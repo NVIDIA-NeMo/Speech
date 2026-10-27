@@ -194,9 +194,9 @@ class AcousticCodesPredictor(torch.nn.Module):
         if loss_mask is None:
             supervised = has_target
         else:
-            assert loss_mask.shape == target_codes.shape[:2], (
-                f"loss mask has shape {tuple(loss_mask.shape)}, expected {tuple(target_codes.shape[:2])}"
-            )
+            assert (
+                loss_mask.shape == target_codes.shape[:2]
+            ), f"loss mask has shape {tuple(loss_mask.shape)}, expected {tuple(target_codes.shape[:2])}"
             supervised = has_target & loss_mask.to(device=target_codes.device, dtype=torch.bool).unsqueeze(-1)
 
         compact_targets = torch.where(target_codes == self.audio_eos_id, self.codebook_size, target_codes)

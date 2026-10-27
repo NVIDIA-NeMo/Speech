@@ -24,9 +24,9 @@ import os
 
 import pytest
 import torch
-from omegaconf import OmegaConf
 from examples.tts.magpietts_inference import main as magpietts_inference_main
 from examples.tts.magpietts_inference import run_inference_and_evaluation
+from omegaconf import OmegaConf
 
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.collections.tts.models import EasyMagpieTTSInferenceModel, NemotronTTSBaseV2

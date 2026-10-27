@@ -2000,9 +2000,14 @@ def test_fastconformer_asr_branch_runs_packed_in_training_mode(monkeypatch):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="PEE GPU test requires CUDA")
 def test_fastconformer_asr_branch_rejects_attention_dropout_in_packed_training_on_gpu():
     """rel_pos attention runs FlexAttention on CUDA, which has no dropout; the error names the encoder option."""
+    # FlexAttention lowers head dimensions of at least 16: two heads over the 32-wide toy encoders
     asr_encoder_cfg = toy_asr_encoder_cfg()
+    asr_encoder_cfg.n_heads = 2
     asr_encoder_cfg.dropout_att = 0.1
-    encoder = build_toy_pe_encoder(asr_encoder_cfg=asr_encoder_cfg).train().cuda()
+    diarization_model_cfg = toy_diarization_model_cfg()
+    diarization_model_cfg.encoder.n_heads = 2
+    encoder = build_toy_pe_encoder(asr_encoder_cfg=asr_encoder_cfg, diarization_model_cfg=diarization_model_cfg)
+    encoder = encoder.train().cuda()
     lengths = torch.tensor([80, 53], device="cuda")
     mels = torch.randn(2, _MEL_FEATURES, 80, device="cuda")
     targets = torch.ones(2, 10, _N_SPK, device="cuda")  # external speaker targets: Sortformer is skipped

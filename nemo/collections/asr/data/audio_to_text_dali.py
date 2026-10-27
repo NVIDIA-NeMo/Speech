@@ -434,7 +434,7 @@ class _AudioTextDALIDataset(Iterator):
                     audio = audio + self.dither * gaussian_noise
 
                 # Preemphasis filter
-                if self.preemph > 0.0:
+                if self.preemph is not None and self.preemph > 0.0:
                     audio = dali.fn.preemphasis_filter(audio, preemph_coeff=self.preemph, border='zero')
 
                 # Power spectrogram

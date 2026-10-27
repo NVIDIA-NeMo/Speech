@@ -36,6 +36,7 @@ from nemo.core.config.schedulers import (
     CosineAnnealingParams,
     InverseSquareRootAnnealingParams,
     NoamAnnealingParams,
+    PiecewiseLinearParams,
     PolynomialDecayAnnealingParams,
     PolynomialHoldDecayAnnealingParams,
     SchedulerParams,

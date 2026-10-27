@@ -22,6 +22,7 @@ from nemo.core.optim.lr_scheduler import (
     CosineAnnealing,
     InverseSquareRootAnnealing,
     NoamAnnealing,
+    PiecewiseLinear,
     PolynomialDecayAnnealing,
     PolynomialHoldDecayAnnealing,
     SquareAnnealing,

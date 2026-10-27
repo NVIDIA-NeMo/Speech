@@ -14,7 +14,7 @@
 # limitations under the License.
 
 import os
-from typing import List, Optional
+from typing import Iterable, List, Optional, Union
 
 from transformers import AutoTokenizer as AUTOTOKENIZER
 
@@ -278,16 +278,20 @@ class AutoTokenizer(TokenizerSpec):
         tokens = self.tokenizer.tokenize(text)
         return tokens
 
-    def tokens_to_text(self, tokens):
+    def tokens_to_text(self, tokens: Union[str, Iterable[str]]) -> str:
         """
-        Converts a list of tokens back into text.
+        Converts tokens back into text.
 
         Args:
-            tokens (List[str]): List of tokens to be converted.
+            tokens (Union[str, Iterable[str]]): List of tokens, iterable of tokens, or single token string to be converted.
 
         Returns:
             str: The reconstructed text.
         """
+        if isinstance(tokens, str):
+            tokens = [tokens]
+        elif not isinstance(tokens, list):
+            tokens = list(tokens)
         text = self.tokenizer.convert_tokens_to_string(tokens)
         return text
 
@@ -303,29 +307,37 @@ class AutoTokenizer(TokenizerSpec):
         """
         return self.tokens_to_ids([token])[0]
 
-    def tokens_to_ids(self, tokens):
+    def tokens_to_ids(self, tokens: Union[str, Iterable[str]]) -> List[int]:
         """
         Converts a list of tokens to their corresponding IDs.
 
         Args:
-            tokens (List[str]): List of tokens to convert.
+            tokens (Union[str, Iterable[str]]): List of tokens, iterable of tokens, or single token string to convert.
 
         Returns:
             List[int]: List of token IDs.
         """
+        if isinstance(tokens, str):
+            tokens = [tokens]
+        elif not isinstance(tokens, list):
+            tokens = list(tokens)
         ids = self.tokenizer.convert_tokens_to_ids(tokens)
         return ids
 
-    def ids_to_tokens(self, ids):
+    def ids_to_tokens(self, ids: Union[int, Iterable[int]]) -> List[str]:
         """
         Converts a list of token IDs back to tokens.
 
         Args:
-            ids (List[int]): List of token IDs to convert.
+            ids (Union[int, Iterable[int]]): List of token IDs, iterable of IDs, or single token ID to convert.
 
         Returns:
             List[str]: List of tokens.
         """
+        if isinstance(ids, int):
+            ids = [ids]
+        elif not isinstance(ids, list):
+            ids = list(ids)
         tokens = self.tokenizer.convert_ids_to_tokens(ids)
         return tokens
 

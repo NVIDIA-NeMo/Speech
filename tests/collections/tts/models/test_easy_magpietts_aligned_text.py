@@ -28,6 +28,8 @@ def aligned_model():
                     'aligned_text_head_chunk_size': 2,
                     'aligned_text_aligner': {
                         'flow_type': 'sttts',
+                        'text_encoder_type': 'relative_transformer',
+                        'text_dropout': 0.0,
                         'hidden_channels': 8,
                         'num_flows': 2,
                         'num_text_layers': 1,
@@ -176,6 +178,7 @@ def test_unversioned_aligner_config_preserves_compact_architecture(restoring):
     assert resolved['flow_type'] == 'legacy'
     assert resolved['hidden_channels'] == 64 and resolved['num_flows'] == 4
     assert resolved['max_log_scale'] == 2.0
+    assert resolved['text_encoder_type'] == 'cnn'
 
 
 def test_new_aligner_config_and_old_implicit_restoration_are_unambiguous():
@@ -186,5 +189,29 @@ def test_new_aligner_config_and_old_implicit_restoration_are_unambiguous():
     assert (new['flow_type'], new['hidden_channels'], new['num_flows']) == ('sttts', 128, 6)
     assert (new['coupling_num_layers'], new['coupling_kernel_size']) == (4, 5)
     assert new['max_log_scale'] is None
+    assert new['text_encoder_type'] == 'relative_transformer'
+    assert (new['text_num_heads'], new['text_filter_channels'], new['text_rel_attn_window_size']) == (2, None, 4)
     assert resolve(None, restoring=True)['flow_type'] == 'legacy'
-    assert resolve({'flow_type': 'sttts'}, restoring=True) == new
+    assert resolve(None, restoring=True)['text_encoder_type'] == 'cnn'
+    explicit = {'flow_type': 'sttts', 'text_encoder_type': 'relative_transformer'}
+    assert resolve(explicit, restoring=True) == new
+
+
+@pytest.mark.parametrize('restoring', [False, True])
+def test_saved_sttts_flow_without_text_version_keeps_cnn_prior(restoring):
+    from nemo.collections.tts.models.easy_magpietts_inference import EasyMagpieTTSInferenceModel
+
+    old = {'flow_type': 'sttts', 'hidden_channels': 128, 'num_flows': 6, 'num_text_layers': 2}
+    resolved = EasyMagpieTTSInferenceModel._resolve_aligned_text_aligner_config(old, restoring=restoring)
+    assert resolved['flow_type'] == 'sttts' and resolved['text_encoder_type'] == 'cnn'
+    assert (resolved['hidden_channels'], resolved['num_flows']) == (128, 6)
+
+
+def test_explicit_relative_text_config_uses_current_flow_defaults():
+    from nemo.collections.tts.models.easy_magpietts_inference import EasyMagpieTTSInferenceModel
+
+    resolved = EasyMagpieTTSInferenceModel._resolve_aligned_text_aligner_config(
+        {'text_encoder_type': 'relative_transformer', 'text_num_heads': 4, 'text_dropout': 0.0}
+    )
+    assert resolved['flow_type'] == 'sttts' and resolved['text_encoder_type'] == 'relative_transformer'
+    assert resolved['text_num_heads'] == 4 and resolved['text_dropout'] == 0.0

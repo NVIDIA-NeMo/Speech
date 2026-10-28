@@ -36,6 +36,24 @@ embeddings are detached before entering the tiny text prior. The invertible flow
 is trained by acoustic negative log likelihood, including the Jacobian; there is
 no posterior encoder or VITS KL objective.
 
+The default `text_encoder_type=relative_transformer` prior projects those CAS
+features to width 128, then applies a small `RelativePositionTransformer`: two
+layers, two heads, a 512-wide convolutional feed-forward network (kernel three,
+ReLU), dropout 0.1, and residual connections with post-layer normalization. It
+uses the [VITS relative-attention design](https://github.com/jaywalnut310/vits/blob/main/attentions.py):
+learned relative key and value embeddings, shared across heads, for offsets
+-4 through +4. This window controls relative embeddings; content attention is
+bidirectional across the entire turn. No absolute positional embedding is added.
+The final projection predicts Gaussian latent means, with variance fixed to one.
+There is no duplicate vocabulary embedding or duration predictor. The encoder
+receives only normalized-text features; decoder states do not enter it.
+
+`modules/relative_position_transformer.py` adapts the MIT-licensed VITS attention
+implementation and reuses NeMo's masked convolution layers. It does not require
+the Coqui TTS package. The same attention/FFN structure is used at a smaller
+capacity than VITS's usual six-layer, width-192 encoder. Masks are applied between
+convolutions and after residual normalization, including fully invalid turn rows.
+
 The aligner trains from step zero. Before `start_aligner_text_head_steps`, the new
 head predicts normalized tokens followed by right padding within each turn. At
 the threshold it predicts BPE tokens repeated according to the current MAS path.
@@ -60,17 +78,21 @@ ActNorm starts as identity, without data-dependent initialization or distributed
 initialization collectives. The reference coupling log scale is unconstrained;
 `max_log_scale` can optionally bound it.
 
-This follows the published flow capacity, not the entire ST-TTS model. Existing
-CAS features and the two-layer text prior are retained. Frozen quantized codec
-features with jitter replace ST-TTS's mel observations. Consequently the same
-kernel covers more seconds at 12.5 FPS, and boundary accuracy still requires
+This follows the published flow capacity, not the entire ST-TTS model. The text
+prior uses the small VITS-style relative-position Transformer described above.
+Frozen quantized codec features with jitter replace ST-TTS's mel observations.
+Consequently the same kernel covers more seconds at 12.5 FPS, and boundary accuracy still requires
 evaluation. The Gaussian prior variance remains fixed to one.
 
 The earlier compact flow is available as `flow_type=legacy` with its original
 parameter names. Unversioned saved aligner dictionaries are interpreted as
 legacy profiles (64 hidden channels/four flows by default); new runs use the
 explicit `sttts` profile in the YAML. Resuming an old compact aligner keeps its
-architecture. To start the new reference flow from an older TTS checkpoint, use
+architecture. Saved configurations without `text_encoder_type` retain the earlier
+CNN prior, including checkpoints that already use the ST-TTS flow. Explicitly
+select `text_encoder_type=cnn` to keep that prior in a new experiment. New YAML
+configurations explicitly select `relative_transformer` and save all its settings.
+To start the new text encoder or reference flow from an older TTS checkpoint, use
 the existing partial-pretrained initialization path with the new YAML, rather
 than resuming an old optimizer state into a different architecture.
 
@@ -86,6 +108,9 @@ Useful controls:
 - `aligned_text_aligner`: versioned flow type, hidden width, flow/text-layer
   counts, `coupling_num_layers`, `coupling_kernel_size`, `flow_n_split`, feature
   jitter, and `mas_backend` (`auto`, `triton`, `cpu`).
+- Text prior controls inside `aligned_text_aligner`: `text_encoder_type`,
+  `text_num_heads`, `text_filter_channels` (default four times the hidden width),
+  `text_kernel_size`, `text_dropout`, and `text_rel_attn_window_size`.
 - `aligned_text_max_turns_per_batch=32` and
   `aligned_text_max_frames_per_batch=8192`: padding-aware teacher batch limits.
   Oversized individual turns raise explicitly; increase the limit rather than
@@ -120,8 +145,11 @@ The profiler checks CPU/GPU parity and measures MAS, full teacher
 forward/backward, memory, and separate-turn versus whole-conversation lattices.
 Compilation is warmed up; CPU transfers are included. Synthetic teacher timings
 exclude codec decoding, CAS, the text head and the TTS backbone.
-It defaults to the ST-TTS flow profile. To compare the old compact teacher, pass
-`--flow-type legacy --hidden-channels 64 --num-flows 4` explicitly.
+It defaults to the ST-TTS flow with the relative-position text encoder. Compare
+the previous ST-TTS teacher using `--text-encoder-type cnn`, or the original
+compact teacher using `--flow-type legacy --hidden-channels 64 --num-flows 4`
+together with `--text-encoder-type cnn`. Reports separate text-encoder and flow
+parameter counts, as well as their combined forward/backward cost.
 
 ## Inference and portability
 
@@ -143,10 +171,11 @@ generated sound. Word boundaries require validation. Adjacent equal BPE IDs also
 cannot reveal their intervening position boundary without an additional advance
 signal. No hard stay/advance decoding or attention constraint is imposed here.
 
-For another branch, cherry-pick the feature commit followed by the ST-TTS flow
-update, or apply the exported two-commit patch series. Reusable code
-lives in `modules/glow_tts_aligner.py`, `modules/aligned_text_head.py` and
-`parts/utils/monotonic_alignment.py`. The integration touches only the model and
+For another branch, cherry-pick the feature commit, the ST-TTS flow update, and
+the relative-position text-encoder update, or apply the exported patch series.
+Reusable code lives in `modules/glow_tts_aligner.py`, `modules/aligned_text_head.py`,
+`modules/relative_position_transformer.py`, and `parts/utils/monotonic_alignment.py`.
+The integration touches only the model and
 inference base, the two target loaders, the multiturn YAML, tests and this guide.
 The cluster recipe is not required by the modules and is not copied into the
 repository. Older checkpoints initialize the added modules through the existing

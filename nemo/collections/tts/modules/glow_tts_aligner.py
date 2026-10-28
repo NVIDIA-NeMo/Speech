@@ -22,8 +22,8 @@ There is no posterior encoder or variational KL objective.
 
 The default acoustic flow follows ST-TTS section 3.1.4: six Glow-style blocks,
 128 hidden channels, and four gated residual kernel-five layers per affine
-coupling, without additional time squeezing. Existing CAS embeddings and the
-small text prior remain Nemotron-specific adaptations. ActNorm uses identity
+coupling, without additional time squeezing. A small VITS-style relative-position
+Transformer maps existing CAS features to latent means. ActNorm uses identity
 initialization without data-dependent or distributed initialization. The earlier
 compact flow remains available as ``flow_type='legacy'`` for old checkpoints.
 
@@ -61,6 +61,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from nemo.collections.tts.modules.relative_position_transformer import RelativePositionTransformer
 from nemo.collections.tts.modules.submodules import ConvNorm
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
 from nemo.collections.tts.parts.utils.monotonic_alignment import maximum_path_indices
@@ -83,9 +84,9 @@ class TinyGlowTTSAligner(nn.Module):
         audio_channels: Acoustic feature dimension. It is preserved by the flow.
         text_channels: Dimension of existing text/CAS embeddings. No duplicate
             vocabulary embedding is created.
-        hidden_channels: Width of the small convolutional subnetworks.
+        hidden_channels: Width of the acoustic coupling networks and text prior.
         num_flows: Number of normalization/mixing/coupling blocks.
-        num_text_layers: Number of residual convolution layers in the text prior.
+        num_text_layers: Number of Transformer blocks, or legacy CNN layers.
         dequantization_noise: Half-width of uniform feature jitter during training.
             Quantized codec features need a continuous observation model; this
             learns the density of their jittered distribution. Set to zero for
@@ -101,6 +102,15 @@ class TinyGlowTTSAligner(nn.Module):
         flow_n_split: Size of the shared invertible mixing matrix. A full
             channel matrix is used when the feature dimension is not divisible
             by this even split size, preserving support for odd dimensions.
+        text_encoder_type: ``relative_transformer`` for VITS-style relative
+            self-attention, or ``cnn`` to retain existing teacher checkpoints.
+        text_num_heads: Number of bidirectional text-attention heads.
+        text_filter_channels: Convolutional feed-forward width; None uses four
+            times hidden_channels.
+        text_kernel_size: Odd kernel size of the two feed-forward convolutions.
+        text_dropout: Dropout within attention, FFN and residual branches.
+        text_rel_attn_window_size: Maximum learned relative key/value offset.
+            Content attention remains global beyond this window.
 
     The caller should provide detached audio-only features and detached text
     embeddings when the aligner is an auxiliary teacher for another generator.
@@ -122,6 +132,12 @@ class TinyGlowTTSAligner(nn.Module):
         coupling_num_layers: int = 4,
         coupling_kernel_size: int = 5,
         flow_n_split: int = 4,
+        text_encoder_type: str = 'relative_transformer',
+        text_num_heads: int = 2,
+        text_filter_channels: int | None = None,
+        text_kernel_size: int = 3,
+        text_dropout: float = 0.1,
+        text_rel_attn_window_size: int = 4,
     ):
         super().__init__()
         if audio_channels < 2 or text_channels < 1 or hidden_channels < 1:
@@ -142,6 +158,8 @@ class TinyGlowTTSAligner(nn.Module):
             raise ValueError('coupling_kernel_size must be an odd positive integer')
         if type(flow_n_split) is not int or flow_n_split < 2 or flow_n_split % 2:
             raise ValueError('flow_n_split must be an even integer >= 2')
+        if text_encoder_type not in {'relative_transformer', 'cnn'}:
+            raise ValueError(f'Unknown text encoder type: {text_encoder_type}')
         self.audio_channels = audio_channels
         self.text_channels = text_channels
         self.hidden_channels = hidden_channels
@@ -154,7 +172,26 @@ class TinyGlowTTSAligner(nn.Module):
         self.max_log_scale = max_log_scale
         self.dequantization_noise = dequantization_noise
         self.mas_backend = mas_backend
-        self.text_encoder = _TextPrior(text_channels, hidden_channels, audio_channels, num_text_layers)
+        self.text_encoder_type = text_encoder_type
+        self.text_num_heads = text_num_heads
+        self.text_filter_channels = 4 * hidden_channels if text_filter_channels is None else text_filter_channels
+        self.text_kernel_size = text_kernel_size
+        self.text_dropout = text_dropout
+        self.text_rel_attn_window_size = text_rel_attn_window_size
+        if text_encoder_type == 'cnn':
+            self.text_encoder = _TextPrior(text_channels, hidden_channels, audio_channels, num_text_layers)
+        else:
+            self.text_encoder = _TransformerTextPrior(
+                text_channels,
+                hidden_channels,
+                audio_channels,
+                num_text_layers,
+                text_num_heads,
+                self.text_filter_channels,
+                text_kernel_size,
+                text_dropout,
+                text_rel_attn_window_size,
+            )
         if flow_type == 'legacy':
             self.flow = _AudioFlow(
                 audio_channels, hidden_channels, num_flows, 2.0 if max_log_scale is None else max_log_scale
@@ -259,6 +296,40 @@ class TinyGlowTTSAligner(nn.Module):
             durations=torch.zeros(text_features.shape[:2], dtype=torch.long, device=audio_features.device),
             valid_turns=valid_turns,
         )
+
+
+class _TransformerTextPrior(nn.Module):
+    """Project existing text features through a small relative-position encoder."""
+
+    def __init__(
+        self,
+        in_channels,
+        hidden_channels,
+        out_channels,
+        num_layers,
+        num_heads,
+        filter_channels,
+        kernel_size,
+        dropout,
+        window_size,
+    ):
+        super().__init__()
+        self.input_projection = ConvNorm(in_channels, hidden_channels, kernel_size=1)
+        self.encoder = RelativePositionTransformer(
+            hidden_channels=hidden_channels,
+            filter_channels=filter_channels,
+            n_heads=num_heads,
+            n_layers=num_layers,
+            kernel_size=kernel_size,
+            p_dropout=dropout,
+            window_size=window_size,
+        )
+        self.output_projection = ConvNorm(hidden_channels, out_channels, kernel_size=1)
+
+    def forward(self, features, mask):
+        hidden = self.input_projection(features, mask) * mask
+        hidden = self.encoder(hidden, mask)
+        return self.output_projection(hidden, mask) * mask
 
 
 class _TextPrior(nn.Module):

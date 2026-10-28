@@ -2515,16 +2515,28 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
     @staticmethod
     def _resolve_aligned_text_aligner_config(config=None, restoring=False):
-        """Version old compact teachers and stamp complete defaults for new runs."""
+        """Preserve saved flow/text architectures and stamp new-run defaults."""
         values = dict(config or {})
-        unversioned = config is not None and 'flow_type' not in values
+        unversioned = config is not None and 'flow_type' not in values and 'text_encoder_type' not in values
         legacy = unversioned or (restoring and not values)
         profile = values.get('flow_type', 'legacy' if legacy else 'sttts')
+        # Both previous teacher versions used the CNN prior, including ST-TTS
+        # flow checkpoints. Only new configs explicitly opt into relative text
+        # attention; old weights retain their original names and dimensions.
+        text_profile = values.get(
+            'text_encoder_type', 'cnn' if config is not None or restoring else 'relative_transformer'
+        )
         defaults = {
             'flow_type': profile,
             'hidden_channels': 64 if profile == 'legacy' else 128,
             'num_flows': 4 if profile == 'legacy' else 6,
             'num_text_layers': 2,
+            'text_encoder_type': text_profile,
+            'text_num_heads': 2,
+            'text_filter_channels': None,
+            'text_kernel_size': 3,
+            'text_dropout': 0.1,
+            'text_rel_attn_window_size': 4,
             'coupling_num_layers': 1 if profile == 'legacy' else 4,
             'coupling_kernel_size': 3 if profile == 'legacy' else 5,
             'flow_n_split': 4,

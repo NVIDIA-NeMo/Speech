@@ -166,7 +166,14 @@ def test_reference_profile_preserves_audio_grid_under_bfloat16_amp():
 
 
 def test_explicit_legacy_profile_restores_original_state_keys_and_predictions():
-    kwargs = dict(audio_channels=4, text_channels=6, hidden_channels=8, num_flows=2, flow_type='legacy')
+    kwargs = dict(
+        audio_channels=4,
+        text_channels=6,
+        hidden_channels=8,
+        num_flows=2,
+        flow_type='legacy',
+        text_encoder_type='cnn',
+    )
     original = TinyGlowTTSAligner(**kwargs).eval()
     state = original.state_dict()
     assert 'flow.shifts.0' in state and 'flow.log_scales.0' in state
@@ -202,6 +209,7 @@ def _small_aligner():
         coupling_kernel_size=3,
         mas_backend='cpu',
         flow_type='sttts',
+        text_dropout=0.0,
     )
 
 

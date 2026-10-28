@@ -192,3 +192,5 @@ eval_results/
 
 # agents
 .claude/settings.local.json
+
+.devcontainer/devcontainer-lock.json

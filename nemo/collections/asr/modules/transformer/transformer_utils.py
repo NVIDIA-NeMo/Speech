@@ -131,6 +131,11 @@ def get_nemo_transformer(
             pre_ln=cfg.get('pre_ln', False),
             pre_ln_final_layer_norm=pre_ln_final_layer_norm,
             num_token_types=cfg.get('num_token_types', 2),
+            embedding=cfg.get('embedding', None),
+            norm=cfg.get('norm', None),
+            self_attn=cfg.get('self_attn', None),
+            cross_attn=cfg.get('cross_attn', None),
+            feed_forward=cfg.get('feed_forward', None),
         )
 
     return model

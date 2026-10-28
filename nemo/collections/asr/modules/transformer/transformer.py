@@ -14,7 +14,7 @@
 # limitations under the License.
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import torch
 from omegaconf.omegaconf import MISSING, DictConfig
@@ -24,7 +24,9 @@ from nemo.collections.asr.modules.transformer.encoder_module import EncoderModul
 from nemo.collections.asr.modules.transformer.transformer_decoders import TransformerDecoder, TransformerDecoderAdapter
 from nemo.collections.asr.modules.transformer.transformer_encoders import TransformerEncoder
 from nemo.collections.asr.modules.transformer.transformer_modules import TransformerEmbedding
+from nemo.collections.asr.parts.submodules.packed_attention import PackedAttentionContext
 from nemo.collections.asr.parts.utils import adapter_utils
+from nemo.collections.common.parts.utils import ModuleBlock, build_module
 from nemo.core.classes.common import typecheck
 from nemo.core.classes.exportable import Exportable
 from nemo.core.classes.mixins import adapter_mixins
@@ -67,6 +69,13 @@ class NeMoTransformerEncoderConfig(NeMoTransformerConfig):
 @dataclass
 class NeMoTransformerDecoderConfig(NeMoTransformerConfig):
     r2l: bool = False
+
+    # configurable blocks (Hydra sections with _target_ and _partial_: true), see TransformerDecoderNM
+    embedding: Optional[Any] = None
+    norm: Optional[Any] = None
+    self_attn: Optional[Any] = None
+    cross_attn: Optional[Any] = None
+    feed_forward: Optional[Any] = None
 
 
 class TransformerEncoderNM(EncoderModule, Exportable):
@@ -177,7 +186,20 @@ class TransformerDecoderNM(DecoderModule, Exportable):
         hidden_act: str = 'relu',
         pre_ln: bool = False,
         pre_ln_final_layer_norm: bool = True,
+        embedding: ModuleBlock | None = None,
+        norm: ModuleBlock | None = None,
+        self_attn: ModuleBlock | None = None,
+        cross_attn: ModuleBlock | None = None,
+        feed_forward: ModuleBlock | None = None,
     ):
+        """
+        Args:
+            embedding: configurable embedding block (class, callable or Hydra partial with ``_target_`` and
+                ``_partial_: true``) built with the vocabulary and embedding arguments above; default
+                TransformerEmbedding
+            norm, self_attn, cross_attn, feed_forward: configurable blocks of the decoder layers, see
+                TransformerDecoderBlock
+        """
         super().__init__()
 
         self._vocab_size = vocab_size
@@ -188,7 +210,8 @@ class TransformerDecoderNM(DecoderModule, Exportable):
         if pre_ln_final_layer_norm:
             self.num_states += 1
 
-        self._embedding = TransformerEmbedding(
+        self._embedding = build_module(
+            embedding or TransformerEmbedding,
             vocab_size=self.vocab_size,
             hidden_size=self.hidden_size,
             max_sequence_length=max_sequence_length,
@@ -208,6 +231,10 @@ class TransformerDecoderNM(DecoderModule, Exportable):
             hidden_act=hidden_act,
             pre_ln=pre_ln,
             pre_ln_final_layer_norm=pre_ln_final_layer_norm,
+            norm=norm,
+            self_attn=self_attn,
+            cross_attn=cross_attn,
+            feed_forward=feed_forward,
         )
 
     @typecheck()
@@ -238,6 +265,27 @@ class TransformerDecoderNM(DecoderModule, Exportable):
         if self.return_mems:
             decoder_hidden_states = torch.transpose(decoder_hidden_states, 0, 1)
         return decoder_hidden_states
+
+    def forward_packed(
+        self,
+        input_ids: torch.Tensor,
+        decoder_context: PackedAttentionContext,
+        encoder_states: torch.Tensor,
+        encoder_context: PackedAttentionContext,
+    ) -> torch.Tensor:
+        """Decoder hidden states for token-flat input ids, see ``TransformerDecoder.forward_packed``.
+
+        Args:
+            input_ids: token ids of all sequences, shape ``(U_total,)``.
+            decoder_context: boundaries and positions of the ids.
+            encoder_states: packed encoder output, shape ``(T_total, hidden_size)``.
+            encoder_context: boundaries of the encoder output.
+
+        Returns:
+            The decoder hidden states, shape ``(U_total, hidden_size)``.
+        """
+        decoder_embeddings = self._embedding.forward_packed(input_ids, decoder_context.position_ids)
+        return self._decoder.forward_packed(decoder_embeddings, decoder_context, encoder_states, encoder_context)
 
     @property
     def hidden_size(self):

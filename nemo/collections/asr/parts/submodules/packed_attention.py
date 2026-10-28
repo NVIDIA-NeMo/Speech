@@ -32,7 +32,7 @@ from nemo.collections.asr.parts.packed_sequence import (
     packed_sequence_ids,
 )
 
-__all__ = ["PackedAttentionContext", "packed_attention"]
+__all__ = ["PackedAttentionContext", "packed_attention", "packed_cross_attention"]
 
 # the sparse block size of FlexAttention; the document block mask is built at this granularity
 BLOCK_SIZE = 128
@@ -267,6 +267,97 @@ def packed_attention(
             )
         return _flex_packed_attention(q, k, v, context, rel_pos_bias=rel_pos_bias, scale=scale)
     return _reference_packed_attention(q, k, v, context, rel_pos_bias=rel_pos_bias, dropout_p=dropout_p, scale=scale)
+
+
+def packed_cross_attention(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    query_context: PackedAttentionContext,
+    key_context: PackedAttentionContext,
+    *,
+    causal: bool = False,
+    dropout_p: float = 0.0,
+    scale: float | None = None,
+) -> Tensor:
+    """Attend from token-flat queries to the token-flat keys of the same sequence, without a position bias.
+
+    On CUDA in half precision this runs variable-length FlashAttention;
+    otherwise the sequences are attended one at a time with dense attention.
+
+    Args:
+        q: queries, shape ``(Q_total, H, d_k)``.
+        k: keys, shape ``(K_total, H, d_k)``, packed in the same sequence order as the queries.
+        v: values, shape ``(K_total, H, d_k)``.
+        query_context: packing metadata of the queries.
+        key_context: packing metadata of the keys; the same object as ``query_context`` in self-attention.
+        causal: let every query see only the keys at its position or before; needs equal query and key lengths.
+        dropout_p: dropout on the attention weights.
+        scale: score scale, ``1 / sqrt(d_k)`` by default.
+
+    Returns:
+        Context vectors of shape ``(Q_total, H, d_k)``.
+    """
+    if scale is None:
+        scale = 1.0 / math.sqrt(q.shape[-1])
+    if query_context.lengths.numel() != key_context.lengths.numel():
+        raise ValueError("query_context and key_context must describe the same number of sequences.")
+    if query_context.total_tokens == 0 or key_context.total_tokens == 0:
+        anchor = (q.sum() + k.sum() + v.sum()) * 0.0
+        return q.new_zeros(q.shape) + anchor.to(q.dtype)
+    if q.is_cuda:
+        flash = _flash_attention_varlen(q)
+        if flash is not None:
+            return flash(
+                q.contiguous(),
+                k.contiguous(),
+                v.contiguous(),
+                query_context.cu_seqlens,
+                key_context.cu_seqlens,
+                query_context.max_seqlen,
+                key_context.max_seqlen,
+                dropout_p=dropout_p,
+                softmax_scale=scale,
+                causal=causal,
+            )
+    return _reference_packed_cross_attention(
+        q, k, v, query_context, key_context, causal=causal, dropout_p=dropout_p, scale=scale
+    )
+
+
+def _reference_packed_cross_attention(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    query_context: PackedAttentionContext,
+    key_context: PackedAttentionContext,
+    *,
+    causal: bool,
+    dropout_p: float,
+    scale: float,
+) -> Tensor:
+    """Dense attention one sequence at a time from its queries to its keys."""
+    outputs = []
+    for (q_start, q_end), (k_start, k_end) in zip(query_context.sequence_slices, key_context.sequence_slices):
+        if q_end == q_start:
+            continue
+        if k_end == k_start:
+            outputs.append(q.new_zeros((q_end - q_start,) + tuple(q.shape[1:])))
+            continue
+        qi = q[q_start:q_end].transpose(0, 1)
+        ki = k[k_start:k_end].transpose(0, 1)
+        vi = v[k_start:k_end].transpose(0, 1)
+        scores = torch.matmul(qi, ki.transpose(-2, -1)) * scale
+        if causal:
+            if q_end - q_start != k_end - k_start:
+                raise ValueError("causal packed attention needs equal query and key lengths per sequence.")
+            visible = torch.ones(q_end - q_start, k_end - k_start, dtype=torch.bool, device=q.device).tril()
+            scores = scores.masked_fill(~visible, float("-inf"))
+        weights = torch.softmax(scores, dim=-1)
+        if dropout_p > 0.0:
+            weights = torch.nn.functional.dropout(weights, p=dropout_p, training=True)
+        outputs.append(torch.matmul(weights, vi).transpose(0, 1))
+    return torch.cat(outputs, dim=0)
 
 
 def _flash_attention_varlen(q: Tensor) -> Callable | None:

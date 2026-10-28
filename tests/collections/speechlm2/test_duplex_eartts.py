@@ -633,3 +633,28 @@ def test_set_init_inputs_takes_the_batch_system_prompts_and_rejects_different_on
             speaker_audio_lens=speaker_audio_lens,
             system_prompt=["Speak slowly.", "Shout."],
         )
+
+
+@pytest.mark.parametrize("prompts", [["Speak slowly.", "Shout."], ["Speak slowly.", "Speak slowly."], None])
+def test_evaluation_forwards_every_rows_system_prompt_to_the_initializer(prompts):
+    """run_evaluation_one_batch hands the whole batch's prompts to set_init_inputs, which checks their agreement."""
+
+    class InitReached(Exception):
+        pass
+
+    def capture_init(**kwargs):
+        assert kwargs["system_prompt"] == prompts
+        raise InitReached
+
+    probe = SimpleNamespace(
+        prepare_inputs=lambda batch: {},
+        get_teacher_force_inference_audio=lambda batch: (None, None),
+        set_init_inputs=capture_init,
+    )
+    batch = {
+        "audio_prompt": torch.zeros(2, 1),
+        "audio_prompt_lens": torch.ones(2, dtype=torch.long),
+        "system_prompts_raw": prompts,
+    }
+    with pytest.raises(InitReached):
+        DuplexEARTTS.run_evaluation_one_batch(probe, "val", batch)

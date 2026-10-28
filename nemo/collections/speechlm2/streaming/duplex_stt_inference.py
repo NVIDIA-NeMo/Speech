@@ -136,11 +136,6 @@ class DuplexSTTStreamingInference:
                 "duplex_asr_text_weight", 1.0
             )
 
-        start_gen_pos = 0
-        if prompt_token_lens is not None:
-            max_prompt_len = prompt_token_lens.max().item()
-            start_gen_pos = max_prompt_len
-
         is_prompt_position_mask = torch.zeros(B, T, dtype=torch.bool, device=self.model.device)
         if prompt_token_lens is not None:
             for i, prompt_len in enumerate(prompt_token_lens):
@@ -160,7 +155,6 @@ class DuplexSTTStreamingInference:
             "use_cache": use_cache,
             "gen_text": gen_text,
             "gen_asr": gen_asr,
-            "start_gen_pos": start_gen_pos,
             "is_prompt_position_mask": is_prompt_position_mask,
         }
 
@@ -171,10 +165,16 @@ class DuplexSTTStreamingInference:
             cache=inference_state["cache"],
         )
 
-        if inference_state["start_gen_pos"] == 0:
-            inference_state["gen_text"][:, 0] = ans["text_logits"][:, -1].argmax(dim=-1)
-            if self.model.predict_user_text:
-                inference_state["gen_asr"][:, 0] = ans["asr_logits"][:, -1].argmax(dim=-1)
+        is_prompt_position = inference_state["is_prompt_position_mask"][:, 0]
+        generated_tokens = ans["text_logits"][:, -1].argmax(dim=-1)
+        inference_state["gen_text"][:, 0] = torch.where(
+            is_prompt_position, inference_state["gen_text"][:, 0], generated_tokens
+        )
+        if self.model.predict_user_text:
+            generated_asr = ans["asr_logits"][:, -1].argmax(dim=-1)
+            inference_state["gen_asr"][:, 0] = torch.where(
+                is_prompt_position, inference_state["gen_asr"][:, 0], generated_asr
+            )
 
         return ans, inference_state
 

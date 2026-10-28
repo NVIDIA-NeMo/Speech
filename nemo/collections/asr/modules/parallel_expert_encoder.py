@@ -1081,6 +1081,25 @@ class ParallelExpertEncoder(nn.Module):
         encoding[:, 1::2] = torch.cos(position * div_term)
         return encoding
 
+    def _check_speaker_targets_grid(self, spk_targets: torch.Tensor, target_len: int) -> None:
+        """
+        Reject speaker activity that is far longer than the ASR grid.
+        External targets live on the ASR output grid; a collated length overruns it by a few frames of
+        duration rounding at most, while a tensor on another grid (native 10 ms frames, a different
+        subsampling factor) would be cut to its first frames silently.
+
+        Args:
+            spk_targets (torch.Tensor): Speaker activity shaped ``(B, T, S)``.
+            target_len (int): ASR frame count.
+        """
+        slack = int(self.asr_encoder.subsampling_factor)
+        if spk_targets.shape[1] > target_len + slack:
+            raise ValueError(
+                f"spk_targets have {spk_targets.shape[1]} frames for an ASR grid of {target_len} frames; "
+                f"speaker targets must be on the ASR output grid (one frame per {slack} mel frames, "
+                "multispeaker_cfg.subsampling_factor)."
+            )
+
     @staticmethod
     def _align_diar_frames(spk_targets: torch.Tensor, target_len: int) -> torch.Tensor:
         """
@@ -1233,6 +1252,7 @@ class ParallelExpertEncoder(nn.Module):
             torch.Tensor: Speaker-infused states shaped ``(B, D, T)``.
         """
         states = asr_encoded.transpose(1, 2)
+        self._check_speaker_targets_grid(spk_targets, states.shape[1])
         spk_targets = self._align_diar_frames(spk_targets, states.shape[1]).to(
             device=states.device, dtype=states.dtype
         )
@@ -1646,6 +1666,7 @@ class ParallelExpertEncoder(nn.Module):
         Returns:
             torch.Tensor: Speaker probabilities aligned to the CTC frame grid.
         """
+        self._check_speaker_targets_grid(spk_targets, target_len)
         speaker_probs = self._align_diar_frames(spk_targets, target_len)
         if use_diarization is not None:
             diarization_preds = self._downsample_high_resolution_diarization_for_fusion(diarization_preds, target_len)

@@ -117,7 +117,8 @@ class TestPackedAttentionKernelShapes:
     def test_recompile_limit_miss_raises_instead_of_running_eagerly(self, monkeypatch):
         """Past its recompile limit Dynamo would run flex_attention eagerly over dense scores; the miss must fail."""
         monkeypatch.setattr(packed_attention_module, "RECOMPILE_LIMIT", 1)
-        monkeypatch.setattr(torch._dynamo.config, "recompile_limit", 1)
+        limit_name = "recompile_limit" if hasattr(torch._dynamo.config, "recompile_limit") else "cache_size_limit"
+        monkeypatch.setattr(torch._dynamo.config, limit_name, 1)
         torch._dynamo.reset()
 
         def attend(lengths):
@@ -129,6 +130,27 @@ class TestPackedAttentionKernelShapes:
         attend([40, 30])
         with pytest.raises(torch._dynamo.exc.FailOnRecompileLimitHit):
             attend([5000, 30])
+
+    @pytest.mark.unit
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA FlexAttention")
+    def test_token_total_does_not_recompile(self, monkeypatch):
+        """Batches with equal padded shapes but different token totals share one kernel.
+
+        The relative-position bias enters the kernel with its unpadded token axis;
+        without the dynamic mark on that axis the static compile specializes on every distinct total.
+        """
+        torch._dynamo.reset()
+
+        def attend(lengths):
+            context = PackedAttentionContext.from_lengths(torch.tensor(lengths, device="cuda"))
+            q, k, v = (torch.randn(context.total_tokens, 2, 16, device="cuda") for _ in range(3))
+            bias = torch.randn(context.total_tokens, 2, 2 * context.padded_max_seqlen - 1, device="cuda")
+            return packed_attention(q, k, v, context, rel_pos_bias=bias)
+
+        attend([40, 30])
+        monkeypatch.setattr(torch._dynamo.config, "error_on_recompile", True)
+        attend([40, 35])
+        attend([45, 35, 20])
 
 
 class TestPackedRelPositionAttention:

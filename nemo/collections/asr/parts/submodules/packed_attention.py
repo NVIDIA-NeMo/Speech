@@ -20,6 +20,7 @@ import math
 from collections.abc import Callable
 
 import torch
+import torch._dynamo
 from torch import Tensor
 from torch.nn.attention.flex_attention import BlockMask, flex_attention
 
@@ -291,6 +292,9 @@ def _flex_packed_attention(
     if rel_pos_bias is not None:
         bias = rel_pos_bias
         rows = context.bias_rows()
+        # the bias keeps its token axis (no padded copy), which the static compile would otherwise
+        # specialize on, one kernel per distinct token total of a run; the mark keeps that axis symbolic
+        torch._dynamo.maybe_mark_dynamic(bias, 0)
         # the bias covers the relative positions (W - 1) / 2 down to -(W - 1) / 2;
         # indices outside an utterance are masked, so clamping only keeps the gather in bounds,
         # and the rows map the padded token axis onto the bias, which is not padded

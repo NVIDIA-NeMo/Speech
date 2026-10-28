@@ -669,15 +669,16 @@ class ConvSubsampling(torch.nn.Module):
 
         At the input stage every slot starts at a multiple of the subsampling factor
         and leaves at least that many empty frames after its utterance.
-        A layer with time kernel k, stride s and padding (left, right) reads at most max(left, right) frames
-        beyond an utterance, which must stay inside the gap,
+        A layer with time kernel k (dilation included), stride s and padding (left, right) reads at most
+        max(left, right) frames beyond an utterance, which must stay inside the gap,
         and leaves at least ceil((gap + k - left - right - s) / s) empty frames behind it.
         """
         gap = self.subsampling_factor
         for layer in self.conv:
-            if not hasattr(layer, 'kernel_size'):
-                continue
+            if not isinstance(layer, (nn.Conv1d, nn.Conv2d, nn.MaxPool2d)):
+                continue  # activations
             kernel, stride = _time_axis(layer.kernel_size), _time_axis(layer.stride)
+            kernel = (kernel - 1) * _time_axis(layer.dilation) + 1
             left, right = _layer_padding(layer)
             if max(left, right) > gap:
                 raise NotImplementedError(

@@ -497,6 +497,20 @@ class MagpieTTSDataset(TextToSpeechDataset):
             "text_len": text_len,
         }
 
+        if getattr(self, 'use_aligned_text_head', False):
+            # Imported lazily to leave the ordinary dataset's dependency path
+            # unchanged when the auxiliary alignment task is disabled.
+            from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import alignment_spoken_text
+
+            normalized = alignment_spoken_text(
+                data.manifest_entry.get('normalized_text'),
+                strip_punctuation=getattr(self, 'aligned_text_strip_punctuation', True),
+            )
+            reference = self.text_tokenizer.encode(normalized, tokenizer_name=tokenizer_name) if normalized else []
+            example['alignment_reference_tokens'] = torch.tensor(reference, dtype=torch.long)
+            example['alignment_reference_len'] = len(reference)
+            example['alignment_missing_normalized_text'] = int(not normalized)
+
         if self.phoneme_tokenizer is not None:
             # Use IPA text for IPABPETokenizer (required), otherwise use regular text
             if isinstance(self.phoneme_tokenizer, IPABPETokenizer):
@@ -793,6 +807,19 @@ class MagpieTTSDataset(TextToSpeechDataset):
             "text": batch_tokens,
             "text_lens": batch_token_len,
         }
+
+        if getattr(self, 'use_aligned_text_head', False):
+            batch_dict['alignment_text_tokens'] = torch.nn.utils.rnn.pad_sequence(
+                [example['alignment_reference_tokens'] for example in batch],
+                batch_first=True,
+                padding_value=self.text_tokenizer.pad,
+            )
+            batch_dict['alignment_text_lens'] = torch.tensor(
+                [example['alignment_reference_len'] for example in batch], dtype=torch.long
+            )
+            batch_dict['alignment_missing_normalized_text'] = torch.tensor(
+                sum(example['alignment_missing_normalized_text'] for example in batch), dtype=torch.long
+            )
 
         if len(audio_list) > 0:
             batch_audio_len = torch.IntTensor(audio_len_list)

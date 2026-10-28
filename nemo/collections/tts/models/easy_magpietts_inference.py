@@ -17,7 +17,7 @@ import random
 import tempfile
 import time
 from collections import Counter
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from functools import partial
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -164,6 +164,8 @@ class StreamingState:
     gt_phoneme_lens: Optional[torch.Tensor] = None  # (B,) lengths after stacking
     gt_audio_embeddings: Optional[torch.Tensor] = None  # (B, T', E) pre-computed GT audio embeddings
     gt_audio_lens: Optional[torch.Tensor] = None  # (B,) lengths after stacking
+    last_aligned_text_tokens: Optional[torch.Tensor] = None  # (B,) previous frame's normalized BPE
+    all_aligned_text_predictions: List[torch.Tensor] = field(default_factory=list)  # list of (B,) decoder steps
 
 
 @dataclass
@@ -176,6 +178,8 @@ class StreamingFinalizeOutput:
     audio_codes_len: torch.Tensor  # (B,) length of codes per batch item
     phoneme_tokens: List[List[int]]  # List of phoneme token sequences per batch item
     phoneme_text: List[str]  # Decoded phoneme strings per batch item
+    aligned_text_tokens: Optional[torch.Tensor] = None  # (B, T_decoder), repeated BPE on the audio step grid
+    aligned_text_tokens_lens: Optional[torch.Tensor] = None  # (B,) valid decoder steps, before codec decode padding
 
 
 @dataclass
@@ -190,6 +194,8 @@ class InferBatchOutput:
     predicted_phoneme_tokens: Optional[torch.Tensor] = None  # (B, phoneme_stacking_factor, T_phoneme_steps)
     predicted_phoneme_tokens_lens: Optional[torch.Tensor] = None  # (B,) number of valid phoneme steps per item
     phoneme_prediction_start_idx: Optional[torch.Tensor] = None  # (B,) start index into predicted_phoneme_tokens
+    predicted_aligned_text_tokens: Optional[torch.Tensor] = None  # (B, T_decoder), already trimmed to audio output
+    predicted_aligned_text_tokens_lens: Optional[torch.Tensor] = None  # (B,) valid aligned-text decoder steps
 
 
 @dataclass
@@ -238,6 +244,21 @@ class EasyMagpieTTSInferenceModel(ModelPT):
     """
 
     def __init__(self, cfg: DictConfig, trainer: 'Trainer' = None):
+        # Read before ModelPT setup constructs data loaders. This feature has its
+        # own compact head and does not enable the decoder's full-size LM head.
+        self.use_aligned_text_head = cfg.get('use_aligned_text_head', False)
+        self.aligned_text_feedback = cfg.get('aligned_text_feedback', True)
+        if type(self.use_aligned_text_head) is not bool or type(self.aligned_text_feedback) is not bool:
+            raise ValueError('use_aligned_text_head and aligned_text_feedback must be booleans')
+        feedback_scale = cfg.get('aligned_text_feedback_scale', 1.0)
+        if isinstance(feedback_scale, bool) or not isinstance(feedback_scale, (int, float)):
+            raise ValueError('aligned_text_feedback_scale must be finite and nonnegative')
+        if not math.isfinite(feedback_scale) or feedback_scale < 0:
+            raise ValueError('aligned_text_feedback_scale must be finite and nonnegative')
+        self.aligned_text_feedback_scale = float(feedback_scale)
+        aligned_text_head_dim = cfg.get('aligned_text_head_dim', 128)
+        if type(aligned_text_head_dim) is not int or aligned_text_head_dim < 1:
+            raise ValueError('aligned_text_head_dim must be a positive integer')
         # Nested codec restoration clears NeMo's global restore flag. Capture
         # the parent state before it so fine-tuned HF weights are never reloaded.
         restoring_hf_decoder = cfg.get('transformer_hf_load_pretrained_weights', False) and (
@@ -695,6 +716,30 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 codebook_size=self.codebook_size,
             )
 
+        if self.use_aligned_text_head:
+            from nemo.collections.tts.modules.aligned_text_head import AlignedTextHead
+            from nemo.collections.tts.modules.glow_tts_aligner import TinyGlowTTSAligner
+
+            if type(self.frame_stacking_factor) is not int or self.frame_stacking_factor < 1:
+                raise ValueError('Aligned-text training requires a positive integer frame_stacking_factor')
+            acoustic_channels = getattr(self._codec_model.vector_quantizer, 'codebook_dim', None)
+            if acoustic_channels is None:
+                raise ValueError('Aligned-text training requires a codec quantizer exposing codebook_dim')
+            self.aligned_text_head = AlignedTextHead(
+                cfg.hidden_dim, self.text_vocab_size, projection_dim=aligned_text_head_dim
+            )
+            allowed_text_outputs = torch.arange(self.text_vocab_size) < self.bos_id
+            allowed_text_outputs[self.eos_id] = True
+            allowed_text_outputs[self.pad_id] = True
+            self.register_buffer('_aligned_text_output_mask', allowed_text_outputs, persistent=False)
+            # Owned here so inference-only restoration accepts complete training
+            # checkpoints. The acoustic aligner is never called during inference.
+            self.text_aligner = TinyGlowTTSAligner(
+                audio_channels=acoustic_channels * self.frame_stacking_factor,
+                text_channels=cfg.embedding_dim,
+                **dict(cfg.get('aligned_text_aligner', {}) or {}),
+            )
+
     @property
     def codec_sil_codes(self):
         """Return the representative silence codes in the active codec codebook space."""
@@ -894,6 +939,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             state.all_predictions.append(
                 sil_codes_unstacked
             )  # keep silence so that in the target audio user will be silence
+            if self.use_aligned_text_head:
+                pad_predictions = torch.full((B, T), self.pad_id, dtype=torch.long, device=device)
+                state.all_aligned_text_predictions.extend(pad_predictions.unbind(dim=1))
+                state.last_aligned_text_tokens = torch.full((B,), self.bos_id, dtype=torch.long, device=device)
             if self.cfg.get("use_user_speaking_token", False):
                 state.last_audio_codes = torch.full(
                     (B, C * S),
@@ -1072,6 +1121,31 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         """Encode context audio embeddings with the speaker encoder."""
         context_mask = get_mask_from_lengths(context_audio_lens)
         return self.speaker_encoder(context_audio_embedded, context_mask, cond=None, cond_mask=None)['output']
+
+    def embed_aligned_text_tokens(self, tokens: torch.Tensor) -> torch.Tensor:
+        """Reuse text/CAS embeddings for repeated frame labels, with exact-zero PAD.
+
+        CAS encodes each subword independently. Embed distinct non-PAD IDs once
+        and gather them back onto the frame grid, avoiding repeated character
+        encoding for a token's duration. Repetitions share the call's dropout
+        realization, while their embedding gradients still accumulate normally.
+        """
+        if tokens.ndim != 2:
+            raise ValueError('Aligned-text tokens must have shape [batch, decoder_steps]')
+        if tokens.numel() == 0:
+            return self.audio_embeddings[0].weight.new_zeros((*tokens.shape, self.cfg.embedding_dim))
+        unique_ids, inverse = torch.unique(tokens, sorted=True, return_inverse=True)
+        nonpad = unique_ids != self.pad_id
+        active_ids = unique_ids[nonpad]
+        if active_ids.numel() == 0:
+            return self.audio_embeddings[0].weight.new_zeros((*tokens.shape, self.cfg.embedding_dim))
+        active_embeddings = self.embed_text_tokens(
+            active_ids.unsqueeze(0),
+            text_lens=torch.full((1,), active_ids.numel(), dtype=torch.long, device=tokens.device),
+        )[0]
+        unique_embeddings = active_embeddings.new_zeros((unique_ids.numel(), self.cfg.embedding_dim))
+        unique_embeddings = unique_embeddings.index_copy(0, nonpad.nonzero(as_tuple=True)[0], active_embeddings)
+        return unique_embeddings[inverse.reshape(-1)].reshape(*tokens.shape, self.cfg.embedding_dim)
 
     def embed_phoneme_tokens(self, phoneme_tokens):
         # phoneme_tokens: (B, S, T')
@@ -1957,6 +2031,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 text_tokens,
                 force_dropout_text,
                 user_audio_channel_embedding=user_audio_channel_embedding,
+                suppress_aligned_text_feedback=prefill_like_step,
             )
 
             # Phase 2: Transformer forward pass
@@ -1991,6 +2066,16 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
                 # Keep decoded profile/warmup region silent.
                 state.all_predictions.append(sil)
+                if self.use_aligned_text_head:
+                    state.all_aligned_text_predictions.append(
+                        torch.full((B,), self.pad_id, dtype=torch.long, device=device)
+                    )
+                    state.last_aligned_text_tokens = torch.full(
+                        (B,),
+                        self.bos_id if prefill_like_is_last_step else self.pad_id,
+                        dtype=torch.long,
+                        device=device,
+                    )
 
                 pred_phoneme_tokens = None
 
@@ -2069,6 +2154,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         text_tokens: Optional[torch.Tensor],
         force_dropout_text: bool,
         user_audio_channel_embedding: Optional[torch.Tensor] = None,
+        suppress_aligned_text_feedback: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Build the input embedding for one streaming step.
@@ -2224,6 +2310,25 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
             next_input = next_input + audio_emb
 
+        aligned_feedback_emb = None
+        if (
+            self.use_aligned_text_head
+            and self.aligned_text_feedback
+            and not suppress_aligned_text_feedback
+            and needs_audio.any()
+        ):
+            feedback_tokens = state.last_aligned_text_tokens
+            if feedback_tokens is None:
+                feedback_tokens = torch.full((batch_size,), self.bos_id, dtype=torch.long, device=device)
+            feedback_tokens = torch.where(
+                state.audio_steps == 0, torch.full_like(feedback_tokens, self.bos_id), feedback_tokens
+            )
+            feedback_tokens = torch.where(needs_audio, feedback_tokens, torch.full_like(feedback_tokens, self.pad_id))
+            aligned_feedback_emb = (
+                self.embed_aligned_text_tokens(feedback_tokens.unsqueeze(1)) * self.aligned_text_feedback_scale
+            )
+            next_input = next_input + aligned_feedback_emb
+
         user_audio_cond_emb = None
         if user_audio_channel_embedding is not None:
             user_audio_cond_emb = user_audio_channel_embedding.unsqueeze(1).to(
@@ -2258,6 +2363,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             if needs_audio.any():
                 audio_mask = needs_audio.view(batch_size, 1, 1).float()
                 next_input_unconditional = next_input_unconditional * (1 - audio_mask) + audio_emb * audio_mask
+            if aligned_feedback_emb is not None:
+                # Generated history is shared by both CFG branches, as for audio.
+                next_input_unconditional = next_input_unconditional + aligned_feedback_emb
 
             if self.repeat_context:
                 # Match repeated CFG-dropout context during training without leaking
@@ -2335,6 +2443,11 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
         # --- Audio predictions ---
         if needs_audio.any():
+            if self.use_aligned_text_head:
+                predicted_text = self._predict_aligned_text_tokens(state)
+                predicted_text = torch.where(needs_audio, predicted_text, torch.full_like(predicted_text, self.pad_id))
+                state.last_aligned_text_tokens = predicted_text
+                state.all_aligned_text_predictions.append(predicted_text)
             first_audio_step = needs_audio & (state.audio_prediction_start_idx == -1)
             if first_audio_step.any():
                 current_frame_idx = sum(p.size(-1) for p in state.all_predictions)
@@ -2375,7 +2488,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
                 newly_ended_audio = audio_eos_detected & (state.audio_prediction_end_idx == -1)
                 if newly_ended_audio.any():
-                    current_frame_count = len(state.all_predictions) * self.frame_stacking_factor
+                    # Bulk prefill may store several decoder steps in one chunk.
+                    current_frame_count = sum(prediction.size(-1) for prediction in state.all_predictions)
                     end_frame_idx = current_frame_count + eos_frame_idx
                     state.audio_prediction_end_idx = torch.where(
                         newly_ended_audio, end_frame_idx, state.audio_prediction_end_idx
@@ -2390,6 +2504,17 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             state.finished = state.finished | gt_exhausted
 
         return audio_codes_next, pred_phoneme_tokens
+
+    def _predict_aligned_text_tokens(self, state: StreamingState) -> torch.Tensor:
+        """Predict the normalized BPE for this audio step from the conditional state.
+
+        PAD and text EOS are allowed outputs. Text EOS is a channel prediction;
+        only the existing audio EOS logic terminates speech generation.
+        """
+        conditional_hidden = state.last_hidden[: state.config.batch_size, -1, :]
+        logits = self.aligned_text_head(conditional_hidden)
+        logits = logits.masked_fill(~self._aligned_text_output_mask, -torch.inf)
+        return logits.argmax(dim=-1)
 
     def _predict_phoneme_tokens(self, state: StreamingState) -> torch.Tensor:
         """Predict phoneme tokens from the last hidden state."""
@@ -2485,6 +2610,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         """
         batch_size = state.config.batch_size
         device = state.config.device
+        aligned_text_tokens, aligned_text_tokens_lens = self._finalize_aligned_text_predictions(state)
 
         # Extract and decode phoneme predictions
         phoneme_tokens_list: List[List[int]] = []
@@ -2518,6 +2644,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 audio_codes_len=torch.zeros(batch_size, dtype=torch.long, device=device),
                 phoneme_tokens=phoneme_tokens_list,
                 phoneme_text=phoneme_text_list,
+                aligned_text_tokens=aligned_text_tokens,
+                aligned_text_tokens_lens=aligned_text_tokens_lens,
             )
 
         grad_ctx = torch.inference_mode if use_inference_mode else torch.no_grad
@@ -2550,6 +2678,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     audio_codes_len=torch.zeros(batch_size, dtype=torch.long, device=device),
                     phoneme_tokens=phoneme_tokens_list,
                     phoneme_text=phoneme_text_list,
+                    aligned_text_tokens=aligned_text_tokens,
+                    aligned_text_tokens_lens=aligned_text_tokens_lens,
                 )
 
             # Create padded output tensor and slice each item's valid predictions
@@ -2611,7 +2741,50 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 audio_codes_len=predicted_codes_lens,
                 phoneme_tokens=phoneme_tokens_list,
                 phoneme_text=phoneme_text_list,
+                aligned_text_tokens=aligned_text_tokens,
+                aligned_text_tokens_lens=aligned_text_tokens_lens,
             )
+
+    def _finalize_aligned_text_predictions(
+        self, state: StreamingState
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """Trim framewise BPE to generated audio, retaining one label per decoder step.
+
+        Audio boundaries use unstacked codec frames. A partially retained stacked
+        frame keeps its text label; padding inserted for codec decoding does not
+        create labels. Silence/user prefill regions inside the output retain PAD.
+        """
+        if not self.use_aligned_text_head:
+            return None, None
+        batch_size, device = state.config.batch_size, state.config.device
+        lengths = torch.zeros(batch_size, dtype=torch.long, device=device)
+        if not state.all_predictions:
+            return torch.full((batch_size, 0), self.pad_id, dtype=torch.long, device=device), lengths
+        total_frames = sum(prediction.size(-1) for prediction in state.all_predictions)
+        stacking_factor = self.frame_stacking_factor
+        total_steps = total_frames // stacking_factor
+        if len(state.all_aligned_text_predictions) != total_steps:
+            raise ValueError('Aligned-text history must contain one label per audio decoder step')
+        if not total_steps:
+            return torch.full((batch_size, 0), self.pad_id, dtype=torch.long, device=device), lengths
+        all_tokens = torch.stack(state.all_aligned_text_predictions, dim=1)
+        starts = torch.div(state.audio_prediction_start_idx.clamp_min(0), stacking_factor, rounding_mode='floor')
+        ends_in_frames = torch.where(
+            state.audio_prediction_end_idx >= 0,
+            state.audio_prediction_end_idx,
+            torch.full_like(state.audio_prediction_end_idx, total_frames),
+        )
+        ends = torch.div(ends_in_frames + stacking_factor - 1, stacking_factor, rounding_mode='floor')
+        starts, ends = starts.clamp(0, total_steps), ends.clamp(0, total_steps)
+        lengths = torch.where(
+            state.audio_prediction_start_idx >= 0, (ends - starts).clamp_min(0), torch.zeros_like(starts)
+        )
+        max_length = int(lengths.max()) if batch_size else 0
+        positions = torch.arange(max_length, device=device).unsqueeze(0)
+        gather_positions = (positions + starts.unsqueeze(1)).clamp(max=total_steps - 1)
+        tokens = all_tokens.gather(1, gather_positions)
+        tokens = torch.where(positions < lengths.unsqueeze(1), tokens, torch.full_like(tokens, self.pad_id))
+        return tokens, lengths
 
     def infer_batch(
         self,
@@ -2866,6 +3039,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 predicted_phoneme_tokens=predicted_phoneme_tokens,
                 predicted_phoneme_tokens_lens=predicted_phoneme_tokens_lens,
                 phoneme_prediction_start_idx=phoneme_prediction_start_idx_out,
+                predicted_aligned_text_tokens=finalize_output.aligned_text_tokens,
+                predicted_aligned_text_tokens_lens=finalize_output.aligned_text_tokens_lens,
             )
 
     @staticmethod

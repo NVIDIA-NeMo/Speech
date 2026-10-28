@@ -16,6 +16,7 @@ import math
 import multiprocessing
 import random
 import re
+import unicodedata
 from typing import Dict, List, Union
 
 import numpy as np
@@ -51,6 +52,121 @@ from nemo.utils import logging
 def check_speaker_format(item: str):
     pattern = r"\| Language:\w+ Dataset:[\w\d\W]+ Speaker:[\w\d\W]+ \|"
     return bool(re.match(pattern, item))
+
+
+def alignment_spoken_text(text: str, strip_punctuation: bool = True) -> str:
+    """Clean alignment text before tokenization, preserving lexical punctuation.
+
+    Missing or non-string references return an empty string. Symbols and decimal
+    points inside numbers are preserved, since deleting them could silently
+    change the transcript's meaning. Expansion belongs in normalization data.
+    """
+    if not isinstance(text, str):
+        return ''
+    text = _strip_timestamps(text)
+    if not strip_punctuation:
+        return ' '.join(text.split())
+    chars = []
+    for index, char in enumerate(text):
+        internal = index > 0 and index + 1 < len(text) and text[index - 1].isalnum() and text[index + 1].isalnum()
+        lexical = char in "'’ʼ-‐‑" and internal
+        decimal = char in '.,' and internal and text[index - 1].isdigit() and text[index + 1].isdigit()
+        chars.append(char if lexical or decimal or not unicodedata.category(char).startswith('P') else ' ')
+    return ' '.join(''.join(chars).split())
+
+
+def build_alignment_text_turns(
+    cuts: CutSet,
+    tokenizer,
+    tokenizer_names: list[str],
+    frame_length: Seconds,
+    output_roles: set[str],
+    pad_id: int,
+    bos_id: int,
+    eos_id: int,
+    add_text_bos: bool = False,
+    strip_punctuation: bool = True,
+) -> Dict[str, torch.Tensor]:
+    """Pack normalized spoken transcripts and their acoustic spans into independent turns.
+
+    ``alignment_turn_indices`` contains ``(batch_index, start_frame, end_frame)``;
+    ends are exclusive on the same codec-frame grid as the regular text channel.
+    ``alignment_text_tokens`` contains no BOS/EOS or pronunciation-control tokens.
+    ``aligned_text`` is a separate, right-padded transcript channel for head warmup.
+    The original conditioning channel is never changed.
+
+    Only ``normalized_text`` is used; missing or empty normalized references have
+    no text tokens or acoustic span. No raw-text or IPA fallback is performed.
+    ``alignment_missing_normalized_text`` counts absent or empty usable references.
+    Truncated, overlapping, empty and deliberately mismatched transcripts retain
+    their compact tokens for diagnostics but receive a zero-length acoustic span.
+    Turns with fewer frames than tokens remain intact for the aligner's validity
+    check. Neither transcript shortening nor frame repetition repairs such cases.
+    """
+    cuts = list(cuts)
+    if len(cuts) != len(tokenizer_names):
+        raise ValueError('Each cut requires an alignment tokenizer name')
+    grid_lens = torch.tensor(
+        [compute_num_frames(cut.duration, frame_length, cut.sampling_rate) for cut in cuts], dtype=torch.long
+    )
+    max_grid_len = int(grid_lens.max()) if len(cuts) else 0
+    right_padded = torch.full((len(cuts), max_grid_len), pad_id, dtype=torch.long)
+    turn_tokens, turn_indices = [], []
+    missing_normalized_text = 0
+    for batch_idx, (cut, tokenizer_name) in enumerate(zip(cuts, tokenizer_names)):
+        grid_len = int(grid_lens[batch_idx])
+        previous_end = 0
+        for supervision in sorted(cut.supervisions, key=lambda sup: sup.start):
+            if supervision.speaker not in output_roles:
+                continue
+            normalized = supervision.normalized_text if supervision.has_custom('normalized_text') else None
+            transcript = alignment_spoken_text(normalized, strip_punctuation=strip_punctuation)
+            missing_normalized_text += int(not transcript)
+            ids = tokenizer.encode(transcript, tokenizer_name=tokenizer_name) if transcript else []
+            ids = torch.tensor(ids, dtype=torch.long)
+            start_seconds, end_seconds = supervision.start, supervision.end
+            start = compute_num_frames(max(0.0, start_seconds), frame_length, cut.sampling_rate)
+            end = compute_num_frames(max(0.0, end_seconds), frame_length, cut.sampling_rate)
+            clipped_start, clipped_end = max(0, min(start, grid_len)), max(0, min(end, grid_len))
+            # A cropped transcript or a deliberately replaced text cannot teach
+            # acoustic timing. Do not turn an incomplete turn into a forced match.
+            invalid = (
+                start_seconds < -1e-6
+                or end_seconds > cut.duration + 1e-6
+                or end > grid_len
+                or start < previous_end
+                or clipped_end <= clipped_start
+                or not len(ids)
+                or (supervision.has_custom('challenging_text_replaced') and supervision.challenging_text_replaced)
+            )
+            turn_tokens.append(ids)
+            turn_indices.append((batch_idx, clipped_start, clipped_start if invalid else clipped_end))
+            previous_end = max(previous_end, end)
+            if invalid or clipped_end - clipped_start < len(ids):
+                continue
+            # Warmup has the same compact-then-pad layout as the source channel.
+            # Never overwrite another turn or clip actual transcript tokens just
+            # to make room for a BOS/EOS marker on very short spans.
+            available = clipped_end - clipped_start
+            warmup_ids = ids.tolist()
+            if add_text_bos and available > len(warmup_ids):
+                warmup_ids.insert(0, bos_id)
+            if available > len(warmup_ids):
+                warmup_ids.append(eos_id)
+            right_padded[batch_idx, clipped_start : clipped_start + len(warmup_ids)] = torch.tensor(warmup_ids)
+
+    max_text_len = max((len(ids) for ids in turn_tokens), default=0)
+    packed_tokens = torch.full((len(turn_tokens), max_text_len), pad_id, dtype=torch.long)
+    for turn_idx, ids in enumerate(turn_tokens):
+        packed_tokens[turn_idx, : len(ids)] = ids
+    return {
+        'alignment_text_tokens': packed_tokens,
+        'alignment_text_lens': torch.tensor([len(ids) for ids in turn_tokens], dtype=torch.long),
+        'alignment_turn_indices': torch.tensor(turn_indices, dtype=torch.long).reshape(-1, 3),
+        'aligned_text': right_padded,
+        'aligned_text_lens': grid_lens,
+        'alignment_missing_normalized_text': torch.tensor(missing_normalized_text, dtype=torch.long),
+    }
 
 
 def _strip_timestamps(
@@ -141,6 +257,10 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             available. Defaults to `1.0`.
         context_audio_shuffle_batch_prob: Probability of replacing valid audio contexts with audio contexts
             from other items in the same training batch. Text contexts are not changed.
+        use_aligned_text_head: Add normalized spoken transcripts and acoustic spans
+            for the optional Glow-TTS aligner. Defaults to False.
+        aligned_text_strip_punctuation: Remove nonspoken punctuation before
+            tokenizing alignment targets. The conditioning text is unchanged.
     """
 
     def __init__(
@@ -191,6 +311,8 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         phoneme_lexicon_loss_scale: float = 1.0,
         phoneme_loss_lexicon: PhonemeLossLexicon = None,
         dynamic_phoneme_delay: bool = False,
+        use_aligned_text_head: bool = False,
+        aligned_text_strip_punctuation: bool = True,
     ):
         super().__init__()
         self.sample_rate = sample_rate
@@ -223,6 +345,8 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         self.phoneme_lexicon_loss_scale = phoneme_lexicon_loss_scale
         self._phoneme_loss_lexicon = phoneme_loss_lexicon
         self.dynamic_phoneme_delay = dynamic_phoneme_delay
+        self.use_aligned_text_head = use_aligned_text_head
+        self.aligned_text_strip_punctuation = aligned_text_strip_punctuation
         self.ignore_phoneme_languages = ignore_phoneme_languages or []
         self.enable_phoneme_text_input = enable_phoneme_text_input
         self.text_phoneme_token_offset = text_phoneme_token_offset
@@ -967,6 +1091,17 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             "user_audio_turn_splitted_indices": audio_data["user_audio_turn_splitted_indices"],
         }
 
+        if self.use_aligned_text_head:
+            for key in (
+                'alignment_text_tokens',
+                'alignment_text_lens',
+                'alignment_turn_indices',
+                'aligned_text',
+                'aligned_text_lens',
+                'alignment_missing_normalized_text',
+            ):
+                batch_dict[key] = text_data[key]
+
         self._add_optional_batch_fields(batch_dict, phoneme_data, features)
 
         agent_mask, agent_mask_lens = collate_speaker_mask_channel(
@@ -1045,6 +1180,21 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
 
         audio_data = self._collate_audio_channels(cuts)
         text_data = self._collate_text_channels(cuts, batch_tokenizer_names)
+        if self.use_aligned_text_head:
+            text_data.update(
+                build_alignment_text_turns(
+                    cuts,
+                    tokenizer=self.text_tokenizer,
+                    tokenizer_names=batch_tokenizer_names,
+                    frame_length=self.frame_length,
+                    output_roles=self.output_roles,
+                    pad_id=self.pad_id,
+                    bos_id=self.bos_id,
+                    eos_id=self.eos_id,
+                    add_text_bos=False,
+                    strip_punctuation=self.aligned_text_strip_punctuation,
+                )
+            )
         phoneme_data = self._collate_phoneme_tokens(cuts)
         features = self._collect_cut_features(cuts, batch_tokenizer_names, audio_data["target_audio_lens"])
         self._maybe_shuffle_context_audio(features)

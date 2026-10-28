@@ -22,6 +22,7 @@ from typing import Optional, Tuple
 import numpy as np
 import soundfile as sf
 import torch
+import torch.nn.functional as F
 import wandb
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
@@ -37,6 +38,7 @@ from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_confi
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import MagpieTTSLhotseDataset, setup_tokenizers
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import MagpieTTSLhotseMultiturnDataset
 from nemo.collections.tts.models.easy_magpietts_inference import EasyMagpieTTSInferenceModel, TrainingMode
+from nemo.collections.tts.modules.aligned_text_head import align_text_turns
 from nemo.collections.tts.modules.magpietts_modules import (
     LocalTransformerType,
     add_special_tokens,
@@ -113,6 +115,10 @@ class ProcessBatchOutput:
     context_audio_codes_lens: Optional[torch.Tensor]
     selected_training_mode: Optional[str]
     phoneme_loss_coverage: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
+    aligned_text_loss: Optional[torch.Tensor] = None
+    aligner_loss: Optional[torch.Tensor] = None
+    aligned_text_targets: Optional[torch.Tensor] = None
+    alignment_metrics: Optional[dict] = None
 
 
 class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
@@ -152,6 +158,14 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             )
         self.parallel_codebook_loss_scale = cfg.get('parallel_codebook_loss_scale', 1.0)
         self.local_transformer_loss_scale = cfg.get('local_transformer_loss_scale', 1.0)
+        self.start_aligner_text_head_steps = cfg.get('start_aligner_text_head_steps', 10000)
+        if type(self.start_aligner_text_head_steps) is not int or self.start_aligner_text_head_steps < 0:
+            raise ValueError('start_aligner_text_head_steps must be an integer >= 0')
+        self.aligned_text_loss_weight = float(cfg.get('aligned_text_loss_weight', 1.0))
+        self.aligner_loss_weight = float(cfg.get('aligner_loss_weight', 1.0))
+        for name in ('aligned_text_loss_weight', 'aligner_loss_weight'):
+            if not math.isfinite(getattr(self, name)) or getattr(self, name) < 0:
+                raise ValueError(f'{name} must be finite and >= 0')
 
         self.cross_entropy_loss = nn.CrossEntropyLoss(reduction='none')
 
@@ -1039,7 +1053,11 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         )
         phoneme_loss = loss_result[0]
         return ProcessBatchOutput(
-            loss=self.phoneme_loss_weight * phoneme_loss,
+            loss=(
+                self.phoneme_loss_weight * phoneme_loss + self._aligned_text_zero_loss(phoneme_loss)
+                if self.use_aligned_text_head
+                else self.phoneme_loss_weight * phoneme_loss
+            ),
             codebook_loss=phoneme_loss.new_zeros(()),
             phoneme_loss=phoneme_loss,
             local_transformer_loss=None,
@@ -1075,6 +1093,11 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         agent_mask: Optional[torch.Tensor] = None,
         user_audio_embedded: Optional[torch.Tensor] = None,
         phoneme_loss_mask: Optional[torch.Tensor] = None,
+        alignment_text_tokens: Optional[torch.Tensor] = None,
+        alignment_text_lens: Optional[torch.Tensor] = None,
+        alignment_turn_indices: Optional[torch.Tensor] = None,
+        aligned_text: Optional[torch.Tensor] = None,
+        aligned_text_lens: Optional[torch.Tensor] = None,
     ) -> ProcessBatchOutput:
         """
         Simplified batch processing using channel-based embedding architecture.
@@ -1248,6 +1271,30 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             agent_mask=agent_mask,
             dropout_audio_conditioning=dropout_audio_conditioning,
         )
+
+        alignment = None
+        if self.use_aligned_text_head:
+            alignment = self._prepare_aligned_text_targets(
+                audio_codes,
+                audio_codes_lens,
+                audio_codes_target,
+                alignment_text_tokens,
+                alignment_text_lens,
+                alignment_turn_indices,
+                aligned_text,
+            )
+            if self.aligned_text_feedback:
+                feedback = self._aligned_text_feedback_inputs(
+                    alignment.targets, alignment.loss_mask, alignment_turn_indices
+                )
+                feedback_embedding = self.embed_aligned_text_tokens(feedback) * self.aligned_text_feedback_scale
+                delay_padding = feedback_embedding.new_zeros(
+                    (feedback.size(0), int(audio_delay.max()), self.cfg.embedding_dim)
+                )
+                feedback_channel, _ = self.join_embeddings_temporally(
+                    [delay_padding, feedback_embedding], [audio_delay, audio_codes_lens_target]
+                )
+                audio_channel_embedding = audio_channel_embedding + feedback_channel.to(audio_channel_embedding.dtype)
 
         # 6. Sum the channel embeddings element-wise
         # First, align all channels to the same length (max of all channel lengths)
@@ -1425,6 +1472,15 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             agent_mask_target=agent_mask if self.cfg.get("mask_user_on_loss", False) else None,
         )
         loss = self.parallel_codebook_loss_scale * codebook_loss
+        aligned_text_loss = None
+        if alignment is not None:
+            aligned_text_loss = self.aligned_text_head.loss(
+                pred_embeddings,
+                alignment.targets,
+                alignment.loss_mask,
+                chunk_size=self.cfg.get('aligned_text_head_chunk_size', 128),
+            )
+            loss = loss + self.aligned_text_loss_weight * aligned_text_loss + self.aligner_loss_weight * alignment.loss
 
         # Compute local transformer loss if applicable
         local_transformer_loss = None
@@ -1522,6 +1578,156 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             context_audio_codes_lens=context_audio_codes_lens_processed,
             selected_training_mode=selected_training_mode.name if selected_training_mode is not None else None,
             phoneme_loss_coverage=phoneme_loss_coverage,
+            aligned_text_loss=aligned_text_loss,
+            aligner_loss=alignment.loss if alignment is not None else None,
+            aligned_text_targets=alignment.targets if alignment is not None else None,
+            alignment_metrics=(
+                {
+                    'valid_turns': alignment.valid_turn_count,
+                    'turns': alignment.turn_count,
+                    'one_frame_tokens': alignment.one_frame_tokens,
+                    'tokens': alignment.token_count,
+                }
+                if alignment is not None
+                else None
+            ),
+        )
+
+    def _prepare_aligned_text_targets(
+        self, audio_codes, audio_lens, audio_targets, tokens, token_lens, turn_indices, warmup_targets
+    ):
+        """Train an audio-grounded teacher before applying the decoder curriculum.
+
+        Raw codec indices are decoded with the frozen codec's own quantizer.
+        Stacking concatenates features rather than compressing them with a
+        trainable projection, preserving the observation space of the flow.
+        """
+        if tokens is None or token_lens is None:
+            raise ValueError(
+                'Aligned text training requires separate normalized_text alignment targets from the loader'
+            )
+        with torch.no_grad(), torch.autocast(device_type=audio_codes.device.type, enabled=False):
+            features = self._codec_model.vector_quantizer.decode(
+                indices=audio_codes.long().transpose(0, 1), input_len=audio_lens
+            ).float()
+            stacking = self.frame_stacking_factor
+            features = F.pad(features, (0, (-features.size(2)) % stacking))
+            batch_size, channels, frames = features.shape
+            features = features.view(batch_size, channels, frames // stacking, stacking)
+            features = features.permute(0, 2, 1, 3).reshape(batch_size, frames // stacking, channels * stacking)
+            target_steps = audio_targets.size(2)
+            features = F.pad(features, (0, 0, 0, max(0, target_steps - features.size(1))))[:, :target_steps]
+            if turn_indices is None:
+                ends = torch.div(audio_lens + stacking - 1, stacking, rounding_mode='floor')
+                turn_indices = torch.stack([torch.arange(batch_size, device=ends.device), ends * 0, ends], dim=1)
+            else:
+                turn_indices = turn_indices.clone()
+                rows = turn_indices[:, 0].long()
+                valid_rows = (rows >= 0) & (rows < batch_size)
+                ends = torch.div(audio_lens + stacking - 1, stacking, rounding_mode='floor')
+                beyond_audio = ~valid_rows | (turn_indices[:, 2] > ends[rows.clamp(0, batch_size - 1)])
+                turn_indices[beyond_audio, 2] = turn_indices[beyond_audio, 1]
+            if warmup_targets is None:
+                warmup_targets = tokens.new_full((batch_size, target_steps), self.pad_id)
+                for row, length in enumerate(token_lens.detach().cpu().tolist()):
+                    count = min(length, target_steps)
+                    warmup_targets[row, :count] = tokens[row, :count]
+                    if count < target_steps and length:
+                        warmup_targets[row, count] = self.eos_id
+            else:
+                warmup_targets = F.pad(
+                    warmup_targets, (0, max(0, target_steps - warmup_targets.size(1))), value=self.pad_id
+                )[:, :target_steps]
+        result = align_text_turns(
+            self.text_aligner,
+            features,
+            tokens,
+            token_lens,
+            turn_indices,
+            warmup_targets,
+            embed_text=lambda ids, lengths: self.embed_text_tokens(ids, text_lens=lengths),
+            pad_id=self.pad_id,
+            use_alignment=int(self.global_step) >= self.start_aligner_text_head_steps,
+            max_turns_per_batch=self.cfg.get('aligned_text_max_turns_per_batch', 32),
+            max_frames_per_batch=self.cfg.get('aligned_text_max_frames_per_batch', 8192),
+        )
+        # Audio EOS may be one frame beyond the supervision boundary in the
+        # existing multiturn channel. Train text EOS at that same output slot.
+        recent_speech = F.pad(result.loss_mask, (1, 0))[:, :-1] | F.pad(result.loss_mask, (2, 0))[:, :-2]
+        eos_mask = audio_targets[:, 0].eq(self.audio_eos_id) & recent_speech & ~result.loss_mask
+        result.targets[eos_mask] = self.eos_id
+        result.loss_mask = result.loss_mask | eos_mask
+        return result
+
+    def _aligned_text_feedback_inputs(self, targets, mask, turn_indices=None):
+        """Shift labels once; each new supervised speech span starts with BOS."""
+        feedback = torch.full_like(targets, self.pad_id)
+        if targets.size(1):
+            feedback[:, 0] = self.bos_id
+            feedback[:, 1:] = targets[:, :-1]
+            starts = mask & ~F.pad(mask, (1, 0))[:, :-1] & targets.ne(self.eos_id)
+            feedback[starts] = self.bos_id
+            if turn_indices is not None and turn_indices.numel():
+                rows, positions = turn_indices[:, 0].long(), turn_indices[:, 1].long()
+                valid = (rows >= 0) & (rows < targets.size(0)) & (positions >= 0) & (positions < targets.size(1))
+                valid = valid & (turn_indices[:, 2] > turn_indices[:, 1])
+                rows = rows.clamp(0, targets.size(0) - 1)
+                positions = positions.clamp(0, targets.size(1) - 1)
+                valid = valid & mask[rows, positions] & targets[rows, positions].ne(self.eos_id)
+                feedback[rows[valid], positions[valid]] = self.bos_id
+            feedback = feedback.masked_fill(~mask, self.pad_id)
+        return feedback
+
+    def _aligned_text_zero_loss(self, reference):
+        # Mixed speech/text-only batches must participate in all DDP reductions.
+        return sum(
+            (
+                parameter.reshape(-1)[0] * 0.0
+                for module in (self.text_aligner, self.aligned_text_head)
+                for parameter in module.parameters()
+            ),
+            reference.new_zeros(()),
+        )
+
+    @staticmethod
+    def _aligned_text_batch_kwargs(batch):
+        return {
+            key: batch.get(key)
+            for key in (
+                'alignment_text_tokens',
+                'alignment_text_lens',
+                'alignment_turn_indices',
+                'aligned_text',
+                'aligned_text_lens',
+            )
+        }
+
+    def _log_aligned_text_losses(self, output, mode, batch_size, missing_normalized=None):
+        if not self.use_aligned_text_head:
+            return
+        zero = output.loss.detach().new_zeros(())
+        metrics = output.alignment_metrics or {}
+        self.log_dict(
+            {
+                f'{mode}/aligned_text_loss': (
+                    output.aligned_text_loss if output.aligned_text_loss is not None else zero
+                ),
+                f'{mode}/aligner_nll': output.aligner_loss if output.aligner_loss is not None else zero,
+                f'{mode}/aligner_valid_turn_fraction': metrics.get('valid_turns', zero)
+                / metrics.get('turns', zero).clamp_min(1),
+                f'{mode}/aligner_one_frame_token_fraction': metrics.get('one_frame_tokens', zero)
+                / metrics.get('tokens', zero).clamp_min(1),
+                f'{mode}/aligner_missing_normalized_text': (
+                    missing_normalized if missing_normalized is not None else zero
+                ),
+                f'{mode}/aligned_text_curriculum_active': float(
+                    int(self.global_step) >= self.start_aligner_text_head_steps
+                ),
+            },
+            on_step=mode == 'train',
+            on_epoch=mode != 'train',
+            batch_size=batch_size,
+            sync_dist=True,
         )
 
     def _log_phoneme_loss_coverage(self, output):
@@ -1563,6 +1769,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 phoneme_loss_mask=batch.get("phoneme_loss_mask"),
             )
             self._log_phoneme_loss_coverage(output)
+            self._log_aligned_text_losses(
+                output, 'train', batch['text'].size(0), batch.get('alignment_missing_normalized_text')
+            )
             self.log("train/loss", output.loss, prog_bar=True, sync_dist=True)
             self.log("train/phoneme_loss", output.phoneme_loss, prog_bar=True, sync_dist=True)
             self.log("train/codebook_loss", output.codebook_loss, prog_bar=True, sync_dist=True)
@@ -1789,9 +1998,13 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             agent_mask=batch["agent_mask"] if self.cfg.get("use_multiturn_dataset", False) else None,
             user_audio_embedded=user_audio_embedded,
             phoneme_loss_mask=batch.get("phoneme_loss_mask"),
+            **self._aligned_text_batch_kwargs(batch),
         )
         loss = batch_output.loss
         self._log_phoneme_loss_coverage(batch_output)
+        self._log_aligned_text_losses(
+            batch_output, 'train', batch['text'].size(0), batch.get('alignment_missing_normalized_text')
+        )
         codebook_loss = batch_output.codebook_loss
         self.log('train/codebook_loss', codebook_loss, prog_bar=True, sync_dist=True)
         self.log('train/loss', loss, prog_bar=True, sync_dist=True)
@@ -1859,6 +2072,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 batch.get("phoneme_tokens"),
                 batch.get("phoneme_tokens_lens"),
                 mode="val",
+            )
+            self._log_aligned_text_losses(
+                output, 'val', batch['text'].size(0), batch.get('alignment_missing_normalized_text')
             )
             val_output = {
                 "val_loss": output.loss,
@@ -1939,6 +2155,10 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             mode="val",
             task=batch["task"] if "task" in batch else None,
             agent_mask=batch["agent_mask"] if "agent_mask" in batch else None,
+            **self._aligned_text_batch_kwargs(batch),
+        )
+        self._log_aligned_text_losses(
+            batch_output, 'val', batch['text'].size(0), batch.get('alignment_missing_normalized_text')
         )
         # Access ProcessBatchOutput dataclass attributes
         # logits come from the parallel prediction head
@@ -2556,6 +2776,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             phoneme_text_eop_marker=self.phoneme_text_eop_marker,
         )
         dataset.load_16khz_audio = False
+        dataset.use_aligned_text_head = self.cfg.get('use_aligned_text_head', False)
+        dataset.aligned_text_strip_punctuation = self.cfg.get('aligned_text_strip_punctuation', True)
         dataset.tokenizer_config = (
             self.cfg.text_tokenizers
         )  # This will be used in worker_init_fn for instantiating tokenizer
@@ -2634,6 +2856,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 phoneme_lexicon_loss_scale=self.phoneme_lexicon_loss_scale,
                 phoneme_loss_lexicon=self.phoneme_loss_lexicon,
                 dynamic_phoneme_delay=dynamic_delay,
+                use_aligned_text_head=self.cfg.get('use_aligned_text_head', False),
+                aligned_text_strip_punctuation=self.cfg.get('aligned_text_strip_punctuation', True),
             )
             dataset = FallbackDataset(dataset)
         else:

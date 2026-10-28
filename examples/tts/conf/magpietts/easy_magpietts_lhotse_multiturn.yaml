@@ -85,6 +85,24 @@ model:
   # Below args are only relevant if use_local_transformer is autoregressive
   local_transformer_loss_scale: 1.0
   phoneme_loss_weight: 1.0
+  # Auxiliary normalized BPE stream. The existing source-text channel is preserved.
+  use_aligned_text_head: false
+  start_aligner_text_head_steps: 10000 # Train the aligner immediately; switch head/feedback targets at this step.
+  aligned_text_feedback: true
+  aligned_text_feedback_scale: 1.0
+  aligned_text_head_dim: 128 # Factorized BPE projection; no duplicate full-size decoder LM head.
+  aligned_text_head_chunk_size: 128 # Checkpointed CE chunks bound vocabulary-logit memory.
+  aligned_text_loss_weight: 1.0
+  aligner_loss_weight: 1.0
+  aligned_text_strip_punctuation: true
+  aligned_text_max_turns_per_batch: 32
+  aligned_text_max_frames_per_batch: 8192 # Budget includes padding; individual turns are never truncated.
+  aligned_text_aligner:
+    hidden_channels: 64
+    num_flows: 4
+    num_text_layers: 2
+    dequantization_noise: 0.01 # Continuous jitter for frozen quantized codec observations.
+    mas_backend: auto # Triton on supported CUDA shapes; existing NeMo Numba MAS fallback.
   # Optional English normalization-vocabulary IPA matching in CPU data-loader workers.
   # Scale 1.0 disables matching and preserves the existing loss; validation stays unweighted.
   phoneme_loss_lexicon_path: null

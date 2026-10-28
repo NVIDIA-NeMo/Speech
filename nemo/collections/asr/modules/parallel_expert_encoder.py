@@ -1224,7 +1224,8 @@ class ParallelExpertEncoder(nn.Module):
 
         Args:
             asr_encoded (torch.Tensor): ASR states shaped ``(B, D, T)``.
-            spk_targets (torch.Tensor): External or predicted speaker activity shaped ``(B, T', S)``.
+            spk_targets (torch.Tensor): External targets on the ASR frame grid, or aligned predictions,
+                shaped ``(B, T', S)``; frames past ``T`` are cut, a shorter tensor repeats its last frame.
             diarization_preds (Optional[torch.Tensor]): Sortformer predictions shaped ``(B, T', S)``.
             use_diarization (Optional[torch.Tensor]): Rows that should use ``diarization_preds``, shaped ``(B,)``.
 
@@ -1232,7 +1233,6 @@ class ParallelExpertEncoder(nn.Module):
             torch.Tensor: Speaker-infused states shaped ``(B, D, T)``.
         """
         states = asr_encoded.transpose(1, 2)
-        spk_targets = self._downsample_high_resolution_diarization_for_fusion(spk_targets, states.shape[1])
         spk_targets = self._align_diar_frames(spk_targets, states.shape[1]).to(
             device=states.device, dtype=states.dtype
         )
@@ -1638,7 +1638,7 @@ class ParallelExpertEncoder(nn.Module):
         Select and align speaker probabilities for timestamp extraction.
 
         Args:
-            spk_targets (torch.Tensor): External or predicted speaker activity.
+            spk_targets (torch.Tensor): External targets on the ASR frame grid, or aligned predictions.
             diarization_preds (Optional[torch.Tensor]): Predicted activity for missing-target rows.
             use_diarization (Optional[torch.Tensor]): Rows that should use diarization predictions.
             target_len (int): Required CTC frame count.
@@ -1646,8 +1646,7 @@ class ParallelExpertEncoder(nn.Module):
         Returns:
             torch.Tensor: Speaker probabilities aligned to the CTC frame grid.
         """
-        speaker_probs = self._downsample_high_resolution_diarization_for_fusion(spk_targets, target_len)
-        speaker_probs = self._align_diar_frames(speaker_probs, target_len)
+        speaker_probs = self._align_diar_frames(spk_targets, target_len)
         if use_diarization is not None:
             diarization_preds = self._downsample_high_resolution_diarization_for_fusion(diarization_preds, target_len)
             diarization_preds = self._align_diar_frames(diarization_preds, target_len)

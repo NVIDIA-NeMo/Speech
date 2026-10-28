@@ -106,9 +106,37 @@ stop token 11, context 62,464, output cap 17,278, TP8, no prefix caching and no 
 under the same settings. Output contains IDs, raw predictions, error counts and finish reasons; summaries contain
 manifest hashes and corpus totals.
 
-Report Mandarin-only, English-only and mixed slices by joining the saved IDs to the manifest's `language` field.
-Choose the checkpoint using development MER and the declared retention constraints, then run the same command on
-`test.jsonl` for that checkpoint and the seed. Evaluate a fixed general-English retention manifest with `--metric wer`.
+Report Mandarin-only, English-only and mixed slices from the saved predictions, without decoding again:
+
+```bash
+python - "$ASCEND_DATA/validation.jsonl" "$ASCEND_RESULTS/candidate-dev.jsonl" <<'PY'
+import json
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+manifest, predictions = [
+    [json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
+    for path in sys.argv[1:]
+]
+languages = {row["id"]: row["language"] for row in manifest}
+assert len(languages) == len(manifest) == len(predictions)
+assert {row["id"] for row in predictions} == set(languages)
+totals = defaultdict(lambda: [0, 0, 0])
+for row in predictions:
+    for key in ("all", languages[row["id"]]):
+        values = totals[key]
+        values[0] += 1
+        values[1] += row["errors"]
+        values[2] += row["reference_tokens"]
+for language, (rows, errors, units) in sorted(totals.items()):
+    print(f"{language}: {rows} recordings, MER {100 * errors / units:.3f}% ({errors}/{units})")
+PY
+```
+
+Repeat the slice calculation for the seed predictions. Choose the checkpoint using development MER and the declared
+retention constraints, then decode `test.jsonl` for that checkpoint and the seed and report the same slices.
+Evaluate a fixed general-English retention manifest with `--metric wer`.
 The existing project's test was inspected previously; its new scores are reused-benchmark results. A new customer
 experiment should leave its test untouched until selection is final.
 

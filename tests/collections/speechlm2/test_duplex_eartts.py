@@ -606,12 +606,15 @@ def test_eartts_offline_generation(model):
     assert gen_audio.dtype == torch.float32
 
 
+@pytest.mark.parametrize("lens_on_cpu", [False, True])
 @pytest.mark.parametrize("incremental_audio_decoding", [False, True])
-def test_eartts_offline_generation_audio_len_of_a_short_row_matches_the_row_alone(model, incremental_audio_decoding):
+def test_eartts_offline_generation_audio_len_of_a_short_row_matches_the_row_alone(
+    model, incremental_audio_decoding, lens_on_cpu
+):
     """A row with fewer text tokens than the batch width gets the audio length of the row generated alone."""
     model.eval()
     subword_ids = torch.ones(2, 10).long()
-    subword_lens = torch.tensor([10, 4])
+    subword_lens = torch.tensor([10, 4], device="cpu" if lens_on_cpu else None)
 
     model.set_init_inputs(
         speaker_audio=torch.randn(1, 22050),
@@ -631,6 +634,22 @@ def test_eartts_offline_generation_audio_len_of_a_short_row_matches_the_row_alon
 
     assert batched_lens.tolist() == [10 * 1764, 4 * 1764]
     assert batched_lens[1] == short_alone_lens[0]
+    assert batched_lens.device == short_alone_lens.device
+
+
+@pytest.mark.parametrize("subword_lens", [[[10], [4]], [10, 11]], ids=["shape", "range"])
+def test_eartts_offline_generation_rejects_malformed_text_lengths(model, subword_lens):
+    model.eval()
+    model.set_init_inputs(
+        speaker_audio=torch.randn(1, 22050),
+        speaker_audio_lens=torch.tensor([22050]),
+    )
+    with pytest.raises(ValueError, match="next_subword_lens"):
+        model.offline_inference(
+            next_subword_ids=torch.ones(2, 10).long(),
+            next_subword_lens=torch.tensor(subword_lens),
+            init_inputs=model.get_init_inputs(B=2),
+        )
 
 
 def test_eartts_evaluation_scores_each_row_on_its_own_audio_length(model, dataset, monkeypatch):

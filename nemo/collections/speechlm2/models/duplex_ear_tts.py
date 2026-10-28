@@ -762,14 +762,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         target_audio_no_prompt = dataset_batch["target_audio"][
             :, -int(next_subword_ids.size(-1) * self.target_samples_per_frame) :
         ]
-        target_audio_no_prompt_lens = dataset_batch["target_audio_lens"] - (
-            torch.tensor(
-                dataset_batch["prompt_lens"],
-                dtype=torch.long,
-                device=dataset_batch["target_audio_lens"].device,
-            )
-            * self.target_samples_per_frame
-        )
+        target_audio_no_prompt_lens = dataset_batch["target_audio_lens"] - prompt_lens * self.target_samples_per_frame
 
         with fp32_precision():  # resample is fragile to bfloat16 default dtype
             metric_audio_pred = results["audio"]
@@ -1263,6 +1256,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         guidance_enabled: bool = True,
         generation_config: dict = None,
         incremental_audio_decoding: bool = False,
+        *,
         next_subword_lens: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """
@@ -1349,6 +1343,15 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         max_steps = next_subword_ids.size(-1)
         if next_subword_lens is None:
             next_subword_lens = torch.full((B,), max_steps, device=self.device, dtype=torch.long)
+        else:
+            next_subword_lens = next_subword_lens.to(device=self.device, dtype=torch.long)
+            if next_subword_lens.shape != (B,):
+                raise ValueError(f"next_subword_lens must have shape ({B},), got {tuple(next_subword_lens.shape)}.")
+            if bool((next_subword_lens > max_steps).any()):
+                raise ValueError(
+                    f"next_subword_lens must not exceed the width of next_subword_ids ({max_steps}), "
+                    f"got {next_subword_lens.tolist()}."
+                )
         # create variable to store the audios
         gen_audio_codes = torch.zeros(
             B, max_steps, self.tts_model.config.num_quantizers, device=self.device, dtype=torch.long

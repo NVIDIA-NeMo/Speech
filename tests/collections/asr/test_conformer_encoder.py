@@ -699,6 +699,33 @@ class TestPackedConformerEncoder:
         torch.testing.assert_close(packed.data, _valid_frames(padded_out, padded_lengths))
 
     @pytest.mark.unit
+    def test_empty_batch_runs_through_the_encoder(self):
+        """A rank whose share of a batch is empty gets an empty output and a zero gradient for every parameter.
+
+        The empty paths of the frontend and the attention alone did not carry the batch through the layers:
+        the depthwise convolution cannot run over the empty slot layout and now skips it.
+        The running statistics of the batch normalization stay untouched in training mode
+        (the batch counter advances as in every training step).
+        """
+        default_encoder = ConformerEncoder(
+            feat_in=8, n_layers=1, d_model=16, n_heads=2, subsampling_factor=4, subsampling_conv_channels=4
+        )
+        for encoder in (_packed_encoder().double().train(), default_encoder.double().eval()):
+            features = torch.empty(0, 8, 0, dtype=torch.float64, requires_grad=True)
+            out = encoder.forward_sequence_packed(features, torch.empty(0, dtype=torch.long))
+            assert out.data.shape == (0, 16)
+            assert out.lengths.tolist() == [] and out.cu_seqlens.tolist() == [0] and out.max_seqlen == 0
+            out.data.sum().backward()
+            assert features.grad is not None and features.grad.shape == features.shape
+            for name, parameter in encoder.named_parameters():
+                assert parameter.grad is not None and not parameter.grad.any(), name
+            for name, buffer in encoder.named_buffers():
+                if name.endswith("running_mean"):
+                    assert not buffer.any(), name
+                elif name.endswith("running_var"):
+                    assert torch.equal(buffer, torch.ones_like(buffer)), name
+
+    @pytest.mark.unit
     def test_interctc_capture_is_rejected(self):
         """The InterCTC consumer expects padded (B, D, T) tensors, so the packed forward refuses the capture."""
         encoder = _packed_encoder().double().eval()

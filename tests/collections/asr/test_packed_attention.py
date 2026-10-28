@@ -18,7 +18,7 @@
 import pytest
 import torch
 import torch._dynamo
-from torch.nn.attention.flex_attention import create_block_mask
+from torch.nn.attention.flex_attention import create_block_mask, flex_attention
 
 from nemo.collections.asr.parts.packed_sequence import pack_encoder_output, packed_sequence_ids
 from nemo.collections.asr.parts.submodules import packed_attention as packed_attention_module
@@ -37,6 +37,18 @@ def _valid_frames(padded, lengths):
     """Rows of a padded (B, T, D) batch inside the lengths, in packing order."""
     mask = torch.arange(padded.shape[1], device=padded.device)[None, :] < lengths[:, None]
     return padded[mask]
+
+
+@pytest.fixture(autouse=True)
+def reset_dynamo_after_each_test():
+    """Leave no compiled state behind for the suites that run after this module.
+
+    Dynamo keeps the entries of a compiled function on its code object and counts them against the recompile limit;
+    the kernels these tests compile would otherwise stay in the process until a later compile hits that limit
+    and silently runs eagerly (the online CUDA-graph test of the parallel expert encoder then saw dense FlexAttention).
+    """
+    yield
+    torch._dynamo.reset()
 
 
 class TestDocumentBlockMask:
@@ -151,6 +163,32 @@ class TestPackedAttentionKernelShapes:
         monkeypatch.setattr(torch._dynamo.config, "error_on_recompile", True)
         attend([40, 35])
         attend([45, 35, 20])
+
+    @pytest.mark.unit
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA FlexAttention")
+    def test_kernels_have_a_dynamo_cache_of_their_own(self, monkeypatch):
+        """The packed kernels leave the code object of flex_attention itself alone.
+
+        The Transformer encoders compile flex_attention itself with dynamic shapes;
+        entries of the packed kernels on that code object would count against that compile's recompile limit.
+        """
+        torch._dynamo.reset()
+
+        def attend(lengths):
+            context = PackedAttentionContext.from_lengths(torch.tensor(lengths, device="cuda"))
+            q, k, v = (torch.randn(context.total_tokens, 2, 16, device="cuda") for _ in range(3))
+            bias = torch.randn(context.total_tokens, 2, 2 * context.padded_max_seqlen - 1, device="cuda")
+            return packed_attention(q, k, v, context, rel_pos_bias=bias)
+
+        attend([40, 30])
+        attend([5000, 30])  # a second kernel shape, a second cache entry
+        limit_name = "recompile_limit" if hasattr(torch._dynamo.config, "recompile_limit") else "cache_size_limit"
+        monkeypatch.setattr(torch._dynamo.config, limit_name, 1)
+        monkeypatch.setattr(torch._dynamo.config, "fail_on_recompile_limit_hit", True)
+        # with a shared cache the two entries above would already be over the limit of this compile
+        compiled_itself = torch.compile(flex_attention, dynamic=True)
+        q = torch.randn(1, 2, 64, 16, device="cuda")
+        assert compiled_itself(q, q, q).shape == q.shape
 
 
 class TestPackedRelPositionAttention:

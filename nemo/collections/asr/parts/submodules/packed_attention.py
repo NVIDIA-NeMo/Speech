@@ -57,8 +57,19 @@ def _padded_size(value: int, floor: int) -> int:
 
 @functools.cache
 def _compiled_flex_attention() -> Callable:
-    """flex_attention compiled statically per shape, at the first call so that importing the encoders stays cheap."""
-    return torch.compile(flex_attention, dynamic=False)
+    """FlexAttention compiled statically per shape, at the first call so that importing the encoders stays cheap.
+
+    The compile goes through a function of this module, not through ``flex_attention`` itself:
+    Dynamo keeps a compiled function's entries on its code object and counts them against the recompile limit there,
+    so the kernels of this module would otherwise share the cache, and the limit, with every other compile
+    of ``flex_attention`` in the process (the Transformer encoders compile it with dynamic shapes),
+    and the entries of one site would send the other to eager FlexAttention.
+    """
+
+    def packed_flex_attention(q, k, v, score_mod, block_mask, scale):
+        return flex_attention(q, k, v, score_mod=score_mod, block_mask=block_mask, scale=scale)
+
+    return torch.compile(packed_flex_attention, dynamic=False)
 
 
 def _recompile_limit_patch():

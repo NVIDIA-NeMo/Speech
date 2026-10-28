@@ -36,8 +36,10 @@ __all__ = ["PackedAttentionContext", "packed_attention"]
 
 # the sparse block size of FlexAttention; the document block mask is built at this granularity
 BLOCK_SIZE = 128
-# The FlexAttention kernels are compiled statically per shape,
-# because with dynamic shapes Dynamo cannot trace the gather of the relative-position bias.
+# the smallest head width FlexAttention's Triton kernels take (tl.dot); narrower heads are zero-padded for the kernel
+FLEX_MIN_HEAD_DIM = 16
+# The FlexAttention kernels are compiled statically per shape (a fully dynamic compile cannot trace the computed
+# gather of the relative-position bias; only the bias's token axis is marked dynamic, see _flex_packed_attention).
 # The token axis and the relative-position width the kernels see are rounded up to powers of two
 # from these floors, so the kernels of a run are bounded by the logarithms of the two ranges,
 # not by the number of distinct batches, and the recompile limit below leaves room for them.
@@ -284,9 +286,13 @@ def _flex_packed_attention(
     total_tokens = context.total_tokens
     padded_total = context.padded_total_tokens
     tail = padded_total - total_tokens
+    head_dim = q.shape[-1]
+    # zero features change neither the scores nor the context vectors, and the output is sliced back;
+    # wider heads are rounded inside the kernel, without a copy here
+    width_pad = max(FLEX_MIN_HEAD_DIM - head_dim, 0)
 
     def pad_tokens(tensor: Tensor) -> Tensor:
-        return torch.nn.functional.pad(tensor, (0, 0) * (tensor.dim() - 1) + (0, tail)) if tail else tensor
+        return torch.nn.functional.pad(tensor, (0, width_pad, 0, 0, 0, tail)) if tail or width_pad else tensor
 
     score_mod = None
     if rel_pos_bias is not None:
@@ -315,7 +321,7 @@ def _flex_packed_attention(
             block_mask=context.block_mask(),
             scale=scale,
         )
-    return out.squeeze(0).transpose(0, 1)[:total_tokens]
+    return out.squeeze(0).transpose(0, 1)[:total_tokens, :, :head_dim]
 
 
 def _reference_packed_attention(

@@ -196,11 +196,16 @@ class TestPackedRelPositionAttention:
 
     @pytest.mark.unit
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA FlexAttention")
-    @pytest.mark.parametrize("lengths", [[300, 7, 150, 1, 260], [1000, 513, 2]])
-    def test_flex_attention_matches_reference_on_cuda(self, lengths):
+    @pytest.mark.parametrize(
+        "lengths, head_dim",
+        [([300, 7, 150, 1, 260], 32), ([1000, 513, 2], 32), ([300, 7, 150], 8), ([300, 7, 150], 44)],
+        ids=["five_utterances", "long_utterances", "head_dim_8", "head_dim_44"],
+    )
+    def test_flex_attention_matches_reference_on_cuda(self, lengths, head_dim):
+        """Also a head width below the kernel minimum of 16 (zero-padded) and a non-power-of-two width."""
         torch.manual_seed(0)
         lengths = torch.tensor(lengths, device="cuda")
-        heads, head_dim = 4, 32
+        heads = 4
         states = torch.randn(len(lengths), int(lengths.max()), heads * head_dim, device="cuda")
         packed = pack_encoder_output(states, lengths)
         context = PackedAttentionContext(packed)

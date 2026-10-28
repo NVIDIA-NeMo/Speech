@@ -509,6 +509,20 @@ class TestPackedConvSubsampling:
             ConvSubsampling("striding_conv1d", 4, 8, 12, 4).forward_packed(packed)
         with pytest.raises(NotImplementedError):
             ConvSubsampling("striding", 4, 8, 12, 4, is_causal=True).forward_packed(packed)
+        with pytest.raises(NotImplementedError, match="vggnet"):
+            ConvSubsampling("vggnet", 4, 8, 12, 4).forward_packed(packed)
+
+    @pytest.mark.unit
+    def test_empty_batch_keeps_gradients(self):
+        """A batch without utterances (a rank's share may be empty) gives an empty output with every gradient edge."""
+        module = ConvSubsampling("striding", 4, 8, 12, 4).double()
+        features = torch.empty(0, 0, 8, dtype=torch.float64, requires_grad=True)
+        out = module.forward_packed(pack_encoder_output(features, torch.empty(0, dtype=torch.long)))
+        assert out.data.shape == (0, 12)
+        assert out.lengths.tolist() == [] and out.cu_seqlens.tolist() == [0] and out.max_seqlen == 0
+        out.data.sum().backward()
+        assert features.grad is not None
+        assert all(parameter.grad is not None for parameter in module.parameters())
 
     @pytest.mark.unit
     def test_rejects_a_stack_that_reads_across_utterances(self):

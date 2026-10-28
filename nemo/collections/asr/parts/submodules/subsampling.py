@@ -626,7 +626,8 @@ class ConvSubsampling(torch.nn.Module):
         and the frames outside the utterances are zeroed before every layer as the padded forward masks them.
         The strided convolutions therefore keep their stride phase per utterance and read zeros beyond it,
         and the result equals ``forward`` on the padded batch at the valid frames.
-        Only the two-dimensional, non-causal convolution stacks are supported.
+        Only the non-causal ``striding`` and ``dw_striding`` stacks are supported;
+        VGGNet pools with ``ceil_mode``, which the floor-mode lengths of the gapped layout do not model.
 
         Args:
             packed: features of all utterances, data of shape ``(sum(T_i), feat_in)``.
@@ -634,13 +635,20 @@ class ConvSubsampling(torch.nn.Module):
         Returns:
             The subsampled features, data of shape ``(sum(T'_i), feat_out)``.
         """
-        if not self.conv2d_subsampling:
+        if not self.conv2d_subsampling or self._subsampling == 'vggnet':
             raise NotImplementedError(f"subsampling={self._subsampling!r} has no sequence-packed form.")
         if self.is_causal:
             raise NotImplementedError("Causal subsampling has no sequence-packed form.")
         if packed.data.shape[1] != self._feat_in:
             raise ValueError(f"Packed features must have width {self._feat_in}, got {packed.data.shape[1]}.")
         self._check_packed_stack_gaps()
+        if packed.batch_size == 0:
+            # a rank without utterances keeps every parameter in the graph, as the packed attention does
+            anchor = packed.data.sum() * 0.0
+            for parameter in self.conv.parameters():
+                anchor = anchor + parameter.sum().to(anchor.dtype) * 0.0
+            empty = self.out(packed.data.new_zeros((0, self.out.in_features))) + anchor
+            return _new_packed_encoder_activations(empty, packed.lengths, packed.cu_seqlens, 0)
         layout = packed_slot_layout(packed, alignment=self.subsampling_factor, gap=self.subsampling_factor)
         outputs = []
         lengths = []

@@ -602,6 +602,77 @@ class TestPackedConformerEncoder:
             encoder.forward_sequence_packed(pack_encoder_output(features.transpose(1, 2), lengths), lengths - 1)
 
     @pytest.mark.unit
+    def test_output_padding_is_zero_whatever_the_input_padding(self):
+        """Normalized packed features carry a (B, feat_in) padding tensor; the encoder output pads with zeros."""
+        torch.manual_seed(5)
+        lengths = torch.tensor([4, 2])
+        for encoder, width in ((_packed_encoder(pre_encode=None, subsampling_factor=1), 8), (_packed_encoder(), 8)):
+            encoder = encoder.double().eval()
+            features = pack_encoder_output(torch.randn(2, 4, width, dtype=torch.float64), lengths)
+            features = PackedEncoderActivations(
+                features.data,
+                features.lengths,
+                features.cu_seqlens,
+                features.max_seqlen,
+                padding_value=torch.full((2, width), 7.0, dtype=torch.float64),
+            )
+            out = encoder.forward_sequence_packed(features)
+            assert out.padding_value == 0.0
+            unpacked = unpack_encoder_output(out)
+            assert unpacked.shape == (2, int(out.lengths.max()), 16)
+            assert torch.equal(unpacked[1, out.lengths[1] :], torch.zeros_like(unpacked[1, out.lengths[1] :]))
+        states = torch.randn(2, 5, 16, dtype=torch.float64)
+        packed_states = pack_encoder_output(states, torch.tensor([5, 2]))
+        packed_states = PackedEncoderActivations(
+            packed_states.data,
+            packed_states.lengths,
+            packed_states.cu_seqlens,
+            packed_states.max_seqlen,
+            padding_value=torch.full((2, 16), 7.0, dtype=torch.float64),
+        )
+        out = encoder.forward_sequence_packed(packed_states, bypass_pre_encode=True)
+        assert out.padding_value == 0.0 and torch.equal(unpack_encoder_output(out)[1, 2:], torch.zeros(3, 16).double())
+
+    @pytest.mark.unit
+    def test_activation_checkpoint_wrappers_run_packed(self):
+        """SpeechLM's activation checkpointing wraps the frontend and the layers; the packed path keeps both.
+
+        The wrapped layer's packed forward runs once in the forward and once more in the backward (the recompute),
+        and outputs, lengths and gradients equal the unwrapped encoder's.
+        """
+        from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
+
+        torch.manual_seed(5)
+        lengths = torch.tensor([20, 13])
+        features = _packed_test_features(lengths).requires_grad_()
+        plain = _packed_encoder().double().eval()
+        wrapped = copy.deepcopy(plain)
+        wrapped.pre_encode = checkpoint_wrapper(wrapped.pre_encode)
+        for index in range(len(wrapped.layers)):
+            wrapped.layers[index] = checkpoint_wrapper(wrapped.layers[index])
+        calls = []
+        layer = wrapped.layers[0]._checkpoint_wrapped_module
+        layer_forward_packed = layer.forward_packed
+
+        def counting_forward_packed(*args, **kwargs):
+            calls.append(1)
+            return layer_forward_packed(*args, **kwargs)
+
+        layer.forward_packed = counting_forward_packed
+
+        reference = plain.forward_sequence_packed(features, lengths)
+        wrapped_features = features.detach().clone().requires_grad_()
+        out = wrapped.forward_sequence_packed(wrapped_features, lengths)
+        torch.testing.assert_close(out.data, reference.data)
+        assert out.lengths.tolist() == reference.lengths.tolist()
+        reference.data.square().sum().backward()
+        out.data.square().sum().backward()
+        torch.testing.assert_close(wrapped_features.grad, features.grad)
+        for (name, parameter), (_, wrapped_parameter) in zip(plain.named_parameters(), wrapped.named_parameters()):
+            torch.testing.assert_close(wrapped_parameter.grad, parameter.grad, msg=name)
+        assert len(calls) == 2
+
+    @pytest.mark.unit
     def test_batch_norm_training_semantics(self):
         """Training-mode BatchNorm differs by the padded frames; it agrees without padding and with LayerNorm."""
         torch.manual_seed(6)

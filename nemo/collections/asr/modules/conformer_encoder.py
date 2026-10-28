@@ -29,6 +29,7 @@ from nemo.collections.asr.models.configs import CacheAwareStreamingConfig
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.packed_sequence import (
     PackedEncoderActivations,
+    _new_packed_encoder_activations,
     pack_encoder_output,
     packed_slot_layout,
 )
@@ -65,6 +66,22 @@ from nemo.core.neural_types import (
 from nemo.utils import logging
 
 __all__ = ['ConformerEncoder', 'ConformerMultiLayerFeatureExtractor']
+
+try:
+    from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import CheckpointWrapper
+except ImportError:  # a torch build without torch.distributed
+    CheckpointWrapper = ()
+
+
+def _forward_packed_module(module: nn.Module, *args, **kwargs):
+    """A module's ``forward_packed``, through its activation-checkpoint wrapper when it has one.
+
+    SpeechLM wraps the frontend and the layers in ``CheckpointWrapper`` (``_set_encoder_activation_checkpointing``):
+    its attribute access reaches the wrapped module's methods, but only ``checkpoint_fn`` checkpoints them.
+    """
+    if isinstance(module, CheckpointWrapper):
+        return module.checkpoint_fn(module._checkpoint_wrapped_module.forward_packed, *args, **kwargs)
+    return module.forward_packed(*args, **kwargs)
 
 
 class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
@@ -923,12 +940,18 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             )
 
         if not bypass_pre_encode:
-            if isinstance(self.pre_encode, nn.Linear):
-                packed = packed.with_data(self.pre_encode(packed.data))
-            elif isinstance(self.pre_encode, ConvSubsampling):
-                packed = self.pre_encode.forward_packed(packed)
+            pre_encode = self.pre_encode
+            if isinstance(pre_encode, CheckpointWrapper):
+                pre_encode = pre_encode._checkpoint_wrapped_module
+            if isinstance(pre_encode, nn.Linear):
+                # the input's padding metadata describes features, not the projected states
+                packed = _new_packed_encoder_activations(
+                    self.pre_encode(packed.data), packed.lengths, packed.cu_seqlens, packed.max_seqlen
+                )
+            elif isinstance(pre_encode, ConvSubsampling):
+                packed = _forward_packed_module(self.pre_encode, packed)
             else:
-                raise NotImplementedError(f"{type(self.pre_encode).__name__} has no sequence-packed form.")
+                raise NotImplementedError(f"{type(pre_encode).__name__} has no sequence-packed form.")
 
         attention_context = PackedAttentionContext(packed)
         # the relative-position table covers the padded length the attention kernels see
@@ -964,7 +987,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
 
         for lth, (drop_prob, layer) in enumerate(zip(self.layer_drop_probs, self.layers)):
             original_signal = x
-            x = layer.forward_packed(x, attention_context=attention_context, conv_layout=conv_layout, pos_emb=pos_emb)
+            x = _forward_packed_module(
+                layer, x, attention_context=attention_context, conv_layout=conv_layout, pos_emb=pos_emb
+            )
             # stochastic depth as in forward_internal
             if self.training and drop_prob > 0.0:
                 should_drop = torch.rand(1) < drop_prob
@@ -975,7 +1000,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
 
         if self.out_proj is not None:
             x = self.out_proj(x)
-        return packed.with_data(x)
+        # encoder outputs pad with zeros, whatever padding metadata the input carried
+        return _new_packed_encoder_activations(x, packed.lengths, packed.cu_seqlens, packed.max_seqlen)
 
     def update_max_seq_length(self, seq_length: int, device):
         """

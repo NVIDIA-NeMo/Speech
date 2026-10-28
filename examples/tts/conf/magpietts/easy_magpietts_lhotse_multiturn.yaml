@@ -113,6 +113,10 @@ model:
     text_kernel_size: 3
     text_dropout: 0.1
     text_rel_attn_window_size: 4 # Learned relative keys/values; content attention remains global.
+    use_speaker_conditioning: false # Learn a small codec-reference encoder with attentive statistics pooling.
+    speaker_hidden_channels: 64
+    speaker_embedding_dim: 64
+    speaker_num_layers: 2
     dequantization_noise: 0.01 # Continuous jitter for frozen quantized codec observations.
     mas_backend: auto # Triton on supported CUDA shapes; existing NeMo Numba MAS fallback.
   # Optional English normalization-vocabulary IPA matching in CPU data-loader workers.

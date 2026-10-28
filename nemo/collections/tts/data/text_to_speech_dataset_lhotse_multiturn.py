@@ -984,9 +984,15 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
 
         original_contexts = list(features[context_key])
         original_context_lens = list(context_lens)
+        if getattr(self, 'use_aligned_text_head', False) and donor_indices:
+            # Decoder augmentation may use another voice, while the acoustic
+            # alignment teacher must not mistake it for the target speaker.
+            features['alignment_speaker_reference_valid'] = [True] * batch_size
         for target_idx, donor_idx in donor_indices.items():
             features[context_key][target_idx] = original_contexts[donor_idx]
             context_lens[target_idx] = original_context_lens[donor_idx]
+            if getattr(self, 'use_aligned_text_head', False):
+                features['alignment_speaker_reference_valid'][target_idx] = False
 
         cross_lingual_count = sum(
             languages[target_idx] != languages[donor_idx] for target_idx, donor_idx in donor_indices.items()
@@ -1038,6 +1044,11 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                 1, 2
             )
             batch_dict["context_audio_codes_lens"] = torch.IntTensor(features["context_audio_codes_lens"])
+
+        if getattr(self, 'use_aligned_text_head', False) and 'alignment_speaker_reference_valid' in features:
+            batch_dict['alignment_speaker_reference_valid'] = torch.tensor(
+                features['alignment_speaker_reference_valid'], dtype=torch.bool
+            )
 
         if self.use_text_conditioning_tokenizer:
             batch_dict['context_text_tokens'] = collate_vectors(

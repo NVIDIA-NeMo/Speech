@@ -1098,6 +1098,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         alignment_turn_indices: Optional[torch.Tensor] = None,
         aligned_text: Optional[torch.Tensor] = None,
         aligned_text_lens: Optional[torch.Tensor] = None,
+        alignment_speaker_reference_valid: Optional[torch.Tensor] = None,
     ) -> ProcessBatchOutput:
         """
         Simplified batch processing using channel-based embedding architecture.
@@ -1282,6 +1283,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 alignment_text_lens,
                 alignment_turn_indices,
                 aligned_text,
+                speaker_reference_codes=context_audio_codes,
+                speaker_reference_lens=context_audio_codes_lens,
+                speaker_reference_valid=alignment_speaker_reference_valid,
             )
             if self.aligned_text_feedback:
                 feedback = self._aligned_text_feedback_inputs(
@@ -1594,7 +1598,17 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         )
 
     def _prepare_aligned_text_targets(
-        self, audio_codes, audio_lens, audio_targets, tokens, token_lens, turn_indices, warmup_targets
+        self,
+        audio_codes,
+        audio_lens,
+        audio_targets,
+        tokens,
+        token_lens,
+        turn_indices,
+        warmup_targets,
+        speaker_reference_codes=None,
+        speaker_reference_lens=None,
+        speaker_reference_valid=None,
     ):
         """Train an audio-grounded teacher before applying the decoder curriculum.
 
@@ -1638,6 +1652,11 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 warmup_targets = F.pad(
                     warmup_targets, (0, max(0, target_steps - warmup_targets.size(1))), value=self.pad_id
                 )[:, :target_steps]
+        reference_features, reference_lens = None, None
+        if self.text_aligner.use_speaker_conditioning:
+            reference_features, reference_lens = self._decode_aligner_speaker_reference(
+                speaker_reference_codes, speaker_reference_lens, speaker_reference_valid
+            )
         result = align_text_turns(
             self.text_aligner,
             features,
@@ -1650,6 +1669,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             use_alignment=int(self.global_step) >= self.start_aligner_text_head_steps,
             max_turns_per_batch=self.cfg.get('aligned_text_max_turns_per_batch', 32),
             max_frames_per_batch=self.cfg.get('aligned_text_max_frames_per_batch', 8192),
+            speaker_reference_features=reference_features,
+            speaker_reference_lens=reference_lens,
         )
         # Audio EOS may be one frame beyond the supervision boundary in the
         # existing multiturn channel. Train text EOS at that same output slot.
@@ -1658,6 +1679,49 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         result.targets[eos_mask] = self.eos_id
         result.loss_mask = result.loss_mask | eos_mask
         return result
+
+    def _decode_aligner_speaker_reference(self, codes, lengths, reference_valid=None):
+        """Decode original reference codec IDs without decoder-context augmentation.
+
+        The loader supplies one output-speaker reference per conversation. This
+        path uses raw IDs before special tokens, vocabulary conversion, CFG
+        dropout, or shuffled decoder embeddings. Loader-replaced references are
+        marked unavailable. The frozen quantizer is the only no-grad component;
+        the subsequent learnable ASP encoder runs outside this method.
+        """
+        if (codes is None) != (lengths is None):
+            raise ValueError('Speaker reference codes and lengths must be provided together')
+        if codes is None:
+            return None, None
+        if codes.ndim != 3 or lengths.shape != (codes.size(0),):
+            raise ValueError('Expected speaker reference codes [B,C,T] and lengths [B]')
+        lengths = lengths.to(device=codes.device, dtype=torch.long)
+        if torch.any((lengths < 0) | (lengths > codes.size(2))):
+            raise ValueError('Speaker reference lengths must lie within their padded sequence')
+        if reference_valid is not None:
+            if reference_valid.shape != lengths.shape:
+                raise ValueError('Speaker reference validity must have shape [B]')
+            lengths = torch.where(reference_valid.to(device=codes.device, dtype=torch.bool), lengths, 0)
+        with torch.no_grad(), torch.autocast(device_type=codes.device.type, enabled=False):
+            if codes.size(2) == 0:
+                features = torch.zeros(
+                    codes.size(0), 0, self.text_aligner.audio_channels, device=codes.device, dtype=torch.float32
+                )
+            else:
+                mask = torch.arange(codes.size(2), device=codes.device)[None, :] < lengths[:, None]
+                safe_codes = codes.long().masked_fill(~mask[:, None, :], 0)
+                features = self._codec_model.vector_quantizer.decode(
+                    indices=safe_codes.transpose(0, 1), input_len=lengths
+                ).float()
+                stacking = self.frame_stacking_factor
+                features = F.pad(features, (0, (-features.size(2)) % stacking))
+                batch, channels, frames = features.shape
+                features = features.view(batch, channels, frames // stacking, stacking)
+                features = features.permute(0, 2, 1, 3).reshape(batch, frames // stacking, channels * stacking)
+            reference_lens = torch.div(
+                lengths + self.frame_stacking_factor - 1, self.frame_stacking_factor, rounding_mode='floor'
+            )
+        return features, reference_lens
 
     def _aligned_text_feedback_inputs(self, targets, mask, turn_indices=None):
         """Shift labels once; each new supervised speech span starts with BOS."""
@@ -1699,6 +1763,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 'alignment_turn_indices',
                 'aligned_text',
                 'aligned_text_lens',
+                'alignment_speaker_reference_valid',
             )
         }
 

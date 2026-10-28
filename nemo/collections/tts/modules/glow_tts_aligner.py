@@ -61,6 +61,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from nemo.collections.tts.modules.codec_speaker_encoder import CodecSpeakerEncoder
 from nemo.collections.tts.modules.relative_position_transformer import RelativePositionTransformer
 from nemo.collections.tts.modules.submodules import ConvNorm
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
@@ -111,6 +112,12 @@ class TinyGlowTTSAligner(nn.Module):
         text_dropout: Dropout within attention, FFN and residual branches.
         text_rel_attn_window_size: Maximum learned relative key/value offset.
             Content attention remains global beyond this window.
+        use_speaker_conditioning: Enable learnable ASP reference conditioning of
+            the ST-TTS flow. False creates no speaker parameters and preserves
+            the existing checkpoint layout.
+        speaker_hidden_channels: Width of the masked reference convolution stack.
+        speaker_embedding_dim: Size of its global attentive-statistics embedding.
+        speaker_num_layers: Number of residual reference convolution layers.
 
     The caller should provide detached audio-only features and detached text
     embeddings when the aligner is an auxiliary teacher for another generator.
@@ -138,6 +145,10 @@ class TinyGlowTTSAligner(nn.Module):
         text_kernel_size: int = 3,
         text_dropout: float = 0.1,
         text_rel_attn_window_size: int = 4,
+        use_speaker_conditioning: bool = False,
+        speaker_hidden_channels: int = 64,
+        speaker_embedding_dim: int = 64,
+        speaker_num_layers: int = 2,
     ):
         super().__init__()
         if audio_channels < 2 or text_channels < 1 or hidden_channels < 1:
@@ -160,6 +171,18 @@ class TinyGlowTTSAligner(nn.Module):
             raise ValueError('flow_n_split must be an even integer >= 2')
         if text_encoder_type not in {'relative_transformer', 'cnn'}:
             raise ValueError(f'Unknown text encoder type: {text_encoder_type}')
+        if type(use_speaker_conditioning) is not bool:
+            raise ValueError('use_speaker_conditioning must be a boolean')
+        if use_speaker_conditioning and flow_type != 'sttts':
+            raise ValueError('Speaker conditioning requires flow_type=sttts')
+        if use_speaker_conditioning:
+            for name, value in (
+                ('speaker_hidden_channels', speaker_hidden_channels),
+                ('speaker_embedding_dim', speaker_embedding_dim),
+                ('speaker_num_layers', speaker_num_layers),
+            ):
+                if type(value) is not int or value < 1:
+                    raise ValueError(f'{name} must be a positive integer')
         self.audio_channels = audio_channels
         self.text_channels = text_channels
         self.hidden_channels = hidden_channels
@@ -178,6 +201,10 @@ class TinyGlowTTSAligner(nn.Module):
         self.text_kernel_size = text_kernel_size
         self.text_dropout = text_dropout
         self.text_rel_attn_window_size = text_rel_attn_window_size
+        self.use_speaker_conditioning = use_speaker_conditioning
+        self.speaker_hidden_channels = speaker_hidden_channels
+        self.speaker_embedding_dim = speaker_embedding_dim
+        self.speaker_num_layers = speaker_num_layers
         if text_encoder_type == 'cnn':
             self.text_encoder = _TextPrior(text_channels, hidden_channels, audio_channels, num_text_layers)
         else:
@@ -205,7 +232,13 @@ class TinyGlowTTSAligner(nn.Module):
                 coupling_kernel_size,
                 flow_n_split,
                 max_log_scale,
+                speaker_channels=speaker_embedding_dim if use_speaker_conditioning else 0,
             )
+        self.speaker_encoder = (
+            CodecSpeakerEncoder(audio_channels, speaker_hidden_channels, speaker_embedding_dim, speaker_num_layers)
+            if use_speaker_conditioning
+            else None
+        )
 
     def forward(
         self,
@@ -213,6 +246,9 @@ class TinyGlowTTSAligner(nn.Module):
         text_features: torch.Tensor,
         audio_lens: torch.Tensor,
         text_lens: torch.Tensor,
+        speaker_reference_features: torch.Tensor | None = None,
+        speaker_reference_lens: torch.Tensor | None = None,
+        speaker_embeddings: torch.Tensor | None = None,
     ) -> GlowTTSAlignmentOutput:
         """Align ``audio_features[B,T,C]`` to ``text_features[B,N,D]``.
 
@@ -221,6 +257,13 @@ class TinyGlowTTSAligner(nn.Module):
         negative acoustic log likelihood per valid frame and feature dimension.
         Invalid-only batches retain zero gradients for every trainable parameter,
         allowing mixed tasks and DDP without changing the module graph.
+
+        Optional reference features have shape [B,R,C], on the same acoustic
+        feature grid. Missing references use zero speaker conditioning; target
+        audio is never substituted. Only the observations should be detached,
+        so the ASP encoder can learn from the alignment likelihood.
+        Alternatively, pass precomputed [B,D] ``speaker_embeddings`` to reuse one
+        reference encoding across turn packs. The two interfaces are exclusive.
         """
         if audio_features.ndim != 3 or text_features.ndim != 3:
             raise ValueError('Audio and text features must have shape [batch, time, channels]')
@@ -254,7 +297,23 @@ class TinyGlowTTSAligner(nn.Module):
             audio = audio * audio_mask
             if self.training and self.dequantization_noise:
                 audio = audio + (2.0 * torch.rand_like(audio) - 1.0) * self.dequantization_noise * audio_mask
-            z, log_det = self.flow(audio, audio_mask)
+            if self.use_speaker_conditioning:
+                if speaker_embeddings is None:
+                    speaker_embedding = self._encode_speaker_reference(
+                        audio_features, speaker_reference_features, speaker_reference_lens
+                    )
+                else:
+                    if speaker_reference_features is not None or speaker_reference_lens is not None:
+                        raise ValueError('Pass speaker embeddings or reference features, not both')
+                    if (
+                        speaker_embeddings.shape != (batch_size, self.speaker_embedding_dim)
+                        or speaker_embeddings.device != audio_features.device
+                    ):
+                        raise ValueError('Speaker embeddings must match the audio batch, embedding width and device')
+                    speaker_embedding = speaker_embeddings.float()
+                z, log_det = self.flow(audio, audio_mask, speaker_embedding=speaker_embedding)
+            else:
+                z, log_det = self.flow(audio, audio_mask)
             means = self.text_encoder(text * text_mask, text_mask)
 
             effective_audio_lens = torch.where(valid_turns, audio_lens, 0)
@@ -285,6 +344,31 @@ class TinyGlowTTSAligner(nn.Module):
             durations = torch.zeros(batch_size, text_steps, dtype=torch.long, device=indices.device)
             durations.scatter_add_(1, indices.clamp_min(0), frame_mask.long())
         return GlowTTSAlignmentOutput(loss, indices, durations, valid_turns)
+
+    def encode_speaker_reference(self, reference_features, reference_lens):
+        """Pool each reference once, retaining ASP gradients across turn packs."""
+        if not self.use_speaker_conditioning:
+            raise ValueError('Speaker reference encoding requires use_speaker_conditioning=true')
+        if reference_features is None or reference_lens is None:
+            raise ValueError('Speaker reference features and lengths must be provided together')
+        with torch.autocast(device_type=reference_features.device.type, enabled=False):
+            return self.speaker_encoder(reference_features.float(), reference_lens)
+
+    def _encode_speaker_reference(self, audio_features, reference_features, reference_lens):
+        if (reference_features is None) != (reference_lens is None):
+            raise ValueError('Speaker reference features and lengths must be provided together')
+        if reference_features is None:
+            reference_features = audio_features.new_zeros((audio_features.size(0), 1, self.audio_channels))
+            reference_lens = torch.zeros(audio_features.size(0), device=audio_features.device, dtype=torch.long)
+        elif (
+            reference_features.ndim != 3
+            or reference_features.size(0) != audio_features.size(0)
+            or reference_features.size(2) != self.audio_channels
+            or reference_features.device != audio_features.device
+            or reference_lens.shape != (audio_features.size(0),)
+        ):
+            raise ValueError('Speaker references must match the audio batch, feature channels and device')
+        return self.encode_speaker_reference(reference_features, reference_lens)
 
     def _empty_output(self, audio_features, text_features, valid_turns):
         # This branch is only needed for tensors whose static time dimension is 0.
@@ -433,6 +517,7 @@ class _STTTSFlow(nn.Module):
         coupling_kernel_size=5,
         flow_n_split=4,
         max_log_scale=None,
+        speaker_channels=0,
     ):
         super().__init__()
         if channels < 2 or hidden_channels < 1 or num_flows < 1:
@@ -441,12 +526,19 @@ class _STTTSFlow(nn.Module):
         self.mixers = nn.ModuleList([_InvertibleChannelMix(channels, flow_n_split) for _ in range(num_flows)])
         self.couplings = nn.ModuleList(
             [
-                _ResidualCoupling(channels, hidden_channels, coupling_num_layers, coupling_kernel_size, max_log_scale)
+                _ResidualCoupling(
+                    channels,
+                    hidden_channels,
+                    coupling_num_layers,
+                    coupling_kernel_size,
+                    max_log_scale,
+                    speaker_channels,
+                )
                 for _ in range(num_flows)
             ]
         )
 
-    def forward(self, inputs, mask, reverse=False):
+    def forward(self, inputs, mask, reverse=False, speaker_embedding=None):
         hidden = inputs * mask
         log_det = inputs.new_zeros(inputs.size(0))
         indices = range(len(self.couplings) - 1, -1, -1) if reverse else range(len(self.couplings))
@@ -457,7 +549,10 @@ class _STTTSFlow(nn.Module):
                 else (self.actnorms[index], self.mixers[index], self.couplings[index])
             )
             for layer in layers:
-                hidden, layer_log_det = layer(hidden, mask, reverse=reverse)
+                if layer is self.couplings[index]:
+                    hidden, layer_log_det = layer(hidden, mask, reverse=reverse, speaker_embedding=speaker_embedding)
+                else:
+                    hidden, layer_log_det = layer(hidden, mask, reverse=reverse)
                 log_det = log_det + layer_log_det
         return hidden, log_det
 
@@ -538,7 +633,7 @@ class _ResidualCoupling(nn.Module):
     zero-initialized final projection makes the initial coupling the identity.
     """
 
-    def __init__(self, channels, hidden_channels, num_layers=4, kernel_size=5, max_log_scale=None):
+    def __init__(self, channels, hidden_channels, num_layers=4, kernel_size=5, max_log_scale=None, speaker_channels=0):
         super().__init__()
         if type(num_layers) is not int or num_layers < 1:
             raise ValueError('The affine coupling must have at least one residual layer')
@@ -571,13 +666,28 @@ class _ResidualCoupling(nn.Module):
         self.output_projection = nn.Conv1d(hidden_channels, 2 * self.second_channels, kernel_size=1)
         nn.init.zeros_(self.output_projection.weight)
         nn.init.zeros_(self.output_projection.bias)
+        self.condition_projection = (
+            nn.Linear(speaker_channels, 2 * hidden_channels * num_layers, bias=False) if speaker_channels else None
+        )
 
-    def forward(self, inputs, mask, reverse=False):
+    def forward(self, inputs, mask, reverse=False, speaker_embedding=None):
         first, second = inputs.split([self.first_channels, self.second_channels], dim=1)
         hidden = self.input_projection(first, mask) * mask
         skip = torch.zeros_like(hidden)
+        condition = None
+        if self.condition_projection is not None:
+            if speaker_embedding is None:
+                speaker_embedding = inputs.new_zeros((inputs.size(0), self.condition_projection.in_features))
+            if speaker_embedding.shape != (inputs.size(0), self.condition_projection.in_features):
+                raise ValueError('Speaker embedding must have shape [batch, speaker_channels]')
+            condition = self.condition_projection(speaker_embedding).reshape(
+                inputs.size(0), self.num_layers, 2 * self.hidden_channels, 1
+            )
         for index, (temporal, residual_skip) in enumerate(zip(self.in_layers, self.res_skip_layers)):
-            first_gate, second_gate = (temporal(hidden, mask) * mask).chunk(2, dim=1)
+            preactivation = temporal(hidden, mask)
+            if condition is not None:
+                preactivation = preactivation + condition[:, index]
+            first_gate, second_gate = (preactivation * mask).chunk(2, dim=1)
             gated = torch.tanh(first_gate) * torch.sigmoid(second_gate) * mask
             updates = residual_skip(gated, mask) * mask
             if index < self.num_layers - 1:

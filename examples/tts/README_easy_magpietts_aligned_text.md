@@ -54,6 +54,47 @@ the Coqui TTS package. The same attention/FFN structure is used at a smaller
 capacity than VITS's usual six-layer, width-192 encoder. Masks are applied between
 convolutions and after residual normalization, including fully invalid turn rows.
 
+Optional speaker conditioning is disabled by default. Enable it with:
+
+```bash
+++model.aligned_text_aligner.use_speaker_conditioning=true
+```
+
+The frozen codec quantizer decodes the original reference audio codes into
+continuous features. A small learnable encoder with two masked residual
+convolution layers (width 64) applies channelwise attentive statistics pooling:
+learned attention weights produce a weighted mean and standard deviation, then
+a projection yields a normalized 64-dimensional vector. This follows the ASP
+construction in `audio_codec_modules.ResNetSpeakerEncoder`, using masked NeMo
+convolutions and no waveform/mel frontend, large ResNet, batch normalization, or
+external speaker model. `speaker_hidden_channels`, `speaker_embedding_dim`, and
+`speaker_num_layers` control its size.
+
+The reference vector conditions the gated affine-coupling networks of the ST-TTS
+flow; the latent means still depend only on normalized text. The acoustic NLL
+trains the ASP encoder and conditioning projections. Only codec observations are
+detached. References are encoded once per conversation and gathered using each
+packed turn's original sample index, so sorting and microbatching preserve the
+association. The loader currently supplies one output-speaker reference per
+conversation, shared by its output turns; it does not provide separate reference
+clips for different output-speaker identities within that conversation.
+
+This path uses reference codec IDs before decoder-context vocabulary conversion,
+special tokens, CFG dropout, and context-embedding shuffling. If loader-level
+reference shuffling replaces a reference with another sample's voice, the batch
+marks that reference unavailable for the aligner. Missing or empty references
+produce zero conditioning with finite gradients. The aligner never substitutes
+target audio when a reference is missing; the dataset's existing reference
+selection may itself choose an output turn when no separate clip is supplied.
+The pooled vector is learned for alignment without a speaker-classification
+objective, so speaker-only disentanglement is not guaranteed.
+
+With the option disabled, no speaker parameters are created and old checkpoint
+layouts are preserved. Speaker conditioning requires `flow_type=sttts`. Enabling
+new modules from an older TTS checkpoint uses partial-pretrained initialization;
+do not resume an incompatible optimizer state. The aligner and ASP encoder run
+only during training and teacher-forced validation, not autoregressive inference.
+
 The aligner trains from step zero. Before `start_aligner_text_head_steps`, the new
 head predicts normalized tokens followed by right padding within each turn. At
 the threshold it predicts BPE tokens repeated according to the current MAS path.
@@ -150,6 +191,8 @@ the previous ST-TTS teacher using `--text-encoder-type cnn`, or the original
 compact teacher using `--flow-type legacy --hidden-channels 64 --num-flows 4`
 together with `--text-encoder-type cnn`. Reports separate text-encoder and flow
 parameter counts, as well as their combined forward/backward cost.
+Pass `--use-speaker-conditioning` to include ASP reference encoding and its
+backward pass; `--speaker-reference-frames` defaults to 75 stacked codec frames.
 
 ## Inference and portability
 
@@ -171,10 +214,12 @@ generated sound. Word boundaries require validation. Adjacent equal BPE IDs also
 cannot reveal their intervening position boundary without an additional advance
 signal. No hard stay/advance decoding or attention constraint is imposed here.
 
-For another branch, cherry-pick the feature commit, the ST-TTS flow update, and
-the relative-position text-encoder update, or apply the exported patch series.
+For another branch, cherry-pick the feature commit, the ST-TTS flow update,
+the relative-position text-encoder update, and the optional ASP conditioning
+update, or apply the exported patch series.
 Reusable code lives in `modules/glow_tts_aligner.py`, `modules/aligned_text_head.py`,
-`modules/relative_position_transformer.py`, and `parts/utils/monotonic_alignment.py`.
+`modules/relative_position_transformer.py`, `modules/codec_speaker_encoder.py`,
+and `parts/utils/monotonic_alignment.py`.
 The integration touches only the model and
 inference base, the two target loaders, the multiturn YAML, tests and this guide.
 The cluster recipe is not required by the modules and is not copied into the

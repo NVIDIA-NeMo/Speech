@@ -60,12 +60,21 @@ def main():
     parser.add_argument('--text-kernel-size', type=int, default=3)
     parser.add_argument('--text-dropout', type=float, default=0.1)
     parser.add_argument('--text-rel-attn-window-size', type=int, default=4)
+    parser.add_argument('--use-speaker-conditioning', action='store_true')
+    parser.add_argument('--speaker-hidden-channels', type=int, default=64)
+    parser.add_argument('--speaker-embedding-dim', type=int, default=64)
+    parser.add_argument('--speaker-num-layers', type=int, default=2)
+    parser.add_argument(
+        '--speaker-reference-frames', type=int, default=75, help='Reference length on the stacked codec grid'
+    )
     parser.add_argument('--dequantization-noise', type=float, default=0.01)
     parser.add_argument('--cpu-threads', type=int, help='Optional PyTorch and Numba CPU thread count')
     parser.add_argument('--seed', type=int, default=1234)
     args = parser.parse_args()
     if args.warmup < 1 or args.iterations < 1 or args.long_iterations < 1:
         parser.error('Warmup and iteration counts must be positive')
+    if args.speaker_reference_frames < 1:
+        parser.error('--speaker-reference-frames must be positive')
     if args.cpu_threads is not None:
         if args.cpu_threads < 1:
             parser.error('--cpu-threads must be positive')
@@ -103,6 +112,10 @@ def main():
         text_kernel_size=args.text_kernel_size,
         text_dropout=args.text_dropout,
         text_rel_attn_window_size=args.text_rel_attn_window_size,
+        use_speaker_conditioning=args.use_speaker_conditioning,
+        speaker_hidden_channels=args.speaker_hidden_channels,
+        speaker_embedding_dim=args.speaker_embedding_dim,
+        speaker_num_layers=args.speaker_num_layers,
         flow_type=args.flow_type,
         coupling_num_layers=args.coupling_num_layers,
         coupling_kernel_size=args.coupling_kernel_size,
@@ -115,7 +128,7 @@ def main():
     for name, shape in shapes:
         iterations = min(args.iterations, args.long_iterations) if shape[1] >= 2048 else args.iterations
         print(f'Profiling {name}: {shape}, {iterations} measured iterations', file=sys.stderr, flush=True)
-        cases.append(_profile_case(name, shape, model, device, args.warmup, iterations))
+        cases.append(_profile_case(name, shape, model, device, args.warmup, iterations, args.speaker_reference_frames))
     report = {
         'created_utc': datetime.now(timezone.utc).isoformat(),
         'git_commit': _git_commit(),
@@ -135,6 +148,11 @@ def main():
             'text_kernel_size': args.text_kernel_size,
             'text_dropout': args.text_dropout,
             'text_rel_attn_window_size': args.text_rel_attn_window_size,
+            'use_speaker_conditioning': args.use_speaker_conditioning,
+            'speaker_hidden_channels': args.speaker_hidden_channels,
+            'speaker_embedding_dim': args.speaker_embedding_dim,
+            'speaker_num_layers': args.speaker_num_layers,
+            'speaker_reference_frames': args.speaker_reference_frames,
             'flow_type': args.flow_type,
             'coupling_num_layers': args.coupling_num_layers,
             'coupling_kernel_size': args.coupling_kernel_size,
@@ -143,6 +161,11 @@ def main():
             'parameters': sum(parameter.numel() for parameter in model.parameters()),
             'text_encoder_parameters': sum(parameter.numel() for parameter in model.text_encoder.parameters()),
             'audio_flow_parameters': sum(parameter.numel() for parameter in model.flow.parameters()),
+            'speaker_encoder_parameters': (
+                sum(parameter.numel() for parameter in model.speaker_encoder.parameters())
+                if model.speaker_encoder is not None
+                else 0
+            ),
             'trainable_parameters': sum(
                 parameter.numel() for parameter in model.parameters() if parameter.requires_grad
             ),
@@ -154,6 +177,7 @@ def main():
         'notes': [
             'Synthetic fixed audio and detached text features; no codec, tokenizer, or TTS decoder is loaded.',
             'Flow forward includes text prior, acoustic flow, score matrix, MAS, and selected-path likelihood.',
+            'Speaker-conditioned runs include learnable reference encoding/ASP once per row in forward/backward.',
             'Forward and backward wall times synchronize CUDA; compilation and warmup are excluded.',
             'Model gradients are cleared between iterations; no optimizer step is included.',
             'CPU MAS timings include score and path transfers. CUDA memory excludes the CPU baseline scratch memory.',
@@ -252,7 +276,7 @@ def _parse_shapes(value, parser):
     return shapes
 
 
-def _profile_case(name, shape, model, device, warmup, iterations):
+def _profile_case(name, shape, model, device, warmup, iterations, reference_frames=75):
     batch_size, audio_steps, text_steps = shape
     text_lens = torch.full((batch_size,), text_steps, device=device, dtype=torch.long)
     audio_lens = torch.full((batch_size,), audio_steps, device=device, dtype=torch.long)
@@ -279,7 +303,17 @@ def _profile_case(name, shape, model, device, warmup, iterations):
     _cleanup(device)
     audio = torch.randn(batch_size, audio_steps, model.audio_channels, device=device).detach()
     text = torch.randn(batch_size, text_steps, model.text_channels, device=device).detach()
-    flow_measurements = _measure_flow(model, audio, text, audio_lens, text_lens, device, warmup, iterations)
+    reference_kwargs = {}
+    if model.use_speaker_conditioning:
+        reference_kwargs = {
+            'speaker_reference_features': torch.randn(
+                batch_size, reference_frames, model.audio_channels, device=device
+            ),
+            'speaker_reference_lens': torch.full((batch_size,), reference_frames, device=device, dtype=torch.long),
+        }
+    flow_measurements = _measure_flow(
+        model, audio, text, audio_lens, text_lens, device, warmup, iterations, **reference_kwargs
+    )
     del audio, text, audio_lens, text_lens
     model.zero_grad(set_to_none=True)
     _cleanup(device)
@@ -315,10 +349,10 @@ def _measure_call(call, device, warmup, iterations):
     return {**_timing_summary(samples), **_memory_peak(device, memory_before)}
 
 
-def _measure_flow(model, audio, text, audio_lens, text_lens, device, warmup, iterations):
+def _measure_flow(model, audio, text, audio_lens, text_lens, device, warmup, iterations, **reference_kwargs):
     for _ in range(warmup):
         model.zero_grad(set_to_none=True)
-        output = model(audio, text, audio_lens, text_lens)
+        output = model(audio, text, audio_lens, text_lens, **reference_kwargs)
         output.loss.backward()
     del output
     model.zero_grad(set_to_none=True)
@@ -331,7 +365,7 @@ def _measure_flow(model, audio, text, audio_lens, text_lens, device, warmup, ite
         model.zero_grad(set_to_none=True)
         _synchronize(device)
         started = time.perf_counter()
-        output = model(audio, text, audio_lens, text_lens)
+        output = model(audio, text, audio_lens, text_lens, **reference_kwargs)
         _synchronize(device)
         forward_finished = time.perf_counter()
         output.loss.backward()

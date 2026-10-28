@@ -88,6 +88,8 @@ def align_text_turns(
     use_alignment: bool,
     max_turns_per_batch: int = 32,
     max_frames_per_batch: int = 8192,
+    speaker_reference_features: torch.Tensor | None = None,
+    speaker_reference_lens: torch.Tensor | None = None,
 ) -> AlignedTextTargets:
     """Align compact text turns and restore their labels to the conversation grid.
 
@@ -106,6 +108,12 @@ def align_text_turns(
     Before the curriculum switch, valid spans retain ``warmup_targets``.
     Afterwards they contain BPE tokens repeated according to the MAS path.
     Outside valid spans, targets are PAD and the loss mask is false.
+
+    Optional speaker references use the conversation batch axis, rather than
+    the compact turn axis. The learnable encoder pools each reference once;
+    turn packs gather its vector using the original sample index. Reference
+    features are detached, while the encoder and flow conditioning learn from
+    the acoustic likelihood. Missing references use zero conditioning.
     """
     if audio_features.ndim != 3 or warmup_targets.shape != audio_features.shape[:2]:
         raise ValueError('Expected audio_features [B,T,C] and warmup_targets [B,T]')
@@ -149,6 +157,16 @@ def align_text_turns(
     loss_mask = torch.zeros_like(warmup_targets, dtype=torch.bool)
     weighted_loss = audio_features.new_zeros((), dtype=torch.float32)
     counts = torch.zeros(4, dtype=torch.long, device=audio_features.device)
+    speaker_embeddings = None
+    if getattr(aligner, 'use_speaker_conditioning', False):
+        if (speaker_reference_features is None) != (speaker_reference_lens is None):
+            raise ValueError('Speaker reference features and lengths must be provided together')
+        if speaker_reference_features is not None:
+            if speaker_reference_features.size(0) != batch_size:
+                raise ValueError('Speaker references must use the conversation batch dimension')
+            speaker_embeddings = aligner.encode_speaker_reference(
+                speaker_reference_features.detach(), speaker_reference_lens
+            )
     # Counts: valid turns, one-frame text tokens, text tokens, acoustic frames.
     for batch_rows in batches:
         max_audio = max(metadata[row][2] - metadata[row][1] for row in batch_rows)
@@ -165,7 +183,13 @@ def align_text_turns(
         packed_audio_lens = torch.tensor(audio_lengths, device=audio_features.device, dtype=torch.long)
         with torch.no_grad():
             text_features = embed_text(packed_text, packed_text_lens).detach()
-        result = aligner(packed_audio, text_features, packed_audio_lens, packed_text_lens)
+        speaker_kwargs = {}
+        if speaker_embeddings is not None:
+            sample_indices = torch.tensor(
+                [metadata[row][0] for row in batch_rows], device=audio_features.device, dtype=torch.long
+            )
+            speaker_kwargs['speaker_embeddings'] = speaker_embeddings.index_select(0, sample_indices)
+        result = aligner(packed_audio, text_features, packed_audio_lens, packed_text_lens, **speaker_kwargs)
         valid = result.valid_turns.to(dtype=torch.bool, device=audio_features.device)
         frame_count = (packed_audio_lens * valid).sum()
         weighted_loss = weighted_loss + result.loss * frame_count

@@ -1925,8 +1925,14 @@ class ParallelExpertEncoder(nn.Module):
         use_diarization = None
         if spk_targets is not None:
             use_diarization = self._missing_target_rows(spk_targets)
-            run_streaming_diar = bool(use_diarization.any().item())
+            missing_rows = use_diarization.cpu()  # one host transfer for both decisions
+            run_streaming_diar = bool(missing_rows.any())
             if not run_streaming_diar:
+                use_diarization = None
+            elif spk_targets.shape[1] > 0 and bool(missing_rows.all()):
+                # every row holds the sentinel, the spelling of "no targets": the predictions are used as they are,
+                # instead of aligning a sentinel tensor of the caller's width to the windowed grid first
+                spk_targets = None
                 use_diarization = None
 
         if run_streaming_diar:

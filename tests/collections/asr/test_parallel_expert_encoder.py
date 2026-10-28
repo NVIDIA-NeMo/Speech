@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import dataclasses
 import gc
 import importlib.util
 import io
@@ -2234,9 +2235,16 @@ def test_online_inference_matches_independent_valid_prefixes_for_unequal_audio(a
 
 
 @pytest.mark.unit
-def test_all_sentinel_targets_route_long_audio_like_no_targets():
+@pytest.mark.parametrize(
+    "high_resolution, return_ctc_timestamp_inputs",
+    [(False, False), (True, False), (True, True)],
+)
+def test_all_sentinel_targets_route_long_audio_like_no_targets(high_resolution, return_ctc_timestamp_inputs):
     """A spk_targets tensor of only the missing-target sentinel is the documented spelling of None."""
+    diarization_config = toy_diarization_model_cfg()
+    diarization_config.high_resolution = high_resolution
     encoder = build_toy_pe_encoder(
+        diarization_model_cfg=diarization_config,
         online_inference_length=10,
         chunk_left_context=2,
         chunk_right_context=2,
@@ -2248,14 +2256,23 @@ def test_all_sentinel_targets_route_long_audio_like_no_targets():
     torch.manual_seed(0)
     mels = torch.randn(2, _MEL_FEATURES, 321)
     lengths = torch.tensor([321, 173])
+    # the width a caller would collate on the offline grid: one frame more than the windowed output
+    sentinel = torch.full((2, 41, _N_SPK), encoder.missing_rttm_target)
 
     with torch.no_grad(), encoder.online_inference():
-        output, output_lengths = encoder(mels, lengths)
-        sentinel = torch.full((2, int(output_lengths.max()), _N_SPK), encoder.missing_rttm_target)
-        sentinel_output, sentinel_lengths = encoder(mels, lengths, spk_targets=sentinel)
+        expected = encoder(mels, lengths, return_ctc_timestamp_inputs=return_ctc_timestamp_inputs)
+        actual = encoder(mels, lengths, spk_targets=sentinel, return_ctc_timestamp_inputs=return_ctc_timestamp_inputs)
 
-    assert torch.equal(sentinel_lengths, output_lengths)
-    torch.testing.assert_close(sentinel_output, output)
+    assert expected[1].tolist() == [40, 22]
+    assert torch.equal(actual[1], expected[1])
+    torch.testing.assert_close(actual[0], expected[0])
+    if return_ctc_timestamp_inputs:
+        for field in dataclasses.fields(CTCTimestampInputs):
+            expected_value, actual_value = getattr(expected[2], field.name), getattr(actual[2], field.name)
+            if expected_value is None:
+                assert actual_value is None
+            else:
+                torch.testing.assert_close(actual_value, expected_value)
 
 
 @pytest.mark.unit

@@ -563,6 +563,8 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         # init
         audio_pred = None
         audio_pred_len = torch.zeros(B, device=self.device, dtype=torch.long)
+        # each row's audio ends with its own last frame (prompt and audio), not at the batch width
+        audio_frame_lens = inference_state["lengths"].to(self.device)
 
         # Autoregressive loop
         for t in range(1, T):
@@ -602,7 +604,8 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                     audio_pred = audio_pred_i
                 else:
                     audio_pred = torch.cat([audio_pred, audio_pred_i], dim=1)
-                audio_pred_len += audio_pred_i_len
+                # the step counts only for the rows whose frames reach it
+                audio_pred_len += audio_pred_i_len * (audio_frame_lens > t)
 
             logging.info(f"Autoregressive inference step: {t} of {T} !")
 
@@ -614,17 +617,10 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
 
         if decode_audio:
             gen_codes = gen_codes[:, : inference_state["T_local"]]
-            # each row's audio ends with its own last frame (prompt and audio), not at the batch width
-            gen_audio_codes_lens = inference_state["lengths"].to(self.device)
-            if incremental_audio_decoding:
-                # the incremental path decodes the frames 1 to T-1
-                audio_pred_len = (gen_audio_codes_lens - 1) * self.tts_model.audio_codec.config.wav_to_token_ratio
-            else:
+            if not incremental_audio_decoding:
                 gen_audio_codes = gen_codes
                 with fp32_precision(), torch.no_grad():
-                    audio_pred, audio_pred_len = self.tts_model.audio_codec.decode(
-                        gen_audio_codes, gen_audio_codes_lens
-                    )
+                    audio_pred, audio_pred_len = self.tts_model.audio_codec.decode(gen_audio_codes, audio_frame_lens)
             ans["audio"] = audio_pred.squeeze(1)
             ans["audio_len"] = audio_pred_len
 

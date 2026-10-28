@@ -309,12 +309,8 @@ class DuplexSTTStreamingInference:
 
         if self.model.predict_user_text:
             gen_text_src = gen_asr
-            src_text_cleaned = [
-                self.model.tokenizer.ids_to_text(gen_text_src[b]) for b in range(gen_text_src.shape[0])
-            ]
         else:
             gen_text_src = None
-            src_text_cleaned = None
 
         if prompt_token_lens is not None:
             max_prompt_len = prompt_token_lens.max().item()
@@ -345,6 +341,11 @@ class DuplexSTTStreamingInference:
                     gen_text_src = gen_asr
                 lengths = lengths_trimmed
 
+        if self.model.predict_user_text:
+            src_text = tokens_to_str(gen_asr, lengths, tokenizer=self.model.tokenizer, pad_id=self.model.text_pad_id)
+        else:
+            src_text = None
+
         ans = {
             "text": tokens_to_str(
                 gen_text,
@@ -353,7 +354,7 @@ class DuplexSTTStreamingInference:
                 pad_id=self.model.text_pad_id,
                 eval_text_turn_taking=self.model.cfg.get("eval_text_turn_taking", True),
             ),
-            "src_text": src_text_cleaned,
+            "src_text": src_text,
             "tokens_text_src": gen_text_src,
             "tokens_text": gen_text,
             "tokens_len": lengths,

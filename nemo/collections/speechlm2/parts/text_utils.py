@@ -52,6 +52,7 @@ def tokens_to_str(
         return token_ids
 
     for hyp_ids, hyp_len in zip(tokens.cpu(), lengths.cpu()):
+        hyp_ids = hyp_ids[:hyp_len]
         if eval_text_turn_taking:
             # Insert timestamps to the text
             agent_bos_positions = (hyp_ids == tokenizer.bos).nonzero(as_tuple=True)[0].tolist()
@@ -104,7 +105,6 @@ def tokens_to_str(
             ans.append(" ".join(out_str))
         else:
             # For non-turn-taking mode: filter out ALL special tokens, return only pure text
-            hyp_ids = hyp_ids[:hyp_len]
             hyp_ids = filter_special_tokens(hyp_ids)
             ans.append(tokenizer.ids_to_text(hyp_ids))
     return ans

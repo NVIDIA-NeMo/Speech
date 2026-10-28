@@ -276,6 +276,111 @@ For models with a Local Transformer, GRPO can optimize both with and without the
     +model.use_local_transformer_prob=0.5  # 50% of generations use LT
 
 
+EasyMagpie Online PO Options
+---------------------------
+
+For ``examples/tts/easy_magpietts.py`` in ``onlinepo_train`` mode, set
+``model.phoneme_po_loss_weight`` above zero to optimize sampled phoneme actions
+alongside audio. This requires ``inference_phoneme_sampling_method=sample``, a
+positive ``inference_phoneme_temperature``, ``inference_phoneme_topk>=2``, and
+``phoneme_confidence_unk_threshold=0``. Phoneme sampling temperature and top-k
+can be configured independently of audio sampling.
+
+``model.rollout_cfg_mode`` accepts ``off`` (the default) and ``alternate``.
+The latter enables classifier-free guidance on odd training steps using
+``model.inference_cfg_scale``. Validation reward rollouts use ``off``.
+``model.codec_decode_batch_size`` limits the number of generated items decoded
+at once; zero retains full-batch decoding.
+
+``model.save_reward_audios`` defaults to ``True``. Set it to ``False`` to skip
+all generated/reference WAV writes during online reward scoring. ASR, speaker
+similarity, and UTMOS consume detached, true-length waveforms directly; no
+shared-memory directories or cleanup processes are created. Saved WAVs are only
+debugging artifacts and are not read back by reward models.
+
+In-memory UTMOS scoring requires UTMOSv2 **v1.3.0**::
+
+    pip install git+https://github.com/sarulab-speech/UTMOSv2.git@v1.3.0
+
+The scorer resamples from ``output_sample_rate`` to the UTMOS model configuration's
+rate (16 kHz for the default pretrained model). It uses upstream CPU NumPy/librosa
+preprocessing on each unpadded clip, then batches the resulting fixed-size features
+for model inference. ``model.utmos_batch_size`` controls inference batching and
+``model.utmos_num_workers`` controls CPU preprocessing workers (default 0).
+``model.utmos_device=cpu`` (default) keeps the reward model on CPU. Set it to
+``cuda`` to score on the training rank's device.
+
+NeMo ASR and speaker inputs are resampled to their model's configured sample rate.
+Whisper inputs are resampled to 16 kHz and converted to CPU NumPy arrays at its
+feature-extractor boundary. Speaker inference retains tensors on the model's
+device. Waveforms remain local to the reward call and are not cached between
+iterations. Avoiding WAV encoding also removes the previous PCM-16 quantization,
+so reward scores can differ from the file-based path. Silence removal keeps
+the existing model configuration; the default retains silence, matching the
+previous UTMOSv2 1.2.1 file-based behavior.
+
+EasyMagpie Challenging-Text Curriculum
+------------------------------------
+
+The multiturn training dataset can replace an eligible English TTS supervision
+with text from a UTF-8 file containing one prompt per line. Configure
+``model.train_ds.dataset`` with ``challenging_texts_path``,
+``challenging_text_start_prob``, ``challenging_text_end_prob``,
+``challenging_text_start_step``, and ``challenging_text_end_step``. Replacement
+is disabled before the start step, increases linearly between the two steps,
+and remains at the end probability afterwards. A positive end probability
+requires ``0 <= start_step < end_step``. The schedule is communicated to
+DataLoader workers without rebuilding the dataloader.
+
+For online PO with replacement enabled, set ``model.gt_phoneme_input_prob=0``
+because replacement text has no corresponding ground-truth IPA alignment.
+``model.train_ds.dataset.context_audio_shuffle_batch_prob`` independently
+enables replacing eligible audio contexts with contexts from other batch
+items; text contexts are preserved. Both augmentations apply to training only.
+
+EasyMagpie Reward ASR Routing
+----------------------------
+
+EasyMagpie online PO accepts ``model.reward_asr`` to select transcription
+backends by language while preserving rollout order. For example:
+
+.. code-block:: yaml
+
+    reward_asr:
+      default_backend: nemo
+      language_routes: {hi: whisper}
+      backends:
+        nemo:
+          type: nemo
+          model_name: nvidia/parakeet-ctc-0.6b
+          batch_size: 16
+        whisper:
+          type: whisper
+          model_name: openai/whisper-large-v3
+
+The ``nemo_process`` and ``qwen`` types use a persistent worker in
+``scripts/tts/reward_asr_worker.py``. The Qwen backend requires a Python runtime
+with ``qwen_asr`` installed; its default is ``/opt/qwen_asr/bin/python``. Override
+the backend's ``python_executable`` and, when needed, ``worker_script`` for your
+environment. The training package does not install the separate Qwen runtime.
+The ``nemo_process`` backend defaults to the training Python executable.
+
+``model.validation_asr_backend=reward`` reuses the reward router for validation
+transcription; the default retains the base model's validation ASR selection.
+``model.normalize_reward_transcript`` defaults to ``True`` and inherits
+``normalize_whisper_transcript`` when omitted. Existing ``reward_asr_model``
+recipes are translated when ``reward_asr`` is absent. Worker processes are
+closed during model teardown.
+
+Reward ASR backends accept true-length waveforms plus their actual sample rate.
+Process-isolated NeMo and Qwen workers receive lossless float32 samples through
+their existing stdin pipe rather than file paths. NeMo resamples to its model's
+configured rate; Qwen receives ``(numpy_array, sample_rate)`` inputs and performs
+its own frontend conversion. Worker request buffers are released after scoring,
+and closing a backend reaps the worker and closes its pipes. Validation with
+``validation_asr_backend=reward`` passes waveforms to the same router; validation
+WAVs remain available as logging artifacts.
+
 See Also
 ########
 

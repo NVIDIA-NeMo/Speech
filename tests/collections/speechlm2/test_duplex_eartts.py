@@ -652,8 +652,21 @@ def test_eartts_offline_generation_rejects_malformed_text_lengths(model, subword
         )
 
 
-def test_eartts_evaluation_scores_each_row_on_its_own_audio_length(model, dataset, monkeypatch):
-    """run_evaluation_one_batch scores a shorter row on the audio of its own text frames, not the batch width."""
+@pytest.mark.parametrize("num_delay_speech_tokens", [0, 2])
+def test_eartts_evaluation_scores_each_row_on_its_own_audio_length(model, monkeypatch, num_delay_speech_tokens):
+    """run_evaluation_one_batch scores each row on its own codec frames after the prompt, as the row alone."""
+    dataset = DuplexEARTTSDataset(
+        model.tokenizer,
+        add_text_bos_and_eos_in_each_turn=True,
+        add_audio_prompt=True,
+        audio_prompt_duration=3.0,
+        frame_length=0.08,
+        source_sample_rate=22050,
+        target_sample_rate=22050,
+        input_roles=["user", "User"],
+        output_roles=["agent", "Assistant", "assistant", "Agent"],
+        num_delay_speech_tokens=num_delay_speech_tokens,
+    )
     cuts = []
     for idx, duration in enumerate((1.0, 0.6)):
         cut = dummy_cut(
@@ -685,7 +698,16 @@ def test_eartts_evaluation_scores_each_row_on_its_own_audio_length(model, datase
 
     monkeypatch.setattr(model.asr_bleu, "update", spy)
     model.run_evaluation_one_batch("dummy_val_set", batch)
+    batched_lens = seen["pred_audio_lens"].tolist()
 
-    text_lens = batch["target_token_lens"] - torch.as_tensor(batch["prompt_lens"], device=model.device)
-    expected = (text_lens * model.target_samples_per_frame / model.target_sample_rate * 16000).to(torch.long)
-    assert seen["pred_audio_lens"].tolist() == expected.tolist()
+    # the codec frames of each row's target audio (speech delay included, rounded up to a frame), minus the prompt
+    frames = -(-batch["target_audio_lens"] // model.target_samples_per_frame)
+    expected = frames - torch.as_tensor(batch["prompt_lens"], device=model.device)
+    assert (
+        batched_lens == (expected * model.target_samples_per_frame / model.target_sample_rate * 16000).long().tolist()
+    )
+    for row, cut in enumerate(cuts):
+        model.run_evaluation_one_batch(
+            "dummy_val_set", move_data_to_device(dataset[CutSet([cut])], device=model.device)
+        )
+        assert seen["pred_audio_lens"].tolist() == [batched_lens[row]]

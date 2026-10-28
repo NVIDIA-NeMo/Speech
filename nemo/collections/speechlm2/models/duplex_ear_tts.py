@@ -741,7 +741,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         )
 
         prompt_lens = torch.as_tensor(dataset_batch["prompt_lens"], dtype=torch.long, device=self.device)
-        next_subword_lens = (dataset_batch["target_token_lens"].to(self.device) - prompt_lens).clamp(
+        # each row's codec frames after its prompt: the speech delay and the codec frame rounding
+        # are in output_lens, not in target_token_lens
+        next_subword_lens = (inputs["output_lens"].to(self.device) - prompt_lens).clamp(
             min=0, max=next_subword_ids.size(-1)
         )
         results["audio"], results["audio_len"] = self.offline_inference(

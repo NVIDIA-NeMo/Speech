@@ -19,8 +19,7 @@ If a current release lacks these, check the public contribution state:
 [RL #4748](https://github.com/NVIDIA-NeMo/RL/pull/4748),
 [Automodel #4377](https://github.com/NVIDIA-NeMo/Automodel/pull/4377).
 Prefer merged code; otherwise explicitly pin the reviewed PR revision. Do not say an unmerged feature exists in main.
-There is no dependency on Skills #1539. WER works without Skills; the optional CER scorer is described in
-[Data and signal](data-and-signal.md).
+The optional CER scoring dependency is described in [Data and signal](data-and-signal.md).
 
 Use the selected RL revision's [installation guide](https://github.com/NVIDIA-NeMo/RL/blob/main/docs/about/installation.md)
 and [SpeechLM guide](https://github.com/NVIDIA-NeMo/RL/blob/main/docs/guides/gspo-speechlm.md) for compatible Python,
@@ -29,7 +28,7 @@ Do not blindly copy a whole historical environment or the single-GPU SFT skill's
 compatible image when available; avoid rebuilding native dependencies unnecessarily. A v0.7.0 image requires its
 matching source/dependency set and is not proof that arbitrary current mainlines work inside it.
 
-The standalone WER path needs Speech/RL/Automodel and their declared dependencies, not a Skills launcher installation.
+The standalone WER path needs Speech/RL/Automodel and their declared dependencies.
 For adapters, install their CPU scoring dependencies in the reward-worker environment as well. Record both policy and
 generation interpreter paths/versions. The prepared policy Python is called `$SPEECHLM_GSPO_PYTHON` below; the serving
 Python is `$SERVING_PYTHON`. Do not globally force every Ray actor into the policy environment.
@@ -50,7 +49,7 @@ do not copy shared audio or the model through every submission directory.
 
 Use NeMo-RL's documented [cluster launch](https://github.com/NVIDIA-NeMo/RL/blob/main/docs/cluster.md) to provision
 the requested nodes and Ray. Run the driver below **once** in that allocation, not once per rank. Scheduler and
-container commands depend on the customer's infrastructure; do not invent a universal `sbatch` or Skills command.
+container commands depend on the customer's infrastructure; use its supported launch procedure.
 
 ```bash
 cd "$RL"
@@ -112,7 +111,7 @@ the exporter with an ad hoc cast or claim every FP32 training delta survives BF1
 Resume only from the same run's complete native checkpoint, with optimizer, scheduler and data cursor. Starting
 from an HF export creates a new optimizer history; it does not resume the previous training state.
 
-## Matched evaluation without a Skills PR
+## Matched evaluation
 
 Reuse `examples/speechlm2/finetuning/vllm_task_eval.py` and `task_metrics.py` for supported tasks. Its JSON-lines
 evaluation rows use `audio_filepath`, `text`, and `context`; use `context = instruction + "\n<|audio|>"` to preserve

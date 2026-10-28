@@ -18,7 +18,7 @@ coordinated Speech and RL revisions containing both:
 
 These example additions are local contributions pending publication. The general GSPO PR alone does not contain
 MER support. The archived experiment used a matching v0.7.0 stack; it does not qualify arbitrary current mainlines
-inside that image. No NeMo-Skills feature branch is needed for MER.
+inside that image.
 
 Set `$SPEECH`, `$RL`, `$SPEECHLM_GSPO_PYTHON` and `$SERVING_PYTHON` as in the execution guide. Place model, data and
 outputs on storage visible to every worker. Run preparation on CPU; decoding/export use one eight-GPU node and

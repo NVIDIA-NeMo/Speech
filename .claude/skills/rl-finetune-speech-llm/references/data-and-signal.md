@@ -47,11 +47,11 @@ and balance it with speech on which the model sometimes omits words or returns e
 dataset can teach a bad shortcut. A completed hallucination is a legitimate poor alternative, not a row to erase.
 
 Mandarin CER in the public RL scorer calls `nemo_skills.evaluation.evaluator.audio.evaluate_cer` with
-`whitespace_mode="han_adjacent"`. This optional scoring dependency is distinct from the Skills launcher/PR.
-Use a public Skills release/main revision that provides that API, or implement the customer's CER contract as a tested
+`whitespace_mode="han_adjacent"`. Use a published NeMo-Skills release or main revision that provides that API,
+or implement the customer's CER contract as a tested
 reward adapter. Test the behavior, not just importability: a function accepting `**kwargs` may ignore a new option.
 For example, the intended rule treats `今 天 use AI` and `今天use AI` alike while preserving English word boundaries.
-Do not install an unmerged Skills feature branch or silently score Mandarin with whitespace WER.
+Do not silently score Mandarin with whitespace WER.
 The built-in Mandarin path requires `task="ordinary_asr"`, `reward_metric="cer"` and
 `cer_whitespace_mode="han_adjacent"`, and a nonempty normalized reference.
 

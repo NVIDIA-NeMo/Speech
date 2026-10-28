@@ -11,7 +11,7 @@ held-out task score with acceptable retention—not a higher training reward.
 
 The default seed is [`nvidia/Nemotron-3.5-Transcribe-30B-A4B`](https://huggingface.co/nvidia/Nemotron-3.5-Transcribe-30B-A4B).
 Use its full Hugging Face snapshot, including the tokenizer, speech encoder, projection and auxiliary heads.
-This skill uses NeMo-Speech, NeMo-RL and NeMo-Automodel. It does **not** require a NeMo-Skills feature branch or launcher.
+This skill uses NeMo-Speech, NeMo-RL and NeMo-Automodel.
 
 ## References
 

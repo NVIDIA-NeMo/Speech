@@ -915,6 +915,30 @@ def test_forward_dispatch(online_len, chunk_feat_len, training, n_frames, expect
     assert enc.forward(audio, length) == expected
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "scope, training, n_frames, real_rows, expected",
+    [
+        (True, False, 200, 0, "online"),  # scope on, all rows sentinel: the spelling of None
+        (True, False, 50, 0, "online"),  # the scope ignores the length, as for None
+        (True, False, 200, 1, "offline"),  # one row of real targets keeps the single pass
+        (True, False, 200, 2, "offline"),
+        (None, False, 200, 0, "offline"),  # no scope: any tensor keeps the single pass
+        (None, True, 200, 0, "offline"),
+    ],
+)
+def test_forward_dispatch_with_speaker_targets(scope, training, n_frames, real_rows, expected):
+    enc = dispatch_stub(500, 100, training)
+    enc.missing_rttm_target = -1.0
+    if scope is not None:
+        enc.online_inference_enabled = scope
+    audio = torch.zeros(2, 8, n_frames)
+    length = torch.tensor([n_frames, n_frames])
+    spk_targets = torch.full((2, n_frames // 8, 4), -1.0)
+    spk_targets[:real_rows] = 0.5
+    assert enc.forward(audio, length, spk_targets=spk_targets) == expected
+
+
 # ----------------------------------------------------------------------------- #
 # _forward_online orchestration (stubbed ASR encoder, provided spk_targets)
 # ----------------------------------------------------------------------------- #
@@ -2207,6 +2231,31 @@ def test_online_inference_matches_independent_valid_prefixes_for_unequal_audio(a
     assert batched_output.shape == (2, _ASR_D_MODEL, int(expected_lengths.max()))
     torch.testing.assert_close(batched_output[0, :, : first_length[0]], first_output[0], rtol=1e-5, atol=2e-5)
     torch.testing.assert_close(batched_output[1, :, : second_length[0]], second_output[0], rtol=1e-5, atol=2e-5)
+
+
+@pytest.mark.unit
+def test_all_sentinel_targets_route_long_audio_like_no_targets():
+    """A spk_targets tensor of only the missing-target sentinel is the documented spelling of None."""
+    encoder = build_toy_pe_encoder(
+        online_inference_length=10,
+        chunk_left_context=2,
+        chunk_right_context=2,
+        diar_fifo_len=10,
+        diar_spkcache_update_period=20,
+        diar_spkcache_len=20,
+    ).eval()
+    encoder._suppress_online_pbar = True
+    torch.manual_seed(0)
+    mels = torch.randn(2, _MEL_FEATURES, 321)
+    lengths = torch.tensor([321, 173])
+
+    with torch.no_grad(), encoder.online_inference():
+        output, output_lengths = encoder(mels, lengths)
+        sentinel = torch.full((2, int(output_lengths.max()), _N_SPK), encoder.missing_rttm_target)
+        sentinel_output, sentinel_lengths = encoder(mels, lengths, spk_targets=sentinel)
+
+    assert torch.equal(sentinel_lengths, output_lengths)
+    torch.testing.assert_close(sentinel_output, output)
 
 
 @pytest.mark.unit

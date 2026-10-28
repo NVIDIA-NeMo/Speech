@@ -440,6 +440,7 @@ def load_easy_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tup
         else:
             logging.info(f"Loading model from NeMo archive: {config.nemo_file}")
             model_cfg = EasyMagpieTTSInferenceModel.restore_from(config.nemo_file, return_config=True)
+            model_cls = select_easy_magpie_model_class(model_cfg)
 
             with open_dict(model_cfg):
                 model_cfg.codecmodel_path = config.codecmodel_path
@@ -450,11 +451,10 @@ def load_easy_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tup
                     model_cfg.disable_cas_for_context_text = True
                 if config.phoneme_tokenizer_path and hasattr(model_cfg, 'phoneme_tokenizer'):
                     model_cfg.phoneme_tokenizer.tokenizer_path = config.phoneme_tokenizer_path
-                # Override target so restore_from instantiates the inference class,
-                # not the training subclass stored in the .nemo config.
-                model_cfg.target = 'nemo.collections.tts.models.easy_magpietts_inference.EasyMagpieTTSInferenceModel'
+                # Restore the matching inference class instead of the saved training subclass.
+                model_cfg.target = f"{model_cls.__module__}.{model_cls.__name__}"
 
-            model = EasyMagpieTTSInferenceModel.restore_from(config.nemo_file, override_config_path=model_cfg)
+            model = model_cls.restore_from(config.nemo_file, override_config_path=model_cfg)
             checkpoint_name = os.path.basename(config.nemo_file).replace(".nemo", "")
 
     model.to(device)

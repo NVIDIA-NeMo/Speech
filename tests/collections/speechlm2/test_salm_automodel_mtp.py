@@ -80,8 +80,9 @@ def test_mtp_num_depths_is_zero_without_head():
     assert model._mtp_num_depths == 0
 
 
-def test_disabled_mtp_overrides_native_checkpoint_head(monkeypatch):
-    """Native checkpoint MTP weights are not instantiated when MTP is disabled."""
+@pytest.mark.parametrize(("retain_native_mtp", "native_depth"), [(False, 1), (True, 0), (True, 2)])
+def test_disabled_mtp_retains_checkpoint_topology_only_when_requested(monkeypatch, retain_native_mtp, native_depth):
+    """Retention must not request creation or replacement of checkpoint MTP heads."""
     from omegaconf import DictConfig
 
     captured_kwargs = {}
@@ -93,8 +94,8 @@ def test_disabled_mtp_overrides_native_checkpoint_head(monkeypatch):
     class _LLM(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.config = type("Config", (), {"hidden_size": 8, "num_nextn_predict_layers": 1})()
-            self.mtp = None
+            self.config = type("Config", (), {"hidden_size": 8, "num_nextn_predict_layers": native_depth})()
+            self.mtp = torch.nn.Linear(4, 4) if retain_native_mtp and native_depth else None
 
     def _load_llm(*_args, **kwargs):
         captured_kwargs.update(kwargs)
@@ -106,7 +107,8 @@ def test_disabled_mtp_overrides_native_checkpoint_head(monkeypatch):
             "pretrained_llm": "native-mtp-checkpoint",
             "pretrained_asr": "unused-in-test",
             "pretrained_weights": True,
-            "mtp": {"enabled": False},
+            "retain_native_mtp": retain_native_mtp,
+            "mtp": {"enabled": False, "replace_existing_head": True},
         }
     )
     model._trainer = None
@@ -123,10 +125,16 @@ def test_disabled_mtp_overrides_native_checkpoint_head(monkeypatch):
 
     SALMAutomodel.configure_model(model)
 
-    assert captured_kwargs["num_nextn_predict_layers"] == 0
     assert "mtp_config_overrides" not in captured_kwargs
-    assert model.llm.config.num_nextn_predict_layers == 0
-    assert not model._mtp_enabled
+    assert "replace_mtp_config" not in captured_kwargs
+    if retain_native_mtp:
+        assert "num_nextn_predict_layers" not in captured_kwargs
+        assert model.llm.config.num_nextn_predict_layers == native_depth
+        assert model._mtp_enabled == (native_depth > 0)
+    else:
+        assert captured_kwargs["num_nextn_predict_layers"] == 0
+        assert model.llm.config.num_nextn_predict_layers == 0
+        assert not model._mtp_enabled
 
 
 @pytest.mark.parametrize(
@@ -236,7 +244,8 @@ def test_invalid_mtp_training_mode_fails_before_loading(monkeypatch):
         SALMAutomodel.configure_model(model)
 
 
-def test_repeated_layer_settings_reach_native_mtp_constructor(monkeypatch):
+@pytest.mark.parametrize("retain_native_mtp", [False, True])
+def test_repeated_layer_settings_reach_native_mtp_constructor(monkeypatch, retain_native_mtp):
     """Reload preserves logical MTP depth when the checkpoint stores one physical repeated layer."""
     from omegaconf import DictConfig
 
@@ -267,8 +276,9 @@ def test_repeated_layer_settings_reach_native_mtp_constructor(monkeypatch):
             "pretrained_weights": True,
             "freeze_params": [],
             "prevent_freeze_params": [],
+            "retain_native_mtp": retain_native_mtp,
             "mtp": {
-                "enabled": True,
+                "enabled": not retain_native_mtp,
                 "training_mode": "joint",
                 "num_nextn_predict_layers": 3,
                 "use_repeated_layer": True,
@@ -290,12 +300,16 @@ def test_repeated_layer_settings_reach_native_mtp_constructor(monkeypatch):
 
     SALMAutomodel.configure_model(model)
 
-    assert captured_kwargs["mtp_config_overrides"] == {
-        "num_nextn_predict_layers": 1,
-        "mtp_hybrid_override_pattern": "*",
-        "mtp_layers_block_type": None,
-    }
-    assert captured_kwargs["replace_mtp_config"] is False
+    if retain_native_mtp:
+        assert "mtp_config_overrides" not in captured_kwargs
+        assert "replace_mtp_config" not in captured_kwargs
+    else:
+        assert captured_kwargs["mtp_config_overrides"] == {
+            "num_nextn_predict_layers": 1,
+            "mtp_hybrid_override_pattern": "*",
+            "mtp_layers_block_type": None,
+        }
+        assert captured_kwargs["replace_mtp_config"] is False
     assert captured_kwargs["num_nextn_predict_layers"] == 3
     assert captured_kwargs["mtp_use_repeated_layer"] is True
     assert model.llm.config.num_nextn_predict_layers == 1

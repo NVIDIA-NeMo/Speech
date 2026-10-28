@@ -1129,6 +1129,35 @@ class TestSortformerEncLabelModelStreaming:
         torch.testing.assert_close(torch.sigmoid(logits[valid_mask]), preds[valid_mask])
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("async_streaming", [False, True])
+    def test_high_resolution_last_chunk_skips_state_update_without_changing_predictions(self, async_streaming):
+        model = _create_sortformer_model(high_resolution=True).eval()
+        model.streaming_mode = True
+        model.async_streaming = async_streaming
+        modules = model.sortformer_modules
+        processed_signal = torch.randn(2, 6 * model.encoder.subsampling_factor, model.encoder._feat_in)
+        processed_signal_length = torch.tensor([processed_signal.shape[1], 4 * model.encoder.subsampling_factor])
+
+        results = {}
+        with torch.no_grad():
+            for update_state in (True, False):
+                state = modules.init_streaming_state(batch_size=2, async_streaming=async_streaming)
+                initial = {k: v.clone() for k, v in vars(state).items() if isinstance(v, torch.Tensor)}
+                state, preds = model.forward_streaming_step(
+                    processed_signal=processed_signal,
+                    processed_signal_length=processed_signal_length,
+                    streaming_state=state,
+                    total_preds=torch.zeros(2, 0, modules.n_spk),
+                    update_state=update_state,
+                )
+                results[update_state] = preds
+                if not update_state:
+                    for k, v in initial.items():
+                        assert torch.equal(getattr(state, k), v), k
+
+        torch.testing.assert_close(results[False], results[True], rtol=0, atol=0)
+
+    @pytest.mark.unit
     @pytest.mark.parametrize(
         "stacking_factor, feature_shape, input_lengths, expected_encoded_lengths",
         [(8, (2, 120, 80), (120, 91), (15, 12))],

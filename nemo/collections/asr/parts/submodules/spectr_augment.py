@@ -79,6 +79,10 @@ class SpecAugment(nn.Module, Typing):
         self.freq_masks = freq_masks
         self.time_masks = time_masks
 
+        self.short_recording_frame_duration = None
+        self.short_recording_max_duration = None
+        self.short_recording_max_mask_fraction = None
+
         self.freq_width = freq_width
         self.time_width = time_width
 
@@ -92,6 +96,50 @@ class SpecAugment(nn.Module, Typing):
                 raise ValueError("If `time_width` is a float value, must be in range [0, 1]")
 
             self.adaptive_temporal_width = True
+
+    def configure_short_recording_time_mask_cap(
+        self,
+        *,
+        frame_duration_seconds: float,
+        max_duration_seconds: float = 1.0,
+        max_mask_fraction: float = 0.1,
+    ) -> None:
+        """Cap total time masking for recordings shorter than a duration threshold.
+
+        Short rows use at most one non-empty time mask whose width cannot exceed
+        ``floor(length * max_mask_fraction)``. Long rows retain the original mask
+        count, width, and random-number path.
+        """
+        if frame_duration_seconds <= 0:
+            raise ValueError("frame_duration_seconds must be positive.")
+        if max_duration_seconds <= 0:
+            raise ValueError("max_duration_seconds must be positive.")
+        if not 0 <= max_mask_fraction <= 1:
+            raise ValueError("max_mask_fraction must be in [0, 1].")
+        self.short_recording_frame_duration = float(frame_duration_seconds)
+        self.short_recording_max_duration = float(max_duration_seconds)
+        self.short_recording_max_mask_fraction = float(max_mask_fraction)
+
+    def _time_mask_width_limits(self, lengths: torch.Tensor, width: int | float, num_masks: int):
+        """Return per-mask width limits when the short-recording cap is active."""
+        if self.short_recording_frame_duration is None or num_masks == 0:
+            return width
+        short_rows = (
+            lengths.to(torch.float32) * self.short_recording_frame_duration < self.short_recording_max_duration
+        )
+        if isinstance(width, torch.Tensor):
+            ordinary_limit = width.to(device=lengths.device, dtype=torch.float32)
+            if ordinary_limit.ndim == 1:
+                ordinary_limit = ordinary_limit.unsqueeze(1)
+        elif isinstance(width, float):
+            ordinary_limit = torch.clamp(width * lengths, min=0).to(torch.float32).unsqueeze(1)
+        else:
+            ordinary_limit = torch.full((lengths.numel(), 1), float(width), device=lengths.device, dtype=torch.float32)
+        ordinary_limits = ordinary_limit.expand(-1, num_masks)
+        short_limits = torch.zeros_like(ordinary_limits)
+        total_budget = torch.floor(lengths.to(torch.float32) * self.short_recording_max_mask_fraction)
+        short_limits[:, 0] = torch.minimum(ordinary_limit[:, 0], total_budget)
+        return torch.where(short_rows.unsqueeze(1), short_limits, ordinary_limits)
 
     @typecheck()
     @torch.no_grad()
@@ -108,11 +156,12 @@ class SpecAugment(nn.Module, Typing):
         ``use_vectorized_code`` only preserves the historical dense backend choice;
         the new packed API always avoids the legacy Python loop.
         """
+        time_width = self._time_mask_width_limits(input_spec.lengths, self.time_width, self.time_masks)
         data = _apply_packed_axis_masks(
             input_spec.data,
             input_spec,
             num_masks=self.time_masks,
-            width=self.time_width,
+            width=time_width,
             axis=self.TIME_AXIS,
             mask_value=self.mask_value,
         )
@@ -146,12 +195,22 @@ class SpecAugment(nn.Module, Typing):
                 time_max_width = max(1, int(lengths_cpu[idx] * self.time_width))
             else:
                 time_max_width = self.time_width
-            time_start_upper_bound = max(1, lengths_cpu[idx] - time_max_width)
+            time_width_limits = self._time_mask_width_limits(
+                torch.as_tensor([lengths_cpu[idx]]), time_max_width, self.time_masks
+            )
+            if isinstance(time_width_limits, torch.Tensor):
+                time_width_limits = time_width_limits[0].tolist()
+            else:
+                time_width_limits = [time_width_limits] * self.time_masks
 
-            # Set time masking
-            for _ in range(self.time_masks):
+            # Draw with the historical bounds even for capped short rows.
+            # randint uses rejection sampling, so changing its bounds would shift
+            # the RNG state for later rows and subsequent batches.
+            time_start_upper_bound = max(1, lengths_cpu[idx] - time_max_width)
+            for mask_idx in range(self.time_masks):
                 start = self._rng.randint(0, time_start_upper_bound)
                 width = self._rng.randint(0, time_max_width)
+                width = min(width, int(time_width_limits[mask_idx]))
                 fill_mask[idx, :, start : start + width] = True
         # Bring the mask to device and fill spec
         fill_mask = torch.from_numpy(fill_mask).to(input_spec.device)
@@ -205,6 +264,9 @@ class SpecAugment(nn.Module, Typing):
         # If width is float then it is transformed into a tensor
         if axis == self.TIME_AXIS and isinstance(width, float):
             width = torch.clamp(width * length, max=axis_length).unsqueeze(1)
+
+        if axis == self.TIME_AXIS:
+            width = self._time_mask_width_limits(length, width, num_masks)
 
         # Generate [0-1) random numbers and then scale the tensors.
         # Use float32 dtype for begin/end mask markers before they are quantized to long.

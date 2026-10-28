@@ -29,6 +29,19 @@ from nemo.collections.asr.parts.packed_sequence import (
 from nemo.core import Exportable, NeuralModule, typecheck
 
 
+def _configure_short_recording_spec_augment(spec_augmentation: nn.Module | None, preprocessor: nn.Module) -> None:
+    """Apply the SpeechLM short-recording safety policy when supported."""
+    configure = getattr(spec_augmentation, "configure_short_recording_time_mask_cap", None)
+    if not callable(configure):
+        return
+    featurizer = preprocessor.featurizer
+    configure(
+        frame_duration_seconds=featurizer.hop_length / featurizer.sample_rate,
+        max_duration_seconds=1.0,
+        max_mask_fraction=0.1,
+    )
+
+
 class AudioPerceptionModule(NeuralModule, Exportable):
     """Audio perception module that consists of audio encoder(s) and modality adapter."""
 
@@ -87,6 +100,7 @@ class AudioPerceptionModule(NeuralModule, Exportable):
             self.spec_augmentation = self.from_config_dict(cfg.spec_augment)
         else:
             self.spec_augmentation = None
+        _configure_short_recording_spec_augment(self.spec_augmentation, self.preprocessor)
         self.modality_adapter = self.from_config_dict(cfg.modality_adapter)
         if isinstance(self.modality_adapter, (QformerConnector, MultiLayerProjectionConnector)):
             from nemo.collections.asr.modules.conformer_encoder import ConformerMultiLayerFeatureExtractor
@@ -186,6 +200,7 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         processed_signal=None,
         processed_signal_length=None,
         return_encoder_emb=False,
+        return_ctc_timestamp_inputs=False,
         time_offset=None,
         spk_targets=None,
         input_signal_cu_seqlens=None,
@@ -206,7 +221,10 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         if self.spec_augmentation is not None and self.training:
             processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
 
+        ctc_timestamp_inputs = None
         if isinstance(self.modality_adapter, (QformerConnector, MultiLayerProjectionConnector)):
+            if return_ctc_timestamp_inputs:
+                raise ValueError("CTC timestamp inputs are not supported with multi-layer perception adapters.")
             encoder_emb, encoded_len = self.encoder_multilayer(
                 audio_signal=processed_signal, length=processed_signal_length
             )
@@ -220,7 +238,13 @@ class AudioPerceptionModule(NeuralModule, Exportable):
                         "spk_targets has no effect when the encoder does not support it."
                     )
                 encoder_kwargs["spk_targets"] = spk_targets
-            encoder_emb, encoded_len = self.encoder(**encoder_kwargs)
+            if return_ctc_timestamp_inputs:
+                if not getattr(self.encoder, "supports_ctc_timestamp_inputs", False):
+                    raise ValueError(f"{type(self.encoder).__name__} does not support returning CTC timestamp inputs.")
+                encoder_kwargs["return_ctc_timestamp_inputs"] = True
+                encoder_emb, encoded_len, ctc_timestamp_inputs = self.encoder(**encoder_kwargs)
+            else:
+                encoder_emb, encoded_len = self.encoder(**encoder_kwargs)
         if self.rote is not None:
             encoder_emb = self._apply_rote(encoder_emb, time_offset)
         encoded, encoded_len = self.modality_adapter(audio_signal=encoder_emb, length=encoded_len)
@@ -230,6 +254,8 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         result = (encoded, encoded_len)
         if return_encoder_emb:
             result += (encoder_emb.transpose(1, 2),)
+        if return_ctc_timestamp_inputs:
+            result += (ctc_timestamp_inputs,)
         return result
 
     @typecheck.disable_checks()
@@ -534,6 +560,7 @@ class AudioTranscriptionPerceptionModule(NeuralModule, Exportable):
         self.spec_augmentation = None
         if 'spec_augment' in cfg and cfg.spec_augment is not None:
             self.spec_augmentation = self.from_config_dict(cfg.spec_augment)
+        _configure_short_recording_spec_augment(self.spec_augmentation, self.preprocessor)
         self.modality_adapter = self.from_config_dict(cfg.modality_adapter)
         if isinstance(self.modality_adapter, (QformerConnector, MultiLayerProjectionConnector)):
             from nemo.collections.asr.modules.conformer_encoder import ConformerMultiLayerFeatureExtractor

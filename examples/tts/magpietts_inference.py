@@ -176,14 +176,15 @@ def run_inference_and_evaluation(
         meta = dataset_meta_info[dataset]
         manifest_records = read_manifest(meta['manifest_path'])
 
-        # Per-dataset overrides (asr_model, language) come from the evalset entry; everything else is inherited from
-        # the CLI-level eval_config.
+        # asr_model and language in the evalset entry override the CLI-level eval_config; stripping of annotation
+        # markers for CER/WER is set per dataset only (strip_text_annotations_for_metrics key, default off).
         eval_config_for_dataset = resolve_evaluation_config_for_dataset(eval_config, meta)
         language = eval_config_for_dataset.language
         if not skip_evaluation:
             logging.info(
                 f"Dataset {dataset}: language={language}, "
-                f"asr_model={eval_config_for_dataset.asr_model_name} ({eval_config_for_dataset.asr_model_type})"
+                f"asr_model={eval_config_for_dataset.asr_model_name} ({eval_config_for_dataset.asr_model_type}), "
+                f"strip_text_annotations_for_metrics={eval_config_for_dataset.strip_text_annotations_for_metrics}"
             )
 
         tokenizer_names = meta.get('tokenizer_names', None)
@@ -194,6 +195,10 @@ def run_inference_and_evaluation(
             "language": language,
             "tokenizer_names": tokenizer_names,
         }
+        if "precomputed_context_audio_embedding_key" in meta:
+            dataset_meta_for_dl["precomputed_context_audio_embedding_key"] = meta[
+                "precomputed_context_audio_embedding_key"
+            ]
 
         # Setup output directories
         eval_dir = os.path.join(out_dir, f"{full_checkpoint_name}_{language}_{dataset}")
@@ -436,7 +441,6 @@ def main(argv=None):
         codec_model_path=args.codecmodel_path if not args.disable_fcd else None,
         with_prosody_metrics=args.with_prosody_metrics,
         prosody_model_size=args.prosody_model_size,
-        strip_text_annotations_for_metrics=args.strip_text_annotations_for_metrics,
         asr_batch_size=args.asr_batch_size,
         eou_batch_size=args.eou_batch_size,
     )

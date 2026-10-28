@@ -2898,6 +2898,9 @@ def test_graphs_share_their_pool_under_an_allocator_split_limit():
     """vLLM 0.32 profiles, and so captures, under max_split_size_mb:20; graphs must still reuse their shared pool."""
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
+    allocator_apis = ("_accelerator_getAllocatorSettings", "_accelerator_setAllocatorSettings")
+    if any(getattr(torch._C, name, None) is None for name in allocator_apis):
+        pytest.skip("allocator-settings APIs unavailable")
     pool, graphs, seen = torch.cuda.graph_pool_handle(), [], []
     before = torch._C._accelerator_getAllocatorSettings()
     torch._C._accelerator_setAllocatorSettings("garbage_collection_threshold:0.9,max_split_size_mb:20")

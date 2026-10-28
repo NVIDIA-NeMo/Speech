@@ -412,6 +412,7 @@ jobs:
   notify-nightly-failure:
     name: Notify scheduled CI failure
     runs-on: ubuntu-latest
+    environment: main
     needs:
       - ephemeral-runner-routing
       - pre-flight

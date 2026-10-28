@@ -62,8 +62,8 @@ When using PyTorch Lightning, NeMo users can automatically train with:
 - early stopping
 - and more
 
-The two main aspects of the Lightning API are the `LightningModule <https://lightning.ai/docs/pytorch/stable/common/lightning_module>`_
-and the `Trainer <https://lightning.ai/docs/pytorch/stable/common/trainer>`_.
+The two main aspects of the Lightning API are the `LightningModule <https://lightning.ai/docs/pytorch/stable/common/lightning_module.html>`_
+and the `Trainer <https://lightning.ai/docs/pytorch/stable/common/trainer.html>`_.
 
 PyTorch Lightning ``LightningModule``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -168,10 +168,10 @@ While validation logic can be found in ``validation_step``:
         return {'val_loss': val_loss, 'tp': tp, 'fn': fn, 'fp': fp}
 
 PyTorch Lightning then handles all of the boilerplate code needed for training. Virtually any aspect of training can be customized
-via PyTorch Lightning `hooks <https://lightning.ai/docs/pytorch/stable/common/hooks>`_,
-`strategies <https://lightning.ai/docs/pytorch/stable/extensions/strategy>`_,
-`callbacks <https://lightning.ai/docs/pytorch/stable/extensions/callbacks>`_, or by overriding
-`LightningModule methods <https://lightning.ai/docs/pytorch/stable/common/lightning_module>`_.
+via PyTorch Lightning `hooks <https://lightning.ai/docs/pytorch/stable/common/hooks.html>`_,
+`strategies <https://lightning.ai/docs/pytorch/stable/extensions/strategy.html>`_,
+`callbacks <https://lightning.ai/docs/pytorch/stable/extensions/callbacks.html>`_, or by overriding
+`LightningModule methods <https://lightning.ai/docs/pytorch/stable/common/lightning_module.html>`_.
 
 For more domain-specific information, see:
 
@@ -201,7 +201,7 @@ First, instantiate the model and trainer, then call ``.fit``:
     # Or we can run the test loop on test data by calling
     trainer.test(model=model)
 
-All `Trainer arguments <https://lightning.ai/docs/pytorch/stable/common/trainer>`_ can be set in the NeMo configuration.
+All `Trainer arguments <https://lightning.ai/docs/pytorch/stable/common/trainer.html>`_ can be set in the NeMo configuration.
     
 
 Configuration
@@ -420,6 +420,32 @@ Optimizers can be configured from the CLI as well:
         # modify betas 
         model.optim.betas=[.8, .5]
 
+Parameter groups
+~~~~~~~~~~~~~~~~
+
+``optim_param_groups`` sets optimizer options per model attribute,
+and ``optim_param_group_rules`` selects parameters by the type of the module that owns them or by name patterns,
+for example to exclude embeddings, normalization layers and biases from weight decay:
+
+.. code-block:: yaml
+
+    optim_param_group_rules:
+        no_weight_decay:
+            module_types: [torch.nn.Embedding, torch.nn.LayerNorm]
+            param_names: ["*.bias"]
+            weight_decay: 0.0
+
+:meth:`nemo.core.classes.ModelPT.setup_optimization` applies the rules to the groups
+:meth:`nemo.core.classes.ModelPT.setup_optimizer_param_groups` sets, before it creates the optimizer,
+so a model that overrides the grouping, for example to keep frozen modules out of the optimizer,
+keeps its groups and gets the rules.
+The rules decide the optimizer's parameter groups:
+a changed rule set changes their membership and order,
+so an optimizer state saved under other rules (a training checkpoint) fails to load,
+or loads onto other parameters when the group counts and sizes still match;
+keep the rules unchanged when resuming.
+See :func:`nemo.core.optim.param_groups.apply_param_group_rules`.
+
 .. _optimizers-label:
 
 Optimizers
@@ -445,6 +471,38 @@ Optimizers
     name: rmsprop opt: <class 'torch.optim.rmsprop.RMSprop'>
     name: rprop opt: <class 'torch.optim.rprop.Rprop'>
     name: novograd opt: <class 'nemo.core.optim.novograd.Novograd'>
+    name: muon opt: <class 'nemo.core.optim.muon.Muon'>
+
+``muon`` (Muon with an AdamW fallback) decides per parameter by shape:
+a matrix below ``adam_dim_threshold`` in both dimensions takes the Muon update, every other parameter AdamW.
+The shape alone does not tell an embedding from a hidden matrix,
+so exclude small-vocabulary embeddings and tied output projections explicitly with ``use_muon`` on their parameter group,
+in Python or, for a model attribute, through ``optim_param_groups``:
+
+.. code-block:: python
+
+    from nemo.core.optim import Muon
+
+    optimizer = Muon(
+        [
+            {"params": hidden_matrices},
+            {"params": [model.embedding.weight], "use_muon": False, "weight_decay": 0.0},
+        ],
+        lr=0.02,
+        weight_decay=0.01,
+    )
+
+.. code-block:: yaml
+
+    model:
+        optim:
+            name: muon
+            lr: 0.02
+            weight_decay: 0.01
+        optim_param_groups:
+            embedding:
+                use_muon: false
+                weight_decay: 0.0
 
 Optimizer Params
 ~~~~~~~~~~~~~~~~
@@ -499,10 +557,28 @@ Learning rate schedulers can be optionally configured under the ``optim.sched`` 
     name: SquareRootAnnealing, schedule: <class 'nemo.core.optim.lr_scheduler.SquareRootAnnealing'>
     name: PolynomialDecayAnnealing, schedule: <class 'nemo.core.optim.lr_scheduler.PolynomialDecayAnnealing'>
     name: PolynomialHoldDecayAnnealing, schedule: <class 'nemo.core.optim.lr_scheduler.PolynomialHoldDecayAnnealing'>
+    name: PiecewiseLinear, schedule: <class 'nemo.core.optim.lr_scheduler.PiecewiseLinear'>
     name: StepLR, schedule: <class 'torch.optim.lr_scheduler.StepLR'>
     name: ExponentialLR, schedule: <class 'torch.optim.lr_scheduler.ExponentialLR'>
     name: ReduceLROnPlateau, schedule: <class 'torch.optim.lr_scheduler.ReduceLROnPlateau'>
     name: CyclicLR, schedule: <class 'torch.optim.lr_scheduler.CyclicLR'>
+
+A scheduler whose shape comes from the configuration, such as ``PiecewiseLinear``, takes its points under ``optim.sched`` as well.
+Here a warmup over the first 45% of the training, a decay to 90% and a final decay, with relative boundaries that follow ``max_steps``:
+
+.. code-block:: yaml
+
+    optim:
+        lr: 1.0
+        sched:
+            name: PiecewiseLinear
+            relative: true
+            boundaries: [0.0, 0.45, 0.9, 1.0]
+            values: [1e-5, 4e-3, 1e-5, 1e-6]
+
+``max_steps`` is the number of optimizer steps of the training, a positive integer:
+``ModelPT`` passes it from the trainer, or ``sched.max_steps`` sets it explicitly.
+Relative boundaries require it, step boundaries ignore it.
 
 Scheduler Params
 ~~~~~~~~~~~~~~~~

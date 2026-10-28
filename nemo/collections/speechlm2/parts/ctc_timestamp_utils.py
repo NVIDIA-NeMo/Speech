@@ -41,6 +41,10 @@ from torch import nn
 from nemo.collections.asr.modules.conv_asr import ConvASRDecoder
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer
+from nemo.core.utils.optional_libs import NUMBA_AVAILABLE
+
+if NUMBA_AVAILABLE:
+    from numba import jit
 
 __all__ = [
     "CTCTimestampArtifact",
@@ -69,6 +73,8 @@ class TransformerCTCDecoder(ConvASRDecoder):
 
     d_model is intentionally constrained to feat_in. This keeps the head strictly
     Transformer+Conv (or Conv-only), without a separate Linear projection layer.
+    ``upsampling_factor=2`` adds the checkpoint's learned ConvTranspose1d before
+    the bridge, producing native 40 ms CTC frames from 80 ms encoder states.
     """
 
     requires_encoded_lengths = False
@@ -101,6 +107,8 @@ class TransformerCTCDecoder(ConvASRDecoder):
         residual: bool = False,
         residual_scale: float = 1.0,
         learnable_residual_scale: bool = False,
+        upsampling_factor: int = 1,
+        upsampling_mode: str = "conv_transpose",
     ):
         """
         Initialize the optional Transformer bridge and CTC projection.
@@ -132,9 +140,15 @@ class TransformerCTCDecoder(ConvASRDecoder):
             residual (bool): Whether to add the bridge input to its output.
             residual_scale (float): Initial residual branch scale.
             learnable_residual_scale (bool): Whether the residual scale is trainable.
+            upsampling_factor (int): Output frames per encoder frame; 2 gives 40 ms CTC from 80 ms states.
+            upsampling_mode (str): Learned upsampling layer; only ``conv_transpose`` is supported.
         """
         if residual and not use_transformer:
             raise ValueError("TransformerCTCDecoder residual connections require use_transformer=True.")
+        if isinstance(upsampling_factor, bool) or not isinstance(upsampling_factor, int) or upsampling_factor < 1:
+            raise ValueError("upsampling_factor must be a positive integer.")
+        if upsampling_mode != "conv_transpose":
+            raise ValueError("Only conv_transpose upsampling is supported.")
 
         super().__init__(
             feat_in=feat_in,
@@ -145,9 +159,15 @@ class TransformerCTCDecoder(ConvASRDecoder):
         )
 
         self.use_transformer = use_transformer
-        self.requires_encoded_lengths = use_transformer
+        self.requires_encoded_lengths = use_transformer or upsampling_factor > 1
         self.transformer = None
         self.residual = residual
+        self.upsampling_factor = upsampling_factor
+        if upsampling_factor > 1:
+            self.register_buffer("upsample_factor", torch.tensor(upsampling_factor), persistent=True)
+            self.upsample = nn.ConvTranspose1d(
+                feat_in, feat_in, kernel_size=upsampling_factor, stride=upsampling_factor
+            )
 
         if self.use_transformer:
             transformer_d_model = feat_in if d_model is None else int(d_model)
@@ -201,11 +221,15 @@ class TransformerCTCDecoder(ConvASRDecoder):
         Args:
             encoder_output (torch.Tensor): Acoustic states shaped ``(B, D, T)``.
             encoded_lengths (Optional[torch.Tensor]): Valid frame counts shaped ``(B,)``. Required when
-                ``use_transformer=True`` so padded frames cannot affect the Transformer bridge.
+                ``use_transformer=True`` or ``upsampling_factor > 1``.
 
         Returns:
-            torch.Tensor: Log probabilities shaped ``(B, T, num_classes_with_blank)``.
+            torch.Tensor: Log probabilities shaped ``(B, T * upsampling_factor, num_classes_with_blank)``.
         """
+        return self.classify(self.trunk(encoder_output, encoded_lengths))
+
+    def trunk(self, encoder_output: torch.Tensor, encoded_lengths: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """:meth:`forward` up to the convolution: the upsampled, bridged states shaped ``(B, D, T')``."""
         if encoder_output.ndim != 3:
             raise ValueError(
                 "TransformerCTCDecoder expects encoder_output with shape (B, D, T), "
@@ -218,6 +242,11 @@ class TransformerCTCDecoder(ConvASRDecoder):
             )
 
         encoded = encoder_output
+        if self.upsampling_factor > 1:
+            if encoded_lengths is None:
+                raise ValueError("Upsampling requires encoded_lengths.")
+            encoded = self.upsample(encoded)
+            encoded_lengths = self.output_lengths(encoded_lengths)
         if self.use_transformer:
             if encoded_lengths is None:
                 raise ValueError("TransformerCTCDecoder requires encoded_lengths when use_transformer=True.")
@@ -231,8 +260,23 @@ class TransformerCTCDecoder(ConvASRDecoder):
 
             if self.residual:
                 encoded = residual_input + self.residual_scale.to(dtype=encoded.dtype) * encoded
+        return encoded
 
+    def classify(self, encoded: torch.Tensor) -> torch.Tensor:
+        """The rest of :meth:`forward`: log probabilities from :meth:`trunk` states, each frame on its own."""
         return super().forward(encoder_output=encoded)
+
+    def output_lengths(self, encoded_lengths: torch.Tensor) -> torch.Tensor:
+        """
+        Convert valid encoder lengths to valid CTC output lengths.
+
+        Args:
+            encoded_lengths (torch.Tensor): Valid encoder frame counts shaped ``(B,)``.
+
+        Returns:
+            torch.Tensor: Valid CTC frame counts shaped ``(B,)``.
+        """
+        return encoded_lengths * self.upsampling_factor
 
 
 class MultiSpeakerSOTWordTimestampAligner:
@@ -289,7 +333,7 @@ class MultiSpeakerSOTWordTimestampAligner:
             speaker_activity_threshold (float): Threshold for speaker activity metadata.
             speaker_logprob_weight (float): Weight of the Sortformer prior in CTC alignment; defaults to 1.0.
             maximum_token_len (float): Maximum emitted word duration in seconds.
-            max_word_frames (int): Banded CTC word duration and onset-snap cap in CTC frames.
+            max_word_frames (int): Word duration and onset-snap cap in encoder frames, scaled for upsampling.
             timestamp_language (Optional[str]): Explicit alignment-unit policy: zh/ja characters,
                 th newmm words, or unchanged whitespace words for other languages. None selects
                 per-transcript script detection.
@@ -388,13 +432,13 @@ class MultiSpeakerSOTWordTimestampAligner:
             timestamp_inputs (Any): ``CTCTimestampInputs`` whose ``asr_encoded`` is shaped ``(B, D, T)``.
 
         Returns:
-            torch.Tensor: CTC log probabilities shaped ``(B, T, classes)``.
+            torch.Tensor: CTC log probabilities shaped ``(B, T * upsampling_factor, classes)``.
         """
         output = None
         for batch_start, start, chunk in self._iter_ctc_windows(timestamp_inputs):
             if output is None:
                 states = timestamp_inputs.asr_encoded
-                output = chunk.new_empty((states.shape[0], states.shape[-1], chunk.shape[-1]))
+                output = chunk.new_empty((states.shape[0], self._ctc_frames(states.shape[-1]), chunk.shape[-1]))
             output[batch_start : batch_start + chunk.shape[0], start : start + chunk.shape[1]] = chunk
             del chunk
         return output
@@ -422,7 +466,7 @@ class MultiSpeakerSOTWordTimestampAligner:
             Dict[str, Any]: The prepared batch described in :meth:`prepare_alignment`.
         """
         states = timestamp_inputs.asr_encoded
-        num_frames = states.shape[-1]
+        num_frames = self._ctc_frames(states.shape[-1])
         num_classes = int(self.ctc_decoder.num_classes_with_blank)
 
         return self._prepare(
@@ -430,9 +474,9 @@ class MultiSpeakerSOTWordTimestampAligner:
             partial(_read_deferred_ctc_columns, self, timestamp_inputs, num_classes),
             timestamp_inputs.sortformer_sigmoids,
             sot_transcripts,
-            ctc_lengths=timestamp_inputs.asr_encoded_lengths.clamp(max=num_frames),
+            ctc_lengths=self._ctc_frames(timestamp_inputs.asr_encoded_lengths).clamp(max=num_frames),
             # Speaker frames past the CTC timeline are never aligned.
-            sortformer_lengths=timestamp_inputs.sortformer_lengths.clamp(max=num_frames),
+            sortformer_lengths=timestamp_inputs.sortformer_lengths.clamp(max=states.shape[-1]),
             audio_durations=audio_durations,
             diarization_labels=timestamp_inputs.diarization_labels,
             diarization_lengths=timestamp_inputs.diarization_lengths,
@@ -744,7 +788,7 @@ class MultiSpeakerSOTWordTimestampAligner:
                 "speaker_activity_threshold": self.speaker_activity_threshold,
                 "speaker_logprob_weight": speaker_logprob_weight,
                 "maximum_token_len": self.maximum_token_len,
-                "max_word_frames": self.max_word_frames,
+                "max_word_frames": self._ctc_frames(self.max_word_frames),
                 "timestamp_language": self.timestamp_language,
                 "epsilon": self.epsilon,
             },
@@ -877,16 +921,20 @@ class MultiSpeakerSOTWordTimestampAligner:
             },
         }
 
-    def _iter_ctc_windows(self, timestamp_inputs: Any) -> Iterator[Tuple[int, int, torch.Tensor]]:
+    def _iter_ctc_windows(
+        self, timestamp_inputs: Any, *, trunk_only: bool = False
+    ) -> Iterator[Tuple[int, int, torch.Tensor]]:
         """
-        Yield one normalized core at a time, bounding batches by context/vocabulary size.
+        Yield normalized cores, bounding each decoder call by context/vocabulary size.
         Each core of ``online_inference_length`` frames is decoded with its left and right
-        context, then trimmed back to the core. The records are split into sub-batches so a
-        decoder call stays within ``_CTC_WINDOW_MAX_ELEMENTS``, unless one context window is
-        already larger than that.
+        context, then trimmed back to the core. Windows of equal context length share decoder
+        calls, one row per record and window, so a long record takes a few calls rather than one
+        per window. A call stays within ``_CTC_WINDOW_MAX_ELEMENTS``, unless one context window
+        is already larger than that.
 
         Args:
             timestamp_inputs (Any): ``CTCTimestampInputs`` whose ``asr_encoded`` is shaped ``(B, D, T)``.
+            trunk_only (bool): Yield :meth:`TransformerCTCDecoder.trunk` states ``(B, D, T)`` instead.
 
         Yields:
             Tuple[int, int, torch.Tensor]: First record index, first CTC frame index, and the
@@ -896,29 +944,73 @@ class MultiSpeakerSOTWordTimestampAligner:
         lengths = timestamp_inputs.asr_encoded_lengths
         parameter = next(self.ctc_decoder.parameters(), None)
         decoder_dtype = parameter.dtype if parameter is not None else states.dtype
+        num_frames = states.shape[-1]
         core_length = self.online_inference_length
-        core_length = core_length if core_length > 0 else states.shape[-1]
-        vocab_size = getattr(self.ctc_decoder, "num_classes_with_blank", 1)
-        for start in range(0, states.shape[-1], core_length):
-            end = min(start + core_length, states.shape[-1])
+        core_length = core_length if core_length > 0 else num_frames
+        width = states.shape[1] if trunk_only else getattr(self.ctc_decoder, "num_classes_with_blank", 1)
+        decode = self.ctc_decoder.trunk if trunk_only else self.ctc_decoder
+        frame_axis = -1 if trunk_only else 1
+        windows_by_length: Dict[int, List[Tuple[int, int, int]]] = {}
+        for start in range(0, num_frames, core_length):
+            end = min(start + core_length, num_frames)
             context_start = max(start - self.chunk_left_context, 0)
-            context_end = min(end + self.chunk_right_context, states.shape[-1])
-            context_frames = context_end - context_start
-            batch_size = max(1, self._CTC_WINDOW_MAX_ELEMENTS // (context_frames * vocab_size))
-            for batch_start in range(0, states.shape[0], batch_size):
-                batch_end = min(batch_start + batch_size, states.shape[0])
-                context_lengths = (lengths[batch_start:batch_end] - context_start).clamp(min=0, max=context_frames)
-                context_logits = self.ctc_decoder(
-                    states[batch_start:batch_end, :, context_start:context_end].to(dtype=decoder_dtype),
-                    encoded_lengths=context_lengths,
+            context_end = min(end + self.chunk_right_context, num_frames)
+            windows_by_length.setdefault(context_end - context_start, []).append((start, end, context_start))
+        for context_frames, windows in windows_by_length.items():
+            batch_size = max(1, self._CTC_WINDOW_MAX_ELEMENTS // (self._ctc_frames(context_frames) * width))
+            rows = [(window, record) for window in windows for record in range(states.shape[0])]
+            for call_start in range(0, len(rows), batch_size):
+                # Runs of consecutive records under one window: each is a slice of the states.
+                segments: List[List[Any]] = []
+                for window, record in rows[call_start : call_start + batch_size]:
+                    if segments and segments[-1][0] is window and segments[-1][1] + segments[-1][2] == record:
+                        segments[-1][2] += 1
+                    else:
+                        segments.append([window, record, 1])
+                parts = [
+                    states[first : first + count, :, window[2] : window[2] + context_frames]
+                    for window, first, count in segments
+                ]
+                context_states = (parts[0] if len(parts) == 1 else torch.cat(parts)).to(dtype=decoder_dtype)
+                context_lengths = torch.cat(
+                    [
+                        (lengths[first : first + count] - window[2]).clamp(min=0, max=context_frames)
+                        for window, first, count in segments
+                    ]
                 )
-                if context_logits.shape[1] != context_frames:
+                single = context_states.shape[0] == 1 and context_states.is_cuda
+                if single:
+                    # Two copies of a lone record, so the decoder's compiled attention, which torch.compile
+                    # specializes for a batch of one, never needs a variant of its own for that case.
+                    context_states, context_lengths = context_states.repeat(2, 1, 1), context_lengths.repeat(2)
+                context_output = decode(context_states, encoded_lengths=context_lengths)
+                if single:
+                    context_output = context_output[:1]
+                if context_output.shape[frame_axis] != self._ctc_frames(context_frames):
                     raise ValueError(
-                        f"The CTC head returned {context_logits.shape[1]} frames for {context_frames} input frames."
+                        f"The CTC head returned {context_output.shape[frame_axis]} frames for {context_frames} "
+                        "input frames."
                     )
-                left_drop = start - context_start
-                yield batch_start, start, context_logits[:, left_drop : left_drop + end - start]
-                del context_logits
+                row = 0
+                for (start, end, context_start), first, count in segments:
+                    core = context_output[row : row + count].narrow(
+                        frame_axis, self._ctc_frames(start - context_start), self._ctc_frames(end - start)
+                    )
+                    yield first, self._ctc_frames(start), core
+                    row += count
+                del context_output, core
+
+    def _ctc_frames(self, encoder_frames: Union[int, torch.Tensor]) -> Union[int, torch.Tensor]:
+        """
+        Convert encoder frame counts to CTC frame counts.
+
+        Args:
+            encoder_frames (Union[int, torch.Tensor]): Encoder frame count(s).
+
+        Returns:
+            Union[int, torch.Tensor]: Counts scaled by the decoder's upsampling factor (1 by default).
+        """
+        return encoder_frames * int(getattr(self.ctc_decoder, "upsampling_factor", 1))
 
     @staticmethod
     def _group_words_by_speaker(
@@ -1018,7 +1110,12 @@ class MultiSpeakerSOTWordTimestampAligner:
         token_ids = [int(token_id) for token_id in self.tokenizer.text_to_ids(text)]
         if not token_ids or min(token_ids) < 0 or max(token_ids) >= blank_id:
             raise ValueError("Tokenizer produced IDs outside the non-blank CTC vocabulary.")
-        ids_by_word = [[int(token_id) for token_id in self.tokenizer.text_to_ids(word["word"])] for word in words]
+        # Words repeat, and a word always tokenizes the same.
+        ids_of = {}
+        for word in words:
+            if word["word"] not in ids_of:
+                ids_of[word["word"]] = [int(token_id) for token_id in self.tokenizer.text_to_ids(word["word"])]
+        ids_by_word = [list(ids_of[word["word"]]) for word in words]
         if any(not token_ids for token_ids in ids_by_word):
             raise ValueError("SentencePiece produced an empty word tokenization.")
         if [token_id for word_ids in ids_by_word for token_id in word_ids] != token_ids:
@@ -1051,12 +1148,8 @@ class MultiSpeakerSOTWordTimestampAligner:
     def _word_rows_from_path(
         self,
         words: Sequence[Dict[str, Any]],
-        labels: Sequence[int],
         state_to_word: Sequence[Optional[int]],
-        path: torch.Tensor,
-        ctc: torch.Tensor,
-        speaker_probs: Optional[torch.Tensor],
-        speaker_mapping: Dict[int, Optional[int]],
+        path: np.ndarray,
         ctc_step: float,
         time_offset: float,
     ) -> List[Dict[str, Any]]:
@@ -1067,66 +1160,29 @@ class MultiSpeakerSOTWordTimestampAligner:
 
         Args:
             words (Sequence[Dict[str, Any]]): Tokenized words for one speaker stream.
-            labels (Sequence[int]): Blank-expanded CTC target labels.
             state_to_word (Sequence[Optional[int]]): Target-state to word-index mapping.
-            path (torch.Tensor): Best CTC target state at every frame.
-            ctc (torch.Tensor): CTC log probabilities shaped ``(T, V)``.
-            speaker_probs (Optional[torch.Tensor]): Speaker probabilities shaped ``(T, S)``.
-            speaker_mapping (Dict[int, Optional[int]]): t-SOT tag to speaker-column mapping.
+            path (np.ndarray): Best CTC target state at every frame, ``-1`` where none.
             ctc_step (float): Duration of one CTC frame in seconds.
             time_offset (float): Offset added to returned timestamps.
 
         Returns:
-            List[Dict[str, Any]]: Timestamp and confidence metadata for each word.
+            List[Dict[str, Any]]: Each word with its ``start`` and ``end`` in seconds.
         """
-        frames_by_word: List[List[Tuple[int, int]]] = [[] for _ in words]
+        frames_by_word: List[List[int]] = [[] for _ in words]
         for frame, state in enumerate(path.tolist()):
             if state < 0:
                 continue
             word_index = state_to_word[state]
             if word_index is not None:
-                frames_by_word[word_index].append((frame, state))
+                frames_by_word[word_index].append(frame)
 
         rows = []
-        for word, word_frames in zip(words, frames_by_word):
-            if not word_frames:
+        for word, frames in zip(words, frames_by_word):
+            if not frames:
                 raise ValueError(f"CTC path did not visit word {word['word']!r}.")
-            frames = [frame for frame, _ in word_frames]
             start = time_offset + frames[0] * ctc_step
-            end = min(
-                time_offset + (frames[-1] + 1) * ctc_step,
-                start + self.maximum_token_len,
-            )
-            end_frame = min(
-                frames[-1],
-                max(frames[0], math.ceil((end - time_offset) / ctc_step) - 1),
-            )
-            selected = torch.stack([ctc[frame, labels[state]] for frame, state in word_frames])
-            column = speaker_mapping.get(word["speaker_tag"])
-            speaker_confidence = None
-            activity_start = activity_end = None
-            if speaker_probs is not None and column is not None:
-                activity = speaker_probs[frames, column]
-                speaker_confidence = float(activity.mean())
-                active = torch.nonzero(activity >= self.speaker_activity_threshold).flatten()
-                if active.numel():
-                    first, last = frames[int(active[0])], frames[int(active[-1])]
-                    activity_start = time_offset + first * ctc_step
-                    activity_end = time_offset + (last + 1) * ctc_step
-            rows.append(
-                {
-                    **word,
-                    "start": start,
-                    "end": end,
-                    "start_frame": frames[0],
-                    "end_frame": end_frame,
-                    "ctc_confidence": float(torch.exp(selected.mean())),
-                    "sortformer_column": column,
-                    "speaker_confidence": speaker_confidence,
-                    "speaker_activity_start": activity_start,
-                    "speaker_activity_end": activity_end,
-                }
-            )
+            end = min(time_offset + (frames[-1] + 1) * ctc_step, start + self.maximum_token_len)
+            rows.append({**word, "start": start, "end": end})
         return rows
 
     @staticmethod
@@ -1250,6 +1306,14 @@ def merge_prepared_batches(batches: Sequence[Dict[str, Any]]) -> Optional[Dict[s
     if any(values != batch_values[0] for values in batch_values[1:]):
         return None
     return {**batch_values[0], "records": [record for batch in batches for record in batch["records"]]}
+
+
+def compile_banded_ctc_search() -> None:
+    """Compile the banded CTC search for the arrays alignment passes it, ahead of the first alignment."""
+    logp = np.zeros((2, 2), np.float32)
+    # The log activity prior is float32 from speaker probabilities and float64 for streams without them.
+    for prior in (np.zeros(2, np.float32), np.zeros(2, np.float64)):
+        _banded_ctc_search(logp, np.array([0, 1, 0]), np.arange(2), prior)
 
 
 @dataclass(frozen=True)
@@ -1822,7 +1886,7 @@ def _ctc_anchor_band_starts(greedy, target, states, half, width):
 
 def _ctc_banded_forward(logp, labels, positions, activity_prior, starts, width):
     """
-    Score the band using max-sum DP; ties prefer stay, step, then skip.
+    Score the band using max-sum DP; ties prefer stay, step, then skip. Compiled with Numba when available.
 
     Args:
         logp (np.ndarray): Compact CTC log probabilities shaped ``(T, columns)``, blank at column 0.
@@ -1838,6 +1902,24 @@ def _ctc_banded_forward(logp, labels, positions, activity_prior, starts, width):
         Tuple[np.ndarray, np.ndarray]: Final-frame scores shaped ``(width,)`` and uint8 backpointers
             shaped ``(frames, width)``, encoding stay (0), step (1), or skip (2).
     """
+    if not NUMBA_AVAILABLE:
+        return _ctc_banded_forward_numpy(logp, labels, positions, activity_prior, starts, width)
+    labels = np.ascontiguousarray(labels, dtype=np.int64)
+    can_skip = (labels != 0) & (labels != np.r_[labels[:2], labels[:-2]])
+    return _ctc_banded_forward_compiled(
+        np.ascontiguousarray(logp),
+        labels,
+        np.ascontiguousarray(positions, dtype=np.int64),
+        np.zeros(1, np.float32) if activity_prior is None else np.ascontiguousarray(activity_prior),
+        activity_prior is not None,
+        np.ascontiguousarray(starts, dtype=np.int64),
+        int(width),
+        can_skip,
+    )
+
+
+def _ctc_banded_forward_numpy(logp, labels, positions, activity_prior, starts, width):
+    """:func:`_ctc_banded_forward` without Numba: a NumPy loop over frames."""
     frames = len(positions)
     previous = np.full(width, -np.inf, np.float32)
     previous[: min(2, width)] = logp[positions[0], labels[: min(2, width)]]
@@ -1865,6 +1947,46 @@ def _ctc_banded_forward(logp, labels, positions, activity_prior, starts, width):
         if activity_prior is not None:
             previous += np.where(target != 0, activity_prior[positions[t]], 0)
     return previous, pointers
+
+
+if NUMBA_AVAILABLE:
+
+    @jit(nopython=True, nogil=True, cache=True)
+    def _ctc_banded_forward_compiled(logp, labels, positions, activity_prior, has_prior, starts, width, can_skip):
+        """:func:`_ctc_banded_forward_numpy`, compiled, with the same arithmetic and tie order."""
+        frames = positions.shape[0]
+        previous = np.full(width, -np.inf, np.float32)
+        current = np.empty(width, np.float32)
+        pointers = np.zeros((frames, width), np.uint8)
+        first = positions[0]
+        for j in range(min(2, width)):
+            previous[j] = logp[first, labels[j]]
+            if has_prior and labels[j] != 0:
+                previous[j] = previous[j] + activity_prior[first]
+        for t in range(1, frames):
+            start = starts[t]
+            delta = start - starts[t - 1]
+            position = positions[t]
+            for j in range(width):
+                # previous[k] is state start + j - (number of states moved) in the previous frame's band.
+                k = j + delta
+                best = previous[k] if k < width else np.float32(-np.inf)
+                move = 0
+                one = previous[k - 1] if 0 <= k - 1 < width else np.float32(-np.inf)
+                if one > best:
+                    best = one
+                    move = 1
+                two = previous[k - 2] if 0 <= k - 2 < width else np.float32(-np.inf)
+                if two > best and can_skip[start + j]:
+                    best = two
+                    move = 2
+                pointers[t, j] = move
+                label = labels[start + j]
+                current[j] = best + logp[position, label]
+                if has_prior and label != 0:
+                    current[j] = current[j] + activity_prior[position]
+            previous, current = current, previous
+        return previous, pointers
 
 
 def _ctc_banded_backtrace(previous, pointers, starts, states):
@@ -2054,12 +2176,8 @@ def _align_banded_ctc(aligner, prepared):
             rows.extend(
                 aligner._word_rows_from_path(
                     stream['words'],
-                    stream['labels'],
                     stream['state_to_word'],
-                    torch.from_numpy(fullpath),
-                    record['ctc_log_probs'],
-                    speaker,
-                    mapping,
+                    fullpath,
                     record['ctc_step'],
                     record['time_offset'],
                 )
@@ -2093,7 +2211,7 @@ def _align_banded_ctc(aligner, prepared):
         result['alignment_diagnostics']['failed_streams'] = failures
         result['alignment_diagnostics']['one_pass'] = True
         result['alignment_diagnostics']['banded'] = diagnostics
-        results.append(_refine_word_timestamps(result, aligner.max_word_frames))
+        results.append(_refine_word_timestamps(result, prepared['config']['max_word_frames']))
     return results
 
 
@@ -2126,11 +2244,10 @@ def _timestamp_units(words, language):
             ``alignment_unit``.
     """
     if language == 'auto':
+        # The scripts present depend only on the distinct characters.
         names = [
             unicodedata.name(c, '')
-            for word in words
-            if not re.fullmatch(r'<[^<>]+>', word['word'])
-            for c in word['word']
+            for c in {c for word in words if not re.fullmatch(r'<[^<>]+>', word['word']) for c in word['word']}
         ]
         # Script heuristic matching the evaluated policy; an explicit language overrides it.
         language = next(
@@ -2211,6 +2328,7 @@ def _read_deferred_ctc_columns(
 ) -> List[torch.Tensor]:
     """
     Run the CTC head window by window and copy each record's kept columns to the host.
+    The full-vocabulary log probabilities exist for one slice of frames at a time.
 
     Args:
         aligner (MultiSpeakerSOTWordTimestampAligner): Aligner owning the deferred CTC head.
@@ -2222,23 +2340,48 @@ def _read_deferred_ctc_columns(
     Returns:
         List[torch.Tensor]: Per-record float32 CPU log probabilities shaped ``(length, columns)``.
     """
-    compact = [
-        torch.empty((length, len(record_columns)), dtype=torch.float32, device="cpu")
-        for record_columns, length in zip(columns, lengths)
+    states = timestamp_inputs.asr_encoded
+    width = max(len(record_columns) for record_columns in columns)
+    # Records keep different numbers of columns; padding repeats each record's blank column and is dropped below.
+    index = torch.tensor(
+        [record_columns + record_columns[:1] * (width - len(record_columns)) for record_columns in columns],
+        device=states.device,
+    )
+    # An explicit dtype: a vLLM server prepares on a thread of its own, while the speech encoder on the engine thread
+    # sets the process-wide default dtype around its streaming steps.
+    kept = torch.empty(
+        (len(columns), aligner._ctc_frames(states.shape[-1]), width), dtype=torch.float32, device=states.device
+    )
+    decoder = aligner.ctc_decoder
+    # A decoder without a separate trunk and classifier yields whole windows of log probabilities.
+    split = callable(getattr(decoder, "trunk", None)) and callable(getattr(decoder, "classify", None))
+    for batch_start, start, window in aligner._iter_ctc_windows(timestamp_inputs, trunk_only=split):
+        rows = window.shape[0]
+        rows_index = index[batch_start : batch_start + rows, None, :]
+        if split:
+            step = max(1, aligner._CTC_WINDOW_MAX_ELEMENTS // (rows * num_classes))
+            slices = (
+                (offset, decoder.classify(window[:, :, offset : offset + step]))
+                for offset in range(0, window.shape[-1], step)
+            )
+        else:
+            slices = ((0, window),)
+        for offset, log_probs in slices:
+            if log_probs.shape[-1] != num_classes:
+                raise ValueError(f"The CTC head returned {log_probs.shape[-1]} classes, not {num_classes}.")
+            span = log_probs.shape[1]
+            kept[batch_start : batch_start + rows, start + offset : start + offset + span] = log_probs.gather(
+                2, rows_index.expand(-1, span, -1)
+            )
+            del log_probs
+        # The vocabulary-wide output must not outlive its window.
+        del window, slices
+    host = torch.empty(kept.shape, dtype=kept.dtype, device="cpu", pin_memory=kept.is_cuda)
+    host.copy_(kept)
+    return [
+        host[row, :length, : len(record_columns)].clone()
+        for row, (record_columns, length) in enumerate(zip(columns, lengths))
     ]
-    indices = [torch.tensor(record_columns, device=timestamp_inputs.asr_encoded.device) for record_columns in columns]
-    for batch_start, start, log_probs in aligner._iter_ctc_windows(timestamp_inputs):
-        if log_probs.shape[-1] != num_classes:
-            raise ValueError(f"The CTC head returned {log_probs.shape[-1]} classes, not {num_classes}.")
-        for offset in range(log_probs.shape[0]):
-            row = batch_start + offset
-            count = min(log_probs.shape[1], lengths[row] - start)
-            if count > 0:
-                compact[row][start : start + count].copy_(
-                    log_probs[offset, :count].detach().index_select(1, indices[row])
-                )
-        del log_probs
-    return compact
 
 
 def _read_ctc_columns(ctc_log_probs: torch.Tensor, columns: List[List[int]], lengths: List[int]) -> List[torch.Tensor]:

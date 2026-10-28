@@ -3,6 +3,8 @@ Training and Scaling
 
 This page provides detailed information on training speechlm2 models, including setup requirements, running experiments at scale, debugging, and parallelism strategies.
 
+For reward-based transcription fine-tuning, see :ref:`speechlm-gspo`.
+
 Running Experiments
 -------------------
 
@@ -439,3 +441,11 @@ When customizing the training scripts, keep these points in mind:
 1. **Path Overrides**: Override paths in the YAML configuration files with your own, as needed
 2. **W&B Keys**: Update Weights & Biases API keys in configuration files
 3. **Batch Size Tuning**: Adjust batch size based on your GPU memory and model size
+
+.. _speechlm-gspo:
+
+Post-training
+------------------
+
+See
+`SpeechLM GSPO guide <https://github.com/NVIDIA-NeMo/RL/blob/main/docs/guides/gspo-speechlm.md>`_

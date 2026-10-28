@@ -96,10 +96,12 @@ vllm serve $OUT --trust-remote-code --dtype bfloat16 \
 ```
 
 Use `--kv-cache-dtype fp8` for NVFP4 checkpoints; FP8 checkpoints carry calibrated KV cache scales and serve with
-`auto`. With NVIDIA-NeMo/Speech#16344, add
-`--middleware nemo.collections.speechlm2.vllm.salm.ctc_serving.ctc_timestamp_middleware` for word timestamps. On
-SM12x GPUs with cuDNN older than 9.23.1, set `VLLM_DISABLED_KERNELS=FlashInferFP8ScaledMMLinearKernel`; the
-FlashInfer FP8 GEMM can crash partway through a run there.
+`auto`. For word timestamps, add
+`--middleware nemo.collections.speechlm2.vllm.salm.ctc_serving.ctc_timestamp_middleware --trust-request-mm-kwargs`.
+Requests opt in through `mm_processor_kwargs`, which vLLM rejects without `--trust-request-mm-kwargs`; set it only
+when clients are trusted. On SM12x GPUs with cuDNN older than 9.23.1, set
+`VLLM_DISABLED_KERNELS=FlashInferFP8ScaledMMLinearKernel`; the FlashInfer FP8 GEMM can crash partway through a run
+there.
 
 The server log should show `FP8 audio encoder: N Linears built from quantization_config` and, for NVFP4,
 `Using fp8 data type to store kv cache`.

@@ -315,6 +315,48 @@ class TestOptimizersSchedulers:
         assert isinstance(scheduler_setup['scheduler'], optim.lr_scheduler.CosineAnnealing)
 
     @pytest.mark.unit
+    def test_sched_config_parse_from_args(self):
+        model = TempModel()
+        opt_cls = optim.get_optimizer('novograd')
+        opt = opt_cls(model.parameters(), lr=self.INITIAL_LR)
+
+        # the override arguments next to `name`, as the example configs write them
+        basic_sched_config = {
+            'name': 'CosineAnnealing',
+            'max_steps': self.MAX_STEPS,
+            'args': {'name': 'auto', 'warmup_steps': None, 'warmup_ratio': 0.1, 'min_lr': 0.1, 'last_epoch': -1},
+        }
+        for sched_config in (basic_sched_config, omegaconf.OmegaConf.create(basic_sched_config)):
+            scheduler = optim.lr_scheduler.prepare_lr_scheduler(opt, sched_config)['scheduler']
+            assert isinstance(scheduler, optim.lr_scheduler.CosineAnnealing)
+            assert scheduler.warmup_steps == int(0.1 * self.MAX_STEPS)
+            assert scheduler.min_lr == 0.1
+
+        # the override arguments under `params`, and the parameter config selected by its name
+        for args in (
+            {'name': 'auto', 'params': {'min_lr': 0.1}},
+            {'name': 'CosineAnnealingParams', 'params': {'min_lr': 0.1}},
+            {'name': 'CosineAnnealingParams', 'min_lr': 0.1},
+        ):
+            sched_config = {'name': 'CosineAnnealing', 'max_steps': self.MAX_STEPS, 'args': args}
+            scheduler = optim.lr_scheduler.prepare_lr_scheduler(opt, sched_config)['scheduler']
+            assert isinstance(scheduler, optim.lr_scheduler.CosineAnnealing)
+            assert scheduler.min_lr == 0.1
+
+        # `params` is normally flattened by the config version update before the overrides are read;
+        # it stays nested when that update skips the config, here because of a value OmegaConf cannot hold
+        sched_config = {
+            'name': 'CosineAnnealing',
+            'max_steps': self.MAX_STEPS,
+            'args': {'name': 'auto', 'warmup_ratio': 0.1, 'params': {'min_lr': 0.1}},
+            'unrelated_object': object(),
+        }
+        scheduler = optim.lr_scheduler.prepare_lr_scheduler(opt, sched_config)['scheduler']
+        assert isinstance(scheduler, optim.lr_scheduler.CosineAnnealing)
+        assert scheduler.warmup_steps == int(0.1 * self.MAX_STEPS)
+        assert scheduler.min_lr == 0.1
+
+    @pytest.mark.unit
     def test_sched_config_from_model_config_builder(self):
         # the builder's scheduler config is the parameter config plus `name`, without `SchedConfig.min_lr`,
         # which not every scheduler takes: here torch's StepLR through a parameter config of its own

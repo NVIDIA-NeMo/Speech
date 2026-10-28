@@ -940,6 +940,15 @@ class _DetectionErrorRateAccumulator:
         ref_data = _merge_rttm_dicts([_annotation_to_rttm_data(fid, reference)])
         sys_data = _merge_rttm_dicts([_annotation_to_rttm_data(fid, hypothesis)])
 
+        if uem is None:
+            # Without a UEM, md-eval scores only the reference's extent and drops false alarms
+            # outside it. Score the union of both extents, as the external library did.
+            tokens = [
+                tok for data in (ref_data, sys_data) for chnl in data.get(fid, {}).values() for tok in chnl["RTTM"]
+            ]
+            if tokens:
+                uem = [[min(t["TBEG"] for t in tokens), max(t["TEND"] for t in tokens)]]
+
         uem_data = None
         if uem is not None:
             if hasattr(uem, "__iter__") and not isinstance(uem, (list, tuple)):

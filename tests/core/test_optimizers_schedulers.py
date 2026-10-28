@@ -24,7 +24,7 @@ import torch.optim
 from lightning.pytorch.utilities import rank_zero_only
 
 from nemo.core import config, optim
-from nemo.core.optim.lr_scheduler import AVAILABLE_SCHEDULERS
+from nemo.core.optim.lr_scheduler import AVAILABLE_SCHEDULERS, PiecewiseLinear
 from nemo.core.optim.optimizers import AVAILABLE_OPTIMIZERS
 from nemo.utils import logging
 
@@ -310,6 +310,48 @@ class TestOptimizersSchedulers:
         dict_config = omegaconf.OmegaConf.create(basic_sched_config)
         scheduler_setup = optim.lr_scheduler.prepare_lr_scheduler(opt, dict_config)
         assert isinstance(scheduler_setup['scheduler'], optim.lr_scheduler.CosineAnnealing)
+
+    @pytest.mark.unit
+    def test_sched_config_parse_from_args(self):
+        model = TempModel()
+        opt_cls = optim.get_optimizer('novograd')
+        opt = opt_cls(model.parameters(), lr=self.INITIAL_LR)
+
+        # the override arguments next to `name`, as the example configs write them
+        basic_sched_config = {
+            'name': 'CosineAnnealing',
+            'max_steps': self.MAX_STEPS,
+            'args': {'name': 'auto', 'warmup_steps': None, 'warmup_ratio': 0.1, 'min_lr': 0.1, 'last_epoch': -1},
+        }
+        for sched_config in (basic_sched_config, omegaconf.OmegaConf.create(basic_sched_config)):
+            scheduler = optim.lr_scheduler.prepare_lr_scheduler(opt, sched_config)['scheduler']
+            assert isinstance(scheduler, optim.lr_scheduler.CosineAnnealing)
+            assert scheduler.warmup_steps == int(0.1 * self.MAX_STEPS)
+            assert scheduler.min_lr == 0.1
+
+        # the override arguments under `params`, and the parameter config selected by its name
+        for args in (
+            {'name': 'auto', 'params': {'min_lr': 0.1}},
+            {'name': 'CosineAnnealingParams', 'params': {'min_lr': 0.1}},
+            {'name': 'CosineAnnealingParams', 'min_lr': 0.1},
+        ):
+            sched_config = {'name': 'CosineAnnealing', 'max_steps': self.MAX_STEPS, 'args': args}
+            scheduler = optim.lr_scheduler.prepare_lr_scheduler(opt, sched_config)['scheduler']
+            assert isinstance(scheduler, optim.lr_scheduler.CosineAnnealing)
+            assert scheduler.min_lr == 0.1
+
+        # `params` is normally flattened by the config version update before the overrides are read;
+        # it stays nested when that update skips the config, here because of a value OmegaConf cannot hold
+        sched_config = {
+            'name': 'CosineAnnealing',
+            'max_steps': self.MAX_STEPS,
+            'args': {'name': 'auto', 'warmup_ratio': 0.1, 'params': {'min_lr': 0.1}},
+            'unrelated_object': object(),
+        }
+        scheduler = optim.lr_scheduler.prepare_lr_scheduler(opt, sched_config)['scheduler']
+        assert isinstance(scheduler, optim.lr_scheduler.CosineAnnealing)
+        assert scheduler.warmup_steps == int(0.1 * self.MAX_STEPS)
+        assert scheduler.min_lr == 0.1
 
     @pytest.mark.unit
     def test_sched_config_parse_reduce_on_plateau(self):
@@ -1180,3 +1222,145 @@ class TestWarmupHoldAnnealSchedulers:
             dataset_len=2000,
             drop_last=True,
         )
+
+
+def _sgd_with_group_lrs(*lrs: float) -> torch.optim.Optimizer:
+    groups = [{'params': [torch.nn.Parameter(torch.zeros(2))], 'lr': lr} for lr in lrs]
+    return torch.optim.SGD(groups, lr=lrs[0])
+
+
+def _learning_rates_per_step(scheduler, optimizer: torch.optim.Optimizer, steps: int) -> list:
+    """The learning rate the optimizer uses at each of ``steps`` optimizer steps."""
+    rates = []
+    for _ in range(steps):
+        rates.append(scheduler.get_last_lr()[0])
+        optimizer.step()
+        scheduler.step()
+    return rates
+
+
+class TestPiecewiseLinear:
+    @pytest.mark.unit
+    def test_registry_and_config(self):
+        assert AVAILABLE_SCHEDULERS['PiecewiseLinear'] is PiecewiseLinear
+        sched_config = {
+            'name': 'PiecewiseLinear',
+            'max_steps': 20,
+            'relative': True,
+            'boundaries': [0.0, 0.5, 1.0],
+            'values': [0.1, 1.0, 0.0],
+        }
+        for cfg in (sched_config, omegaconf.OmegaConf.create(sched_config)):
+            setup = optim.lr_scheduler.prepare_lr_scheduler(_sgd_with_group_lrs(1.0), cfg)
+            scheduler = setup['scheduler']
+            assert isinstance(scheduler, PiecewiseLinear)
+            assert setup['interval'] == 'step'
+            assert scheduler.multiplier(0.25) == pytest.approx(0.55)
+
+        by_class = {
+            '_target_': 'nemo.core.config.PiecewiseLinearParams',
+            'params': {'boundaries': [0, 10], 'values': [0.0, 1.0]},
+            'max_steps': 20,
+        }
+        scheduler = optim.lr_scheduler.prepare_lr_scheduler(_sgd_with_group_lrs(1.0), by_class)['scheduler']
+        assert isinstance(scheduler, PiecewiseLinear)
+        assert not scheduler.relative
+        assert scheduler.multiplier(5) == 0.5
+
+        assert config.schedulers.PiecewiseLinearParams().boundaries is None
+
+    @pytest.mark.unit
+    def test_steps(self):
+        optimizer = _sgd_with_group_lrs(1.0)
+        scheduler = PiecewiseLinear(optimizer, boundaries=[0, 4, 8], values=[0.1, 1.0, 0.5])
+        rates = _learning_rates_per_step(scheduler, optimizer, steps=11)
+        assert rates == pytest.approx([0.1, 0.325, 0.55, 0.775, 1.0, 0.875, 0.75, 0.625, 0.5, 0.5, 0.5])
+
+    @pytest.mark.unit
+    def test_relative_to_max_steps(self):
+        optimizer = _sgd_with_group_lrs(1.0)
+        scheduler = PiecewiseLinear(
+            optimizer, boundaries=[0.0, 0.5, 1.0], values=[0.0, 1.0, 0.0], relative=True, max_steps=20
+        )
+        rates = _learning_rates_per_step(scheduler, optimizer, steps=21)
+        assert rates[0] == 0.0
+        assert rates[5] == pytest.approx(0.5)
+        assert rates[10] == pytest.approx(1.0)
+        assert rates[15] == pytest.approx(0.5)
+        assert rates[20] == pytest.approx(0.0)
+        # the same schedule for a longer training
+        longer = PiecewiseLinear(
+            _sgd_with_group_lrs(1.0), boundaries=[0.0, 0.5, 1.0], values=[0.0, 1.0, 0.0], relative=True, max_steps=200
+        )
+        assert longer.multiplier(100 / 200) == pytest.approx(1.0)
+
+    @pytest.mark.unit
+    def test_values_before_and_after_the_boundaries(self):
+        optimizer = _sgd_with_group_lrs(1.0)
+        scheduler = PiecewiseLinear(optimizer, boundaries=[2, 4], values=[0.5, 1.0])
+        rates = _learning_rates_per_step(scheduler, optimizer, steps=7)
+        assert rates == pytest.approx([0.5, 0.5, 0.5, 0.75, 1.0, 1.0, 1.0])
+
+    @pytest.mark.unit
+    def test_multiplies_each_group_learning_rate(self):
+        optimizer = _sgd_with_group_lrs(1.0, 0.1)
+        scheduler = PiecewiseLinear(optimizer, boundaries=[0, 10], values=[0.0, 1.0])
+        for _ in range(5):
+            optimizer.step()
+            scheduler.step()
+        assert scheduler.get_last_lr() == pytest.approx([0.5, 0.05])
+        assert [group['lr'] for group in optimizer.param_groups] == pytest.approx([0.5, 0.05])
+
+    @pytest.mark.unit
+    def test_state_dict_round_trip(self):
+        optimizer = _sgd_with_group_lrs(1.0)
+        scheduler = PiecewiseLinear(optimizer, boundaries=[0, 10], values=[0.0, 1.0])
+        _learning_rates_per_step(scheduler, optimizer, steps=3)
+        state = scheduler.state_dict()
+        restored = PiecewiseLinear(_sgd_with_group_lrs(1.0), boundaries=[0, 10], values=[0.0, 1.0])
+        restored.load_state_dict(state)
+        assert restored.last_epoch == 3
+        assert restored.get_last_lr() == pytest.approx([0.3])
+
+    @pytest.mark.unit
+    def test_invalid_arguments(self):
+        with pytest.raises(ValueError, match="needs `boundaries` and `values`"):
+            PiecewiseLinear(_sgd_with_group_lrs(1.0), boundaries=None, values=None)
+        with pytest.raises(ValueError, match="same length"):
+            PiecewiseLinear(_sgd_with_group_lrs(1.0), boundaries=[0, 1], values=[1.0])
+        with pytest.raises(ValueError, match="same length"):
+            PiecewiseLinear(_sgd_with_group_lrs(1.0), boundaries=[], values=[])
+        with pytest.raises(ValueError, match="strictly increasing"):
+            PiecewiseLinear(_sgd_with_group_lrs(1.0), boundaries=[0, 1, 1], values=[1.0, 1.0, 1.0])
+        for max_steps in (None, 0, -5, 10.5, "10"):
+            with pytest.raises(ValueError, match="positive integer `max_steps`"):
+                PiecewiseLinear(
+                    _sgd_with_group_lrs(1.0), boundaries=[0, 1], values=[1.0, 1.0], relative=True, max_steps=max_steps
+                )
+        with pytest.raises(ValueError, match="finite"):
+            PiecewiseLinear(_sgd_with_group_lrs(1.0), boundaries=[0, float('nan')], values=[1.0, 1.0])
+        with pytest.raises(ValueError, match="finite"):
+            PiecewiseLinear(_sgd_with_group_lrs(1.0), boundaries=[0, 1], values=[1.0, float('inf')])
+
+    @pytest.mark.unit
+    def test_production_schedule(self):
+        # a training of 88,004 steps with a warmup to 45%, a decay to 90% and a final decay,
+        # as a trainer with `max_steps` and relative boundaries configures it
+        max_steps = 88_004
+        optimizer = _sgd_with_group_lrs(1.0)
+        scheduler = PiecewiseLinear(
+            optimizer,
+            boundaries=[0.0, 0.45, 0.9, 1.0],
+            values=[1e-5, 4e-3, 1e-5, 1e-6],
+            relative=True,
+            max_steps=max_steps,
+        )
+        rates = _learning_rates_per_step(scheduler, optimizer, steps=max_steps + 1)
+        assert rates[0] == 1e-5
+        assert rates[-1] == pytest.approx(1e-6)
+        peak = max(range(len(rates)), key=rates.__getitem__)
+        assert peak in (39601, 39602)  # 0.45 * 88004 = 39601.8
+        assert rates[peak] == pytest.approx(4e-3, rel=1e-4)
+        assert all(later >= earlier for earlier, later in zip(rates[:peak], rates[1 : peak + 1]))
+        assert all(later <= earlier for earlier, later in zip(rates[peak:], rates[peak + 1 :]))
+        assert rates[79204] == pytest.approx(1e-5, rel=1e-3)  # 0.9 * 88004 = 79203.6

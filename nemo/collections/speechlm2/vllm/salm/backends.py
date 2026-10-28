@@ -311,6 +311,12 @@ class HybridBackend(_BaseBackend):
                     )
             elif hf_name in (
                 "backbone.embed_tokens.weight",
+                # NemotronH's embedding is `embeddings`, and a ModelOpt export
+                # already carries that HF name, so it never hits the
+                # `embed_tokens` rename above. Omitting it here leaves the
+                # embedding unpadded and every quantized checkpoint dies on
+                # vLLM's `loaded_weight.shape[output_dim] == org_vocab_size`.
+                "backbone.embeddings.weight",
                 "lm_head.weight",
             ):
                 if target_vocab:

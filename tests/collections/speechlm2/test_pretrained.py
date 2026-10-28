@@ -21,7 +21,6 @@ from omegaconf import DictConfig, OmegaConf
 from safetensors.torch import save_file
 
 from nemo.collections.speechlm2.parts import pretrained
-from nemo.collections.speechlm2.parts.model_loading import resolve_target_class
 from nemo.core.classes.common import UnsafeTargetError
 
 
@@ -100,6 +99,8 @@ def test_setup_speech_encoder_instantiates_the_configured_target(target):
 
 def test_resolve_target_class_rejects_unlisted_and_foreign_targets():
     """The key goes through the target allowlist, and the class must derive from the model's base."""
+    from nemo.collections.speechlm2.parts.model_loading import resolve_target_class
+
     with pytest.raises(UnsafeTargetError):
         resolve_target_class("os.path.join", pretrained.AudioPerceptionModule, "perception.target")
     with pytest.raises(TypeError, match="perception.target"):

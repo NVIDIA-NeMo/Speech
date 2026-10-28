@@ -500,16 +500,22 @@ class MagpieTTSDataset(TextToSpeechDataset):
         if getattr(self, 'use_aligned_text_head', False):
             # Imported lazily to leave the ordinary dataset's dependency path
             # unchanged when the auxiliary alignment task is disabled.
-            from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import alignment_spoken_text
+            from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import (
+                alignment_spoken_text,
+                select_alignment_text,
+            )
 
-            normalized = alignment_spoken_text(
-                data.manifest_entry.get('normalized_text'),
+            selected, has_normalized = select_alignment_text(
+                data.manifest_entry.get('normalized_text'), data.manifest_entry.get('text')
+            )
+            transcript = alignment_spoken_text(
+                selected,
                 strip_punctuation=getattr(self, 'aligned_text_strip_punctuation', True),
             )
-            reference = self.text_tokenizer.encode(normalized, tokenizer_name=tokenizer_name) if normalized else []
+            reference = self.text_tokenizer.encode(transcript, tokenizer_name=tokenizer_name) if transcript else []
             example['alignment_reference_tokens'] = torch.tensor(reference, dtype=torch.long)
             example['alignment_reference_len'] = len(reference)
-            example['alignment_missing_normalized_text'] = int(not normalized)
+            example['alignment_missing_normalized_text'] = int(not has_normalized)
 
         if self.phoneme_tokenizer is not None:
             # Use IPA text for IPABPETokenizer (required), otherwise use regular text

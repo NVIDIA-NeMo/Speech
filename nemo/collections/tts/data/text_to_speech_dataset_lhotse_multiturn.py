@@ -54,6 +54,19 @@ def check_speaker_format(item: str):
     return bool(re.match(pattern, item))
 
 
+def select_alignment_text(normalized_text: str | None, text: str | None) -> tuple[str, bool]:
+    """Prefer a supplied normalized transcript, otherwise use original text.
+
+    The boolean reports whether nonempty normalized metadata was supplied, even
+    if cleaning later leaves no spoken tokens. Selection precedes punctuation
+    cleanup so a supplied nonempty transcript is never replaced just because it
+    is unusable for alignment. No IPA or source-token substitution is performed.
+    """
+    has_normalized = isinstance(normalized_text, str) and bool(normalized_text.strip())
+    selected = normalized_text if has_normalized else text
+    return selected if isinstance(selected, str) else '', has_normalized
+
+
 def alignment_spoken_text(text: str, strip_punctuation: bool = True) -> str:
     """Clean alignment text before tokenization, preserving lexical punctuation.
 
@@ -87,7 +100,7 @@ def build_alignment_text_turns(
     add_text_bos: bool = False,
     strip_punctuation: bool = True,
 ) -> Dict[str, torch.Tensor]:
-    """Pack normalized spoken transcripts and their acoustic spans into independent turns.
+    """Pack preferred spoken transcripts and their acoustic spans into independent turns.
 
     ``alignment_turn_indices`` contains ``(batch_index, start_frame, end_frame)``;
     ends are exclusive on the same codec-frame grid as the regular text channel.
@@ -95,9 +108,10 @@ def build_alignment_text_turns(
     ``aligned_text`` is a separate, right-padded transcript channel for head warmup.
     The original conditioning channel is never changed.
 
-    Only ``normalized_text`` is used; missing or empty normalized references have
-    no text tokens or acoustic span. No raw-text or IPA fallback is performed.
-    ``alignment_missing_normalized_text`` counts absent or empty usable references.
+    ``normalized_text`` is preferred; absent, empty or whitespace-only metadata
+    falls back to the supervision's original ``text``. No IPA fallback is used.
+    ``alignment_missing_normalized_text`` counts unavailable normalized metadata
+    even when original text supplies usable alignment and head targets.
     Truncated, overlapping, empty and deliberately mismatched transcripts retain
     their compact tokens for diagnostics but receive a zero-length acoustic span.
     Turns with fewer frames than tokens remain intact for the aligner's validity
@@ -120,8 +134,9 @@ def build_alignment_text_turns(
             if supervision.speaker not in output_roles:
                 continue
             normalized = supervision.normalized_text if supervision.has_custom('normalized_text') else None
-            transcript = alignment_spoken_text(normalized, strip_punctuation=strip_punctuation)
-            missing_normalized_text += int(not transcript)
+            selected, has_normalized = select_alignment_text(normalized, supervision.text)
+            transcript = alignment_spoken_text(selected, strip_punctuation=strip_punctuation)
+            missing_normalized_text += int(not has_normalized)
             ids = tokenizer.encode(transcript, tokenizer_name=tokenizer_name) if transcript else []
             ids = torch.tensor(ids, dtype=torch.long)
             start_seconds, end_seconds = supervision.start, supervision.end

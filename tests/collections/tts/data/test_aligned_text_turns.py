@@ -209,18 +209,72 @@ def test_text_only_batch_never_constructs_acoustic_alignment_metadata():
     assert dataset[[_cut(1.0, _sup(0.0, 1.0, 'text'), task='text_only')]] is expected
 
 
-@pytest.mark.parametrize('normalized', [None, '', '  ', '...'])
-def test_missing_or_empty_normalized_text_never_falls_back_to_raw_or_ipa(normalized):
-    supervision = _sup(0.0, 1.0, '$10', ipa='tɛn dɑlɚz')
-    if normalized is not None:
+@pytest.mark.parametrize('has_normalized,normalized', [(False, None), (True, None), (True, ''), (True, '  ')])
+def test_missing_or_empty_normalization_uses_raw_text_for_both_targets(has_normalized, normalized):
+    supervision = _sup(0.0, 1.0, 'hello there!', ipa='həloʊ ðɛr')
+    if has_normalized:
         supervision.normalized_text = normalized
     tokenizer = _Tokenizer()
     result = _build([_cut(1.0, supervision)], tokenizer=tokenizer)
+    assert tokenizer.calls == [('hello there', 'bpe')]
+    assert result['alignment_text_tokens'].tolist() == [[1, 2]]
+    assert result['alignment_text_lens'].tolist() == [2]
+    assert result['alignment_turn_indices'].tolist() == [[0, 0, 10]]
+    assert result['aligned_text'][0, :4].tolist() == [1, 2, 101, 0]
+    assert result['alignment_missing_normalized_text'].item() == 1
+    assert supervision.text == 'hello there!'
+
+
+def test_mixed_normalized_and_raw_turns_share_the_selected_transcript_for_head_warmup():
+    tokenizer = _Tokenizer()
+    normalized = _sup(0.0, 1.0, '$10', normalized_text='ten dollars!')
+    raw = _sup(1.2, 2.0, 'good morning!', ipa='ɡʊd mɔrnɪŋ')
+    result = _build([_cut(2.0, normalized, raw)], tokenizer=tokenizer)
+    assert tokenizer.calls == [('ten dollars', 'bpe'), ('good morning', 'bpe')]
+    assert result['alignment_text_tokens'].tolist() == [[1, 2], [3, 4]]
+    assert result['alignment_turn_indices'].tolist() == [[0, 0, 10], [0, 12, 20]]
+    assert result['aligned_text'][0, :3].tolist() == [1, 2, 101]
+    assert result['aligned_text'][0, 12:15].tolist() == [3, 4, 101]
+    assert result['alignment_missing_normalized_text'].item() == 1
+    assert normalized.text == '$10' and raw.text == 'good morning!'
+
+
+@pytest.mark.parametrize('raw', [None, '', '  ', '...'])
+def test_unusable_normalized_and_raw_text_never_fall_back_to_ipa(raw):
+    tokenizer = _Tokenizer()
+    result = _build([_cut(1.0, _sup(0.0, 1.0, raw, normalized_text='', ipa='spoken words'))], tokenizer=tokenizer)
     assert tokenizer.calls == []
     assert result['alignment_text_lens'].tolist() == [0]
     assert result['alignment_turn_indices'].tolist() == [[0, 0, 0]]
     assert result['aligned_text'].eq(0).all()
     assert result['alignment_missing_normalized_text'].item() == 1
+
+
+def test_provided_normalized_text_remains_authoritative_when_cleanup_removes_it():
+    tokenizer = _Tokenizer()
+    result = _build(
+        [_cut(1.0, _sup(0.0, 1.0, 'do not substitute these words', normalized_text='...'))], tokenizer=tokenizer
+    )
+    assert tokenizer.calls == []
+    assert result['alignment_text_lens'].tolist() == [0]
+    assert result['alignment_turn_indices'].tolist() == [[0, 0, 0]]
+    assert result['aligned_text'].eq(0).all()
+    assert result['alignment_missing_normalized_text'].item() == 0
+
+
+def test_raw_fallback_keeps_cropped_mismatched_and_overlapping_turns_masked():
+    result = _build(
+        [
+            _cut(1.0, _sup(-0.2, 0.5, 'left crop')),
+            _cut(1.0, _sup(0.5, 1.3, 'right crop')),
+            _cut(1.0, _sup(0.0, 1.0, 'wrong text', challenging_text_replaced=True)),
+            _cut(1.0, _sup(0.0, 0.8, 'first'), _sup(0.5, 1.0, 'overlap')),
+        ]
+    )
+    assert result['alignment_turn_indices'].tolist() == [[0, 0, 0], [1, 5, 5], [2, 0, 0], [3, 0, 8], [3, 5, 5]]
+    assert result['aligned_text'][:3].eq(0).all()
+    assert result['aligned_text'][3, 5:].eq(0).all()
+    assert result['alignment_missing_normalized_text'].item() == 5
 
 
 def _single_turn_dataset(monkeypatch, manifest_entries, enabled=True):
@@ -284,21 +338,54 @@ def test_single_turn_alignment_reference_is_normalized_pure_bpe_and_gated(monkey
     assert 'alignment_turn_indices' not in batch
 
 
-@pytest.mark.parametrize('normalized', [None, '', '  ', '...'])
-def test_single_turn_missing_normalization_is_invalid_without_changing_source(monkeypatch, normalized):
-    entry = {'text': '$10!', 'ipa': 'tɛn dɑlɚz'}
-    if normalized is not None:
+@pytest.mark.parametrize('has_normalized,normalized', [(False, None), (True, None), (True, ''), (True, '  ')])
+def test_single_turn_missing_normalization_uses_raw_text_without_changing_source(
+    monkeypatch, has_normalized, normalized
+):
+    entry = {'text': 'hello there!', 'ipa': 'həloʊ ðɛr'}
+    if has_normalized:
         entry['normalized_text'] = normalized
     dataset = _single_turn_dataset(monkeypatch, [entry])
     example = dataset[0]
-    assert example['tokens'].tolist() == [1, 101]
-    assert example['alignment_reference_tokens'].numel() == 0
+    assert example['tokens'].tolist() == [1, 2, 101]
+    assert example['alignment_reference_tokens'].tolist() == [1, 3]
+    assert example['alignment_reference_len'] == 2
+    assert example['raw_text'] == 'hello there!'
+    assert dataset.text_tokenizer.calls == [('hello there!', 'bpe'), ('hello there', 'bpe')]
+    batch = dataset.collate_fn([example])
+    assert batch['alignment_text_tokens'].tolist() == [[1, 3]]
+    assert batch['alignment_text_lens'].tolist() == [2]
+    assert batch['alignment_missing_normalized_text'].item() == 1
+
+
+def test_single_turn_fallback_uses_manifest_text_instead_of_processed_conditioning_or_ipa(monkeypatch):
+    dataset = _single_turn_dataset(monkeypatch, [{'text': 'good morning!', 'ipa': 'ɡʊd mɔrnɪŋ'}])
+    dataset.data_samples[0].text = 'ɡʊd mɔrnɪŋ'
+    example = dataset[0]
+    assert dataset.text_tokenizer.calls == [('ɡʊd mɔrnɪŋ', 'bpe'), ('good morning', 'bpe')]
+    assert example['alignment_reference_tokens'].tolist() == [3, 4]
+    assert dataset.data_samples[0].text == 'ɡʊd mɔrnɪŋ'
+    assert dataset.data_samples[0].manifest_entry['text'] == 'good morning!'
+
+
+@pytest.mark.parametrize('raw', ['', '  ', '...'])
+def test_single_turn_unusable_fallback_never_uses_ipa(monkeypatch, raw):
+    dataset = _single_turn_dataset(monkeypatch, [{'text': raw, 'normalized_text': '', 'ipa': 'spoken words'}])
+    example = dataset[0]
     assert example['alignment_reference_len'] == 0
-    assert dataset.text_tokenizer.calls == [('$10!', 'bpe')]
+    assert dataset.text_tokenizer.calls == [(raw, 'bpe')]
     batch = dataset.collate_fn([example])
     assert batch['alignment_text_tokens'].shape == (1, 0)
     assert batch['alignment_text_lens'].tolist() == [0]
     assert batch['alignment_missing_normalized_text'].item() == 1
+
+
+def test_single_turn_provided_normalized_punctuation_does_not_revert_to_raw_text(monkeypatch):
+    dataset = _single_turn_dataset(monkeypatch, [{'text': 'ordinary words', 'normalized_text': '...'}])
+    example = dataset[0]
+    assert example['alignment_reference_len'] == 0
+    assert example['alignment_missing_normalized_text'] == 0
+    assert dataset.text_tokenizer.calls == [('ordinary words', 'bpe')]
 
 
 def test_single_turn_collation_keeps_normalized_reference_lengths_and_padding(monkeypatch):
@@ -307,14 +394,15 @@ def test_single_turn_collation_keeps_normalized_reference_lengths_and_padding(mo
         [
             {'text': '$10', 'normalized_text': 'ten dollars'},
             {'text': '1000', 'normalized_text': 'thousand'},
-            {'text': 'raw has no normalized reference'},
+            {'text': 'good day'},
         ],
     )
     batch = dataset.collate_fn([dataset[index] for index in range(3)])
-    assert batch['alignment_text_lens'].tolist() == [2, 1, 0]
+    assert batch['alignment_text_lens'].tolist() == [2, 1, 2]
     assert batch['alignment_text_tokens'].shape == (3, 2)
     assert batch['alignment_text_tokens'][1, 1] == dataset.text_tokenizer.pad
-    assert batch['alignment_text_tokens'][2].eq(dataset.text_tokenizer.pad).all()
+    raw_ids = [dataset.text_tokenizer.words[word] for word in ('good', 'day')]
+    assert batch['alignment_text_tokens'][2].tolist() == raw_ids
     assert batch['alignment_missing_normalized_text'].item() == 1
 
 

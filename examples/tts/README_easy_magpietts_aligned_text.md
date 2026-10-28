@@ -2,7 +2,8 @@
 
 This optional experiment learns a Glow-TTS-style alignment teacher and a separate
 autoregressive BPE output channel. It preserves the existing raw/IPA conditioning
-channel and uses only `normalized_text` for the teacher and the new head.
+channel and prefers `normalized_text` for the teacher and the new head, falling
+back to the original `text` when normalization metadata is unavailable.
 
 ```bash
 ++model.use_aligned_text_head=true \
@@ -15,12 +16,20 @@ feature creates no additional modules and preserves the original training path.
 
 ## Training
 
-The loader retokenizes normalized transcripts separately from the source text.
+The loader selects `normalized_text` when it is a nonempty string, otherwise
+the original raw `text`. It retokenizes this selected transcript separately
+from the conditioning channel, using exactly the same transcript for the aligner,
+right-padded warmup labels, and repeated aligned-text labels.
 It removes nonspoken boundary punctuation by default, retaining internal
 apostrophes/hyphens, numeric punctuation and symbols. It does not perform text
-normalization itself. A missing, empty or unusable `normalized_text` skips the
-auxiliary supervision and increments `aligner_missing_normalized_text`; raw text
-and IPA are never substituted. The ordinary TTS/phoneme losses still apply.
+normalization itself. Missing, null, nonstring, empty, or whitespace-only
+normalization metadata falls back to original text. A provided nonempty normalized
+transcript remains authoritative, even if punctuation cleanup makes it empty.
+Unusable selected text skips auxiliary supervision; IPA and text-conditioned
+decoder states are never substituted. `aligner_missing_normalized_text` counts
+unavailable normalization metadata even when raw-text fallback is successfully
+supervised. It does not count skipped turns. Complex normalization cases should
+provide `normalized_text`. The ordinary TTS/phoneme losses still apply.
 
 Each complete output turn is packed independently using the existing supervision
 start/end boundaries. User turns, padding, cropped turns,
@@ -46,7 +55,7 @@ learned relative key and value embeddings, shared across heads, for offsets
 bidirectional across the entire turn. No absolute positional embedding is added.
 The final projection predicts Gaussian latent means, with variance fixed to one.
 There is no duplicate vocabulary embedding or duration predictor. The encoder
-receives only normalized-text features; decoder states do not enter it.
+receives only the selected transcript's features; decoder states do not enter it.
 
 `modules/relative_position_transformer.py` adapts the MIT-licensed VITS attention
 implementation and reuses NeMo's masked convolution layers. It does not require
@@ -71,7 +80,7 @@ external speaker model. `speaker_hidden_channels`, `speaker_embedding_dim`, and
 `speaker_num_layers` control its size.
 
 The reference vector conditions the gated affine-coupling networks of the ST-TTS
-flow; the latent means still depend only on normalized text. The acoustic NLL
+flow; the latent means depend only on the selected transcript. The acoustic NLL
 trains the ASP encoder and conditioning projections. Only codec observations are
 detached. References are encoded once per conversation and gathered using each
 packed turn's original sample index, so sorting and microbatching preserve the
@@ -96,7 +105,7 @@ do not resume an incompatible optimizer state. The aligner and ASP encoder run
 only during training and teacher-forced validation, not autoregressive inference.
 
 The aligner trains from step zero. Before `start_aligner_text_head_steps`, the new
-head predicts normalized tokens followed by right padding within each turn. At
+head predicts selected-transcript tokens followed by right padding within each turn. At
 the threshold it predicts BPE tokens repeated according to the current MAS path.
 The threshold uses Lightning's global optimizer step, including checkpoint resume.
 The frozen codec and shared embeddings do not receive the aligner's gradients.
@@ -196,7 +205,7 @@ backward pass; `--speaker-reference-frames` defaults to 75 stacked codec frames.
 
 ## Inference and portability
 
-The head predicts one normalized BPE/PAD/EOS label per decoder audio step, and its
+The head predicts one selected-transcript BPE/PAD/EOS label per decoder audio step, and its
 previous prediction is fed back alongside the previous audio token. No aligner
 or MAS runs at inference and no extra autoregressive pass is added. Text EOS does
 not terminate audio generation. Raw streaming text and CFG remain supported.
@@ -215,8 +224,8 @@ cannot reveal their intervening position boundary without an additional advance
 signal. No hard stay/advance decoding or attention constraint is imposed here.
 
 For another branch, cherry-pick the feature commit, the ST-TTS flow update,
-the relative-position text-encoder update, and the optional ASP conditioning
-update, or apply the exported patch series.
+the relative-position text-encoder update, the optional ASP conditioning update,
+and the normalized-first/raw-text fallback update, or apply the exported patch series.
 Reusable code lives in `modules/glow_tts_aligner.py`, `modules/aligned_text_head.py`,
 `modules/relative_position_transformer.py`, `modules/codec_speaker_encoder.py`,
 and `parts/utils/monotonic_alignment.py`.

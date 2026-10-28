@@ -123,7 +123,7 @@ def test_missing_metadata_never_falls_back_to_conditioning_text(aligned_model):
         aligned_model.process_batch(**batch)
 
 
-def test_missing_normalization_excludes_auxiliary_losses(aligned_model):
+def test_empty_selected_alignment_targets_exclude_auxiliary_losses(aligned_model):
     batch = _alignment_batch(aligned_model)
     batch['alignment_text_tokens'] = batch['alignment_text_tokens'][:, :0]
     batch['alignment_text_lens'].zero_()

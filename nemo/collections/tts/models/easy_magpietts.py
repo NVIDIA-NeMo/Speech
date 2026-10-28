@@ -1618,7 +1618,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         """
         if tokens is None or token_lens is None:
             raise ValueError(
-                'Aligned text training requires separate normalized_text alignment targets from the loader'
+                'Aligned text training requires separate alignment targets from the loader '
+                '(normalized_text, falling back to original text)'
             )
         with torch.no_grad(), torch.autocast(device_type=audio_codes.device.type, enabled=False):
             features = self._codec_model.vector_quantizer.decode(

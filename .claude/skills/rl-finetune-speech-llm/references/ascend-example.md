@@ -127,3 +127,8 @@ The test gain was **4.08% relative**, not a broad claim about all English or Man
 400 retained groups from 240 distinct recordings. The English-retention difference was one edit, so report the
 counts and uncertainty rather than treating that tiny slice as a full regression suite. Frozen CTC weights also do
 not prove unchanged timestamps when the speech encoder is updated.
+
+On development, mixed speech supplied 57 of the 58 fewer errors; Mandarin-only errors rose by 6 and English-only
+errors fell by 7. A paired utterance bootstrap gave a 95% interval of approximately **−1.207 to +0.040 percentage
+points** for the overall MER change (candidate minus seed). Development has only three speakers. The observed gain
+therefore motivates the extension experiment but does not establish a reliable broad improvement.

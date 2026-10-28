@@ -1420,15 +1420,13 @@ class RVQEARTTSModel(nn.Module):
             # extract one frame (as the original generate_step expects)
             frame_hidden = hidden_states[:, t, :]  # [B, H]
 
-            # call original generate_step
+            # call original generate_step; keep every frame
             generated_codes, lm_logits, eos_flag = self.generate_step(
-                frame_hidden.unsqueeze(1), **generation_config  # keep batch dim + frame dim
+                frame_hidden.unsqueeze(1), ignore_eos_flag_stop=True, **generation_config  # keep batch dim + frame dim
             )
-            if generated_codes is not None:
-                # store in cache
-                generated_codes_cache.append(generated_codes)
-                lm_logits_cache.append(lm_logits)
-                eos_flag_cache.append(eos_flag)
+            generated_codes_cache.append(generated_codes)
+            lm_logits_cache.append(lm_logits)
+            eos_flag_cache.append(eos_flag)
 
         # Stack results along time dimension
         generated_codes = torch.stack(generated_codes_cache, dim=1)  # [B, T, ...]

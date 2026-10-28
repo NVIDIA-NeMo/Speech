@@ -840,6 +840,10 @@ class TransformerEncoder(nn.Module):
         causal_tail_block_size: Size of each causal-tail block in encoder frames after subsampling.
             Attention is bidirectional within a block, while future blocks remain hidden. This value
             is ignored when ``causal_tail_len == 0``.
+        final_norm: If True (default), apply a ``LayerNorm`` to the output of the last Transformer block.
+            Set False to return the last block's residual stream unnormalized,
+            as a head trained on that stream expects;
+            the encoder then has no ``final_norm`` parameters.
     """
 
     supports_sequence_packed_output = True
@@ -870,6 +874,7 @@ class TransformerEncoder(nn.Module):
         sync_max_audio_length: bool = True,
         causal_tail_len: int = 0,
         causal_tail_block_size: int = 1,
+        final_norm: bool = True,
     ):
         super().__init__()
         if d_model % n_heads != 0:
@@ -988,7 +993,7 @@ class TransformerEncoder(nn.Module):
         # cos/sin buffers are computed once and reused across all attention modules.
         layer_pos_enc = self.pos_enc if self_attention_model == "rope" else None
         self.layers = nn.ModuleList([TransformerBlock(cfg, pos_enc=layer_pos_enc) for _ in range(n_layers)])
-        self.final_norm = nn.LayerNorm(d_model)
+        self.final_norm = nn.LayerNorm(d_model) if final_norm else nn.Identity()
         if feat_out > 0 and feat_out != self._feat_out:
             self.out_proj = nn.Linear(self._feat_out, feat_out)
             self._feat_out = feat_out

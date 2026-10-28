@@ -1820,15 +1820,15 @@ def frame_vad_construct_supervisions_per_file(
 
     rec_id = "frame_vad"
     hypothesis: List[SupervisionSegment] = []
-    if isinstance(groundtruth, str) and prediction.endswith('.rttm'):
+    if isinstance(prediction, str) and prediction.endswith('.rttm'):
         hypothesis = read_rttm_as_supervisions(prediction, speaker_override='speech')
-    elif isinstance(groundtruth, str) and prediction.endswith('.txt'):
+    elif isinstance(prediction, str) and prediction.endswith('.txt'):
         pred = pd.read_csv(prediction, sep=" ", header=None)
         for _index, row in pred.iterrows():
             start = float(row[0])
             end = start + float(row[1])
             hypothesis.append(make_diar_segment(start, end, 'speech', recording_id=rec_id))
-    elif isinstance(groundtruth, list):
+    elif isinstance(prediction, list):
         segments = convert_labels_to_speech_segments(prediction, frame_length_in_sec)
         for segment in segments:
             hypothesis.append(make_diar_segment(float(segment[0]), float(segment[1]), 'speech', recording_id=rec_id))

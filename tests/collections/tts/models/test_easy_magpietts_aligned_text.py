@@ -26,7 +26,12 @@ def aligned_model():
                     'start_aligner_text_head_steps': 10000,
                     'aligned_text_head_dim': 8,
                     'aligned_text_head_chunk_size': 2,
-                    'aligned_text_aligner': {'hidden_channels': 8, 'num_flows': 2, 'num_text_layers': 1},
+                    'aligned_text_aligner': {
+                        'flow_type': 'sttts',
+                        'hidden_channels': 8,
+                        'num_flows': 2,
+                        'num_text_layers': 1,
+                    },
                 }
             )
         )
@@ -160,3 +165,26 @@ def test_pretrained_weights_without_alignment_modules_load(aligned_model, tmp_pa
     expected = aligned_model.aligned_text_head.output_projection.weight.detach().clone()
     aligned_model.restore_from_pretrained_checkpoint(str(checkpoint))
     torch.testing.assert_close(aligned_model.aligned_text_head.output_projection.weight, expected)
+
+
+@pytest.mark.parametrize('restoring', [False, True])
+def test_unversioned_aligner_config_preserves_compact_architecture(restoring):
+    from nemo.collections.tts.models.easy_magpietts_inference import EasyMagpieTTSInferenceModel
+
+    old = {'hidden_channels': 64, 'num_flows': 4, 'num_text_layers': 2}
+    resolved = EasyMagpieTTSInferenceModel._resolve_aligned_text_aligner_config(old, restoring=restoring)
+    assert resolved['flow_type'] == 'legacy'
+    assert resolved['hidden_channels'] == 64 and resolved['num_flows'] == 4
+    assert resolved['max_log_scale'] == 2.0
+
+
+def test_new_aligner_config_and_old_implicit_restoration_are_unambiguous():
+    from nemo.collections.tts.models.easy_magpietts_inference import EasyMagpieTTSInferenceModel
+
+    resolve = EasyMagpieTTSInferenceModel._resolve_aligned_text_aligner_config
+    new = resolve(None)
+    assert (new['flow_type'], new['hidden_channels'], new['num_flows']) == ('sttts', 128, 6)
+    assert (new['coupling_num_layers'], new['coupling_kernel_size']) == (4, 5)
+    assert new['max_log_scale'] is None
+    assert resolve(None, restoring=True)['flow_type'] == 'legacy'
+    assert resolve({'flow_type': 'sttts'}, restoring=True) == new

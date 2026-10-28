@@ -49,9 +49,32 @@ available. Audio, phoneme, aligned-text and acoustic-likelihood losses train
 together; text-only batches supply zero gradients for the new parameters so
 mixed distributed batches remain valid.
 
-The default teacher has 64 hidden channels, two text-convolution layers and four
-flow blocks (about 210k parameters with 80 acoustic/1536 text dimensions). The
-factorized output head uses `aligned_text_head_dim=128`; the vocabulary projection
+The default `flow_type=sttts` teacher follows the flow capacity in
+[ST-TTS section 3.1.4](https://www.isca-archive.org/interspeech_2021/kim21n_interspeech.pdf#page=3):
+six flow blocks, 128 hidden channels, and four residual convolution layers with
+kernel size five in each affine coupling network. Each block uses ActNorm,
+learned invertible channel mixing, and a gated tanh/sigmoid residual-and-skip
+coupling stack, following the paper's cited Glow-TTS implementation. The final
+coupling projection is zero-initialized, and no extra time squeezing is applied.
+ActNorm starts as identity, without data-dependent initialization or distributed
+initialization collectives. The reference coupling log scale is unconstrained;
+`max_log_scale` can optionally bound it.
+
+This follows the published flow capacity, not the entire ST-TTS model. Existing
+CAS features and the two-layer text prior are retained. Frozen quantized codec
+features with jitter replace ST-TTS's mel observations. Consequently the same
+kernel covers more seconds at 12.5 FPS, and boundary accuracy still requires
+evaluation. The Gaussian prior variance remains fixed to one.
+
+The earlier compact flow is available as `flow_type=legacy` with its original
+parameter names. Unversioned saved aligner dictionaries are interpreted as
+legacy profiles (64 hidden channels/four flows by default); new runs use the
+explicit `sttts` profile in the YAML. Resuming an old compact aligner keeps its
+architecture. To start the new reference flow from an older TTS checkpoint, use
+the existing partial-pretrained initialization path with the new YAML, rather
+than resuming an old optimizer state into a different architecture.
+
+The factorized output head uses `aligned_text_head_dim=128`; the vocabulary projection
 is evaluated in checkpointed chunks of `aligned_text_head_chunk_size=128` valid
 frames. It never retains conversation-length vocabulary logits. This compact head
 is independent of the old `disable_lm_text_head` setting. Feedback reuses CAS and
@@ -60,8 +83,9 @@ embeds each distinct token once per call.
 Useful controls:
 
 - `aligned_text_loss_weight` and `aligner_loss_weight`: default 1.0 each.
-- `aligned_text_aligner`: hidden width, flow/text-layer counts, feature jitter,
-  and `mas_backend` (`auto`, `triton`, `cpu`).
+- `aligned_text_aligner`: versioned flow type, hidden width, flow/text-layer
+  counts, `coupling_num_layers`, `coupling_kernel_size`, `flow_n_split`, feature
+  jitter, and `mas_backend` (`auto`, `triton`, `cpu`).
 - `aligned_text_max_turns_per_batch=32` and
   `aligned_text_max_frames_per_batch=8192`: padding-aware teacher batch limits.
   Oversized individual turns raise explicitly; increase the limit rather than
@@ -96,6 +120,8 @@ The profiler checks CPU/GPU parity and measures MAS, full teacher
 forward/backward, memory, and separate-turn versus whole-conversation lattices.
 Compilation is warmed up; CPU transfers are included. Synthetic teacher timings
 exclude codec decoding, CAS, the text head and the TTS backbone.
+It defaults to the ST-TTS flow profile. To compare the old compact teacher, pass
+`--flow-type legacy --hidden-channels 64 --num-flows 4` explicitly.
 
 ## Inference and portability
 
@@ -117,7 +143,8 @@ generated sound. Word boundaries require validation. Adjacent equal BPE IDs also
 cannot reveal their intervening position boundary without an additional advance
 signal. No hard stay/advance decoding or attention constraint is imposed here.
 
-For another branch, cherry-pick the self-contained feature commit. Reusable code
+For another branch, cherry-pick the feature commit followed by the ST-TTS flow
+update, or apply the exported two-commit patch series. Reusable code
 lives in `modules/glow_tts_aligner.py`, `modules/aligned_text_head.py` and
 `parts/utils/monotonic_alignment.py`. The integration touches only the model and
 inference base, the two target loaders, the multiturn YAML, tests and this guide.

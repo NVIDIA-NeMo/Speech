@@ -25,7 +25,7 @@ import numpy as np
 import soundfile as sf
 import torch
 from lightning.pytorch import Trainer
-from omegaconf import DictConfig
+from omegaconf import DictConfig, open_dict
 from torch import nn
 from transformers import AutoConfig, AutoModelForCausalLM
 
@@ -261,9 +261,17 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             raise ValueError('aligned_text_head_dim must be a positive integer')
         # Nested codec restoration clears NeMo's global restore flag. Capture
         # the parent state before it so fine-tuned HF weights are never reloaded.
-        restoring_hf_decoder = cfg.get('transformer_hf_load_pretrained_weights', False) and (
-            self._is_model_being_restored()
-        )
+        restoring_model = self._is_model_being_restored()
+        restoring_hf_decoder = cfg.get('transformer_hf_load_pretrained_weights', False) and restoring_model
+        if self.use_aligned_text_head:
+            # Persist an explicit architecture before nested codec restoration
+            # clears the restore flag. Unversioned saved compact profiles keep
+            # their original parameter layout instead of silently changing flow.
+            aligner_config = self._resolve_aligned_text_aligner_config(
+                cfg.get('aligned_text_aligner', None), restoring=restoring_model
+            )
+            with open_dict(cfg):
+                cfg.aligned_text_aligner = aligner_config
         self.world_size = 1
         if trainer is not None:
             self.world_size = trainer.num_nodes * trainer.num_devices
@@ -2504,6 +2512,28 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             state.finished = state.finished | gt_exhausted
 
         return audio_codes_next, pred_phoneme_tokens
+
+    @staticmethod
+    def _resolve_aligned_text_aligner_config(config=None, restoring=False):
+        """Version old compact teachers and stamp complete defaults for new runs."""
+        values = dict(config or {})
+        unversioned = config is not None and 'flow_type' not in values
+        legacy = unversioned or (restoring and not values)
+        profile = values.get('flow_type', 'legacy' if legacy else 'sttts')
+        defaults = {
+            'flow_type': profile,
+            'hidden_channels': 64 if profile == 'legacy' else 128,
+            'num_flows': 4 if profile == 'legacy' else 6,
+            'num_text_layers': 2,
+            'coupling_num_layers': 1 if profile == 'legacy' else 4,
+            'coupling_kernel_size': 3 if profile == 'legacy' else 5,
+            'flow_n_split': 4,
+            'max_log_scale': 2.0 if profile == 'legacy' else None,
+            'dequantization_noise': 0.01,
+            'mas_backend': 'auto',
+        }
+        defaults.update(values)
+        return defaults
 
     def _predict_aligned_text_tokens(self, state: StreamingState) -> torch.Tensor:
         """Predict the normalized BPE for this audio step from the conditional state.

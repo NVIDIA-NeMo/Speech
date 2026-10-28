@@ -98,8 +98,14 @@ model:
   aligned_text_max_turns_per_batch: 32
   aligned_text_max_frames_per_batch: 8192 # Budget includes padding; individual turns are never truncated.
   aligned_text_aligner:
-    hidden_channels: 64
-    num_flows: 4
+    # ST-TTS section 3.1.4 flow capacity; existing CAS/text prior is reused.
+    flow_type: sttts
+    hidden_channels: 128
+    num_flows: 6
+    coupling_num_layers: 4
+    coupling_kernel_size: 5
+    flow_n_split: 4
+    max_log_scale: null # Reference affine coupling uses an unconstrained log scale.
     num_text_layers: 2
     dequantization_noise: 0.01 # Continuous jitter for frozen quantized codec observations.
     mas_backend: auto # Triton on supported CUDA shapes; existing NeMo Numba MAS fallback.

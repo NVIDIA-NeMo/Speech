@@ -47,8 +47,12 @@ def main():
     )
     parser.add_argument('--audio-channels', type=int, default=80, help='Default: codec dimension 40, stacked by two')
     parser.add_argument('--text-channels', type=int, default=1536)
-    parser.add_argument('--hidden-channels', type=int, default=64)
-    parser.add_argument('--num-flows', type=int, default=4)
+    parser.add_argument('--flow-type', choices=['sttts', 'legacy'], default='sttts')
+    parser.add_argument('--hidden-channels', type=int, default=128)
+    parser.add_argument('--num-flows', type=int, default=6)
+    parser.add_argument('--coupling-num-layers', type=int, default=4)
+    parser.add_argument('--coupling-kernel-size', type=int, default=5)
+    parser.add_argument('--flow-n-split', type=int, default=4)
     parser.add_argument('--num-text-layers', type=int, default=2)
     parser.add_argument('--dequantization-noise', type=float, default=0.01)
     parser.add_argument('--cpu-threads', type=int, help='Optional PyTorch and Numba CPU thread count')
@@ -87,6 +91,10 @@ def main():
         hidden_channels=args.hidden_channels,
         num_flows=args.num_flows,
         num_text_layers=args.num_text_layers,
+        flow_type=args.flow_type,
+        coupling_num_layers=args.coupling_num_layers,
+        coupling_kernel_size=args.coupling_kernel_size,
+        flow_n_split=args.flow_n_split,
         dequantization_noise=args.dequantization_noise,
         mas_backend='auto',
     ).to(device)
@@ -109,8 +117,14 @@ def main():
             'hidden_channels': args.hidden_channels,
             'num_flows': args.num_flows,
             'num_text_layers': args.num_text_layers,
+            'flow_type': args.flow_type,
+            'coupling_num_layers': args.coupling_num_layers,
+            'coupling_kernel_size': args.coupling_kernel_size,
+            'flow_n_split': args.flow_n_split,
             'dequantization_noise': args.dequantization_noise,
             'parameters': sum(parameter.numel() for parameter in model.parameters()),
+            'text_encoder_parameters': sum(parameter.numel() for parameter in model.text_encoder.parameters()),
+            'audio_flow_parameters': sum(parameter.numel() for parameter in model.flow.parameters()),
             'trainable_parameters': sum(
                 parameter.numel() for parameter in model.parameters() if parameter.requires_grad
             ),

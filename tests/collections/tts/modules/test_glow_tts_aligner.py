@@ -38,7 +38,7 @@ def test_flow_inverse_and_jacobian(channels):
 
 def test_likelihood_includes_flow_jacobian_and_backpropagates():
     torch.manual_seed(21)
-    aligner = TinyGlowTTSAligner(4, 6, hidden_channels=8, num_flows=2, mas_backend='cpu').eval()
+    aligner = TinyGlowTTSAligner(4, 6, hidden_channels=8, num_flows=2, mas_backend='cpu', flow_type='legacy').eval()
     audio = torch.randn(2, 7, 4)
     text = torch.randn(2, 1, 6)
     audio_lens = torch.tensor([7, 5])
@@ -63,7 +63,7 @@ def test_likelihood_includes_flow_jacobian_and_backpropagates():
 
 def test_padding_cannot_change_valid_alignment_or_density():
     torch.manual_seed(22)
-    aligner = TinyGlowTTSAligner(4, 6, hidden_channels=8, num_flows=2, mas_backend='cpu').eval()
+    aligner = TinyGlowTTSAligner(4, 6, hidden_channels=8, num_flows=2, mas_backend='cpu', flow_type='legacy').eval()
     with torch.no_grad():
         for coupling in aligner.flow.couplings:
             coupling.output_projection.weight.normal_(std=0.05)
@@ -86,7 +86,7 @@ def test_padding_cannot_change_valid_alignment_or_density():
 
 def test_selected_frame_likelihood_and_gradients_match_dense_path_objective():
     torch.manual_seed(24)
-    aligner = TinyGlowTTSAligner(4, 6, hidden_channels=8, num_flows=2, mas_backend='cpu').eval()
+    aligner = TinyGlowTTSAligner(4, 6, hidden_channels=8, num_flows=2, mas_backend='cpu', flow_type='legacy').eval()
     with torch.no_grad():
         for coupling in aligner.flow.couplings:
             coupling.output_projection.weight.normal_(std=0.05)
@@ -124,7 +124,7 @@ def test_selected_frame_likelihood_and_gradients_match_dense_path_objective():
 
 @pytest.mark.parametrize('empty_audio,empty_text', [(False, False), (True, False), (False, True)])
 def test_invalid_only_batches_are_finite_and_keep_all_parameter_gradients(empty_audio, empty_text):
-    aligner = TinyGlowTTSAligner(4, 6, hidden_channels=8, num_flows=2, mas_backend='cpu')
+    aligner = TinyGlowTTSAligner(4, 6, hidden_channels=8, num_flows=2, mas_backend='cpu', flow_type='legacy')
     audio = torch.randn(2, 0 if empty_audio else 3, 4)
     text = torch.randn(2, 0 if empty_text else 4, 6)
     audio_lens = torch.tensor([audio.size(1), 0])
@@ -143,7 +143,7 @@ def test_likelihood_recovers_acoustically_distinct_segments():
         def forward(self, features, mask):
             return features * mask
 
-    aligner = TinyGlowTTSAligner(4, 4, hidden_channels=8, num_flows=2, mas_backend='cpu').eval()
+    aligner = TinyGlowTTSAligner(4, 4, hidden_channels=8, num_flows=2, mas_backend='cpu', flow_type='legacy').eval()
     aligner.text_encoder = IdentityPrior()
     text = torch.tensor([[[-3.0] * 4, [0.0] * 4, [3.0] * 4]])
     expected_indices = torch.tensor([[0, 0, 0, 1, 1, 2, 2, 2, 2]])
@@ -155,7 +155,7 @@ def test_likelihood_recovers_acoustically_distinct_segments():
 
 def test_bfloat16_autocast_preserves_float32_likelihood():
     torch.manual_seed(23)
-    aligner = TinyGlowTTSAligner(4, 6, hidden_channels=8, num_flows=2, mas_backend='cpu').eval()
+    aligner = TinyGlowTTSAligner(4, 6, hidden_channels=8, num_flows=2, mas_backend='cpu', flow_type='legacy').eval()
     audio, text = torch.randn(1, 7, 4), torch.randn(1, 3, 6)
     with torch.autocast('cpu', dtype=torch.bfloat16):
         output = aligner(audio, text, torch.tensor([7]), torch.tensor([3]))
@@ -163,7 +163,7 @@ def test_bfloat16_autocast_preserves_float32_likelihood():
     assert torch.isfinite(output.loss)
 
 
-def test_tiny_defaults_do_not_create_a_vocabulary_embedding():
+def test_reference_defaults_do_not_create_a_vocabulary_embedding():
     aligner = TinyGlowTTSAligner(audio_channels=40, text_channels=1024)
-    assert sum(parameter.numel() for parameter in aligner.parameters()) < 1_000_000
+    assert sum(parameter.numel() for parameter in aligner.parameters()) < 10_000_000
     assert not any(isinstance(module, nn.Embedding) for module in aligner.modules())

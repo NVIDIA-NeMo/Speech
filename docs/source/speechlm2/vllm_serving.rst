@@ -99,7 +99,9 @@ parameters before checkpoint loading, for both the target and MTP draft.
 MoE routers use FP32 weights, operands, and output logits, matching the
 Automodel training precision contract. Other language-model and perception
 weights retain their configured serving precision. FP32 SSM cache defaults
-are delegated to vLLM's NemotronH configuration hook.
+are delegated to vLLM's NemotronH configuration hook; with ReplaySSM, a
+bfloat16 cache is faster at the same accuracy (see
+:ref:`speechlm2-vllm-throughput-settings`).
 
 .. _speechlm2-vllm-encoder-cuda-graphs:
 
@@ -158,3 +160,33 @@ For example, a low-concurrency deployment of short clips:
 Both ``encoder_cuda_graphs`` and ``encoder_compile`` are off by default. If a capture fails, the encoder runs eagerly
 instead. With CTC timestamps enabled, the graphs also produce the alignment inputs, so requests that ask for
 timestamps are served from the same graphs.
+
+.. _speechlm2-vllm-throughput-settings:
+
+Throughput settings
+-------------------
+
+For high-throughput serving, especially of long recordings, serve the MTP checkpoint with:
+
+.. code-block:: bash
+
+   vllm serve /path/to/vllm-ready-speechlm-checkpoint \
+     --trust-remote-code \
+     --dtype bfloat16 \
+     --use-replayssm --mamba-backend flashinfer --mamba-cache-mode none \
+     --no-enable-prefix-caching \
+     --speculative-config '{"method": "mtp", "num_speculative_tokens": 3}' \
+     --hf-overrides '{"encoder_cuda_graphs": true, "encoder_compile": true}' \
+     --mamba-ssm-cache-dtype bfloat16 \
+     --api-server-count 4
+
+- ``encoder_cuda_graphs`` and ``encoder_compile`` (see :ref:`speechlm2-vllm-encoder-cuda-graphs`): a long recording
+  is encoded window by window in the engine step that admits it, so the requests being decoded wait for it; the
+  graphs replay those windows instead of launching their many small kernels one by one, and ``encoder_compile``
+  fuses the encoder's memory-bound operations into fewer kernels, changing its outputs at bf16 rounding level.
+- ``--mamba-ssm-cache-dtype bfloat16``: overrides the float32 Mamba state cache the checkpoint config asks for. With
+  ReplaySSM, the state is written to the cache only every ``--replayssm-buffer-len`` steps, so it is rounded to
+  bfloat16 once per write rather than once per step, and accuracy is unchanged. The smaller state makes each
+  decoding step cheaper.
+- ``--api-server-count 4``: four API-server processes prepare incoming audio in parallel, so a burst of long
+  recordings reaches the engine sooner. Each keeps its own multimodal processor cache (``--mm-processor-cache-gb``).

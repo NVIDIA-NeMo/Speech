@@ -604,3 +604,69 @@ def test_eartts_offline_generation(model):
     assert gen_audio.shape == (2, 17640)
     assert gen_audio_len[0] == gen_audio.size(-1)
     assert gen_audio.dtype == torch.float32
+
+
+@pytest.mark.parametrize("incremental_audio_decoding", [False, True])
+def test_eartts_offline_generation_audio_len_of_a_short_row_matches_the_row_alone(model, incremental_audio_decoding):
+    """A row with fewer text tokens than the batch width gets the audio length of the row generated alone."""
+    model.eval()
+    subword_ids = torch.ones(2, 10).long()
+    subword_lens = torch.tensor([10, 4])
+
+    model.set_init_inputs(
+        speaker_audio=torch.randn(1, 22050),
+        speaker_audio_lens=torch.tensor([22050]),
+    )
+    _, batched_lens = model.offline_inference(
+        next_subword_ids=subword_ids,
+        next_subword_lens=subword_lens,
+        init_inputs=model.get_init_inputs(B=2),
+        incremental_audio_decoding=incremental_audio_decoding,
+    )
+    _, short_alone_lens = model.offline_inference(
+        next_subword_ids=subword_ids[1:, :4],
+        init_inputs=model.get_init_inputs(B=1),
+        incremental_audio_decoding=incremental_audio_decoding,
+    )
+
+    assert batched_lens.tolist() == [10 * 1764, 4 * 1764]
+    assert batched_lens[1] == short_alone_lens[0]
+
+
+def test_eartts_evaluation_scores_each_row_on_its_own_audio_length(model, dataset, monkeypatch):
+    """run_evaluation_one_batch scores a shorter row on the audio of its own text frames, not the batch width."""
+    cuts = []
+    for idx, duration in enumerate((1.0, 0.6)):
+        cut = dummy_cut(
+            idx,
+            duration=duration,
+            recording=dummy_recording(idx, with_data=True, duration=duration, sampling_rate=22050),
+        )
+        cut.target_audio = dummy_recording(idx + 10, with_data=True, duration=duration, sampling_rate=22050)
+        cut.supervisions = [
+            SupervisionSegment(
+                id=cut.id, recording_id=cut.recording_id, start=0, duration=0.1, text='hi', speaker="user"
+            ),
+            SupervisionSegment(
+                id=cut.id, recording_id=cut.recording_id, start=0.3, duration=0.1, text='hello', speaker="assistant"
+            ),
+        ]
+        cuts.append(cut)
+    batch = move_data_to_device(dataset[CutSet(cuts)], device=model.device)
+    assert batch["target_token_lens"][0] > batch["target_token_lens"][1]
+
+    model.eval()
+    model.on_validation_epoch_start()
+    seen = {}
+    asr_bleu_update = model.asr_bleu.update
+
+    def spy(**kwargs):
+        seen.update(kwargs)
+        return asr_bleu_update(**kwargs)
+
+    monkeypatch.setattr(model.asr_bleu, "update", spy)
+    model.run_evaluation_one_batch("dummy_val_set", batch)
+
+    text_lens = batch["target_token_lens"] - torch.as_tensor(batch["prompt_lens"], device=model.device)
+    expected = (text_lens * model.target_samples_per_frame / model.target_sample_rate * 16000).to(torch.long)
+    assert seen["pred_audio_lens"].tolist() == expected.tolist()

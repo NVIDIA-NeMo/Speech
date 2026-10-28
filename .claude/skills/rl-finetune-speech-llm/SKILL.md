@@ -22,6 +22,7 @@ Paths beginning with `examples/` are relative to the Speech checkout. `$RL` mean
 | Preparing rows, prompts and rollout selection | [Data and signal](references/data-and-signal.md) |
 | Choosing a reward or a small-task preset | [Tasks and presets](references/tasks-and-presets.md) |
 | Installing, launching, exporting and evaluating | [Execution](references/execution.md) |
+| Running a small Mandarin–English experiment | [ASCEND end-to-end example](references/ascend-example.md) |
 | Understanding the underlying GSPO recipe | [NeMo-RL SpeechLM guide](https://github.com/NVIDIA-NeMo/RL/blob/main/docs/guides/gspo-speechlm.md) |
 | Reusing dataset preparation and task scoring | `examples/speechlm2/finetuning/README.md`, `task_metrics.py` in that directory |
 | Choosing SFT when RL has no useful signal | `../finetune-speech-llm/SKILL.md` |

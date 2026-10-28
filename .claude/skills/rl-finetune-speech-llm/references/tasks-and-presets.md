@@ -10,7 +10,7 @@ catalog of guaranteed wins. The tested full-scale recipe and small studies used 
 |---|---|---|
 | Word-based ASR | Built-in fractional `1-WER`; also score with the customer's fixed benchmark normalizer | One instruction matching reference style; language, accent, duration, insertion/deletion and empty output |
 | Mandarin ASR | Built-in CER path needs the optional public scoring API; otherwise a tested CER adapter | Preserve expected script; use the same character/space policy for mining and training |
-| Mandarin/English code switching | Adapter: `1-MER` with Chinese characters and English words | One verbatim, language-preserving instruction; Mandarin-only, English-only and mixed speech |
+| Mandarin/English code switching | ASCEND extension: `1-MER` with Chinese characters and English words | One verbatim, language-preserving instruction; Mandarin-only, English-only and mixed speech |
 | CommonLanguage / language ID | Adapter: binary exact canonical-label correctness | Fixed full label vocabulary, one-label-only response; strict accuracy, macro/per-class recall and invalid labels |
 | Speaker-attributed transcription | Define speaker/token normalization and permutation behavior explicitly | Dedicated speaker-tag prompt; score speaker attribution as well as words; plain WER is not cpWER |
 | Other audio tasks | Explicit verifiable task reward; existing ASR WER is not a general task reward | Match desired output and reference schema; use SFT if meaningful alternatives are absent |
@@ -22,13 +22,15 @@ Do not supply the answer language or class in a per-row prompt when inference mu
 
 ## Small task adapters
 
-The public ASR environment dispatches to `nemo_rl/environments/asr_reward.py`. At the reviewed recipe revision it
-supports WER and the Mandarin CER path, **not** `reward_metric="mer"` or `"accuracy_strict"`. Implement only the
-required dispatch branch, with pure CPU scoring and focused tests, in the customer's pinned RL source branch.
+The public ASR environment dispatches to `nemo_rl/environments/asr_reward.py`. The general recipe supports WER and
+Mandarin CER. The [ASCEND example](ascend-example.md) adds a small `reward_metric="mer"` branch and its matching
+Speech tokenizer; use both coordinated revisions. `"accuracy_strict"` still requires a task adapter. Implement only
+the missing dispatch branch, with pure CPU scoring and focused tests, in the customer's pinned RL source branch.
 Keep the native data processor, grouping, estimator, optimizer and exporter unchanged. Package the adapter on all
 reward-worker nodes; do not inject runtime monkey-patches.
 
-- **MER:** reuse `examples/speechlm2/finetuning/task_metrics.py:mer_tokens` from the pinned Speech version (or the
+- **MER:** use the example's `nemo.collections.speechlm2.parts.metrics.mer.mer_tokens`, tested against the existing
+  `examples/speechlm2/finetuning/task_metrics.py:mer_tokens` convention (or the
   customer's established benchmark tokenizer). Apply edit distance to its token lists and return `1 - edits/ref_units`.
   Test Chinese-only, English-only, mixed boundaries, punctuation, numerals and empty references. Do not use whitespace
   WER for Chinese or CER for English words. Record the explicit empty-reference rule.

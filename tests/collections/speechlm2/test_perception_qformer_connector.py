@@ -108,5 +108,5 @@ def test_perception_with_qformer_connector_batched_rows_match_single_rows(percep
 
     assert batched.shape == (2, PROMPT_SIZE, LLM_HIDDEN_SIZE)
     torch.testing.assert_close(batched[0], full_row[0])
-    torch.testing.assert_close(batched[1], short_row[0], atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(batched[1], short_row[0])
     assert batched_lens.tolist() == [PROMPT_SIZE, PROMPT_SIZE]

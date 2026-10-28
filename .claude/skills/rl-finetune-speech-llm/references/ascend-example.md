@@ -42,7 +42,10 @@ preserves the official development/test membership (1,130/1,315 rows). It writes
 a 32-row training pilot and `DATA_DONE.json` with membership, hashes and duration. The 500 recordings total about
 0.44 hours. Use the same seed/data revisions to reproduce this subset.
 
-Every row uses **“Transcribe the audio into text.”** with no system message and text before audio. The reference
+This reproduction uses **“Transcribe the audio into text.”** with no system message and text before audio. It is the
+historical experiment prompt, not the seed's established ASCEND benchmark prompt. For a new adaptation, start with
+the [task-specific prompt](tasks-and-presets.md#prompt-defaults) and remeasure seed quality and training signal;
+do not attribute a prompt-only gain to RL. The reference
 goes to the reward scorer, never into the model prompt. MER reward is `1 − edits/reference_units`, unbounded below;
 empty normalized references are rejected. It does not spell out numbers or translate mixed speech into one language.
 

@@ -18,7 +18,7 @@ Use Parquet with one recording/instruction per row. A minimal WER row is:
 }
 ```
 
-Read `$RL/nemo_rl/data/asr.py` and `data/datasets/response_datasets/response_dataset.py` at the selected revision.
+Read `$RL/nemo_rl/data/asr.py` and `$RL/nemo_rl/data/datasets/response_datasets/response_dataset.py` at the selected revision.
 The `messages` column preserves the extra fields through `ResponseDataset`; omitting it can discard audio/metadata.
 The ASR processor renders **`instruction + "\n<|audio|>"`**, with no system message or reference in the prompt.
 Keep `messages` and `instruction` consistent. Reference text belongs only in reward metadata.

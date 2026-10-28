@@ -131,7 +131,7 @@ The latest prebuilt NeMo Speech image is the
 .. code-block:: bash
 
    docker pull nvcr.io/nvidia/nemo-speech:26.07.00
-   docker run --rm -it --gpus all -v "$PWD:/workspace" nvcr.io/nvidia/nemo-speech:26.07.00 bash
+   docker run --rm -it --gpus all --shm-size=8g --ipc=host -v "$PWD:/workspace" nvcr.io/nvidia/nemo-speech:26.07.00 bash
 
 To build the container from source, use the provided ``docker/Dockerfile`` (CUDA 13 / H100+ by default):
 
@@ -140,7 +140,7 @@ To build the container from source, use the provided ``docker/Dockerfile`` (CUDA
    git clone https://github.com/NVIDIA-NeMo/Speech.git
    cd Speech
    docker buildx build -f docker/Dockerfile -t nemo-speech .          # CUDA 13 / H100+ (default)
-   docker run --rm -it --gpus all -v "$PWD:/workspace" nemo-speech bash
+   docker run --rm -it --gpus all --shm-size=8g --ipc=host -v "$PWD:/workspace" nemo-speech bash
 
 For A100, set ``GPU_TARGET=a100``. A100 works with **both CUDA 12 and CUDA 13** — CUDA 13 (the default base image) is recommended; the CUDA 12 base is offered only as a convenience:
 

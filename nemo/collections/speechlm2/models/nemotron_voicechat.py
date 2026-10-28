@@ -614,8 +614,12 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
 
         if decode_audio:
             gen_codes = gen_codes[:, : inference_state["T_local"]]
-            if not incremental_audio_decoding:
-                gen_audio_codes_lens = torch.tensor([gen_codes.shape[1]] * gen_codes.shape[0]).to(self.device)
+            # each row's audio ends with its own last frame (prompt and audio), not at the batch width
+            gen_audio_codes_lens = inference_state["lengths"].to(self.device)
+            if incremental_audio_decoding:
+                # the incremental path decodes the frames 1 to T-1
+                audio_pred_len = (gen_audio_codes_lens - 1) * self.tts_model.audio_codec.config.wav_to_token_ratio
+            else:
                 gen_audio_codes = gen_codes
                 with fp32_precision(), torch.no_grad():
                     audio_pred, audio_pred_len = self.tts_model.audio_codec.decode(

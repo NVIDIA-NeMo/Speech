@@ -335,3 +335,34 @@ def test_e2s_offline_generation(model):
     # 14 tokens = 24696 audio frames
     gen_audio = ans["audio"]
     assert gen_audio.shape == (1, 24696)
+
+
+@pytest.mark.parametrize("incremental_audio_decoding", [False, True])
+def test_e2s_offline_generation_audio_len_of_a_short_row_matches_the_row_alone(model, incremental_audio_decoding):
+    """The audio length of a row padded to a longer row equals the length of the row generated alone."""
+    model.eval()
+    torch.manual_seed(0)
+    audio = torch.randn(2, 16000, device=model.device)
+    audio[1, 8000:] = 0.0
+    audio_lens = torch.tensor([16000, 8000], device=model.device)
+    speaker_audio = torch.randn(2, 22050, device=model.device)
+    speaker_audio_lens = torch.tensor([22050, 22050], device=model.device)
+
+    batched = model.offline_inference(
+        audio,
+        audio_lens,
+        speaker_audio=speaker_audio,
+        speaker_audio_lens=speaker_audio_lens,
+        incremental_audio_decoding=incremental_audio_decoding,
+    )
+    short_alone = model.offline_inference(
+        audio[1:, :8000],
+        audio_lens[1:],
+        speaker_audio=speaker_audio[1:],
+        speaker_audio_lens=speaker_audio_lens[1:],
+        incremental_audio_decoding=incremental_audio_decoding,
+    )
+
+    assert batched["tokens_len"][1] == short_alone["tokens_len"][0]
+    assert batched["audio_len"][1] == short_alone["audio_len"][0]
+    assert short_alone["audio_len"][0] <= short_alone["audio"].shape[1]

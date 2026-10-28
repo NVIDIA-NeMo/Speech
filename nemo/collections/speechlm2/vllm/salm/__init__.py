@@ -231,7 +231,9 @@ def register():
 
     from nemo.collections.speechlm2.vllm.salm.config import NeMoSpeechLMConfig
 
-    AutoConfig.register("nemo_speechlm", NeMoSpeechLMConfig)
+    # `exist_ok`: Transformers versions that support this model natively also register `nemo_speechlm`; the plugin's
+    # config class then takes precedence in this process only (registered classes are looked up first).
+    AutoConfig.register("nemo_speechlm", NeMoSpeechLMConfig, exist_ok=True)
 
     from vllm.transformers_utils.config import _CONFIG_REGISTRY
 

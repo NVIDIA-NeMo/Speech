@@ -431,7 +431,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         decode_audio: bool = True,
         incremental_audio_decoding: bool = False,
         generation_config: dict = None,
-        guidance_enabled: bool = True,
+        guidance_enabled: bool | None = None,
     ) -> dict[str, torch.Tensor]:
         """
         Runs full offline duplex speech-to-speech inference.
@@ -479,6 +479,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
 
             guidance_enabled (bool, optional):
                 Enables classifier-free guidance.
+                ``None`` (default) takes ``inference_guidance_enabled`` from the TTS model config.
 
         Returns:
             dict[str, torch.Tensor]:
@@ -545,6 +546,8 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         )
         init_inputs = self.tts_model.get_init_inputs(B=B)
 
+        if guidance_enabled is None:
+            guidance_enabled = self.tts_model.inference_guidance_enabled
         if generation_config is None:
             generation_config = self.tts_model._get_generation_config(guidance_enabled)
 

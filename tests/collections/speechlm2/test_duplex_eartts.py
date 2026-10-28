@@ -604,3 +604,28 @@ def test_eartts_offline_generation(model):
     assert gen_audio.shape == (2, 17640)
     assert gen_audio_len[0] == gen_audio.size(-1)
     assert gen_audio.dtype == torch.float32
+
+
+def test_eartts_inference_guidance_follows_the_config(model, dataset, training_cutset_batch, monkeypatch):
+    """The validation entry points take `inference_guidance_enabled` from the config; an argument still wins."""
+    model.eval()
+    assert model.cfg.inference_guidance_enabled is False
+    seen = []
+    get_generation_config = model._get_generation_config
+
+    def spy(guidance_enabled=False):
+        seen.append(guidance_enabled)
+        return get_generation_config(guidance_enabled=guidance_enabled)
+
+    monkeypatch.setattr(model, "_get_generation_config", spy)
+    model.set_init_inputs(speaker_audio=torch.randn(1, 22050), speaker_audio_lens=torch.tensor([22050]))
+    subword_ids = torch.ones(1, 4).long()
+    batch = move_data_to_device(dataset[training_cutset_batch], device=model.device)
+
+    model.offline_inference(next_subword_ids=subword_ids, init_inputs=model.get_init_inputs(B=1))
+    model.get_teacher_force_inference_audio(batch)
+    model.offline_inference(
+        next_subword_ids=subword_ids, init_inputs=model.get_init_inputs(B=1), guidance_enabled=True
+    )
+
+    assert seen == [False, False, True]

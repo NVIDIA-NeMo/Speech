@@ -604,3 +604,32 @@ def test_eartts_offline_generation(model):
     assert gen_audio.shape == (2, 17640)
     assert gen_audio_len[0] == gen_audio.size(-1)
     assert gen_audio.dtype == torch.float32
+
+
+def test_set_init_inputs_takes_the_batch_system_prompts_and_rejects_different_ones(model, monkeypatch):
+    """A list with one prompt per row behaves like the string; different prompts in one batch fail loudly."""
+    model.eval()
+    monkeypatch.setitem(model.cfg, "use_system_prompt", True)
+    speaker_audio = torch.randn(2, 22050)
+    speaker_audio_lens = torch.tensor([22050, 22050])
+
+    model.set_init_inputs(
+        speaker_audio=speaker_audio, speaker_audio_lens=speaker_audio_lens, system_prompt="Speak slowly."
+    )
+    from_string = model.get_init_inputs(B=2)
+    model.set_init_inputs(
+        speaker_audio=speaker_audio,
+        speaker_audio_lens=speaker_audio_lens,
+        system_prompt=["Speak slowly.", "Speak slowly."],
+    )
+    from_list = model.get_init_inputs(B=2)
+    assert from_list.keys() == from_string.keys()
+    for key, value in from_string.items():
+        assert (value is None and from_list[key] is None) or torch.equal(from_list[key], value)
+
+    with pytest.raises(ValueError, match="different system prompts"):
+        model.set_init_inputs(
+            speaker_audio=speaker_audio,
+            speaker_audio_lens=speaker_audio_lens,
+            system_prompt=["Speak slowly.", "Shout."],
+        )

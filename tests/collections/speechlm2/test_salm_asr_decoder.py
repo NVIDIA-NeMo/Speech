@@ -13,11 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 import torch
 from lhotse import CutSet, SupervisionSegment
 from lhotse.testing.dummies import dummy_cut, dummy_recording
+from omegaconf import DictConfig
 from transformers import GenerationConfig
 
 from nemo.collections.common.data.lhotse import NeMoMultimodalConversation
@@ -25,7 +28,8 @@ from nemo.collections.common.data.lhotse.text_adapters import AudioTurn, TextTur
 from nemo.collections.common.data.utils import move_data_to_device
 from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.speechlm2.data import SALMDataset
-from nemo.collections.speechlm2.models.salm_asr_decoder import SALMWithAsrDecoder
+from nemo.collections.speechlm2.models.salm_asr_decoder import SALMWithAsrDecoder, setup_speech_encoder_with_asr
+from nemo.collections.speechlm2.modules.perception import AudioTranscriptionPerceptionModule
 
 if torch.cuda.is_available():
     torch.set_default_device('cuda')
@@ -273,3 +277,45 @@ def test_salm_generation_prompts_as_tensor(model):
     assert answer.dtype == torch.long
     assert (answer >= 0).all()
     assert (answer < model.text_vocab_size).all()
+
+
+def _perception_stub(target: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        cfg=DictConfig({"pretrained_asr": "unused", "perception": {"target": target}}),
+        llm=SimpleNamespace(config=SimpleNamespace(hidden_size=8)),
+    )
+
+
+def test_setup_speech_encoder_with_asr_rejects_a_perception_target_without_asr_decoder():
+    """perception.target is read; a class that is not the transcription module fails loudly instead of silently."""
+    stub = _perception_stub("nemo.collections.speechlm2.modules.perception.IdentityConnector")
+    with pytest.raises(TypeError, match="perception.target"):
+        setup_speech_encoder_with_asr(stub, pretrained_weights=False)
+
+
+def test_setup_speech_encoder_with_asr_maps_the_legacy_perception_target(monkeypatch):
+    """Configs and checkpoints from the shipped salm_asr_decoder.yaml, which named the plain module, keep working."""
+    from nemo.collections.speechlm2.models import salm_asr_decoder
+
+    built = MagicMock()
+    resolved = []
+    warnings = []
+
+    def resolve(target, base, option):
+        resolved.append((target, base, option))
+        return built
+
+    monkeypatch.setattr(salm_asr_decoder, "resolve_target_class", resolve)
+    monkeypatch.setattr(salm_asr_decoder.logging, "warning", warnings.append)
+    stub = _perception_stub("nemo.collections.speechlm2.modules.perception.AudioPerceptionModule")
+
+    setup_speech_encoder_with_asr(stub, pretrained_weights=False)
+
+    transcription_target = (
+        f"{AudioTranscriptionPerceptionModule.__module__}.{AudioTranscriptionPerceptionModule.__name__}"
+    )
+    assert resolved == [(transcription_target, AudioTranscriptionPerceptionModule, "perception.target")]
+    built.assert_called_once_with(stub.cfg.perception, "unused")
+    assert len(warnings) == 1 and "perception.target" in warnings[0]
+    # the saved config names the class that was built
+    assert stub.cfg.perception.target == transcription_target

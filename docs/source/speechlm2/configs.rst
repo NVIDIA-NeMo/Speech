@@ -61,6 +61,7 @@ See the `SALM paper <https://arxiv.org/abs/2310.09424>`_ for more details.
       
       # Audio perception module configuration
       perception:
+        # the perception class to build (SALMWithAsrDecoder needs AudioTranscriptionPerceptionModule)
         target: nemo.collections.speechlm2.modules.perception.AudioPerceptionModule
         
         preprocessor:

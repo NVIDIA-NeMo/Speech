@@ -122,7 +122,8 @@ class NemotronTTSModelV2(NemotronTTSBaseV2):
         self.parallel_codebook_loss_scale = cfg.get('parallel_codebook_loss_scale', 1.0)
         self.acoustic_codes_predictor_loss_scale = cfg.get('acoustic_codes_predictor_loss_scale', 1.0)
 
-        self.cross_entropy_loss = nn.CrossEntropyLoss(reduction='none')
+        self.label_smoothing = cfg.get('label_smoothing', 0.1)
+        self.cross_entropy_loss = nn.CrossEntropyLoss(reduction='none', label_smoothing=self.label_smoothing)
 
         if 'feature_masking' in cfg:
             self.feature_masking = safe_instantiate(cfg.feature_masking)
@@ -132,6 +133,12 @@ class NemotronTTSModelV2(NemotronTTSBaseV2):
         # Validation inference with metrics (optional)
         self.run_val_inference = cfg.get('run_val_inference', False)
         self.use_multilingual_asr = cfg.get('use_multilingual_asr', False)
+        self.val_max_decoder_steps = cfg.get('val_max_decoder_steps', 330)
+        self.val_temperature = cfg.get('val_temperature', 0.5)
+        self.val_topk = cfg.get('val_topk', 10)
+        self.use_cfg_in_val = cfg.get('inference_use_cfg_in_val', True)
+        self.val_cfg_scale = cfg.get('val_cfg_scale', 2.5)
+
         if self.run_val_inference:
             logging.info("Loading eval models for validation inference (ASR and speaker verification)...")
             if self.use_multilingual_asr:
@@ -1276,6 +1283,7 @@ class NemotronTTSModelV2(NemotronTTSBaseV2):
             lengths=combined_channel_lens,
             loss_mask=predictor_loss_mask,
             feature_masking=self.feature_masking if dropout_audio_conditioning else None,
+            label_smoothing=self.label_smoothing,
         )
         loss = loss + self.acoustic_codes_predictor_loss_scale * acoustic_codes_predictor_loss
 
@@ -1695,11 +1703,11 @@ class NemotronTTSModelV2(NemotronTTSBaseV2):
         if self.run_val_inference:
             infer_output = self.infer_batch(
                 batch,
-                max_decoder_steps=330,
-                temperature=0.7,
-                topk=80,
-                use_cfg=self.cfg.get('inference_use_cfg_in_val', True),
-                cfg_scale=2.5,
+                max_decoder_steps=self.val_max_decoder_steps,
+                temperature=self.val_temperature,
+                topk=self.val_topk,
+                use_cfg=self.use_cfg_in_val,
+                cfg_scale=self.val_cfg_scale,
             )
 
             # Get audio output directory

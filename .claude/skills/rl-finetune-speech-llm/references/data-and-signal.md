@@ -116,6 +116,13 @@ protected capabilities. Audit a few high-spread examples against audio to exclud
 where useful contrast per GPU-hour is high **and** coverage is needed. Relax a selection threshold before spending
 64 samples on every candidate, but record the change and its effect on accepted quality/yield.
 
+When improving X while preserving Y, select an explicit mix of training recordings representative of both domains
+and their deployment tasks/prompts. Use Y's training split or a separate matching corpus, never its held-out
+development/evaluation recordings. Measure selection yield and reward variation separately for X and Y; easy Y
+examples with identical rewards provide zero advantage. Track each domain's retained groups and distinct
+contributors after online filtering, which can change the intended mixture substantially. Tune the training mix
+on development scores for both domains within the agreed retention tolerance. No fixed ratio guarantees retention.
+
 Offline selection chooses recordings and prompts, **not saved target responses for replay**. GSPO generates fresh
 responses on-policy. Publish the selected Parquet, its hash, membership and source/signal counts; retain the raw mining
 results. Early small releases can start training while further train-only mining proceeds, but freeze each run's input.

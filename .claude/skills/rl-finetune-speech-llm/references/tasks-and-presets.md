@@ -80,6 +80,12 @@ no-training comparator; some classes had no positive samples and Chinese regiona
 Neither study establishes a general 20% relative improvement expectation. These observations motivate the slices and
 stopping decisions above, not a new objective or universal quota.
 
+For ASCEND adaptation, combine mixed-speech target examples with informative English-only training examples.
+If general-English ASR must also be preserved, include training data representative of that protected domain.
+The original 500-recording ASCEND pool already contained 123 English-only recordings, but English-only groups
+accounted for 73 of the 400 retained group presentations. This motivates checking effective coverage; it does not
+establish that the mixture caused the English regression or that increasing its English share will fix it.
+
 Start with `1e-6`. A `5e-7` comparison is a reasonable **proposed** lower-LR option when retention or drift limits the
 first run; it is not a validated winner. Compare from the same seed/data with a fresh optimizer/output directory and
 the same update budget. Do not change LR, prompt, reward and batch simultaneously if the purpose is diagnosis.

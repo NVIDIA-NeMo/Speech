@@ -87,6 +87,11 @@ protected-task coverage; avoid filling the dataset solely with the largest rewar
 only by normalization quirks are not useful task signal. The oracle best-of-samples score is an opportunity estimate,
 not an expected trained-model score.
 
+To improve task/domain X while preserving Y, include representative **training data from both** in the RL mix.
+Keep development and evaluation examples out of that mix. Mine useful reward variation in each domain and track
+their actual retained groups; merely evaluating Y, or adding Y examples whose rewards are all equal, supplies no
+retention learning signal. Adjust the mixture using development results for both X and Y.
+
 If meaningful contrasts are scarce, inspect reward correctness, references and prompts, then sample a different
 training stratum. If the model still cannot produce useful answers, explain the evidence and recommend SFT or new
 data. Do not spend a long RL run trying to manufacture a capability absent from its samples.

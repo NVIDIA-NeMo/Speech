@@ -145,9 +145,15 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 self._eval_asr_model.freeze()
                 self.whisper_processor = None
                 self.whisper_model = None
-            self._eval_speaker_verification_model = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(
-                model_name='titanet_large'
-            )
+            speaker_model_path = cfg.get('speaker_verification_model_path')
+            if speaker_model_path:
+                self._eval_speaker_verification_model = nemo_asr.models.EncDecSpeakerLabelModel.restore_from(
+                    restore_path=speaker_model_path
+                )
+            else:
+                self._eval_speaker_verification_model = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(
+                    model_name='titanet_large'
+                )
             self._eval_speaker_verification_model.freeze()
             logging.info("Eval models loaded successfully.")
 
@@ -1295,6 +1301,42 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             audio_lens = batch['audio_lens']
             audio_codes, audio_codes_lens = self._codec_helper.audio_to_codes(audio, audio_lens)
 
+        replay_streams = batch.get("replay_streams")
+        replay_sources = batch.get("replay_sources")
+        languages = batch.get("languages")
+        target_audio_lens = batch.get("audio_lens")
+        if replay_streams and replay_sources and languages and target_audio_lens is not None:
+            for stream in sorted(set(replay_streams) - {"non_replay"}):
+                self.log(
+                    f"train/exposure/{stream}_batches",
+                    1.0,
+                    on_step=True,
+                    on_epoch=False,
+                    rank_zero_only=True,
+                )
+            exposure_groups = {}
+            for sample_index, (stream, source, language) in enumerate(zip(replay_streams, replay_sources, languages)):
+                if stream == "non_replay":
+                    continue
+                exposure_groups.setdefault((stream, source, language), []).append(sample_index)
+            for (stream, source, language), indices in exposure_groups.items():
+                index_tensor = torch.tensor(indices, device=target_audio_lens.device, dtype=torch.long)
+                audio_seconds = target_audio_lens.index_select(0, index_tensor).sum().float() / float(self.sample_rate)
+                self.log(
+                    f"train/exposure/{stream}/{source}/{language}_cuts",
+                    float(len(indices)),
+                    on_step=True,
+                    on_epoch=False,
+                    rank_zero_only=True,
+                )
+                self.log(
+                    f"train/exposure/{stream}/{source}/{language}_audio_seconds",
+                    audio_seconds,
+                    on_step=True,
+                    on_epoch=False,
+                    rank_zero_only=True,
+                )
+
         if (
             self.cfg.get("use_multiturn_dataset", False)
             and batch["user_audio_turn_splitted"] is not None
@@ -1913,6 +1955,16 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                         torch.tensor(np.mean(lang_wer[lang]), device=self.device),
                         prog_bar=True,
                         sync_dist=True,
+                    )
+                if lang_cer:
+                    macro_cer = float(np.mean([np.mean(values) for values in lang_cer.values()]))
+                    self.log(
+                        "val/cer_macro_lang", torch.tensor(macro_cer, device=self.device), prog_bar=True, sync_dist=True
+                    )
+                if lang_wer:
+                    macro_wer = float(np.mean([np.mean(values) for values in lang_wer.values()]))
+                    self.log(
+                        "val/wer_macro_lang", torch.tensor(macro_wer, device=self.device), prog_bar=True, sync_dist=True
                     )
 
         self.validation_step_outputs.clear()  # free memory

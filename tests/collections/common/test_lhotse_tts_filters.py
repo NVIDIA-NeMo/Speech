@@ -21,6 +21,7 @@ from nemo.collections.common.data.lhotse.sampling import (
     CERFilter,
     ContextSpeakerSimilarityFilter,
     SpeakerFilter,
+    SupervisionCustomFieldsFilter,
     ValidationStatusFilter,
 )
 
@@ -57,6 +58,11 @@ def cut_example():
                     'context_audio_duration': 14.64,
                     'context_audio_text': 'Uat gives an excellent illustration of the effects of a course of selection, which may be considered as unconscious, insofar that the breeders could never have expected, or even wished, to produce the result which ensued,',
                     'context_recording_id': 'rec-Zdud2gXLTXY',
+                    'valid_tn_raw_transcript': True,
+                    'valid_ipa': True,
+                    'early_cut_off': False,
+                    'valid_context_audio_text': True,
+                    'context_audio_text_overlap': 0.49,
                 },
                 alignment=None,
             )
@@ -142,6 +148,27 @@ def test_cut_validation_status_filter(cut_example):
 
     f = ValidationStatusFilter("any_other_status")
     assert f(cut_example) == False
+
+
+def test_supervision_custom_fields_filter(cut_example):
+    config = {
+        "equals": {
+            "valid_tn_raw_transcript": True,
+            "valid_ipa": True,
+            "early_cut_off": False,
+            "valid_context_audio_text": True,
+        },
+        "less_than": {"context_audio_text_overlap": 0.5},
+    }
+    assert SupervisionCustomFieldsFilter(config)(cut_example)
+
+    cut_example.supervisions[0].context_audio_text_overlap = 0.5
+    assert not SupervisionCustomFieldsFilter(config)(cut_example)
+
+
+def test_supervision_custom_fields_filter_rejects_missing_field(cut_example):
+    config = {"equals": {"field_that_does_not_exist": True}}
+    assert not SupervisionCustomFieldsFilter(config)(cut_example)
 
 
 def test_cut_speaker_filter_by_speaker(cut_example):

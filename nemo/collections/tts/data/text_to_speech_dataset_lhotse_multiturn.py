@@ -407,6 +407,12 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             else next((sup.language for sup in reversed(cut.supervisions) if sup.has_custom("language")), "en")
         )
 
+    def _get_replay_stream(self, cut: Cut) -> str:
+        return cut.replay_stream if cut.has_custom("replay_stream") else "non_replay"
+
+    def _get_replay_source(self, cut: Cut) -> str:
+        return cut.replay_source if cut.has_custom("replay_source") else "unknown"
+
     def _load_cached_codes(self, cut: Cut) -> tuple[Union[torch.Tensor, None], Union[torch.Tensor, None]]:
         target_codes = None
         source_codes = None
@@ -617,11 +623,15 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             "has_text_context": [],
             "rewards": [],
             "languages": [],
+            "replay_streams": [],
+            "replay_sources": [],
         }
 
         for i, cut in enumerate(cuts):
             features["dataset_names"].append(self._get_dataset_name(cut))
 
+            features["replay_streams"].append(self._get_replay_stream(cut))
+            features["replay_sources"].append(self._get_replay_source(cut))
             language = self._get_language(cut)
             features["languages"].append(language)
             context_text = next((sup.context_text for sup in cut.supervisions if sup.has_custom("context_text")), None)
@@ -735,6 +745,8 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         batch_dict = {
             "sample_id": [str(cut.id) for cut in cuts],
             "dataset_names": features["dataset_names"],
+            "replay_streams": features["replay_streams"],
+            "replay_sources": features["replay_sources"],
             "languages": features["languages"],
             "source_audio": audio_data["source_audio"],
             "source_audio_lens": audio_data["source_audio_lens"],

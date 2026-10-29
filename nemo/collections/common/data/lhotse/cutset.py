@@ -41,6 +41,7 @@ from nemo.collections.common.data.lhotse.nemo_adapters import (
     LazyParquetIterator,
     expand_sharded_filepaths,
 )
+from nemo.collections.common.data.lhotse.sampling import SupervisionCustomFieldsFilter
 from nemo.collections.common.data.lhotse.text_adapters import (
     AudioTurn,
     LhotseTextAdapter,
@@ -785,6 +786,8 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
         if indexes_root is not None:
             from_file_kwargs["index_path"] = index_file_path(path, indexes_root)
         cuts = CutSet.from_file(path, **from_file_kwargs).map(partial(resolve_relative_paths, manifest_path=path))
+    if filter_config := config.get("supervision_custom_fields_filter"):
+        cuts = cuts.filter(SupervisionCustomFieldsFilter(filter_config))
     return cuts, is_tarred
 
 

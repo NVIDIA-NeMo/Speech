@@ -15,7 +15,7 @@
 import math
 from bisect import bisect_left
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 from lhotse.cut import Cut, MonoCut
@@ -286,6 +286,39 @@ class ValidationStatusFilter:
             return False
         else:
             return True
+
+
+class SupervisionCustomFieldsFilter:
+    """
+    Filter cuts by equality and strict upper-bound predicates on the first
+    supervision's custom fields.
+
+    Missing fields fail the predicate. Objects other than cuts pass through.
+    """
+
+    def __init__(self, config: Mapping[str, Mapping[str, Any]]) -> None:
+        self.equals = dict(config.get("equals") or {})
+        self.less_than = dict(config.get("less_than") or {})
+
+    def __call__(self, example) -> bool:
+        if not isinstance(example, Cut):
+            return True
+        if not example.supervisions:
+            return False
+
+        supervision = example.supervisions[0]
+        for field, expected in self.equals.items():
+            if not supervision.has_custom(field) or getattr(supervision, field) != expected:
+                return False
+        for field, upper_bound in self.less_than.items():
+            if not supervision.has_custom(field):
+                return False
+            try:
+                if not float(getattr(supervision, field)) < float(upper_bound):
+                    return False
+            except (TypeError, ValueError):
+                return False
+        return True
 
 
 class CERFilter:

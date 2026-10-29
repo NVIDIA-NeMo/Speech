@@ -17,6 +17,7 @@ import random
 import tempfile
 import time
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from functools import partial
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -792,6 +793,89 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
             self.load_state_dict(checkpoint_state, strict=True)
             logging.info(f"Model restored from the checkpoint: {checkpoint_path} !")
+
+    def restore_text_speech_aligner_from_pretrained_checkpoint(self, checkpoint_path):
+        """Restore only the configured text-speech aligner, requiring a complete architecture match.
+
+        Accepts a full ``.nemo`` archive, a PyTorch model state dictionary, a Lightning checkpoint,
+        or a bare aligner state dictionary. Other model weights and checkpoint configuration are ignored.
+        ``None`` leaves the model unchanged. Alignment must already be enabled in the model configuration.
+        PyTorch/Lightning checkpoint files must be trusted: their training metadata requires pickle loading.
+        """
+        if checkpoint_path is None:
+            return
+        aligner = getattr(self, 'text_aligner', None)
+        if aligner is None:
+            raise ValueError(
+                'pretrained_model_text_speech_aligner requires use_aligned_text_head=true '
+                'or use_attention_alignment=true so that the model has a text_aligner.'
+            )
+
+        source_path = str(checkpoint_path)
+        if source_path.lower().endswith('.nemo'):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                SaveRestoreConnector._unpack_nemo_file(source_path, tmpdir)
+                checkpoint_state = torch.load(f'{tmpdir}/model_weights.ckpt', map_location='cpu', weights_only=True)
+        else:
+            checkpoint_state = torch.load(source_path, map_location='cpu', weights_only=False)
+        if isinstance(checkpoint_state, Mapping) and 'state_dict' in checkpoint_state:
+            checkpoint_state = checkpoint_state['state_dict']
+        if not isinstance(checkpoint_state, Mapping):
+            raise ValueError(f'Checkpoint {source_path!r} does not contain a model state dictionary.')
+
+        expected_state = aligner.state_dict()
+        normalized_state = {}
+        wrappers = ('model.', 'module.', '_orig_mod.')
+        for key, value in checkpoint_state.items():
+            if not isinstance(key, str):
+                raise ValueError(f'Checkpoint {source_path!r} contains a non-string state dictionary key.')
+            while key.startswith(wrappers):
+                key = key.split('.', 1)[1]
+            if key in normalized_state:
+                raise ValueError(f'Checkpoint {source_path!r} contains duplicate unwrapped state key {key!r}.')
+            normalized_state[key] = value
+
+        prefix = 'text_aligner.'
+        aligner_state = {
+            key[len(prefix) :]: value for key, value in normalized_state.items() if key.startswith(prefix)
+        }
+        if not aligner_state:
+            # A bare aligner state has no module prefix; a full model without aligner weights must fail.
+            if not expected_state.keys() & normalized_state.keys():
+                raise ValueError(f'Checkpoint {source_path!r} contains no text_aligner weights.')
+            aligner_state = normalized_state
+
+        missing = sorted(expected_state.keys() - aligner_state.keys())
+        unexpected = sorted(aligner_state.keys() - expected_state.keys())
+        incompatible = []
+        for key in expected_state.keys() & aligner_state.keys():
+            value = aligner_state[key]
+            if not isinstance(value, torch.Tensor):
+                incompatible.append(f'{key}: expected a tensor, got {type(value).__name__}')
+            elif value.shape != expected_state[key].shape:
+                incompatible.append(
+                    f'{key}: checkpoint {tuple(value.shape)}, model {tuple(expected_state[key].shape)}'
+                )
+        if missing or unexpected or incompatible:
+            details = []
+            for label, entries in (
+                ('missing keys', missing),
+                ('unexpected keys', unexpected),
+                ('incompatible tensors', sorted(incompatible)),
+            ):
+                if entries:
+                    details.append(f'{label}: {entries[:8]}' + (f' (of {len(entries)})' if len(entries) > 8 else ''))
+            raise ValueError(
+                f'Checkpoint {source_path!r} is incompatible with the configured text_aligner; '
+                + '; '.join(details)
+                + '. Configure aligned_text_aligner to match the source, including speaker conditioning.'
+            )
+
+        # Validate the complete state before loading: PyTorch strict loading alone can partially copy weights.
+        aligner.load_state_dict(aligner_state, strict=True)
+        logging.info(
+            f'Text-speech aligner restored from the checkpoint: {source_path} ({len(aligner_state)} tensors).'
+        )
 
     def _generate_codec_silence_buffer(self):
         """Generate and cache representative codec tokens for a silent waveform."""

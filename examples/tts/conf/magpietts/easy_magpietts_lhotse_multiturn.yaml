@@ -1,5 +1,9 @@
 name: Magpie-TTS-DecoderOnly-EN
 
+# Optional teacher-only initialization, applied after full-model pretrained initialization.
+# Requires an enabled alignment mode and matching model.aligned_text_aligner settings.
+pretrained_model_text_speech_aligner: null
+
 quadratic_duration: 20
 
 # Adjust batch size based on GPU memory

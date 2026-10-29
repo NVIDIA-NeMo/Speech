@@ -24,10 +24,41 @@ The initial implementation requires `decoder_type=nemotron_h` and
 unchanged; teacher requests are rejected during cached decoding.
 
 Start from the original good TTS checkpoint using partial pretrained
-initialization. The added flow parameters must be initialized and trained; do
-not resume an optimizer from a checkpoint with an incompatible module layout.
-Completed attention-alignment checkpoints retain their complete configuration
-and teacher weights for restoration.
+initialization. To reuse a trained aligner from another checkpoint, set the
+top-level `pretrained_model_text_speech_aligner` parameter:
+
+```bash
+++pretrained_model=/path/to/base_tts.nemo \
+++pretrained_model_text_speech_aligner=/path/to/trained_aligner.nemo \
+++model.use_attention_alignment=true \
+++model.use_aligned_text_head=false \
+++model.aligned_text_feedback=false
+```
+
+The aligner-only load runs after `pretrained_model` and NeMo's `init_from_*`
+initialization. It restores only `text_aligner`: the flow, small text encoder,
+and optional speaker encoder. Decoder, shared text embeddings, repeated text
+head, optimizer and source configuration are not loaded by this parameter.
+Full `.nemo` archives, flat PyTorch state dictionaries, Lightning `state_dict`
+checkpoints and bare aligner state dictionaries are supported.
+PyTorch/Lightning files must be trusted; their metadata uses ordinary pickle
+deserialization. `.nemo` tensor weights use restricted loading. The receiving
+`model.aligned_text_aligner` configuration must match all teacher keys and tensor
+shapes, including speaker conditioning; mismatches fail before weights are
+copied. The source must use the same text tokenizer and acoustic representation;
+these semantics cannot be verified from tensor shapes. A separately trained
+teacher also depends on compatible shared text embeddings, which are retained
+from the base TTS checkpoint.
+
+The parameter defaults to `null` and never enables an alignment mode implicitly.
+`use_attention_alignment` remains `false` by default. A pretrained teacher does
+not change the attention schedule; set `model.attention_alignment.start_step=0`
+explicitly if guidance should begin without the usual warmup.
+
+Do not resume an optimizer from a checkpoint with an incompatible module layout.
+Trainer checkpoint resume restores the complete training state after these
+initializations, overriding them. Completed attention-alignment checkpoints
+retain their complete configuration and teacher weights for restoration.
 
 ## What is supervised
 

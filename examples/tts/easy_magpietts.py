@@ -71,6 +71,10 @@ def main(cfg):
 
     model.maybe_init_from_pretrained_checkpoint(cfg=cfg)
 
+    # Override only the teacher after any full-model initialization.
+    if cfg.get("pretrained_model_text_speech_aligner", None):
+        model.restore_text_speech_aligner_from_pretrained_checkpoint(cfg.pretrained_model_text_speech_aligner)
+
     if mode == 'onlinepo_train' and trainer.ckpt_path is None:
         trainer.validate(model)
 

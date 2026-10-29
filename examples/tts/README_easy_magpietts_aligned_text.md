@@ -14,6 +14,15 @@ The existing aligner recipe can use these two overrides unchanged. Defaults are
 declared in `conf/magpietts/easy_magpietts_lhotse_multiturn.yaml`. Disabling the
 feature creates no additional modules and preserves the original training path.
 
+To initialize only the teacher from an existing checkpoint, set the top-level
+`pretrained_model_text_speech_aligner=/path/to/checkpoint.nemo`. It loads only
+`text_aligner` after full-model pretrained initialization; the repeated text head
+and shared embeddings keep their current weights. Configure
+`model.aligned_text_aligner` to match the source teacher exactly. This optional
+parameter defaults to `null` and does not alter the curriculum switch. See the
+[attention alignment initialization notes](README_easy_magpietts_attention_alignment.md)
+for supported formats, compatibility requirements and resume behavior.
+
 ## Training
 
 The loader selects `normalized_text` when it is a nonempty string, otherwise

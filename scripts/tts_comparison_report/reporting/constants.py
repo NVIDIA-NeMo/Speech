@@ -38,6 +38,13 @@ BENCHMARK_META: dict[str, str] = {
     'cmltts_pt': 'pt',
     'vivos': 'vi',
     'mscenespeech': 'zh',
+    **{
+        f'portable_{language}': language
+        for language in (
+            'ar bg cs da de el en es et fi fr hi hr hu it ja ko lt lv nl '
+            'pl pt ro ru sk sl sv uk vi zh'
+        ).split()
+    },
 }
 
 SUPPORTED_BENCHMARK_NAMES: list[str] = list(BENCHMARK_META.keys())

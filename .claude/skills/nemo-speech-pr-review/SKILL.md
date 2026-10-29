@@ -92,6 +92,12 @@ Each rule is a position the maintainer enforced repeatedly. General good practic
   high-level APIs such as `transcribe()` built on top of those methods. A model variant that departs far from the
   shared workflow gets its own minimal files, not branches in shared ones; evaluation and export are separate
   scripts.
+- **New models plug into the collection's high-level API.** Expose `transcribe()` or `diarize()` through the
+  collection's mixin, with a test.
+- **Example scripts stay thin.** Logic another script could reuse belongs in `nemo/collections/<collection>/parts/`
+  with unit tests, not in `examples/`.
+- **Library code raises and logs.** Under `nemo/`, report user-facing errors with exceptions and
+  `nemo.utils.logging`, never `print` or `assert`. Both are fine in `scripts/` and tests.
 - **Shortcuts are acceptable when labeled.** Early-stage hacks may merge if unsupported paths raise
   `NotImplementedError` or a comment states what must replace them.
 
@@ -128,6 +134,9 @@ Each rule is a position the maintainer enforced repeatedly. General good practic
 - **Test through the real path.** New dataloader options go through `get_lhotse_dataloader_from_config`; new
   datasets get an end-to-end load and a collation check with a batch of at least two; model changes run on a small
   model or a released checkpoint.
+- **New scripts and model paths get a functional test** in `tests/functional_tests/`: a fast-dev-run for
+  training, or an inference run that checks a WER, CER, or similar threshold. Load a `.nemo` checkpoint and local
+  CI test data, not Hugging Face downloads.
 - **Isolate tests.** Add new fixtures and test files instead of changing shared ones. Seed statistical tests.
 
 ### Docs and diffs

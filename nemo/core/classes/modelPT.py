@@ -256,7 +256,8 @@ class ModelPT(LightningModule, Model):
                 else:
                     an error will be raised.
 
-        Archive references must resolve within the extracted model directory.
+        Archive references must resolve within the extracted model directory. During restoration,
+        local names also refer to bundled files unless the runtime ``SaveRestoreConnector`` allows external artifacts.
 
         WARNING: use .register_artifact calls in your models' constructors.
         The returned path is not guaranteed to exist after you have exited your model's constructor.

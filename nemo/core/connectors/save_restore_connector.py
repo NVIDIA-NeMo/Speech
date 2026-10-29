@@ -22,6 +22,7 @@ import tempfile
 import time
 import uuid
 from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
 from pathlib import PurePosixPath
 from typing import Callable, Generator, Optional, Set, Union
 
@@ -43,13 +44,22 @@ from nemo.utils.tar_utils import is_safe_tar_member, safe_extract
 class SaveRestoreConnector:
     """
     Connector for saving and restoring models.
+
+    Args:
+        allow_external_artifacts: Allow trusted local artifact paths during restoration.
+            This runtime option is disabled by default and is not read from model configuration.
     """
 
-    def __init__(self) -> None:
+    _artifact_restore_context = ContextVar("artifact_restore_context", default=None)
+
+    def __init__(self, allow_external_artifacts: bool = False) -> None:
         self._model_config_yaml = "model_config.yaml"
         self._model_weights_ckpt = "model_weights.ckpt"
         self._model_extracted_dir = None
         self._pack_nemo_file = True
+        if not isinstance(allow_external_artifacts, bool):
+            raise TypeError("allow_external_artifacts must be a bool")
+        self._allow_external_artifacts = allow_external_artifacts
 
     def save_to(self, model: "nemo_classes.ModelPT", save_path: str):
         """
@@ -140,6 +150,7 @@ class SaveRestoreConnector:
                 map_location = torch.device('cpu')
 
         app_state = AppState()
+        previous_restore_state = (app_state.is_model_being_restored, app_state.nemo_file_folder)
 
         # Determine if we should use a pre-extracted directory
         use_extracted_dir = self.model_extracted_dir is not None and os.path.isdir(self.model_extracted_dir)
@@ -191,12 +202,19 @@ class SaveRestoreConnector:
                 os.chdir(cwd)
                 # get the class
                 calling_cls._set_model_restore_state(is_being_restored=True, folder=tmpdir)
-                instance = calling_cls.from_config_dict(config=conf, trainer=trainer)
+                artifact_context = self._artifact_restore_context.set((tmpdir, self.allow_external_artifacts))
+                try:
+                    instance = calling_cls.from_config_dict(config=conf, trainer=trainer)
+                finally:
+                    self._artifact_restore_context.reset(artifact_context)
                 instance = instance.to(map_location)
                 # add load_state_dict override
                 if app_state.model_parallel_size is not None and app_state.model_parallel_size > 1:
                     model_weights = self._inject_model_parallel_rank_for_ckpt(tmpdir, self.model_weights_ckpt)
                 state_dict = self._load_state_dict_from_disk(model_weights, map_location=map_location)
+            except BaseException:
+                calling_cls._set_model_restore_state(*previous_restore_state)
+                raise
             finally:
                 os.chdir(cwd)
 
@@ -380,7 +398,8 @@ class SaveRestoreConnector:
               else:
                   an error will be raised.
 
-        Archive references must resolve within the extracted model directory.
+        Archive references must resolve within the extracted model directory. During restoration,
+        unprefixed paths also resolve to bundled files unless the caller enables ``allow_external_artifacts``.
 
         WARNING: use .register_artifact calls in your models' constructors.
         The returned path is not guaranteed to exist after you have exited your model's constructor.
@@ -397,20 +416,31 @@ class SaveRestoreConnector:
                 instance life
         """
         app_state = AppState()
+        restore_context = self._artifact_restore_context.get()
+        restore_folder = restore_context[0] if restore_context is not None else app_state.nemo_file_folder
+        restoring = restore_context is not None or app_state.is_model_being_restored
+        allow_external = self.allow_external_artifacts or (restore_context is not None and restore_context[1])
 
         artifact_item = model_utils.ArtifactItem()
 
         # This is for backward compatibility, if the src objects exists simply inside of the tarfile
         # without its key having been overriden, this pathway will be used.
         src_obj_name = os.path.basename(src)
-        if app_state.nemo_file_folder is not None:
-            src_obj_path = os.path.abspath(os.path.join(app_state.nemo_file_folder, src_obj_name))
+        if restore_folder is not None:
+            src_obj_path = os.path.abspath(os.path.join(restore_folder, src_obj_name))
         else:
             src_obj_path = src_obj_name
 
         # Archive references always use the extracted model directory.
         if src.startswith("nemo:"):
-            return_path = self._resolve_archive_artifact(app_state.nemo_file_folder, src[5:])
+            return_path = self._resolve_archive_artifact(restore_folder, src[5:])
+            artifact_item.path_type = model_utils.ArtifactPathType.TAR_PATH
+
+        elif restoring and not allow_external:
+            return_path = self._resolve_restored_artifact(restore_folder, src)
+            if not os.path.exists(return_path) and not verify_src_exists:
+                logging.warning("Optional artifact %s was not found in the extracted model directory.", config_path)
+                return None
             artifact_item.path_type = model_utils.ArtifactPathType.TAR_PATH
 
         # src is a local existing path - register artifact and return exact same path for usage by the model
@@ -437,7 +467,7 @@ class SaveRestoreConnector:
                 return None
 
         if not os.path.exists(return_path):
-            nemo_folder = app_state.nemo_file_folder
+            nemo_folder = restore_folder
             existing_files = os.listdir(nemo_folder) if nemo_folder and os.path.isdir(nemo_folder) else []
             raise FileNotFoundError(
                 f"Artifact not found at expected path: {return_path}\n"
@@ -446,7 +476,10 @@ class SaveRestoreConnector:
                 f"  Files in nemo_file_folder: {existing_files}"
             )
 
-        artifact_item.path = os.path.abspath(src)
+        if restoring and not allow_external:
+            artifact_item.path = "nemo:" + os.path.relpath(return_path, os.path.realpath(restore_folder))
+        else:
+            artifact_item.path = os.path.abspath(src)
         model.artifacts[config_path] = artifact_item
         # we were called by ModelPT
         if hasattr(model, "cfg"):
@@ -646,6 +679,20 @@ class SaveRestoreConnector:
             raise ValueError("Archive artifact reference must remain within the extracted model directory.")
         return resolved
 
+    @classmethod
+    def _resolve_restored_artifact(cls, folder: str, source: str) -> str:
+        """Resolve current and legacy references to bundled artifacts during restoration."""
+        if folder is None:
+            raise ValueError("Restored artifacts require an extracted model directory.")
+        try:
+            relative = os.path.relpath(source, folder) if os.path.isabs(source) else source
+            resolved = cls._resolve_archive_artifact(folder, relative)
+        except ValueError:
+            resolved = cls._resolve_archive_artifact(folder, os.path.basename(source))
+        if not os.path.exists(resolved):
+            resolved = cls._resolve_archive_artifact(folder, os.path.basename(source))
+        return resolved
+
     @staticmethod
     def _is_safe_path(member, extract_to):
         return is_safe_tar_member(member, os.path.realpath(extract_to))
@@ -780,6 +827,11 @@ class SaveRestoreConnector:
         except Exception as e:
             logging.error(f"Failed to load checkpoint: {e}")
             raise e
+
+    @property
+    def allow_external_artifacts(self) -> bool:
+        """Whether the caller permits local artifact paths during restoration."""
+        return self._allow_external_artifacts
 
     @property
     def model_config_yaml(self) -> str:

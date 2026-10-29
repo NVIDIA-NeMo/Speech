@@ -578,7 +578,9 @@ def evaluate_dir(
         # kanji/kana spelling differences between reference and ASR hypothesis.
         gt_katakana = pred_katakana = None
         katakana_cer = None
-        if isinstance(text_processor, JapaneseTextProcessor):
+        if isinstance(text_processor, JapaneseTextProcessor) and os.environ.get(
+            "NEMO_DISABLE_JAPANESE_KATAKANA_CER"
+        ) != "1":
             gt_katakana = text_processor.text_to_katakana(gt_text)
             pred_katakana = text_processor.text_to_katakana(pred_text)
             katakana_cer = word_error_rate_detail(hypotheses=[pred_katakana], references=[gt_katakana], use_cer=True)[

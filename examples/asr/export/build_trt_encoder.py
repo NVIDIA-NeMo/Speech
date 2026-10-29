@@ -13,7 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Build an offline ASR encoder engine from ONNX using NeMo's TensorRT builder."""
+"""Build an offline ASR encoder engine from ONNX using NeMo's TensorRT builder.
+
+This is the ONNX route; ``build_torch_trt_encoder.py`` converts the Transformer encoder directly with Torch-TensorRT.
+The inference guide ("Offline TensorRT encoder" in ``docs/source/asr/inference.rst``) says when to use which route.
+It also names the TensorRT versions each route needs.
+"""
 
 from argparse import ArgumentParser
 from pathlib import Path

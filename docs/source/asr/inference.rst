@@ -346,6 +346,13 @@ Use ``--help`` for build options.
 FP32 with TF32 disabled is the default; check recognition accuracy when enabling ``--fp16``.
 Build for the GPU and TensorRT/CUDA versions you will deploy.
 
+Two build routes exist.
+``build_trt_encoder.py`` is the ONNX route: it builds from any encoder that NeMo exports to ONNX, Conformer, FastConformer or the Transformer encoder, with the TensorRT 10.x release of the ``trt`` extra, and it is the route that the preprocessing, decoder and serving examples and the tests share (validated with TensorRT 10.13.3).
+The `Torch-TensorRT builder <https://github.com/NVIDIA-NeMo/Speech/blob/main/examples/asr/export/build_torch_trt_encoder.py>`_ is the direct route for the Transformer encoder: it captures the PyTorch graph with ``torch.export`` and converts it without an ONNX file, which needs matching PyTorch, Torch-TensorRT and TensorRT builds; its `README <https://github.com/NVIDIA-NeMo/Speech/blob/main/examples/asr/export/README_torch_tensorrt.md>`_ names the validated versions (PyTorch and Torch-TensorRT 2.15 with TensorRT 11.3) and the converter support that older Torch-TensorRT releases lack.
+Use the ONNX route by default; use the direct route when you build the Transformer encoder in an environment with a matching Torch-TensorRT, or when you need a TensorRT release that the ``trt`` extra does not cover.
+Both routes produce a plan with the bindings ``audio_signal``, ``length``, ``outputs`` and ``encoded_lengths``, which ``TensorRTEncoder`` and the examples run alike.
+A plan runs only under the TensorRT version that built it, so install that version's runtime (TensorRT 10 or newer) and rebuild the plan after a TensorRT upgrade.
+
 Transcribe mono audio at the checkpoint's sample rate, using the same checkpoint as the export:
 
 .. code-block:: bash

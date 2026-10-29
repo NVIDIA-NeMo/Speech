@@ -517,6 +517,21 @@ class MagpieTTSDataset(TextToSpeechDataset):
             example['alignment_reference_len'] = len(reference)
             example['alignment_missing_normalized_text'] = int(not has_normalized)
 
+        if getattr(self, 'use_attention_alignment', False):
+            cutoff = getattr(self, 'attention_alignment_bos_id', None)
+            if cutoff is None:
+                cutoff = self.bos_id if self.bos_id is not None else self.eos_id
+            pad = getattr(self, 'attention_alignment_pad_id', self.text_tokenizer.pad)
+            content = (tokens >= 0) & (tokens < cutoff) & tokens.ne(self.eos_id) & tokens.ne(pad)
+            if self.bos_id is not None:
+                content = content & tokens.ne(self.bos_id)
+            example['attention_alignment_reference_tokens'] = tokens[content].long()
+            example['attention_alignment_key_positions'] = content.nonzero(as_tuple=True)[0]
+            allowed = content | tokens.eq(self.eos_id) | tokens.eq(pad)
+            if self.bos_id is not None:
+                allowed = allowed | tokens.eq(self.bos_id)
+            example['attention_alignment_reference_valid'] = bool(allowed.all())
+
         if self.phoneme_tokenizer is not None:
             # Use IPA text for IPABPETokenizer (required), otherwise use regular text
             if isinstance(self.phoneme_tokenizer, IPABPETokenizer):
@@ -825,6 +840,24 @@ class MagpieTTSDataset(TextToSpeechDataset):
             )
             batch_dict['alignment_missing_normalized_text'] = torch.tensor(
                 sum(example['alignment_missing_normalized_text'] for example in batch), dtype=torch.long
+            )
+
+        if getattr(self, 'use_attention_alignment', False):
+            batch_dict['attention_alignment_text_tokens'] = torch.nn.utils.rnn.pad_sequence(
+                [item['attention_alignment_reference_tokens'] for item in batch],
+                batch_first=True,
+                padding_value=self.text_tokenizer.pad,
+            )
+            batch_dict['attention_alignment_text_lens'] = torch.tensor(
+                [item['attention_alignment_reference_tokens'].numel() for item in batch], dtype=torch.long
+            )
+            batch_dict['attention_alignment_key_positions'] = torch.nn.utils.rnn.pad_sequence(
+                [item['attention_alignment_key_positions'] for item in batch],
+                batch_first=True,
+                padding_value=-1,
+            )
+            batch_dict['attention_alignment_reference_valid'] = torch.tensor(
+                [item['attention_alignment_reference_valid'] for item in batch], dtype=torch.bool
             )
 
         if len(audio_list) > 0:

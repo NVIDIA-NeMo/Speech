@@ -119,6 +119,8 @@ class ProcessBatchOutput:
     aligner_loss: Optional[torch.Tensor] = None
     aligned_text_targets: Optional[torch.Tensor] = None
     alignment_metrics: Optional[dict] = None
+    attention_alignment_loss: Optional[torch.Tensor] = None
+    attention_alignment_metrics: Optional[dict] = None
 
 
 class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
@@ -167,6 +169,38 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             if not math.isfinite(getattr(self, name)) or getattr(self, name) < 0:
                 raise ValueError(f'{name} must be finite and >= 0')
 
+        self.attention_alignment_config = dict(cfg.get('attention_alignment', {}) or {})
+        for name, default, minimum in (
+            ('start_step', 10000, 0),
+            ('ramp_steps', 1000, 1),
+            ('prior_anneal_steps', 5000, 1),
+            ('query_chunk_size', 128, 1),
+        ):
+            value = self.attention_alignment_config.get(name, default)
+            if type(value) is not int or value < minimum:
+                raise ValueError(f'attention_alignment.{name} must be an integer >= {minimum}')
+            self.attention_alignment_config[name] = value
+        for name, default in (('loss_weight', 0.1), ('prior_strength', 1.0), ('band_width', 1.0)):
+            value = self.attention_alignment_config.get(name, default)
+            if isinstance(value, bool) or not math.isfinite(value) or value < 0:
+                raise ValueError(f'attention_alignment.{name} must be finite and nonnegative')
+            self.attention_alignment_config[name] = float(value)
+        if self.attention_alignment_config['band_width'] <= 0:
+            raise ValueError('attention_alignment.band_width must be positive')
+        if self.attention_alignment_config['prior_strength'] > 1:
+            raise ValueError('attention_alignment.prior_strength must be <= 1')
+        heads = self.attention_alignment_config.get('heads', [0])
+        if heads is not None and (
+            not heads or any(type(head) is not int or head < 0 for head in heads) or len(set(heads)) != len(heads)
+        ):
+            raise ValueError('attention_alignment.heads must be null or distinct nonnegative head indices')
+        if self.use_attention_alignment:
+            decoder_config = self.decoder.config
+            if 'attention' not in decoder_config.layers_block_type:
+                raise ValueError('Attention alignment requires at least one attention layer in the decoder')
+            if heads is not None and any(head >= decoder_config.num_attention_heads for head in heads):
+                raise ValueError('attention_alignment.heads contains an index outside the decoder head count')
+        self.attention_alignment_config['heads'] = heads
         self.cross_entropy_loss = nn.CrossEntropyLoss(reduction='none')
 
         if 'feature_masking' in cfg:
@@ -1055,7 +1089,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         return ProcessBatchOutput(
             loss=(
                 self.phoneme_loss_weight * phoneme_loss + self._aligned_text_zero_loss(phoneme_loss)
-                if self.use_aligned_text_head
+                if self.use_aligned_text_head or self.use_attention_alignment
                 else self.phoneme_loss_weight * phoneme_loss
             ),
             codebook_loss=phoneme_loss.new_zeros(()),
@@ -1099,6 +1133,11 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         aligned_text: Optional[torch.Tensor] = None,
         aligned_text_lens: Optional[torch.Tensor] = None,
         alignment_speaker_reference_valid: Optional[torch.Tensor] = None,
+        attention_alignment_text_tokens: Optional[torch.Tensor] = None,
+        attention_alignment_text_lens: Optional[torch.Tensor] = None,
+        attention_alignment_key_positions: Optional[torch.Tensor] = None,
+        attention_alignment_turn_indices: Optional[torch.Tensor] = None,
+        attention_alignment_reference_valid: Optional[torch.Tensor] = None,
     ) -> ProcessBatchOutput:
         """
         Simplified batch processing using channel-based embedding architecture.
@@ -1300,6 +1339,28 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 )
                 audio_channel_embedding = audio_channel_embedding + feedback_channel.to(audio_channel_embedding.dtype)
 
+        attention_guidance = None
+        attention_metrics = None
+        if self.use_attention_alignment:
+            alignment, attention_guidance, attention_metrics = self._prepare_attention_alignment_targets(
+                audio_codes,
+                audio_codes_lens,
+                audio_codes_target,
+                attention_alignment_text_tokens,
+                attention_alignment_text_lens,
+                attention_alignment_turn_indices,
+                attention_alignment_key_positions,
+                context_lens,
+                audio_delay,
+                dropout_conditional_input=dropout_conditional_input or dropout_text_input,
+                conditioning_text=text,
+                conditioning_lens=text_lens,
+                reference_valid=attention_alignment_reference_valid,
+                speaker_reference_codes=context_audio_codes,
+                speaker_reference_lens=context_audio_codes_lens,
+                speaker_reference_valid=alignment_speaker_reference_valid,
+            )
+
         # 6. Sum the channel embeddings element-wise
         # First, align all channels to the same length (max of all channel lengths)
         max_channel_len = max(
@@ -1453,6 +1514,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             inputs_embeds=full_embedding,
             attention_mask=get_mask_from_lengths(combined_channel_lens),
             context_prefix_lens=context_lens,
+            attention_alignment=attention_guidance,
         )
         transformer_hidden_states = transformer_out.last_hidden_state  # (B, T_total, E)
 
@@ -1477,7 +1539,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         )
         loss = self.parallel_codebook_loss_scale * codebook_loss
         aligned_text_loss = None
-        if alignment is not None:
+        if alignment is not None and self.use_aligned_text_head:
             aligned_text_loss = self.aligned_text_head.loss(
                 pred_embeddings,
                 alignment.targets,
@@ -1485,6 +1547,18 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 chunk_size=self.cfg.get('aligned_text_head_chunk_size', 128),
             )
             loss = loss + self.aligned_text_loss_weight * aligned_text_loss + self.aligner_loss_weight * alignment.loss
+
+        attention_alignment_loss = None
+        if self.use_attention_alignment:
+            attention_alignment_loss = getattr(transformer_out, 'attention_alignment_loss', None)
+            if attention_alignment_loss is None:
+                attention_alignment_loss = pred_embeddings.float().sum() * 0.0
+            loss_scale, _ = self._attention_alignment_schedule()
+            loss = (
+                loss
+                + self.aligner_loss_weight * alignment.loss
+                + self.attention_alignment_config['loss_weight'] * loss_scale * attention_alignment_loss
+            )
 
         # Compute local transformer loss if applicable
         local_transformer_loss = None
@@ -1585,6 +1659,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             aligned_text_loss=aligned_text_loss,
             aligner_loss=alignment.loss if alignment is not None else None,
             aligned_text_targets=alignment.targets if alignment is not None else None,
+            attention_alignment_loss=attention_alignment_loss,
+            attention_alignment_metrics=attention_metrics,
             alignment_metrics=(
                 {
                     'valid_turns': alignment.valid_turn_count,
@@ -1596,6 +1672,161 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 else None
             ),
         )
+
+    def _attention_alignment_schedule(self):
+        """Warm up the teacher, ramp guidance, then remove only the forward prior."""
+        settings = self.attention_alignment_config
+        elapsed = int(self.global_step) - settings['start_step']
+        ramp = min(1.0, max(0.0, elapsed / settings['ramp_steps']))
+        decay = min(1.0, max(0.0, (elapsed - settings['ramp_steps']) / settings['prior_anneal_steps']))
+        return ramp, settings['prior_strength'] * ramp * (1.0 - decay)
+
+    def _prepare_attention_alignment_targets(
+        self,
+        audio_codes,
+        audio_lens,
+        audio_targets,
+        tokens,
+        token_lens,
+        turn_indices,
+        key_positions,
+        context_lens,
+        audio_delay,
+        dropout_conditional_input=False,
+        conditioning_text=None,
+        conditioning_lens=None,
+        reference_valid=None,
+        speaker_reference_codes=None,
+        speaker_reference_lens=None,
+        speaker_reference_valid=None,
+    ):
+        """Train the reused flow on conditioning IDs and detach its positional path.
+
+        Query positions refer to decoder states predicting acoustic frames.
+        Key positions identify exactly where each raw BPE entered the original
+        text channel. Text EOS/PAD and audio EOS never become guidance targets.
+        The teacher still learns during warmup and conditioning dropout; only
+        attention supervision is suppressed when text is not available.
+        """
+        from nemo.collections.tts.modules.attention_alignment import AttentionAlignmentGuidance, AttentionAlignmentTurn
+
+        if tokens is None or token_lens is None or key_positions is None:
+            raise ValueError('Attention alignment requires exact conditioning BPE tokens and key positions')
+        if tokens.shape != key_positions.shape or token_lens.shape != (tokens.size(0),):
+            raise ValueError('Attention alignment tokens, lengths and key positions must match')
+        if turn_indices is None:
+            if tokens.size(0) != audio_codes.size(0):
+                raise ValueError('Single-turn attention metadata must contain one transcript per sample')
+            ends = torch.div(
+                audio_lens + self.frame_stacking_factor - 1, self.frame_stacking_factor, rounding_mode='floor'
+            )
+            turn_indices = torch.stack([torch.arange(ends.numel(), device=ends.device), ends * 0, ends], dim=1)
+            if reference_valid is not None:
+                turn_indices = turn_indices.clone()
+                turn_indices[~reference_valid.bool(), 2] = 0
+        if turn_indices.shape != (tokens.size(0), 3):
+            raise ValueError('Attention alignment turn indices must have shape [turns, 3]')
+        metadata = torch.cat([turn_indices, token_lens[:, None].to(turn_indices.device)], dim=1)
+        metadata = metadata.detach().cpu().tolist()
+        if conditioning_text is not None:
+            for row, (sample, start, end, length) in enumerate(metadata):
+                if sample < 0 or sample >= conditioning_text.size(0) or end <= start or not length:
+                    continue
+                positions = key_positions[row, :length].long()
+                available = (
+                    int(conditioning_lens[sample]) if conditioning_lens is not None else conditioning_text.size(1)
+                )
+                if (
+                    length > tokens.size(1)
+                    or positions.numel() != length
+                    or bool(((positions < 0) | (positions >= available)).any())
+                    or not torch.equal(conditioning_text[sample].gather(0, positions), tokens[row, :length])
+                ):
+                    raise ValueError(
+                        'Attention alignment metadata must match the actual conditioning BPE IDs and positions'
+                    )
+        warmup = tokens.new_full((audio_codes.size(0), audio_targets.size(2)), self.pad_id)
+        teacher = self._prepare_aligned_text_targets(
+            audio_codes,
+            audio_lens,
+            audio_targets,
+            tokens,
+            token_lens,
+            turn_indices,
+            warmup,
+            speaker_reference_codes=speaker_reference_codes,
+            speaker_reference_lens=speaker_reference_lens,
+            speaker_reference_valid=speaker_reference_valid,
+            return_token_indices=True,
+        )
+        settings = self.attention_alignment_config
+        loss_scale, prior_strength = self._attention_alignment_schedule()
+        guidance_turns = []
+        valid_frames = teacher.token_indices.ge(0).sum()
+        causal_frames = tokens.new_zeros(())
+        for row, (sample, start, end, length) in enumerate(metadata):
+            if sample < 0 or sample >= audio_codes.size(0) or start < 0 or end <= start or not length:
+                continue
+            end = min(end, teacher.token_indices.size(1))
+            path = teacher.token_indices[sample, start:end].detach()
+            frames = torch.arange(start, end, device=tokens.device)
+            keys = key_positions[row, :length].long() + context_lens[sample]
+            queries = frames + audio_delay[sample]
+            selected_keys = keys.gather(0, path.clamp(0, length - 1))
+            causal = (path >= 0) & (selected_keys <= queries) & (key_positions[row, :length].min() >= 0)
+            causal_frames += causal.sum()
+            if not dropout_conditional_input and loss_scale > 0 and causal.any():
+                guidance_turns.append(
+                    AttentionAlignmentTurn(
+                        batch_index=sample,
+                        query_positions=queries[causal].long(),
+                        key_positions=keys.long(),
+                        token_indices=path[causal].long(),
+                    )
+                )
+        heads = settings.get('heads', [0])
+        request = None
+        if guidance_turns:
+            request = AttentionAlignmentGuidance(
+                turns=guidance_turns,
+                prior_strength=prior_strength,
+                band_width=settings['band_width'],
+                heads=None if heads is None else tuple(heads),
+                query_chunk_size=settings['query_chunk_size'],
+            )
+        spans = turn_indices[:, 2] - turn_indices[:, 1]
+        metrics = {
+            'turns': teacher.turn_count,
+            'valid_turns': teacher.valid_turn_count,
+            'supervised_turns': tokens.new_tensor(len(guidance_turns)),
+            'teacher_frames': valid_frames,
+            'causal_frames': causal_frames,
+            'invalid_spans': spans.le(0).sum(),
+            'short_turns': ((spans > 0) & (spans < token_lens)).sum(),
+            'empty_turns': token_lens.eq(0).sum(),
+            'loss_scale': loss_scale,
+            'prior_strength': prior_strength,
+        }
+        return teacher, request, metrics
+
+    def _log_attention_alignment_losses(self, output, mode, batch_size):
+        zero = output.loss.detach().new_zeros(())
+        metrics = output.attention_alignment_metrics or {}
+        denominator = metrics.get('turns', zero).clamp_min(1)
+        values = {
+            f'{mode}/attention_alignment_loss': (
+                output.attention_alignment_loss if output.attention_alignment_loss is not None else zero
+            ),
+            f'{mode}/aligner_nll': output.aligner_loss if output.aligner_loss is not None else zero,
+            f'{mode}/attention_alignment_valid_turn_fraction': metrics.get('valid_turns', zero) / denominator,
+            f'{mode}/attention_alignment_causal_frame_fraction': metrics.get('causal_frames', zero)
+            / metrics.get('teacher_frames', zero).clamp_min(1),
+            f'{mode}/attention_alignment_loss_scale': metrics.get('loss_scale', 0.0),
+            f'{mode}/attention_alignment_prior_strength': metrics.get('prior_strength', 0.0),
+        }
+        for name in ('supervised_turns', 'invalid_spans', 'short_turns', 'empty_turns'):
+            values[f'{mode}/attention_alignment_{name}'] = metrics.get(name, zero)
+        self.log_dict(values, on_step=mode == 'train', on_epoch=mode != 'train', batch_size=batch_size, sync_dist=True)
 
     def _prepare_aligned_text_targets(
         self,
@@ -1609,6 +1840,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         speaker_reference_codes=None,
         speaker_reference_lens=None,
         speaker_reference_valid=None,
+        return_token_indices=False,
     ):
         """Train an audio-grounded teacher before applying the decoder curriculum.
 
@@ -1672,6 +1904,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             max_frames_per_batch=self.cfg.get('aligned_text_max_frames_per_batch', 8192),
             speaker_reference_features=reference_features,
             speaker_reference_lens=reference_lens,
+            return_token_indices=return_token_indices,
         )
         # Audio EOS may be one frame beyond the supervision boundary in the
         # existing multiturn channel. Train text EOS at that same output slot.
@@ -1748,7 +1981,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         return sum(
             (
                 parameter.reshape(-1)[0] * 0.0
-                for module in (self.text_aligner, self.aligned_text_head)
+                for module in (
+                    [self.text_aligner, self.aligned_text_head] if self.use_aligned_text_head else [self.text_aligner]
+                )
                 for parameter in module.parameters()
             ),
             reference.new_zeros(()),
@@ -1765,10 +2000,17 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 'aligned_text',
                 'aligned_text_lens',
                 'alignment_speaker_reference_valid',
+                'attention_alignment_text_tokens',
+                'attention_alignment_text_lens',
+                'attention_alignment_key_positions',
+                'attention_alignment_turn_indices',
+                'attention_alignment_reference_valid',
             )
         }
 
     def _log_aligned_text_losses(self, output, mode, batch_size, missing_normalized=None):
+        if self.use_attention_alignment:
+            self._log_attention_alignment_losses(output, mode, batch_size)
         if not self.use_aligned_text_head:
             return
         zero = output.loss.detach().new_zeros(())
@@ -2843,6 +3085,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         )
         dataset.load_16khz_audio = False
         dataset.use_aligned_text_head = self.cfg.get('use_aligned_text_head', False)
+        dataset.use_attention_alignment = self.cfg.get('use_attention_alignment', False)
+        dataset.attention_alignment_bos_id = self.bos_id
+        dataset.attention_alignment_pad_id = self.pad_id
         dataset.aligned_text_strip_punctuation = self.cfg.get('aligned_text_strip_punctuation', True)
         dataset.tokenizer_config = (
             self.cfg.text_tokenizers
@@ -2923,6 +3168,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 phoneme_loss_lexicon=self.phoneme_loss_lexicon,
                 dynamic_phoneme_delay=dynamic_delay,
                 use_aligned_text_head=self.cfg.get('use_aligned_text_head', False),
+                use_attention_alignment=self.cfg.get('use_attention_alignment', False),
                 aligned_text_strip_punctuation=self.cfg.get('aligned_text_strip_punctuation', True),
             )
             dataset = FallbackDataset(dataset)
@@ -2954,6 +3200,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 phoneme_text_eop_marker=self.phoneme_text_eop_marker,
                 add_language_to_context_text=self.add_language_to_context_text,
             )
+            dataset.use_attention_alignment = self.cfg.get('use_attention_alignment', False)
+            dataset.attention_alignment_bos_id = self.bos_id
+            dataset.attention_alignment_pad_id = self.pad_id
 
         data_config = dataset_cfg.dataset
         if dynamic_delay:

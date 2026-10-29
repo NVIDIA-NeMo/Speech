@@ -184,6 +184,73 @@ def build_alignment_text_turns(
     }
 
 
+def build_attention_alignment_turns(
+    cuts: CutSet,
+    conditioning_tokens: torch.Tensor,
+    frame_length: Seconds,
+    output_roles: set[str],
+    bos_id: int,
+    eos_id: int,
+    pad_id: int,
+) -> Dict[str, torch.Tensor]:
+    """Gather the actual conditioning BPE IDs and key positions for complete turns.
+
+    The conditioning channel is authoritative. This function never selects a
+    normalized transcript, retokenizes text, or substitutes pronunciation IDs.
+    EOS must still be visible inside the turn so a cropped/overwritten token
+    sequence cannot silently become an alignment target. All positions are on
+    the original text/audio grid; the model adds decoder context and delays.
+    """
+    cuts = list(cuts)
+    if conditioning_tokens.ndim != 2 or conditioning_tokens.size(0) != len(cuts):
+        raise ValueError('Conditioning tokens must have shape [cuts, text_steps]')
+    packed, positions, spans = [], [], []
+    for sample, cut in enumerate(cuts):
+        grid_len = compute_num_frames(cut.duration, frame_length, cut.sampling_rate)
+        grid_len = min(grid_len, conditioning_tokens.size(1))
+        previous_end = 0
+        for supervision in sorted(cut.supervisions, key=lambda item: item.start):
+            if supervision.speaker not in output_roles:
+                continue
+            start = compute_num_frames(max(0.0, supervision.start), frame_length, cut.sampling_rate)
+            end = compute_num_frames(max(0.0, supervision.end), frame_length, cut.sampling_rate)
+            clipped_start, clipped_end = min(start, grid_len), min(end, grid_len)
+            visible = conditioning_tokens[sample, clipped_start:clipped_end]
+            eos = visible.eq(eos_id).nonzero(as_tuple=True)[0]
+            prefix = visible[: int(eos[0])] if eos.numel() else visible
+            content = (prefix >= 0) & (prefix < bos_id) & prefix.ne(pad_id)
+            key_positions = content.nonzero(as_tuple=True)[0] + clipped_start
+            ids = prefix[content]
+            controls = ~content & prefix.ne(bos_id) & prefix.ne(pad_id)
+            invalid = (
+                supervision.start < -1e-6
+                or supervision.end > cut.duration + 1e-6
+                or end > grid_len
+                or start < previous_end
+                or clipped_end <= clipped_start
+                or not eos.numel()
+                or not ids.numel()
+                or bool(controls.any())
+                or (supervision.has_custom('challenging_text_replaced') and supervision.challenging_text_replaced)
+            )
+            packed.append(ids)
+            positions.append(key_positions)
+            spans.append((sample, clipped_start, clipped_start if invalid else clipped_end))
+            previous_end = max(previous_end, end)
+    max_tokens = max((ids.numel() for ids in packed), default=0)
+    tokens = conditioning_tokens.new_full((len(packed), max_tokens), pad_id)
+    keys = conditioning_tokens.new_full((len(packed), max_tokens), -1)
+    for row, (ids, key_positions) in enumerate(zip(packed, positions)):
+        tokens[row, : ids.numel()] = ids
+        keys[row, : ids.numel()] = key_positions
+    return {
+        'attention_alignment_text_tokens': tokens,
+        'attention_alignment_text_lens': torch.tensor([ids.numel() for ids in packed], dtype=torch.long),
+        'attention_alignment_key_positions': keys,
+        'attention_alignment_turn_indices': torch.tensor(spans, dtype=torch.long).reshape(-1, 3),
+    }
+
+
 def _strip_timestamps(
     text: str, _TIMESTAMP_PATTERN=re.compile(r"<\|\d+\|>"), _SPACE_PATTERN=re.compile(r"\s+")
 ) -> str:
@@ -327,6 +394,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         phoneme_loss_lexicon: PhonemeLossLexicon = None,
         dynamic_phoneme_delay: bool = False,
         use_aligned_text_head: bool = False,
+        use_attention_alignment: bool = False,
         aligned_text_strip_punctuation: bool = True,
     ):
         super().__init__()
@@ -361,6 +429,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         self._phoneme_loss_lexicon = phoneme_loss_lexicon
         self.dynamic_phoneme_delay = dynamic_phoneme_delay
         self.use_aligned_text_head = use_aligned_text_head
+        self.use_attention_alignment = use_attention_alignment
         self.aligned_text_strip_punctuation = aligned_text_strip_punctuation
         self.ignore_phoneme_languages = ignore_phoneme_languages or []
         self.enable_phoneme_text_input = enable_phoneme_text_input
@@ -999,14 +1068,16 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
 
         original_contexts = list(features[context_key])
         original_context_lens = list(context_lens)
-        if getattr(self, 'use_aligned_text_head', False) and donor_indices:
+        if (
+            getattr(self, 'use_aligned_text_head', False) or getattr(self, 'use_attention_alignment', False)
+        ) and donor_indices:
             # Decoder augmentation may use another voice, while the acoustic
             # alignment teacher must not mistake it for the target speaker.
             features['alignment_speaker_reference_valid'] = [True] * batch_size
         for target_idx, donor_idx in donor_indices.items():
             features[context_key][target_idx] = original_contexts[donor_idx]
             context_lens[target_idx] = original_context_lens[donor_idx]
-            if getattr(self, 'use_aligned_text_head', False):
+            if getattr(self, 'use_aligned_text_head', False) or getattr(self, 'use_attention_alignment', False):
                 features['alignment_speaker_reference_valid'][target_idx] = False
 
         cross_lingual_count = sum(
@@ -1060,7 +1131,9 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             )
             batch_dict["context_audio_codes_lens"] = torch.IntTensor(features["context_audio_codes_lens"])
 
-        if getattr(self, 'use_aligned_text_head', False) and 'alignment_speaker_reference_valid' in features:
+        if (
+            getattr(self, 'use_aligned_text_head', False) or getattr(self, 'use_attention_alignment', False)
+        ) and 'alignment_speaker_reference_valid' in features:
             batch_dict['alignment_speaker_reference_valid'] = torch.tensor(
                 features['alignment_speaker_reference_valid'], dtype=torch.bool
             )
@@ -1128,6 +1201,14 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             ):
                 batch_dict[key] = text_data[key]
 
+        if getattr(self, 'use_attention_alignment', False):
+            for key in (
+                'attention_alignment_text_tokens',
+                'attention_alignment_text_lens',
+                'attention_alignment_key_positions',
+                'attention_alignment_turn_indices',
+            ):
+                batch_dict[key] = text_data[key]
         self._add_optional_batch_fields(batch_dict, phoneme_data, features)
 
         agent_mask, agent_mask_lens = collate_speaker_mask_channel(
@@ -1206,6 +1287,18 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
 
         audio_data = self._collate_audio_channels(cuts)
         text_data = self._collate_text_channels(cuts, batch_tokenizer_names)
+        if getattr(self, 'use_attention_alignment', False):
+            text_data.update(
+                build_attention_alignment_turns(
+                    cuts,
+                    text_data['target_text_tokens'],
+                    self.frame_length,
+                    self.output_roles,
+                    self.bos_id,
+                    self.eos_id,
+                    self.pad_id,
+                )
+            )
         if self.use_aligned_text_head:
             text_data.update(
                 build_alignment_text_turns(

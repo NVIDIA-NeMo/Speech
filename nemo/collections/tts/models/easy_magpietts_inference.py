@@ -247,6 +247,15 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         # Read before ModelPT setup constructs data loaders. This feature has its
         # own compact head and does not enable the decoder's full-size LM head.
         self.use_aligned_text_head = cfg.get('use_aligned_text_head', False)
+        self.use_attention_alignment = cfg.get('use_attention_alignment', False)
+        if type(self.use_attention_alignment) is not bool:
+            raise ValueError('use_attention_alignment must be a boolean')
+        if self.use_attention_alignment and self.use_aligned_text_head:
+            raise ValueError('Attention alignment and the repeated text head are separate experimental modes')
+        if self.use_attention_alignment and cfg.get('decoder_type', 'huggingface') != 'nemotron_h':
+            raise ValueError('Attention alignment currently requires the nemotron_h decoder')
+        if self.use_attention_alignment and cfg.get('nemotron_h_config', {}).get('rswa_window') is not None:
+            raise ValueError('Attention alignment currently requires full causal attention, with rswa_window=null')
         self.aligned_text_feedback = cfg.get('aligned_text_feedback', True)
         if type(self.use_aligned_text_head) is not bool or type(self.aligned_text_feedback) is not bool:
             raise ValueError('use_aligned_text_head and aligned_text_feedback must be booleans')
@@ -263,7 +272,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         # the parent state before it so fine-tuned HF weights are never reloaded.
         restoring_model = self._is_model_being_restored()
         restoring_hf_decoder = cfg.get('transformer_hf_load_pretrained_weights', False) and restoring_model
-        if self.use_aligned_text_head:
+        if self.use_aligned_text_head or self.use_attention_alignment:
             # Persist an explicit architecture before nested codec restoration
             # clears the restore flag. Unversioned saved compact profiles keep
             # their original parameter layout instead of silently changing flow.
@@ -724,7 +733,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 codebook_size=self.codebook_size,
             )
 
-        if self.use_aligned_text_head:
+        if self.use_aligned_text_head or self.use_attention_alignment:
             from nemo.collections.tts.modules.aligned_text_head import AlignedTextHead
             from nemo.collections.tts.modules.glow_tts_aligner import TinyGlowTTSAligner
 
@@ -733,13 +742,14 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             acoustic_channels = getattr(self._codec_model.vector_quantizer, 'codebook_dim', None)
             if acoustic_channels is None:
                 raise ValueError('Aligned-text training requires a codec quantizer exposing codebook_dim')
-            self.aligned_text_head = AlignedTextHead(
-                cfg.hidden_dim, self.text_vocab_size, projection_dim=aligned_text_head_dim
-            )
-            allowed_text_outputs = torch.arange(self.text_vocab_size) < self.bos_id
-            allowed_text_outputs[self.eos_id] = True
-            allowed_text_outputs[self.pad_id] = True
-            self.register_buffer('_aligned_text_output_mask', allowed_text_outputs, persistent=False)
+            if self.use_aligned_text_head:
+                self.aligned_text_head = AlignedTextHead(
+                    cfg.hidden_dim, self.text_vocab_size, projection_dim=aligned_text_head_dim
+                )
+                allowed_text_outputs = torch.arange(self.text_vocab_size) < self.bos_id
+                allowed_text_outputs[self.eos_id] = True
+                allowed_text_outputs[self.pad_id] = True
+                self.register_buffer('_aligned_text_output_mask', allowed_text_outputs, persistent=False)
             # Owned here so inference-only restoration accepts complete training
             # checkpoints. The acoustic aligner is never called during inference.
             self.text_aligner = TinyGlowTTSAligner(
@@ -1183,6 +1193,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         past_key_values=None,
         cache_position=None,
         context_prefix_lens=None,
+        attention_alignment=None,
     ):
         # Only pass cache_position for NemotronH (HF transformers may not accept it)
         """Run the configured decoder backend.
@@ -1206,6 +1217,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 past_key_values=past_key_values,
                 cache_position=cache_position,
                 context_prefix_lens=context_prefix_lens,
+                attention_alignment=attention_alignment,
             )
         else:
             backend_out = self.decoder(

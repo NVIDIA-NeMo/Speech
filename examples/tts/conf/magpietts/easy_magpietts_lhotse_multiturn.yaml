@@ -87,6 +87,18 @@ model:
   phoneme_loss_weight: 1.0
   # Auxiliary normalized BPE stream. The existing source-text channel is preserved.
   use_aligned_text_head: false
+  # Separate experiment: raw conditioning BPE flow teacher guides selected self-attention heads.
+  # No CTC, repeated-text input feedback, or inference-time prior is introduced by this flag.
+  use_attention_alignment: false
+  attention_alignment:
+    loss_weight: 0.1
+    start_step: 10000
+    ramp_steps: 1000
+    prior_anneal_steps: 5000
+    prior_strength: 1.0
+    band_width: 1.0
+    heads: [0]
+    query_chunk_size: 128
   start_aligner_text_head_steps: 10000 # Train the aligner immediately; switch head/feedback targets at this step.
   aligned_text_feedback: true
   aligned_text_feedback_scale: 1.0

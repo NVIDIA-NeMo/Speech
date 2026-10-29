@@ -23,6 +23,7 @@ class AlignedTextTargets:
     turn_count: torch.Tensor
     one_frame_tokens: torch.Tensor
     token_count: torch.Tensor
+    token_indices: torch.Tensor | None = None
 
 
 class AlignedTextHead(nn.Module):
@@ -90,6 +91,7 @@ def align_text_turns(
     max_frames_per_batch: int = 8192,
     speaker_reference_features: torch.Tensor | None = None,
     speaker_reference_lens: torch.Tensor | None = None,
+    return_token_indices: bool = False,
 ) -> AlignedTextTargets:
     """Align compact text turns and restore their labels to the conversation grid.
 
@@ -108,6 +110,10 @@ def align_text_turns(
     Before the curriculum switch, valid spans retain ``warmup_targets``.
     Afterwards they contain BPE tokens repeated according to the MAS path.
     Outside valid spans, targets are PAD and the loss mask is false.
+
+    ``return_token_indices`` also restores the detached MAS position indices to
+    the acoustic grid. Positions restart from zero in each compact transcript;
+    invalid frames contain -1. These are positions, not vocabulary token IDs.
 
     Optional speaker references use the conversation batch axis, rather than
     the compact turn axis. The learnable encoder pools each reference once;
@@ -155,6 +161,7 @@ def align_text_turns(
 
     targets = torch.full_like(warmup_targets, pad_id)
     loss_mask = torch.zeros_like(warmup_targets, dtype=torch.bool)
+    token_indices = torch.full_like(warmup_targets, -1) if return_token_indices else None
     weighted_loss = audio_features.new_zeros((), dtype=torch.float32)
     counts = torch.zeros(4, dtype=torch.long, device=audio_features.device)
     speaker_embeddings = None
@@ -207,6 +214,8 @@ def align_text_turns(
                 labels = warmup_targets[sample, start:end]
             targets[sample, start:end] = torch.where(valid_frames, labels, pad_id)
             loss_mask[sample, start:end] = valid_frames
+            if token_indices is not None:
+                token_indices[sample, start:end] = torch.where(valid_frames, path, -1)
 
     loss = weighted_loss / counts[3].clamp_min(1)
     if not batches:
@@ -219,6 +228,7 @@ def align_text_turns(
         turn_count=torch.tensor(text_tokens.size(0), device=audio_features.device, dtype=torch.long),
         one_frame_tokens=counts[1],
         token_count=counts[2],
+        token_indices=token_indices,
     )
 
 

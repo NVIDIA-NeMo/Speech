@@ -31,6 +31,7 @@ import torch.utils.checkpoint
 from torch import nn
 from torch.nn import CrossEntropyLoss
 
+from nemo.collections.tts.modules.attention_alignment import AttentionAlignmentGuidance, apply_attention_alignment
 from nemo.utils import logging
 
 
@@ -268,6 +269,7 @@ class NemotronHOutput:
     past_key_values: Optional[Any] = None  # HybridMambaAttentionDynamicCache
     hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     attentions: Optional[Tuple[torch.FloatTensor]] = None
+    attention_alignment_loss: Optional[torch.FloatTensor] = None
 
 
 @dataclass
@@ -279,6 +281,7 @@ class NemotronHCausalLMOutput:
     past_key_values: Optional[Any] = None
     hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     attentions: Optional[Tuple[torch.FloatTensor]] = None
+    attention_alignment_loss: Optional[torch.FloatTensor] = None
 
 
 class HybridMambaAttentionDynamicCache:
@@ -1049,8 +1052,13 @@ class NemotronHAttention(nn.Module):
         output_attentions: bool = False,
         use_cache: bool = False,
         cache_position: Optional[torch.LongTensor] = None,
+        attention_alignment: Optional[AttentionAlignmentGuidance] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         bsz, q_len, _ = hidden_states.size()
+        if attention_alignment is not None and (past_key_value is not None or use_cache):
+            raise ValueError('Attention alignment teachers cannot be used during cached decoding')
+        if attention_alignment is not None and self.config.rswa_window is not None:
+            raise ValueError('Attention alignment currently requires full causal attention, not R-SWA')
 
         query_states = self.q_proj(hidden_states)
         key_states = self.k_proj(hidden_states)
@@ -1102,11 +1110,23 @@ class NemotronHAttention(nn.Module):
             is_causal=is_causal,
         )
 
+        alignment_loss = None
+        if attention_alignment is not None:
+            attn_output, alignment_loss = apply_attention_alignment(
+                query_states,
+                key_states,
+                value_states,
+                attn_output,
+                attention_alignment,
+                attention_mask=causal_mask,
+                dropout_p=self.attention_dropout if self.training else 0.0,
+            )
+
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.view(bsz, q_len, self.num_heads * self.head_dim)
         attn_output = self.o_proj(attn_output)
 
-        return attn_output, None, past_key_value
+        return attn_output, alignment_loss, past_key_value
 
 
 class NemotronHFlashAttention2(NemotronHAttention):
@@ -1131,6 +1151,7 @@ class NemotronHFlashAttention2(NemotronHAttention):
         output_attentions: bool = False,
         use_cache: bool = False,
         cache_position: Optional[torch.LongTensor] = None,
+        attention_alignment: Optional[AttentionAlignmentGuidance] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         if self.config.rswa_window is not None or not FLASH_ATTN_AVAILABLE or _flash_attention_forward is None:
             return super().forward(
@@ -1141,9 +1162,12 @@ class NemotronHFlashAttention2(NemotronHAttention):
                 output_attentions=output_attentions,
                 use_cache=use_cache,
                 cache_position=cache_position,
+                attention_alignment=attention_alignment,
             )
 
         bsz, q_len, _ = hidden_states.size()
+        if attention_alignment is not None and (past_key_value is not None or use_cache):
+            raise ValueError('Attention alignment teachers cannot be used during cached decoding')
 
         query_states = self.q_proj(hidden_states)
         key_states = self.k_proj(hidden_states)
@@ -1191,10 +1215,23 @@ class NemotronHFlashAttention2(NemotronHAttention):
             use_top_left_mask=self._flash_attn_uses_top_left_mask,
         )
 
+        alignment_loss = None
+        if attention_alignment is not None:
+            attn_output, alignment_loss = apply_attention_alignment(
+                query_states.transpose(1, 2),
+                key_states.transpose(1, 2),
+                value_states.transpose(1, 2),
+                attn_output.transpose(1, 2),
+                attention_alignment,
+                attention_mask=attention_mask,
+                dropout_p=dropout_rate,
+            )
+            attn_output = attn_output.transpose(1, 2)
+
         attn_output = attn_output.reshape(bsz, q_len, self.num_heads * self.head_dim).contiguous()
         attn_output = self.o_proj(attn_output)
 
-        return attn_output, None, past_key_value
+        return attn_output, alignment_loss, past_key_value
 
 
 NEMOTRONH_ATTENTION_CLASSES = {
@@ -1450,13 +1487,16 @@ class NemotronHBlock(nn.Module):
         cache_params: Optional[HybridMambaAttentionDynamicCache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
+        attention_alignment: Optional[AttentionAlignmentGuidance] = None,
     ):
         # Use torch.cuda.stream() to avoid NaN issues when using multiple GPUs
         if hidden_states.is_cuda:
             with torch.cuda.stream(torch.cuda.default_stream(hidden_states.device)):
-                return self._forward_impl(hidden_states, cache_params, cache_position, attention_mask)
+                return self._forward_impl(
+                    hidden_states, cache_params, cache_position, attention_mask, attention_alignment
+                )
         else:
-            return self._forward_impl(hidden_states, cache_params, cache_position, attention_mask)
+            return self._forward_impl(hidden_states, cache_params, cache_position, attention_mask, attention_alignment)
 
     def _forward_impl(
         self,
@@ -1464,12 +1504,14 @@ class NemotronHBlock(nn.Module):
         cache_params: Optional[HybridMambaAttentionDynamicCache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
+        attention_alignment: Optional[AttentionAlignmentGuidance] = None,
     ):
         residual = hidden_states
         hidden_states = self.norm(hidden_states.to(dtype=self.norm.weight.dtype))
         if self.residual_in_fp32:
             residual = residual.to(torch.float32)
 
+        alignment_loss = None
         if self.block_type == "mamba":
             hidden_states = self.mixer(hidden_states, cache_params=cache_params, cache_position=cache_position)
         elif self.block_type == "attention":
@@ -1478,12 +1520,16 @@ class NemotronHBlock(nn.Module):
                 attention_mask=attention_mask,
                 cache_position=cache_position,
                 past_key_value=cache_params,
+                attention_alignment=attention_alignment,
             )
+            alignment_loss = hidden_states[1]
             hidden_states = hidden_states[0]
         elif self.block_type in ("mlp", "moe"):
             hidden_states = self.mixer(hidden_states)
 
         hidden_states = residual + hidden_states
+        if attention_alignment is not None:
+            return hidden_states, alignment_loss
         return hidden_states
 
 
@@ -1564,17 +1610,24 @@ class NemotronHModel(nn.Module):
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         context_prefix_lens: Optional[torch.LongTensor] = None,
+        attention_alignment: Optional[AttentionAlignmentGuidance] = None,
         **kwargs,
     ) -> Union[Tuple, NemotronHOutput]:
         # Support both cache_params and past_key_values for compatibility
         if past_key_values is not None and cache_params is None:
             cache_params = past_key_values
+        if attention_alignment is not None and (cache_params is not None or use_cache is True):
+            raise ValueError('Attention alignment teachers require uncached full-sequence evaluation')
+        if attention_alignment is not None and self.config.rswa_window is not None:
+            raise ValueError('Attention alignment currently requires full causal attention, not R-SWA')
 
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
         use_cache = use_cache if use_cache is not None else (self.config.use_cache if not self.training else False)
+        if attention_alignment is not None:
+            use_cache = False
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         if (input_ids is None) ^ (inputs_embeds is not None):
@@ -1629,6 +1682,7 @@ class NemotronHModel(nn.Module):
 
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
+        alignment_losses = []
 
         for layer_idx, layer in enumerate(self.layers):
             if layer.block_type == "mamba":
@@ -1641,49 +1695,66 @@ class NemotronHModel(nn.Module):
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
-            def create_custom_forward(layer, layer_mask):
+            layer_alignment = attention_alignment if layer.block_type == 'attention' else None
+
+            def create_custom_forward(layer, layer_mask, layer_alignment):
                 def custom_forward(hidden_states):
                     return layer(
                         hidden_states,
                         cache_params=None,
                         cache_position=None,
                         attention_mask=layer_mask,
+                        attention_alignment=layer_alignment,
                     )
 
                 return custom_forward
 
             if self.gradient_checkpointing and self.training:
-                hidden_states = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(layer, layer_mask),
+                layer_output = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(layer, layer_mask, layer_alignment),
                     hidden_states,
                     use_reentrant=False,
                 )
             else:
-                hidden_states = layer(
+                layer_output = layer(
                     hidden_states,
                     cache_params=cache_params,
                     cache_position=cache_position,
                     attention_mask=layer_mask,
+                    attention_alignment=layer_alignment,
                 )
+            if layer_alignment is not None:
+                hidden_states, alignment_loss = layer_output
+                alignment_losses.append(alignment_loss)
+            else:
+                hidden_states = layer_output
 
         hidden_states = self.norm_f(hidden_states)
+        attention_alignment_loss = torch.stack(alignment_losses).mean() if alignment_losses else None
 
         if output_hidden_states:
             all_hidden_states = all_hidden_states + (hidden_states,)
 
         if not return_dict:
-            return tuple(v for v in [hidden_states, cache_params, all_hidden_states] if v is not None)
+            return tuple(
+                v for v in [hidden_states, cache_params, all_hidden_states, attention_alignment_loss] if v is not None
+            )
 
         return NemotronHOutput(
             last_hidden_state=hidden_states,
             past_key_values=cache_params if use_cache else None,
             hidden_states=all_hidden_states,
             attentions=all_self_attns,
+            attention_alignment_loss=attention_alignment_loss,
         )
 
     def _create_causal_mask(self, attention_mask, input_tensor, cache_position):
         """Create causal attention mask."""
-        if self.config._attn_implementation == "flash_attention_2":
+        if (
+            self.config._attn_implementation == "flash_attention_2"
+            and FLASH_ATTN_AVAILABLE
+            and _flash_attention_forward is not None
+        ):
             if attention_mask is not None and torch.any(attention_mask == 0):
                 return attention_mask
             return None
@@ -1774,6 +1845,7 @@ class NemotronHForCausalLM(nn.Module):
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         context_prefix_lens: Optional[torch.LongTensor] = None,
+        attention_alignment: Optional[AttentionAlignmentGuidance] = None,
         **kwargs,
     ) -> Union[Tuple, NemotronHCausalLMOutput]:
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
@@ -1791,6 +1863,7 @@ class NemotronHForCausalLM(nn.Module):
             return_dict=return_dict,
             cache_position=cache_position,
             context_prefix_lens=context_prefix_lens,
+            attention_alignment=attention_alignment,
         )
 
         hidden_states = outputs.last_hidden_state if return_dict else outputs[0]
@@ -1814,6 +1887,7 @@ class NemotronHForCausalLM(nn.Module):
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
+            attention_alignment_loss=outputs.attention_alignment_loss,
         )
 
     def prepare_inputs_for_generation(

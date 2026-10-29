@@ -39,7 +39,7 @@ from nemo.collections.tts.data.text_to_speech_dataset_lhotse import MagpieTTSLho
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import MagpieTTSLhotseMultiturnDataset
 from nemo.collections.tts.models.easy_magpietts_inference import EasyMagpieTTSInferenceModel, TrainingMode
 from nemo.collections.tts.modules.aligned_text_head import align_text_turns
-from nemo.collections.tts.modules.attention_alignment import AttentionAlignmentGuidance
+from nemo.collections.tts.modules.attention_alignment import AttentionAlignmentCapture, AttentionAlignmentGuidance
 from nemo.collections.tts.modules.magpietts_modules import (
     LocalTransformerType,
     add_special_tokens,
@@ -122,6 +122,7 @@ class ProcessBatchOutput:
     alignment_metrics: Optional[dict] = None
     attention_alignment_loss: Optional[torch.Tensor] = None
     attention_alignment_metrics: Optional[dict] = None
+    alignment_plots: Optional[list[dict]] = None
 
 
 class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
@@ -220,6 +221,21 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             if heads is not None and any(head >= decoder_config.num_attention_heads for head in heads):
                 raise ValueError('attention_alignment.heads contains an index outside the decoder head count')
         self.attention_alignment_config['heads'] = heads
+        self.alignment_visualization_config = dict(cfg.get('alignment_visualization', {}) or {})
+        plot_enabled = self.alignment_visualization_config.get('enabled', True)
+        if type(plot_enabled) is not bool:
+            raise ValueError('alignment_visualization.enabled must be a boolean')
+        self.alignment_visualization_config['enabled'] = plot_enabled
+        for name, default, minimum in (
+            ('max_examples', 2, 0),
+            ('max_audio_frames', 1024, 1),
+            ('max_text_tokens', 256, 1),
+        ):
+            value = self.alignment_visualization_config.get(name, default)
+            if type(value) is not int or value < minimum:
+                raise ValueError(f'alignment_visualization.{name} must be an integer >= {minimum}')
+            self.alignment_visualization_config[name] = value
+        self._alignment_plots_logged = 0
         self.cross_entropy_loss = nn.CrossEntropyLoss(reduction='none')
 
         if 'feature_masking' in cfg:
@@ -1157,6 +1173,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         attention_alignment_key_positions: Optional[torch.Tensor] = None,
         attention_alignment_turn_indices: Optional[torch.Tensor] = None,
         attention_alignment_reference_valid: Optional[torch.Tensor] = None,
+        alignment_plot_limit: int = 0,
     ) -> ProcessBatchOutput:
         """
         Simplified batch processing using channel-based embedding architecture.
@@ -1331,6 +1348,21 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             dropout_audio_conditioning=dropout_audio_conditioning,
         )
 
+        plot_limit = (
+            min(alignment_plot_limit, self.alignment_visualization_config['max_examples'])
+            if mode == 'val'
+            and self.alignment_visualization_config['enabled']
+            and not self.training
+            and not torch.is_grad_enabled()
+            else 0
+        )
+        attention_capture = None
+        if plot_limit > 0 and self.use_attention_alignment:
+            attention_capture = AttentionAlignmentCapture(
+                max_turns=plot_limit,
+                max_audio_frames=self.alignment_visualization_config['max_audio_frames'],
+                max_text_tokens=self.alignment_visualization_config['max_text_tokens'],
+            )
         alignment = None
         if self.use_aligned_text_head:
             alignment = self._prepare_aligned_text_targets(
@@ -1344,6 +1376,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 speaker_reference_codes=context_audio_codes,
                 speaker_reference_lens=context_audio_codes_lens,
                 speaker_reference_valid=alignment_speaker_reference_valid,
+                return_token_indices=plot_limit > 0,
             )
             if self.aligned_text_feedback:
                 feedback = self._aligned_text_feedback_inputs(
@@ -1378,6 +1411,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 speaker_reference_codes=context_audio_codes,
                 speaker_reference_lens=context_audio_codes_lens,
                 speaker_reference_valid=alignment_speaker_reference_valid,
+                capture=attention_capture,
             )
 
         # 6. Sum the channel embeddings element-wise
@@ -1680,6 +1714,20 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             aligned_text_targets=alignment.targets if alignment is not None else None,
             attention_alignment_loss=attention_alignment_loss,
             attention_alignment_metrics=attention_metrics,
+            alignment_plots=(
+                self._prepare_alignment_visualizations(
+                    alignment,
+                    attention_alignment_text_tokens if self.use_attention_alignment else alignment_text_tokens,
+                    attention_alignment_text_lens if self.use_attention_alignment else alignment_text_lens,
+                    attention_alignment_turn_indices if self.use_attention_alignment else alignment_turn_indices,
+                    audio_codes_lens,
+                    audio_delay,
+                    attention_capture,
+                    plot_limit,
+                )
+                if plot_limit > 0 and alignment is not None
+                else None
+            ),
             alignment_metrics=(
                 {
                     'valid_turns': alignment.valid_turn_count,
@@ -1718,6 +1766,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         speaker_reference_codes=None,
         speaker_reference_lens=None,
         speaker_reference_valid=None,
+        capture=None,
     ):
         """Train the reused flow on conditioning IDs and detach its positional path.
 
@@ -1794,7 +1843,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             selected_keys = keys.gather(0, path.clamp(0, length - 1))
             causal = (path >= 0) & (selected_keys <= queries) & (key_positions[row, :length].min() >= 0)
             causal_frames += causal.sum()
-            if not dropout_conditional_input and loss_scale > 0 and causal.any():
+            if not dropout_conditional_input and (loss_scale > 0 or capture is not None) and causal.any():
                 guidance_turns.append(
                     AttentionAlignmentTurn(
                         batch_index=sample,
@@ -1815,12 +1864,14 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 layers=settings['layers'],
                 look_back_tokens=settings['look_back_tokens'],
                 look_ahead_tokens=settings['look_ahead_tokens'],
+                capture=capture,
+                capture_only=capture is not None and loss_scale == 0,
             )
         spans = turn_indices[:, 2] - turn_indices[:, 1]
         metrics = {
             'turns': teacher.turn_count,
             'valid_turns': teacher.valid_turn_count,
-            'supervised_turns': tokens.new_tensor(len(guidance_turns)),
+            'supervised_turns': tokens.new_tensor(len(guidance_turns) if loss_scale > 0 else 0),
             'teacher_frames': valid_frames,
             'causal_frames': causal_frames,
             'invalid_spans': spans.le(0).sum(),
@@ -1830,6 +1881,147 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             'prior_strength': prior_strength,
         }
         return teacher, request, metrics
+
+    def _alignment_plot_budget(self):
+        """Reserve diagnostic work only for bounded, rank-zero W&B validation examples."""
+        settings = self.alignment_visualization_config
+        if (
+            not settings['enabled']
+            or not (self.use_attention_alignment or self.use_aligned_text_head)
+            or self.global_rank != 0
+        ):
+            return 0
+        try:
+            trainer = self.trainer
+        except RuntimeError:
+            return 0
+        if trainer is not None and getattr(trainer, 'sanity_checking', False):
+            return 0
+        if not any(isinstance(logger, WandbLogger) for logger in self.loggers):
+            return 0
+        return max(0, settings['max_examples'] - self._alignment_plots_logged)
+
+    def _prepare_alignment_visualizations(
+        self, alignment, tokens, token_lens, turn_indices, audio_lens, audio_delay, capture, limit
+    ):
+        """Pair detached MAS paths and captured head probabilities on the same turn-local axes."""
+        if alignment.token_indices is None or tokens is None or token_lens is None:
+            return []
+        if turn_indices is None:
+            ends = torch.div(
+                audio_lens + self.frame_stacking_factor - 1, self.frame_stacking_factor, rounding_mode='floor'
+            )
+            turn_indices = torch.stack([torch.arange(ends.numel(), device=ends.device), ends * 0, ends], dim=1)
+        records = [] if capture is None else capture.records
+        examples = []
+        mas_only = []
+        for row, (sample, start, end) in enumerate(turn_indices.detach().cpu().tolist()):
+            if len(examples) >= limit or (not records and len(mas_only) >= limit):
+                break
+            length = int(token_lens[row])
+            if not 0 <= sample < alignment.token_indices.size(0) or start < 0 or end <= start or length < 1:
+                continue
+            end = min(end, alignment.token_indices.size(1))
+            path = alignment.token_indices[sample, start:end].detach().cpu()
+            if not path.ge(0).any():
+                continue
+            example = {
+                'mas_token_indices': path,
+                'token_ids': tokens[row, :length].detach().cpu(),
+                'attention_probs': None,
+                'attention_frame_indices': None,
+                'attention_token_positions': None,
+                'batch_index': sample,
+                'turn_index': row,
+                'sample_start': start,
+                'attention_layer_ordinal': None,
+                'decoder_block_index': None,
+                'head': None,
+                'cropped': False,
+            }
+            offset = int(audio_delay[sample]) + start
+            for record in records:
+                queries = record['query_positions']
+                if record['batch_index'] != sample or not queries.numel():
+                    continue
+                if int(queries[0]) < offset or int(queries[-1]) >= offset + path.numel():
+                    continue
+                example.update(
+                    attention_probs=record['probabilities'],
+                    attention_frame_indices=queries - offset,
+                    attention_token_positions=torch.arange(
+                        record['key_positions'].numel(), dtype=torch.long, device='cpu'
+                    ),
+                    attention_layer_ordinal=record['attention_layer_ordinal'],
+                    decoder_block_index=record['decoder_block_index'],
+                    head=record['head'],
+                    cropped=record['cropped_audio'] or record['cropped_text'],
+                )
+                break
+            if example['attention_probs'] is not None:
+                examples.append(example)
+            elif len(mas_only) < limit:
+                mas_only.append(example)
+        return (examples + mas_only)[:limit]
+
+    def _log_alignment_visualizations(self, output):
+        """Log paired teacher/attention images without retaining GPU attention matrices."""
+        examples = getattr(output, 'alignment_plots', None)
+        if not examples:
+            return
+        budget = self._alignment_plot_budget()
+        if budget == 0:
+            return
+        from nemo.collections.tts.parts.utils.alignment_visualization import render_alignment_comparison
+
+        loggers = [logger for logger in self.loggers if isinstance(logger, WandbLogger)]
+        frame_rate = (
+            self.codec_model_input_sample_rate / self.codec_model_samples_per_frame / self.frame_stacking_factor
+        )
+        for example in examples[:budget]:
+            ids = example['token_ids'].tolist()
+            labels = [str(token) for token in ids]
+            decode = getattr(self.tokenizer, 'decode', None)
+            if decode is not None and ids:
+                for index in np.unique(np.linspace(0, len(ids) - 1, min(12, len(ids)), dtype=np.int64)):
+                    try:
+                        label = decode([ids[index]], tokenizer_name=self.text_conditioning_tokenizer_name)
+                    except (TypeError, ValueError, KeyError, AttributeError):
+                        continue
+                    if isinstance(label, str) and label:
+                        labels[index] = label
+            location = (
+                f"attention layer {example['attention_layer_ordinal']}, "
+                f"block {example['decoder_block_index']}, head {example['head']}"
+                if example['attention_probs'] is not None
+                else 'no guided attention capture'
+            )
+            title = f"Eval item {example['batch_index']}, turn {example['turn_index']}: {location}"
+            if example['cropped']:
+                title += ' (attention excerpt)'
+            image = render_alignment_comparison(
+                example['mas_token_indices'].numpy(),
+                None if example['attention_probs'] is None else example['attention_probs'].numpy(),
+                None if example['attention_frame_indices'] is None else example['attention_frame_indices'].numpy(),
+                token_labels=labels,
+                title=title,
+                frames_per_second=frame_rate,
+                attention_token_positions=(
+                    None
+                    if example['attention_token_positions'] is None
+                    else example['attention_token_positions'].numpy()
+                ),
+            )
+            caption = (
+                f'{title}; teacher-forced eval; MAS from the flow teacher; '
+                'attention before the training prior, normalized over all visible decoder keys. '
+                'Gray cells are outside the captured excerpt or have no valid alignment; '
+                'causally masked or padded text keys have zero attention probability.'
+            )
+            key = f'val/alignment/turn_{self._alignment_plots_logged}'
+            for logger in loggers:
+                logger.log_image(key=key, images=[image], caption=[caption], step=int(self.global_step))
+            self._alignment_plots_logged += 1
 
     def _log_attention_alignment_losses(self, output, mode, batch_size):
         zero = output.loss.detach().new_zeros(())
@@ -2485,8 +2677,10 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             mode="val",
             task=batch["task"] if "task" in batch else None,
             agent_mask=batch["agent_mask"] if "agent_mask" in batch else None,
+            alignment_plot_limit=self._alignment_plot_budget(),
             **self._aligned_text_batch_kwargs(batch),
         )
+        self._log_alignment_visualizations(batch_output)
         self._log_aligned_text_losses(
             batch_output, 'val', batch['text'].size(0), batch.get('alignment_missing_normalized_text')
         )
@@ -2759,6 +2953,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             self._generate_codec_silence_buffer()
 
     def on_validation_epoch_start(self) -> None:
+        self._alignment_plots_logged = 0
         self._text_only_val_ar_samples = 0
         self._prepare_text_only_validation_examples()
         if torch.distributed.is_initialized():

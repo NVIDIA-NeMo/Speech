@@ -11,7 +11,7 @@ attention mass on text.
 """
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 import torch.nn.functional as F
@@ -26,6 +26,30 @@ class AttentionAlignmentTurn:
     query_positions: torch.Tensor
     key_positions: torch.Tensor
     token_indices: torch.Tensor
+
+
+@dataclass
+class AttentionAlignmentCapture:
+    """Bounded validation diagnostics, containing detached CPU tensors only.
+
+    Long turns are shown as explicitly marked leading excerpts. Attention retains
+    its full visible-key normalization before selecting the displayed text keys.
+    Create a fresh collector per forward; decoder metadata is filled on records.
+    """
+
+    max_turns: int = 2
+    max_audio_frames: int = 1024
+    max_text_tokens: int = 256
+    records: list[dict] = field(default_factory=list)
+    decoder_block_index: int | None = None
+    attention_layer_ordinal: int | None = None
+
+    def __post_init__(self):
+        for name in ('max_turns', 'max_audio_frames', 'max_text_tokens'):
+            if type(getattr(self, name)) is not int or getattr(self, name) < 1:
+                raise ValueError(f'{name} must be a positive integer')
+        if not isinstance(self.records, list):
+            raise ValueError('capture records must be a list')
 
 
 @dataclass
@@ -50,6 +74,8 @@ class AttentionAlignmentGuidance:
     layers: str | tuple[int, ...] | None = 'middle'
     look_back_tokens: int = 0
     look_ahead_tokens: int = 0
+    capture: AttentionAlignmentCapture | None = None
+    capture_only: bool = False
 
     def __post_init__(self):
         if not math.isfinite(self.prior_strength) or not 0 <= self.prior_strength <= 1:
@@ -61,6 +87,12 @@ class AttentionAlignmentGuidance:
         for name in ('look_back_tokens', 'look_ahead_tokens'):
             if type(getattr(self, name)) is not int or getattr(self, name) < 0:
                 raise ValueError(f'{name} must be a nonnegative integer')
+        if self.capture is not None and not isinstance(self.capture, AttentionAlignmentCapture):
+            raise ValueError('capture must be an AttentionAlignmentCapture or null')
+        if type(self.capture_only) is not bool:
+            raise ValueError('capture_only must be a boolean')
+        if self.capture_only and (self.capture is None or self.prior_strength != 0):
+            raise ValueError('capture_only requires a collector and zero prior_strength')
         if self.heads is not None:
             self.heads = tuple(self.heads)
             if (
@@ -121,6 +153,8 @@ def apply_attention_alignment(
         raise ValueError('Attention guidance does not support cached decoding')
     if attention_mask is not None and attention_mask.ndim not in (2, 4):
         raise ValueError('Attention guidance requires a 2D padding or 4D attention mask')
+    if guidance.capture is not None and torch.is_grad_enabled():
+        raise ValueError('Attention capture requires no_grad validation')
 
     batch_size, num_heads, query_length, _ = query.shape
     head_indices = tuple(range(num_heads)) if guidance.heads is None else guidance.heads
@@ -129,10 +163,14 @@ def apply_attention_alignment(
     selected_heads = torch.tensor(head_indices, device=query.device, dtype=torch.long)
     # Retain the original tensor and arithmetic exactly when the prior is off.
     output = ordinary_output.clone() if guidance.prior_strength else ordinary_output
-    loss_sum = query.float().sum() * 0.0 + key.float().sum() * 0.0
+    loss_sum = (
+        query.new_zeros((), dtype=torch.float32)
+        if guidance.capture_only
+        else query.float().sum() * 0.0 + key.float().sum() * 0.0
+    )
     count = 0
     seen_queries = set()
-    for turn in guidance.turns:
+    for turn_index, turn in enumerate(guidance.turns):
         _validate_turn(turn, query, query_length, batch_size)
         if not turn.query_positions.numel() or not turn.key_positions.numel():
             continue
@@ -157,8 +195,26 @@ def apply_attention_alignment(
         centers = centers[target_exists]
         if not positions.numel():
             continue
-        selected_query = query[turn.batch_index].index_select(0, selected_heads)
-        selected_key = key[turn.batch_index].index_select(0, selected_heads)
+        if guidance.capture_only:
+            selected_query = query[turn.batch_index, head_indices[0] : head_indices[0] + 1]
+            selected_key = key[turn.batch_index, head_indices[0] : head_indices[0] + 1]
+        else:
+            selected_query = query[turn.batch_index].index_select(0, selected_heads)
+            selected_key = key[turn.batch_index].index_select(0, selected_heads)
+        if guidance.capture is not None:
+            _capture_turn_attention(
+                selected_query[0],
+                selected_key[0],
+                turn,
+                turn_index,
+                positions,
+                centers,
+                head_indices[0],
+                guidance,
+                attention_mask,
+            )
+        if guidance.capture_only:
+            continue
         selected_value = value[turn.batch_index].index_select(0, selected_heads)
         for start in range(0, positions.numel(), guidance.query_chunk_size):
             rows = positions[start : start + guidance.query_chunk_size]
@@ -193,6 +249,57 @@ def apply_attention_alignment(
             if guidance.prior_strength:
                 output[turn.batch_index, selected_heads[:, None], rows[None, :], :] = guided_output
     return output, loss_sum / max(count, 1)
+
+
+def _capture_turn_attention(query, key, turn, turn_index, positions, centers, head, guidance, attention_mask):
+    collector = guidance.capture
+    if len(collector.records) >= collector.max_turns:
+        return
+    keys = turn.key_positions.detach().long()
+    displayed_keys = keys[: collector.max_text_tokens]
+    displayed = centers < displayed_keys.numel()
+    displayed_positions = positions[displayed][: collector.max_audio_frames]
+    displayed_centers = centers[displayed][: collector.max_audio_frames]
+    if not displayed_positions.numel():
+        return
+    head_tensor = torch.tensor([head], device=query.device, dtype=torch.long)
+    probabilities = []
+    with torch.autocast(device_type=query.device.type, enabled=False):
+        full_key = key.float().T
+        for start in range(0, displayed_positions.numel(), guidance.query_chunk_size):
+            rows = displayed_positions[start : start + guidance.query_chunk_size]
+            scores = query.index_select(0, rows).float() @ full_key / math.sqrt(query.size(-1))
+            visible = torch.arange(key.size(0), device=query.device)[None, :] <= rows[:, None]
+            if attention_mask is not None:
+                mask = _select_attention_mask(attention_mask, turn.batch_index, head_tensor, rows, key.size(0))[0]
+                visible = visible & _mask_visibility(mask)
+                if mask.dtype != torch.bool:
+                    scores = scores + mask.float()
+            scores = scores.masked_fill(~visible, -torch.inf)
+            # Select columns after full-key softmax. Renormalizing the text slice
+            # would conceal a head that assigns almost no attention mass to text.
+            probabilities.append(F.softmax(scores, dim=-1).index_select(-1, displayed_keys).detach().cpu())
+    collector.records.append(
+        {
+            'turn_index': turn_index,
+            'batch_index': turn.batch_index,
+            'decoder_block_index': collector.decoder_block_index,
+            'attention_layer_ordinal': collector.attention_layer_ordinal,
+            'head': head,
+            'query_positions': displayed_positions.detach().cpu(),
+            'key_positions': displayed_keys.detach().cpu(),
+            'token_indices': displayed_centers.detach().cpu(),
+            'probabilities': torch.cat(probabilities, dim=0),
+            'total_query_rows': turn.query_positions.numel(),
+            'turn_query_start': int(turn.query_positions[0].item()),
+            'turn_query_end': int(turn.query_positions[-1].item()) + 1,
+            'eligible_query_rows': positions.numel(),
+            'total_text_tokens': keys.numel(),
+            'cropped_audio': displayed_positions.numel() < positions.numel(),
+            'cropped_text': displayed_keys.numel() < keys.numel(),
+            'prior_free': True,
+        }
+    )
 
 
 def _alignment_chunk(

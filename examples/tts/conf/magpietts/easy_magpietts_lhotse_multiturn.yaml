@@ -115,6 +115,12 @@ model:
     look_ahead_tokens: 5
     prior_epsilon: 0.1
   aligned_text_use_normalized_text: true # False selects raw text for both the repeated head and its aligner.
+  # W&B validation diagnostics only when an alignment experiment is explicitly enabled.
+  alignment_visualization:
+    enabled: true
+    max_examples: 2 # Total valid turns per validation epoch, logged only on rank zero.
+    max_audio_frames: 1024 # Captured attention excerpt; rendering remains bounded for long turns.
+    max_text_tokens: 256
   start_aligner_text_head_steps: 10000 # Train the aligner immediately; switch head/feedback targets at this step.
   aligned_text_feedback: true
   aligned_text_feedback_scale: 1.0

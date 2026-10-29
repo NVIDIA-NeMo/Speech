@@ -22,7 +22,7 @@ layer types (Mamba, Attention, MLP, MoE) via the hybrid_override_pattern config.
 """
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, Optional, Tuple, Union
 
 import torch
@@ -1069,6 +1069,10 @@ class NemotronHAttention(nn.Module):
         if attention_alignment is not None and self.config.rswa_window is not None:
             raise ValueError('Attention alignment currently requires full causal attention, not R-SWA')
 
+        if attention_alignment is not None and attention_alignment.capture is not None:
+            if self.training or torch.is_grad_enabled():
+                raise ValueError('Attention capture requires eval mode and no_grad validation')
+
         query_states = self.q_proj(hidden_states)
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
@@ -1191,6 +1195,10 @@ class NemotronHFlashAttention2(NemotronHAttention):
             raise ValueError('Training attention guidance and inference window requests are mutually exclusive')
         if attention_alignment is not None and (past_key_value is not None or use_cache):
             raise ValueError('Attention alignment teachers cannot be used during cached decoding')
+
+        if attention_alignment is not None and attention_alignment.capture is not None:
+            if self.training or torch.is_grad_enabled():
+                raise ValueError('Attention capture requires eval mode and no_grad validation')
 
         query_states = self.q_proj(hidden_states)
         key_states = self.k_proj(hidden_states)
@@ -1676,6 +1684,9 @@ class NemotronHModel(nn.Module):
             raise ValueError('Attention alignment teachers require uncached full-sequence evaluation')
         if attention_alignment is not None and self.config.rswa_window is not None:
             raise ValueError('Attention alignment currently requires full causal attention, not R-SWA')
+        if attention_alignment is not None and attention_alignment.capture is not None:
+            if self.training or torch.is_grad_enabled():
+                raise ValueError('Attention capture requires eval mode and no_grad validation')
 
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -1761,11 +1772,14 @@ class NemotronHModel(nn.Module):
         all_self_attns = () if output_attentions else None
         alignment_losses = []
         guided_layer_indices = set()
+        capture_layer_index = None
         if attention_alignment is not None:
             attention_layers = [idx for idx, layer in enumerate(self.layers) if layer.block_type == 'attention']
             guided_layer_indices = {
                 attention_layers[ordinal] for ordinal in attention_alignment.resolve_layers(len(attention_layers))
             }
+            if attention_alignment.capture is not None:
+                capture_layer_index = min(guided_layer_indices)
         inference_layer_index = None
         if attention_alignment_inference is not None:
             attention_layers = [idx for idx, layer in enumerate(self.layers) if layer.block_type == 'attention']
@@ -1786,6 +1800,20 @@ class NemotronHModel(nn.Module):
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
             layer_alignment = attention_alignment if layer_idx in guided_layer_indices else None
+            if layer_alignment is not None and layer_alignment.capture is not None:
+                if layer_idx == capture_layer_index:
+                    layer_alignment = replace(
+                        layer_alignment,
+                        capture=replace(
+                            layer_alignment.capture,
+                            decoder_block_index=layer_idx,
+                            attention_layer_ordinal=attention_layers.index(layer_idx),
+                        ),
+                    )
+                elif layer_alignment.capture_only:
+                    layer_alignment = None
+                else:
+                    layer_alignment = replace(layer_alignment, capture=None)
             layer_inference_alignment = attention_alignment_inference if layer_idx == inference_layer_index else None
 
             def create_custom_forward(layer, layer_mask, layer_alignment, layer_inference_alignment):

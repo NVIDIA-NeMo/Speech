@@ -195,6 +195,42 @@ zero auxiliary contribution; zero loss alone is not evidence of a useful path.
 The attention loss uses soft targets, so its minimum includes their entropy;
 it is not directly comparable to the repeated-BPE head's cross-entropy.
 
+### Validation alignment figures
+
+With an alignment mode and a W&B logger enabled, validation logs paired figures
+under `val/alignment/turn_0`, `val/alignment/turn_1`, and so on. Each image compares
+the flow teacher's hard MAS path with the actual guided head's attention over
+the same eval turn, using shared BPE-position and acoustic-time axes. The caption
+identifies the attention-layer ordinal, absolute decoder block and head.
+
+```yaml
+alignment_visualization:
+  enabled: true
+  max_examples: 2
+  max_audio_frames: 1024
+  max_text_tokens: 256
+```
+
+The sample limit applies across the complete validation epoch on rank zero.
+Sanity checks, other ranks, training batches and runs without W&B do not capture
+attention. Both alignment features remain disabled by default; diagnostics do
+not activate either feature. Set `alignment_visualization.enabled=false` to skip
+these images in an alignment experiment.
+
+The attention panel shows **raw probabilities before applying the training
+prior**, normalized over all visible decoder keys. This reveals whether the
+head actually attends to text rather than just displaying the imposed prior.
+Warmup capture does not activate the alignment loss or prior. The first selected
+guided layer and first selected head are plotted; the default is the middle
+attention layer, head zero. In repeated-head-only mode, only MAS is available.
+
+Long-turn attention is a clearly labeled leading excerpt, capped by the settings
+above. Gray regions are uncaptured or have no valid alignment. Captured text keys
+excluded by causal or padding masks have zero probability and appear dark.
+Rendering uses a bounded raster on the full turn's axes; it never constructs or
+logs a conversation-square attention matrix. These are teacher-forced validation
+diagnostics, not alignments recovered from autoregressively generated speech.
+
 ## Inference and evaluation
 
 The flow, teacher prior and supervision are not run during synthesis. By default,

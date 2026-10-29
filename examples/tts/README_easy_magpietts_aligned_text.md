@@ -34,6 +34,12 @@ for supported formats, compatibility requirements and resume behavior.
 
 ## Training
 
+W&B validation can log the hard MAS path under `val/alignment/turn_0` and
+`val/alignment/turn_1` by default. Configure `model.alignment_visualization` to
+change the sample budget or disable plotting. Attention is shown alongside MAS
+when the separate attention-guidance experiment is used; repeated-head-only
+training labels the attention panel as unavailable.
+
 By default, the loader selects `normalized_text` when it is a nonempty string, otherwise
 the original raw `text`. It retokenizes this selected transcript separately
 from the conditioning channel, using exactly the same transcript for the aligner,

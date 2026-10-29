@@ -49,8 +49,10 @@ class EasyMagpieCodecConfig(PretrainedConfig):
         num_levels_per_group: list[int] | None = None,
         frame_stacking_factor: int = 2,
         output_sample_rate: int = 22050,
+        watermark_checkpoint: str | None = None,
         **kwargs,
     ) -> None:
+        """``watermark_checkpoint`` is relative to the codec model directory."""
         kwargs.setdefault("architectures", ["EasyMagpieCodecForConditionalGeneration"])
         kwargs.setdefault("torch_dtype", "float32")
         super().__init__(**kwargs)
@@ -70,6 +72,7 @@ class EasyMagpieCodecConfig(PretrainedConfig):
         self.num_levels_per_group = list(num_levels_per_group or [4, 4, 4, 4, 4])
         self.frame_stacking_factor = int(frame_stacking_factor)
         self.output_sample_rate = int(output_sample_rate)
+        self.watermark_checkpoint = watermark_checkpoint
         # Minimal language-model-shaped fields used by generic vLLM input allocation.
         self.vocab_size = max(self.codebook_size + 1, 2)
         self.hidden_size = 1

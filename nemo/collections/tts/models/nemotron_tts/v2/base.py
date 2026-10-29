@@ -26,7 +26,6 @@ import torch
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig
 from torch import nn
-from transformers import AutoConfig, AutoModelForCausalLM
 
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.speechlm2.parts.pretrained import set_model_dict_for_partial_init
@@ -299,9 +298,6 @@ class NemotronTTSBaseV2(ModelPT):
         # If True, remove the decoder LM head over text tokens to save parameters when the model does not train or
         # infer text-token logits from the decoder output.
         self.disable_lm_text_head = cfg.get('disable_lm_text_head', True)
-        # Legacy checkpoints may have trained context text with decoder embeddings only, even when CAS is enabled for
-        # regular text tokens. This flag skips adding CAS embeddings for context text to match those checkpoints.
-        self.disable_cas_for_context_text = cfg.get('disable_cas_for_context_text', False)
         if self.disable_subword_embedding and not self.use_bpe_char_tokenizer:
             logging.warning(
                 "`disable_subword_embedding=True` requires `use_bpe_char_tokenizer=True`; overriding automatically."
@@ -370,10 +366,6 @@ class NemotronTTSBaseV2(ModelPT):
             self.phoneme_tokenizer = safe_instantiate(cfg.phoneme_tokenizer)
             self.phoneme_stacking_factor = cfg.get('phoneme_stacking_factor', 1)
             self.phoneme_vocab_size = self.phoneme_tokenizer.vocab_size
-            if cfg.get('phoneme_corruption_batch_prob', None) is None:
-                # Legacy mode: remove the UNK token from the phoneme vocabulary
-                # TODO: Remove this.
-                self.phoneme_vocab_size -= 1
             # If max phoneme probability is below this threshold at inference-time,
             # replace the predicted timestep with UNK to reduce error propagation.
             self.phoneme_confidence_unk_threshold = cfg.get('phoneme_confidence_unk_threshold', 0.0)
@@ -423,25 +415,10 @@ class NemotronTTSBaseV2(ModelPT):
         # Audio embedding dimension - can be smaller than hidden_dim to reduce parameters
         self.audio_embedding_dim = cfg.get('audio_embedding_dim', cfg.hidden_dim)
 
-        # Input-side audio embeddings come either from one learned table per codebook channel, or
-        # from a single projection of the codec's own quantizer latents.
-        self.use_codec_latent_audio_embedding = cfg.get('use_codec_latent_audio_embedding', False)
-        self.audio_embeddings = None
-        self.audio_in_projection = None
-        self.audio_code_projection = None
-        if self.use_codec_latent_audio_embedding:
-            self._init_codec_latent_audio_embedding(cfg)
-        else:
-            audio_embeddings = []
-            for _ in range(self.num_audio_codebooks * self.frame_stacking_factor):
-                audio_embeddings.append(nn.Embedding(self.num_all_tokens_per_codebook, self.audio_embedding_dim))
-            self.audio_embeddings = nn.ModuleList(audio_embeddings)
-
-            # Projection from audio_embedding_dim to embedding_dim (Identity if same)
-            if self.audio_embedding_dim != cfg.embedding_dim:
-                self.audio_in_projection = nn.Linear(self.audio_embedding_dim, cfg.embedding_dim)
-            else:
-                self.audio_in_projection = nn.Identity()
+        # NemotronTTS v2 embeds audio codes through the codec's quantizer latents.
+        if not bool(cfg.get('use_codec_latent_audio_embedding', False)):
+            raise ValueError("NemotronTTS v2 requires use_codec_latent_audio_embedding=True")
+        self._init_codec_latent_audio_embedding(cfg)
 
         # Speaker/context encoder for context audio embeddings.
         # This enables keeping the zero-shot conditioning module private at release time.
@@ -490,66 +467,27 @@ class NemotronTTSBaseV2(ModelPT):
             self.phoneme_embeddings = nn.ModuleList(phoneme_embeddings)
             self.phoneme_final_proj = nn.Linear(cfg.hidden_dim, self.phoneme_vocab_size * self.phoneme_stacking_factor)
 
-        # Decoder backend selection - supports HuggingFace models or NemotronH
-        self.decoder_type = cfg.get('decoder_type', 'huggingface')  # backward compatible default
-        logging.info(f"Using decoder type: {self.decoder_type}")
+        if cfg.get('decoder_type', 'nemotron_h') != 'nemotron_h':
+            raise ValueError("NemotronTTS v2 requires decoder_type='nemotron_h'")
+        from nemo.collections.tts.modules.nemotron_h_decoder import NemotronHConfig, NemotronHForCausalLM
 
-        if self.decoder_type == 'huggingface':
-            # Existing HuggingFace path
-            self.transformer_backend_config = AutoConfig.from_pretrained(
-                cfg.transformer_hf_backend,
-                trust_remote_code=True,
-            )
-
-            # This is set True during inference to save time on loading the model.
-            use_meta = cfg.get('use_meta_init_for_decoder', False)
-            if use_meta:
-                logging.info("Using meta device for decoder init (weights will be loaded from checkpoint)")
-                with torch.device('meta'):
-                    hf_transformer = AutoModelForCausalLM.from_config(self.transformer_backend_config)
-                hf_transformer = hf_transformer.to_empty(device='cpu')
-                for module in hf_transformer.modules():
-                    if 'RotaryEmbedding' in type(module).__name__ and hasattr(module, 'config'):
-                        type(module).__init__(module, module.config, device='cpu')
-            else:
-                hf_transformer = AutoModelForCausalLM.from_config(self.transformer_backend_config)
-            if self.disable_lm_text_head:
-                hf_transformer.lm_head = None
-            self.decoder = hf_transformer.model
-            self.lm_text_head = None if self.disable_lm_text_head else hf_transformer.lm_head
-
-        elif self.decoder_type == 'nemotron_h':
-            # NemotronH hybrid Mamba2/Attention backend
-            from nemo.collections.tts.modules.nemotron_h_decoder import NemotronHConfig, NemotronHForCausalLM
-
-            # Build config from YAML parameters
-            nemotron_h_config_dict = dict(cfg.get('nemotron_h_config', {}))
-            # Ensure hidden_size matches embedding_dim for compatibility
-            if 'hidden_size' not in nemotron_h_config_dict:
-                nemotron_h_config_dict['hidden_size'] = cfg.embedding_dim
-            nemotron_config = NemotronHConfig(**nemotron_h_config_dict)
-            nemotron_model = NemotronHForCausalLM(nemotron_config)
-            if self.disable_lm_text_head:
-                nemotron_model.lm_head = None
-            self.decoder = nemotron_model.backbone
-            self.lm_text_head = None if self.disable_lm_text_head else nemotron_model.lm_head
-            logging.info(
-                f"NemotronH config: {nemotron_config.num_hidden_layers} layers, pattern={nemotron_config.hybrid_override_pattern[:20]}..."
-            )
-
-        else:
-            raise ValueError(f"Unknown decoder_type: {self.decoder_type}. Supported: 'huggingface', 'nemotron_h'")
+        nemotron_h_config_dict = dict(cfg.get('nemotron_h_config', {}))
+        if 'hidden_size' not in nemotron_h_config_dict:
+            nemotron_h_config_dict['hidden_size'] = cfg.embedding_dim
+        nemotron_config = NemotronHConfig(**nemotron_h_config_dict)
+        nemotron_model = NemotronHForCausalLM(nemotron_config)
+        if self.disable_lm_text_head:
+            nemotron_model.lm_head = None
+        self.decoder = nemotron_model.backbone
+        self.lm_text_head = None if self.disable_lm_text_head else nemotron_model.lm_head
+        logging.info(
+            f"NemotronH config: {nemotron_config.num_hidden_layers} layers, pattern={nemotron_config.hybrid_override_pattern[:20]}..."
+        )
 
         self.activation_checkpointing = cfg.get("activation_checkpointing", False)
         if self.activation_checkpointing:
             logging.info("Enabling activation checkpointing for decoder")
-
-            if self.decoder_type == "nemotron_h":
-                self.decoder.gradient_checkpointing = True
-            elif hasattr(self.decoder, "gradient_checkpointing_enable"):
-                self.decoder.gradient_checkpointing_enable()
-            elif hasattr(self.decoder, "gradient_checkpointing"):
-                self.decoder.gradient_checkpointing = True
+            self.decoder.gradient_checkpointing = True
 
         if self.disable_lm_text_head and hasattr(self.decoder, 'lm_head'):
             self.decoder.lm_head = None
@@ -614,8 +552,6 @@ class NemotronTTSBaseV2(ModelPT):
             self.num_audio_codebooks * self.num_all_tokens_per_codebook * self.frame_stacking_factor,
         )
 
-        if self.decoder_type != 'nemotron_h':
-            raise ValueError("NemotronTTS v2 requires a Nemotron-H backbone")
         prediction_schedule = cfg.get('acoustic_codes_predictor_schedule', None)
         if prediction_schedule is None:
             raise ValueError("NemotronTTS v2 requires acoustic_codes_predictor_schedule")
@@ -946,26 +882,13 @@ class NemotronTTSBaseV2(ModelPT):
                     f"Received {audio_tokens.size(1)} code channels but {len(codebook_indices)} codebook indices"
                 )
 
-        if self.use_codec_latent_audio_embedding:
-            all_codebook_indices = tuple(range(self.num_audio_codebooks * self.frame_stacking_factor))
-            if codebook_indices == all_codebook_indices:
-                return self._embed_audio_tokens_from_codec_latent(audio_tokens)
-            return sum(
-                self.embed_audio_codebook(codebook_idx, audio_tokens[:, input_idx, :])
-                for input_idx, codebook_idx in enumerate(codebook_indices)
-            ) / len(codebook_indices)
-
-        audio_embedding = None
-        for input_idx, codebook_idx in enumerate(codebook_indices):
-            embedding = self.audio_embeddings[codebook_idx](audio_tokens[:, input_idx, :])
-            if audio_embedding is None:
-                audio_embedding = embedding
-            else:
-                audio_embedding = audio_embedding + embedding
-        audio_embedding = audio_embedding / audio_tokens.size(1)
-        # Project from audio_embedding_dim to embedding_dim
-        audio_embedding = self.audio_in_projection(audio_embedding)
-        return audio_embedding
+        all_codebook_indices = tuple(range(self.num_audio_codebooks * self.frame_stacking_factor))
+        if codebook_indices == all_codebook_indices:
+            return self._embed_audio_tokens_from_codec_latent(audio_tokens)
+        return sum(
+            self.embed_audio_codebook(codebook_idx, audio_tokens[:, input_idx, :])
+            for input_idx, codebook_idx in enumerate(codebook_indices)
+        ) / len(codebook_indices)
 
     def embed_audio_codebook(self, channel_index: int, codes: torch.Tensor) -> torch.Tensor:
         """Embed one stacked codebook channel through the codec latent projection."""
@@ -1072,7 +995,6 @@ class NemotronTTSBaseV2(ModelPT):
         self,
         text_tokens: torch.Tensor,
         text_lens: Optional[torch.Tensor] = None,
-        disable_cas_embedding: bool = False,
         is_multiturn: bool = False,
     ) -> torch.Tensor:
         """Embed text tokens using decoder embedding + optional CAS, or CAS-only when configured.
@@ -1080,8 +1002,6 @@ class NemotronTTSBaseV2(ModelPT):
         Args:
             text_tokens: Token ids to embed, shaped ``(B, T)``.
             text_lens: Optional valid token lengths for constructing the CAS mask. Defaults to the full sequence length.
-            disable_cas_embedding: When True, skip adding CAS embeddings even if the model uses the BPE char tokenizer.
-                This is needed for legacy models where context text was trained without CAS embeddings.
             is_multiturn: When True creates the text_mask based on non text pad ids positions, so that it can support multiturn.
         """
         if text_lens is None:
@@ -1095,12 +1015,10 @@ class NemotronTTSBaseV2(ModelPT):
             text_mask = get_mask_from_lengths(text_lens)
 
         if self.disable_subword_embedding:
-            if disable_cas_embedding:
-                raise ValueError("Cannot disable CAS embedding when `disable_subword_embedding=True`.")
             return self.cas_encoder(text_tokens, subword_mask=text_mask)
 
         text_embedded = self.decoder.get_input_embeddings()(text_tokens)
-        if self.use_bpe_char_tokenizer and not disable_cas_embedding:
+        if self.use_bpe_char_tokenizer:
             cas_embedding = self.cas_encoder(text_tokens, subword_mask=text_mask)
             text_embedded = text_embedded + cas_embedding
         return text_embedded
@@ -1144,22 +1062,13 @@ class NemotronTTSBaseV2(ModelPT):
         Returns:
             Decoder backend output.
         """
-        if self.decoder_type == 'nemotron_h':
-            backend_out = self.decoder(
-                inputs_embeds=inputs_embeds,
-                attention_mask=attention_mask,
-                use_cache=use_cache,
-                past_key_values=past_key_values,
-                cache_position=cache_position,
-            )
-        else:
-            backend_out = self.decoder(
-                inputs_embeds=inputs_embeds,
-                attention_mask=attention_mask,
-                use_cache=use_cache,
-                past_key_values=past_key_values,
-            )
-        return backend_out
+        return self.decoder(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            use_cache=use_cache,
+            past_key_values=past_key_values,
+            cache_position=cache_position,
+        )
 
     def logits_to_audio_codes(self, all_code_logits, audio_codes_lens):
         # all_code_logits: (B, T', num_codebooks * num_tokens_per_codebook)
@@ -1452,7 +1361,6 @@ class NemotronTTSBaseV2(ModelPT):
         context_text_embedded = self.embed_text_tokens(
             context_text_tokens,
             text_lens=context_text_lens,
-            disable_cas_embedding=self.disable_cas_for_context_text,
         )  # (B, L, E)
 
         # Prepare task embedding for multi-mode training
@@ -1481,7 +1389,6 @@ class NemotronTTSBaseV2(ModelPT):
             cfg_token_embedding = self.embed_text_tokens(
                 torch.full((batch_size, 1), cfg_token_id, device=device),
                 text_lens=torch.ones(batch_size, dtype=torch.long, device=device),
-                disable_cas_embedding=self.disable_cas_for_context_text,
             )  # (B, 1, E)
             # Expand CFG token to match context embedding size
             context_embedding = cfg_token_embedding.expand(-1, context_embedding.size(1), -1)  # (B, T_context, E)
@@ -1690,7 +1597,6 @@ class NemotronTTSBaseV2(ModelPT):
                 dummy_context_embedding_unconditional = self.embed_text_tokens(
                     torch.full((1, 1), self.cfg_unk_token_id, device=device),
                     text_lens=torch.ones(1, dtype=torch.long, device=device),
-                    disable_cas_embedding=self.disable_cas_for_context_text,
                 )
                 # Create unconditional context (same length as conditional)
                 dummy_context_expanded = dummy_context_embedding_unconditional.expand(

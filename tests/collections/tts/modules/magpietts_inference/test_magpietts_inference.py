@@ -47,9 +47,11 @@ from nemo.collections.tts.modules.magpietts_inference.evaluation import (
 )
 from nemo.collections.tts.modules.magpietts_inference.utils import (
     EXPERIMENT_METRICS_CSV_HEADER,
+    ModelLoadConfig,
     _group_multiturn_filewise_metrics_by_sample,
     _write_grouped_multiturn_filewise_metrics_csv,
     append_metrics_to_csv,
+    load_easy_magpie_model,
     select_easy_magpie_model_class,
     write_csv_header_if_needed,
 )
@@ -547,11 +549,58 @@ def test_example_script_rejects_removed_strip_flag(capsys):
     "model_cfg,expected_class",
     [
         (OmegaConf.create({}), EasyMagpieTTSInferenceModel),
-        (OmegaConf.create({"acoustic_codes_predictor_schedule": [1, 1]}), NemotronTTSBaseV2),
+        (OmegaConf.create({"model_type": "v1"}), EasyMagpieTTSInferenceModel),
+        (OmegaConf.create({"model_type": "v2"}), NemotronTTSBaseV2),
     ],
 )
 def test_select_easy_magpie_model_class(model_cfg, expected_class):
     assert select_easy_magpie_model_class(model_cfg) is expected_class
+
+
+@pytest.mark.unit
+def test_select_easy_magpie_model_class_rejects_unknown_type():
+    with pytest.raises(ValueError, match="Unsupported model_type"):
+        select_easy_magpie_model_class(OmegaConf.create({"model_type": "v3"}))
+
+
+@pytest.mark.unit
+def test_load_easy_magpie_model_selects_v2_for_nemo_archive(tmp_path, monkeypatch):
+    model_cfg = OmegaConf.create({"model_type": "v2", "target": "training.Model"})
+    restored = []
+
+    class FakeModel:
+        def to(self, device):
+            return self
+
+        def eval(self):
+            return self
+
+        def float(self):
+            return self
+
+    def read_config(cls, restore_path, return_config=False, **kwargs):
+        assert return_config
+        return model_cfg
+
+    def restore_v2(cls, restore_path, override_config_path=None, **kwargs):
+        restored.append((restore_path, override_config_path))
+        return FakeModel()
+
+    monkeypatch.setattr(EasyMagpieTTSInferenceModel, "restore_from", classmethod(read_config))
+    monkeypatch.setattr(NemotronTTSBaseV2, "restore_from", classmethod(restore_v2))
+
+    nemo_file = tmp_path / "model.nemo"
+    model, checkpoint_name = load_easy_magpie_model(
+        ModelLoadConfig(nemo_file=str(nemo_file)),
+        device="cpu",
+    )
+
+    assert isinstance(model, FakeModel)
+    assert checkpoint_name == "model"
+    assert len(restored) == 1
+    assert restored[0][0] == str(nemo_file)
+    expected_target = f'{NemotronTTSBaseV2.__module__}.{NemotronTTSBaseV2.__name__}'
+    assert restored[0][1].target == expected_target
 
 
 @pytest.mark.unit

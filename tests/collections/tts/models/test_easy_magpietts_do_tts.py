@@ -191,7 +191,6 @@ class TestNemotronTTSV2PrecomputedContext:
         model.training_modes = [SimpleNamespace(mode_idx=None)]
         model.task_embedding = None
         model.use_speaker_encoder = True
-        model.disable_cas_for_context_text = False
         model.embed_text_tokens.return_value = torch.zeros(2, 3, 8)
         model._validate_precomputed_context_audio.side_effect = (
             lambda embedding, lengths, batch_size: NemotronTTSBaseV2._validate_precomputed_context_audio(

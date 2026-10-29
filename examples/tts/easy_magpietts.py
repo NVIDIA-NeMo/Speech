@@ -86,8 +86,12 @@ def main(cfg):
 
 def _select_model_class(model_cfg) -> type:
     """Select the v1 or v2 model implementation from the model configuration."""
-    is_v2 = model_cfg.get('acoustic_codes_predictor_schedule') is not None
-    return NemotronTTSModelV2 if is_v2 else EasyMagpieTTSModel
+    model_type = model_cfg.get('model_type', 'v1')
+    if model_type == 'v1':
+        return EasyMagpieTTSModel
+    if model_type == 'v2':
+        return NemotronTTSModelV2
+    raise ValueError(f"Unsupported model_type: {model_type!r}")
 
 
 if __name__ == '__main__':

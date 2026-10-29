@@ -41,6 +41,15 @@ class AcousticCodesPredictorBlock(torch.nn.Module):
         num_output_tokens: int,
         n_layers: int = 1,
     ):
+        """Build a block that predicts one or more consecutive codebooks.
+
+        Args:
+            backbone_config: Configuration of the Nemotron-H backbone.
+            first_code: Index of the first codebook predicted by this block.
+            num_codes: Number of consecutive codebooks predicted by this block.
+            num_output_tokens: Number of output classes for each codebook.
+            n_layers: Number of attention and feed-forward layer pairs.
+        """
         super().__init__()
         assert n_layers > 0, "acoustic_codes_predictor_n_layers must be positive"
         self.codebook_indices = tuple(range(first_code, first_code + num_codes))
@@ -59,6 +68,16 @@ class AcousticCodesPredictorBlock(torch.nn.Module):
         self._init_weights()
 
     def make_cache(self, batch_size: int, device, dtype) -> HybridMambaAttentionDynamicCache:
+        """Create the cache used by this block during streaming.
+
+        Args:
+            batch_size: Number of sequences stored in the cache.
+            device: Device on which to allocate the cache.
+            dtype: Data type used by the cached states.
+
+        Returns:
+            An empty cache configured for this block.
+        """
         return HybridMambaAttentionDynamicCache(
             self.config,
             batch_size=batch_size,
@@ -71,6 +90,15 @@ class AcousticCodesPredictorBlock(torch.nn.Module):
         hidden_states: torch.Tensor,
         cache: Optional[HybridMambaAttentionDynamicCache] = None,
     ) -> torch.Tensor:
+        """Run the causal layers and update the cache when one is provided.
+
+        Args:
+            hidden_states: Input features with shape ``(batch, frames, hidden_size)``.
+            cache: Optional streaming cache. It is updated in place.
+
+        Returns:
+            Output features with the same shape as ``hidden_states``.
+        """
         cached = cache.get_seq_length() if cache is not None else 0
         if cached > 0 and hidden_states.size(1) > 1 and self.config._attn_implementation == "flash_attention_2":
             return torch.cat(
@@ -84,7 +112,14 @@ class AcousticCodesPredictorBlock(torch.nn.Module):
         return self.norm(hidden_states)
 
     def compute_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        """Project only the code channels assigned to this predictor block."""
+        """Project only the code channels assigned to this predictor block.
+
+        Args:
+            hidden_states: Predictor features with shape ``(batch, frames, hidden_size)``.
+
+        Returns:
+            Logits with shape ``(batch, frames, num_codes, num_output_tokens)``.
+        """
         logits = self.codebook_projection(hidden_states)
         return logits.reshape(hidden_states.shape[:2] + (self.num_codes, self.num_output_tokens))
 
@@ -93,6 +128,7 @@ class AcousticCodesPredictorBlock(torch.nn.Module):
         hidden_states: torch.Tensor,
         cache: Optional[HybridMambaAttentionDynamicCache],
     ) -> Optional[torch.Tensor]:
+        """Build a causal mask that accounts for frames already in the cache."""
         frames = hidden_states.size(1)
         cached = cache.get_seq_length() if cache is not None else 0
         if cached == 0 or frames == 1:
@@ -105,6 +141,7 @@ class AcousticCodesPredictorBlock(torch.nn.Module):
         return mask.masked_fill(blocked, torch.finfo(hidden_states.dtype).min)[None, None]
 
     def _init_weights(self) -> None:
+        """Initialize linear layers using the decoder's initialization settings."""
         for module in self.modules():
             if isinstance(module, torch.nn.Linear):
                 torch.nn.init.normal_(module.weight, mean=0.0, std=self.config.initializer_range)
@@ -132,6 +169,18 @@ class AcousticCodesPredictor(torch.nn.Module):
         prediction_schedule,
         n_layers: int = 1,
     ):
+        """Build the sequence of predictor blocks described by ``prediction_schedule``.
+
+        Args:
+            backbone_config: Configuration of the Nemotron-H backbone.
+            embed_codes: Callable that embeds selected acoustic-code channels.
+            num_audio_codebooks: Total number of acoustic-code channels to predict.
+            audio_eos_id: Token id used for the end of the audio sequence.
+            mask_token_id: Token id used when an acoustic code is unavailable.
+            codebook_size: Number of codec tokens in each codebook.
+            prediction_schedule: Number of codebooks predicted by each block.
+            n_layers: Number of attention and feed-forward layer pairs in each block.
+        """
         super().__init__()
         prediction_schedule = tuple(int(num_codes) for num_codes in prediction_schedule)
         assert prediction_schedule, "acoustic_codes_predictor_schedule must not be empty"
@@ -167,10 +216,28 @@ class AcousticCodesPredictor(torch.nn.Module):
         self.blocks = torch.nn.ModuleList(blocks)
 
     def make_cache(self, batch_size: int, device, dtype) -> List[HybridMambaAttentionDynamicCache]:
+        """Create one streaming cache for each predictor block.
+
+        Args:
+            batch_size: Number of sequences stored in each cache.
+            device: Device on which to allocate the caches.
+            dtype: Data type used by the cached states.
+
+        Returns:
+            A list containing one empty cache per predictor block.
+        """
         return [block.make_cache(batch_size, device=device, dtype=dtype) for block in self.blocks]
 
     @staticmethod
     def cached_frames(cache: List[HybridMambaAttentionDynamicCache]) -> int:
+        """Return the number of frames stored in the predictor caches.
+
+        Args:
+            cache: Predictor caches created by :meth:`make_cache`.
+
+        Returns:
+            Number of cached frames.
+        """
         return cache[0].get_seq_length()
 
     def compute_loss(
@@ -181,7 +248,18 @@ class AcousticCodesPredictor(torch.nn.Module):
         loss_mask: Optional[torch.Tensor] = None,
         feature_masking=None,
     ) -> torch.Tensor:
-        """Compute loss over codec tokens and AUDIO_EOS on the backbone timeline."""
+        """Compute loss over codec tokens and AUDIO_EOS on the backbone timeline.
+
+        Args:
+            hidden_states: Backbone features with shape ``(batch, frames, hidden_size)``.
+            target_codes: Target codes with shape ``(batch, frames, num_audio_codebooks)``.
+            lengths: Number of valid target frames in each sequence.
+            loss_mask: Optional boolean mask selecting supervised frames.
+            feature_masking: Optional masking module applied to previous-code embeddings.
+
+        Returns:
+            Mean cross-entropy loss over supervised codebook tokens.
+        """
         assert target_codes.size(-1) == sum(self.prediction_schedule), (
             f"target has {target_codes.size(-1)} codes, but acoustic_codes_predictor_schedule "
             f"predicts {sum(self.prediction_schedule)}"
@@ -246,7 +324,12 @@ class AcousticCodesPredictor(torch.nn.Module):
         hidden_states: torch.Tensor,
         cache: List[HybridMambaAttentionDynamicCache],
     ) -> None:
-        """Populate every predictor block's cache for positions without audio targets."""
+        """Populate every predictor block's cache for positions without audio targets.
+
+        Args:
+            hidden_states: Backbone features with shape ``(batch, frames, hidden_size)``.
+            cache: Predictor caches to update in place.
+        """
         previous_codes = None
         previous_codebook_indices = None
         for block, block_cache in zip(self.blocks, cache):
@@ -273,7 +356,22 @@ class AcousticCodesPredictor(torch.nn.Module):
         sanitize_logits: bool = False,
         predict: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Sample every acoustic-code channel without using backbone code predictions."""
+        """Sample every acoustic-code channel without using backbone code predictions.
+
+        Args:
+            hidden_states: Backbone features with shape ``(batch, frames, hidden_size)``. With CFG enabled,
+                the conditional and unconditional batches are concatenated in that order.
+            cache: Optional list of streaming caches, one per predictor block.
+            temperature: Sampling temperature. Values at or below zero use greedy decoding.
+            topk: Number of highest-scoring tokens considered during sampling.
+            use_cfg: Whether ``hidden_states`` contains conditional and unconditional batches for CFG.
+            cfg_scale: Classifier-free guidance scale.
+            sanitize_logits: Whether to replace non-finite logits and clamp their range before sampling.
+            predict: Optional boolean mask selecting batch rows for which codes should be generated.
+
+        Returns:
+            Sampled codes with shape ``(batch, frames, num_audio_codebooks)``.
+        """
         num_streams = hidden_states.size(0) // 2 if use_cfg else hidden_states.size(0)
         assert not use_cfg or hidden_states.size(0) == 2 * num_streams
         if predict is None:
@@ -320,9 +418,11 @@ class AcousticCodesPredictor(torch.nn.Module):
         return codes
 
     def _embed(self, codes: torch.Tensor, codebook_indices) -> torch.Tensor:
+        """Embed selected codebooks and return features on the backbone timeline."""
         return self.embed_codes(codes.transpose(1, 2), codebook_indices=codebook_indices)
 
     def _sample_codes(self, logits: torch.Tensor, temperature: float, topk: int) -> torch.Tensor:
+        """Sample from the top-k logits, or use argmax when temperature is zero."""
         cutoff = logits.topk(min(topk, self.num_output_tokens), dim=-1).values[..., -1:]
         logits = logits.masked_fill(logits < cutoff, float('-inf'))
         if temperature <= 0.0:

@@ -185,22 +185,6 @@ def test_loss_masks_teacher_forced_code_embeddings_between_blocks():
         assert torch.count_nonzero(embedding.weight.grad) == 0
 
 
-def test_feature_masking_respects_maskable_timesteps():
-    masking = FeatureMasking(hidden_size=D_MODEL, mask_min=1.0, mask_max=1.0)
-    inputs = torch.randn(2, 5, D_MODEL)
-    maskable = torch.tensor(
-        [
-            [False, True, True, False, False],
-            [False, False, True, True, False],
-        ]
-    )
-
-    output = masking(inputs, input_len=torch.tensor([4, 5]), maskable=maskable)
-
-    torch.testing.assert_close(output[maskable], masking.masked_emb.expand_as(output)[maskable])
-    torch.testing.assert_close(output[~maskable], inputs[~maskable])
-
-
 def test_next_block_embeds_only_codes_predicted_by_the_previous_block():
     predictor = _make_predictor()
     embedder = predictor.embed_codes

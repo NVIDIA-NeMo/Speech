@@ -23,15 +23,16 @@ pytestmark = pytest.mark.unit
 
 
 def test_select_v2_model():
-    model_cfg = OmegaConf.create(
-        {
-            "acoustic_codes_predictor_schedule": [1] * 16,
-            "local_transformer_type": "autoregressive",
-        }
-    )
+    model_cfg = OmegaConf.create({"model_type": "v2"})
 
     assert _select_model_class(model_cfg) is NemotronTTSModelV2
 
 
 def test_select_v1_model():
     assert _select_model_class(OmegaConf.create({})) is EasyMagpieTTSModel
+    assert _select_model_class(OmegaConf.create({"model_type": "v1"})) is EasyMagpieTTSModel
+
+
+def test_reject_unknown_model_type():
+    with pytest.raises(ValueError, match="Unsupported model_type"):
+        _select_model_class(OmegaConf.create({"model_type": "v3"}))

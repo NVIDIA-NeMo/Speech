@@ -50,6 +50,27 @@ Preprocessing, decoding, streaming caches and ``bypass_pre_encode`` are outside 
 For RNNT/TDT, ``model.export("model.onnx")`` exports the encoder and combined prediction/joint network separately.
 
 
+Building a TensorRT Engine for a Transformer Encoder
+----------------------------------------------------
+
+To run the offline encoder with TensorRT, compile it directly into a standalone plan with Torch-TensorRT, without an ONNX file:
+
+.. code-block:: bash
+
+    python examples/asr/export/build_torch_trt_encoder.py \
+        --model model.nemo --engine encoder.plan
+
+The script captures the encoder with ``torch.export`` and converts the whole graph in FP32 with TF32 disabled.
+Unsupported operations fail the conversion; the plan has no PyTorch fallback.
+The plan has the same inputs and outputs as the ONNX export above.
+
+Batch size and padded frame count are dynamic within the limits given by ``--min-frames``, ``--opt-frames``, ``--max-frames``, ``--opt-batch`` and ``--max-batch``.
+Building requires a CUDA device and matching PyTorch, Torch-TensorRT and TensorRT versions, and running the plan requires TensorRT only.
+The script refuses to overwrite an existing ``--engine`` file.
+Build the plan for the GPU and TensorRT version that will run it, and compare its outputs with the ONNX or PyTorch results at the same precision.
+The `example README <https://github.com/NVIDIA-NeMo/Speech/blob/main/examples/asr/export/README_torch_tensorrt.md>`_ lists the validated versions, the limits of the conversion and the minimum frame count with feature stacking.
+
+
 Basic Transcription
 -------------------
 

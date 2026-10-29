@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
+
 import logging
 import os
 import shutil
@@ -18,8 +20,6 @@ from argparse import ArgumentParser, RawDescriptionHelpFormatter
 from pathlib import Path
 from typing import BinaryIO, Optional
 
-from paramiko import AutoAddPolicy, SSHClient
-from paramiko.sftp_client import SFTPClient
 from scripts.tts_comparison_report.reporting import (
     DUMMY_TASK_ID,
     SUPPORTED_BENCHMARK_NAMES,
@@ -300,6 +300,8 @@ def main() -> None:
 
     try:
         if args.remote_hostname is not None or args.remote_username is not None:
+            from paramiko import AutoAddPolicy, SSHClient
+
             if args.remote_username is None:
                 raise ValueError("'remote_username' must be provided when using remote access.")
 

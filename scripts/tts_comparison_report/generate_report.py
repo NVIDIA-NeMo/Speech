@@ -13,9 +13,10 @@
 # limitations under the License.
 import logging
 import os
+import shutil
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
 from pathlib import Path
-from typing import Optional
+from typing import BinaryIO, Optional
 
 from paramiko import AutoAddPolicy, SSHClient
 from paramiko.sftp_client import SFTPClient
@@ -42,6 +43,49 @@ _S3_ACCESS_KEY_ID: str = "S3_ACCESS_KEY_ID"
 _S3_SECRET_ACCESS_KEY: str = "S3_SECRET_ACCESS_KEY"
 
 _DEFAULT_BENCHMARK_NAMES: str = "libritts,riva_en"
+
+
+class LocalReportClient:
+    """S3-compatible writer that keeps reports and audio on the local filesystem."""
+
+    def __init__(self, output_dir: Path) -> None:
+        self.output_dir = output_dir.resolve()
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def _url(self, path: Path, content_type: Optional[str]) -> str:
+        if content_type and content_type.startswith("text/html"):
+            return path.as_uri()
+        return f"./{path.parent.name}/{path.name}"
+
+    def upload_fileobj(
+        self,
+        fileobj: BinaryIO,
+        key: str,
+        expires_in: int,
+        content_type: Optional[str] = None,
+    ) -> str:
+        del expires_in
+        path = self.output_dir / key
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("wb") as dst:
+            shutil.copyfileobj(fileobj, dst)
+        return self._url(path, content_type)
+
+    def upload_bytes(
+        self,
+        data: bytes,
+        key: str,
+        expires_in: int,
+        content_type: Optional[str] = None,
+    ) -> str:
+        del expires_in
+        path = self.output_dir / key
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return self._url(path, content_type)
+
+    def close(self) -> None:
+        pass
 
 
 def _create_argparser() -> ArgumentParser:
@@ -82,20 +126,26 @@ def _create_argparser() -> ArgumentParser:
     parser.add_argument(
         "--s3_endpoint",
         type=str,
-        required=True,
+        default=None,
         help="S3 endpoint URL used for uploading the audio report.",
     )
     parser.add_argument(
         "--s3_bucket",
         type=str,
-        required=True,
+        default=None,
         help="Name of the S3 bucket where the audio report HTML and audio files will be uploaded.",
     )
     parser.add_argument(
         "--s3_region",
         type=str,
-        required=True,
+        default=None,
         help="AWS region name for the S3 client.",
+    )
+    parser.add_argument(
+        "--local_output_dir",
+        type=Path,
+        default=None,
+        help="Write reports, images, and audio locally instead of uploading to S3.",
     )
     parser.add_argument(
         "--remote_hostname",
@@ -195,32 +245,37 @@ def main() -> None:
     task_id = args.task_id
 
     storage: BaseStorage
-    s3_client: Optional[S3Client] = None
+    s3_client: Optional[object] = None
     ssh_client: Optional[SSHClient] = None
     sftp: Optional[SFTPClient] = None
     eval_report_url: Optional[str] = None
     audio_report_url: Optional[str] = None
     audio_report_benchmarks: Optional[list[str]] = None
 
-    s3_key_id = os.getenv(_S3_ACCESS_KEY_ID)
-    s3_secret_key = os.getenv(_S3_SECRET_ACCESS_KEY)
-
-    if s3_key_id is None or s3_secret_key is None:
-        raise ValueError(
-            f"Environment variables '{_S3_ACCESS_KEY_ID}' and '{_S3_SECRET_ACCESS_KEY}' "
-            "must be set for uploading reports to S3."
+    if args.local_output_dir is not None:
+        s3_client = LocalReportClient(args.local_output_dir)
+    else:
+        if args.s3_endpoint is None or args.s3_bucket is None or args.s3_region is None:
+            raise ValueError(
+                "Provide --local_output_dir or all of --s3_endpoint, --s3_bucket, and --s3_region."
+            )
+        s3_key_id = os.getenv(_S3_ACCESS_KEY_ID)
+        s3_secret_key = os.getenv(_S3_SECRET_ACCESS_KEY)
+        if s3_key_id is None or s3_secret_key is None:
+            raise ValueError(
+                f"Environment variables '{_S3_ACCESS_KEY_ID}' and '{_S3_SECRET_ACCESS_KEY}' "
+                "must be set for uploading reports to S3."
+            )
+        s3_cfg = S3Config(
+            bucket=args.s3_bucket,
+            endpoint_url=args.s3_endpoint,
+            region_name=args.s3_region,
         )
-
-    s3_cfg = S3Config(
-        bucket=args.s3_bucket,
-        endpoint_url=args.s3_endpoint,
-        region_name=args.s3_region,
-    )
-    s3_client = S3Client(
-        cfg=s3_cfg,
-        aws_access_key_id=s3_key_id,
-        aws_secret_access_key=s3_secret_key,
-    )
+        s3_client = S3Client(
+            cfg=s3_cfg,
+            aws_access_key_id=s3_key_id,
+            aws_secret_access_key=s3_secret_key,
+        )
 
     benchmarks = _get_benchmarks_list(args.benchmarks)
     _validate_benchmarks(benchmarks)

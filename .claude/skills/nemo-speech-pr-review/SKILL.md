@@ -11,7 +11,7 @@ user_invocable: false
 This rubric is loaded from the protected default branch for `/review`. It is the authoritative source of
 review principles for this repository; agents and people self-reviewing a change apply it too.
 
-The principles are distilled from the maintainer's review history on
+The principles are distilled from the maintainers' review history on
 [lhotse](https://github.com/lhotse-speech/lhotse) and NeMo Speech.
 
 ## Review modes
@@ -19,7 +19,8 @@ The principles are distilled from the maintainer's review history on
 Both modes check every changed file against every principle below.
 
 - **`mode=light` (default): comprehensive.** Report every finding that rests on a concrete failure scenario,
-  real duplication, or a measurable cost, at every severity. Leave out speculative concerns and pure taste.
+  real duplication, or a measurable cost, at blocking and should-fix severity. Leave out nitpicks, speculative
+  concerns, and pure taste.
   In this mode:
   - Check each principle against each changed file explicitly, so that nothing is skipped silently.
   - Probe edge cases: empty or `None` inputs, zero-length audio, a batch of one, padding, reduced precision
@@ -59,7 +60,8 @@ author more time than no review at all.
 
 ## How to review
 
-- **Establish the goal first.** If the PR does not say what problem it solves, ask before reviewing details.
+- **Establish the goal first.** If the PR does not say what problem it solves, put that question in the summary
+  and review what the diff does; if the goal still cannot be inferred, report the review as incomplete.
 - **Learn why code is where it is before accepting a move or removal.** Ordering is often deliberate.
 - **Describe the concrete failure,** not the violated practice: "If half the examples exceed `max_seq_length`,
   this truncation teaches the model to emit EOS mid-sentence, and nothing in the logs reveals it."
@@ -68,7 +70,7 @@ author more time than no review at all.
 
 ## Principles
 
-Each rule is a position the maintainer enforced repeatedly. General good practice is assumed, not listed.
+Each rule is a position the maintainers enforced repeatedly. General good practice is assumed, not listed.
 
 ### Compatibility
 

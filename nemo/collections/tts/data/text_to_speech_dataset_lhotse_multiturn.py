@@ -54,16 +54,22 @@ def check_speaker_format(item: str):
     return bool(re.match(pattern, item))
 
 
-def select_alignment_text(normalized_text: str | None, text: str | None) -> tuple[str, bool]:
-    """Prefer a supplied normalized transcript, otherwise use original text.
+def select_alignment_text(
+    normalized_text: str | None, text: str | None, use_normalized_text: bool = True
+) -> tuple[str, bool]:
+    """Select the shared aligner/head transcript, preferring normalization by default.
 
     The boolean reports whether nonempty normalized metadata was supplied, even
     if cleaning later leaves no spoken tokens. Selection precedes punctuation
     cleanup so a supplied nonempty transcript is never replaced just because it
-    is unusable for alignment. No IPA or source-token substitution is performed.
+    is unusable for alignment. With ``use_normalized_text=False``, only original
+    text is selected; missing original text never falls back to normalization.
+    No IPA or source-token substitution is performed.
     """
+    if type(use_normalized_text) is not bool:
+        raise ValueError('use_normalized_text must be a boolean')
     has_normalized = isinstance(normalized_text, str) and bool(normalized_text.strip())
-    selected = normalized_text if has_normalized else text
+    selected = normalized_text if use_normalized_text and has_normalized else text
     return selected if isinstance(selected, str) else '', has_normalized
 
 
@@ -99,6 +105,7 @@ def build_alignment_text_turns(
     eos_id: int,
     add_text_bos: bool = False,
     strip_punctuation: bool = True,
+    use_normalized_text: bool = True,
 ) -> Dict[str, torch.Tensor]:
     """Pack preferred spoken transcripts and their acoustic spans into independent turns.
 
@@ -108,8 +115,10 @@ def build_alignment_text_turns(
     ``aligned_text`` is a separate, right-padded transcript channel for head warmup.
     The original conditioning channel is never changed.
 
-    ``normalized_text`` is preferred; absent, empty or whitespace-only metadata
-    falls back to the supervision's original ``text``. No IPA fallback is used.
+    ``normalized_text`` is preferred by default; absent, empty or whitespace-only
+    metadata falls back to the supervision's original ``text``. Setting
+    ``use_normalized_text=False`` always uses original text, with no normalized
+    or IPA fallback. Punctuation cleanup is configured independently.
     ``alignment_missing_normalized_text`` counts unavailable normalized metadata
     even when original text supplies usable alignment and head targets.
     Truncated, overlapping, empty and deliberately mismatched transcripts retain
@@ -117,6 +126,8 @@ def build_alignment_text_turns(
     Turns with fewer frames than tokens remain intact for the aligner's validity
     check. Neither transcript shortening nor frame repetition repairs such cases.
     """
+    if type(use_normalized_text) is not bool:
+        raise ValueError('use_normalized_text must be a boolean')
     cuts = list(cuts)
     if len(cuts) != len(tokenizer_names):
         raise ValueError('Each cut requires an alignment tokenizer name')
@@ -134,7 +145,9 @@ def build_alignment_text_turns(
             if supervision.speaker not in output_roles:
                 continue
             normalized = supervision.normalized_text if supervision.has_custom('normalized_text') else None
-            selected, has_normalized = select_alignment_text(normalized, supervision.text)
+            selected, has_normalized = select_alignment_text(
+                normalized, supervision.text, use_normalized_text=use_normalized_text
+            )
             transcript = alignment_spoken_text(selected, strip_punctuation=strip_punctuation)
             missing_normalized_text += int(not has_normalized)
             ids = tokenizer.encode(transcript, tokenizer_name=tokenizer_name) if transcript else []
@@ -343,6 +356,9 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             for the optional Glow-TTS aligner. Defaults to False.
         aligned_text_strip_punctuation: Remove nonspoken punctuation before
             tokenizing alignment targets. The conditioning text is unchanged.
+        aligned_text_use_normalized_text: Prefer normalized text with raw-text
+            fallback for the aligner and repeated head. False always selects raw
+            text, independently of conditioning and punctuation cleanup.
     """
 
     def __init__(
@@ -396,8 +412,11 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         use_aligned_text_head: bool = False,
         use_attention_alignment: bool = False,
         aligned_text_strip_punctuation: bool = True,
+        aligned_text_use_normalized_text: bool = True,
     ):
         super().__init__()
+        if type(aligned_text_use_normalized_text) is not bool:
+            raise ValueError('aligned_text_use_normalized_text must be a boolean')
         self.sample_rate = sample_rate
         self.volume_norm = volume_norm
 
@@ -431,6 +450,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         self.use_aligned_text_head = use_aligned_text_head
         self.use_attention_alignment = use_attention_alignment
         self.aligned_text_strip_punctuation = aligned_text_strip_punctuation
+        self.aligned_text_use_normalized_text = aligned_text_use_normalized_text
         self.ignore_phoneme_languages = ignore_phoneme_languages or []
         self.enable_phoneme_text_input = enable_phoneme_text_input
         self.text_phoneme_token_offset = text_phoneme_token_offset
@@ -1312,6 +1332,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                     eos_id=self.eos_id,
                     add_text_bos=False,
                     strip_punctuation=self.aligned_text_strip_punctuation,
+                    use_normalized_text=getattr(self, 'aligned_text_use_normalized_text', True),
                 )
             )
         phoneme_data = self._collate_phoneme_tokens(cuts)

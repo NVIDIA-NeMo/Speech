@@ -39,6 +39,7 @@ from nemo.collections.tts.data.text_to_speech_dataset_lhotse import MagpieTTSLho
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import MagpieTTSLhotseMultiturnDataset
 from nemo.collections.tts.models.easy_magpietts_inference import EasyMagpieTTSInferenceModel, TrainingMode
 from nemo.collections.tts.modules.aligned_text_head import align_text_turns
+from nemo.collections.tts.modules.attention_alignment import AttentionAlignmentGuidance
 from nemo.collections.tts.modules.magpietts_modules import (
     LocalTransformerType,
     add_special_tokens,
@@ -175,6 +176,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             ('ramp_steps', 1000, 1),
             ('prior_anneal_steps', 5000, 1),
             ('query_chunk_size', 128, 1),
+            ('look_back_tokens', 0, 0),
+            ('look_ahead_tokens', 0, 0),
         ):
             value = self.attention_alignment_config.get(name, default)
             if type(value) is not int or value < minimum:
@@ -190,6 +193,11 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         if self.attention_alignment_config['prior_strength'] > 1:
             raise ValueError('attention_alignment.prior_strength must be <= 1')
         heads = self.attention_alignment_config.get('heads', [0])
+        configured_layers = self.attention_alignment_config.get('layers', 'middle')
+        if OmegaConf.is_list(configured_layers):
+            configured_layers = list(configured_layers)
+        layer_selection = AttentionAlignmentGuidance(turns=[], layers=configured_layers)
+        self.attention_alignment_config['layers'] = layer_selection.layers
         if heads is not None and (
             not heads or any(type(head) is not int or head < 0 for head in heads) or len(set(heads)) != len(heads)
         ):
@@ -198,6 +206,17 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             decoder_config = self.decoder.config
             if 'attention' not in decoder_config.layers_block_type:
                 raise ValueError('Attention alignment requires at least one attention layer in the decoder')
+            attention_blocks = [
+                index for index, block in enumerate(decoder_config.layers_block_type) if block == 'attention'
+            ]
+            try:
+                selected_layers = layer_selection.resolve_layers(len(attention_blocks))
+            except ValueError as error:
+                raise ValueError(f'attention_alignment.layers: {error}') from error
+            logging.info(
+                f'Attention alignment guides attention-layer ordinals {selected_layers}, '
+                f'decoder blocks {tuple(attention_blocks[index] for index in selected_layers)}, heads {heads}.'
+            )
             if heads is not None and any(head >= decoder_config.num_attention_heads for head in heads):
                 raise ValueError('attention_alignment.heads contains an index outside the decoder head count')
         self.attention_alignment_config['heads'] = heads
@@ -1708,7 +1727,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         The teacher still learns during warmup and conditioning dropout; only
         attention supervision is suppressed when text is not available.
         """
-        from nemo.collections.tts.modules.attention_alignment import AttentionAlignmentGuidance, AttentionAlignmentTurn
+        from nemo.collections.tts.modules.attention_alignment import AttentionAlignmentTurn
 
         if tokens is None or token_lens is None or key_positions is None:
             raise ValueError('Attention alignment requires exact conditioning BPE tokens and key positions')
@@ -1793,6 +1812,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 band_width=settings['band_width'],
                 heads=None if heads is None else tuple(heads),
                 query_chunk_size=settings['query_chunk_size'],
+                layers=settings['layers'],
+                look_back_tokens=settings['look_back_tokens'],
+                look_ahead_tokens=settings['look_ahead_tokens'],
             )
         spans = turn_indices[:, 2] - turn_indices[:, 1]
         metrics = {
@@ -1851,7 +1873,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         if tokens is None or token_lens is None:
             raise ValueError(
                 'Aligned text training requires separate alignment targets from the loader '
-                '(normalized_text, falling back to original text)'
+                '(selected by aligned_text_use_normalized_text)'
             )
         with torch.no_grad(), torch.autocast(device_type=audio_codes.device.type, enabled=False):
             features = self._codec_model.vector_quantizer.decode(
@@ -3089,6 +3111,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         dataset.attention_alignment_bos_id = self.bos_id
         dataset.attention_alignment_pad_id = self.pad_id
         dataset.aligned_text_strip_punctuation = self.cfg.get('aligned_text_strip_punctuation', True)
+        dataset.aligned_text_use_normalized_text = self.aligned_text_use_normalized_text
         dataset.tokenizer_config = (
             self.cfg.text_tokenizers
         )  # This will be used in worker_init_fn for instantiating tokenizer
@@ -3170,6 +3193,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 use_aligned_text_head=self.cfg.get('use_aligned_text_head', False),
                 use_attention_alignment=self.cfg.get('use_attention_alignment', False),
                 aligned_text_strip_punctuation=self.cfg.get('aligned_text_strip_punctuation', True),
+                aligned_text_use_normalized_text=self.aligned_text_use_normalized_text,
             )
             dataset = FallbackDataset(dataset)
         else:
@@ -3203,6 +3227,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             dataset.use_attention_alignment = self.cfg.get('use_attention_alignment', False)
             dataset.attention_alignment_bos_id = self.bos_id
             dataset.attention_alignment_pad_id = self.pad_id
+            dataset.aligned_text_use_normalized_text = self.aligned_text_use_normalized_text
 
         data_config = dataset_cfg.dataset
         if dynamic_delay:

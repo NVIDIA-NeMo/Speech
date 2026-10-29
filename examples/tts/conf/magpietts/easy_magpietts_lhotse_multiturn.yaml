@@ -102,7 +102,19 @@ model:
     prior_strength: 1.0
     band_width: 1.0
     heads: [0]
+    layers: middle # Attention-layer ordinals: middle, null (all), or e.g. [1] for the second attention layer.
+    look_back_tokens: 0 # Additional flat tolerance before the teacher token; only used when guidance is enabled.
+    look_ahead_tokens: 0 # Additional flat tolerance after the teacher token, limited to causally available keys.
     query_chunk_size: 128
+  # Independent, optional online window; no flow/teacher is run during inference.
+  attention_alignment_inference:
+    enabled: false
+    layer: middle # Single attention-layer ordinal or middle.
+    head: 0
+    look_back_tokens: 1
+    look_ahead_tokens: 5
+    prior_epsilon: 0.1
+  aligned_text_use_normalized_text: true # False selects raw text for both the repeated head and its aligner.
   start_aligner_text_head_steps: 10000 # Train the aligner immediately; switch head/feedback targets at this step.
   aligned_text_feedback: true
   aligned_text_feedback_scale: 1.0

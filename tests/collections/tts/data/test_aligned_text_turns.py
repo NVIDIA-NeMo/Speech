@@ -13,6 +13,7 @@ from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import (
     MagpieTTSLhotseMultiturnDataset,
     alignment_spoken_text,
     build_alignment_text_turns,
+    select_alignment_text,
 )
 
 pytestmark = pytest.mark.unit
@@ -174,10 +175,12 @@ def test_no_output_turns_have_well_defined_empty_shapes(cuts, expected_shape):
 
 
 @pytest.mark.parametrize('enabled', [True, False])
-def test_dataset_adds_alignment_metadata_only_when_enabled(enabled):
+@pytest.mark.parametrize('use_normalized_text', [True, False])
+def test_dataset_adds_alignment_metadata_only_when_enabled(enabled, use_normalized_text):
     dataset = MagpieTTSLhotseMultiturnDataset.__new__(MagpieTTSLhotseMultiturnDataset)
     dataset.use_aligned_text_head = enabled
     dataset.aligned_text_strip_punctuation = True
+    dataset.aligned_text_use_normalized_text = use_normalized_text
     dataset.text_tokenizer = _Tokenizer()
     dataset.frame_length = 0.1
     dataset.output_roles = {'agent'}
@@ -197,6 +200,9 @@ def test_dataset_adds_alignment_metadata_only_when_enabled(enabled):
     assert result['target_text_tokens'] is original_text
     assert ('alignment_text_tokens' in result) is enabled
     assert ('aligned_text' in result) is enabled
+    if enabled:
+        expected = 'ten dollars' if use_normalized_text else '$10'
+        assert dataset.text_tokenizer.calls == [(expected, 'bpe')]
 
 
 def test_text_only_batch_never_constructs_acoustic_alignment_metadata():
@@ -410,3 +416,97 @@ def test_public_cleaner_rejects_non_string_references_and_strips_timestamps():
     assert alignment_spoken_text(None) == ''
     assert alignment_spoken_text(10) == ''
     assert alignment_spoken_text('<|12|>Ten dollars!') == 'Ten dollars'
+
+
+def test_raw_mode_uses_one_transcript_for_teacher_and_head_on_each_turn():
+    tokenizer = _Tokenizer()
+    first = _sup(0.0, 1.0, '$10!', normalized_text='ten dollars')
+    user = _sup(1.0, 1.8, 'user text', speaker='user')
+    second = _sup(2.0, 3.0, '1000', normalized_text='one thousand')
+    result = _build([_cut(3.0, second, user, first)], tokenizer=tokenizer, use_normalized_text=False)
+
+    assert tokenizer.calls == [('$10', 'bpe'), ('1000', 'bpe')]
+    assert result['alignment_text_tokens'].tolist() == [[1], [2]]
+    assert result['alignment_text_lens'].tolist() == [1, 1]
+    assert result['alignment_turn_indices'].tolist() == [[0, 0, 10], [0, 20, 30]]
+    assert result['aligned_text'][0, :3].tolist() == [1, 101, 0]
+    assert result['aligned_text'][0, 10:20].eq(0).all()
+    assert result['aligned_text'][0, 20:23].tolist() == [2, 101, 0]
+    assert result['alignment_missing_normalized_text'].item() == 0
+    assert first.text == '$10!' and first.normalized_text == 'ten dollars'
+    assert second.text == '1000' and second.normalized_text == 'one thousand'
+
+
+@pytest.mark.parametrize('raw', [None, '', '  ', '...'])
+def test_raw_mode_never_falls_back_to_normalization_when_raw_text_is_unusable(raw):
+    tokenizer = _Tokenizer()
+    result = _build(
+        [_cut(1.0, _sup(0.0, 1.0, raw, normalized_text='do not substitute'))],
+        tokenizer=tokenizer,
+        use_normalized_text=False,
+    )
+
+    assert tokenizer.calls == []
+    assert result['alignment_text_lens'].tolist() == [0]
+    assert result['alignment_turn_indices'].tolist() == [[0, 0, 0]]
+    assert result['aligned_text'].eq(0).all()
+    assert result['alignment_missing_normalized_text'].item() == 0
+
+
+@pytest.mark.parametrize('strip_punctuation', [True, False])
+def test_raw_mode_keeps_punctuation_cleanup_independent(strip_punctuation):
+    tokenizer = _Tokenizer()
+    _build(
+        [_cut(1.0, _sup(0.0, 1.0, '$10!', normalized_text='ten dollars'))],
+        tokenizer=tokenizer,
+        use_normalized_text=False,
+        strip_punctuation=strip_punctuation,
+    )
+    assert tokenizer.calls == [('$10' if strip_punctuation else '$10!', 'bpe')]
+
+
+@pytest.mark.parametrize('invalid', [None, 0, 1, 'false', [], {}])
+def test_normalized_text_preference_requires_a_boolean(invalid):
+    with pytest.raises(ValueError, match='use_normalized_text must be a boolean'):
+        select_alignment_text('normalized', 'raw', use_normalized_text=invalid)
+    with pytest.raises(ValueError, match='use_normalized_text must be a boolean'):
+        _build([], use_normalized_text=invalid)
+    with pytest.raises(ValueError, match='aligned_text_use_normalized_text must be a boolean'):
+        MagpieTTSLhotseMultiturnDataset(sample_rate=16000, aligned_text_use_normalized_text=invalid)
+
+
+@pytest.mark.parametrize('use_normalized_text', [True, False])
+def test_single_turn_transcript_source_changes_teacher_without_changing_conditioning(monkeypatch, use_normalized_text):
+    dataset = _single_turn_dataset(monkeypatch, [{'text': '$10!', 'normalized_text': 'ten dollars!'}])
+    dataset.aligned_text_use_normalized_text = use_normalized_text
+    dataset.data_samples[0].text = 'processed conditioning'
+
+    example = dataset[0]
+
+    selected = 'ten dollars' if use_normalized_text else '$10'
+    assert dataset.text_tokenizer.calls == [('processed conditioning', 'bpe'), (selected, 'bpe')]
+    assert example['tokens'].tolist() == [1, 2, 101]
+    expected_ids = [dataset.text_tokenizer.words[word] for word in selected.split()]
+    assert example['alignment_reference_tokens'].tolist() == expected_ids
+    assert example['alignment_reference_len'] == len(expected_ids)
+    assert example['alignment_missing_normalized_text'] == 0
+    batch = dataset.collate_fn([example])
+    assert batch['alignment_text_tokens'].tolist() == [expected_ids]
+    assert batch['alignment_text_lens'].tolist() == [len(expected_ids)]
+    assert dataset.data_samples[0].manifest_entry['text'] == '$10!'
+
+
+@pytest.mark.parametrize('raw', [None, '', '  ', '...'])
+def test_single_turn_raw_mode_does_not_replace_unusable_raw_with_normalized_text(monkeypatch, raw):
+    dataset = _single_turn_dataset(monkeypatch, [{'text': raw, 'normalized_text': 'do not substitute'}])
+    dataset.aligned_text_use_normalized_text = False
+    dataset.data_samples[0].text = 'conditioning'
+
+    example = dataset[0]
+
+    assert dataset.text_tokenizer.calls == [('conditioning', 'bpe')]
+    assert example['alignment_reference_len'] == 0
+    assert example['alignment_missing_normalized_text'] == 0
+    batch = dataset.collate_fn([example])
+    assert batch['alignment_text_tokens'].shape == (1, 0)
+    assert batch['alignment_text_lens'].tolist() == [0]

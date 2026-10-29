@@ -506,7 +506,9 @@ class MagpieTTSDataset(TextToSpeechDataset):
             )
 
             selected, has_normalized = select_alignment_text(
-                data.manifest_entry.get('normalized_text'), data.manifest_entry.get('text')
+                data.manifest_entry.get('normalized_text'),
+                data.manifest_entry.get('text'),
+                use_normalized_text=getattr(self, 'aligned_text_use_normalized_text', True),
             )
             transcript = alignment_spoken_text(
                 selected,

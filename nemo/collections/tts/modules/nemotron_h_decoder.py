@@ -32,6 +32,10 @@ from torch import nn
 from torch.nn import CrossEntropyLoss
 
 from nemo.collections.tts.modules.attention_alignment import AttentionAlignmentGuidance, apply_attention_alignment
+from nemo.collections.tts.modules.attention_alignment_inference import (
+    AttentionAlignmentInferenceRequest,
+    apply_attention_alignment_inference,
+)
 from nemo.utils import logging
 
 
@@ -1053,8 +1057,13 @@ class NemotronHAttention(nn.Module):
         use_cache: bool = False,
         cache_position: Optional[torch.LongTensor] = None,
         attention_alignment: Optional[AttentionAlignmentGuidance] = None,
+        attention_alignment_inference: Optional[AttentionAlignmentInferenceRequest] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         bsz, q_len, _ = hidden_states.size()
+        if attention_alignment is not None and attention_alignment_inference is not None:
+            raise ValueError('Training attention guidance and inference window requests are mutually exclusive')
+        if attention_alignment_inference is not None and self.config.rswa_window is not None:
+            raise ValueError('Inference attention guidance currently requires full causal attention, not R-SWA')
         if attention_alignment is not None and (past_key_value is not None or use_cache):
             raise ValueError('Attention alignment teachers cannot be used during cached decoding')
         if attention_alignment is not None and self.config.rswa_window is not None:
@@ -1121,6 +1130,16 @@ class NemotronHAttention(nn.Module):
                 attention_mask=causal_mask,
                 dropout_p=self.attention_dropout if self.training else 0.0,
             )
+        elif attention_alignment_inference is not None:
+            attn_output = apply_attention_alignment_inference(
+                query_states,
+                key_states,
+                value_states,
+                attn_output,
+                attention_alignment_inference,
+                cache_position=cache_position,
+                attention_mask=causal_mask,
+            )
 
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.view(bsz, q_len, self.num_heads * self.head_dim)
@@ -1152,6 +1171,7 @@ class NemotronHFlashAttention2(NemotronHAttention):
         use_cache: bool = False,
         cache_position: Optional[torch.LongTensor] = None,
         attention_alignment: Optional[AttentionAlignmentGuidance] = None,
+        attention_alignment_inference: Optional[AttentionAlignmentInferenceRequest] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         if self.config.rswa_window is not None or not FLASH_ATTN_AVAILABLE or _flash_attention_forward is None:
             return super().forward(
@@ -1163,9 +1183,12 @@ class NemotronHFlashAttention2(NemotronHAttention):
                 use_cache=use_cache,
                 cache_position=cache_position,
                 attention_alignment=attention_alignment,
+                attention_alignment_inference=attention_alignment_inference,
             )
 
         bsz, q_len, _ = hidden_states.size()
+        if attention_alignment is not None and attention_alignment_inference is not None:
+            raise ValueError('Training attention guidance and inference window requests are mutually exclusive')
         if attention_alignment is not None and (past_key_value is not None or use_cache):
             raise ValueError('Attention alignment teachers cannot be used during cached decoding')
 
@@ -1227,6 +1250,16 @@ class NemotronHFlashAttention2(NemotronHAttention):
                 dropout_p=dropout_rate,
             )
             attn_output = attn_output.transpose(1, 2)
+        elif attention_alignment_inference is not None:
+            attn_output = apply_attention_alignment_inference(
+                query_states.transpose(1, 2),
+                key_states.transpose(1, 2),
+                value_states.transpose(1, 2),
+                attn_output.transpose(1, 2),
+                attention_alignment_inference,
+                cache_position=cache_position,
+                attention_mask=attention_mask,
+            ).transpose(1, 2)
 
         attn_output = attn_output.reshape(bsz, q_len, self.num_heads * self.head_dim).contiguous()
         attn_output = self.o_proj(attn_output)
@@ -1488,15 +1521,28 @@ class NemotronHBlock(nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         attention_alignment: Optional[AttentionAlignmentGuidance] = None,
+        attention_alignment_inference: Optional[AttentionAlignmentInferenceRequest] = None,
     ):
         # Use torch.cuda.stream() to avoid NaN issues when using multiple GPUs
         if hidden_states.is_cuda:
             with torch.cuda.stream(torch.cuda.default_stream(hidden_states.device)):
                 return self._forward_impl(
-                    hidden_states, cache_params, cache_position, attention_mask, attention_alignment
+                    hidden_states,
+                    cache_params,
+                    cache_position,
+                    attention_mask,
+                    attention_alignment,
+                    attention_alignment_inference,
                 )
         else:
-            return self._forward_impl(hidden_states, cache_params, cache_position, attention_mask, attention_alignment)
+            return self._forward_impl(
+                hidden_states,
+                cache_params,
+                cache_position,
+                attention_mask,
+                attention_alignment,
+                attention_alignment_inference,
+            )
 
     def _forward_impl(
         self,
@@ -1505,6 +1551,7 @@ class NemotronHBlock(nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         attention_alignment: Optional[AttentionAlignmentGuidance] = None,
+        attention_alignment_inference: Optional[AttentionAlignmentInferenceRequest] = None,
     ):
         residual = hidden_states
         hidden_states = self.norm(hidden_states.to(dtype=self.norm.weight.dtype))
@@ -1521,6 +1568,7 @@ class NemotronHBlock(nn.Module):
                 cache_position=cache_position,
                 past_key_value=cache_params,
                 attention_alignment=attention_alignment,
+                attention_alignment_inference=attention_alignment_inference,
             )
             alignment_loss = hidden_states[1]
             hidden_states = hidden_states[0]
@@ -1611,11 +1659,19 @@ class NemotronHModel(nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
         context_prefix_lens: Optional[torch.LongTensor] = None,
         attention_alignment: Optional[AttentionAlignmentGuidance] = None,
+        attention_alignment_inference: Optional[AttentionAlignmentInferenceRequest] = None,
         **kwargs,
     ) -> Union[Tuple, NemotronHOutput]:
         # Support both cache_params and past_key_values for compatibility
         if past_key_values is not None and cache_params is None:
             cache_params = past_key_values
+        if attention_alignment_inference is not None:
+            if attention_alignment is not None:
+                raise ValueError('Training attention guidance and inference window requests are mutually exclusive')
+            if self.training:
+                raise ValueError('Inference attention guidance requires eval mode')
+            if self.config.rswa_window is not None:
+                raise ValueError('Inference attention guidance currently requires full causal attention, not R-SWA')
         if attention_alignment is not None and (cache_params is not None or use_cache is True):
             raise ValueError('Attention alignment teachers require uncached full-sequence evaluation')
         if attention_alignment is not None and self.config.rswa_window is not None:
@@ -1637,6 +1693,8 @@ class NemotronHModel(nn.Module):
             inputs_embeds = self.embeddings(input_ids)
 
         hidden_states = inputs_embeds
+        if attention_alignment_inference is not None and (not use_cache or hidden_states.size(1) != 1):
+            raise ValueError('Inference attention guidance requires cached decoding with exactly one query step')
 
         # Create cache if use_cache=True but no cache provided
         if use_cache and cache_params is None:
@@ -1646,6 +1704,16 @@ class NemotronHModel(nn.Module):
                 dtype=hidden_states.dtype,
                 device=hidden_states.device,
             )
+        if attention_alignment_inference is not None and cache_position is not None:
+            attention_indices = [idx for idx, layer in enumerate(self.layers) if layer.block_type == 'attention']
+            expected_position = cache_params.get_seq_length(attention_indices[0]) if attention_indices else 0
+            if (
+                cache_position.shape != (1,)
+                or cache_position.dtype not in (torch.int32, torch.int64)
+                or cache_position.device != hidden_states.device
+                or int(cache_position.item()) != expected_position
+            ):
+                raise ValueError('Inference cache_position must continue the contiguous, absolute cache timeline')
 
         if self.config.rswa_window is not None:
             if context_prefix_lens is None:
@@ -1675,7 +1743,16 @@ class NemotronHModel(nn.Module):
             )
         else:
             if cache_position is None:
-                cache_position = torch.arange(hidden_states.shape[1], device=hidden_states.device)
+                past_length = 0
+                if attention_alignment_inference is not None and cache_params is not None:
+                    attention_indices = [
+                        idx for idx, layer in enumerate(self.layers) if layer.block_type == 'attention'
+                    ]
+                    if attention_indices:
+                        past_length = cache_params.get_seq_length(attention_indices[0])
+                cache_position = torch.arange(
+                    past_length, past_length + hidden_states.shape[1], device=hidden_states.device
+                )
             # Keep the original full-attention path, including FlashAttention2, unchanged.
             causal_mask = self._create_causal_mask(attention_mask, inputs_embeds, cache_position)
         mamba_mask = self._update_mamba_mask(attention_mask, cache_position)
@@ -1683,6 +1760,19 @@ class NemotronHModel(nn.Module):
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
         alignment_losses = []
+        guided_layer_indices = set()
+        if attention_alignment is not None:
+            attention_layers = [idx for idx, layer in enumerate(self.layers) if layer.block_type == 'attention']
+            guided_layer_indices = {
+                attention_layers[ordinal] for ordinal in attention_alignment.resolve_layers(len(attention_layers))
+            }
+        inference_layer_index = None
+        if attention_alignment_inference is not None:
+            attention_layers = [idx for idx, layer in enumerate(self.layers) if layer.block_type == 'attention']
+            ordinal = attention_alignment_inference.state.resolve_layer(len(attention_layers))
+            if attention_alignment_inference.state.head >= self.config.num_attention_heads:
+                raise ValueError('Inference attention head exceeds the decoder head count')
+            inference_layer_index = attention_layers[ordinal]
 
         for layer_idx, layer in enumerate(self.layers):
             if layer.block_type == "mamba":
@@ -1695,9 +1785,10 @@ class NemotronHModel(nn.Module):
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
-            layer_alignment = attention_alignment if layer.block_type == 'attention' else None
+            layer_alignment = attention_alignment if layer_idx in guided_layer_indices else None
+            layer_inference_alignment = attention_alignment_inference if layer_idx == inference_layer_index else None
 
-            def create_custom_forward(layer, layer_mask, layer_alignment):
+            def create_custom_forward(layer, layer_mask, layer_alignment, layer_inference_alignment):
                 def custom_forward(hidden_states):
                     return layer(
                         hidden_states,
@@ -1705,13 +1796,14 @@ class NemotronHModel(nn.Module):
                         cache_position=None,
                         attention_mask=layer_mask,
                         attention_alignment=layer_alignment,
+                        attention_alignment_inference=layer_inference_alignment,
                     )
 
                 return custom_forward
 
             if self.gradient_checkpointing and self.training:
                 layer_output = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(layer, layer_mask, layer_alignment),
+                    create_custom_forward(layer, layer_mask, layer_alignment, layer_inference_alignment),
                     hidden_states,
                     use_reentrant=False,
                 )
@@ -1722,6 +1814,7 @@ class NemotronHModel(nn.Module):
                     cache_position=cache_position,
                     attention_mask=layer_mask,
                     attention_alignment=layer_alignment,
+                    attention_alignment_inference=layer_inference_alignment,
                 )
             if layer_alignment is not None:
                 hidden_states, alignment_loss = layer_output
@@ -1846,6 +1939,7 @@ class NemotronHForCausalLM(nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
         context_prefix_lens: Optional[torch.LongTensor] = None,
         attention_alignment: Optional[AttentionAlignmentGuidance] = None,
+        attention_alignment_inference: Optional[AttentionAlignmentInferenceRequest] = None,
         **kwargs,
     ) -> Union[Tuple, NemotronHCausalLMOutput]:
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
@@ -1864,6 +1958,7 @@ class NemotronHForCausalLM(nn.Module):
             cache_position=cache_position,
             context_prefix_lens=context_prefix_lens,
             attention_alignment=attention_alignment,
+            attention_alignment_inference=attention_alignment_inference,
         )
 
         hidden_states = outputs.last_hidden_state if return_dict else outputs[0]
@@ -1940,6 +2035,7 @@ class NemotronHForCausalLM(nn.Module):
                 "attention_mask": attention_mask,
                 "cache_position": cache_position,
                 "context_prefix_lens": context_prefix_lens,
+                "attention_alignment_inference": kwargs.get('attention_alignment_inference'),
             }
         )
         return model_inputs

@@ -158,13 +158,22 @@ def test_multiple_turns_restore_context_to_original_batch_and_positions():
 
 
 @pytest.mark.parametrize('prior_strength', [0.0, 0.7])
-def test_decoder_guidance_and_gradient_checkpointing_have_matching_gradients(prior_strength):
+@pytest.mark.parametrize('layers', ['middle', (0, 2)])
+@pytest.mark.parametrize('window', [(0, 0), (1, 2)])
+def test_decoder_guidance_and_gradient_checkpointing_have_matching_gradients(prior_strength, layers, window):
     torch.manual_seed(0)
-    ordinary_model = NemotronHForCausalLM(_config()).train()
+    ordinary_model = NemotronHForCausalLM(_config(num_hidden_layers=7, hybrid_override_pattern='-*-*-*-')).train()
     checkpointed_model = copy.deepcopy(ordinary_model)
     checkpointed_model.backbone.gradient_checkpointing = True
     inputs = torch.randn(1, 6, 16)
-    guidance = AttentionAlignmentGuidance([_turn()], prior_strength=prior_strength, query_chunk_size=1)
+    guidance = AttentionAlignmentGuidance(
+        [_turn()],
+        prior_strength=prior_strength,
+        query_chunk_size=1,
+        layers=layers,
+        look_back_tokens=window[0],
+        look_ahead_tokens=window[1],
+    )
     actual = ordinary_model(inputs_embeds=inputs, attention_alignment=guidance, use_cache=False)
     recomputed = checkpointed_model(inputs_embeds=inputs, attention_alignment=guidance, use_cache=False)
     torch.testing.assert_close(actual.logits, recomputed.logits)
@@ -257,6 +266,22 @@ def test_guidance_rejects_cached_decode_and_rswa_without_altering_disabled_paths
         {'heads': ()},
         {'heads': (0, 0)},
         {'query_chunk_size': 0},
+        {'layers': 'first'},
+        {'layers': ()},
+        {'layers': (0, 0)},
+        {'layers': (-1,)},
+        {'layers': (True,)},
+        {'layers': ('1',)},
+        {'layers': True},
+        {'layers': 0},
+        {'layers': {0: 1}},
+        {'layers': {0, 1}},
+        {'look_back_tokens': -1},
+        {'look_ahead_tokens': -1},
+        {'look_back_tokens': True},
+        {'look_ahead_tokens': False},
+        {'look_back_tokens': 1.0},
+        {'look_ahead_tokens': '1'},
     ],
 )
 def test_guidance_configuration_is_validated(settings):
@@ -268,3 +293,166 @@ def test_overlapping_queries_fail_instead_of_silently_overwriting_guidance():
     q = torch.randn(1, 2, 6, 2)
     with pytest.raises(ValueError, match='overlap'):
         apply_attention_alignment(q, q, q, q, AttentionAlignmentGuidance([_turn(), _turn()]))
+
+
+@pytest.mark.parametrize('layers,expected', [('middle', (3,)), ([1], (3,)), ((0, 2), (1, 5)), (None, (1, 3, 5))])
+def test_only_selected_attention_layers_receive_the_prior_and_contribute_to_the_loss(layers, expected):
+    import nemo.collections.tts.modules.nemotron_h_decoder as decoder_module
+
+    torch.manual_seed(13)
+    model = NemotronHForCausalLM(_config(num_hidden_layers=7, hybrid_override_pattern='-*-*-*-')).eval()
+    active_layer = {}
+    observed_requests = {}
+    observed_losses = {}
+    handles = []
+
+    def observe_layer(module, args, kwargs):
+        active_layer['index'] = module.layer_idx
+        observed_requests[module.layer_idx] = kwargs.get('attention_alignment')
+
+    for layer in model.backbone.layers:
+        if layer.block_type == 'attention':
+            handles.append(layer.mixer.register_forward_pre_hook(observe_layer, with_kwargs=True))
+
+    def observe_guidance(query, key, value, ordinary_output, guidance, **kwargs):
+        output, loss = apply_attention_alignment(query, key, value, ordinary_output, guidance, **kwargs)
+        observed_losses[active_layer['index']] = loss
+        assert not torch.equal(output[:, 0, 3:], ordinary_output[:, 0, 3:])
+        assert torch.equal(output[:, 1:], ordinary_output[:, 1:])
+        return output, loss
+
+    request = AttentionAlignmentGuidance([_turn()], prior_strength=0.7, heads=(0,), layers=layers)
+    try:
+        with patch.object(decoder_module, 'apply_attention_alignment', side_effect=observe_guidance):
+            output = model(inputs_embeds=torch.randn(1, 6, 16), attention_alignment=request, use_cache=False)
+    finally:
+        for handle in handles:
+            handle.remove()
+
+    assert tuple(observed_losses) == expected
+    assert tuple(index for index, guidance in observed_requests.items() if guidance is not None) == expected
+    for index in (1, 3, 5):
+        assert observed_requests[index] is (request if index in expected else None)
+    torch.testing.assert_close(output.attention_alignment_loss, torch.stack(list(observed_losses.values())).mean())
+
+
+@pytest.mark.parametrize('count,expected', [(1, (0,)), (2, (1,)), (3, (1,)), (4, (2,))])
+def test_middle_selector_counts_attention_layers_only(count, expected):
+    assert AttentionAlignmentGuidance([]).resolve_layers(count) == expected
+
+
+@pytest.mark.parametrize('pattern,layers', [('---', 'middle'), ('*-*', (2,))])
+def test_guidance_rejects_missing_or_out_of_range_attention_layers(pattern, layers):
+    model = NemotronHForCausalLM(_config(num_hidden_layers=len(pattern), hybrid_override_pattern=pattern)).eval()
+    with pytest.raises(ValueError, match='attention layer|attention-layer count'):
+        model(
+            inputs_embeds=torch.randn(1, 6, 16),
+            attention_alignment=AttentionAlignmentGuidance([_turn()], layers=layers),
+            use_cache=False,
+        )
+
+
+def test_asymmetric_token_window_has_flat_tolerance_and_gaussian_edges():
+    query = torch.zeros(1, 1, 8, 8, requires_grad=True)
+    key = torch.zeros_like(query, requires_grad=True)
+    value = torch.eye(8).reshape(1, 1, 8, 8).requires_grad_()
+    ordinary = F.scaled_dot_product_attention(query, key, value, is_causal=True)
+    guidance = AttentionAlignmentGuidance(
+        [_turn(queries=(7,), keys=tuple(range(8)), centers=(3,))],
+        prior_strength=1.0,
+        look_back_tokens=1,
+        look_ahead_tokens=2,
+    )
+
+    output, loss = apply_attention_alignment(query, key, value, ordinary, guidance)
+
+    # The plateau spans positions 2..5: one before the center and two after it.
+    distance = torch.tensor([2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0])
+    target = torch.exp(-0.5 * distance.square())
+    target = target / target.sum()
+    torch.testing.assert_close(output[0, 0, 7], target)
+    assert torch.equal(output[0, 0, 7, 2:6], output[0, 0, 7, 2].expand(4))
+    assert output[0, 0, 7, 0] < output[0, 0, 7, 1] < output[0, 0, 7, 2]
+    assert loss.item() == pytest.approx(math.log(8), abs=1e-6)
+    (loss + output.square().mean()).backward()
+    assert all(tensor.grad is not None and torch.isfinite(tensor.grad).all() for tensor in (query, key, value))
+
+
+def test_zero_token_window_reproduces_the_original_gaussian_loss_and_prior():
+    torch.manual_seed(24)
+    query = torch.randn(1, 1, 7, 7, requires_grad=True)
+    key = torch.randn_like(query, requires_grad=True)
+    value = torch.eye(7).reshape(1, 1, 7, 7)
+    ordinary = F.scaled_dot_product_attention(query, key, value, is_causal=True)
+    guidance = AttentionAlignmentGuidance(
+        [_turn(queries=(6,), keys=tuple(range(7)), centers=(2,))], prior_strength=1.0
+    )
+
+    output, loss = apply_attention_alignment(query, key, value, ordinary, guidance)
+
+    scores = query[0, 0, 6] @ key[0, 0].T / math.sqrt(query.size(-1))
+    offsets = torch.arange(7) - 2
+    old_target = torch.exp(-0.5 * offsets.float().square())
+    old_target = old_target / old_target.sum()
+    expected_loss = -(old_target * F.log_softmax(scores, dim=-1)).sum()
+    expected_output = F.softmax(scores + old_target.clamp_min(1e-6).log(), dim=-1)
+    torch.testing.assert_close(loss, expected_loss)
+    torch.testing.assert_close(output[0, 0, 6], expected_output)
+    explicit_zero, explicit_zero_loss = apply_attention_alignment(
+        query,
+        key,
+        value,
+        ordinary,
+        AttentionAlignmentGuidance(guidance.turns, prior_strength=1.0, look_back_tokens=0, look_ahead_tokens=0),
+    )
+    assert torch.equal(output, explicit_zero)
+    assert torch.equal(loss, explicit_zero_loss)
+
+
+def test_asymmetric_token_window_supervises_the_same_soft_target_used_by_the_prior():
+    torch.manual_seed(19)
+    query = torch.randn(1, 1, 8, 8, requires_grad=True)
+    key = torch.randn_like(query, requires_grad=True)
+    value = torch.eye(8).reshape(1, 1, 8, 8)
+    ordinary = F.scaled_dot_product_attention(query, key, value, is_causal=True)
+    guidance = AttentionAlignmentGuidance(
+        [_turn(queries=(7,), keys=tuple(range(8)), centers=(3,))],
+        prior_strength=1.0,
+        look_back_tokens=1,
+        look_ahead_tokens=2,
+    )
+
+    output, loss = apply_attention_alignment(query, key, value, ordinary, guidance)
+
+    scores = query[0, 0, 7] @ key[0, 0].T / math.sqrt(query.size(-1))
+    distance = torch.tensor([2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0])
+    target = torch.exp(-0.5 * distance.square())
+    target = target / target.sum()
+    torch.testing.assert_close(loss, -(target * F.log_softmax(scores, dim=-1)).sum())
+    torch.testing.assert_close(output[0, 0, 7], F.softmax(scores + target.log(), dim=-1))
+
+
+def test_token_window_respects_causality_padding_and_turn_key_boundaries():
+    query = torch.zeros(1, 1, 10, 10, requires_grad=True)
+    key = torch.zeros_like(query, requires_grad=True)
+    value = torch.eye(10).reshape(1, 1, 10, 10)
+    ordinary = F.scaled_dot_product_attention(query, key, value, is_causal=True)
+    padding = torch.ones(1, 10, dtype=torch.bool)
+    padding[:, 3] = False
+    guidance = AttentionAlignmentGuidance(
+        [_turn(queries=(4,), keys=(1, 2, 3, 5, 6), centers=(1,))],
+        prior_strength=1.0,
+        look_back_tokens=100,
+        look_ahead_tokens=100,
+    )
+
+    output, loss = apply_attention_alignment(query, key, value, ordinary, guidance, attention_mask=padding)
+
+    probabilities = output[0, 0, 4]
+    torch.testing.assert_close(probabilities[1:3], torch.full((2,), 0.5), atol=2e-6, rtol=0)
+    assert probabilities[3] == 0  # Masked padding stays invisible.
+    assert torch.equal(probabilities[5:], torch.zeros(5))  # Look-ahead never reveals future keys.
+    assert (probabilities[torch.tensor([0, 4])] < 2e-6).all()  # Other turns receive only the existing soft floor.
+    assert loss.item() == pytest.approx(math.log(4), abs=1e-6)
+    loss.backward()
+    assert torch.isfinite(query.grad).all() and torch.isfinite(key.grad).all()

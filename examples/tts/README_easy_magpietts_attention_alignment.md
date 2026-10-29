@@ -108,6 +108,9 @@ attention_alignment:
   prior_strength: 1.0
   band_width: 1.0
   heads: [0]
+  layers: middle
+  look_back_tokens: 0
+  look_ahead_tokens: 0
   query_chunk_size: 128
 ```
 
@@ -120,9 +123,56 @@ These are optimizer-global-step settings, including checkpoint resume:
 - From 11,000 to 16,000, the forward prior fades to zero. Attention supervision
   remains active after the prior disappears.
 
-`heads` selects head indices within each attention layer; `[0]` starts with one
-head per layer. `null` selects every head. `band_width` is the Gaussian standard
+`layers` selects **attention-layer ordinals**, counting only attention blocks in
+the hybrid stack. `middle` (default) selects ordinal `count // 2`: with three
+attention layers, only the second receives the attention loss and forward prior.
+The first and last use ordinary attention. Gradients can still flow through
+them from downstream losses. For even counts, `middle` selects the later middle
+layer. Use `[1]` to select the second attention layer explicitly, `[0, 2]` for
+first and third, or `null` to recover guidance across all attention layers.
+These indices are independent of absolute decoder block depths. Selected
+ordinals and block depths are logged during model initialization.
+
+`heads` selects head indices within each selected attention layer; `[0]` starts
+with one head in the middle layer. `null` selects every head in the selected
+layers. `band_width` is the Gaussian standard
 deviation in BPE-position units. `query_chunk_size` bounds recomputation chunks.
+
+To tolerate local text-normalization reordering, widen the soft target around
+each MAS center, for example:
+
+```bash
+++model.attention_alignment.look_back_tokens=2 \
+++model.attention_alignment.look_ahead_tokens=2
+```
+
+These counts are BPE token positions within the current turn. The loss target
+and forward prior have equal unnormalized weight inside this tolerance interval,
+then Gaussian falloff outside it, controlled by `band_width`. Attention may move
+backward or forward inside the interval; no attention pointer is forced to advance
+monotonically. The flow teacher's MAS path remains monotonic, so this relaxes local
+attention guidance and does not solve arbitrary long-range reordering. Future
+text positions are included only after their keys become causally available;
+padding, other turns and unavailable future tokens remain excluded from targets.
+Both counts default to zero, preserving the original Gaussian target. The global
+feature flags `use_attention_alignment` and `use_aligned_text_head` both default
+to `false`; these settings never enable a feature or an inference-time mask.
+
+The attention teacher always consumes the exact conditioning BPE IDs. To use
+raw conditioning text even when normalized metadata is available, set:
+
+```bash
+++model.train_ds.load_normalized_text_percent=0.0 \
+++model.validation_ds.load_normalized_text_percent=0.0
+```
+
+The separate repeated-head experiment also supports
+`model.aligned_text_use_normalized_text=false` for raw teacher/head transcripts.
+That flag leaves conditioning unchanged and does not replace attention key
+metadata. The two experimental modes remain mutually exclusive. Punctuation
+cleanup in the repeated-head mode is controlled independently by
+`model.aligned_text_strip_punctuation`; attention guidance always retains the
+actual conditioning tokens.
 
 The total training objective adds `aligner_loss_weight * aligner_nll` and the
 scheduled `attention_alignment.loss_weight * attention_alignment_loss` to the
@@ -147,13 +197,63 @@ it is not directly comparable to the repeated-BPE head's cross-entropy.
 
 ## Inference and evaluation
 
-The flow, teacher prior and supervision are not run during synthesis. The
-decoder uses its learned attention without an additional text-feedback channel.
-No hard monotonic inference mask or attention-derived timestamps are introduced
-by this experiment. Those require a separately evaluated online controller.
-Teacher-forced validation can use the scheduled prior while autoregressive
-generation never does. Compare these separately during the ramp/fade, and check
-generated speech again after the prior has fully disappeared.
+The flow, teacher prior and supervision are not run during synthesis. By default,
+the decoder uses its ordinary cached attention, with no additional text-feedback
+channel or moving window. Training guidance and online inference guidance have
+independent, disabled-by-default switches.
+
+For an explicitly enabled online experiment, the controller adapts the moving
+window in NeMo's [Magpie-TTS inference code](https://github.com/NVIDIA-NeMo/Speech/blob/main/nemo/collections/tts/models/magpietts.py).
+This is distinct from the original T5-TTS paper's static training prior, which is
+annealed away before inference.
+
+```yaml
+attention_alignment_inference:
+  enabled: false
+  layer: middle
+  head: 0
+  look_back_tokens: 1
+  look_ahead_tokens: 5
+  prior_epsilon: 0.1
+```
+
+Enable it with `model.attention_alignment_inference.enabled=true` on a model
+whose selected head has learned useful alignment. The single `layer` is an
+attention-layer ordinal or `middle`; `head` is the single head used both for
+tracking and guidance. It uses the existing decoder weights and no flow,
+teacher transcript or new prediction head. It is supported for native
+Nemotron-H full-attention cached evaluation, with one decoder query per step.
+It is not wired into external inference engines such as vLLM.
+
+The controller tracks actual observed BPE key positions within the current turn.
+It softly downweights text keys outside the backward/forward window by
+`prior_epsilon`; the value must be positive, so this never hard-blocks a token.
+Other heads, layers, CFG unconditional rows, non-BPE timeline positions and
+reference context retain ordinary attention. A BPE-carrying KV position in this
+decoder-only model can also contain audio/phoneme information; the prior weights
+that combined position, not an isolated text component. Look-ahead includes only
+text already
+received by the stream. The progress anchor is nondecreasing, while attention
+can read backward within the window and can still reach outside it with the
+smaller weight. There is no forced advancement after a duration threshold:
+raw text normalization can require many audio frames for a single source BPE.
+
+The optional controller is available as
+`state.attention_alignment_inference_state`; `last_attended_tokens` contains the
+latest current-turn BPE-position estimates. New BOS or a reset turn counter
+clears current-turn tracking. Multiturn callers can explicitly invoke
+`model.reset_attention_alignment_turn(state, batch_indices=...)` together with
+their generation-state reset; this preserves the KV cache. Text EOS alone does
+not clear tracking while the remaining speech for that turn is generated.
+User/profile prefill is excluded from response-text registration.
+
+Teacher-forced validation can use the scheduled training prior while ordinary
+autoregressive generation never uses that teacher prior. The optional moving
+window is a separate inference heuristic. Compare teacher-forced and generated
+metrics separately during ramp/fade, and evaluate WER with the online controller
+both disabled and enabled after training. Its attended token positions are
+alignment estimates, not verified word boundaries or evidence that a word was
+actually pronounced.
 
 Evaluate generated WER and the original phoneme/codebook losses against the
 same source checkpoint, with matching data and synthesis settings. Low teacher

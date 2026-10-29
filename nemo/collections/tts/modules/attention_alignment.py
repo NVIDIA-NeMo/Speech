@@ -35,7 +35,11 @@ class AttentionAlignmentGuidance:
     ``prior_strength=0`` preserves decoder outputs exactly while still computing
     the auxiliary loss. One is a soft text-band prior; intermediate values mix
     that prior with all ones. Heads not listed here always retain ordinary
-    attention. ``heads=None`` supervises all heads.
+    attention. ``heads=None`` supervises all heads. ``layers`` selects zero-based
+    attention-layer ordinals, excluding intervening Mamba/MLP blocks. ``'middle'``
+    selects ordinal ``num_attention_layers // 2``; ``None`` selects every layer.
+    Optional look-back/look-ahead token counts give the soft band a flat local
+    tolerance window before Gaussian falloff; causal visibility still applies.
     """
 
     turns: list[AttentionAlignmentTurn]
@@ -43,6 +47,9 @@ class AttentionAlignmentGuidance:
     band_width: float = 1.0
     heads: tuple[int, ...] | None = (0,)
     query_chunk_size: int = 128
+    layers: str | tuple[int, ...] | None = 'middle'
+    look_back_tokens: int = 0
+    look_ahead_tokens: int = 0
 
     def __post_init__(self):
         if not math.isfinite(self.prior_strength) or not 0 <= self.prior_strength <= 1:
@@ -51,6 +58,9 @@ class AttentionAlignmentGuidance:
             raise ValueError('band_width must be finite and positive')
         if type(self.query_chunk_size) is not int or self.query_chunk_size < 1:
             raise ValueError('query_chunk_size must be a positive integer')
+        for name in ('look_back_tokens', 'look_ahead_tokens'):
+            if type(getattr(self, name)) is not int or getattr(self, name) < 0:
+                raise ValueError(f'{name} must be a nonnegative integer')
         if self.heads is not None:
             self.heads = tuple(self.heads)
             if (
@@ -59,6 +69,31 @@ class AttentionAlignmentGuidance:
                 or len(set(self.heads)) != len(self.heads)
             ):
                 raise ValueError('heads must be null or distinct nonnegative head indices')
+        if isinstance(self.layers, str):
+            if self.layers != 'middle':
+                raise ValueError('layers must be middle, null or distinct nonnegative attention-layer indices')
+        elif self.layers is not None:
+            if not isinstance(self.layers, (list, tuple)):
+                raise ValueError('layers must be middle, null or distinct nonnegative attention-layer indices')
+            self.layers = tuple(self.layers)
+            if (
+                not self.layers
+                or any(type(layer) is not int or layer < 0 for layer in self.layers)
+                or len(set(self.layers)) != len(self.layers)
+            ):
+                raise ValueError('layers must be middle, null or distinct nonnegative attention-layer indices')
+
+    def resolve_layers(self, num_attention_layers: int) -> tuple[int, ...]:
+        """Resolve the selected ordinals against the decoder's actual attention count."""
+        if type(num_attention_layers) is not int or num_attention_layers < 1:
+            raise ValueError('Attention alignment requires at least one attention layer')
+        if self.layers == 'middle':
+            return (num_attention_layers // 2,)
+        if self.layers is None:
+            return tuple(range(num_attention_layers))
+        if any(layer >= num_attention_layers for layer in self.layers):
+            raise ValueError('An attention alignment layer index exceeds the decoder attention-layer count')
+        return self.layers
 
 
 def apply_attention_alignment(
@@ -146,6 +181,8 @@ def apply_attention_alignment(
                 guidance.prior_strength,
                 guidance.band_width,
                 dropout_p,
+                guidance.look_back_tokens,
+                guidance.look_ahead_tokens,
             )
             if torch.is_grad_enabled() and any(tensor.requires_grad for tensor in (q, selected_key, selected_value)):
                 chunk_loss, guided_output = checkpoint(_alignment_chunk, *args, use_reentrant=False)
@@ -158,7 +195,20 @@ def apply_attention_alignment(
     return output, loss_sum / max(count, 1)
 
 
-def _alignment_chunk(query, key, value, rows, text_keys, centers, mask, prior_strength, band_width, dropout_p):
+def _alignment_chunk(
+    query,
+    key,
+    value,
+    rows,
+    text_keys,
+    centers,
+    mask,
+    prior_strength,
+    band_width,
+    dropout_p,
+    look_back_tokens,
+    look_ahead_tokens,
+):
     with torch.autocast(device_type=query.device.type, enabled=False):
         scores = torch.matmul(query.float(), key.float().transpose(-1, -2)) / math.sqrt(query.size(-1))
         causal = torch.arange(key.size(1), device=query.device)[None, None, :] <= rows[None, :, None]
@@ -169,7 +219,10 @@ def _alignment_chunk(query, key, value, rows, text_keys, centers, mask, prior_st
         log_probs = F.log_softmax(scores, dim=-1)
 
         token_distance = torch.arange(text_keys.numel(), device=query.device)[None, :] - centers[:, None]
-        target = torch.exp(-0.5 * (token_distance.float() / band_width).square())
+        distance = (token_distance - look_ahead_tokens).clamp_min(0) + (-token_distance - look_back_tokens).clamp_min(
+            0
+        )
+        target = torch.exp(-0.5 * (distance.float() / band_width).square())
         text_visible = visible.expand(query.size(0), -1, -1).index_select(-1, text_keys)
         target = target[None, :, :] * text_visible
         target = (target / target.sum(dim=-1, keepdim=True).clamp_min(torch.finfo(torch.float32).tiny)).detach()

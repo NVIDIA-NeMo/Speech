@@ -5,6 +5,15 @@ autoregressive BPE output channel. It preserves the existing raw/IPA conditionin
 channel and prefers `normalized_text` for the teacher and the new head, falling
 back to the original `text` when normalization metadata is unavailable.
 
+Set `model.aligned_text_use_normalized_text=false` to select original raw `text`
+for both the teacher and all text-head targets, including warmup and aligned
+targets. This option defaults to `true` and leaves existing experiments unchanged.
+With `false`, unusable raw text skips the auxiliary task instead of falling back
+to normalized text. The normalization-availability metric still counts metadata
+availability, independently of which source is selected. Punctuation cleanup
+remains separate: set `model.aligned_text_strip_punctuation=false` to retain the
+raw punctuation too. Neither option changes the decoder's conditioning stream.
+
 ```bash
 ++model.use_aligned_text_head=true \
 ++model.start_aligner_text_head_steps=10000
@@ -25,7 +34,7 @@ for supported formats, compatibility requirements and resume behavior.
 
 ## Training
 
-The loader selects `normalized_text` when it is a nonempty string, otherwise
+By default, the loader selects `normalized_text` when it is a nonempty string, otherwise
 the original raw `text`. It retokenizes this selected transcript separately
 from the conditioning channel, using exactly the same transcript for the aligner,
 right-padded warmup labels, and repeated aligned-text labels.

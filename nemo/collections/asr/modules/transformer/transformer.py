@@ -24,6 +24,7 @@ from nemo.collections.asr.modules.transformer.encoder_module import EncoderModul
 from nemo.collections.asr.modules.transformer.transformer_decoders import TransformerDecoder, TransformerDecoderAdapter
 from nemo.collections.asr.modules.transformer.transformer_encoders import TransformerEncoder
 from nemo.collections.asr.modules.transformer.transformer_modules import TransformerEmbedding
+from nemo.collections.asr.parts.submodules.multi_head_attention import RotaryPositionalEncoding
 from nemo.collections.asr.parts.utils import adapter_utils
 from nemo.collections.common.parts.utils import ModuleBlock, build_module
 from nemo.core.classes.common import typecheck
@@ -314,8 +315,10 @@ class TransformerDecoderNM(DecoderModule, Exportable):
             A tuple of input examples.
         """
         sample = next(self.parameters())
+        # ids must exist in the vocabulary and positions in the fixed positional table
+        max_dim = min(max_dim, self._max_sequence_length)
         sz = (max_batch, max_dim)
-        input_ids = torch.randint(low=0, high=2048, size=sz, device=sample.device)
+        input_ids = torch.randint(low=0, high=self._vocab_size, size=sz, device=sample.device)
         encoder_mask = torch.randint(low=0, high=1, size=sz, device=sample.device)
         mem_size = [max_batch, self.num_states, max_dim - 1, self._hidden_size]
         decoder_mems = torch.rand(mem_size, device=sample.device)
@@ -324,6 +327,12 @@ class TransformerDecoderNM(DecoderModule, Exportable):
     def _prepare_for_export(self, **kwargs):
         self._decoder.diagonal = None
         self.return_mems = True
+        # rotary tables grow with the key length in eager mode but are constants in the exported graph,
+        # so they cover every position the decoder supports before the example is traced
+        sample = next(self.parameters())
+        for module in self._decoder.modules():
+            if isinstance(module, RotaryPositionalEncoding):
+                module.extend_pe(self.max_sequence_length, sample.device, sample.dtype)
         super()._prepare_for_export(**kwargs)
 
     @property

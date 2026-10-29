@@ -35,6 +35,7 @@ from nemo.collections.asr.parts.utils.tokenizer_utils import (
     extract_punctuation_from_vocab,
 )
 from nemo.collections.common import tokenizers
+from nemo.collections.common.parts.utils import ModuleBlock
 from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.utils import app_state, logging
 from nemo.utils.file_utils import robust_copy
@@ -529,6 +530,7 @@ class ASRModuleMixin(ASRAdapterModelMixin):
         update_config: bool = True,
         rope_base: float = None,
         rotary_fraction: float = None,
+        self_attn: ModuleBlock | None = None,
     ):
         """
         Update the self_attention_model if function is available in encoder.
@@ -558,8 +560,17 @@ class ASRModuleMixin(ASRAdapterModelMixin):
                 ``self_attention_model='rope'``. If None, the existing value is kept.
             rotary_fraction (float): Fraction of the per-head dim to rotate. Only used when
                 ``self_attention_model='rope'``. If None, the existing value is kept.
+            self_attn: the block the new attention layers are built from, see `ConformerEncoder.change_attention_model`;
+                an encoder built from a `self_attn` block needs a new block here to change its attention model,
+                and with `update_config` the block must be a Hydra section.
         """
-        if self_attention_model is None and att_context_size is None and rope_base is None and rotary_fraction is None:
+        if (
+            self_attention_model is None
+            and att_context_size is None
+            and rope_base is None
+            and rotary_fraction is None
+            and self_attn is None
+        ):
             return
 
         if not hasattr(self, 'encoder'):
@@ -580,6 +591,7 @@ class ASRModuleMixin(ASRAdapterModelMixin):
             device=self.device,
             rope_base=rope_base,
             rotary_fraction=rotary_fraction,
+            self_attn=self_attn,
         )
         if update_config:
             with open_dict(self.cfg):
@@ -588,6 +600,8 @@ class ASRModuleMixin(ASRAdapterModelMixin):
                 if self.encoder.self_attention_model == 'rope':
                     self.cfg.encoder.rope_base = self.encoder._cfg.rope_base
                     self.cfg.encoder.rotary_fraction = self.encoder._cfg.rotary_fraction
+                if self_attn is not None:
+                    self.cfg.encoder.self_attn = self.encoder._cfg.self_attn
 
     def change_subsampling_conv_chunking_factor(
         self, subsampling_conv_chunking_factor: int, update_config: bool = True

@@ -176,6 +176,37 @@ def test_dflash_alias_registration_supports_class_backed_registry():
     assert FakeRegistry.models["AutomodelDraft"] is NativeModel
 
 
+@pytest.mark.skipif(not _HAS_CONFIG, reason="SpeechLM vLLM plugin not available")
+@pytest.mark.parametrize(
+    ("model_cfg", "backbone_architectures", "expected"),
+    [
+        pytest.param(
+            {"pe_encoder_path": "/models/pee.nemo"},
+            ["NemotronHForCausalLM"],
+            "Nemotron3_5TranscribeForConditionalGeneration",
+            id="training-config",
+        ),
+        pytest.param(
+            {"pe_encoder_path": None, "pe_encoder_config": {"target": "ParallelExpertEncoderPT"}},
+            ["NemotronHForCausalLM"],
+            "Nemotron3_5TranscribeForConditionalGeneration",
+            id="exported-config",
+        ),
+        pytest.param({}, ["NemotronHForCausalLM"], "NeMoSpeechLMForConditionalGeneration", id="no-pe-encoder"),
+        pytest.param(
+            {"pe_encoder_path": "/models/pee.nemo"},
+            ["Qwen3ForCausalLM"],
+            "NeMoSpeechLMForConditionalGeneration",
+            id="transformer-backbone",
+        ),
+    ],
+)
+def test_checkpoint_architecture_names_transcribe_by_structure(model_cfg, backbone_architectures, expected):
+    from nemo.collections.speechlm2.vllm.salm.config import checkpoint_architecture
+
+    assert checkpoint_architecture(model_cfg, backbone_architectures) == expected
+
+
 @pytest.mark.skipif(not _HAS_CONFIG, reason="NeMoSpeechLMConfig not available")
 class TestNeMoSpeechLMConfig:
     """Tests for NeMoSpeechLMConfig."""
@@ -1015,6 +1046,28 @@ class TestAudioProcessing:
         assert model.perception.encoder.context_exits == 1
         assert model.perception.encoder.online_inference_enabled is False
 
+    def test_pe_processing_uses_encoder_graphs_and_falls_back_to_eager(self):
+        import torch
+
+        model = self._make_pe_processing_model(torch)
+        audio_input = SimpleNamespace(audio_signal=torch.ones(2, 16), audio_signal_length=torch.tensor([16, 8]))
+        graph_calls = []
+
+        def graphs(audio_signal, audio_lengths):
+            graph_calls.append(audio_lengths.tolist())
+            return [torch.zeros(5, 4), torch.zeros(2, 4)]
+
+        model._encoder_graphs = graphs
+        result = model._process_audio(audio_input)
+        assert graph_calls == [[16, 8]]
+        assert [r.shape for r in result] == [(5, 4), (2, 4)]
+        assert model.perception.online_enabled_during_forward is None  # eager forward did not run
+
+        model._encoder_graphs = lambda audio_signal, audio_lengths: None  # e.g. audio too long to graph
+        result = model._process_audio(audio_input)
+        assert [r.shape for r in result] == [(3, 4), (3, 4)]
+        assert model.perception.online_enabled_during_forward is True
+
     def test_pe_processing_error_does_not_leak_online_inference_state(self):
         import torch
 
@@ -1046,9 +1099,23 @@ class TestAudioProcessing:
         torch.nn.Module.__init__(model)
         model.perception = _Perception()
         model._uses_pe_encoder = True
+        model._perception_weights_initialized = False
 
         with pytest.raises(RuntimeError, match="does not exactly match"):
             model._load_perception_weights({})
+
+        assert not model._perception_weights_initialized
+        seed = {key: value.clone() for key, value in model.perception.state_dict().items()}
+        model._load_perception_weights(seed)
+        assert model._perception_weights_initialized
+        before_bias = model.perception.encoder.bias.detach().clone()
+        update = torch.full_like(model.perception.encoder.weight, 0.5)
+        assert model._load_perception_weights({"encoder.weight": update}) == {"perception.encoder.weight"}
+        torch.testing.assert_close(model.perception.encoder.weight, update)
+        torch.testing.assert_close(model.perception.encoder.bias, before_bias)
+        assert model._load_perception_weights({}) == set()
+        with pytest.raises(RuntimeError, match="unexpected"):
+            model._load_perception_weights({"wrong.weight": update})
 
         model._uses_pe_encoder = False
         assert model._load_perception_weights({}) == set()
@@ -1300,7 +1367,7 @@ class TestAudioProcessing:
         )
 
         with pytest.raises(ValueError, match="placeholders"):
-            processor._call_hf_processor(
+            processor._call_hf_processor_with_prompt(
                 prompt="Transcribe this audio",
                 mm_data={"audios": [[0.0] * 16000]},
                 mm_kwargs={},
@@ -1320,7 +1387,7 @@ class TestAudioProcessing:
             _get_audio_token_estimator_config=lambda: None,
         )
 
-        result = processor._call_hf_processor(
+        result = processor._call_hf_processor_with_prompt(
             prompt="Transcribe: <|audio|>",
             mm_data={"audios": [[0.0] * 12345]},
             mm_kwargs={},
@@ -1330,6 +1397,395 @@ class TestAudioProcessing:
         assert len(result["audio_signal"]) == 1
         assert result["audio_signal"][0].shape[-1] == 12345
         assert torch.equal(result["audio_signal_length"], torch.tensor([12345]))
+
+    @pytest.mark.parametrize("capture", [False, True])
+    def test_call_hf_processor_audio_only_packages_audio_without_prompt(self, capture):
+        """vLLM 0.32 passes only the audio; the processor must not tokenize or expand any prompt."""
+        import torch
+
+        from nemo.collections.speechlm2.vllm.salm.audio import NeMoSpeechLMMultiModalProcessor
+
+        processor = object.__new__(NeMoSpeechLMMultiModalProcessor)
+        processor.info = SimpleNamespace(get_tokenizer=_FakeTokenizer)
+
+        result = processor._call_hf_processor_audio_only(
+            hf_data={"audio": [[0.0] * 12345, torch.zeros(1, 800)]},
+            hf_kwargs={"capture_ctc_timestamps": capture},
+        )
+
+        assert "input_ids" not in result
+        assert [audio.shape for audio in result["audio_signal"]] == [torch.Size([12345]), torch.Size([800])]
+        assert torch.equal(result["audio_signal_length"], torch.tensor([12345, 800]))
+        assert torch.equal(result["capture_ctc_timestamps"], torch.tensor([capture, capture]))
+
+    def test_call_hf_processor_audio_only_without_audio_is_empty(self):
+        from nemo.collections.speechlm2.vllm.salm.audio import NeMoSpeechLMMultiModalProcessor
+
+        processor = object.__new__(NeMoSpeechLMMultiModalProcessor)
+
+        result = processor._call_hf_processor_audio_only(hf_data={}, hf_kwargs={})
+
+        assert dict(result) == {}
+
+    @pytest.mark.parametrize("takes_prompt", [False, True])
+    def test_call_hf_processor_follows_the_installed_vllm_contract(self, monkeypatch, takes_prompt):
+        from nemo.collections.speechlm2.vllm.salm import audio
+        from nemo.collections.speechlm2.vllm.salm.audio import NeMoSpeechLMMultiModalProcessor
+
+        processor = object.__new__(NeMoSpeechLMMultiModalProcessor)
+        calls = []
+        monkeypatch.setattr(audio, "_PROCESSOR_TAKES_PROMPT", takes_prompt)
+        monkeypatch.setattr(processor, "_call_hf_processor_with_prompt", lambda *a, **k: calls.append(("prompt", a)))
+        monkeypatch.setattr(processor, "_call_hf_processor_audio_only", lambda *a, **k: calls.append(("audio", a)))
+
+        if takes_prompt:
+            processor._call_hf_processor("p", {"audios": []}, {}, {})
+            assert calls == [("prompt", ("p", {"audios": []}, {}, {}))]
+        else:
+            processor._call_hf_processor({"audio": []}, {})
+            assert calls == [("audio", ({"audio": []}, {}))]
+
+    def test_prompt_updates_expand_the_placeholder_token_id(self, monkeypatch):
+        """vLLM 0.32 applies prompt updates on token ids only."""
+        from nemo.collections.speechlm2.vllm.salm import audio
+        from nemo.collections.speechlm2.vllm.salm.audio import NeMoSpeechLMMultiModalProcessor
+
+        class _PlaceholderTokenizer(_FakeTokenizer):
+            def encode(self, prompt, add_special_tokens=True):
+                return [42] if prompt == "<|audio|>" else [1, 2]
+
+        processor = object.__new__(NeMoSpeechLMMultiModalProcessor)
+        processor.info = SimpleNamespace(
+            get_tokenizer=_PlaceholderTokenizer,
+            _estimate_audio_tokens=lambda samples, chunk_size_seconds=None, estimator_config=None: samples // 100,
+            _get_encoder_chunk_size_seconds=lambda: None,
+            _get_audio_token_estimator_config=lambda: None,
+        )
+        items = SimpleNamespace(get=lambda i: SimpleNamespace(shape=(300 * (i + 1),)))
+        mm_items = SimpleNamespace(get_items=lambda modality, typ: items)
+        monkeypatch.setattr(audio, "_PROMPT_UPDATES_TAKE_TEXT", False)
+
+        (update,) = processor._get_prompt_updates(mm_items, {}, None)
+
+        assert update.target == [42]
+        assert update.replacement(0) == [42] * 3
+        assert update.replacement(1) == [42] * 6
+
+    def test_prompt_updates_without_uncached_audio(self, monkeypatch):
+        """vLLM asks for prompt updates of the items missing from its processor cache only; with every audio item
+        cached (as for the second startup profiling input) there are no audio items at all."""
+        from nemo.collections.speechlm2.vllm.salm import audio
+        from nemo.collections.speechlm2.vllm.salm.audio import NeMoSpeechLMMultiModalProcessor
+
+        class _PlaceholderTokenizer(_FakeTokenizer):
+            def encode(self, prompt, add_special_tokens=True):
+                return [42] if prompt == "<|audio|>" else [1, 2]
+
+        def no_items(modality, typ):
+            raise KeyError(f"Modality {modality!r} not found. Available modalities: set()")
+
+        processor = object.__new__(NeMoSpeechLMMultiModalProcessor)
+        processor.info = SimpleNamespace(
+            get_tokenizer=_PlaceholderTokenizer,
+            _get_encoder_chunk_size_seconds=lambda: None,
+            _get_audio_token_estimator_config=lambda: None,
+        )
+        mm_items = SimpleNamespace(get_items=no_items)
+        monkeypatch.setattr(audio, "_PROMPT_UPDATES_TAKE_TEXT", False)
+
+        (update,) = processor._get_prompt_updates(mm_items, {}, None)
+
+        assert update.modality == "audio"
+        assert update.target == [42]
+
+    def test_prompt_updates_require_a_single_placeholder_token(self, monkeypatch):
+        from nemo.collections.speechlm2.vllm.salm import audio
+        from nemo.collections.speechlm2.vllm.salm.audio import NeMoSpeechLMMultiModalProcessor
+
+        class _SplitPlaceholderTokenizer(_FakeTokenizer):
+            def encode(self, prompt, add_special_tokens=True):
+                return [7, 8]
+
+        processor = object.__new__(NeMoSpeechLMMultiModalProcessor)
+        processor.info = SimpleNamespace(
+            get_tokenizer=_SplitPlaceholderTokenizer,
+            _get_encoder_chunk_size_seconds=lambda: None,
+            _get_audio_token_estimator_config=lambda: None,
+        )
+        mm_items = SimpleNamespace(get_items=lambda modality, typ: None)
+        monkeypatch.setattr(audio, "_PROMPT_UPDATES_TAKE_TEXT", False)
+
+        with pytest.raises(ValueError, match="exactly one token"):
+            processor._get_prompt_updates(mm_items, {}, None)
+
+    def test_prompt_updates_expand_the_placeholder_text_on_older_vllm(self):
+        from nemo.collections.speechlm2.vllm.salm import audio
+        from nemo.collections.speechlm2.vllm.salm.audio import NeMoSpeechLMMultiModalProcessor
+
+        if not audio._PROMPT_UPDATES_TAKE_TEXT:
+            pytest.skip("the installed vLLM applies prompt updates on token ids only")
+        processor = object.__new__(NeMoSpeechLMMultiModalProcessor)
+        processor.info = SimpleNamespace(
+            _estimate_audio_tokens=lambda samples, chunk_size_seconds=None, estimator_config=None: samples // 100,
+            _get_encoder_chunk_size_seconds=lambda: None,
+            _get_audio_token_estimator_config=lambda: None,
+        )
+        items = SimpleNamespace(get=lambda i: SimpleNamespace(shape=(300,)))
+        mm_items = SimpleNamespace(get_items=lambda modality, typ: items)
+
+        (update,) = processor._get_prompt_updates(mm_items, {}, None)
+
+        assert update.target == "<|audio|>"
+        assert update.replacement(0).full == "<|audio|>" * 3
+
+    @pytest.mark.parametrize("separable", [True, False])
+    def test_call_hf_processor_expands_the_cached_template_like_direct_tokenization(self, separable):
+        from nemo.collections.speechlm2.vllm.salm.audio import NeMoSpeechLMMultiModalProcessor
+
+        tokenizer = _SpecialTokenTokenizer(separable=separable)
+        processor = object.__new__(NeMoSpeechLMMultiModalProcessor)
+        processor.info = SimpleNamespace(
+            get_tokenizer=lambda: tokenizer,
+            _estimate_audio_tokens=lambda samples, chunk_size_seconds=None, estimator_config=None: samples // 100,
+            _get_encoder_chunk_size_seconds=lambda: None,
+            _get_audio_token_estimator_config=lambda: None,
+        )
+        prompt = "Transcribe this: <|audio|> then <|audio|> please"
+
+        reference = _SpecialTokenTokenizer(separable=separable)
+        # The first request repeats no placeholder, so its own expansion cannot tell a nonseparable tokenizer apart.
+        for lengths in ([100, 100], [300, 500], [700, 200], [100, 900]):
+            result = processor._call_hf_processor_with_prompt(
+                prompt=prompt, mm_data={"audios": [[0.0] * n for n in lengths]}, mm_kwargs={}, tok_kwargs={}
+            )
+            first, second = ("<|audio|>" * (n // 100) for n in lengths)
+            expanded = f"Transcribe this: {first} then {second} please"
+            assert result["input_ids"][0].tolist() == reference.encode(expanded)
+
+        # Separable: the template and a probe expansion are tokenized once; every request expands the cached ids.
+        # Otherwise every request is tokenized directly.
+        assert len(tokenizer.encoded) == (2 if separable else 2 + 4)
+        assert tokenizer.encoded[0] == prompt
+
+    def test_encoder_graph_runner_splits_batches_into_buckets(self):
+        from nemo.collections.speechlm2.vllm.salm.encoder_graphs import EncoderGraphRunner
+
+        runner = object.__new__(EncoderGraphRunner)
+        runner.long_audio = False
+        runner.batch_sizes, runner.window = [8, 16, 32, 64, 128], 4000
+        runner.max_rows_x_frames = 128 * runner.window
+        assert runner._split(1, 4000) == [8]
+        assert runner._split(8, 4000) == [8]
+        assert runner._split(80, 4000) == [64, 16]
+        assert runner._split(71, 4000) == [64, 8]
+        assert runner._split(300, 4000) == [128, 128, 32, 8, 8]
+        # two-window audio: graphs hold at most half the rows
+        assert runner._split(80, 8000) == [64, 16]
+        assert runner._split(130, 8000) == [64, 64, 8]
+
+    def test_encoder_graph_runner_defaults_cover_low_concurrency(self):
+        """One request replays a one-row graph, not a padded batch."""
+        import inspect
+
+        from nemo.collections.speechlm2.vllm.salm.encoder_graphs import EncoderGraphRunner
+
+        runner = object.__new__(EncoderGraphRunner)
+        runner.long_audio = False
+        runner.batch_sizes = list(inspect.signature(EncoderGraphRunner).parameters["batch_sizes"].default)
+        runner.window = 4000
+        runner.max_rows_x_frames = runner.batch_sizes[-1] * runner.window
+        assert runner.batch_sizes[:3] == [1, 2, 4]
+        assert runner._split(1, 4000) == [1]
+        assert runner._split(3, 4000) == [4]
+        assert runner._split(4, 4000) == [4]
+        assert runner._split(5, 4000) == [8]
+        # Rows past the large graphs are padded into one small graph, not split over several.
+        assert runner._split(13, 4000) == [8, 8]
+        assert runner._split(12, 4000) == [8, 4]
+        assert runner._split(37, 4000) == [32, 8]
+
+    def test_encoder_graph_capture_raises_the_recompile_limit_only_while_capturing(self):
+        """Capturing every bucket compiles more attention variants than dynamo's default limit allows."""
+        import torch
+
+        from nemo.collections.speechlm2.vllm.salm import encoder_graphs
+        from nemo.collections.speechlm2.vllm.salm.encoder_graphs import EncoderGraphRunner
+
+        config = torch._dynamo.config
+        name = "recompile_limit" if hasattr(config, "recompile_limit") else "cache_size_limit"
+        before = getattr(config, name)
+        runner = object.__new__(EncoderGraphRunner)
+        runner.long_audio = False
+        runner.perception = SimpleNamespace(
+            maybe_preprocess_audio=lambda audio, lengths, *_: (audio[:, None], lengths)
+        )
+        runner.max_frames, runner.graphs, runner.enabled, runner.ctc_timestamp_inputs = 800, {}, True, False
+        seen = []
+
+        def capture_all(n_feat, dtype):
+            seen.append(getattr(config, name))
+            raise RuntimeError("stop after the limit is checked")
+
+        runner._capture_all = capture_all
+        assert runner(torch.zeros(1, 300), torch.tensor([300])) is None
+        assert seen == [max(before, encoder_graphs._CAPTURE_RECOMPILE_LIMIT)]
+        assert getattr(config, name) == before
+
+    def test_shared_graph_buffers_hand_out_views_of_one_buffer_per_slot(self):
+        import torch
+
+        from nemo.collections.common.parts.optional_cuda_graphs import SharedGraphBuffers
+
+        buffers = SharedGraphBuffers()
+        big = buffers.view("x", (4, 3, 5), torch.float32, "cpu")
+        small = buffers.view("x", (2, 3, 4), torch.float32, "cpu")
+        other = buffers.view("y", (2, 3, 4), torch.float32, "cpu")
+        assert small.is_contiguous() and small.data_ptr() == big.data_ptr()
+        assert other.data_ptr() != big.data_ptr()
+        # A larger request gets a new buffer; the earlier views keep the old one.
+        bigger = buffers.view("x", (8, 3, 5), torch.float32, "cpu")
+        assert bigger.data_ptr() != big.data_ptr() and big.numel() == 60
+
+    @pytest.mark.parametrize(
+        "frames,expected", [(8001, 8400), (8400, 8400), (8401, 8800), (11999, 12000), (12000, 12000)]
+    )
+    def test_long_audio_pads_only_the_last_window_to_its_bucket(self, frames, expected):
+        from nemo.collections.speechlm2.vllm.salm.encoder_graphs import EncoderGraphRunner
+
+        runner = object.__new__(EncoderGraphRunner)
+        runner.long_audio = False
+        runner.window, runner.last_window_bucket = 4000, 400
+        assert runner._long_frames(frames) == expected
+
+    def test_long_audio_steps_pad_rows_by_at_most_half(self):
+        from nemo.collections.speechlm2.vllm.salm.encoder_graphs import EncoderGraphRunner
+
+        runner = object.__new__(EncoderGraphRunner)
+        runner.step_batch_sizes = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 24, 32, 48, 64, 96, 128]
+        for rows in range(1, 129):
+            size = runner._bucket(rows)
+            assert rows <= size <= max(16, 1.5 * rows)
+        assert runner._bucket(129) is None
+
+    def test_encoder_graph_options_come_from_the_model_config(self):
+        from nemo.collections.speechlm2.vllm.salm.encoder_graphs import encoder_graph_options
+
+        assert encoder_graph_options(SimpleNamespace(encoder_cuda_graphs=True)) == {}
+        config = SimpleNamespace(
+            encoder_cuda_graph_batch_sizes=[1, 4, 32],
+            encoder_cuda_graph_frame_bucket=128,
+            encoder_cuda_graph_max_windows=1,
+            encoder_cuda_graph_long_audio=False,
+            encoder_cuda_graph_last_window_bucket=500,
+        )
+        assert encoder_graph_options(config) == {
+            "batch_sizes": (1, 4, 32),
+            "frame_bucket": 128,
+            "max_windows": 1,
+            "long_audio": False,
+            "last_window_bucket": 500,
+        }
+
+    @pytest.mark.parametrize(
+        "kwargs", [{"batch_sizes": ()}, {"batch_sizes": (0, 8)}, {"frame_bucket": 0}, {"max_windows": 0}]
+    )
+    def test_encoder_graph_runner_rejects_invalid_buckets(self, kwargs):
+        import torch
+
+        from nemo.collections.speechlm2.vllm.salm.encoder_graphs import EncoderGraphRunner
+
+        with pytest.raises(ValueError):
+            EncoderGraphRunner(torch.nn.Module(), **kwargs)
+
+    @pytest.mark.parametrize("window,frame_bucket,max_windows", [(4000, 256, 1), (4000, 256, 2), (1024, 128, 2)])
+    def test_encoder_graph_runner_captures_every_reachable_bucket(self, window, frame_bucket, max_windows):
+        from nemo.collections.speechlm2.vllm.salm.encoder_graphs import EncoderGraphRunner
+
+        runner = object.__new__(EncoderGraphRunner)
+        runner.long_audio = False
+        runner.window, runner.frame_bucket, runner.max_frames = window, frame_bucket, window * max_windows
+        runner.batch_sizes, runner.max_rows_x_frames = [8, 16], 16 * window
+        captured = set()
+        runner._capture = lambda rows, frames, n_feat, dtype: captured.add((rows, frames))
+        runner._capture_all(n_feat=128, dtype=None)
+        for frames in range(1, runner.max_frames + 1):
+            bucket = runner._frame_bucket(frames)
+            assert bucket >= frames
+            assert {(rows, bucket) for rows in runner._split(17, bucket)} <= captured
+
+    def test_encoder_graph_runner_falls_back_to_eager_when_capture_fails(self):
+        """A failed capture, even after some buckets were captured, makes this and every later call return None."""
+        import torch
+
+        from nemo.collections.speechlm2.vllm.salm.encoder_graphs import EncoderGraphRunner
+
+        runner = object.__new__(EncoderGraphRunner)
+        runner.long_audio = False
+        runner.perception = SimpleNamespace(
+            maybe_preprocess_audio=lambda audio, lengths, *_: (audio[:, None], lengths)
+        )
+        runner.window, runner.frame_bucket, runner.max_frames = 400, 128, 800
+        runner.batch_sizes, runner.max_rows_x_frames = [8], 8 * 400
+        runner.graphs, runner.pool, runner.enabled = {}, object(), True
+        attempts = []
+
+        def capture(rows, frames, n_feat, dtype):
+            attempts.append((rows, frames))
+            if len(attempts) > 1:
+                raise RuntimeError("operation not permitted when stream is capturing")
+            runner.graphs[rows, frames] = None
+
+        runner._capture = capture
+        audio, lengths = torch.zeros(2, 300), torch.tensor([300, 200])
+        assert runner(audio, lengths) is None
+        assert runner(audio, lengths) is None
+        assert len(attempts) == 2 and runner.graphs == {} and runner.pool is None and not runner.enabled
+
+    def test_encoder_graph_runner_failed_capture_leaves_eager_inference_working(self, monkeypatch):
+        """A capture that syncs the host fails; the eager forward still runs on the same device afterwards."""
+        import torch
+
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA required")
+        from nemo.collections.speechlm2.vllm.salm.encoder_graphs import EncoderGraphRunner
+
+        torch.manual_seed(0)
+        perception = _toy_perception().cuda().eval()
+        runner = EncoderGraphRunner(perception, batch_sizes=(4,), frame_bucket=128, max_windows=1)
+        forward = runner._forward
+        monkeypatch.setattr(runner, "_forward", lambda x, x_len: (x_len.max().item(), forward(x, x_len))[1])
+        audio = torch.randn(2, 1500, device="cuda")
+        lengths = torch.tensor([1500, 900], device="cuda")
+        assert runner(audio, lengths) is None
+        assert not runner.enabled and runner.graphs == {}
+        with torch.no_grad(), perception.encoder.online_inference():
+            emb, emb_len = perception(input_signal=audio, input_signal_length=lengths)
+        assert torch.isfinite(emb).all() and emb_len.tolist()[0] > 0
+
+    def test_encoder_graph_runner_matches_eager_forward(self):
+        """Graph replays over padded buckets return the eager forward's per-row embeddings."""
+        import torch
+
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA required")
+        from nemo.collections.speechlm2.vllm.salm.encoder_graphs import EncoderGraphRunner
+
+        torch.manual_seed(0)
+        perception = _toy_perception().cuda().eval()
+        runner = EncoderGraphRunner(perception, batch_sizes=(4, 8, 16), frame_bucket=128, max_windows=2)
+        for batch, max_len in ((3, 150), (13, 600), (21, 1000)):
+            lengths = torch.randint(200, max_len * 10 + 1, (batch,), device="cuda")
+            lengths[0] = max_len * 10
+            audio = torch.randn(batch, max_len * 10, device="cuda")
+            got = runner(audio, lengths)
+            with torch.no_grad():
+                emb, emb_len = perception(input_signal=audio, input_signal_length=lengths)
+            assert len(got) == batch
+            for i in range(batch):
+                torch.testing.assert_close(got[i], emb[i, : emb_len[i]])
+        # longer than max_windows windows: left to the eager path
+        assert runner(torch.randn(1, 30000, device="cuda"), torch.tensor([30000], device="cuda")) is None
+        assert {b for b, _ in runner.graphs} <= {4, 8, 16}
 
     def test_perception_forward(self):
         """A small NeMo perception module should encode dummy audio to embeddings."""
@@ -1460,6 +1916,31 @@ class TestPluginRegistration:
         register()
 
         assert MODELS_CONFIG_MAP["NeMoSpeechLMForConditionalGeneration"] is NeMoSpeechLMForConditionalGenerationConfig
+
+    def test_register_transcribe_architecture(self, monkeypatch):
+        """The dedicated PE-encoder/NemotronH architecture name resolves to the SpeechLM class and config hook."""
+        from transformers import AutoConfig
+        from vllm.model_executor.models.config import MODELS_CONFIG_MAP
+        from vllm.model_executor.models.registry import ModelRegistry
+
+        from nemo.collections.speechlm2.vllm.salm import register
+        from nemo.collections.speechlm2.vllm.salm.config_hook import NeMoSpeechLMForConditionalGenerationConfig
+
+        monkeypatch.setattr(
+            AutoConfig,
+            "from_pretrained",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError()),
+        )
+
+        register()
+
+        speechlm = ModelRegistry.models["NeMoSpeechLMForConditionalGeneration"]
+        transcribe = ModelRegistry.models["Nemotron3_5TranscribeForConditionalGeneration"]
+        assert (transcribe.module_name, transcribe.class_name) == (speechlm.module_name, speechlm.class_name)
+        assert (
+            MODELS_CONFIG_MAP["Nemotron3_5TranscribeForConditionalGeneration"]
+            is NeMoSpeechLMForConditionalGenerationConfig
+        )
 
     @pytest.mark.parametrize(
         ("is_hybrid", "backbone_dtype", "initial_dtype", "expected_dtype"),
@@ -1747,7 +2228,7 @@ class TestMTPPlugin:
         assert "NeMoSpeechLMMTPModel" in ModelRegistry.get_supported_archs()
 
     def test_mtp_patch_extends_mtp_model_types(self, monkeypatch):
-        """register() should add 'nemo_speechlm_mtp' to vLLM's MTPModelTypes Literal."""
+        """register() should add both SpeechLM draft model types to vLLM's MTPModelTypes Literal."""
         from typing import get_args
 
         import vllm.config.speculative as _spec_mod
@@ -1764,6 +2245,7 @@ class TestMTPPlugin:
         register()
 
         assert "nemo_speechlm_mtp" in get_args(_spec_mod.MTPModelTypes)
+        assert "nemotron3_5_transcribe_mtp" in get_args(_spec_mod.MTPModelTypes)
 
     def test_patched_override_routes_nemo_mtp_config(self, monkeypatch):
         """hf_config_override should rewrite nemo_speechlm configs with MTP heads."""
@@ -1793,6 +2275,50 @@ class TestMTPPlugin:
         assert result.architectures == ["NeMoSpeechLMMTPModel"]
         assert result.n_predict == 1
         assert result.num_nextn_predict_layers == 1
+
+    @pytest.mark.parametrize(
+        ("architecture", "mtp_model_type", "mtp_architecture"),
+        [
+            ("NeMoSpeechLMForConditionalGeneration", "nemo_speechlm_mtp", "NeMoSpeechLMMTPModel"),
+            (
+                "Nemotron3_5TranscribeForConditionalGeneration",
+                "nemotron3_5_transcribe_mtp",
+                "Nemotron3_5TranscribeMTPModel",
+            ),
+        ],
+    )
+    def test_patched_override_names_draft_after_target(
+        self, monkeypatch, architecture, mtp_model_type, mtp_architecture
+    ):
+        """The dedicated architecture's MTP draft uses vLLM's native model type and name; both resolve to one class."""
+        from transformers import AutoConfig
+        from vllm.config.speculative import SpeculativeConfig
+        from vllm.model_executor.models.registry import ModelRegistry
+
+        from nemo.collections.speechlm2.vllm.salm import register
+
+        monkeypatch.setattr(
+            AutoConfig,
+            "from_pretrained",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()),
+        )
+        register()
+
+        hf_cfg = self._HFConfigLike(
+            model_type="nemo_speechlm",
+            architectures=[architecture],
+            mtp={
+                "enabled": True,
+                "num_nextn_predict_layers": 2,
+                "use_repeated_layer": True,
+            },
+        )
+        result = SpeculativeConfig.hf_config_override(hf_cfg)
+
+        assert result.model_type == mtp_model_type
+        assert result.architectures == [mtp_architecture]
+        draft = ModelRegistry.models[mtp_architecture]
+        assert (draft.module_name, draft.class_name) == ("nemo.collections.speechlm2.vllm.salm.mtp", "NeMoSpeechLMMTP")
 
     def test_patched_override_is_pickleable_for_spawned_engine(self, monkeypatch):
         """The callable retained on draft ModelConfig must survive multiprocessing spawn."""
@@ -2118,6 +2644,93 @@ class TestMTPPlugin:
         from nemo.collections.speechlm2.vllm.salm.mtp import NeMoSpeechLMMTP
 
         assert supports_multimodal_embeddings(NeMoSpeechLMMTP)
+
+    @pytest.mark.parametrize(
+        "name, unused",
+        [
+            ("llm.mtp.layers.0.mixer.q_proj.weight", False),
+            ("llm.lm_head.weight", False),
+            ("llm.model.embed_tokens.weight", False),
+            ("llm.backbone.embeddings.weight", False),
+            ("llm.model.layers.3.mixer.in_proj.weight", True),
+            ("llm.model.norm.weight", True),
+        ],
+    )
+    def test_mtp_reads_only_draft_tensors_from_the_checkpoint(self, name, unused):
+        """vLLM 0.32 skips checkpoint tensors before reading them; the ``llm.``-prefixed draft head must survive."""
+        from nemo.collections.speechlm2.vllm.salm.mtp import NeMoSpeechLMMTP
+
+        model = object.__new__(NeMoSpeechLMMTP)
+
+        assert model.is_unused_checkpoint_weight(name) is unused
+
+    def test_mtp_defers_remapped_names_to_vllm(self, monkeypatch):
+        """Names already remapped by load_weights go through vLLM's own NemotronHMTP rule."""
+        from vllm.model_executor.models.nemotron_h_mtp import NemotronHMTP
+
+        from nemo.collections.speechlm2.vllm.salm.mtp import NeMoSpeechLMMTP
+
+        monkeypatch.setattr(
+            NemotronHMTP, "is_unused_checkpoint_weight", lambda self, name: name == "unused", raising=False
+        )
+        model = object.__new__(NeMoSpeechLMMTP)
+
+        assert model.is_unused_checkpoint_weight("unused") is True
+        assert model.is_unused_checkpoint_weight("mtp.layers.0.mixer.q_proj.weight") is False
+
+    def test_mtp_keeps_every_remapped_name_on_older_vllm(self, monkeypatch):
+        """vLLM 0.28 has no NemotronHMTP rule; nothing is skipped there."""
+        from vllm.model_executor.models.nemotron_h_mtp import NemotronHMTP
+
+        from nemo.collections.speechlm2.vllm.salm.mtp import NeMoSpeechLMMTP
+
+        monkeypatch.delattr(NemotronHMTP, "is_unused_checkpoint_weight", raising=False)
+        model = object.__new__(NeMoSpeechLMMTP)
+
+        assert model.is_unused_checkpoint_weight("mtp.layers.0.mixer.q_proj.weight") is False
+
+    def test_model_declares_replayssm_support(self):
+        """vLLM refuses --use-replayssm for architectures that do not declare it."""
+        from vllm.model_executor.models import interfaces
+
+        from nemo.collections.speechlm2.vllm.salm.model import NeMoSpeechLMForConditionalGeneration
+
+        assert NeMoSpeechLMForConditionalGeneration.supports_replayssm is True
+        if hasattr(interfaces, "supports_replayssm"):
+            assert interfaces.supports_replayssm(NeMoSpeechLMForConditionalGeneration)
+
+    def test_mtp_warms_every_triton_variant_of_the_eagle_prepare_kernel(self, monkeypatch):
+        """Loading the draft should JIT every num_reqs variant, so no request pays for it later."""
+        import vllm.v1.spec_decode.utils as spec_utils
+
+        from nemo.collections.speechlm2.vllm.salm.mtp import warm_eagle_prepare_inputs_kernel
+
+        launched = []
+
+        class _Kernel:
+            def __getitem__(self, grid):
+                return lambda *args: launched.append((grid, args[-1]))
+
+        monkeypatch.setattr(spec_utils, "eagle_prepare_inputs_padded_kernel", _Kernel())
+        _pretend_cuda_is_available(monkeypatch)
+        warm_eagle_prepare_inputs_kernel(device="cpu")
+
+        # Triton specializes integer arguments on ``== 1`` and ``% 16 == 0``.
+        assert [num_reqs for _, num_reqs in launched] == [1, 2, 16]
+        assert all(grid == (num_reqs,) for grid, num_reqs in launched)
+
+    def test_mtp_kernel_warmup_never_fails_loading(self, monkeypatch):
+        import vllm.v1.spec_decode.utils as spec_utils
+
+        from nemo.collections.speechlm2.vllm.salm.mtp import warm_eagle_prepare_inputs_kernel
+
+        class _Broken:
+            def __getitem__(self, grid):
+                raise RuntimeError("compile failed")
+
+        monkeypatch.setattr(spec_utils, "eagle_prepare_inputs_padded_kernel", _Broken())
+        _pretend_cuda_is_available(monkeypatch)
+        warm_eagle_prepare_inputs_kernel(device="cpu")
 
     def test_embed_input_ids_text_only(self):
         """embed_input_ids with no audio embeddings should return plain text embeddings."""
@@ -2504,6 +3117,77 @@ class TestMTPPlugin:
 
         with pytest.raises(ValueError, match="backbone vocabulary boundary"):
             NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS, image_token_index=42)
+
+
+class _SpecialTokenTokenizer:
+    """Whitespace tokenizer with ``<|audio|>`` as a special token (split out of the text before tokenizing).
+
+    With ``separable=False`` the special token's id depends on the preceding token, so the template ids cannot
+    be expanded.
+    """
+
+    def __init__(self, separable=True):
+        self.separable = separable
+        self.encoded = []
+
+    def get_vocab(self):
+        return {"<|audio|>": 1}
+
+    def add_special_tokens(self, tokens):
+        pass
+
+    def encode(self, prompt, add_special_tokens=True):
+        import re
+
+        self.encoded.append(prompt)
+        ids = [0] if add_special_tokens else []
+        for piece in re.split(r"(<\|audio\|>)", prompt):
+            if piece == "<|audio|>":
+                ids.append(1 if self.separable or ids[-1] != 1 else 2)
+            else:
+                ids.extend(10 + len(w) for w in piece.split())
+        return ids
+
+
+def _pretend_cuda_is_available(monkeypatch):
+    """Let the MTP kernel warmup run its launch loop on a machine without a CUDA device."""
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda device=None: None)
+
+
+def _toy_perception():
+    """Stand-in for the perception module: a framewise 'preprocessor', a 2x subsampling encoder with a
+    length-masked mean (so padding would leak into valid frames if it were not masked), and the online-inference
+    API."""
+    import torch
+    from torch import nn
+
+    class _ToyPerception(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = nn.Linear(10, 8)
+            self.encoder = SimpleNamespace(chunk_feat_len=1024, online_inference=contextlib.nullcontext)
+
+        def maybe_preprocess_audio(self, input_signal, input_signal_length, processed_signal, processed_signal_length):
+            if processed_signal is not None:
+                return processed_signal, processed_signal_length
+            b, n = input_signal.shape
+            return input_signal[:, : n // 10 * 10].view(b, -1, 10).transpose(1, 2), input_signal_length // 10
+
+        def forward(
+            self, input_signal=None, input_signal_length=None, processed_signal=None, processed_signal_length=None
+        ):
+            x, x_len = self.maybe_preprocess_audio(
+                input_signal, input_signal_length, processed_signal, processed_signal_length
+            )
+            mask = (torch.arange(x.shape[-1], device=x.device) < x_len[:, None]).unsqueeze(1)
+            mean = (x * mask).sum(-1, keepdim=True) / x_len[:, None, None]
+            h = self.proj(((x - mean) * mask).transpose(1, 2))
+            return h[:, ::2], (x_len + 1) // 2
+
+    return _ToyPerception()
 
 
 class _FakeTokenizer:

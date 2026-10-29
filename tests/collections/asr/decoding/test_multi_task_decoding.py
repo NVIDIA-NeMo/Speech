@@ -15,10 +15,11 @@
 
 import functools
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 import torch
+from omegaconf import OmegaConf
 
 from nemo.collections.asr.modules.transformer.transformer import TransformerDecoderNM, TransformerEncoderNM
 from nemo.collections.asr.modules.transformer.transformer_generators import (
@@ -38,6 +39,7 @@ from nemo.collections.asr.parts.submodules.multitask_greedy_decoding import (
 )
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.submodules.token_classifier import TokenClassifier
+from nemo.utils import logging
 
 
 @pytest.fixture()
@@ -702,3 +704,37 @@ def test_transformer_aed_greedy_infer_trims_xatt_scores(prompted_inputs, decoder
     # Check that the expected trimming has indeed been done.
     for layer_scores in hyp.xatt_scores:
         assert layer_scores.shape[1] == total_expected_len
+
+
+@pytest.mark.parametrize("len_pen", [0.0, 0.7, 1.0])
+def test_multitask_decoding_beam_len_pen_reaches_the_generator(decoder_nm, nnet, tokenizer, len_pen):
+    # the beam strategy reads `beam.len_pen`, the field of AEDBeamInferConfig
+    *_, classifier = nnet
+    cfg = MultiTaskDecodingConfig(strategy="beam", beam=AEDBeamInferConfig(beam_size=2, len_pen=len_pen))
+    decoding = MultiTaskDecoding(cfg, decoder_nm, classifier, tokenizer)
+    assert decoding.decoding.beam_search.len_pen == len_pen
+
+
+def test_multitask_decoding_beam_len_pen_from_dict_config(decoder_nm, nnet, tokenizer):
+    *_, classifier = nnet
+    cfg = OmegaConf.create({"strategy": "beam", "beam": {"beam_size": 2, "len_pen": 0.5}})
+    decoding = MultiTaskDecoding(cfg, decoder_nm, classifier, tokenizer)
+    assert decoding.decoding.beam_search.len_pen == 0.5
+
+
+def test_multitask_decoding_beam_length_penalty_alias(decoder_nm, nnet, tokenizer):
+    # configs that worked around the old lookup with `length_penalty` keep their penalty, with a removal notice
+    *_, classifier = nnet
+    cfg = OmegaConf.create({"strategy": "beam", "beam": {"beam_size": 2, "length_penalty": 0.3}})
+    with patch.object(logging, "warning") as warning:
+        decoding = MultiTaskDecoding(cfg, decoder_nm, classifier, tokenizer)
+    assert decoding.decoding.beam_search.len_pen == 0.3
+    assert "`beam.length_penalty` is deprecated and will be removed in the next release" in warning.call_args.args[0]
+
+
+def test_multitask_decoding_beam_len_pen_default_is_zero(decoder_nm, nnet, tokenizer):
+    # a config without the field decodes without a length penalty, as before the lookup read `len_pen`
+    *_, classifier = nnet
+    cfg = MultiTaskDecodingConfig(strategy="beam", beam=AEDBeamInferConfig(beam_size=2))
+    decoding = MultiTaskDecoding(cfg, decoder_nm, classifier, tokenizer)
+    assert decoding.decoding.beam_search.len_pen == 0.0

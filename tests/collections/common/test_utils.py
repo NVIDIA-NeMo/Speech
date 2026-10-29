@@ -22,13 +22,14 @@ from unittest import mock
 import numpy as np
 import pytest
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path, is_tarred_dataset
 from nemo.collections.common.parts.utils import (
     SquaredReLU,
     activation_registry,
     block_binds,
+    build_activation,
     build_module,
     flatten,
     mask_sequence_tensor,
@@ -398,9 +399,40 @@ class TestBuildModule:
         assert build_module(explicit, normalized_shape=4).eps == 1e-3
 
     @pytest.mark.unit
+    def test_section_keeps_its_root_for_interpolations(self):
+        cfg = OmegaConf.create(
+            {"width": 4, "block": {"_target_": "torch.nn.LayerNorm", "normalized_shape": ["${width}"]}}
+        )
+        assert build_module(cfg.block).normalized_shape == (4,)
+        assert "_partial_" not in cfg.block
+        scalar = OmegaConf.create(
+            {"width": 4, "block": {"_target_": "torch.nn.LayerNorm", "normalized_shape": "${width}"}}
+        )
+        assert build_module(scalar.block).normalized_shape == (4,)
+
+    @pytest.mark.unit
     def test_section_targets_are_validated(self):
         with pytest.raises(Exception, match="unsafe target"):
             build_module({"_target_": "os.system"}, command="true")
+
+    @pytest.mark.unit
+    def test_positional_arguments_take_precedence(self):
+        block = functools.partial(torch.nn.LayerNorm, 4)
+        assert build_module(block, normalized_shape=8).normalized_shape == (4,)
+        norm = build_module(block, eps=1e-3)
+        assert norm.normalized_shape == (4,) and norm.eps == 1e-3
+        section = {"_target_": "torch.nn.LayerNorm", "_args_": [4]}
+        assert build_module(section, normalized_shape=8).normalized_shape == (4,)
+
+    @pytest.mark.unit
+    def test_variadic_positional_arguments_occupy_no_name(self):
+        def factory(*shape: int, eps: float = 1e-5) -> torch.nn.LayerNorm:
+            return torch.nn.LayerNorm(shape, eps=eps)
+
+        block = functools.partial(factory, 2, 3)
+        norm = build_module(block, eps=1e-3)
+        assert norm.normalized_shape == (2, 3) and norm.eps == 1e-3
+        assert not block_binds(block, "shape") and not block_binds(block, "eps")
 
     @pytest.mark.unit
     def test_block_binds(self):
@@ -408,9 +440,21 @@ class TestBuildModule:
         assert not block_binds(functools.partial(torch.nn.LayerNorm), "eps")
         assert block_binds({"_target_": "torch.nn.LayerNorm", "eps": 1e-6}, "eps")
         assert not block_binds(torch.nn.LayerNorm, "eps") and not block_binds(None, "eps")
+        positional = functools.partial(torch.nn.LayerNorm, 4)
+        assert block_binds(positional, "normalized_shape") and not block_binds(positional, "eps")
+        section = {"_target_": "torch.nn.LayerNorm", "_args_": [4]}
+        assert block_binds(section, "normalized_shape") and not block_binds(section, "eps")
 
     @pytest.mark.unit
     def test_squared_relu(self):
         x = torch.tensor([-2.0, 0.0, 3.0])
         torch.testing.assert_close(SquaredReLU()(x), torch.tensor([0.0, 0.0, 9.0]))
         assert activation_registry["squared_relu"] is SquaredReLU
+
+    @pytest.mark.unit
+    def test_build_activation(self):
+        assert isinstance(build_activation("gelu"), torch.nn.GELU)
+        module = torch.nn.Tanh()
+        assert build_activation(module) is module
+        with pytest.raises(ValueError, match="unknown activation 'tanh'"):
+            build_activation("tanh")

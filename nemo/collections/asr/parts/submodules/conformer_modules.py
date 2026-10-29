@@ -28,10 +28,99 @@ from nemo.collections.asr.parts.submodules.multi_head_attention import (
     RoPEMultiHeadAttention,
 )
 from nemo.collections.asr.parts.utils.activations import Swish
-from nemo.collections.common.parts.utils import activation_registry
+from nemo.collections.common.parts.utils import ModuleBlock, activation_registry, block_binds, build_module
 from nemo.core.classes.mixins import AccessMixin
 
-__all__ = ['ConformerConvolution', 'ConformerFeedForward', 'ConformerLayer']
+__all__ = ['ConformerConvolution', 'ConformerFeedForward', 'ConformerLayer', 'build_self_attention']
+
+
+def build_self_attention(
+    self_attn: ModuleBlock | None,
+    self_attention_model: str,
+    *,
+    n_heads: int,
+    d_model: int,
+    dropout_att: float,
+    att_context_size,
+    pos_bias_u=None,
+    pos_bias_v=None,
+    use_bias: bool = True,
+    use_pytorch_sdpa: bool = False,
+    use_pytorch_sdpa_backends=None,
+    global_tokens: int = 0,
+    global_tokens_spacing: int = 1,
+    global_attn_separate: bool = False,
+    pos_enc=None,
+) -> nn.Module:
+    """Build the self-attention module of a Conformer layer.
+
+    `ConformerLayer` builds its attention here, and `ConformerEncoder.change_attention_model` rebuilds it here,
+    so a `self_attn` block keeps its settings through both.
+
+    Args:
+        self_attn: the attention block (a class, a callable or a Hydra partial),
+            default the attention class of `self_attention_model`;
+            the block's own arguments win over the defaults below
+        self_attention_model: 'rel_pos', 'rel_pos_local_attn', 'abs_pos' or 'rope',
+            which picks the default class and the arguments it receives
+        n_heads: number of attention heads
+        d_model: size of the features
+        dropout_att: dropout of the attention weights
+        att_context_size: left and right context; the left size bounds the cache,
+            and local attention receives the whole context
+        pos_bias_u: positional bias U of the relative-position models, shared across layers when given
+        pos_bias_v: positional bias V, likewise
+        use_bias: bias in the projections
+        use_pytorch_sdpa: PyTorch scaled dot-product attention; local attention does not support it and is built without
+        use_pytorch_sdpa_backends: its backends
+        global_tokens: global tokens of local attention
+        global_tokens_spacing: their spacing
+        global_attn_separate: separate projections for the global tokens
+        pos_enc: the rotary encoding that 'rope' attention needs
+
+    Returns:
+        The attention module.
+    """
+    attention_defaults = dict(
+        n_head=n_heads,
+        n_feat=d_model,
+        dropout_rate=dropout_att,
+        max_cache_len=att_context_size[0],
+        use_bias=use_bias,
+    )
+    sdpa_defaults = dict(use_pytorch_sdpa=use_pytorch_sdpa, use_pytorch_sdpa_backends=use_pytorch_sdpa_backends or [])
+
+    if self_attention_model == 'rel_pos':
+        return build_module(
+            self_attn or RelPositionMultiHeadAttention,
+            pos_bias_u=pos_bias_u,
+            pos_bias_v=pos_bias_v,
+            **attention_defaults,
+            **sdpa_defaults,
+        )
+    if self_attention_model == 'rel_pos_local_attn':
+        return build_module(
+            self_attn or RelPositionMultiHeadAttentionLongformer,
+            pos_bias_u=pos_bias_u,
+            pos_bias_v=pos_bias_v,
+            att_context_size=att_context_size,
+            global_tokens=global_tokens,
+            global_tokens_spacing=global_tokens_spacing,
+            global_attn_separate=global_attn_separate,
+            **attention_defaults,
+        )
+    if self_attention_model == 'abs_pos':
+        return build_module(self_attn or MultiHeadAttention, **attention_defaults, **sdpa_defaults)
+    if self_attention_model == 'rope':
+        if pos_enc is None:
+            raise ValueError("'rope' attention requires a RotaryPositionalEncoding via pos_enc.")
+        return build_module(
+            self_attn or RoPEMultiHeadAttention, pos_enc=pos_enc, **attention_defaults, **sdpa_defaults
+        )
+    raise ValueError(
+        f"'{self_attention_model}' is not not a valid value for 'self_attention_model', "
+        f"valid values can be from ['rel_pos', 'rel_pos_local_attn', 'abs_pos', 'rope']"
+    )
 
 
 class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
@@ -60,6 +149,12 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         dropout_att (float): dropout probabilities for attention distributions
         use_bias (bool): Apply bias to all Linear and Conv1d layers from each ConformerLayer to improve activation flow and stabilize training of huge models.
             Defaults to True.
+        feed_forward: block of both feed-forward modules, default `ConformerFeedForward`;
+            a block is a class, a callable or a Hydra partial (``_target_`` with ``_partial_: true``),
+            built from the arguments the parent supplies, so a block section only names what deviates
+        conv: block of the convolution module, default `ConformerConvolution`
+        self_attn: block of the self-attention, default the attention class of `self_attention_model`
+        norm: block of every layer norm, default `torch.nn.LayerNorm`
     """
 
     def __init__(
@@ -83,6 +178,10 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         use_pytorch_sdpa=False,
         use_pytorch_sdpa_backends=None,
         pos_enc=None,
+        feed_forward: ModuleBlock | None = None,
+        conv: ModuleBlock | None = None,
+        self_attn: ModuleBlock | None = None,
+        norm: ModuleBlock | None = None,
     ):
         super(ConformerLayer, self).__init__()
 
@@ -94,85 +193,53 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         self.n_heads = n_heads
         self.fc_factor = 0.5
 
+        norm = norm or LayerNorm
+        feed_forward = feed_forward or ConformerFeedForward
+
         # first feed forward module
-        self.norm_feed_forward1 = LayerNorm(d_model)
-        self.feed_forward1 = ConformerFeedForward(d_model=d_model, d_ff=d_ff, dropout=dropout, use_bias=use_bias)
+        self.norm_feed_forward1 = build_module(norm, normalized_shape=d_model)
+        self.feed_forward1 = build_module(feed_forward, d_model=d_model, d_ff=d_ff, dropout=dropout, use_bias=use_bias)
 
         # convolution module
-        self.norm_conv = LayerNorm(d_model)
-        self.conv = ConformerConvolution(
+        self.norm_conv = build_module(norm, normalized_shape=d_model)
+        conv_defaults = dict(
             d_model=d_model,
             kernel_size=conv_kernel_size,
             norm_type=conv_norm_type,
             conv_context_size=conv_context_size,
             use_bias=use_bias,
         )
+        if block_binds(conv, 'kernel_size') and not block_binds(conv, 'conv_context_size'):
+            # a block with its own kernel derives its own padding
+            conv_defaults['conv_context_size'] = None
+        self.conv = build_module(conv or ConformerConvolution, **conv_defaults)
 
         # multi-headed self-attention module
-        self.norm_self_att = LayerNorm(d_model)
-        MHA_max_cache_len = att_context_size[0]
-
-        if self_attention_model == 'rel_pos':
-            self.self_attn = RelPositionMultiHeadAttention(
-                n_head=n_heads,
-                n_feat=d_model,
-                dropout_rate=dropout_att,
-                pos_bias_u=pos_bias_u,
-                pos_bias_v=pos_bias_v,
-                max_cache_len=MHA_max_cache_len,
-                use_bias=use_bias,
-                use_pytorch_sdpa=self.use_pytorch_sdpa,
-                use_pytorch_sdpa_backends=self.use_pytorch_sdpa_backends,
-            )
-        elif self_attention_model == 'rel_pos_local_attn':
-            self.self_attn = RelPositionMultiHeadAttentionLongformer(
-                n_head=n_heads,
-                n_feat=d_model,
-                dropout_rate=dropout_att,
-                pos_bias_u=pos_bias_u,
-                pos_bias_v=pos_bias_v,
-                max_cache_len=MHA_max_cache_len,
-                att_context_size=att_context_size,
-                global_tokens=global_tokens,
-                global_tokens_spacing=global_tokens_spacing,
-                global_attn_separate=global_attn_separate,
-                use_bias=use_bias,
-            )
-        elif self_attention_model == 'abs_pos':
-            self.self_attn = MultiHeadAttention(
-                n_head=n_heads,
-                n_feat=d_model,
-                dropout_rate=dropout_att,
-                max_cache_len=MHA_max_cache_len,
-                use_bias=use_bias,
-                use_pytorch_sdpa=self.use_pytorch_sdpa,
-                use_pytorch_sdpa_backends=self.use_pytorch_sdpa_backends,
-            )
-        elif self_attention_model == 'rope':
-            if pos_enc is None:
-                raise ValueError("'rope' attention requires a RotaryPositionalEncoding via pos_enc.")
-            self.self_attn = RoPEMultiHeadAttention(
-                n_head=n_heads,
-                n_feat=d_model,
-                dropout_rate=dropout_att,
-                pos_enc=pos_enc,
-                max_cache_len=MHA_max_cache_len,
-                use_bias=use_bias,
-                use_pytorch_sdpa=self.use_pytorch_sdpa,
-                use_pytorch_sdpa_backends=self.use_pytorch_sdpa_backends,
-            )
-        else:
-            raise ValueError(
-                f"'{self_attention_model}' is not not a valid value for 'self_attention_model', "
-                f"valid values can be from ['rel_pos', 'rel_pos_local_attn', 'abs_pos', 'rope']"
-            )
+        self.norm_self_att = build_module(norm, normalized_shape=d_model)
+        self.self_attn = build_self_attention(
+            self_attn,
+            self_attention_model,
+            n_heads=n_heads,
+            d_model=d_model,
+            dropout_att=dropout_att,
+            att_context_size=att_context_size,
+            pos_bias_u=pos_bias_u,
+            pos_bias_v=pos_bias_v,
+            use_bias=use_bias,
+            use_pytorch_sdpa=self.use_pytorch_sdpa,
+            use_pytorch_sdpa_backends=self.use_pytorch_sdpa_backends,
+            global_tokens=global_tokens,
+            global_tokens_spacing=global_tokens_spacing,
+            global_attn_separate=global_attn_separate,
+            pos_enc=pos_enc,
+        )
 
         # second feed forward module
-        self.norm_feed_forward2 = LayerNorm(d_model)
-        self.feed_forward2 = ConformerFeedForward(d_model=d_model, d_ff=d_ff, dropout=dropout, use_bias=use_bias)
+        self.norm_feed_forward2 = build_module(norm, normalized_shape=d_model)
+        self.feed_forward2 = build_module(feed_forward, d_model=d_model, d_ff=d_ff, dropout=dropout, use_bias=use_bias)
 
         self.dropout = nn.Dropout(dropout)
-        self.norm_out = LayerNorm(d_model)
+        self.norm_out = build_module(norm, normalized_shape=d_model)
 
     def forward(self, x, att_mask=None, pos_emb=None, pad_mask=None, cache_last_channel=None, cache_last_time=None):
         """
@@ -256,12 +323,15 @@ class ConformerConvolution(nn.Module):
     """The convolution module for the Conformer model.
     Args:
         d_model (int): hidden dimension
-        kernel_size (int): kernel size for depthwise convolution
+        kernel_size (int): kernel size for depthwise convolution;
+            an even kernel pads the sequence with (kernel_size - 1) // 2 frames on the left
+            and kernel_size // 2 frames on the right, unless conv_context_size says otherwise
         pointwise_activation (str): name of the activation function to be used for the pointwise conv.
             Note that Conformer uses a special key `glu_` which is treated as the original default from
             the paper.
         use_bias (bool): Use bias in all Linear and Conv1d layers improve activation flow and stabilize training of huge models.
             Defaults to True
+        norm_eps: epsilon of the normalization layer
     """
 
     def __init__(
@@ -272,16 +342,28 @@ class ConformerConvolution(nn.Module):
         conv_context_size=None,
         pointwise_activation='glu_',
         use_bias=True,
+        norm_eps: float = 1e-5,
     ):
         super(ConformerConvolution, self).__init__()
-        assert (kernel_size - 1) % 2 == 0
         self.d_model = d_model
         self.kernel_size = kernel_size
         self.norm_type = norm_type
         self.use_bias = use_bias
 
         if conv_context_size is None:
-            conv_context_size = (kernel_size - 1) // 2
+            conv_context_size = [(kernel_size - 1) // 2, kernel_size // 2]
+        elif conv_context_size == 'causal':
+            conv_context_size = [kernel_size - 1, 0]
+        elif isinstance(conv_context_size, int):
+            conv_context_size = [conv_context_size, conv_context_size]
+        conv_context_size = list(conv_context_size)
+        if len(conv_context_size) != 2 or conv_context_size[0] + conv_context_size[1] + 1 != kernel_size:
+            raise ValueError(
+                f"Invalid conv_context_size {conv_context_size} for kernel_size {kernel_size}: "
+                "the left and right context plus one must equal the kernel size."
+            )
+        # the encoder reads the context of its layers' convolution for the streaming caches
+        self.conv_context_size = conv_context_size
 
         if pointwise_activation in activation_registry:
             self.pointwise_activation = activation_registry[pointwise_activation]()
@@ -313,16 +395,16 @@ class ConformerConvolution(nn.Module):
         )
 
         if norm_type == 'batch_norm':
-            self.batch_norm = nn.BatchNorm1d(dw_conv_input_dim)
+            self.batch_norm = nn.BatchNorm1d(dw_conv_input_dim, eps=norm_eps)
         elif norm_type == 'instance_norm':
-            self.batch_norm = nn.InstanceNorm1d(dw_conv_input_dim)
+            self.batch_norm = nn.InstanceNorm1d(dw_conv_input_dim, eps=norm_eps)
         elif norm_type == 'layer_norm':
-            self.batch_norm = nn.LayerNorm(dw_conv_input_dim)
+            self.batch_norm = nn.LayerNorm(dw_conv_input_dim, eps=norm_eps)
         elif norm_type == 'fused_batch_norm':
             self.batch_norm = FusedBatchNorm1d(dw_conv_input_dim)
         elif norm_type.startswith('group_norm'):
             num_groups = int(norm_type.replace("group_norm", ""))
-            self.batch_norm = nn.GroupNorm(num_groups=num_groups, num_channels=d_model)
+            self.batch_norm = nn.GroupNorm(num_groups=num_groups, num_channels=d_model, eps=norm_eps)
         else:
             raise ValueError(f"conv_norm_type={norm_type} is not valid!")
 
@@ -390,17 +472,25 @@ class ConformerConvolution(nn.Module):
 
 
 class ConformerFeedForward(nn.Module):
-    """
-    feed-forward module of Conformer model.
-    use_bias (bool): Apply bias to all Linear and Conv1d layers improve activation flow and stabilize training of huge models.
+    """Feed-forward module of the Conformer model.
+
+    Args:
+        d_model: input and output dimension
+        d_ff: hidden dimension
+        dropout: dropout probability after the activation
+        activation: the activation module, or its name in the activation registry
+            (`swish`, `relu`, `gelu`, `squared_relu`, ...); default `Swish`
+        use_bias: bias in both linear layers
     """
 
-    def __init__(self, d_model, d_ff, dropout, activation=Swish(), use_bias=True):
+    def __init__(self, d_model, d_ff, dropout, activation: nn.Module | str = Swish(), use_bias=True):
         super(ConformerFeedForward, self).__init__()
         self.d_model = d_model
         self.d_ff = d_ff
         self.use_bias = use_bias
         self.linear1 = nn.Linear(d_model, d_ff, bias=self.use_bias)
+        if isinstance(activation, str):
+            activation = activation_registry[activation]()
         self.activation = activation
         self.dropout = nn.Dropout(p=dropout)
         self.linear2 = nn.Linear(d_ff, d_model, bias=self.use_bias)

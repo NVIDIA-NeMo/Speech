@@ -320,7 +320,7 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
 class AEDBeamInferConfig:
     beam_size: int = 1
     search_type: str = 'default'
-    len_pen: float = 1.0
+    len_pen: float = 0.0  # 0.0 keeps the behavior of configs without the field, which decoded without a penalty
     max_generation_delta: int = -1  # -1 means up to the max length of the decoder
     return_best_hypothesis: bool = True
     preserve_alignments: bool = False

@@ -358,6 +358,7 @@ class TestBuildFP8Encoder:
         nn.Module.__init__(model)
         model.perception = perception
         model._uses_pe_encoder = True  # turns on the exact-architecture check
+        model._perception_weights_initialized = False
 
         loaded = model._load_perception_weights(state)
 

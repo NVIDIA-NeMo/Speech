@@ -27,6 +27,7 @@ from nemo.collections.asr.modules.transformer.transformer import TransformerDeco
 from nemo.collections.asr.modules.transformer.transformer_decoders import TransformerDecoderKeyValueCache
 from nemo.collections.asr.modules.transformer.transformer_modules import (
     FixedPositionalEncoding,
+    GatedPositionWiseFF,
     MultiHeadAttention,
     PositionWiseFF,
     RMSNorm,
@@ -53,7 +54,7 @@ def _composed_decoder(**overrides):
         ),
         norm=functools.partial(RMSNorm, eps=1e-6),
         self_attn=functools.partial(MultiHeadAttention, use_bias=False, rotary_base=10000.0),
-        feed_forward=functools.partial(PositionWiseFF, hidden_act="swiglu", use_bias=False),
+        feed_forward=functools.partial(GatedPositionWiseFF, hidden_act="swish"),
     )
     options.update(overrides)
     return TransformerDecoderNM(**options).eval()
@@ -120,9 +121,9 @@ class TestTransformerDecoderBlockComposition:
                     "rotary_base": 10000.0,
                 },
                 "feed_forward": {
-                    "_target_": "nemo.collections.asr.modules.transformer.transformer_modules.PositionWiseFF",
+                    "_target_": "nemo.collections.asr.modules.transformer.transformer_modules.GatedPositionWiseFF",
                     "_partial_": True,
-                    "hidden_act": "swiglu",
+                    "hidden_act": "swish",
                 },
             }
         )
@@ -130,9 +131,9 @@ class TestTransformerDecoderBlockComposition:
         block = decoder.decoder.layers[0]
         assert isinstance(block.layer_norm_1, RMSNorm) and block.layer_norm_1.eps == 1e-6
         assert block.first_sub_layer.query_net.bias is None and block.first_sub_layer.rotary_pos_enc is not None
-        assert (
-            block.third_sub_layer.dense_in.weight.shape == (48, 16) and block.third_sub_layer.dense_in.bias is not None
-        )
+        assert type(block.third_sub_layer) is GatedPositionWiseFF
+        assert block.third_sub_layer.dense_in.weight.shape == (48, 16) and block.third_sub_layer.dense_in.bias is None
+        assert isinstance(block.third_sub_layer.act_fn, torch.nn.SiLU)
         assert isinstance(decoder.embedding.layer_norm, torch.nn.LayerNorm)
 
     @pytest.mark.unit
@@ -145,13 +146,81 @@ class TestTransformerDecoderBlockComposition:
         assert list(norm.state_dict()) == ["weight"]
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    def test_rms_norm_half_precision(self, dtype):
+        # the mean square must not overflow: 1000 squared is outside the float16 range
+        norm = RMSNorm(8, eps=1e-6).to(dtype)
+        large = torch.full((2, 8), 1000.0, dtype=dtype)
+        torch.testing.assert_close(norm(large), torch.ones_like(large))
+        # forward and backward against the float32 computation; mixed signs, a zero row, a non-unit weight
+        torch.manual_seed(0)
+        x32 = torch.randn(5, 8) * 300.0
+        x32[2] = 0.0
+        w32 = torch.randn(8)
+        norm.weight.data = w32.to(dtype)
+        x = x32.to(dtype).requires_grad_()
+        out = norm(x)
+        assert out.dtype == dtype
+        out.sum().backward()
+        reference = RMSNorm(8, eps=1e-6)
+        reference.weight.data = w32.clone()
+        x_ref = x32.clone().requires_grad_()
+        expected = reference(x_ref)
+        expected.sum().backward()
+        torch.testing.assert_close(out.float(), expected, rtol=2e-2, atol=5e-2)
+        torch.testing.assert_close(x.grad.float(), x_ref.grad, rtol=2e-2, atol=5e-2)
+        torch.testing.assert_close(norm.weight.grad.float(), reference.weight.grad, rtol=2e-2, atol=5e-2)
+
+    @pytest.mark.unit
+    def test_export_covers_rotary_positions_beyond_the_example(self, tmp_path):
+        # the exported graph holds the rotary table as a constant,
+        # so it must cover every position the decoder supports, not only the example's key length
+        decoder = _composed_decoder(max_sequence_length=8)
+        for parameter in decoder.parameters():
+            parameter.data.normal_(0, 0.3)
+
+        def example(length):
+            torch.manual_seed(length)
+            input_ids = torch.randint(0, 11, (1, length))
+            decoder_mask = torch.ones(1, length, dtype=torch.int64)
+            encoder_states = torch.randn(1, 9, 16)
+            encoder_mask = torch.ones(1, 9, dtype=torch.int64)
+            decoder_mems = torch.randn(1, decoder.num_states, length - 1, 16)
+            return input_ids, decoder_mask, encoder_states, encoder_mask, decoder_mems
+
+        path = str(tmp_path / "decoder.ts")
+        decoder.export(path, input_example=example(4), check_trace=False)
+        exported = torch.jit.load(path)
+        for length in (4, 5, 8):
+            input_ids, decoder_mask, encoder_states, encoder_mask, decoder_mems = example(length)
+            with torch.no_grad():
+                # export switched the module to returning the states of every layer, as the graph does
+                expected = decoder(
+                    input_ids=input_ids,
+                    decoder_mask=decoder_mask,
+                    encoder_embeddings=encoder_states,
+                    encoder_mask=encoder_mask,
+                    decoder_mems=decoder_mems,
+                )
+            torch.testing.assert_close(
+                exported(input_ids, decoder_mask, encoder_states, encoder_mask, decoder_mems), expected
+            )
+
+    @pytest.mark.unit
     def test_gated_feed_forward(self):
         torch.manual_seed(0)
-        ff = PositionWiseFF(16, 24, hidden_act="swiglu", use_bias=False)
+        ff = GatedPositionWiseFF(16, 24)
+        assert ff.dense_in.bias is None and ff.dense_in.weight.shape == (48, 16)
         x = torch.randn(3, 16)
-        gate, value = ff.dense_in(x).chunk(2, dim=-1)
-        torch.testing.assert_close(ff(x), ff.dense_out(torch.nn.functional.silu(gate) * value))
-        with pytest.raises(ValueError, match="hidden_act"):
+        activated, gate = ff.dense_in(x).chunk(2, dim=-1)
+        torch.testing.assert_close(ff(x), ff.dense_out(torch.nn.functional.silu(activated) * gate))
+        # both activations are free: GEGLU-style first half with a gated second half, from registry names
+        geglu = GatedPositionWiseFF(16, 24, hidden_act="gelu", gate_act="relu", use_bias=True)
+        assert isinstance(geglu.act_fn, torch.nn.GELU) and isinstance(geglu.gate_act_fn, torch.nn.ReLU)
+        assert geglu.dense_in.bias is not None
+        # the plain network takes its activation from the registry as well
+        assert isinstance(PositionWiseFF(16, 24, hidden_act="gelu").act_fn, torch.nn.GELU)
+        with pytest.raises(ValueError, match="activation"):
             PositionWiseFF(16, 24, hidden_act="tanh")
 
     @pytest.mark.unit
@@ -172,7 +241,9 @@ class TestTransformerDecoderBlockComposition:
         block = decoder.decoder.layers[0]
         assert type(block.layer_norm_1) is torch.nn.LayerNorm and block.layer_norm_1.eps == 1e-5
         assert block.first_sub_layer.query_net.bias is not None and block.first_sub_layer.rotary_pos_enc is None
-        assert block.third_sub_layer.dense_in.weight.shape == (24, 16) and not block.third_sub_layer.gated
+        assert type(block.third_sub_layer) is PositionWiseFF
+        assert isinstance(block.third_sub_layer.act_fn, torch.nn.ReLU)
+        assert block.third_sub_layer.dense_in.weight.shape == (24, 16)
         assert (
             isinstance(decoder.embedding.layer_norm, torch.nn.LayerNorm) and decoder.embedding.embedding_scale is None
         )
@@ -198,7 +269,7 @@ def _cache_decoder(rotary=True, pre_ln=True, seed=0, **overrides):
                 use_layer_norm=False,
             ),
             norm=functools.partial(RMSNorm, eps=1e-6),
-            feed_forward=functools.partial(PositionWiseFF, hidden_act="swiglu", use_bias=False),
+            feed_forward=functools.partial(GatedPositionWiseFF, hidden_act="swish"),
         )
     blocks.update(overrides)
     decoder = TransformerDecoderNM(

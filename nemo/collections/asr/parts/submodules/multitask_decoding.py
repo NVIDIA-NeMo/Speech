@@ -123,7 +123,7 @@ class AbstractMultiTaskDecoding(ConfidenceMixin):
                     If beam_size == 1, will perform cached greedy search. This might be slightly different
                     results compared to the greedy search above.
 
-                length_penalty: float, length penalty for beam search decoding. Must be >= 0.0.
+                len_pen: float, length penalty for beam search decoding. Must be >= 0.0.
 
                 max_generation_delta: int,in case of encoder-decoder generation (e.g. NMT),
                     forbids generated sequences to be longer than the length of source sequences plus max_generation_delta
@@ -199,6 +199,15 @@ class AbstractMultiTaskDecoding(ConfidenceMixin):
             )
 
         elif strategy == 'beam':
+            len_pen = self.cfg.beam.get('len_pen', 0.0)
+            if 'length_penalty' in self.cfg.beam:
+                # the lookup used this name before it read the config field `len_pen`; keep such configs working
+                # TODO(albertz): remove the `length_penalty` alias in the next release (NeMo 3.2)
+                logging.warning(
+                    "`beam.length_penalty` is deprecated and will be removed in the next release. "
+                    "Please use `beam.len_pen` instead."
+                )
+                len_pen = self.cfg.beam.length_penalty
 
             self.decoding = TransformerAEDBeamInfer(
                 transformer_decoder=self.transformer_decoder,
@@ -206,7 +215,7 @@ class AbstractMultiTaskDecoding(ConfidenceMixin):
                 tokenizer=self.tokenizer,
                 search_type=self.cfg.beam.get('search_type', 'default'),
                 beam_size=self.cfg.beam.beam_size,
-                length_penalty=self.cfg.beam.get('length_penalty', 0.0),
+                length_penalty=len_pen,
                 max_generation_delta=self.cfg.beam.get('max_generation_delta', -1),
                 return_best_hypothesis=self.cfg.beam.get('return_best_hypothesis', True),
                 preserve_alignments=self.preserve_alignments,
@@ -499,7 +508,7 @@ class MultiTaskDecoding(AbstractMultiTaskDecoding):
                     If beam_size == 1, will perform cached greedy search. This might be slightly different
                     results compared to the greedy search above.
 
-                length_penalty: float, length penalty for beam search decoding. Must be >= 0.0.
+                len_pen: float, length penalty for beam search decoding. Must be >= 0.0.
 
                 max_generation_delta: int, maximum number of additional target tokens to generate
 

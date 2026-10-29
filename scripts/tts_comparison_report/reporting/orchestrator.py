@@ -455,7 +455,7 @@ class Orchestrator:
             bucket_candidate=bucket_candidate,
             box_plots_cfg=box_plots_cfg,
         )
-        self._log_info("\nUploading images to S3:")
+        self._log_info("\nWriting image artifacts:")
         uploaded_box_plots_info = self._upload_boxplots(
             eval_artifacts=eval_artifacts,
             s3_prefix=s3_prefix,
@@ -472,7 +472,7 @@ class Orchestrator:
                 used_benchmarks=audio_report_benchmarks,
                 samples_per_benchmark=samples_per_benchmark,
             )
-            self._log_info("\nUploading audio files to S3:")
+            self._log_info("\nWriting audio artifacts:")
             uploaded_audio_info = self._upload_audio(
                 used_benchmarks=audio_report_benchmarks,
                 audio_pairs=audio_pairs,
@@ -508,6 +508,7 @@ class Orchestrator:
             s3_prefix=s3_prefix,
             report_name="eval_report",
         )
-        self._log_info(f"\nUploaded artifacts to bucket '{self.s3_client.cfg.bucket}' with prefix '{s3_prefix}'.")
+        destination = getattr(getattr(self.s3_client, "cfg", None), "bucket", "local output")
+        self._log_info(f"\nWrote artifacts to '{destination}' with prefix '{s3_prefix}'.")
 
         return eval_report_url, audio_report_url

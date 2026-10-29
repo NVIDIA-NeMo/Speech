@@ -39,7 +39,7 @@ from nemo.collections.asr.parts.submodules.multi_head_attention import (
 )
 from nemo.collections.asr.parts.submodules.subsampling import FeatureStacking, StackingSubsampling
 from nemo.core.classes.exportable import Exportable
-from nemo.core.classes.module import NeuralModule, freeze, unfreeze
+from nemo.core.classes.module import freeze, unfreeze
 from nemo.core.neural_types import AcousticEncodedRepresentation, LengthsType, NeuralType, SpectrogramType
 from nemo.utils import logging
 from nemo.utils.decorators import experimental
@@ -785,7 +785,7 @@ class TransformerBlock(nn.Module):
 
 
 @experimental
-class TransformerEncoder(NeuralModule, Exportable):
+class TransformerEncoder(nn.Module, Exportable):
     """Pre-norm Transformer encoder for ASR.
 
     Architecture: PreEncode -> PositionalEncoding -> LayerNorm -> N x TransformerBlock -> FinalNorm
@@ -1059,8 +1059,12 @@ class TransformerEncoder(NeuralModule, Exportable):
         For positional encodings, call set_max_audio_length before export to provision the largest supported sequence.
         This exports offline inference without streaming caches or pre-encoder bypass.
         """
+        # Grow the positional cache locally for the example call.
+        # update_max_seq_length would all_reduce,
+        # and export often runs on rank 0 only, so the collective would wait for ranks that never join.
         if not torch.jit.is_tracing() and not torch.onnx.is_in_onnx_export():
-            self.update_max_seq_length(seq_length=audio_signal.size(2), device=audio_signal.device)
+            if audio_signal.size(2) > self.max_audio_length:
+                self.set_max_audio_length(audio_signal.size(2))
         return self.forward_internal(audio_signal, length, for_export=True)
 
     def forward(self, audio_signal, length, bypass_pre_encode=False):

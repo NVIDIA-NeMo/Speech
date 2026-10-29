@@ -91,3 +91,31 @@ def _check_export(tmp_path, position="rope", mask="full", subsampling="feature_s
         assert np.isfinite(actual[0]).all()
         np.testing.assert_allclose(actual[0], expected[0].numpy(), rtol=2e-5, atol=2e-5)
         np.testing.assert_array_equal(actual[1], expected[1].numpy())
+
+
+class TestExportWithoutCollectives:
+    @pytest.mark.unit
+    def test_forward_for_export_does_not_all_reduce(self, monkeypatch):
+        model = TransformerEncoder(
+            feat_in=8,
+            d_model=32,
+            n_heads=2,
+            n_layers=1,
+            feat_out=24,
+            subsampling="stacking",
+            subsampling_factor=4,
+            drop_rate=0.0,
+            pos_emb_max_len=8,
+            sync_max_audio_length=True,
+        ).eval()
+
+        def fail_all_reduce(*args, **kwargs):
+            raise AssertionError("all_reduce called during export")
+
+        monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+        monkeypatch.setattr(torch.distributed, "all_reduce", fail_all_reduce)
+        example = model.input_example(max_batch=2, max_dim=16)
+        with torch.no_grad():
+            model.forward_for_export(*example)
+        # The example is longer than the initial cache, which grows locally.
+        assert model.max_audio_length == 16

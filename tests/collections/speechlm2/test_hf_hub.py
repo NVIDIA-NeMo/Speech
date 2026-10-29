@@ -13,15 +13,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from types import SimpleNamespace
+
 import pytest
+import torch
 from huggingface_hub import PyTorchModelHubMixin
+from safetensors.torch import save_file
 
 import nemo.collections.speechlm2.parts.hf_hub as hf_hub
-from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin, _inject_local_artifact_paths
+from nemo.collections.speechlm2.parts.ctc_timestamp_utils import CTC_TIMESTAMP_ARTIFACT_FORMAT
+from nemo.collections.speechlm2.parts.hf_hub import (
+    HFHubMixin,
+    _attach_bundled_ctc_timestamp,
+    _inject_local_artifact_paths,
+)
 
 
 class _DummyHubModel(HFHubMixin):
-    pass
+    def __init__(self, cfg):
+        self.cfg = cfg
 
 
 def _cached_file_kwargs():
@@ -103,6 +113,34 @@ def test_save_pretrained_does_not_persist_remote_code_trust(tmp_path, monkeypatc
     assert model.cfg["trust_remote_code"] is True
 
 
+@pytest.mark.parametrize(
+    ("cfg", "expected"),
+    [
+        pytest.param(
+            {"pe_encoder_path": "/models/pee.nemo"},
+            "Nemotron3_5TranscribeForConditionalGeneration",
+            id="transcribe",
+        ),
+        pytest.param({}, "NeMoSpeechLMForConditionalGeneration", id="no-pe-encoder"),
+        pytest.param({"architectures": ["Custom"]}, "Custom", id="explicit-name-kept"),
+    ],
+)
+def test_save_pretrained_names_architecture_after_structure(tmp_path, monkeypatch, cfg, expected):
+    captured = {}
+
+    def fake_save_pretrained(_self, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(PyTorchModelHubMixin, "save_pretrained", fake_save_pretrained)
+    model = object.__new__(_DummyHubModel)
+    model.cfg = cfg
+    model.llm = SimpleNamespace(config=SimpleNamespace(architectures=["NemotronHForCausalLM"]))
+
+    model.save_pretrained(tmp_path)
+
+    assert captured["config"]["architectures"] == [expected]
+
+
 def test_inject_local_artifact_paths_salm_config(tmp_path):
     _write_local_export_artifacts(tmp_path)
     cfg = {
@@ -128,6 +166,53 @@ def test_inject_local_artifact_paths_duplex_eartts_config(tmp_path):
 
     assert cfg["pretrained_lm_name"] == str(tmp_path / "llm_backbone")
     assert cfg["tokenizer_path"] == str(tmp_path)
+
+
+def test_from_pretrained_loads_alternate_local_weights_path(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}")
+    weights_path = tmp_path / "model_ctc.safetensors"
+    save_file({"weight": torch.ones(1)}, weights_path)
+
+    def fake_cached_file(_model_id, filename, **_kwargs):
+        return str(config_path) if filename == hf_hub.CONFIG_NAME else None
+
+    captured = {}
+
+    def fake_load(_cls, model, model_file, map_location, strict):
+        captured.update(model_file=model_file, map_location=map_location, strict=strict)
+        return model
+
+    monkeypatch.setattr(hf_hub, "cached_file", fake_cached_file)
+    monkeypatch.setattr(_DummyHubModel, "_load_as_safetensor", classmethod(fake_load))
+
+    model = _DummyHubModel._from_pretrained(
+        model_id=str(tmp_path),
+        revision=None,
+        cache_dir=None,
+        force_download=False,
+        local_files_only=True,
+        token=None,
+        weights_path=weights_path,
+    )
+
+    assert isinstance(model, _DummyHubModel)
+    assert captured == {"model_file": str(weights_path), "map_location": "cpu", "strict": False}
+
+
+def test_attach_bundled_ctc_timestamp_sets_encoder_artifact_path(tmp_path):
+    weights_path = tmp_path / "model_ctc.safetensors"
+    save_file(
+        {"weight": torch.ones(1)},
+        weights_path,
+        metadata={"ctc_timestamp_format": CTC_TIMESTAMP_ARTIFACT_FORMAT},
+    )
+    encoder = SimpleNamespace(supports_ctc_timestamp_inputs=True, ctc_timestamp_model_path=None)
+    model = SimpleNamespace(perception=SimpleNamespace(encoder=encoder))
+
+    _attach_bundled_ctc_timestamp(model, weights_path)
+
+    assert encoder.ctc_timestamp_model_path == str(weights_path.resolve())
 
 
 def test_inject_local_artifact_paths_no_artifacts_keeps_old_config(tmp_path):

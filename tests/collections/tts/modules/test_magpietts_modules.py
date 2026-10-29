@@ -43,3 +43,25 @@ class TestFeatureMasking:
                     torch.testing.assert_close(actual=output_val, expected=masked_emb)
                 else:
                     torch.testing.assert_close(actual=output_val, expected=inputs[i, j])
+
+    @pytest.mark.unit
+    def test_feature_masking_forward(self):
+        _set_seed()
+        hidden_size = 8
+        feature_masking = FeatureMasking(hidden_size=hidden_size, mask_min=0.5, mask_max=0.5)
+        torch.nn.init.constant_(feature_masking.masked_emb, 7.0)
+        inputs = torch.randn(size=(4, 10, hidden_size), dtype=torch.float32)
+        input_len = torch.tensor([10, 7, 2, 1])
+
+        # Training: half of the valid timesteps (rounded down, at least one) are replaced by the mask embedding.
+        feature_masking.train()
+        outputs = feature_masking(inputs=inputs, input_len=input_len)
+        masked = (outputs == 7.0).all(dim=-1)
+        for i, length in enumerate(input_len.tolist()):
+            assert not masked[i, length:].any()
+            assert masked[i, :length].sum().item() == max(length // 2, 1)
+        torch.testing.assert_close(actual=outputs[~masked], expected=inputs[~masked])
+
+        # Eval: inputs pass through unchanged.
+        feature_masking.eval()
+        torch.testing.assert_close(actual=feature_masking(inputs=inputs, input_len=input_len), expected=inputs)

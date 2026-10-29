@@ -53,7 +53,8 @@ Examples::
 import logging
 import os
 import sys
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+import time
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, TimeoutError, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -88,6 +89,7 @@ WDS_TAR_V2 = "wds_tar_v2"
 JSONL = "jsonl"
 SHAREGPT_ROUTE = "sharegpt_route"
 INDEX_KINDS = (JSONL, NEMO_TAR, WDS_TAR, WDS_TAR_V2, SHAREGPT_ROUTE)
+_PROGRESS_INTERVAL = 60.0
 
 
 @dataclass(frozen=True)
@@ -602,6 +604,7 @@ def main(
     Build .idx sidecars for every JSONL/tar referenced by INPUT_CFGS.
 
     INPUT_CFGS are NeMo Lhotse dataloading configs (``input_cfg`` YAML).
+    During parallel builds, progress is logged every minute even when no file completes.
     """
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -640,35 +643,39 @@ def main(
             logging.info("  [%s] %s -> %s", j.kind, j.path, j.idx_path())
         return
 
-    # Per-file success logging is suppressed: building 80k-400k indexes would
-    # otherwise emit one log line per file, swamping the SLURM stdout buffer.
-    # Failures are still logged inline; success only emits a periodic
-    # "<built>/<total> processed" heartbeat (~every 5% of total or 5000 files,
-    # whichever is smaller) plus a final summary.
+    # A completion-count threshold can leave slow archives silent for hours.
+    # Time out the iterator, not the workers, so progress also reports stalled work.
     failures: list[tuple[IndexJob, Exception]] = []
     total = len(todo)
-    log_every = max(1, min(5000, total // 20))
+    started = last_completion = time.monotonic()
     pool_cls = ProcessPoolExecutor if executor == "process" else ThreadPoolExecutor
     with pool_cls(max_workers=max(1, workers)) as ex:
         futures = {ex.submit(_build_one, j, force=force): j for j in todo}
         done = 0
-        for fut in as_completed(futures):
-            done += 1
-            j = futures[fut]
+        while futures:
             try:
-                _, _status = fut.result()
-            except Exception as e:  # surface worker failures but let interrupts/system exits propagate
-                failures.append((j, e))
-                logging.error("  [FAIL] %s %s: %s", j.kind, j.path, e)
-                continue
-            if done % log_every == 0 or done == total:
-                logging.info(
-                    "  built %d/%d (%.1f%%)  failures=%d",
-                    done,
-                    total,
-                    100.0 * done / total,
-                    len(failures),
-                )
+                for fut in as_completed(futures, timeout=_PROGRESS_INTERVAL):
+                    j = futures.pop(fut)
+                    done += 1
+                    last_completion = time.monotonic()
+                    try:
+                        _, _status = fut.result()
+                    except Exception as e:  # Keep interrupts and system exits visible to the caller.
+                        failures.append((j, e))
+                        logging.error("  [FAIL] %s %s: %s", j.kind, j.path, e)
+            except TimeoutError:
+                # The reporting interval elapsed; log progress below and keep waiting for unfinished workers.
+                pass
+            now = time.monotonic()
+            logging.info(
+                "  built %d/%d  failures=%d  pending=%d  elapsed=%.0fs  last completion=%.0fs ago",
+                done - len(failures),
+                total,
+                len(failures),
+                len(futures),
+                now - started,
+                now - last_completion,
+            )
 
     if not failures:
         for job in route_todo:

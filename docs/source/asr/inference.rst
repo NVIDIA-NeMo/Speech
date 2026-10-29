@@ -24,6 +24,32 @@ Loading Checkpoints
     model = nemo_asr.models.ASRModel.from_pretrained("nvidia/parakeet-tdt-0.6b-v2")
 
 
+Exporting a Transformer Encoder to ONNX
+---------------------------------------
+
+Export an offline Transformer encoder with NeMo's existing API:
+
+.. code-block:: python
+
+    model.eval()
+    encoder = model.encoder
+    encoder.set_max_audio_length(5000)
+    encoder.export("encoder.onnx", onnx_opset_version=17)
+
+Set the maximum length to cover the longest feature sequence you need; the exported positional cache cannot grow later.
+Batch size and sequence length may vary within that limit.
+
+Inputs are ``audio_signal`` of shape ``(batch, features, frames)`` and int64 ``length`` of shape ``(batch,)``.
+Outputs are ``outputs`` of shape ``(batch, channels, encoded_frames)`` and int64 ``encoded_lengths``.
+
+Export uses scaled dot-product attention with the encoder's weights, positional encodings and masks.
+Ordinary training and inference retain FlexAttention.
+Check outputs, lengths and transcripts with your intended runtime and precision, since rounding can affect recognition.
+
+Preprocessing, decoding, streaming caches and ``bypass_pre_encode`` are outside this interface.
+For RNNT/TDT, ``model.export("model.onnx")`` exports the encoder and combined prediction/joint network separately.
+
+
 Basic Transcription
 -------------------
 
@@ -275,8 +301,13 @@ flag directly:
         decoder_type=rnnt \
         strip_lang_tags=true
 
-Use ``target_lang=<lang-code>`` to pin every sample in the batch to one language, or
-``target_lang=auto`` to read the per-sample ``target_lang`` field from each manifest entry.
+``target_lang`` must be a key of the model's ``prompt_dictionary``. A bare language code such as
+``en`` is also accepted when it matches exactly one locale key (for example ``en-US``). An
+unsupported language raises an error. ``target_lang=auto`` (the default when ``target_lang`` is
+unset) selects the language-agnostic prompt; quality on languages the model was not trained on is
+not guaranteed. This script applies one prompt to every sample. For per-utterance languages, use
+``model.transcribe()``, which reads each manifest entry's ``lang`` field when ``target_lang`` is
+unset and uses ``auto`` for entries without one.
 Setting ``strip_lang_tags=true`` removes ``<xx-XX>`` language tags from the decoded text
 (pattern is customizable via ``lang_tag_pattern``).
 

@@ -379,6 +379,43 @@ def test_save_hf_checkpoint_writes_llm_backbone_config(tmp_path):
     assert _FakeExportModel.cfg["dtype"] == "bf16"
 
 
+@pytest.mark.parametrize("mtp_layers", [0, 1])
+def test_nemotron_backbone_export_preserves_portable_topology(tmp_path, mtp_layers):
+    from transformers import AutoConfig, NemotronHConfig
+
+    blocks = ["mamba", "moe", "attention", "mlp"]
+    config = NemotronHConfig(
+        layers_block_type=blocks,
+        mtp_layers_block_type=["attention", "moe"],
+        num_nextn_predict_layers=mtp_layers,
+        architectures=["NemotronHForCausalLM"],
+    )
+    before = config.to_dict()
+    model = SimpleNamespace(llm=SimpleNamespace(config=config))
+
+    to_hf.save_llm_backbone_config(model, tmp_path)
+
+    backbone_dir = tmp_path / "llm_backbone"
+    saved = json.loads((backbone_dir / "config.json").read_text())
+    assert saved["layers_block_type"] == blocks
+    assert saved["mtp_layers_block_type"] == ["attention", "moe"]
+    assert saved["num_nextn_predict_layers"] == mtp_layers
+    assert config.to_dict() == before
+    reloaded = AutoConfig.from_pretrained(backbone_dir, local_files_only=True)
+    assert reloaded.hybrid_override_pattern == "ME*-"
+    assert reloaded.mtp_hybrid_override_pattern == "*E"
+    assert reloaded.num_nextn_predict_layers == mtp_layers
+    assert tuple(reloaded.time_step_limit) == tuple(config.time_step_limit)
+
+    # The serving wrapper must embed the same portable config, not the live one.
+    _seed_output_dir(tmp_path)
+    tokenizer = _FakeTokenizer(vocab_tokens=("a", AUDIO_TOKEN))
+    with patch("transformers.AutoTokenizer.from_pretrained", return_value=tokenizer):
+        to_hf.prepare_for_vllm(str(tmp_path), _FakeExportModel.cfg)
+    wrapper = json.loads((tmp_path / "config.json").read_text())
+    assert wrapper["llm_config"] == saved
+
+
 def test_save_hf_checkpoint_accepts_bf16_export_dtype(tmp_path):
     cfg = to_hf.HfExportConfig(
         class_path="fake.Class",
@@ -570,6 +607,17 @@ def test_detect_vllm_architecture_returns_model_embedding_vocab():
     assert vocab_size == 151936
 
 
+def test_detect_vllm_architecture_names_transcribe():
+    """A ParallelExpertEncoder on a NemotronH backbone exports under its dedicated architecture name."""
+    backbone = SimpleNamespace(architectures=["NemotronHForCausalLM"], vocab_size=131072)
+    with patch("transformers.AutoConfig.from_pretrained", return_value=backbone):
+        architecture, _ = to_hf._detect_vllm_architecture(
+            {"pretrained_llm": "fake-model", "pe_encoder_path": "/models/pee.nemo"}
+        )
+
+    assert architecture == "Nemotron3_5TranscribeForConditionalGeneration"
+
+
 @pytest.mark.parametrize("vocab_size", [None, True, 0, -1])
 def test_detect_vllm_architecture_rejects_invalid_model_vocab(vocab_size):
     backbone = SimpleNamespace(architectures=["Qwen2ForCausalLM"], vocab_size=vocab_size)
@@ -609,12 +657,14 @@ def _run_prepare(
 
 
 def test_prepare_for_vllm_patches_config_json(tmp_path):
-    """config.json gets model metadata without persisting token-index fields."""
+    """config.json persists the resolved audio ID without legacy token-index fields."""
     output_dir = _run_prepare(tmp_path, _FakeTokenizer())
     cfg = json.loads((output_dir / "config.json").read_text())
     assert cfg["model_type"] == "nemo_speechlm"
     assert cfg["architectures"] == ["NeMoSpeechLMForConditionalGeneration"]
     assert cfg["audio_locator_tag"] == AUDIO_TOKEN
+    assert cfg["audio_token_id"] == 0
+    assert cfg["speechlm_runtime_added_token_ids"] == [0]
     assert "audio_token_index" not in cfg
     assert "image_token_index" not in cfg
     # Original LLM fields are preserved.
@@ -675,7 +725,9 @@ def test_prepare_for_vllm_adds_audio_token_to_vocab(tmp_path):
 def test_prepare_for_vllm_skips_add_if_audio_token_already_in_vocab(tmp_path):
     """Avoid re-adding a token that was already present in the backbone vocab."""
     fake_tok = _FakeTokenizer(vocab_tokens=["<|im_start|>", "<|im_end|>", AUDIO_TOKEN])
-    _run_prepare(tmp_path, fake_tok)
+    output_dir = _run_prepare(tmp_path, fake_tok)
+    cfg = json.loads((output_dir / "config.json").read_text())
+    assert cfg["speechlm_runtime_added_token_ids"] == []
     assert fake_tok.add_special_tokens_calls == []
 
 
@@ -699,11 +751,13 @@ def test_prepare_for_vllm_accepts_audio_token_inside_non_boundary_embedding_row(
     tmp_path,
 ):
     """Qwen-style reserved rows may put the audio token below the model-vocab boundary."""
-    fake_tok = _FakeTokenizer(vocab_tokens=["<pad>", AUDIO_TOKEN, "<extra>"])
+    fake_tok = _FakeTokenizer(vocab_tokens=["<pad>"])
 
     output_dir = _run_prepare(tmp_path, fake_tok, backbone_vocab_size=100)
 
     cfg = json.loads((output_dir / "config.json").read_text())
+    assert cfg["audio_token_id"] == fake_tok.get_vocab()[AUDIO_TOKEN] == 1
+    assert cfg["speechlm_runtime_added_token_ids"] == [1]
     assert "audio_token_index" not in cfg
     assert "image_token_index" not in cfg
 
@@ -927,3 +981,54 @@ def test_adapt_strategy_preserves_compatible_hsdp_replicate_axis() -> None:
     }
     adapted = to_hf._adapt_strategy_for_conversion_world(original, world_size=8)
     assert adapted["dp_replicate_size"] == 2
+
+
+def test_vllm_publication_stays_inside_the_output_mount(tmp_path):
+    # A parent directory can be on the container overlay while output_dir is
+    # a writable bind mount; rename must keep both endpoints in that mount.
+    real_replace = Path.replace
+    publication_targets = []
+
+    def require_same_output_mount(source, target):
+        target = Path(target)
+        assert target.parent in source.parents
+        publication_targets.append(target.name)
+        return real_replace(source, target)
+
+    with patch.object(Path, "replace", new=require_same_output_mount):
+        output_dir = _run_prepare(tmp_path, _FakeTokenizer(vocab_tokens=[AUDIO_TOKEN]))
+    assert "tokenizer.json" in publication_targets
+    assert publication_targets[-1] == "config.json"
+    assert list(output_dir.glob(".*-vllm-*")) == []
+
+
+def test_save_hf_checkpoint_preserves_frozen_ctc_storage_and_metadata(tmp_path):
+    from safetensors import safe_open
+
+    model = _FakeExportModel()
+    metadata = {
+        'ctc_timestamp_format': 'nemo_ctc_timestamp_artifact_v1',
+        'ctc_timestamp_decoder_config': '{}',
+        'ctc_timestamp_tokenizer_config': '{}',
+    }
+    model.ctc_timestamp = SimpleNamespace(artifact_metadata=metadata)
+    state = {
+        'ordinary_weight': torch.ones(1),
+        'ctc_timestamp.decoder.weight': torch.tensor([1.000123], dtype=torch.float32),
+        'ctc_timestamp.tokenizer.model_proto': torch.tensor([0, 1, 127, 128, 255], dtype=torch.uint8),
+    }
+    cfg = to_hf.HfExportConfig(
+        class_path='fake.Class',
+        ckpt_path='fake.ckpt',
+        ckpt_config='fake.yaml',
+        output_dir=str(tmp_path),
+        dtype='bfloat16',
+    )
+    to_hf.save_hf_checkpoint(model, state, cfg)
+    exported = load_file(tmp_path / 'model.safetensors')
+    with safe_open(tmp_path / 'model.safetensors', framework='pt') as handle:
+        assert handle.metadata() == metadata
+    for name in ('ctc_timestamp.decoder.weight', 'ctc_timestamp.tokenizer.model_proto'):
+        assert exported[name].dtype == state[name].dtype
+        assert torch.equal(exported[name], state[name].cpu())
+    assert exported['ordinary_weight'].dtype == torch.bfloat16

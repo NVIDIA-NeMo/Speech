@@ -115,6 +115,9 @@ class AbstractMultiTaskDecoding(ConfidenceMixin):
                 max_generation_delta: int = -1  # -1 means up to the max length of the decoder
                 preserve_alignments: bool = False (unsupported)
 
+                use_kv_cache: bool = False, decode over the decoder's key-value cache with the encoder
+                    projections computed once per batch; same hypotheses, faster
+
             "beam":
                 beam_size: int, defining the beam size for beam search. Must be >= 1.
                     If beam_size == 1, will perform cached greedy search. This might be slightly different
@@ -127,6 +130,8 @@ class AbstractMultiTaskDecoding(ConfidenceMixin):
 
                 return_best_hypothesis: optional bool, whether to return just the best hypothesis or all of the
                     hypotheses after beam search has concluded. This flag is set by default.
+
+                use_kv_cache: bool = False, as for greedy decoding
 
 
         transformer_decoder: Transformer decoder module.
@@ -190,6 +195,7 @@ class AbstractMultiTaskDecoding(ConfidenceMixin):
                 temperature=self.cfg.greedy.temperature,
                 n_samples=self.cfg.greedy.n_samples,
                 return_xattn_scores=self.cfg.get('return_xattn_scores', False),
+                use_kv_cache=self.cfg.greedy.get('use_kv_cache', False),
             )
 
         elif strategy == 'beam':
@@ -218,6 +224,7 @@ class AbstractMultiTaskDecoding(ConfidenceMixin):
                 boosting_tree=self.cfg.beam.get('boosting_tree', None),
                 boosting_tree_alpha=self.cfg.beam.get('boosting_tree_alpha', 0.0),
                 return_xattn_scores=self.cfg.get('return_xattn_scores', False),
+                use_kv_cache=self.cfg.beam.get('use_kv_cache', False),
             )
 
         else:
@@ -493,6 +500,9 @@ class MultiTaskDecoding(AbstractMultiTaskDecoding):
 
                 preserve_alignments: bool = False (unsupported)
 
+                use_kv_cache: bool = False, decode over the decoder's key-value cache with the encoder
+                    projections computed once per batch; same hypotheses, faster
+
             "beam":
                 beam_size: int, defining the beam size for beam search. Must be >= 1.
                     If beam_size == 1, will perform cached greedy search. This might be slightly different
@@ -504,6 +514,8 @@ class MultiTaskDecoding(AbstractMultiTaskDecoding):
 
                 return_best_hypothesis: optional bool, whether to return just the best hypothesis or all of the
                     hypotheses after beam search has concluded. This flag is set by default.
+
+                use_kv_cache: bool = False, as for greedy decoding
 
 
         transformer_decoder: Transformer decoder module.

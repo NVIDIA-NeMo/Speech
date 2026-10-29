@@ -61,6 +61,11 @@ class GreedySequenceGenerator(ConfidenceMethodMixin):
             during greedy decoding. When set to true, the results will contain additional List of tensor floats.
         return_xattn_scores: Bool flag which indicates whether to keep and return the cross-attention scores
             during greedy/beam search decoding. When set to true, the results will contain additional List of tensors.
+        use_kv_cache: decode over the decoder's bounded key-value cache (``TransformerDecoder.create_kv_cache``)
+            instead of recomputing the attention over the cached layer inputs;
+            the encoder projections are computed once per batch.
+            The hypotheses are the same.
+            Requires encoder states and a decoder that accepts ``kv_cache``.
         confidence_method_cfg: A dict-like object which contains the method name and settings to compute per-step
             confidence scores.
             name: The method name (str).
@@ -107,6 +112,7 @@ class GreedySequenceGenerator(ConfidenceMethodMixin):
         preserve_step_confidence=False,
         return_xattn_scores=False,
         confidence_method_cfg: Optional[DictConfig] = None,
+        use_kv_cache: bool = False,
     ):
         super().__init__()
         self.embedding = embedding
@@ -120,6 +126,7 @@ class GreedySequenceGenerator(ConfidenceMethodMixin):
         self.temperature = temperature
         self.preserve_step_confidence = preserve_step_confidence
         self.return_xattn_scores = return_xattn_scores
+        self.use_kv_cache = use_kv_cache
 
         # set confidence calculation method
         self.num_tokens = getattr(self.classifier.mlp, f'layer{self.classifier.mlp.layers - 1}').out_features
@@ -145,14 +152,26 @@ class GreedySequenceGenerator(ConfidenceMethodMixin):
                 mode (e.g., language modeling)
             encoder_input_mask: input mask used in the encoder
             decoder_mems_list: list of size num_layers with cached activations
-                of sequence (x[1], ..., x[k-1]) for fast generation of x[k]
+                of sequence (x[1], ..., x[k-1]) for fast generation of x[k];
+                with ``use_kv_cache`` the decoder's key-value cache,
+                created here for the maximum sequence length when None
             pos: starting position in positional encoding (can be a tensor for asynchronius decoding)
         """
 
         decoder_hidden_states = self.embedding.forward(decoder_input_ids, start_pos=pos)
         decoder_input_mask = mask_padded_tokens(decoder_input_ids, self.pad).float()
 
-        if encoder_hidden_states is not None:
+        if self.use_kv_cache:
+            # the memory slot holds the key-value cache;
+            # _forward creates it with the capacity of the search
+            if decoder_mems_list is None:
+                decoder_mems_list = self.decoder.create_kv_cache(
+                    encoder_hidden_states, encoder_input_mask, capacity=self.max_seq_length
+                )
+            layer_states, xatt_scores_list = self.decoder.forward(
+                decoder_hidden_states, decoder_input_mask, kv_cache=decoder_mems_list, return_mems=True
+            )
+        elif encoder_hidden_states is not None:
             decoder_mems_list, xatt_scores_list = self.decoder.forward(
                 decoder_hidden_states,
                 decoder_input_mask,
@@ -161,13 +180,15 @@ class GreedySequenceGenerator(ConfidenceMethodMixin):
                 decoder_mems_list,
                 return_mems=True,
             )
+            layer_states = decoder_mems_list
         else:
             decoder_mems_list, _ = self.decoder.forward(
                 decoder_hidden_states, decoder_input_mask, decoder_mems_list, return_mems=True
             )
             xatt_scores_list = None
+            layer_states = decoder_mems_list
         with self.classifier.with_log_softmax_enabled(return_scores) as clf:
-            logits = clf.forward(hidden_states=decoder_mems_list[-1][:, -1:])
+            logits = clf.forward(hidden_states=layer_states[-1][:, -1:])
 
         return logits, decoder_mems_list, xatt_scores_list
 
@@ -231,6 +252,10 @@ class GreedySequenceGenerator(ConfidenceMethodMixin):
             step_confidence = None
 
         decoder_mems_list = None
+        if self.use_kv_cache:
+            decoder_mems_list = self.decoder.create_kv_cache(
+                encoder_hidden_states, encoder_input_mask, capacity=tgt_len + max_generation_length
+            )
         xatt_scores_list = None
         for i in range(max_generation_length):
 
@@ -425,10 +450,15 @@ class BeamSearchSequenceGenerator(GreedySequenceGenerator):
         self, decoder_input_ids=None, encoder_hidden_states=None, encoder_input_mask=None, return_beam_scores=False
     ):
         tgt, batch_size, max_generation_length = self._prepare_for_search(decoder_input_ids, encoder_hidden_states)
+        decoder_mems_list = None
+        if self.use_kv_cache:
+            decoder_mems_list = self.decoder.create_kv_cache(
+                encoder_hidden_states, encoder_input_mask, capacity=tgt.size(1) + max_generation_length
+            )
 
         # generate initial buffer of beam_size prefixes-hypotheses
         log_probs, decoder_mems_list, xatt_scores_list = self._one_step_forward(
-            tgt, encoder_hidden_states, encoder_input_mask, None, 0
+            tgt, encoder_hidden_states, encoder_input_mask, decoder_mems_list, 0
         )
         if not self.return_xattn_scores:
             xatt_scores_list = None
@@ -438,8 +468,11 @@ class BeamSearchSequenceGenerator(GreedySequenceGenerator):
         # repeat init target prefixes and cached memory states beam_size times,
         # every source sequence beam_size times in a row, as the prefixes and the encoder states
         prefixes = torch.cat((tgt.repeat(1, self.beam_size).view(-1, tgt.shape[1]), prefixes), dim=1)
-        for j in range(len(decoder_mems_list)):
-            decoder_mems_list[j] = decoder_mems_list[j].repeat_interleave(self.beam_size, dim=0)
+        if self.use_kv_cache:
+            decoder_mems_list = decoder_mems_list.repeat_interleave(self.beam_size)
+        else:
+            for j in range(len(decoder_mems_list)):
+                decoder_mems_list[j] = decoder_mems_list[j].repeat_interleave(self.beam_size, dim=0)
 
         # repeat source sequence beam_size times for beam search
         if encoder_hidden_states is not None:
@@ -516,14 +549,20 @@ class BeamSearchSequenceGenerator(GreedySequenceGenerator):
 
             # reshuffle cached decoder memory states to restore the order
             # of hypotheses broken after top-k selection
-            mems_ids = indices_i.unsqueeze(2).unsqueeze(3).repeat(1, 1, p_len - 1, hidden_size) // self.beam_size
-            for j in range(len(decoder_mems_list)):
-                decoder_mems_list[j] = (
-                    decoder_mems_list[j]
-                    .view(-1, self.beam_size, p_len - 1, hidden_size)
-                    .gather(1, mems_ids)
-                    .view(-1, p_len - 1, hidden_size)
-                )
+            if self.use_kv_cache:
+                hypotheses = indices_i // self.beam_size + self.beam_size * torch.arange(
+                    batch_size, device=indices_i.device
+                ).unsqueeze(1)
+                decoder_mems_list.reorder_hypotheses(hypotheses.view(-1))
+            else:
+                mems_ids = indices_i.unsqueeze(2).unsqueeze(3).repeat(1, 1, p_len - 1, hidden_size) // self.beam_size
+                for j in range(len(decoder_mems_list)):
+                    decoder_mems_list[j] = (
+                        decoder_mems_list[j]
+                        .view(-1, self.beam_size, p_len - 1, hidden_size)
+                        .gather(1, mems_ids)
+                        .view(-1, p_len - 1, hidden_size)
+                    )
 
             # update prefixes_len and pad_profile
             not_eos_pad = prefixes.ne(self.eos) & prefixes.ne(self.pad)
@@ -591,6 +630,11 @@ class BeamSearchSequenceGeneratorWithFusionModels(BeamSearchSequenceGenerator):
             fusion_model.to(device)
 
         tgt, batch_size, max_generation_length = self._prepare_for_search(decoder_input_ids, encoder_hidden_states)
+        decoder_mems_list = None
+        if self.use_kv_cache:
+            decoder_mems_list = self.decoder.create_kv_cache(
+                encoder_hidden_states, encoder_input_mask, capacity=tgt.size(1) + max_generation_length
+            )
 
         batch_fusion_states_list = [
             fusion_model.get_init_states(batch_size=batch_size, bos=True) for fusion_model in self.fusion_models
@@ -599,7 +643,7 @@ class BeamSearchSequenceGeneratorWithFusionModels(BeamSearchSequenceGenerator):
 
         # generate initial buffer of beam_size prefixes-hypotheses
         log_probs, decoder_mems_list, xatt_scores_list = self._one_step_forward(
-            tgt, encoder_hidden_states, encoder_input_mask, None, 0
+            tgt, encoder_hidden_states, encoder_input_mask, decoder_mems_list, 0
         )
         if not self.return_xattn_scores:
             xatt_scores_list = None
@@ -624,8 +668,11 @@ class BeamSearchSequenceGeneratorWithFusionModels(BeamSearchSequenceGenerator):
         # repeat init target prefixes and cached memory states beam_size times,
         # every source sequence beam_size times in a row, as the prefixes and the encoder states
         prefixes = torch.cat((tgt.repeat(1, self.beam_size).view(-1, tgt.shape[1]), prefixes), dim=1)
-        for j in range(len(decoder_mems_list)):
-            decoder_mems_list[j] = decoder_mems_list[j].repeat_interleave(self.beam_size, dim=0)
+        if self.use_kv_cache:
+            decoder_mems_list = decoder_mems_list.repeat_interleave(self.beam_size)
+        else:
+            for j in range(len(decoder_mems_list)):
+                decoder_mems_list[j] = decoder_mems_list[j].repeat_interleave(self.beam_size, dim=0)
 
         # repeat source sequence beam_size times for beam search
         if encoder_hidden_states is not None:
@@ -720,14 +767,20 @@ class BeamSearchSequenceGeneratorWithFusionModels(BeamSearchSequenceGenerator):
 
             # reshuffle cached decoder memory states to restore the order
             # of hypotheses broken after top-k selection
-            mems_ids = indices_i.unsqueeze(2).unsqueeze(3).repeat(1, 1, p_len - 1, hidden_size) // self.beam_size
-            for j in range(len(decoder_mems_list)):
-                decoder_mems_list[j] = (
-                    decoder_mems_list[j]
-                    .view(-1, self.beam_size, p_len - 1, hidden_size)
-                    .gather(1, mems_ids)
-                    .view(-1, p_len - 1, hidden_size)
-                )
+            if self.use_kv_cache:
+                hypotheses = indices_i // self.beam_size + self.beam_size * torch.arange(
+                    batch_size, device=indices_i.device
+                ).unsqueeze(1)
+                decoder_mems_list.reorder_hypotheses(hypotheses.view(-1))
+            else:
+                mems_ids = indices_i.unsqueeze(2).unsqueeze(3).repeat(1, 1, p_len - 1, hidden_size) // self.beam_size
+                for j in range(len(decoder_mems_list)):
+                    decoder_mems_list[j] = (
+                        decoder_mems_list[j]
+                        .view(-1, self.beam_size, p_len - 1, hidden_size)
+                        .gather(1, mems_ids)
+                        .view(-1, p_len - 1, hidden_size)
+                    )
 
             # update prefixes_len and pad_profile
             not_eos_pad = prefixes.ne(self.eos) & prefixes.ne(self.pad)

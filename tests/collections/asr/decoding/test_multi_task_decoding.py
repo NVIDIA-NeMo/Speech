@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -28,10 +29,14 @@ from nemo.collections.asr.modules.transformer.transformer_generators import (
     EnsembleBeamSearchSequenceGenerator,
     GreedySequenceGenerator,
 )
+from nemo.collections.asr.modules.transformer.transformer_modules import MultiHeadAttention, RMSNorm
 from nemo.collections.asr.parts.context_biasing import GPUBoostingTreeModel
 from nemo.collections.asr.parts.submodules.multitask_beam_decoding import AEDBeamInferConfig, TransformerAEDBeamInfer
 from nemo.collections.asr.parts.submodules.multitask_decoding import MultiTaskDecoding, MultiTaskDecodingConfig
-from nemo.collections.asr.parts.submodules.multitask_greedy_decoding import TransformerAEDGreedyInfer
+from nemo.collections.asr.parts.submodules.multitask_greedy_decoding import (
+    AEDGreedyInferConfig,
+    TransformerAEDGreedyInfer,
+)
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.submodules.token_classifier import TokenClassifier
 from nemo.utils import logging
@@ -429,6 +434,163 @@ class TestBeamSearchBatching:
         for i in range(prompt.shape[0]):
             single = generator(src_ids[i : i + 1], encoder_mask[i : i + 1], prompt[i : i + 1], return_beam_scores=True)
             self._assert_flat_sequence_matches(i, generator.beam_size, batched, single)
+
+
+class TestSequenceGeneratorsKeyValueCache:
+    """The generators give the same hypotheses over the decoder's key-value cache as over the cached layer inputs."""
+
+    PAD, BOS, EOS, VOCAB, HIDDEN = 0, 1, 2, 12, 16
+    TOLERANCE = dict(atol=1e-5, rtol=1e-5)
+
+    @pytest.fixture()
+    def cached_modules(self):
+        torch.manual_seed(0)
+        decoder = TransformerDecoderNM(
+            vocab_size=self.VOCAB,
+            hidden_size=self.HIDDEN,
+            num_layers=2,
+            inner_size=24,
+            num_attention_heads=2,
+            max_sequence_length=40,
+            num_token_types=0,
+            pre_ln=True,
+            norm=functools.partial(RMSNorm, eps=1e-6),
+            self_attn=functools.partial(MultiHeadAttention, use_bias=False, rotary_base=10000.0),
+        ).eval()
+        classifier = TokenClassifier(hidden_size=self.HIDDEN, num_classes=self.VOCAB, num_layers=1, log_softmax=True)
+        for parameter in list(decoder.parameters()) + list(classifier.parameters()):
+            parameter.data.normal_(0, 0.5)
+        # Trained models never emit the pad token before the end of a hypothesis;
+        # a random model would, and the cache masks the pad position as the full pass does,
+        # while the memory path attends to it.
+        classifier.mlp.layer0.bias.data[self.PAD] = -30.0
+        return decoder, classifier.eval()
+
+    @pytest.fixture()
+    def cached_inputs(self):
+        torch.manual_seed(1)
+        batch, frames = 3, 7
+        prompt = torch.tensor([[self.BOS, 4], [self.BOS, 7], [self.BOS, 3]])
+        encoder_states = torch.randn(batch, frames, self.HIDDEN)
+        encoder_mask = (torch.arange(frames)[None, :] < torch.tensor([7, 5, 6])[:, None]).float()
+        return prompt, encoder_states, encoder_mask
+
+    def _generators(self, cls, decoder, classifier, **kwargs):
+        return [
+            cls(
+                decoder.embedding,
+                decoder.decoder,
+                classifier,
+                bos=self.BOS,
+                pad=self.PAD,
+                eos=self.EOS,
+                use_kv_cache=flag,
+                **kwargs,
+            )
+            for flag in (False, True)
+        ]
+
+    @pytest.mark.unit
+    def test_greedy(self, cached_modules, cached_inputs):
+        default, cached = self._generators(
+            GreedySequenceGenerator,
+            *cached_modules,
+            max_delta_length=5,
+            return_xattn_scores=True,
+            preserve_step_confidence=True,
+        )
+        best, _, confidence, xatt = default(*cached_inputs)
+        cached_best, _, cached_confidence, cached_xatt = cached(*cached_inputs)
+        assert torch.equal(best, cached_best)
+        torch.testing.assert_close(confidence, cached_confidence, **self.TOLERANCE)
+        for layer in range(len(xatt)):
+            torch.testing.assert_close(xatt[layer], cached_xatt[layer], **self.TOLERANCE)
+
+    @pytest.mark.unit
+    def test_temperature_sampling(self, cached_modules, cached_inputs):
+        default, cached = self._generators(
+            GreedySequenceGenerator, *cached_modules, max_delta_length=5, temperature=2.0, n_samples=2
+        )
+        torch.manual_seed(3)
+        best, samples, _, _ = default(*cached_inputs)
+        torch.manual_seed(3)
+        cached_best, cached_samples, _, _ = cached(*cached_inputs)
+        assert torch.equal(best, cached_best)
+        assert all(torch.equal(a, b) for a, b in zip(samples, cached_samples))
+
+    @pytest.mark.unit
+    def test_beam(self, cached_modules, cached_inputs):
+        default, cached = self._generators(
+            BeamSearchSequenceGenerator,
+            *cached_modules,
+            beam_size=3,
+            len_pen=0.5,
+            max_delta_length=5,
+            return_xattn_scores=True,
+        )
+        prefixes, scores, best, xatt = default(*cached_inputs, return_beam_scores=True)
+        cached_prefixes, cached_scores, cached_best, cached_xatt = cached(*cached_inputs, return_beam_scores=True)
+        assert torch.equal(best, cached_best)
+        for i in range(len(prefixes)):
+            assert torch.equal(prefixes[i], cached_prefixes[i])
+            torch.testing.assert_close(scores[i], cached_scores[i], **self.TOLERANCE)
+        for layer in range(len(xatt)):
+            torch.testing.assert_close(xatt[layer], cached_xatt[layer], **self.TOLERANCE)
+
+    @pytest.mark.unit
+    def test_beam_with_fusion_models(self, cached_modules, cached_inputs):
+        default, cached = self._generators(
+            BeamSearchSequenceGeneratorWithFusionModels,
+            *cached_modules,
+            fusion_models=[NGramGPULanguageModel.dummy_unigram_lm(vocab_size=self.VOCAB)],
+            fusion_models_alpha=[0.3],
+            beam_size=3,
+            len_pen=0.5,
+            max_delta_length=5,
+        )
+        prefixes, scores, best, _ = default(*cached_inputs, return_beam_scores=True)
+        cached_prefixes, cached_scores, cached_best, _ = cached(*cached_inputs, return_beam_scores=True)
+        assert torch.equal(best, cached_best)
+        for i in range(len(prefixes)):
+            assert torch.equal(prefixes[i], cached_prefixes[i])
+            torch.testing.assert_close(scores[i], cached_scores[i], **self.TOLERANCE)
+
+    @pytest.mark.unit
+    def test_aed_infer_and_configuration(self, cached_modules, cached_inputs, tokenizer):
+        decoder, classifier = cached_modules
+        prompt, encoder_states, encoder_mask = cached_inputs
+        results = {}
+        for flag in (False, True):
+            greedy = TransformerAEDGreedyInfer(
+                decoder, classifier, tokenizer, max_generation_delta=5, use_kv_cache=flag
+            )
+            beam = TransformerAEDBeamInfer(
+                decoder, classifier, tokenizer, beam_size=3, max_generation_delta=5, use_kv_cache=flag
+            )
+            assert greedy.greedy_search.use_kv_cache is flag and beam.beam_search.use_kv_cache is flag
+            results[flag] = [
+                [
+                    hyp.y_sequence
+                    for hyp in infer(
+                        encoder_hidden_states=encoder_states, encoder_input_mask=encoder_mask, decoder_input_ids=prompt
+                    )[0]
+                ]
+                for infer in (greedy, beam)
+            ]
+        for default, cached in zip(results[False], results[True]):
+            assert all(torch.equal(a, b) for a, b in zip(default, cached))
+
+        config = MultiTaskDecodingConfig(
+            strategy="greedy",
+            greedy=AEDGreedyInferConfig(use_kv_cache=True),
+            beam=AEDBeamInferConfig(beam_size=2, use_kv_cache=True),
+        )
+        decoding = MultiTaskDecoding(config, decoder, classifier, tokenizer)
+        assert decoding.decoding.greedy_search.use_kv_cache is True
+        decoding.change_strategy("beam")
+        assert decoding.decoding.beam_search.use_kv_cache is True
+        default = MultiTaskDecoding(MultiTaskDecodingConfig(strategy="beam"), decoder, classifier, tokenizer)
+        assert default.decoding.beam_search.use_kv_cache is False
 
 
 @pytest.fixture()

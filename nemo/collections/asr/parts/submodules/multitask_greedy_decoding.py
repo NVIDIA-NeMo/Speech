@@ -140,6 +140,7 @@ class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
         confidence_method_cfg: Optional[DictConfig] = None,
         n_samples: int = 1,
         return_xattn_scores: bool = False,
+        use_kv_cache: bool = False,
     ):
         super().__init__(
             transformer_decoder=transformer_decoder,
@@ -166,6 +167,7 @@ class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
             preserve_step_confidence=preserve_token_confidence,
             confidence_method_cfg=confidence_method_cfg,
             return_xattn_scores=return_xattn_scores,
+            use_kv_cache=use_kv_cache,
         )
 
         self.preserve_alignments = preserve_alignments
@@ -287,6 +289,8 @@ class AEDGreedyInferConfig:
     preserve_token_confidence: bool = False
     confidence_method_cfg: Optional[ConfidenceMethodConfig] = field(default_factory=lambda: ConfidenceMethodConfig())
     n_samples: int = 1
+    # decode over the decoder's key-value cache instead of recomputing the attention over cached layer inputs
+    use_kv_cache: bool = False
 
     def __post_init__(self):
         # OmegaConf.structured ensures that post_init check is always executed

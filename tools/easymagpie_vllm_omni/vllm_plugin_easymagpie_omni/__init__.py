@@ -82,8 +82,15 @@ def _register_serving_adapter() -> None:
 
 def _register_pipeline() -> None:
     """Register the EasyMagpieTTS and standalone EasyMagpie LM pipelines."""
-    from easymagpie_vllm_omni.pipeline import EASYMAGPIE_LM_PIPELINE, EASYMAGPIE_PIPELINE
+    from easymagpie_vllm_omni.pipeline import (
+        EASYMAGPIE_CFG_PAIRING_PIPELINE,
+        EASYMAGPIE_CFG_PIPELINE,
+        EASYMAGPIE_LM_PIPELINE,
+        EASYMAGPIE_PIPELINE,
+    )
     from vllm_omni.config.pipeline_registry import register_pipeline
 
     register_pipeline(EASYMAGPIE_PIPELINE)
     register_pipeline(EASYMAGPIE_LM_PIPELINE)
+    register_pipeline(EASYMAGPIE_CFG_PAIRING_PIPELINE)
+    register_pipeline(EASYMAGPIE_CFG_PIPELINE)

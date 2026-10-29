@@ -22,6 +22,8 @@ its HF architecture or an explicit ``pipeline: …`` deployment setting.
   prediction only (no in-engine Code2Wav). Use this to benchmark and develop
   EasyMagpie LM in isolation; select it with ``pipeline: easymagpie_lm``.
 """
+from dataclasses import replace
+
 from vllm_omni.config.stage_config import PipelineConfig, StageExecutionType, StagePipelineConfig
 
 _PROC = "easymagpie_vllm_omni.stage_processors"
@@ -119,5 +121,32 @@ EASYMAGPIE_LM_PIPELINE = PipelineConfig(
                 "stop_token_ids": [_AUDIO_EOS_STOP_TOKEN_ID],
             },
         ),
+    ),
+)
+
+# Explicit diagnostic topology; never selected by architecture auto-detection.
+# The physical unconditional branch is hidden by both the runner and scheduler.
+EASYMAGPIE_CFG_PAIRING_PIPELINE = replace(
+    EASYMAGPIE_PIPELINE,
+    model_type="easymagpie_cfg_pairing",
+    hf_architectures=(),
+    stages=(
+        replace(
+            EASYMAGPIE_PIPELINE.stages[0],
+            scheduler_cls="easymagpie_vllm_omni.cfg_scheduler.EasyMagpieCFGPairingScheduler",
+        ),
+        EASYMAGPIE_PIPELINE.stages[1],
+    ),
+)
+
+EASYMAGPIE_CFG_PIPELINE = replace(
+    EASYMAGPIE_CFG_PAIRING_PIPELINE,
+    model_type="easymagpie_cfg",
+    stages=(
+        replace(
+            EASYMAGPIE_PIPELINE.stages[0],
+            scheduler_cls="easymagpie_vllm_omni.cfg_scheduler.EasyMagpieCFGScheduler",
+        ),
+        EASYMAGPIE_PIPELINE.stages[1],
     ),
 )

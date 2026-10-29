@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from math import prod
 from typing import Any
 
+from easymagpie_vllm_omni.cfg import validate_cfg_capability
+
 # Each audio codebook appends BOS, EOS, context, mask, and reserved tokens.
 NUM_SPECIAL_AUDIO_TOKENS: int = 8
 
@@ -52,6 +54,8 @@ class EasyMagpieOmniArch:
     # v1 predicts each frame with an intra-frame local transformer. v2 uses a
     # sequence-cached Nemotron-H predictor that must run on every backbone row.
     acoustic_predictor_type: str = "local_transformer"
+    cfg_unk_token_id: int | None = None
+    cfg_capability: dict | None = None
 
     # v2 embeds codec indices by dequantizing their FSQ latents and applying one
     # learned projection. v1 keeps one learned embedding table per channel.
@@ -120,6 +124,13 @@ class EasyMagpieOmniArch:
 
     def validate(self, *, text_vocab_size: int | None = None) -> None:
         """Reject architecture variants the current vLLM implementation cannot serve."""
+
+        validate_cfg_capability(
+            self.cfg_capability,
+            predictor_type=self.acoustic_predictor_type,
+            token_id=self.cfg_unk_token_id,
+            text_vocab_size=text_vocab_size,
+        )
 
         positive_fields = (
             "hidden_dim",
@@ -438,6 +449,8 @@ class EasyMagpieOmniArch:
             "codebook_size",
             "frame_stacking_factor",
             "acoustic_predictor_type",
+            "cfg_unk_token_id",
+            "cfg_capability",
             "use_codec_latent_audio_embedding",
             "codec_num_levels_per_group",
             "phoneme_stacking_factor",

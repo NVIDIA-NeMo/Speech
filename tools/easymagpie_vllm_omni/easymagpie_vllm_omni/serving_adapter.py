@@ -22,6 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable
 
+from easymagpie_vllm_omni.cfg import AcousticSamplingSettings, validate_cfg_capability
 from easymagpie_vllm_omni.config import EasyMagpieOmniArch
 from easymagpie_vllm_omni.tokenizer import EasyMagpieTextTokenizer
 
@@ -34,8 +35,6 @@ _SERVING_MODULE = "vllm_omni.entrypoints.openai.serving_speech"
 
 _DEFAULT_SPEAKER = "eng"
 _DEFAULT_CONTEXT_TEXT = "[EN]"
-_DEFAULT_TEMPERATURE = 0.7
-_DEFAULT_TOP_K = 80
 
 # Legacy checkpoints use the last-but-one text-vocab row for EOS. Converted
 # multiturn checkpoints pin the actual ID explicitly in ``config.json``.
@@ -144,6 +143,10 @@ def _build_adapter_cls() -> type:
             extra = request.extra_params
             if extra is not None and not isinstance(extra, dict):
                 return "extra_params must be a JSON object/dict"
+            try:
+                self._acoustic_info(request)
+            except ValueError as error:
+                return str(error)
             ref_audio = request.ref_audio
             if ref_audio is None:
                 return None
@@ -168,6 +171,7 @@ def _build_adapter_cls() -> type:
         ) -> "PreparedRequest":
             del sampling_params_list, has_inline_ref_audio
             extra = request.extra_params or {}
+            acoustic_info = self._acoustic_info(request)
             text_eos_id, text_prefill_num = self._text_stream_metadata()
             text_tokens = self._model_tokenizer().encode(request.input, add_special_tokens=False)
             text_tokens.append(text_eos_id)
@@ -178,8 +182,7 @@ def _build_adapter_cls() -> type:
                     "text_tokens": text_tokens,
                     "prefill_text_tokens": text_tokens[:text_prefill_num],
                     "text_prefill_num": text_prefill_num,
-                    "temperature": float(extra.get("temperature", _DEFAULT_TEMPERATURE)),
-                    "top_k": int(extra.get("top_k", _DEFAULT_TOP_K)),
+                    **acoustic_info,
                 },
             }
             ref_audio = request.ref_audio
@@ -207,6 +210,11 @@ def _build_adapter_cls() -> type:
 
         def build_streaming_spec(self, request: OpenAICreateSpeechRequest) -> EasyMagpieStreamingSpec:
             """Build the speaker prefill and tokenizer metadata without complete text."""
+            acoustic_info = self._acoustic_info(request)
+            if request.ref_audio is not None:
+                raise ValueError("Incremental EasyMagpie input requires a registered speaker, not ref_audio")
+            if self._uses_cfg_scheduler():
+                acoustic_info["max_stream_tokens"] = request.max_new_tokens or 2048
             speaker_id = (request.voice or _DEFAULT_SPEAKER).strip()
             model_path = Path(self._model_path())
             text_eos_id, text_prefill_num = self._text_stream_metadata()
@@ -221,9 +229,8 @@ def _build_adapter_cls() -> type:
                 prefill_prompt={
                     "prompt_token_ids": [0] * (self._prompt_len(speaker_id) + text_prefill_num),
                     "additional_information": {
-                        "context_text": _DEFAULT_CONTEXT_TEXT,
-                        "temperature": _DEFAULT_TEMPERATURE,
-                        "top_k": _DEFAULT_TOP_K,
+                        "context_text": (request.extra_params or {}).get("context_text", _DEFAULT_CONTEXT_TEXT),
+                        **acoustic_info,
                         "speaker_id": speaker_id,
                         "text_prefill_num": text_prefill_num,
                     },
@@ -233,6 +240,41 @@ def _build_adapter_cls() -> type:
                 sample_rate=sample_rate,
                 text_prefill_num=text_prefill_num,
             )
+
+        def _uses_cfg_scheduler(self) -> bool:
+            engine = getattr(self.ctx, "engine_client", None)
+            for stage in getattr(engine, "stage_configs", None) or []:
+                args = getattr(stage, "engine_args", None)
+                if getattr(args, "model_stage", None) == _TALKER_STAGE:
+                    return getattr(args, "scheduler_cls", None) == (
+                        "easymagpie_vllm_omni.cfg_scheduler.EasyMagpieCFGScheduler"
+                    )
+            return False
+
+        def _acoustic_info(self, request: OpenAICreateSpeechRequest) -> dict[str, Any]:
+            extra = request.extra_params or {}
+            settings = AcousticSamplingSettings.from_info(extra)
+            if request.ref_audio is not None and (settings.use_cfg or self._uses_cfg_scheduler()):
+                raise ValueError("The V2 CFG pipeline requires a registered speaker with a precomputed embedding")
+            if settings.use_cfg:
+                if not self._uses_cfg_scheduler():
+                    raise ValueError("CFG requires the easymagpie_cfg pipeline; select deploy/easymagpie_cfg.yaml")
+                config = self._model_config()
+                capability = config.get("cfg_capability")
+                if capability is None:
+                    raise ValueError("CFG requires capability metadata; reconvert the NeMo checkpoint")
+                validate_cfg_capability(
+                    capability,
+                    predictor_type=config.get("acoustic_predictor_type", "local_transformer"),
+                    token_id=config.get("cfg_unk_token_id"),
+                    text_vocab_size=config.get("text_vocab_size"),
+                )
+            info = {"temperature": settings.temperature, "top_k": settings.top_k}
+            if "use_cfg" in extra or settings.use_cfg:
+                info["use_cfg"] = settings.use_cfg
+            if "cfg_scale" in extra or settings.use_cfg:
+                info["cfg_scale"] = settings.cfg_scale
+            return info
 
     return EasyMagpieTTSAdapter
 

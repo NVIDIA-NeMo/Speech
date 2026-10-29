@@ -39,6 +39,74 @@ def test_input_stream_default_pacing_tolerates_loaded_service_queueing():
 
 
 @pytest.mark.asyncio
+async def test_cfg_input_stream_reserves_one_bound_across_text_eos_and_tail():
+    stream = EasyMagpieInputStream(
+        prefill_prompt={'prompt_token_ids': [0] * 6, 'additional_information': {'speaker_id': 'eng', 'use_cfg': True}},
+        sampling_params=SamplingParams(max_tokens=20),
+        text_eos_id=99,
+        max_new_tokens=20,
+        text_prefill_num=4,
+        pace_timeout_s=0,
+    )
+    await stream.put_tokens([1, 2])  # Buffer until the known phoneme-BOS warmup fits.
+    assert not stream._received_first_update
+    await stream.put_tokens([3, 4, 5])
+    await stream.put_tokens([6, 7])
+    await stream.finish()
+    chunks = [chunk async for chunk in stream.inputs()]
+    assert chunks[0].prompt['additional_information']['max_stream_tokens'] == 20
+    assert chunks[0].prompt['additional_information']['prefill_text_tokens'] == [1, 2, 3, 4]
+    assert chunks[1].prompt['additional_information'] == {'text_token': [6, 7, 99], 'text_token_start': 5}
+    assert sum(chunk.sampling_params.max_tokens for chunk in chunks) == 20
+    assert [chunk.sampling_params.max_tokens for chunk in chunks] == [2, 3, 15]
+
+
+@pytest.mark.asyncio
+async def test_cfg_input_stream_rejects_text_that_exhausts_the_history_bound():
+    stream = EasyMagpieInputStream(
+        prefill_prompt={'prompt_token_ids': [0], 'additional_information': {'speaker_id': 'eng', 'use_cfg': True}},
+        sampling_params=SamplingParams(max_tokens=4),
+        text_eos_id=99,
+        max_new_tokens=4,
+        pace_timeout_s=0,
+    )
+    await stream.put_tokens([1, 2])
+    await stream.put_tokens([3])
+    await stream.finish()
+    with pytest.raises(ValueError, match='max_stream_tokens'):
+        _ = [chunk async for chunk in stream.inputs()]
+
+
+@pytest.mark.asyncio
+async def test_cfg_input_stream_waits_for_acoustic_tail_before_final_sentinel():
+    stream = EasyMagpieInputStream(
+        prefill_prompt={'prompt_token_ids': [0], 'additional_information': {'speaker_id': 'eng', 'use_cfg': True}},
+        sampling_params=SamplingParams(max_tokens=20),
+        text_eos_id=99,
+        max_new_tokens=20,
+    )
+    await stream.put_tokens([2, 3])
+    await stream.finish()
+    inputs = stream.inputs()
+    boundary = SimpleNamespace(stage_id=0, outputs=[SimpleNamespace(token_ids=[0], finish_reason='length')])
+    await anext(inputs)  # initial text
+    stream.observe_output(boundary)
+    await anext(inputs)  # text EOS
+    stream.observe_output(boundary)
+    await anext(inputs)  # acoustic tail
+    exhausted = asyncio.create_task(anext(inputs, None))
+    try:
+        await asyncio.sleep(0)
+        assert not exhausted.done(), 'Final sentinel must wait for acoustic completion'
+        stream.observe_output(boundary)
+        assert await exhausted is None
+    finally:
+        exhausted.cancel()
+        await asyncio.gather(exhausted, return_exceptions=True)
+        await inputs.aclose()
+
+
+@pytest.mark.asyncio
 async def test_input_stream_builds_one_resumable_request_from_token_chunks():
     params = SamplingParams(
         temperature=0.0,

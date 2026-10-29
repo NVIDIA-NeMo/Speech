@@ -6,6 +6,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 
 import torch
+from easymagpie_vllm_omni.cfg_graph import CFGGraphBuffers
+from easymagpie_vllm_omni.cfg_pairing import CFGPairingLayout
 from easymagpie_vllm_omni.config import NUM_SPECIAL_AUDIO_TOKENS, EasyMagpieOmniArch
 from easymagpie_vllm_omni.local_transformer import EasyMagpieLocalTransformerPredictor
 from torch import nn
@@ -15,7 +17,6 @@ from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.model_executor.models.nemotron_h import NemotronHAttentionDecoderLayer, NemotronHMLPDecoderLayer
 
 _DEFAULT_TOP_K = 80
-_MIN_SAMPLING_TEMPERATURE = 1e-4
 
 
 class CodecLatentAudioEmbedder(nn.Module):
@@ -165,7 +166,6 @@ class EasyMagpieAcousticCodesPredictor(nn.Module):
         self.num_output_tokens = arch.codebook_size + 1
         self.temperature = 0.7
         self.top_k = _DEFAULT_TOP_K
-        self._sample_top_k = min(self.top_k, self.num_output_tokens)
 
         predictor_config = vllm_config.model_config.hf_config
         self.blocks = nn.ModuleList(
@@ -185,8 +185,8 @@ class EasyMagpieAcousticCodesPredictor(nn.Module):
         max_num_tokens = vllm_config.scheduler_config.max_num_batched_tokens
         self._gumbel_buf = torch.zeros(
             max_num_tokens,
-            self.num_codebooks,
-            self._sample_top_k,
+            1,
+            self.num_output_tokens,
             dtype=torch.float32,
         )
 
@@ -218,18 +218,56 @@ class EasyMagpieAcousticCodesPredictor(nn.Module):
         *,
         positions: torch.Tensor,
         predict: torch.Tensor | None = None,
+        pairing: CFGPairingLayout | None = None,
+        graph_pairing: CFGGraphBuffers | None = None,
+        cfg_scale: torch.Tensor | None = None,
+        temperature: torch.Tensor | float | None = None,
+        top_k: torch.Tensor | int | None = None,
     ) -> torch.Tensor:
-        """Advance every cache row and sample only rows in ``predict``."""
+        """Advance physical caches, guide logits, and share logical sampled feedback.
+
+        ``pairing`` is an eager-only token-row map supplied after runner reordering.
+        ``graph_pairing`` instead supplies fixed-shape runtime tensor mappings.
+        Sampling settings index physical token rows; conditional rows own settings.
+        """
         num_tokens = hidden_states.shape[0]
         if predict is None:
             predict = torch.ones(num_tokens, dtype=torch.bool, device=hidden_states.device)
         if predict.shape != (num_tokens,):
             raise ValueError(f"expected predict mask {(num_tokens,)}, got {tuple(predict.shape)}")
 
-        noise = self._gumbel_buf[:num_tokens]
-        noise.uniform_(1e-20, 1.0 - 1e-20)
-        noise.log_().neg_().log_().neg_()
-        temperature = max(float(self.temperature), _MIN_SAMPLING_TEMPERATURE)
+        temperature = self.temperature if temperature is None else temperature
+        top_k = self.top_k if top_k is None else top_k
+        owners = torch.arange(num_tokens, device=hidden_states.device)
+        partners = owners.clone()
+        if graph_pairing is not None:
+            owners = graph_pairing.owners[:num_tokens]
+            partners = graph_pairing.partners[:num_tokens]
+            predict = predict & graph_pairing.active[:num_tokens]
+            # Sample a fixed physical shape, then gather only public-owner results.
+            # Private and padding draws never feed valid acoustic histories.
+            rows = torch.arange(num_tokens, device=hidden_states.device)
+        elif pairing is not None:
+            for conditional, unconditional in zip(pairing.conditional_rows, pairing.unconditional_rows):
+                c = torch.tensor(conditional, device=hidden_states.device, dtype=torch.long)
+                u = torch.tensor(unconditional, device=hidden_states.device, dtype=torch.long)
+                if not torch.equal(predict[c], predict[u]):
+                    raise ValueError("CFG prediction masks must agree between branches")
+                owners[u] = c
+                partners[c] = u
+            # CFG is eager: sample only logical audio rows, including in mixed prefill.
+            rows = torch.nonzero(predict & (owners == torch.arange(num_tokens, device=owners.device))).flatten()
+        else:
+            # Fixed shapes preserve the existing non-CFG CUDA graph path.
+            rows = owners
+
+        def select_setting(value):
+            return value[rows].reshape(-1, 1, 1) if isinstance(value, torch.Tensor) else value
+
+        row_temperature = select_setting(temperature)
+        row_top_k = select_setting(top_k)
+        if pairing is not None and isinstance(row_temperature, torch.Tensor) and (row_temperature <= 0).all():
+            row_temperature = 0.0  # Eager CFG greedy inference consumes no random draws.
 
         codes = torch.full(
             (num_tokens, self.num_codebooks),
@@ -245,18 +283,28 @@ class EasyMagpieAcousticCodesPredictor(nn.Module):
                 hidden_states = hidden_states + self.audio_embedder.embed_codebooks(previous_codes, previous_indices)
             hidden_states = block(hidden_states, positions)
             logits = block.compute_logits(hidden_states)
+            logical_logits = logits[rows]
+            if pairing is not None or graph_pairing is not None:
+                scales = cfg_scale[rows].reshape(-1, 1, 1)
+                # NeMo multiplies by Python scalars: half/BF16 products use FP32
+                # arithmetic then round individually before the branch sum.
+                conditional = (scales * logical_logits.float()).to(logits.dtype)
+                unconditional = ((1.0 - scales) * logits[partners[rows]].float()).to(logits.dtype)
+                guided = conditional + unconditional
+                if graph_pairing is not None:
+                    paired = partners[rows] != rows
+                    logical_logits = torch.where(paired[:, None, None], guided, logical_logits)
+                else:
+                    logical_logits = guided
+            logits = logical_logits
             logits = torch.nan_to_num(logits, nan=0.0, posinf=100.0, neginf=-100.0).clamp(-100.0, 100.0)
-            values, indices = torch.topk(logits, self._sample_top_k, dim=-1)
-            picked = (values / temperature + noise[:, code_offset : code_offset + block.num_codes]).argmax(
-                dim=-1, keepdim=True
-            )
-            sampled = indices.gather(-1, picked).squeeze(-1)
+            sampled = self._sample_codes(logits, temperature=row_temperature, top_k=row_top_k)
             sampled = torch.where(sampled == self.arch.codebook_size, self.arch.audio_eos_id, sampled)
-            previous_codes = torch.where(
-                predict.unsqueeze(-1),
-                sampled,
-                torch.full_like(sampled, self.arch.mask_token_id),
+            previous_codes = torch.full(
+                (num_tokens, block.num_codes), self.arch.mask_token_id, dtype=torch.long, device=hidden_states.device
             )
+            previous_codes[rows] = torch.where(predict[rows, None], sampled, self.arch.mask_token_id)
+            previous_codes = previous_codes[owners]
             codes[:, code_offset : code_offset + block.num_codes] = previous_codes
             previous_indices = block.codebook_indices
             code_offset += block.num_codes
@@ -282,6 +330,29 @@ class EasyMagpieAcousticCodesPredictor(nn.Module):
                 loader(param, tensor)
                 loaded.add(name)
         return loaded
+
+    def _sample_codes(self, logits, *, temperature, top_k):
+        """Match NeMo cutoff ties and argmax semantics, with request-owned settings."""
+        if isinstance(top_k, torch.Tensor):
+            cutoff_index = (top_k.clamp(1, self.num_output_tokens) - 1).expand(*logits.shape[:-1], 1)
+            cutoff = logits.sort(dim=-1, descending=True).values.gather(-1, cutoff_index)
+        else:
+            cutoff = logits.topk(min(top_k, self.num_output_tokens), dim=-1).values[..., -1:]
+        logits = logits.masked_fill(logits < cutoff, float("-inf"))
+        if not isinstance(temperature, torch.Tensor) and temperature <= 0:
+            return logits.argmax(dim=-1)
+        noise = self._gumbel_buf[: logits.shape[0], : logits.shape[1]]
+        noise.uniform_(1e-20, 1.0 - 1e-20)
+        noise.log_().neg_().log_().neg_()
+        positive_temperature = (
+            torch.where(temperature > 0, temperature, torch.ones_like(temperature))
+            if isinstance(temperature, torch.Tensor)
+            else temperature
+        )
+        sampled = (logits.float() / positive_temperature + noise).argmax(dim=-1)
+        if isinstance(temperature, torch.Tensor):
+            sampled = torch.where((temperature <= 0).squeeze(-1), logits.argmax(dim=-1), sampled)
+        return sampled
 
 
 def create_acoustic_predictor(*, vllm_config: VllmConfig, prefix: str = "") -> nn.Module:

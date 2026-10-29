@@ -1,0 +1,59 @@
+# Initial V2 CFG synthesis: one logical known-speaker request, two physical histories.
+pipeline: easymagpie_cfg
+async_chunk: true
+trust_remote_code: true
+dtype: float16
+
+connectors:
+  connector_of_shared_memory:
+    name: SharedMemoryConnector
+    extra:
+      shm_threshold_bytes: 65536
+      connector_get_sleep_s: 0.01
+      connector_get_max_wait_first_chunk: 3000
+      connector_get_max_wait: 300
+      codec_chunk_frames: 8
+      codec_startup_chunk_frames: [6, 6]
+
+stages:
+  - stage_id: 0
+    # One logical request, two independently allocated physical histories.
+    max_num_seqs: 2
+    gpu_memory_utilization: 0.5
+    enforce_eager: true
+    async_scheduling: false
+    enable_prefix_caching: false
+    enable_chunked_prefill: false
+    max_num_batched_tokens: 4096
+    max_model_len: 4096
+    devices: "0"
+    output_connectors:
+      to_stage_1: connector_of_shared_memory
+    mamba_ssm_cache_dtype: float32
+    mamba_cache_mode: "none"
+    skip_tokenizer_init: false
+    engine_extras:
+      worker_cls: easymagpie_vllm_omni.runner.EasyMagpieGPUARWorker
+    default_sampling_params:
+      temperature: 0.0
+      detokenize: false
+      max_tokens: 2048
+
+  - stage_id: 1
+    max_num_seqs: 1
+    gpu_memory_utilization: 0.35
+    dtype: float32
+    enforce_eager: true
+    async_scheduling: false
+    enable_prefix_caching: false
+    enable_chunked_prefill: false
+    # The runner retains cumulative codec prompt IDs across streaming chunks.
+    # Cover the complete Stage-0 generation budget, not just one codec chunk.
+    max_num_batched_tokens: 2048
+    max_model_len: 2048
+    devices: "0"
+    input_connectors:
+      from_stage_0: connector_of_shared_memory
+    default_sampling_params:
+      temperature: 0.0
+      max_tokens: 65536

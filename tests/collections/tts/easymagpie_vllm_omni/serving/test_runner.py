@@ -16,13 +16,66 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+
+import pytest
 import torch
 import yaml
 
 from conftest import EASYMAGPIE_ROOT
-from easymagpie_vllm_omni.runner import merge_streaming_additional_information
+from easymagpie_vllm_omni.cfg_pairing import CFGPair
+from easymagpie_vllm_omni.runner import EasyMagpieGPUARModelRunner, merge_streaming_additional_information
+from vllm_omni.worker.gpu_ar_model_runner import GPUARModelRunner
 
 WORKER_CLS = "easymagpie_vllm_omni.runner.EasyMagpieGPUARWorker"
+
+
+@pytest.mark.parametrize("use_cfg", [False, True])
+def test_cfg_runner_builds_layout_after_parent_preprocess_reorders_rows(monkeypatch, use_cfg):
+    pair = CFGPair.create("speech")
+    runner = object.__new__(EasyMagpieGPUARModelRunner)
+    runner.model = SimpleNamespace()
+    runner.requests = {
+        rid: SimpleNamespace(additional_information_cpu={**pair.metadata(rid), "use_cfg": use_cfg})
+        for rid in pair.physical_ids
+    }
+    ids = list(pair.physical_ids)
+    runner.input_batch = SimpleNamespace(req_ids=ids, num_computed_tokens_cpu=[5, 5])
+    step = SimpleNamespace(num_scheduled_tokens=dict.fromkeys(ids, 1))
+
+    def prepare(self, *args):
+        ids.reverse()
+        return "prepared"
+
+    monkeypatch.setattr(GPUARModelRunner, "_preprocess", prepare)
+    assert runner._preprocess(step, 2) == "prepared"
+    assert runner.model.cfg_pairing_layout.conditional_rows == ((1,),)
+    assert runner.model.cfg_pairing_layout.unconditional_rows == ((0,),)
+    assert (runner.model.cfg_guidance_layout is not None) is use_cfg
+
+
+def test_ordinary_runner_batch_clears_previous_pair_layout(monkeypatch):
+    runner = object.__new__(EasyMagpieGPUARModelRunner)
+    runner.model = SimpleNamespace(cfg_pairing_layout="old")
+    runner.input_batch = SimpleNamespace(req_ids=["ordinary"])
+    monkeypatch.setattr(GPUARModelRunner, "_preprocess", lambda self, *args: "prepared")
+    assert runner._preprocess(None, 1) == "prepared"
+    assert runner.model.cfg_pairing_layout is None
+
+
+def test_cfg_runner_does_not_build_private_codec_payload(monkeypatch):
+    runner = object.__new__(EasyMagpieGPUARModelRunner)
+    pair = CFGPair.create("speech")
+    calls = []
+
+    def downstream(self, rid):
+        calls.append(rid)
+        return True
+
+    monkeypatch.setattr(GPUARModelRunner, "_request_needs_downstream_stage_payload", downstream)
+    assert runner._request_needs_downstream_stage_payload(pair.unconditional_id) is False
+    assert runner._request_needs_downstream_stage_payload(pair.conditional_id) is True
+    assert calls == [pair.conditional_id]
 
 
 def test_streaming_update_preserves_model_state_and_replaces_latest_chunk():

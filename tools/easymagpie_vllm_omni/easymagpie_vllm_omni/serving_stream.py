@@ -22,10 +22,11 @@ from contextlib import aclosing
 from typing import Any, cast
 
 from fastapi import WebSocket, WebSocketDisconnect
+from pydantic import ValidationError
 from vllm.engine.protocol import StreamingInput
 from vllm.logger import init_logger
 from vllm.utils import random_uuid
-from vllm_omni.entrypoints.openai.protocol.audio import OpenAICreateSpeechRequest
+from vllm_omni.entrypoints.openai.protocol.audio import OpenAICreateSpeechRequest, StreamingSpeechSessionConfig
 from vllm_omni.entrypoints.openai.serving_speech_stream import OmniStreamingSpeechHandler
 from vllm_omni.entrypoints.utils import coerce_param_message_types
 
@@ -156,12 +157,18 @@ class EasyMagpieInputStream:
         first_info = first_prompt.setdefault("additional_information", {})
         first_info["text_token"] = first_token_ids
         first_info["text_token_start"] = text_token_start
+        bounded = first_info.get('use_cfg') is True or 'max_stream_tokens' in first_info
+        if bounded:
+            first_info['max_stream_tokens'] = self.max_new_tokens
         if self.text_prefill_num:
             first_info["text_prefill_num"] = self.text_prefill_num
             first_info["prefill_text_tokens"] = first_token_ids[: self.text_prefill_num]
             first_required_frames = 1 + len(first_token_ids) - self.text_prefill_num
         else:
             first_required_frames = len(first_token_ids)
+        submitted_frames = first_required_frames
+        if bounded and submitted_frames >= self.max_new_tokens:
+            raise ValueError('Streaming text must leave capacity for EOS and the acoustic tail')
         yield StreamingInput(
             prompt=first_prompt,
             sampling_params=_sampling_params_with_max_tokens(self.sampling_params, first_required_frames),
@@ -178,6 +185,9 @@ class EasyMagpieInputStream:
             token_ids, input_done = self._accumulate_queued_tokens(token_ids)
             if input_done:
                 token_ids.append(self.text_eos_id)
+            submitted_frames += len(token_ids)
+            if bounded and submitted_frames >= self.max_new_tokens:
+                raise ValueError('Streaming text exceeds max_stream_tokens acoustic-tail capacity')
             yield StreamingInput(
                 prompt={
                     "prompt_token_ids": [0],
@@ -191,6 +201,9 @@ class EasyMagpieInputStream:
 
         await self._wait_for_segment_completion()
         if not input_done:
+            submitted_frames += 1
+            if bounded and submitted_frames >= self.max_new_tokens:
+                raise ValueError('Streaming EOS exceeds max_stream_tokens acoustic-tail capacity')
             yield StreamingInput(
                 prompt={
                     "prompt_token_ids": [0],
@@ -204,7 +217,7 @@ class EasyMagpieInputStream:
             text_token_start += 1
             await self._wait_for_segment_completion()
 
-        tail_max_tokens = self.max_new_tokens - self.observed_output_frames
+        tail_max_tokens = self.max_new_tokens - (submitted_frames if bounded else self.observed_output_frames)
         yield StreamingInput(
             prompt={
                 "prompt_token_ids": [0],
@@ -215,6 +228,17 @@ class EasyMagpieInputStream:
                 tail_max_tokens,
             ),
         )
+        if bounded:
+            # Exhausting the iterator sends a final sentinel to every stage.
+            # Let Stage 0 finish its acoustic tail before that sentinel can
+            # close a codec stage still processing an earlier text segment.
+            await self._wait_for_segment_completion()
+
+
+class EasyMagpieStreamingSessionConfig(StreamingSpeechSessionConfig):
+    """EasyMagpie acoustic settings carried unchanged to backend validation."""
+
+    extra_params: dict[str, Any] | None = None
 
 
 class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
@@ -265,6 +289,8 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
                 response_format="pcm",
                 max_new_tokens=config.max_new_tokens,
                 stream=True,
+                ref_audio=config.ref_audio,
+                extra_params=config.extra_params,
             )
             spec = adapter.build_streaming_spec(request)
             text_encoder = spec.tokenizer.incremental_encoder()
@@ -416,3 +442,31 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
                     await self._speech_service.engine_client.abort(request_id)
                 except Exception:
                     logger.debug("Failed to abort incremental request %s", request_id, exc_info=True)
+
+    async def _receive_config(self, websocket: WebSocket) -> StreamingSpeechSessionConfig | None:
+        if getattr(self._speech_service, "_tts_model_type", None) != _MODEL_TYPE:
+            return await super()._receive_config(websocket)
+        try:
+            raw = await asyncio.wait_for(websocket.receive_text(), timeout=self._config_timeout)
+        except asyncio.TimeoutError:
+            await self._send_error(websocket, "Timeout waiting for session.config")
+            return None
+        if len(raw) > 4 * 1024 * 1024:
+            await self._send_error(websocket, "session.config message too large")
+            return None
+        try:
+            message = json.loads(raw)
+        except json.JSONDecodeError:
+            await self._send_error(websocket, "Invalid JSON in session.config")
+            return None
+        if not isinstance(message, dict):
+            await self._send_error(websocket, "session.config must be a JSON object")
+            return None
+        if message.get("type") != "session.config":
+            await self._send_error(websocket, f"Expected session.config, got: {message.get('type')}")
+            return None
+        try:
+            return EasyMagpieStreamingSessionConfig(**{key: value for key, value in message.items() if key != "type"})
+        except ValidationError as error:
+            await self._send_error(websocket, f"Invalid session config: {error}")
+            return None

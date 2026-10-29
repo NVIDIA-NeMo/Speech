@@ -32,12 +32,7 @@ def preserve_resumable_segment(output, request_state) -> bool:
 
 def patch_streaming_lifecycle() -> None:
     """Patch segment and request completion for the pinned vLLM-Omni lifecycle."""
-    from vllm_omni.engine.messages import OutputMessage
-    from vllm_omni.engine.orchestrator import (
-        Orchestrator,
-        _build_terminal_empty_output,
-        _infer_stage_audio_sample_rate,
-    )
+    from vllm_omni.engine.orchestrator import Orchestrator
 
     original_outputs = Orchestrator._handle_processed_outputs
     if not getattr(original_outputs, "_easymagpie_patched", False):
@@ -48,7 +43,13 @@ def patch_streaming_lifecycle() -> None:
                 request_state = self.request_states.get(output.request_id)
                 if request_state is not None:
                     preserve_resumable_segment(output, request_state)
-            return await original_outputs(self, stage_id, replica_id, outputs)
+            result = await original_outputs(self, stage_id, replica_id, outputs)
+            # Raw terminal acknowledgements are recorded before this callback.
+            # Process the real audio outputs first; only then bridge a terminal
+            # acknowledgement dropped by the output processor.
+            for request_id in list(getattr(self, '_easymagpie_terminal_requests', ())):
+                await _complete_drained_stream(self, request_id)
+            return result
 
         patched_outputs._easymagpie_patched = True
         Orchestrator._handle_processed_outputs = patched_outputs
@@ -67,32 +68,51 @@ def patch_streaming_lifecycle() -> None:
         if request_state is None:
             return
 
-        # TODO(vLLM-Omni upstream): a final streaming update can arrive after
-        # every stage is already WAITING_FOR_STREAMING_REQ. Each scheduler then
-        # removes its request without a model step, so no processed output ever
-        # reaches Orchestrator._route_output() and AsyncOmni.generate() waits
-        # forever. The orchestrator owns the session and must publish terminal
-        # frontend state after submitting the non-resumable update. Remove this
-        # private-state bridge once upstream handles that lifecycle explicitly.
-        final_stage_id = request_state.final_stage_id
-        final_pool = self.stage_pools[final_stage_id]
-        terminal_output = _build_terminal_empty_output(
-            msg.request_id,
-            final_output_type=getattr(final_pool.stage_client, "final_output_type", None),
-            audio_sample_rate=_infer_stage_audio_sample_rate(final_pool),
-        )
-        await self.output_async_queue.put(
-            OutputMessage(
-                request_id=msg.request_id,
-                stage_id=final_stage_id,
-                replica_id=final_pool.get_bound_replica_id(msg.request_id) or 0,
-                engine_outputs=terminal_output,
-                metrics=None,
-                finished=True,
-                stage_submit_ts=request_state.stage_submit_ts.get(final_stage_id),
-            )
-        )
-        await self._cleanup_request_ids([msg.request_id])
+        # Text input ending does not mean the downstream codec has drained.
+        # Keep the request live until every selected output stage acknowledges
+        # its terminal connector payload.
+        pending = getattr(self, '_easymagpie_terminal_requests', None)
+        if pending is None:
+            pending = self._easymagpie_terminal_requests = set()
+        pending.add(msg.request_id)
+        await _complete_drained_stream(self, msg.request_id)
 
     patched_update._easymagpie_terminal_patched = True
     Orchestrator._handle_streaming_update = patched_update
+
+
+async def _complete_drained_stream(orchestrator, request_id) -> None:
+    """Bridge a dropped terminal output only after downstream acknowledgement."""
+    pending = orchestrator._easymagpie_terminal_requests
+    state = orchestrator.request_states.get(request_id)
+    if state is None:
+        pending.discard(request_id)
+        return
+    stages = state.final_output_stage_ids or {state.final_stage_id}
+    if not stages.issubset(state.finished_final_output_stage_ids):
+        return
+
+    from vllm_omni.engine.messages import OutputMessage
+    from vllm_omni.engine.orchestrator import _build_terminal_empty_output, _infer_stage_audio_sample_rate
+
+    # vLLM may drop the terminal output after removing a streaming session.
+    # Its raw acknowledgement still proves the codec consumed the final chunk.
+    pool = orchestrator.stage_pools[state.final_stage_id]
+    terminal = _build_terminal_empty_output(
+        request_id,
+        final_output_type=getattr(pool.stage_client, 'final_output_type', None),
+        audio_sample_rate=_infer_stage_audio_sample_rate(pool),
+    )
+    await orchestrator.output_async_queue.put(
+        OutputMessage(
+            request_id=request_id,
+            stage_id=state.final_stage_id,
+            replica_id=pool.get_bound_replica_id(request_id) or 0,
+            engine_outputs=terminal,
+            metrics=None,
+            finished=True,
+            stage_submit_ts=state.stage_submit_ts.get(state.final_stage_id),
+        )
+    )
+    pending.discard(request_id)
+    await orchestrator._cleanup_request_ids([request_id])

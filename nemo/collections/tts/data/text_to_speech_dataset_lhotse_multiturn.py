@@ -350,6 +350,8 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         phoneme_turn_max_words_to_drop: Turns with this many words or fewer keep empty phoneme string.
         load_normalized_text_percent: Probability in `[0.0, 1.0]` of loading the normalized transcript when
             available. Defaults to `1.0`.
+        force_raw_text_input: Select raw text and disable input phoneme-span parsing and random replacement.
+            The model can retain its reserved phoneme vocabulary while this dataset emits only raw-text BPE IDs.
         context_audio_shuffle_batch_prob: Probability of replacing valid audio contexts with audio contexts
             from other items in the same training batch. Text contexts are not changed.
         use_aligned_text_head: Add normalized spoken transcripts and acoustic spans
@@ -413,10 +415,14 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         use_attention_alignment: bool = False,
         aligned_text_strip_punctuation: bool = True,
         aligned_text_use_normalized_text: bool = True,
+        force_raw_text_input: bool = False,
     ):
         super().__init__()
         if type(aligned_text_use_normalized_text) is not bool:
             raise ValueError('aligned_text_use_normalized_text must be a boolean')
+        if type(force_raw_text_input) is not bool:
+            raise ValueError('force_raw_text_input must be a boolean')
+        self.force_raw_text_input = force_raw_text_input
         self.sample_rate = sample_rate
         self.volume_norm = volume_norm
 
@@ -452,9 +458,9 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         self.aligned_text_strip_punctuation = aligned_text_strip_punctuation
         self.aligned_text_use_normalized_text = aligned_text_use_normalized_text
         self.ignore_phoneme_languages = ignore_phoneme_languages or []
-        self.enable_phoneme_text_input = enable_phoneme_text_input
+        self.enable_phoneme_text_input = enable_phoneme_text_input and not force_raw_text_input
         self.text_phoneme_token_offset = text_phoneme_token_offset
-        self.partial_phoneme_text_prob = partial_phoneme_text_prob
+        self.partial_phoneme_text_prob = 0.0 if force_raw_text_input else partial_phoneme_text_prob
         self.partial_phoneme_portion_min = partial_phoneme_portion_min
         self.partial_phoneme_portion_max = partial_phoneme_portion_max
         self.phoneme_text_bop_marker = phoneme_text_bop_marker
@@ -469,7 +475,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         self.phoneme_turn_dropout_turn_prob = phoneme_turn_dropout_turn_prob
         self.phoneme_turn_max_words_to_drop = phoneme_turn_max_words_to_drop
         _validate_probability("load_normalized_text_percent", load_normalized_text_percent)
-        self.load_normalized_text_percent = load_normalized_text_percent
+        self.load_normalized_text_percent = 0.0 if force_raw_text_input else load_normalized_text_percent
         if not 0.0 <= context_audio_shuffle_batch_prob <= 1.0:
             raise ValueError("context_audio_shuffle_batch_prob must be between 0 and 1.")
         self.context_audio_shuffle_batch_prob = context_audio_shuffle_batch_prob

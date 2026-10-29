@@ -174,7 +174,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         self.attention_alignment_config = dict(cfg.get('attention_alignment', {}) or {})
         for name, default, minimum in (
             ('start_step', 10000, 0),
-            ('ramp_steps', 1000, 1),
+            ('ramp_steps', 1000, 0),
             ('prior_anneal_steps', 5000, 1),
             ('query_chunk_size', 128, 1),
             ('look_back_tokens', 0, 0),
@@ -221,6 +221,10 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             if heads is not None and any(head >= decoder_config.num_attention_heads for head in heads):
                 raise ValueError('attention_alignment.heads contains an index outside the decoder head count')
         self.attention_alignment_config['heads'] = heads
+        force_raw_text = self.attention_alignment_config.get('force_raw_text', False)
+        if type(force_raw_text) is not bool:
+            raise ValueError('attention_alignment.force_raw_text must be a boolean')
+        self.attention_alignment_config['force_raw_text'] = force_raw_text
         self.alignment_visualization_config = dict(cfg.get('alignment_visualization', {}) or {})
         plot_enabled = self.alignment_visualization_config.get('enabled', True)
         if type(plot_enabled) is not bool:
@@ -1744,7 +1748,11 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         """Warm up the teacher, ramp guidance, then remove only the forward prior."""
         settings = self.attention_alignment_config
         elapsed = int(self.global_step) - settings['start_step']
-        ramp = min(1.0, max(0.0, elapsed / settings['ramp_steps']))
+        ramp = (
+            float(elapsed >= 0)
+            if settings['ramp_steps'] == 0
+            else min(1.0, max(0.0, elapsed / settings['ramp_steps']))
+        )
         decay = min(1.0, max(0.0, (elapsed - settings['ramp_steps']) / settings['prior_anneal_steps']))
         return ramp, settings['prior_strength'] * ramp * (1.0 - decay)
 
@@ -3272,12 +3280,25 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             if not callable(getattr(self.phoneme_tokenizer, 'encode_with_offsets', None)):
                 raise ValueError("Phoneme lexicon loss weighting requires an IPA BPE tokenizer with offsets")
 
+    def _force_raw_attention_text(self):
+        """Disable text-side transformations without changing the model's reserved vocabulary."""
+        force = (self.cfg.get('attention_alignment', {}) or {}).get('force_raw_text', False)
+        if type(force) is not bool:
+            raise ValueError('attention_alignment.force_raw_text must be a boolean')
+        return self.cfg.get('use_attention_alignment', False) and force
+
     def get_dataset(self, dataset_cfg, dataset_type):
         if self.cfg.get('dynamic_phoneme_delay_recompute_alignment', False):
             raise ValueError('dynamic_phoneme_delay_recompute_alignment requires dynamic_phoneme_delay and Lhotse')
         if self.cfg.get('dynamic_phoneme_delay', False):
             raise ValueError('dynamic_phoneme_delay requires the Lhotse multiturn dataloader')
         self._initialize_phoneme_loss_lexicon()
+        force_raw_text = self._force_raw_attention_text()
+        source_kwargs = {}
+        if force_raw_text:
+            source_kwargs = {'force_raw_text_input': True, 'load_normalized_text_percent': 0.0}
+        elif 'load_normalized_text_percent' in dataset_cfg:
+            source_kwargs['load_normalized_text_percent'] = dataset_cfg.load_normalized_text_percent
         dataset = safe_instantiate(
             dataset_cfg.dataset,
             sample_rate=self.sample_rate,
@@ -3295,10 +3316,11 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             context_duration_min=self.cfg.context_duration_min,
             context_duration_max=self.cfg.context_duration_max,
             ignore_phoneme_languages=self.cfg.get("ignore_phoneme_languages", []),
-            enable_phoneme_text_input=self.enable_phoneme_text_input,
+            enable_phoneme_text_input=self.enable_phoneme_text_input and not force_raw_text,
             text_phoneme_token_offset=self.text_phoneme_token_offset,
             phoneme_text_bop_marker=self.phoneme_text_bop_marker,
             phoneme_text_eop_marker=self.phoneme_text_eop_marker,
+            **source_kwargs,
         )
         dataset.load_16khz_audio = False
         dataset.use_aligned_text_head = self.cfg.get('use_aligned_text_head', False)
@@ -3307,6 +3329,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         dataset.attention_alignment_pad_id = self.pad_id
         dataset.aligned_text_strip_punctuation = self.cfg.get('aligned_text_strip_punctuation', True)
         dataset.aligned_text_use_normalized_text = self.aligned_text_use_normalized_text
+        dataset.force_raw_text_input = force_raw_text
         dataset.tokenizer_config = (
             self.cfg.text_tokenizers
         )  # This will be used in worker_init_fn for instantiating tokenizer
@@ -3325,7 +3348,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         # TODO @xueyang: better to distinguish cfg. self.cfg is the model cfg, while cfg here is train_ds cfg. Also
         #   cfg is a classifier-free guidance.
         self._initialize_phoneme_loss_lexicon()
-        load_normalized_text_percent = dataset_cfg.get("load_normalized_text_percent", 1.0)
+        force_raw_text = self._force_raw_attention_text()
+        load_normalized_text_percent = 0.0 if force_raw_text else dataset_cfg.get("load_normalized_text_percent", 1.0)
         dynamic_delay = self.cfg.get('dynamic_phoneme_delay', False)
         recompute_alignment = self.cfg.get('dynamic_phoneme_delay_recompute_alignment', False)
         if recompute_alignment and not dynamic_delay:
@@ -3360,7 +3384,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 tokenizer_config=self.cfg.text_tokenizers,
                 phoneme_tokenizer_config=self.cfg.get("phoneme_tokenizer", None),
                 ignore_phoneme_languages=self.cfg.get("ignore_phoneme_languages", []),
-                enable_phoneme_text_input=self.enable_phoneme_text_input,
+                enable_phoneme_text_input=self.enable_phoneme_text_input and not force_raw_text,
                 text_phoneme_token_offset=self.text_phoneme_token_offset,
                 partial_phoneme_text_prob=self.partial_phoneme_text_prob if mode == 'train' else 0.0,
                 partial_phoneme_portion_min=self.partial_phoneme_portion_min,
@@ -3389,6 +3413,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 use_attention_alignment=self.cfg.get('use_attention_alignment', False),
                 aligned_text_strip_punctuation=self.cfg.get('aligned_text_strip_punctuation', True),
                 aligned_text_use_normalized_text=self.aligned_text_use_normalized_text,
+                force_raw_text_input=force_raw_text,
             )
             dataset = FallbackDataset(dataset)
         else:
@@ -3410,7 +3435,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 tokenizer_config=self.cfg.text_tokenizers,
                 phoneme_tokenizer_config=self.cfg.get("phoneme_tokenizer", None),
                 ignore_phoneme_languages=self.cfg.get("ignore_phoneme_languages", []),
-                enable_phoneme_text_input=self.enable_phoneme_text_input,
+                enable_phoneme_text_input=self.enable_phoneme_text_input and not force_raw_text,
                 text_phoneme_token_offset=self.text_phoneme_token_offset,
                 partial_phoneme_text_prob=self.partial_phoneme_text_prob if mode == 'train' else 0.0,
                 partial_phoneme_portion_min=self.partial_phoneme_portion_min,
@@ -3423,6 +3448,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             dataset.attention_alignment_bos_id = self.bos_id
             dataset.attention_alignment_pad_id = self.pad_id
             dataset.aligned_text_use_normalized_text = self.aligned_text_use_normalized_text
+            dataset.force_raw_text_input = force_raw_text
 
         data_config = dataset_cfg.dataset
         if dynamic_delay:

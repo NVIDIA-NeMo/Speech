@@ -26,8 +26,9 @@ feature creates no additional modules and preserves the original training path.
 To initialize only the teacher from an existing checkpoint, set the top-level
 `pretrained_model_text_speech_aligner=/path/to/checkpoint.nemo`. It loads only
 `text_aligner` after full-model pretrained initialization; the repeated text head
-and shared embeddings keep their current weights. Configure
-`model.aligned_text_aligner` to match the source teacher exactly. This optional
+and shared embeddings keep their current weights. `.nemo` donors restore the
+teacher's architecture configuration as well, including optional speaker
+conditioning. Weight-only donors require a matching teacher configuration. This optional
 parameter defaults to `null` and does not alter the curriculum switch. See the
 [attention alignment initialization notes](README_easy_magpietts_attention_alignment.md)
 for supported formats, compatibility requirements and resume behavior.

@@ -95,6 +95,7 @@ class TextToSpeechDataset(Dataset):
         volume_norm: Whether to apply volume normalization to loaded audio.
         load_normalized_text_percent: Probability in `[0.0, 1.0]` of loading the normalized transcript when
             available. Defaults to `1.0`.
+        force_raw_text_input: Always select original manifest text, ignoring normalized metadata. Defaults to False.
     """
 
     def __init__(
@@ -111,7 +112,11 @@ class TextToSpeechDataset(Dataset):
         max_duration: Optional[float] = None,
         volume_norm: bool = True,
         load_normalized_text_percent: float = 1.0,
+        force_raw_text_input: bool = False,
     ):
+        if type(force_raw_text_input) is not bool:
+            raise ValueError('force_raw_text_input must be a boolean')
+        self.force_raw_text_input = force_raw_text_input
         super().__init__()
 
         self.sample_rate = sample_rate
@@ -121,7 +126,7 @@ class TextToSpeechDataset(Dataset):
         self.include_align_prior = self.align_prior_hop_length is not None
         self.volume_norm = volume_norm
         _validate_probability("load_normalized_text_percent", load_normalized_text_percent)
-        self.load_normalized_text_percent = load_normalized_text_percent
+        self.load_normalized_text_percent = 0.0 if force_raw_text_input else load_normalized_text_percent
 
         if speaker_path:
             self.include_speaker = True
@@ -362,6 +367,8 @@ class MagpieTTSDataset(TextToSpeechDataset):
         load_normalized_text_percent: Probability in `[0.0, 1.0]` of loading the normalized transcript when
             available. Defaults to `1.0`.
         codec_model_samples_per_frame: Num samples in waveform per codec frame (codec downsample factor).
+        force_raw_text_input: Select raw manifest text and encode pronunciation-control markers as ordinary BPE text.
+            This changes dataset tokenization only and does not shrink the model's reserved phoneme vocabulary.
         bos_id: Text BOS token id.
         eos_id: Text EOS token id.
         num_audio_codebooks: Number of audio codebooks.
@@ -410,6 +417,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
         add_language_to_context_text: bool = False,
         default_tokenizer_name: str = "english_phoneme",
         load_normalized_text_percent: float = 1.0,
+        force_raw_text_input: bool = False,
     ):
         super().__init__(
             dataset_meta=dataset_meta,
@@ -424,6 +432,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
             max_duration=max_duration,
             volume_norm=volume_norm,
             load_normalized_text_percent=load_normalized_text_percent,
+            force_raw_text_input=force_raw_text_input,
         )
         self.bos_id = bos_id  # TODO @xueyang: this should be removed since no other places used it.
         self.eos_id = eos_id
@@ -445,7 +454,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
         self.text_context_remapping = text_context_remapping
         self.text_context_remapping_prob = text_context_remapping_prob
         self.ignore_phoneme_languages = ignore_phoneme_languages or []
-        self.enable_phoneme_text_input = enable_phoneme_text_input
+        self.enable_phoneme_text_input = enable_phoneme_text_input and not self.force_raw_text_input
         self.text_phoneme_token_offset = text_phoneme_token_offset
         self.phoneme_text_bop_marker = phoneme_text_bop_marker
         self.phoneme_text_eop_marker = phoneme_text_eop_marker

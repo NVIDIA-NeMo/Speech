@@ -95,9 +95,10 @@ model:
   # No CTC, repeated-text input feedback, or inference-time prior is introduced by this flag.
   use_attention_alignment: false
   attention_alignment:
+    force_raw_text: false # Dataset-only raw BPE; preserves the model's reserved phoneme embedding rows.
     loss_weight: 0.1
     start_step: 10000
-    ramp_steps: 1000
+    ramp_steps: 1000 # Zero enables full guidance at start_step for an already pretrained aligner.
     prior_anneal_steps: 5000
     prior_strength: 1.0
     band_width: 1.0

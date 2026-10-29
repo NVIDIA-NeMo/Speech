@@ -20,13 +20,14 @@ from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from functools import partial
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import soundfile as sf
 import torch
 from lightning.pytorch import Trainer
-from omegaconf import DictConfig, open_dict
+from omegaconf import DictConfig, OmegaConf, open_dict
 from torch import nn
 from transformers import AutoConfig, AutoModelForCausalLM
 
@@ -823,11 +824,15 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             logging.info(f"Model restored from the checkpoint: {checkpoint_path} !")
 
     def restore_text_speech_aligner_from_pretrained_checkpoint(self, checkpoint_path):
-        """Restore only the configured text-speech aligner, requiring a complete architecture match.
+        """Restore a complete text-speech aligner without changing the other model weights.
 
         Accepts a full ``.nemo`` archive, a PyTorch model state dictionary, a Lightning checkpoint,
-        or a bare aligner state dictionary. Other model weights and checkpoint configuration are ignored.
+        or a bare aligner state dictionary. A ``.nemo`` archive's aligner configuration is restored,
+        including optional speaker conditioning, while the receiving audio/text feature dimensions
+        remain fixed. Other model weights and checkpoint configuration are ignored. Weight-only
+        checkpoints require the receiving aligner architecture to match because they have no configuration.
         ``None`` leaves the model unchanged. Alignment must already be enabled in the model configuration.
+        Call this initialization method before creating the optimizer.
         PyTorch/Lightning checkpoint files must be trusted: their training metadata requires pickle loading.
         """
         if checkpoint_path is None:
@@ -840,9 +845,20 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             )
 
         source_path = str(checkpoint_path)
+        source_aligner_config = None
         if source_path.lower().endswith('.nemo'):
             with tempfile.TemporaryDirectory() as tmpdir:
                 SaveRestoreConnector._unpack_nemo_file(source_path, tmpdir)
+                config_path = Path(tmpdir) / 'model_config.yaml'
+                if config_path.is_file():
+                    source_config = OmegaConf.load(config_path)
+                    source_model_config = source_config.get('model', source_config)
+                    if isinstance(source_model_config, Mapping) and 'aligned_text_aligner' in source_model_config:
+                        saved_aligner_config = source_model_config.aligned_text_aligner
+                        if saved_aligner_config is not None:
+                            if not OmegaConf.is_dict(saved_aligner_config):
+                                raise ValueError('The source aligned_text_aligner configuration must be a mapping.')
+                            source_aligner_config = OmegaConf.to_container(saved_aligner_config, resolve=True)
                 checkpoint_state = torch.load(f'{tmpdir}/model_weights.ckpt', map_location='cpu', weights_only=True)
         else:
             checkpoint_state = torch.load(source_path, map_location='cpu', weights_only=False)
@@ -851,7 +867,39 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         if not isinstance(checkpoint_state, Mapping):
             raise ValueError(f'Checkpoint {source_path!r} does not contain a model state dictionary.')
 
-        expected_state = aligner.state_dict()
+        replacement_aligner = aligner
+        if source_aligner_config is not None:
+            from nemo.collections.tts.modules.glow_tts_aligner import TinyGlowTTSAligner
+
+            source_aligner_config = EasyMagpieTTSInferenceModel._resolve_aligned_text_aligner_config(
+                source_aligner_config, restoring=True
+            )
+            for name in ('audio_channels', 'text_channels'):
+                source_dimension = source_aligner_config.pop(name, getattr(aligner, name))
+                if source_dimension != getattr(aligner, name):
+                    raise ValueError(
+                        f'Checkpoint {source_path!r} requires aligner {name}={source_dimension}, '
+                        f'but the receiving model provides {getattr(aligner, name)}.'
+                    )
+            comparable_config = dict(source_aligner_config)
+            if comparable_config['text_filter_channels'] is None:
+                comparable_config['text_filter_channels'] = 4 * comparable_config['hidden_channels']
+            if any(getattr(aligner, key, None) != value for key, value in comparable_config.items()):
+                parameter = next(aligner.parameters())
+                # All parameters will be restored, so their temporary initialization
+                # must not advance the receiving model's dropout/dequantization RNG.
+                with torch.random.fork_rng(devices=[]), torch.device('cpu'):
+                    replacement_aligner = TinyGlowTTSAligner(
+                        audio_channels=aligner.audio_channels,
+                        text_channels=aligner.text_channels,
+                        **source_aligner_config,
+                    )
+                replacement_aligner = replacement_aligner.to(device=parameter.device, dtype=parameter.dtype)
+                replacement_aligner.train(aligner.training)
+
+        # The candidate is separate until its complete checkpoint has been validated.
+        # This preserves the current teacher and configuration if a donor is incompatible.
+        expected_state = replacement_aligner.state_dict()
         normalized_state = {}
         wrappers = ('model.', 'module.', '_orig_mod.')
         for key, value in checkpoint_state.items():
@@ -900,7 +948,13 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             )
 
         # Validate the complete state before loading: PyTorch strict loading alone can partially copy weights.
-        aligner.load_state_dict(aligner_state, strict=True)
+        replacement_aligner.load_state_dict(aligner_state, strict=True)
+        if source_aligner_config is not None:
+            with open_dict(self.cfg):
+                self.cfg.aligned_text_aligner = source_aligner_config
+        if replacement_aligner is not aligner:
+            self.text_aligner = replacement_aligner
+            logging.info('Restored the source text-speech aligner architecture, including its speaker conditioning.')
         logging.info(
             f'Text-speech aligner restored from the checkpoint: {source_path} ({len(aligner_state)} tensors).'
         )

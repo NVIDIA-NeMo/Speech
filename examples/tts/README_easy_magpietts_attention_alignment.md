@@ -38,14 +38,22 @@ top-level `pretrained_model_text_speech_aligner` parameter:
 The aligner-only load runs after `pretrained_model` and NeMo's `init_from_*`
 initialization. It restores only `text_aligner`: the flow, small text encoder,
 and optional speaker encoder. Decoder, shared text embeddings, repeated text
-head, optimizer and source configuration are not loaded by this parameter.
+head, optimizer and the source TTS configuration are not loaded by this parameter.
 Full `.nemo` archives, flat PyTorch state dictionaries, Lightning `state_dict`
 checkpoints and bare aligner state dictionaries are supported.
 PyTorch/Lightning files must be trusted; their metadata uses ordinary pickle
-deserialization. `.nemo` tensor weights use restricted loading. The receiving
-`model.aligned_text_aligner` configuration must match all teacher keys and tensor
-shapes, including speaker conditioning; mismatches fail before weights are
-copied. The source must use the same text tokenizer and acoustic representation;
+deserialization. `.nemo` tensor weights use restricted loading. A `.nemo` donor's
+`aligned_text_aligner` configuration is restored along with its complete teacher
+weights, including learned ASP speaker conditioning. Only the teacher is rebuilt
+when necessary; its configuration is saved in the receiving model. All other
+modules keep their weights, identities and configuration. Reconstruction preserves
+the current device, dtype, train/eval mode and RNG state. Call this initialization
+before constructing the optimizer.
+
+Weight-only checkpoints have no architecture metadata, so configure their
+receiving teacher to match. Missing or incompatible teacher tensors still fail
+before replacing the module; weights are never silently dropped. The source
+must use the same text tokenizer and acoustic representation;
 these semantics cannot be verified from tensor shapes. A separately trained
 teacher also depends on compatible shared text embeddings, which are retained
 from the base TTS checkpoint.
@@ -53,7 +61,10 @@ from the base TTS checkpoint.
 The parameter defaults to `null` and never enables an alignment mode implicitly.
 `use_attention_alignment` remains `false` by default. A pretrained teacher does
 not change the attention schedule; set `model.attention_alignment.start_step=0`
-explicitly if guidance should begin without the usual warmup.
+explicitly if guidance should begin without the usual warmup. For full guidance
+on the first optimizer step with an already trained teacher, also set
+`model.attention_alignment.ramp_steps=0`. The repeated-head setting
+`start_aligner_text_head_steps` does not control this attention schedule.
 
 Do not resume an optimizer from a checkpoint with an incompatible module layout.
 Trainer checkpoint resume restores the complete training state after these
@@ -102,6 +113,7 @@ The existing FlashAttention path is preserved for ordinary attention.
 ```yaml
 attention_alignment:
   loss_weight: 0.1
+  force_raw_text: false
   start_step: 10000
   ramp_steps: 1000
   prior_anneal_steps: 5000
@@ -122,6 +134,10 @@ These are optimizer-global-step settings, including checkpoint resume:
   ramp from zero to their configured values.
 - From 11,000 to 16,000, the forward prior fades to zero. Attention supervision
   remains active after the prior disappears.
+
+For a pretrained teacher, `start_step=0, ramp_steps=0` starts attention supervision
+and the full forward prior at step zero, then fades the prior over
+`prior_anneal_steps`. The default warmup and ramp above are unchanged.
 
 `layers` selects **attention-layer ordinals**, counting only attention blocks in
 the hybrid stack. `middle` (default) selects ordinal `count // 2`: with three
@@ -165,6 +181,14 @@ raw conditioning text even when normalized metadata is available, set:
 ++model.train_ds.load_normalized_text_percent=0.0 \
 ++model.validation_ds.load_normalized_text_percent=0.0
 ```
+
+To enforce raw BPE throughout the attention experiment, also set
+`model.attention_alignment.force_raw_text=true`. This dataset-only override
+forces normalization sampling to zero and disables IPA text substitution and
+marked-IPA parsing, while preserving the model's reserved phoneme embedding
+rows and phoneme output head. It defaults to false and only takes effect when
+`use_attention_alignment=true`. Legacy validation now honors its top-level
+`load_normalized_text_percent` setting as well as the Lhotse loaders.
 
 The separate repeated-head experiment also supports
 `model.aligned_text_use_normalized_text=false` for raw teacher/head transcripts.

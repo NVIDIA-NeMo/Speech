@@ -20,21 +20,22 @@ import math
 import numpy as np
 import torch
 from torch import nn
-from torch.nn.functional import gelu
 
 from nemo.collections.asr.parts.submodules.multi_head_attention import RotaryPositionalEncoding
 from nemo.collections.common.parts import form_attention_mask
+from nemo.collections.common.parts.utils import build_activation
 
-__all__ = ["TransformerEmbedding", "AttentionBridge", "RMSNorm"]
+__all__ = ["TransformerEmbedding", "AttentionBridge", "RMSNorm", "PositionWiseFF", "GatedPositionWiseFF"]
 
 
 class RMSNorm(nn.Module):
     """
     Root mean square normalization (Zhang and Sennrich, 2019) with a learned scale and no bias.
 
-    Written with elementary ops in the input dtype so that ONNX export works:
-    ``torch.nn.RMSNorm`` lowers to ``aten::rms_norm``, which the exporter does not support,
-    and dtype casts around the computation leave the legacy exporter's graph with dangling references.
+    Written with elementary ops so that ONNX export works:
+    ``torch.nn.RMSNorm`` lowers to ``aten::rms_norm``, which the exporter does not support.
+    The mean square is accumulated in float32, as ``torch.nn.functional.rms_norm`` does for half inputs,
+    and only the scale is cast back to the input dtype, which the output keeps.
     The state is ``weight``, as in ``torch.nn.RMSNorm``.
 
     Args:
@@ -48,8 +49,9 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(normalized_shape))
 
     def forward(self, x):
-        variance = x.pow(2).mean(dim=-1, keepdim=True)
-        return x * torch.rsqrt(variance + self.eps) * self.weight
+        # in float16 the squares overflow from magnitude 256 on, so the mean square is taken in float32
+        variance = x.float().pow(2).mean(dim=-1, keepdim=True)
+        return x * torch.rsqrt(variance + self.eps).to(x.dtype) * self.weight
 
 
 class FixedPositionalEncoding(nn.Module):
@@ -167,7 +169,8 @@ class TransformerEmbedding(nn.Module):
 
         # prepare position embedding for asynchronius decoding (canary streaming)
         if torch.is_tensor(start_pos):
-            shift_pos = start_pos.unsqueeze(-1)
+            # under tracing the shape-derived start position is a CPU tensor even for CUDA inputs
+            shift_pos = start_pos.unsqueeze(-1).to(input_ids.device)
             start_pos = 0
         else:
             shift_pos = None
@@ -354,30 +357,67 @@ class PositionWiseFF(nn.Module):
         inner_size: number of neurons in the intermediate part of feed-forward
             net, usually is (4-8 x hidden_size) in the papers
         ffn_dropout: probability of dropout applied to net output
-        hidden_act: activation function used between two linear layers: ``relu``, ``gelu``,
-            or a gated variant ``swiglu``, ``geglu`` or ``reglu`` (Shazeer, 2020),
-            whose first projection has twice the inner size and whose activated first half gates the second half
+        hidden_act: activation between the two linear layers, a module or its name in the activation registry
+            (``relu``, ``gelu``, ``swish``, ``squared_relu``, ...)
         use_bias: bias in both projections (default True)
     """
 
-    def __init__(self, hidden_size, inner_size, ffn_dropout=0.0, hidden_act="relu", use_bias: bool = True):
+    def __init__(
+        self, hidden_size, inner_size, ffn_dropout=0.0, hidden_act: nn.Module | str = "relu", use_bias: bool = True
+    ):
         super().__init__()
-        ACT2FN = {"gelu": gelu, "relu": torch.relu, "swiglu": nn.functional.silu, "geglu": gelu, "reglu": torch.relu}
-        if hidden_act not in ACT2FN:
-            raise ValueError(f"hidden_act must be one of {sorted(ACT2FN)}, got {hidden_act!r}")
-        self.gated = hidden_act in ("swiglu", "geglu", "reglu")
-        self.dense_in = nn.Linear(hidden_size, 2 * inner_size if self.gated else inner_size, bias=use_bias)
+        self.dense_in = nn.Linear(hidden_size, inner_size, bias=use_bias)
         self.dense_out = nn.Linear(inner_size, hidden_size, bias=use_bias)
         self.layer_dropout = nn.Dropout(ffn_dropout)
-        self.act_fn = ACT2FN[hidden_act]
+        self.act_fn = build_activation(hidden_act)
 
     def forward(self, hidden_states):
         output_states = self.dense_in(hidden_states)
-        if self.gated:
-            gate, output_states = output_states.chunk(2, dim=-1)
-            output_states = self.act_fn(gate) * output_states
-        else:
-            output_states = self.act_fn(output_states)
+        output_states = self.act_fn(output_states)
+        output_states = self.dense_out(output_states)
+        output_states = self.layer_dropout(output_states)
+        return output_states
+
+
+class GatedPositionWiseFF(nn.Module):
+    """
+    Gated position-wise feed-forward network (the GLU variants of Shazeer, 2020), SwiGLU with the defaults.
+
+    The first projection has twice the inner size; its first half goes through ``hidden_act``
+    and gates its second half, which goes through ``gate_act``:
+    ``dense_out(hidden_act(a) * gate_act(b))`` with ``a, b = dense_in(x).chunk(2)``.
+    A decoder block passes its own ``hidden_act`` on to this block, so a block section names ``hidden_act: swish``
+    for SwiGLU unless the decoder's activation is already the one wanted.
+
+    Args:
+        hidden_size: size of the embeddings in the model, also known as d_model
+        inner_size: size of the gated intermediate representation;
+            the paper keeps the parameter count of the plain network with two thirds of its inner size
+        ffn_dropout: probability of dropout applied to net output
+        hidden_act: activation of the first half, a module or its name in the activation registry; default ``swish``
+        gate_act: activation of the second half; default ``identity``
+        use_bias: bias in both projections; default False, as the gated variants are usually trained
+    """
+
+    def __init__(
+        self,
+        hidden_size,
+        inner_size,
+        ffn_dropout=0.0,
+        hidden_act: nn.Module | str = "swish",
+        gate_act: nn.Module | str = "identity",
+        use_bias: bool = False,
+    ):
+        super().__init__()
+        self.dense_in = nn.Linear(hidden_size, 2 * inner_size, bias=use_bias)
+        self.dense_out = nn.Linear(inner_size, hidden_size, bias=use_bias)
+        self.layer_dropout = nn.Dropout(ffn_dropout)
+        self.act_fn = build_activation(hidden_act)
+        self.gate_act_fn = build_activation(gate_act)
+
+    def forward(self, hidden_states):
+        activated, gate = self.dense_in(hidden_states).chunk(2, dim=-1)
+        output_states = self.act_fn(activated) * self.gate_act_fn(gate)
         output_states = self.dense_out(output_states)
         output_states = self.layer_dropout(output_states)
         return output_states

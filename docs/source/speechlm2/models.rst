@@ -163,16 +163,21 @@ CTC timestamps in vLLM chat responses
 
 A vLLM server whose checkpoint bundles a compatible CTC timestamp head, or
 configures ``ctc_timestamps.adapter_path``, can attach timestamps to chat
-completions. Enable the middleware when starting the server:
+completions, on vLLM's V1 GPU model runner and on Model Runner V2. Start the
+server with the middleware and per-request multimodal kwargs allowed:
 
 .. code-block:: bash
 
     vllm serve /path/to/checkpoint \
-        --middleware nemo.collections.speechlm2.vllm.salm.ctc_serving.ctc_timestamp_middleware
+        --middleware nemo.collections.speechlm2.vllm.salm.ctc_serving.ctc_timestamp_middleware \
+        --trust-request-mm-kwargs
 
-Timestamps need vLLM's V1 GPU model runner. When the engine uses Model Runner
-V2 (for example with a DFlash2 draft, and by default from vLLM 0.30), a bundled
-head is skipped with a warning and opted-in requests report
+Requests opt in through ``mm_processor_kwargs``, which vLLM 0.31 and later
+reject unless the server sets ``--trust-request-mm-kwargs``; set it only when
+clients are trusted. vLLM 0.28 has no such flag, so leave it out there.
+
+When the engine cannot produce timestamps, for example with a chunked encoder,
+a bundled head is skipped with a warning and opted-in requests report
 ``error="not_enabled"``; a configured ``adapter_path`` or
 ``ctc_timestamps.enabled=true`` fails at startup instead. Set
 ``ctc_timestamps.enabled=false``, in ``config.json`` or with

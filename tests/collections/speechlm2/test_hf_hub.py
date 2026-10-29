@@ -113,6 +113,34 @@ def test_save_pretrained_does_not_persist_remote_code_trust(tmp_path, monkeypatc
     assert model.cfg["trust_remote_code"] is True
 
 
+@pytest.mark.parametrize(
+    ("cfg", "expected"),
+    [
+        pytest.param(
+            {"pe_encoder_path": "/models/pee.nemo"},
+            "Nemotron3_5TranscribeForConditionalGeneration",
+            id="transcribe",
+        ),
+        pytest.param({}, "NeMoSpeechLMForConditionalGeneration", id="no-pe-encoder"),
+        pytest.param({"architectures": ["Custom"]}, "Custom", id="explicit-name-kept"),
+    ],
+)
+def test_save_pretrained_names_architecture_after_structure(tmp_path, monkeypatch, cfg, expected):
+    captured = {}
+
+    def fake_save_pretrained(_self, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(PyTorchModelHubMixin, "save_pretrained", fake_save_pretrained)
+    model = object.__new__(_DummyHubModel)
+    model.cfg = cfg
+    model.llm = SimpleNamespace(config=SimpleNamespace(architectures=["NemotronHForCausalLM"]))
+
+    model.save_pretrained(tmp_path)
+
+    assert captured["config"]["architectures"] == [expected]
+
+
 def test_inject_local_artifact_paths_salm_config(tmp_path):
     _write_local_export_artifacts(tmp_path)
     cfg = {

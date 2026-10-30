@@ -375,10 +375,12 @@ class SaveRestoreConnector:
 
               If "src" is local existing path:
                   then it will be returned in absolute path form
-              elif "src" starts with "nemo_file:unique_artifact_name":
+              elif "src" starts with "nemo:unique_artifact_name":
                   .nemo will be untarred to a temporary folder location and an actual existing path will be returned
               else:
                   an error will be raised.
+
+        Archive references must resolve within the extracted model directory.
 
         WARNING: use .register_artifact calls in your models' constructors.
         The returned path is not guaranteed to exist after you have exited your model's constructor.
@@ -406,16 +408,15 @@ class SaveRestoreConnector:
         else:
             src_obj_path = src_obj_name
 
+        # Archive references always use the extracted model directory.
+        if src.startswith("nemo:"):
+            return_path = self._resolve_archive_artifact(app_state.nemo_file_folder, src[5:])
+            artifact_item.path_type = model_utils.ArtifactPathType.TAR_PATH
+
         # src is a local existing path - register artifact and return exact same path for usage by the model
-        if os.path.exists(os.path.abspath(src)):
+        elif os.path.exists(os.path.abspath(src)):
             return_path = os.path.abspath(src)
             artifact_item.path_type = model_utils.ArtifactPathType.LOCAL_PATH
-
-        # this is the case when artifact must be retried from the nemo file
-        # we are assuming that the location of the right nemo file is available from _MODEL_RESTORE_PATH
-        elif src.startswith("nemo:"):
-            return_path = os.path.abspath(os.path.join(app_state.nemo_file_folder, src[5:]))
-            artifact_item.path_type = model_utils.ArtifactPathType.TAR_PATH
 
         # backward compatibility implementation
         elif os.path.exists(src_obj_path):
@@ -629,6 +630,21 @@ class SaveRestoreConnector:
                 logging.debug(
                     f"Time spent for msc.upload_file from {tar_file} to {filename}: {time.time() - start_time:.4f}"
                 )
+
+    @staticmethod
+    def _resolve_archive_artifact(folder: str, source: str) -> str:
+        """Resolve an archive-relative artifact within the extracted model directory."""
+        if folder is None or not source or os.path.isabs(source):
+            raise ValueError("Archive artifact references require an extracted directory and a relative file path.")
+        root = os.path.realpath(folder)
+        resolved = os.path.realpath(os.path.join(root, source))
+        try:
+            contained = os.path.commonpath([root, resolved]) == root
+        except ValueError:
+            contained = False
+        if not contained:
+            raise ValueError("Archive artifact reference must remain within the extracted model directory.")
+        return resolved
 
     @staticmethod
     def _is_safe_path(member, extract_to):

@@ -57,6 +57,9 @@ class HFHubMixin(
             ...     "nvidia/salm-model", distributed_setup=strategy.distributed_setup
             ... )
 
+        Both single-file (``model.safetensors``) and sharded (``model.safetensors.index.json``
+        plus shard files) checkpoints are supported, with or without ``distributed_setup``.
+
         ``trust_remote_code`` is a runtime security decision. It is deliberately
         taken from the caller and overwrites any value stored in the downloaded
         checkpoint config so that a model repository cannot opt itself into
@@ -108,8 +111,11 @@ class HFHubMixin(
                 )
 
             # super()._from_pretrained() below only loads a single model.safetensors file,
-            # not the sharded format (index.json + weight_map). Handle that ourselves first.
-            resolved_index_file = cached_file(model_id, SAFETENSORS_INDEX_FILE, **_cached_file_kwargs)
+            # not the sharded format (index.json + weight_map). Handle that ourselves, but like
+            # transformers, prefer model.safetensors when both are present.
+            resolved_index_file = None
+            if cached_file(model_id, SAFETENSORS_SINGLE_FILE, **_cached_file_kwargs) is None:
+                resolved_index_file = cached_file(model_id, SAFETENSORS_INDEX_FILE, **_cached_file_kwargs)
             if resolved_index_file is not None:
                 # Unlike super()._from_pretrained() below, we call cls(...) ourselves, so these
                 # hub-transport kwargs (which some huggingface_hub versions forward here) must be
@@ -223,6 +229,20 @@ def _distributed_from_pretrained(
     ``__init__`` frame, causing ``KeyError: 'self'``.  By moving the constructor
     call here (a plain module-level function), the problematic frame is avoided.
     """
+    # Resolve weights before building the model so a missing file fails fast.
+    # Like transformers (and the non-distributed path), prefer model.safetensors when both are present.
+    # The DCP reader loads every *.safetensors file in weight_dir, so a sharded checkpoint
+    # only needs all of its shards resolved (i.e. downloaded for a Hub repo) next to each other.
+    weight_file = cached_file(model_id, SAFETENSORS_SINGLE_FILE, **cached_file_kwargs)
+    if weight_file is not None:
+        weight_dir = str(Path(weight_file).parent)
+    else:
+        index_file = cached_file(model_id, SAFETENSORS_INDEX_FILE, **cached_file_kwargs)
+        if index_file is None:
+            raise RuntimeError(f"Missing {SAFETENSORS_SINGLE_FILE} or {SAFETENSORS_INDEX_FILE} file for {model_id=}")
+        shard_files = _resolve_safetensors_shards(model_id, index_file, cached_file_kwargs)
+        weight_dir = str(Path(shard_files[0]).parent)
+
     model_kwargs['cfg']['init_configure_model'] = False
     if torch_dtype is not None:
         model_kwargs['cfg']['torch_dtype'] = (
@@ -236,10 +256,7 @@ def _distributed_from_pretrained(
     instance.configure_model(distributed_setup=distributed_setup)
 
     # 3. Load weights
-    weight_file = cached_file(model_id, SAFETENSORS_SINGLE_FILE, **cached_file_kwargs)
-    if weight_file is None:
-        raise RuntimeError(f"Missing {SAFETENSORS_SINGLE_FILE} file for {model_id=}")
-    _load_state_dict_with_dtensors(instance, str(Path(weight_file).parent))
+    _load_state_dict_with_dtensors(instance, weight_dir)
 
     return instance
 
@@ -285,19 +302,14 @@ def _load_sharded_safetensors(
     (index.json + weight_map). Shard filenames are read as-is, so any split (by size or by
     submodule) works. cls(...) is called here, not in _from_pretrained: see
     _distributed_from_pretrained for why."""
-    import json
-
     from safetensors.torch import _remove_duplicate_names, load_file
 
+    # Resolve shards before building the model so a missing shard fails fast.
+    shard_files = _resolve_safetensors_shards(model_id, index_file, cached_file_kwargs)
     model = cls(**model_kwargs)
-    index = json.loads(Path(index_file).read_text())
-    shard_filenames = sorted(set(index["weight_map"].values()))
 
     state_dict = {}
-    for shard_filename in shard_filenames:
-        resolved_shard_file = cached_file(model_id, shard_filename, **cached_file_kwargs)
-        if resolved_shard_file is None:
-            raise RuntimeError(f"Missing shard {shard_filename!r} listed in {index_file} for {model_id=}")
+    for resolved_shard_file in shard_files:
         state_dict.update(load_file(resolved_shard_file, device=map_location))
 
     # Mirror safetensors.torch.load_model (used by the single-file path): safetensors stores shared
@@ -319,6 +331,20 @@ def _load_sharded_safetensors(
         )
     model.eval()
     return model
+
+
+def _resolve_safetensors_shards(model_id: str, index_file: str, cached_file_kwargs: dict) -> list[str]:
+    """Resolve (download for a Hub repo) every shard listed in a safetensors index's weight_map."""
+    import json
+
+    index = json.loads(Path(index_file).read_text())
+    shard_files = []
+    for shard_filename in sorted(set(index["weight_map"].values())):
+        resolved_shard_file = cached_file(model_id, shard_filename, **cached_file_kwargs)
+        if resolved_shard_file is None:
+            raise RuntimeError(f"Missing shard {shard_filename!r} listed in {index_file} for {model_id=}")
+        shard_files.append(resolved_shard_file)
+    return shard_files
 
 
 def _inject_local_artifact_paths(cfg: dict, model_id: str, cached_file_kwargs: dict) -> None:

@@ -29,7 +29,7 @@ import pytest
 import torch
 
 from nemo.collections.tts.models.easy_magpietts_inference import EasyMagpieTTSInferenceModel
-from nemo.collections.tts.models.nemotron_tts.v2.base import NemotronTTSBaseV2
+from nemo.collections.tts.models.nemotron_tts.v2.base import NemotronTTSBase
 from nemo.collections.tts.modules.magpietts_modules import LocalTransformerType
 
 
@@ -132,7 +132,7 @@ class TestEasyDoTtsPrecomputedContext:
 class TestNemotronTTSV2PrecomputedContext:
     @staticmethod
     def _make_model():
-        model = MagicMock(spec=NemotronTTSBaseV2)
+        model = MagicMock(spec=NemotronTTSBase)
         model.parameters.side_effect = lambda: iter([torch.zeros(1)])
         model.cfg = MagicMock()
         model.cfg.embedding_dim = 8
@@ -159,7 +159,7 @@ class TestNemotronTTSV2PrecomputedContext:
         model = self._make_model()
         context_embedding = torch.randn(7, 8)
 
-        NemotronTTSBaseV2.do_tts(
+        NemotronTTSBase.do_tts(
             model,
             "hello world",
             context_text="Speaker: Example",
@@ -178,7 +178,7 @@ class TestNemotronTTSV2PrecomputedContext:
         model = self._make_model()
 
         with pytest.raises(ValueError, match="context_audio_file_path"):
-            NemotronTTSBaseV2.do_tts(
+            NemotronTTSBase.do_tts(
                 model,
                 "hello world",
                 context_audio_file_path="context.wav",
@@ -193,7 +193,7 @@ class TestNemotronTTSV2PrecomputedContext:
         model.use_speaker_encoder = True
         model.embed_text_tokens.return_value = torch.zeros(2, 3, 8)
         model._validate_precomputed_context_audio.side_effect = (
-            lambda embedding, lengths, batch_size: NemotronTTSBaseV2._validate_precomputed_context_audio(
+            lambda embedding, lengths, batch_size: NemotronTTSBase._validate_precomputed_context_audio(
                 model, embedding, lengths, batch_size
             )
         )
@@ -204,7 +204,7 @@ class TestNemotronTTSV2PrecomputedContext:
         context_embedding = torch.randn(2, 4, 8)
         context_embedding_lens = torch.tensor([4, 2])
 
-        combined, combined_lens, context_codes, context_code_lens = NemotronTTSBaseV2.prepare_context_tensors(
+        combined, combined_lens, context_codes, context_code_lens = NemotronTTSBase.prepare_context_tensors(
             model,
             context_text_tokens=torch.ones(2, 3, dtype=torch.long),
             context_text_tokens_lens=torch.tensor([3, 2]),

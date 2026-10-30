@@ -222,7 +222,7 @@ class EasyModelInferenceParameters:
         return cls(**filtered_data)
 
 
-class NemotronTTSBaseV2(ModelPT):
+class NemotronTTSBase(ModelPT):
     """
     Inference-only base class for EasyMagpieTTS decoder-only model.
 
@@ -230,7 +230,7 @@ class NemotronTTSBaseV2(ModelPT):
     shared building-block methods, and all inference methods (streaming_init,
     streaming_step, streaming_finalize, infer_batch, do_tts).
 
-    NemotronTTSModelV2 subclasses this to add training, validation, and data loading.
+    NemotronTTSModel subclasses this to add training, validation, and data loading.
     """
 
     def __init__(self, cfg: DictConfig, trainer: 'Trainer' = None):

@@ -29,7 +29,7 @@ from examples.tts.magpietts_inference import run_inference_and_evaluation
 from omegaconf import OmegaConf
 
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
-from nemo.collections.tts.models import EasyMagpieTTSInferenceModel, NemotronTTSBaseV2
+from nemo.collections.tts.models import EasyMagpieTTSInferenceModel, NemotronTTSBase
 from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio import (
     FILEWISE_METRICS_TO_SAVE,
     _get_record_texts,
@@ -550,7 +550,7 @@ def test_example_script_rejects_removed_strip_flag(capsys):
     [
         (OmegaConf.create({}), EasyMagpieTTSInferenceModel),
         (OmegaConf.create({"model_type": "v1"}), EasyMagpieTTSInferenceModel),
-        (OmegaConf.create({"model_type": "v2"}), NemotronTTSBaseV2),
+        (OmegaConf.create({"model_type": "v2"}), NemotronTTSBase),
     ],
 )
 def test_select_easy_magpie_model_class(model_cfg, expected_class):
@@ -587,7 +587,7 @@ def test_load_easy_magpie_model_selects_v2_for_nemo_archive(tmp_path, monkeypatc
         return FakeModel()
 
     monkeypatch.setattr(EasyMagpieTTSInferenceModel, "restore_from", classmethod(read_config))
-    monkeypatch.setattr(NemotronTTSBaseV2, "restore_from", classmethod(restore_v2))
+    monkeypatch.setattr(NemotronTTSBase, "restore_from", classmethod(restore_v2))
 
     nemo_file = tmp_path / "model.nemo"
     model, checkpoint_name = load_easy_magpie_model(
@@ -599,13 +599,13 @@ def test_load_easy_magpie_model_selects_v2_for_nemo_archive(tmp_path, monkeypatc
     assert checkpoint_name == "model"
     assert len(restored) == 1
     assert restored[0][0] == str(nemo_file)
-    expected_target = f'{NemotronTTSBaseV2.__module__}.{NemotronTTSBaseV2.__name__}'
+    expected_target = f'{NemotronTTSBase.__module__}.{NemotronTTSBase.__name__}'
     assert restored[0][1].target == expected_target
 
 
 @pytest.mark.unit
 def test_nemotron_tts_v2_infer_batch_accepts_compatibility_kwargs():
-    parameters = inspect.signature(NemotronTTSBaseV2.infer_batch).parameters
+    parameters = inspect.signature(NemotronTTSBase.infer_batch).parameters
     assert 'use_local_transformer_for_inference' not in parameters
     assert parameters['kwargs'].kind is inspect.Parameter.VAR_KEYWORD
 

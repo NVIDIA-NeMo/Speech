@@ -21,7 +21,7 @@ from nemo.collections.tts.models import (
     EasyMagpieCFGDistillation,
     EasyMagpieTTSModel,
     EasyMagpieTTSModelOnlinePO,
-    NemotronTTSModelV2,
+    NemotronTTSModel,
 )
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
@@ -90,7 +90,7 @@ def _select_model_class(model_cfg) -> type:
     if model_type == 'v1':
         return EasyMagpieTTSModel
     if model_type == 'v2':
-        return NemotronTTSModelV2
+        return NemotronTTSModel
     raise ValueError(f"Unsupported model_type: {model_type!r}")
 
 

@@ -37,7 +37,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
-from nemo.collections.tts.models import EasyMagpieTTSInferenceModel, MagpieTTSModel, NemotronTTSBaseV2
+from nemo.collections.tts.models import EasyMagpieTTSInferenceModel, MagpieTTSModel, NemotronTTSBase
 from nemo.collections.tts.models.easy_magpietts_inference import EasyModelInferenceParameters
 from nemo.collections.tts.models.magpietts import ModelInferenceParameters
 from nemo.collections.tts.modules.magpietts_inference.evaluation_config import ASR_MODEL_TYPES
@@ -378,7 +378,7 @@ def select_easy_magpie_model_class(model_cfg: DictConfig) -> type:
     """Select the decoder-only model implementation for a saved model configuration."""
     model_type = model_cfg.get('model_type', 'v1')
     if model_type == 'v2':
-        return NemotronTTSBaseV2
+        return NemotronTTSBase
     if model_type == 'v1':
         return EasyMagpieTTSInferenceModel
     raise ValueError(f"Unsupported model_type: {model_type!r}")

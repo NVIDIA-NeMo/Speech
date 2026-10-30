@@ -17,7 +17,7 @@ import pytest
 from examples.tts.easy_magpietts import _select_model_class
 from omegaconf import OmegaConf
 
-from nemo.collections.tts.models import EasyMagpieTTSModel, NemotronTTSModelV2
+from nemo.collections.tts.models import EasyMagpieTTSModel, NemotronTTSModel
 
 pytestmark = pytest.mark.unit
 
@@ -25,7 +25,7 @@ pytestmark = pytest.mark.unit
 def test_select_v2_model():
     model_cfg = OmegaConf.create({"model_type": "v2"})
 
-    assert _select_model_class(model_cfg) is NemotronTTSModelV2
+    assert _select_model_class(model_cfg) is NemotronTTSModel
 
 
 def test_select_v1_model():

@@ -35,7 +35,7 @@ from nemo.collections.common.data.fallback import FallbackDataset
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import MagpieTTSLhotseDataset, setup_tokenizers
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import MagpieTTSLhotseMultiturnDataset
-from nemo.collections.tts.models.nemotron_tts.v2.base import NemotronTTSBaseV2, TrainingMode
+from nemo.collections.tts.models.nemotron_tts.v2.base import NemotronTTSBase, TrainingMode
 from nemo.collections.tts.modules.magpietts_modules import (
     add_special_tokens,
     remove_eos_token,
@@ -100,11 +100,11 @@ class ProcessBatchOutput:
     selected_training_mode: Optional[str]
 
 
-class NemotronTTSModelV2(NemotronTTSBaseV2):
+class NemotronTTSModel(NemotronTTSBase):
     """
     Magpie-TTS Model Decoder Only Model with training support.
 
-    Subclasses NemotronTTSBaseV2 to add training_step, validation_step,
+    Subclasses NemotronTTSBase to add training_step, validation_step,
     process_batch, data loading, and training-specific configuration (loss weights,
     phoneme corruption, eval models for validation metrics).
     """

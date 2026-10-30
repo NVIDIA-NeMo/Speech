@@ -41,7 +41,6 @@ from nemo.collections.asr.parts.turbo_transducer.rnnt_joint_fused_vocab_triton i
     _load_lattice_row_grads,
     _load_lattice_rows,
     _normalize_backward_options,
-    _rnnt_grad_logits,
     _select_pruning_starts,
 )
 from nemo.collections.asr.parts.turbo_transducer.types import TransducerLossInputs
@@ -49,6 +48,8 @@ from nemo.collections.asr.parts.turbo_transducer.utils_triton import matmul
 
 # Size of the grad logits buffer (teacher and student rows) used by CHUNKED backward
 CHUNKED_BWD_GRAD_LOGITS_BUFFER_BYTES = 128 * 1024**2
+# Logit for padded vocabulary columns in forward: exp underflows to zero, finite to keep differences zero
+_PADDED_VOCAB_LOGIT: tl.constexpr = tl.constexpr(-1.0e30)
 
 
 def _fwd_autotune_configs():
@@ -140,6 +141,8 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
     Teacher rows are [0, pair_flattened_size) of the flattened batch, student rows are offset by pair_flattened_size.
     Log-softmax and KL accumulators are computed online over vocabulary blocks with running max and exp-sums:
     KL(teacher || student) = sum(p_teacher * (z_teacher - z_student)) - (lse_teacher - lse_student)
+    Target and blank logits are computed after the vocabulary loop as dot products with the gathered weight rows:
+    extracting them from each block of logits needs more registers than the two logits accumulators leave.
     """
     compute_dtype = tl.float32
     matmul_dtype = (
@@ -157,25 +160,18 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
     pair_mask = teacher_offsets < pair_flattened_size
     student_offsets = teacher_offsets + pair_flattened_size
 
-    teacher_blank_mask, teacher_target_mask, teacher_targets = _load_lattice_rows(
+    # teacher and student rows have identical lengths and targets => load lattice rows once (also saves registers)
+    blank_mask, target_mask, targets = _load_lattice_rows(
         teacher_offsets, pair_mask, targets_ptr, src_lengths_ptr, tgt_lengths_ptr, max_src_len, max_tgt_len_plus_1
-    )
-    student_blank_mask, student_target_mask, student_targets = _load_lattice_rows(
-        student_offsets, pair_mask, targets_ptr, src_lengths_ptr, tgt_lengths_ptr, max_src_len, max_tgt_len_plus_1
     )
 
     vocab_offsets_in_block = tl.arange(0, VOCAB_BLOCK)
-
     teacher_max = tl.full([PAIR_BLOCK], value=float("-inf"), dtype=compute_dtype)
     teacher_exp_sum = tl.zeros([PAIR_BLOCK], dtype=compute_dtype)
     teacher_kl_sum = tl.zeros([PAIR_BLOCK], dtype=compute_dtype)
-    teacher_blank_logits = tl.zeros([PAIR_BLOCK], dtype=compute_dtype)
-    teacher_target_logits = tl.zeros([PAIR_BLOCK], dtype=compute_dtype)
     student_max = tl.full([PAIR_BLOCK], value=float("-inf"), dtype=compute_dtype)
     student_exp_sum = tl.zeros([PAIR_BLOCK], dtype=compute_dtype)
     student_kl_sum = tl.zeros([PAIR_BLOCK], dtype=compute_dtype)
-    student_blank_logits = tl.zeros([PAIR_BLOCK], dtype=compute_dtype)
-    student_target_logits = tl.zeros([PAIR_BLOCK], dtype=compute_dtype)
 
     NUM_HIDDEN_ITERS: tl.constexpr = tl.cdiv(hidden_dim, HIDDEN_BLOCK)
     HIDDEN_RESET: tl.constexpr = NUM_HIDDEN_ITERS * HIDDEN_BLOCK
@@ -214,10 +210,6 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
     )
 
     for vocab_start in tl.range(0, vocab_size, VOCAB_BLOCK):
-        vocab_offsets = vocab_start + vocab_offsets_in_block
-        vocab_mask = vocab_offsets < vocab_size
-        contains_blank = vocab_start <= blank_id and blank_id < vocab_start + VOCAB_BLOCK
-
         bias_chunk = tl.load(bias_block_ptr, boundary_check=(0,)).to(compute_dtype)
         teacher_logits = tl.zeros([PAIR_BLOCK, VOCAB_BLOCK], dtype=compute_dtype) + bias_chunk[None, :]
         student_logits = tl.zeros([PAIR_BLOCK, VOCAB_BLOCK], dtype=compute_dtype) + bias_chunk[None, :]
@@ -242,10 +234,13 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
         weight_block_ptr = tl.advance(weight_block_ptr, (VOCAB_BLOCK, -HIDDEN_RESET))
         bias_block_ptr = tl.advance(bias_block_ptr, (VOCAB_BLOCK,))
 
-        teacher_logits = tl.where(vocab_mask[None, :], teacher_logits, -float("inf"))
-        student_logits = tl.where(vocab_mask[None, :], student_logits, -float("inf"))
-        # zero for invalid vocab positions to avoid (-inf) - (-inf)
-        logits_diff = tl.where(vocab_mask[None, :], teacher_logits - student_logits, 0.0)
+        if vocab_start + VOCAB_BLOCK > vocab_size:
+            # only the last block has padded vocab columns. Their logits are zero for both rows (zero-padded loads);
+            # a large finite negative value excludes them from the exp-sums and keeps the logits difference zero
+            vocab_mask = (vocab_start + vocab_offsets_in_block) < vocab_size
+            teacher_logits = tl.where(vocab_mask[None, :], teacher_logits, _PADDED_VOCAB_LOGIT)
+            student_logits = tl.where(vocab_mask[None, :], student_logits, _PADDED_VOCAB_LOGIT)
+        logits_diff = teacher_logits - student_logits
 
         teacher_max, teacher_exp_sum, teacher_kl_sum = _online_exp_sums_update(
             teacher_logits, logits_diff, teacher_max, teacher_exp_sum, teacher_kl_sum, WITH_WEIGHTED_SUM=True
@@ -254,14 +249,30 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
             student_logits, -logits_diff, student_max, student_exp_sum, student_kl_sum, WITH_WEIGHTED_SUM=SYMMETRICAL
         )
 
-        is_target_col = vocab_offsets[None, :] == teacher_targets[:, None]
-        teacher_target_logits += tl.sum(tl.where(is_target_col, teacher_logits, 0.0), axis=-1)
-        is_target_col = vocab_offsets[None, :] == student_targets[:, None]
-        student_target_logits += tl.sum(tl.where(is_target_col, student_logits, 0.0), axis=-1)
-        if contains_blank:
-            is_blank_col = (vocab_offsets == blank_id)[None, :]
-            teacher_blank_logits += tl.sum(tl.where(is_blank_col, teacher_logits, 0.0), axis=-1)
-            student_blank_logits += tl.sum(tl.where(is_blank_col, student_logits, 0.0), axis=-1)
+    teacher_target_logits, teacher_blank_logits = _target_blank_logits(
+        joint_hidden_ptr,
+        teacher_offsets,
+        weight_ptr,
+        bias_ptr,
+        targets,
+        target_mask,
+        blank_mask,
+        blank_id,
+        hidden_dim,
+        HIDDEN_BLOCK,
+    )
+    student_target_logits, student_blank_logits = _target_blank_logits(
+        joint_hidden_ptr,
+        student_offsets,
+        weight_ptr,
+        bias_ptr,
+        targets,
+        target_mask,
+        blank_mask,
+        blank_id,
+        hidden_dim,
+        HIDDEN_BLOCK,
+    )
 
     teacher_lse = teacher_max + tl.log(teacher_exp_sum)
     student_lse = student_max + tl.log(student_exp_sum)
@@ -271,14 +282,13 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
     else:
         consistency_kl = teacher_kl_sum / teacher_exp_sum - (teacher_lse - student_lse)
 
-    tl.store(blank_logprobs_out_ptr + teacher_offsets, teacher_blank_logits - teacher_lse, mask=teacher_blank_mask)
-    tl.store(target_logprobs_out_ptr + teacher_offsets, teacher_target_logits - teacher_lse, mask=teacher_target_mask)
-    tl.store(log_sum_exp_out_ptr + teacher_offsets, teacher_lse, mask=teacher_blank_mask)
-    tl.store(blank_logprobs_out_ptr + student_offsets, student_blank_logits - student_lse, mask=student_blank_mask)
-    tl.store(target_logprobs_out_ptr + student_offsets, student_target_logits - student_lse, mask=student_target_mask)
-    tl.store(log_sum_exp_out_ptr + student_offsets, student_lse, mask=student_blank_mask)
-    # consistency mask: valid positions of the teacher
-    tl.store(consistency_kl_out_ptr + teacher_offsets, consistency_kl, mask=teacher_blank_mask)
+    tl.store(blank_logprobs_out_ptr + teacher_offsets, teacher_blank_logits - teacher_lse, mask=blank_mask)
+    tl.store(target_logprobs_out_ptr + teacher_offsets, teacher_target_logits - teacher_lse, mask=target_mask)
+    tl.store(log_sum_exp_out_ptr + teacher_offsets, teacher_lse, mask=blank_mask)
+    tl.store(blank_logprobs_out_ptr + student_offsets, student_blank_logits - student_lse, mask=blank_mask)
+    tl.store(target_logprobs_out_ptr + student_offsets, student_target_logits - student_lse, mask=target_mask)
+    tl.store(log_sum_exp_out_ptr + student_offsets, student_lse, mask=blank_mask)
+    tl.store(consistency_kl_out_ptr + teacher_offsets, consistency_kl, mask=blank_mask)
 
 
 @triton.autotune(
@@ -380,17 +390,8 @@ def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
         pair_offsets, pair_mask, pruning_starts_ptr, max_tgt_len_plus_1, PRUNING_RANGE
     )
     student_lattice_offsets = teacher_lattice_offsets + student_lattice_offset
-    teacher_blank_mask, teacher_target_mask, teacher_targets = _load_lattice_rows(
+    blank_mask, target_mask, targets = _load_lattice_rows(
         teacher_lattice_offsets,
-        pair_mask,
-        targets_ptr,
-        src_lengths_ptr,
-        tgt_lengths_ptr,
-        max_src_len,
-        max_tgt_len_plus_1,
-    )
-    student_blank_mask, student_target_mask, student_targets = _load_lattice_rows(
-        student_lattice_offsets,
         pair_mask,
         targets_ptr,
         src_lengths_ptr,
@@ -400,8 +401,8 @@ def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
     )
     teacher_lse, teacher_grad_target, teacher_grad_blank = _load_lattice_row_grads(
         teacher_lattice_offsets,
-        teacher_blank_mask,
-        teacher_target_mask,
+        blank_mask,
+        target_mask,
         log_sum_exp_ptr,
         grad_target_scores_ptr,
         grad_blank_scores_ptr,
@@ -409,16 +410,16 @@ def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
     )
     student_lse, student_grad_target, student_grad_blank = _load_lattice_row_grads(
         student_lattice_offsets,
-        student_blank_mask,
-        student_target_mask,
+        blank_mask,
+        target_mask,
         log_sum_exp_ptr,
         grad_target_scores_ptr,
         grad_blank_scores_ptr,
         compute_dtype,
     )
-    grad_consistency_kl = tl.load(
-        grad_consistency_kl_ptr + teacher_lattice_offsets, mask=teacher_blank_mask, other=0.0
-    ).to(compute_dtype)
+    grad_consistency_kl = tl.load(grad_consistency_kl_ptr + teacher_lattice_offsets, mask=blank_mask, other=0.0).to(
+        compute_dtype
+    )
 
     teacher_rows = teacher_lattice_offsets.to(tl.int64)
     student_rows = student_lattice_offsets.to(tl.int64)
@@ -429,10 +430,10 @@ def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
     for hidden_start in tl.range(0, hidden_dim, HIDDEN_BLOCK):
         if PRUNING_RANGE:
             teacher_hidden_chunk = _load_hidden_rows(
-                joint_hidden_ptr, teacher_rows, teacher_blank_mask, hidden_start, hidden_dim, HIDDEN_BLOCK
+                joint_hidden_ptr, teacher_rows, blank_mask, hidden_start, hidden_dim, HIDDEN_BLOCK
             ).to(matmul_dtype)
             student_hidden_chunk = _load_hidden_rows(
-                joint_hidden_ptr, student_rows, student_blank_mask, hidden_start, hidden_dim, HIDDEN_BLOCK
+                joint_hidden_ptr, student_rows, blank_mask, hidden_start, hidden_dim, HIDDEN_BLOCK
             ).to(matmul_dtype)
         else:
             teacher_hidden_chunk = tl.load(teacher_hidden_block_ptr, boundary_check=(0, 1)).to(matmul_dtype)
@@ -454,12 +455,11 @@ def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
         student_grad_target,
         student_grad_blank,
         grad_consistency_kl,
-        teacher_targets,
-        student_targets,
-        teacher_blank_mask,
-        student_blank_mask,
+        targets,
+        blank_mask,
         vocab_offsets,
-        vocab_mask,
+        vocab_block_start + VOCAB_BLOCK > vocab_size,
+        vocab_size,
         blank_id,
         SYMMETRICAL,
     )
@@ -483,7 +483,7 @@ def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
         tl.atomic_add(
             grad_joint_hidden_out_ptr + teacher_rows[:, None] * hidden_dim + hidden_offsets[None, :],
             teacher_grad_hidden_delta.to(grad_joint_hidden_out_ptr.dtype.element_ty),
-            mask=teacher_blank_mask[:, None] & hidden_mask[None, :],
+            mask=blank_mask[:, None] & hidden_mask[None, :],
             sem="relaxed",
         )
         student_grad_hidden_delta = matmul(
@@ -492,7 +492,7 @@ def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
         tl.atomic_add(
             grad_joint_hidden_out_ptr + student_rows[:, None] * hidden_dim + hidden_offsets[None, :],
             student_grad_hidden_delta.to(grad_joint_hidden_out_ptr.dtype.element_ty),
-            mask=student_blank_mask[:, None] & hidden_mask[None, :],
+            mask=blank_mask[:, None] & hidden_mask[None, :],
             sem="relaxed",
         )
 
@@ -504,10 +504,10 @@ def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
 
         if PRUNING_RANGE:
             teacher_hidden_chunk_t = _load_hidden_rows(
-                joint_hidden_ptr, teacher_rows, teacher_blank_mask, hidden_start, hidden_dim, HIDDEN_BLOCK
+                joint_hidden_ptr, teacher_rows, blank_mask, hidden_start, hidden_dim, HIDDEN_BLOCK
             ).T.to(matmul_dtype)
             student_hidden_chunk_t = _load_hidden_rows(
-                joint_hidden_ptr, student_rows, student_blank_mask, hidden_start, hidden_dim, HIDDEN_BLOCK
+                joint_hidden_ptr, student_rows, blank_mask, hidden_start, hidden_dim, HIDDEN_BLOCK
             ).T.to(matmul_dtype)
         else:
             teacher_hidden_block_ptr = tl.advance(teacher_hidden_block_ptr, (0, -HIDDEN_BLOCK))
@@ -650,17 +650,8 @@ def _rnnt_joint_fused_vocab_consistency_bwd_grad_logits_triton_kernel(
     teacher_logits += bias_chunk[None, :]
     student_logits += bias_chunk[None, :]
 
-    teacher_blank_mask, teacher_target_mask, teacher_targets = _load_lattice_rows(
+    blank_mask, target_mask, targets = _load_lattice_rows(
         teacher_lattice_offsets,
-        chunk_mask,
-        targets_ptr,
-        src_lengths_ptr,
-        tgt_lengths_ptr,
-        max_src_len,
-        max_tgt_len_plus_1,
-    )
-    student_blank_mask, student_target_mask, student_targets = _load_lattice_rows(
-        student_lattice_offsets,
         chunk_mask,
         targets_ptr,
         src_lengths_ptr,
@@ -670,8 +661,8 @@ def _rnnt_joint_fused_vocab_consistency_bwd_grad_logits_triton_kernel(
     )
     teacher_lse, teacher_grad_target, teacher_grad_blank = _load_lattice_row_grads(
         teacher_lattice_offsets,
-        teacher_blank_mask,
-        teacher_target_mask,
+        blank_mask,
+        target_mask,
         log_sum_exp_ptr,
         grad_target_scores_ptr,
         grad_blank_scores_ptr,
@@ -679,16 +670,16 @@ def _rnnt_joint_fused_vocab_consistency_bwd_grad_logits_triton_kernel(
     )
     student_lse, student_grad_target, student_grad_blank = _load_lattice_row_grads(
         student_lattice_offsets,
-        student_blank_mask,
-        student_target_mask,
+        blank_mask,
+        target_mask,
         log_sum_exp_ptr,
         grad_target_scores_ptr,
         grad_blank_scores_ptr,
         compute_dtype,
     )
-    grad_consistency_kl = tl.load(
-        grad_consistency_kl_ptr + teacher_lattice_offsets, mask=teacher_blank_mask, other=0.0
-    ).to(compute_dtype)
+    grad_consistency_kl = tl.load(grad_consistency_kl_ptr + teacher_lattice_offsets, mask=blank_mask, other=0.0).to(
+        compute_dtype
+    )
 
     teacher_grad_logits, student_grad_logits = _paired_grad_logits(
         teacher_logits,
@@ -700,12 +691,11 @@ def _rnnt_joint_fused_vocab_consistency_bwd_grad_logits_triton_kernel(
         student_grad_target,
         student_grad_blank,
         grad_consistency_kl,
-        teacher_targets,
-        student_targets,
-        teacher_blank_mask,
-        student_blank_mask,
+        targets,
+        blank_mask,
         vocab_offsets,
-        vocab_mask,
+        vocab_start + VOCAB_BLOCK > vocab_size,
+        vocab_size,
         blank_id,
         SYMMETRICAL,
     )
@@ -953,7 +943,8 @@ def rnnt_joint_fused_vocab_consistency_triton(
     batch without materializing logits [2B, T, U+1, V].
 
     Rows [0, B) of the double batch are the teacher pass, rows [B, 2B) are the student pass of the same utterances
-    (identical lengths and targets in both halves; not checked to avoid host-device synchronization).
+    (identical lengths and targets in both halves; not checked to avoid host-device synchronization, the kernels
+    read lengths and targets of the teacher half for both rows of a pair).
     The consistency loss is KL(teacher || student), or 0.5 * (KL(teacher || student) + KL(student || teacher))
     if `consistency_symmetrical`. Its gradient treats the other distribution as a constant target in each KL
     direction: student gets `coef * (p_student - p_teacher)`, teacher gets the negated value when symmetrical
@@ -1168,6 +1159,46 @@ def _online_exp_sums_update(
 
 
 @triton.jit
+def _target_blank_logits(
+    joint_hidden_ptr,
+    rows,
+    weight_ptr,
+    bias_ptr,
+    targets,
+    target_mask,
+    blank_mask,
+    blank_id: tl.constexpr,
+    hidden_dim: tl.constexpr,
+    HIDDEN_BLOCK: tl.constexpr,
+):
+    """Target and blank logits of the hidden rows: dot products with the gathered weight rows (CUDA cores)"""
+    compute_dtype = tl.float32
+    target_logits = tl.load(bias_ptr + targets, mask=target_mask, other=0.0).to(compute_dtype)
+    blank_logits = tl.zeros_like(target_logits) + tl.load(bias_ptr + blank_id).to(compute_dtype)
+    hidden_rows = rows.to(tl.int64) * hidden_dim
+    target_weight_rows = targets.to(tl.int64) * hidden_dim
+    for hidden_start in tl.range(0, hidden_dim, HIDDEN_BLOCK):
+        hidden_offsets = hidden_start + tl.arange(0, HIDDEN_BLOCK)
+        hidden_mask = hidden_offsets < hidden_dim
+        hidden_chunk = tl.load(
+            joint_hidden_ptr + hidden_rows[:, None] + hidden_offsets[None, :],
+            mask=blank_mask[:, None] & hidden_mask[None, :],
+            other=0.0,
+        ).to(compute_dtype)
+        target_weight_chunk = tl.load(
+            weight_ptr + target_weight_rows[:, None] + hidden_offsets[None, :],
+            mask=target_mask[:, None] & hidden_mask[None, :],
+            other=0.0,
+        ).to(compute_dtype)
+        blank_weight_chunk = tl.load(
+            weight_ptr + blank_id * hidden_dim + hidden_offsets, mask=hidden_mask, other=0.0
+        ).to(compute_dtype)
+        target_logits += tl.sum(hidden_chunk * target_weight_chunk, axis=1)
+        blank_logits += tl.sum(hidden_chunk * blank_weight_chunk[None, :], axis=1)
+    return target_logits, blank_logits
+
+
+@triton.jit
 def _paired_grad_logits(
     teacher_logits,
     student_logits,
@@ -1178,12 +1209,11 @@ def _paired_grad_logits(
     student_grad_target,
     student_grad_blank,
     grad_consistency_kl,
-    teacher_targets,
-    student_targets,
-    teacher_blank_mask,
-    student_blank_mask,
+    targets,
+    row_mask,
     vocab_offsets,
-    vocab_mask,
+    has_padded_vocab,
+    vocab_size: tl.constexpr,
     blank_id: tl.constexpr,
     SYMMETRICAL: tl.constexpr,
 ):
@@ -1192,24 +1222,37 @@ def _paired_grad_logits(
     The consistency gradient treats the other distribution as a constant target in each KL direction:
     student += coef * grad_kl * (p_student - p_teacher); teacher -= the same value when symmetrical (coef = 0.5),
     otherwise teacher gets no consistency gradient (coef = 1).
+    Terms are grouped by probabilities with per-row coefficients to keep few [rows, vocab] tensors alive.
+    Gradients are zero for invalid rows and padded vocabulary columns without masking the [rows, vocab] outputs:
+    probabilities are zero there (+inf log-sum-exp, -inf logits), upstream gradients of invalid rows are zero.
     """
+    if has_padded_vocab:
+        vocab_mask = vocab_offsets < vocab_size
+        teacher_logits = tl.where(vocab_mask[None, :], teacher_logits, -float("inf"))
+        student_logits = tl.where(vocab_mask[None, :], student_logits, -float("inf"))
+    teacher_lse = tl.where(row_mask, teacher_lse, float("inf"))
+    student_lse = tl.where(row_mask, student_lse, float("inf"))
+    consistency_coef = (0.5 if SYMMETRICAL else 1.0) * grad_consistency_kl
     teacher_probabilities = tl.exp(teacher_logits - teacher_lse[:, None])
     student_probabilities = tl.exp(student_logits - student_lse[:, None])
-    teacher_grad_logits = _rnnt_grad_logits(
-        teacher_probabilities, teacher_grad_target, teacher_grad_blank, teacher_targets, vocab_offsets, blank_id
-    )
-    student_grad_logits = _rnnt_grad_logits(
-        student_probabilities, student_grad_target, student_grad_blank, student_targets, vocab_offsets, blank_id
-    )
-    consistency_coef = 0.5 if SYMMETRICAL else 1.0
-    student_consistency_grad = (consistency_coef * grad_consistency_kl)[:, None] * (
-        student_probabilities - teacher_probabilities
-    )
-    student_grad_logits += student_consistency_grad
+    is_target_col = vocab_offsets[None, :] == targets[:, None]
+    is_blank_col = (vocab_offsets == blank_id)[None, :]
+
+    teacher_coef = -(teacher_grad_target + teacher_grad_blank)
     if SYMMETRICAL:
-        teacher_grad_logits -= student_consistency_grad
-    teacher_grad_logits = tl.where(teacher_blank_mask[:, None] & vocab_mask[None, :], teacher_grad_logits, 0.0)
-    student_grad_logits = tl.where(student_blank_mask[:, None] & vocab_mask[None, :], student_grad_logits, 0.0)
+        teacher_coef += consistency_coef
+    teacher_grad_logits = teacher_coef[:, None] * teacher_probabilities
+    if SYMMETRICAL:
+        teacher_grad_logits -= consistency_coef[:, None] * student_probabilities
+    teacher_grad_logits += tl.where(is_target_col, teacher_grad_target[:, None], 0.0)
+    teacher_grad_logits += tl.where(is_blank_col, teacher_grad_blank[:, None], 0.0)
+
+    student_coef = consistency_coef - (student_grad_target + student_grad_blank)
+    student_grad_logits = (
+        student_coef[:, None] * student_probabilities - consistency_coef[:, None] * teacher_probabilities
+    )
+    student_grad_logits += tl.where(is_target_col, student_grad_target[:, None], 0.0)
+    student_grad_logits += tl.where(is_blank_col, student_grad_blank[:, None], 0.0)
     return teacher_grad_logits, student_grad_logits
 
 

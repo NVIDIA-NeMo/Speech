@@ -22,10 +22,10 @@ from pathlib import Path
 import sentencepiece
 import torch
 
-from nemo.collections.asr.parts.submodules.tdt_decoder import TDTDecoderOutput
+from nemo.collections.asr.parts.submodules.rnnt_greedy_decoding import BatchedTDTOutput
 from nemo.collections.asr.parts.submodules.tensorrt_encoder import TensorRTEncoder
 from nemo.collections.asr.parts.submodules.tensorrt_plan import TensorRTPlan
-from nemo.collections.asr.parts.submodules.tensorrt_tdt_decoder import TensorRTTDTDecoder
+from nemo.collections.asr.parts.submodules.tensorrt_tdt_decoder import load_tensorrt_tdt_decoder
 
 
 class TensorRTASR:
@@ -45,8 +45,8 @@ class TensorRTASR:
             raise ValueError("Unsupported waveform ASR bundle version.")
         self.preprocessor = TensorRTPlan(directory / "preprocessor.plan", device)
         self.encoder = TensorRTEncoder(directory / "encoder.plan", device)
-        self.decoder = TensorRTTDTDecoder.load(directory / "decoder", device, use_cuda_graphs)
-        self.device = self.decoder.device
+        self.decoder = load_tensorrt_tdt_decoder(directory / "decoder", device, use_cuda_graphs)
+        self.device = self.encoder.device
         self.tokenizer = sentencepiece.SentencePieceProcessor(model_file=str(directory / "tokenizer.model"))
         self._punctuation = (
             re.compile(self.config["punctuation_pattern"]) if self.config["punctuation_pattern"] else None
@@ -71,7 +71,7 @@ class TensorRTASR:
             raise ValueError("Waveforms must contain finite values.")
 
     @torch.inference_mode()
-    def __call__(self, audio: torch.Tensor, lengths: torch.Tensor) -> TDTDecoderOutput:
+    def __call__(self, audio: torch.Tensor, lengths: torch.Tensor) -> BatchedTDTOutput:
         self.validate_inputs(audio, lengths)
         audio = audio.to(self.device)
         lengths = lengths.to(device=self.device, dtype=torch.int64)
@@ -85,9 +85,9 @@ class TensorRTASR:
         if x.shape[2] < self.config["min_feature_frames"]:
             x = torch.nn.functional.pad(x, (0, self.config["min_feature_frames"] - x.shape[2]))
         encoded, encoded_lengths = self.encoder(x, features["processed_length"])
-        return self.decoder(encoded, encoded_lengths)
+        return self.decoder.decode_tensors(encoded, encoded_lengths)
 
-    def texts(self, result: TDTDecoderOutput) -> list[str]:
+    def texts(self, result: BatchedTDTOutput) -> list[str]:
         """Decode tokens using the source checkpoint's punctuation and language-tag policy."""
         tokens, lengths = result.tokens.cpu().tolist(), result.lengths.cpu().tolist()
         texts = []

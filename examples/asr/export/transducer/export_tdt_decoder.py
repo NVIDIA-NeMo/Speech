@@ -20,7 +20,7 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 from nemo.collections.asr.models import ASRModel
-from nemo.collections.asr.parts.submodules.tdt_decoder import TDTDecoder
+from nemo.collections.asr.parts.submodules.tdt_decoder_artifact import build_tdt_decoder, save_tdt_decoder
 
 
 def main() -> None:
@@ -40,12 +40,12 @@ def main() -> None:
     max_symbols = model.cfg.decoding.get("greedy", {}).get("max_symbols", 10)
     if max_symbols is None:
         raise ValueError("Serving requires a finite greedy.max_symbols limit in the checkpoint.")
-    decoder = TDTDecoder(
+    decoder = build_tdt_decoder(
         model.decoder, model.joint, model.decoding.blank_id, list(durations), max_symbols, use_cuda_graphs=False
     )
     version = args.output / "1"
     version.mkdir(parents=True)
-    decoder.save(version / "decoder.pt")
+    save_tdt_decoder(decoder, version / "decoder.pt")
     shutil.copyfile(Path(__file__).with_name("tdt_triton_model.py"), version / "model.py")
     channels = model.joint.enc.in_features
     config = f'''backend: "python"

@@ -22,7 +22,7 @@ import torch
 import triton_python_backend_utils as pb_utils
 from torch.utils.dlpack import from_dlpack
 
-from nemo.collections.asr.parts.submodules.tdt_decoder import TDTDecoder
+from nemo.collections.asr.parts.submodules.tdt_decoder_artifact import load_tdt_decoder
 
 
 class TritonPythonModel:
@@ -37,7 +37,8 @@ class TritonPythonModel:
         use_graphs = config.get("parameters", {}).get("use_cuda_graphs", {}).get("string_value", "true")
         if use_graphs not in ("true", "false"):
             raise ValueError("use_cuda_graphs must be true or false.")
-        self.decoder = TDTDecoder.load(Path(__file__).with_name("decoder.pt"), device, use_graphs == "true")
+        self.device = torch.device(device)
+        self.decoder = load_tdt_decoder(Path(__file__).with_name("decoder.pt"), device, use_graphs == "true")
 
     @torch.inference_mode()
     def execute(self, requests: list) -> list:
@@ -50,7 +51,7 @@ class TritonPythonModel:
                 if lengths.ndim != 2 or lengths.shape[1] != 1:
                     raise ValueError("ENCODED_LENGTH must have shape [batch, 1].")
                 lengths = lengths[:, 0]
-                self.decoder.validate_inputs(encoded, lengths)
+                self.decoder.validate_tensor_inputs(encoded, lengths)
                 valid.append((index, encoded, lengths))
             except (ValueError, AttributeError) as exc:
                 responses[index] = pb_utils.InferenceResponse(
@@ -62,9 +63,9 @@ class TritonPythonModel:
             return responses
         try:
             # Triton groups equal non-batch shapes; combine requests into one decoder invocation.
-            encoded = torch.cat([x.to(self.decoder.device) for _, x, _ in valid])
-            lengths = torch.cat([x.to(self.decoder.device) for _, _, x in valid])
-            result = self.decoder(encoded, lengths)
+            encoded = torch.cat([x.to(self.device) for _, x, _ in valid])
+            lengths = torch.cat([x.to(self.device) for _, _, x in valid])
+            result = self.decoder.decode_tensors(encoded, lengths)
             offset = 0
             for index, request_encoded, _ in valid:
                 size = request_encoded.shape[0]

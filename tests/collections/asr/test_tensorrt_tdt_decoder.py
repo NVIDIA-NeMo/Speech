@@ -24,8 +24,8 @@ from examples.asr.export import build_trt_tdt_decoder as builder
 from omegaconf import OmegaConf
 
 from nemo.collections.asr.modules.rnnt import RNNTDecoder, RNNTJoint
-from nemo.collections.asr.parts.submodules.tdt_decoder import TDTDecoder
-from nemo.collections.asr.parts.submodules.tensorrt_tdt_decoder import TensorRTTDTDecoder
+from nemo.collections.asr.parts.submodules.tdt_decoder_artifact import build_tdt_decoder
+from nemo.collections.asr.parts.submodules.tensorrt_tdt_decoder import load_tensorrt_tdt_decoder
 
 
 def _model():
@@ -85,28 +85,30 @@ def test_complete_tensorrt_tdt(tmp_path):
         model.joint.joint_net[-1].bias[3] += 10
     output = tmp_path / "decoder"
     builder.build(model, output, max_batch=4, max_frames=512, max_symbols=2)
-    reference = TDTDecoder(model.decoder.cuda(), model.joint.cuda(), 2, [0, 1, 3], 2, False)
-    eager = TensorRTTDTDecoder.load(output, use_cuda_graphs=False)
-    graphed = TensorRTTDTDecoder.load(output, use_cuda_graphs=True)
-    partial = TensorRTTDTDecoder.load(output, use_cuda_graphs=True)
-    partial.computer.force_cuda_graphs_mode(partial.computer.CudaGraphsMode.NO_WHILE_LOOPS)
+    reference = build_tdt_decoder(model.decoder.cuda(), model.joint.cuda(), 2, [0, 1, 3], 2, False)
+    eager = load_tensorrt_tdt_decoder(output, use_cuda_graphs=False)
+    graphed = load_tensorrt_tdt_decoder(output, use_cuda_graphs=True)
+    partial = load_tensorrt_tdt_decoder(output, use_cuda_graphs=True)
+    partial.decoding_computer.force_cuda_graphs_mode(partial.decoding_computer.CudaGraphsMode.NO_WHILE_LOOPS)
     for frames, lengths in ((4, [4, 2, 0]), (2, [1]), (400, [4, 3, 2, 0]), (5, [0, 0]), (6, [6, 3])):
         encoded = torch.randn(len(lengths), 4, frames, device="cuda")
         lengths = torch.tensor(lengths, device="cuda")
-        expected = reference(encoded, lengths)
-        saved = eager(encoded, lengths)
-        for result in (saved, graphed(encoded, lengths), partial(encoded, lengths)):
+        expected = reference.decode_tensors(encoded, lengths)
+        saved = eager.decode_tensors(encoded, lengths)
+        for result in (saved, graphed.decode_tensors(encoded, lengths), partial.decode_tensors(encoded, lengths)):
             for actual, wanted in zip(result, expected):
                 torch.testing.assert_close(actual, wanted, atol=0, rtol=0)
         snapshots = tuple(t.clone() for t in saved)
-        eager(encoded, lengths)
+        eager.decode_tensors(encoded, lengths)
         for actual, wanted in zip(saved, snapshots):
             torch.testing.assert_close(actual, wanted, atol=0, rtol=0)
-    other = TensorRTTDTDecoder.load(output, use_cuda_graphs=True)
-    other(encoded, lengths)
+    other = load_tensorrt_tdt_decoder(output, use_cuda_graphs=True)
+    other.decode_tensors(encoded, lengths)
     torch.cuda.empty_cache()
     for decoder in (graphed, partial):
-        for actual, wanted in zip(decoder(encoded, lengths), reference(encoded, lengths)):
+        for actual, wanted in zip(
+            decoder.decode_tensors(encoded, lengths), reference.decode_tensors(encoded, lengths)
+        ):
             torch.testing.assert_close(actual, wanted, atol=0, rtol=0)
 
 

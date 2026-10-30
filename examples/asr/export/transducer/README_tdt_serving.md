@@ -41,15 +41,16 @@ Warm up intended batch/frame sizes before timing.
 For direct Python use:
 
 ```python
-from nemo.collections.asr.parts.submodules.tdt_decoder import TDTDecoder
+from nemo.collections.asr.parts.submodules.tdt_decoder_artifact import load_tdt_decoder
 
-decoder = TDTDecoder.load("model_repository/tdt_decoder/1/decoder.pt", device="cuda")
-result = decoder(encoded, encoded_lengths)  # Shapes: [B, C, T] and [B].
+decoder = load_tdt_decoder("model_repository/tdt_decoder/1/decoder.pt", device="cuda")
+result = decoder.decode_tensors(encoded, encoded_lengths)  # Shapes: [B, C, T] and [B].
 ```
 
 Preprocessing, the encoder and tokenization remain separate.
 Beam search, language-model fusion, confidence outputs and streaming state are unsupported.
-See [TDTDecoder](../../../../nemo/collections/asr/parts/submodules/tdt_decoder.py) and the [Triton adapter](tdt_triton_model.py) for execution details.
+`load_tdt_decoder` returns NeMo's `GreedyBatchedTDTInfer`, whose `decode_tensors` method is this tensor interface;
+see [the artifact module](../../../../nemo/collections/asr/parts/submodules/tdt_decoder_artifact.py), [GreedyBatchedTDTInfer](../../../../nemo/collections/asr/parts/submodules/rnnt_greedy_decoding.py) and the [Triton adapter](tdt_triton_model.py) for execution details.
 
 ## Check a running server
 

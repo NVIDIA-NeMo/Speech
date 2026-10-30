@@ -22,31 +22,29 @@ from types import SimpleNamespace
 import torch
 
 from nemo.collections.asr.modules.rnnt import RNNTDecoder
-from nemo.collections.asr.parts.submodules.tdt_decoder import TDTDecoder
+from nemo.collections.asr.parts.submodules.rnnt_greedy_decoding import GreedyBatchedTDTInfer
+from nemo.collections.asr.parts.submodules.tdt_decoder_artifact import build_tdt_decoder
 from nemo.collections.asr.parts.submodules.tensorrt_plan import TensorRTPlan
 
 
-class TensorRTTDTDecoder(TDTDecoder):
-    """Load cached predictor and joint plans built by build_trt_tdt_decoder.py.
+def load_tensorrt_tdt_decoder(
+    path: str | Path, device: str = "cuda", use_cuda_graphs: bool = True
+) -> GreedyBatchedTDTInfer:
+    """Load the cached predictor and joint plans built by build_trt_tdt_decoder.py into a greedy TDT decoder.
 
-    Network calculations use TensorRT; state updates, output assembly and the decoding loop use PyTorch, including the native CUDA graph implementation.
-    The plans contain all network weights; no native model checkpoint is loaded.
+    Network calculations use TensorRT; state updates, output assembly and the decoding loop use PyTorch,
+    including the native CUDA graph implementation, through ``GreedyBatchedTDTInfer.decode_tensors``.
+    The plans contain all network weights; no native model checkpoint is loaded, and the result cannot be saved.
     """
-
-    @classmethod
-    def load(cls, path: str | Path, device: str = "cuda", use_cuda_graphs: bool = True) -> "TensorRTTDTDecoder":
-        directory = Path(path)
-        config = json.loads((directory / "config.json").read_text())
-        if config["format_version"] != 1:
-            raise ValueError("Unsupported TensorRT TDT artifact version.")
-        predictor = _Prediction(directory, config, device)
-        joint = _Joint(directory, config, device)
-        return cls(
-            predictor, joint, config["blank_id"], config["durations"], config["max_symbols_per_step"], use_cuda_graphs
-        )
-
-    def save(self, path: str | Path) -> None:
-        raise NotImplementedError("Build a TensorRT decoder bundle from the source checkpoint.")
+    directory = Path(path)
+    config = json.loads((directory / "config.json").read_text())
+    if config["format_version"] != 1:
+        raise ValueError("Unsupported TensorRT TDT artifact version.")
+    predictor = _Prediction(directory, config, device)
+    joint = _Joint(directory, config, device)
+    return build_tdt_decoder(
+        predictor, joint, config["blank_id"], config["durations"], config["max_symbols_per_step"], use_cuda_graphs
+    )
 
 
 class _PlanModule(torch.nn.Module):

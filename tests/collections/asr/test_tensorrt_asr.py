@@ -23,7 +23,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from nemo.collections.asr.parts.submodules.tdt_decoder import TDTDecoderOutput
+from nemo.collections.asr.parts.submodules.rnnt_greedy_decoding import BatchedTDTOutput
 from nemo.collections.asr.parts.submodules.tensorrt_asr import TensorRTASR
 
 
@@ -62,7 +62,7 @@ def test_waveform_padding_and_empty_item():
         return features, lengths
 
     model.preprocessor, model.encoder = preprocess, encoder
-    model.decoder = lambda features, lengths: (features, lengths)
+    model.decoder = SimpleNamespace(decode_tensors=lambda features, lengths: (features, lengths))
     model(torch.ones(2, 400), torch.tensor([320, 0]))
     assert seen["input_signal"].shape == (2, 800)
     assert seen["input_signal"][0, :320].eq(1).all()
@@ -89,7 +89,7 @@ def test_text_policy():
     model.tokenizer = SimpleNamespace(decode=lambda ids: "<en-US> Hello , world")
     model._punctuation = re.compile(r"(\s+)([,])")
     model._language = re.compile(r"<[a-z]{2}-[A-Z]{2}>")
-    result = TDTDecoderOutput(torch.tensor([[1, 2, -1]]), torch.tensor([2]), torch.zeros(1, 3), torch.zeros(1, 3))
+    result = BatchedTDTOutput(torch.tensor([[1, 2, -1]]), torch.tensor([2]), torch.zeros(1, 3), torch.zeros(1, 3))
     assert model.texts(result) == ["Hello, world"]
 
 
@@ -135,7 +135,7 @@ def test_waveform_requests_batch_and_recover(monkeypatch):
         def __call__(self, audio, lengths):
             calls.append(lengths.tolist())
             batch = len(lengths)
-            return TDTDecoderOutput(
+            return BatchedTDTOutput(
                 torch.ones(batch, 1, dtype=torch.long),
                 torch.ones(batch, dtype=torch.long),
                 torch.zeros(batch, 1, dtype=torch.long),

@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 import torch
 
-from nemo.collections.asr.parts.submodules.tdt_decoder import TDTDecoder
+from nemo.collections.asr.parts.submodules.tdt_decoder_artifact import load_tdt_decoder
 
 
 @pytest.mark.run_only_on("GPU")
@@ -24,7 +24,7 @@ def test_live_tdt_triton():
         pytest.skip("Set NEMO_TDT_TRITON_URL and NEMO_TDT_DECODER_ARTIFACT with CUDA available.")
     name = os.environ.get("NEMO_TDT_TRITON_MODEL", "tdt_decoder")
     endpoint = f"{url.rstrip('/')}/v2/models/{name}"
-    decoder = TDTDecoder.load(artifact, "cuda", True)
+    decoder = load_tdt_decoder(artifact, "cuda", True)
     rng = np.random.default_rng(42)
 
     def request(path, payload=None):
@@ -51,7 +51,7 @@ def test_live_tdt_triton():
     def case(batch, frames, lengths):
         encoded = rng.standard_normal((batch, decoder.joint.enc.in_features, frames)).astype(np.float32)
         lengths = np.asarray(lengths, dtype=np.int64)
-        expected = decoder(torch.from_numpy(encoded), torch.from_numpy(lengths))
+        expected = decoder.decode_tensors(torch.from_numpy(encoded), torch.from_numpy(lengths))
         return encoded, lengths, tuple(t.cpu().numpy().copy() for t in expected)
 
     def check(actual, expected):

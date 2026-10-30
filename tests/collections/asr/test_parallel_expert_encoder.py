@@ -3174,3 +3174,59 @@ def test_eager_long_audio_never_captures_window_graphs(monkeypatch, cause):
         with torch.no_grad(), encoder.online_inference():
             perception(input_signal=long, input_signal_length=lengths)
     assert runner.long_graph_count() == 0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    'payload',
+    [
+        b'\xff',
+        b'target: [unterminated',
+        b'- target',
+        b'42',
+        b'target: ${missing}',
+        b'target: ${oc.env:PE_PROBE_TARGET}',
+    ],
+)
+def test_is_pe_nemo_rejects_malformed_config(tmp_path, monkeypatch, payload):
+    monkeypatch.setenv('PE_PROBE_TARGET', 'ParallelExpertEncoderPT')
+    path = tmp_path / 'malformed.nemo'
+    with tarfile.open(path, 'w') as archive:
+        member = tarfile.TarInfo('model_config.yaml')
+        member.size = len(payload)
+        archive.addfile(member, io.BytesIO(payload))
+    assert ParallelExpertEncoderPT.is_pe_nemo(str(path)) is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('member_type', [tarfile.SYMTYPE, tarfile.LNKTYPE, tarfile.DIRTYPE])
+def test_is_pe_nemo_rejects_nonregular_config(tmp_path, member_type):
+    path = tmp_path / 'link.nemo'
+    with tarfile.open(path, 'w') as archive:
+        member = tarfile.TarInfo('model_config.yaml')
+        member.type = member_type
+        member.linkname = 'missing-config'
+        archive.addfile(member)
+    assert ParallelExpertEncoderPT.is_pe_nemo(str(path)) is False
+
+
+@pytest.mark.unit
+def test_is_pe_nemo_rejects_oversized_config(tmp_path):
+    path = tmp_path / 'large.nemo'
+    payload = b'target: ParallelExpertEncoderPT\n#' + b'x' * (1024 * 1024)
+    with tarfile.open(path, 'w') as archive:
+        member = tarfile.TarInfo('model_config.yaml')
+        member.size = len(payload)
+        archive.addfile(member, io.BytesIO(payload))
+    assert ParallelExpertEncoderPT.is_pe_nemo(str(path)) is False
+
+
+@pytest.mark.unit
+def test_is_pe_nemo_rejects_deeply_nested_config(tmp_path):
+    path = tmp_path / 'deep.nemo'
+    payload = b'target: ' + b'[' * 2000 + b'0' + b']' * 2000
+    with tarfile.open(path, 'w') as archive:
+        member = tarfile.TarInfo('model_config.yaml')
+        member.size = len(payload)
+        archive.addfile(member, io.BytesIO(payload))
+    assert ParallelExpertEncoderPT.is_pe_nemo(str(path)) is False

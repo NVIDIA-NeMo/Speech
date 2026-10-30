@@ -18,6 +18,7 @@ Tests for MagpieTTS inference.
 """
 
 import csv
+import inspect
 import json
 import os
 
@@ -25,8 +26,10 @@ import pytest
 import torch
 from examples.tts.magpietts_inference import main as magpietts_inference_main
 from examples.tts.magpietts_inference import run_inference_and_evaluation
+from omegaconf import OmegaConf
 
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
+from nemo.collections.tts.models import EasyMagpieTTSInferenceModel, NemotronTTSBase
 from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio import (
     FILEWISE_METRICS_TO_SAVE,
     _get_record_texts,
@@ -44,9 +47,12 @@ from nemo.collections.tts.modules.magpietts_inference.evaluation import (
 )
 from nemo.collections.tts.modules.magpietts_inference.utils import (
     EXPERIMENT_METRICS_CSV_HEADER,
+    ModelLoadConfig,
     _group_multiturn_filewise_metrics_by_sample,
     _write_grouped_multiturn_filewise_metrics_csv,
     append_metrics_to_csv,
+    load_easy_magpie_model,
+    select_easy_magpie_model_class,
     write_csv_header_if_needed,
 )
 from nemo.collections.tts.parts.utils.tts_dataset_utils import DefaultTextProcessor
@@ -536,6 +542,72 @@ def test_example_script_rejects_removed_strip_flag(capsys):
     with pytest.raises(SystemExit):
         magpietts_inference_main(["--strip_text_annotations_for_metrics"])
     assert '"strip_text_annotations_for_metrics": true or false' in capsys.readouterr().err
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "model_cfg,expected_class",
+    [
+        (OmegaConf.create({}), EasyMagpieTTSInferenceModel),
+        (OmegaConf.create({"model_type": "v1"}), EasyMagpieTTSInferenceModel),
+        (OmegaConf.create({"model_type": "v2"}), NemotronTTSBase),
+    ],
+)
+def test_select_easy_magpie_model_class(model_cfg, expected_class):
+    assert select_easy_magpie_model_class(model_cfg) is expected_class
+
+
+@pytest.mark.unit
+def test_select_easy_magpie_model_class_rejects_unknown_type():
+    with pytest.raises(ValueError, match="Unsupported model_type"):
+        select_easy_magpie_model_class(OmegaConf.create({"model_type": "v3"}))
+
+
+@pytest.mark.unit
+def test_load_easy_magpie_model_selects_v2_for_nemo_archive(tmp_path, monkeypatch):
+    model_cfg = OmegaConf.create({"model_type": "v2", "target": "training.Model"})
+    restored = []
+
+    class FakeModel:
+        def to(self, device):
+            return self
+
+        def eval(self):
+            return self
+
+        def float(self):
+            return self
+
+    def read_config(cls, restore_path, return_config=False, **kwargs):
+        assert return_config
+        return model_cfg
+
+    def restore_v2(cls, restore_path, override_config_path=None, **kwargs):
+        restored.append((restore_path, override_config_path))
+        return FakeModel()
+
+    monkeypatch.setattr(EasyMagpieTTSInferenceModel, "restore_from", classmethod(read_config))
+    monkeypatch.setattr(NemotronTTSBase, "restore_from", classmethod(restore_v2))
+
+    nemo_file = tmp_path / "model.nemo"
+    model, checkpoint_name = load_easy_magpie_model(
+        ModelLoadConfig(nemo_file=str(nemo_file)),
+        device="cpu",
+    )
+
+    assert isinstance(model, FakeModel)
+    assert checkpoint_name == "model"
+    assert len(restored) == 1
+    assert restored[0][0] == str(nemo_file)
+    expected_target = f'{NemotronTTSBase.__module__}.{NemotronTTSBase.__name__}'
+    assert restored[0][1].target == expected_target
+
+
+@pytest.mark.unit
+def test_nemotron_tts_v2_infer_batch_accepts_compatibility_kwargs():
+    parameters = inspect.signature(NemotronTTSBase.infer_batch).parameters
+    assert 'use_local_transformer_for_inference' not in parameters
+    assert parameters['kwargs'].kind is inspect.Parameter.VAR_KEYWORD
 
 
 class _FakeRunner:

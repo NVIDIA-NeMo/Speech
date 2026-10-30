@@ -1,13 +1,13 @@
 ## EasyMagpieTTS — vLLM-Omni two-stage inference
 
-Streaming TTS for **NemotronTTS** (Nemotron-H backbone + per-codebook local
-transformer over a 25 fps spectral codec) via [vLLM-Omni](https://github.com/vllm-project/vllm-omni).
+Streaming TTS for **NemotronTTS** (Nemotron-H backbone + architecture-selected
+acoustic predictor over a neural audio codec) via [vLLM-Omni](https://github.com/vllm-project/vllm-omni).
 
 EasyMagpieTTS decomposes into EasyMagpie LM and SpectralCodec-BWE-22kHz:
 
 | Stage | Role |
 |-------|------|
-| **0 — EasyMagpie LM** | `EasyMagpie_LM_Backbone` (Nemotron-H) + `EasyMagpie_LM_LT` → stacked acoustic codes |
+| **0 — EasyMagpie LM** | Nemotron-H backbone + v1 local transformer or v2 acoustic predictor with global cache → stacked acoustic codes |
 | **1 — SpectralCodec-BWE-22kHz** | Stateful native vLLM codec → 22.05 kHz waveform |
 
 Model definition and pipeline registration live in
@@ -15,7 +15,7 @@ Model definition and pipeline registration live in
 [`vllm_plugin_easymagpie_omni/`](vllm_plugin_easymagpie_omni/).
 Deployment knobs are in [`deploy/easymagpie.yaml`](deploy/easymagpie.yaml).
 
-### Convert a NeMo checkpoint
+### Convert a checkpoint
 
 This step converts the EasyMagpie LM, precomputes the text-embedding lookup,
 and saves the tokenizer and optional named-speaker embedding. The Stage-1 codec

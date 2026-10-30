@@ -15,8 +15,8 @@
 """Inference-only EasyMagpieTTS model for vLLM-Omni.
 
 The Nemotron-H backbone consumes additive text, phoneme, and previous-audio
-embeddings. A local transformer predicts the stacked audio codebooks for each
-frame. Request metadata supplies target text, optional context text and task
+embeddings. An architecture-selected acoustic predictor emits the stacked audio
+codebooks for each frame. Request metadata supplies target text, optional context text and task
 mode, audio sampling parameters, and either precomputed or raw reference audio
 conditioning.
 
@@ -34,6 +34,7 @@ from collections.abc import Callable, Iterable
 from typing import Any, Optional
 
 import torch
+from easymagpie_vllm_omni.acoustic_predictor import create_acoustic_predictor
 from easymagpie_vllm_omni.backbone_patches import (
     patch_mamba_streaming_decode,
     patch_moe_routed_scale,
@@ -41,8 +42,7 @@ from easymagpie_vllm_omni.backbone_patches import (
 )
 from easymagpie_vllm_omni.codec.encoder import EasyMagpieCodecEncoder
 from easymagpie_vllm_omni.codec.encoder_config import EasyMagpieCodecEncoderConfig
-from easymagpie_vllm_omni.config import EasyMagpieOmniArch
-from easymagpie_vllm_omni.local_transformer import EasyMagpieCodePredictor
+from easymagpie_vllm_omni.config import NO_AUDIO_FRAME, EasyMagpieOmniArch
 from easymagpie_vllm_omni.multimodal import (
     EasyMagpieDummyInputsBuilder,
     EasyMagpieMultiModalProcessor,
@@ -111,10 +111,8 @@ def _merge_streaming_text_chunk(
 _DEFAULT_CONTEXT_TEXT = "[EN]"
 
 
-# This class is not wrapped in ``@support_torch_compile``: the Nemotron-H
-# backbone and :class:`EasyMagpieCodePredictor` each manage their own
-# ``torch.compile`` / CUDA-graph capture internally, so the outer ``forward``
-# runs eagerly and dispatches into the two self-compiled subgraphs.
+# This class stays eager while vLLM compiles/captures its architecture-specific
+# backbone and acoustic-predictor submodules.
 @MULTIMODAL_REGISTRY.register_processor(
     EasyMagpieMultiModalProcessor,
     info=EasyMagpieProcessingInfo,
@@ -206,9 +204,9 @@ class EasyMagpieTTSForConditionalGeneration(
         # decodes so FULL/FULL_DECODE_ONLY cudagraphs read the right Mamba slot.
         patch_mamba_streaming_decode()
 
-        # ── Local transformer (its own compile group / CUDA graph) ──────
-        with set_model_tag("local_transformer"):
-            self.code_predictor = EasyMagpieCodePredictor(
+        # ── Architecture-selected acoustic predictor ───────────────────
+        with set_model_tag(arch.acoustic_predictor_type):
+            self.code_predictor = create_acoustic_predictor(
                 vllm_config=vllm_config,
                 prefix=maybe_prefix(prefix, "code_predictor"),
             )
@@ -287,7 +285,11 @@ class EasyMagpieTTSForConditionalGeneration(
             self._dec_phoneme_tokens = torch.zeros(max_num_tokens, arch.phoneme_stacking_factor, dtype=torch.long)
             self._dec_phoneme_valid = torch.zeros(max_num_tokens, dtype=torch.long)
 
-        self._out_codes = torch.zeros(max_num_tokens, self.num_codebooks, dtype=torch.long)
+        self._out_codes = torch.full(
+            (max_num_tokens, self.num_codebooks),
+            NO_AUDIO_FRAME,
+            dtype=torch.long,
+        )
 
         # ── Audio-EOS → engine stop ─────────────────────────────────────
         # The model signals end-of-speech inside the audio codebooks.
@@ -489,7 +491,7 @@ class EasyMagpieTTSForConditionalGeneration(
         return acc / len(self.phoneme_embeddings)
 
     # ------------------------------------------------------------------
-    # Decode-token dispatch (which positions need the local transformer)
+    # Query dispatch (v1 compute selection and v2 prediction masking)
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -524,20 +526,19 @@ class EasyMagpieTTSForConditionalGeneration(
         for m in metas:
             if hasattr(m, "num_prefills") and hasattr(m, "num_decodes"):
                 if int(getattr(m, "num_prefills", 0)) == 0:
-                    return 1, None  # decode-only -> caller runs the LT everywhere
+                    return 1, None  # decode-only -> every row is a decode row
                 break
         return None, None
 
     def _get_query_dispatch(self):
         """Return decode rows and the final row of each prefill query.
 
-        * ``(None, 0, None)`` → run the local transformer on every token (a warm-up
-          run with no ``attn_metadata``, or a decode-only batch where
-          ``max_query_len == 1``), so the captured CUDA graph covers every
-          ``cudagraph_capture_sizes`` value.
-        * ``(indices, num_requests, prefill_last_indices)`` → run the local
-          transformer only on listed decode rows, and the phoneme projection on
-          each final prefill row. ``indices`` is CUDA-graph padded;
+        * ``(None, 0, None)`` means every row follows the decode-shaped path (a
+          warm-up run with no metadata, or a decode-only batch).
+        * ``(indices, num_requests, prefill_last_indices)`` identifies decode
+          rows and each final prefill row. v1 runs its local transformer only on
+          ``indices``; v2 still advances all rows and uses ``indices`` only as
+          its sampling mask. ``indices`` is CUDA-graph padded and
           ``num_requests`` is its unpadded count.
         """
         ctx = get_forward_context()
@@ -547,7 +548,7 @@ class EasyMagpieTTSForConditionalGeneration(
 
         max_query_len, start_loc = self._select_query_layout(attn_metadata)
 
-        # Decode-only batch (or layout unavailable) -> run the LT on every token.
+        # Decode-only batch (or layout unavailable) -> all rows use the decode-shaped path.
         if max_query_len is None or max_query_len == 1 or start_loc is None:
             return None, 0, None
 
@@ -587,7 +588,7 @@ class EasyMagpieTTSForConditionalGeneration(
         :meth:`preprocess` (zeros at decode positions). For decode positions we
         assemble ``text_emb + phoneme_emb + audio_emb`` in-place from the
         per-token buffers, run the backbone, then sample the codebooks with the
-        local transformer (skipping prefill positions).
+        architecture-selected acoustic predictor.
         """
         num_tokens = input_ids.shape[0]
         combined = self._combined_embeddings[:num_tokens]
@@ -606,7 +607,7 @@ class EasyMagpieTTSForConditionalGeneration(
         if decode_idx is not None:
             # Acoustic prediction is skipped on prefill rows. Clear their shared
             # scratch slots so a prior request cannot leak a fake codec frame.
-            self._out_codes[:num_tokens].zero_()
+            self._out_codes[:num_tokens].fill_(NO_AUDIO_FRAME)
         if decode_idx is None:
             # Warm-up or decode-only batches exercise the full decode path.
             self._assemble_decode_embeddings(combined, slice(0, num_tokens))
@@ -621,8 +622,36 @@ class EasyMagpieTTSForConditionalGeneration(
             inputs_embeds=combined,
         )
 
-        # Sample codes (local transformer) only where needed.
-        if decode_idx is None:
+        # v1's stateless local transformer only runs on decode rows. The v2
+        # predictor owns global attention caches, so every backbone row must pass
+        # through every predictor block; non-audio rows advance with MASK tokens.
+        if getattr(self.code_predictor, "requires_all_tokens", False):
+            if decode_idx is not None and num_req == 0:
+                # Pure prefill: advance all global predictor caches without
+                # projecting/sampling logits that no request will consume.
+                self.code_predictor.advance(hidden_states, positions=positions)
+                codes = None
+            else:
+                predict = torch.zeros(num_tokens, dtype=torch.bool, device=hidden_states.device)
+                if decode_idx is None:
+                    predict.copy_(self._dec_audio_valid[:num_tokens].bool())
+                else:
+                    valid = decode_idx[:num_req]
+                    predict[valid] = self._dec_audio_valid[valid].bool()
+                codes = self.code_predictor.generate_codes(hidden_states, positions=positions, predict=predict)
+            if decode_idx is None:
+                assert codes is not None
+                self._out_codes[:num_tokens].copy_(codes)
+                self._flag_audio_eos(codes, slice(0, num_tokens))
+                if self.has_phoneme:
+                    self._predict_phonemes(hidden_states, slice(0, num_tokens))
+            elif num_req > 0:
+                valid = decode_idx[:num_req]
+                self._out_codes[valid] = codes[valid]
+                self._flag_audio_eos(codes[valid], valid)
+                if self.has_phoneme:
+                    self._predict_phonemes(hidden_states, valid)
+        elif decode_idx is None:
             codes = self.code_predictor.generate_codes(hidden_states)
             self._out_codes[:num_tokens].copy_(codes)
             self._flag_audio_eos(codes, slice(0, num_tokens))
@@ -774,7 +803,10 @@ class EasyMagpieTTSForConditionalGeneration(
             )
         return OmniOutput(
             text_hidden_states=hidden,
-            multimodal_outputs={"audio_codes": audio_codes, "codes": {"audio": audio_codes}},
+            multimodal_outputs={
+                "audio_codes": audio_codes,
+                "codes": {"audio": audio_codes},
+            },
         )
 
     # ------------------------------------------------------------------
@@ -814,10 +846,18 @@ class EasyMagpieTTSForConditionalGeneration(
             base = input_embeds if input_embeds is not None else self.embed_input_ids(input_ids)
             return input_ids, base, {}
 
+        start = self._batch_slot_offset(input_ids, start)
         if bool(info_dict["_omni_is_prefill"]):
+            # A one-token prefill has the same query shape as decode. Clear the
+            # per-slot decode gates so it cannot inherit stale state when the
+            # forward dispatcher intentionally treats that shape uniformly.
+            stop = start + span_len
+            self._dec_text_mask[start:stop].zero_()
+            self._dec_audio_valid[start:stop].zero_()
+            if self.has_phoneme:
+                self._dec_phoneme_valid[start:stop].zero_()
             return self._preprocess_prefill(input_ids, input_embeds, span_len, device, info_dict)
 
-        start = self._batch_slot_offset(input_ids, start)
         return self._preprocess_decode(input_ids, start, device, info_dict)
 
     @staticmethod
@@ -837,7 +877,7 @@ class EasyMagpieTTSForConditionalGeneration(
         device: torch.device,
         info_dict: dict[str, Any],
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
-        self._maybe_set_lt_sampling_params(info_dict)
+        self._maybe_set_code_sampling_params(info_dict)
         # Absolute position within this request's retained Stage-0 state.
         offset = int(info_dict["_omni_num_computed_tokens"])
         text_tokens = list(info_dict.get("text_tokens") or [])
@@ -1290,8 +1330,8 @@ class EasyMagpieTTSForConditionalGeneration(
         )
         return embedding.to(device=device, dtype=dtype)
 
-    def _maybe_set_lt_sampling_params(self, info_dict: dict[str, Any]) -> None:
-        """Apply per-request audio sampling params to the local transformer.
+    def _maybe_set_code_sampling_params(self, info_dict: dict[str, Any]) -> None:
+        """Apply per-request audio sampling params to the acoustic predictor.
 
         Reads ``temperature`` / ``top_k`` (alias ``topk``) from the request's
         ``additional_information`` and stores them on the code predictor. Absent
@@ -1481,7 +1521,7 @@ class EasyMagpieTTSForConditionalGeneration(
         # ── Audio channel ── opens at decode step == ``speech_delay`` (seeded with
         # audio BOS), then feeds back the previous frame's codes. For the leading
         # ``speech_delay`` steps the channel is masked off (only text/phoneme
-        # condition the backbone); the local transformer still runs for CUDA-graph
+        # condition the backbone); the acoustic predictor still runs for CUDA-graph
         # stability but its codes for those frames are discarded by the caller and
         # never fed back here.
         if decode_offset < self.speech_delay:
@@ -1553,6 +1593,8 @@ class EasyMagpieTTSForConditionalGeneration(
         "local_transformer_out_projections.": "code_predictor.local_transformer_out_projections.",
         "audio_embeddings.": "code_predictor.audio_embeddings.",
         "audio_in_projection.": "code_predictor.audio_in_projection.",
+        "audio_code_projection.": "code_predictor.audio_embedder.audio_code_projection.",
+        "audio_special_embeddings.": "code_predictor.audio_embedder.audio_special_embeddings.",
         "phoneme_embeddings.": "phoneme_embeddings.",
         "phoneme_final_proj.": "phoneme_final_proj.",
         "text_embedding.": "text_embedding.",
@@ -1592,10 +1634,14 @@ class EasyMagpieTTSForConditionalGeneration(
         own_params = {**dict(self.named_parameters()), **dict(self.named_buffers())}
         loaded: set[str] = set()
         backbone_weights: list[tuple[str, torch.Tensor]] = []
+        predictor_weights: list[tuple[str, torch.Tensor]] = []
 
         for name, tensor in weights:
             if name.startswith("decoder."):
                 backbone_weights.append((name[len("decoder.") :], tensor))
+                continue
+            if name.startswith("acoustic_codes_predictor."):
+                predictor_weights.append((name[len("acoustic_codes_predictor.") :], tensor))
                 continue
             mapped = self._remap_tts_key(name)
             if mapped is None:
@@ -1634,9 +1680,13 @@ class EasyMagpieTTSForConditionalGeneration(
         backbone_weights = list(NemotronHForCausalLM.hf_to_vllm_mapper.apply(backbone_weights))
         backbone_loaded = self.backbone.load_weights(backbone_weights)
         loaded |= {f"backbone.{n}" for n in backbone_loaded}
+        if predictor_weights:
+            predictor_loaded = self.code_predictor.load_weights(predictor_weights)
+            loaded |= {f"code_predictor.{n}" for n in predictor_loaded}
 
-        # Derived runtime state.
-        self.code_predictor.init_forbidden_mask()
+        # Derived runtime state used by the v1 local transformer.
+        if hasattr(self.code_predictor, "init_forbidden_mask"):
+            self.code_predictor.init_forbidden_mask()
 
         logger.info("Loaded %d weights for EasyMagpieTTSForConditionalGeneration", len(loaded))
         return loaded

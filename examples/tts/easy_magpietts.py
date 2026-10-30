@@ -17,7 +17,12 @@ import lightning.pytorch as pl
 import torch.multiprocessing as mp
 from omegaconf import OmegaConf, open_dict
 
-from nemo.collections.tts.models import EasyMagpieCFGDistillation, EasyMagpieTTSModel, EasyMagpieTTSModelOnlinePO
+from nemo.collections.tts.models import (
+    EasyMagpieCFGDistillation,
+    EasyMagpieTTSModel,
+    EasyMagpieTTSModelOnlinePO,
+    NemotronTTSModel,
+)
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
@@ -53,7 +58,8 @@ def main(cfg):
     train_modes_msg = ", ".join(_TRAIN_MODES)
 
     if mode == 'train':
-        model = EasyMagpieTTSModel(cfg=cfg.model, trainer=trainer)
+        model_cls = _select_model_class(cfg.model)
+        model = model_cls(cfg=cfg.model, trainer=trainer)
     elif mode == "online_cfg_distillation_train":
         model = EasyMagpieCFGDistillation(cfg=cfg.model, trainer=trainer)
     elif mode == 'onlinepo_train':
@@ -62,7 +68,8 @@ def main(cfg):
             model_cfg.reference_model_ckpt_path = cfg.init_from_ptl_ckpt
         model = EasyMagpieTTSModelOnlinePO(cfg=model_cfg, trainer=trainer)
     elif mode == 'test':
-        model = EasyMagpieTTSModel(cfg=cfg.model, trainer=trainer)
+        model_cls = _select_model_class(cfg.model)
+        model = model_cls(cfg=cfg.model, trainer=trainer)
     else:
         raise NotImplementedError(f"Only {train_modes_msg} and test modes are supported. Got {mode}.")
 
@@ -78,6 +85,16 @@ def main(cfg):
         trainer.fit(model)
     elif mode == 'test':
         trainer.test(model)
+
+
+def _select_model_class(model_cfg) -> type:
+    """Select the v1 or v2 model implementation from the model configuration."""
+    model_type = model_cfg.get('model_type', 'v1')
+    if model_type == 'v1':
+        return EasyMagpieTTSModel
+    if model_type == 'v2':
+        return NemotronTTSModel
+    raise ValueError(f"Unsupported model_type: {model_type!r}")
 
 
 if __name__ == '__main__':

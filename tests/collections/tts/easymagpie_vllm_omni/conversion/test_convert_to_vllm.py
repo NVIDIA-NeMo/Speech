@@ -490,3 +490,51 @@ def test_validate_model_config_rejects_non_streaming_default_mode():
 
     with pytest.raises(ValueError, match="text_input_mode='streaming'"):
         converter.validate_model_config(model)
+
+
+def test_validate_model_config_accepts_v2_acoustic_predictor():
+    model = _validation_model()
+    model.cfg.local_transformer_type = "none"
+    model.cfg.use_codec_latent_audio_embedding = True
+    model.num_audio_codebooks = 2
+    model.frame_stacking_factor = 1
+    model.acoustic_codes_predictor = types.SimpleNamespace(prediction_schedule=(1, 1))
+
+    converter.validate_model_config(model)
+    assert converter.acoustic_predictor_type(model) == "acoustic_codes_predictor"
+
+
+@pytest.mark.parametrize(
+    ("schedule", "n_layers", "message"),
+    [
+        ((2,), 1, "one predictor block per stacked codebook"),
+        ((1, 1), 2, "one attention/FFN pair per codebook"),
+    ],
+)
+def test_validate_model_config_rejects_unsupported_v2_predictor_layout(schedule, n_layers, message):
+    model = _validation_model()
+    model.cfg.local_transformer_type = "none"
+    model.cfg.use_codec_latent_audio_embedding = True
+    model.cfg.acoustic_codes_predictor_n_layers = n_layers
+    model.num_audio_codebooks = 2
+    model.frame_stacking_factor = 1
+    model.acoustic_codes_predictor = types.SimpleNamespace(prediction_schedule=schedule)
+
+    with pytest.raises(ValueError, match=message):
+        converter.validate_model_config(model)
+
+
+def test_select_weights_keeps_v2_predictor_and_audio_embedding():
+    state = {
+        "audio_code_projection.weight": torch.ones(4, 2),
+        "audio_special_embeddings.weight": torch.ones(16, 4),
+        "acoustic_codes_predictor.blocks.0.layers.0.mixer.q_proj.weight": torch.ones(4, 4),
+        "final_proj.weight": torch.ones(4, 4),
+    }
+
+    weights = converter.select_weights(state, hidden_dim=4, dtype=torch.float16)
+
+    assert "audio_code_projection.weight" in weights
+    assert "audio_special_embeddings.weight" in weights
+    assert "acoustic_codes_predictor.blocks.0.layers.0.mixer.q_proj.weight" in weights
+    assert "final_proj.weight" not in weights

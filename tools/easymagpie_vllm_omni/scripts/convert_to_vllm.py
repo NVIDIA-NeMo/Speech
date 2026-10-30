@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Convert an EasyMagpieTTS ``.nemo`` checkpoint to a vLLM-Omni model directory.
+"""Convert an EasyMagpieTTS ``.nemo`` or Lightning checkpoint to a vLLM-Omni model directory.
 
 The output directory is self-contained and ready to be passed as ``model=<dir>``
 to the ``easymagpie_vllm_omni`` vLLM-Omni model
@@ -76,6 +76,9 @@ from safetensors.torch import load_file, save_file
 _TTS_PREFIXES = (
     "audio_embeddings.",
     "audio_in_projection.",
+    "audio_code_projection.",
+    "audio_special_embeddings.",
+    "acoustic_codes_predictor.",
     "local_transformer.",
     "local_transformer_in_projection.",
     "local_transformer_audio_out_projection.",
@@ -131,10 +134,16 @@ _NEMOTRON_CONFIG_FIELDS = (
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Convert an EasyMagpieTTS .nemo checkpoint to a vLLM-Omni model directory."
+    parser = argparse.ArgumentParser(description="Convert an EasyMagpieTTS checkpoint to a vLLM-Omni model directory.")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--nemo_file", help="Path to an EasyMagpieTTS .nemo checkpoint.")
+    source.add_argument("--checkpoint_file", help="Path to an EasyMagpieTTS Lightning .ckpt checkpoint.")
+    parser.add_argument("--hparams_file", help="Training hparams YAML; required with --checkpoint_file.")
+    parser.add_argument(
+        "--hparams_file_from_wandb",
+        action="store_true",
+        help="Read the model config from the hparams YAML's cfg.value field.",
     )
-    parser.add_argument("--nemo_file", required=True, help="Path to the EasyMagpieTTS .nemo checkpoint.")
     parser.add_argument("--codec_model_path", required=True, help="Path to the audio codec .nemo checkpoint.")
     parser.add_argument("--outdir", required=True, help="Output directory for the vLLM model.")
     parser.add_argument(
@@ -292,6 +301,20 @@ def extract_speaker_embedding(model, context_audio_path: str, context_audio_dura
     return context_audio_embedded[0, :audio_len].contiguous().float().detach().cpu()
 
 
+def acoustic_predictor_type(model) -> str:
+    """Identify the serving architecture without coupling conversion to model classes."""
+    if getattr(model, "acoustic_codes_predictor", None) is not None:
+        return "acoustic_codes_predictor"
+    local_transformer_type = str(model.cfg.get("local_transformer_type", "none"))
+    if local_transformer_type in {"ar", "autoregressive"}:
+        return "local_transformer"
+    raise ValueError(
+        "The checkpoint has neither the v2 acoustic_codes_predictor nor "
+        "local_transformer_type='ar'/'autoregressive' for v1; "
+        f"got {local_transformer_type!r}."
+    )
+
+
 def validate_model_config(model) -> None:
     """Validate checkpoint features implemented by the vLLM serving model."""
     cfg = model.cfg
@@ -316,13 +339,24 @@ def validate_model_config(model) -> None:
             f"directly; got {backbone_hidden_dim} and {embedding_dim}. Add an input projection to support this layout."
         )
 
-    local_transformer_type = str(cfg.get("local_transformer_type", "none"))
-    if local_transformer_type not in {"ar", "autoregressive"}:
-        raise ValueError(
-            "The serving code currently requires local_transformer_type='ar'/'autoregressive'; "
-            "extend EasyMagpieCodePredictor "
-            f"to support '{local_transformer_type}'."
-        )
+    predictor_type = acoustic_predictor_type(model)
+    if predictor_type == "acoustic_codes_predictor":
+        if not bool(cfg.get("use_codec_latent_audio_embedding", False)):
+            raise ValueError("v2 serving currently requires use_codec_latent_audio_embedding=True")
+        num_stacked_codebooks = int(model.num_audio_codebooks) * int(model.frame_stacking_factor)
+        schedule = tuple(model.acoustic_codes_predictor.prediction_schedule)
+        expected_schedule = (1,) * num_stacked_codebooks
+        if schedule != expected_schedule:
+            raise ValueError(
+                "v2 serving requires one predictor block per stacked codebook; "
+                f"expected schedule {list(expected_schedule)}, got {list(schedule)}"
+            )
+        predictor_n_layers = int(cfg.get("acoustic_codes_predictor_n_layers", 1))
+        if predictor_n_layers != 1:
+            raise ValueError(
+                "v2 serving requires exactly one attention/FFN pair per codebook; "
+                f"got acoustic_codes_predictor_n_layers={predictor_n_layers}"
+            )
 
     default_mode = model.mode_name_to_mode.get(model.default_inference_mode)
     if default_mode is None:
@@ -341,6 +375,7 @@ def build_config(
     *,
     bundle_audio_encoders: bool = False,
     max_audio_seconds: float = EasyMagpieOmniArch.max_audio_seconds,
+    codec_num_levels_per_group: list[int] | None = None,
 ) -> dict:
     """Build the flat vLLM ``config.json`` dict from the loaded NeMo model."""
     from nemo.collections.tts.modules.nemotron_h_decoder import NemotronHConfig
@@ -441,9 +476,17 @@ def build_config(
 
     config["num_task_embeddings"] = len(model.training_modes) if model.task_embedding is not None else 0
 
-    config["local_transformer_n_layers"] = int(cfg.get("local_transformer_n_layers", 2))
-    config["local_transformer_n_heads"] = int(cfg.get("local_transformer_n_heads", 1))
-    config["local_transformer_hidden_dim"] = int(cfg.get("local_transformer_hidden_dim", hidden_dim))
+    predictor_type = acoustic_predictor_type(model)
+    config["acoustic_predictor_type"] = predictor_type
+    if predictor_type == "local_transformer":
+        config["local_transformer_n_layers"] = int(cfg.get("local_transformer_n_layers", 2))
+        config["local_transformer_n_heads"] = int(cfg.get("local_transformer_n_heads", 1))
+        config["local_transformer_hidden_dim"] = int(cfg.get("local_transformer_hidden_dim", hidden_dim))
+    else:
+        config["use_codec_latent_audio_embedding"] = bool(cfg.get("use_codec_latent_audio_embedding", False))
+        if codec_num_levels_per_group is None:
+            _, codec_num_levels_per_group, _ = resolve_codec_layout(model)
+        config["codec_num_levels_per_group"] = list(codec_num_levels_per_group)
 
     # Pin the exact special-token ids (covers legacy ``forced_*`` checkpoints).
     config["forced_audio_bos_id"] = int(model.audio_bos_id)
@@ -588,8 +631,11 @@ def configure_codec_reference_speaker_encoder(outdir: str, config: dict) -> None
         "reference_speaker_encoder_max_length",
     )
     encoder_config.update({field: config[field] for field in fields if field in config})
-    encoder_config["context_audio_bos_id"] = int(config["codebook_size"]) + 2
-    encoder_config["context_audio_eos_id"] = int(config["codebook_size"]) + 3
+    codebook_size = int(config["codebook_size"])
+    encoder_config["audio_bos_id"] = codebook_size
+    encoder_config["audio_eos_id"] = codebook_size + 1
+    encoder_config["context_audio_bos_id"] = codebook_size + 2
+    encoder_config["context_audio_eos_id"] = codebook_size + 3
     with open(path, "w") as output_file:
         json.dump(encoder_config, output_file, indent=2)
 
@@ -661,6 +707,9 @@ def convert(args) -> None:
     model, ckpt_name = load_easy_magpie_model(
         ModelLoadConfig(
             nemo_file=args.nemo_file,
+            hparams_file=args.hparams_file,
+            checkpoint_file=args.checkpoint_file,
+            hparams_from_wandb=args.hparams_file_from_wandb,
             codecmodel_path=args.codec_model_path,
             phoneme_tokenizer_path=args.phoneme_tokenizer_path,
             disable_cas_for_context_text=args.disable_cas_for_context_text,
@@ -683,6 +732,7 @@ def convert(args) -> None:
         args.dtype,
         bundle_audio_encoders=args.bundle_audio_encoders,
         max_audio_seconds=args.max_audio_seconds,
+        codec_num_levels_per_group=num_levels_per_group,
     )
     encoder_path = convert_codec_artifacts(
         args.codec_model_path,

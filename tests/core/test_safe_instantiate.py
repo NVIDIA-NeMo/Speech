@@ -13,6 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
+import sys
+import textwrap
 from unittest.mock import patch
 
 import pytest
@@ -24,7 +27,13 @@ from torch.distributed.fsdp import MixedPrecisionPolicy
 
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import BaseTokenizer
 from nemo.collections.tts.g2p.models.base import BaseG2p
-from nemo.core.classes.common import _is_target_allowed, safe_instantiate
+from nemo.core.classes import common
+from nemo.core.classes.common import (
+    UnsafeTargetError,
+    _is_target_allowed,
+    add_allowed_target_prefixes,
+    safe_instantiate,
+)
 from nemo.utils.decorators import experimental
 
 
@@ -157,3 +166,175 @@ def test_safe_instantiate_allows_experimental_asr_transformer_encoder():
 
     assert _is_target_allowed("nemo.collections.asr.modules.transformer_encoder.TransformerEncoder") is True
     assert _is_target_allowed("nemo.collections.asr.modules.TransformerEncoder") is True
+
+
+@pytest.fixture
+def external_package(tmp_path, monkeypatch):
+    """Two packages outside NeMo's allow-list, importable for the test: `trusted_blocks` and `trusted_blocks_other`.
+
+    `trusted_blocks` defines an `nn.Module`, a function returning one and a plain class in `trusted_blocks.layers`,
+    re-exports the module and the function at the top level, and imports `os` and `torch` like any real package.
+    No prefix is added when the fixture starts; the test adds what it needs.
+    """
+    (tmp_path / "trusted_blocks").mkdir()
+    (tmp_path / "trusted_blocks" / "__init__.py").write_text(
+        textwrap.dedent(
+            """
+            import os
+            import torch
+
+            from trusted_blocks.layers import Scale, scale
+            """
+        )
+    )
+    (tmp_path / "trusted_blocks" / "layers.py").write_text(
+        textwrap.dedent(
+            """
+            import torch
+
+
+            class Scale(torch.nn.Module):
+                def __init__(self, factor: float = 2.0):
+                    super().__init__()
+                    self.factor = factor
+
+                def forward(self, x):
+                    return x * self.factor
+
+
+            def scale(factor: float = 2.0):
+                return Scale(factor)
+
+
+            class Plain:
+                pass
+            """
+        )
+    )
+    (tmp_path / "trusted_blocks_other.py").write_text(
+        textwrap.dedent(
+            """
+            import torch
+
+
+            class Scale(torch.nn.Module):
+                pass
+            """
+        )
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(common, "_ADDED_TARGET_PREFIXES", set())
+    monkeypatch.delenv(common.ALLOWED_TARGET_PREFIXES_ENV_VAR, raising=False)
+    yield "trusted_blocks"
+    for name in [name for name in sys.modules if name.startswith("trusted_blocks")]:
+        del sys.modules[name]
+
+
+@pytest.mark.unit
+def test_external_target_is_blocked_by_default(external_package):
+    assert _is_target_allowed("trusted_blocks.Scale") is False
+    assert _is_target_allowed("trusted_blocks.layers.scale") is False
+
+    with pytest.raises(UnsafeTargetError, match="NEMO_ALLOWED_TARGET_PREFIXES") as excinfo:
+        safe_instantiate(DictConfig({"_target_": "trusted_blocks.Scale"}))
+    assert "Instantiation of unsafe target 'trusted_blocks.Scale' is blocked" in str(excinfo.value)
+    assert "add_allowed_target_prefixes" in str(excinfo.value)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "target",
+    [
+        "trusted_blocks.Scale",
+        "trusted_blocks.layers.Scale",
+        "trusted_blocks.scale",
+        "trusted_blocks.layers.scale",
+    ],
+)
+def test_added_prefix_allows_classes_and_functions(external_package, target):
+    add_allowed_target_prefixes(external_package)
+
+    assert _is_target_allowed(target) is True
+    obj = safe_instantiate(DictConfig({"_target_": target, "factor": 3.0}))
+    assert type(obj).__name__ == "Scale"
+    assert obj.factor == 3.0
+
+
+@pytest.mark.unit
+def test_added_prefix_allows_a_partial_section(external_package):
+    """The form a parent module builds a configurable block from: `_partial_: true`, the parent fills the rest."""
+    add_allowed_target_prefixes("trusted_blocks.")
+
+    partial = safe_instantiate(DictConfig({"_target_": "trusted_blocks.Scale", "_partial_": True}))
+    assert isinstance(partial, functools.partial)
+    assert partial(factor=5.0).factor == 5.0
+
+
+@pytest.mark.unit
+def test_added_prefix_allows_plain_classes_defined_in_the_package(external_package):
+    add_allowed_target_prefixes(external_package)
+
+    assert _is_target_allowed("trusted_blocks.layers.Plain") is True
+
+
+@pytest.mark.unit
+def test_added_prefix_can_be_a_submodule(external_package):
+    add_allowed_target_prefixes("trusted_blocks.layers")
+
+    assert _is_target_allowed("trusted_blocks.layers.Scale") is True
+    # the target itself must lie under the prefix, not only the object it resolves to
+    assert _is_target_allowed("trusted_blocks.Scale") is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "target",
+    [
+        "trusted_blocks.os.system",
+        "trusted_blocks.torch.nn.Linear",
+        "trusted_blocks.layers.torch.save",
+        "trusted_blocks",
+        "trusted_blocks.layers",
+        "trusted_blocks.missing",
+        "trusted_blocks_other.Scale",
+    ],
+)
+def test_added_prefix_does_not_leak_out_of_the_package(external_package, target):
+    """An attribute path out of the package, a module, a missing name and a sibling package stay blocked."""
+    add_allowed_target_prefixes(external_package)
+
+    assert _is_target_allowed(target) is False
+    with pytest.raises(UnsafeTargetError):
+        safe_instantiate(DictConfig({"_target_": target}))
+
+
+@pytest.mark.unit
+def test_added_prefixes_from_the_environment(external_package, monkeypatch):
+    monkeypatch.setenv(common.ALLOWED_TARGET_PREFIXES_ENV_VAR, " some_other_package, trusted_blocks. ")
+
+    assert _is_target_allowed("trusted_blocks.Scale") is True
+    assert _is_target_allowed("trusted_blocks_other.Scale") is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("prefix", ["", " ", ".", "my-blocks", "my..blocks", "os.system()"])
+def test_add_allowed_target_prefixes_rejects_invalid_prefixes(external_package, prefix):
+    with pytest.raises(ValueError, match="Invalid module prefix"):
+        add_allowed_target_prefixes(prefix)
+    assert not common._ADDED_TARGET_PREFIXES
+
+
+@pytest.mark.unit
+def test_invalid_prefix_in_the_environment_fails_the_check(external_package, monkeypatch):
+    monkeypatch.setenv(common.ALLOWED_TARGET_PREFIXES_ENV_VAR, "my-blocks")
+
+    with pytest.raises(ValueError, match="Invalid module prefix"):
+        _is_target_allowed("trusted_blocks.Scale")
+
+
+@pytest.mark.unit
+def test_added_prefix_leaves_the_builtin_allow_list_unchanged(external_package):
+    add_allowed_target_prefixes(external_package)
+
+    assert _is_target_allowed("torch.nn.Linear") is True
+    assert _is_target_allowed("subprocess.Popen") is False

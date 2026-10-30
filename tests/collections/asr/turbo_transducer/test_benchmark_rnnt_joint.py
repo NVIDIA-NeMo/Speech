@@ -278,3 +278,69 @@ def test_forward_memory_baseline_excludes_warmup_gradients(monkeypatch):
 
     output_bytes = 2 * batch_size * max_time * (max_targets + 1) * torch.float32.itemsize
     assert result.forward_memory_gb * 1024**3 >= output_bytes
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    'joint,backend,batch_size',
+    [('fused', 'triton', 4), ('fused_vocab', 'cutile', 4), ('fused_vocab', 'triton', 3), ('standard', '-', 3)],
+)
+def test_benchmark_rejects_unsupported_consistency(joint, backend, batch_size):
+    with pytest.raises(ValueError, match='[Cc]onsistency'):
+        benchmark_rnnt_joint.run_benchmark(
+            joint=joint,
+            loss='turbo_rnnt',
+            dtype=torch.float32,
+            joint_backend=backend,
+            batch_size=batch_size,
+            with_consistency=True,
+        )
+
+
+@pytest.mark.unit
+def test_multi_benchmark_with_consistency_skips_unsupported_joints(monkeypatch):
+    calls = []
+    monkeypatch.setattr("sys.argv", ["benchmark_rnnt_joint_multi.py", "--with-consistency", "--pruning-range-sizes"])
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda device: "test GPU")
+    monkeypatch.setattr(benchmark_rnnt_joint_multi, "VOCAB_SIZES", [17])
+    monkeypatch.setattr(
+        benchmark_rnnt_joint_multi,
+        "EXPERIMENTS",
+        [
+            ("standard", "-", "turbo_rnnt"),
+            ("fused_vocab", "triton", "turbo_rnnt"),
+            ("fused_vocab", "cutile", "turbo_rnnt"),
+            ("fused", "triton", "turbo_rnnt"),
+        ],
+    )
+    monkeypatch.setattr(benchmark_rnnt_joint_multi, "run_benchmark", lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(benchmark_rnnt_joint_multi, "print_results_table", lambda results: None)
+    benchmark_rnnt_joint_multi.main()
+    assert [(call["joint"], call["joint_backend"]) for call in calls] == [("standard", "-"), ("fused_vocab", "triton")]
+    assert all(call["with_consistency"] for call in calls)
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+@pytest.mark.parametrize(
+    'joint,backend,loss',
+    [('standard', '-', 'warprnnt_numba'), ('standard', '-', 'turbo_rnnt'), ('fused_vocab', 'triton', 'turbo_rnnt')],
+)
+def test_benchmark_with_consistency_runs(joint, backend, loss):
+    result = benchmark_rnnt_joint.run_benchmark(
+        joint=joint,
+        loss=loss,
+        dtype=torch.float32,
+        joint_backend=backend,
+        warmup_iters=1,
+        bench_iters=1,
+        batch_size=4,
+        max_time=6,
+        hidden_dim=32,
+        vocab_size=17,
+        max_targets=3,
+        with_consistency=True,
+    )
+    assert result.with_consistency
+    assert result.total_time_ms > 0

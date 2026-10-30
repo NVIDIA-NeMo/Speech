@@ -24,6 +24,13 @@ Usage:
     python benchmark_rnnt_joint.py --joint fused_vocab --dtype bf16-mixed --mm-full-precision
     python benchmark_rnnt_joint.py --joint standard --loss warprnnt_numba --dtype bfloat16
     python benchmark_rnnt_joint.py --joint fused --dtype bfloat16 -fo  # forward only
+    python benchmark_rnnt_joint.py --joint fused_vocab --dtype bfloat16 --with-consistency
+
+With `--with-consistency`, `--batch-size` is the double batch (teacher + student halves), and the loss is
+RNN-T loss + `CONSISTENCY_LOSS_WEIGHT` * consistency (KL) loss. Each Joint uses its optimal route:
+standard + warprnnt_numba computes the consistency loss separately from the logits (legacy), standard + turbo_rnnt
+uses fused log-probs + KL extraction from the logits, Triton fused_vocab computes the KL inside the kernels.
+`fused` Joint and cuTile backend do not support the consistency loss.
 
 For a multi-config sweep (matrix defined at top of the file) see
 `benchmark_rnnt_joint_multi.py`.
@@ -40,8 +47,15 @@ import torch.nn.functional as F
 
 from nemo.collections.asr.losses.rnnt import RNNTLoss
 from nemo.collections.asr.modules.rnnt import RNNTJoint
+from nemo.collections.asr.parts.turbo_transducer.rnnt_consistency import (
+    ConsistencyRNNTLoss,
+    rnnt_logprobs_with_consistency,
+)
 from nemo.collections.asr.parts.turbo_transducer.rnnt_fused_joint import rnnt_fused_joint
-from nemo.collections.asr.parts.turbo_transducer.rnnt_joint_fused_vocab import rnnt_joint_fused_vocab
+from nemo.collections.asr.parts.turbo_transducer.rnnt_joint_fused_vocab import (
+    rnnt_joint_fused_vocab,
+    rnnt_joint_fused_vocab_with_consistency,
+)
 from nemo.collections.asr.parts.turbo_transducer.rnnt_loss_triton import rnnt_loss_from_logprobs_triton
 
 STANDARD_BACKEND_LABEL = "-"
@@ -51,6 +65,7 @@ VALID_JOINT_BACKENDS = ("triton", "cutile")
 VALID_LOSSES = ("warprnnt_numba", "turbo_rnnt")
 VALID_DTYPES = ("float32", "fp32", "bfloat16", "bf16", "bfloat16-mixed", "bf16-mixed")
 VALID_BACKWARD_MODES = ('auto', 'atomic', 'chunked')
+CONSISTENCY_LOSS_WEIGHT = 0.2
 
 
 @dataclass
@@ -76,6 +91,14 @@ class BenchmarkResults:
     use_high_precision_mm: bool = False
     pruning_range_size: int | None = None
     backward_mode: str = 'auto'
+    with_consistency: bool = False
+
+
+def supports_consistency(joint: str, joint_backend: str | None) -> bool:
+    """Whether the Joint implementation supports the consistency loss in the benchmark"""
+    return joint == "standard" or (
+        joint == "fused_vocab" and _normalize_joint_backend(joint, joint_backend) == "triton"
+    )
 
 
 def get_dtype(dtype_str: str) -> torch.dtype | str:
@@ -155,6 +178,7 @@ def run_benchmark(
     use_high_precision_mm: bool = False,
     pruning_range_size: int | None = None,
     backward_mode: str | None = None,
+    with_consistency: bool = False,
 ) -> BenchmarkResults:
     """Benchmark Joint+loss. Mixed precision uses BF16 projected inputs, FP32 parameters and forward autocast.
 
@@ -162,6 +186,7 @@ def run_benchmark(
     Joint matmuls; ``use_high_precision_mm`` additionally requests IEEE math in Triton. Standard Joint follows
     PyTorch's precision settings and does not accept these kernel-specific overrides.
     ``pruning_range_size`` enables approximate backward for Triton ``fused_vocab`` only; forward stays dense.
+    ``with_consistency`` treats ``batch_size`` as a double batch and adds the consistency loss.
     """
     dtype = get_dtype(dtype) if isinstance(dtype, str) else dtype
     mixed_precision = dtype == "bfloat16-mixed"
@@ -195,6 +220,13 @@ def run_benchmark(
             raise ValueError("pruning_range_size must be a positive integer or None")
         if joint != "fused_vocab" or joint_backend != "triton":
             raise ValueError("Backward pruning requires joint='fused_vocab' and joint_backend='triton'")
+    if with_consistency:
+        if not supports_consistency(joint, joint_backend):
+            raise ValueError(f"Consistency loss is not supported for joint={joint!r}, backend={joint_backend!r}")
+        if batch_size % 2 != 0:
+            raise ValueError(f"Consistency loss requires an even (double) batch size, got {batch_size}")
+        if fused_batch_size > 0:
+            raise ValueError("Consistency loss is not supported with fused_batch_size")
 
     device = torch.device('cuda')
     blank_id = vocab_size - 1
@@ -223,6 +255,10 @@ def run_benchmark(
         linear = torch.nn.Linear(hidden_dim, vocab_size, device=device, dtype=parameter_dtype)
         linear.weight = torch.nn.Parameter(torch.rand(vocab_size, hidden_dim, device=device, dtype=parameter_dtype))
     targets = torch.randint(0, blank_id, (batch_size, max_targets), device=device, dtype=torch.long)
+    half_batch_size = batch_size // 2
+    if with_consistency:
+        # teacher and student passes of the same utterances
+        targets[half_batch_size:] = targets[:half_batch_size]
     src_lengths = torch.full([batch_size], max_time, device=device, dtype=torch.long)
     tgt_lengths = torch.full([batch_size], max_targets, device=device, dtype=torch.long)
 
@@ -242,6 +278,17 @@ def run_benchmark(
             standard_joint.set_loss(loss_module)
             # Required by RNNTJoint's fused path, but unused when compute_wer=False.
             standard_joint.set_wer(object())
+    consistency_loss_module = (
+        ConsistencyRNNTLoss(symmetrical=True, reduction='mean_volume', backend='triton') if with_consistency else None
+    )
+
+    def add_consistency_loss(loss_value: torch.Tensor, consistency_kl: torch.Tensor) -> torch.Tensor:
+        consistency_loss_value = consistency_loss_module.forward_from_kl(
+            consistency_kl=consistency_kl,
+            src_lengths=src_lengths[:half_batch_size],
+            tgt_lengths=tgt_lengths[:half_batch_size],
+        )
+        return loss_value + CONSISTENCY_LOSS_WEIGHT * consistency_loss_value
 
     def run_fwd_standard() -> torch.Tensor:
         if fused_batch_size > 0:
@@ -255,14 +302,44 @@ def run_benchmark(
             return loss_value
 
         logits = standard_joint(encoder_outputs=enc_proj.transpose(1, 2), decoder_outputs=pred_proj.transpose(1, 2))
-        return loss_module(log_probs=logits, targets=targets, input_lengths=src_lengths, target_lengths=tgt_lengths)
+        if with_consistency and loss_module.supports_logprobs_input:
+            # one autograd function (and one gradient buffer) for the RNN-T log-probs and the consistency KL
+            loss_inputs = rnnt_logprobs_with_consistency(
+                logits=logits,
+                targets=targets,
+                blank_id=blank_id,
+                src_lengths=src_lengths,
+                tgt_lengths=tgt_lengths,
+                compute_consistency=True,
+                consistency_symmetrical=consistency_loss_module.symmetrical,
+            )
+            loss_value = loss_module.forward_from_logprobs(
+                target_logprobs=loss_inputs.target_logprobs,
+                blank_logprobs=loss_inputs.blank_logprobs,
+                input_lengths=src_lengths,
+                target_lengths=tgt_lengths,
+            )
+            return add_consistency_loss(loss_value, loss_inputs.consistency_kl)
+        loss_value = loss_module(
+            log_probs=logits, targets=targets, input_lengths=src_lengths, target_lengths=tgt_lengths
+        )
+        if not with_consistency:
+            return loss_value
+        # legacy route: the consistency loss keeps its own gradient buffers for the logits
+        consistency_loss_value = consistency_loss_module(
+            teacher_logits=logits[:half_batch_size],
+            student_logits=logits[half_batch_size:],
+            src_lengths=src_lengths[:half_batch_size],
+            tgt_lengths=tgt_lengths[:half_batch_size],
+        )
+        return loss_value + CONSISTENCY_LOSS_WEIGHT * consistency_loss_value
 
     def run_fwd_fused_vocab() -> torch.Tensor:
         joint_hidden = enc_proj.unsqueeze(2) + pred_proj.unsqueeze(1)
         joint_hidden.relu_()
         if dropout_p > 0.0:
             joint_hidden = F.dropout(joint_hidden, p=dropout_p, training=True)
-        target_logprobs, blank_logprobs = rnnt_joint_fused_vocab(
+        kernel_kwargs = dict(
             joint_hidden=joint_hidden,
             targets=targets,
             tgt_lengths=tgt_lengths,
@@ -276,12 +353,20 @@ def run_benchmark(
             mm_full_precision=mm_full_precision,
             use_high_precision_mm=use_high_precision_mm,
         )
+        if with_consistency:
+            target_logprobs, blank_logprobs, consistency_kl = rnnt_joint_fused_vocab_with_consistency(
+                **kernel_kwargs, consistency_symmetrical=consistency_loss_module.symmetrical
+            )
+        else:
+            target_logprobs, blank_logprobs = rnnt_joint_fused_vocab(**kernel_kwargs)
         loss_batch = rnnt_loss_from_logprobs_triton(
             target_logprobs=target_logprobs,
             blank_logprobs=blank_logprobs,
             src_lengths=src_lengths,
             tgt_lengths=tgt_lengths,
         )
+        if with_consistency:
+            return add_consistency_loss(loss_batch.sum(), consistency_kl)
         return loss_batch.sum()
 
     def run_fwd_fused() -> torch.Tensor:
@@ -423,6 +508,7 @@ def run_benchmark(
         use_high_precision_mm=use_high_precision_mm,
         pruning_range_size=pruning_range_size,
         backward_mode=(backward_mode or 'auto') if joint == 'fused_vocab' and joint_backend == 'triton' else '-',
+        with_consistency=with_consistency,
     )
 
 
@@ -451,6 +537,7 @@ TABLE_COLUMNS: tuple[tuple[str, str, callable], ...] = (
     ("Joint", "joint", _fmt_str),
     ("Joint Backend", "joint_backend", _fmt_str),
     ("Loss", "loss", _fmt_str),
+    ("Consistency", "with_consistency", lambda value: "yes" if value else "no"),
     ("Pruning Range", "pruning_range_size", lambda value: "-" if value is None else str(value)),
     ("Backward Mode", "backward_mode", _fmt_str),
     ("Fused Batch Size", "fused_batch_size", _fmt_int),
@@ -583,6 +670,11 @@ def main():
         help='Target window width for approximate Triton fused_vocab backward; omitted means dense backward',
     )
     parser.add_argument('--backward-mode', choices=VALID_BACKWARD_MODES, default='auto')
+    parser.add_argument(
+        '--with-consistency',
+        action='store_true',
+        help='Add consistency loss; --batch-size is the double batch (teacher + student halves)',
+    )
     parser.add_argument('--mm-full-precision', action='store_true', help='Use FP32 matmul operands in optimized Joint')
     parser.add_argument(
         '--use-high-precision-mm', action='store_true', help='Use FP32 operands and IEEE matmuls in Triton Joint'
@@ -620,6 +712,7 @@ def main():
         use_high_precision_mm=args.use_high_precision_mm,
         pruning_range_size=args.pruning_range_size,
         backward_mode=None if args.backward_mode == 'auto' else args.backward_mode,
+        with_consistency=args.with_consistency,
     )
 
     print(

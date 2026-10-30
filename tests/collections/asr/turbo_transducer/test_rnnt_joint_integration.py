@@ -264,14 +264,17 @@ def test_joints_declare_support_for_loss_logprobs():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("kernel_type", ["fused_vocab", "fused"])
-def test_turbo_joint_rejects_consistency_loss(kernel_type):
+@pytest.mark.parametrize("kernel_type,backend", [("fused", "triton"), ("fused_vocab", "cutile")])
+def test_turbo_joint_rejects_unsupported_consistency_loss(kernel_type, backend):
+    turbo_kernel = _turbo_kernel_config(kernel_type)
+    turbo_kernel["kwargs"]["backend"] = backend
     joint = RNNTJoint(
         jointnet=_jointnet_config(),
         num_classes=8,
         log_softmax=False,
-        turbo_kernel=_turbo_kernel_config(kernel_type),
+        turbo_kernel=turbo_kernel,
     )
+    assert not joint.supports_consistency_loss
     with pytest.raises(NotImplementedError, match="Consistency loss"):
         joint.forward_for_loss(
             encoder_outputs=torch.randn(2, 5, 4),

@@ -32,6 +32,7 @@ def _model_config(
     consistency_symmetrical: bool = True,
     turbo_kernel_type: str = None,
     fuse_loss_wer: bool = False,
+    turbo_kernel_backend: str = 'triton',
 ) -> DictConfig:
     preprocessor = {'_target_': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor', 'features': 64}
     encoder = {
@@ -60,7 +61,16 @@ def _model_config(
         '_target_': 'nemo.collections.asr.modules.RNNTJoint',
         'jointnet': {'joint_hidden': 8, 'activation': 'relu'},
         'log_softmax': False,
-        'turbo_kernel': {'type': turbo_kernel_type, 'kwargs': {'backend': 'triton'}},
+        'turbo_kernel': {
+            'type': turbo_kernel_type,
+            # full precision matmuls to compare with the reference computed from the full logits
+            'kwargs': {
+                'backend': turbo_kernel_backend,
+                'use_high_precision_mm': True,
+                'input_grad_full_precision': True,
+                'weight_grad_full_precision': True,
+            },
+        },
         'fuse_loss_wer': fuse_loss_wer,
         'fused_batch_size': 1 if fuse_loss_wer else None,
     }
@@ -115,10 +125,22 @@ def test_consistency_loss_rejects_fuse_loss_wer():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("turbo_kernel_type", ["fused_vocab", "fused"])
-def test_consistency_loss_rejects_turbo_kernel(turbo_kernel_type: str):
+@pytest.mark.parametrize("turbo_kernel_type,turbo_kernel_backend", [("fused", "triton"), ("fused_vocab", "cutile")])
+def test_consistency_loss_rejects_unsupported_turbo_kernel(turbo_kernel_type: str, turbo_kernel_backend: str):
+    """Unsupported combinations must fail at init, not when consistency is enabled after `after_step`"""
     with pytest.raises(NotImplementedError, match="Consistency loss"):
-        EncDecRNNTModel(cfg=_model_config(turbo_kernel_type=turbo_kernel_type))
+        EncDecRNNTModel(
+            cfg=_model_config(turbo_kernel_type=turbo_kernel_type, turbo_kernel_backend=turbo_kernel_backend)
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not TRITON_AVAILABLE, reason="Triton is not installed")
+def test_consistency_loss_with_fused_vocab_turbo_kernel():
+    model = EncDecRNNTModel(cfg=_model_config(turbo_kernel_type="fused_vocab"))
+    assert model.use_double_batch
+    assert model.uses_loss_logprobs_path
+    assert model.joint.supports_consistency_loss
 
 
 @pytest.mark.unit
@@ -133,11 +155,14 @@ def test_legacy_loss_does_not_use_logprobs_path():
 @pytest.mark.skipif(not TRITON_AVAILABLE, reason="Triton is not installed")
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 @pytest.mark.parametrize("symmetrical", [True, False])
-def test_model_compute_losses_with_consistency_matches_reference(symmetrical: bool):
+@pytest.mark.parametrize("turbo_kernel_type", [None, "fused_vocab"])
+def test_model_compute_losses_with_consistency_matches_reference(symmetrical: bool, turbo_kernel_type: str):
     """The model-level fused path must match the reference (full logits + two separate losses)."""
     torch.manual_seed(17)
     device = torch.device("cuda")
-    model = EncDecRNNTModel(cfg=_model_config(consistency_symmetrical=symmetrical)).to(device)
+    model = EncDecRNNTModel(
+        cfg=_model_config(consistency_symmetrical=symmetrical, turbo_kernel_type=turbo_kernel_type)
+    ).to(device)
     model.train()
 
     half_batch_size, num_frames, num_text_units = 2, 6, 3

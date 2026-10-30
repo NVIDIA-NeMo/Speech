@@ -249,7 +249,10 @@ model:
     # NB: enabling it doubles the batch (each utterance is processed twice).
     # With `loss_name: turbo_rnnt` the consistency loss is fused with the log-probs extraction from the
     # Joint output, so both losses share a single gradient buffer (much lower memory in the backward pass).
-    # NB: incompatible with `joint.fuse_loss_wer` and (not yet supported) with `joint.turbo_kernel`.
+    # With `joint.turbo_kernel.type: fused_vocab` (Triton backend) the consistency loss is computed inside the
+    # turbo kernels, logits are never materialized. With backward pruning, the consistency gradient is restricted to
+    # the same target windows as the RNN-T gradient (one window per teacher/student frame pair).
+    # NB: incompatible with `joint.fuse_loss_wer`, and not supported with `fused` turbo kernel or cuTile backend.
     consistency:
       weight: 0.0  # 0.2
       symmetrical: true

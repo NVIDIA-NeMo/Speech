@@ -27,6 +27,10 @@ Usage:
     python benchmark_rnnt_joint_multi.py --dtype bf16-mixed
     python benchmark_rnnt_joint_multi.py --dtype bfloat16-mixed --mm-full-precision
     python benchmark_rnnt_joint_multi.py --pruning-range-sizes 4 8 16
+    python benchmark_rnnt_joint_multi.py --with-consistency
+
+With `--with-consistency`, `BATCH_SIZE` is the double batch (teacher + student halves) and the consistency loss is
+added; experiments without consistency support (`fused` Joint, cuTile backend) are skipped.
 
 Mixed precision keeps the projection parameters in FP32 and runs forward under BF16 autocast.
 Matmul precision overrides apply to optimized Joint implementations; standard Joint follows PyTorch settings.
@@ -44,6 +48,7 @@ from tests.collections.asr.turbo_transducer.benchmark_rnnt_joint import (
     get_dtype,
     print_results_table,
     run_benchmark,
+    supports_consistency,
     write_csv,
 )
 
@@ -101,6 +106,11 @@ def main() -> None:
         '--use-high-precision-mm', action='store_true', help='Use FP32 operands and IEEE matmuls in Triton Joint'
     )
     parser.add_argument(
+        "--with-consistency",
+        action="store_true",
+        help="Add consistency loss (batch is the double batch); skips experiments without consistency support",
+    )
+    parser.add_argument(
         "--fused-batch-size",
         type=int,
         default=0,
@@ -109,8 +119,13 @@ def main() -> None:
     args = parser.parse_args()
     if any(width <= 0 for width in args.pruning_range_sizes):
         parser.error('--pruning-range-sizes must contain positive integers')
+    if args.with_consistency and args.fused_batch_size > 0:
+        parser.error('--with-consistency is not supported with --fused-batch-size')
     experiments = []
     for joint, backend, loss in EXPERIMENTS:
+        if args.with_consistency and not supports_consistency(joint, backend):
+            print(f"Skipping joint={joint}, backend={backend}: consistency loss is not supported")
+            continue
         if joint == 'fused_vocab' and backend == 'triton':
             for backward_mode in args.backward_modes:
                 backward_mode = None if backward_mode == 'auto' else backward_mode
@@ -136,7 +151,7 @@ def main() -> None:
     print(
         f"Shape: enc=[{BATCH_SIZE}, {MAX_TIME}, {HIDDEN_DIM}], "
         f"pred=[{BATCH_SIZE}, {MAX_TARGETS + 1}, {HIDDEN_DIM}], dtype={args.dtype}, dropout_p={dropout_p}, "
-        f"standard_fused_batch_size={args.fused_batch_size}"
+        f"standard_fused_batch_size={args.fused_batch_size}, with_consistency={args.with_consistency}"
     )
 
     results: list[BenchmarkResults] = []
@@ -167,6 +182,7 @@ def main() -> None:
                 use_high_precision_mm=args.use_high_precision_mm if joint != "standard" else False,
                 pruning_range_size=pruning_range_size,
                 backward_mode=backward_mode,
+                with_consistency=args.with_consistency,
             )
             results.append(result)
 

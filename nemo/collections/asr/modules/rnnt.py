@@ -34,9 +34,13 @@ from omegaconf import DictConfig
 
 from nemo.collections.asr.modules import rnnt_abstract
 from nemo.collections.asr.parts.submodules import stateless_net
+from nemo.collections.asr.parts.turbo_transducer.backend import TurboTransducerBackend
 from nemo.collections.asr.parts.turbo_transducer.rnnt_consistency import rnnt_logprobs_with_consistency
 from nemo.collections.asr.parts.turbo_transducer.rnnt_fused_joint import rnnt_fused_joint
-from nemo.collections.asr.parts.turbo_transducer.rnnt_joint_fused_vocab import rnnt_joint_fused_vocab
+from nemo.collections.asr.parts.turbo_transducer.rnnt_joint_fused_vocab import (
+    rnnt_joint_fused_vocab,
+    rnnt_joint_fused_vocab_with_consistency,
+)
 from nemo.collections.asr.parts.turbo_transducer.types import TransducerLossInputs
 from nemo.collections.asr.parts.utils import adapter_utils, rnnt_utils
 from nemo.collections.common.parts import rnn
@@ -54,6 +58,7 @@ from nemo.core.neural_types import (
     NeuralType,
     SpectrogramType,
 )
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 from nemo.utils import logging
 
 
@@ -1322,6 +1327,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             when positive; absent, None, or non-positive values disable it. An optional positive
             ``turbo_kernel.backward_pruning_start_step`` delays pruning until that optimizer step.
             This keeps the full loss value but approximates its gradient.
+            The consistency loss (see `forward_for_loss`) is computed inside the kernels for ``fused_vocab`` with
+            Triton backend; with backward pruning its gradient is restricted to the same target windows.
 
         fuse_loss_wer: Optional bool, set to False by default.
 
@@ -1557,6 +1564,21 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         """Whether this Joint can produce target/blank log-probabilities directly (see `forward_for_loss`)."""
         return True
 
+    @property
+    def supports_consistency_loss(self) -> bool:
+        """
+        Whether `forward_for_loss` can compute the consistency loss: always for the materialized logits,
+        with `turbo_kernel` only for the `fused_vocab` kernel with Triton backend.
+        """
+        if self._turbo_kernel_type is None:
+            return True
+        if self._turbo_kernel_type != 'fused_vocab':
+            return False
+        backend = self._turbo_kernel_kwargs.get('backend')
+        if backend is None:
+            return TRITON_AVAILABLE
+        return TurboTransducerBackend(backend) is TurboTransducerBackend.TRITON
+
     def forward_for_loss(
         self,
         encoder_outputs: torch.Tensor,
@@ -1611,8 +1633,10 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                 consistency_symmetrical=consistency_symmetrical,
             )
 
-        if compute_consistency:
-            raise NotImplementedError("Consistency loss is not yet supported with the `turbo_kernel` Joint")
+        if compute_consistency and not self.supports_consistency_loss:
+            raise NotImplementedError(
+                "Consistency loss with `turbo_kernel` is supported only for the `fused_vocab` kernel with Triton backend"
+            )
 
         vocab_projection = self.joint_net[-1]
         kernel_kwargs = dict(self._turbo_kernel_kwargs)
@@ -1633,6 +1657,18 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
         if self._turbo_kernel_type == 'fused_vocab':
             joint_hidden = self._joint_hidden_after_projection(encoder_output_projected, predictor_output_projected)
+            if compute_consistency:
+                return rnnt_joint_fused_vocab_with_consistency(
+                    joint_hidden=joint_hidden,
+                    targets=transcripts,
+                    tgt_lengths=transcript_lengths,
+                    src_lengths=encoder_lengths,
+                    weight=vocab_projection.weight,
+                    bias=vocab_projection.bias,
+                    blank_id=self._vocab_size,
+                    consistency_symmetrical=consistency_symmetrical,
+                    **kernel_kwargs,
+                )
             target_logprobs, blank_logprobs = rnnt_joint_fused_vocab(
                 joint_hidden=joint_hidden,
                 targets=transcripts,

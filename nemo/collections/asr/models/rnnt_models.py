@@ -185,8 +185,12 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
                 raise ValueError(
                     "Joint `turbo_kernel` requires an RNN-T loss that accepts target/blank log-probabilities"
                 )
-            if has_consistency_loss:
-                raise NotImplementedError("Consistency loss is not yet supported with the `turbo_kernel` Joint")
+            if has_consistency_loss and not self.joint.supports_consistency_loss:
+                # validate at init: consistency can be enabled only after `consistency.after_step` steps
+                raise NotImplementedError(
+                    "Consistency loss with Joint `turbo_kernel` is supported only for the `fused_vocab` kernel "
+                    "with Triton backend"
+                )
             if self.joint.turbo_kernel_type == 'fused' and self.joint.is_adapter_available():
                 raise ValueError("The `fused` Joint turbo kernel does not support Joint adapters")
         if has_consistency_loss and not self.uses_loss_logprobs_path:

@@ -195,33 +195,21 @@ def _rnnt_joint_fused_vocab_fwd_triton_kernel(
     flattened_batch_offsets = flattened_batch_start + tl.arange(0, FLATTENED_BATCH_BLOCK)
     flattened_batch_valid_mask = flattened_batch_offsets < flattened_batch_size
 
-    source_target_block_size = max_src_len * max_tgt_len_plus_1
-    batch_index = flattened_batch_offsets // source_target_block_size
-    batch_offsets = flattened_batch_offsets - batch_index * source_target_block_size
-    source_index = batch_offsets // max_tgt_len_plus_1
-    target_index = batch_offsets - source_index * max_tgt_len_plus_1
-
-    source_length = tl.load(src_lengths_ptr + batch_index, mask=flattened_batch_valid_mask, other=0)
-    target_length = tl.load(tgt_lengths_ptr + batch_index, mask=flattened_batch_valid_mask, other=0)
-
-    source_mask = source_index < source_length
-    target_valid_mask = target_index <= target_length
-    target_label_mask = target_index < target_length
-    output_blank_mask = flattened_batch_valid_mask & source_mask & target_valid_mask
-    output_target_mask = flattened_batch_valid_mask & source_mask & target_label_mask
+    output_blank_mask, output_target_mask, targets = _load_lattice_rows(
+        flattened_batch_offsets,
+        flattened_batch_valid_mask,
+        targets_ptr,
+        src_lengths_ptr,
+        tgt_lengths_ptr,
+        max_src_len,
+        max_tgt_len_plus_1,
+    )
 
     vocab_offsets_in_block = tl.arange(0, VOCAB_BLOCK)
 
     log_sum_exp_score = tl.full([FLATTENED_BATCH_BLOCK], value=float("-inf"), dtype=compute_dtype)
     blank_logits = tl.zeros([FLATTENED_BATCH_BLOCK], dtype=compute_dtype)
     target_logits = tl.zeros([FLATTENED_BATCH_BLOCK], dtype=compute_dtype)
-
-    max_target_len = max_tgt_len_plus_1 - 1
-    targets = tl.load(
-        targets_ptr + batch_index * max_target_len + target_index,
-        mask=flattened_batch_valid_mask & target_label_mask,
-        other=0,
-    )
 
     # Create block pointers once before the loops
     NUM_HIDDEN_ITERS: tl.constexpr = tl.cdiv(hidden_dim, HIDDEN_BLOCK)
@@ -367,7 +355,6 @@ def _rnnt_joint_fused_vocab_bwd_triton_kernel(
 
     vocab_offsets = vocab_block_start + tl.arange(0, VOCAB_BLOCK)
     vocab_mask = vocab_offsets < vocab_size
-    is_blank_vocab_col = (vocab_offsets == blank_id) & vocab_mask
 
     # Create block pointers once before the loops
     NUM_HIDDEN_ITERS: tl.constexpr = tl.cdiv(hidden_dim, HIDDEN_BLOCK)
@@ -398,8 +385,6 @@ def _rnnt_joint_fused_vocab_bwd_triton_kernel(
         order=(0,),
     )
 
-    source_target_block_size = max_src_len * max_tgt_len_plus_1
-    max_target_len = max_tgt_len_plus_1 - 1
     bias_chunk = tl.load(bias_block_ptr, boundary_check=(0,)).to(compute_dtype)
 
     flattened_batch_offsets = flattened_batch_start + tl.arange(0, FLATTENED_BATCH_BLOCK)
@@ -407,39 +392,24 @@ def _rnnt_joint_fused_vocab_bwd_triton_kernel(
     lattice_offsets = _get_lattice_offsets(
         flattened_batch_offsets, flattened_batch_mask, pruning_starts_ptr, max_tgt_len_plus_1, PRUNING_RANGE
     )
-
-    batch_index = lattice_offsets // source_target_block_size
-    batch_offsets = lattice_offsets - batch_index * source_target_block_size
-    source_index = batch_offsets // max_tgt_len_plus_1
-    target_index = batch_offsets - source_index * max_tgt_len_plus_1
-
-    source_length = tl.load(src_lengths_ptr + batch_index, mask=flattened_batch_mask, other=0)
-    target_length = tl.load(tgt_lengths_ptr + batch_index, mask=flattened_batch_mask, other=0)
-
-    source_mask = source_index < source_length
-    target_valid_mask = target_index <= target_length
-    target_label_mask = target_index < target_length
-    output_blank_mask = flattened_batch_mask & source_mask & target_valid_mask
-    output_target_mask = flattened_batch_mask & source_mask & target_label_mask
-
-    targets = tl.load(
-        targets_ptr + batch_index * max_target_len + target_index,
-        mask=output_target_mask,
-        other=0,
+    output_blank_mask, output_target_mask, targets = _load_lattice_rows(
+        lattice_offsets,
+        flattened_batch_mask,
+        targets_ptr,
+        src_lengths_ptr,
+        tgt_lengths_ptr,
+        max_src_len,
+        max_tgt_len_plus_1,
     )
-
-    lse = tl.load(log_sum_exp_ptr + lattice_offsets, mask=output_blank_mask, other=0.0).to(compute_dtype)
-    grad_target = tl.load(
-        grad_target_scores_ptr + lattice_offsets,
-        mask=output_target_mask,
-        other=0.0,
-    ).to(compute_dtype)
-    grad_blank = tl.load(
-        grad_blank_scores_ptr + lattice_offsets,
-        mask=output_blank_mask,
-        other=0.0,
-    ).to(compute_dtype)
-    sum_grad = grad_target + grad_blank
+    lse, grad_target, grad_blank = _load_lattice_row_grads(
+        lattice_offsets,
+        output_blank_mask,
+        output_target_mask,
+        log_sum_exp_ptr,
+        grad_target_scores_ptr,
+        grad_blank_scores_ptr,
+        compute_dtype,
+    )
 
     flattened_batch_flat_indices = lattice_offsets.to(tl.int64)
     logits_block = tl.zeros([FLATTENED_BATCH_BLOCK, VOCAB_BLOCK], dtype=compute_dtype) + bias_chunk[None, :]
@@ -469,10 +439,8 @@ def _rnnt_joint_fused_vocab_bwd_triton_kernel(
 
     # Compute grad_logits
     probabilities_block = tl.exp(logits_block - lse[:, None])  # [FLATTENED_BATCH_BLOCK, VOCAB_BLOCK]
-    grad_logits_block = (
-        -(sum_grad[:, None] * probabilities_block)
-        + (grad_blank[:, None] * is_blank_vocab_col[None, :])
-        + (grad_target[:, None] * (vocab_offsets[None, :] == targets[:, None]))
+    grad_logits_block = _rnnt_grad_logits(
+        probabilities_block, grad_target, grad_blank, targets, vocab_offsets, blank_id
     )
     grad_logits_block = tl.where(output_blank_mask[:, None] & vocab_mask[None, :], grad_logits_block, 0.0)
     grad_bias_acc = tl.sum(grad_logits_block, axis=0)
@@ -640,43 +608,22 @@ def _rnnt_joint_fused_vocab_bwd_grad_logits_triton_kernel(
     bias_chunk = tl.load(bias_ptr + vocab_offsets, mask=vocab_mask, other=0.0).to(compute_dtype)
     logits_block += bias_chunk[None, :]
 
-    source_target_block_size = max_src_len * max_tgt_len_plus_1
-    max_target_len = max_tgt_len_plus_1 - 1
-    batch_index = lattice_offsets // source_target_block_size
-    batch_offsets = lattice_offsets - batch_index * source_target_block_size
-    source_index = batch_offsets // max_tgt_len_plus_1
-    target_index = batch_offsets - source_index * max_tgt_len_plus_1
-
-    source_length = tl.load(src_lengths_ptr + batch_index, mask=chunk_mask, other=0)
-    target_length = tl.load(tgt_lengths_ptr + batch_index, mask=chunk_mask, other=0)
-
-    source_mask = source_index < source_length
-    output_blank_mask = chunk_mask & source_mask & (target_index <= target_length)
-    output_target_mask = chunk_mask & source_mask & (target_index < target_length)
-
-    targets = tl.load(
-        targets_ptr + batch_index * max_target_len + target_index,
-        mask=output_target_mask,
-        other=0,
+    output_blank_mask, output_target_mask, targets = _load_lattice_rows(
+        lattice_offsets, chunk_mask, targets_ptr, src_lengths_ptr, tgt_lengths_ptr, max_src_len, max_tgt_len_plus_1
     )
-    lse = tl.load(log_sum_exp_ptr + lattice_offsets, mask=output_blank_mask, other=0.0).to(compute_dtype)
-    grad_target = tl.load(
-        grad_target_scores_ptr + lattice_offsets,
-        mask=output_target_mask,
-        other=0.0,
-    ).to(compute_dtype)
-    grad_blank = tl.load(
-        grad_blank_scores_ptr + lattice_offsets,
-        mask=output_blank_mask,
-        other=0.0,
-    ).to(compute_dtype)
-    sum_grad = grad_target + grad_blank
+    lse, grad_target, grad_blank = _load_lattice_row_grads(
+        lattice_offsets,
+        output_blank_mask,
+        output_target_mask,
+        log_sum_exp_ptr,
+        grad_target_scores_ptr,
+        grad_blank_scores_ptr,
+        compute_dtype,
+    )
 
     probabilities_block = tl.exp(logits_block - lse[:, None])
-    grad_logits_block = (
-        -(sum_grad[:, None] * probabilities_block)
-        + tl.where((vocab_offsets == blank_id)[None, :], grad_blank[:, None], 0.0)
-        + tl.where(vocab_offsets[None, :] == targets[:, None], grad_target[:, None], 0.0)
+    grad_logits_block = _rnnt_grad_logits(
+        probabilities_block, grad_target, grad_blank, targets, vocab_offsets, blank_id
     )
     grad_logits_block = tl.where(output_blank_mask[:, None] & vocab_mask[None, :], grad_logits_block, 0.0)
 
@@ -926,14 +873,9 @@ def rnnt_joint_fused_vocab_triton(
             gradient. FastEmit produces weighted importance rather than unweighted state posteriors.
             None, non-positive widths, or a range covering the padded target dimension use dense backward.
     """
-    if backward_pruning_range_size is not None:
-        if type(backward_pruning_range_size) is not int:
-            raise ValueError("backward_pruning_range_size must be an integer or None")
-        if backward_pruning_range_size <= 0 or backward_pruning_range_size >= joint_hidden.shape[2]:
-            backward_pruning_range_size = None
-    if backward_mode is None:
-        backward_mode = _get_default_backward_mode(joint_hidden.device)
-    backward_mode = FusedVocabBackwardMode(backward_mode)
+    backward_mode, backward_pruning_range_size = _normalize_backward_options(
+        joint_hidden, backward_mode, backward_pruning_range_size
+    )
     target_logprobs, blank_logprobs = _RnntJointFusedVocabTritonFunction.apply(
         joint_hidden,
         targets,
@@ -950,6 +892,22 @@ def rnnt_joint_fused_vocab_triton(
         backward_pruning_range_size,
     )
     return target_logprobs, blank_logprobs
+
+
+def _normalize_backward_options(
+    joint_hidden: torch.Tensor,
+    backward_mode: str | FusedVocabBackwardMode | None,
+    backward_pruning_range_size: int | None,
+) -> tuple[FusedVocabBackwardMode, int | None]:
+    """Resolve the automatic backward mode; disable pruning for non-positive widths or widths covering U+1"""
+    if backward_pruning_range_size is not None:
+        if type(backward_pruning_range_size) is not int:
+            raise ValueError("backward_pruning_range_size must be an integer or None")
+        if backward_pruning_range_size <= 0 or backward_pruning_range_size >= joint_hidden.shape[2]:
+            backward_pruning_range_size = None
+    if backward_mode is None:
+        backward_mode = _get_default_backward_mode(joint_hidden.device)
+    return FusedVocabBackwardMode(backward_mode), backward_pruning_range_size
 
 
 def _get_default_backward_mode(device: torch.device) -> FusedVocabBackwardMode:
@@ -1104,10 +1062,16 @@ def _addmm_full_precision_(accumulator: torch.Tensor, mat1: torch.Tensor, mat2: 
         accumulator += torch.mm(mat1, mat2)
 
 
-def _select_pruning_starts(grad_target, grad_blank, src_lengths, tgt_lengths, range_size):
+def _select_pruning_starts(grad_target, grad_blank, src_lengths, tgt_lengths, range_size, paired=False):
+    """
+    Select the start of the target window for each frame, maximizing abs(target grad) + abs(blank grad) in the window.
+    With `paired`, the batch is a double batch [teacher; student] with identical lengths in both halves:
+    one window is selected per teacher/student frame pair from their summed importance, output is [B // 2, T].
+    """
     batch_size, max_src_len, max_tgt_len_plus_1 = grad_blank.shape
-    starts = torch.empty([batch_size, max_src_len], dtype=torch.int32, device=grad_blank.device)
-    _select_pruning_starts_kernel[(batch_size * max_src_len,)](
+    num_frames = (batch_size // 2 if paired else batch_size) * max_src_len
+    starts = torch.empty([num_frames // max_src_len, max_src_len], dtype=torch.int32, device=grad_blank.device)
+    _select_pruning_starts_kernel[(num_frames,)](
         grad_target,
         grad_blank,
         src_lengths,
@@ -1115,8 +1079,10 @@ def _select_pruning_starts(grad_target, grad_blank, src_lengths, tgt_lengths, ra
         starts,
         max_src_len,
         max_tgt_len_plus_1,
+        num_frames,
         range_size,
         BLOCK_SIZE=triton.next_power_of_2(max_tgt_len_plus_1),
+        PAIRED=paired,
     )
     return starts
 
@@ -1130,8 +1096,10 @@ def _select_pruning_starts_kernel(
     starts_out_ptr,
     max_src_len,
     max_tgt_len_plus_1,
+    paired_frame_offset,
     range_size: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
+    PAIRED: tl.constexpr = False,
 ):
     frame_index = tl.program_id(0)
     batch_index = frame_index // max_src_len
@@ -1151,6 +1119,16 @@ def _select_pruning_starts_kernel(
         other=0.0,
     )
     importance = tl.abs(grad_target) + tl.abs(grad_blank)
+    if PAIRED:
+        # student frame of the pair: same lengths, offset by the half of the double batch
+        paired_offsets = (frame_index + paired_frame_offset) * max_tgt_len_plus_1 + tgt_offsets
+        paired_grad_target = tl.load(
+            grad_target_ptr + paired_offsets, mask=row_mask & (tgt_offsets < tgt_length), other=0.0
+        )
+        paired_grad_blank = tl.load(
+            grad_blank_ptr + paired_offsets, mask=row_mask & (tgt_offsets <= tgt_length), other=0.0
+        )
+        importance += tl.abs(paired_grad_target) + tl.abs(paired_grad_blank)
     prefix = tl.cumsum(importance)
     end_indices = tl.minimum(tgt_offsets + range_size - 1, BLOCK_SIZE - 1)
     before_indices = tl.maximum(tgt_offsets - 1, 0)
@@ -1162,6 +1140,62 @@ def _select_pruning_starts_kernel(
     # argmax breaks ties toward the first window, including zero-gradient and padded frames.
     start = tl.argmax(window_importance, axis=0, tie_break_left=True)
     tl.store(starts_out_ptr + frame_index, start)
+
+
+@triton.jit
+def _load_lattice_rows(
+    lattice_offsets, row_mask, targets_ptr, src_lengths_ptr, tgt_lengths_ptr, max_src_len, max_tgt_len_plus_1
+):
+    """
+    For flat offsets in the [B, T, U+1] lattice, return masks of the valid blank/target outputs and target labels.
+    """
+    source_target_block_size = max_src_len * max_tgt_len_plus_1
+    batch_index = lattice_offsets // source_target_block_size
+    batch_offsets = lattice_offsets - batch_index * source_target_block_size
+    source_index = batch_offsets // max_tgt_len_plus_1
+    target_index = batch_offsets - source_index * max_tgt_len_plus_1
+
+    source_length = tl.load(src_lengths_ptr + batch_index, mask=row_mask, other=0)
+    target_length = tl.load(tgt_lengths_ptr + batch_index, mask=row_mask, other=0)
+
+    source_mask = source_index < source_length
+    output_blank_mask = row_mask & source_mask & (target_index <= target_length)
+    output_target_mask = row_mask & source_mask & (target_index < target_length)
+    targets = tl.load(
+        targets_ptr + batch_index * (max_tgt_len_plus_1 - 1) + target_index,
+        mask=output_target_mask,
+        other=0,
+    )
+    return output_blank_mask, output_target_mask, targets
+
+
+@triton.jit
+def _load_lattice_row_grads(
+    lattice_offsets,
+    output_blank_mask,
+    output_target_mask,
+    log_sum_exp_ptr,
+    grad_target_scores_ptr,
+    grad_blank_scores_ptr,
+    compute_dtype: tl.constexpr,
+):
+    """Load log-sum-exp (saved in forward) and upstream target/blank gradients for lattice rows"""
+    lse = tl.load(log_sum_exp_ptr + lattice_offsets, mask=output_blank_mask, other=0.0).to(compute_dtype)
+    grad_target = tl.load(grad_target_scores_ptr + lattice_offsets, mask=output_target_mask, other=0.0)
+    grad_blank = tl.load(grad_blank_scores_ptr + lattice_offsets, mask=output_blank_mask, other=0.0)
+    return lse, grad_target.to(compute_dtype), grad_blank.to(compute_dtype)
+
+
+@triton.jit
+def _rnnt_grad_logits(probabilities, grad_target, grad_blank, targets, vocab_offsets, blank_id: tl.constexpr):
+    """
+    Gradient wrt logits [rows, vocab block] of target/blank log-probabilities given their upstream gradients [rows]
+    """
+    return (
+        -((grad_target + grad_blank)[:, None] * probabilities)
+        + tl.where((vocab_offsets == blank_id)[None, :], grad_blank[:, None], 0.0)
+        + tl.where(vocab_offsets[None, :] == targets[:, None], grad_target[:, None], 0.0)
+    )
 
 
 @triton.jit

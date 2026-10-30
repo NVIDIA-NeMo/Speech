@@ -86,7 +86,13 @@ def merge_singleturn_rank_outputs(repeat_audio_dir, world_size, total_samples, s
         raise ValueError('Single-turn ranks disagree on actual-input manifest use')
     evaluation_records = []
     frontend_records = []
-    for pattern in ['predicted_audio_*.wav', 'predicted_codes_*.pt', 'context_audio_*.wav', 'target_audio_*.wav']:
+    for pattern in [
+        'predicted_audio_*.wav',
+        'predicted_audio_*.alignment.json',
+        'predicted_codes_*.pt',
+        'context_audio_*.wav',
+        'target_audio_*.wav',
+    ]:
         for previous in root.glob(pattern):
             previous.unlink()
     for rank, document in enumerate(documents):
@@ -108,6 +114,13 @@ def merge_singleturn_rank_outputs(repeat_audio_dir, world_size, total_samples, s
                 raise ValueError(f'Missing actual input text for rank {rank}')
             for row in rows:
                 row['predicted_audio_filepath'] = str(root / f'predicted_audio_{row["item_idx"]}.wav')
+                if row.get('token_alignment_filepath'):
+                    source = Path(row['token_alignment_filepath'])
+                    if not source.is_absolute():
+                        source = rank_dir / source
+                    destination = root / f'predicted_audio_{row["item_idx"]}.alignment.json'
+                    _copy_token_alignment(source, destination, row['predicted_audio_filepath'])
+                    row['token_alignment_filepath'] = str(destination.resolve())
             evaluation_records.extend(rows)
         if document['frontend_used']:
             with (rank_dir / 'phoneme_frontend_manifest.jsonl').open(encoding='utf-8') as handle:
@@ -139,3 +152,9 @@ def merge_singleturn_rank_outputs(repeat_audio_dir, world_size, total_samples, s
         summary['evaluation_manifest_path'] = str(destination)
     (root / 'singleturn_merged.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
     return summary
+
+
+def _copy_token_alignment(source, destination, audio_path):
+    record = json.loads(source.read_text(encoding='utf-8'))
+    record['predicted_audio_filepath'] = str(Path(audio_path).resolve())
+    destination.write_text(json.dumps(record, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')

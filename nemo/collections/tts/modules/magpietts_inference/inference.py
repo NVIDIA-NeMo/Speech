@@ -53,6 +53,7 @@ from nemo.collections.tts.modules.magpietts_inference.singleturn_distributed imp
     singleturn_rank_indices,
     write_singleturn_rank_manifest,
 )
+from nemo.collections.tts.modules.magpietts_inference.token_alignment import save_token_alignment_debug
 from nemo.collections.tts.parts.utils.tts_dataset_utils import normalize_volume, stack_tensors
 from nemo.utils import logging
 
@@ -173,6 +174,8 @@ class EasyMagpieInferenceConfig(BaseInferenceConfig):
     phoneme_frontend_max_steps: int = 4096
     phoneme_frontend_on_max_steps: str = 'error'
     phoneme_frontend_as_text_input: bool = False
+    save_token_alignments: bool = False
+    alignment_inference_config: Optional[dict] = None
 
     def build_identifier(self) -> str:
         parts = [
@@ -182,7 +185,13 @@ class EasyMagpieInferenceConfig(BaseInferenceConfig):
             f"LT_{self.use_local_transformer}",
             f"Phoneme_{self.phoneme_input_type}_{self.phoneme_sampling_method}",
         ]
-        return "_".join(parts) + _phoneme_frontend_identifier(self)
+        identifier = "_".join(parts) + _phoneme_frontend_identifier(self)
+        alignment = self.alignment_inference_config or {}
+        if alignment.get('enabled') or alignment.get('record_alignments'):
+            digest = hashlib.sha256(json.dumps(alignment, sort_keys=True).encode()).hexdigest()[:10]
+            mode = alignment.get('source', 'attention') if alignment.get('enabled') else 'record'
+            identifier += f'_Align_{mode}_{digest}'
+        return identifier
 
 
 # Backwards-compatible aliases
@@ -206,6 +215,9 @@ class BaseInferenceRunner(abc.ABC):
         """
         self.model = model
         self.config = config
+        if isinstance(config, EasyMagpieInferenceConfig):
+            config.alignment_inference_config = dict(getattr(model, 'attention_alignment_inference_config', {}))
+            config.save_token_alignments = bool(config.alignment_inference_config.get('record_alignments', False))
 
         # Set phoneme probability to 1 for inference
         self._configure_tokenizer()
@@ -337,6 +349,7 @@ class BaseInferenceRunner(abc.ABC):
             "predicted_codes*.pt",
             "predicted_audio*.wav",
             "cross_attn_map_*.png",
+            "predicted_audio*.alignment.json",
         ]
         for pattern in patterns:
             for f in glob.glob(os.path.join(output_dir, pattern)):
@@ -1120,6 +1133,21 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
                 sf.write(audio_path, audio_np, sample_rate)
                 generated_audio_paths.append(audio_path)
 
+                if self.config.save_token_alignments:
+                    debug = getattr(output, 'alignment_debug', None)
+                    evaluation_records[-1]['token_alignment_filepath'] = save_token_alignment_debug(
+                        audio_path,
+                        debug[idx] if debug is not None else None,
+                        self.model,
+                        end_time=audio_len / sample_rate,
+                        expected_input_text=evaluation_records[-1]['text'],
+                        expected_input_token_ids=[
+                            token_id
+                            for token_id in batch['text'][idx].detach().cpu().tolist()
+                            if 0 <= token_id < self.model.bos_id and token_id != self.model.pad_id
+                        ],
+                    )
+
                 if save_context_audio and source_idx < len(manifest_records):
                     self._copy_reference_audio(
                         manifest_records[source_idx],
@@ -1585,6 +1613,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                         text_tokens=warmup_tokens[:, i],
                         user_audio_channel_embedding=user_step_emb,
                         prefill_like_step=True,
+                        response_text_warmup=True,
                         prefill_like_is_last_step=(i == delay_tokens - 1),
                         use_inference_mode=True,
                     )
@@ -2274,6 +2303,16 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                             record[destination_key] = values[source_turn_idx]
                         elif isinstance(values, str):
                             record[destination_key] = values
+                if self.config.save_token_alignments:
+                    debug = getattr(output, 'alignment_debug', None)
+                    turn_manifest_records[-1]['token_alignment_filepath'] = save_token_alignment_debug(
+                        predicted_audio_path,
+                        debug[0] if debug is not None else None,
+                        self.model,
+                        start_time=start_sample / sample_rate,
+                        end_time=end_sample / sample_rate,
+                        expected_input_text=turn_manifest_records[-1]['text'],
+                    )
                 logging.info(
                     f"[MT_USER_AUDIO_TURN] rank={rank}/{world_size} "
                     f"global_sample_idx={sample_idx} turn_id={int(turn_id)} "

@@ -110,11 +110,16 @@ model:
   # Independent, optional online window; no flow/teacher is run during inference.
   attention_alignment_inference:
     enabled: false
+    source: attention # attention, or text_head for a raw repeated-BPE head; no MAS during inference.
+    record_alignments: false # Export lightweight token timing traces independently of guidance.
     layer: middle # Single attention-layer ordinal or middle.
     head: 0
     look_back_tokens: 1
     look_ahead_tokens: 5
     prior_epsilon: 0.1
+    min_confidence: 0.0 # Minimum probability of a candidate before advancing the progress anchor.
+    min_margin: 0.0 # Minimum probability margin over the next candidate.
+    min_token_frames: 1 # Minimum audio decoder frames at the current anchor before advancing.
   aligned_text_use_normalized_text: true # False selects raw text for both the repeated head and its aligner.
   # W&B validation diagnostics only when an alignment experiment is explicitly enabled.
   alignment_visualization:

@@ -270,11 +270,16 @@ annealed away before inference.
 ```yaml
 attention_alignment_inference:
   enabled: false
+  source: attention
+  record_alignments: false
   layer: middle
   head: 0
   look_back_tokens: 1
   look_ahead_tokens: 5
   prior_epsilon: 0.1
+  min_confidence: 0.0
+  min_margin: 0.0
+  min_token_frames: 1
 ```
 
 Enable it with `model.attention_alignment_inference.enabled=true` on a model
@@ -297,6 +302,106 @@ received by the stream. The progress anchor is nondecreasing, while attention
 can read backward within the window and can still reach outside it with the
 smaller weight. There is no forced advancement after a duration threshold:
 raw text normalization can require many audio frames for a single source BPE.
+
+### Inference CLI and token timing diagnostics
+
+`examples/tts/magpietts_inference.py` exposes the online controls for
+`--model_type easy_magpie` in both single-turn and `multiturn_user_audio` modes.
+They apply to `.nemo` restores and `hparams.yaml` plus checkpoint loading before
+the model is constructed. Omitting them preserves the checkpoint settings;
+guidance and recording remain disabled in existing training recipes.
+
+For the trained middle attention head, append:
+
+```bash
+--alignment_guidance attention \
+--alignment_layer middle \
+--alignment_head 0 \
+--alignment_look_back_tokens 1 \
+--alignment_look_ahead_tokens 5 \
+--alignment_prior_epsilon 0.1 \
+--alignment_min_confidence 0.0 \
+--alignment_min_margin 0.0 \
+--alignment_min_token_frames 1 \
+--save_token_alignments
+```
+
+For a checkpoint with a trained **raw repeated-BPE output head**, including a
+checkpoint trained without aligned-text feedback, use:
+
+```bash
+--alignment_guidance text_head \
+--alignment_layer middle \
+--alignment_head 0 \
+--alignment_look_back_tokens 1 \
+--alignment_look_ahead_tokens 5 \
+--alignment_prior_epsilon 0.1 \
+--alignment_min_confidence 0.0 \
+--alignment_min_margin 0.0 \
+--alignment_min_token_frames 1 \
+--save_token_alignments
+```
+
+In `text_head` mode, the ordinary masked-vocabulary head prediction updates the
+source-text position for the **next** decoder step. It does not enable text
+feedback, run MAS, invoke the flow teacher, or force speech EOS. PAD/EOS,
+unmatched, low-confidence and ambiguous-current-token predictions hold the
+position. The head and conditioning tokens must match: this mode requires
+`aligned_text_use_normalized_text=false` and punctuation preservation. Adjacent
+identical source IDs are ambiguous; the controller prefers the current/earliest
+reachable occurrence and records that ambiguity instead of inventing a boundary.
+
+`min_confidence` gates advancement on the candidate probability. In attention
+mode it is the selected candidate's probability over all visible decoder keys;
+in text-head mode it is the predicted ID's probability over the full allowed
+head vocabulary. `min_margin` is the probability difference between the strongest
+two eligible window positions (attention) or full-vocabulary IDs (head).
+`min_token_frames` requires that many audio query frames at the current anchor
+before it may advance; it never forces advancement. All three controls preserve
+the previous attention controller behavior at their defaults. `prior_epsilon`
+is in `(0,1]`: `1` removes the window's effect on attention values.
+
+To inspect both traces with **no inference guidance**, use
+`--alignment_guidance none --save_token_alignments`. Recording computes the
+selected head's probabilities without changing its output. It records the BPE
+head only when the checkpoint contains one; attention-only checkpoints still
+produce the attention trace. Use `--no-save_token_alignments` to override a
+checkpoint that enabled recording. Guidance modes require native Nemotron-H
+cached full attention and are not wired into vLLM.
+
+Each generated `predicted_audio_<id>.wav` gets a neighboring
+`predicted_audio_<id>.alignment.json`, referenced by the generated evaluation
+manifest's `token_alignment_filepath` key. It contains:
+
+- `frames`: audio-relative start/end times, head ID/probability, raw attention
+  input-position/probability, window-biased position, progress anchor and
+  confidence/acceptance diagnostics.
+- `text_head.decoded_text`, `text_head.token_ids`, and `text_head.tokens`: decoded
+  consecutive head-token runs with `token_id`, `token`, `start`, `end`. These are
+  output runs; two adjacent identical input tokens cannot be separated by IDs
+  alone. Special predictions remain visible in the frame/run trace.
+- `attention.tokens`: each observed input BPE occurrence with its own
+  `token_index`, ID, label, first `start`, last `end`, and every disjoint `spans`
+  interval. A token never attended has null times. `attention.segments` preserves
+  visits and backward movements rather than joining them across other tokens.
+- Codec-grid resolution, actual audio duration, source-turn IDs, selected
+  layer/head and inference settings. Times account for the audio start/delay,
+  stacked frames and final partial-frame trimming, and are relative to each
+  saved turn waveform in multiturn evaluation.
+- `expected_input_text` records the complete requested conditioning text;
+  single-turn exports also include `expected_input_token_ids` with controls
+  removed and repeated occurrences retained. The `turns` table contains only
+  observed streaming input keys (`source_token_scope=observed_streaming_input`),
+  so an unreceived tail after early audio EOS can be distinguished from an
+  observed but unattended token. Expected-input metadata is added after
+  generation and is never supplied to the online controller.
+
+These are **model estimates**, not recognized-word timestamps. A head prediction
+or attention peak does not independently verify which word the acoustic token
+realized. Recording stores only a linear-size trace, not full attention matrices.
+Distributed merges preserve the sidecars and rewrite their audio references.
+Enabled guidance/recording settings add a short configuration hash to the run
+identifier so different window/threshold experiments do not overwrite each other.
 
 The optional controller is available as
 `state.attention_alignment_inference_state`; `last_attended_tokens` contains the

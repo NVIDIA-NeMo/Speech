@@ -81,6 +81,7 @@ from nemo.collections.tts.modules.magpietts_inference.utils import (
     _add_common_args,
     _add_easy_magpie_args,
     _add_magpie_args,
+    _alignment_inference_overrides,
     _build_easy_magpie_config,
     _build_magpie_config,
     _configure_cuda_for_rank,
@@ -481,6 +482,7 @@ def main(argv=None):
                 hparams_from_wandb=args.hparams_file_from_wandb,
                 phoneme_tokenizer_path=getattr(args, 'phoneme_tokenizer_path', None),
                 disable_cas_for_context_text=args.disable_cas_for_context_text,
+                alignment_inference_overrides=_alignment_inference_overrides(args),
             )
 
             # Load model
@@ -525,6 +527,7 @@ def main(argv=None):
                 legacy_text_conditioning=args.legacy_text_conditioning,
                 phoneme_tokenizer_path=getattr(args, 'phoneme_tokenizer_path', None),
                 disable_cas_for_context_text=args.disable_cas_for_context_text,
+                alignment_inference_overrides=_alignment_inference_overrides(args),
             )
 
             # Load model

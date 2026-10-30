@@ -172,6 +172,8 @@ class StreamingState:
     attention_alignment_inference_state: Optional[AttentionAlignmentInferenceState] = None
     attention_alignment_turn_counters: Optional[torch.Tensor] = None
     attention_alignment_turn_valid: Optional[torch.Tensor] = None
+    alignment_debug_history: Optional[List[List[dict]]] = None
+    alignment_debug_turns: Optional[List[List[dict]]] = None
 
 
 @dataclass
@@ -186,6 +188,7 @@ class StreamingFinalizeOutput:
     phoneme_text: List[str]  # Decoded phoneme strings per batch item
     aligned_text_tokens: Optional[torch.Tensor] = None  # (B, T_decoder), repeated BPE on the audio step grid
     aligned_text_tokens_lens: Optional[torch.Tensor] = None  # (B,) valid decoder steps, before codec decode padding
+    alignment_debug: Optional[List[dict]] = None  # JSON-ready timing estimates relative to returned audio
 
 
 @dataclass
@@ -202,6 +205,7 @@ class InferBatchOutput:
     phoneme_prediction_start_idx: Optional[torch.Tensor] = None  # (B,) start index into predicted_phoneme_tokens
     predicted_aligned_text_tokens: Optional[torch.Tensor] = None  # (B, T_decoder), already trimmed to audio output
     predicted_aligned_text_tokens_lens: Optional[torch.Tensor] = None  # (B,) valid aligned-text decoder steps
+    alignment_debug: Optional[List[dict]] = None
 
 
 @dataclass
@@ -257,7 +261,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self.attention_alignment_inference_config = self._resolve_attention_alignment_inference_config(
             cfg.get('attention_alignment_inference', None)
         )
-        if self.attention_alignment_inference_config['enabled']:
+        if (
+            self.attention_alignment_inference_config['enabled']
+            or self.attention_alignment_inference_config['record_alignments']
+        ):
             if cfg.get('decoder_type', 'huggingface') != 'nemotron_h':
                 raise ValueError('Inference attention alignment currently requires the nemotron_h decoder')
             if cfg.get('nemotron_h_config', {}).get('rswa_window') is not None:
@@ -265,6 +272,17 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self.aligned_text_use_normalized_text = cfg.get('aligned_text_use_normalized_text', True)
         if type(self.aligned_text_use_normalized_text) is not bool:
             raise ValueError('aligned_text_use_normalized_text must be a boolean')
+        if (
+            self.attention_alignment_inference_config['enabled']
+            and self.attention_alignment_inference_config['source'] == 'text_head'
+        ):
+            if not self.use_aligned_text_head:
+                raise ValueError('Text-head alignment guidance requires a trained use_aligned_text_head checkpoint')
+            if self.aligned_text_use_normalized_text or cfg.get('aligned_text_strip_punctuation', True):
+                raise ValueError(
+                    'Text-head alignment guidance requires raw matching BPE targets: '
+                    'aligned_text_use_normalized_text=false and aligned_text_strip_punctuation=false'
+                )
         if type(self.use_attention_alignment) is not bool:
             raise ValueError('use_attention_alignment must be a boolean')
         if self.use_attention_alignment and self.use_aligned_text_head:
@@ -622,7 +640,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         else:
             raise ValueError(f"Unknown decoder_type: {self.decoder_type}. Supported: 'huggingface', 'nemotron_h'")
 
-        if self.attention_alignment_inference_config['enabled']:
+        if (
+            self.attention_alignment_inference_config['enabled']
+            or self.attention_alignment_inference_config['record_alignments']
+        ):
             controller = self._new_attention_alignment_inference_state(batch_size=1)
             attention_blocks = [
                 index for index, block in enumerate(self.decoder.config.layers_block_type) if block == 'attention'
@@ -630,8 +651,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             ordinal = controller.resolve_layer(len(attention_blocks))
             if controller.head >= self.decoder.config.num_attention_heads:
                 raise ValueError('attention_alignment_inference.head exceeds the decoder head count')
+            action = 'guides' if controller.enabled else 'records'
             logging.info(
-                f'Inference attention alignment guides attention-layer ordinal {ordinal}, '
+                f'Inference attention alignment {action} attention-layer ordinal {ordinal}, '
                 f'decoder block {attention_blocks[ordinal]}, head {controller.head}.'
             )
 
@@ -1006,6 +1028,18 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             raise ValueError('batch_indices must contain valid conditional batch indices')
         for index in indices:
             controller.reset_turn(index)
+            if getattr(state, 'alignment_debug_turns', None) is not None:
+                turns = state.alignment_debug_turns[index]
+                previous = turns[-1]
+                next_turn = {
+                    'turn_index': previous['turn_index'] + int(bool(previous['source_token_ids'])),
+                    'source_token_ids': controller.text_token_ids[index],
+                    'source_key_positions': controller.text_key_positions[index],
+                }
+                if previous['source_token_ids']:
+                    turns.append(next_turn)
+                else:
+                    turns[-1] = next_turn
         if indices:
             # streaming_init uses inference tensors by default; public resets may happen outside its context.
             with torch.inference_mode():
@@ -2188,14 +2222,30 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 attention_alignment_turn_counters=(
                     torch.zeros(batch_size, dtype=torch.long, device=device)
                     if self.attention_alignment_inference_config['enabled']
+                    or self.attention_alignment_inference_config['record_alignments']
                     else None
                 ),
                 attention_alignment_turn_valid=(
                     torch.ones(batch_size, dtype=torch.bool, device=device)
                     if self.attention_alignment_inference_config['enabled']
+                    or self.attention_alignment_inference_config['record_alignments']
                     else None
                 ),
             )
+
+            if self.attention_alignment_inference_config['record_alignments']:
+                controller = state.attention_alignment_inference_state
+                state.alignment_debug_history = [[] for _ in range(batch_size)]
+                state.alignment_debug_turns = [
+                    [
+                        {
+                            'turn_index': 0,
+                            'source_token_ids': controller.text_token_ids[index],
+                            'source_key_positions': controller.text_key_positions[index],
+                        }
+                    ]
+                    for index in range(batch_size)
+                ]
 
             return state
 
@@ -2208,6 +2258,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         prefill_like_step: bool = False,
         use_inference_mode: bool = True,
         prefill_like_is_last_step: bool = False,
+        response_text_warmup: bool = False,
     ) -> Tuple[StreamingState, Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
         Perform one streaming inference step with batch support.
@@ -2233,6 +2284,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             prefill_like_is_last_step: Whether this is the final prefill-like step.
                 When enabled together with the corresponding model configuration,
                 the next audio input uses the user-speaking-end token.
+            response_text_warmup: Register response BPE keys during silent speech-delay
+                warmup. User/profile prefill leaves this false and is never registered.
 
         Returns:
             Tuple of:
@@ -2252,7 +2305,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             inference_request = None
             if has_inference_controller:
                 inference_request = self._prepare_attention_alignment_inference(
-                    state, text_tokens, force_dropout_text, prefill_like_step
+                    state, text_tokens, force_dropout_text, prefill_like_step, response_text_warmup
                 )
 
             # Phase 1: Prepare input embedding and determine per-item phase masks
@@ -2678,11 +2731,22 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
         # --- Audio predictions ---
         if needs_audio.any():
+            controller = getattr(state, 'attention_alignment_inference_state', None)
             if self.use_aligned_text_head:
-                predicted_text = self._predict_aligned_text_tokens(state)
+                if controller is not None and (controller.record_alignments or controller.source == 'text_head'):
+                    predicted_text, logits = self._predict_aligned_text_tokens(state, return_logits=True)
+                    controller.observe_text_logits(
+                        logits,
+                        active_batch_indices=needs_audio.nonzero(as_tuple=True)[0].tolist(),
+                        ignored_token_ids=(self.pad_id, self.eos_id),
+                    )
+                else:
+                    predicted_text = self._predict_aligned_text_tokens(state)
                 predicted_text = torch.where(needs_audio, predicted_text, torch.full_like(predicted_text, self.pad_id))
                 state.last_aligned_text_tokens = predicted_text
                 state.all_aligned_text_predictions.append(predicted_text)
+            if getattr(state, 'alignment_debug_history', None) is not None:
+                self._record_alignment_step(state, needs_audio)
             first_audio_step = needs_audio & (state.audio_prediction_start_idx == -1)
             if first_audio_step.any():
                 current_frame_idx = sum(p.size(-1) for p in state.all_predictions)
@@ -2729,6 +2793,13 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     state.audio_prediction_end_idx = torch.where(
                         newly_ended_audio, end_frame_idx, state.audio_prediction_end_idx
                     )
+                if getattr(state, 'alignment_debug_history', None) is not None:
+                    # Multiturn callers clear audio_prediction_end_idx between turns.
+                    # Preserve the real final subframe in the observation itself so
+                    # later finalization never labels codec EOS or its padded tail.
+                    for row in audio_eos_detected.nonzero(as_tuple=True)[0].tolist():
+                        observation = state.alignment_debug_history[row][-1]
+                        observation['end_frame'] = observation['start_frame'] + int(eos_frame_idx[row].item())
 
             state.all_predictions.append(audio_codes_unstacked)
             audio_codes_next = audio_codes_unstacked
@@ -2740,6 +2811,93 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
         return audio_codes_next, pred_phoneme_tokens
 
+    def _record_alignment_step(self, state: StreamingState, needs_audio: torch.Tensor) -> None:
+        """Keep scalar observations on the codec timeline, without retaining attention matrices."""
+        controller = state.attention_alignment_inference_state
+        frame_start = sum(prediction.size(-1) for prediction in state.all_predictions)
+        for row in needs_audio.nonzero(as_tuple=True)[0].tolist():
+            attention = controller.last_observations[row]
+            head = controller.last_head_observations[row]
+            state.alignment_debug_history[row].append(
+                {
+                    'start_frame': frame_start,
+                    'end_frame': frame_start + self.frame_stacking_factor,
+                    'decoder_step': frame_start // self.frame_stacking_factor,
+                    'turn_index': state.alignment_debug_turns[row][-1]['turn_index'],
+                    'attention': dict(attention) if attention is not None else None,
+                    'text_head': dict(head) if head is not None else None,
+                }
+            )
+
+    def _finalize_alignment_debug(self, state: StreamingState, audio_lengths=None) -> Optional[List[dict]]:
+        """Trim timing estimates to generated codec frames before decode padding is introduced.
+
+        Starts/ends refer to the waveform returned by ``streaming_finalize``. A
+        stacked prediction that overlaps audio EOS retains only its real codec
+        frames. Context, speech delay and user/profile prefill produce no labels.
+        """
+        if getattr(state, 'alignment_debug_history', None) is None:
+            return None
+        seconds_per_codec_frame = self.codec_model_samples_per_frame / self.sample_rate
+        total_frames = sum(prediction.size(-1) for prediction in state.all_predictions)
+        controller = state.attention_alignment_inference_state
+        results = []
+        for row, observations in enumerate(state.alignment_debug_history):
+            start = int(state.audio_prediction_start_idx[row].item())
+            end = int(state.audio_prediction_end_idx[row].item())
+            if start < 0:
+                start, end = 0, 0
+            elif end < 0:
+                end = total_frames
+            start, end = max(0, min(start, total_frames)), max(0, min(end, total_frames))
+            end = max(start, end)
+            duration = (end - start) * seconds_per_codec_frame
+            if audio_lengths is not None:
+                duration = int(audio_lengths[row].item()) / self.output_sample_rate
+            frames = []
+            for observation in observations:
+                left = max(start, observation['start_frame'])
+                right = min(end, observation['end_frame'])
+                if right <= left:
+                    continue
+                start_time = min((left - start) * seconds_per_codec_frame, duration)
+                end_time = min((right - start) * seconds_per_codec_frame, duration)
+                if end_time <= start_time:
+                    continue
+                frames.append(
+                    {
+                        **observation,
+                        'start_frame': left - start,
+                        'end_frame': right - start,
+                        'start': start_time,
+                        'end': end_time,
+                    }
+                )
+            results.append(
+                {
+                    'schema_version': 1,
+                    'timings_are_estimates': True,
+                    'guidance_source': controller.source if controller.enabled else 'none',
+                    'attention_layer': controller.layer,
+                    'attention_head': controller.head,
+                    'text_head_uses_normalized_text': self.aligned_text_use_normalized_text,
+                    'frame_step_seconds': self.frame_stacking_factor * seconds_per_codec_frame,
+                    'audio_duration_seconds': duration,
+                    'audio_frame_count': end - start,
+                    'frame_stacking_factor': self.frame_stacking_factor,
+                    'turns': [
+                        {
+                            'turn_index': turn['turn_index'],
+                            'source_token_ids': list(turn['source_token_ids']),
+                            'source_key_positions': list(turn['source_key_positions']),
+                        }
+                        for turn in state.alignment_debug_turns[row]
+                    ],
+                    'frames': frames,
+                }
+            )
+        return results
+
     @staticmethod
     def _resolve_attention_alignment_inference_config(config=None):
         """Resolve the opt-in online window without enabling training-time alignment modules."""
@@ -2747,11 +2905,16 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             raise ValueError('attention_alignment_inference must be a configuration mapping')
         values = {
             'enabled': False,
+            'source': 'attention',
+            'record_alignments': False,
             'layer': 'middle',
             'head': 0,
             'look_back_tokens': 1,
             'look_ahead_tokens': 5,
             'prior_epsilon': 0.1,
+            'min_confidence': 0.0,
+            'min_margin': 0.0,
+            'min_token_frames': 1,
         }
         unknown = set(config or {}) - values.keys()
         if unknown:
@@ -2760,25 +2923,26 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         if type(values['enabled']) is not bool:
             raise ValueError('attention_alignment_inference.enabled must be a boolean')
         try:
-            AttentionAlignmentInferenceState(batch_size=1, **{k: v for k, v in values.items() if k != 'enabled'})
+            AttentionAlignmentInferenceState(batch_size=1, **values)
         except ValueError as error:
             raise ValueError(f'attention_alignment_inference: {error}') from error
         return values
 
     def _new_attention_alignment_inference_state(self, batch_size):
         settings = self.attention_alignment_inference_config
-        if not settings['enabled']:
+        if not settings['enabled'] and not settings['record_alignments']:
             return None
-        return AttentionAlignmentInferenceState(
-            batch_size=batch_size, **{key: value for key, value in settings.items() if key != 'enabled'}
-        )
+        return AttentionAlignmentInferenceState(batch_size=batch_size, **settings)
 
-    def _prepare_attention_alignment_inference(self, state, text_tokens, force_dropout_text, prefill_like_step):
+    def _prepare_attention_alignment_inference(
+        self, state, text_tokens, force_dropout_text, prefill_like_step, response_text_warmup=False
+    ):
         """Register only observed response BPE keys, then request online guidance on audio queries."""
         controller = getattr(state, 'attention_alignment_inference_state', None)
         if controller is None:
             return None
-        if prefill_like_step:
+        controller.begin_step()
+        if prefill_like_step and not response_text_warmup:
             self.reset_attention_alignment_turn(state)
             return None
         counters = getattr(state, 'turn_text_tokens_seen', state.text_tokens_seen)
@@ -2800,8 +2964,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             state.attention_alignment_turn_valid[needs_text & ~allowed] = False
             observed_rows = (needs_text & content & state.attention_alignment_turn_valid).nonzero(as_tuple=True)[0]
             for row in observed_rows.tolist():
-                controller.add_text_token(row, state.cache_seq_len)
+                controller.add_text_token(row, state.cache_seq_len, token_id=int(text_tokens[row].item()))
 
+        if prefill_like_step:
+            return None
         needs_audio = (
             ~needs_context
             & (counters >= state.config.training_mode.streaming_speech_delay)
@@ -2856,7 +3022,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         defaults.update(values)
         return defaults
 
-    def _predict_aligned_text_tokens(self, state: StreamingState) -> torch.Tensor:
+    def _predict_aligned_text_tokens(self, state: StreamingState, return_logits: bool = False):
         """Predict the normalized BPE for this audio step from the conditional state.
 
         PAD and text EOS are allowed outputs. Text EOS is a channel prediction;
@@ -2865,7 +3031,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         conditional_hidden = state.last_hidden[: state.config.batch_size, -1, :]
         logits = self.aligned_text_head(conditional_hidden)
         logits = logits.masked_fill(~self._aligned_text_output_mask, -torch.inf)
-        return logits.argmax(dim=-1)
+        tokens = logits.argmax(dim=-1)
+        return (tokens, logits) if return_logits else tokens
 
     def _predict_phoneme_tokens(self, state: StreamingState) -> torch.Tensor:
         """Predict phoneme tokens from the last hidden state."""
@@ -2962,6 +3129,11 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         batch_size = state.config.batch_size
         device = state.config.device
         aligned_text_tokens, aligned_text_tokens_lens = self._finalize_aligned_text_predictions(state)
+        alignment_debug = (
+            self._finalize_alignment_debug(state)
+            if getattr(state, 'alignment_debug_history', None) is not None
+            else None
+        )
 
         # Extract and decode phoneme predictions
         phoneme_tokens_list: List[List[int]] = []
@@ -2997,6 +3169,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 phoneme_text=phoneme_text_list,
                 aligned_text_tokens=aligned_text_tokens,
                 aligned_text_tokens_lens=aligned_text_tokens_lens,
+                alignment_debug=alignment_debug,
             )
 
         grad_ctx = torch.inference_mode if use_inference_mode else torch.no_grad
@@ -3031,6 +3204,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     phoneme_text=phoneme_text_list,
                     aligned_text_tokens=aligned_text_tokens,
                     aligned_text_tokens_lens=aligned_text_tokens_lens,
+                    alignment_debug=alignment_debug,
                 )
 
             # Create padded output tensor and slice each item's valid predictions
@@ -3094,6 +3268,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 phoneme_text=phoneme_text_list,
                 aligned_text_tokens=aligned_text_tokens,
                 aligned_text_tokens_lens=aligned_text_tokens_lens,
+                alignment_debug=(
+                    self._finalize_alignment_debug(state, audio_len) if alignment_debug is not None else None
+                ),
             )
 
     def _finalize_aligned_text_predictions(
@@ -3392,6 +3569,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 phoneme_prediction_start_idx=phoneme_prediction_start_idx_out,
                 predicted_aligned_text_tokens=finalize_output.aligned_text_tokens,
                 predicted_aligned_text_tokens_lens=finalize_output.aligned_text_tokens_lens,
+                alignment_debug=finalize_output.alignment_debug,
             )
 
     @staticmethod

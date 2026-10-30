@@ -144,6 +144,7 @@ class ModelLoadConfig:
         hparams_from_wandb: Whether hparams file is from wandb export.
         phoneme_tokenizer_path: Override path to the phoneme tokenizer file (EasyMagpieTTS only).
         disable_cas_for_context_text: Skip CAS embeddings for context text in legacy EasyMagpieTTS models.
+        alignment_inference_overrides: Explicit online alignment controls, applied before model construction.
     """
 
     hparams_file: Optional[str] = None
@@ -155,6 +156,7 @@ class ModelLoadConfig:
     hparams_from_wandb: bool = False
     phoneme_tokenizer_path: Optional[str] = None
     disable_cas_for_context_text: bool = False
+    alignment_inference_overrides: Optional[dict] = None
 
     def validate(self) -> None:
         """Validate that the configuration is complete and consistent."""
@@ -423,6 +425,7 @@ def load_easy_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tup
             if config.phoneme_tokenizer_path and hasattr(model_cfg, 'phoneme_tokenizer'):
                 model_cfg.phoneme_tokenizer.tokenizer_path = config.phoneme_tokenizer_path
 
+        _apply_alignment_inference_overrides(model_cfg, config.alignment_inference_overrides)
         model = EasyMagpieTTSInferenceModel(cfg=model_cfg)
 
         logging.info(f"Loading weights from checkpoint: {config.checkpoint_file}")
@@ -433,7 +436,16 @@ def load_easy_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tup
         checkpoint_name = os.path.basename(config.checkpoint_file).replace(".ckpt", "")
     else:
         if config.nemo_file.startswith("nvidia/"):
-            model = EasyMagpieTTSInferenceModel.from_pretrained(config.nemo_file, map_location=load_device)
+            if config.alignment_inference_overrides:
+                model_cfg = EasyMagpieTTSInferenceModel.from_pretrained(
+                    config.nemo_file, return_config=True, map_location=load_device
+                )
+                _apply_alignment_inference_overrides(model_cfg, config.alignment_inference_overrides)
+                model = EasyMagpieTTSInferenceModel.from_pretrained(
+                    config.nemo_file, override_config_path=model_cfg, map_location=load_device
+                )
+            else:
+                model = EasyMagpieTTSInferenceModel.from_pretrained(config.nemo_file, map_location=load_device)
             checkpoint_name = config.nemo_file.split("/")[-1]
         else:
             logging.info(f"Loading model from NeMo archive: {config.nemo_file}")
@@ -454,6 +466,7 @@ def load_easy_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tup
                 # not the training subclass stored in the .nemo config.
                 model_cfg.target = 'nemo.collections.tts.models.easy_magpietts_inference.EasyMagpieTTSInferenceModel'
 
+            _apply_alignment_inference_overrides(model_cfg, config.alignment_inference_overrides)
             model = EasyMagpieTTSInferenceModel.restore_from(
                 config.nemo_file, override_config_path=model_cfg, map_location=load_device
             )
@@ -1072,6 +1085,7 @@ def _merge_multiturn_rank_outputs(repeat_audio_dir: str, world_size: int, save_p
         "target_audio_*.wav",
         "context_audio_*.wav",
         "predicted_codes_*.pt",
+        "predicted_audio_*.alignment.json",
     ]:
         for path in Path(repeat_audio_dir).glob(pattern):
             if path.is_symlink() or path.exists():
@@ -1111,6 +1125,16 @@ def _merge_multiturn_rank_outputs(repeat_audio_dir: str, world_size: int, save_p
             _copy_or_link(context_src, context_dst, required=True)
 
             merged = dict(record)
+            if record.get('token_alignment_filepath'):
+                source = Path(record['token_alignment_filepath'])
+                if not source.is_absolute():
+                    source = Path(rank_dir) / source
+                destination = Path(repeat_audio_dir) / f'predicted_audio_{global_idx}.alignment.json'
+                alignment = json.loads(source.read_text(encoding='utf-8'))
+                alignment['predicted_audio_filepath'] = str(Path(pred_dst).resolve())
+                destination.write_text(json.dumps(alignment, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+                merged['token_alignment_filepath'] = str(destination.resolve())
+                merged['predicted_audio_filepath'] = str(Path(pred_dst).resolve())
             merged["audio_filepath"] = f"target_audio_{global_idx}.wav"
             merged["context_audio_filepath"] = f"context_audio_{global_idx}.wav"
             merged["rank"] = rank
@@ -1397,6 +1421,26 @@ def _add_easy_magpie_args(parser: argparse.ArgumentParser) -> None:
     )
     group.add_argument('--no_save_debug_multiturn_audio', action='store_true')
     group.add_argument(
+        '--alignment_guidance',
+        choices=['none', 'attention', 'text_head'],
+        default=None,
+        help='Optional online text-position window; omitted preserves the checkpoint setting (normally disabled)',
+    )
+    group.add_argument('--alignment_layer', type=_alignment_layer, default=None, help='Attention ordinal or middle')
+    group.add_argument('--alignment_head', type=int, default=None)
+    group.add_argument('--alignment_look_back_tokens', type=int, default=None)
+    group.add_argument('--alignment_look_ahead_tokens', type=int, default=None)
+    group.add_argument('--alignment_prior_epsilon', type=float, default=None)
+    group.add_argument('--alignment_min_confidence', type=float, default=None)
+    group.add_argument('--alignment_min_margin', type=float, default=None)
+    group.add_argument('--alignment_min_token_frames', type=int, default=None)
+    group.add_argument(
+        '--save_token_alignments',
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help='Save text-head predictions and selected-head token time estimates beside each generated waveform',
+    )
+    group.add_argument(
         '--phoneme_frontend_nemo_file',
         type=str,
         default=None,
@@ -1510,6 +1554,7 @@ def _build_easy_magpie_config(args) -> EasyMagpieInferenceConfig:
         phoneme_frontend_expected_delay=getattr(args, 'phoneme_frontend_expected_delay', 8),
         phoneme_frontend_max_steps=getattr(args, 'phoneme_frontend_max_steps', 4096),
         phoneme_frontend_on_max_steps=getattr(args, 'phoneme_frontend_on_max_steps', 'error'),
+        save_token_alignments=bool(getattr(args, 'save_token_alignments', False)),
     )
     if cfg_cls is EasyMagpieMultiturnUserAudioInferenceConfig:
         kwargs.update(
@@ -1521,6 +1566,8 @@ def _build_easy_magpie_config(args) -> EasyMagpieInferenceConfig:
 
 def _select_runner_cls(args):
     if args.model_type == 'magpie':
+        if _alignment_inference_overrides(args):
+            raise ValueError('Alignment guidance and token timing recording require --model_type easy_magpie')
         if getattr(args, 'phoneme_frontend_nemo_file', None) or getattr(args, 'phoneme_frontend_as_text_input', False):
             raise ValueError('--phoneme_frontend_nemo_file requires --model_type easy_magpie')
         if args.easy_magpie_inference_mode != 'single_turn':
@@ -1529,3 +1576,55 @@ def _select_runner_cls(args):
     if args.easy_magpie_inference_mode == 'multiturn_user_audio':
         return EasyMagpieMultiturnUserAudioInferenceRunner
     return EasyMagpieInferenceRunner
+
+
+def _alignment_layer(value):
+    if value == 'middle':
+        return value
+    try:
+        ordinal = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            'alignment_layer must be middle or a nonnegative attention ordinal'
+        ) from error
+    if ordinal < 0:
+        raise argparse.ArgumentTypeError('alignment_layer must be middle or a nonnegative attention ordinal')
+    return ordinal
+
+
+def _alignment_inference_overrides(args):
+    """Keep omitted CLI values out of the saved model configuration."""
+    values = {}
+    mode = getattr(args, 'alignment_guidance', None)
+    if mode is not None:
+        values['enabled'] = mode != 'none'
+        if mode != 'none':
+            values['source'] = mode
+    for name in (
+        'layer',
+        'head',
+        'look_back_tokens',
+        'look_ahead_tokens',
+        'prior_epsilon',
+        'min_confidence',
+        'min_margin',
+        'min_token_frames',
+    ):
+        value = getattr(args, 'alignment_' + name, None)
+        if value is not None:
+            values[name] = value
+    record = getattr(args, 'save_token_alignments', None)
+    if record is not None:
+        values['record_alignments'] = record
+    return values or None
+
+
+def _apply_alignment_inference_overrides(model_cfg, overrides):
+    """Apply explicit CLI controls before allocating/restoring any model weights."""
+    if not overrides:
+        return
+    values = dict(model_cfg.get('attention_alignment_inference', {}) or {})
+    values.update(overrides)
+    values = EasyMagpieTTSInferenceModel._resolve_attention_alignment_inference_config(values)
+    with open_dict(model_cfg):
+        model_cfg.attention_alignment_inference = values

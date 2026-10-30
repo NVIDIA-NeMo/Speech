@@ -18,6 +18,9 @@ class AttentionAlignmentInferenceState:
     State indices are conditional decoder rows; any CFG rows appended after them
     remain untouched. Positions refer to the absolute KV-cache timeline. A turn
     reset forgets only this metadata, preserving the decoder's conversation cache.
+    ``enabled=False`` observes attention without changing decoder outputs or the
+    progress anchor. Text-head guidance requires a matching raw input/output BPE
+    vocabulary and consumes the current frame's logits after its forward pass.
     """
 
     def __init__(
@@ -28,12 +31,19 @@ class AttentionAlignmentInferenceState:
         prior_epsilon: float = 0.1,
         layer: str | int = 'middle',
         head: int = 0,
+        source: str = 'attention',
+        enabled: bool = True,
+        record_alignments: bool = False,
+        min_confidence: float = 0.0,
+        min_margin: float = 0.0,
+        min_token_frames: int = 1,
     ):
         for name, value, minimum in (
             ('batch_size', batch_size, 1),
             ('look_back_tokens', look_back_tokens, 0),
             ('look_ahead_tokens', look_ahead_tokens, 0),
             ('head', head, 0),
+            ('min_token_frames', min_token_frames, 1),
         ):
             if type(value) is not int or value < minimum:
                 raise ValueError(f'{name} must be an integer >= {minimum}')
@@ -46,32 +56,134 @@ class AttentionAlignmentInferenceState:
             raise ValueError('prior_epsilon must be finite and in (0, 1]')
         if layer != 'middle' and (type(layer) is not int or layer < 0):
             raise ValueError('layer must be middle or a nonnegative attention-layer ordinal')
+        if source not in ('attention', 'text_head'):
+            raise ValueError('source must be attention or text_head')
+        for name, value in (('enabled', enabled), ('record_alignments', record_alignments)):
+            if type(value) is not bool:
+                raise ValueError(f'{name} must be a boolean')
+        for name, value in (('min_confidence', min_confidence), ('min_margin', min_margin)):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or not 0 <= value <= 1
+            ):
+                raise ValueError(f'{name} must be finite and in [0, 1]')
         self.batch_size = batch_size
         self.look_back_tokens = look_back_tokens
         self.look_ahead_tokens = look_ahead_tokens
         self.prior_epsilon = float(prior_epsilon)
         self.layer = layer
         self.head = head
+        self.source = source
+        self.enabled = enabled
+        self.record_alignments = record_alignments
+        self.min_confidence = float(min_confidence)
+        self.min_margin = float(min_margin)
+        self.min_token_frames = min_token_frames
         self.text_key_positions: list[list[int]] = [[] for _ in range(batch_size)]
+        self.text_token_ids: list[list[int | None]] = [[] for _ in range(batch_size)]
         self.anchors = [0] * batch_size
         self.last_attended_tokens = [-1] * batch_size
+        self.last_observations: list[dict | None] = [None] * batch_size
+        self.last_head_observations: list[dict | None] = [None] * batch_size
+        self._visible_token_ordinals: list[list[int]] = [[] for _ in range(batch_size)]
+        self._anchor_frames = [0] * batch_size
 
-    def add_text_token(self, batch_index: int, key_position: int):
+    def add_text_token(self, batch_index: int, key_position: int, token_id: int | None = None):
         """Register one actual conditioning BPE key, excluding controls and padding."""
         self._validate_batch_index(batch_index)
         if type(key_position) is not int or key_position < 0:
             raise ValueError('key_position must be a nonnegative integer')
+        if token_id is not None and (type(token_id) is not int or token_id < 0):
+            raise ValueError('token_id must be a nonnegative integer or None')
         positions = self.text_key_positions[batch_index]
         if positions and key_position <= positions[-1]:
             raise ValueError('Text key positions must be strictly increasing within a turn')
         positions.append(key_position)
+        self.text_token_ids[batch_index].append(token_id)
 
     def reset_turn(self, batch_index: int):
         """Start a new turn without changing any decoder KV cache."""
         self._validate_batch_index(batch_index)
         self.text_key_positions[batch_index] = []
+        self.text_token_ids[batch_index] = []
         self.anchors[batch_index] = 0
         self.last_attended_tokens[batch_index] = -1
+        self.last_observations[batch_index] = None
+        self.last_head_observations[batch_index] = None
+        self._visible_token_ordinals[batch_index] = []
+        self._anchor_frames[batch_index] = 0
+
+    def observe_text_logits(self, logits, active_batch_indices=None, ignored_token_ids=()):
+        """Observe this audio frame's BPE head and update the next frame's window.
+
+        Logits are the conditional rows, with the head's ordinary output mask
+        already applied. Confidence is measured over that full vocabulary, not
+        renormalized over the input text. Only positions visible to the preceding
+        attention query may be matched. Adjacent identical input IDs cannot be
+        distinguished by this head; keep the current occurrence when possible
+        and report that ambiguity instead of inventing a boundary.
+        """
+        if logits.ndim != 2 or logits.size(0) != self.batch_size or logits.size(1) < 1:
+            raise ValueError('Text-head logits must have shape [conditional_batch_size, vocabulary_size]')
+        indices = self.request(active_batch_indices).batch_indices
+        ignored = set(ignored_token_ids)
+        for batch_index in indices:
+            probabilities = F.softmax(logits[batch_index].detach().float(), dim=-1)
+            top = probabilities.topk(min(2, probabilities.numel()))
+            # Match the ordinary output head's argmax, including its earliest-ID
+            # tie break. topk is used only for the probability margin.
+            token_id = int(logits[batch_index].argmax().item())
+            confidence = float(top.values[0].item())
+            margin = confidence - (float(top.values[1].item()) if top.values.numel() > 1 else 0.0)
+            anchor = self.anchors[batch_index]
+            available = self._visible_token_ordinals[batch_index]
+            candidates = [index for index in available if anchor <= index <= anchor + self.look_ahead_tokens]
+            matches = [index for index in candidates if self.text_token_ids[batch_index][index] == token_id]
+            candidate = matches[0] if matches else None
+            ambiguous = len(matches) > 1
+            accepted = False
+            if self.source == 'text_head':
+                self._anchor_frames[batch_index] += 1
+            if not math.isfinite(confidence) or not math.isfinite(margin):
+                reason = 'invalid_logits'
+                confidence = 0.0
+                margin = 0.0
+            elif token_id in ignored:
+                reason = 'ignored_token'
+            elif candidate is None:
+                reason = 'unmatched_token'
+            elif confidence < self.min_confidence:
+                reason = 'low_confidence'
+            elif margin < self.min_margin:
+                reason = 'low_margin'
+            elif candidate > anchor and self._anchor_frames[batch_index] < self.min_token_frames:
+                reason = 'minimum_frames'
+            else:
+                accepted = True
+                reason = 'ambiguous_token' if ambiguous else 'matched_token'
+                if self.enabled and self.source == 'text_head' and candidate > anchor:
+                    self.anchors[batch_index] = candidate
+                    self._anchor_frames[batch_index] = 0
+            self.last_head_observations[batch_index] = {
+                'token_id': token_id,
+                'probability': confidence,
+                'margin': margin,
+                'candidate_token_index': candidate,
+                'anchor_before': anchor,
+                'anchor': self.anchors[batch_index],
+                'accepted': accepted,
+                'ambiguous': ambiguous,
+                'reason': reason,
+            }
+        return self.last_head_observations
+
+    def begin_step(self):
+        """Clear per-query observations so inactive rows never reuse stale peaks."""
+        self.last_observations = [None] * self.batch_size
+        self.last_head_observations = [None] * self.batch_size
+        self._visible_token_ordinals = [[] for _ in range(self.batch_size)]
 
     def request(self, active_batch_indices=None):
         """Build an immutable request selecting conditional rows active at this step."""
@@ -124,9 +236,11 @@ def apply_attention_alignment_inference(
 
     Inputs use ``[B,H,Q,D]`` with expanded grouped K/V and exactly one query.
     The finite prior scales only current-turn text keys outside the previous
-    progress window. It never reveals future/padded keys. The new progress
-    anchor is chosen within that window and cannot move backwards; actual
-    attention remains free to look back or overcome the finite prior.
+    progress window. It never reveals future/padded keys. For an attention-driven
+    controller the new anchor is chosen within that window; a text-head-driven
+    controller updates it separately after the current forward pass. The anchor
+    cannot move backwards; actual attention remains free to look back or overcome
+    the finite prior. Record-only requests preserve ``ordinary_output`` exactly.
     """
     state = request.state
     if (
@@ -155,6 +269,8 @@ def apply_attention_alignment_inference(
     heads = torch.tensor([state.head], device=query.device, dtype=torch.long)
     key_indices = torch.arange(key.size(2), device=query.device)
     for batch_index in request.batch_indices:
+        state.last_observations[batch_index] = None
+        state._visible_token_ordinals[batch_index] = []
         positions = state.text_key_positions[batch_index]
         if not positions:
             continue
@@ -177,6 +293,7 @@ def apply_attention_alignment_inference(
         ordinals = ordinals[text_visible]
         if not text_keys.numel():
             continue
+        state._visible_token_ordinals[batch_index] = ordinals.tolist()
         with torch.autocast(device_type=query.device.type, enabled=False):
             scores = (query[batch_index, state.head, 0].float() @ key[batch_index, state.head].float().T) / math.sqrt(
                 query.size(-1)
@@ -188,16 +305,55 @@ def apply_attention_alignment_inference(
             inside = (ordinals >= anchor - state.look_back_tokens) & (ordinals <= anchor + state.look_ahead_tokens)
             prior = torch.ones_like(scores)
             outside_keys = text_keys[~inside]
-            prior[outside_keys] = state.prior_epsilon
+            if state.enabled:
+                prior[outside_keys] = state.prior_epsilon
+            raw_probabilities = F.softmax(scores, dim=-1)
             probabilities = F.softmax(scores + prior.log(), dim=-1)
-            peak = ordinals[probabilities.index_select(0, text_keys).argmax()]
+            text_probabilities = probabilities.index_select(0, text_keys)
+            raw_text_probabilities = raw_probabilities.index_select(0, text_keys)
+            raw_peak_index = int(raw_text_probabilities.argmax().item())
+            peak_index = int(text_probabilities.argmax().item())
+            peak = ordinals[peak_index]
             state.last_attended_tokens[batch_index] = int(peak.item())
+            accepted = False
+            confidence = 0.0
+            margin = 0.0
+            candidate = None
+            if state.source == 'attention':
+                state._anchor_frames[batch_index] += 1
             if inside.any():
                 candidates = ordinals[inside]
                 candidate_keys = text_keys[inside]
-                candidate = int(candidates[probabilities.index_select(0, candidate_keys).argmax()].item())
-                state.anchors[batch_index] = max(anchor, candidate)
-            if state.prior_epsilon < 1 and outside_keys.numel():
+                candidate_probabilities = raw_probabilities.index_select(0, candidate_keys)
+                top = candidate_probabilities.topk(min(2, candidate_probabilities.numel()))
+                # argmax preserves the earliest-position tie break of the legacy
+                # controller; topk is used only for the confidence margin.
+                candidate = int(candidates[candidate_probabilities.argmax()].item())
+                confidence = float(top.values[0].item())
+                margin = confidence - (float(top.values[1].item()) if top.values.numel() > 1 else 0.0)
+                accepted = (
+                    confidence >= state.min_confidence
+                    and margin >= state.min_margin
+                    and (candidate <= anchor or state._anchor_frames[batch_index] >= state.min_token_frames)
+                )
+                if state.enabled and state.source == 'attention' and accepted and candidate > anchor:
+                    state.anchors[batch_index] = candidate
+                    state._anchor_frames[batch_index] = 0
+            state.last_observations[batch_index] = {
+                'attention_token_index': int(ordinals[raw_peak_index].item()),
+                'attention_probability': float(raw_text_probabilities[raw_peak_index].item()),
+                'guided_attention_token_index': int(peak.item()),
+                'guided_attention_probability': float(text_probabilities[peak_index].item()),
+                'text_attention_mass': float(raw_text_probabilities.sum().item()),
+                'guided_text_attention_mass': float(text_probabilities.sum().item()),
+                'anchor_before': anchor,
+                'anchor': state.anchors[batch_index],
+                'candidate_token_index': candidate,
+                'confidence': confidence,
+                'margin': margin,
+                'accepted': accepted,
+            }
+            if state.enabled and state.prior_epsilon < 1 and outside_keys.numel():
                 output[batch_index, state.head, 0] = (probabilities @ value[batch_index, state.head].float()).to(
                     dtype=query.dtype
                 )

@@ -26,7 +26,7 @@ from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 from nemo.utils import logging
 
 if TRITON_AVAILABLE:
-    from nemo.collections.asr.parts.k2.rnnt_logprobs_triton import rnnt_logprobs_triton
+    from nemo.collections.asr.parts.turbo_transducer.rnnt_logprobs_triton import rnnt_logprobs_triton
 
 
 def force_float32_context() -> ContextManager:
@@ -187,7 +187,18 @@ class GraphTransducerLossBase(Loss):
                 target_fsas_vec = k2.connect(target_fsas_vec)
         return target_fsas_vec
 
-    def get_batch_indices(self, target_fsas_vec: k2.Fsa) -> torch.Tensor:
+    @staticmethod
+    def get_arc_sizes(target_fsas_vec: "k2.Fsa") -> torch.Tensor:
+        batch_size = target_fsas_vec.shape[0]
+        device = target_fsas_vec.device
+        arc_sizes = torch.tensor(
+            [target_fsas_vec.arcs.index(0, i)[0].values().shape[0] for i in range(batch_size)],
+            device=device,
+        )
+        return arc_sizes
+
+    @staticmethod
+    def get_batch_indices(target_fsas_vec: "k2.Fsa") -> torch.Tensor:
         """
         Get batch indices (for logits) for each arc in the lattices.
 
@@ -199,12 +210,10 @@ class GraphTransducerLossBase(Loss):
         """
         batch_size = target_fsas_vec.shape[0]
         device = target_fsas_vec.device
+        arc_sizes = GraphTransducerLossBase.get_arc_sizes(target_fsas_vec=target_fsas_vec)
         scores_to_batch_i = torch.repeat_interleave(
             torch.arange(batch_size, device=device, dtype=torch.int64),
-            torch.tensor(
-                [target_fsas_vec.arcs.index(0, i)[0].values().shape[0] for i in range(batch_size)],
-                device=device,
-            ),
+            arc_sizes,
         )
         return scores_to_batch_i
 
@@ -519,8 +528,8 @@ class GraphRnntLoss(GraphTransducerLossBase):
                     logits=logits,
                     targets=targets,
                     blank_id=self.blank,
-                    source_lengths=source_lengths,
-                    target_lengths=target_lengths,
+                    src_lengths=source_lengths,
+                    tgt_lengths=target_lengths,
                 )
                 text_units_blank_mask = text_units == self.blank
                 scores = torch.where(
@@ -539,6 +548,56 @@ class GraphRnntLoss(GraphTransducerLossBase):
             else:
                 target_fsas_vec.scores = scores
         return target_fsas_vec
+
+    @torch.inference_mode(mode=False)
+    def align_graphs(
+        self,
+        target_fsas_vec: "k2.Fsa",
+    ) -> torch.Tensor:
+        # extract alignment
+        shortest_paths = k2.shortest_path(target_fsas_vec, use_double_scores=self.double_scores)
+        batch_size = shortest_paths.shape[0]
+        # TODO: speedup, avoid iteration
+        alignments = [
+            shortest_paths[i].aux_labels[(shortest_paths[i].labels != self.blank) & (shortest_paths[i].labels != -1)]
+            for i in range(batch_size)
+        ]
+        # assert [alignment.shape[0] for alignment in alignments] == target_lengths.tolist()
+        padded_alignments = torch.nn.utils.rnn.pad_sequence(alignments, batch_first=True, padding_value=0)
+        return padded_alignments
+
+    @torch.inference_mode(mode=False)
+    def align_from_logits(
+        self,
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        source_lengths: torch.Tensor,
+        target_lengths: torch.Tensor,
+    ) -> torch.Tensor:
+        """Align from Joint logits"""
+        target_fsas_vec = self.get_weighted_graphs(
+            logits=logits,
+            targets=targets,
+            source_lengths=source_lengths,
+            target_lengths=target_lengths,
+            use_graph_weight=False,
+        )
+        return self.align_graphs(target_fsas_vec=target_fsas_vec)
+
+    def get_arc_post_batch(self, target_fsas_vec: "k2.Fsa", pad_value: float = 0.0):
+        arc_post = target_fsas_vec.get_arc_post(use_double_scores=self.double_scores, log_semiring=True)
+        assert arc_post.dim() == 1
+        device = arc_post.device
+        arc_sizes = self.get_arc_sizes(target_fsas_vec=target_fsas_vec)
+        max_arcs = int(arc_sizes.max().item())
+        total_arcs = int(arc_sizes.sum().item())
+        batch_size = target_fsas_vec.shape[0]
+        arc_post_batch = arc_post.new_full([batch_size, max_arcs], fill_value=pad_value)
+        row = torch.repeat_interleave(torch.arange(batch_size, device=device), arc_sizes)  # [total_arcs]
+        starts = arc_sizes.cumsum(dim=0) - arc_sizes
+        col = torch.arange(total_arcs, device=device) - torch.repeat_interleave(starts, arc_sizes)
+        arc_post_batch[row, col] = arc_post
+        return arc_post_batch, arc_sizes
 
     def forward(
         self,

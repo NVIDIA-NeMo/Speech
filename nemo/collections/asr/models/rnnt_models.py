@@ -40,6 +40,7 @@ from nemo.collections.asr.parts.mixins import (
 )
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecoding, RNNTDecodingConfig
+from nemo.collections.asr.parts.turbo_transducer.rnnt_consistency import ConsistencyRNNTLoss
 from nemo.collections.asr.parts.utils.asr_batching import get_semi_sorted_batch_sampler
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.timestamp_utils import process_timestamp_outputs
@@ -95,6 +96,28 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             reduction=self.cfg.get("rnnt_reduction", "mean_batch"),
         )
 
+        # Setup consistency loss (optional); NB: it requires a double batch (each utterance is processed twice)
+        self.consistency_loss = None
+        self.consistency_loss_weight = 0.0
+        self.consistency_loss_after_step = -1
+        self.use_double_batch = False
+        consistency_loss_cfg = self.cfg.get("loss", {}).get("consistency", None)
+        if consistency_loss_cfg is not None:
+            weight = consistency_loss_cfg.get("weight", None)
+            if weight is not None and weight != 0.0:
+                if loss_name == "tdt":
+                    raise NotImplementedError("Consistency loss is not supported for the TDT loss")
+                self.use_double_batch = True
+                self.consistency_loss = ConsistencyRNNTLoss(
+                    symmetrical=consistency_loss_cfg.get("symmetrical", True),
+                    reduction=consistency_loss_cfg.get("reduction", "mean_volume"),
+                    backend=consistency_loss_cfg.get("backend", None),
+                )
+                self.consistency_loss_weight = weight
+                self.consistency_loss_after_step = consistency_loss_cfg.get("after_step", -1)
+            else:
+                self.use_double_batch = consistency_loss_cfg.get("force_double_batch", False)
+
         if hasattr(self.cfg, 'spec_augment') and self._cfg.spec_augment is not None:
             self.spec_augmentation = EncDecRNNTModel.from_config_dict(self.cfg.spec_augment)
         else:
@@ -115,6 +138,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             use_cer=self._cfg.get('use_cer', False),
             log_prediction=self._cfg.get('log_prediction', True),
             dist_sync_on_step=True,
+            normalize_wer=self._cfg.get('normalize_wer', False),
         )
 
         # Whether to compute loss during evaluation
@@ -138,6 +162,39 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
         # Setup encoder adapters (from ASRAdapterModelMixin)
         self.setup_adapters()
+
+        self._validate_loss_config()
+
+    @property
+    def uses_loss_logprobs_path(self) -> bool:
+        """
+        Whether the loss is computed from target/blank log-probabilities produced by the Joint
+        (`Joint.forward_for_loss`) instead of the full logits tensor. This is the memory-efficient path.
+        """
+        return self.loss.supports_logprobs_input and self.joint.supports_loss_logprobs
+
+    def _validate_loss_config(self):
+        has_consistency_loss = self.consistency_loss is not None
+        if self.joint.fuse_loss_wer:
+            if self.joint.uses_turbo_kernel:
+                raise ValueError("Joint `turbo_kernel` and `fuse_loss_wer` cannot be enabled together")
+            if has_consistency_loss:
+                raise ValueError("Consistency loss and `fuse_loss_wer` cannot be enabled together")
+        if self.joint.uses_turbo_kernel:
+            if not self.loss.supports_logprobs_input:
+                raise ValueError(
+                    "Joint `turbo_kernel` requires an RNN-T loss that accepts target/blank log-probabilities"
+                )
+            if has_consistency_loss:
+                raise NotImplementedError("Consistency loss is not yet supported with the `turbo_kernel` Joint")
+            if self.joint.turbo_kernel_type == 'fused' and self.joint.is_adapter_available():
+                raise ValueError("The `fused` Joint turbo kernel does not support Joint adapters")
+        if has_consistency_loss and not self.uses_loss_logprobs_path:
+            logging.warning(
+                "Consistency loss is used with a loss/Joint combination that requires full logits: "
+                "the RNN-T and the consistency loss will keep separate gradient buffers for the Joint output, "
+                "which uses significantly more memory. Consider `loss.loss_name=turbo_rnnt`."
+            )
 
     def setup_optim_normalization(self):
         """
@@ -400,6 +457,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
                 use_cer=self.wer.use_cer,
                 log_prediction=self.wer.log_prediction,
                 dist_sync_on_step=True,
+                normalize_wer=self.wer.normalize_wer,
             )
 
             # Setup fused Joint step
@@ -460,6 +518,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             use_cer=self.wer.use_cer,
             log_prediction=self.wer.log_prediction,
             dist_sync_on_step=True,
+            normalize_wer=self.wer.normalize_wer,
         )
 
         # Setup fused Joint step
@@ -715,12 +774,69 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
                 length=input_signal_length,
             )
 
+        if self.use_double_batch:
+            processed_signal = torch.cat((processed_signal, processed_signal), dim=0)
+            processed_signal_length = torch.cat((processed_signal_length, processed_signal_length), dim=0)
+
         # Spec augment is not applied during evaluation/testing
         if self.spec_augmentation is not None and self.training:
             processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
 
         encoded, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
         return encoded, encoded_len
+
+    def _compute_losses(self, encoded, decoder, transcript, encoded_len, target_length, compute_consistency=False):
+        """
+        Compute the RNN-T loss and, optionally, the consistency loss.
+
+        When `compute_consistency` is set, the batch is expected to be a double batch: the first half is
+        the teacher pass, the second half is the student pass of the same utterances.
+
+        Returns:
+            Tuple (RNN-T loss, consistency loss or None)
+        """
+        half_batch_size = encoded.shape[0] // 2
+        if self.uses_loss_logprobs_path:
+            loss_inputs = self.joint.forward_for_loss(
+                encoder_outputs=encoded,
+                decoder_outputs=decoder,
+                encoder_lengths=encoded_len,
+                transcripts=transcript,
+                transcript_lengths=target_length,
+                compute_consistency=compute_consistency,
+                consistency_symmetrical=self.consistency_loss.symmetrical if compute_consistency else True,
+            )
+            loss_value = self.loss.forward_from_logprobs(
+                target_logprobs=loss_inputs.target_logprobs,
+                blank_logprobs=loss_inputs.blank_logprobs,
+                input_lengths=encoded_len,
+                target_lengths=target_length,
+            )
+            if not compute_consistency:
+                return loss_value, None
+            consistency_loss_value = self.consistency_loss.forward_from_kl(
+                consistency_kl=loss_inputs.consistency_kl,
+                src_lengths=encoded_len[:half_batch_size],
+                tgt_lengths=target_length[:half_batch_size],
+            )
+            return loss_value, consistency_loss_value
+
+        joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
+        loss_value = self.loss(
+            log_probs=joint,
+            targets=transcript,
+            input_lengths=encoded_len,
+            target_lengths=target_length,
+        )
+        if not compute_consistency:
+            return loss_value, None
+        consistency_loss_value = self.consistency_loss(
+            teacher_logits=joint[:half_batch_size],
+            student_logits=joint[half_batch_size:],
+            src_lengths=encoded_len[:half_batch_size],
+            tgt_lengths=target_length[:half_batch_size],
+        )
+        return loss_value, consistency_loss_value
 
     # PTL-specific methods
     def training_step(self, batch, batch_nb):
@@ -737,6 +853,10 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len)
         del signal
 
+        if self.use_double_batch:
+            transcript = torch.cat((transcript, transcript), dim=0)
+            transcript_len = torch.cat((transcript_len, transcript_len), dim=0)
+
         # During training, loss must be computed, so decoder forward is necessary
         decoder, target_length, states = self.decoder(targets=transcript, target_length=transcript_len)
 
@@ -749,14 +869,30 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
         # If experimental fused Joint-Loss-WER is not used
         if not self.joint.fuse_loss_wer:
-            # Compute full joint and loss
-            joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
-            loss_value = self.loss(
-                log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
+            compute_consistency = (
+                self.consistency_loss is not None and self.trainer.global_step > self.consistency_loss_after_step
+            )
+            loss_value, consistency_loss_value = self._compute_losses(
+                encoded=encoded,
+                decoder=decoder,
+                transcript=transcript,
+                encoded_len=encoded_len,
+                target_length=target_length,
+                compute_consistency=compute_consistency,
             )
 
             # Add auxiliary losses, if registered
             loss_value = self.add_auxiliary_losses(loss_value)
+
+            # NB: log tensors (not `.item()`) to avoid host-device synchronization on each step
+            consistency_loss_logs = {}
+            if self.consistency_loss is not None:
+                consistency_loss_logs["rnnt_loss"] = loss_value.detach()
+            if consistency_loss_value is not None:
+                consistency_loss_value_scaled = self.consistency_loss_weight * consistency_loss_value
+                loss_value = loss_value + consistency_loss_value_scaled
+                consistency_loss_logs["consistency_loss"] = consistency_loss_value.detach()
+                consistency_loss_logs["consistency_loss_scaled"] = consistency_loss_value_scaled.detach()
 
             # Reset access registry
             if AccessMixin.is_access_enabled(self.model_guid):
@@ -767,6 +903,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
                 'learning_rate': self._optimizer.param_groups[0]['lr'],
                 'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
             }
+            tensorboard_logs |= consistency_loss_logs
 
             if (sample_id + 1) % log_every_n_steps == 0:
                 self.wer.update(
@@ -855,10 +992,12 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         if not self.joint.fuse_loss_wer:
             if self.compute_eval_loss:
                 decoder, target_length, states = self.decoder(targets=transcript, target_length=transcript_len)
-                joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
-
-                loss_value = self.loss(
-                    log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
+                loss_value, _ = self._compute_losses(
+                    encoded=encoded,
+                    decoder=decoder,
+                    transcript=transcript,
+                    encoded_len=encoded_len,
+                    target_length=target_length,
                 )
 
                 tensorboard_logs['val_loss'] = loss_value

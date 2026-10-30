@@ -201,6 +201,15 @@ WER is the default metric for all ASR models and measures transcription accuracy
     use_cer: false                  # Set to true for Character Error Rate instead (default: false)
     log_prediction: true            # Whether to log a sample prediction during training (default: true)
     batch_dim_index: 0              # Index of batch dimension in prediction tensors output. Set to 1 for RNNT models.
+    normalize_wer: false            # Normalize references and predictions before computing WER/CER (default: false)
+
+Models trained with punctuation and capitalization produce WER that is dominated by casing and punctuation errors.
+For RNN-T and hybrid RNN-T/CTC models (``EncDecRNNTModel``, ``EncDecRNNTBPEModel``,
+``EncDecRNNTBPEModelWithPrompt``, ``EncDecHybridRNNTCTCModel``, ``EncDecHybridRNNTCTCBPEModel``,
+``EncDecHybridRNNTCTCBPEModelWithPrompt``), set ``normalize_wer: true`` to lowercase the text, remove punctuation
+and collapse whitespace in both references and predictions before scoring (see
+``nemo.collections.asr.parts.utils.eval_utils.clean_label``). For hybrid models the flag also applies to the
+auxiliary CTC WER. Logged sample predictions and returned hypotheses keep the original text.
 
 BLEU Score
 ~~~~~~~~~~

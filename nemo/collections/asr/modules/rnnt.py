@@ -34,6 +34,10 @@ from omegaconf import DictConfig
 
 from nemo.collections.asr.modules import rnnt_abstract
 from nemo.collections.asr.parts.submodules import stateless_net
+from nemo.collections.asr.parts.turbo_transducer.rnnt_consistency import rnnt_logprobs_with_consistency
+from nemo.collections.asr.parts.turbo_transducer.rnnt_fused_joint import rnnt_fused_joint
+from nemo.collections.asr.parts.turbo_transducer.rnnt_joint_fused_vocab import rnnt_joint_fused_vocab
+from nemo.collections.asr.parts.turbo_transducer.types import TransducerLossInputs
 from nemo.collections.asr.parts.utils import adapter_utils, rnnt_utils
 from nemo.collections.common.parts import rnn
 from nemo.core.classes import adapter_mixins, typecheck
@@ -1307,6 +1311,14 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             Warning: This will make the forward-backward pass much slower than normal.
             It also might not fix the OOM if the GPU simply does not have enough memory to compute the joint.
 
+        turbo_kernel: Optional configuration for an optimized training-only Joint implementation. Supported
+            types are ``fused_vocab`` and ``fused``. The optimized path returns only target and blank
+            log-probabilities and therefore requires a compatible RNN-T loss.
+            BF16 activations use BF16 matmul operands with FP32 master parameters. Set
+            ``turbo_kernel.kwargs.mm_full_precision=true`` for FP32 operands, or
+            ``turbo_kernel.kwargs.use_high_precision_mm=true`` for FP32 operands with IEEE math in Triton.
+            Gradient accumulation precision is configured separately.
+
         fuse_loss_wer: Optional bool, set to False by default.
 
             Fuses the joint forward, loss forward and
@@ -1408,6 +1420,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         vocabulary: Optional[List] = None,
         log_softmax: Optional[bool] = None,
         preserve_memory: bool = False,
+        turbo_kernel: Optional[Dict[str, Any]] = None,
         fuse_loss_wer: bool = False,
         fused_batch_size: Optional[int] = None,
         experimental_fuse_loss_wer: Any = None,
@@ -1431,9 +1444,16 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
         self._fuse_loss_wer = fuse_loss_wer
         self._fused_batch_size = fused_batch_size
+        self._turbo_kernel_type, self._turbo_kernel_kwargs = self._parse_turbo_kernel_config(turbo_kernel)
 
         if fuse_loss_wer and (fused_batch_size is None):
             raise ValueError("If `fuse_loss_wer` is set, then `fused_batch_size` cannot be None!")
+        if self.uses_turbo_kernel and fuse_loss_wer:
+            raise ValueError("`turbo_kernel` and `fuse_loss_wer` cannot be enabled together")
+        if self.uses_turbo_kernel and num_extra_outputs != 0:
+            raise ValueError("`turbo_kernel` does not support extra Joint outputs")
+        if self.uses_turbo_kernel and preserve_memory:
+            raise ValueError("`preserve_memory` is not applicable when `turbo_kernel` is enabled")
 
         self._loss = None
         self._wer = None
@@ -1457,6 +1477,12 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
         # Optional arguments
         dropout = jointnet.get('dropout', 0.0)
+        self._joint_dropout = dropout
+
+        if self._turbo_kernel_type == 'fused' and self.activation != 'relu':
+            raise ValueError("The `fused` turbo kernel supports only relu activation")
+        if self._turbo_kernel_type == 'fused' and self.masking_prob > 0.0:
+            raise ValueError("The `fused` turbo kernel does not support decoder-output masking")
 
         self.pred, self.enc, self.joint_net = self._joint_net_modules(
             num_classes=self._num_classes,  # add 1 for blank symbol
@@ -1467,6 +1493,11 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             dropout=dropout,
         )
 
+        if self.uses_turbo_kernel:
+            vocab_projection = self.joint_net[-1]
+            if not isinstance(vocab_projection, torch.nn.Linear) or vocab_projection.bias is None:
+                raise TypeError("The optimized Joint requires the last `joint_net` module to be nn.Linear with bias")
+
         # Flag needed for RNNT export support
         self._rnnt_export = False
 
@@ -1474,6 +1505,136 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         self.temperature = 1.0
 
         self.hypotheses = None
+
+    @staticmethod
+    def _parse_turbo_kernel_config(turbo_kernel: Optional[Dict[str, Any]]) -> Tuple[Optional[str], Dict[str, Any]]:
+        if turbo_kernel is None:
+            return None, {}
+        if not hasattr(turbo_kernel, 'get'):
+            raise TypeError("`turbo_kernel` must be a mapping or None")
+
+        kernel_type = turbo_kernel.get('type')
+        if kernel_type is None:
+            return None, {}
+        if kernel_type not in {'fused_vocab', 'fused'}:
+            raise ValueError("`turbo_kernel.type` must be one of: null, fused_vocab, fused")
+
+        kernel_kwargs = turbo_kernel.get('kwargs', {}) or {}
+        if not hasattr(kernel_kwargs, 'items'):
+            raise TypeError("`turbo_kernel.kwargs` must be a mapping")
+        kernel_kwargs = dict(kernel_kwargs)
+        supported_kwargs = {
+            'backend',
+            'mm_full_precision',
+            'input_grad_full_precision',
+            'use_high_precision_mm',
+            'weight_grad_full_precision',
+        }
+        unsupported_kwargs = set(kernel_kwargs) - supported_kwargs
+        if unsupported_kwargs:
+            raise ValueError(f"Unsupported `turbo_kernel.kwargs`: {sorted(unsupported_kwargs)}")
+
+        return kernel_type, kernel_kwargs
+
+    @property
+    def uses_turbo_kernel(self) -> bool:
+        return self._turbo_kernel_type is not None
+
+    @property
+    def turbo_kernel_type(self) -> Optional[str]:
+        return self._turbo_kernel_type
+
+    @property
+    def supports_loss_logprobs(self) -> bool:
+        """Whether this Joint can produce target/blank log-probabilities directly (see `forward_for_loss`)."""
+        return True
+
+    def forward_for_loss(
+        self,
+        encoder_outputs: torch.Tensor,
+        decoder_outputs: torch.Tensor,
+        encoder_lengths: torch.Tensor,
+        transcripts: torch.Tensor,
+        transcript_lengths: torch.Tensor,
+        compute_consistency: bool = False,
+        consistency_symmetrical: bool = True,
+    ) -> TransducerLossInputs:
+        """
+        Run a Joint forward that returns per-position quantities for the losses (target/blank
+        log-probabilities and, optionally, the consistency loss), instead of the full logits tensor.
+
+        With `turbo_kernel` enabled, the logits are never materialized. Otherwise the logits are computed
+        as usual, but the losses do not keep a separate gradient buffer for each of them.
+
+        Args:
+            encoder_outputs: Output of the Encoder model, [B, D, T]
+            decoder_outputs: Output of the Prediction network, [B, D, U+1]
+            encoder_lengths: lengths of the encoder sequences, [B]
+            transcripts: targets, [B, U]
+            transcript_lengths: lengths of the targets, [B]
+            compute_consistency: whether to compute the consistency loss between the halves of the batch
+                (the batch is expected to be a double batch: teacher first half, student second half)
+            consistency_symmetrical: if True, compute symmetric KL divergence for the consistency loss
+
+        Returns:
+            `TransducerLossInputs`
+        """
+        if self.temperature != 1.0:
+            raise ValueError("The optimized Joint loss path requires temperature == 1.0")
+
+        encoder_outputs = encoder_outputs.transpose(1, 2)
+        decoder_outputs = decoder_outputs.transpose(1, 2)
+        encoder_output_projected = self.project_encoder(encoder_outputs)
+        predictor_output_projected = self.project_prednet(decoder_outputs)
+
+        if self._turbo_kernel_type is None:
+            logits = self._joint_logits_after_projection(encoder_output_projected, predictor_output_projected)
+            return rnnt_logprobs_with_consistency(
+                logits=logits,
+                targets=transcripts,
+                blank_id=self._vocab_size,
+                src_lengths=encoder_lengths,
+                tgt_lengths=transcript_lengths,
+                compute_consistency=compute_consistency,
+                consistency_symmetrical=consistency_symmetrical,
+            )
+
+        if compute_consistency:
+            raise NotImplementedError("Consistency loss is not yet supported with the `turbo_kernel` Joint")
+
+        vocab_projection = self.joint_net[-1]
+        kernel_kwargs = dict(self._turbo_kernel_kwargs)
+
+        if self._turbo_kernel_type == 'fused_vocab':
+            joint_hidden = self._joint_hidden_after_projection(encoder_output_projected, predictor_output_projected)
+            target_logprobs, blank_logprobs = rnnt_joint_fused_vocab(
+                joint_hidden=joint_hidden,
+                targets=transcripts,
+                tgt_lengths=transcript_lengths,
+                src_lengths=encoder_lengths,
+                weight=vocab_projection.weight,
+                bias=vocab_projection.bias,
+                blank_id=self._vocab_size,
+                **kernel_kwargs,
+            )
+            return TransducerLossInputs(target_logprobs=target_logprobs, blank_logprobs=blank_logprobs)
+
+        if self.is_adapter_available():
+            raise RuntimeError("The `fused` turbo kernel does not support Joint adapters")
+        target_logprobs, blank_logprobs = rnnt_fused_joint(
+            encoder_output_projected=encoder_output_projected,
+            predictor_output_projected=predictor_output_projected,
+            targets=transcripts,
+            tgt_lengths=transcript_lengths,
+            src_lengths=encoder_lengths,
+            weight=vocab_projection.weight,
+            bias=vocab_projection.bias,
+            blank_id=self._vocab_size,
+            activation=self.activation,
+            dropout_p=self._joint_dropout if self.training else 0.0,
+            **kernel_kwargs,
+        )
+        return TransducerLossInputs(target_logprobs=target_logprobs, blank_logprobs=blank_logprobs)
 
     @typecheck()
     def forward(
@@ -1675,6 +1836,43 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         """
         return self.pred(prednet_output)
 
+    def _joint_hidden_after_projection(self, encoder_output: torch.Tensor, predictor_output: torch.Tensor):
+        encoder_output = encoder_output.unsqueeze(dim=2)
+        predictor_output = predictor_output.unsqueeze(dim=1)
+
+        if self.training and self.masking_prob > 0:
+            batch_size, _, target_steps, _ = predictor_output.shape
+            keep_mask = torch.rand([batch_size, 1, target_steps, 1]).to(predictor_output.device)
+            keep_mask = torch.gt(keep_mask, self.masking_prob)
+            predictor_output = predictor_output * keep_mask
+
+        joint_hidden = encoder_output + predictor_output
+
+        if self.is_adapter_available():
+            joint_hidden = self.forward_enabled_adapters(joint_hidden)
+
+        for layer_index in range(len(self.joint_net) - 1):
+            joint_hidden = self.joint_net[layer_index](joint_hidden)
+
+        return joint_hidden
+
+    def _joint_logits_after_projection(self, f: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
+        """
+        Compute raw Joint logits (before log-softmax and temperature scaling) from the projected
+        encoder/predictor outputs.
+
+        Args:
+            f: Output of the Encoder model after projection. A torch.Tensor of shape [B, T, H]
+            g: Output of the Decoder model after projection. A torch.Tensor of shape [B, U, H]
+
+        Returns:
+            Logits of shape [B, T, U, V + 1]
+        """
+        joint_hidden = self._joint_hidden_after_projection(f, g)
+        logits = self.joint_net[-1](joint_hidden)  # [B, T, U, V + 1]
+        del joint_hidden
+        return logits
+
     def joint_after_projection(self, f: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
         r"""
         Compute the joint step of the network after projection.
@@ -1705,26 +1903,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         Returns:
             Logits / log softmaxed tensor of shape (B, T, U, V + 1).
         """
-        f = f.unsqueeze(dim=2)  # (B, T, 1, H)
-        g = g.unsqueeze(dim=1)  # (B, 1, U, H)
-
-        if self.training and self.masking_prob > 0:
-            [B, _, U, _] = g.shape
-            rand = torch.rand([B, 1, U, 1]).to(g.device)
-            rand = torch.gt(rand, self.masking_prob)
-            g = g * rand
-
-        inp = f + g  # [B, T, U, H]
-
-        del f, g
-
-        # Forward adapter modules on joint hidden
-        if self.is_adapter_available():
-            inp = self.forward_enabled_adapters(inp)
-
-        res = self.joint_net(inp)  # [B, T, U, V + 1]
-
-        del inp
+        res = self._joint_logits_after_projection(f, g)  # [B, T, U, V + 1]
 
         if self.preserve_memory:
             torch.cuda.empty_cache()
@@ -1823,6 +2002,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         return self._fuse_loss_wer
 
     def set_fuse_loss_wer(self, fuse_loss_wer, loss=None, metric=None):
+        if fuse_loss_wer and self.uses_turbo_kernel:
+            raise ValueError("`turbo_kernel` and `fuse_loss_wer` cannot be enabled together")
         self._fuse_loss_wer = fuse_loss_wer
 
         self._loss = loss
@@ -2006,6 +2187,11 @@ class SampledRNNTJoint(RNNTJoint):
         )
         self.n_samples = n_samples
         self.register_buffer('blank_id', torch.tensor([self.num_classes_with_blank - 1]), persistent=False)
+
+    @property
+    def supports_loss_logprobs(self) -> bool:
+        """Sampled Joint samples the vocabulary during training, so it requires the full logits path."""
+        return False
 
     @typecheck()
     def forward(

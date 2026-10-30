@@ -21,7 +21,7 @@ import torch
 import torch.nn.functional as F
 from lhotse import CutSet, MonoCut
 from lhotse.testing.dummies import DummyManifest
-from omegaconf import DictConfig, ListConfig
+from omegaconf import DictConfig, ListConfig, open_dict
 
 from nemo.collections.asr.data.audio_to_text_lhotse import LhotseSpeechToTextBpeDataset
 from nemo.collections.asr.models import EncDecRNNTModel
@@ -379,6 +379,27 @@ class TestEncDecRNNTModel:
         for name, m in asr_model.encoder.named_modules():
             if type(m).__class__.__name__ == 'SqueezeExcite':
                 assert m.context_window == 32
+
+    @pytest.mark.skipif(
+        not NUMBA_RNNT_LOSS_AVAILABLE,
+        reason='RNNTLoss has not been compiled with appropriate numba version.',
+    )
+    @pytest.mark.unit
+    def test_normalize_wer(self, asr_model):
+        assert asr_model.wer.normalize_wer is False
+
+        cfg = copy.deepcopy(asr_model.cfg)
+        with open_dict(cfg):
+            cfg.normalize_wer = True
+        model = EncDecRNNTModel(cfg=cfg)
+        assert model.wer.normalize_wer is True
+
+        # flag is preserved when WER is re-created
+        model.change_decoding_strategy(decoding_cfg=DictConfig({'strategy': 'greedy', 'greedy': {'max_symbols': 10}}))
+        assert model.wer.normalize_wer is True
+
+        model.change_vocabulary(new_vocabulary=copy.deepcopy(model.joint.vocabulary) + ['!'])
+        assert model.wer.normalize_wer is True
 
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE,

@@ -375,6 +375,66 @@ class TestWordErrorRate:
         assert self.get_wer_rnnt('ducati motorcycle', 'ducuti motorcycle', batch_dim_index, test_wer_bpe) == 0.5
         assert abs(self.get_wer_rnnt('a f c', 'a b c', batch_dim_index, test_wer_bpe) - 1.0 / 3.0) < 1e-6
 
+    @staticmethod
+    def get_wer_with_raw_texts(predictions: List[str], references: List[str], **wer_kwargs):
+        """Computes WER for RNNT decoding mock, returning the given predictions and references texts as is."""
+        decoding = Mock(
+            rnnt_decoder_predictions_tensor=Mock(
+                return_value=[Hypothesis(score=1.0, y_sequence=[], text=text) for text in predictions]
+            ),
+            # each target is a single token: index of the reference
+            decode_ids_to_str=lambda ids: references[ids[0]],
+            spec=RNNTDecoding,
+        )
+        wer = WER(decoding, **wer_kwargs)
+        batch_size = len(references)
+        wer.update(
+            predictions=torch.zeros([batch_size, 1, 1]),
+            predictions_lengths=torch.ones([batch_size], dtype=torch.long),
+            targets=torch.arange(batch_size).unsqueeze(-1),
+            targets_lengths=torch.ones([batch_size], dtype=torch.long),
+        )
+        res, scores, words = wer.compute()
+        return res.item(), scores.item(), words.item(), wer
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("normalize_wer", [False, True])
+    def test_wer_normalize(self, normalize_wer):
+        predictions = ["hello world", "Good morning, Mr. Smith!", "it's “fine”"]
+        references = ["Hello, World!", "good morning mr smith", "It's fine."]
+        res, scores, words, wer = self.get_wer_with_raw_texts(
+            predictions, references, normalize_wer=normalize_wer, log_prediction=False
+        )
+        assert wer.normalize_wer == normalize_wer
+        assert words == 2 + 4 + 2
+        if normalize_wer:
+            assert res == 0.0
+        else:
+            # all words in references differ from hypotheses by case and/or punctuation
+            assert scores == 2 + 4 + 2
+        # hypotheses are not modified by normalization
+        assert [hyp.text for hyp in wer.get_hypotheses()] == predictions
+
+    @pytest.mark.unit
+    def test_wer_normalize_default_off(self):
+        res, _, _, wer = self.get_wer_with_raw_texts(["hello world"], ["Hello, world!"], log_prediction=False)
+        assert wer.normalize_wer is False
+        assert res == 1.0
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("normalize_wer", [False, True])
+    def test_cer_normalize(self, normalize_wer):
+        res, scores, words, _ = self.get_wer_with_raw_texts(
+            ["Hello,  World"], ["hello world!"], use_cer=True, normalize_wer=normalize_wer, log_prediction=False
+        )
+        if normalize_wer:
+            assert res == 0.0
+            assert words == len("hello world")
+        else:
+            # "H"->"h", "W"->"w", extra "," and " ", missing "!"
+            assert scores == 5
+            assert words == len("hello world!")
+
     @pytest.mark.unit
     @pytest.mark.parametrize("test_wer_bpe", [False, True])
     def test_rnnt_wer_metric_randomized(self, test_wer_bpe):

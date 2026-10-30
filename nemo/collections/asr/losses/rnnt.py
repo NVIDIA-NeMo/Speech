@@ -37,6 +37,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.losses.rnnt_pytorch import MultiblankRNNTLossPytorch, RNNTLossPytorch, TDTLossPytorch
+from nemo.collections.asr.parts.turbo_transducer.rnnt_loss import TurboRnntLoss
 from nemo.core.classes import Loss, typecheck
 from nemo.core.neural_types import LabelsType, LengthsType, LogprobsType, LossType, NeuralType
 from nemo.core.utils import numba_utils
@@ -153,6 +154,14 @@ RNNT_LOSS_RESOLVER = {
         min_version='0.0',
         is_available=True,
         installation_msg="Pure Pytorch implementation of TDT loss. Slow and for debugging purposes only.",
+    ),
+    "turbo_rnnt": RNNTLossConfig(
+        loss_name="turbo_rnnt",
+        lib_name="torch",
+        min_version='0.0',
+        is_available=True,  # always allow instantiation of the loss
+        installation_msg="Turbo Transducer RNN-T loss",
+        force_float32=False,  # do not cast logits to float32
     ),
 }
 
@@ -323,6 +332,9 @@ def resolve_rnnt_loss(loss_name: str, blank_idx: int, loss_kwargs: dict = None) 
     elif loss_name == "graph_w_transducer":
         loss_kwargs = _clean_kwargs(loss_name, loss_kwargs, GraphWTransducerLoss.__init__, ignore_params={"blank"})
         loss_func = GraphWTransducerLoss(blank=blank_idx, **loss_kwargs)
+    elif loss_name == "turbo_rnnt":
+        loss_kwargs = _clean_kwargs(loss_name, loss_kwargs, TurboRnntLoss.__init__, ignore_params={"blank"})
+        loss_func = TurboRnntLoss(blank=blank_idx, **loss_kwargs)
     else:
         raise ValueError(
             f"Invalid value of `loss_name`: {loss_name}. Allowed loss names are :" f"{loss_function_names}"
@@ -419,6 +431,11 @@ class RNNTLoss(Loss):
         self._force_float32 = RNNT_LOSS_RESOLVER[loss_name].force_float32
         self._fp16_compat_checked = False
 
+    @property
+    def supports_logprobs_input(self) -> bool:
+        """Whether the selected loss accepts precomputed target and blank log-probabilities."""
+        return callable(getattr(self._loss, 'forward_from_logprobs', None))
+
     def warmup(self, device: Union[str, torch.device]) -> bool:
         """Warm supported Numba RNNT/TDT kernels before allocating training activations.
 
@@ -451,6 +468,41 @@ class RNNTLoss(Loss):
             losses = losses.sum() / target_lengths.sum()  # same as above but longer samples weigh more
 
         return losses
+
+    def forward_from_logprobs(
+        self,
+        target_logprobs: torch.Tensor,
+        blank_logprobs: torch.Tensor,
+        input_lengths: torch.Tensor,
+        target_lengths: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute RNN-T loss from target and blank log-probabilities."""
+        if not self.supports_logprobs_input:
+            raise RuntimeError(
+                f"{type(self._loss).__name__} does not support target and blank log-probabilities as input"
+            )
+
+        input_lengths = input_lengths.long()
+        target_lengths = target_lengths.long()
+        target_logprobs = target_logprobs.contiguous()
+        blank_logprobs = blank_logprobs.contiguous()
+
+        loss_reduction = self._loss.reduction
+        self._loss.reduction = None
+        try:
+            loss = self._loss.forward_from_logprobs(
+                target_logprobs=target_logprobs,
+                blank_logprobs=blank_logprobs,
+                act_lens=input_lengths,
+                label_lens=target_lengths,
+            )
+        finally:
+            self._loss.reduction = loss_reduction
+
+        if self.reduction is not None:
+            loss = self.reduce(loss, target_lengths)
+
+        return loss
 
     @typecheck()
     def forward(self, log_probs, targets, input_lengths, target_lengths):

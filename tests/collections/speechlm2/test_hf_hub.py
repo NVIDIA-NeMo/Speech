@@ -197,34 +197,9 @@ def _write_sharded_checkpoint(tmp_path, state_dict_by_shard: dict[str, dict[str,
     return str(index_path)
 
 
-def test_load_sharded_safetensors_loads_weights_split_by_submodule(tmp_path):
-    expected_encoder_weight = torch.randn(4, 4)
-    expected_llm_weight = torch.randn(4, 4)
-    index_file = _write_sharded_checkpoint(
-        tmp_path,
-        {
-            "encoder.safetensors": {"encoder.weight": expected_encoder_weight},
-            "llm.safetensors": {"llm.weight": expected_llm_weight},
-        },
-    )
-
-    model = _load_sharded_safetensors(
-        cls=_TinyEncoderLLM,
-        model_kwargs={},
-        model_id=str(tmp_path),
-        index_file=index_file,
-        cached_file_kwargs=_cached_file_kwargs(),
-        map_location="cpu",
-        strict=True,
-    )
-
-    assert isinstance(model, _TinyEncoderLLM)
-    torch.testing.assert_close(model.encoder.weight, expected_encoder_weight)
-    torch.testing.assert_close(model.llm.weight, expected_llm_weight)
-
-
-def test_load_sharded_safetensors_loads_weights_split_by_size(tmp_path):
-    """Conventional model-XXXXX-of-XXXXX.safetensors naming works the same way."""
+def test_load_sharded_safetensors_loads_weights_from_all_shards(tmp_path):
+    """Shard filenames are read as-is from the weight_map, so any split (by size or by submodule) works.
+    Like the single-file path, the model is returned in eval mode."""
     expected_encoder_weight = torch.randn(4, 4)
     expected_llm_weight = torch.randn(4, 4)
     index_file = _write_sharded_checkpoint(
@@ -245,27 +220,9 @@ def test_load_sharded_safetensors_loads_weights_split_by_size(tmp_path):
         strict=True,
     )
 
+    assert isinstance(model, _TinyEncoderLLM)
     torch.testing.assert_close(model.encoder.weight, expected_encoder_weight)
     torch.testing.assert_close(model.llm.weight, expected_llm_weight)
-
-
-def test_load_sharded_safetensors_returns_model_in_eval_mode(tmp_path):
-    """Like the single-file path, so dropout etc. are disabled for inference after from_pretrained()."""
-    index_file = _write_sharded_checkpoint(
-        tmp_path,
-        {"model-00001-of-00001.safetensors": {"encoder.weight": torch.randn(4, 4), "llm.weight": torch.randn(4, 4)}},
-    )
-
-    model = _load_sharded_safetensors(
-        cls=_TinyEncoderLLM,
-        model_kwargs={},
-        model_id=str(tmp_path),
-        index_file=index_file,
-        cached_file_kwargs=_cached_file_kwargs(),
-        map_location="cpu",
-        strict=True,
-    )
-
     assert not model.training
 
 
@@ -352,7 +309,7 @@ class _DummyShardedModel(HFHubMixin, torch.nn.Module):
         self.llm = torch.nn.Linear(2, 2, bias=False)
 
 
-def test_from_pretrained_dispatches_to_sharded_loader(tmp_path, monkeypatch):
+def test_from_pretrained_loads_sharded_checkpoint(tmp_path, monkeypatch):
     """A sharded checkpoint (index file present) should use the sharded loader, not
     PyTorchModelHubMixin (single-file only)."""
     (tmp_path / "config.json").write_text("{}")
@@ -380,3 +337,84 @@ def test_from_pretrained_dispatches_to_sharded_loader(tmp_path, monkeypatch):
 
     assert isinstance(instance, _DummyShardedModel)
     torch.testing.assert_close(instance.llm.weight, expected_llm_weight)
+
+
+class _DummyDistributedShardedModel:
+    """Records the distributed loading steps without needing GPUs or nemo_automodel."""
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.configured_with = None
+
+    def configure_model(self, distributed_setup):
+        self.configured_with = distributed_setup
+
+
+def _spy_cached_file(monkeypatch):
+    requested = []
+    real_cached_file = hf_hub.cached_file
+
+    def spy(model_id, filename, **kwargs):
+        requested.append(filename)
+        return real_cached_file(model_id, filename, **kwargs)
+
+    monkeypatch.setattr(hf_hub, "cached_file", spy)
+    return requested
+
+
+def test_distributed_from_pretrained_loads_sharded_checkpoint(tmp_path, monkeypatch):
+    """With distributed_setup, a sharded checkpoint resolves every shard (so remote repos download them
+    all) and hands their directory to the DCP loader, which reads all *.safetensors files in it."""
+    _write_sharded_checkpoint(
+        tmp_path,
+        {
+            "model-00001-of-00002.safetensors": {"encoder.weight": torch.randn(4, 4)},
+            "model-00002-of-00002.safetensors": {"llm.weight": torch.randn(4, 4)},
+        },
+    )
+    requested = _spy_cached_file(monkeypatch)
+    loaded = {}
+    monkeypatch.setattr(
+        hf_hub, "_load_state_dict_with_dtensors", lambda model, weight_dir: loaded.update(model=model, dir=weight_dir)
+    )
+    distributed_setup = object()
+
+    instance = hf_hub._distributed_from_pretrained(
+        cls=_DummyDistributedShardedModel,
+        model_id=str(tmp_path),
+        model_kwargs={"cfg": {}},
+        torch_dtype=None,
+        distributed_setup=distributed_setup,
+        cached_file_kwargs=_cached_file_kwargs(),
+    )
+
+    assert "model-00001-of-00002.safetensors" in requested
+    assert "model-00002-of-00002.safetensors" in requested
+    assert instance.configured_with is distributed_setup
+    assert loaded["model"] is instance
+    assert loaded["dir"] == str(tmp_path)
+
+
+def test_distributed_from_pretrained_sharded_missing_shard_raises(tmp_path, monkeypatch):
+    """Shards are resolved before building the model, so an incomplete checkpoint fails fast instead of
+    after the (expensive) distributed model construction."""
+    index_path = tmp_path / hf_hub.SAFETENSORS_INDEX_FILE
+    index_path.write_text(
+        json.dumps({"metadata": {"total_size": 0}, "weight_map": {"llm.weight": "missing.safetensors"}})
+    )
+    monkeypatch.setattr(
+        hf_hub, "_load_state_dict_with_dtensors", lambda *_: pytest.fail("must not load weights with a missing shard")
+    )
+
+    def fail_if_built(**_kwargs):
+        pytest.fail("model must not be constructed when a shard is missing")
+
+    with pytest.raises(RuntimeError, match="missing.safetensors"):
+        hf_hub._distributed_from_pretrained(
+            cls=fail_if_built,
+            model_id=str(tmp_path),
+            model_kwargs={"cfg": {}},
+            torch_dtype=None,
+            distributed_setup=object(),
+            cached_file_kwargs=_cached_file_kwargs(),
+        )

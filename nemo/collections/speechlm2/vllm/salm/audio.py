@@ -624,11 +624,13 @@ class NeMoSpeechLMMultiModalProcessor(
         mm_data = dict(mm_data)
         audios = mm_data.pop("audios", [])
 
+        prompt_ids = None
         if audios:
             chunk_size_seconds = self.info._get_encoder_chunk_size_seconds()
             estimator_config = self.info._get_audio_token_estimator_config()
             audio_list: list[torch.Tensor] = []
             audio_lengths: list[int] = []
+            template = prompt
             parts = re.split(f"({re.escape(_AUDIO_PLACEHOLDER)})", prompt)
             # One placeholder is overwritten with one audio's encoder output
             # at forward time (positional pairing); counts must match or the
@@ -654,8 +656,12 @@ class NeMoSpeechLMMultiModalProcessor(
                 audio_lengths.append(audio_tensor.shape[-1])
 
             prompt = "".join(parts)
+            prompt_ids = self._expand_template_ids(
+                tokenizer, template, [len(parts[i]) // len(_AUDIO_PLACEHOLDER) for i in ph_positions]
+            )
 
-        prompt_ids = tokenizer.encode(prompt, add_special_tokens=True)
+        if prompt_ids is None:
+            prompt_ids = tokenizer.encode(prompt, add_special_tokens=True)
         result = BatchFeature(dict(input_ids=[prompt_ids]), tensor_type="pt")
 
         if audios:
@@ -665,6 +671,34 @@ class NeMoSpeechLMMultiModalProcessor(
             capture = bool(mm_kwargs.get("capture_ctc_timestamps", False))
             result["capture_ctc_timestamps"] = torch.full((len(audio_list),), capture)
         return result
+
+    def _expand_template_ids(
+        self, tokenizer: PreTrainedTokenizerBase, template: str, counts: list[int]
+    ) -> list[int] | None:
+        """Token ids of ``template`` with its i-th audio placeholder repeated ``counts[i]`` times.
+
+        The placeholder is a special token, which tokenizers split out before tokenizing the text between them,
+        so the ids equal the template's ids with each placeholder id repeated. Tokenizing the long expanded
+        string costs ~0.5 ms per request; the template is tokenized once per distinct prompt and checked then
+        against the direct tokenization of a probe that repeats every placeholder, whatever the request's counts.
+        Returns None (tokenize directly) when the check fails.
+        """
+        cache = self.__dict__.setdefault("_template_ids_cache", {})
+        if template not in cache:
+            ph_id = tokenizer.get_vocab().get(_AUDIO_PLACEHOLDER)
+            ids = tokenizer.encode(template, add_special_tokens=True)
+            entry = (ids, ph_id) if ph_id is not None and ids.count(ph_id) == len(counts) else None
+            probe = template.replace(_AUDIO_PLACEHOLDER, _AUDIO_PLACEHOLDER * 2)
+            if entry is not None and _expand_ids(*entry, [2] * len(counts)) != tokenizer.encode(
+                probe, add_special_tokens=True
+            ):
+                entry = None
+            if entry is None:
+                logging.warning("Audio prompt template does not tokenize separably; tokenizing every request.")
+            if len(cache) < 1024:
+                cache[template] = entry
+        entry = cache.get(template)
+        return None if entry is None else _expand_ids(*entry, counts)
 
     def _call_hf_processor_audio_only(
         self,
@@ -759,3 +793,15 @@ def _config_has_pe_encoder(config) -> bool:
     return getattr(config, "pe_encoder_path", None) not in (None, "", False) or getattr(
         config, "pe_encoder_config", None
     ) not in (None, {}, "", False)
+
+
+def _expand_ids(ids: list[int], placeholder_id: int, counts: list[int]) -> list[int]:
+    """Repeat the k-th occurrence of ``placeholder_id`` in ``ids`` ``counts[k]`` times."""
+    out, k = [], 0
+    for t in ids:
+        if t == placeholder_id:
+            out.extend([t] * counts[k])
+            k += 1
+        else:
+            out.append(t)
+    return out

@@ -15,6 +15,7 @@
 
 import math
 import random
+from dataclasses import dataclass
 
 import lightning.pytorch as pl
 import omegaconf
@@ -24,6 +25,8 @@ import torch.optim
 from lightning.pytorch.utilities import rank_zero_only
 
 from nemo.core import config, optim
+from nemo.core.config.modelPT import ModelConfig, ModelConfigBuilder
+from nemo.core.config.schedulers import ReduceLROnPlateauParams
 from nemo.core.optim.lr_scheduler import AVAILABLE_SCHEDULERS, PiecewiseLinear
 from nemo.core.optim.optimizers import AVAILABLE_OPTIMIZERS
 from nemo.utils import logging
@@ -310,6 +313,84 @@ class TestOptimizersSchedulers:
         dict_config = omegaconf.OmegaConf.create(basic_sched_config)
         scheduler_setup = optim.lr_scheduler.prepare_lr_scheduler(opt, dict_config)
         assert isinstance(scheduler_setup['scheduler'], optim.lr_scheduler.CosineAnnealing)
+
+    @pytest.mark.unit
+    def test_sched_config_parse_from_args(self):
+        model = TempModel()
+        opt_cls = optim.get_optimizer('novograd')
+        opt = opt_cls(model.parameters(), lr=self.INITIAL_LR)
+
+        # the override arguments next to `name`, as the example configs write them
+        basic_sched_config = {
+            'name': 'CosineAnnealing',
+            'max_steps': self.MAX_STEPS,
+            'args': {'name': 'auto', 'warmup_steps': None, 'warmup_ratio': 0.1, 'min_lr': 0.1, 'last_epoch': -1},
+        }
+        for sched_config in (basic_sched_config, omegaconf.OmegaConf.create(basic_sched_config)):
+            scheduler = optim.lr_scheduler.prepare_lr_scheduler(opt, sched_config)['scheduler']
+            assert isinstance(scheduler, optim.lr_scheduler.CosineAnnealing)
+            assert scheduler.warmup_steps == int(0.1 * self.MAX_STEPS)
+            assert scheduler.min_lr == 0.1
+
+        # the override arguments under `params`, and the parameter config selected by its name
+        for args in (
+            {'name': 'auto', 'params': {'min_lr': 0.1}},
+            {'name': 'CosineAnnealingParams', 'params': {'min_lr': 0.1}},
+            {'name': 'CosineAnnealingParams', 'min_lr': 0.1},
+        ):
+            sched_config = {'name': 'CosineAnnealing', 'max_steps': self.MAX_STEPS, 'args': args}
+            scheduler = optim.lr_scheduler.prepare_lr_scheduler(opt, sched_config)['scheduler']
+            assert isinstance(scheduler, optim.lr_scheduler.CosineAnnealing)
+            assert scheduler.min_lr == 0.1
+
+        # `params` is normally flattened by the config version update before the overrides are read;
+        # it stays nested when that update skips the config, here because of a value OmegaConf cannot hold
+        sched_config = {
+            'name': 'CosineAnnealing',
+            'max_steps': self.MAX_STEPS,
+            'args': {'name': 'auto', 'warmup_ratio': 0.1, 'params': {'min_lr': 0.1}},
+            'unrelated_object': object(),
+        }
+        scheduler = optim.lr_scheduler.prepare_lr_scheduler(opt, sched_config)['scheduler']
+        assert isinstance(scheduler, optim.lr_scheduler.CosineAnnealing)
+        assert scheduler.warmup_steps == int(0.1 * self.MAX_STEPS)
+        assert scheduler.min_lr == 0.1
+
+    @pytest.mark.unit
+    def test_sched_config_from_model_config_builder(self):
+        # the builder's scheduler config is the parameter config plus `name`, without `SchedConfig.min_lr`,
+        # which not every scheduler takes: here torch's StepLR through a parameter config of its own
+        @dataclass
+        class StepLRParams(config.SchedulerParams):
+            max_steps: int = 20
+            step_size: int = 2
+            gamma: float = 0.5
+
+        model = TempModel()
+        opt = torch.optim.SGD(model.parameters(), lr=self.INITIAL_LR)
+        builder = ModelConfigBuilder(ModelConfig())
+        builder.set_optim(config.SGDParams(lr=self.INITIAL_LR), StepLRParams())
+        cfg = omegaconf.OmegaConf.structured(builder.model_cfg)  # as ModelPT holds the config
+        scheduler = optim.lr_scheduler.prepare_lr_scheduler(opt, cfg.optim.sched)['scheduler']
+        assert isinstance(scheduler, torch.optim.lr_scheduler.StepLR)
+        assert scheduler.step_size == 2
+
+        # a scheduler that takes `min_lr` keeps the value of its parameter config
+        builder.set_optim(config.SGDParams(lr=self.INITIAL_LR), config.CosineAnnealingParams(max_steps=20, min_lr=0.1))
+        cfg = omegaconf.OmegaConf.structured(builder.model_cfg)
+        scheduler = optim.lr_scheduler.prepare_lr_scheduler(opt, cfg.optim.sched)['scheduler']
+        assert isinstance(scheduler, optim.lr_scheduler.CosineAnnealing)
+        assert scheduler.min_lr == 0.1
+
+        # a registered parameter config that does not derive from `SchedulerParams` converts as well
+        builder.set_optim(config.SGDParams(lr=self.INITIAL_LR), ReduceLROnPlateauParams(patience=2))
+        cfg = omegaconf.OmegaConf.structured(builder.model_cfg)
+        assert cfg.optim.sched.name == 'ReduceLROnPlateau'
+        assert cfg.optim.sched.patience == 2
+        assert 'last_epoch' not in cfg.optim.sched
+
+        builder.set_optim(config.SGDParams(lr=self.INITIAL_LR))
+        assert omegaconf.OmegaConf.structured(builder.model_cfg).optim.sched is None
 
     @pytest.mark.unit
     def test_sched_config_parse_reduce_on_plateau(self):

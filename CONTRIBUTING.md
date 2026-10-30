@@ -147,8 +147,9 @@ If you would like to start a new one and contribute back to the platform, you ar
 
 ## Pull-request reviews
 
-Comment `/review` on a pull request for the formal review service. Use
-`/review mode=strict` for deeper analysis, or add `model=claude` to select a
+Comment `/review` on a pull request for a comprehensive review from the formal
+review service. Use `/review mode=strict` for an exhaustive, maximally strict
+review, or add `model=claude` to select a
 Claude reviewer instead of the default Codex reviewer. `/review help` lists
 all options. The retired `/claude review` and `/claude strict-review` commands
 only reply with migration instructions when posted as an exact command by an

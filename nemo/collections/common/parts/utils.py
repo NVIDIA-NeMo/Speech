@@ -29,7 +29,16 @@ import torch
 import torch.nn as nn
 from omegaconf import DictConfig
 
-__all__ = ['if_exist', '_compute_softmax', 'flatten', 'build_module', 'block_binds', 'ModuleBlock', 'SquaredReLU']
+__all__ = [
+    'if_exist',
+    '_compute_softmax',
+    'flatten',
+    'build_module',
+    'block_binds',
+    'build_activation',
+    'ModuleBlock',
+    'SquaredReLU',
+]
 
 
 class SquaredReLU(nn.Module):
@@ -49,6 +58,23 @@ activation_registry = {
     "gelu": nn.GELU,
     "squared_relu": SquaredReLU,
 }
+
+
+def build_activation(activation: nn.Module | str) -> nn.Module:
+    """The activation module given, or a new instance of the registry's class under this name.
+
+    Args:
+        activation: an activation module, or its name in ``activation_registry`` (``relu``, ``gelu``, ``swish``, ...).
+
+    Returns:
+        The activation module.
+    """
+    if isinstance(activation, str):
+        if activation not in activation_registry:
+            raise ValueError(f"unknown activation {activation!r}; the registry has {sorted(activation_registry)}")
+        return activation_registry[activation]()
+    return activation
+
 
 ModuleBlock = Callable[..., nn.Module] | functools.partial | Mapping
 

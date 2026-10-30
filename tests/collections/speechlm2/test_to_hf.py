@@ -379,6 +379,43 @@ def test_save_hf_checkpoint_writes_llm_backbone_config(tmp_path):
     assert _FakeExportModel.cfg["dtype"] == "bf16"
 
 
+@pytest.mark.parametrize("mtp_layers", [0, 1])
+def test_nemotron_backbone_export_preserves_portable_topology(tmp_path, mtp_layers):
+    from transformers import AutoConfig, NemotronHConfig
+
+    blocks = ["mamba", "moe", "attention", "mlp"]
+    config = NemotronHConfig(
+        layers_block_type=blocks,
+        mtp_layers_block_type=["attention", "moe"],
+        num_nextn_predict_layers=mtp_layers,
+        architectures=["NemotronHForCausalLM"],
+    )
+    before = config.to_dict()
+    model = SimpleNamespace(llm=SimpleNamespace(config=config))
+
+    to_hf.save_llm_backbone_config(model, tmp_path)
+
+    backbone_dir = tmp_path / "llm_backbone"
+    saved = json.loads((backbone_dir / "config.json").read_text())
+    assert saved["layers_block_type"] == blocks
+    assert saved["mtp_layers_block_type"] == ["attention", "moe"]
+    assert saved["num_nextn_predict_layers"] == mtp_layers
+    assert config.to_dict() == before
+    reloaded = AutoConfig.from_pretrained(backbone_dir, local_files_only=True)
+    assert reloaded.hybrid_override_pattern == "ME*-"
+    assert reloaded.mtp_hybrid_override_pattern == "*E"
+    assert reloaded.num_nextn_predict_layers == mtp_layers
+    assert tuple(reloaded.time_step_limit) == tuple(config.time_step_limit)
+
+    # The serving wrapper must embed the same portable config, not the live one.
+    _seed_output_dir(tmp_path)
+    tokenizer = _FakeTokenizer(vocab_tokens=("a", AUDIO_TOKEN))
+    with patch("transformers.AutoTokenizer.from_pretrained", return_value=tokenizer):
+        to_hf.prepare_for_vllm(str(tmp_path), _FakeExportModel.cfg)
+    wrapper = json.loads((tmp_path / "config.json").read_text())
+    assert wrapper["llm_config"] == saved
+
+
 def test_save_hf_checkpoint_accepts_bf16_export_dtype(tmp_path):
     cfg = to_hf.HfExportConfig(
         class_path="fake.Class",
@@ -944,3 +981,54 @@ def test_adapt_strategy_preserves_compatible_hsdp_replicate_axis() -> None:
     }
     adapted = to_hf._adapt_strategy_for_conversion_world(original, world_size=8)
     assert adapted["dp_replicate_size"] == 2
+
+
+def test_vllm_publication_stays_inside_the_output_mount(tmp_path):
+    # A parent directory can be on the container overlay while output_dir is
+    # a writable bind mount; rename must keep both endpoints in that mount.
+    real_replace = Path.replace
+    publication_targets = []
+
+    def require_same_output_mount(source, target):
+        target = Path(target)
+        assert target.parent in source.parents
+        publication_targets.append(target.name)
+        return real_replace(source, target)
+
+    with patch.object(Path, "replace", new=require_same_output_mount):
+        output_dir = _run_prepare(tmp_path, _FakeTokenizer(vocab_tokens=[AUDIO_TOKEN]))
+    assert "tokenizer.json" in publication_targets
+    assert publication_targets[-1] == "config.json"
+    assert list(output_dir.glob(".*-vllm-*")) == []
+
+
+def test_save_hf_checkpoint_preserves_frozen_ctc_storage_and_metadata(tmp_path):
+    from safetensors import safe_open
+
+    model = _FakeExportModel()
+    metadata = {
+        'ctc_timestamp_format': 'nemo_ctc_timestamp_artifact_v1',
+        'ctc_timestamp_decoder_config': '{}',
+        'ctc_timestamp_tokenizer_config': '{}',
+    }
+    model.ctc_timestamp = SimpleNamespace(artifact_metadata=metadata)
+    state = {
+        'ordinary_weight': torch.ones(1),
+        'ctc_timestamp.decoder.weight': torch.tensor([1.000123], dtype=torch.float32),
+        'ctc_timestamp.tokenizer.model_proto': torch.tensor([0, 1, 127, 128, 255], dtype=torch.uint8),
+    }
+    cfg = to_hf.HfExportConfig(
+        class_path='fake.Class',
+        ckpt_path='fake.ckpt',
+        ckpt_config='fake.yaml',
+        output_dir=str(tmp_path),
+        dtype='bfloat16',
+    )
+    to_hf.save_hf_checkpoint(model, state, cfg)
+    exported = load_file(tmp_path / 'model.safetensors')
+    with safe_open(tmp_path / 'model.safetensors', framework='pt') as handle:
+        assert handle.metadata() == metadata
+    for name in ('ctc_timestamp.decoder.weight', 'ctc_timestamp.tokenizer.model_proto'):
+        assert exported[name].dtype == state[name].dtype
+        assert torch.equal(exported[name], state[name].cpu())
+    assert exported['ordinary_weight'].dtype == torch.bfloat16

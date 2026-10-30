@@ -29,6 +29,7 @@ from nemo.collections.common.parts.utils import (
     SquaredReLU,
     activation_registry,
     block_binds,
+    build_activation,
     build_module,
     flatten,
     mask_sequence_tensor,
@@ -449,3 +450,11 @@ class TestBuildModule:
         x = torch.tensor([-2.0, 0.0, 3.0])
         torch.testing.assert_close(SquaredReLU()(x), torch.tensor([0.0, 0.0, 9.0]))
         assert activation_registry["squared_relu"] is SquaredReLU
+
+    @pytest.mark.unit
+    def test_build_activation(self):
+        assert isinstance(build_activation("gelu"), torch.nn.GELU)
+        module = torch.nn.Tanh()
+        assert build_activation(module) is module
+        with pytest.raises(ValueError, match="unknown activation 'tanh'"):
+            build_activation("tanh")

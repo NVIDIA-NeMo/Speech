@@ -167,6 +167,13 @@ Evaluation set configuration
 The optional keys are:
 
 - ``language``: overrides ``--language`` for this dataset.
+
+By default, a per-record manifest ``language`` takes precedence over the dataset
+or command-line language during inference. Pass ``--ignore_manifest_language``
+to ``magpietts_inference.py`` to use the dataset or command-line language instead.
+This is useful when a newer model uses corrected language tags in the evalset
+configuration. Omitting the flag preserves the behavior for older models.
+
 - ``precomputed_context_audio_embedding_key``: for EasyMagpie, select a speaker-encoded
   audio context from the table provided with ``--precomputed_context_audio_embeddings_path``.
   The table is a torch-saved dictionary with ``audio_embeddings[key]["embedding"]`` tensors

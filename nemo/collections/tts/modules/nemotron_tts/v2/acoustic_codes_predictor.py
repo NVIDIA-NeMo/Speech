@@ -247,6 +247,7 @@ class AcousticCodesPredictor(torch.nn.Module):
         lengths: torch.Tensor,
         loss_mask: Optional[torch.Tensor] = None,
         feature_masking=None,
+        label_smoothing=0.0,
     ) -> torch.Tensor:
         """Compute loss over codec tokens and AUDIO_EOS on the backbone timeline.
 
@@ -307,6 +308,7 @@ class AcousticCodesPredictor(torch.nn.Module):
                 step_targets.reshape(-1),
                 ignore_index=_IGNORE_INDEX,
                 reduction='sum',
+                label_smoothing=label_smoothing,
             )
             num_predictions = num_predictions + block_is_supervised.sum()
             previous_codes = torch.where(

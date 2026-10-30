@@ -69,6 +69,7 @@ Building requires a CUDA device and matching PyTorch, Torch-TensorRT and TensorR
 The script refuses to overwrite an existing ``--engine`` file.
 Build the plan for the GPU and TensorRT version that will run it, and compare its outputs with the ONNX or PyTorch results at the same precision.
 The `example README <https://github.com/NVIDIA-NeMo/Speech/blob/main/examples/asr/export/README_torch_tensorrt.md>`_ lists the validated versions, the limits of the conversion and the minimum frame count with feature stacking.
+For the choice between this route and the ONNX build with ``build_trt_encoder.py``, and the TensorRT versions each route needs, see `Offline TensorRT encoder`_.
 
 
 Basic Transcription

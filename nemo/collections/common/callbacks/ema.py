@@ -17,6 +17,7 @@ import contextlib
 import copy
 import os
 import threading
+from collections import defaultdict
 from typing import Any, Dict, Iterable
 
 import lightning.pytorch as pl
@@ -24,6 +25,9 @@ import torch
 from lightning.pytorch import Callback
 from lightning.pytorch.utilities.exceptions import MisconfigurationException
 from lightning.pytorch.utilities.rank_zero import rank_zero_info
+from omegaconf import DictConfig, ListConfig
+from omegaconf.base import ContainerMetadata, Metadata
+from omegaconf.nodes import AnyNode
 
 
 class EMA(Callback):
@@ -137,7 +141,24 @@ class EMA(Callback):
                 return
             ema_path = ckpt_path.replace(ext, f'-EMA{ext}')
             if os.path.exists(ema_path):
-                ema_state_dict = torch.load(ema_path, map_location=torch.device('cpu'), weights_only=False)
+                # NeMo checkpoints contain OmegaConf metadata even though we only need optimizer state.
+                # Permit these known config containers without allowing checkpoint-selected globals.
+                with torch.serialization.safe_globals(
+                    [
+                        DictConfig,
+                        ListConfig,
+                        ContainerMetadata,
+                        Metadata,
+                        AnyNode,
+                        Any,
+                        dict,
+                        list,
+                        int,
+                        str,
+                        defaultdict,
+                    ]
+                ):
+                    ema_state_dict = torch.load(ema_path, map_location=torch.device('cpu'), weights_only=True)
 
                 checkpoint['optimizer_states'] = ema_state_dict['optimizer_states']
                 del ema_state_dict

@@ -35,8 +35,16 @@ def build_engine(
     workspace_size=0,
     int8=False,
     builder_optimization_level=None,
+    tf32: bool | None = None,
 ):
-    """Build and serialize a TensorRT engine from an ONNX model."""
+    """Build and serialize a TensorRT engine from an ONNX model.
+
+    tf32 controls TF32 internal kernels; None preserves Polygraphy's default.
+    workspace_size is in bytes.
+    Each input profile contains minimum, optimum and maximum shapes.
+    """
+    if not HAVE_TRT:
+        raise ImportError("Building an engine requires TensorRT and Polygraphy.")
     print(f"Building TensorRT engine for {onnx_path}: {output_path}")
     p = Profile()
     if input_profile:
@@ -47,6 +55,8 @@ def build_engine(
     preview_features = None
 
     config_kwargs = {}
+    if tf32 is not None:
+        config_kwargs["tf32"] = tf32
     if workspace_size > 0:
         config_kwargs["memory_pool_limits"] = {trt.MemoryPoolType.WORKSPACE: workspace_size}
     engine = engine_from_network(

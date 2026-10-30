@@ -21,7 +21,7 @@ from typing import Optional
 
 import pytest
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.modules import RNNTDecoder, RNNTJoint
@@ -33,6 +33,7 @@ from nemo.collections.asr.parts.submodules import tdt_beam_decoding
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTBPEDecoding, RNNTDecoding, RNNTDecodingConfig
 from nemo.collections.asr.parts.utils import rnnt_utils
+from nemo.core.classes.common import Serialization
 from nemo.core.utils import numba_utils
 from nemo.core.utils.numba_utils import __NUMBA_MINIMUM_VERSION__
 from tests.collections.asr.decoding.test_timestamps import BaseTimestampsTest
@@ -710,3 +711,152 @@ def test_transcribe_timestamps_no_decoder_reinstantiation(stt_en_fastconformer_t
         "Decoder was reinstantiated on second transcribe call with timestamps=True. "
         "This indicates change_decoding_strategy() was called unnecessarily."
     )
+
+
+def make_tdt_tensor_decoder(
+    token: int = 0, duration: int = 0, device: str = "cpu", graphs: bool = False
+) -> greedy_decode.GreedyBatchedTDTInfer:
+    """A greedy TDT decoder whose joint always emits ``token`` with the duration at index ``duration`` of [0, 1, 3].
+
+    The networks come from config dictionaries, so that the decoder artifact can serialize them.
+    """
+    decoder = Serialization.from_config_dict(
+        OmegaConf.create(
+            {
+                "_target_": "nemo.collections.asr.modules.RNNTDecoder",
+                "prednet": {"pred_hidden": 8, "pred_rnn_layers": 1},
+                "vocab_size": 2,
+            }
+        )
+    ).to(device)
+    joint = Serialization.from_config_dict(
+        OmegaConf.create(
+            {
+                "_target_": "nemo.collections.asr.modules.RNNTJoint",
+                "jointnet": {"encoder_hidden": 4, "pred_hidden": 8, "joint_hidden": 8, "activation": "relu"},
+                "num_classes": 2,
+                "num_extra_outputs": 3,
+                "log_softmax": False,
+            }
+        )
+    ).to(device)
+    with torch.no_grad():
+        for parameter in joint.parameters():
+            parameter.zero_()
+        joint.joint_net[-1].bias[token] = 10
+        joint.joint_net[-1].bias[3 + duration] = 10
+    return greedy_decode.GreedyBatchedTDTInfer(
+        decoder.eval(),
+        joint.eval(),
+        blank_index=2,
+        durations=[0, 1, 3],
+        max_symbols_per_step=2,
+        include_duration=True,
+        use_cuda_graph_decoder=graphs,
+    )
+
+
+class TestGreedyBatchedTDTInferTensors:
+    """The tensor interface ``decode_tensors`` that the TDT serving examples call."""
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("token,duration,expected", [(0, 0, [8, 4, 0]), (2, 0, [0, 0, 0]), (1, 2, [2, 1, 0])])
+    def test_complete_loop(self, token, duration, expected):
+        infer = make_tdt_tensor_decoder(token, duration)
+        result = infer.decode_tensors(torch.randn(3, 4, 4), torch.tensor([4, 2, 0]))
+        assert result.lengths.tolist() == expected
+        for b, length in enumerate(expected):
+            assert result.tokens[b, :length].tolist() == [token] * length
+            assert result.tokens[b, length:].eq(-1).all()
+            if length:
+                timestamps = (
+                    [t for t in range([4, 2, 0][b]) for _ in range(2)]
+                    if duration == 0
+                    else list(range(0, [4, 2, 0][b], 3))
+                )
+                assert result.timestamps[b, :length].tolist() == timestamps
+                assert result.durations[b, :length].tolist() == [[0, 1, 3][duration]] * length
+        snapshot = tuple(t.clone() for t in result)
+        infer.decode_tensors(torch.randn(1, 4, 2), torch.tensor([1]))
+        for value, saved in zip(result, snapshot):
+            torch.testing.assert_close(value, saved, rtol=0, atol=0)
+
+    @pytest.mark.unit
+    def test_matches_forward_hypotheses(self):
+        infer = make_tdt_tensor_decoder(1, 2)
+        encoded, lengths = torch.randn(2, 4, 7), torch.tensor([7, 3])
+        result = infer.decode_tensors(encoded, lengths)
+        hypotheses = infer(encoder_output=encoded, encoded_lengths=lengths)[0]
+        for b, hypothesis in enumerate(hypotheses):
+            count = result.lengths[b].item()
+            assert hypothesis.y_sequence.tolist() == result.tokens[b, :count].tolist()
+            assert list(hypothesis.timestamp) == result.timestamps[b, :count].tolist()
+            assert list(hypothesis.token_duration) == result.durations[b, :count].tolist()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("lengths", [[-1, 2], [5, 2]])
+    def test_reject_invalid_lengths(self, lengths):
+        with pytest.raises(ValueError, match="Encoded lengths"):
+            make_tdt_tensor_decoder().decode_tensors(torch.randn(2, 4, 4), torch.tensor(lengths))
+
+    @pytest.mark.unit
+    def test_requires_label_looping_with_durations(self):
+        infer = make_tdt_tensor_decoder()
+        without_durations = greedy_decode.GreedyBatchedTDTInfer(
+            infer.decoder, infer.joint, blank_index=2, durations=[0, 1, 3], max_symbols_per_step=2
+        )
+        with pytest.raises(ValueError, match="include_duration"):
+            without_durations.decode_tensors(torch.randn(1, 4, 4), torch.tensor([4]))
+        no_pad = RNNTDecoder(prednet={"pred_hidden": 8, "pred_rnn_layers": 1}, vocab_size=2, blank_as_pad=False)
+        without_computer = greedy_decode.GreedyBatchedTDTInfer(
+            no_pad, infer.joint, blank_index=2, durations=[0, 1, 3], max_symbols_per_step=2, include_duration=True
+        )
+        assert without_computer.decoding_computer is None
+        with pytest.raises(ValueError, match="blank_as_pad"):
+            without_computer.decode_tensors(torch.randn(1, 4, 4), torch.tensor([4]))
+
+    @pytest.mark.unit
+    @pytest.mark.run_only_on("GPU")
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+    def test_graph_reuse_and_batch_changes(self):
+        infer = make_tdt_tensor_decoder(device="cuda", graphs=True)
+        for lengths in ([4, 2, 0], [1], [0, 0], [5, 3, 2, 1]):
+            encoded = torch.randn(len(lengths), 4, max(1, max(lengths)), device="cuda")
+            out = infer.decode_tensors(encoded, torch.tensor(lengths))
+            assert out.lengths.tolist() == [2 * length for length in lengths]
+        assert infer.decoding_computer.cuda_graphs_mode is not None
+
+    @pytest.mark.unit
+    @pytest.mark.run_only_on("GPU")
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+    @pytest.mark.parametrize("force_partial", [False, True])
+    def test_graph_replay_after_another_instance_captures(self, force_partial):
+        first = make_tdt_tensor_decoder(device="cuda", graphs=True)
+        second = make_tdt_tensor_decoder(token=1, device="cuda", graphs=True)
+        if force_partial:
+            for infer in (first, second):
+                computer = infer.decoding_computer
+                computer.force_cuda_graphs_mode(computer.CudaGraphsMode.NO_WHILE_LOOPS)
+
+        def check(infer, frames, token):
+            lengths = torch.tensor([frames, frames // 2], device="cuda")
+            result = infer.decode_tensors(torch.randn(2, 4, frames, device="cuda"), lengths)
+            assert result.lengths.tolist() == [2 * frames, 2 * (frames // 2)]
+            for batch, count in enumerate(result.lengths.tolist()):
+                assert result.tokens[batch, :count].tolist() == [token] * count
+            return result
+
+        check(first, 4, 0)
+        computer = first.decoding_computer
+        if force_partial or not hasattr(torch.cuda.CUDAGraph, "begin_capture_to_while_node"):
+            assert computer.cuda_graphs_mode is computer.CudaGraphsMode.NO_WHILE_LOOPS
+        saved = check(first, 400, 0)
+        snapshot = tuple(value.clone() for value in saved)
+        check(second, 4, 1)
+        torch.cuda.empty_cache()
+        check(first, 4, 0)
+        check(second, 450, 1)
+        torch.cuda.empty_cache()
+        check(first, 400, 0)
+        for value, expected in zip(saved, snapshot):
+            torch.testing.assert_close(value, expected, atol=0, rtol=0)

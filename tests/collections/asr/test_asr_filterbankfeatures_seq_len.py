@@ -112,6 +112,29 @@ class TestFilterbankFeatures:
             ), f"{fb_spec.shape}, {nfft}, {window_size}, {hop_size}, {audio_length}, {audio_length // hop_size}"
 
 
+class TestFilterbankFeaturesStft:
+    @pytest.mark.unit
+    def test_real_valued_spectrum(self):
+        torch.manual_seed(0)
+        fb_module = FilterbankFeatures(n_fft=512, n_window_size=400, n_window_stride=160)
+        x = torch.randn(2, 4000)
+        spectrum = fb_module.stft(x)
+        reference = torch.view_as_real(
+            torch.stft(
+                x,
+                n_fft=512,
+                hop_length=160,
+                win_length=400,
+                center=True,
+                window=fb_module.window,
+                return_complex=True,
+                pad_mode="constant",
+            )
+        )
+        assert spectrum.shape == reference.shape == (2, 257, 26, 2)
+        torch.testing.assert_close(spectrum, reference)
+
+
 # A 25 ms window and 10 ms hop in a 512-point FFT, without dither, pre-emphasis, padding or normalization.
 PLAIN = dict(n_window_size=400, n_window_stride=160, n_fft=512, nfilt=80, dither=0.0, preemph=None, pad_to=0)
 

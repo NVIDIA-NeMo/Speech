@@ -69,9 +69,7 @@ def select_channels(signal: npt.NDArray, channel_selector: Optional[ChannelSelec
     if signal.ndim == 1:
         # For one-dimensional input, return the input signal.
         if channel_selector not in [None, 0, 'average']:
-            raise ValueError(
-                'Input signal is one-dimensional, channel selector (%s) cannot not be used.', str(channel_selector)
-            )
+            raise ValueError(f'Input signal is one-dimensional, channel selector ({channel_selector}) cannot be used.')
         return signal
 
     num_channels = signal.shape[-1]
@@ -170,9 +168,7 @@ class AudioSegment(object):
 
         # Check if channel selector is necessary
         if samples.ndim == 1 and channel_selector not in [None, 0, 'average']:
-            raise ValueError(
-                'Input signal is one-dimensional, channel selector (%s) cannot not be used.', str(channel_selector)
-            )
+            raise ValueError(f'Input signal is one-dimensional, channel selector ({channel_selector}) cannot be used.')
         elif samples.ndim == 2:
             samples = select_channels(samples, channel_selector)
         elif samples.ndim >= 3:

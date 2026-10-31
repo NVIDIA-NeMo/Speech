@@ -79,6 +79,17 @@ class TestRotaryPositionalEncoding:
         assert pe.cos.data_ptr() == prev
 
     @pytest.mark.unit
+    def test_rotate_at_positions_matches_forward(self):
+        # rotate() at explicit positions gives the rotation forward() applies to a key sequence from position 0
+        pe = RotaryPositionalEncoding(d_k=16, rotary_fraction=1.0)
+        pe.extend_pe(32, device=torch.device('cpu'), dtype=torch.float32)
+        torch.manual_seed(0)
+        k = torch.randn(2, 4, 8, 16)
+        _, k_rot = pe(k, k)
+        positions = torch.tensor([3, 5, 6])
+        assert torch.allclose(pe.rotate(k[:, :, positions], positions), k_rot[:, :, positions], atol=1e-6)
+
+    @pytest.mark.unit
     def test_forward_first_token_is_identity(self):
         # Position 0 has zero phase, so cos=1, sin=0 -> rotation is identity.
         pe = RotaryPositionalEncoding(d_k=16, rotary_fraction=1.0)

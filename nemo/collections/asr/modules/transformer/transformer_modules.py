@@ -258,23 +258,58 @@ class MultiHeadAttention(nn.Module):
         x = x.view(*new_x_shape)
         return x.permute(0, 2, 1, 3)
 
-    def forward(self, queries, keys, values, attention_mask):
+    def project_queries(self, queries: torch.Tensor, positions: torch.Tensor | None = None) -> torch.Tensor:
+        """Query heads, pre-divided by ``sqrt(sqrt(d))`` for numerical stability.
 
-        # attention_mask is needed to hide the tokens which correspond to [PAD]
-        # in the case of BERT, or to hide the future tokens in the case of
-        # vanilla language modeling and translation
-        query = self.query_net(queries)
-        key = self.key_net(keys)
-        value = self.value_net(values)
-        query = self.transpose_for_scores(query) / self.attn_scale
-        key = self.transpose_for_scores(key) / self.attn_scale
-        value = self.transpose_for_scores(value)
-        if self.rotary_pos_enc is not None:
-            # the rotation commutes with the scalar scaling above; the table grows with the key length
-            self.rotary_pos_enc.extend_pe(key.size(2), key.device, key.dtype)
-            query, key = self.rotary_pos_enc(query, key)
+        Args:
+            queries: (B, T, hidden_size)
+            positions: absolute positions (T,) to rotate at with a rotary position embedding;
+                None leaves the rotation to the caller, as ``forward`` rotates queries and keys together
 
-        # for numerical stability we pre-divide query and key by sqrt(sqrt(d))
+        Returns:
+            query heads (B, H, T, head_size)
+        """
+        query = self.transpose_for_scores(self.query_net(queries)) / self.attn_scale
+        if positions is not None and self.rotary_pos_enc is not None:
+            query = self.rotary_pos_enc.rotate(query, positions)
+        return query
+
+    def project_keys_values(
+        self, keys: torch.Tensor, values: torch.Tensor, positions: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Key and value heads; the keys are pre-divided like the queries.
+
+        The projections of a fixed sequence, such as encoder states under cross-attention,
+        can be computed once and reused for every query.
+
+        Args:
+            keys: (B, T, hidden_size)
+            values: (B, T, hidden_size)
+            positions: as in ``project_queries``
+
+        Returns:
+            key heads and value heads, each (B, H, T, head_size)
+        """
+        key = self.transpose_for_scores(self.key_net(keys)) / self.attn_scale
+        value = self.transpose_for_scores(self.value_net(values))
+        if positions is not None and self.rotary_pos_enc is not None:
+            key = self.rotary_pos_enc.rotate(key, positions)
+        return key, value
+
+    def attend(
+        self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, attention_mask: torch.Tensor | None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Scaled dot-product attention over projected heads, followed by the output projection.
+
+        Args:
+            query: (B, H, T1, head_size) from ``project_queries``
+            key: (B, H, T2, head_size) from ``project_keys_values``
+            value: (B, H, T2, head_size) from ``project_keys_values``
+            attention_mask: additive mask broadcastable to (B, H, T1, T2), or None
+
+        Returns:
+            output states (B, T1, hidden_size) and the attention probabilities (B, H, T1, T2)
+        """
         attention_scores = torch.matmul(query, key.transpose(-1, -2))
         if attention_mask is not None:
             attention_scores = attention_scores + attention_mask.to(attention_scores.dtype)
@@ -290,6 +325,21 @@ class MultiHeadAttention(nn.Module):
         # output projection
         output_states = self.out_projection(context)
         output_states = self.layer_dropout(output_states)
+        return output_states, attention_probs
+
+    def forward(self, queries, keys, values, attention_mask):
+
+        # attention_mask is needed to hide the tokens which correspond to [PAD]
+        # in the case of BERT, or to hide the future tokens in the case of
+        # vanilla language modeling and translation
+        query = self.project_queries(queries)
+        key, value = self.project_keys_values(keys, values)
+        if self.rotary_pos_enc is not None:
+            # the rotation commutes with the scalar scaling above; the table grows with the key length
+            self.rotary_pos_enc.extend_pe(key.size(2), key.device, key.dtype)
+            query, key = self.rotary_pos_enc(query, key)
+
+        output_states, attention_probs = self.attend(query, key, value, attention_mask)
 
         extra_output = {}
         if self.return_xatt_scores:

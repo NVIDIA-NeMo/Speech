@@ -18,6 +18,7 @@ import torch
 from torch import nn as nn
 from torch.nn import LayerNorm
 
+from nemo.collections.asr.parts.packed_sequence import PackedSlotLayout
 from nemo.collections.asr.parts.submodules.adapters.attention_adapter_mixin import AttentionAdapterModuleMixin
 from nemo.collections.asr.parts.submodules.batchnorm import FusedBatchNorm1d
 from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D
@@ -27,6 +28,7 @@ from nemo.collections.asr.parts.submodules.multi_head_attention import (
     RelPositionMultiHeadAttentionLongformer,
     RoPEMultiHeadAttention,
 )
+from nemo.collections.asr.parts.submodules.packed_attention import PackedAttentionContext
 from nemo.collections.asr.parts.utils.activations import Swish
 from nemo.collections.common.parts.utils import ModuleBlock, activation_registry, block_binds, build_module
 from nemo.core.classes.mixins import AccessMixin
@@ -318,6 +320,53 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         else:
             return x, cache_last_channel, cache_last_time
 
+    def forward_packed(
+        self,
+        x: torch.Tensor,
+        *,
+        attention_context: PackedAttentionContext,
+        conv_layout: PackedSlotLayout,
+        pos_emb: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """The layer over token-flat input of all utterances, with explicit boundaries instead of padding masks.
+
+        Streaming caches, adapters, local attention and the ``save_encoder_tensors`` capture
+        are not supported in this form.
+
+        Args:
+            x: input signals, shape ``(T_total, d_model)``.
+            attention_context: packing metadata for the self-attention.
+            conv_layout: gapped layout for the depthwise convolution, see ``ConformerConvolution.forward_packed``.
+            pos_emb: relative positional embedding ``(1, 2 * max_seqlen - 1, d_model)`` for ``rel_pos`` attention,
+                else None.
+
+        Returns:
+            The layer output, shape ``(T_total, d_model)``.
+        """
+        if self.is_adapter_available():
+            raise NotImplementedError("Adapters are not supported in the sequence-packed ConformerLayer.")
+        if self.self_attention_model == 'rel_pos_local_attn':
+            raise NotImplementedError("rel_pos_local_attn has no sequence-packed form.")
+
+        residual = x
+        x = self.norm_feed_forward1(x)
+        x = self.feed_forward1(x)
+        residual = residual + self.dropout(x) * self.fc_factor
+
+        x = self.norm_self_att(residual)
+        x = self.self_attn.forward_packed(x, attention_context, pos_emb=pos_emb)
+        residual = residual + self.dropout(x)
+
+        x = self.norm_conv(residual)
+        x = self.conv.forward_packed(x, conv_layout)
+        residual = residual + self.dropout(x)
+
+        x = self.norm_feed_forward2(residual)
+        x = self.feed_forward2(x)
+        residual = residual + self.dropout(x) * self.fc_factor
+
+        return self.norm_out(residual)
+
 
 class ConformerConvolution(nn.Module):
     """The convolution module for the Conformer model.
@@ -456,6 +505,52 @@ class ConformerConvolution(nn.Module):
             return x
         else:
             return x, cache
+
+    def forward_packed(self, x: torch.Tensor, layout: PackedSlotLayout) -> torch.Tensor:
+        """The module over token-flat input of all utterances.
+
+        Batch normalization takes its statistics from the valid frames only.
+        The padded forward includes the padded frames,
+        which hold the bias and the boundary tails of the depthwise convolution,
+        so the two forms differ in training mode by the share of padding in the batch and agree in evaluation mode.
+        Instance and group normalization need per-utterance statistics and are not supported here.
+        Without any frame (a rank whose share of a batch is empty) the convolution is skipped
+        and its parameters keep a zero gradient edge.
+
+        Args:
+            x: input signals, shape ``(T_total, d_model)``.
+            layout: gapped layout of the utterances with at least ``kernel_size - 1`` empty frames after each,
+                so the depthwise convolution reads zeros beyond an utterance,
+                as it does beyond the masked padding of a padded batch.
+
+        Returns:
+            The module output, shape ``(T_total, d_model)``.
+        """
+        if self.norm_type == 'instance_norm' or self.norm_type.startswith('group_norm'):
+            raise NotImplementedError(f"conv_norm_type={self.norm_type} has no sequence-packed form.")
+        x = self._apply_pointwise(x, self.pointwise_conv1)
+        if self.pointwise_activation == 'glu_':
+            x = nn.functional.glu(x, dim=-1)
+        else:
+            x = self.pointwise_activation(x)
+
+        if x.shape[0] == 0:
+            # no frame to convolve, and a batch without utterances has a layout without slots,
+            # which the convolution cannot take; the kernel keeps its zero gradient edge
+            # as the empty matmuls keep the other parameters'
+            anchor = x.new_zeros(())
+            for parameter in self.depthwise_conv.parameters():
+                anchor = anchor + parameter.sum().to(anchor.dtype) * 0.0
+            x = x + anchor
+        else:
+            # one channel-first sequence over the gapped slots; the empty slots are the zero padding between utterances
+            slots = layout.scatter(x).transpose(0, 1).unsqueeze(0)
+            slots = self.depthwise_conv(slots)
+            x = layout.gather(slots.squeeze(0).transpose(0, 1))
+
+        x = self.batch_norm(x)
+        x = self.activation(x)
+        return self._apply_pointwise(x, self.pointwise_conv2)
 
     def reset_parameters_conv(self):
         pw1_max = pw2_max = self.d_model**-0.5

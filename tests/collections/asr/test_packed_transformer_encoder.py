@@ -31,6 +31,8 @@ from nemo.collections.asr.parts.packed_sequence import (
     PackedEncoderActivations,
     pack_encoder_output,
     packed_encoder_position_ids,
+    packed_sequence_ids,
+    packed_slot_layout,
     split_encoder_output,
     split_packed_data,
     unpack_encoder_output,
@@ -629,3 +631,25 @@ def test_sequence_packed_reduces_forward_backward_peak_memory_for_uneven_batch()
         f"Expected native THD to materially reduce peak activation memory; "
         f"padded={padded_peak:,} bytes, packed={packed_peak:,} bytes."
     )
+
+
+def test_packed_slot_layout_slots_and_round_trip():
+    packed = pack_encoder_output(torch.arange(2 * 5 * 1, dtype=torch.float32).reshape(2, 5, 1), torch.tensor([5, 2]))
+    layout = packed_slot_layout(packed, alignment=3, gap=3)
+    # ceil((5 + 3) / 3) * 3 = 9 and ceil((2 + 3) / 3) * 3 = 6
+    assert layout.slot_lengths.tolist() == [9, 6] and layout.slot_offsets.tolist() == [0, 9]
+    assert layout.total_slots == 15
+    assert layout.token_slots.tolist() == [0, 1, 2, 3, 4, 9, 10]
+    slots = layout.scatter(packed.data)
+    assert slots.shape == (15, 1) and slots[5:9].abs().sum() == 0 and slots[11:].abs().sum() == 0
+    torch.testing.assert_close(layout.gather(slots), packed.data)
+    assert packed_sequence_ids(packed).tolist() == [0, 0, 0, 0, 0, 1, 1]
+    with pytest.raises(ValueError, match="alignment"):
+        packed_slot_layout(packed, alignment=0)
+
+
+def test_packed_encoder_output_detach_and_cpu_keep_metadata():
+    data = torch.randn(3, 2, requires_grad=True)
+    packed = pack_encoder_output(data.unsqueeze(0), torch.tensor([3]))
+    detached = packed.detach().cpu()
+    assert not detached.data.requires_grad and detached.lengths.tolist() == [3] and detached.max_seqlen == 3

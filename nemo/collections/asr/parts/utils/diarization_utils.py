@@ -30,7 +30,7 @@ import torch
 from lhotse import SupervisionSegment
 from omegaconf import OmegaConf
 
-from nemo.collections.asr.metrics.cpwer import calculate_session_cpWER, concat_perm_word_error_rate
+from nemo.collections.asr.metrics.cpwer import calculate_corpus_cpWER, calculate_session_cpWER
 from nemo.collections.asr.metrics.der import score_labels, score_labels_from_rttm_labels
 from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.asr.models import ClusteringDiarizer
@@ -1561,11 +1561,11 @@ class OfflineDiarWithASR:
                 # Calculate session by session WER value
                 WER_values.append(word_error_rate([mix_hypothesis], [mix_reference]))
 
-            cpWER_values, hyps_spk, refs_spk = concat_perm_word_error_rate(spk_hypotheses, spk_references)
+            average_cpWER, cpWER_values = calculate_corpus_cpWER(spk_hypotheses, spk_references)
 
             # Take an average of cpWER and regular WER value on all sessions
             wer_results['total'] = {}
-            wer_results['total']['average_cpWER'] = word_error_rate(hypotheses=hyps_spk, references=refs_spk)
+            wer_results['total']['average_cpWER'] = average_cpWER
             wer_results['total']['average_WER'] = word_error_rate(hypotheses=mix_hypotheses, references=mix_references)
 
             for uniq_id, cpWER, WER in zip(uniq_id_list, cpWER_values, WER_values):

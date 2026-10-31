@@ -299,6 +299,27 @@ def test_stt_offline_generation_with_asr(model_with_asr):
     assert (asr_tokens < model_with_asr.text_vocab_size).all()
 
 
+def test_stt_offline_generation_text_of_a_short_row_matches_the_row_alone(model_with_asr):
+    """The text outputs of a row padded to a longer row equal the outputs of the row decoded alone."""
+    model = model_with_asr.eval()
+    torch.manual_seed(0)
+    audio = torch.randn(2, 16000, device=model.device)
+    audio[1, 8000:] = 0.0
+    audio_lens = torch.tensor([16000, 8000], device=model.device)
+
+    inference = model.streaming_inference
+    batched = inference.offline_inference(audio, audio_lens)
+    long_alone = inference.offline_inference(audio[:1], audio_lens[:1])
+    short_alone = inference.offline_inference(audio[1:, :8000], audio_lens[1:])
+
+    for row, alone in ((0, long_alone), (1, short_alone)):
+        length = alone["tokens_len"][0]
+        assert batched["tokens_len"][row] == length
+        assert torch.equal(batched["tokens_text"][row, :length], alone["tokens_text"][0, :length])
+        assert batched["text"][row] == alone["text"][0]
+        assert batched["src_text"][row] == alone["src_text"][0]
+
+
 def test_trailing_pad_loss_scale_is_masked(dataset, training_cutset_batch):
     """Test that trailing pad positions (from batching) have loss_scale=0 when token_loss_weight is set."""
     model = create_model(predict_user_text=True)

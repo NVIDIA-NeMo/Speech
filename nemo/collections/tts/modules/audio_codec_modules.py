@@ -1115,15 +1115,14 @@ class MultiBandDiscriminatorSTFT(NeuralModule):
             The floats are in the range [0, 1] representing the fraction of all stft bands.
             For example for n_fft=1024, the stft output has 513 dimensions.
             For band input [(0, 0.25), (0.25, 1.0)] it would use stft dimensions [0 through 127] and [128 through 512].
-        filters: Number of filters to use in each band's DiscriminatorSTFT.
     """
 
-    def __init__(self, resolution: Tuple[int], stft_bands: Iterable[Tuple[int]], filters: int = 32):
+    def __init__(self, resolution: Tuple[int], stft_bands: Iterable[Tuple[int]]):
         super().__init__()
 
         self.n_fft, self.hop_length, self.win_length = resolution
         self.register_buffer("window", torch.hann_window(self.win_length, periodic=False))
-        self.discriminators = nn.ModuleList([DiscriminatorSTFT(filters=filters) for _ in stft_bands])
+        self.discriminators = nn.ModuleList([DiscriminatorSTFT() for _ in stft_bands])
         n_stft = self.n_fft // 2 + 1
         self.stft_bands = [(int(band[0] * n_stft), int(band[1] * n_stft)) for band in stft_bands]
 
@@ -1183,21 +1182,12 @@ class MultiResolutionDiscriminatorSTFT(NeuralModule):
             The floats are in the range [0, 1] representing the fraction of all stft bands.
             For example for n_fft=1024, the stft output has 513 dimensions.
             For band input [(0, 0.25), (0.25, 1.0)] it would use stft dimensions [0 through 127] and [128 through 512].
-        filters: Number of filters to use in each band's DiscriminatorSTFT.
     """
 
-    def __init__(
-        self,
-        resolutions: Iterable[Tuple[int]],
-        stft_bands: Iterable[Tuple[int]],
-        filters: int = 32,
-    ):
+    def __init__(self, resolutions: Iterable[Tuple[int]], stft_bands: Iterable[Tuple[int]]):
         super().__init__()
         self.discriminators = nn.ModuleList(
-            [
-                MultiBandDiscriminatorSTFT(resolution=resolution, stft_bands=stft_bands, filters=filters)
-                for resolution in resolutions
-            ]
+            [MultiBandDiscriminatorSTFT(resolution=resolution, stft_bands=stft_bands) for resolution in resolutions]
         )
 
     @property

@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import dataclasses
 import gc
 import importlib.util
 import io
@@ -913,6 +914,30 @@ def test_forward_dispatch(online_len, chunk_feat_len, training, n_frames, expect
     audio = torch.zeros(1, 8, n_frames)
     length = torch.tensor([n_frames])
     assert enc.forward(audio, length) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "scope, training, n_frames, real_rows, expected",
+    [
+        (True, False, 200, 0, "online"),  # scope on, all rows sentinel: the spelling of None
+        (True, False, 50, 0, "online"),  # the scope ignores the length, as for None
+        (True, False, 200, 1, "offline"),  # one row of real targets keeps the single pass
+        (True, False, 200, 2, "offline"),
+        (None, False, 200, 0, "offline"),  # no scope: any tensor keeps the single pass
+        (None, True, 200, 0, "offline"),
+    ],
+)
+def test_forward_dispatch_with_speaker_targets(scope, training, n_frames, real_rows, expected):
+    enc = dispatch_stub(500, 100, training)
+    enc.missing_rttm_target = -1.0
+    if scope is not None:
+        enc.online_inference_enabled = scope
+    audio = torch.zeros(2, 8, n_frames)
+    length = torch.tensor([n_frames, n_frames])
+    spk_targets = torch.full((2, n_frames // 8, 4), -1.0)
+    spk_targets[:real_rows] = 0.5
+    assert enc.forward(audio, length, spk_targets=spk_targets) == expected
 
 
 # ----------------------------------------------------------------------------- #
@@ -2207,6 +2232,47 @@ def test_online_inference_matches_independent_valid_prefixes_for_unequal_audio(a
     assert batched_output.shape == (2, _ASR_D_MODEL, int(expected_lengths.max()))
     torch.testing.assert_close(batched_output[0, :, : first_length[0]], first_output[0], rtol=1e-5, atol=2e-5)
     torch.testing.assert_close(batched_output[1, :, : second_length[0]], second_output[0], rtol=1e-5, atol=2e-5)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "high_resolution, return_ctc_timestamp_inputs",
+    [(False, False), (True, False), (True, True)],
+)
+def test_all_sentinel_targets_route_long_audio_like_no_targets(high_resolution, return_ctc_timestamp_inputs):
+    """A spk_targets tensor of only the missing-target sentinel is the documented spelling of None."""
+    diarization_config = toy_diarization_model_cfg()
+    diarization_config.high_resolution = high_resolution
+    encoder = build_toy_pe_encoder(
+        diarization_model_cfg=diarization_config,
+        online_inference_length=10,
+        chunk_left_context=2,
+        chunk_right_context=2,
+        diar_fifo_len=10,
+        diar_spkcache_update_period=20,
+        diar_spkcache_len=20,
+    ).eval()
+    encoder._suppress_online_pbar = True
+    torch.manual_seed(0)
+    mels = torch.randn(2, _MEL_FEATURES, 321)
+    lengths = torch.tensor([321, 173])
+    # the width a caller would collate on the offline grid: one frame more than the windowed output
+    sentinel = torch.full((2, 41, _N_SPK), encoder.missing_rttm_target)
+
+    with torch.no_grad(), encoder.online_inference():
+        expected = encoder(mels, lengths, return_ctc_timestamp_inputs=return_ctc_timestamp_inputs)
+        actual = encoder(mels, lengths, spk_targets=sentinel, return_ctc_timestamp_inputs=return_ctc_timestamp_inputs)
+
+    assert expected[1].tolist() == [40, 22]
+    assert torch.equal(actual[1], expected[1])
+    torch.testing.assert_close(actual[0], expected[0])
+    if return_ctc_timestamp_inputs:
+        for field in dataclasses.fields(CTCTimestampInputs):
+            expected_value, actual_value = getattr(expected[2], field.name), getattr(actual[2], field.name)
+            if expected_value is None:
+                assert actual_value is None
+            else:
+                torch.testing.assert_close(actual_value, expected_value)
 
 
 @pytest.mark.unit

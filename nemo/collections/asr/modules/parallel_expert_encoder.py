@@ -1318,9 +1318,12 @@ class ParallelExpertEncoder(nn.Module):
     ):
         """
         Encode mels and fuse RTTM or Sortformer speaker activity.
-        External ``spk_targets`` always use the single-pass path. Otherwise an active
-        :meth:`online_inference` scope decides, and in evaluation mode inputs longer than one
-        window (``chunk_feat_len``) use the windowed path when ``online_inference_length > 0``.
+        An active :meth:`online_inference` scope decides the path, except that ``spk_targets`` with at
+        least one row of real targets keep the single-pass path; a tensor whose every row holds the
+        missing-target sentinel is routed like ``None`` there.
+        Without a scope, any ``spk_targets`` tensor keeps the single-pass path (training and validation
+        rely on it), and in evaluation mode inputs longer than one window (``chunk_feat_len``) use the
+        windowed path when ``online_inference_length > 0``.
 
         Args:
             audio_signal (torch.Tensor): Unnormalized mel features shaped ``(B, D, T)``.
@@ -1332,14 +1335,14 @@ class ParallelExpertEncoder(nn.Module):
             tuple: Fused states shaped ``(B, D, T_out)`` and their lengths shaped ``(B,)``, followed by
                 :class:`CTCTimestampInputs` when ``return_ctc_timestamp_inputs`` is ``True``.
         """
-        if spk_targets is not None:
-            use_online = False
-        elif getattr(self, "online_inference_enabled", None) is not None:
+        if getattr(self, "online_inference_enabled", None) is not None:
             use_online = bool(self.online_inference_enabled) and self.online_inference_length > 0
-        elif self.online_inference_length > 0 and not self.training:
-            use_online = audio_signal.shape[-1] > self.chunk_feat_len
-        else:
+            if use_online and spk_targets is not None:
+                use_online = bool(self._missing_target_rows(spk_targets).all())
+        elif spk_targets is not None or self.training or self.online_inference_length <= 0:
             use_online = False
+        else:
+            use_online = audio_signal.shape[-1] > self.chunk_feat_len
         if return_ctc_timestamp_inputs:
             runner = (
                 self._forward_online_with_ctc_timestamp_inputs
@@ -1922,8 +1925,14 @@ class ParallelExpertEncoder(nn.Module):
         use_diarization = None
         if spk_targets is not None:
             use_diarization = self._missing_target_rows(spk_targets)
-            run_streaming_diar = bool(use_diarization.any().item())
+            missing_rows = use_diarization.cpu()  # one host transfer for both decisions
+            run_streaming_diar = bool(missing_rows.any())
             if not run_streaming_diar:
+                use_diarization = None
+            elif spk_targets.shape[1] > 0 and bool(missing_rows.all()):
+                # every row holds the sentinel, the spelling of "no targets": the predictions are used as they are,
+                # instead of aligning a sentinel tensor of the caller's width to the windowed grid first
+                spk_targets = None
                 use_diarization = None
 
         if run_streaming_diar:

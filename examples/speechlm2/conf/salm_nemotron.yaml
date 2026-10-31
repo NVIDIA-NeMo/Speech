@@ -143,7 +143,6 @@ data:
     sample_rate: ${data.train_ds.sample_rate}
     window_stride: 0.01  # preprocessor hop in seconds
     subsampling_factor: 8  # encoder frames per output frame
-    no_rttm_to_ones: true  # a row without speaker timing counts as one speaker throughout
 
   train_ds:
     seed: 42

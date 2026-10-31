@@ -610,7 +610,12 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         results = super().transcribe(audio=audio, override_config=trcfg)
 
         if trcfg.enable_chunking:
-            results = merge_all_hypotheses(results, trcfg.timestamps, self.encoder.subsampling_factor)
+            results = merge_all_hypotheses(
+                results,
+                trcfg.timestamps,
+                self.encoder.subsampling_factor,
+                window_stride=self.cfg['preprocessor']['window_stride'],
+            )
 
         return results
 

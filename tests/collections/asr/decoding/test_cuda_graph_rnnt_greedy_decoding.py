@@ -13,8 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
+import gc
 import glob
 import types
+from pathlib import Path
+from typing import Callable
 
 import lightning.pytorch as ptl
 import pytest
@@ -128,6 +131,79 @@ def test_conditional_node_restores_previous_stream_on_body_error(monkeypatch):
     assert fake_torch_cuda.current_stream(device="cuda") is fake_torch_cuda.parent_stream
     assert fake_torch_cuda.set_calls == [fake_torch_cuda.body_stream, fake_torch_cuda.parent_stream]
     assert fake_cudart.ended_streams == ["body"]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA decoder can run only on CUDA")
+@pytest.mark.parametrize(
+    "decoder_kind",
+    [
+        "rnnt_label_looping",
+        "tdt_label_looping",
+        "rnnt_frame_looping",
+        "rnnt_malsd",
+        "tdt_malsd",
+        "ctc_greedy_ngram_lm",
+        "ctc_beam",
+    ],
+)
+def test_full_graph_memory_survives_empty_cache(
+    decoder_kind: str, test_data_dir: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Memory allocated while capturing a full graph must stay mapped as long as the graph can be replayed."""
+    skip_cuda_python_test_if_cuda_graphs_conditional_nodes_not_supported()
+    decode = _full_graph_decode_fn(decoder_kind, test_data_dir)
+
+    def trace_length() -> int:
+        return len(torch.cuda.memory._snapshot()["device_traces"][torch.cuda.current_device()])
+
+    capture_bounds = []
+    capture_begin, capture_end = torch.cuda.CUDAGraph.capture_begin, torch.cuda.CUDAGraph.capture_end
+
+    def recording_capture_begin(graph: torch.cuda.CUDAGraph, *args, **kwargs) -> None:
+        capture_bounds.append(trace_length())
+        capture_begin(graph, *args, **kwargs)
+
+    def recording_capture_end(graph: torch.cuda.CUDAGraph) -> None:
+        capture_end(graph)
+        capture_bounds.append(trace_length())
+
+    monkeypatch.setattr(torch.cuda.CUDAGraph, "capture_begin", recording_capture_begin)
+    monkeypatch.setattr(torch.cuda.CUDAGraph, "capture_end", recording_capture_end)
+
+    torch.cuda.memory._record_memory_history(max_entries=100_000)
+    try:
+        with torch.inference_mode():
+            expected = decode()
+        torch.cuda.synchronize()
+        traces = torch.cuda.memory._snapshot()["device_traces"][torch.cuda.current_device()]
+    finally:
+        torch.cuda.memory._record_memory_history(enabled=None)
+    captured = [
+        entry["addr"]
+        for begin, end in zip(capture_bounds[::2], capture_bounds[1::2])
+        for entry in traces[begin:end]
+        if entry["action"] == "alloc"
+    ]
+    assert captured, "decoding did not capture a CUDA graph"
+
+    torch.cuda.empty_cache()
+    segments = torch.cuda.memory._snapshot()["segments"]
+    released = [
+        address
+        for address in captured
+        if not any(segment["address"] <= address < segment["address"] + segment["total_size"] for segment in segments)
+    ]
+    if released:
+        # A graph left alive over released memory can crash CUDA graph captures in later tests.
+        del decode
+        gc.collect()
+    assert not released, f"empty_cache() released {len(released)} of {len(captured)} allocations the graph uses"
+
+    with torch.inference_mode():
+        actual = decode()
+    assert len(actual) == len(expected)
+    assert all(torch.equal(output, expected_output) for output, expected_output in zip(actual, expected))
 
 
 @pytest.mark.with_downloads
@@ -367,3 +443,100 @@ def test_change_devices(loop_labels: bool, stt_en_fastconformer_transducer_large
     # Sanity check: The device we run on should not change execution
     # output.
     assert first_device_transcripts == second_device_transcripts
+
+
+def _full_graph_decode_fn(decoder_kind: str, test_data_dir: str) -> Callable[[], list[torch.Tensor]]:
+    """Build a decoder in full-graph mode and return a function that decodes the same random inputs on every call."""
+    from nemo.collections.asr.modules import RNNTDecoder, RNNTJoint
+    from nemo.collections.asr.parts.submodules.ctc_batched_beam_decoding import BatchedBeamCTCComputer
+    from nemo.collections.asr.parts.submodules.ctc_greedy_decoding import GreedyBatchedCTCInfer
+    from nemo.collections.asr.parts.submodules.cuda_graph_rnnt_greedy_decoding import RNNTGreedyDecodeCudaGraph
+    from nemo.collections.asr.parts.submodules.rnnt_greedy_decoding import GreedyBatchedRNNTInfer
+    from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import ModifiedALSDBatchedRNNTComputer
+    from nemo.collections.asr.parts.submodules.tdt_malsd_batched_computer import ModifiedALSDBatchedTDTComputer
+    from nemo.collections.asr.parts.submodules.transducer_decoding.rnnt_label_looping import (
+        GreedyBatchedRNNTLabelLoopingComputer,
+    )
+    from nemo.collections.asr.parts.submodules.transducer_decoding.tdt_label_looping import (
+        GreedyBatchedTDTLabelLoopingComputer,
+    )
+
+    torch.manual_seed(0)
+    lengths = torch.tensor([16, 5, 11, 8], device="cuda")
+
+    if decoder_kind == "ctc_greedy_ngram_lm":
+        lm_vocab_size = 1024
+        lm_path = Path(test_data_dir) / "asr/kenlm_ngram_lm/parakeet-tdt_ctc-110m-libri-1024.kenlm.tmp.arpa"
+        ctc_greedy = GreedyBatchedCTCInfer(
+            blank_id=lm_vocab_size, ngram_lm_model=str(lm_path), ngram_lm_alpha=0.2, allow_cuda_graphs=True
+        )
+        ctc_greedy.force_cuda_graphs_mode(mode="full_graph")
+        log_probs = torch.randn(4, 16, lm_vocab_size + 1, device="cuda").log_softmax(dim=-1)
+
+        def decode_ctc_greedy() -> list[torch.Tensor]:
+            (hyps,) = ctc_greedy(decoder_output=log_probs, decoder_lengths=lengths)
+            return [torch.as_tensor(hyp.y_sequence).clone() for hyp in hyps]
+
+        return decode_ctc_greedy
+
+    vocab_size, hidden_size, durations = 5, 8, [0, 1, 2, 4]
+    if decoder_kind == "ctc_beam":
+        ctc_beam = BatchedBeamCTCComputer(blank_index=vocab_size, beam_size=4, allow_cuda_graphs=True)
+        ctc_beam.force_cuda_graphs_mode(mode="full_graph")
+        log_probs = torch.randn(4, 16, vocab_size + 1, device="cuda").log_softmax(dim=-1)
+
+        def decode_ctc_beam() -> list[torch.Tensor]:
+            hyps = ctc_beam(log_probs, lengths)
+            return [hyps.scores.clone(), hyps.transcript_wb.clone()]
+
+        return decode_ctc_beam
+
+    decoder = RNNTDecoder(prednet={"pred_hidden": hidden_size, "pred_rnn_layers": 1}, vocab_size=vocab_size)
+    joint = RNNTJoint(
+        jointnet={
+            "encoder_hidden": hidden_size,
+            "pred_hidden": hidden_size,
+            "joint_hidden": hidden_size,
+            "activation": "relu",
+        },
+        num_classes=vocab_size,
+        num_extra_outputs=len(durations) if decoder_kind.startswith("tdt") else 0,
+    )
+    decoder, joint = decoder.cuda().eval(), joint.cuda().eval()
+    encoder_output = torch.randn(4, 16, hidden_size, device="cuda")
+
+    if decoder_kind == "rnnt_frame_looping":
+        frame_looping = GreedyBatchedRNNTInfer(
+            decoder_model=decoder,
+            joint_model=joint,
+            blank_index=vocab_size,
+            max_symbols_per_step=10,
+            loop_labels=False,
+            use_cuda_graph_decoder=True,
+        )
+        assert isinstance(frame_looping._greedy_decode, RNNTGreedyDecodeCudaGraph)
+
+        def decode_frame_looping() -> list[torch.Tensor]:
+            (hyps,) = frame_looping(encoder_output=encoder_output.transpose(1, 2), encoded_lengths=lengths)
+            return [torch.as_tensor(hyp.y_sequence).clone() for hyp in hyps]
+
+        return decode_frame_looping
+
+    common = dict(decoder=decoder, joint=joint, blank_index=vocab_size, max_symbols_per_step=10)
+    if decoder_kind == "rnnt_label_looping":
+        computer = GreedyBatchedRNNTLabelLoopingComputer(**common)
+    elif decoder_kind == "tdt_label_looping":
+        computer = GreedyBatchedTDTLabelLoopingComputer(durations=durations, **common)
+    elif decoder_kind == "rnnt_malsd":
+        computer = ModifiedALSDBatchedRNNTComputer(beam_size=4, allow_cuda_graphs=True, **common)
+    else:
+        computer = ModifiedALSDBatchedTDTComputer(durations=durations, beam_size=4, allow_cuda_graphs=True, **common)
+    computer.force_cuda_graphs_mode(mode="full_graph")
+
+    def decode_transducer() -> list[torch.Tensor]:
+        hyps, _ = computer(encoder_output, lengths)
+        if decoder_kind.endswith("malsd"):
+            return [hyps.scores.clone(), hyps.transcript_wb.clone()]
+        return [hyps.transcript.clone(), hyps.current_lengths.clone()]
+
+    return decode_transducer

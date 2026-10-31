@@ -299,6 +299,31 @@ def test_stt_offline_generation_with_asr(model_with_asr):
     assert (asr_tokens < model_with_asr.text_vocab_size).all()
 
 
+def test_stt_offline_generation_mixed_prompt_batch_matches_single_rows(model_with_asr):
+    """Each row of a batch where only some rows carry a prompt decodes like the row alone."""
+    model = model_with_asr.eval()
+    torch.manual_seed(0)
+    audio = torch.randn(2, 16000, device=model.device)
+    audio_lens = torch.tensor([16000, 16000], device=model.device)
+    prompt_tokens = torch.tensor([[0, 0, 0, 0], [5, 6, 7, 8]], device=model.device)
+    prompt_token_lens = torch.tensor([0, 4], device=model.device)
+
+    inference = model.streaming_inference
+    batched = inference.offline_inference(
+        audio, audio_lens, prompt_tokens=prompt_tokens, prompt_token_lens=prompt_token_lens
+    )
+    without_prompt = inference.offline_inference(audio[:1], audio_lens[:1])
+    with_prompt = inference.offline_inference(
+        audio[1:], audio_lens[1:], prompt_tokens=prompt_tokens[1:], prompt_token_lens=prompt_token_lens[1:]
+    )
+
+    for row, alone in ((0, without_prompt), (1, with_prompt)):
+        length = alone["tokens_len"][0]
+        assert batched["tokens_len"][row] == length
+        assert torch.equal(batched["tokens_text"][row, :length], alone["tokens_text"][0, :length])
+        assert torch.equal(batched["tokens_text_src"][row, :length], alone["tokens_text_src"][0, :length])
+
+
 def test_trailing_pad_loss_scale_is_masked(dataset, training_cutset_batch):
     """Test that trailing pad positions (from batching) have loss_scale=0 when token_loss_weight is set."""
     model = create_model(predict_user_text=True)

@@ -1923,12 +1923,75 @@ def test_high_resolution_fusion_pools_offline_but_not_aligned_online_predictions
     aligned_predictions = encoder.diarization_model.sortformer_modules.downsample_preds(
         fine_predictions, _SUBSAMPLING_FACTOR
     )
+    use_diarization = torch.ones(1, dtype=torch.bool)
 
-    offline_fused = encoder._fuse_diar_and_asr(asr_states, fine_predictions)
-    online_fused = encoder._fuse_diar_and_asr(asr_states, aligned_predictions)
+    offline_fused = encoder._fuse_diar_and_asr(
+        asr_states,
+        torch.zeros_like(aligned_predictions),
+        diarization_preds=fine_predictions,
+        use_diarization=use_diarization,
+    )
+    online_fused = encoder._fuse_diar_and_asr(
+        asr_states,
+        torch.zeros_like(aligned_predictions),
+        diarization_preds=aligned_predictions,
+        use_diarization=use_diarization,
+    )
 
     assert aligned_predictions.shape[1] == asr_states.shape[-1]
     torch.testing.assert_close(offline_fused, online_fused)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("extra_frames", [1, 6, _SUBSAMPLING_FACTOR])
+def test_high_resolution_fusion_cuts_external_targets_past_the_asr_grid(extra_frames):
+    """External targets live on the ASR grid: a rounding tail past it is cut, never pooled as native output."""
+    diarization_config = toy_diarization_model_cfg()
+    diarization_config.high_resolution = True
+    encoder = build_toy_pe_encoder(diarization_model_cfg=diarization_config).eval()
+    asr_states = torch.randn(2, _ASR_D_MODEL, 3)
+    spk_targets = torch.rand(2, 3 + extra_frames, _N_SPK)
+
+    fused = encoder._fuse_diar_and_asr(asr_states, spk_targets)
+    speaker_probs = encoder._timestamp_speaker_probs(spk_targets, None, None, asr_states.shape[-1])
+
+    torch.testing.assert_close(fused, encoder._fuse_diar_and_asr(asr_states, spk_targets[:, :3]))
+    torch.testing.assert_close(speaker_probs, spk_targets[:, :3])
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("high_resolution", [False, True])
+def test_fusion_rejects_external_targets_on_another_grid(high_resolution):
+    """Targets far longer than the ASR grid (native 10 ms frames here) fail loudly instead of being cut."""
+    diarization_config = toy_diarization_model_cfg()
+    diarization_config.high_resolution = high_resolution
+    encoder = build_toy_pe_encoder(diarization_model_cfg=diarization_config).eval()
+    asr_states = torch.randn(2, _ASR_D_MODEL, 3)
+    spk_targets = torch.rand(2, 3 * _SUBSAMPLING_FACTOR, _N_SPK)
+
+    with pytest.raises(ValueError, match="ASR output grid"):
+        encoder._fuse_diar_and_asr(asr_states, spk_targets)
+    with pytest.raises(ValueError, match="ASR output grid"):
+        encoder._timestamp_speaker_probs(spk_targets, None, None, asr_states.shape[-1])
+
+
+@pytest.mark.unit
+def test_pe_encoder_high_resolution_accepts_external_targets_one_frame_past_the_asr_grid():
+    """A collated target length that overruns the ASR grid by rounding runs like the targets cut to the grid."""
+    diarization_config = toy_diarization_model_cfg()
+    diarization_config.high_resolution = True
+    encoder = build_toy_pe_encoder(diarization_model_cfg=diarization_config).eval()
+    mels = torch.randn(2, _MEL_FEATURES, 400)
+    lengths = torch.tensor([400, 327])
+
+    with torch.no_grad():
+        reference, reference_len = encoder(mels, lengths)
+        spk_targets = torch.rand(2, reference.shape[-1] + 1, _N_SPK)
+        fused, fused_len = encoder(mels, lengths, spk_targets=spk_targets)
+        fused_cut, _ = encoder(mels, lengths, spk_targets=spk_targets[:, :-1])
+
+    assert torch.equal(fused_len, reference_len)
+    torch.testing.assert_close(fused, fused_cut)
 
 
 @pytest.mark.unit

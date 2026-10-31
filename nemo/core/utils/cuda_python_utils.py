@@ -263,11 +263,11 @@ def run_nvrtc(kernel_string: str, kernel_name: bytes, program_name: bytes):
     # Get PTX from compilation
     err, ptxSize = nvrtc.nvrtcGetPTXSize(prog)
     assert_drv(err)
-    ptx = b" " * ptxSize
+    ptx = bytearray(ptxSize)
     (err,) = nvrtc.nvrtcGetPTX(prog, ptx)
     assert_drv(err)
 
-    ptx = np.char.array(ptx)
+    ptx = np.char.array(bytes(ptx))
     err, module = cuda.cuModuleLoadData(ptx.ctypes.data)
     assert_drv(err)
     err, kernel = cuda.cuModuleGetFunction(module, kernel_name)

@@ -52,6 +52,7 @@ from nemo.collections.asr.inference.utils.pipeline_utils import (
     get_confidence_utils,
 )
 from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import ModifiedALSDBatchedRNNTComputer
+from nemo.collections.asr.parts.utils.prompt_language_utils import resolve_prompt_language
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.utils import logging
 
@@ -121,7 +122,10 @@ class CacheAwareRNNTPipeline(BasePipeline):
         # Language prompt for multilingual models, taken from the top-level `lang` field.
         self.strip_lang_tags = cfg.asr.get("strip_lang_tags", True)
         if self.prompt_enabled:
-            self.default_language_code = cfg.get("lang", None) or self._resolve_default_language_code()
+            # Validated up front, so an unsupported `lang` fails before streaming starts; None selects "auto".
+            self.default_language_code = resolve_prompt_language(
+                cfg.get("lang", None), self._prompt_config['prompt_dict']
+            )
             logging.info(f"Multilingual ASR model: conditioning on language '{self.default_language_code}'.")
         else:
             self.default_language_code = None
@@ -188,6 +192,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.return_tail_result = cfg.return_tail_result
 
         self.request_type = RequestType.from_str(cfg.streaming.request_type)
+        self.flush_size_in_secs = cfg.streaming.get("flush_size_in_secs", 0.0)  # 0.0 disables
 
     def init_greedy_rnnt_decoder(self) -> None:
         """Initialize the RNNT decoder."""
@@ -249,10 +254,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         # Create per-stream prompt index for prompt-enabled models
         if self.prompt_enabled:
-            lang_code = getattr(new_options, "language_code", None)
-            if not isinstance(lang_code, str) or len(lang_code) == 0:
-                raise ValueError("Prompt-enabled model requires a valid language_code in request options.")
-            prompt_idx = self._resolve_prompt_index(lang_code)
+            prompt_idx = self._resolve_prompt_index(getattr(new_options, "language_code", None))
             state.set_prompt_index(prompt_idx)
 
         return state
@@ -617,6 +619,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             buffer_size_in_secs=self.buffer_size_in_secs,
             device=self.device,
             pad_last_frame=True,
+            flush_size_in_secs=self.flush_size_in_secs,
         )
         return request_generator
 

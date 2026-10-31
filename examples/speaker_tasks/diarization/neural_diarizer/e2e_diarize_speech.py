@@ -25,14 +25,19 @@ https://docs.nvidia.com/nemo-framework/user-guide/latest/nemotoolkit
 
 Usage for diarization inference:
 
-The end-to-end speaker diarization model can be specified by "model_path".
+The end-to-end speaker diarization model can be specified by "model_path" or "pretrained_name".
 Data for diarization is fed through the "dataset_manifest".
 By default, post-processing is bypassed, and only binarization is performed.
 If you want to reproduce DER scores reported on NeMo model cards, you need to apply post-processing steps.
 Use batch_size = 1 to have the longest inference window and the highest possible accuracy.
 
 python $BASEPATH/neural_diarizer/e2e_diarize_speech.py \
-    model_path=/path/to/diar_sortformer_4spk_v1.nemo \
+    model_path=/path/to/diar_streaming_sortformer_4spk_v2.1.nemo \
+    batch_size=1 \
+    dataset_manifest=/path/to/diarization_manifest.json
+
+python $BASEPATH/neural_diarizer/e2e_diarize_speech.py \
+    pretrained_name=nvidia/diar_streaming_sortformer_4spk-v2.1 \
     batch_size=1 \
     dataset_manifest=/path/to/diarization_manifest.json
 
@@ -76,7 +81,8 @@ torch.backends.cudnn.deterministic = True
 class DiarizationConfig:
     """Diarization configuration parameters for inference."""
 
-    model_path: Optional[str] = None  # Path to a .nemo file
+    model_path: Optional[str] = None  # Path to a local .ckpt or .nemo file
+    pretrained_name: Optional[str] = None  # Hugging Face pretrained model name
     dataset_manifest: Optional[str] = None  # Path to dataset's JSON manifest
     presort_manifest: Optional[bool] = True
 
@@ -102,7 +108,7 @@ class DiarizationConfig:
     # Total padded-audio duration threshold, in seconds, for feature extraction.
     # Above it, batches are split along the batch dimension; <= 0 disables splitting.
     # Lower this value for feature-extraction OOMs.
-    max_batch_dur: float = 100000
+    max_batch_dur: float = 36000
 
     # Eval Settings: (0.25, False) should be default setting for sortformer eval.
     collar: float = 0.25  # Collar in seconds for DER calculation
@@ -171,8 +177,10 @@ def get_tensor_path(cfg: DiarizationConfig) -> tuple[Optional[str], str, str]:
         tensor_filename (str): Manifest-derived identifier used in the prediction tensor filename.
     """
     tensor_filename = os.path.basename(cfg.dataset_manifest).replace("manifest.", "").replace(".json", "")
-    model_path = Path(cfg.model_path).expanduser().absolute()
-    model_id = model_path.name.replace(".ckpt", "").replace(".nemo", "")
+    model_source = getattr(cfg, "model_path", None) or getattr(cfg, "pretrained_name", None)
+    if model_source is None:
+        raise ValueError("Either model_path or pretrained_name must be specified.")
+    model_id = Path(model_source).name.replace(".ckpt", "").replace(".nemo", "")
     model_id = f"{model_id}_sf{cfg.output_subsampling_factor}"
     if cfg.out_preds_tensors:
         tensor_path = Path(cfg.out_preds_tensors).expanduser().absolute()
@@ -280,6 +288,28 @@ def run_optuna_hyperparam_search(
     study.optimize(worker_function, n_trials=cfg.optuna_n_trials)
 
 
+def load_diarization_model(
+    model_path: Optional[str],
+    pretrained_name: Optional[str],
+    map_location: torch.device,
+) -> SortformerEncLabelModel:
+    """Load a Sortformer diarization model from a local checkpoint or a pretrained model registry."""
+    if (model_path is None) == (pretrained_name is None):
+        raise ValueError("Specify exactly one of model_path or pretrained_name.")
+
+    if model_path is not None:
+        if model_path.endswith(".ckpt"):
+            return SortformerEncLabelModel.load_from_checkpoint(
+                checkpoint_path=model_path, map_location=map_location, strict=False
+            )
+        if model_path.endswith(".nemo"):
+            return SortformerEncLabelModel.restore_from(restore_path=model_path, map_location=map_location)
+        raise ValueError("model_path must end with .ckpt or .nemo.")
+
+    logging.info("Loading pretrained diarization model %s", pretrained_name)
+    return SortformerEncLabelModel.from_pretrained(model_name=pretrained_name, map_location=map_location)
+
+
 @hydra_runner(config_name="DiarizationConfig", schema=DiarizationConfig)
 def main(cfg: DiarizationConfig) -> Union[DiarizationConfig]:
     """Main function for end-to-end speaker diarization inference."""
@@ -291,9 +321,6 @@ def main(cfg: DiarizationConfig) -> Union[DiarizationConfig]:
 
     if cfg.random_seed:
         pl.seed_everything(cfg.random_seed)
-
-    if cfg.model_path is None:
-        raise ValueError("cfg.model_path cannot be None. Please specify the path to the model.")
 
     # setup GPU
     torch.set_float32_matmul_precision(cfg.matmul_precision)
@@ -311,14 +338,11 @@ def main(cfg: DiarizationConfig) -> Union[DiarizationConfig]:
         accelerator = 'gpu'
         map_location = torch.device(f'cuda:{cfg.cuda}')
 
-    if cfg.model_path.endswith(".ckpt"):
-        diar_model = SortformerEncLabelModel.load_from_checkpoint(
-            checkpoint_path=cfg.model_path, map_location=map_location, strict=False
-        )
-    elif cfg.model_path.endswith(".nemo"):
-        diar_model = SortformerEncLabelModel.restore_from(restore_path=cfg.model_path, map_location=map_location)
-    else:
-        raise ValueError("cfg.model_path must end with.ckpt or.nemo!")
+    diar_model = load_diarization_model(
+        model_path=cfg.model_path,
+        pretrained_name=cfg.pretrained_name,
+        map_location=map_location,
+    )
 
     diar_model.max_batch_dur = cfg.max_batch_dur
 

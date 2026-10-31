@@ -34,9 +34,10 @@ metadata is unavailable and loading a non-meta checkpoint is acceptable.
 
 Pass ``--config`` when available so the script can resolve the training blend,
 recover desired blend weights, dataset names, and count indexed examples from
-``.idx`` sidecars. Use ``--indexes-root`` when the sidecars live in a mirrored
-index tree instead of next to the manifests/tars. ``--state-json`` is a debugging
-escape hatch for analyzing an already-extracted payload without importing torch.
+``.idx`` sidecars or dataset-level ``.idxpack`` catalogs. Use ``--indexes-root``
+or ``--index-pack-root`` when they live in a mirror instead of next to the
+manifests/tars. ``--state-json`` is a debugging escape hatch for analyzing an
+already-extracted payload without importing torch.
 
 Outputs
 -------
@@ -74,7 +75,14 @@ except ImportError as exc:  # pragma: no cover - startup guard
 BRACE_RANGE_PATTERN = re.compile(r"\{(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?\}")
 EVAL_STEP_PATTERN = re.compile(r"eval-step-(\d+)$")
 STATEFUL_KEY = "train_dataloader_per_rank"
-POSITION_KEYS = {"position", "shard_id", "num_shards"}
+LEGACY_POSITION_KEYS = {"position", "shard_id", "num_shards"}
+PACKED_POSITION_KEYS = {
+    "global_position",
+    "global_shard_id",
+    "global_num_shards",
+    "num_iters",
+}
+POSITION_KEYS = LEGACY_POSITION_KEYS | PACKED_POSITION_KEYS
 INDEX_DIR_CACHE: dict[str, dict[str, int] | None] = {}
 
 
@@ -87,12 +95,17 @@ INDEX_DIR_CACHE: dict[str, dict[str, int] | None] = {}
 class DatasetSpec:
     source_index: int
     name: str
+    tags: dict[str, Any] = field(default_factory=dict)
     desired_weight: float | None = None
     raw_weight: float | None = None
     hours: float | None = None
     kind: str | None = None
     source_path: str | None = None
     total_items: int | None = None
+    index_pack_path: str | None = None
+    index_pack_collection_keys: list[str] = field(default_factory=list)
+    matched_index_pack_collection_key: str | None = None
+    packed_shard_lengths: list[int] | None = None
     missing_index_paths: list[str] = field(default_factory=list)
 
 
@@ -108,6 +121,8 @@ class LeafProgress:
     num_shards: int | None
     total_len: int | None
     state_path: str
+    packed_current_shard: int | None = None
+    packed_current_position: int | None = None
 
 
 @dataclass
@@ -143,7 +158,9 @@ def collect_dataset_specs(
     *,
     config_path: Path | None,
     indexes_root: str | None,
-    data_blend_dir: str | None,
+    index_pack_root: str | None = None,
+    default_index_pack_root: str | None = None,
+    data_blend_dir: str | None = None,
 ) -> list[DatasetSpec]:
     """Resolve training blend leaves into ordered dataset specs.
 
@@ -161,6 +178,13 @@ def collect_dataset_specs(
         raw_dir = config.get("data_blend_dir")
         if isinstance(raw_dir, str):
             data_blend_dir = raw_dir
+    explicit_index_pack_root = index_pack_root
+    if index_pack_root is None:
+        raw_pack_root = train_ds.get("index_pack_root")
+        if isinstance(raw_pack_root, str):
+            index_pack_root = raw_pack_root
+        else:
+            index_pack_root = default_index_pack_root
     current_dir = config_path.parent if config_path is not None else None
     temps = _temperature_list(train_ds)
     leaves: list[dict[str, Any]] = []
@@ -177,7 +201,7 @@ def collect_dataset_specs(
             merged = dict(inherited)
             for key, value in node.items():
                 if key not in ("input_cfg", "weight"):
-                    merged.setdefault(key, value)
+                    merged[key] = value
             if "input_cfg" in node:
                 child = node["input_cfg"]
                 recurse(child, cumulative_weight, level, next_dir, merged)
@@ -220,19 +244,31 @@ def collect_dataset_specs(
                 break
             missing.extend(group_missing[:20])
         source_path = paths[0] if paths else None
+        leaf_index_pack_root = leaf.get("index_pack_root")
+        effective_index_pack_root = (
+            explicit_index_pack_root
+            or (str(leaf_index_pack_root) if leaf_index_pack_root is not None else None)
+            or index_pack_root
+        )
+        tags = leaf.get("tags")
+        tags = dict(tags) if isinstance(tags, dict) else {}
         specs.append(
             DatasetSpec(
                 source_index=idx,
                 name=_dataset_name(leaf, source_path, idx),
+                tags=tags,
                 desired_weight=_safe_float(leaf.get("_desired_weight")),
                 raw_weight=_safe_float(leaf.get("_raw_weight")),
                 hours=_safe_float(leaf.get("hours")),
                 kind=str(leaf.get("type")) if leaf.get("type") is not None else None,
                 source_path=source_path,
                 total_items=total_items,
+                index_pack_path=_resolve_index_pack_path(leaf.get("index_pack"), effective_index_pack_root),
+                index_pack_collection_keys=_index_pack_collection_keys(leaf),
                 missing_index_paths=missing[:20],
             )
         )
+    _fill_totals_from_index_packs(specs)
     return specs
 
 
@@ -257,14 +293,24 @@ def extract_progress(payload: Any) -> tuple[list[LeafProgress], list[str]]:
                 inner_state = entry.get("state", entry)
                 for sampler_path, sampler_state in _find_sampler_states(inner_state, f"{state_path}[{idx}].state"):
                     worker = _worker_from_path(sampler_path)
-                    progress.extend(
-                        _collect_leaves_from_sampler(sampler_state, rank=rank, worker=worker, path=sampler_path)
+                    sampler_progress, _ = _collect_leaves_from_sampler(
+                        sampler_state,
+                        rank=rank,
+                        worker=worker,
+                        path=sampler_path,
                     )
+                    progress.extend(sampler_progress)
     else:
         notes.append(f"no {STATEFUL_KEY!r} payload found; scanning for raw sampler_state entries")
         for sampler_path, sampler_state in _find_sampler_states(payload):
             worker = _worker_from_path(sampler_path)
-            progress.extend(_collect_leaves_from_sampler(sampler_state, rank=None, worker=worker, path=sampler_path))
+            sampler_progress, _ = _collect_leaves_from_sampler(
+                sampler_state,
+                rank=None,
+                worker=worker,
+                path=sampler_path,
+            )
+            progress.extend(sampler_progress)
     progress, removed = _deduplicate_progress(progress)
     if removed:
         notes.append(f"deduplicated {removed} duplicate leaf progress state(s)")
@@ -289,7 +335,8 @@ def summarize(progress: list[LeafProgress], specs: list[DatasetSpec]) -> list[Su
         total_len = next((leaf.total_len for leaf in leaves if leaf.total_len is not None), None)
         if total_len is None and spec is not None:
             total_len = spec.total_items
-        values = [_consumed_items(leaf, total_len) for leaf in leaves]
+        packed_shard_lengths = spec.packed_shard_lengths if spec is not None else None
+        values = [_consumed_items(leaf, total_len, packed_shard_lengths=packed_shard_lengths) for leaf in leaves]
         consumed = sum(v for v in values if v is not None) if all(v is not None for v in values) else None
         consumed_by_index[source_index] = consumed
         if consumed is not None:
@@ -321,6 +368,10 @@ def summarize(progress: list[LeafProgress], specs: list[DatasetSpec]) -> list[Su
             notes.append("missing total; provide --indexes-root or a config with indexed sidecars")
         elif spec.missing_index_paths:
             notes.append(f"{len(spec.missing_index_paths)} missing index path(s)")
+        if any(leaf.packed_current_shard is not None for leaf in leaves) and (
+            spec is None or spec.packed_shard_lengths is None
+        ):
+            notes.append("sequential packed progress requires a matching index-pack collection")
         rows.append(
             SummaryRow(
                 source_index=source_index,
@@ -455,7 +506,7 @@ def write_outputs(summary: dict[str, Any], rows: list[SummaryRow], args: argpars
     if md_path is not None:
         md_path.parent.mkdir(parents=True, exist_ok=True)
         body = [
-            f"# Resumable Dataloader Checkpoint Analysis",
+            "# Resumable Dataloader Checkpoint Analysis",
             "",
             f"- checkpoint: `{summary['checkpoint_input']}`",
             f"- metadata_loaded: `{summary.get('checkpoint_metadata_loaded')}`",
@@ -484,6 +535,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", help="Training YAML/JSON for desired weights and source index totals.")
     parser.add_argument("--data-blend-dir", help="Override ${data_blend_dir} while resolving nested blend YAMLs.")
     parser.add_argument("--indexes-root", help="Root containing mirrored .idx sidecars, e.g. /tmp/idx.")
+    parser.add_argument(
+        "--index-pack-root",
+        help="Explicit override for the root containing dataset-level .idxpack files.",
+    )
+    parser.add_argument(
+        "--default-index-pack-root",
+        help="Fallback .idxpack root used only when the training config does not pin one.",
+    )
     parser.add_argument("--output-dir", help="Directory for summary.json/summary.md/summary.csv.")
     parser.add_argument("--output-json", help="Explicit JSON output path.")
     parser.add_argument("--output-md", help="Explicit Markdown output path.")
@@ -520,6 +579,8 @@ def main() -> int:
         config,
         config_path=loaded_config_path,
         indexes_root=args.indexes_root,
+        index_pack_root=args.index_pack_root,
+        default_index_pack_root=args.default_index_pack_root,
         data_blend_dir=args.data_blend_dir,
     )
     if specs and len(specs) != len({leaf.source_index for leaf in progress}):
@@ -533,6 +594,8 @@ def main() -> int:
         "checkpoint_metadata_loaded": str(loaded_path) if loaded_path else None,
         "config_path": str(loaded_config_path) if loaded_config_path else None,
         "indexes_root": args.indexes_root,
+        "index_pack_root": args.index_pack_root,
+        "default_index_pack_root": args.default_index_pack_root,
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "notes": notes,
         "num_leaf_progress_states": len(progress),
@@ -622,6 +685,92 @@ def _indexed_file_size(idx_path: Path) -> int | None:
     if entries is None:
         return None
     return entries.get(idx_path.name)
+
+
+def _resolve_index_pack_path(index_pack: Any, index_pack_root: str | None) -> str | None:
+    if not isinstance(index_pack, str) or not index_pack:
+        return None
+    expanded = Path(os.path.expandvars(index_pack))
+    if expanded.is_absolute():
+        return str(expanded)
+    if index_pack_root:
+        return str(Path(os.path.expandvars(index_pack_root)) / expanded)
+    return str(expanded)
+
+
+def _index_pack_collection_keys(item: dict[str, Any]) -> list[str]:
+    """Return exact runtime collection identities for one packed leaf.
+
+    Adapters derive collection keys from the unexpanded source declaration,
+    not from the concrete first shard path. Keep the same role/kind/source-spec
+    triples here so catalog lookup cannot silently depend on insertion order.
+    """
+    try:
+        from lhotse.index_pack import index_pack_collection_key
+    except ImportError:
+        return []
+
+    identities: list[tuple[str, str, Any]] = []
+    if item.get("manifest_filepath") is not None:
+        identities.append(("manifest", "jsonl", item["manifest_filepath"]))
+    if item.get("paths") is not None:
+        # A path collection may contain JSONL or tar inputs. Exact pack-key
+        # matching below selects the one identity actually present.
+        identities.extend(
+            [
+                ("paths", "jsonl", item["paths"]),
+                ("paths", "nemo_tar", item["paths"]),
+            ]
+        )
+    if item.get("data_dir") is not None:
+        identities.append(("wds_tar", "wds_tar_v2", item["data_dir"]))
+    return [index_pack_collection_key(role, kind, source_spec).hex() for role, kind, source_spec in identities]
+
+
+def _fill_totals_from_index_packs(specs: list[DatasetSpec]) -> None:
+    """Fill exact leaf lengths from dataset-level index-pack catalogs.
+
+    Packed iterators do not serialize their collection length. Resolve each
+    collection by the same stable source-spec key used by its runtime adapter;
+    never infer identity from catalog or config insertion order.
+    """
+    grouped: dict[str, list[DatasetSpec]] = {}
+    for spec in specs:
+        if spec.index_pack_path:
+            grouped.setdefault(spec.index_pack_path, []).append(spec)
+    if not grouped:
+        return
+    try:
+        from lhotse.index_pack import open_index_pack
+    except ImportError:
+        return
+
+    for pack_path, pack_specs in grouped.items():
+        path = Path(pack_path)
+        if not path.is_file():
+            continue
+        try:
+            pack = open_index_pack(path)
+        except (OSError, ValueError):
+            continue
+        for spec in pack_specs:
+            matches = []
+            for collection_key in spec.index_pack_collection_keys:
+                try:
+                    collection = pack.collection(collection_key)
+                except KeyError:
+                    continue
+                matches.append((collection_key, collection))
+            if len(matches) != 1:
+                # No identity match means this adapter is not supported here;
+                # multiple matches indicate an invalid heterogeneous source.
+                continue
+            collection_key, collection = matches[0]
+            spec.total_items = len(collection)
+            spec.matched_index_pack_collection_key = collection_key
+            spec.packed_shard_lengths = [
+                collection.shard_length(shard_index) for shard_index in range(collection.sequence_count)
+            ]
 
 
 def _fallback_brace_expand(path: str) -> list[str]:
@@ -855,16 +1004,40 @@ def _leaf_from_state(
     node_type: str,
     state: dict[str, Any],
 ) -> LeafProgress | None:
-    if not POSITION_KEYS.issubset(state.keys()):
+    packed_current_shard = None
+    packed_current_position = None
+    if LEGACY_POSITION_KEYS.issubset(state):
+        position = state.get("position")
+        epoch = state.get("epoch", 0)
+        shard_id = state.get("shard_id")
+        num_shards = state.get("num_shards")
+    elif PACKED_POSITION_KEYS.issubset(state):
+        epoch = state.get("num_iters", 0)
+        shard_id = state.get("global_shard_id")
+        num_shards = state.get("global_num_shards")
+        if (
+            state.get("global_seed") is None
+            and isinstance(state.get("current_iter_idx"), int)
+            and isinstance(state.get("packed_current_position"), int)
+        ):
+            packed_current_shard = state["current_iter_idx"]
+            packed_current_position = state["packed_current_position"]
+            position = packed_current_position
+            node_type = f"{node_type}/packed-sequential"
+        elif state.get("global_seed") is not None:
+            position = state.get("global_position")
+            node_type = f"{node_type}/packed-global"
+        else:
+            # LazyIteratorChain serializes global_* fields in sequential mode
+            # but does not expose enough per-shard information to decode them.
+            # Reserve its source index rather than falsely reporting 0%.
+            return None
+    else:
         return None
-    position = state.get("position")
     if not isinstance(position, int):
         return None
-    epoch = state.get("epoch", 0)
     if not isinstance(epoch, int):
         epoch = 0
-    shard_id = state.get("shard_id")
-    num_shards = state.get("num_shards")
     return LeafProgress(
         source_index=source_index,
         rank=rank,
@@ -876,27 +1049,66 @@ def _leaf_from_state(
         num_shards=num_shards if isinstance(num_shards, int) else None,
         total_len=_state_total_len(state),
         state_path=path,
+        packed_current_shard=packed_current_shard,
+        packed_current_position=packed_current_position,
     )
 
 
-def _collect_leaf_states(tree: Any, *, rank: int | None, worker: str | None, path: str = "$") -> list[LeafProgress]:
+def _looks_like_terminal_progress_state(state: dict[str, Any]) -> bool:
+    """Return true for an unrecognized terminal iterator progress schema.
+
+    This intentionally reserves a structural source index even when a future
+    iterator schema cannot yet be decoded. Otherwise every later source is
+    silently assigned to the wrong dataset name.
+    """
+    if "source" in state or "sources" in state:
+        return False
+    return bool(POSITION_KEYS.intersection(state))
+
+
+def _collect_leaf_states_with_span(
+    tree: Any,
+    *,
+    rank: int | None,
+    worker: str | None,
+    path: str = "$",
+    source_offset: int = 0,
+) -> tuple[list[LeafProgress], int]:
     leaves: list[LeafProgress] = []
+    next_source_index = source_offset
 
     def walk(node: Any, node_path: str) -> None:
+        nonlocal next_source_index
         if isinstance(node, dict):
             node_type = str(node.get("_type", "state"))
             state = node.get("_state")
             if isinstance(state, dict):
-                leaf = _leaf_from_state(len(leaves), rank, worker, f"{node_path}._state", node_type, state)
+                leaf = _leaf_from_state(
+                    next_source_index,
+                    rank,
+                    worker,
+                    f"{node_path}._state",
+                    node_type,
+                    state,
+                )
                 if leaf is not None:
                     leaves.append(leaf)
+                    next_source_index += 1
                     return
-                for key in ("source", "sources"):
-                    if key in state:
-                        walk(state[key], f"{node_path}._state.{key}")
-            leaf = _leaf_from_state(len(leaves), rank, worker, node_path, node_type, node)
+                if _looks_like_terminal_progress_state(state):
+                    next_source_index += 1
+                    return
+                # Traverse the state once. The old implementation also walked
+                # it again through the parent dict and doubled every leaf.
+                walk(state, f"{node_path}._state")
+                return
+            leaf = _leaf_from_state(next_source_index, rank, worker, node_path, node_type, node)
             if leaf is not None:
                 leaves.append(leaf)
+                next_source_index += 1
+                return
+            if _looks_like_terminal_progress_state(node):
+                next_source_index += 1
                 return
             for child_path, child in _iter_children(node, node_path):
                 walk(child, child_path)
@@ -905,35 +1117,49 @@ def _collect_leaf_states(tree: Any, *, rank: int | None, worker: str | None, pat
                 walk(child, child_path)
 
     walk(tree, path)
+    return leaves, next_source_index - source_offset
+
+
+def _collect_leaf_states(tree: Any, *, rank: int | None, worker: str | None, path: str = "$") -> list[LeafProgress]:
+    leaves, _ = _collect_leaf_states_with_span(tree, rank=rank, worker=worker, path=path)
     return leaves
 
 
 def _collect_leaves_from_sampler(
-    sampler_state: dict[str, Any], *, rank: int | None, worker: str | None, path: str
-) -> list[LeafProgress]:
+    sampler_state: dict[str, Any],
+    *,
+    rank: int | None,
+    worker: str | None,
+    path: str,
+    source_offset: int = 0,
+) -> tuple[list[LeafProgress], int]:
     leaves: list[LeafProgress] = []
+    next_source_index = source_offset
     nested = sampler_state.get("samplers") or sampler_state.get("bucket_samplers")
     if isinstance(nested, list):
         for idx, sub in enumerate(nested):
             if isinstance(sub, dict):
-                leaves.extend(
-                    _collect_leaves_from_sampler(
-                        sub,
-                        rank=rank,
-                        worker=worker,
-                        path=f"{path}.samplers[{idx}]",
-                    )
+                sub_leaves, span = _collect_leaves_from_sampler(
+                    sub,
+                    rank=rank,
+                    worker=worker,
+                    path=f"{path}.samplers[{idx}]",
+                    source_offset=next_source_index,
                 )
+                leaves.extend(sub_leaves)
+                next_source_index += span
         if leaves:
-            for idx, leaf in enumerate(leaves):
-                leaf.source_index = idx
-            return leaves
+            return leaves, next_source_index - source_offset
     cuts_state = sampler_state.get("cuts_state")
     if cuts_state is not None:
-        leaves = _collect_leaf_states(cuts_state, rank=rank, worker=worker, path=f"{path}.cuts_state")
-        for idx, leaf in enumerate(leaves):
-            leaf.source_index = idx
-    return leaves
+        return _collect_leaf_states_with_span(
+            cuts_state,
+            rank=rank,
+            worker=worker,
+            path=f"{path}.cuts_state",
+            source_offset=source_offset,
+        )
+    return leaves, next_source_index - source_offset
 
 
 def _deduplicate_progress(progress: list[LeafProgress]) -> tuple[list[LeafProgress], int]:
@@ -956,7 +1182,37 @@ def _shard_len(total_len: int, shard_id: int | None, num_shards: int | None) -> 
     return (total_len - shard_id + num_shards - 1) // num_shards
 
 
-def _consumed_items(leaf: LeafProgress, total_len: int | None) -> int | None:
+def _consumed_items(
+    leaf: LeafProgress,
+    total_len: int | None,
+    *,
+    packed_shard_lengths: list[int] | None = None,
+) -> int | None:
+    if leaf.packed_current_shard is not None:
+        if (
+            packed_shard_lengths is None
+            or leaf.packed_current_position is None
+            or leaf.shard_id is None
+            or leaf.num_shards is None
+            or leaf.num_shards <= 0
+            or not 0 <= leaf.packed_current_shard <= len(packed_shard_lengths)
+        ):
+            return None
+        partitioned_lengths = [_shard_len(length, leaf.shard_id, leaf.num_shards) for length in packed_shard_lengths]
+        if any(length is None for length in partitioned_lengths):
+            return None
+        current_shard = leaf.packed_current_shard
+        current_position = leaf.packed_current_position
+        if current_position < 0:
+            return None
+        if current_shard == len(partitioned_lengths):
+            if current_position != 0:
+                return None
+        elif current_position > partitioned_lengths[current_shard]:
+            return None
+        partition_total = sum(partitioned_lengths)
+        return leaf.epoch * partition_total + sum(partitioned_lengths[:current_shard]) + current_position
+
     total = leaf.total_len if leaf.total_len is not None else total_len
     if total is None:
         if leaf.epoch == 0:

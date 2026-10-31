@@ -26,6 +26,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
+from nemo.collections.common.data.lhotse.audio_loading import LhotseAudioLoadingDatasetMixin
 from nemo.collections.common.tokenizers.aggregate_tokenizer import TokenizerWrapper
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
@@ -73,7 +74,7 @@ class RandomPaddingConfig:
     post_pad_duration: float = 3.0  # amount of right-padding when pad_distribution='constant'
 
 
-class LhotseSpeechToTextBpeEOUDataset(torch.utils.data.Dataset):
+class LhotseSpeechToTextBpeEOUDataset(LhotseAudioLoadingDatasetMixin, torch.utils.data.Dataset):
     """
     This dataset processes the audio data and the corresponding text data to generate the ASR labels,
     along with EOU labels for each frame. The audios used in this dataset should only contain speech with
@@ -206,7 +207,7 @@ class LhotseSpeechToTextBpeEOUDataset(torch.utils.data.Dataset):
             )
 
     def __getitem__(self, cuts: CutSet) -> AudioToTextEOUBatch:
-        audio, audio_lens, cuts = self.load_audio(cuts)
+        audio, audio_lens, cuts = self.load_audio_with_cuts(cuts)
         audio_signals = []
         audio_lengths = []
         eou_targets = []

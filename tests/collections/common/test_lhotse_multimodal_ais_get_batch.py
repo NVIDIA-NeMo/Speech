@@ -21,14 +21,16 @@ exercised — we validate cut metadata and loader-call semantics only.
 
 import tarfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import lhotse
 import pytest
+import torch
 from lhotse import Recording
 from lhotse.dataset import AudioSamples
 from lhotse.testing.dummies import dummy_recording
 
+from nemo.collections.common.data.lhotse import text_adapters as text_adapters_module
 from nemo.collections.common.data.lhotse.text_adapters import (
     AudioTurn,
     NeMoMultimodalConversation,
@@ -37,6 +39,7 @@ from nemo.collections.common.data.lhotse.text_adapters import (
     NeMoMultimodalConversationTarWriter,
     TextTurn,
     collate_conversation_audio_fault_tolerant,
+    collate_conversation_audio_packed_fault_tolerant,
 )
 
 
@@ -200,6 +203,7 @@ def test_jsonl_batch_skipme(skipme_manifest, monkeypatch):
             manifest_filepath=manifest,
             tarred_audio_filepaths=tar,
             audio_locator_tag="[audio]",
+            skip_missing_manifest_entries=False,
         )
     )
     # 4 rows total, half marked _skipme -> 2 yielded.
@@ -256,9 +260,116 @@ def test_jsonl_batch_vs_tar_parity(tarred_jsonl_manifest, monkeypatch):
         assert [t.cut.id for t in _audio_turns(a)] == [t.cut.id for t in _audio_turns(b)]
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
+@pytest.mark.parametrize("fault_tolerant_audio_loading", [False, True])
+def test_jsonl_indexed_missing_tar_member_obeys_only_audio_policy(
+    tarred_jsonl_manifest, monkeypatch, skip_missing_manifest_entries, fault_tolerant_audio_loading
+):
+    manifest, tar = tarred_jsonl_manifest
+
+    def fail_get(self, name):
+        raise KeyError(f"missing {name}")
+
+    monkeypatch.setattr(
+        "nemo.collections.common.data.lhotse.indexed_adapters.IndexedTarMemberReader.get",
+        fail_get,
+    )
+    adapter = NeMoMultimodalConversationJsonlAdapter(
+        manifest_filepath=manifest,
+        tarred_audio_filepaths=tar,
+        audio_locator_tag="[audio]",
+        indexed=True,
+        skip_missing_manifest_entries=skip_missing_manifest_entries,
+        fault_tolerant_audio_loading=fault_tolerant_audio_loading,
+    )
+    if fault_tolerant_audio_loading:
+        assert list(adapter) == []
+    else:
+        with pytest.raises(RuntimeError, match="Failed to load multimodal audio member"):
+            next(iter(adapter))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
+@pytest.mark.parametrize("fault_tolerant_audio_loading", [False, True])
+def test_jsonl_streaming_missing_tar_member_obeys_only_audio_policy(
+    tarred_jsonl_manifest, monkeypatch, skip_missing_manifest_entries, fault_tolerant_audio_loading
+):
+    manifest, tar = tarred_jsonl_manifest
+    monkeypatch.delenv("USE_AIS_GET_BATCH", raising=False)
+    monkeypatch.setattr(
+        "nemo.collections.common.data.lhotse.text_adapters.TarIterator",
+        lambda path: iter(()),
+    )
+    adapter = NeMoMultimodalConversationJsonlAdapter(
+        manifest_filepath=manifest,
+        tarred_audio_filepaths=tar,
+        audio_locator_tag="[audio]",
+        indexed=False,
+        skip_missing_manifest_entries=skip_missing_manifest_entries,
+        fault_tolerant_audio_loading=fault_tolerant_audio_loading,
+    )
+    if fault_tolerant_audio_loading:
+        assert list(adapter) == []
+    else:
+        with pytest.raises(RuntimeError, match="Failed to load multimodal tar shard"):
+            next(iter(adapter))
+
+
 # ---------------------------------------------------------------------------
 # NeMoMultimodalConversationShareGPTJsonlAdapter — GetBatch mode
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
+@pytest.mark.parametrize("fault_tolerant_audio_loading", [False, True])
+def test_sequential_pairing_skips_only_tar_members_absent_from_jsonl(
+    skip_missing_manifest_entries, fault_tolerant_audio_loading
+):
+    expected_recording = object()
+    tar = iter([(object(), Path("extra.wav")), (expected_recording, Path("expected.wav"))])
+
+    if skip_missing_manifest_entries:
+        recording, path = text_adapters_module._next_matching_paired_audio(
+            tar,
+            "expected.wav",
+            manifest_path="manifest.jsonl",
+            tar_path="audio.tar",
+            skip_missing_manifest_entries=True,
+        )
+        assert recording is expected_recording
+        assert path == Path("expected.wav")
+    else:
+        with pytest.raises(ValueError, match="no corresponding JSONL entry"):
+            text_adapters_module._next_matching_paired_audio(
+                tar,
+                "expected.wav",
+                manifest_path="manifest.jsonl",
+                tar_path="audio.tar",
+                skip_missing_manifest_entries=False,
+            )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
+@pytest.mark.parametrize("fault_tolerant_audio_loading", [False, True])
+def test_trailing_tar_member_policy_is_independent_of_audio_policy(
+    skip_missing_manifest_entries, fault_tolerant_audio_loading
+):
+    kwargs = {
+        "manifest_path": "manifest.jsonl",
+        "tar_path": "audio.tar",
+        "skip_missing_manifest_entries": skip_missing_manifest_entries,
+        "fault_tolerant_audio_loading": fault_tolerant_audio_loading,
+    }
+    tar = iter([(object(), Path("trailing.wav"))])
+    if skip_missing_manifest_entries:
+        assert text_adapters_module._validate_no_trailing_paired_audio(tar, **kwargs) is None
+    else:
+        with pytest.raises(ValueError, match="no corresponding JSONL entry"):
+            text_adapters_module._validate_no_trailing_paired_audio(tar, **kwargs)
 
 
 @pytest.mark.unit
@@ -353,6 +464,97 @@ def test_collate_empty_audio_conversations():
     assert audios.numel() == 0
     assert audio_lens.numel() == 0
     assert list(ok)[0] is text_only
+
+
+@pytest.mark.unit
+def test_collate_packed_audio_avoids_padded_loader_and_preserves_samples(tmp_path):
+    conversations = []
+    expected_rows = []
+    for idx, duration in enumerate((0.25, 0.5, 0.125)):
+        path = tmp_path / f"packed-{idx}.wav"
+        dummy_recording(idx, duration, with_data=True).to_cut().save_audio(path)
+        conversation = _build_conversation(f"packed-{idx}", path)
+        conversations.append(conversation)
+        samples = torch.from_numpy(conversation.list_cuts()[0].load_audio()).mean(dim=0)
+        expected_rows.append(samples)
+
+    extra_path = tmp_path / "packed-extra.wav"
+    dummy_recording(10, 0.375, with_data=True).to_cut().save_audio(extra_path)
+    extra_cut = Recording.from_file(extra_path).to_cut().with_id("packed-extra")
+    conversations[1].turns.append(AudioTurn(cut=extra_cut, role="user", audio_locator_tag="[audio]"))
+    expected_rows.insert(2, torch.from_numpy(extra_cut.load_audio()).mean(dim=0))
+
+    class NoPaddedCollationAudioSamples(AudioSamples):
+        def __call__(self, cuts, recording_field=None):
+            raise AssertionError("packed collation must not call AudioSamples.__call__")
+
+    packed, cu_seqlens, audio_lens, ok = collate_conversation_audio_packed_fault_tolerant(
+        conversations,
+        NoPaddedCollationAudioSamples(fault_tolerant=True, mono_downmix=True),
+    )
+
+    expected_lens = torch.tensor([row.numel() for row in expected_rows], dtype=torch.long)
+    assert [conversation.id for conversation in ok] == [conversation.id for conversation in conversations]
+    assert torch.equal(audio_lens, expected_lens)
+    assert torch.equal(cu_seqlens, torch.tensor([0, *expected_lens.cumsum(0).tolist()], dtype=torch.long))
+    assert torch.equal(packed, torch.cat(expected_rows))
+    assert packed.numel() == int(audio_lens.sum())
+    assert packed.numel() < len(expected_rows) * int(audio_lens.max())
+
+
+@pytest.mark.unit
+def test_collate_packed_audio_preserves_text_only_batch():
+    text_only = NeMoMultimodalConversation(
+        id="text_only",
+        turns=[TextTurn(role="user", value="hi"), TextTurn(role="assistant", value="hello")],
+    )
+
+    packed, cu_seqlens, audio_lens, ok = collate_conversation_audio_packed_fault_tolerant(
+        [text_only], AudioSamples(fault_tolerant=True, mono_downmix=True)
+    )
+
+    assert packed.dtype == torch.float32
+    assert packed.numel() == 0
+    assert torch.equal(cu_seqlens, torch.tensor([0], dtype=torch.long))
+    assert audio_lens.numel() == 0
+    assert list(ok)[0] is text_only
+
+
+@pytest.mark.unit
+def test_collate_packed_audio_keeps_text_only_rows_when_all_audio_rows_fail(local_convs):
+    conversations, paths = local_convs
+    for conversation, path in zip(conversations, paths):
+        conversation.turns[0].cut.recording.sources[0].source = str(path) + ".missing"
+    text_only = NeMoMultimodalConversation(
+        id="text_only",
+        turns=[TextTurn(role="user", value="hi"), TextTurn(role="assistant", value="hello")],
+    )
+
+    packed, cu_seqlens, audio_lens, ok = collate_conversation_audio_packed_fault_tolerant(
+        [text_only, *conversations], AudioSamples(fault_tolerant=True, mono_downmix=True)
+    )
+
+    assert packed.numel() == 0
+    assert torch.equal(cu_seqlens, torch.tensor([0], dtype=torch.long))
+    assert audio_lens.numel() == 0
+    assert list(ok) == [text_only]
+
+
+@pytest.mark.unit
+def test_collate_packed_audio_preserves_fault_tolerance_and_ais_batch_call(local_convs):
+    conversations, paths = local_convs
+    broken_cut = conversations[1].turns[0].cut
+    broken_cut.recording.sources[0].source = str(paths[1]) + ".missing"
+    loader = AudioSamples(fault_tolerant=True, mono_downmix=True)
+    loader.use_batch_loader = True
+    loader.ais_batch_loader = Mock(side_effect=lambda cuts: cuts)
+
+    packed, cu_seqlens, audio_lens, ok = collate_conversation_audio_packed_fault_tolerant(conversations, loader)
+
+    loader.ais_batch_loader.assert_called_once()
+    assert [conversation.id for conversation in ok] == ["conv_c0", "conv_c2"]
+    assert packed.numel() == int(audio_lens.sum())
+    assert torch.equal(cu_seqlens[1:] - cu_seqlens[:-1], audio_lens)
 
 
 # ---------------------------------------------------------------------------

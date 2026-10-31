@@ -23,11 +23,12 @@ from nemo.collections.asr.parts.utils.asr_multispeaker_utils import (
     get_hidden_length_from_sample_length,
     speaker_to_target,
 )
+from nemo.collections.common.data.lhotse.audio_loading import LhotseAudioLoadingDatasetMixin
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 from nemo.utils import logging
 
 
-class LhotseAudioToSpeechE2ESpkDiarDataset(torch.utils.data.Dataset):
+class LhotseAudioToSpeechE2ESpkDiarDataset(LhotseAudioLoadingDatasetMixin, torch.utils.data.Dataset):
     """
     This dataset is a Lhotse version of diarization dataset in audio_to_diar_label.py.
     Unlike native NeMo datasets, Lhotse dataset defines only the mapping from
@@ -94,7 +95,7 @@ class LhotseAudioToSpeechE2ESpkDiarDataset(torch.utils.data.Dataset):
             speaker_activities.append(speaker_activity)
 
         cuts = type(cuts).from_cuts(mono_cuts)
-        audio, audio_lens, cuts = self.load_audio(cuts)
+        audio, audio_lens, cuts = self.load_audio_with_cuts(cuts)
         max_num_speakers = max(1, max(activity.shape[1] for activity in speaker_activities))
         speaker_activities = [
             torch.nn.functional.pad(activity, (0, max_num_speakers - activity.shape[1]))

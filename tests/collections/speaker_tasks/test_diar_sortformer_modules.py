@@ -229,6 +229,48 @@ class TestSortformerModules_GeneralUtils:
         assert hidden_out_with_grad.grad.shape == hidden_out_with_grad.shape
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("batch_size, n_frames, num_spks", [(2, 7, 4)])
+    def test_forward_speaker_logits_match_sigmoid_wrapper(self, batch_size, n_frames, num_spks):
+        sortformer_modules = SortformerModules(num_spks=num_spks).eval()
+        hidden_out = torch.randn(batch_size, n_frames, sortformer_modules.tf_d_model)
+
+        logits = sortformer_modules.forward_speaker_logits(hidden_out)
+        preds = sortformer_modules.forward_speaker_sigmoids(hidden_out)
+
+        torch.testing.assert_close(torch.sigmoid(logits), preds)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "use_activity_head, batch_size, n_frames",
+        [(False, 2, 5), (True, 1, 7)],
+    )
+    def test_activity_head_construction_and_forward(self, use_activity_head, batch_size, n_frames):
+        sortformer_modules = SortformerModules(use_activity_head=use_activity_head)
+        hidden_out = torch.randn(
+            batch_size,
+            n_frames,
+            sortformer_modules.hidden_size,
+            requires_grad=True,
+        )
+
+        activity_logits = sortformer_modules.forward_activity_logits(hidden_out)
+        activity_state_keys = [key for key in sortformer_modules.state_dict() if key.startswith("activity_head.")]
+
+        if not use_activity_head:
+            assert sortformer_modules.activity_head is None
+            assert activity_logits is None
+            assert not activity_state_keys
+            return
+
+        assert activity_logits.shape == (batch_size, n_frames, 3)
+        assert activity_logits.requires_grad
+        assert activity_state_keys
+        assert not torch.allclose(activity_logits.sum(dim=-1), torch.ones(batch_size, n_frames))
+        activity_logits.square().sum().backward()
+        assert hidden_out.grad is not None
+        assert torch.isfinite(hidden_out.grad).all()
+
+    @pytest.mark.unit
     @pytest.mark.parametrize(
         "batch_size, n_frames, n_spk, encoder_lengths",
         [

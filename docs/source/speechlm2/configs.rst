@@ -50,7 +50,7 @@ See the `SALM paper <https://arxiv.org/abs/2310.09424>`_ for more details.
       # Freezing parameters
       freeze_params:
         - "^llm\\.model\\.layers\\.[0-4]\\..+$"  # Regex patterns for parameters to freeze
-      prevent_freeze_params: []  # Override freeze_params for specific submodules
+      prevent_freeze_params: []  # Keep these trainable, overriding freeze_params and module-level freezing
       
       # Optional LoRA settings for efficient fine-tuning
       lora:
@@ -162,13 +162,33 @@ Note the differences from the SALM configuration:
 * ``encoder_chunk_size_seconds`` controls long-audio chunking for the speech encoder.
   Audio rows longer than this value are split on the time axis, encoded as a chunk
   batch, and concatenated back into one embedding sequence before the LLM forward.
-  Set it to ``null`` to disable chunking.
+  Set it to ``null`` to disable chunking. With a ``ParallelExpertEncoder`` and
+  ``packed_encoder_sequences: true``, this same value instead chunks both the ASR
+  and diarization branches after feature stacking; set the data audio-token
+  estimator's ``chunk_size_seconds`` to ``null`` because this does not change the
+  total encoder-token count.
 
 SALMAutomodel-Specific Options
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The SALMAutomodel config exposes a few extra knobs that pass through to NeMo
 Automodel. All are optional — defaults preserve standard behavior.
+
+**Garbage collection:**
+
+.. code-block:: yaml
+
+    model:
+      # Optional positive optimizer-step interval; null keeps automatic GC.
+      gc_every_steps: null
+
+Setting ``gc_every_steps`` to a positive integer disables Python's automatic
+garbage collector at fit start and uses NeMo Automodel's generation-1 collector
+at that optimizer-step cadence. This avoids an occasional generation-2 scan on
+one distributed rank delaying all peers at the next collective. The cadence is
+counted in optimizer steps, so gradient accumulation does not increase the
+collection frequency. Leave it ``null`` unless profiling shows GC-related rank
+stragglers.
 
 **MoE training:**
 
@@ -431,6 +451,19 @@ Model Parameters
 - **pretrained_audio_codec**: Path to the pretrained audio codec model (for speech generation)
 - **init_from_checkpoint**: Path to a training checkpoint to initialize model weights from (see :ref:`fine-tuning-from-checkpoint` below)
 - **freeze_params**: Regex patterns of parameters to freeze during training
+- **prevent_freeze_params**: Regex patterns of parameters that must stay trainable. They take precedence
+  over ``freeze_params`` and also over module-level freezing: a matching parameter is re-enabled even if
+  its module was frozen during setup (for example, when LoRA adapters freeze the rest of the LLM).
+- **lr_multipliers**: Optional mapping of parameter-name regex to learning-rate multiplier, e.g.
+  ``{"perception\\..*": 10.0}``. Matching parameters get their own optimizer parameter group with
+  ``lr = optimizer.lr * multiplier``; the first matching pattern wins and unmatched parameters keep the
+  base learning rate.
+- **pe_encoder_path**: Path to a standalone ParallelExpertEncoder ``.nemo`` bundle (or a pretrained model
+  id) to mount as the perception encoder. Optional **pe_encoder_overrides** adjust the bundle's config.
+- **pe_encoder_config**: Inline ParallelExpertEncoder config, as embedded in consolidated checkpoints.
+  It constructs only the encoder architecture: the weights must come from the checkpoint loaded
+  afterwards (e.g. via ``init_from_checkpoint``), otherwise the encoder keeps its random initialization.
+  It is mutually exclusive with ``pe_encoder_path`` and cannot be combined with ``pe_encoder_overrides``.
 - **audio_loss_weight/text_loss_weight**: Weighting of different loss components
 
 Perception Module
@@ -458,6 +491,8 @@ Example configurations for all model types can be found in the example directory
 
 - SALM: `examples/speechlm2/conf/salm.yaml`
 - SALMAutomodel: `examples/speechlm2/conf/salm_automodel.yaml`
+- SALMAutomodel, large-scale multi-node training: `examples/speechlm2/conf/salm_nemotron.yaml`
+- SALM DFlash draft training: ``examples/speechlm2/conf/dflash.yaml`` (launch with ``dflash_train.py``)
 - DuplexS2SModel: `examples/speechlm2/conf/s2s_duplex.yaml`
 - DuplexS2SSpeechDecoderModel: `examples/speechlm2/conf/s2s_duplex_speech_decoder.yaml`
 - DuplexSTTModel: `examples/speechlm2/conf/duplex_stt.yaml`

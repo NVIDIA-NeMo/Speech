@@ -22,6 +22,7 @@ smoke. These tests cover the fallback contracts that run on every machine
 import pytest
 import torch
 
+from nemo.collections.asr.parts.packed_sequence import pack_encoder_output
 from nemo.collections.speechlm2.parts.cp_helpers import encode_audio_with_cp_distribution, get_cp_mesh
 
 
@@ -158,6 +159,8 @@ class _TrainablePerceptionStub(torch.nn.Module):
         self.last_input_signal_shape = None
         self.last_input_signal_length = None
         self.spk_targets_calls = []
+        self.supports_sequence_packed_output = True
+        self.sequence_packed_calls = 0
 
     def forward(self, *, input_signal, input_signal_length, spk_targets=None):
         self.num_calls += 1
@@ -168,6 +171,19 @@ class _TrainablePerceptionStub(torch.nn.Module):
         embs = input_signal[:, : max(1, min(2, input_signal.shape[1]))].unsqueeze(-1) * self.scale
         lens = torch.full((B,), embs.shape[1], dtype=input_signal_length.dtype, device=input_signal_length.device)
         return embs, lens
+
+    def forward_sequence_packed(self, **kwargs):
+        self.sequence_packed_calls += 1
+        cu_seqlens = kwargs.pop("input_signal_cu_seqlens", None)
+        if cu_seqlens is not None:
+            offsets = cu_seqlens.tolist()
+            rows = [
+                kwargs["input_signal"][offsets[row] : offsets[row + 1]]
+                for row in range(kwargs["input_signal_length"].numel())
+            ]
+            kwargs["input_signal"] = torch.nn.utils.rnn.pad_sequence(rows, batch_first=True)
+        embs, lens = self.forward(**kwargs)
+        return pack_encoder_output(embs, lens)
 
 
 def test_encode_audio_cp_distribution_preserves_local_autograd(monkeypatch):
@@ -304,3 +320,78 @@ def test_encode_audio_nonempty_rank_participates_in_fsdp_audio_probe(monkeypatch
     assert perception.num_calls == 1
     assert all_reduce_calls == [(1, "fake-fsdp-group")]
     assert dummy_audio_loss is None
+
+
+def test_sequence_packed_cp_uses_flat_gather_and_preserves_local_autograd(monkeypatch):
+    perception = _TrainablePerceptionStub()
+    audios = torch.tensor([[1.0, 2.0, 0.0], [3.0, 4.0, 0.0]])
+    audio_lens = torch.tensor([3, 3], dtype=torch.long)
+    gathered_shapes = []
+
+    def fake_all_gather(local_flat, group):
+        assert group == "fake-cp-group"
+        gathered_shapes.append(tuple(local_flat.shape))
+        return (local_flat, torch.full_like(local_flat, 7.0))
+
+    def fake_lens_all_gather(gathered_lens, local_lens, group):
+        assert group == "fake-cp-group"
+        gathered_lens[0].copy_(local_lens)
+        gathered_lens[1].copy_(local_lens)
+
+    monkeypatch.setattr("nemo.collections.speechlm2.parts.cp_helpers.dist.get_rank", lambda group: 0)
+    monkeypatch.setattr("nemo.collections.speechlm2.parts.cp_helpers.dist.all_reduce", lambda *args, **kwargs: None)
+    monkeypatch.setattr("nemo.collections.speechlm2.parts.cp_helpers.dist.all_gather", fake_lens_all_gather)
+    monkeypatch.setattr("nemo.collections.speechlm2.parts.cp_helpers.differentiable_all_gather", fake_all_gather)
+
+    embs = encode_audio_with_cp_distribution(
+        perception,
+        audios,
+        audio_lens,
+        chunk_size_seconds=None,
+        sampling_rate=16000,
+        cp_mesh=_FakeCpMesh(),
+        sequence_packed=True,
+        packed_cp_gather=True,
+    )
+
+    assert perception.sequence_packed_calls == 1
+    assert gathered_shapes == [(2, 1)]
+    assert len(embs) == 2
+    torch.testing.assert_close(embs[1], torch.full((2, 1), 7.0))
+    embs[0].sum().backward()
+    assert perception.scale.grad.item() == pytest.approx(3.0)
+
+
+def test_packed_waveform_cp_slices_before_local_frontend(monkeypatch):
+    perception = _TrainablePerceptionStub()
+    audios = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0])
+    audio_lens = torch.tensor([2, 5], dtype=torch.long)
+    audio_cu_seqlens = torch.tensor([0, 2, 7], dtype=torch.long)
+
+    def fake_all_gather(local_flat, group):
+        return (local_flat, torch.zeros_like(local_flat))
+
+    def fake_lens_all_gather(gathered_lens, local_lens, group):
+        gathered_lens[0].copy_(local_lens)
+        gathered_lens[1].copy_(local_lens)
+
+    monkeypatch.setattr("nemo.collections.speechlm2.parts.cp_helpers.dist.get_rank", lambda group: 0)
+    monkeypatch.setattr("nemo.collections.speechlm2.parts.cp_helpers.dist.all_reduce", lambda *args, **kwargs: None)
+    monkeypatch.setattr("nemo.collections.speechlm2.parts.cp_helpers.dist.all_gather", fake_lens_all_gather)
+    monkeypatch.setattr("nemo.collections.speechlm2.parts.cp_helpers.differentiable_all_gather", fake_all_gather)
+
+    embs = encode_audio_with_cp_distribution(
+        perception,
+        audios,
+        audio_lens,
+        audio_cu_seqlens=audio_cu_seqlens,
+        chunk_size_seconds=None,
+        sampling_rate=16000,
+        cp_mesh=_FakeCpMesh(),
+        sequence_packed=True,
+        packed_cp_gather=True,
+    )
+
+    assert perception.last_input_signal_shape == (1, 2)
+    assert perception.last_input_signal_length == [2]
+    assert len(embs) == 2

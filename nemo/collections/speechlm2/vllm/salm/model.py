@@ -23,8 +23,9 @@ rename rules, optional LoRA merge, mamba state passthroughs) lives in
 ``backends.py`` and is selected once at ``__init__`` time via
 ``make_backend(config)``. The class declares ``IsHybrid`` /
 ``SupportsMambaPrefixCaching`` so vLLM's hybrid KV-cache allocator picks up
-NemotronH backbones; for transformer backbones the runtime
-``ModelConfig.is_hybrid`` property returns False because ``config.py``
+NemotronH backbones, and ``SupportsEagle3`` so DFlash and DFlash2 can consume
+auxiliary hidden states from the language tower. For transformer backbones the
+runtime ``ModelConfig.is_hybrid`` property returns False because ``config.py``
 populates ``text_config.layer_types`` with all-attention markers (vLLM's
 granite-4.0-micro escape hatch).
 
@@ -32,7 +33,9 @@ Requires NeMo toolkit for the audio encoder:
     pip install 'nemo-toolkit[asr]'
 """
 
-from collections.abc import Iterable
+import contextlib
+from collections.abc import Callable, Iterable
+from datetime import datetime, timezone
 from typing import Any
 
 import torch
@@ -41,6 +44,7 @@ from vllm.config import VllmConfig
 from vllm.model_executor.models.interfaces import (
     IsHybrid,
     MultiModalEmbeddings,
+    SupportsEagle3,
     SupportsMambaPrefixCaching,
     SupportsMultiModal,
     SupportsPP,
@@ -50,8 +54,8 @@ from vllm.model_executor.models.utils import AutoWeightsLoader, init_vllm_regist
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.sequence import IntermediateTensors
 
-from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoder
 from nemo.collections.speechlm2.parts.encoder_chunking import encode_audio_with_optional_chunking
+from nemo.collections.speechlm2.parts.weight_loading import load_perception_state
 from nemo.collections.speechlm2.vllm.salm.audio import (
     _SAMPLING_RATE,
     NeMoSpeechLMAudioInputs,
@@ -59,13 +63,50 @@ from nemo.collections.speechlm2.vllm.salm.audio import (
     NeMoSpeechLMMultiModalProcessor,
     NeMoSpeechLMProcessingInfo,
     _load_nemo_perception,
+    _maybe_mount_independent_speaker_encoder,
     _maybe_mount_pe_encoder,
 )
 from nemo.collections.speechlm2.vllm.salm.backends import HybridBackend, make_backend
 from nemo.collections.speechlm2.vllm.salm.config import _AUDIO_PLACEHOLDER
+from nemo.collections.speechlm2.vllm.salm.ctc_timestamps import (
+    active_aligner,
+    ctc_adapter_path,
+    ctc_timestamp_config,
+    install_worker_methods,
+    read_speaker_prior_weight,
+    register_aligner,
+    store_alignment_states,
+    take_step_hashes,
+    tokenizer_special_tokens,
+)
+from nemo.collections.speechlm2.vllm.salm.fp8_encoder import build_fp8_encoder, check_fp8_encoder_weights
+from nemo.utils import logging
 
 _AUDIO_INPUT_DTYPE = torch.float32
 _PERCEPTION_DTYPE = torch.bfloat16
+
+
+def _is_parallel_expert_encoder(module: nn.Module) -> bool:
+    """Recognize the shared speaker-aware encoder contract without importing ASR at plugin import time."""
+    return bool(getattr(module, "supports_external_speaker_targets", False)) and callable(
+        getattr(module, "online_inference", None)
+    )
+
+
+def _require_resampling_rate(perception: Any) -> None:
+    """Refuse a perception module built for a sample rate other than the one audio is resampled to.
+
+    vLLM resamples every request's audio to ``_SAMPLING_RATE`` before the encoder sees it
+    (``NeMoSpeechLMProcessingInfo.get_data_parser``), and audio durations are computed
+    from that rate.
+    """
+    featurizer = getattr(getattr(perception, "preprocessor", None), "featurizer", None)
+    sample_rate = getattr(featurizer, "sample_rate", None)
+    if sample_rate is not None and sample_rate != _SAMPLING_RATE:
+        raise ValueError(
+            f"The perception preprocessor expects {sample_rate} Hz audio, but the NeMo SpeechLM vLLM plugin "
+            f"resamples audio to {_SAMPLING_RATE} Hz."
+        )
 
 
 @MULTIMODAL_REGISTRY.register_processor(
@@ -79,8 +120,17 @@ class NeMoSpeechLMForConditionalGeneration(
     SupportsPP,
     IsHybrid,
     SupportsMambaPrefixCaching,
+    SupportsEagle3,
 ):
     """Backbone-agnostic NeMo SpeechLM. Composition with a backend handles per-backbone details."""
+
+    # EncoderGraphRunner, set when the config enables encoder_cuda_graphs.
+    _encoder_graphs = None
+
+    # vLLM accepts --use-replayssm (ReplaySSM cached Mamba decode; with MTP from vLLM 0.32) only for models that
+    # declare this flag. The Mamba state shapes and dtypes, the ReplaySSM ring included, come from
+    # NemotronHForCausalLM through the IsHybrid classmethods below.
+    supports_replayssm = True
 
     @classmethod
     def get_placeholder_str(cls, modality: str, i: int) -> str | None:
@@ -92,6 +142,7 @@ class NeMoSpeechLMForConditionalGeneration(
         super().__init__()
         config = vllm_config.model_config.hf_config
         self.config = config
+        self._perception_weights_initialized = False
         self.encoder_chunk_size_seconds = getattr(config, "encoder_chunk_size_seconds", None)
 
         backend = make_backend(config)
@@ -107,11 +158,156 @@ class NeMoSpeechLMForConditionalGeneration(
 
         with self._mark_tower_model(vllm_config, {"audio"}):
             self.perception = _load_nemo_perception(config.perception)
-            _maybe_mount_pe_encoder(self.perception, getattr(config, "pe_encoder_path", None))
+            _require_resampling_rate(self.perception)
+            pe_encoder_path = getattr(config, "pe_encoder_path", None)
+            pe_encoder_config = getattr(config, "pe_encoder_config", None)
+            speaker_encoder = getattr(config, "speaker_encoder", None)
+            has_pe_encoder = pe_encoder_path not in (
+                None,
+                "",
+                False,
+            ) or pe_encoder_config not in (
+                None,
+                {},
+                "",
+                False,
+            )
+            has_speaker_encoder = speaker_encoder not in (None, {}, "", False)
+            if has_pe_encoder and has_speaker_encoder:
+                raise ValueError("ParallelExpertEncoder and speaker_encoder are mutually exclusive.")
+            if has_speaker_encoder:
+                _maybe_mount_independent_speaker_encoder(
+                    self.perception,
+                    speaker_encoder,
+                    self.encoder_chunk_size_seconds,
+                )
+                self._uses_pe_encoder = False
+            else:
+                _maybe_mount_pe_encoder(
+                    self.perception,
+                    pe_encoder_path,
+                    pe_encoder_config,
+                    getattr(config, "pe_encoder_overrides", None),
+                )
+                self._uses_pe_encoder = _is_parallel_expert_encoder(getattr(self.perception, "encoder", None))
+            # Built here, as vLLM builds a quantized decoder, so FP8 weights load directly.
+            build_fp8_encoder(self.perception, vllm_config.quant_config)
+            # Opt-in (``encoder_cuda_graphs`` in the checkpoint config or ``hf_overrides``): replay the
+            # encoder from CUDA graphs at the small per-step batches vLLM encodes; see encoder_graphs.py.
+            if self._uses_pe_encoder and getattr(config, "encoder_cuda_graphs", False):
+                from nemo.collections.speechlm2.vllm.salm.encoder_graphs import (
+                    EncoderGraphRunner,
+                    encoder_graph_options,
+                )
 
-        self._uses_pe_encoder = isinstance(getattr(self.perception, "encoder", None), ParallelExpertEncoder)
+                self._encoder_graphs = EncoderGraphRunner(
+                    self.perception,
+                    compile_layers=bool(getattr(config, "encoder_compile", False)),
+                    **encoder_graph_options(config),
+                )
+
+        if isinstance(backend, HybridBackend):
+            from nemo.collections.speechlm2.vllm.salm.precision import preserve_hybrid_precision
+
+            preserve_hybrid_precision(self.language_model)
+
+        # Installed even without an adapter, so ctc_timestamps() gets a clear "not
+        # enabled" error instead of an unknown method.
+        install_worker_methods()
+        self._maybe_enable_ctc_timestamps(ctc_timestamp_config(vllm_config.model_config), vllm_config)
+        if self._encoder_graphs is not None:
+            # Graphs are captured at the first encoder call, after this.
+            self._encoder_graphs.ctc_timestamp_inputs = active_aligner() is not None
 
         self.make_empty_intermediate_tensors = self.language_model.make_empty_intermediate_tensors
+
+    def _maybe_enable_ctc_timestamps(self, ctc_config: Any, vllm_config: VllmConfig) -> None:
+        """Arm CTC timestamp capture when the checkpoint names a CTC adapter or bundles the head.
+
+        Driven by the checkpoint (``ctc_timestamp_config``), mirroring how
+        ``encoder_quantization`` travels, so serving needs no extra flags;
+        ``ctc_timestamps.enabled=false`` turns a bundled head off. When this engine
+        cannot produce timestamps, a bundled head (``"optional"``) is skipped with a
+        warning, while a named adapter or ``enabled: true`` fails at startup.
+        """
+        adapter_path = ctc_adapter_path(ctc_config)
+        if not adapter_path:
+            return
+
+        from nemo.collections.speechlm2.parts.ctc_timestamp_utils import get_ctc_timestamp_aligner
+        from nemo.collections.speechlm2.vllm.salm.ctc_timestamps import install_encoder_cache_binding
+
+        unavailable = self._ctc_timestamps_unavailable()
+        if unavailable is not None:
+            if not (isinstance(ctc_config, dict) and ctc_config.get("optional")):
+                raise ValueError(unavailable)
+            logging.warning(
+                "[NeMoSpeechLM] Serving without CTC timestamps, although the checkpoint bundles a CTC head: %s "
+                "Set ctc_timestamps.enabled=false to skip the head without this warning.",
+                unavailable,
+            )
+            return
+        encoder = self.perception.encoder
+        speaker_prior_weight = read_speaker_prior_weight(ctc_config)
+        encoder.ctc_timestamp_model_path = adapter_path
+        device = next(encoder.parameters()).device
+        # Load now rather than on the first timestamped request, so a bad artifact
+        # path fails at startup instead of mid-serve.
+        aligner = get_ctc_timestamp_aligner(encoder, adapter_path, device)
+        aligner.speaker_logprob_weight = speaker_prior_weight
+
+        register_aligner(aligner, tokenizer_special_tokens(vllm_config.model_config))
+        install_encoder_cache_binding(getattr(vllm_config, "use_v2_model_runner", False))
+        logging.info("[NeMoSpeechLM] CTC timestamps enabled from checkpoint config: %s", adapter_path)
+
+    def _ctc_timestamps_unavailable(self) -> str | None:
+        """Why this engine cannot produce CTC timestamps, or ``None`` when it can."""
+        encoder = self.perception.encoder
+        if not getattr(encoder, "supports_ctc_timestamp_inputs", False):
+            return f"{type(encoder).__name__} cannot produce CTC timestamp inputs."
+        if not self._uses_pe_encoder and self.encoder_chunk_size_seconds:
+            # Captured inputs cover one forward over the whole audio; nothing would
+            # reassemble the inputs of the chunks this setting splits it into.
+            return (
+                "CTC timestamps need one unchunked encoder forward, but encoder_chunk_size_seconds="
+                f"{self.encoder_chunk_size_seconds} is set."
+            )
+        return None
+
+    # ── language-model integration ──
+
+    def get_language_model(self) -> nn.Module:
+        """Return the wrapped decoder used by vLLM speculative decoders.
+
+        DFlash and DFlash2 resolve the target embedding table and LM head
+        through this hook. Returning the registered vLLM language tower also
+        lets the ``SupportsEagle3`` interface reach its inner ``EagleModelMixin``.
+        """
+        return self.language_model
+
+    def _require_eagle3_method(self, method_name: str) -> Callable:
+        method = getattr(self.language_model, method_name, None)
+        if callable(method):
+            return method
+
+        text_config = getattr(self.config, "text_config", None)
+        architectures = getattr(text_config, "architectures", None)
+        if isinstance(architectures, (list, tuple)) and architectures:
+            backbone = ", ".join(str(architecture) for architecture in architectures)
+        else:
+            backbone = type(self.language_model).__name__
+        raise NotImplementedError(
+            f"SpeechLM backbone {backbone!r} does not support DFlash/Eagle3 "
+            f"hidden-state export: missing {method_name}()."
+        )
+
+    def set_aux_hidden_state_layers(self, layers: tuple[int, ...]) -> None:
+        """Select target layers whose hidden states are consumed by DFlash drafters."""
+        self._require_eagle3_method("set_aux_hidden_state_layers")(layers)
+
+    def get_eagle3_default_aux_hidden_state_layers(self) -> tuple[int, ...]:
+        """Delegate vLLM's fallback auxiliary-layer selection to the decoder."""
+        return self._require_eagle3_method("get_eagle3_default_aux_hidden_state_layers")()
 
     # ── audio processing ──
 
@@ -119,6 +315,7 @@ class NeMoSpeechLMForConditionalGeneration(
         self,
         audio_signal: torch.Tensor | list[torch.Tensor] | None = None,
         audio_signal_length: torch.Tensor | None = None,
+        capture_ctc_timestamps: torch.Tensor | None = None,
         **kwargs,
     ) -> NeMoSpeechLMAudioInputs | None:
         if audio_signal is None:
@@ -137,13 +334,12 @@ class NeMoSpeechLMForConditionalGeneration(
         return NeMoSpeechLMAudioInputs(
             audio_signal=audio_signal,
             audio_signal_length=audio_signal_length,
+            capture_ctc_timestamps=capture_ctc_timestamps,
         )
 
     def _process_audio(self, audio_input: NeMoSpeechLMAudioInputs) -> tuple[torch.Tensor, ...]:
-        # Real device placement happens at init via _mark_tower_model +
-        # get_mm_mapping; this .to() is a no-op guard kept for paranoia.
+        # Device placement happens at init via _mark_tower_model + get_mm_mapping.
         device = next(self.perception.parameters()).device
-        self.perception = self.perception.to(device)
 
         audio_signal = audio_input.audio_signal
         if isinstance(audio_signal, list):
@@ -157,13 +353,23 @@ class NeMoSpeechLMForConditionalGeneration(
         # forward and the per-chunk embeddings are concatenated. ``None``
         # disables chunking and runs a single forward over the full batch.
         # A ParallelExpertEncoder instead runs its own context-preserving online
-        # inference over the full audio, so it bypasses the chunking helper.
+        # inference over the full audio, so it bypasses the chunking helper, and so
+        # does CTC timestamp capture, whose inputs cover one forward. Both replay the
+        # encoder from CUDA graphs when enabled.
         with torch.no_grad():
-            if self._uses_pe_encoder:
-                audio_embs, audio_emb_lens = self.perception(
-                    input_signal=audio_signal, input_signal_length=audio_lengths
+            if active_aligner() is not None:
+                audio_embeds = self._encode_with_ctc_capture(
+                    audio_signal, audio_lengths, audio_input.capture_ctc_timestamps
                 )
-                audio_embeds = [emb[:emblen] for emb, emblen in zip(audio_embs, audio_emb_lens)]
+            elif self._uses_pe_encoder:
+                graphs = self._encoder_graphs
+                audio_embeds = graphs(audio_signal, audio_lengths) if graphs is not None else None
+                if audio_embeds is None:
+                    with self.perception.encoder.online_inference():
+                        audio_embs, audio_emb_lens = self.perception(
+                            input_signal=audio_signal, input_signal_length=audio_lengths
+                        )
+                    audio_embeds = [emb[:emblen] for emb, emblen in zip(audio_embs, audio_emb_lens.tolist())]
             else:
                 audio_embeds = encode_audio_with_optional_chunking(
                     self.perception,
@@ -174,6 +380,46 @@ class NeMoSpeechLMForConditionalGeneration(
                 )
 
         return tuple(emb.to(_PERCEPTION_DTYPE) for emb in audio_embeds)
+
+    def _encode_with_ctc_capture(
+        self, audio_signal: torch.Tensor, audio_lengths: torch.Tensor, capture: torch.Tensor | None
+    ) -> list[torch.Tensor]:
+        """One encoder forward over the whole audio that also keeps each row's alignment states.
+
+        Args:
+            audio_signal (torch.Tensor): Padded audio, one row per item.
+            audio_lengths (torch.Tensor): Valid samples per row.
+            capture (torch.Tensor | None): Per row, on the host, whether to keep its
+                alignment states; ``None`` keeps no row, as for a request that did not opt in.
+        """
+        # vLLM passes only tensors here, so each row's mm_hash comes from the runner
+        # hook, which lists the step's hashes in encoding order. Every row takes one,
+        # kept or not, so the rest stay paired. Outside the hook (vLLM's startup
+        # profiling pass) there are none: the states are still produced, so memory is
+        # profiled as served, but nothing is stored.
+        num_audio_items = audio_signal.shape[0]
+        mm_hashes = take_step_hashes(num_audio_items)
+        keep = [False] * num_audio_items if capture is None else capture.tolist()
+        want_states = any(keep)
+        graphs = self._encoder_graphs
+        encoded = graphs(audio_signal, audio_lengths, return_ctc_timestamp_inputs=want_states) if graphs else None
+        if encoded is None:
+            online = self.perception.encoder.online_inference() if self._uses_pe_encoder else contextlib.nullcontext()
+            with online:
+                audio_embs, audio_emb_lens, *states = self.perception(
+                    input_signal=audio_signal,
+                    input_signal_length=audio_lengths,
+                    return_ctc_timestamp_inputs=want_states,
+                )
+            audio_embeds = [emb[:emblen] for emb, emblen in zip(audio_embs, audio_emb_lens)]
+            encoded = (audio_embeds, *states) if want_states else audio_embeds
+        if not want_states:
+            return encoded
+        audio_embeds, alignment_states = encoded
+        if mm_hashes is not None:
+            kept_hashes = [mm_hash if kept else None for mm_hash, kept in zip(mm_hashes, keep)]
+            store_alignment_states(kept_hashes, alignment_states, audio_lengths.double() / _SAMPLING_RATE)
+        return audio_embeds
 
     def embed_multimodal(self, **kwargs) -> MultiModalEmbeddings:
         audio_input = self._parse_audio_input(**kwargs)
@@ -190,13 +436,19 @@ class NeMoSpeechLMForConditionalGeneration(
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,
         **kwargs,
-    ) -> torch.Tensor | IntermediateTensors:
+    ) -> torch.Tensor | IntermediateTensors | tuple[torch.Tensor, list[torch.Tensor]]:
         if intermediate_tensors is not None:
             inputs_embeds = None
         return self.language_model(input_ids, positions, intermediate_tensors, inputs_embeds)
 
     def compute_logits(self, hidden_states: torch.Tensor) -> torch.Tensor | None:
-        return self.language_model.compute_logits(hidden_states)
+        logits = self.language_model.compute_logits(hidden_states)
+        if logits is not None:
+            logits[..., self.config.speechlm_output_vocab_size :] = -torch.inf
+            for token_id in getattr(self.config, "speechlm_runtime_added_token_ids", []):
+                if token_id < logits.shape[-1]:
+                    logits[..., token_id] = -torch.inf
+        return logits
 
     def get_mm_mapping(self) -> MultiModelKeys:
         return MultiModelKeys.from_string_field(
@@ -208,14 +460,27 @@ class NeMoSpeechLMForConditionalGeneration(
     # ── weight loading ──
 
     def _load_perception_weights(self, perception_weights: dict[str, torch.Tensor]) -> set[str]:
+        check_fp8_encoder_weights(self.perception, perception_weights)
+        from nemo.collections.speechlm2.modules.perception import IndependentDualEncoder
+
+        requires_exact_architecture = (
+            isinstance(getattr(self.perception, "encoder", None), IndependentDualEncoder) or self._uses_pe_encoder
+        )
+        loaded = load_perception_state(
+            self.perception,
+            perception_weights,
+            require_complete=requires_exact_architecture and not self._perception_weights_initialized,
+        )
         self.perception = self.perception.to(_PERCEPTION_DTYPE)
-        self.perception.load_state_dict(perception_weights, strict=False)
-        return {"perception." + k for k in perception_weights}
+        self._perception_weights_initialized = True
+        return loaded
 
     @staticmethod
     def _split_perception_llm(
         weights: Iterable[tuple[str, torch.Tensor]],
     ) -> tuple[dict[str, torch.Tensor], list[tuple[str, torch.Tensor]]]:
+        from nemo.collections.speechlm2.parts.ctc_timestamp_utils import CTC_TIMESTAMP_BUNDLE_PREFIX
+
         perception: dict[str, torch.Tensor] = {}
         llm: list[tuple[str, torch.Tensor]] = []
         for name, tensor in weights:
@@ -223,20 +488,67 @@ class NeMoSpeechLMForConditionalGeneration(
                 continue
             if name.startswith("perception."):
                 perception[name[len("perception.") :]] = tensor
+            elif name.startswith("llm.mtp."):
+                pass  # MTP draft-head weights; loaded by the speculative draft model, not here
+            elif name.startswith(CTC_TIMESTAMP_BUNDLE_PREFIX):
+                pass  # a bundled CTC timestamp head; the aligner loads it from the checkpoint file
+            elif name.startswith("mtp."):
+                raise ValueError(
+                    f"Unsupported bare MTP tensor {name!r}; NeMo SpeechLM exports must store draft weights "
+                    f"under the 'llm.mtp.*' namespace."
+                )
             else:
                 llm.append((name, tensor))
         return perception, llm
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         perception_weights, llm_raw = self._split_perception_llm(weights)
+        verification = None
+        verification_config = getattr(self.config, "speechlm_refit_verification", None)
+        # The first complete checkpoint load remains strict. Diagnostics apply
+        # only to subsequent normal load_weights calls used by refit.
+        if verification_config and self._perception_weights_initialized:
+            from vllm.distributed import get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size
+
+            from nemo.collections.speechlm2.parts.refit_verification import RefitWeightVerifier
+
+            verification = RefitWeightVerifier(
+                self,
+                verification_config["samples"],
+                tp_rank=get_tensor_model_parallel_rank(),
+                tp_size=get_tensor_model_parallel_world_size(),
+            )
+            self._refit_verification_load_call = getattr(self, "_refit_verification_load_call", 0) + 1
+            verification_started = datetime.now(timezone.utc).isoformat()
+            for name, tensor in perception_weights.items():
+                verification.capture("perception." + name, tensor)
         loaded_perception = self._load_perception_weights(perception_weights)
 
         preprocessed = self._backend.preprocess_llm_weights(llm_raw)
         hf_weights = self._backend.nemo_to_hf_llm_weights(preprocessed)
-        combined = (("language_model." + n, t) for n, t in hf_weights)
+
+        def combined_weights():
+            for name, tensor in hf_weights:
+                name = "language_model." + name
+                if verification is not None:
+                    verification.capture(name, tensor)
+                yield name, tensor
 
         loader = AutoWeightsLoader(self)
-        loaded_llm = loader.load_weights(combined)
+        loaded_llm = loader.load_weights(combined_weights())
+
+        if verification is not None:
+            from nemo.collections.speechlm2.parts.refit_verification import append_refit_receipt
+
+            receipt = verification.verify()
+            receipt["load_call"] = self._refit_verification_load_call
+            receipt["started_utc"] = verification_started
+            receipt["finished_utc"] = datetime.now(timezone.utc).isoformat()
+            receipt["received_source_names"] = ["perception." + name for name in perception_weights] + [
+                name for name, _ in llm_raw
+            ]
+            receipt["scope"] = "destination samples versus received BF16 refit; not full policy correspondence"
+            append_refit_receipt(verification_config["output_dir"], receipt)
 
         return loaded_llm | loaded_perception
 

@@ -18,7 +18,7 @@ import os
 import tarfile
 from abc import ABC, abstractmethod
 from pathlib import PurePosixPath
-from typing import List
+from typing import List, Optional
 
 import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
@@ -28,12 +28,14 @@ import nemo.collections.asr.models as asr_models
 from nemo.collections.asr.parts.mixins.asr_adapter_mixins import ASRAdapterModelMixin
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.utils import asr_module_utils
+from nemo.collections.asr.parts.utils.prompt_language_utils import resolve_prompt_index
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.tokenizer_utils import (
     extract_capitalized_tokens_from_vocab,
     extract_punctuation_from_vocab,
 )
 from nemo.collections.common import tokenizers
+from nemo.collections.common.parts.utils import ModuleBlock
 from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.utils import app_state, logging
 from nemo.utils.file_utils import robust_copy
@@ -528,6 +530,7 @@ class ASRModuleMixin(ASRAdapterModelMixin):
         update_config: bool = True,
         rope_base: float = None,
         rotary_fraction: float = None,
+        self_attn: ModuleBlock | None = None,
     ):
         """
         Update the self_attention_model if function is available in encoder.
@@ -557,8 +560,17 @@ class ASRModuleMixin(ASRAdapterModelMixin):
                 ``self_attention_model='rope'``. If None, the existing value is kept.
             rotary_fraction (float): Fraction of the per-head dim to rotate. Only used when
                 ``self_attention_model='rope'``. If None, the existing value is kept.
+            self_attn: the block the new attention layers are built from, see `ConformerEncoder.change_attention_model`;
+                an encoder built from a `self_attn` block needs a new block here to change its attention model,
+                and with `update_config` the block must be a Hydra section.
         """
-        if self_attention_model is None and att_context_size is None and rope_base is None and rotary_fraction is None:
+        if (
+            self_attention_model is None
+            and att_context_size is None
+            and rope_base is None
+            and rotary_fraction is None
+            and self_attn is None
+        ):
             return
 
         if not hasattr(self, 'encoder'):
@@ -579,6 +591,7 @@ class ASRModuleMixin(ASRAdapterModelMixin):
             device=self.device,
             rope_base=rope_base,
             rotary_fraction=rotary_fraction,
+            self_attn=self_attn,
         )
         if update_config:
             with open_dict(self.cfg):
@@ -587,6 +600,8 @@ class ASRModuleMixin(ASRAdapterModelMixin):
                 if self.encoder.self_attention_model == 'rope':
                     self.cfg.encoder.rope_base = self.encoder._cfg.rope_base
                     self.cfg.encoder.rotary_fraction = self.encoder._cfg.rotary_fraction
+                if self_attn is not None:
+                    self.cfg.encoder.self_attn = self.encoder._cfg.self_attn
 
     def change_subsampling_conv_chunking_factor(
         self, subsampling_conv_chunking_factor: int, update_config: bool = True
@@ -969,7 +984,24 @@ class PromptStreamingMixin:
             torch.nn.Linear(proj_out_size * 2, proj_out_size),
         )
 
-    def set_inference_prompt(self, target_lang: str):
+    def resolve_prompt_language(self, target_lang: Optional[str]) -> int:
+        """Map a language name to its prompt index.
+
+        Accepts an exact ``prompt_dictionary`` key (``"de-DE"``, ``"de"``) or a bare language code
+        that matches exactly one locale key. None selects the language-agnostic ``"auto"`` prompt.
+
+        Args:
+            target_lang: Language name, or None for the language-agnostic prompt.
+
+        Returns:
+            (int) Index into the prompt one-hot vector.
+
+        Raises:
+            ValueError: If the language is not supported by the model, or is ambiguous.
+        """
+        return resolve_prompt_index(target_lang, self.cfg.model_defaults.get('prompt_dictionary') or {})
+
+    def set_inference_prompt(self, target_lang: Optional[str]):
         """
         Set the language prompt for streaming inference.
 
@@ -978,17 +1010,10 @@ class PromptStreamingMixin:
         ``change_decoding_strategy``.
 
         Args:
-            target_lang: A key from the model's ``prompt_dictionary``
+            target_lang: Language name, resolved by :meth:`resolve_prompt_language`
                          (e.g. ``"en-US"``, ``"auto"``).
         """
-        prompt_dict = self.cfg.model_defaults.get('prompt_dictionary', {})
-        if target_lang not in prompt_dict:
-            available = list(prompt_dict.keys())
-            raise ValueError(
-                f"Unknown target language '{target_lang}'. "
-                f"Available: {available[:20]}{'...' if len(available) > 20 else ''}"
-            )
-        self._inference_prompt_index = prompt_dict[target_lang]
+        self._inference_prompt_index = self.resolve_prompt_language(target_lang)
         logging.info(f"Inference prompt set to '{target_lang}' (index {self._inference_prompt_index})")
 
     def _apply_prompt_to_encoded(self, encoded: Tensor) -> Tensor:

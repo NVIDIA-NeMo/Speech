@@ -43,6 +43,7 @@ from nemo.collections.asr.parts.utils.manifest_utils import write_manifest
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.collections.common.data.utils import move_data_to_device
+from nemo.core.classes.common import PretrainedModelInfo
 from nemo.core.classes.mixins import AccessMixin
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 from nemo.utils import logging
@@ -369,6 +370,11 @@ class ASREOUModelMixin:
 
 
 class EncDecRNNTBPEEOUModel(EncDecRNNTBPEModel, ASREOUModelMixin):
+    @classmethod
+    def list_available_models(cls) -> List[PretrainedModelInfo]:
+        # Parent checkpoints lack EOU/EOB tokens and must not be discovered as EOU models.
+        return []
+
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
 
         self._patch_decoding_cfg(cfg)
@@ -701,6 +707,11 @@ class EncDecRNNTBPEEOUModel(EncDecRNNTBPEModel, ASREOUModelMixin):
 
 
 class EncDecHybridRNNTCTCBPEEOUModel(EncDecHybridRNNTCTCBPEModel, ASREOUModelMixin):
+    @classmethod
+    def list_available_models(cls) -> List[PretrainedModelInfo]:
+        # Parent checkpoints lack EOU/EOB tokens and must not be discovered as EOU models.
+        return []
+
     def __init__(self, cfg: DictConfig, trainer):
         self._patch_decoding_cfg(cfg)
         if cfg.aux_ctc.get('decoding', None) is not None:
@@ -836,7 +847,6 @@ class EncDecHybridRNNTCTCBPEEOUModel(EncDecHybridRNNTCTCBPEModel, ASREOUModelMix
             tensorboard_logs['val_wer'] = wer
             tensorboard_logs['val_eou_metrics'] = eou_metrics_list
             tensorboard_logs['val_eob_metrics'] = eob_metrics_list
-            tensorboard_logs['val_text_pred'] = text_pred
 
         else:
             # If experimental fused Joint-Loss-WER is used

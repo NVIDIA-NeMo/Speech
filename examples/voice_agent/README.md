@@ -1,5 +1,9 @@
 # NeMo Voice Agent
 
+> [!WARNING]
+> `nemo/agents/voice_agent` and `examples/voice_agent` in this repository are deprecated.
+> Please use the new [NVIDIA NeMo Voice Agent repository](https://github.com/NVIDIA-NeMo/labs-Voice-Agent) instead.
+
 A fully open-source NVIDIA NeMo Voice Agent example demonstrating a simple way to combine NVIDIA NeMo STT/TTS service and HuggingFace LLM together into a conversational agent. Everything is open-source and deployed locally so you can have your own voice agent. Feel free to explore the code and see how different speech technologies can be integrated with LLMs to create a seamless conversation experience. 
 
 As of now, we only support English input and output, but more languages will be supported in the future.

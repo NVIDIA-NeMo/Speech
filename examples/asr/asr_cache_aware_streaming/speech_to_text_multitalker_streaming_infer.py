@@ -49,8 +49,7 @@ class MultitalkerTranscriptionConfig:
     """
 
     # Required configs
-    diar_model: Optional[str] = None  # Path to a .nemo file
-    diar_pretrained_name: Optional[str] = None  # Name of a pretrained model
+    diar_model: Optional[str] = None  # Path to a local checkpoint or name of a pretrained model
     max_num_of_spks: Optional[int] = 4  # maximum number of speakers
     parallel_speaker_strategy: bool = True  # whether to use parallel speaker strategy
     masked_asr: bool = False  # whether to use masked ASR
@@ -93,6 +92,12 @@ class MultitalkerTranscriptionConfig:
     shift_size: int = -1
     left_chunks: int = 5
     online_normalization: bool = False
+    # Language-ID prompt for prompt-conditioned ASR models. The value must be a key in the
+    # model's prompt_dictionary (for example, "en-US" or "auto"). It is ignored by models
+    # without prompt support.
+    target_lang: Optional[str] = None
+    strip_lang_tags: bool = False
+    lang_tag_pattern: Optional[str] = None
     output_path: Optional[str] = None
     diar_output_rttm_dir: Optional[str] = None
     diar_collar: float = 0.0
@@ -119,6 +124,42 @@ class MultitalkerTranscriptionConfig:
     print_path: Optional[str] = None
     ignored_initial_frame_steps: int = 5
     finetune_realtime_ratio: float = 0.01
+
+
+def load_diar_model(model_name_or_path: str, map_location: torch.device) -> SortformerEncLabelModel:
+    """Load a diarization model from a local checkpoint or pretrained model name."""
+    if model_name_or_path.endswith(".ckpt"):
+        logging.info(f"Using local diarization model checkpoint from {model_name_or_path}")
+        return SortformerEncLabelModel.load_from_checkpoint(
+            checkpoint_path=model_name_or_path, map_location=map_location, strict=False
+        )
+    if model_name_or_path.endswith(".nemo"):
+        logging.info(f"Using local NeMo diarization model from {model_name_or_path}")
+        return SortformerEncLabelModel.restore_from(restore_path=model_name_or_path, map_location=map_location)
+
+    logging.info(f"Using pretrained diarization model {model_name_or_path}")
+    return SortformerEncLabelModel.from_pretrained(model_name=model_name_or_path, map_location=map_location)
+
+
+def configure_asr_for_multitalker_streaming(cfg, asr_model) -> None:
+    """Configure model-specific behavior used by the shared multitalker streaming path."""
+    if cfg.parallel_speaker_strategy and not cfg.masked_asr and not hasattr(asr_model, "set_speaker_targets"):
+        raise ValueError(
+            "parallel_speaker_strategy=true with masked_asr=false requires an ASR model that supports "
+            "speaker-target injection via set_speaker_targets(). Use masked_asr=true for a conventional ASR model."
+        )
+
+    if hasattr(asr_model, "set_inference_prompt"):
+        target_lang = cfg.target_lang if cfg.target_lang is not None else "auto"
+        asr_model.set_inference_prompt(target_lang)
+        if not hasattr(asr_model, "decoding") or not hasattr(asr_model.decoding, "set_strip_lang_tags"):
+            raise ValueError("Prompt-conditioned ASR model does not expose decoding.set_strip_lang_tags().")
+        asr_model.decoding.set_strip_lang_tags(cfg.strip_lang_tags, lang_tag_pattern=cfg.lang_tag_pattern)
+    elif cfg.target_lang is not None:
+        logging.warning(
+            "target_lang=%s was provided, but the ASR model does not support language-ID prompts. Ignoring it.",
+            cfg.target_lang,
+        )
 
 
 def launch_serial_streaming(
@@ -239,8 +280,8 @@ def main(cfg: MultitalkerTranscriptionConfig) -> Union[MultitalkerTranscriptionC
     if cfg.random_seed:
         pl.seed_everything(cfg.random_seed)
 
-    if cfg.diar_model is None and cfg.diar_pretrained_name is None:
-        raise ValueError("Both cfg.diar_model and cfg.pretrained_name cannot be None!")
+    if cfg.diar_model is None:
+        raise ValueError("cfg.diar_model cannot be None")
     if cfg.audio_file is None and cfg.manifest_file is None:
         raise ValueError("Both cfg.audio_file and cfg.manifest_file cannot be None!")
 
@@ -260,14 +301,7 @@ def main(cfg: MultitalkerTranscriptionConfig) -> Union[MultitalkerTranscriptionC
         accelerator = 'gpu'
         map_location = torch.device(f'cuda:{cfg.cuda}')
 
-    if cfg.diar_model.endswith(".ckpt"):
-        diar_model = SortformerEncLabelModel.load_from_checkpoint(
-            checkpoint_path=cfg.diar_model, map_location=map_location, strict=False
-        )
-    elif cfg.diar_model.endswith(".nemo"):
-        diar_model = SortformerEncLabelModel.restore_from(restore_path=cfg.diar_model, map_location=map_location)
-    else:
-        raise ValueError("cfg.diar_model must end with.ckpt or.nemo!")
+    diar_model = load_diar_model(cfg.diar_model, map_location)
 
     bf16_requested = str(cfg.precision).lower().startswith("bf16")
     use_bf16 = bf16_requested and cfg.use_amp and accelerator == "gpu" and torch.cuda.is_bf16_supported()
@@ -291,7 +325,7 @@ def main(cfg: MultitalkerTranscriptionConfig) -> Union[MultitalkerTranscriptionC
         logging.info(f"Using local ASR model from {cfg.asr_model}")
         asr_model = nemo_asr.models.ASRModel.restore_from(restore_path=cfg.asr_model)
     else:
-        logging.info(f"Using NGC cloud ASR model {cfg.asr_model}")
+        logging.info(f"Using pretrained ASR model {cfg.asr_model}")
         asr_model = nemo_asr.models.ASRModel.from_pretrained(model_name=cfg.asr_model)
 
     if cfg.att_context_size is not None:
@@ -299,6 +333,8 @@ def main(cfg: MultitalkerTranscriptionConfig) -> Union[MultitalkerTranscriptionC
             asr_model.encoder.set_default_att_context_size(att_context_size=cfg.att_context_size)
         else:
             raise ValueError("Model does not support multiple lookaheads.")
+
+    configure_asr_for_multitalker_streaming(cfg, asr_model)
 
     # Initialize to avoid "possibly used before assignment" error
     multispk_asr_streamer = None

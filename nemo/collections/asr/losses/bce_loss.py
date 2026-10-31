@@ -14,124 +14,141 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Dict, Optional, Sequence, Union
+
 import torch
 
 from nemo.core.classes import Loss, Typing, typecheck
-from nemo.core.neural_types import LabelsType, LengthsType, LossType, NeuralType, ProbsType
+from nemo.core.neural_types import LabelsType, LengthsType, LogitsType, LossType, NeuralType, ProbsType
 
-__all__ = ['BCELoss']
+__all__ = ['BCELoss', 'BCEWithLogitsLoss']
 
 
 class BCELoss(Loss, Typing):
-    """
-    Computes Binary Cross Entropy (BCE) loss. The BCELoss class expects output from Sigmoid function.
+    """Compute Binary Cross Entropy (BCE) from speaker probabilities.
+
+    Frames at or beyond each value in ``target_lens`` are excluded before the
+    underlying PyTorch loss is evaluated in FP32.
     """
 
     @property
-    def input_types(self):
-        """Input types definitions for AnguarLoss."""
+    def input_types(self) -> Dict[str, NeuralType]:
+        """Input type definitions for Binary Cross Entropy loss."""
         return {
             "probs": NeuralType(('B', 'T', 'C'), ProbsType()),
             'labels': NeuralType(('B', 'T', 'C'), LabelsType()),
-            "target_lens": NeuralType(('B'), LengthsType()),
+            "target_lens": NeuralType(('B',), LengthsType()),
         }
 
     @property
-    def output_types(self):
-        """
-        Output types definitions for binary cross entropy loss. Weights for labels can be set using weight variables.
-        """
+    def output_types(self) -> Dict[str, NeuralType]:
+        """Output type definition for Binary Cross Entropy loss."""
         return {"loss": NeuralType(elements_type=LossType())}
 
     def __init__(
         self,
         reduction: str = 'mean',
-        alpha: float = 1.0,
-        weight: torch.Tensor = torch.tensor([0.1, 0.9]),
-        sorted_preds: bool = False,
-        sorted_loss: bool = False,
-        class_normalization: bool = False,
-    ):
-        """
-        A custom loss function that supports class normalization,
-        weighted binary cross-entropy, and optional sorting.
+        weight: Optional[Union[torch.Tensor, Sequence[float]]] = None,
+    ) -> None:
+        """Initialize the probability-based BCE loss.
 
         Args:
-            reduction (str): Specifies the reduction to apply to the output,
-                options are 'mean', 'sum', or 'none'. Default is 'mean'.
-            alpha (float): Scaling factor for loss (unused in this implementation). Default is 1.0.
-            weight (torch.Tensor): Class weights for the binary cross-entropy loss. Default is [0.1, 0.9].
-            sorted_preds (bool): If True, assumes predictions are sorted. Default is False.
-            sorted_loss (bool): If True, sorts the loss before reduction. Default is False.
-            class_normalization (bool): If True, uses 'none' reduction for per-class loss. Default is False.
+            reduction: Reduction applied by ``torch.nn.BCELoss``. Supported
+                values are ``"none"``, ``"mean"``, and ``"sum"``.
+            weight: Optional element-wise weight broadcastable to the
+                concatenated valid-frame tensors. List-like values are
+                converted to floating-point tensors.
         """
         super().__init__()
-        self.class_normalization = class_normalization
-        if class_normalization:
-            self.reduction = 'none'
-        else:
-            self.reduction = 'mean'
-        self.loss_weight = weight
-        self.loss_f = torch.nn.BCELoss(reduction=self.reduction)
-        self.sorted_preds = sorted_preds
-        self.sorted_loss = sorted_loss
-        self.eps = 1e-6
+        if weight is not None and not torch.is_tensor(weight):
+            weight = torch.as_tensor(weight, dtype=torch.float)
+        self.loss_f = torch.nn.BCELoss(weight=weight, reduction=reduction)
 
     @typecheck()
-    def forward(self, probs, labels, target_lens, enable_autocast=False):
-        """
-        Calculate binary cross entropy loss based on probs, labels and target_lens variables.
+    def forward(
+        self,
+        probs: torch.Tensor,
+        labels: torch.Tensor,
+        target_lens: torch.Tensor,
+    ) -> torch.Tensor:
+        """Calculate probability-based BCE after excluding padded frames.
 
         Args:
-            probs (torch.tensor)
-                Predicted probability value which ranges from 0 to 1. Sigmoid output is expected.
-            labels (torch.tensor)
-                Groundtruth label for the predicted samples.
-            target_lens (torch.tensor):
-                The actual length of the sequence without zero-padding.
+            probs: Speaker probabilities with shape ``(B, T, C)``.
+            labels: Binary speaker targets with shape ``(B, T, C)``.
+            target_lens: Number of valid temporal frames per batch item with
+                shape ``(B,)``.
 
         Returns:
-            loss (NeuralType)
-                Binary cross entropy loss value.
+            The BCE loss with the configured reduction.
         """
-        probs_list = [probs[k, : target_lens[k], :] for k in range(probs.shape[0])]
-        targets_list = [labels[k, : target_lens[k], :] for k in range(labels.shape[0])]
-        probs = torch.cat(probs_list, dim=0)
-        labels = torch.cat(targets_list, dim=0)
-        norm_weight = torch.zeros_like(labels).detach().clone()
-        loss = torch.tensor(0.0).to(labels.device)
+        probs = torch.cat([probs[k, : target_lens[k], :] for k in range(probs.shape[0])], dim=0)
+        labels = torch.cat([labels[k, : target_lens[k], :] for k in range(labels.shape[0])], dim=0)
+        with torch.autocast(device_type=probs.device.type, enabled=False):
+            loss = self.loss_f(probs.float(), labels.float())
+        return loss
 
-        if self.class_normalization in ['class', 'class_binary', 'binary']:
-            if self.class_normalization in ['class', 'class_binary']:
-                # Normalize loss by number of classes
-                norm_weight = 1 / (labels.sum(dim=0) + self.eps)
-                norm_weight_norm = norm_weight / norm_weight.sum()
-                norm_weight_norm = torch.clamp(norm_weight_norm, min=0.05, max=1.0)
-                norm_weight_norm = norm_weight_norm / norm_weight_norm.max()
-                norm_weight = norm_weight_norm[None, :].expand_as(labels).detach().clone()
-            else:
-                norm_weight = torch.ones_like(labels).detach().clone()
 
-            if self.class_normalization in ['binary', 'class_binary']:
-                binary_weight = torch.ones_like(labels).detach().clone()
-                one_weight = (labels.sum() / (labels.shape[0] * labels.shape[1])).to(labels.device)
-                binary_weight[labels == 0] = one_weight
-                binary_weight[labels == 1] = 1 - one_weight
-            else:
-                binary_weight = torch.ones_like(labels).detach().clone()
+class BCEWithLogitsLoss(Loss, Typing):
+    """Compute numerically stable Binary Cross Entropy from speaker logits.
 
-        elif self.class_normalization == 'none' or not self.class_normalization:
-            binary_weight = torch.ones_like(labels).detach().clone()
-            norm_weight = torch.ones_like(labels).detach().clone()
+    Frames at or beyond each value in ``target_lens`` are excluded before the
+    fused logits-based PyTorch loss is evaluated in FP32.
+    """
 
-        with torch.cuda.amp.autocast(enabled=enable_autocast):
-            if self.reduction == 'sum':
-                loss = self.loss_f(probs, labels)
-            elif self.reduction == 'mean':
-                loss = self.loss_f(probs, labels).mean()
-            elif self.reduction == 'none':
-                if self.class_normalization in ['class', 'class_binary', 'binary']:
-                    loss = (binary_weight * norm_weight * self.loss_f(probs, labels)).sum()
-                else:
-                    loss = self.loss_f(probs, labels)
+    @property
+    def input_types(self) -> Dict[str, NeuralType]:
+        """Input type definitions for Binary Cross Entropy with logits loss."""
+        return {
+            "logits": NeuralType(('B', 'T', 'C'), LogitsType()),
+            'labels': NeuralType(('B', 'T', 'C'), LabelsType()),
+            "target_lens": NeuralType(('B',), LengthsType()),
+        }
+
+    @property
+    def output_types(self) -> Dict[str, NeuralType]:
+        """Output type definition for Binary Cross Entropy with logits loss."""
+        return {"loss": NeuralType(elements_type=LossType())}
+
+    def __init__(
+        self,
+        reduction: str = 'mean',
+        pos_weight: Optional[Union[torch.Tensor, float, Sequence[float]]] = None,
+    ) -> None:
+        """Initialize the fused logits-based BCE loss.
+
+        Args:
+            reduction: Reduction applied by ``torch.nn.BCEWithLogitsLoss``.
+                Supported values are ``"none"``, ``"mean"``, and ``"sum"``.
+            pos_weight: Optional weight applied to positive examples.
+                ``None`` is unweighted and adds no persistent state. Non-tensor
+                values are converted to floating-point tensors.
+        """
+        super().__init__()
+        if pos_weight is not None and not torch.is_tensor(pos_weight):
+            pos_weight = torch.as_tensor(pos_weight, dtype=torch.float)
+        self.loss_f = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction=reduction)
+
+    @typecheck()
+    def forward(
+        self,
+        logits: torch.Tensor,
+        labels: torch.Tensor,
+        target_lens: torch.Tensor,
+    ) -> torch.Tensor:
+        """Calculate logits-based BCE after excluding padded frames.
+
+        Args:
+            logits: Raw speaker logits with shape ``(B, T, C)``.
+            labels: Binary speaker targets with shape ``(B, T, C)``.
+            target_lens: Number of valid temporal frames per batch item with
+                shape ``(B,)``.
+
+        Returns:
+            The fused BCE-with-logits loss with the configured reduction.
+        """
+        logits = torch.cat([logits[k, : target_lens[k], :] for k in range(logits.shape[0])], dim=0)
+        labels = torch.cat([labels[k, : target_lens[k], :] for k in range(labels.shape[0])], dim=0)
+        with torch.autocast(device_type=logits.device.type, enabled=False):
+            loss = self.loss_f(logits.float(), labels.float())
         return loss

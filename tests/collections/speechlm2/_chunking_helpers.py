@@ -16,6 +16,9 @@
 from types import SimpleNamespace
 
 import torch
+from torch.nn.utils.rnn import pad_sequence
+
+from nemo.collections.asr.parts.packed_sequence import pack_encoder_output
 
 
 def chunking_test_devices():
@@ -46,6 +49,8 @@ class ChunkingTestPerception(torch.nn.Module):
         self.calls = []
         self.time_offsets = []
         self.spk_targets_calls = []
+        self.sequence_packed_calls = 0
+        self.supports_sequence_packed_output = True
 
     def forward(self, input_signal=None, input_signal_length=None, time_offset=None, spk_targets=None):
         self.calls.append((input_signal.detach().clone(), input_signal_length.detach().clone()))
@@ -53,6 +58,26 @@ class ChunkingTestPerception(torch.nn.Module):
         self.spk_targets_calls.append(None if spk_targets is None else spk_targets.detach().clone())
         max_len = int(input_signal_length.max().item()) if input_signal_length.numel() > 0 else 0
         return input_signal[:, :max_len].unsqueeze(-1), input_signal_length.clone()
+
+    def forward_sequence_packed(
+        self,
+        input_signal=None,
+        input_signal_length=None,
+        time_offset=None,
+        spk_targets=None,
+        input_signal_cu_seqlens=None,
+    ):
+        self.sequence_packed_calls += 1
+        if input_signal_cu_seqlens is not None:
+            offsets = input_signal_cu_seqlens.tolist()
+            input_signal = pad_sequence(
+                [input_signal[offsets[row] : offsets[row + 1]] for row in range(input_signal_length.numel())],
+                batch_first=True,
+            )
+        padded, lengths = self.forward(
+            input_signal, input_signal_length, time_offset=time_offset, spk_targets=spk_targets
+        )
+        return pack_encoder_output(padded, lengths)
 
 
 class _ChunkingTestFeaturizer:

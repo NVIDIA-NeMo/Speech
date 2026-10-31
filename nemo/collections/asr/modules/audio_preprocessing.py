@@ -21,6 +21,7 @@ from typing import Any, Optional
 
 import torch
 
+from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations
 from nemo.collections.asr.parts.preprocessing.features import FilterbankFeatures
 from nemo.collections.asr.parts.submodules.spectr_augment import SpecAugment, SpecCutout
 from nemo.collections.audio.parts.utils.transforms import MFCC
@@ -92,10 +93,38 @@ class AudioPreprocessor(NeuralModule, ABC):
         processed_signal = processed_signal.to(self.dtype_sentinel_tensor.dtype)
         return processed_signal, processed_length
 
+    @torch.no_grad()
+    def forward_packed(self, input_signal, length, input_signal_cu_seqlens) -> PackedEncoderActivations:
+        """Preprocess concatenated waveforms into token-flat features.
+
+        The packed frontend uses one vectorized guarded STFT and returns exactly
+        the valid feature frames. The historical padded :meth:`forward` contract
+        and checkpoint state remain unchanged.
+
+        Args:
+            input_signal: Concatenated waveform samples with shape `(sum(length),)`.
+            length: Per-waveform sample counts with shape `(B,)`.
+            input_signal_cu_seqlens: Cumulative sample offsets with shape `(B + 1,)`.
+
+        Returns:
+            Packed time-major features and their sequence metadata.
+        """
+        if input_signal.dtype != torch.float32:
+            logging.warning(
+                f"AudioPreprocessor received an input signal of dtype {input_signal.dtype}, rather than "
+                "torch.float32. Packed preprocessing runs in float32 for numerical stability.",
+                mode=logging_mode.ONCE,
+            )
+        processed = self.get_features_packed(input_signal.to(torch.float32), length, input_signal_cu_seqlens)
+        return processed.with_data(processed.data.to(self.dtype_sentinel_tensor.dtype))
+
     @abstractmethod
     def get_features(self, input_signal, length):
         # Called by forward(). Subclasses should implement this.
         pass
+
+    def get_features_packed(self, input_signal, length, input_signal_cu_seqlens) -> PackedEncoderActivations:
+        raise NotImplementedError(f"{type(self).__name__} does not implement packed waveform preprocessing.")
 
 
 class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
@@ -115,10 +144,19 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
         window (str): Windowing function for fft. can be one of ['hann',
             'hamming', 'blackman', 'bartlett']
             Defaults to "hann"
-        normalize (str): Can be one of ['per_feature', 'all_features']; all
-            other options disable feature normalization. 'all_features'
-            normalizes the entire spectrogram to be mean 0 with std 1.
+        normalize: Can be one of ['per_feature', 'all_features'] or a normalization block;
+            None, 'NA' or 'None' disable feature normalization, and any other value raises.
+            'all_features' normalizes the entire spectrogram to be mean 0 with std 1.
             'pre_features' normalizes per channel / freq instead.
+            A normalization block is a module class, a `functools.partial`
+            or a config section with `_target_` and `_partial_: true`;
+            it is built with `num_features` and called as `block(features, lengths)` on [B, D, T] features,
+            and for the packed front end it also provides `forward_packed(frames)` on the valid frames [N, D].
+            `MaskedBatchNorm1d` is such a block: batch normalization per channel / freq
+            with the statistics of the batch's valid frames in training and with running statistics in evaluation.
+            The preprocessor computes its features without gradients,
+            so a block with trainable parameters is rejected at construction;
+            `MaskedBatchNorm1d` therefore needs `affine: false` here.
             Defaults to "per_feature"
         n_fft (int): Length of FT window. If None, it uses the smallest power
             of 2 that is larger than n_window_size.
@@ -163,6 +201,18 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
             Defaults to 4000
         mel_norm: Normalization used for mel filterbank weights.
             Defaults to 'slaney' (area normalization)
+        mel_scale: Mel scale of the filterbank, 'slaney' or 'htk' as in librosa.
+            Defaults to 'slaney'
+        periodic_window: If True, uses the periodic form of the window function,
+            as the TensorFlow, SciPy and librosa STFT defaults do, instead of the symmetric form.
+            Defaults to False
+        snip_edges: If True, frames lie entirely inside the signal:
+            no padding, the first frame starts at the first sample,
+            and num_frames = (audio_length - n_window_size) // n_window_stride + 1, all of them valid.
+            Cannot be combined with exact_pad.
+            Defaults to False
+        log_base: Base of the logarithm applied to the features; None for the natural logarithm.
+            Defaults to None
         stft_exact_pad: Deprecated argument, kept for compatibility with older checkpoints.
         stft_conv: Deprecated argument, kept for compatibility with older checkpoints.
     """
@@ -227,6 +277,10 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
         nb_augmentation_prob=0.0,
         nb_max_freq=4000,
         mel_norm="slaney",
+        mel_scale: str = "slaney",
+        periodic_window: bool = False,
+        snip_edges: bool = False,
+        log_base: Optional[float] = None,
         use_torchaudio: bool = False,  # Deprecated arguments; kept for config compatibility
         stft_exact_pad=False,  # Deprecated arguments; kept for config compatibility
         stft_conv=False,  # Deprecated arguments; kept for config compatibility
@@ -269,6 +323,10 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
             nb_augmentation_prob=nb_augmentation_prob,
             nb_max_freq=nb_max_freq,
             mel_norm=mel_norm,
+            mel_scale=mel_scale,
+            periodic_window=periodic_window,
+            snip_edges=snip_edges,
+            log_base=log_base,
             stft_exact_pad=stft_exact_pad,  # Deprecated arguments; kept for config compatibility
             stft_conv=stft_conv,  # Deprecated arguments; kept for config compatibility
         )
@@ -283,6 +341,9 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
 
     def get_features(self, input_signal, length):
         return self.featurizer(input_signal, length)
+
+    def get_features_packed(self, input_signal, length, input_signal_cu_seqlens) -> PackedEncoderActivations:
+        return self.featurizer.forward_packed(input_signal, length, input_signal_cu_seqlens)
 
     @property
     def filter_banks(self):
@@ -502,6 +563,8 @@ class SpectrogramAugmentation(NeuralModule):
         else:
             self.spec_augment = lambda input_spec, length: input_spec
 
+        # Retain the requested backend even on hosts without Numba CUDA support.
+        self.use_numba_spec_augment = use_numba_spec_augment
         # Check if numba is supported, and use a Numba kernel if it is
         if use_numba_spec_augment and NUMBA_CUDA_AVAILABLE:
             logging.info('Numba CUDA SpecAugment kernel is being used')
@@ -516,6 +579,33 @@ class SpectrogramAugmentation(NeuralModule):
         else:
             self.spec_augment_numba = None
 
+    def configure_short_recording_time_mask_cap(
+        self,
+        *,
+        frame_duration_seconds: float,
+        max_duration_seconds: float = 1.0,
+        max_mask_fraction: float = 0.1,
+    ) -> None:
+        """Limit aggregate time masking on sub-threshold recordings.
+
+        The cap uses PyTorch SpecAugment, overriding a requested Numba backend.
+        The vectorized PyTorch implementation does not require Numba.
+        """
+        if isinstance(self.spec_augment, SpecAugment):
+            self.spec_augment.configure_short_recording_time_mask_cap(
+                frame_duration_seconds=frame_duration_seconds,
+                max_duration_seconds=max_duration_seconds,
+                max_mask_fraction=max_mask_fraction,
+            )
+            if self.use_numba_spec_augment:
+                logging.warning(
+                    "The short-recording time-mask cap uses PyTorch SpecAugment; "
+                    "overriding use_numba_spec_augment=True because the Numba backend "
+                    "does not support per-recording time-mask limits. "
+                    "This can change augmentation RNG, outputs and throughput, including for long recordings."
+                )
+            self.spec_augment_numba = None
+
     @typecheck()
     def forward(self, input_spec, length):
         augmented_spec = self.spec_cutout(input_spec=input_spec)
@@ -527,6 +617,15 @@ class SpectrogramAugmentation(NeuralModule):
         else:
             augmented_spec = self.spec_augment(input_spec=augmented_spec, length=length)
         return augmented_spec
+
+    @torch.no_grad()
+    def forward_packed(self, input_spec: PackedEncoderActivations) -> PackedEncoderActivations:
+        """Apply sequence-local augmentation without padding token-flat features."""
+        if isinstance(self.spec_cutout, SpecCutout):
+            input_spec = self.spec_cutout.forward_packed(input_spec)
+        if isinstance(self.spec_augment, SpecAugment):
+            input_spec = self.spec_augment.forward_packed(input_spec)
+        return input_spec
 
 
 class MaskedPatchAugmentation(NeuralModule):
@@ -704,7 +803,7 @@ class AudioToMelSpectrogramPreprocessorConfig:
     n_window_size: Optional[int] = None
     n_window_stride: Optional[int] = None
     window: str = "hann"
-    normalize: str = "per_feature"
+    normalize: Any = "per_feature"
     n_fft: Optional[int] = None
     preemph: float = 0.97
     features: int = 64
@@ -722,7 +821,11 @@ class AudioToMelSpectrogramPreprocessorConfig:
     rng: Optional[str] = None
     nb_augmentation_prob: float = 0.0
     nb_max_freq: int = 4000
-    mel_norm: str = "slaney"
+    mel_norm: Optional[str] = "slaney"
+    mel_scale: str = "slaney"
+    periodic_window: bool = False
+    snip_edges: bool = False
+    log_base: Optional[float] = None
     use_torchaudio: bool = False  # Deprecated argument, kept for compatibility with older checkpoints.
     stft_exact_pad: bool = False  # Deprecated argument, kept for compatibility with older checkpoints.
     stft_conv: bool = False  # Deprecated argument, kept for compatibility with older checkpoints.

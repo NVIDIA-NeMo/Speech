@@ -57,6 +57,7 @@ def nemo_tarred_manifest_path_for_slicing(tmp_path_factory):
                     "audio_filepath": f"audio_{start_idx + idx}.wav",
                     "text": f"utterance {start_idx + idx}",
                     "duration": c.duration,
+                    "sampling_rate": c.sampling_rate,
                     "lang": "en",
                     "shard_id": shard_id,
                 }

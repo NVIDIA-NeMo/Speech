@@ -32,9 +32,8 @@ from nemo.core.classes.common import safe_instantiate
 _FLASH_PRECISION_ALIASES = {
     "fp16-flash": "fp16-flash",
     "bf16-flash": "bf16-flash",
-    # Temporary backward-compatible aliases retained during migration.
+    # Temporary backward-compatible alias retained during migration.
     "fp16-automodel": "fp16-flash",
-    "bf16-automodel": "bf16-flash",
 }
 
 
@@ -61,6 +60,9 @@ def resolve_trainer_cfg(trainer_cfg: DictConfig) -> DictConfig:
     if precision in ("fp16-true", "bf16-true"):
         trainer_cfg.pop("precision", None)
         trainer_cfg["plugins"] = [HalfPrecisionForAudio(precision)]
+    elif precision == "bf16-automodel":
+        trainer_cfg.pop("precision", None)
+        trainer_cfg["plugins"] = [AutomodelBF16Precision()]
     elif (flash_precision := _normalize_flash_precision(precision)) is not None:
         trainer_cfg.pop("precision", None)
         trainer_cfg["plugins"] = [FlashPrecision(flash_precision)]
@@ -191,6 +193,25 @@ class FlashPrecision(Precision):
             )
 
         return _convert_audio_preserving(data, self._desired_input_dtype)
+
+
+class AutomodelBF16Precision(FlashPrecision):
+    """Keep Automodel's parameter dtype policy while converting non-audio inputs.
+
+    Automodel/FSDP owns all parameter casting, including deliberate FP32 Mamba
+    parameters and router correction buffers. The inherited forward context is
+    a no-op, so Lightning never changes the global default dtype or autocasts.
+    """
+
+    precision: str = "bf16-automodel"
+
+    def __init__(self) -> None:
+        super().__init__("bf16-flash")
+        self.precision = "bf16-automodel"
+
+    @override
+    def convert_module(self, module: torch.nn.Module) -> torch.nn.Module:
+        return module
 
 
 def _convert_audio_preserving(data: dict, dtype: torch.dtype) -> dict:

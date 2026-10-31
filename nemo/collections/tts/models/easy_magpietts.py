@@ -127,6 +127,11 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
         self.cross_entropy_loss = nn.CrossEntropyLoss(reduction='none')
 
+        if 'feature_masking' in cfg:
+            self.feature_masking = safe_instantiate(cfg.feature_masking)
+        else:
+            self.feature_masking = None
+
         # Validation inference with metrics (optional)
         self.run_val_inference = cfg.get('run_val_inference', False)
         self.use_multilingual_asr = cfg.get('use_multilingual_asr', False)
@@ -154,6 +159,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
         # UTMOSv2 naturalness scoring for validation (optional)
         self.use_utmos = cfg.get('use_utmos', False)
+        self.utmos_device = str(cfg.get('utmos_device', 'cpu')).lower()
+        if self.utmos_device not in {'cpu', 'cuda'}:
+            raise ValueError(f"utmos_device must be 'cpu' or 'cuda', got {self.utmos_device!r}.")
         if self.use_utmos:
             assert HAVE_UTMOSV2, (
                 "UTMOSv2 is required for UTMOS scoring but is not installed. "
@@ -624,6 +632,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         delay: torch.Tensor,
         speech_eos_mask: Optional[torch.Tensor] = None,
         agent_mask: Optional[torch.Tensor] = None,
+        dropout_audio_conditioning: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """Prepare the delayed autoregressive audio channel and its targets.
 
@@ -646,6 +655,10 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 aligned to the autoregressive target timeline and may be used both
                 for loss masking and for replacing user regions with dedicated
                 user-speech tokens.
+            dropout_audio_conditioning: Whether to pass the audio channel embeddings through
+                ``self.feature_masking``. ``process_batch`` sets it whenever the module is configured and the
+                batch is not a CFG-unconditional one (``dropout_conditional_input``); the module itself masks only
+                in training mode and is the identity in eval mode.
 
         Returns:
             A tuple containing:
@@ -826,6 +839,11 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             embeddings=[zero_delay_tensor, audio_embedded],
             lengths=[delay, audio_codes_lens_target],
         )
+
+        if dropout_audio_conditioning:
+            audio_channel_embedding = self.feature_masking(
+                inputs=audio_channel_embedding, input_len=audio_channel_lens
+            )
 
         return (
             audio_channel_embedding,
@@ -1025,6 +1043,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             )
 
         # 5. Prepare audio channel embeddings
+        dropout_audio_conditioning = (self.feature_masking is not None) and (not dropout_conditional_input)
         (
             audio_channel_embedding,
             audio_channel_lens,
@@ -1037,6 +1056,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             delay=audio_delay,
             speech_eos_mask=speech_eos_mask,
             agent_mask=agent_mask,
+            dropout_audio_conditioning=dropout_audio_conditioning,
         )
 
         # 6. Sum the channel embeddings element-wise
@@ -1212,8 +1232,14 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         local_transformer_logits = None
         if self.local_transformer_type != LocalTransformerType.NO_LT:
             assert self.local_transformer_type == LocalTransformerType.AR, "Unexpected local transformer type"
+
+            if dropout_audio_conditioning:
+                lt_masking = self.feature_masking
+            else:
+                lt_masking = None
+
             local_transformer_logits = self._lt_helper.compute_logits(
-                pred_embeddings, audio_codes_target, targets_offset_by_one=False
+                pred_embeddings, audio_codes_target, targets_offset_by_one=False, feature_masking=lt_masking
             )
             local_transformer_loss, _ = self.compute_loss(
                 local_transformer_logits,
@@ -1771,6 +1797,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
                     utmos_scores = None
                     if getattr(self, 'use_utmos', False) and hasattr(self, '_utmos_calculator'):
+                        target_device = self.device if self.utmos_device == 'cuda' else self.utmos_device
+                        self._utmos_calculator.to(target_device)
                         utmos_batch_size = max(int(self.cfg.get('utmos_batch_size', len(predicted_audio_paths))), 1)
                         utmos_num_workers = max(int(self.cfg.get('utmos_num_workers', 0)), 0)
                         try:
@@ -1859,6 +1887,10 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             self._generate_codec_silence_buffer()
 
     def on_validation_epoch_start(self) -> None:
+        # Workaround for a PyTorch/Lightning DDP issue when resuming training after autoregressive validation.
+        # Restored in on_validation_epoch_end()
+        # If editing this part, double check that all child classes update the corresponding part in
+        # on_validation_epoch_end(), notably EasyMagpieCFGDistillation overrides on_validation_epoch_end()
         if torch.distributed.is_initialized():
             self.trainer.strategy.model.require_backward_grad_sync = False
 
@@ -1929,7 +1961,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             eos_id=self.eos_id,
             num_audio_codebooks=self.data_num_audio_codebooks,
             codec_model_samples_per_frame=self.codec_model_samples_per_frame,
-            prior_scaling_factor=0.0,
+            prior_scaling_factor=None,
             load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
             dataset_type=dataset_type,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
             use_text_conditioning_tokenizer=True,
@@ -1965,7 +1997,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 codec_model_input_sample_rate=self.codec_model_input_sample_rate,
                 frame_stacking_factor=self.frame_stacking_factor,
                 num_audio_codebooks=self.data_num_audio_codebooks,
-                prior_scaling_factor=0.0,
+                prior_scaling_factor=None,
                 load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
                 dataset_type=mode,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
                 load_16khz_audio=False,
@@ -1993,6 +2025,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 phoneme_turn_dropout_batch_prob=self.cfg.get("phoneme_turn_dropout_batch_prob", 0.0),
                 phoneme_turn_dropout_turn_prob=self.cfg.get("phoneme_turn_dropout_turn_prob", 0.0),
                 phoneme_turn_max_words_to_drop=self.cfg.get("phoneme_turn_max_words_to_drop", 2),
+                challenging_texts_path=dataset_cfg.dataset.get("challenging_texts_path"),
+                challenging_text_replacement_prob=dataset_cfg.dataset.get("challenging_text_replacement_prob", 0.0),
+                context_audio_shuffle_batch_prob=dataset_cfg.dataset.get("context_audio_shuffle_batch_prob", 0.0),
             )
             dataset = FallbackDataset(dataset)
         else:
@@ -2001,7 +2036,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 volume_norm=dataset_cfg.volume_norm,
                 codec_model_samples_per_frame=self.codec_model_samples_per_frame,
                 num_audio_codebooks=self.data_num_audio_codebooks,
-                prior_scaling_factor=0.0,
+                prior_scaling_factor=None,
                 load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
                 dataset_type=mode,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
                 load_16khz_audio=False,

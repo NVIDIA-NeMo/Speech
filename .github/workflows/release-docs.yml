@@ -84,7 +84,7 @@ jobs:
       ref: ${{ inputs.github-ref }}
       docs-directory: docs/source
       sync-all: true
-      no-extras: "--no-extra cu12 --no-extra compiled --no-extra compiled-a100"
+      no-extras: "--no-extra cu12 --no-extra compiled --no-extra compiled-a100 --no-extra vllm"
 
   publish-docs:
     runs-on: ubuntu-latest

@@ -72,6 +72,11 @@ def setup_logging():
 
 setup_logging()
 
+logger.warning(
+    "examples/voice_agent is deprecated. "
+    "Please use the new repository at https://github.com/NVIDIA-NeMo/labs-Voice-Agent instead."
+)
+
 # Global flag for graceful shutdown
 shutdown_event = asyncio.Event()
 

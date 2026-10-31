@@ -227,6 +227,18 @@ class TestRotaryPositionalEncoding:
         assert torch.allclose(q_rot_nc, q_rot_c, atol=1e-6)
         assert torch.allclose(k_rot_nc, k_rot_c, atol=1e-6)
 
+    @pytest.mark.run_only_on('GPU')
+    @pytest.mark.unit
+    def test_cache_is_identical_across_construction_devices(self):
+        cpu = RotaryPositionalEncoding(d_k=64, max_len=8192)
+        cpu.extend_pe(8192, device=torch.device('cpu'), dtype=torch.bfloat16)
+
+        cuda = RotaryPositionalEncoding(d_k=64, max_len=8192).to('cuda')
+        cuda.extend_pe(8192, device=torch.device('cuda'), dtype=torch.bfloat16)
+
+        assert torch.equal(cuda.cos.cpu(), cpu.cos)
+        assert torch.equal(cuda.sin.cpu(), cpu.sin)
+
 
 class TestRoPEMultiHeadAttention:
     @pytest.mark.unit
@@ -580,3 +592,70 @@ class TestConformerEncoderRoPE:
         # Live encoder agrees.
         assert model.encoder.self_attention_model == 'rope'
         assert model.encoder.pos_enc.d_k_rot == 8  # d_k=16, fraction=0.5
+
+    @pytest.mark.unit
+    def test_change_attention_model_forwards_a_self_attn_block(self):
+        # An encoder built from a self_attn block changes its attention model only with a new block,
+        # and the model-level method passes that block through and records it in the saved config.
+        from omegaconf import DictConfig
+
+        from nemo.collections.asr.models import EncDecCTCModel
+
+        attention = 'nemo.collections.asr.parts.submodules.multi_head_attention.'
+        encoder_cfg = {
+            '_target_': 'nemo.collections.asr.modules.ConformerEncoder',
+            'feat_in': 64,
+            'n_layers': 2,
+            'd_model': 64,
+            'n_heads': 4,
+            'self_attention_model': 'rel_pos',
+            'subsampling_factor': 4,
+            'subsampling_conv_channels': 32,
+            'pos_emb_max_len': 256,
+            'dropout': 0.0,
+            'dropout_att': 0.0,
+            'dropout_emb': 0.0,
+            'dropout_pre_encoder': 0.0,
+            'self_attn': {
+                '_target_': attention + 'RelPositionMultiHeadAttention',
+                '_partial_': True,
+                'use_bias': False,
+            },
+        }
+        decoder_cfg = {
+            '_target_': 'nemo.collections.asr.modules.ConvASRDecoder',
+            'feat_in': None,
+            'num_classes': 28,
+            'vocabulary': list("abcdefghijklmnopqrstuvwxyz '"),
+        }
+        preproc_cfg = {'_target_': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor'}
+        model = EncDecCTCModel(
+            cfg=DictConfig(
+                {
+                    'preprocessor': preproc_cfg,
+                    'encoder': encoder_cfg,
+                    'decoder': decoder_cfg,
+                    'optim': {'name': 'adamw'},
+                }
+            )
+        )
+
+        with pytest.raises(ValueError, match="self_attn block"):
+            model.change_attention_model(self_attention_model='rope')
+
+        rope_block = {'_target_': attention + 'RoPEMultiHeadAttention', '_partial_': True, 'use_bias': False}
+        model.change_attention_model(self_attention_model='rope', self_attn=rope_block)
+        for layer in model.encoder.layers:
+            assert isinstance(layer.self_attn, RoPEMultiHeadAttention)
+            assert layer.self_attn.pos_enc is model.encoder.pos_enc
+            assert layer.self_attn.linear_q.bias is None
+        assert model.cfg.encoder.self_attention_model == 'rope'
+        assert model.cfg.encoder.self_attn['_target_'] == rope_block['_target_']
+        assert model.cfg.encoder.self_attn['use_bias'] is False
+
+        # a block-only update is an update, and a context-only update keeps the replaced block
+        model.change_attention_model(self_attn={**rope_block, 'use_bias': True})
+        assert model.encoder.layers[0].self_attn.linear_q.bias is not None
+        model.change_attention_model(att_context_size=[4, 4])
+        assert isinstance(model.encoder.layers[0].self_attn, RoPEMultiHeadAttention)
+        assert model.encoder.layers[0].self_attn._max_cache_len == 4

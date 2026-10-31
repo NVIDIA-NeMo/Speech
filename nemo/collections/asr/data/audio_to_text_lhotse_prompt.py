@@ -21,12 +21,13 @@ import torch.utils.data
 from lhotse.dataset import AudioSamples
 from lhotse.dataset.collation import collate_matrices, collate_vectors
 
+from nemo.collections.common.data.lhotse.audio_loading import LhotseAudioLoadingDatasetMixin
 from nemo.collections.common.tokenizers.aggregate_tokenizer import AggregateTokenizer
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 
 
-class LhotseSpeechToTextBpeDatasetWithPrompt(torch.utils.data.Dataset):
+class LhotseSpeechToTextBpeDatasetWithPrompt(LhotseAudioLoadingDatasetMixin, torch.utils.data.Dataset):
     """
     Dataset class for speech-to-text with prompt vectors.
     Supports both language ID and custom prompts.
@@ -115,7 +116,7 @@ class LhotseSpeechToTextBpeDatasetWithPrompt(torch.utils.data.Dataset):
         return int(hidden_length)
 
     def __getitem__(self, cuts) -> Tuple[torch.Tensor, ...]:
-        audio, audio_lens, cuts = self.load_audio(cuts)
+        audio, audio_lens, cuts = self.load_audio_with_cuts(cuts)
         tokens = [torch.as_tensor(self.tokenizer(c.supervisions[0].text, c.supervisions[0].language)) for c in cuts]
 
         # Create prompt targets

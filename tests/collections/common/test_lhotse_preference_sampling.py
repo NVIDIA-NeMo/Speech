@@ -170,3 +170,83 @@ def test_lhotse_as_conversation_routes_preference_sampling_config(monkeypatch):
     assert conversation.turns[0].value == "Translate the audio."
     assert conversation.turns[-1].value == "Bonjour le monde."
     assert conversation.token_equivalent_duration == 0.5
+
+
+@pytest.mark.unit
+def test_preference_sampling_can_skip_invalid_converted_targets(monkeypatch, caplog):
+    valid = _make_cut(unique_id=20)
+    valid.system_prompt = ""
+
+    missing = _make_cut(
+        unique_id=21,
+        custom={"preference_instructions": [{"prompt": "Missing target.", "tags": {"type": "invalid"}}]},
+    )
+    missing.supervisions[0].text = None
+
+    non_string = _make_cut(
+        unique_id=22,
+        custom={
+            "preference_instructions": [
+                {"prompt": "Non-string target.", "target": ["not", "text"], "tags": {"type": "invalid"}}
+            ]
+        },
+    )
+
+    empty = _make_cut(
+        unique_id=23,
+        custom={"preference_instructions": [{"prompt": "Empty target.", "target": "", "tags": {"type": "invalid"}}]},
+    )
+    empty.supervisions[0].text = ""
+
+    monkeypatch.setattr(
+        cutset_module,
+        "read_cutset_from_config",
+        lambda config: (CutSet.from_cuts([valid, missing, non_string, empty]), False),
+    )
+    config = OmegaConf.create(
+        {
+            "audio_locator_tag": "<audio>",
+            "token_equivalent_duration": 0.5,
+            "preference_sampling": {"skip_invalid_target": True},
+        }
+    )
+
+    with caplog.at_level("WARNING"):
+        conversations, _ = cutset_module.read_lhotse_as_conversation(config)
+        materialized = list(conversations)
+
+    assert [conversation.id for conversation in materialized] == [valid.id]
+    assert materialized[0].turns[0].role == "system"
+    assert materialized[0].turns[0].value == ""
+    assert {conversation.id for conversation in (missing, non_string, empty)} <= {
+        record.getMessage().rsplit("=", maxsplit=1)[-1] for record in caplog.records
+    }
+
+
+@pytest.mark.unit
+def test_preference_sampling_invalid_target_filter_is_opt_in(monkeypatch):
+    cut = _make_cut(
+        unique_id=24,
+        custom={
+            "preference_instructions": [
+                {"prompt": "Non-string target.", "target": {"not": "text"}, "tags": {"type": "invalid"}}
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        cutset_module,
+        "read_cutset_from_config",
+        lambda config: (CutSet.from_cuts([cut]), False),
+    )
+    config = OmegaConf.create(
+        {
+            "audio_locator_tag": "<audio>",
+            "token_equivalent_duration": 0.5,
+            "preference_sampling": {},
+        }
+    )
+
+    conversations, _ = cutset_module.read_lhotse_as_conversation(config)
+    (conversation,) = list(conversations)
+
+    assert conversation.turns[-1].value == {"not": "text"}

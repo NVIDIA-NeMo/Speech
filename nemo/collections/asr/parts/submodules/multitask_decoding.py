@@ -20,6 +20,10 @@ from typing import List, Optional, Union
 import torch
 from omegaconf import OmegaConf
 
+from nemo.collections.asr.parts.submodules.aed_ctc_beam_decoding import (
+    AEDCTCBeamInferConfig,
+    TransformerAEDCTCBeamInfer,
+)
 from nemo.collections.asr.parts.submodules.multitask_beam_decoding import (
     AEDBeamInfer,
     AEDBeamInferConfig,
@@ -46,6 +50,9 @@ class AbstractMultiTaskDecoding(ConfidenceMixin):
                 Possible values are :
                 -   greedy, greedy_batch (for greedy decoding).
                 -   beam, tsd, alsd (for beam search decoding).
+                -   aed_ctc_beam (time-synchronous beam search over the frames of a CTC head
+                    with the decoder's label scores fused in;
+                    `decode_predictions_tensor` then needs `ctc_log_probs`).
 
             compute_langs: a bool flag, which allows to compute language id (LID) information per token,
                 word, and the entire sample (most likely language id). The LIDS will be available
@@ -128,6 +135,22 @@ class AbstractMultiTaskDecoding(ConfidenceMixin):
                 return_best_hypothesis: optional bool, whether to return just the best hypothesis or all of the
                     hypotheses after beam search has concluded. This flag is set by default.
 
+            "aed_ctc_beam":
+                beam_size: int, hypotheses kept per sequence after every CTC frame.
+
+                aed_weight: float, scale of the decoder's label log-probabilities.
+
+                ctc_weight: float, scale of the CTC frame log-probabilities.
+
+                recombination: `max`, `sum` or None, how paths with the same label sequence are merged.
+
+                ctc_soft_collapse_threshold: optional float,
+                    merges runs of CTC frames with a confident shared argmax label before the search.
+
+                length_normalization: float, exponent of the hypothesis length dividing the final scores.
+
+                return_best_hypothesis: optional bool, as for `beam`.
+
 
         transformer_decoder: Transformer decoder module.
         log_softmax_module: Log Softmax projection module to the vocab size.
@@ -162,7 +185,7 @@ class AbstractMultiTaskDecoding(ConfidenceMixin):
         self.change_strategy(self.cfg.strategy)
 
     def change_strategy(self, strategy: str) -> "AbstractMultiTaskDecoding":
-        possible_strategies = ['greedy', 'greedy_batch', 'beam']
+        possible_strategies = ['greedy', 'greedy_batch', 'beam', 'aed_ctc_beam']
         if strategy not in possible_strategies:
             raise ValueError(f"Decoding strategy must be one of {possible_strategies}" f"but was provided {strategy}")
 
@@ -173,6 +196,9 @@ class AbstractMultiTaskDecoding(ConfidenceMixin):
 
             elif strategy in ['beam']:
                 self.preserve_alignments = self.cfg.beam.get('preserve_alignments', False)
+
+            elif strategy == 'aed_ctc_beam':
+                self.preserve_alignments = self.cfg.aed_ctc_beam.get('preserve_alignments', False)
 
         if strategy in ['greedy', 'greedy_batch']:
             if self.cfg.greedy.get('ngram_lm_model') is not None:
@@ -220,6 +246,23 @@ class AbstractMultiTaskDecoding(ConfidenceMixin):
                 return_xattn_scores=self.cfg.get('return_xattn_scores', False),
             )
 
+        elif strategy == 'aed_ctc_beam':
+
+            self.decoding = TransformerAEDCTCBeamInfer(
+                transformer_decoder=self.transformer_decoder,
+                log_softmax_module=self.log_softmax_module,
+                tokenizer=self.tokenizer,
+                search_type=self.cfg.aed_ctc_beam.get('search_type', 'default'),
+                beam_size=self.cfg.aed_ctc_beam.beam_size,
+                aed_weight=self.cfg.aed_ctc_beam.get('aed_weight', 1.0),
+                ctc_weight=self.cfg.aed_ctc_beam.get('ctc_weight', 1.0),
+                recombination=self.cfg.aed_ctc_beam.get('recombination', 'max'),
+                ctc_soft_collapse_threshold=self.cfg.aed_ctc_beam.get('ctc_soft_collapse_threshold', None),
+                length_normalization=self.cfg.aed_ctc_beam.get('length_normalization', 0.0),
+                return_best_hypothesis=self.cfg.aed_ctc_beam.get('return_best_hypothesis', True),
+                preserve_alignments=self.preserve_alignments,
+            )
+
         else:
 
             raise ValueError(
@@ -234,6 +277,7 @@ class AbstractMultiTaskDecoding(ConfidenceMixin):
         decoder_input_ids: Optional[torch.Tensor] = None,
         return_hypotheses: bool = False,
         partial_hypotheses: Optional[List[Hypothesis]] = None,
+        ctc_log_probs: Optional[torch.Tensor] = None,
     ) -> Union[List[Hypothesis], List[List[Hypothesis]]]:
         """
         Decode an encoder output by autoregressive decoding of the Decoder+Joint networks.
@@ -242,6 +286,9 @@ class AbstractMultiTaskDecoding(ConfidenceMixin):
             encoder_output: torch.Tensor of shape [B, D, T].
             encoded_lengths: torch.Tensor containing lengths of the padded encoder outputs. Shape [B].
             return_hypotheses: bool. If set to True it will return list of Hypothesis or NBestHypotheses
+            ctc_log_probs: torch.Tensor of shape [B, T, C] with the log-probabilities of the CTC head
+                over the encoder frames;
+                the `aed_ctc_beam` strategy needs it, the other strategies ignore it.
 
         Returns:
             If `return_all_hypothesis` is set:
@@ -253,6 +300,10 @@ class AbstractMultiTaskDecoding(ConfidenceMixin):
                 List of best hypotheses
                     Look at rnnt_utils.Hypothesis for more information.
         """
+        # The joint AED and CTC search scores the frames of the CTC head; the other engines take no CTC input.
+        search_inputs = {}
+        if isinstance(self.decoding, TransformerAEDCTCBeamInfer):
+            search_inputs['ctc_log_probs'] = ctc_log_probs
         # Compute hypotheses
         with torch.inference_mode():
             hypotheses_list = self.decoding(
@@ -260,6 +311,7 @@ class AbstractMultiTaskDecoding(ConfidenceMixin):
                 encoder_input_mask=encoder_input_mask,
                 decoder_input_ids=decoder_input_ids,
                 partial_hypotheses=partial_hypotheses,
+                **search_inputs,
             )  # type: [List[Hypothesis]]
 
             # extract the hypotheses
@@ -422,6 +474,9 @@ class MultiTaskDecoding(AbstractMultiTaskDecoding):
                 Possible values are :
                 -   greedy, greedy_batch (for greedy decoding).
                 -   beam, tsd, alsd (for beam search decoding).
+                -   aed_ctc_beam (time-synchronous beam search over the frames of a CTC head
+                    with the decoder's label scores fused in;
+                    `decode_predictions_tensor` then needs `ctc_log_probs`).
 
             compute_langs: a bool flag, which allows to compute language id (LID) information per token,
                 word, and the entire sample (most likely language id). The LIDS will be available
@@ -504,6 +559,22 @@ class MultiTaskDecoding(AbstractMultiTaskDecoding):
 
                 return_best_hypothesis: optional bool, whether to return just the best hypothesis or all of the
                     hypotheses after beam search has concluded. This flag is set by default.
+
+            "aed_ctc_beam":
+                beam_size: int, hypotheses kept per sequence after every CTC frame.
+
+                aed_weight: float, scale of the decoder's label log-probabilities.
+
+                ctc_weight: float, scale of the CTC frame log-probabilities.
+
+                recombination: `max`, `sum` or None, how paths with the same label sequence are merged.
+
+                ctc_soft_collapse_threshold: optional float,
+                    merges runs of CTC frames with a confident shared argmax label before the search.
+
+                length_normalization: float, exponent of the hypothesis length dividing the final scores.
+
+                return_best_hypothesis: optional bool, as for `beam`.
 
 
         transformer_decoder: Transformer decoder module.
@@ -667,6 +738,9 @@ class MultiTaskDecodingConfig:
 
     # beam decoding config
     beam: AEDBeamInferConfig = field(default_factory=lambda: AEDBeamInferConfig(beam_size=1))
+
+    # joint AED and CTC beam decoding config
+    aed_ctc_beam: AEDCTCBeamInferConfig = field(default_factory=AEDCTCBeamInferConfig)
 
     # can be used to change temperature for decoding
     temperature: float = 1.0

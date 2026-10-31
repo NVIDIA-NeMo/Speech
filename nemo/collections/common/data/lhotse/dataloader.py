@@ -59,7 +59,6 @@ from nemo.collections.common.data.lhotse.sampling import (
     BucketingFilter,
     CERFilter,
     ContextSpeakerSimilarityFilter,
-    DropoutFilter,
     DurationFilter,
     FixedBucketBatchSizeConstraint2D,
     MultimodalFixedBucketBatchSizeConstraint2D,

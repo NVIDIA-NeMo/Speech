@@ -28,7 +28,7 @@
 import math
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -1233,17 +1233,6 @@ class Discriminator(NeuralModule):
     def __init__(self, discriminators: Iterable[NeuralModule]):
         super().__init__()
         self.discriminators = nn.ModuleList(discriminators)
-        # Unique label per sub-discriminator (e.g. "MultiPeriodDiscriminator"), used for
-        # per-discriminator metric logging. Disambiguate duplicate types with an index suffix.
-        names = [type(d).__name__ for d in self.discriminators]
-        self.discriminator_names = [
-            name if names.count(name) == 1 else f"{name}_{names[:i].count(name)}" for i, name in enumerate(names)
-        ]
-        # Number of score/fmap entries contributed by each sub-discriminator, populated on each
-        # forward pass. Used to slice the flattened score/fmap lists back into per-discriminator
-        # groups for logging. Scores and fmaps share the same grouping (each sub-discriminator
-        # returns parallel, equal-length score and fmap lists).
-        self.group_sizes: List[int] = []
 
     @property
     def input_types(self):
@@ -1267,30 +1256,14 @@ class Discriminator(NeuralModule):
         scores_gen = []
         fmaps_real = []
         fmaps_gen = []
-        group_sizes = []
         for discriminator in self.discriminators:
             score_real, score_gen, fmap_real, fmap_gen = discriminator(audio_real=audio_real, audio_gen=audio_gen)
-            group_sizes.append(len(score_real))
             scores_real += score_real
             fmaps_real += fmap_real
             scores_gen += score_gen
             fmaps_gen += fmap_gen
 
-        self.group_sizes = group_sizes
         return scores_real, scores_gen, fmaps_real, fmaps_gen
-
-    def split_by_discriminator(self, items: List) -> Dict[str, List]:
-        """Split a flattened per-entry list (scores or fmaps) returned by `forward` back into
-        a mapping from discriminator name to that discriminator's slice of entries.
-
-        Relies on `self.group_sizes` from the most recent `forward` call.
-        """
-        groups = {}
-        offset = 0
-        for name, size in zip(self.discriminator_names, self.group_sizes):
-            groups[name] = items[offset : offset + size]
-            offset += size
-        return groups
 
 
 class VectorQuantizerBase(NeuralModule, ABC):

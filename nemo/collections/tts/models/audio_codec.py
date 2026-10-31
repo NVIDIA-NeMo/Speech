@@ -708,14 +708,6 @@ class AudioCodecModel(ModelPT):
             loss_disc = self.disc_loss_fn(disc_scores_real=disc_scores_real, disc_scores_gen=disc_scores_gen)
             metrics["d_loss"] = loss_disc
 
-            # Per-discriminator breakdown (logging only; the optimized loss is the aggregate above).
-            real_groups = self.discriminator.split_by_discriminator(disc_scores_real)
-            gen_groups = self.discriminator.split_by_discriminator(disc_scores_gen)
-            for name in real_groups:
-                metrics[f"d_loss/{name}"] = self.disc_loss_fn(
-                    disc_scores_real=real_groups[name], disc_scores_gen=gen_groups[name]
-                )
-
             optim_disc.zero_grad()
             self.manual_backward(loss_disc)
 
@@ -754,26 +746,15 @@ class AudioCodecModel(ModelPT):
 
             _, disc_scores_gen, fmaps_real, fmaps_gen = self.discriminator(audio_real=audio, audio_gen=audio_gen)
 
-            # Per-discriminator breakdown (logging only; the optimized losses are the aggregates below).
-            gen_score_groups = self.discriminator.split_by_discriminator(disc_scores_gen)
-            fmap_real_groups = self.discriminator.split_by_discriminator(fmaps_real)
-            fmap_gen_groups = self.discriminator.split_by_discriminator(fmaps_gen)
-
             if self.gen_loss_scale:
                 loss_gen = self.gen_loss_fn(disc_scores_gen=disc_scores_gen)
                 metrics["g_loss_gen"] = loss_gen
                 generator_losses.append(self.gen_loss_scale * loss_gen)
-                for name, scores_gen_g in gen_score_groups.items():
-                    metrics[f"g_loss_gen/{name}"] = self.gen_loss_fn(disc_scores_gen=scores_gen_g)
 
             if self.feature_loss_scale:
                 loss_feature = self.feature_loss_fn(fmaps_real=fmaps_real, fmaps_gen=fmaps_gen)
                 metrics["g_loss_feature"] = loss_feature
                 generator_losses.append(self.feature_loss_scale * loss_feature)
-                for name in fmap_real_groups:
-                    metrics[f"g_loss_feature/{name}"] = self.feature_loss_fn(
-                        fmaps_real=fmap_real_groups[name], fmaps_gen=fmap_gen_groups[name]
-                    )
 
         if self.commit_loss_scale:
             metrics["g_loss_commit"] = commit_loss

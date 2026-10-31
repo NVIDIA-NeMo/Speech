@@ -57,13 +57,13 @@ model:
     num_quantizers: 31
     wav_to_token_ratio: 1764
 
+  num_delay_speech_tokens: 2  # frames the speech channel is delayed against the text
   tts_config:
     # extra configs added
     use_gated_fusion_for_text_audio: true
     disable_eos_prediction: true # disable eos prediction
     use_bos_eos_emb: true
     use_subword_flag_emb: true
-    num_delay_speech_tokens: 2
     # EAR-TTS configs
     backbone_type: gemma3_text
     backbone_model_class: null
@@ -133,7 +133,7 @@ trainer:
 data:
   # data loader configs
   add_text_bos_and_eos_in_each_turn: true
-  add_audio_prompt_after_description: true
+  add_audio_prompt: true
   audio_prompt_duration: 3.0
   frame_length: 0.08
   source_sample_rate: 22050

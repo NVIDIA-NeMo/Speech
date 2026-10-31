@@ -74,13 +74,13 @@ def test_model_training_step():
     T_audio = sr * 2  # 2 seconds of audio
     audio_locator_id = model.audio_locator_tag_id
 
-    # Build text token sequence: [<bos>, <audio_locator>, tok, tok, ..., <eos>]
+    # Build text token sequence: [<audio_locator>, tok, tok, ...].
     # The audio_locator_tag must appear exactly once to match the single audio sample.
     T_text = 16
-    # Use token id 1 as a generic text token (safe for most LLM tokenizers).
-    text_tok = 1
+    text_tok = _get_text_token_id(audio_locator_id, model.text_pad_id, model.text_vocab_size)
     input_ids = torch.full((B, T_text), text_tok, dtype=torch.long, device=d)
     input_ids[0, 0] = audio_locator_id  # one placeholder at position 0
+    assert (input_ids == audio_locator_id).sum().item() == B
 
     # loss_mask=True on the final few tokens (the "response" portion).
     loss_mask = torch.zeros(B, T_text, dtype=torch.bool, device=d)
@@ -139,3 +139,15 @@ def test_model_inference():
     assert (
         logits.shape[2] == model.text_vocab_size
     ), f"logits vocab dim mismatch: expected {model.text_vocab_size}, got {logits.shape[2]}"
+
+
+@pytest.mark.parametrize("audio_locator_id,padding_id,vocab_size", [(1, 0, 3), (0, 1, 3), (2, 0, 3), (1, 1, 2)])
+def test_text_token_id(audio_locator_id, padding_id, vocab_size):
+    text_tok = _get_text_token_id(audio_locator_id, padding_id, vocab_size)
+    assert 0 <= text_tok < vocab_size
+    assert text_tok not in (audio_locator_id, padding_id)
+
+
+def _get_text_token_id(audio_locator_id, padding_id, vocab_size):
+    # A hard-coded text ID can itself be the audio placeholder (1 for Canary).
+    return next(token_id for token_id in range(vocab_size) if token_id not in (audio_locator_id, padding_id))

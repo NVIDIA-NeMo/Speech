@@ -49,7 +49,7 @@ from nemo.core.classes import NeuralModule, typecheck
 from nemo.core.neural_types import BoolType, FloatType, LengthsType, NeuralType, SpectrogramType
 from nemo.utils import logging
 
-__all__ = ['TransformerUNet']
+__all__ = ['TransformerUNet', 'SpectrogramTransformerUNet']
 
 
 class LearnedSinusoidalPosEmb(Module):
@@ -375,6 +375,8 @@ class TransformerUNet(NeuralModule):
         """
         Return the alibi_bias given batch size and seqence length
         """
+        if seq_len > self.pos_matrix.shape[1]:
+            raise ValueError(f"Input sequence length {seq_len} exceeds max_positions {self.pos_matrix.shape[1]}.")
         pos_matrix = self.pos_matrix[:, :seq_len, :seq_len]
         alibi_bias = pos_matrix * self.slopes
         alibi_bias = alibi_bias.repeat(batch_size, 1, 1)
@@ -497,7 +499,7 @@ class SpectrogramTransformerUNet(NeuralModule):
         input = einops.rearrange(input_real_imag, 'B C RI D T -> B T (C RI D)')
 
         x = self.proj_in(input)
-        key_padding_mask = self._get_key_padding_mask(input_length, max_length=T)
+        key_padding_mask = self._get_key_padding_mask(input_length, max_length=T) if input_length is not None else None
         x = self.conv_embed(x, mask=key_padding_mask) + x
 
         if condition is None:

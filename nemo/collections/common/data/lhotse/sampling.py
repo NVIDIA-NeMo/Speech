@@ -571,24 +571,6 @@ class ValidationStatusFilter:
             return True
 
 
-class DropoutFilter:
-    """Exclude MonoCuts with boolean ``True`` in both dropout policy and flag.
-
-    Opt in per dataset with ``tags: {filter_dropout: true}`` in ``input_cfg``.
-    Missing or false policy tags, missing flags, and other example types pass
-    through. Only cut-level ``custom.filter_dropout`` and ``custom.dropout``
-    are consulted, not nested CSV or supervision metadata.
-    """
-
-    def __call__(self, example) -> bool:
-        if not isinstance(example, MonoCut):
-            return True
-        custom = example.custom or {}
-        if custom.get("filter_dropout", False) is not True:
-            return True
-        return custom.get("dropout", False) is not True
-
-
 class CERFilter:
     """
     Callable, returns ``True`` if a cut's CER is less than max_cer and ``False`` otherwise.

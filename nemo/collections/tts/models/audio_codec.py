@@ -252,7 +252,6 @@ class AudioCodecModel(ModelPT):
         self.skip_nan_gradients = cfg.get("skip_nan_gradients", False)
 
         self.freeze_encoder = cfg.get("freeze_encoder", False)
-        self.disc_lr_overrides = cfg.get("disc_lr_overrides", None)
 
     def _freeze_encoder(self):
         for p in self.audio_encoder.parameters():
@@ -1016,21 +1015,6 @@ class AudioCodecModel(ModelPT):
 
         if self.discriminator is None:
             optim_d = None
-        elif self.disc_lr_overrides:
-            base_lr = optim_config.lr
-            param_groups = []
-            self.disc_params = []
-            for name, sub in zip(self.discriminator.discriminator_names, self.discriminator.discriminators):
-                sub_params = list(sub.parameters())
-                self.disc_params += sub_params
-                lr = float(self.disc_lr_overrides.get(name, base_lr))
-                param_groups.append({"params": sub_params, "lr": lr})
-                logging.info(f"Discriminator '{name}' LR = {lr}")
-            # Hydra instantiate mishandles params= list of param-group dicts; build Adam directly.
-            disc_optim_kwargs = OmegaConf.to_container(optim_config, resolve=True)
-            disc_optim_kwargs.pop("_target_", None)
-            disc_optim_kwargs.pop("lr", None)
-            optim_d = torch.optim.Adam(param_groups, **disc_optim_kwargs)
         else:
             self.disc_params = list(self.discriminator.parameters())
             optim_d = safe_instantiate(optim_config, params=self.disc_params)

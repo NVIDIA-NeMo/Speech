@@ -28,7 +28,7 @@
 import math
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -940,29 +940,24 @@ class PeriodDiscriminator(NeuralModule):
 
     Args:
         period: Spacing between audio sample inputs.
-        channels: Output channels for each conv layer (5 values). Input to the first layer is 1.
         lrelu_slope: Slope to use for activation. Leaky relu with slope of 0.1 or 0.2 is recommended for the
            stability of the feature matching loss.
     """
 
-    def __init__(
-        self,
-        period,
-        channels: Sequence[int] = (32, 128, 512, 1024, 1024),
-        lrelu_slope=0.1,
-    ):
+    def __init__(self, period, lrelu_slope=0.1):
         super().__init__()
         self.period = period
         self.activation = nn.LeakyReLU(lrelu_slope)
-        in_channels = [1] + list(channels[:-1])
-        strides = [(3, 1), (3, 1), (3, 1), (3, 1), (1, 1)]
         self.conv_layers = nn.ModuleList(
             [
-                Conv2dNorm(in_ch, out_ch, kernel_size=(5, 1), stride=stride)
-                for in_ch, out_ch, stride in zip(in_channels, channels, strides)
+                Conv2dNorm(1, 32, kernel_size=(5, 1), stride=(3, 1)),
+                Conv2dNorm(32, 128, kernel_size=(5, 1), stride=(3, 1)),
+                Conv2dNorm(128, 512, kernel_size=(5, 1), stride=(3, 1)),
+                Conv2dNorm(512, 1024, kernel_size=(5, 1), stride=(3, 1)),
+                Conv2dNorm(1024, 1024, kernel_size=(5, 1), stride=(1, 1)),
             ]
         )
-        self.conv_post = Conv2dNorm(channels[-1], 1, kernel_size=(3, 1))
+        self.conv_post = Conv2dNorm(1024, 1, kernel_size=(3, 1))
 
     @property
     def input_types(self):
@@ -1011,15 +1006,10 @@ class MultiPeriodDiscriminator(NeuralModule):
     The periods are expected to be increasing prime numbers in order to maximize coverage and minimize overlap
     """
 
-    def __init__(
-        self,
-        periods: Iterable[int] = (2, 3, 5, 7, 11),
-        channels: Sequence[int] = (32, 128, 512, 1024, 1024),
-        lrelu_slope=0.1,
-    ):
+    def __init__(self, periods: Iterable[int] = (2, 3, 5, 7, 11), lrelu_slope=0.1):
         super().__init__()
         self.discriminators = nn.ModuleList(
-            [PeriodDiscriminator(period=period, channels=channels, lrelu_slope=lrelu_slope) for period in periods]
+            [PeriodDiscriminator(period=period, lrelu_slope=lrelu_slope) for period in periods]
         )
 
     @property

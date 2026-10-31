@@ -1089,6 +1089,20 @@ class TestGetWordCount:
 class TestGetTokenizerForLanguage:
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
+    def test_korean_uses_korean_chartokenizer(self):
+        # MagpieTTS v2607 ships `korean_chartokenizer`; without a "ko" entry the
+        # lookup silently fell back to `english_phoneme`.
+        available = ["english_phoneme", "japanese_phoneme", "korean_chartokenizer"]
+
+        assert get_tokenizer_for_language("ko", available) == "korean_chartokenizer"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_korean_keeps_default_fallback_without_korean_tokenizer(self):
+        assert get_tokenizer_for_language("ko", ["english_phoneme", "japanese_phoneme"]) == "english_phoneme"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
     def test_custom_mapping_uses_first_available_candidate(self):
         mapping = {"hi": ["hindi_phoneme", "hindi_chartokenizer"]}
 

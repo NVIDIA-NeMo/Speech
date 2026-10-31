@@ -937,6 +937,7 @@ LANGUAGE_TOKENIZER_MAP: Dict[str, List[str]] = {
     "zh": ["mandarin_phoneme", "mandarin", "chinese"],
     "hi": ["hindi_chartokenizer", "hindi"],
     "ja": ["japanese_phoneme", "japanese"],
+    "ko": ["korean_chartokenizer", "korean"],
 }
 
 

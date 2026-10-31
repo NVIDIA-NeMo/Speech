@@ -188,9 +188,6 @@ class LSTMDropout(torch.nn.Module):
 
             hidden_hidden_bias_scale: Float scale for the hidden-to-hidden bias scale. Set to 0.0 for
                 the default behaviour.
-
-        Returns:
-            A `torch.nn.LSTM`.
         """
         super(LSTMDropout, self).__init__()
 

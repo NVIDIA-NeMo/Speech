@@ -14,10 +14,12 @@
 # limitations under the License.
 
 import os.path
+from dataclasses import dataclass
 
 import pytest
 import torch
 from lightning.pytorch import Trainer
+from omegaconf import OmegaConf
 from torch.nn.utils.rnn import pad_sequence
 
 from nemo.collections.asr.models import ASRModel, EncDecCTCModelBPE
@@ -81,6 +83,18 @@ class _RecordingAggregateVarBPETokenizer:
     def text_to_ids_var_bpe(self, text, case_insensitive=True):
         self.var_bpe_calls.append((text, case_insensitive))
         return _case_variant_var_bpe_representation()
+
+
+class _LegacyConfigTokenizer:
+    vocab_size = 4
+
+    def text_to_ids(self, text):
+        return [1]
+
+
+@dataclass
+class _DerivedBoostingTreeModelConfig(BoostingTreeModelConfig):
+    output_path: str | None = None
 
 
 @pytest.mark.unit
@@ -284,6 +298,93 @@ class TestGPUBoostingTreeModel:
         )
         expected_total_score = 1.0 + 1.0 + torch.log(torch.tensor(2.0)).item()
         assert boosting_scores.sum(dim=1).detach().tolist() == pytest.approx([expected_total_score] * 2)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "legacy_config",
+        [
+            {"model_path": None, "key_phrases_file": None, "key_phrases_list": None},
+            {},
+        ],
+    )
+    def test_legacy_boosting_tree_config_is_empty(self, legacy_config):
+        cfg = OmegaConf.create(legacy_config)
+        OmegaConf.set_struct(cfg, True)
+
+        assert BoostingTreeModelConfig.is_empty(cfg)
+
+    @pytest.mark.unit
+    def test_boosting_tree_from_legacy_config_uses_current_defaults(self, monkeypatch):
+        cfg = OmegaConf.create({"key_phrases_list": ["hello"], "context_score": 3.0})
+        OmegaConf.set_struct(cfg, True)
+        captured = {}
+        expected_model = object()
+
+        def fake_from_context_graph(cls, **kwargs):
+            captured.update(kwargs)
+            return expected_model
+
+        monkeypatch.setattr(GPUBoostingTreeModel, "from_context_graph", classmethod(fake_from_context_graph))
+
+        model = GPUBoostingTreeModel.from_config(cfg, tokenizer=_LegacyConfigTokenizer())
+
+        assert model is expected_model
+        assert captured["context_graph"].context_score == 3.0
+        assert captured["final_eos_score"] == 1.0
+        assert captured["use_triton"] is None
+        assert captured["uniform_weights"] is False
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("legacy", [False, True])
+    def test_nested_boosting_tree_config_resolves_parent_interpolation(self, monkeypatch, legacy):
+        boosting_tree = (
+            OmegaConf.create({"key_phrases_list": ["hello"]})
+            if legacy
+            else OmegaConf.structured(BoostingTreeModelConfig(key_phrases_list=["hello"]))
+        )
+        boosting_tree.context_score = "${..shared_score}"
+        cfg = OmegaConf.create({"shared_score": 7.5, "boosting_tree": boosting_tree})
+        OmegaConf.set_struct(cfg, True)
+        captured = {}
+
+        def fake_from_context_graph(cls, **kwargs):
+            captured.update(kwargs)
+            return object()
+
+        monkeypatch.setattr(GPUBoostingTreeModel, "from_context_graph", classmethod(fake_from_context_graph))
+
+        GPUBoostingTreeModel.from_config(cfg.boosting_tree, tokenizer=_LegacyConfigTokenizer())
+
+        assert captured["context_graph"].context_score == 7.5
+
+    @pytest.mark.unit
+    def test_complete_untyped_config_gets_nested_phrase_item_defaults(self, monkeypatch):
+        config = OmegaConf.to_container(OmegaConf.structured(BoostingTreeModelConfig), resolve=True)
+        config["key_phrase_items_list"] = [{"phrase": "hello"}]
+        cfg = OmegaConf.create(config)
+        OmegaConf.set_struct(cfg, True)
+        captured = {}
+
+        def fake_from_context_graph(cls, **kwargs):
+            captured.update(kwargs)
+            return object()
+
+        monkeypatch.setattr(GPUBoostingTreeModel, "from_context_graph", classmethod(fake_from_context_graph))
+
+        GPUBoostingTreeModel.from_config(cfg, tokenizer=_LegacyConfigTokenizer())
+
+        assert captured["context_graph"].root.next[1].phrase_alpha == 1.0
+
+    @pytest.mark.unit
+    def test_structured_config_subclass_keeps_extra_fields(self):
+        cfg = OmegaConf.structured(
+            _DerivedBoostingTreeModelConfig(key_phrases_list=["hello"], output_path="tree.nemo")
+        )
+
+        normalized = BoostingTreeModelConfig._with_defaults(cfg)
+
+        assert normalized is cfg
+        assert normalized.output_path == "tree.nemo"
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)

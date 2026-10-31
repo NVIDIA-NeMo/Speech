@@ -13,12 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import os
 
 import pytest
 import torch
 from lhotse import CutSet, SupervisionSegment
 from lhotse.testing.dummies import dummy_cut, dummy_recording
+from omegaconf import OmegaConf
 
 from nemo.collections.common.data.utils import move_data_to_device
 from nemo.collections.speechlm2 import DuplexSTTDataset
@@ -335,3 +337,32 @@ def test_e2s_offline_generation(model):
     # 14 tokens = 24696 audio frames
     gen_audio = ans["audio"]
     assert gen_audio.shape == (1, 24696)
+
+
+def test_merge_cfg_reaches_the_sub_models(model):
+    """Evaluation overrides of the STT and TTS sections reach the config copies the sub-models read."""
+    saved = (model.full_cfg, model.stt_model.cfg, model.tts_model.cfg, model.tts_model.data_cfg)
+    model.full_cfg, model.stt_model.cfg, model.tts_model.cfg, model.tts_model.data_cfg = map(copy.deepcopy, saved)
+    model.cfg = model.full_cfg.model
+    try:
+        overrides = OmegaConf.create(
+            {
+                "model": {
+                    "stt": {"model": {"eval_text_turn_taking": False}},
+                    "speech_generation": {
+                        "model": {"inference_noise_scale": 0.123},
+                        "data": {"audio_prompt_duration": 1.5},
+                    },
+                }
+            }
+        )
+        model.merge_cfg(overrides)
+
+        assert model.cfg.stt.model.eval_text_turn_taking is False
+        # the consumers read the copies with these defaults
+        assert model.stt_model.cfg.get("eval_text_turn_taking", True) is False
+        assert model.tts_model._get_generation_config(guidance_enabled=True)["noise_scale"] == 0.123
+        assert model.tts_model.data_cfg.audio_prompt_duration == 1.5
+    finally:
+        model.full_cfg, model.stt_model.cfg, model.tts_model.cfg, model.tts_model.data_cfg = saved
+        model.cfg = model.full_cfg.model

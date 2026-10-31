@@ -25,7 +25,11 @@ from transformers import AutoConfig, AutoModelForCausalLM
 from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
 from nemo.collections.speechlm2.modules import AudioPerceptionModule
-from nemo.collections.speechlm2.parts.model_loading import load_pretrained_nemo, load_pretrained_nemo_config
+from nemo.collections.speechlm2.parts.model_loading import (
+    load_pretrained_nemo,
+    load_pretrained_nemo_config,
+    resolve_target_class,
+)
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.utils import logging
@@ -243,8 +247,8 @@ def setup_audio_codec(model: torch.nn.Module):
 
 def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True):
     """
-    Sets up an ``AudioPerceptionModule``, initializing its ``encoder`` and ``preprocessor``
-    with a pretrained NeMo ``ASRModel``.
+    Sets up an ``AudioPerceptionModule`` (or the class named by ``perception.target``),
+    initializing its ``encoder`` and ``preprocessor`` with a pretrained NeMo ``ASRModel``.
     The result is assigned to ``model.perception`` attribute and is trainable.
 
     If user config specifies encoder parameters, they will override the pretrained model's config.
@@ -286,7 +290,13 @@ def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True
                     if value is not None:  # Only override explicitly set values.
                         model.cfg.perception.encoder[key] = value
 
-    model.perception = AudioPerceptionModule(model.cfg.perception).train()
+    target = model.cfg.perception.get("target")
+    perception_cls = (
+        AudioPerceptionModule
+        if target is None
+        else resolve_target_class(target, AudioPerceptionModule, "perception.target")
+    )
+    model.perception = perception_cls(model.cfg.perception).train()
     if asr is not None:
         asr_sd = asr.state_dict()
         # When a multilayer/Qformer connector is used, the encoder lives at

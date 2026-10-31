@@ -17,6 +17,32 @@
 from pathlib import Path
 
 
+def resolve_target_class(target: str, base: type, option: str) -> type:
+    """
+    Resolve a class path from a config to the class to use.
+
+    The path goes through the repository's target allowlist and must name ``base`` or a subclass of it;
+    a decorated class is unwrapped for the check.
+
+    Args:
+        target: The class path from the config.
+        base: The class the caller requires.
+        option: The name of the config key, for the error message.
+
+    Returns:
+        The resolved class.
+    """
+    from nemo.core.classes.common import _get_allowed_target_class
+
+    resolved_cls = _get_allowed_target_class(target)
+    concrete_cls = resolved_cls
+    while hasattr(concrete_cls, "__wrapped__"):
+        concrete_cls = concrete_cls.__wrapped__
+    if not isinstance(concrete_cls, type) or not issubclass(concrete_cls, base):
+        raise TypeError(f"{option} {target!r} is not a subclass of {base.__name__}.")
+    return resolved_cls
+
+
 def load_pretrained_nemo(cls, model_path_or_name: str):
     """Load a pretrained NeMo model from a local archive or registered model name."""
     if Path(model_path_or_name).exists() and model_path_or_name.endswith(".nemo"):
@@ -25,15 +51,7 @@ def load_pretrained_nemo(cls, model_path_or_name: str):
         cfg = cls.restore_from(model_path_or_name, return_config=True)
         target = cfg.get("target", None) if hasattr(cfg, "get") else None
         if target is not None:
-            from nemo.core.classes.common import _get_allowed_target_class
-
-            resolved_cls = _get_allowed_target_class(target)
-            concrete_cls = resolved_cls
-            while hasattr(concrete_cls, "__wrapped__"):
-                concrete_cls = concrete_cls.__wrapped__
-            if not isinstance(concrete_cls, type) or not issubclass(concrete_cls, cls):
-                raise TypeError(f"Checkpoint target {target!r} is not a subclass of {cls.__name__}.")
-            cls = resolved_cls
+            cls = resolve_target_class(target, cls, "Checkpoint target")
         return cls.restore_from(model_path_or_name)
     return cls.from_pretrained(model_path_or_name)
 

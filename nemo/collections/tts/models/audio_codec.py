@@ -89,6 +89,9 @@ class AudioCodecModel(ModelPT):
 
         # Encoder setup
         self.audio_encoder = safe_instantiate(cfg.audio_encoder)
+        self.freeze_encoder = cfg.get("freeze_encoder", False)
+        if self.freeze_encoder:
+            self._freeze_encoder()
 
         # Optionally, add gaussian noise to encoder output as an information bottleneck
         encoder_noise_stdev = cfg.get("encoder_noise_stdev", 0.0)
@@ -251,7 +254,12 @@ class AudioCodecModel(ModelPT):
         self.clip_grad_norm = cfg.get("clip_grad_norm", None)
         self.skip_nan_gradients = cfg.get("skip_nan_gradients", False)
 
-        self.freeze_encoder = cfg.get("freeze_encoder", False)
+    def train(self, mode: bool = True):
+        # Override the train method to keep a frozen encoder in evaluation mode after validation.
+        super().train(mode)
+        if getattr(self, "freeze_encoder", False):
+            self.audio_encoder.eval()
+        return self
 
     def _freeze_encoder(self):
         for p in self.audio_encoder.parameters():
@@ -984,7 +992,6 @@ class AudioCodecModel(ModelPT):
         OmegaConf.set_struct(optim_config, True)
 
         if self.freeze_encoder:
-            self._freeze_encoder()
             encoder_params = []
         else:
             encoder_params = list(self.audio_encoder.parameters())

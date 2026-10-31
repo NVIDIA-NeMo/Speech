@@ -571,7 +571,7 @@ The model architecture is still defined by ``pretrained_llm`` and ``pretrained_a
 (needed for config and tokenizer initialization), but all weights are overridden by
 the checkpoint.
 
-This feature works with both ``SALM`` and ``SALMAutomodel``.
+This feature works with ``SALM``, ``SALMAutomodel`` and ``SALMWithAsrDecoder``.
 
 .. note::
    ``init_from_checkpoint`` requires the source and target models to use the

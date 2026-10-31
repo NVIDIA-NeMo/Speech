@@ -50,9 +50,8 @@ AUDIO_LOCATOR_TAG = "<|audioplaceholder|>"
 PROMPT = "llama2"
 
 
-@pytest.fixture(scope="session")
-def model():
-    cfg = {
+def model_cfg() -> dict:
+    return {
         **resolve_pretrained_models(),
         "pretrained_weights": True,
         "prompt_format": PROMPT,
@@ -107,10 +106,28 @@ def model():
         },
         "optimizer": {"_target_": "torch.optim.AdamW"},
     }
-    model = SALMWithAsrDecoder(cfg)
+
+
+@pytest.fixture(scope="session")
+def model():
+    model = SALMWithAsrDecoder(model_cfg())
     if torch.cuda.is_available():
         model.to("cuda")
     return model
+
+
+def test_salm_asr_decoder_reads_init_from_checkpoint(tmp_path):
+    """`model.init_from_checkpoint` (the documented key) is loaded, so a missing checkpoint fails instead of training from the pretrained LLM silently."""
+    cfg = {**model_cfg(), "pretrained_weights": False, "init_from_checkpoint": str(tmp_path / "missing.ckpt")}
+    with pytest.raises(FileNotFoundError):
+        SALMWithAsrDecoder(cfg)
+
+
+def test_salm_asr_decoder_rejects_both_init_sources(tmp_path):
+    """The two initialization keys load at different points of the constructor; naming both is a configuration error."""
+    cfg = {**model_cfg(), "init_from_path": str(tmp_path), "init_from_checkpoint": str(tmp_path / "x.ckpt")}
+    with pytest.raises(ValueError, match="init_from_path"):
+        SALMWithAsrDecoder(cfg)
 
 
 @pytest.fixture(scope="session")

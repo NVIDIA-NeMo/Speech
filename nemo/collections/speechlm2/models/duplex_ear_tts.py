@@ -740,10 +740,17 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             ]
         )
 
+        prompt_lens = torch.as_tensor(dataset_batch["prompt_lens"], dtype=torch.long, device=self.device)
+        # each row's codec frames after its prompt: the speech delay and the codec frame rounding
+        # are in output_lens, not in target_token_lens
+        next_subword_lens = (inputs["output_lens"].to(self.device) - prompt_lens).clamp(
+            min=0, max=next_subword_ids.size(-1)
+        )
         results["audio"], results["audio_len"] = self.offline_inference(
             next_subword_ids=next_subword_ids,
             task=dataset_batch["task"][0],
             init_inputs=init_inputs,
+            next_subword_lens=next_subword_lens,
         )
 
         # remove prompt padding from the user audio as autoregressive inference does not return the prompt
@@ -757,14 +764,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         target_audio_no_prompt = dataset_batch["target_audio"][
             :, -int(next_subword_ids.size(-1) * self.target_samples_per_frame) :
         ]
-        target_audio_no_prompt_lens = dataset_batch["target_audio_lens"] - (
-            torch.tensor(
-                dataset_batch["prompt_lens"],
-                dtype=torch.long,
-                device=dataset_batch["target_audio_lens"].device,
-            )
-            * self.target_samples_per_frame
-        )
+        target_audio_no_prompt_lens = dataset_batch["target_audio_lens"] - prompt_lens * self.target_samples_per_frame
 
         with fp32_precision():  # resample is fragile to bfloat16 default dtype
             metric_audio_pred = results["audio"]
@@ -1258,6 +1258,8 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         guidance_enabled: bool = True,
         generation_config: dict = None,
         incremental_audio_decoding: bool = False,
+        *,
+        next_subword_lens: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """
         Runs offline autoregressive inference for the Duplex EAR-TTS speech decoder.
@@ -1304,6 +1306,11 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 autoregressive generation.
                 If False, waveform decoding occurs only after all audio tokens are produced.
 
+            next_subword_lens (torch.Tensor, optional):
+                Number of valid tokens of each row of ``next_subword_ids``, shape (B,).
+                The returned ``audio_len`` covers that many frames per row.
+                ``None`` means every row is as long as ``next_subword_ids``.
+
         Returns:
             dict[str, torch.Tensor]:
                 Contains:
@@ -1336,6 +1343,17 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
         # use the text tokens to stop generation
         max_steps = next_subword_ids.size(-1)
+        if next_subword_lens is None:
+            next_subword_lens = torch.full((B,), max_steps, device=self.device, dtype=torch.long)
+        else:
+            next_subword_lens = next_subword_lens.to(device=self.device, dtype=torch.long)
+            if next_subword_lens.shape != (B,):
+                raise ValueError(f"next_subword_lens must have shape ({B},), got {tuple(next_subword_lens.shape)}.")
+            if bool((next_subword_lens > max_steps).any()):
+                raise ValueError(
+                    f"next_subword_lens must not exceed the width of next_subword_ids ({max_steps}), "
+                    f"got {next_subword_lens.tolist()}."
+                )
         # create variable to store the audios
         gen_audio_codes = torch.zeros(
             B, max_steps, self.tts_model.config.num_quantizers, device=self.device, dtype=torch.long
@@ -1386,21 +1404,19 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                     audio_pred = audio_pred_i
                 else:
                     audio_pred = torch.cat([audio_pred, audio_pred_i], dim=1)
-                audio_pred_len += audio_pred_i_len
+                # the step counts only for the rows whose text reaches it
+                audio_pred_len += audio_pred_i_len * (next_subword_lens > i)
 
             step_time = time.time() - step_start
             logging.info(f"Autoregressive inference step: {i} of {max_steps} take around {step_time}s")
 
         if not incremental_audio_decoding:
-            gen_audio_codes_lens = torch.tensor(
-                [gen_audio_codes.shape[1]] * gen_audio_codes.shape[0], dtype=torch.long
-            ).to(self.device)
             # decode audio. Note that it is not necessary because the prompt is removed, so no special token should be on the output, but lets do it for safety
             gen_audio_codes = replace_control_speech_codes(
                 gen_audio_codes, self._control_codes, self.codec_silence_tokens
             )
             with ensures_target_precision(self.audio_codec_run_dtype), torch.no_grad():
-                audio_pred, audio_pred_len = self.audio_codec.decode(gen_audio_codes, gen_audio_codes_lens)
+                audio_pred, audio_pred_len = self.audio_codec.decode(gen_audio_codes, next_subword_lens)
 
         return audio_pred.squeeze(1), audio_pred_len
 

@@ -939,9 +939,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             "text_lens": text_data["target_token_lens"],
             # Reference transcripts of the output-role turns, used only as the CER/WER reference for GRPO
             # rewards, validation metrics, and sample logging; they are never tokenized or fed to the model.
-            # Offline evaluation reads its references from the evaluation manifest instead. Prefer
-            # normalized_text because it is what the model reads at the default
-            # load_normalized_text_percent=1.0; at lower values some items read the raw text instead.
+            # Offline evaluation reads its references from the evaluation manifest instead.
             "raw_texts": [
                 " ".join(
                     s.normalized_text if s.has_custom("normalized_text") else s.text

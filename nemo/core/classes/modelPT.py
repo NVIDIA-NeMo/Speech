@@ -643,14 +643,14 @@ class ModelPT(LightningModule, Model):
         and a changed rule set changes the optimizer's parameter groups,
         so an optimizer state saved under other rules fails to load,
         or loads onto other parameters when the group counts and sizes still match;
-        keep the rules unchanged when resuming:
+        keep the rules unchanged when resuming::
 
-        model:
-            optim_param_group_rules:
-                no_weight_decay:
-                    module_types: [torch.nn.Embedding, torch.nn.LayerNorm]
-                    param_names: ["*.bias"]
-                    weight_decay: 0.0
+            model:
+                optim_param_group_rules:
+                    no_weight_decay:
+                        module_types: [torch.nn.Embedding, torch.nn.LayerNorm]
+                        param_names: ["*.bias"]
+                        weight_decay: 0.0
 
         Args:
             optim_config: A dictionary containing the following keys:

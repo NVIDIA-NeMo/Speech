@@ -951,6 +951,45 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             codes = codes[:, :, : codes_len.max()]
         return codes, codes_len
 
+    def _codes_to_audio_in_sub_batches(
+        self, codes: torch.Tensor, codes_len: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Decode codes to audio in sub-batches of at most ``codec_decode_batch_size`` items.
+
+        This splits the batch dimension only, never the time axis: each codec call receives complete
+        utterances for a subset of items, so there are no chunk boundaries inside an utterance. The codec
+        masks every layer by length, so each item's audio does not depend on the other items in its
+        sub-batch and matches a single full-batch decode. Sub-batching only lowers the codec decoder's
+        peak activation memory. A ``codec_decode_batch_size`` of 0 decodes the full batch at once.
+
+        Args:
+            codes: Unstacked codes ready for the codec, shaped ``(B, C, T)``.
+            codes_len: Valid frame count per item, shaped ``(B,)``.
+
+        Returns:
+            Tuple of audio shaped ``(B, T_audio)``, zero-padded past each item's length, and audio
+            lengths shaped ``(B,)``.
+        """
+        batch_size = codes.size(0)
+        sub_batch_size = self.codec_decode_batch_size
+        if sub_batch_size <= 0 or sub_batch_size >= batch_size:
+            audio, audio_len, _ = self._codec_helper.codes_to_audio(codes, codes_len)
+            return audio, audio_len
+
+        sub_batch_audio = []
+        sub_batch_audio_len = []
+        for start in range(0, batch_size, sub_batch_size):
+            end = min(start + sub_batch_size, batch_size)
+            audio, audio_len, _ = self._codec_helper.codes_to_audio(codes[start:end], codes_len[start:end])
+            sub_batch_audio.append(audio)
+            sub_batch_audio_len.append(audio_len)
+
+        max_audio_len = max(audio.size(1) for audio in sub_batch_audio)
+        audio = torch.cat(
+            [torch.nn.functional.pad(audio, (0, max_audio_len - audio.size(1))) for audio in sub_batch_audio], dim=0
+        )
+        return audio, torch.cat(sub_batch_audio_len, dim=0)
+
     def embed_audio_tokens(self, audio_tokens):
         # audio_tokens: (B, C, T')
         # Add and average the embeddings of the audio tokens across the codebooks
@@ -2398,35 +2437,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             predicted_codes, predicted_codes_lens = self._prepare_codes_for_decode(
                 predicted_codes, predicted_codes_lens
             )
-            decode_batch_size = self.codec_decode_batch_size
-            if decode_batch_size <= 0 or decode_batch_size >= batch_size:
-                audio, audio_len, _ = self._codec_helper.codes_to_audio(
-                    predicted_codes,
-                    predicted_codes_lens,
-                )
-            else:
-                # Codec output is independent per item, so sub-batch decoding is
-                # mathematically identical to decoding the full rollout batch. It
-                # only lowers the peak activation memory of the codec decoder.
-                audio_chunks = []
-                audio_len_chunks = []
-                for chunk_start in range(0, batch_size, decode_batch_size):
-                    chunk_end = min(chunk_start + decode_batch_size, batch_size)
-                    chunk_audio, chunk_audio_len, _ = self._codec_helper.codes_to_audio(
-                        predicted_codes[chunk_start:chunk_end],
-                        predicted_codes_lens[chunk_start:chunk_end],
-                    )
-                    audio_chunks.append(chunk_audio)
-                    audio_len_chunks.append(chunk_audio_len)
-
-                audio_len = torch.cat(audio_len_chunks, dim=0)
-                max_audio_len = max(chunk.size(1) for chunk in audio_chunks)
-                audio = audio_chunks[0].new_zeros(batch_size, max_audio_len)
-                output_start = 0
-                for chunk_audio in audio_chunks:
-                    output_end = output_start + chunk_audio.size(0)
-                    audio[output_start:output_end, : chunk_audio.size(1)] = chunk_audio
-                    output_start = output_end
+            audio, audio_len = self._codes_to_audio_in_sub_batches(predicted_codes, predicted_codes_lens)
 
             return StreamingFinalizeOutput(
                 audio=audio,

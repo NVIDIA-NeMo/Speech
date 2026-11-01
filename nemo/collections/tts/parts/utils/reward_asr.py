@@ -51,6 +51,8 @@ DEFAULT_NEMOTRON_LANGUAGE_MAP = {
     "vi": "vi-VN",
     "zh": "zh-CN",
 }
+# Languages routed by the legacy ``reward_asr_model`` options; override with ``reward_asr_languages``.
+DEFAULT_REWARD_ASR_LANGUAGES = tuple(DEFAULT_NEMOTRON_LANGUAGE_MAP)
 NEMOTRON_LANGUAGE_TAG_PATTERN = re.compile(r"\s*<[a-z]{2,3}(?:-[A-Za-z]{2,4})?>\s*")
 
 
@@ -337,11 +339,14 @@ BACKEND_TYPES = {
 class RewardASRRouter:
     """Route each language to a configured ASR backend while preserving order.
 
+    ``language_routes`` must map every language that can appear in the data. There is no default
+    backend: an unlisted language raises instead of silently being scored by a backend that may
+    transcribe it poorly.
+
     Example configuration::
 
         reward_asr:
-          default_backend: qwen
-          language_routes: {hi: whisper}
+          language_routes: {en: qwen, de: qwen, hi: whisper}
           backends:
             qwen: {type: qwen, model_name: Qwen/Qwen3-ASR-0.6B}
             whisper: {type: whisper, model_name: openai/whisper-large-v3}
@@ -353,12 +358,20 @@ class RewardASRRouter:
         device_getter: Callable[[], torch.device],
         backend_types: Optional[Mapping[str, type[RewardASRBackend]]] = None,
     ):
-        self.default_backend = str(cfg.get("default_backend", "nemo"))
-        self.language_routes = dict(cfg.get("language_routes", {}))
+        if "default_backend" in cfg:
+            raise ValueError(
+                "reward_asr.default_backend is not supported; map every language explicitly in "
+                "reward_asr.language_routes."
+            )
+        self.language_routes = {
+            str(language): str(backend) for language, backend in dict(cfg.get("language_routes") or {}).items()
+        }
+        if not self.language_routes:
+            raise ValueError("reward_asr.language_routes must map every language to a reward ASR backend.")
         backend_cfgs = cfg.get("backends", {})
         backend_types = dict(backend_types or BACKEND_TYPES)
 
-        required_names = {self.default_backend, *self.language_routes.values()}
+        required_names = sorted(set(self.language_routes.values()))
         self.backends: Dict[str, RewardASRBackend] = {}
         for name in required_names:
             if name not in backend_cfgs:
@@ -376,10 +389,16 @@ class RewardASRRouter:
             raise ValueError(
                 f"audio_paths and languages must have equal lengths, got {len(audio_paths)} and {len(languages)}"
             )
+        unrouted = sorted(set(languages) - set(self.language_routes))
+        if unrouted:
+            raise ValueError(
+                f"No reward ASR backend is configured for languages {unrouted}; "
+                f"reward_asr.language_routes covers {sorted(self.language_routes)}."
+            )
         transcripts = [""] * len(audio_paths)
         grouped: Dict[str, List[tuple[int, str, str]]] = {}
         for index, (audio_path, language) in enumerate(zip(audio_paths, languages)):
-            backend_name = self.language_routes.get(language, self.default_backend)
+            backend_name = self.language_routes[language]
             grouped.setdefault(backend_name, []).append((index, audio_path, language))
 
         for backend_name, items in grouped.items():

@@ -35,7 +35,7 @@ from nemo.collections.tts.parts.utils.helpers import (
     print_grad_weight_summary,
     process_text_for_cer,
 )
-from nemo.collections.tts.parts.utils.reward_asr import RewardASRRouter
+from nemo.collections.tts.parts.utils.reward_asr import DEFAULT_REWARD_ASR_LANGUAGES, RewardASRRouter
 from nemo.utils import logging
 
 try:
@@ -45,6 +45,68 @@ try:
 except (ImportError, ModuleNotFoundError):
     Normalizer = None
     PYNINI_AVAILABLE = False
+
+
+def _reward_asr_cfg_from_legacy_options(cfg: DictConfig) -> Dict:
+    """Translate the legacy ``reward_asr_model`` options into an explicit ``reward_asr`` router config.
+
+    Every language in ``reward_asr_languages`` (default: the GRPO training languages) gets an explicit
+    route, so data in any other language fails instead of falling back to a default backend.
+    """
+    legacy_backend = str(cfg.get("reward_asr_model", "nemo"))
+    model_name = cfg.get("reward_asr_model_name", "nvidia/parakeet-ctc-0.6b")
+    legacy_languages = [str(language) for language in cfg.get("reward_asr_languages", DEFAULT_REWARD_ASR_LANGUAGES)]
+    if legacy_backend in {"nemo", "nemotron"}:
+        backend_type = "nemo_process" if legacy_backend == "nemotron" else "nemo"
+        reward_asr_cfg = {
+            "language_routes": {language: legacy_backend for language in legacy_languages},
+            "log_samples": cfg.get("reward_asr_log_samples", 0),
+            "backends": {
+                legacy_backend: {
+                    "type": backend_type,
+                    "model_name": model_name,
+                    "batch_size": cfg.get("reward_asr_batch_size", 16),
+                    "attention_context": cfg.get("reward_asr_att_context_size"),
+                }
+            },
+        }
+    elif legacy_backend == "whisper":
+        reward_asr_cfg = {
+            "language_routes": {language: "whisper" for language in legacy_languages},
+            "log_samples": cfg.get("reward_asr_log_samples", 0),
+            "backends": {
+                "whisper": {
+                    "type": "whisper",
+                    "model_name": "openai/whisper-large-v3",
+                }
+            },
+        }
+    elif legacy_backend == "qwen_whisper":
+        whisper_languages = list(cfg.get("qwen_asr_whisper_languages", ["hi"]))
+        qwen_cfg = {
+            "type": "qwen",
+            "model_name": cfg.get("qwen_asr_model_name", "Qwen/Qwen3-ASR-0.6B"),
+            "batch_size": cfg.get("qwen_asr_batch_size", 4),
+            "max_new_tokens": cfg.get("qwen_asr_max_new_tokens", 256),
+        }
+        if cfg.get("qwen_asr_python") is not None:
+            qwen_cfg["python_executable"] = cfg.get("qwen_asr_python")
+        language_routes = {language: "qwen" for language in legacy_languages}
+        language_routes.update({str(language): "whisper" for language in whisper_languages})
+        reward_asr_cfg = {
+            "language_routes": language_routes,
+            "log_samples": cfg.get("reward_asr_log_samples", 0),
+            "backends": {
+                "qwen": qwen_cfg,
+                "whisper": {
+                    "type": "whisper",
+                    "model_name": "openai/whisper-large-v3",
+                },
+            },
+        }
+    else:
+        raise ValueError(f"Unknown legacy reward_asr_model={legacy_backend!r}; configure model.reward_asr instead")
+    return reward_asr_cfg
 
 
 class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
@@ -87,62 +149,8 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         reward_asr_cfg = cfg.get('reward_asr')
         if reward_asr_cfg is None:
             # Backward-compatible translation for existing recipes. New recipes
-            # should use reward_asr.default_backend and language_routes directly.
-            legacy_backend = str(cfg.get("reward_asr_model", "nemo"))
-            model_name = cfg.get("reward_asr_model_name", "nvidia/parakeet-ctc-0.6b")
-            if legacy_backend in {"nemo", "nemotron"}:
-                backend_type = "nemo_process" if legacy_backend == "nemotron" else "nemo"
-                reward_asr_cfg = {
-                    "default_backend": legacy_backend,
-                    "language_routes": {},
-                    "log_samples": cfg.get("reward_asr_log_samples", 0),
-                    "backends": {
-                        legacy_backend: {
-                            "type": backend_type,
-                            "model_name": model_name,
-                            "batch_size": cfg.get("reward_asr_batch_size", 16),
-                            "attention_context": cfg.get("reward_asr_att_context_size"),
-                        }
-                    },
-                }
-            elif legacy_backend == "whisper":
-                reward_asr_cfg = {
-                    "default_backend": "whisper",
-                    "language_routes": {},
-                    "log_samples": cfg.get("reward_asr_log_samples", 0),
-                    "backends": {
-                        "whisper": {
-                            "type": "whisper",
-                            "model_name": "openai/whisper-large-v3",
-                        }
-                    },
-                }
-            elif legacy_backend == "qwen_whisper":
-                whisper_languages = list(cfg.get("qwen_asr_whisper_languages", ["hi"]))
-                qwen_cfg = {
-                    "type": "qwen",
-                    "model_name": cfg.get("qwen_asr_model_name", "Qwen/Qwen3-ASR-0.6B"),
-                    "batch_size": cfg.get("qwen_asr_batch_size", 4),
-                    "max_new_tokens": cfg.get("qwen_asr_max_new_tokens", 256),
-                }
-                if cfg.get("qwen_asr_python") is not None:
-                    qwen_cfg["python_executable"] = cfg.qwen_asr_python
-                reward_asr_cfg = {
-                    "default_backend": "qwen",
-                    "language_routes": {language: "whisper" for language in whisper_languages},
-                    "log_samples": cfg.get("reward_asr_log_samples", 0),
-                    "backends": {
-                        "qwen": qwen_cfg,
-                        "whisper": {
-                            "type": "whisper",
-                            "model_name": "openai/whisper-large-v3",
-                        },
-                    },
-                }
-            else:
-                raise ValueError(
-                    f"Unknown legacy reward_asr_model={legacy_backend!r}; configure model.reward_asr instead"
-                )
+            # should configure reward_asr.language_routes directly.
+            reward_asr_cfg = _reward_asr_cfg_from_legacy_options(cfg)
         self._reward_asr_router = RewardASRRouter(reward_asr_cfg, device_getter=lambda: self.device)
         self.reward_asr_log_samples = max(int(reward_asr_cfg.get("log_samples", 0)), 0)
         self.use_multilingual_asr = True

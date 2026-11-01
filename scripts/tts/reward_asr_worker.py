@@ -70,7 +70,12 @@ def load_qwen(args):
 
     def transcribe(audio_paths, languages, attention_context):
         del attention_context
-        qwen_languages = [QWEN_LANGUAGE_MAP.get(language, language) for language in languages]
+        unsupported = sorted(set(languages) - set(QWEN_LANGUAGE_MAP))
+        if unsupported:
+            raise ValueError(
+                f"Qwen reward ASR does not support languages {unsupported}; supported: {sorted(QWEN_LANGUAGE_MAP)}"
+            )
+        qwen_languages = [QWEN_LANGUAGE_MAP[language] for language in languages]
         return [result.text for result in model.transcribe(audio=audio_paths, language=qwen_languages)]
 
     return transcribe

@@ -314,7 +314,7 @@ def init_session_gecko_dict():
 
 def convert_ctm_to_text(ctm_file_path: str) -> Tuple[List[str], str]:
     """
-    Convert ctm file into a list containing transcription (space seperated string) per each speaker.
+    Convert ctm file into a list containing transcription (space separated string) per each speaker.
 
     Args:
         ctm_file_path (str):
@@ -349,7 +349,7 @@ def convert_ctm_to_text(ctm_file_path: str) -> Tuple[List[str], str]:
 
 def convert_word_dict_seq_to_text(word_dict_seq_list: List[Dict[str, float]]) -> Tuple[List[str], str]:
     """
-    Convert word_dict_seq_list into a list containing transcription (space seperated string) per each speaker.
+    Convert word_dict_seq_list into a list containing transcription (space separated string) per each speaker.
 
     Args:
         word_dict_seq_list (list):

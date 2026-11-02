@@ -23,7 +23,21 @@ vs standard transformer backends are auto-detected from the backbone's
 own ``architectures`` field.
 """
 
+from collections.abc import Iterable, Mapping
+from copy import copy
+from typing import Any
+
 from transformers import AutoConfig, PretrainedConfig
+
+# Architectures a checkpoint's config.json names, and the architectures and
+# model types of its MTP draft. A ParallelExpertEncoder on a NemotronH backbone
+# has its own, the names vLLM's native implementation uses.
+SPEECHLM_ARCHITECTURE = "NeMoSpeechLMForConditionalGeneration"
+SPEECHLM_MTP_ARCHITECTURE = "NeMoSpeechLMMTPModel"
+SPEECHLM_MTP_MODEL_TYPE = "nemo_speechlm_mtp"
+TRANSCRIBE_ARCHITECTURE = "Nemotron3_5TranscribeForConditionalGeneration"
+TRANSCRIBE_MTP_ARCHITECTURE = "Nemotron3_5TranscribeMTPModel"
+TRANSCRIBE_MTP_MODEL_TYPE = "nemotron3_5_transcribe_mtp"
 
 _HYBRID_ARCHITECTURES = frozenset(
     {
@@ -56,6 +70,21 @@ _MTP_BLOCK_TYPE_TO_VLLM_SYMBOL = {
 
 def _is_hybrid_backend(architectures: list[str]) -> bool:
     return bool(set(architectures) & _HYBRID_ARCHITECTURES)
+
+
+def checkpoint_architecture(model_cfg: Mapping[str, Any], backbone_architectures: Iterable[str]) -> str:
+    """Return the architecture a SpeechLM checkpoint's ``config.json`` names.
+
+    A ParallelExpertEncoder on a NemotronH backbone gets a dedicated name. The
+    encoder is ``pe_encoder_path`` in a training config and
+    ``pe_encoder_config`` once exported.
+    """
+    pe_encoder_path = model_cfg.get("pe_encoder_path")
+    pe_encoder_config = model_cfg.get("pe_encoder_config")
+    uses_pe_encoder = pe_encoder_path not in (None, "", False) or pe_encoder_config not in (None, {}, "", False)
+    if uses_pe_encoder and _is_hybrid_backend(list(backbone_architectures)):
+        return TRANSCRIBE_ARCHITECTURE
+    return SPEECHLM_ARCHITECTURE
 
 
 def _mtp_pattern_from_backbone_config(text_config) -> str | None:
@@ -429,6 +458,17 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         """
         mtp_cfg = self.__dict__.get("mtp") or {}
         return mtp_cfg.get("hybrid_override_pattern", "*") if isinstance(mtp_cfg, dict) else "*"
+
+    def validate(self):
+        # Transformers 5.18 rejects "attention", but vLLM 0.28 requires it on
+        # hf_config.layer_types. Normalize only a copy for upstream validation.
+        validation_config = copy(self)
+        layer_types = getattr(self, "layer_types", None)
+        if not self.is_hybrid and isinstance(layer_types, (list, tuple)):
+            validation_config.layer_types = [
+                "full_attention" if layer == "attention" else layer for layer in layer_types
+            ]
+        PretrainedConfig.validate(validation_config)
 
     _ATTR_ALIASES = {
         "rms_norm_eps": "layer_norm_epsilon",

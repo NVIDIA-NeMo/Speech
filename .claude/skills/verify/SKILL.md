@@ -20,6 +20,7 @@ Verify the current change proportionally to its risk. Do not report success for 
 
    - Require a regression test for a bug fix and focused unit tests for new or changed behavior, including important edge cases. If no test is appropriate, require a concrete explanation.
    - Check whether changes to public APIs, configuration, CLI behavior, examples, or user workflows are reflected in the relevant documentation. If no documentation update is needed, record why.
+   - Self-review the diff against the `/review` rubric (`.claude/skills/nemo-speech-pr-review/SKILL.md`) and fix blocking and should-fix items before requesting review.
 
 3. **Run repository checks.** For staged changes, run:
 

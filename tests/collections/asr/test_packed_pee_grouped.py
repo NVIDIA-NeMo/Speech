@@ -14,13 +14,53 @@
 
 import pytest
 import torch
+from omegaconf import OmegaConf
 
 from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, pack_encoder_output
-from tests.collections.asr.test_parallel_expert_encoder_two_branch import (
+from tests.collections.asr.test_parallel_expert_encoder import (
     _MEL_FEATURES,
     _N_SPK,
     build_toy_packed_pe_encoder,
+    toy_packed_diarization_model_cfg,
+    toy_transformer_asr_encoder_cfg,
 )
+
+
+@pytest.mark.unit
+def test_packed_pee_reaches_salm_perception_dispatch():
+    from nemo.collections.speechlm2.modules.perception import AudioPerceptionModule
+    from nemo.collections.speechlm2.parts.encoder_chunking import _encode_perception_unpadded
+
+    perception = AudioPerceptionModule(
+        OmegaConf.create(
+            {
+                "preprocessor": {
+                    "_target_": "nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor",
+                    "features": _MEL_FEATURES,
+                },
+                "encoder": {
+                    "_target_": "nemo.collections.asr.modules.parallel_expert_encoder.ParallelExpertEncoder",
+                    "_recursive_": False,
+                    "asr_encoder_type": "transformer",
+                    "asr_encoder_cfg": toy_transformer_asr_encoder_cfg(),
+                    "diarization_model_cfg": toy_packed_diarization_model_cfg(),
+                },
+                "modality_adapter": {
+                    "_target_": "nemo.collections.speechlm2.modules.perception.IdentityConnector",
+                    "output_dim": 32,
+                },
+                "rote": None,
+            }
+        )
+    ).eval()
+    inputs = {"processed_signal": torch.randn(2, _MEL_FEATURES, 40), "processed_signal_length": torch.tensor([40, 17])}
+    with torch.no_grad():
+        expected = _encode_perception_unpadded(perception, inputs, sequence_packed=False)
+        actual = _encode_perception_unpadded(perception, inputs, sequence_packed=True)
+    assert perception.supports_sequence_packed_output
+    assert len(actual) == len(expected) == 2
+    for packed, dense in zip(actual, expected):
+        torch.testing.assert_close(packed, dense, rtol=1e-4, atol=1e-5)
 
 
 @pytest.mark.unit

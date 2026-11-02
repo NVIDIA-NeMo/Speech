@@ -472,7 +472,17 @@ class ParallelExpertEncoderPT(ModelPT):
                     return (
                         isinstance(target, str) and "${" not in target and target.endswith("ParallelExpertEncoderPT")
                     )
-        except (tarfile.TarError, OSError, UnicodeError, ValueError, RecursionError, yaml.YAMLError) as error:
+        except (
+            tarfile.TarError,
+            OSError,
+            UnicodeError,
+            ValueError,
+            RecursionError,
+            yaml.YAMLError,
+            KeyError,
+            IndexError,
+            AttributeError,
+        ) as error:
             logging.warning("[ParallelExpertEncoder] Could not inspect %s: %s", nemo_path, error)
             return False
         return False

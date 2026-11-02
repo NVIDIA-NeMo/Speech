@@ -3185,6 +3185,10 @@ def test_eager_long_audio_never_captures_window_graphs(monkeypatch, cause):
         b'- target',
         b'42',
         b'target: ${missing}',
+        b'target: ${missing}ParallelExpertEncoderPT',
+        b'target: !!bool nope',
+        b"target: !!int ''",
+        b'target: !!timestamp nope',
         b'target: ${oc.env:PE_PROBE_TARGET}',
     ],
 )

@@ -252,6 +252,8 @@ class ModelPT(LightningModule, Model):
                 If "src" starts with "nemo:":
                     resolve its relative suffix within the current extracted model directory;
                     this takes precedence over a local filename with the same spelling.
+                elif restoring an archive without external-artifact permission:
+                    resolve the bundled relative path or its legacy bundled basename.
                 elif "src" is a local existing path:
                     return its absolute path.
                 else:

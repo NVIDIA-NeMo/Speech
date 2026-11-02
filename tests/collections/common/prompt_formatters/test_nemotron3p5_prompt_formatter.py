@@ -34,7 +34,7 @@ def test_nemotron3p5_training_basic(bpe_tokenizer_with_think):
         == "<|im_start|>system\n<|im_end|>\n <|im_start|>user\nTEST<|im_end|>\n "
         "<|im_start|>assistant\n<think></think>TEST<|im_end|>\n"
     )
-    assert ans["mask"].tolist() == [False] * len(ans["context_ids"]) + [True] * len(ans["answer_ids"])
+    assert bpe_tokenizer_with_think.ids_to_text(ans["input_ids"][ans["mask"]].tolist()) == "TEST<|im_end|>"
 
 
 def test_nemotron3p5_inference_generation_prompt(bpe_tokenizer_with_think):

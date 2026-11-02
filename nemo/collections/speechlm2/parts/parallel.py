@@ -267,6 +267,10 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         activation_checkpointing_perception: Enable activation checkpointing
             for the perception encoder's transformer layers (applied with
             ``checkpoint_wrapper`` before FSDP2 sharding).
+        perception_fsdp_wrap_asr_layers: Wrap each ASR encoder transformer
+            layer as its own FSDP2 unit before wrapping the perception root.
+            This reduces the perception root's peak all-gather footprint while
+            preserving the same data-parallel mesh. Disabled by default.
         save_distributed_checkpoint: If True, each rank saves its shard of weights
             and optimizer states. If False, full state is assembled on rank 0.
         process_group_backend: Distributed backend (e.g. ``"nccl"``).
@@ -343,6 +347,7 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         moe_config=None,
         activation_checkpointing_llm: bool = False,
         activation_checkpointing_perception: bool = False,
+        perception_fsdp_wrap_asr_layers: bool = False,
         save_distributed_checkpoint: bool = True,
         process_group_backend: Optional[str] = None,
         timeout: Optional[timedelta] = default_pg_timeout,
@@ -374,6 +379,12 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         self._moe_config = moe_config
         self._activation_checkpointing_llm = activation_checkpointing_llm
         self._activation_checkpointing_perception = activation_checkpointing_perception
+        if not isinstance(perception_fsdp_wrap_asr_layers, bool):
+            raise TypeError(
+                "perception_fsdp_wrap_asr_layers must be a bool, "
+                f"got {type(perception_fsdp_wrap_asr_layers).__name__}."
+            )
+        self._perception_fsdp_wrap_asr_layers = perception_fsdp_wrap_asr_layers
         self._moe_mesh = None
         self._distributed_setup = None
         self._checkpoint_keepalive = None
@@ -405,6 +416,11 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
     def activation_checkpointing_perception(self) -> bool:
         """Whether activation checkpointing is enabled for the perception encoder."""
         return self._activation_checkpointing_perception
+
+    @property
+    def perception_fsdp_wrap_asr_layers(self) -> bool:
+        """Whether perception ASR layers are separate FSDP2 units."""
+        return self._perception_fsdp_wrap_asr_layers
 
     @property
     def distributed_setup(self):

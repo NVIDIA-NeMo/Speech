@@ -1098,15 +1098,13 @@ def create_tar_index(tar_path, idx_path):
     :func:`lhotse.indexing.create_jsonl_index` and the other readers in this
     module: a sequence of little-endian uint64 byte offsets.
 
-    Reads ``tar_path`` through the indexed-source opener for local files and
-    ``s3://`` / ``ais://`` / ``http(s)://`` URIs. When
-    ``LHOTSE_S3_LOCAL_MIRROR_ROOTS`` maps an S3 identity to a local file, the
-    mirror is read without changing the logical source path; otherwise the
-    remote range reader is used. Local and mirrored files adaptively choose
-    streaming iteration (``r|``) for dense/small-member archives and seekable
-    iteration (``r:``) for sparse/large-payload archives. Unresolved remote
-    URLs retain streaming iteration, and the sentinel records the total bytes
-    read through ``_CountingReader``.
+    Supports local files and ``s3://``, ``ais://``, and ``http(s)://`` URIs.
+    When ``LHOTSE_S3_LOCAL_MIRROR_ROOTS`` maps an S3 identity to a local file,
+    the mirror is read without changing the logical source path.
+    Otherwise, remote sources use a sequential stream opened through Lhotse.
+    Local and mirrored files adaptively choose streaming iteration (``r|``) for dense archives,
+    or seekable iteration (``r:``) for archives with large payloads.
+    Remote streams use ``r|``, and the sentinel records the total bytes read through ``_CountingReader``.
 
     Written atomically: data is staged in a per-process temp file next to
     ``idx_path`` and then ``os.replace()``-d into place, so concurrent writers
@@ -1136,25 +1134,20 @@ def create_tar_index(tar_path, idx_path):
         return offsets, counter.bytes_read
 
     read_path = _resolve_data_path(str(tar_path))
-    scheme = urlsplit(read_path).scheme.lower() if _is_remote_path(read_path) else ""
-    if scheme and scheme not in _SUPPORTED_REMOTE_RANGE_SCHEMES:
+    if _is_remote_path(read_path):
         from lhotse.serialization import open_best
 
+        # Sequential scans need one streaming response, not an HTTP range request per 10 KiB tarfile read.
         with open_best(read_path, "rb") as f:
             offsets, file_size = scan_stream(f)
     else:
         with _open_data_path(read_path) as f:
-            if _is_remote_path(read_path):
-                offsets, file_size = scan_stream(f)
-            else:
-                mode = _select_local_tar_index_mode(f)
-                with tarfile.open(fileobj=f, mode=mode) as tar:
-                    offsets = scan_offsets(tar)
-                # Seek to the physical end rather than using tarfile's logical
-                # end-of-archive position, preserving trailing record padding in
-                # the sentinel without reading it.
-                f.seek(0, os.SEEK_END)
-                file_size = f.tell()
+            mode = _select_local_tar_index_mode(f)
+            with tarfile.open(fileobj=f, mode=mode) as tar:
+                offsets = scan_offsets(tar)
+            # Preserve trailing record padding in the sentinel without reading it.
+            f.seek(0, os.SEEK_END)
+            file_size = f.tell()
     tmp_path = f"{idx_path}.tmp.{os.getpid()}"
     with open(tmp_path, "wb") as f_out:
         buf = bytearray()

@@ -85,6 +85,11 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         self.lss_loss = maybe_init_lss_loss(self.cfg.get("lss_loss", None), self.speaker_token_ids)
         self.llm = None  # populated by configure_model
         self.perception = None  # populated by configure_model
+        self.ctc_timestamp = None
+        if self.cfg.get('ctc_timestamp_artifact') is not None:
+            from nemo.collections.speechlm2.parts.ctc_timestamp_checkpoint import CTCTimestampCheckpoint
+
+            self.ctc_timestamp = CTCTimestampCheckpoint(self.cfg.ctc_timestamp_artifact)
 
         self._use_fsdp = False
         self._use_tp = False
@@ -311,7 +316,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             yield
 
     def _warn_parallel_expert_encoder_inference_chunking(self) -> None:
-        if not self.cfg.get("pe_encoder_path", None):
+        if not self._uses_parallel_expert_encoder():
             return
         if self.cfg.get("encoder_chunk_size_seconds", None) is not None:
             warnings.warn(
@@ -459,8 +464,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         return ans
 
     def on_fit_start(self) -> None:
-        """Configure the MoE aux-loss backward scaler to cancel FSDP's gradient
-        averaging (see ``_configure_moe_aux_loss_scaler``)."""
+        """Configure the DP-independent MoE auxiliary-loss backward scale."""
         self._validate_parallelism_compatibility()
         self._configure_moe_aux_loss_scaler()
         self._garbage_collection.on_fit_start()
@@ -700,7 +704,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         self.log_dict({k: v for k, v in ans.items() if k != "loss"}, on_step=True, batch_size=B)
         if (packing_efficiency := batch.get("packing_efficiency")) is not None:
             self.log("packing_efficiency", packing_efficiency, on_step=True, batch_size=B)
-        self.maybe_log_moe_metrics(batch_idx)
+        self.maybe_log_moe_metrics()
         return ans
 
     def _build_empty_training_batch(self) -> dict:
@@ -1008,6 +1012,40 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             _clip_grad_norm_impl(params, max_norm=gradient_clip_val)
 
     @torch.no_grad()
+    def generate_ctc_timestamps(
+        self,
+        answer_tokens: torch.Tensor,
+        audios: torch.Tensor,
+        audio_lens: torch.Tensor,
+        timestamp_inputs: Any,
+    ) -> list[dict[str, Any]]:
+        """Generate CTC word timestamps for a generated audio batch.
+
+        Args:
+            answer_tokens (torch.Tensor): Generated token IDs shaped ``(B, T_text)``.
+            audios (torch.Tensor): Time-domain audio signals shaped ``(B, T_audio)``.
+            audio_lens (torch.Tensor): Valid audio sample counts shaped ``(B,)``.
+            timestamp_inputs (Any): Detached request-owned PEE encoder states and speaker probabilities.
+
+        Returns:
+            list[dict[str, Any]]: Timestamp alignment results for each batch item.
+        """
+        if not self._uses_parallel_expert_encoder():
+            raise RuntimeError("CTC timestamp generation requires a ParallelExpertEncoder perception encoder.")
+        if audios is None or audio_lens is None:
+            raise ValueError("CTC timestamp generation requires audios and audio_lens.")
+        if audios.shape[0] != answer_tokens.shape[0] or audio_lens.shape[0] != answer_tokens.shape[0]:
+            raise ValueError("audios, audio_lens, and answer_tokens must have the same batch size.")
+
+        transcripts = [_decode_timestamp_transcript(self.tokenizer, tokens) for tokens in answer_tokens]
+        audio_durations = [float(length) / self.sampling_rate for length in audio_lens.detach().cpu()]
+        return self.perception.encoder.generate_ctc_timestamps(
+            timestamp_inputs=timestamp_inputs,
+            sot_transcripts=transcripts,
+            audio_durations=audio_durations,
+        )
+
+    @torch.no_grad()
     def generate(
         self,
         prompts: list[list[dict[str]]] | torch.Tensor,
@@ -1016,8 +1054,9 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         spk_targets: torch.Tensor = None,
         generation_config: GenerationConfig = None,
         enable_thinking: bool | None = None,
+        generate_timestamps: bool = False,
         **generation_kwargs,
-    ) -> torch.Tensor:
+    ) -> torch.Tensor | dict[str, Any]:
         """
         Generate LLM answers given text or mixed text+audio prompts.
 
@@ -1080,12 +1119,13 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             audio_lens: Optional. Length of each audio example.
             spk_targets: Optional ``(B, T, n_spk)`` speaker-activity tensor (e.g. oracle / RTTM-derived
                 diarization) injected into the perception encoder. Only effective when the mounted
-                encoder is a ``ParallelExpertEncoder`` (i.e. ``model.pe_encoder_path`` was set); rows
+                encoder is a ``ParallelExpertEncoder``; rows
                 supplied here override its Sortformer prediction. When ``None`` (default), or for a
                 row of ``-1``, the encoder predicts speaker activity itself.
             generation_config: Optional HuggingFace GenerationConfig object.
             enable_thinking: Optional prompt-formatter hint forwarded to ``encode_dialog``.
                 Relevant for prompt formats that support thinking/reasoning mode.
+            generate_timestamps: Return CTC timestamps together with answer IDs when true.
             generation_kwargs: Keyword arguments passed directly to the underlying LLM's ``generate`` method.
         """
         # Encode prompt dicts into int token ids.
@@ -1113,6 +1153,12 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 eos_token_id=self.text_eos_id,
                 pad_token_id=self.text_pad_id,
             )
+        if generate_timestamps and not self._uses_parallel_expert_encoder():
+            raise RuntimeError("CTC timestamp generation requires a ParallelExpertEncoder perception encoder.")
+        if generate_timestamps and audios is None:
+            raise ValueError("CTC timestamp generation requires audio input.")
+
+        timestamp_inputs = None
         if audios is not None:
             # Audio + text input for generation.
             # Prepare token embeddings and audio embeddings.
@@ -1124,9 +1170,16 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                     # the whole sequence: chunking here would nest a second windowing inside
                     # every chunk. Rows without RTTM get a streaming Sortformer prediction.
                     self._warn_parallel_expert_encoder_inference_chunking()
-                    audio_embeds, audio_embed_lens = self.perception(
-                        input_signal=audios, input_signal_length=audio_lens, spk_targets=spk_targets
+                    perception_outputs = self.perception(
+                        input_signal=audios,
+                        input_signal_length=audio_lens,
+                        spk_targets=spk_targets,
+                        return_ctc_timestamp_inputs=generate_timestamps,
                     )
+                    if generate_timestamps:
+                        audio_embeds, audio_embed_lens, timestamp_inputs = perception_outputs
+                    else:
+                        audio_embeds, audio_embed_lens = perception_outputs
                     audio_embeds = [emb[:emblen] for emb, emblen in zip(audio_embeds, audio_embed_lens)]
                 else:
                     audio_embeds = encode_audio_with_optional_chunking(
@@ -1160,7 +1213,17 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 **generation_kwargs,
                 generation_config=generation_config,
             )
-        return answer_tokens
+        if not generate_timestamps:
+            return answer_tokens
+        return {
+            "answer_ids": answer_tokens,
+            "timestamps": self.generate_ctc_timestamps(
+                answer_tokens,
+                audios,
+                audio_lens,
+                timestamp_inputs,
+            ),
+        }
 
     def setup_moe_options(self):
         """Apply MoE config overrides and enable load balance tracking.
@@ -1184,9 +1247,11 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             for module in self.llm.modules():
                 if isinstance(module, Gate):
                     module.train_gate = True
-                    module.weight.requires_grad_(True)
-                    if module.bias is not None:
-                        module.bias.requires_grad_(True)
+                    # An explicit Automodel freeze policy remains authoritative.
+                    if self.cfg.get("automodel_freeze_config") is None:
+                        module.weight.requires_grad_(True)
+                        if module.bias is not None:
+                            module.bias.requires_grad_(True)
 
         moe_metrics_cfg = self.cfg.get("moe_metrics", None)
         if moe_metrics_cfg is not None and moe_metrics_cfg.get("enabled", False):
@@ -1194,18 +1259,22 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
             enable_load_balance_tracking(self.llm)
 
-    def maybe_log_moe_metrics(self, step: int):
+    def maybe_log_moe_metrics(self):
         """Collect and log MoE load balance metrics.
 
         All ranks must call this method (the all-reduce inside
         ``collect_expert_loads`` is collective).  Metrics are logged via
         Lightning's ``self.log_dict`` which respects ``log_every_n_steps``.
-
-        Args:
-            step: Current ``batch_idx``, used to decide brief vs detailed mode.
         """
         moe_metrics_cfg = self.cfg.get("moe_metrics", None)
         if moe_metrics_cfg is None or not moe_metrics_cfg.get("enabled", False):
+            return
+
+        interval = int(moe_metrics_cfg.get("every_steps", 100))
+        if interval < 1:
+            raise ValueError("moe_metrics.every_steps must be positive")
+        step = int(self.global_step)
+        if step % interval:
             return
 
         from nemo_automodel.components.moe.load_balance_metrics import (
@@ -1219,6 +1288,23 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         if not layer_loads:
             return
 
+        # Routing counts are tiny, but the metric helpers perform reductions
+        # and dtype conversions on the tensors' current device. At the end of
+        # a packed training step the CUDA allocator can have effectively no
+        # headroom, so even ``load.mean()`` may fail. The distributed
+        # all-reduce above must happen on CUDA; after it completes, move the
+        # detached metric payload to CPU before doing any reporting math.
+        # Copy to CPU before converting dtype so ``.float()`` in the helper
+        # cannot allocate a temporary CUDA tensor.
+        layer_loads = {
+            name: {
+                **data,
+                "expert_load": data["expert_load"].detach().to(device="cpu"),
+                "aux_loss": (data["aux_loss"].detach().to(device="cpu") if data.get("aux_loss") is not None else None),
+            }
+            for name, data in layer_loads.items()
+        }
+
         mode = moe_metrics_cfg.get("mode", "brief")
         top_k = moe_metrics_cfg.get("top_k_experts", 5)
 
@@ -1230,6 +1316,11 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 metrics = compute_detailed_metrics(layer_loads, top_k=top_k)
         else:
             metrics = compute_brief_metrics(layer_loads, top_k=top_k)
+
+        # Lightning converts Python numbers to tensors on ``self.device``.
+        # Keep the reporting path CPU-only after the all-reduce by supplying
+        # explicit CPU scalar tensors to ``log_dict``.
+        metrics = {name: torch.as_tensor(value, device="cpu", dtype=torch.float32) for name, value in metrics.items()}
 
         # ``batch_size=1`` is required when training_step uses the
         # ``dataloader_iter`` flavor: Lightning cannot infer the batch size
@@ -1266,15 +1357,13 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             return None
 
     def _configure_moe_aux_loss_scaler(self) -> None:
-        """Cancel FSDP's gradient averaging on MoE aux-loss grads.
+        """Use Automodel's DP-independent MoE aux-loss backward scale.
 
         ``MoEAuxLossAutoScaler`` multiplies aux-loss-derived gradients by
-        ``main_loss_backward_scale`` during backward. FSDP's all-reduce then
-        divides every gradient by ``dp_group_size``. Setting the scaler to
-        ``dp_group_size`` (non-PP case) cancels that division out, matching the
-        intent in ``nemo_automodel/recipes/llm/train_ft.py`` — otherwise the
-        aux-loss contribution to the gradient would be under-scaled by a factor
-        of ``dp_group_size``.
+        ``main_loss_backward_scale`` during backward. Automodel normalizes this
+        scale over model microbatches and no longer compensates for DP size; for
+        SALM's one-forward, non-PP training step the correct scale is therefore
+        one. Multiplying by DP size over-weights the router loss.
 
         No-op when ``nemo_automodel`` isn't available (non-MoE builds).
         """
@@ -1282,9 +1371,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             from nemo_automodel.components.moe.megatron.moe_utils import MoEAuxLossAutoScaler
         except ImportError:
             return
-        dp_group = self._get_moe_dp_group()
-        dp_size = dp_group.size() if dp_group is not None else 1
-        MoEAuxLossAutoScaler.main_loss_backward_scale = torch.tensor(float(dp_size))
+        MoEAuxLossAutoScaler.main_loss_backward_scale = torch.tensor(1.0)
 
     def configure_optimizers(self):
         return configure_optimizers(self)
@@ -1344,6 +1431,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         self,
         distributed_setup=None,
         activation_checkpointing_perception: bool | None = None,
+        perception_fsdp_wrap_asr_layers: bool | None = None,
+        perception_mixed_precision=None,
     ) -> None:
         if distributed_setup is None and self._trainer is not None:
             distributed_setup = getattr(self._trainer.strategy, "distributed_setup", None)
@@ -1377,6 +1466,10 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             )
         if activation_checkpointing_perception is None:
             activation_checkpointing_perception = False
+        if perception_fsdp_wrap_asr_layers is None and self._trainer is not None:
+            perception_fsdp_wrap_asr_layers = getattr(self._trainer.strategy, "perception_fsdp_wrap_asr_layers", None)
+        if perception_fsdp_wrap_asr_layers is None:
+            perception_fsdp_wrap_asr_layers = False
         if distributed_setup is not None and distributed_setup.mesh_context.pp_size > 1:
             raise NotImplementedError("SALMAutomodel does not support pipeline parallelism yet.")
 
@@ -1421,32 +1514,40 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         # then initialize, EP/FSDP-shard, activation-checkpoint, and compile the MTP
         # sublayers together with the backbone. Native checkpoint MTP config is kept by
         # default; set replace_existing_head=true to use the recipe's head definition.
-        mtp_cfg = self.cfg.get("mtp", None)
-        mtp_requested = mtp_cfg is not None and mtp_cfg.get("enabled", False)
+        mtp_cfg = self.cfg.get("mtp", None) or {}
+        mtp_requested = mtp_cfg.get("enabled", False)
+        retain_native_mtp = bool(self.cfg.get("retain_native_mtp", False))
+        if retain_native_mtp and mtp_requested:
+            raise ValueError("retain_native_mtp cannot be combined with auxiliary MTP training")
         mtp_training_mode = str(mtp_cfg.get("training_mode", "joint")) if mtp_requested else "disabled"
         if mtp_requested and mtp_training_mode not in {"joint", "head_only"}:
             raise ValueError(
                 f"Unknown mtp.training_mode {mtp_training_mode!r}; expected 'joint' or 'head_only' when MTP is enabled"
             )
         logging.info(f"MTP training mode={mtp_training_mode}")
-        if mtp_requested:
+        mtp_construct = mtp_requested or retain_native_mtp
+        if mtp_construct:
             # MTP supports both BSHD and packed THD. For THD the MTP loss must
             # receive cu_seqlens so target rolling is masked at packed sequence
             # boundaries (see training_step); the MTP sublayers already get the
             # THD context (qkv_format/cu_seqlens/seq_idx) from the model forward.
-            self._mtp_loss_scaling_factor = float(mtp_cfg.get("loss_scaling_factor", 0.1))
-            self._mtp_loss_fn = build_mtp_loss_fn()
+            self._mtp_loss_scaling_factor = float(mtp_cfg.get("loss_scaling_factor", 0.1)) if mtp_requested else 0.0
+            if mtp_requested:
+                self._mtp_loss_fn = build_mtp_loss_fn()
             requested_depth = int(mtp_cfg.get("num_nextn_predict_layers", 1))
             use_repeated_layer = bool(mtp_cfg.get("use_repeated_layer", False))
             # HF/vLLM exports describe physical layers. A repeated MTP head has one
             # physical layer even when it performs multiple logical prediction steps.
             physical_depth = 1 if use_repeated_layer else requested_depth
-            automodel_kwargs["mtp_config_overrides"] = {
-                "num_nextn_predict_layers": physical_depth,
-                "mtp_hybrid_override_pattern": str(mtp_cfg.get("hybrid_override_pattern", "*")),
-                "mtp_layers_block_type": None,
-            }
-            automodel_kwargs["replace_mtp_config"] = bool(mtp_cfg.get("replace_existing_head", False))
+            if mtp_requested:
+                # Retention preserves the checkpoint's head or its absence; only
+                # auxiliary MTP training may create or replace a head.
+                automodel_kwargs["mtp_config_overrides"] = {
+                    "num_nextn_predict_layers": physical_depth,
+                    "mtp_hybrid_override_pattern": str(mtp_cfg.get("hybrid_override_pattern", "*")),
+                    "mtp_layers_block_type": None,
+                }
+                automodel_kwargs["replace_mtp_config"] = bool(mtp_cfg.get("replace_existing_head", False))
             automodel_kwargs["mtp_loss_scaling_factor"] = self._mtp_loss_scaling_factor
             if use_repeated_layer:
                 # HF exports contain the physical depth so their state dict has the
@@ -1454,12 +1555,19 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 # from the SpeechLM config when constructing that physical head.
                 automodel_kwargs["num_nextn_predict_layers"] = requested_depth
                 automodel_kwargs["mtp_use_repeated_layer"] = True
-        else:
+        elif not retain_native_mtp:
             # Some checkpoints (including Nemotron-3.5 Lightning) ship a native
             # MTP head in config.json. Explicitly override its depth to zero so
             # users who omit the block or set ``mtp.enabled: false`` do not pay
             # the MTP memory/compute cost during SpeechLM fine-tuning.
             automodel_kwargs["num_nextn_predict_layers"] = 0
+
+        if self.cfg.get("automodel_freeze_config") is not None:
+            from nemo_automodel.components.utils.model_utils import parse_freeze_config
+
+            automodel_kwargs["freeze_config"] = parse_freeze_config(
+                OmegaConf.to_container(self.cfg.automodel_freeze_config, resolve=True)
+            )
 
         self.llm = load_pretrained_automodel_llm(
             self.cfg.pretrained_llm,
@@ -1468,13 +1576,13 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             trust_remote_code=self.cfg.get("trust_remote_code", False),
             **automodel_kwargs,
         )
-        if mtp_requested and use_repeated_layer:
+        if mtp_construct and use_repeated_layer:
             # Automodel consumes constructor kwargs that match HF config fields,
             # so the logical iteration count above temporarily overwrites the
             # serialized depth. The built MTPConfig retains that logical count;
             # restore the HF config to the one physical layer saved in the state dict.
             self.llm.config.num_nextn_predict_layers = physical_depth
-        if not mtp_requested:
+        if not mtp_requested and not retain_native_mtp:
             # The constructor override suppresses a checkpoint-native MTP module but does
             # not mutate the HF config. Keep the serialized config consistent with the
             # actual state dict so conversion/reload does not recreate a missing head.
@@ -1482,7 +1590,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
         if mtp_requested and not self._mtp_enabled:
             raise RuntimeError("MTP is enabled but Automodel did not construct an MTP head from the configured model.")
-        if not mtp_requested and self._mtp_enabled:
+        if not mtp_requested and not retain_native_mtp and self._mtp_enabled:
             raise RuntimeError("MTP is disabled but the loaded LLM still has an MTP head attached.")
 
         # Apply MoE options (aux_loss_coeff override, load balance tracking)
@@ -1494,11 +1602,6 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         # Fix projection dim for pretrained_weights=False (config output_dim may not match LLM)
         update_perception_output_dim(self)
 
-        # Activation checkpointing on perception encoder layers. Must run BEFORE
-        # FSDP2 wrapping (see LLM path in automodel) so checkpoint_wrapper sees
-        # the pristine layer objects and fully_shard indexes the final structure.
-        self.perception.set_activation_checkpointing(activation_checkpointing_perception)
-
         # Apply LoRA adapters to the LLM.
         # When device_mesh is set, LoRA was already applied inside automodel's
         # from_pretrained (before sharding).  Otherwise, apply it now.
@@ -1509,16 +1612,37 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             # prevent_freeze_params pattern is set for configure_optimizers.
             ensure_lora_trainable(self)
 
+        # Select storage dtypes before FSDP2 captures parameter identities.
+        # Without an explicit freeze policy, preserve the existing SFT defaults.
+        perception_freeze_config = self.cfg.get("perception_freeze_config")
+        if perception_freeze_config is None:
+            if dtype != torch.float32 and device_mesh is not None:
+                self.perception.to(dtype=dtype)
+        else:
+            from nemo_automodel.components.models.common.utils import prepare_frozen_parameters_for_sharding
+            from nemo_automodel.components.utils.model_utils import apply_parameter_freezing
+
+            # The perception constructor uses FP32. Apply the same storage/compute
+            # separation as the backbone before FSDP captures parameter identities.
+            self.perception.to(dtype=dtype)
+            apply_parameter_freezing(self.perception, OmegaConf.to_container(perception_freeze_config, resolve=True))
+            compute_dtype = perception_mixed_precision.param_dtype if perception_mixed_precision is not None else None
+            prepare_frozen_parameters_for_sharding(self.perception, compute_dtype)
+            if compute_dtype is not None:
+                for module in self.perception.modules():
+                    for name, buffer in module._buffers.items():
+                        if buffer is not None and buffer.is_floating_point():
+                            module._buffers[name] = buffer.to(dtype=compute_dtype)
+            perception_fsdp_wrap_asr_layers = True
+
+        # Select/cast pristine parameter names before checkpoint wrappers add
+        # nested module prefixes; wrap before FSDP2 indexes the final structure.
+        self.perception.set_activation_checkpointing(activation_checkpointing_perception)
+
         if device_mesh is None:
             maybe_load_pretrained_models(self)
             self._apply_mtp_training_mode(mtp_training_mode)
             return
-
-        # Cast perception to training dtype BEFORE FSDP2 wrapping.
-        # The LLM is already in the target dtype (loaded via torch_dtype=dtype).
-        # FSDP2 requires uniform parameter dtype, so we cast all parameters.
-        if dtype != torch.float32:
-            self.perception.to(dtype=dtype)
 
         if device_mesh["tp"].size() > 1:
             self._use_tp = True
@@ -1535,7 +1659,13 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
         if fsdp_mesh.size() > 1:
             self._use_fsdp = True
-            self.perception = _fully_shard_perception(self.perception, fsdp_mesh)
+            self.perception = _fully_shard_perception(
+                self.perception,
+                fsdp_mesh,
+                wrap_asr_layers=perception_fsdp_wrap_asr_layers,
+                mixed_precision=perception_mixed_precision,
+                wrap_projection=perception_freeze_config is not None,
+            )
 
         # Enable MoE FSDP gradient accumulation optimization.
         # The MoEFSDPSyncMixin on the LLM defers gradient sync/resharding on
@@ -1579,8 +1709,78 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         }
 
 
-def _fully_shard_perception(perception, mesh):
-    """FSDP2-shard perception and register its packed custom root forward."""
-    perception = fully_shard(perception, mesh=mesh)
+def _decode_timestamp_transcript(tokenizer: Any, answer_tokens: torch.Tensor) -> str:
+    from nemo.collections.speechlm2.parts.ctc_timestamp_utils import MultiSpeakerSOTWordTimestampAligner
+
+    token_ids = answer_tokens.detach().cpu().tolist()
+    text = tokenizer.ids_to_text(token_ids, remove_special_tokens=False)
+    special_tokens = getattr(getattr(tokenizer, "tokenizer", None), "all_special_tokens", ())
+    text = MultiSpeakerSOTWordTimestampAligner.clean_sot_transcript(text, special_tokens)
+    if not text:
+        raise ValueError("The generated ASR answer is empty after removing non-speaker special tokens.")
+    return text
+
+
+def _fully_shard_perception(
+    perception,
+    mesh,
+    *,
+    wrap_asr_layers: bool = False,
+    mixed_precision=None,
+    wrap_projection: bool = False,
+):
+    """FSDP2-shard perception and register its packed custom root forward.
+
+    When ``wrap_asr_layers`` is enabled, each layer in the selected ASR
+    encoder is wrapped first. The subsequent perception-root wrap owns only
+    parameters outside those nested units, so feature extraction does not
+    begin under one monolithic ASR-encoder all-gather. FSDP2 preserves fully
+    qualified parameter names, keeping DCP model/optimizer restore compatible.
+    """
+    if not isinstance(wrap_asr_layers, bool):
+        raise TypeError(f"wrap_asr_layers must be a bool, got {type(wrap_asr_layers).__name__}.")
+    if wrap_asr_layers:
+        mounted_encoder = getattr(perception, "encoder", None)
+        asr_encoder = getattr(mounted_encoder, "asr_encoder", mounted_encoder)
+        layers = getattr(asr_encoder, "layers", None)
+        if layers is None or not isinstance(layers, torch.nn.ModuleList) or not layers:
+            raise ValueError(
+                "perception_fsdp_wrap_asr_layers=true requires perception.encoder.layers "
+                "or perception.encoder.asr_encoder.layers to be a non-empty torch.nn.ModuleList."
+            )
+        logging.info(
+            "FSDP2-sharding %d perception ASR encoder layers before the perception root.",
+            len(layers),
+        )
+        layer_forward_methods = []
+        for layer in layers:
+            checkpoint_wrapped = getattr(layer, "_checkpoint_wrapped_module", None)
+            if checkpoint_wrapped is None:
+                method_name = "_forward_sequence_packed"
+                packed_forward = getattr(layer, method_name, None)
+            else:
+                method_name = "checkpoint_fn"
+                packed_forward = getattr(checkpoint_wrapped, "_forward_sequence_packed", None)
+            if not callable(packed_forward) or not callable(getattr(layer, method_name, None)):
+                raise ValueError(
+                    "A perception ASR encoder FSDP layer cannot execute its packed forward "
+                    f"through {method_name!r}: {type(layer).__name__}."
+                )
+            layer_forward_methods.append(method_name)
+        for layer, method_name in zip(layers, layer_forward_methods):
+            fully_shard(
+                layer,
+                mesh=mesh,
+                **({"mp_policy": mixed_precision} if mixed_precision is not None else {}),
+            )
+            # Packed encoder execution deliberately bypasses ``layer.forward``.
+            # Register the actual entry point so FSDP unshards parameters before
+            # LayerNorm. With activation checkpointing, the entry point invoked
+            # by ``_forward_sequence_packed_layer`` is ``checkpoint_fn``.
+            register_fsdp_forward_method(layer, method_name)
+    kwargs = {"mp_policy": mixed_precision} if mixed_precision is not None else {}
+    if wrap_projection:
+        fully_shard(perception.proj, mesh=mesh, **kwargs)
+    perception = fully_shard(perception, mesh=mesh, **kwargs)
     register_fsdp_forward_method(perception, "forward_sequence_packed")
     return perception

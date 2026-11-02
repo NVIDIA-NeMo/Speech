@@ -89,6 +89,24 @@ git push --force-with-lease
 Before running these commands, the contributor must configure `user.name` and `user.email` to the real name and
 email used to author their commits. Reviewers must not rewrite an external contributor's commits on their behalf.
 
+### Maintainer design rules
+
+Follow these when writing code; reviews enforce them. The full rubric is
+[`.claude/skills/nemo-speech-pr-review/SKILL.md`](.claude/skills/nemo-speech-pr-review/SKILL.md).
+
+- **Never lose data silently.** Raise on unsupported inputs instead of warning and continuing. Strict is the
+  default; fault tolerance is opt-in.
+- **Keep metadata in sync.** Anything that changes audio updates sampling rate, durations, and supervisions.
+- **Protect released checkpoints, not new code.** Add new behavior as a new class or opt-in option instead of
+  editing what released models use. Brand-new code gets no compatibility shims.
+- **Reuse before adding.** Extend existing code instead of writing a parallel path. If new behavior is better,
+  adopt it without a flag. Never hardcode model names in shared code.
+- **Keep layers separate.** Core model methods take and return tensors; audio loading belongs in the dataloader
+  or in high-level APIs such as `transcribe()`.
+- **Data loading.** Keep manifests lazy and cuts immutable. Create and seed the RNG in `__iter__`, never the
+  global RNG.
+- **Optional dependencies never break `import nemo`.** Import them locally behind `is_module_available`.
+
 ## Documentation
 
 Sphinx-based docs live in `docs/source/`. Build with:

@@ -74,6 +74,10 @@ from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.common.tokenizers.aggregate_tokenizer import TokenizerWrapper
 from nemo.utils import logging
 
+# Candidates considered by packed best-fit batching when packing_buffer_size is unset.
+# Smaller buffers find fewer exact fits and leave more of each token budget empty.
+DEFAULT_PACKING_BUFFER_SIZE = 1024
+
 
 @dataclass
 class LhotseDataLoadingConfig:
@@ -115,7 +119,7 @@ class LhotseDataLoadingConfig:
     # without bucketing. This is independent of bucket_buffer_size, which caps
     # total occupancy across all buckets.
     # Explicit legacy shuffle_buffer_size values are copied here during schema
-    # merge; otherwise packed sampling uses a safe 128-candidate default.
+    # merge; otherwise packed sampling uses DEFAULT_PACKING_BUFFER_SIZE candidates.
     packing_buffer_size: int | None = None
     concurrent_bucketing: bool = True  # fetches data in a background thread
     bucketing_2d_strict_mode: bool = True  # reduces padding by discarding significant outliers
@@ -147,6 +151,10 @@ class LhotseDataLoadingConfig:
     # supersedes token_equivalent_duration for constraints and token filters.
     audio_token_estimator: Any = None
     batch_tokens: int | None = None
+    # A second cap of a packed batch on its total output tokens
+    # (the supervision tokens of cuts, the answer tokens of prompted examples), besides batch_tokens.
+    # Packed sequence sampling only.
+    batch_output_tokens: int | None = None
     # Use sum-of-lengths rather than padded batch-size-times-maximum accounting.
     # Enable this when the encoder consumes packed sequences.
     use_packed_sequence_sampling: bool = False
@@ -187,6 +195,8 @@ class LhotseDataLoadingConfig:
     input_sampling_rate: int | None = None
     seed: int | str = 0
     num_workers: int = 0
+    # Number of batches each worker prefetches; None leaves PyTorch's default.
+    prefetch_factor: int | None = None
     pin_memory: bool = False
     channel_selector: int | str | None = None
 
@@ -642,6 +652,10 @@ def get_lhotse_dataloader_from_single_config(
         # reads only light-weight JSON objects; it samples mini-batches and passes
         # the meta-data to Dataset, which performs the actual I/O inside its __getitem__ method.
         dloader_kwargs = dict(dataset=dataset, sampler=sampler)
+    if config.prefetch_factor is not None and global_rank == 0:
+        logging.info(
+            "Lhotse DataLoader: num_workers=%s prefetch_factor=%s", config.num_workers, config.prefetch_factor
+        )
     dloader = _build_dataloader(
         use_stateful_dataloader=config.use_stateful_dataloader,
         dp_rank=global_rank,
@@ -651,6 +665,7 @@ def get_lhotse_dataloader_from_single_config(
         batch_size=None,
         num_workers=config.num_workers,
         pin_memory=config.pin_memory,
+        **({"prefetch_factor": config.prefetch_factor} if config.prefetch_factor is not None else {}),
     )
 
     return dloader
@@ -691,6 +706,7 @@ def get_lhotse_dataloader_from_multi_config(
             "seed",
             "shard_seed",
             "num_workers",
+            "prefetch_factor",
             "pin_memory",
             "shuffle",
             "sampler_fusion",
@@ -783,6 +799,12 @@ def get_lhotse_dataloader_from_multi_config(
         # reads only light-weight JSON objects; it samples mini-batches and passes
         # the meta-data to Dataset, which performs the actual I/O inside its __getitem__ method.
         dloader_kwargs = dict(dataset=dataset, sampler=sampler)
+    if shared_opts.prefetch_factor is not None and global_rank == 0:
+        logging.info(
+            "Lhotse DataLoader: num_workers=%s prefetch_factor=%s",
+            shared_opts.num_workers,
+            shared_opts.prefetch_factor,
+        )
     dloader = _build_dataloader(
         use_stateful_dataloader=shared_opts.use_stateful_dataloader,
         dp_rank=global_rank,
@@ -792,6 +814,7 @@ def get_lhotse_dataloader_from_multi_config(
         batch_size=None,
         num_workers=shared_opts.num_workers,
         pin_memory=shared_opts.pin_memory,
+        **({"prefetch_factor": shared_opts.prefetch_factor} if shared_opts.prefetch_factor is not None else {}),
     )
 
     return dloader
@@ -987,7 +1010,7 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
         if use_exact_packed_sampler:
             packing_buffer_size = config.packing_buffer_size
             if packing_buffer_size is None:
-                packing_buffer_size = 128
+                packing_buffer_size = DEFAULT_PACKING_BUFFER_SIZE
             sampler_kwargs["packing_buffer_size"] = packing_buffer_size
         else:
             sampler_kwargs["shuffle_buffer_size"] = config.shuffle_buffer_size
@@ -1020,7 +1043,7 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
         if config.use_packed_sequence_sampling:
             packing_buffer_size = config.packing_buffer_size
             if packing_buffer_size is None:
-                packing_buffer_size = 128
+                packing_buffer_size = DEFAULT_PACKING_BUFFER_SIZE
             sampler_kwargs["packing_buffer_size"] = packing_buffer_size
         else:
             sampler_kwargs["shuffle_buffer_size"] = config.shuffle_buffer_size
@@ -1141,6 +1164,7 @@ def determine_sampling_constraint(
                     audio_token_estimator=audio_token_estimator,
                     batch_size=config.batch_size,
                     batch_tokens=config.batch_tokens,
+                    batch_output_tokens=config.batch_output_tokens,
                     bucket_duration_bins=bucket_duration_bins,
                     bucket_batch_size=config.bucket_batch_size,
                     quadratic_factor=config.quadratic_factor,
@@ -1164,6 +1188,7 @@ def determine_sampling_constraint(
                 audio_token_estimator=audio_token_estimator,
                 batch_size=config.batch_size,
                 batch_tokens=config.batch_tokens,
+                batch_output_tokens=config.batch_output_tokens,
                 quadratic_factor=config.quadratic_factor,
                 measure_total_length=config.measure_total_length,
                 use_packed_sequence_sampling=config.use_packed_sequence_sampling,

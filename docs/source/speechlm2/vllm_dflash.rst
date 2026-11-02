@@ -12,8 +12,26 @@ Requirements
 
 * A vLLM-ready NeMo SpeechLM checkpoint whose language backbone is compatible
   with the DFlash draft.
-* vLLM 0.27.1 or later for the published Nemotron 3.5 Lightning recipe.
+* vLLM 0.32.0, the version pinned by NeMo's ``vllm`` extra.
 * An attention backend that supports the draft model's non-causal attention.
+
+Automodel is not required to serve an exported checkpoint. Install the ASR
+runtime and pinned vLLM serving dependencies with:
+
+.. code-block:: bash
+
+   pip install -e ".[asr,vllm]"
+
+The equivalent uv command is:
+
+.. code-block:: bash
+
+   uv sync --extra asr --extra vllm
+
+Do not combine ``vllm`` with the ``speechlm2``, ``speechlm2-only``,
+``all``, ``cu12``, ``cu13``, ``compiled``, or ``compiled-a100`` extras. These
+include Automodel training dependencies; vLLM owns the exact Torch and
+CUDA-kernel stack for this serving environment.
 
 The following example uses the published NVFP4 DFlash draft for the Nemotron
 3.5 Lightning 30B-A3B backbone and proposes six tokens per decoding step:
@@ -45,15 +63,11 @@ model. Its checkpoint must be trained or fine-tuned separately for the target
 language backbone; NeMo's vLLM inference plugin does not create or convert
 DFlash2 weights.
 
-At the time of writing, DFlash2 requires vLLM commit
-``3406ec1dae9916f920b90f0dbf90dcf54923d042`` from pull request 52816. The
-immutable commit pin keeps the DFlash2 runtime reproducible. DFlash2 uses the
-same ``method`` value as DFlash; vLLM selects it from the trained draft
+DFlash2 support is included in the pinned vLLM 0.32.0 release. DFlash2 uses
+the same ``method`` value as DFlash; vLLM selects it from the trained draft
 checkpoint's architecture:
 
 .. code-block:: bash
-
-   pip install -U "vllm @ git+https://github.com/vllm-project/vllm.git@3406ec1dae9916f920b90f0dbf90dcf54923d042"
 
    vllm serve /path/to/vllm-ready-speechlm-checkpoint \
      --trust-remote-code \
@@ -79,8 +93,8 @@ train the draft: vLLM constructs each runtime block from one anchor plus the
 configured number of draft tokens and does not reject a training/inference
 block-size mismatch.
 
-The DFlash2 architecture forces vLLM's V2 model runner, including for hybrid
-NemotronH targets that would otherwise use V1. vLLM raises an error for features
+DFlash2 runs on vLLM's V2 model runner, which vLLM 0.32 uses by default,
+hybrid NemotronH targets included. vLLM raises an error for features
 it knows are incompatible with V2, but the target and serving configuration
 should still be qualified on that runner. The SpeechLM target uses the same
 ``SupportsEagle3`` hidden-state contract for DFlash and DFlash2, so no draft
@@ -93,3 +107,6 @@ Compare greedy generation with and without ``--speculative-config`` using the
 same text and audio prompts. The generated token IDs must match. Also inspect
 vLLM's speculative-decoding metrics to confirm that draft tokens are proposed
 and accepted; matching output alone does not prove that DFlash was active.
+
+For the precision guarantees shared by ordinary hybrid serving and MTP,
+see :ref:`speechlm2-vllm-hybrid-precision` in the general serving guide.

@@ -23,7 +23,21 @@ vs standard transformer backends are auto-detected from the backbone's
 own ``architectures`` field.
 """
 
+from collections.abc import Iterable, Mapping
+from copy import copy
+from typing import Any
+
 from transformers import AutoConfig, PretrainedConfig
+
+# Architectures a checkpoint's config.json names, and the architectures and
+# model types of its MTP draft. A ParallelExpertEncoder on a NemotronH backbone
+# has its own, the names vLLM's native implementation uses.
+SPEECHLM_ARCHITECTURE = "NeMoSpeechLMForConditionalGeneration"
+SPEECHLM_MTP_ARCHITECTURE = "NeMoSpeechLMMTPModel"
+SPEECHLM_MTP_MODEL_TYPE = "nemo_speechlm_mtp"
+TRANSCRIBE_ARCHITECTURE = "Nemotron3_5TranscribeForConditionalGeneration"
+TRANSCRIBE_MTP_ARCHITECTURE = "Nemotron3_5TranscribeMTPModel"
+TRANSCRIBE_MTP_MODEL_TYPE = "nemotron3_5_transcribe_mtp"
 
 _HYBRID_ARCHITECTURES = frozenset(
     {
@@ -56,6 +70,21 @@ _MTP_BLOCK_TYPE_TO_VLLM_SYMBOL = {
 
 def _is_hybrid_backend(architectures: list[str]) -> bool:
     return bool(set(architectures) & _HYBRID_ARCHITECTURES)
+
+
+def checkpoint_architecture(model_cfg: Mapping[str, Any], backbone_architectures: Iterable[str]) -> str:
+    """Return the architecture a SpeechLM checkpoint's ``config.json`` names.
+
+    A ParallelExpertEncoder on a NemotronH backbone gets a dedicated name. The
+    encoder is ``pe_encoder_path`` in a training config and
+    ``pe_encoder_config`` once exported.
+    """
+    pe_encoder_path = model_cfg.get("pe_encoder_path")
+    pe_encoder_config = model_cfg.get("pe_encoder_config")
+    uses_pe_encoder = pe_encoder_path not in (None, "", False) or pe_encoder_config not in (None, {}, "", False)
+    if uses_pe_encoder and _is_hybrid_backend(list(backbone_architectures)):
+        return TRANSCRIBE_ARCHITECTURE
+    return SPEECHLM_ARCHITECTURE
 
 
 def _mtp_pattern_from_backbone_config(text_config) -> str | None:
@@ -192,6 +221,8 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         pe_encoder_config: dict | None = None,
         pe_encoder_overrides: dict | None = None,
         speaker_encoder: dict | None = None,
+        audio_token_id: int | None = None,
+        speechlm_runtime_added_token_ids: list[int] | None = None,
         **kwargs,
     ):
         required_fields = {
@@ -210,6 +241,8 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             and pe_encoder_overrides is None
             and speaker_encoder is None
             and llm_config is None
+            and audio_token_id is None
+            and speechlm_runtime_added_token_ids is None
             and not kwargs
             and all(value is None for value in required_fields.values())
         )
@@ -223,6 +256,10 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         self._pending_image_token_index = None
 
         super().__init__(**kwargs)
+        self.audio_token_id = audio_token_id
+        self.speechlm_runtime_added_token_ids = (
+            [] if speechlm_runtime_added_token_ids is None else speechlm_runtime_added_token_ids
+        )
 
         if is_default_init:
             # HuggingFace may instantiate config classes with no arguments when
@@ -345,7 +382,26 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             if num_layers > 0:
                 self.text_config.layer_types = ["attention"] * num_layers
 
+        # Extra runtime embedding rows are not trained output classes.
+        self.text_config.speechlm_output_vocab_size = int(self.text_config.vocab_size)
         self.text_config.vocab_size += _SPEECHLM_EMBED_EXTRA_ROWS
+        if audio_token_id is not None and (
+            isinstance(audio_token_id, bool)
+            or not isinstance(audio_token_id, int)
+            or not 0 <= audio_token_id < self.text_config.vocab_size
+        ):
+            raise ValueError("audio_token_id must be an integer within the SpeechLM embedding table.")
+        if not isinstance(self.speechlm_runtime_added_token_ids, list) or any(
+            isinstance(token_id, bool)
+            or not isinstance(token_id, int)
+            or not 0 <= token_id < self.text_config.vocab_size
+            for token_id in self.speechlm_runtime_added_token_ids
+        ):
+            raise ValueError("speechlm_runtime_added_token_ids must be a list of valid embedding-table IDs.")
+        # MTP may consume the nested text config. Older exports omit provenance;
+        # rerun prepare_for_vllm() with the source tokenizer to record additions.
+        self.text_config.audio_token_id = audio_token_id
+        self.text_config.speechlm_runtime_added_token_ids = self.speechlm_runtime_added_token_ids
         pending_image_token_index = self.__dict__.pop("_pending_image_token_index", None)
         if pending_image_token_index is not None and pending_image_token_index != self.image_token_index:
             raise ValueError(
@@ -368,7 +424,8 @@ class NeMoSpeechLMConfig(PretrainedConfig):
 
         vLLM calls this compatibility field ``image_token_index`` even for an
         audio multimodal target. Actual audio locations come from vLLM's
-        placeholder ranges; no token-index field is serialized by SpeechLM.
+        placeholder ranges. The exported audio_token_id and runtime-added token
+        metadata do not change this compatibility boundary.
         """
         vocab_size = getattr(self.text_config, "vocab_size", None)
         if vocab_size is None:
@@ -402,6 +459,17 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         mtp_cfg = self.__dict__.get("mtp") or {}
         return mtp_cfg.get("hybrid_override_pattern", "*") if isinstance(mtp_cfg, dict) else "*"
 
+    def validate(self):
+        # Transformers 5.18 rejects "attention", but vLLM 0.28 requires it on
+        # hf_config.layer_types. Normalize only a copy for upstream validation.
+        validation_config = copy(self)
+        layer_types = getattr(self, "layer_types", None)
+        if not self.is_hybrid and isinstance(layer_types, (list, tuple)):
+            validation_config.layer_types = [
+                "full_attention" if layer == "attention" else layer for layer in layer_types
+            ]
+        PretrainedConfig.validate(validation_config)
+
     _ATTR_ALIASES = {
         "rms_norm_eps": "layer_norm_epsilon",
         "layer_norm_eps": "layer_norm_epsilon",
@@ -430,6 +498,8 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             "llm_config",
             "pretrained_asr",
             "audio_locator_tag",
+            "audio_token_id",
+            "speechlm_runtime_added_token_ids",
             "image_token_index",
             "prompt_format",
             "pretrained_weights",

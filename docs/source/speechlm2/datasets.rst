@@ -127,6 +127,10 @@ SALMDataset Structure
 ^^^^^^^^^^^^^^^^^^^^^
 
 Data used for SALM can be either regular speech-to-text data (in any NeMo or Lhotse format), or a dataset of multi-turn conversions.
+
+With ``prompt_format: nemotron-nano-v3`` or ``prompt_format: nemotron3p5``,
+training loss is computed over responses from all assistant turns.
+
 For the most part, please refer to :doc:`the ASR datasets documentation <../asr/datasets>` for details on data formats and multimodal dataloading.
 
 When using speech-to-text data, you'll need read it with a special ``lhotse_as_conversation`` data reader

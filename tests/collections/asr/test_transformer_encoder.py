@@ -1888,3 +1888,92 @@ class TestStreamingTransformerEncoder:
                 cache_last_channel_len=clcl,
                 bypass_pre_encode=True,
             )
+
+
+class TestFinalNorm:
+    """``final_norm=False`` returns the last block's residual stream and leaves no norm parameters behind."""
+
+    @staticmethod
+    def _make_encoder(final_norm: bool) -> TransformerEncoder:
+        return TransformerEncoder(
+            feat_in=16,
+            d_model=64,
+            n_heads=4,
+            n_layers=2,
+            subsampling_factor=8,
+            drop_rate=0.0,
+            dropout_pre_encoder=0.0,
+            qk_norm=True,
+            self_attention_model="rope",
+            rotary_fraction=0.5,
+            final_norm=final_norm,
+        ).eval()
+
+    @staticmethod
+    def _load_without_final_norm(target: TransformerEncoder, source: TransformerEncoder) -> None:
+        state = {key: value for key, value in source.state_dict().items() if not key.startswith("final_norm.")}
+        result = target.load_state_dict(state, strict=True)
+        assert result.missing_keys == []
+        assert result.unexpected_keys == []
+
+    @pytest.mark.unit
+    def test_default_keeps_final_norm(self):
+        model = TransformerEncoder(feat_in=16, d_model=64, n_heads=4, n_layers=1)
+        assert isinstance(model.final_norm, torch.nn.LayerNorm)
+        assert {"final_norm.weight", "final_norm.bias"} <= set(model.state_dict())
+
+    @pytest.mark.unit
+    def test_disabled_final_norm_has_no_parameters(self):
+        model = self._make_encoder(final_norm=False)
+        assert isinstance(model.final_norm, torch.nn.Identity)
+        assert not any(key.startswith("final_norm.") for key in model.state_dict())
+        with pytest.raises(RuntimeError, match="final_norm"):
+            model.load_state_dict(self._make_encoder(final_norm=True).state_dict(), strict=True)
+
+    @pytest.mark.unit
+    def test_disabled_final_norm_returns_last_block_output(self):
+        torch.manual_seed(0)
+        normalized = self._make_encoder(final_norm=True)
+        raw = self._make_encoder(final_norm=False)
+        self._load_without_final_norm(raw, normalized)
+        audio = torch.randn(2, 16, 80)
+        lengths = torch.tensor([80, 56])
+
+        with torch.no_grad():
+            out_normalized, lengths_normalized = normalized(audio, lengths)
+            out_raw, lengths_raw = raw(audio, lengths)
+            packed = raw.forward_sequence_packed(audio, lengths)
+
+        assert torch.equal(lengths_raw, lengths_normalized)
+        assert not torch.allclose(out_raw, out_normalized)
+        torch.testing.assert_close(normalized.final_norm(out_raw.transpose(1, 2)).transpose(1, 2), out_normalized)
+        valid = torch.arange(out_raw.shape[-1])[None, :] < lengths_raw[:, None]
+        torch.testing.assert_close(packed.data, out_raw.transpose(1, 2)[valid], rtol=1e-5, atol=1e-6)
+
+    @pytest.mark.unit
+    def test_streaming_step_skips_final_norm(self):
+        torch.manual_seed(0)
+        kwargs = {
+            "feat_in": 64,
+            "d_model": 64,
+            "n_heads": 4,
+            "n_layers": 2,
+            "drop_rate": 0.0,
+            "dropout_pre_encoder": 0.0,
+            "self_attention_model": "rope",
+            "att_context_size": [3, 0],
+        }
+        normalized = StreamingTransformerEncoder(**kwargs).eval()
+        raw = StreamingTransformerEncoder(**kwargs, final_norm=False).eval()
+        self._load_without_final_norm(raw, normalized)
+        x = torch.randn(1, 8, 64)
+        stream = TestStreamingTransformerEncoder._stream_sequence
+
+        with torch.no_grad():
+            streamed_normalized, _ = stream(normalized, x, 2, 4, 1, True)
+            streamed_raw, _ = stream(raw, x, 2, 4, 1, True)
+
+        assert not torch.allclose(streamed_raw, streamed_normalized)
+        torch.testing.assert_close(
+            normalized.final_norm(streamed_raw.transpose(1, 2)).transpose(1, 2), streamed_normalized
+        )

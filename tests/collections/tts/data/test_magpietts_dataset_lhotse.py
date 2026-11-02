@@ -198,6 +198,62 @@ def _multiturn_cutset():
     return CutSet.from_cuts([cut])
 
 
+def _raw_audio_cutset(target_audio_duration, text="hello"):
+    # No "target_codes" custom field, so __getitem__ takes the raw-audio branch regardless of
+    # load_cached_codes_if_available.
+    cut = dummy_cut(
+        2,
+        duration=target_audio_duration,
+        recording=dummy_recording(2, duration=target_audio_duration, with_data=True, sampling_rate=SAMPLE_RATE),
+    )
+    cut.target_audio = dummy_recording(20, duration=target_audio_duration, with_data=True, sampling_rate=SAMPLE_RATE)
+    cut.supervisions = [
+        SupervisionSegment(
+            id="raw-audio",
+            recording_id=cut.recording_id,
+            start=0.0,
+            duration=0.2,
+            text=text,
+            language="en",
+            speaker="| Language:en Dataset:Unit Speaker:spk |",
+            custom={"normalized_text": text},
+        )
+    ]
+    cut.custom = {
+        **(cut.custom or {}),
+        "context_codes": _memory_temporal_array(_cached_codes(num_frames=3, offset=3)),
+        "tokenizer_names": [BPE_TOKENIZER_NAME],
+        "lang": "en",
+    }
+    return CutSet.from_cuts([cut])
+
+
+def _multiturn_fallback_cut(with_target_codes: bool):
+    cut = dummy_cut(
+        2,
+        duration=0.8,
+        recording=dummy_recording(2, duration=0.8, with_data=True, sampling_rate=SAMPLE_RATE),
+    )
+    cut.target_audio = dummy_recording(12, duration=0.8, with_data=True, sampling_rate=SAMPLE_RATE)
+    cut.supervisions = [
+        SupervisionSegment(
+            id="fallback-agent-turn",
+            recording_id=cut.recording_id,
+            start=0.2,
+            duration=0.3,
+            text="fallback context",
+            language="en",
+            speaker="assistant",
+        )
+    ]
+    if with_target_codes:
+        cut.custom = {
+            **(cut.custom or {}),
+            "target_codes": _memory_temporal_array(_cached_codes(num_frames=40)),
+        }
+    return cut
+
+
 def _dataset_kwargs():
     return {
         "sample_rate": SAMPLE_RATE,
@@ -260,6 +316,17 @@ class TestMagpieTTSDataset:
             )
 
 
+def _multiturn_dataset_kwargs():
+    kwargs = _dataset_kwargs()
+    kwargs.update(
+        {
+            "codec_model_input_sample_rate": CODEC_MODEL_INPUT_SAMPLE_RATE,
+            "frame_stacking_factor": FRAME_STACKING_FACTOR,
+        }
+    )
+    return kwargs
+
+
 class TestMagpieTTSLhotseDatasets:
     def test_single_turn_dataset_uses_bpe_and_cached_codes(self):
         _seed_everything()
@@ -281,6 +348,25 @@ class TestMagpieTTSLhotseDatasets:
         assert batch["context_text_tokens"].shape[0] == 1
         assert batch["context_text_tokens_lens"].item() > 0
         assert batch["has_text_context"].tolist() == [True]
+
+    @pytest.mark.parametrize(
+        "target_audio_duration,expected_audio_len",
+        [(0.5, 12000), (0.51, 12480)],
+    )
+    def test_raw_audio_target_padding_is_frame_aligned(self, target_audio_duration, expected_audio_len):
+        """MagpieTTSLhotseDataset's raw-audio branch must not pad an already frame-aligned target."""
+        _seed_everything()
+        kwargs = _dataset_kwargs()
+        kwargs.update({"load_cached_codes_if_available": False, "use_text_conditioning_tokenizer": False})
+        dataset = MagpieTTSLhotseDataset(**kwargs)
+        dataset.text_tokenizer = _FakeTextTokenizer()
+        dataset.bos_id = len(dataset.text_tokenizer.tokens)
+        dataset.eos_id = dataset.bos_id + 1
+        dataset.pad_id = dataset.text_tokenizer.pad
+
+        batch = dataset[_raw_audio_cutset(target_audio_duration)]
+
+        assert batch["audio_lens"].tolist() == [expected_audio_len]
 
     def test_multiturn_pronunciation_control_only_changes_target_turns(self):
         _seed_everything()
@@ -442,3 +528,28 @@ class TestMagpieTTSLhotseDatasets:
 
         with pytest.raises(ValueError, match="load_normalized_text_percent"):
             dataset_class(**kwargs)
+
+    def test_multiturn_fallback_uses_cached_target_turn_codes_when_available(self):
+        dataset = MagpieTTSLhotseMultiturnDataset(**_multiturn_dataset_kwargs())
+        cut = _multiturn_fallback_cut(with_target_codes=True)
+
+        context_audio, context_audio_codes = dataset._load_fallback_context(cut, context_text=None)
+
+        assert context_audio is None
+        expected = torch.from_numpy(_cached_codes(num_frames=40))[:, 10:25].T
+        torch.testing.assert_close(context_audio_codes, expected)
+
+    def test_multiturn_fallback_uses_target_turn_audio_when_cached_codes_are_unavailable(self):
+        dataset = MagpieTTSLhotseMultiturnDataset(**_multiturn_dataset_kwargs())
+        cut = _multiturn_fallback_cut(with_target_codes=False)
+
+        context_audio, context_audio_codes = dataset._load_fallback_context(cut, context_text=None)
+
+        expected = (
+            cut.resample(SAMPLE_RATE, recording_field="target_audio")
+            .truncate(offset=0.2, duration=0.3)
+            .load_custom("target_audio")
+            .squeeze(0)
+        )
+        assert context_audio_codes is None
+        torch.testing.assert_close(context_audio, torch.from_numpy(expected))

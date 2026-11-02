@@ -83,10 +83,11 @@ preprocessing and other setup time count toward the limit:
         max_time_per_run_from_slurm: True
 
 The timer reads the SLURM-provided ``SLURM_JOB_START_TIME`` UNIX timestamp and checks the elapsed
-allocation time before training starts and after each configured timer interval. A missing or invalid timestamp
-raises an error instead of silently starting a fresh timer. Leave enough time between ``max_time_per_run`` and the
-SLURM limit for the final checkpoint to finish writing. Set ``max_time_per_run_from_slurm`` to ``False`` to start
-the timer when the training loop starts instead.
+allocation time before training starts and after each configured timer interval. Outside SLURM, where that
+variable is absent, it falls back to starting the timer when the training loop starts. An invalid timestamp still
+raises an error. Leave enough time between ``max_time_per_run`` and the SLURM limit for the final checkpoint to
+finish writing. Set ``max_time_per_run_from_slurm`` to ``False`` to always start the timer when the training loop
+starts.
 
 Experiment Loggers
 ------------------

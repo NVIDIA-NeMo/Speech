@@ -210,15 +210,25 @@ class TestStatelessTimerSlurmStartTime:
         assert timer.time_elapsed() == pytest.approx(5.0)
 
     @pytest.mark.unit
-    @pytest.mark.parametrize("value", [None, "not-a-timestamp", "0", "-1"])
-    def test_rejects_missing_or_invalid_slurm_start_time(self, monkeypatch, value):
-        if value is None:
-            monkeypatch.delenv("SLURM_JOB_START_TIME", raising=False)
-        else:
-            monkeypatch.setenv("SLURM_JOB_START_TIME", value)
+    @pytest.mark.parametrize("value", ["not-a-timestamp", "0", "-1"])
+    def test_rejects_invalid_slurm_start_time(self, monkeypatch, value):
+        monkeypatch.setenv("SLURM_JOB_START_TIME", value)
 
         with pytest.raises(ValueError, match="SLURM_JOB_START_TIME"):
             StatelessTimer(duration="00:00:20:00", max_time_from_slurm=True)
+
+    @pytest.mark.unit
+    def test_missing_slurm_start_time_falls_back_to_training_start(self, monkeypatch):
+        monkeypatch.delenv("SLURM_JOB_START_TIME", raising=False)
+        clock = {"monotonic": 50.0}
+        monkeypatch.setattr("nemo.utils.exp_manager.time.monotonic", lambda: clock["monotonic"])
+
+        timer = StatelessTimer(duration="00:00:20:00", max_time_from_slurm=True)
+        timer.on_train_start(None, None)
+        clock["monotonic"] = 55.0
+
+        assert timer._slurm_job_start_time is None
+        assert timer.time_elapsed() == pytest.approx(5.0)
 
     @pytest.mark.unit
     def test_exp_manager_enables_slurm_timing_by_default(self, monkeypatch, tmp_path):
@@ -237,6 +247,40 @@ class TestStatelessTimerSlurmStartTime:
 
         timer = next(callback for callback in trainer.callbacks if isinstance(callback, StatelessTimer))
         assert timer._slurm_job_start_time == 100.0
+
+    @pytest.mark.unit
+    def test_exp_manager_default_slurm_timing_falls_back_outside_slurm(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("SLURM_JOB_START_TIME", raising=False)
+        trainer = Trainer(accelerator="cpu", logger=False, enable_checkpointing=False)
+        cfg = ExpManagerConfig(
+            explicit_log_dir=str(tmp_path),
+            create_tensorboard_logger=False,
+            create_checkpoint_callback=False,
+            log_step_timing=False,
+            disable_validation_on_resume=False,
+            max_time_per_run="00:00:20:00",
+        )
+
+        exp_manager(trainer, cfg=OmegaConf.structured(cfg))
+
+        timer = next(callback for callback in trainer.callbacks if isinstance(callback, StatelessTimer))
+        assert timer._slurm_job_start_time is None
+
+    @pytest.mark.unit
+    def test_exp_manager_without_max_time_does_not_create_timer(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("SLURM_JOB_START_TIME", raising=False)
+        trainer = Trainer(accelerator="cpu", logger=False, enable_checkpointing=False)
+        cfg = ExpManagerConfig(
+            explicit_log_dir=str(tmp_path),
+            create_tensorboard_logger=False,
+            create_checkpoint_callback=False,
+            log_step_timing=False,
+            disable_validation_on_resume=False,
+        )
+
+        exp_manager(trainer, cfg=OmegaConf.structured(cfg))
+
+        assert not any(isinstance(callback, StatelessTimer) for callback in trainer.callbacks)
 
 
 def _make_trainer_with_batch_progress(batch_progress: _BatchProgress) -> MagicMock:

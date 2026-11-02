@@ -50,6 +50,7 @@ from nemo.collections.common.data.lhotse.nemo_tar_routing import (
     NEMO_TAR_SKIP_ORDINAL,
     nemo_tar_ordinal_map_collection_key,
     nemo_tar_ordinal_map_source_spec,
+    nemo_tar_shard_map_collection_key,
 )
 
 
@@ -590,11 +591,21 @@ def test_converter_embeds_native_tar_routing_for_filtered_reordered_and_sub_rows
     monkeypatch.setattr(lazy_pointer, "_build_member_index", fail_tar_scan)
     monkeypatch.setattr(lazy_pointer, "_read_first_regular_member", count_bounded_load)
     cuts = list(iterator)
-    assert [cut.supervisions[0].text for cut in cuts] == ["beta", "alpha-0", "alpha-1", "gamma"]
+    assert [cut.supervisions[0].text for cut in cuts] == [
+        "beta",
+        "alpha-0",
+        "alpha-1",
+        "gamma",
+    ]
     pointers = [cut.recording.sources[0].source for cut in cuts]
     assert all("&s=1" in pointer for pointer in pointers)
     assert [(decode_pointer(pointer)[1], decode_pointer(pointer)[2]) for pointer in pointers] == expected_ranges
-    assert [read_payload(pointer) for pointer in pointers] == [b"beta", b"alpha", b"alpha", b"gamma"]
+    assert [read_payload(pointer) for pointer in pointers] == [
+        b"beta",
+        b"alpha",
+        b"alpha",
+        b"gamma",
+    ]
     assert bounded_loads == expected_ranges
 
     checkpointed = LazyNeMoTarredIterator(
@@ -613,7 +624,11 @@ def test_converter_embeds_native_tar_routing_for_filtered_reordered_and_sub_rows
         index_pack=output,
     )
     resumed.load_state_dict(state)
-    assert [cut.supervisions[0].text for cut in resumed] == ["alpha-0", "alpha-1", "gamma"]
+    assert [cut.supervisions[0].text for cut in resumed] == [
+        "alpha-0",
+        "alpha-1",
+        "gamma",
+    ]
 
 
 def test_converter_embeds_full_native_tar_permutation(tmp_path):
@@ -642,6 +657,446 @@ def test_converter_embeds_full_native_tar_permutation(tmp_path):
     iterator = LazyNeMoTarredIterator(str(manifest), str(tar_path), indexed=True, index_pack=output)
     pointers = [cut.recording.sources[0].source for cut in iterator]
     assert [read_payload(pointer) for pointer in pointers] == [b"C", b"A", b"D", b"B"]
+
+
+def _native_tar_route_reuse_args(source_cfg: Path, source_pack: Path) -> list[str]:
+    return [
+        "--reuse-native-tar-routes-source-input-cfg",
+        str(source_cfg),
+        "--reuse-native-tar-routes-source-pack",
+        str(source_pack),
+        "--reuse-native-tar-routes-source-pack-sha256",
+        converter._sha256_file(source_pack),
+    ]
+
+
+def test_converter_reuses_authenticated_route_when_only_nonrouting_fields_change(tmp_path, monkeypatch):
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    source_manifest, tar_path, source_cfg = _make_native_tar_routing_dataset(
+        source_root,
+        [
+            {"audio_filepath": name, "text": f"old-{name}", "prompt": "old"}
+            for name in ("C.wav", "A.wav", "D.wav", "B.wav")
+        ],
+        [(f"{name}.wav", name.encode()) for name in "ABCD"],
+    )
+    source_pack = tmp_path / "source.idxpack"
+    source_result = CliRunner().invoke(main, ["--output", str(source_pack), str(source_cfg)])
+    assert source_result.exit_code == 0, source_result.output
+
+    target_manifest = tmp_path / "target-manifest.jsonl"
+    target_manifest.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "audio_filepath": name,
+                    "duration": 1.0,
+                    "sampling_rate": 16000,
+                    "text": f"new-and-longer-{name}",
+                    "prompt": "new prompt",
+                }
+            )
+            + "\n"
+            for name in ("C.wav", "A.wav", "D.wav", "B.wav")
+        )
+    )
+    create_jsonl_index(target_manifest)
+    target_cfg = tmp_path / "target.yaml"
+    target_cfg.write_text(
+        yaml.safe_dump(
+            {
+                "type": "nemo_tarred",
+                "manifest_filepath": str(target_manifest),
+                "tarred_audio_filepaths": str(tar_path),
+            }
+        )
+    )
+    monkeypatch.setattr(
+        converter,
+        "write_nemo_tar_ordinal_map_shard",
+        lambda *_args, **_kwargs: pytest.fail("a proven-equivalent route must not be rebuilt"),
+    )
+    output = tmp_path / "target.idxpack"
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--output",
+            str(output),
+            *_native_tar_route_reuse_args(source_cfg, source_pack),
+            str(target_cfg),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "native_tar_routes_reused=1" in result.output
+    assert "native_tar_routes_built=0" in result.output
+    with IndexPack(output) as pack:
+        target_route = pack.collection(nemo_tar_ordinal_map_collection_key(str(target_manifest), str(tar_path)))
+        assert [target_route.value(index) for index in range(4)] == [2, 0, 3, 1]
+        with pytest.raises(KeyError):
+            pack.collection(nemo_tar_ordinal_map_collection_key(str(source_manifest), str(tar_path)))
+    iterator = LazyNeMoTarredIterator(str(target_manifest), str(tar_path), indexed=True, index_pack=output)
+    assert [read_payload(cut.recording.sources[0].source) for cut in iterator] == [
+        b"C",
+        b"A",
+        b"D",
+        b"B",
+    ]
+
+
+def test_converter_parallel_reuses_authenticated_routes(tmp_path):
+    source_entries = []
+    target_entries = []
+    expected_routes = []
+    source_cfg = tmp_path / "source.yaml"
+    for dataset_index, order in enumerate((("B.wav", "A.wav"), ("D.wav", "C.wav"))):
+        source_root = tmp_path / f"source-{dataset_index}"
+        source_root.mkdir()
+        _, tar_path, leaf_cfg = _make_native_tar_routing_dataset(
+            source_root,
+            [{"audio_filepath": name, "prompt": "old"} for name in order],
+            [(name, name.encode()) for name in reversed(order)],
+        )
+        source_entries.append(yaml.safe_load(leaf_cfg.read_text()))
+
+        target_manifest = tmp_path / f"target-{dataset_index}.jsonl"
+        target_manifest.write_text(
+            "".join(json.dumps({"audio_filepath": name, "prompt": "new"}) + "\n" for name in order)
+        )
+        create_jsonl_index(target_manifest)
+        target_entries.append(
+            {
+                "type": "nemo_tarred",
+                "manifest_filepath": str(target_manifest),
+                "tarred_audio_filepaths": str(tar_path),
+            }
+        )
+        expected_routes.append((target_manifest, tar_path))
+    source_cfg.write_text(yaml.safe_dump(source_entries))
+    source_pack = tmp_path / "source.idxpack"
+    source_result = CliRunner().invoke(main, ["--output", str(source_pack), str(source_cfg)])
+    assert source_result.exit_code == 0, source_result.output
+
+    target_cfg = tmp_path / "target.yaml"
+    target_cfg.write_text(yaml.safe_dump(target_entries))
+    output = tmp_path / "target.idxpack"
+    result = CliRunner().invoke(
+        main,
+        [
+            "--output",
+            str(output),
+            "--native-tar-route-workers",
+            "2",
+            *_native_tar_route_reuse_args(source_cfg, source_pack),
+            str(target_cfg),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "native_tar_routes_reused=2" in result.output
+    assert "native_tar_routes_built=0" in result.output
+    with IndexPack(output) as pack:
+        for target_manifest, tar_path in expected_routes:
+            route = pack.collection(nemo_tar_ordinal_map_collection_key(str(target_manifest), str(tar_path)))
+            assert [route.value(index) for index in range(2)] == [1, 0]
+
+    serial_output = tmp_path / "target-serial.idxpack"
+    serial_result = CliRunner().invoke(
+        main,
+        [
+            "--output",
+            str(serial_output),
+            "--native-tar-route-workers",
+            "1",
+            *_native_tar_route_reuse_args(source_cfg, source_pack),
+            str(target_cfg),
+        ],
+    )
+    assert serial_result.exit_code == 0, serial_result.output
+    assert output.read_bytes() == serial_output.read_bytes()
+
+    changed_manifest = Path(target_entries[1]["manifest_filepath"])
+    changed_manifest.write_text(
+        json.dumps({"audio_filepath": "C.wav", "prompt": "new"})
+        + "\n"
+        + json.dumps({"audio_filepath": "D.wav", "prompt": "new"})
+        + "\n"
+    )
+    create_jsonl_index(changed_manifest)
+    fallback_output = tmp_path / "parallel-fallback.idxpack"
+    fallback_result = CliRunner().invoke(
+        main,
+        [
+            "--output",
+            str(fallback_output),
+            "--native-tar-route-workers",
+            "2",
+            *_native_tar_route_reuse_args(source_cfg, source_pack),
+            str(target_cfg),
+        ],
+    )
+    assert fallback_result.exit_code == 0, fallback_result.output
+    assert "native_tar_routes_reused=1" in fallback_result.output
+    assert "native_tar_routes_built=1" in fallback_result.output
+    with IndexPack(fallback_output) as pack:
+        first_route = pack.collection(
+            nemo_tar_ordinal_map_collection_key(str(expected_routes[0][0]), str(expected_routes[0][1]))
+        )
+        rebuilt_route = pack.collection(
+            nemo_tar_ordinal_map_collection_key(str(changed_manifest), str(expected_routes[1][1]))
+        )
+        assert [first_route.value(index) for index in range(2)] == [1, 0]
+        assert [rebuilt_route.value(index) for index in range(2)] == [0, 1]
+
+
+def test_converter_route_reuse_rebuilds_changed_ordered_routing_signature_without_copy(tmp_path, monkeypatch):
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    _, tar_path, source_cfg = _make_native_tar_routing_dataset(
+        source_root,
+        [{"audio_filepath": name} for name in ("B.wav", "A.wav")],
+        [("A.wav", b"A"), ("B.wav", b"B")],
+    )
+    source_pack = tmp_path / "source.idxpack"
+    source_result = CliRunner().invoke(main, ["--output", str(source_pack), str(source_cfg)])
+    assert source_result.exit_code == 0, source_result.output
+
+    target_manifest = tmp_path / "target-manifest.jsonl"
+    target_manifest.write_text("".join(json.dumps({"audio_filepath": name}) + "\n" for name in ("A.wav", "B.wav")))
+    create_jsonl_index(target_manifest)
+    target_cfg = tmp_path / "target.yaml"
+    target_cfg.write_text(
+        yaml.safe_dump(
+            {
+                "type": "nemo_tarred",
+                "manifest_filepath": str(target_manifest),
+                "tarred_audio_filepaths": str(tar_path),
+            }
+        )
+    )
+    output = tmp_path / "target.idxpack"
+    monkeypatch.setattr(
+        converter,
+        "_copy_packed_array_shards",
+        lambda *_args, **_kwargs: pytest.fail("mismatched route payload must not be copied"),
+    )
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--output",
+            str(output),
+            *_native_tar_route_reuse_args(source_cfg, source_pack),
+            str(target_cfg),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "native_tar_routes_reused=0" in result.output
+    assert "native_tar_routes_built=1" in result.output
+    with IndexPack(output) as pack:
+        route = pack.collection(nemo_tar_ordinal_map_collection_key(str(target_manifest), str(tar_path)))
+        assert [route.value(index) for index in range(2)] == [0, 1]
+
+
+@pytest.mark.parametrize(
+    ("target_audio_paths", "expected_route"),
+    [
+        (("A.wav",), [0]),
+        (("A.wav", "B.wav", "C.wav"), [0, 1, 2]),
+    ],
+)
+def test_converter_route_reuse_rebuilds_changed_row_count_without_copy(
+    tmp_path, monkeypatch, target_audio_paths, expected_route
+):
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    _, tar_path, source_cfg = _make_native_tar_routing_dataset(
+        source_root,
+        [{"audio_filepath": name} for name in ("B.wav", "A.wav")],
+        [("A.wav", b"A"), ("B.wav", b"B"), ("C.wav", b"C")],
+    )
+    source_pack = tmp_path / "source.idxpack"
+    source_result = CliRunner().invoke(main, ["--output", str(source_pack), str(source_cfg)])
+    assert source_result.exit_code == 0, source_result.output
+
+    target_manifest = tmp_path / "target-manifest.jsonl"
+    target_manifest.write_text("".join(json.dumps({"audio_filepath": name}) + "\n" for name in target_audio_paths))
+    create_jsonl_index(target_manifest)
+    target_cfg = tmp_path / "target.yaml"
+    target_cfg.write_text(
+        yaml.safe_dump(
+            {
+                "type": "nemo_tarred",
+                "manifest_filepath": str(target_manifest),
+                "tarred_audio_filepaths": str(tar_path),
+            }
+        )
+    )
+    monkeypatch.setattr(
+        converter,
+        "_copy_packed_array_shards",
+        lambda *_args, **_kwargs: pytest.fail("mismatched route payload must not be copied"),
+    )
+    output = tmp_path / "target.idxpack"
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--output",
+            str(output),
+            *_native_tar_route_reuse_args(source_cfg, source_pack),
+            str(target_cfg),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "native_tar_routes_reused=0" in result.output
+    assert "native_tar_routes_built=1" in result.output
+    with IndexPack(output) as pack:
+        route = pack.collection(nemo_tar_ordinal_map_collection_key(str(target_manifest), str(tar_path)))
+        assert [route.value(index) for index in range(len(expected_route))] == expected_route
+
+
+def test_converter_route_reuse_unrelated_copy_error_remains_fatal(tmp_path, monkeypatch):
+    _, _, source_cfg = _make_native_tar_routing_dataset(
+        tmp_path,
+        [{"audio_filepath": "B.wav"}, {"audio_filepath": "A.wav"}],
+        [("A.wav", b"A"), ("B.wav", b"B")],
+    )
+    source_pack = tmp_path / "source.idxpack"
+    source_result = CliRunner().invoke(main, ["--output", str(source_pack), str(source_cfg)])
+    assert source_result.exit_code == 0, source_result.output
+
+    def fail_after_partial_copy(_collection, output_paths):
+        output_paths[0].write_bytes(b"partial")
+        raise RuntimeError("unrelated route-copy failure")
+
+    monkeypatch.setattr(converter, "_copy_packed_array_shards", fail_after_partial_copy)
+    output = tmp_path / "target.idxpack"
+    result = CliRunner().invoke(
+        main,
+        [
+            "--output",
+            str(output),
+            *_native_tar_route_reuse_args(source_cfg, source_pack),
+            str(source_cfg),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, RuntimeError)
+    assert "unrelated route-copy failure" in str(result.exception)
+    assert not output.exists()
+    assert not list(tmp_path.glob(".target.idxpack.native-tar-route.*"))
+
+
+def test_converter_route_reuse_builds_only_unmatched_tar_paths(tmp_path, monkeypatch):
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    _, reused_tar, source_cfg = _make_native_tar_routing_dataset(
+        source_root,
+        [{"audio_filepath": "B.wav"}, {"audio_filepath": "A.wav"}],
+        [("A.wav", b"A"), ("B.wav", b"B")],
+    )
+    source_pack = tmp_path / "source.idxpack"
+    source_result = CliRunner().invoke(main, ["--output", str(source_pack), str(source_cfg)])
+    assert source_result.exit_code == 0, source_result.output
+
+    reused_manifest = tmp_path / "reused-manifest.jsonl"
+    reused_manifest.write_text(
+        json.dumps({"audio_filepath": "B.wav", "prompt": "new"})
+        + "\n"
+        + json.dumps({"audio_filepath": "A.wav", "prompt": "new"})
+        + "\n"
+    )
+    create_jsonl_index(reused_manifest)
+    new_root = tmp_path / "new"
+    new_root.mkdir()
+    new_manifest, new_tar, _ = _make_native_tar_routing_dataset(
+        new_root,
+        [{"audio_filepath": "D.wav"}, {"audio_filepath": "C.wav"}],
+        [("C.wav", b"C"), ("D.wav", b"D")],
+    )
+    target_cfg = tmp_path / "target.yaml"
+    target_cfg.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "type": "nemo_tarred",
+                    "manifest_filepath": str(reused_manifest),
+                    "tarred_audio_filepaths": str(reused_tar),
+                },
+                {
+                    "type": "nemo_tarred",
+                    "manifest_filepath": str(new_manifest),
+                    "tarred_audio_filepaths": str(new_tar),
+                },
+            ]
+        )
+    )
+    original_builder = converter.write_nemo_tar_ordinal_map_shard
+    built_tar_paths = []
+
+    def recording_builder(*args, **kwargs):
+        built_tar_paths.append(kwargs["tar_path"])
+        return original_builder(*args, **kwargs)
+
+    monkeypatch.setattr(converter, "write_nemo_tar_ordinal_map_shard", recording_builder)
+    output = tmp_path / "target.idxpack"
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--output",
+            str(output),
+            *_native_tar_route_reuse_args(source_cfg, source_pack),
+            str(target_cfg),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert built_tar_paths == [str(new_tar)]
+    assert "native_tar_routes_reused=1" in result.output
+    assert "native_tar_routes_built=1" in result.output
+    with IndexPack(output) as pack:
+        reused_route = pack.collection(nemo_tar_ordinal_map_collection_key(str(reused_manifest), str(reused_tar)))
+        new_route = pack.collection(nemo_tar_ordinal_map_collection_key(str(new_manifest), str(new_tar)))
+        assert [reused_route.value(index) for index in range(2)] == [1, 0]
+        assert [new_route.value(index) for index in range(2)] == [1, 0]
+
+
+def test_converter_route_reuse_requires_matching_authenticated_pack_sha256(tmp_path):
+    _, _, source_cfg = _make_native_tar_routing_dataset(
+        tmp_path,
+        [{"audio_filepath": "sample.wav"}],
+        [("sample.wav", b"sample")],
+    )
+    source_pack = tmp_path / "source.idxpack"
+    source_result = CliRunner().invoke(main, ["--output", str(source_pack), str(source_cfg)])
+    assert source_result.exit_code == 0, source_result.output
+    output = tmp_path / "target.idxpack"
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--output",
+            str(output),
+            "--reuse-native-tar-routes-source-input-cfg",
+            str(source_cfg),
+            "--reuse-native-tar-routes-source-pack",
+            str(source_pack),
+            "--reuse-native-tar-routes-source-pack-sha256",
+            "0" * 64,
+            str(source_cfg),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "source-pack SHA-256 mismatch" in result.output
+    assert not output.exists()
 
 
 def test_native_tar_route_build_opens_each_source_once_per_shard(tmp_path, monkeypatch):
@@ -686,7 +1141,13 @@ def test_parallel_native_tar_route_build_is_byte_deterministic(tmp_path):
 
     sequential_result = CliRunner().invoke(
         main,
-        ["--output", str(sequential), "--native-tar-route-workers", "1", str(input_cfg)],
+        [
+            "--output",
+            str(sequential),
+            "--native-tar-route-workers",
+            "1",
+            str(input_cfg),
+        ],
     )
     parallel_result = CliRunner().invoke(
         main,
@@ -702,7 +1163,9 @@ def test_parallel_native_tar_route_build_is_byte_deterministic(tmp_path):
         assert [route.value_in_shard(1, index) for index in range(4)] == [3, 1, 0, 2]
 
 
-def test_parallel_native_tar_route_build_covers_multiple_maps_deterministically(tmp_path):
+def test_parallel_native_tar_route_build_covers_multiple_maps_deterministically(
+    tmp_path,
+):
     manifests, tars, input_cfg = _make_multi_map_native_tar_routing_dataset(
         tmp_path,
         [
@@ -721,7 +1184,13 @@ def test_parallel_native_tar_route_build_covers_multiple_maps_deterministically(
 
     sequential_result = CliRunner().invoke(
         main,
-        ["--output", str(sequential), "--native-tar-route-workers", "1", str(input_cfg)],
+        [
+            "--output",
+            str(sequential),
+            "--native-tar-route-workers",
+            "1",
+            str(input_cfg),
+        ],
     )
     parallel_result = CliRunner().invoke(
         main,
@@ -867,7 +1336,13 @@ def test_native_tar_route_workers_must_be_positive(tmp_path):
 
     result = CliRunner().invoke(
         main,
-        ["--output", str(tmp_path / "unused.idxpack"), "--native-tar-route-workers", "0", str(input_cfg)],
+        [
+            "--output",
+            str(tmp_path / "unused.idxpack"),
+            "--native-tar-route-workers",
+            "0",
+            str(input_cfg),
+        ],
     )
 
     assert result.exit_code != 0
@@ -1936,3 +2411,159 @@ def test_share_gpt_jsonl_uses_pack(tmp_path, monkeypatch):
     conversation = iterator[0]
     assert conversation.id == "sample"
     assert [turn.value for turn in conversation.turns] == ["question", "answer"]
+
+
+@pytest.mark.parametrize("native_tar_paths_only", [False, True])
+def test_v3_aggregate_native_manifest_routes_rows_by_shard_id(tmp_path, monkeypatch, native_tar_paths_only):
+    manifest = tmp_path / "aggregate.jsonl"
+    rows = [
+        {
+            "audio_filepath": "zero.wav",
+            "shard_id": 2,
+            "duration": 1.0,
+            "sampling_rate": 16000,
+            "text": "zero",
+        },
+        {
+            "audio_filepath": "one.wav",
+            "shard_id": 7,
+            "duration": 1.0,
+            "sampling_rate": 16000,
+            "text": "one",
+        },
+    ]
+    manifest.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    create_jsonl_index(manifest)
+
+    tar_members = {
+        7: [("one.wav", b"one")],
+        2: [("unused.wav", b"unused"), ("zero.wav", b"zero")],
+    }
+    for shard, members in tar_members.items():
+        tar_path = tmp_path / f"audio_{shard}.tar"
+        with tarfile.open(tar_path, "w") as archive:
+            for name, payload in members:
+                info = tarfile.TarInfo(name)
+                info.size = len(payload)
+                archive.addfile(info, io.BytesIO(payload))
+        create_nemo_tar_index(tar_path, tmp_path / f"audio_{shard}.tar.idx")
+
+    tar_spec = str(tmp_path / "audio__OP_7,2_CL_.tar")
+    input_cfg = tmp_path / "aggregate.yaml"
+    input_cfg.write_text(
+        yaml.safe_dump(
+            {
+                "type": "nemo_tarred",
+                "manifest_filepath": str(manifest),
+                "tarred_audio_filepaths": tar_spec,
+            }
+        )
+    )
+    output = tmp_path / "aggregate.idxpack"
+    args = ["--output", str(output)]
+    if native_tar_paths_only:
+        args.append("--native-tar-paths-only")
+    result = CliRunner().invoke(main, [*args, str(input_cfg)])
+    assert result.exit_code == 0, result.output
+
+    with IndexPack(output) as pack:
+        assert pack.version == 3
+        shard_route = pack.collection(nemo_tar_shard_map_collection_key(str(manifest), tar_spec))
+        assert [shard_route.value(index) for index in range(2)] == [1, 0]
+        if native_tar_paths_only:
+            with pytest.raises(KeyError):
+                pack.collection(nemo_tar_ordinal_map_collection_key(str(manifest), tar_spec))
+        else:
+            member_route = pack.collection(nemo_tar_ordinal_map_collection_key(str(manifest), tar_spec))
+            assert [member_route.value(index) for index in range(2)] == [1, 0]
+
+    if native_tar_paths_only:
+        monkeypatch.setenv("USE_AIS_GET_BATCH", "true")
+    iterator = LazyNeMoTarredIterator(str(manifest), tar_spec, indexed=True, index_pack=output)
+    if native_tar_paths_only:
+        assert [iterator[index].recording.sources[0].source for index in range(2)] == [
+            f"{tmp_path}/audio_2.tar/zero.wav",
+            f"{tmp_path}/audio_7.tar/one.wav",
+        ]
+    else:
+        assert read_payload(iterator[0].recording.sources[0].source) == b"zero"
+        assert read_payload(iterator[1].recording.sources[0].source) == b"one"
+
+
+def test_aggregate_native_manifest_rejects_missing_tar_shard_id(tmp_path):
+    manifest = tmp_path / "aggregate.jsonl"
+    manifest.write_text(
+        json.dumps(
+            {
+                "audio_filepath": "missing.wav",
+                "shard_id": 9,
+                "duration": 1.0,
+                "sampling_rate": 16000,
+                "text": "missing",
+            }
+        )
+        + "\n"
+    )
+    create_jsonl_index(manifest)
+    for shard in (2, 7):
+        (tmp_path / f"audio_{shard}.tar").touch()
+    tar_spec = str(tmp_path / "audio__OP_2,7_CL_.tar")
+    input_cfg = tmp_path / "aggregate.yaml"
+    input_cfg.write_text(
+        yaml.safe_dump(
+            {
+                "type": "nemo_tarred",
+                "manifest_filepath": str(manifest),
+                "tarred_audio_filepaths": tar_spec,
+            }
+        )
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["--output", str(tmp_path / "aggregate.idxpack"), "--native-tar-paths-only", str(input_cfg)],
+    )
+
+    assert result.exit_code != 0
+    assert "shard_id=9, which has no matching tar path" in result.output
+    assert "available shard IDs: [2, 7]" in result.output
+
+
+def test_aggregate_native_manifest_rejects_duplicate_tar_shard_ids(tmp_path):
+    manifest = tmp_path / "aggregate.jsonl"
+    manifest.write_text(
+        json.dumps(
+            {
+                "audio_filepath": "sample.wav",
+                "shard_id": 2,
+                "duration": 1.0,
+                "sampling_rate": 16000,
+                "text": "sample",
+            }
+        )
+        + "\n"
+    )
+    create_jsonl_index(manifest)
+    for bucket in ("a", "b"):
+        directory = tmp_path / f"bucket_{bucket}"
+        directory.mkdir()
+        (directory / "audio_2.tar").touch()
+    tar_spec = str(tmp_path / "bucket__OP_a,b_CL_" / "audio_2.tar")
+    input_cfg = tmp_path / "aggregate.yaml"
+    input_cfg.write_text(
+        yaml.safe_dump(
+            {
+                "type": "nemo_tarred",
+                "manifest_filepath": str(manifest),
+                "tarred_audio_filepaths": tar_spec,
+            }
+        )
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["--output", str(tmp_path / "aggregate.idxpack"), "--native-tar-paths-only", str(input_cfg)],
+    )
+
+    assert result.exit_code != 0
+    assert "duplicate shard_id 2" in result.output

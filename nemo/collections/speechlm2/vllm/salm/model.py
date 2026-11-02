@@ -36,6 +36,7 @@ Requires NeMo toolkit for the audio encoder:
 import contextlib
 from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -142,6 +143,7 @@ class NeMoSpeechLMForConditionalGeneration(
         super().__init__()
         config = vllm_config.model_config.hf_config
         self.config = config
+        self._checkpoint_path = vllm_config.model_config.model
         self._perception_weights_initialized = False
         self.encoder_chunk_size_seconds = getattr(config, "encoder_chunk_size_seconds", None)
 
@@ -476,32 +478,45 @@ class NeMoSpeechLMForConditionalGeneration(
         return loaded
 
     @staticmethod
-    def _split_perception_llm(
-        weights: Iterable[tuple[str, torch.Tensor]],
-    ) -> tuple[dict[str, torch.Tensor], list[tuple[str, torch.Tensor]]]:
+    def _weight_kind(name: str) -> str:
+        """Route a checkpoint tensor: ``"perception"``, ``"llm"`` or ``"skip"``."""
         from nemo.collections.speechlm2.parts.ctc_timestamp_utils import CTC_TIMESTAMP_BUNDLE_PREFIX
 
+        if "._extra_state" in name:
+            return "skip"
+        if name.startswith("perception."):
+            return "perception"
+        if name.startswith("llm.mtp."):
+            return "skip"  # MTP draft-head weights; loaded by the speculative draft model, not here
+        if name.startswith(CTC_TIMESTAMP_BUNDLE_PREFIX):
+            return "skip"  # a bundled CTC timestamp head; the aligner loads it from the checkpoint file
+        if name.startswith("mtp."):
+            raise ValueError(
+                f"Unsupported bare MTP tensor {name!r}; NeMo SpeechLM exports must store draft weights "
+                f"under the 'llm.mtp.*' namespace."
+            )
+        return "llm"
+
+    @classmethod
+    def _split_perception_llm(
+        cls,
+        weights: Iterable[tuple[str, torch.Tensor]],
+    ) -> tuple[dict[str, torch.Tensor], list[tuple[str, torch.Tensor]]]:
         perception: dict[str, torch.Tensor] = {}
         llm: list[tuple[str, torch.Tensor]] = []
         for name, tensor in weights:
-            if "._extra_state" in name:
-                continue
-            if name.startswith("perception."):
+            kind = cls._weight_kind(name)
+            if kind == "perception":
                 perception[name[len("perception.") :]] = tensor
-            elif name.startswith("llm.mtp."):
-                pass  # MTP draft-head weights; loaded by the speculative draft model, not here
-            elif name.startswith(CTC_TIMESTAMP_BUNDLE_PREFIX):
-                pass  # a bundled CTC timestamp head; the aligner loads it from the checkpoint file
-            elif name.startswith("mtp."):
-                raise ValueError(
-                    f"Unsupported bare MTP tensor {name!r}; NeMo SpeechLM exports must store draft weights "
-                    f"under the 'llm.mtp.*' namespace."
-                )
-            else:
+            elif kind == "llm":
                 llm.append((name, tensor))
         return perception, llm
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
+        # Only the first load reads the checkpoint inspected here; a later refit may carry LoRA adapters of its own.
+        if not self._perception_weights_initialized and not _checkpoint_has_lora(self._checkpoint_path):
+            return self._load_weights_streaming(weights)
+
         perception_weights, llm_raw = self._split_perception_llm(weights)
         verification = None
         verification_config = getattr(self.config, "speechlm_refit_verification", None)
@@ -552,6 +567,29 @@ class NeMoSpeechLMForConditionalGeneration(
 
         return loaded_llm | loaded_perception
 
+    def _load_weights_streaming(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
+        """Hand each LLM tensor to vLLM as soon as it is read.
+
+        Collecting the whole checkpoint first keeps a CPU copy of every LLM tensor alive until loading ends. On a
+        unified-memory GPU such as GB10 that copy competes with the GPU weights for the same memory and doubled the
+        peak while loading. Perception tensors are small and are loaded after the language model.
+        """
+        perception_weights: dict[str, torch.Tensor] = {}
+
+        def llm_weights():
+            for name, tensor in weights:
+                kind = self._weight_kind(name)
+                if kind == "perception":
+                    perception_weights[name[len("perception.") :]] = tensor
+                elif kind == "llm":
+                    yield name, tensor
+
+        hf_weights = self._backend.nemo_to_hf_llm_weights(llm_weights())
+        loaded_llm = AutoWeightsLoader(self).load_weights(
+            ("language_model." + name, tensor) for name, tensor in hf_weights
+        )
+        return loaded_llm | self._load_perception_weights(perception_weights)
+
     # ── vLLM IsHybrid mamba state classmethods ──
     #
     # Reached only when vLLM's ``ModelConfig.is_hybrid`` returns True at
@@ -570,3 +608,24 @@ class NeMoSpeechLMForConditionalGeneration(
     @classmethod
     def get_mamba_state_copy_func(cls) -> Any:
         return HybridBackend.get_mamba_state_copy_func()
+
+
+def _checkpoint_has_lora(path: str | None) -> bool:
+    """Whether the checkpoint at ``path`` stores LoRA adapter tensors, read from the safetensors headers only.
+
+    Answers ``True`` when the files cannot be inspected, so loading falls back to the full LoRA-merging pass.
+    """
+    from safetensors import safe_open
+
+    files = sorted(Path(path).glob("*.safetensors")) if path and Path(path).is_dir() else []
+    if not files:
+        return True
+    try:
+        for file in files:
+            with safe_open(str(file), framework="pt", device="cpu") as checkpoint:
+                if any(".lora_A." in name or ".lora_B." in name for name in checkpoint.keys()):
+                    return True
+    except Exception as error:
+        logging.warning(f"Could not read tensor names from {path} ({error}); loading weights in a single full pass.")
+        return True
+    return False

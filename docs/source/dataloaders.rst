@@ -691,6 +691,8 @@ intentionally streaming-only. See :ref:`indexed-resumable-dataloading`.
 
 * ``min_tpt: 0.1``/``max_tpt: 10`` filter examples based on their output-token-per-input-token-ratio. For example, a ``max_tpt: 10`` means we'll filter every example that has more than 10 output tokens per 1 input token. Very useful for removing sequence length outliers that lead to OOM. Use ``estimate_token_bins.py`` to view token count distributions for calbirating this value.
 
+  Set ``max_tpt: null`` to disable the upper ratio bound while retaining any ``min_tpt`` bound.
+
 * (multimodal-only) ``token_equivalent_duration: 0.08`` is used to be able to measure audio examples in the number of "tokens". For example, if we're using fbank with 0.01s frame shift and an acoustic model that has a subsampling factor of 0.08, then a reasonable setting for this could be 0.08 (which means every subsampled frame counts as one token). Calibrate this value to fit your needs.
 
 * (multimodal-only) ``audio_token_estimator`` replaces the duration approximation
@@ -1343,6 +1345,11 @@ that discards examples which have more tokens per second than the threshold valu
 The threshold is determined for each bucket separately based on data distribution, and can be controlled
 with the option ``--token_outlier_threshold``.
 This filtering is useful primarily for noisy datasets to discard low quality examples / outliers.
+
+Set ``max_tps: null`` to disable the upper token-per-second bound while retaining any
+``min_tps`` bound. The default ``min_tps: -1`` together with ``max_tps: null`` disables
+token-per-second filtering entirely. List-valued ``max_tps`` limits are applied by the
+2D bucketing filter rather than by the global token-per-second filter.
 
 We also support aggregate tokenizers for 2D bucketing estimation:
 

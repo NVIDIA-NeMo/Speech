@@ -34,6 +34,7 @@ from nemo.utils.callbacks import NeMoModelCheckpoint
 from nemo.utils.exp_manager import (
     CheckpointMisconfigurationError,
     LoggerMisconfigurationError,
+    NeptuneLogger,
     NotFoundError,
     exp_manager,
 )
@@ -237,7 +238,7 @@ class TestExpManager:
                 "neptune_logger_kwargs": {"name": "", "project": "", "api_key": ""},
             },
         )
-        assert isinstance(test_trainer.logger, pl.loggers.NeptuneLogger)
+        assert isinstance(test_trainer.logger, NeptuneLogger)
 
     @pytest.mark.unit
     def test_checkpoint_configurations(self):

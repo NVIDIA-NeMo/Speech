@@ -249,12 +249,13 @@ class ModelPT(LightningModule, Model):
 
             .. code-block::
 
-                If "src" is local existing path:
-                    then it will be returned in absolute path form.
-                elif "src" starts with "nemo:unique_artifact_name":
-                    .nemo will be untarred to a temporary folder location and an actual existing path will be returned
+                If "src" starts with "nemo:":
+                    resolve its relative suffix within the current extracted model directory;
+                    this takes precedence over a local filename with the same spelling.
+                elif "src" is a local existing path:
+                    return its absolute path.
                 else:
-                    an error will be raised.
+                    try legacy bundled-basename resolution, then apply missing-source handling.
 
         Archive references must resolve within the extracted model directory.
 

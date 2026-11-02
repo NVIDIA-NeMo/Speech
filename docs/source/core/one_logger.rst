@@ -18,6 +18,11 @@ installed. Install the runtime packages if they are not already available:
 
     pip install "nv_one_logger_core>=2.3.1" "nv_one_logger_training_telemetry>=2.3.1"
 
+This adapter uses OneLogger's core APIs and the standard Lightning trainer.
+The separate ``nv_one_logger_pytorch_lightning_integration`` package and its
+trainer subclass are not required. Checkpoint callbacks forward Lightning's
+``weights_only`` argument unchanged, including ``None`` on Lightning 2.6.
+
 Set ``NEMO_ONE_LOGGER_ENABLED`` to a true value before starting a training job:
 
 .. code-block:: bash

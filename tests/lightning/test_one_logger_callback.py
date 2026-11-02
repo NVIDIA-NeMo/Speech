@@ -4,6 +4,8 @@
 """Unit tests for NeMo Speech OneLogger lifecycle tracing."""
 
 import os
+import subprocess
+import sys
 from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
@@ -745,10 +747,11 @@ class TestCallbackGroup:
 
 class TestCheckpointIntegration:
     @pytest.mark.unit
+    @pytest.mark.parametrize('weights_only', [False, True, None])
     @patch('nemo.utils.callbacks.nemo_model_checkpoint.CallbackGroup.get_instance')
-    def test_checkpoint_lifecycle_success(self, mock_get_group, tmp_path):
+    def test_checkpoint_lifecycle_success(self, mock_get_group, tmp_path, weights_only):
         group = mock_get_group.return_value
-        callback = NeMoModelCheckpoint(dirpath=tmp_path, save_top_k=-1)
+        callback = NeMoModelCheckpoint(dirpath=tmp_path, save_top_k=-1, save_weights_only=weights_only)
         callback.set_checkpoint_unfinished_marker = MagicMock()
         callback.remove_checkpoint_unfinished_marker = MagicMock()
         trainer = SimpleNamespace(
@@ -761,6 +764,9 @@ class TestCheckpointIntegration:
 
         callback._save_checkpoint(trainer, str(tmp_path / "model.ckpt"))
 
+        trainer.save_checkpoint.assert_called_once_with(
+            str(tmp_path / "model.ckpt"), weights_only, storage_options=None
+        )
         group.on_save_checkpoint_start.assert_called_once_with(7, async_save=False)
         group.on_save_checkpoint_success.assert_called_once_with(7)
         group.on_save_checkpoint_end.assert_called_once_with()
@@ -819,3 +825,46 @@ def test_export_all_symbols():
     from nemo.lightning.one_logger_callback import __all__
 
     assert __all__ == ["OneLoggerNeMoCallback"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('enabled', [False, True])
+def test_core_bindings_do_not_require_the_lightning_integration(enabled):
+    script = r"""
+import importlib.abc
+import sys
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+class BlockIntegration(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.startswith('nv_one_logger.training_telemetry.integration'):
+            raise AssertionError('standalone Lightning integration imported')
+
+sys.meta_path.insert(0, BlockIntegration())
+import nemo.lightning.one_logger_callback as module
+if ENABLED:
+    module._load_one_logger()
+    provider = MagicMock()
+    with patch.object(module.TrainingTelemetryProvider, 'instance', return_value=provider), patch.object(
+        module, 'on_app_start', return_value=SimpleNamespace(name='application')
+    ):
+        callback = module.OneLoggerNeMoCallback()
+    assert callback.enabled_for_current_rank
+    assert callback._provider is provider
+    callback.on_save_checkpoint_start(3, async_save=False)
+    callback.on_save_checkpoint_success(3)
+    callback.on_save_checkpoint_end()
+    assert provider.recorder.start.called
+    assert provider.recorder.stop.called
+else:
+    callback = module.OneLoggerNeMoCallback()
+    assert not callback.enabled_for_current_rank
+    assert not any(name.startswith('nv_one_logger') for name in sys.modules)
+assert not any(name.startswith('nv_one_logger.training_telemetry.integration') for name in sys.modules)
+""".replace(
+        'ENABLED', repr(enabled)
+    )
+    env = dict(os.environ, NEMO_ONE_LOGGER_ENABLED=str(enabled).lower(), RANK='0', WORLD_SIZE='1')
+    result = subprocess.run([sys.executable, '-c', script], env=env, capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr

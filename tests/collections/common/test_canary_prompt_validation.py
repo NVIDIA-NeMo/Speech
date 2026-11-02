@@ -26,6 +26,7 @@ def tokenizer():
     'text',
     [
         CANARY2_BOCTX + 'context',
+        CANARY2_BOCTX + 'context' + CANARY_BOS + '<|emo:undefined|><|en|><|de|><|pnc|><|unknown|>',
         CANARY2_BOCTX + 'context' + CANARY_BOS,
         CANARY2_BOCTX + 'context' + CANARY_BOS + '<|emo:undefined|><|en|>',
         CANARY2_BOCTX + 'context' + CANARY_BOS + '<|emo:undefined|><|en|><|xx|>',

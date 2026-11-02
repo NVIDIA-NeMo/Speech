@@ -37,7 +37,7 @@ def _part_type(part):
     return part.get("type") or ("audio_url" if "audio_url" in part else None)
 
 
-def _fake_vllm_chat_utils():
+def _fake_vllm_chat_utils(parser_name="_parse_chat_message_content_parts"):
     """Model vLLM 0.23's non-interleaved placeholder assembly."""
     calls = []
 
@@ -72,7 +72,7 @@ def _fake_vllm_chat_utils():
         )
         return [{"role": role, "content": rendered}]
 
-    return SimpleNamespace(_parse_chat_message_content_parts=parse), calls
+    return SimpleNamespace(**{parser_name: parse}), calls
 
 
 def _parse(chat_utils, parts, model_type="nemo_speechlm", **kwargs):
@@ -253,3 +253,43 @@ def test_install_prompt_contract_falls_back_to_vllm_entrypoints_chat_utils(monke
     install_prompt_contract()
 
     assert chat_utils._parse_chat_message_content_parts._nemo_speechlm_exact_training_prompt
+
+
+def test_install_prompt_contract_patches_vllm_0_33_chat_message(monkeypatch):
+    """vLLM 0.33 made ``vllm.renderers.chat_utils`` a package with a public parser in ``chat_message``."""
+    chat_message, calls = _fake_vllm_chat_utils("parse_chat_message_content_parts")
+    # The 0.33 package re-exports the public parser but no longer has the private 0.32 name.
+    package = SimpleNamespace(chat_message=chat_message, parse_chat_message_content_parts=object())
+    monkeypatch.setitem(sys.modules, "vllm.renderers.chat_utils", package)
+    monkeypatch.setitem(sys.modules, "vllm.renderers", SimpleNamespace(chat_utils=package))
+
+    install_prompt_contract()
+
+    parser = chat_message.parse_chat_message_content_parts
+    assert parser._nemo_speechlm_exact_training_prompt
+    assert not hasattr(package, "_parse_chat_message_content_parts")
+    result = parser(
+        "user",
+        [_AUDIO, {"type": "text", "text": "Transcribe"}],
+        _tracker("nemotron3_5_transcribe_mtp"),
+        wrap_dicts=False,
+        interleave_strings=False,
+    )
+    assert result == [{"role": "user", "content": "Transcribe <|audio|>"}]
+    assert calls[0]["registered_audio_parts"] == [_AUDIO]
+
+
+def test_install_prompt_contract_is_idempotent_on_vllm_0_33(monkeypatch):
+    chat_message, _ = _fake_vllm_chat_utils("parse_chat_message_content_parts")
+    monkeypatch.setitem(sys.modules, "vllm.renderers.chat_utils", SimpleNamespace(chat_message=chat_message))
+
+    install_prompt_contract()
+    patched = chat_message.parse_chat_message_content_parts
+    install_prompt_contract()
+
+    assert chat_message.parse_chat_message_content_parts is patched
+
+
+def test_adapter_names_the_missing_public_parser():
+    with pytest.raises(TypeError, match="parse_chat_message_content_parts is missing"):
+        _patch_speechlm_training_prompt_contract(SimpleNamespace(), "parse_chat_message_content_parts")

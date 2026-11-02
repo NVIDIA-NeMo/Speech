@@ -624,6 +624,30 @@ class TestOneLoggerConfiguration:
         with patch.dict(os.environ, {"NEMO_ONE_LOGGER_THROUGHPUT_INTERVAL": "250"}, clear=True):
             assert _get_throughput_interval(trainer) == 250
 
+    @pytest.mark.parametrize(
+        'environment,expected',
+        [
+            ({'OMPI_COMM_WORLD_RANK': '1'}, False),
+            ({'OMPI_COMM_WORLD_RANK': '0'}, True),
+            ({'RANK': '1', 'OMPI_COMM_WORLD_RANK': '0'}, False),
+        ],
+    )
+    def test_mpi_rank_selection(self, environment, expected):
+        with patch.dict(os.environ, dict(environment, NEMO_ONE_LOGGER_ENABLED='true'), clear=True):
+            assert _should_enable_for_current_rank() is expected
+            if not expected:
+                with patch('nemo.lightning.one_logger_callback.importlib.import_module') as load:
+                    assert CallbackGroup().callbacks == []
+                load.assert_not_called()
+
+    def test_mpi_world_size_is_recorded(self):
+        with patch.dict(
+            os.environ,
+            {'NEMO_ONE_LOGGER_ENABLED': 'true', 'OMPI_COMM_WORLD_RANK': '0', 'OMPI_COMM_WORLD_SIZE': '4'},
+            clear=True,
+        ):
+            assert get_one_logger_init_config()['world_size_or_fn'] == 4
+
     def test_distributed_rank_selection(self):
         with patch.dict(
             os.environ,

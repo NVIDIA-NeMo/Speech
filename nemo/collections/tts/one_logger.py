@@ -16,7 +16,7 @@ from nemo.lightning.speech_throughput import (
     value_count,
 )
 
-__all__ = ["AudioCodecThroughputPolicy", "TTSThroughputPolicy"]
+__all__ = ["AudioCodecThroughputPolicy", "EasyMagpieThroughputPolicy", "TTSThroughputPolicy"]
 
 
 class TTSThroughputPolicy(SpeechThroughputPolicy):
@@ -36,6 +36,20 @@ class TTSThroughputPolicy(SpeechThroughputPolicy):
         return value_count(lengths if lengths is not None else audio_lengths(batch))
 
 
+class EasyMagpieThroughputPolicy(TTSThroughputPolicy):
+    """Count non-padding text tokens in multiturn frame-aligned channels."""
+
+    def measure(self, model: Any, batch: Any) -> ThroughputMeasurements:
+        if not model.cfg.get('use_multiturn_dataset', False):
+            return super().measure(model, batch)
+        measurements = {}
+        text = batch_value(batch, 'text')
+        if text is not None:
+            add_sum(measurements, 'input_text_tokens', text != model.pad_id)
+        add_audio_seconds(measurements, 'output_audio_seconds', audio_lengths(batch), _sample_rate(model))
+        return measurements
+
+
 class AudioCodecThroughputPolicy(SpeechThroughputPolicy):
     """Measure input waveform duration for audio codec training."""
 
@@ -43,7 +57,12 @@ class AudioCodecThroughputPolicy(SpeechThroughputPolicy):
 
     def measure(self, model: Any, batch: Any) -> ThroughputMeasurements:
         measurements = {}
-        add_audio_seconds(measurements, "input_audio_seconds", audio_lengths(batch), _sample_rate(model))
+        add_audio_seconds(
+            measurements,
+            "input_audio_seconds",
+            audio_lengths(batch),
+            first_positive(model, "output_sample_rate") or _sample_rate(model),
+        )
         return measurements
 
     def num_examples(self, model: Any, batch: Any) -> int | None:

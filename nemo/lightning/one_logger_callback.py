@@ -49,7 +49,7 @@ def _get_env_int(name: str) -> int | None:
 
 
 def _get_world_size() -> int:
-    for name in ("WORLD_SIZE", "SLURM_NTASKS"):
+    for name in ("WORLD_SIZE", "SLURM_NTASKS", "OMPI_COMM_WORLD_SIZE"):
         value = _get_env_int(name)
         if value is not None and value > 0:
             return value
@@ -65,6 +65,8 @@ def _get_rank() -> int | None:
     rank = _get_env_int("RANK")
     if rank is None:
         rank = _get_env_int("SLURM_PROCID")
+    if rank is None:
+        rank = _get_env_int("OMPI_COMM_WORLD_RANK")
     if rank is None:
         local_rank = _get_env_int("LOCAL_RANK")
         if local_rank is not None:
@@ -133,6 +135,10 @@ class OneLoggerNeMoCallback(BaseCallback):
         self._throughput_cuda_start = None
         self._throughput_cuda_device = None
         self._pending_throughput = None
+        self._previous_batch_step_aligned = True
+        self._batch_start_global_step = None
+        self._optimizer_steps_in_batch = 0
+        self._throughput_start_step_aligned = False
         self._initialized = True
         if not self.enabled_for_current_rank:
             return
@@ -244,6 +250,10 @@ class OneLoggerNeMoCallback(BaseCallback):
             return
         self._throughput_interval = _get_throughput_interval(trainer)
         self._pending_throughput = None
+        self._previous_batch_step_aligned = True
+        self._batch_start_global_step = None
+        self._optimizer_steps_in_batch = 0
+        self._optimizer_step_in_batch = False
         self._reset_throughput_window()
 
     def on_train_end(self, trainer: Any, pl_module: Any) -> None:
@@ -255,16 +265,16 @@ class OneLoggerNeMoCallback(BaseCallback):
         """Poll completed telemetry and start a nonblocking timing window."""
         del batch, batch_idx
         self._optimizer_step_in_batch = False
+        self._optimizer_steps_in_batch = 0
         if self._throughput_policy is None:
             return
+        self._batch_start_global_step = int(getattr(trainer, "global_step", 0))
         self._publish_ready_throughput()
-        if self._pending_throughput is not None:
+        if self._pending_throughput is not None or self._throughput_batches:
             return
-        if self._throughput_batches:
-            return
-        global_step = int(getattr(trainer, "global_step", 0))
-        self._throughput_start_global_step = global_step
-        self._throughput_last_global_step = global_step
+        self._throughput_start_global_step = self._batch_start_global_step
+        self._throughput_last_global_step = self._batch_start_global_step
+        self._throughput_start_step_aligned = self._previous_batch_step_aligned
         self._throughput_started_at = time.monotonic()
         device = getattr(pl_module, "device", None)
         if isinstance(device, torch.device) and device.type == "cuda":
@@ -277,19 +287,27 @@ class OneLoggerNeMoCallback(BaseCallback):
                 self._disable_throughput(error)
 
     def on_before_optimizer_step(self, trainer: Any, pl_module: Any, optimizer: Any) -> None:
-        """Count optimizer-step boundaries so gradient accumulation is reflected."""
-
+        """Track every batch boundary, including batches skipped while CUDA work is pending."""
         del trainer, pl_module, optimizer
-        if self._throughput_policy is not None and self._throughput_started_at is not None:
-            self._throughput_optimizer_steps += 1
+        if self._throughput_policy is not None:
+            self._optimizer_steps_in_batch += 1
             self._optimizer_step_in_batch = True
 
     def on_train_batch_end(self, trainer: Any, pl_module: Any, outputs: Any, batch: Any, batch_idx: int) -> None:
-        """Collect deferred work measurements for the completed training batch."""
+        """Collect deferred work measurements for completed, timed training batches."""
         del outputs, batch_idx
-        if self._throughput_policy is None or self._pending_throughput is not None:
+        if self._throughput_policy is None:
             return
         try:
+            current_global_step = int(getattr(trainer, "global_step", 0))
+            global_step_advanced = (
+                self._batch_start_global_step is not None and current_global_step > self._batch_start_global_step
+            )
+            accumulation = int(getattr(trainer, "accumulate_grad_batches", 1) or 1)
+            optimizer_boundary = self._optimizer_step_in_batch or global_step_advanced or accumulation <= 1
+            self._previous_batch_step_aligned = optimizer_boundary
+            if self._pending_throughput is not None or self._throughput_started_at is None:
+                return
             measurements = self._throughput_policy.measure(pl_module, batch)
             if not measurements:
                 self._reset_throughput_window()
@@ -307,15 +325,9 @@ class OneLoggerNeMoCallback(BaseCallback):
             elif self._throughput_examples is not None:
                 self._throughput_examples += num_examples
 
-            current_global_step = int(getattr(trainer, "global_step", 0))
-            global_step_advanced = (
-                self._throughput_last_global_step is not None
-                and current_global_step > self._throughput_last_global_step
-            )
             self._throughput_last_global_step = current_global_step
             self._throughput_batches += 1
-            accumulation = int(getattr(trainer, "accumulate_grad_batches", 1) or 1)
-            optimizer_boundary = self._optimizer_step_in_batch or global_step_advanced or accumulation <= 1
+            self._throughput_optimizer_steps += self._optimizer_steps_in_batch
             self._throughput_step_aligned = optimizer_boundary
             if self._throughput_batches >= self._throughput_interval and optimizer_boundary:
                 self._report_throughput(trainer=trainer)
@@ -346,7 +358,12 @@ class OneLoggerNeMoCallback(BaseCallback):
 
     def _close_throughput_window(self, trainer: Any, global_step: int | None) -> None:
         host_ended_at = time.monotonic()
-        end_global_step = int(global_step if global_step is not None else getattr(trainer, "global_step", 0))
+        end_global_step = (
+            self._throughput_last_global_step
+            if self._throughput_last_global_step is not None
+            else int(global_step if global_step is not None else getattr(trainer, "global_step", 0))
+        )
+        step_aligned = self._throughput_start_step_aligned and self._throughput_step_aligned
         observed_steps = (
             max(end_global_step - self._throughput_start_global_step, 0)
             if self._throughput_start_global_step is not None
@@ -368,7 +385,7 @@ class OneLoggerNeMoCallback(BaseCallback):
                 attributes,
                 totals,
                 host_ended_at - self._throughput_started_at,
-                step_aligned=self._throughput_step_aligned,
+                step_aligned=step_aligned,
             )
         else:
             with torch.cuda.device(self._throughput_cuda_device):
@@ -379,7 +396,7 @@ class OneLoggerNeMoCallback(BaseCallback):
                 totals,
                 self._throughput_cuda_start,
                 end,
-                self._throughput_step_aligned,
+                step_aligned,
             )
         self._reset_throughput_window()
 
@@ -444,7 +461,7 @@ class OneLoggerNeMoCallback(BaseCallback):
         self._throughput_start_global_step = None
         self._throughput_last_global_step = None
         self._throughput_step_aligned = False
-        self._optimizer_step_in_batch = False
+        self._throughput_start_step_aligned = False
         self._throughput_started_at = None
         self._throughput_cuda_start = None
         self._throughput_cuda_device = None

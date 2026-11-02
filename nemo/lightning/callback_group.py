@@ -95,6 +95,9 @@ class CallbackGroup:
             cb for cb in callbacks if isinstance(cb, PTLCallback) and type(cb) not in callback_types
         ]
 
+        telemetry = [cb for cb in callbacks if isinstance(cb, OneLoggerNeMoCallback)]
+        callbacks = telemetry + [cb for cb in callbacks if not isinstance(cb, OneLoggerNeMoCallback)]
+
         # Sanitize callback state_key for pickling safety
         for cb in callbacks:
             try:

@@ -32,7 +32,8 @@ Set ``NEMO_ONE_LOGGER_ENABLED`` to a true value before starting a training job:
 
 Training entry points that call :func:`nemo.utils.exp_manager.exp_manager`
 attach the callback automatically. In distributed jobs, only global rank zero
-exports telemetry. In a single-process job, the same environment variable
+exports telemetry. Torchrun, Slurm, and MPI global-rank metadata are supported.
+In a single-process job, the same environment variable
 enables the local process.
 
 Unset ``NEMO_ONE_LOGGER_ENABLED``, or set it to ``false``, to leave the
@@ -57,7 +58,9 @@ window waits for the next optimizer-step boundary so per-step metrics never mix
 a partial accumulated batch. A reporting window is also closed before validation
 and checkpointing so those operations are not included in training throughput.
 When such a boundary interrupts gradient accumulation, totals and per-second
-rates are still emitted but per-step means are omitted. GPU timing and
+rates are still emitted but per-step means are omitted. Per-step means require
+both the start and end of a window to align with optimizer steps, including
+windows resumed after validation or skipped measurements. GPU timing and
 aggregation are asynchronous during training.
 
 Reported telemetry

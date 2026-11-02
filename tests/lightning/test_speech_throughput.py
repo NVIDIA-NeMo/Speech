@@ -260,14 +260,14 @@ def test_duplex_stt_omits_example_count_when_either_active_cohort_is_unknown():
     assert DuplexSTTThroughputPolicy().num_examples(model, batch) is None
 
 
-def test_audio_codec_uses_input_sample_rate_when_output_rate_differs():
+def test_audio_codec_uses_training_sample_rate_when_output_rate_differs():
     model = SimpleNamespace(sample_rate=16000, output_sample_rate=24000)
     batch = {"audio_lens": torch.tensor([16000, 8000])}
 
     measured = AudioCodecThroughputPolicy().measure(model, batch)
 
     assert measured.keys() == {"input_audio_seconds"}
-    assert _total(measured["input_audio_seconds"]) == 1.5
+    assert _total(measured["input_audio_seconds"]) == 1.0
     assert AudioCodecThroughputPolicy().num_examples(model, batch) == 2
 
 
@@ -322,3 +322,70 @@ def test_base_policy_omits_measurements_and_example_count():
 
     assert policy.measure(object(), batch) == {}
     assert policy.num_examples(object(), batch) is None
+
+
+@pytest.mark.parametrize('output_rate', [16000, 24000])
+def test_audio_codec_duration_matches_dataset_samples(tmp_path, output_rate):
+    from lhotse import CutSet
+    from nemo.collections.tts.data.audio_codec_dataset_lhotse import AudioCodecLhotseDataset
+    from tests.collections.tts.data.test_audio_codec_dataset_lhotse import _make_cut
+
+    cut = _make_cut(tmp_path, 'codec', duration=1.0, sample_rate=16000, tone_frequency=440.0)
+    batch = AudioCodecLhotseDataset(sample_rate=output_rate, segment_duration=1.0)[CutSet.from_cuts([cut])]
+    model = SimpleNamespace(sample_rate=16000, output_sample_rate=output_rate)
+    assert _total(AudioCodecThroughputPolicy().measure(model, batch)['input_audio_seconds']) == 1.0
+    assert AudioCodecThroughputPolicy().num_examples(model, batch) == 1
+
+
+def test_easy_magpie_multiturn_counts_tokens_in_real_timelines(tmp_path):
+    from lhotse import CutSet, SupervisionSegment
+    from omegaconf import OmegaConf
+    from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import collate_token_channel
+    from nemo.collections.tts.models.easy_magpietts import EasyMagpieTTSModel
+    from tests.collections.tts.data.test_audio_codec_dataset_lhotse import _make_cut
+
+    cuts = []
+    for index in range(2):
+        cut = _make_cut(tmp_path, f'text-{index}', duration=1.0, sample_rate=16000, tone_frequency=440.0)
+        cut.supervisions = [
+            SupervisionSegment(
+                id=f'sup-{index}',
+                recording_id=cut.recording_id,
+                start=0.0,
+                duration=1.0,
+                channel=0,
+                text=str(index),
+                speaker='agent',
+            )
+        ]
+        cuts.append(cut)
+    tokenizer = SimpleNamespace(encode=lambda text, tokenizer_name: [10] if text == '0' else [])
+    text, lengths = collate_token_channel(
+        CutSet.from_cuts(cuts),
+        tokenizer,
+        frame_length=0.02,
+        roles={'agent'},
+        pad_id=0,
+        eos_id=20,
+        bos_id=30,
+        interruption_token_id=40,
+        add_text_bos=False,
+    )
+    model = object.__new__(EasyMagpieTTSModel)
+    torch.nn.Module.__init__(model)
+    model._cfg = OmegaConf.create({'use_multiturn_dataset': True})
+    model.pad_id = 0
+    model.sample_rate = 16000
+    policy = select_throughput_policy(model)
+    batch = {'text': text, 'text_lens': lengths, 'audio_lens': torch.tensor([16000, 16000])}
+    measured = policy.measure(model, batch)
+    assert _total(measured['input_text_tokens']) == 3
+    assert _total(measured['output_audio_seconds']) == 2.0
+    assert policy.num_examples(model, batch) == 2
+    assert type(policy).__name__ == 'EasyMagpieThroughputPolicy'
+    batch['text'] = torch.nn.functional.pad(text, (0, 25), value=0)
+    batch['text_lens'] = lengths + 25
+    assert _total(policy.measure(model, batch)['input_text_tokens']) == 3
+    model._cfg.use_multiturn_dataset = False
+    batch['text_lens'] = torch.tensor([10, 6])
+    assert _total(policy.measure(model, batch)['input_text_tokens']) == 16

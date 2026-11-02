@@ -43,7 +43,7 @@ from nemo.collections.tts.modules.magpietts_modules import (
     remove_special_tokens,
     worker_init_fn,
 )
-from nemo.collections.tts.one_logger import TTSThroughputPolicy
+from nemo.collections.tts.one_logger import EasyMagpieThroughputPolicy
 from nemo.collections.tts.parts.utils.helpers import (
     get_mask_from_lengths,
     get_speaker_embeddings_from_filepaths,
@@ -105,7 +105,7 @@ class ProcessBatchOutput:
     selected_training_mode: Optional[str]
 
 
-@register_throughput_policy(TTSThroughputPolicy)
+@register_throughput_policy(EasyMagpieThroughputPolicy)
 class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
     """
     Magpie-TTS Model Decoder Only Model with training support.

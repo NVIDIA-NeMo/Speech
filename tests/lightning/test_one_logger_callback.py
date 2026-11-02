@@ -15,10 +15,10 @@ import torch
 from lightning.pytorch.callbacks import Callback as PTLCallback
 from omegaconf import OmegaConf
 
-import nemo.lightning.one_logger_callback as one_logger_module
 from nemo.collections.asr.one_logger import ASRThroughputPolicy
 from nemo.collections.speechlm2.one_logger import SALMThroughputPolicy
 from nemo.core.classes.modelPT import ModelPT
+from nemo.lightning import one_logger_callback as one_logger_module
 from nemo.lightning.base_callback import BaseCallback
 from nemo.lightning.callback_group import CallbackGroup, callback_context, with_model_init_callbacks
 from nemo.lightning.one_logger_callback import (

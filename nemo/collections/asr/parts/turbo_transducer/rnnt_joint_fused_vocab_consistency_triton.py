@@ -255,7 +255,6 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
         weight_ptr,
         bias_ptr,
         targets,
-        target_mask,
         blank_mask,
         blank_id,
         hidden_dim,
@@ -267,7 +266,6 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
         weight_ptr,
         bias_ptr,
         targets,
-        target_mask,
         blank_mask,
         blank_id,
         hidden_dim,
@@ -420,6 +418,11 @@ def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
     grad_consistency_kl = tl.load(grad_consistency_kl_ptr + teacher_lattice_offsets, mask=blank_mask, other=0.0).to(
         compute_dtype
     )
+    if PRUNING_RANGE:
+        # pruned lattice rows: labels from the masked load fail to compile in Triton 3.7, see `_load_targets_unmasked`
+        targets = _load_targets_unmasked(
+            teacher_lattice_offsets, targets_ptr, student_lattice_offset, max_src_len, max_tgt_len_plus_1
+        )
 
     teacher_rows = teacher_lattice_offsets.to(tl.int64)
     student_rows = student_lattice_offsets.to(tl.int64)
@@ -1165,15 +1168,19 @@ def _target_blank_logits(
     weight_ptr,
     bias_ptr,
     targets,
-    target_mask,
     blank_mask,
     blank_id: tl.constexpr,
     hidden_dim: tl.constexpr,
     HIDDEN_BLOCK: tl.constexpr,
 ):
-    """Target and blank logits of the hidden rows: dot products with the gathered weight rows (CUDA cores)"""
+    """
+    Target and blank logits of the hidden rows: dot products with the gathered weight rows (CUDA cores).
+    Bias and weight rows are gathered without the target mask: labels are zero (a valid row) at positions without
+    a target, and their target logits are not stored. With the target mask, `TritonGPURemoveLayoutConversions`
+    in Triton 3.7 fails ("'tt.load' op failed to verify that mask type matches ptr type").
+    """
     compute_dtype = tl.float32
-    target_logits = tl.load(bias_ptr + targets, mask=target_mask, other=0.0).to(compute_dtype)
+    target_logits = tl.load(bias_ptr + targets).to(compute_dtype)
     blank_logits = tl.zeros_like(target_logits) + tl.load(bias_ptr + blank_id).to(compute_dtype)
     hidden_rows = rows.to(tl.int64) * hidden_dim
     target_weight_rows = targets.to(tl.int64) * hidden_dim
@@ -1187,7 +1194,7 @@ def _target_blank_logits(
         ).to(compute_dtype)
         target_weight_chunk = tl.load(
             weight_ptr + target_weight_rows[:, None] + hidden_offsets[None, :],
-            mask=target_mask[:, None] & hidden_mask[None, :],
+            mask=hidden_mask[None, :],
             other=0.0,
         ).to(compute_dtype)
         blank_weight_chunk = tl.load(
@@ -1265,3 +1272,24 @@ def _load_hidden_rows(hidden_ptr, rows, row_mask, hidden_start, hidden_dim: tl.c
         mask=row_mask[:, None] & (hidden_offsets < hidden_dim)[None, :],
         other=0.0,
     )
+
+
+@triton.jit
+def _load_targets_unmasked(lattice_offsets, targets_ptr, lattice_size, max_src_len, max_tgt_len_plus_1):
+    """
+    Target labels for flat offsets in the [B, T, U+1] lattice without a masked load: the index is clamped in-bounds,
+    labels at positions without a target are arbitrary (callers zero their target gradients).
+    Workaround for Triton 3.7: when the labels from a masked load (`_load_lattice_rows`) are broadcast against
+    the vocabulary block, `TritonGPURemoveLayoutConversions` fails with
+    "'tt.load' op failed to verify that mask type matches ptr type".
+    """
+    max_tgt_len = max_tgt_len_plus_1 - 1
+    clamped_offsets = tl.minimum(lattice_offsets, lattice_size - 1)
+    batch_index = clamped_offsets // (max_src_len * max_tgt_len_plus_1)
+    target_index = tl.minimum(clamped_offsets % max_tgt_len_plus_1, max_tgt_len - 1)
+    if max_tgt_len > 0:
+        targets = tl.load(targets_ptr + batch_index * max_tgt_len + target_index)
+    else:
+        # empty targets tensor: nothing to load
+        targets = tl.zeros_like(target_index).to(targets_ptr.dtype.element_ty)
+    return targets

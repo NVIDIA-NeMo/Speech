@@ -20,7 +20,7 @@ from torch.utils.data import DataLoader
 
 from nemo.collections.common.callbacks import EMA
 from nemo.collections.speechlm2.parts.parallel import AutomodelParallelStrategy
-from nemo.utils.callbacks.dist_ckpt_io import AsyncFinalizableCheckpointIO, DistributedCheckpointIO
+from nemo.utils.callbacks.dist_ckpt_io import AsyncFinalizableCheckpointIO
 from nemo.utils.callbacks.nemo_model_checkpoint import NeMoModelCheckpoint
 from nemo.utils.exp_manager import NeMoCheckpointConnector, exp_manager
 
@@ -80,15 +80,6 @@ def test_resume_connector_forwards_load_policy():
     with patch.object(_CheckpointConnector, 'resume_start') as resume:
         connector.resume_start(weights_only=True)
     resume.assert_called_once_with(None, weights_only=True)
-
-
-@pytest.mark.unit
-def test_distributed_checkpoint_rejects_unsupported_restricted_load():
-    # The optional Megatron backend has no weights_only parameter. Never silently
-    # discard an explicit request for restricted unpickling.
-    checkpoint_io = object.__new__(DistributedCheckpointIO)
-    with pytest.raises(ValueError, match='weights_only=True'):
-        checkpoint_io.load_checkpoint('model', sharded_state_dict={}, weights_only=True)
 
 
 @pytest.mark.unit

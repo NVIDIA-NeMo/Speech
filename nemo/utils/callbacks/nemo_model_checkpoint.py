@@ -253,6 +253,7 @@ class NeMoModelCheckpoint(ModelCheckpoint):
         return output
 
     def on_validation_end(self, trainer, pl_module):
+        # Lightning 2.6.0 stopped refreshing last when top-k does not improve; preserve NeMo's prior behavior.
         refresh_last = (
             self.save_last is True
             and not self._should_skip_saving_checkpoint(trainer)
@@ -263,6 +264,7 @@ class NeMoModelCheckpoint(ModelCheckpoint):
             self._save_last_checkpoint(trainer, self._monitor_candidates(trainer))
 
     def on_train_epoch_end(self, trainer, pl_module):
+        # Lightning 2.6.0 stopped refreshing last when top-k does not improve; preserve NeMo's prior behavior.
         refresh_last = (
             self.save_last is True
             and not self._should_skip_saving_checkpoint(trainer)

@@ -478,6 +478,57 @@ def filter_dataset_by_duration(entries: List[Dict[str, Any]], min_duration: floa
     return filtered_entries, total_hours, filtered_hours
 
 
+def segment_wav(
+    wav, segment_length: int = 44100, segment_hop_size: int = 44100, min_segment_length: int = 22050
+) -> List[torch.Tensor]:
+    """
+    Splits a waveform into fixed-length, zero-padded segments using a sliding window.
+
+    If input waveform is shorter than ``segment_length``, it's zero-padded and
+    returned as a single segment.
+    Otherwise, waveform is split into overlapping or non-overlapping segments
+    of ``segment_length`` using a hop of ``segment_hop_size``.
+
+    Sliding window stops once fewer than ``min_segment_length`` samples remain.
+    Final segment, if any, is zero-padded to ``segment_length``.
+
+    Args:
+        wav: 1D waveform tensor to segment.
+
+        segment_length: Length of each output segment, in samples. Defaults to 44100 — 1 second at 44.1kHz.
+
+        segment_hop_size: Number of samples to advance the sliding window between
+            segments. Defaults to 44100 — no overlap at the default segment_length.
+
+        min_segment_length: Minimum number of remaining samples required to extract
+            another segment. Once fewer samples than this remain, the loop stops.
+            Defaults to 22050 — 0.5 seconds at 44.1kHz.
+
+    Returns:
+        A list of 1D tensors, each of length ``segment_length``.
+    """
+
+    if len(wav) < segment_length:
+        pad = torch.zeros(segment_length - len(wav))
+        segment = torch.cat([wav, pad])
+        return [segment]
+
+    segment_start_idx = 0
+    segments = []
+
+    while segment_start_idx < len(wav) - min_segment_length:
+        segment = wav[segment_start_idx : segment_start_idx + segment_length]
+
+        if len(segment) < segment_length:
+            pad = torch.zeros(segment_length - len(segment))
+            segment = torch.cat([segment, pad])
+
+        segments.append(segment)
+        segment_start_idx += segment_hop_size
+
+    return segments
+
+
 def get_weighted_sampler(
     sample_weights: List[float], batch_size: int, world_size: int, num_steps: int
 ) -> torch.utils.data.WeightedRandomSampler:

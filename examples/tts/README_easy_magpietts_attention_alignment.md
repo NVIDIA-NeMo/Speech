@@ -427,6 +427,136 @@ Raw-text normalization can reorder spoken content or contain silent symbols;
 the current MAS still assigns every retained BPE at least one frame. The soft
 band tolerates approximate boundaries but does not solve these limitations.
 
+## Streaming token timestamps without inference guidance
+
+An attention-trained checkpoint can export input-token timestamps while retaining
+ordinary audio decoding:
+
+```bash
+python examples/tts/magpietts_inference.py \
+    --model_type easy_magpie \
+    --nemo_files "$CHECKPOINT" \
+    --codecmodel_path "$CODEC" \
+    --datasets_json_path "$DATASETS" \
+    --out_dir "$OUTPUT" \
+    --phoneme_input_type predicted \
+    --phoneme_sampling_method argmax \
+    --alignment_guidance none \
+    --alignment_layer middle \
+    --alignment_head 0 \
+    --timestamp_method monotonic \
+    --timestamp_lookahead_frames 4 \
+    --timestamp_skip_penalty 6.0 \
+    --save_timestamps
+```
+
+`--save_timestamps` enables observation only. It never enables a moving window,
+changes attention values, invokes the flow/MAS, or enables BPE feedback. It is
+independent of `--save_token_alignments`; timestamp-only runs do not retain the
+old framewise debug history. Omitted arguments preserve the checkpoint settings;
+new configurations default to disabled. `--no-save_timestamps` disables export.
+
+The pipeline defaults to `--timestamp_method monotonic`: a fixed-lag Viterbi
+decoder uses the complete observed attention distribution, rather than keeping
+only each frame's largest-probability token. It permits staying, advancing, and
+penalized skips; it does not force every token to receive a timestamp or force
+the last token to be reached. This can recover a weak token between strong
+neighbors even if that token never wins a framewise argmax.
+
+`--timestamp_lookahead_frames` defaults to 4, allowing 320 ms of timestamp
+confirmation lookahead at the current 12.5-Hz decoder rate. This delays label
+commitment only; it does not delay or modify generated audio. The positive skip
+cost is controlled by `--timestamp_skip_penalty` (default 6.0). This decoder
+interprets attention already produced by the model; it does not run the learned
+flow or change the attention used for synthesis.
+
+`--timestamp_method argmax` selects the simpler diagnostic tracker, including
+backward revisits. Its `--timestamp_confirmation_frames` defaults to 2:
+confirmation suppresses isolated reversals and backdates a confirmed transition
+to its first supporting frame. Short forward runs are retained with
+`short_evidence=true` instead of shifting later token positions. Setting
+confirmation to 1 removes that additional hysteresis.
+
+`--timestamp_min_confidence`, `--timestamp_min_text_mass`, and
+`--timestamp_min_margin` default to 0. Nonzero gates can leave weak observations
+unaligned; in particular, a positive pointwise margin can reject a monotonic-path
+label that was supported by its sequence context instead of being the local
+argmax. Confidence values remain the observed attention probabilities.
+
+Each generated waveform has a neighboring `predicted_audio_<id>.timestamps.json`;
+its path appears under `timestamps_filepath` in the evaluation manifest. Its
+top-level **`timestamps`** array contains one entry per requested input BPE
+occurrence, identified by `turn_index`, `token_index`, and `token_id`, with:
+
+- `token`, `start`, and `end`, in seconds relative to the saved waveform.
+- `confidence`, `text_attention_mass`, and a provisional/final status.
+- `spans` for separate visits to the same input position. The primary start/end
+  identify the most-supported contiguous span, rather than stretching across
+  unrelated audio between visits. `ambiguous` reports multiple retained spans.
+- Null times for input tokens with no supported interval. `unaligned` means the
+  token was observed by the stream; `unobserved` marks an input tail never consumed
+  before generation stopped. Repeated IDs and punctuation retain distinct input
+  positions and are never silently collapsed or assigned forced boundaries.
+
+Requested text and IDs are attached after generation solely to describe missing
+input positions; future text is not fed into the timestamp tracker. Timestamp
+files, including their audio references, survive single-turn and multiturn
+distributed output merging. Multiturn files are cropped/rebased to the saved
+turn and retain the source audio offset.
+
+Timestamp observation happens during `streaming_step`, not in a second alignment
+pass. Native callers can consume events as audio is generated:
+
+```python
+state, audio_codes, phonemes = model.streaming_step(state, next_text_token)
+events = model.drain_timestamp_events(state)
+current = model.get_timestamps(state)  # provisional snapshots, one dict per batch item
+final = model.streaming_finalize(state)
+timestamps = final.timestamps
+```
+
+Events identify both the input `token_index` and a `span_id`, and include
+`event`, `start`, `end`, `emitted_at`, and `latency_seconds`. Starts and updates
+can be provisional; a rejected short reversal emits a retraction. Consumers
+should retain the stable positional identities and apply these updates instead
+of treating the first observed boundary as final. Finalization closes the last
+supported span when generation ends.
+
+For another inference pipeline, use the model-independent, standard-library-only
+`AttentionTimestampTracker` in `nemo.collections.tts.modules.attention_timestamps`:
+
+```python
+from nemo.collections.tts.modules.attention_timestamps import AttentionTimestampTracker
+
+tracker = AttentionTimestampTracker(method='monotonic', lookahead_frames=4, skip_penalty=6.0)
+tracker.register_token(0, 101, token='Hello')
+# Register additional token positions as they arrive; IDs may repeat.
+events = tracker.update(
+    text_attention_probabilities,
+    token_indices=visible_input_positions,
+    start=audio_frame_start_seconds,
+    end=audio_frame_end_seconds,
+)
+provisional = tracker.snapshot()
+final_tokens = tracker.finalize(audio_duration_seconds)
+```
+
+Provide the text-key slice of the ordinary, causal **full-key softmax**;
+renormalizing it over text alone would hide attention that ignores text. Audio
+times must already exclude context/prefill/delay, and the last frame must be
+clipped to the actual codec EOS. The estimator accepts explicit frame times and
+does not hardcode a codec frame rate. The current stacked 25-fps codec observes
+one attention query per 80 ms; partial final stacks are clipped separately.
+
+The timestamps are attention-based estimates, not externally verified acoustic
+word boundaries. Position mapping and timing offsets are tested separately from
+acoustic accuracy. A broad, skipped, or incorrect attention assignment remains
+visible through null times, disjoint spans, confidence, and status fields.
+The monotonic decoder follows the ordering encouraged by the training alignment
+loss; raw-text normalization can still have a different spoken order or silent
+symbols. The optional argmax tracker can expose such reversals, and neither
+method establishes an independently verified timestamp for an unsupported token.
+
 ## Portability
 
 The new reusable module is `nemo/collections/tts/modules/attention_alignment.py`.

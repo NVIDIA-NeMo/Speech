@@ -37,6 +37,14 @@ class AttentionAlignmentInferenceState:
         min_confidence: float = 0.0,
         min_margin: float = 0.0,
         min_token_frames: int = 1,
+        record_timestamps: bool = False,
+        timestamp_confirmation_frames: int = 2,
+        timestamp_min_confidence: float = 0.0,
+        timestamp_min_text_mass: float = 0.0,
+        timestamp_min_margin: float = 0.0,
+        timestamp_method: str = 'monotonic',
+        timestamp_lookahead_frames: int = 4,
+        timestamp_skip_penalty: float = 6.0,
     ):
         for name, value, minimum in (
             ('batch_size', batch_size, 1),
@@ -44,6 +52,8 @@ class AttentionAlignmentInferenceState:
             ('look_ahead_tokens', look_ahead_tokens, 0),
             ('head', head, 0),
             ('min_token_frames', min_token_frames, 1),
+            ('timestamp_confirmation_frames', timestamp_confirmation_frames, 1),
+            ('timestamp_lookahead_frames', timestamp_lookahead_frames, 0),
         ):
             if type(value) is not int or value < minimum:
                 raise ValueError(f'{name} must be an integer >= {minimum}')
@@ -58,10 +68,29 @@ class AttentionAlignmentInferenceState:
             raise ValueError('layer must be middle or a nonnegative attention-layer ordinal')
         if source not in ('attention', 'text_head'):
             raise ValueError('source must be attention or text_head')
-        for name, value in (('enabled', enabled), ('record_alignments', record_alignments)):
+        if timestamp_method not in ('monotonic', 'argmax'):
+            raise ValueError('timestamp_method must be monotonic or argmax')
+        if (
+            isinstance(timestamp_skip_penalty, bool)
+            or not isinstance(timestamp_skip_penalty, (int, float))
+            or not math.isfinite(timestamp_skip_penalty)
+            or timestamp_skip_penalty <= 0
+        ):
+            raise ValueError('timestamp_skip_penalty must be finite and positive')
+        for name, value in (
+            ('enabled', enabled),
+            ('record_alignments', record_alignments),
+            ('record_timestamps', record_timestamps),
+        ):
             if type(value) is not bool:
                 raise ValueError(f'{name} must be a boolean')
-        for name, value in (('min_confidence', min_confidence), ('min_margin', min_margin)):
+        for name, value in (
+            ('min_confidence', min_confidence),
+            ('min_margin', min_margin),
+            ('timestamp_min_confidence', timestamp_min_confidence),
+            ('timestamp_min_text_mass', timestamp_min_text_mass),
+            ('timestamp_min_margin', timestamp_min_margin),
+        ):
             if (
                 isinstance(value, bool)
                 or not isinstance(value, (int, float))
@@ -81,12 +110,21 @@ class AttentionAlignmentInferenceState:
         self.min_confidence = float(min_confidence)
         self.min_margin = float(min_margin)
         self.min_token_frames = min_token_frames
+        self.record_timestamps = record_timestamps
+        self.timestamp_confirmation_frames = timestamp_confirmation_frames
+        self.timestamp_min_confidence = float(timestamp_min_confidence)
+        self.timestamp_min_text_mass = float(timestamp_min_text_mass)
+        self.timestamp_min_margin = float(timestamp_min_margin)
+        self.timestamp_method = timestamp_method
+        self.timestamp_lookahead_frames = timestamp_lookahead_frames
+        self.timestamp_skip_penalty = float(timestamp_skip_penalty)
         self.text_key_positions: list[list[int]] = [[] for _ in range(batch_size)]
         self.text_token_ids: list[list[int | None]] = [[] for _ in range(batch_size)]
         self.anchors = [0] * batch_size
         self.last_attended_tokens = [-1] * batch_size
         self.last_observations: list[dict | None] = [None] * batch_size
         self.last_head_observations: list[dict | None] = [None] * batch_size
+        self.last_raw_attention: list[dict | None] = [None] * batch_size
         self._visible_token_ordinals: list[list[int]] = [[] for _ in range(batch_size)]
         self._anchor_frames = [0] * batch_size
 
@@ -112,6 +150,7 @@ class AttentionAlignmentInferenceState:
         self.last_attended_tokens[batch_index] = -1
         self.last_observations[batch_index] = None
         self.last_head_observations[batch_index] = None
+        self.last_raw_attention[batch_index] = None
         self._visible_token_ordinals[batch_index] = []
         self._anchor_frames[batch_index] = 0
 
@@ -183,6 +222,7 @@ class AttentionAlignmentInferenceState:
         """Clear per-query observations so inactive rows never reuse stale peaks."""
         self.last_observations = [None] * self.batch_size
         self.last_head_observations = [None] * self.batch_size
+        self.last_raw_attention = [None] * self.batch_size
         self._visible_token_ordinals = [[] for _ in range(self.batch_size)]
 
     def request(self, active_batch_indices=None):
@@ -264,12 +304,13 @@ def apply_attention_alignment_inference(
         position = int(cache_position.item())
     if not 0 <= position < key.size(2):
         raise ValueError('Inference cache_position must be within the absolute cached key timeline')
-    output = ordinary_output.clone()
+    output = ordinary_output.clone() if state.enabled else ordinary_output
     rows = torch.tensor([position], device=query.device, dtype=torch.long)
     heads = torch.tensor([state.head], device=query.device, dtype=torch.long)
     key_indices = torch.arange(key.size(2), device=query.device)
     for batch_index in request.batch_indices:
         state.last_observations[batch_index] = None
+        state.last_raw_attention[batch_index] = None
         state._visible_token_ordinals[batch_index] = []
         positions = state.text_key_positions[batch_index]
         if not positions:
@@ -308,6 +349,19 @@ def apply_attention_alignment_inference(
             if state.enabled:
                 prior[outside_keys] = state.prior_epsilon
             raw_probabilities = F.softmax(scores, dim=-1)
+            if state.record_timestamps:
+                # Keep one raw observation only. The model supplies the actual
+                # audio interval after codec EOS detection, before updating the
+                # model-independent streaming tracker.
+                state.last_raw_attention[batch_index] = {
+                    'query_position': position,
+                    'token_indices': ordinals.tolist(),
+                    'probabilities': raw_probabilities.index_select(0, text_keys).detach().cpu().tolist(),
+                }
+                if not state.enabled and not state.record_alignments:
+                    # Read-only timestamp collection does not recompute the
+                    # decoder's output or run the guidance cursor/softmax.
+                    continue
             probabilities = F.softmax(scores + prior.log(), dim=-1)
             text_probabilities = probabilities.index_select(0, text_keys)
             raw_text_probabilities = raw_probabilities.index_select(0, text_keys)

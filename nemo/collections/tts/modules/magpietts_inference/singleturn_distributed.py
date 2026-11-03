@@ -89,6 +89,7 @@ def merge_singleturn_rank_outputs(repeat_audio_dir, world_size, total_samples, s
     for pattern in [
         'predicted_audio_*.wav',
         'predicted_audio_*.alignment.json',
+        'predicted_audio_*.timestamps.json',
         'predicted_codes_*.pt',
         'context_audio_*.wav',
         'target_audio_*.wav',
@@ -121,6 +122,13 @@ def merge_singleturn_rank_outputs(repeat_audio_dir, world_size, total_samples, s
                     destination = root / f'predicted_audio_{row["item_idx"]}.alignment.json'
                     _copy_token_alignment(source, destination, row['predicted_audio_filepath'])
                     row['token_alignment_filepath'] = str(destination.resolve())
+                if row.get('timestamps_filepath'):
+                    source = Path(row['timestamps_filepath'])
+                    if not source.is_absolute():
+                        source = rank_dir / source
+                    destination = root / f'predicted_audio_{row["item_idx"]}.timestamps.json'
+                    _copy_token_alignment(source, destination, row['predicted_audio_filepath'])
+                    row['timestamps_filepath'] = str(destination.resolve())
             evaluation_records.extend(rows)
         if document['frontend_used']:
             with (rank_dir / 'phoneme_frontend_manifest.jsonl').open(encoding='utf-8') as handle:

@@ -112,6 +112,14 @@ model:
     enabled: false
     source: attention # attention, or text_head for a raw repeated-BPE head; no MAS during inference.
     record_alignments: false # Export lightweight token timing traces independently of guidance.
+    record_timestamps: false # Read-only streaming token timing from learned attention; no guidance required.
+    timestamp_method: monotonic # Fixed-lag path from full attention probabilities; argmax is also available.
+    timestamp_lookahead_frames: 4 # Timestamp-only delay: 0.32 seconds with the current 12.5 Hz decoder.
+    timestamp_skip_penalty: 6.0 # Permit unsupported raw-text/punctuation positions to remain unaligned.
+    timestamp_confirmation_frames: 2 # Preserve short forward BPEs while rejecting isolated attention excursions.
+    timestamp_min_confidence: 0.0
+    timestamp_min_text_mass: 0.0
+    timestamp_min_margin: 0.0
     layer: middle # Single attention-layer ordinal or middle.
     head: 0
     look_back_tokens: 1

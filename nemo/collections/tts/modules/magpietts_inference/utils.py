@@ -1086,6 +1086,7 @@ def _merge_multiturn_rank_outputs(repeat_audio_dir: str, world_size: int, save_p
         "context_audio_*.wav",
         "predicted_codes_*.pt",
         "predicted_audio_*.alignment.json",
+        "predicted_audio_*.timestamps.json",
     ]:
         for path in Path(repeat_audio_dir).glob(pattern):
             if path.is_symlink() or path.exists():
@@ -1134,6 +1135,16 @@ def _merge_multiturn_rank_outputs(repeat_audio_dir: str, world_size: int, save_p
                 alignment['predicted_audio_filepath'] = str(Path(pred_dst).resolve())
                 destination.write_text(json.dumps(alignment, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
                 merged['token_alignment_filepath'] = str(destination.resolve())
+                merged['predicted_audio_filepath'] = str(Path(pred_dst).resolve())
+            if record.get('timestamps_filepath'):
+                source = Path(record['timestamps_filepath'])
+                if not source.is_absolute():
+                    source = Path(rank_dir) / source
+                destination = Path(repeat_audio_dir) / f'predicted_audio_{global_idx}.timestamps.json'
+                timestamps = json.loads(source.read_text(encoding='utf-8'))
+                timestamps['predicted_audio_filepath'] = str(Path(pred_dst).resolve())
+                destination.write_text(json.dumps(timestamps, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+                merged['timestamps_filepath'] = str(destination.resolve())
                 merged['predicted_audio_filepath'] = str(Path(pred_dst).resolve())
             merged["audio_filepath"] = f"target_audio_{global_idx}.wav"
             merged["context_audio_filepath"] = f"context_audio_{global_idx}.wav"
@@ -1441,6 +1452,24 @@ def _add_easy_magpie_args(parser: argparse.ArgumentParser) -> None:
         help='Save text-head predictions and selected-head token time estimates beside each generated waveform',
     )
     group.add_argument(
+        '--save_timestamps',
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help='Save streaming attention-derived input-token timestamps without enabling inference guidance',
+    )
+    group.add_argument(
+        '--timestamp_method',
+        choices=['monotonic', 'argmax'],
+        default=None,
+        help='Decode observed attention for timestamps only; monotonic uses a fixed-lag posterior path',
+    )
+    group.add_argument('--timestamp_lookahead_frames', type=int, default=None)
+    group.add_argument('--timestamp_skip_penalty', type=float, default=None)
+    group.add_argument('--timestamp_confirmation_frames', type=int, default=None)
+    group.add_argument('--timestamp_min_confidence', type=float, default=None)
+    group.add_argument('--timestamp_min_text_mass', type=float, default=None)
+    group.add_argument('--timestamp_min_margin', type=float, default=None)
+    group.add_argument(
         '--phoneme_frontend_nemo_file',
         type=str,
         default=None,
@@ -1555,6 +1584,7 @@ def _build_easy_magpie_config(args) -> EasyMagpieInferenceConfig:
         phoneme_frontend_max_steps=getattr(args, 'phoneme_frontend_max_steps', 4096),
         phoneme_frontend_on_max_steps=getattr(args, 'phoneme_frontend_on_max_steps', 'error'),
         save_token_alignments=bool(getattr(args, 'save_token_alignments', False)),
+        save_timestamps=bool(getattr(args, 'save_timestamps', False)),
     )
     if cfg_cls is EasyMagpieMultiturnUserAudioInferenceConfig:
         kwargs.update(
@@ -1616,6 +1646,21 @@ def _alignment_inference_overrides(args):
     record = getattr(args, 'save_token_alignments', None)
     if record is not None:
         values['record_alignments'] = record
+    timestamps = getattr(args, 'save_timestamps', None)
+    if timestamps is not None:
+        values['record_timestamps'] = timestamps
+    for name in (
+        'method',
+        'lookahead_frames',
+        'skip_penalty',
+        'confirmation_frames',
+        'min_confidence',
+        'min_text_mass',
+        'min_margin',
+    ):
+        value = getattr(args, 'timestamp_' + name, None)
+        if value is not None:
+            values['timestamp_' + name] = value
     return values or None
 
 

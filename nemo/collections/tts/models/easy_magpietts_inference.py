@@ -40,6 +40,7 @@ from nemo.collections.tts.data.text_to_speech_dataset_lhotse import (
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.collections.tts.modules import transformer_2501
 from nemo.collections.tts.modules.attention_alignment_inference import AttentionAlignmentInferenceState
+from nemo.collections.tts.modules.attention_timestamps import AttentionTimestampTracker
 from nemo.collections.tts.modules.audio_codec_modules import VectorQuantizerIndexConverter
 from nemo.collections.tts.modules.magpietts_modules import (
     CharAwareSubwordEncoder,
@@ -174,6 +175,10 @@ class StreamingState:
     attention_alignment_turn_valid: Optional[torch.Tensor] = None
     alignment_debug_history: Optional[List[List[dict]]] = None
     alignment_debug_turns: Optional[List[List[dict]]] = None
+    timestamp_turns: Optional[List[List[dict]]] = None
+    timestamp_events: Optional[List[dict]] = None
+    timestamp_audio_start_frames: Optional[List[Optional[int]]] = None
+    timestamp_audio_end_frames: Optional[List[Optional[int]]] = None
 
 
 @dataclass
@@ -189,6 +194,7 @@ class StreamingFinalizeOutput:
     aligned_text_tokens: Optional[torch.Tensor] = None  # (B, T_decoder), repeated BPE on the audio step grid
     aligned_text_tokens_lens: Optional[torch.Tensor] = None  # (B,) valid decoder steps, before codec decode padding
     alignment_debug: Optional[List[dict]] = None  # JSON-ready timing estimates relative to returned audio
+    timestamps: Optional[List[dict]] = None  # Per-input-token timing estimates, independent of guidance
 
 
 @dataclass
@@ -206,6 +212,7 @@ class InferBatchOutput:
     predicted_aligned_text_tokens: Optional[torch.Tensor] = None  # (B, T_decoder), already trimmed to audio output
     predicted_aligned_text_tokens_lens: Optional[torch.Tensor] = None  # (B,) valid aligned-text decoder steps
     alignment_debug: Optional[List[dict]] = None
+    timestamps: Optional[List[dict]] = None
 
 
 @dataclass
@@ -264,6 +271,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         if (
             self.attention_alignment_inference_config['enabled']
             or self.attention_alignment_inference_config['record_alignments']
+            or self.attention_alignment_inference_config['record_timestamps']
         ):
             if cfg.get('decoder_type', 'huggingface') != 'nemotron_h':
                 raise ValueError('Inference attention alignment currently requires the nemotron_h decoder')
@@ -643,6 +651,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         if (
             self.attention_alignment_inference_config['enabled']
             or self.attention_alignment_inference_config['record_alignments']
+            or self.attention_alignment_inference_config['record_timestamps']
         ):
             controller = self._new_attention_alignment_inference_state(batch_size=1)
             attention_blocks = [
@@ -1027,7 +1036,20 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         if any(type(index) is not int or not 0 <= index < state.config.batch_size for index in indices):
             raise ValueError('batch_indices must contain valid conditional batch indices')
         for index in indices:
+            if getattr(state, 'timestamp_turns', None) is not None:
+                previous = state.timestamp_turns[index][-1]
+                if previous['source_token_ids'] or previous['has_audio']:
+                    self._finish_timestamp_turn(state, index)
             controller.reset_turn(index)
+            if getattr(state, 'timestamp_turns', None) is not None:
+                turns = state.timestamp_turns[index]
+                previous = turns[-1]
+                has_previous_turn = bool(previous['source_token_ids'] or previous['has_audio'])
+                next_turn = self._new_timestamp_turn(state, index, previous['turn_index'] + int(has_previous_turn))
+                if has_previous_turn:
+                    turns.append(next_turn)
+                else:
+                    turns[-1] = next_turn
             if getattr(state, 'alignment_debug_turns', None) is not None:
                 turns = state.alignment_debug_turns[index]
                 previous = turns[-1]
@@ -2223,12 +2245,14 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     torch.zeros(batch_size, dtype=torch.long, device=device)
                     if self.attention_alignment_inference_config['enabled']
                     or self.attention_alignment_inference_config['record_alignments']
+                    or self.attention_alignment_inference_config['record_timestamps']
                     else None
                 ),
                 attention_alignment_turn_valid=(
                     torch.ones(batch_size, dtype=torch.bool, device=device)
                     if self.attention_alignment_inference_config['enabled']
                     or self.attention_alignment_inference_config['record_alignments']
+                    or self.attention_alignment_inference_config['record_timestamps']
                     else None
                 ),
             )
@@ -2246,6 +2270,12 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     ]
                     for index in range(batch_size)
                 ]
+
+            if self.attention_alignment_inference_config['record_timestamps']:
+                state.timestamp_events = []
+                state.timestamp_audio_start_frames = [None] * batch_size
+                state.timestamp_audio_end_frames = [None] * batch_size
+                state.timestamp_turns = [[self._new_timestamp_turn(state, index, 0)] for index in range(batch_size)]
 
             return state
 
@@ -2733,7 +2763,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         if needs_audio.any():
             controller = getattr(state, 'attention_alignment_inference_state', None)
             if self.use_aligned_text_head:
-                if controller is not None and (controller.record_alignments or controller.source == 'text_head'):
+                if controller is not None and (
+                    controller.record_alignments or (controller.enabled and controller.source == 'text_head')
+                ):
                     predicted_text, logits = self._predict_aligned_text_tokens(state, return_logits=True)
                     controller.observe_text_logits(
                         logits,
@@ -2760,6 +2792,12 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
             S = self.frame_stacking_factor
             C = self.num_audio_codebooks
+            timestamp_frame_start = (
+                sum(prediction.size(-1) for prediction in state.all_predictions)
+                if getattr(state, 'timestamp_turns', None) is not None
+                else None
+            )
+            valid_timestamp_frames = None
             audio_codes_unstacked = audio_codes_next_stacked.view(batch_size, C, S)  # (B, C, S)
 
             if state.last_audio_codes is None:
@@ -2783,6 +2821,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 )  # (B,)
 
                 audio_eos_detected = eos_any_codebook.any(dim=1) & needs_audio
+                if timestamp_frame_start is not None:
+                    valid_timestamp_frames = eos_frame_idx
                 state.finished = state.finished | audio_eos_detected
 
                 newly_ended_audio = audio_eos_detected & (state.audio_prediction_end_idx == -1)
@@ -2801,6 +2841,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                         observation = state.alignment_debug_history[row][-1]
                         observation['end_frame'] = observation['start_frame'] + int(eos_frame_idx[row].item())
 
+            if timestamp_frame_start is not None:
+                self._record_timestamp_step(state, needs_audio, timestamp_frame_start, valid_timestamp_frames)
             state.all_predictions.append(audio_codes_unstacked)
             audio_codes_next = audio_codes_unstacked
 
@@ -2828,6 +2870,148 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     'text_head': dict(head) if head is not None else None,
                 }
             )
+
+    def _new_timestamp_turn(self, state: StreamingState, batch_index: int, turn_index: int) -> dict:
+        controller = state.attention_alignment_inference_state
+        return {
+            'turn_index': turn_index,
+            'source_token_ids': controller.text_token_ids[batch_index],
+            'source_key_positions': controller.text_key_positions[batch_index],
+            'tracker': AttentionTimestampTracker(
+                confirmation_frames=controller.timestamp_confirmation_frames,
+                min_confidence=controller.timestamp_min_confidence,
+                min_text_mass=controller.timestamp_min_text_mass,
+                min_margin=controller.timestamp_min_margin,
+                method=controller.timestamp_method,
+                lookahead_frames=controller.timestamp_lookahead_frames,
+                skip_penalty=controller.timestamp_skip_penalty,
+            ),
+            'finalized': False,
+            'has_audio': False,
+        }
+
+    def _collect_timestamp_events(self, state: StreamingState, row: int, turn: dict) -> None:
+        state.timestamp_events.extend(
+            dict(event, batch_index=row, turn_index=turn['turn_index']) for event in turn['tracker'].drain_events()
+        )
+
+    def _finish_timestamp_turn(self, state: StreamingState, row: int) -> None:
+        turn = state.timestamp_turns[row][-1]
+        if turn['finalized']:
+            return
+        origin = state.timestamp_audio_start_frames[row]
+        end = state.timestamp_audio_end_frames[row]
+        duration = (
+            max(0, end - origin) * self.codec_model_samples_per_frame / self.sample_rate
+            if origin is not None and end is not None
+            else 0.0
+        )
+        turn['tracker'].finalize(duration)
+        turn['finalized'] = True
+        self._collect_timestamp_events(state, row, turn)
+
+    def _record_timestamp_step(self, state, needs_audio, frame_start, valid_frames=None) -> None:
+        """Observe the current query on its emitted audio grid, after EOS clipping.
+
+        The query that consumes AUDIO_BOS predicts frame zero. Its attention is
+        therefore paired with this step's output, not the previous audio input.
+        No timestamps are added for context, delay, prefill or a zero-frame EOS.
+        """
+        seconds_per_frame = self.codec_model_samples_per_frame / self.sample_rate
+        controller = state.attention_alignment_inference_state
+        for row in needs_audio.nonzero(as_tuple=True)[0].tolist():
+            origin = state.timestamp_audio_start_frames[row]
+            if origin is None:
+                predicted_start = int(state.audio_prediction_start_idx[row].item())
+                origin = max(0, predicted_start) if predicted_start >= 0 else frame_start
+                state.timestamp_audio_start_frames[row] = origin
+            count = self.frame_stacking_factor if valid_frames is None else int(valid_frames[row].item())
+            end_frame = frame_start + count
+            state.timestamp_audio_end_frames[row] = end_frame
+            if count <= 0:
+                continue
+            turn = state.timestamp_turns[row][-1]
+            turn['has_audio'] = True
+            observation = controller.last_raw_attention[row]
+            turn['tracker'].update(
+                observation['probabilities'] if observation is not None else [],
+                token_indices=observation['token_indices'] if observation is not None else [],
+                start=max(0, frame_start - origin) * seconds_per_frame,
+                end=max(0, end_frame - origin) * seconds_per_frame,
+            )
+            self._collect_timestamp_events(state, row, turn)
+
+    def drain_timestamp_events(self, state: StreamingState, batch_indices=None) -> List[dict]:
+        """Consume token-boundary events produced by preceding streaming steps.
+
+        Event boundary times are relative to the returned generated waveform.
+        ``emitted_at`` reports availability on that audio clock; confirmation
+        may therefore publish a boundary a few frames after its audio time.
+        """
+        queued = getattr(state, 'timestamp_events', None)
+        if queued is None:
+            return []
+        if batch_indices is None:
+            state.timestamp_events = []
+            return queued
+        indices = set(batch_indices)
+        if any(type(index) is not int or not 0 <= index < state.config.batch_size for index in indices):
+            raise ValueError('batch_indices must contain valid conditional batch indices')
+        selected = [event for event in queued if event['batch_index'] in indices]
+        state.timestamp_events = [event for event in queued if event['batch_index'] not in indices]
+        return selected
+
+    def get_timestamps(
+        self, state: StreamingState, finalize: bool = False, audio_lengths=None
+    ) -> Optional[List[dict]]:
+        """Return independent timestamp snapshots without changing decoder state.
+
+        Pass ``finalize=True`` only once no more audio will be generated. Normal
+        streaming callers can inspect provisional spans and drain events at any
+        step without retaining framewise attention matrices.
+        """
+        if getattr(state, 'timestamp_turns', None) is None:
+            return None
+        controller = state.attention_alignment_inference_state
+        seconds_per_frame = self.codec_model_samples_per_frame / self.sample_rate
+        results = []
+        for row, turns in enumerate(state.timestamp_turns):
+            if finalize:
+                self._finish_timestamp_turn(state, row)
+            origin, end = state.timestamp_audio_start_frames[row], state.timestamp_audio_end_frames[row]
+            duration = max(0, end - origin) * seconds_per_frame if origin is not None and end is not None else 0.0
+            if audio_lengths is not None:
+                duration = int(audio_lengths[row].item()) / self.output_sample_rate
+            entries = []
+            for turn in turns:
+                for record in turn['tracker'].snapshot():
+                    entries.append(dict(record, turn_index=turn['turn_index']))
+            results.append(
+                {
+                    'schema_version': 1,
+                    'source': 'attention',
+                    'timings_are_estimates': True,
+                    'audio_duration_seconds': duration,
+                    'frame_step_seconds': self.frame_stacking_factor * seconds_per_frame,
+                    'attention_layer': controller.layer,
+                    'attention_head': controller.head,
+                    'confirmation_frames': controller.timestamp_confirmation_frames,
+                    'method': controller.timestamp_method,
+                    'lookahead_frames': controller.timestamp_lookahead_frames,
+                    'skip_penalty': controller.timestamp_skip_penalty,
+                    'guidance_enabled': controller.enabled,
+                    'timestamps': entries,
+                    'turns': [
+                        {
+                            'turn_index': turn['turn_index'],
+                            'source_token_ids': list(turn['source_token_ids']),
+                            'source_key_positions': list(turn['source_key_positions']),
+                        }
+                        for turn in turns
+                    ],
+                }
+            )
+        return results
 
     def _finalize_alignment_debug(self, state: StreamingState, audio_lengths=None) -> Optional[List[dict]]:
         """Trim timing estimates to generated codec frames before decode padding is introduced.
@@ -2907,6 +3091,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             'enabled': False,
             'source': 'attention',
             'record_alignments': False,
+            'record_timestamps': False,
             'layer': 'middle',
             'head': 0,
             'look_back_tokens': 1,
@@ -2915,6 +3100,13 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             'min_confidence': 0.0,
             'min_margin': 0.0,
             'min_token_frames': 1,
+            'timestamp_confirmation_frames': 2,
+            'timestamp_min_confidence': 0.0,
+            'timestamp_min_text_mass': 0.0,
+            'timestamp_min_margin': 0.0,
+            'timestamp_method': 'monotonic',
+            'timestamp_lookahead_frames': 4,
+            'timestamp_skip_penalty': 6.0,
         }
         unknown = set(config or {}) - values.keys()
         if unknown:
@@ -2930,7 +3122,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
     def _new_attention_alignment_inference_state(self, batch_size):
         settings = self.attention_alignment_inference_config
-        if not settings['enabled'] and not settings['record_alignments']:
+        if not settings['enabled'] and not settings['record_alignments'] and not settings['record_timestamps']:
             return None
         return AttentionAlignmentInferenceState(batch_size=batch_size, **settings)
 
@@ -2965,6 +3157,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             observed_rows = (needs_text & content & state.attention_alignment_turn_valid).nonzero(as_tuple=True)[0]
             for row in observed_rows.tolist():
                 controller.add_text_token(row, state.cache_seq_len, token_id=int(text_tokens[row].item()))
+                if getattr(state, 'timestamp_turns', None) is not None:
+                    state.timestamp_turns[row][-1]['tracker'].register_token(
+                        len(controller.text_token_ids[row]) - 1, int(text_tokens[row].item())
+                    )
 
         if prefill_like_step:
             return None
@@ -3134,6 +3330,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             if getattr(state, 'alignment_debug_history', None) is not None
             else None
         )
+        timestamps = (
+            self.get_timestamps(state, finalize=True) if getattr(state, 'timestamp_turns', None) is not None else None
+        )
 
         # Extract and decode phoneme predictions
         phoneme_tokens_list: List[List[int]] = []
@@ -3170,6 +3369,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 aligned_text_tokens=aligned_text_tokens,
                 aligned_text_tokens_lens=aligned_text_tokens_lens,
                 alignment_debug=alignment_debug,
+                timestamps=timestamps,
             )
 
         grad_ctx = torch.inference_mode if use_inference_mode else torch.no_grad
@@ -3205,6 +3405,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     aligned_text_tokens=aligned_text_tokens,
                     aligned_text_tokens_lens=aligned_text_tokens_lens,
                     alignment_debug=alignment_debug,
+                    timestamps=timestamps,
                 )
 
             # Create padded output tensor and slice each item's valid predictions
@@ -3271,6 +3472,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 alignment_debug=(
                     self._finalize_alignment_debug(state, audio_len) if alignment_debug is not None else None
                 ),
+                timestamps=self.get_timestamps(state, audio_lengths=audio_len) if timestamps is not None else None,
             )
 
     def _finalize_aligned_text_predictions(
@@ -3570,6 +3772,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 predicted_aligned_text_tokens=finalize_output.aligned_text_tokens,
                 predicted_aligned_text_tokens_lens=finalize_output.aligned_text_tokens_lens,
                 alignment_debug=finalize_output.alignment_debug,
+                timestamps=getattr(finalize_output, 'timestamps', None),
             )
 
     @staticmethod

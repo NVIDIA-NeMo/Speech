@@ -1,0 +1,253 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+import copy
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from nemo.collections.tts.modules.magpietts_inference.token_timestamps import (
+    build_token_timestamps,
+    save_token_timestamps,
+)
+
+pytestmark = pytest.mark.unit
+
+
+def test_input_occurrences_keep_positions_across_mid_end_repetitions_and_unaligned_punctuation():
+    trace = _trace()
+    before = copy.deepcopy(trace)
+    result = build_token_timestamps(
+        trace, _tokenizer(), expected_input_text='a b a . a', expected_input_token_ids=[1, 2, 1, 3, 1]
+    )
+    tokens = result['timestamps']
+    assert [token['token_index'] for token in tokens] == [0, 1, 2, 3, 4]
+    assert [token['token_id'] for token in tokens] == [1, 2, 1, 3, 1]
+    assert [token['start'] for token in tokens] == [0.0, 0.08, 0.24, None, None]
+    assert [token['end'] for token in tokens] == [0.08, 0.24, 0.32, None, None]
+    assert tokens[2]['token'] == 'a' and tokens[3]['token'] == '.'
+    assert tokens[3]['status'] == 'unaligned' and tokens[3]['observed']
+    assert tokens[4]['status'] == 'unobserved' and not tokens[4]['observed']
+    assert result['expected_input_text'] == 'a b a . a'
+    assert trace == before
+
+
+def test_primary_timestamp_does_not_join_disjoint_visits_into_a_false_long_interval():
+    trace = _trace()
+    trace['timestamps'][0]['spans'].append(_span(0.48, 0.64, confidence=0.9))
+    result = build_token_timestamps(trace, _tokenizer())['timestamps'][0]
+    assert result['start'] == 0.48 and result['end'] == 0.64
+    assert result['primary_span_index'] == 1 and result['ambiguous']
+    assert [(span['start'], span['end']) for span in result['spans']] == [(0.0, 0.08), (0.48, 0.64)]
+
+
+def test_reported_115k_sequence_keeps_all_56_positions_when_middle_and_final_tokens_have_no_evidence():
+    # Input IDs from the reported timestamp example; the intervals below only
+    # exercise index mapping, not independently verified acoustic boundaries.
+    expected = [
+        1073,
+        8056,
+        27231,
+        1278,
+        31134,
+        1044,
+        1321,
+        1278,
+        24349,
+        1584,
+        3746,
+        24489,
+        26236,
+        1044,
+        1809,
+        1278,
+        6138,
+        1513,
+        1032,
+        1057,
+        1050,
+        1049,
+        1046,
+        1054,
+        1053,
+        1055,
+        4372,
+        1070,
+        1395,
+        12593,
+        4455,
+        1278,
+        13472,
+        1046,
+        9246,
+        1639,
+        4206,
+        1278,
+        12450,
+        1513,
+        1032,
+        1049,
+        1057,
+        1050,
+        1046,
+        1048,
+        1046,
+        1050,
+        1046,
+        1050,
+        1050,
+        1052,
+        1394,
+        2081,
+        9576,
+        1046,
+    ]
+    missing = {6, 9, 17, 53, 55}
+    tokens = [
+        _token(index, token_id, [] if index in missing else [_span(index * 0.08, (index + 1) * 0.08)])
+        for index, token_id in enumerate(expected)
+    ]
+    for index in missing:
+        tokens[index]['reason'] = 'never_selected'
+    trace = dict(audio_duration_seconds=56 * 0.08, frame_step_seconds=0.08, timestamps=tokens)
+    result = build_token_timestamps(trace, expected_input_token_ids=expected)['timestamps']
+    assert len(result) == 56
+    assert [token['token_id'] for token in result] == expected
+    assert [token['token_index'] for token in result] == list(range(56))
+    assert {token['token_index'] for token in result if token['start'] is None} == missing
+    assert all(result[index]['reason'] == 'never_selected' for index in missing)
+    assert result[54]['start'] == pytest.approx(54 * 0.08)
+    assert result[18]['token_id'] == result[40]['token_id'] == 1032  # Distinct spacing-token occurrences.
+    assert result[18]['start'] != result[40]['start']
+
+
+def test_multiturn_crop_rebases_spans_and_clips_partial_final_frame():
+    trace = _trace()
+    trace['audio_duration_seconds'] = 1.2
+    trace['timestamps'].extend(
+        [
+            _token(0, 1, [_span(0.88, 0.96)], turn=1),
+            _token(1, 2, [_span(1.04, 1.2)], turn=1),
+            _token(2, 3, [], turn=1),
+        ]
+    )
+    result = build_token_timestamps(
+        trace, _tokenizer(), start_time=0.9, end_time=1.15, turn_index=1, expected_input_token_ids=[1, 2, 3, 1]
+    )
+    assert result['audio_duration_seconds'] == pytest.approx(0.25)
+    assert {token['turn_index'] for token in result['timestamps']} == {1}
+    first, last, punctuation, tail = result['timestamps']
+    assert (first['start'], first['end']) == pytest.approx((0.0, 0.06))
+    assert (last['start'], last['end']) == pytest.approx((0.14, 0.25))
+    assert first['spans'][0]['clipped'] and last['spans'][0]['clipped']
+    assert punctuation['start'] is None and tail['status'] == 'unobserved'
+    assert result['audio_offset_seconds'] == 0.9 and result['source_audio_duration_seconds'] == 1.2
+
+
+def test_zero_audio_keeps_requested_tokens_without_fabricated_boundaries():
+    trace = _trace()
+    trace['audio_duration_seconds'] = 0.0
+    result = build_token_timestamps(trace, _tokenizer(), expected_input_token_ids=[1, 2, 1, 3])
+    assert result['audio_duration_seconds'] == 0
+    assert len(result['timestamps']) == 4
+    assert all(token['start'] is token['end'] is None and not token['spans'] for token in result['timestamps'])
+
+
+def test_weakly_supported_monotonic_skip_keeps_null_times_and_its_evidence_reason():
+    trace = _trace()
+    trace.update(method='monotonic', lookahead_frames=4, skip_penalty=6.0)
+    trace['timestamps'][3].update(reason='never_selected', posterior_support=0.001, observed_frames=8)
+    result = build_token_timestamps(trace, expected_input_token_ids=[1, 2, 1, 3])
+    token = result['timestamps'][3]
+    assert token['token_index'] == 3 and token['start'] is token['end'] is None
+    assert token['reason'] == 'never_selected' and token['posterior_support'] == 0.001
+    assert result['method'] == 'monotonic' and result['lookahead_frames'] == 4
+
+
+def test_crop_updates_primary_short_evidence_and_does_not_keep_ambiguity_without_visible_spans():
+    trace = _trace()
+    token = trace['timestamps'][0]
+    token.update(short_evidence=False, ambiguous=True)
+    token['spans'][0]['short_evidence'] = False
+    token['spans'].append(dict(_span(0.4, 0.48, confidence=0.2), short_evidence=True))
+    cropped = build_token_timestamps(trace, start_time=0.4, end_time=0.48)['timestamps'][0]
+    assert cropped['short_evidence'] and not cropped['ambiguous']
+    assert (cropped['start'], cropped['end']) == pytest.approx((0.0, 0.08))
+    absent = build_token_timestamps(trace, start_time=0.5, end_time=0.6)['timestamps'][0]
+    assert absent['start'] is None and not absent['ambiguous'] and not absent['short_evidence']
+
+
+def test_mismatched_input_id_or_index_is_rejected_instead_of_attaching_shifted_times():
+    with pytest.raises(ValueError, match='does not match'):
+        build_token_timestamps(_trace(), expected_input_token_ids=[2, 1, 1, 3])
+    with pytest.raises(ValueError, match='beyond the requested'):
+        build_token_timestamps(_trace(), expected_input_token_ids=[1, 2])
+
+
+def test_sidecar_is_absolute_json_and_rerun_replaces_it_atomically(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    audio = tmp_path / 'outputs' / 'predicted_audio_0.wav'
+    audio.parent.mkdir()
+    audio.write_bytes(b'wav')
+    path = save_token_timestamps('outputs/predicted_audio_0.wav', _trace(), tokenizer=_tokenizer())
+    assert path == str(audio.with_suffix('.timestamps.json'))
+    record = json.loads(audio.with_suffix('.timestamps.json').read_text())
+    assert record['predicted_audio_filepath'] == str(audio)
+    assert record['source'] == 'attention' and record['timings_are_estimates']
+    assert 'timestamps' in record and 'alignment' not in record
+    save_token_timestamps(audio, _trace(), tokenizer=_tokenizer(), end_time=0.08)
+    second = json.loads(audio.with_suffix('.timestamps.json').read_text())
+    assert second['timestamps'][1]['start'] is None
+    assert not list(audio.parent.glob('*.tmp'))
+
+
+@pytest.mark.parametrize('value', [float('nan'), float('inf')])
+def test_invalid_crop_times_fail_without_publishing_json(value):
+    with pytest.raises(ValueError, match='must be finite'):
+        build_token_timestamps(_trace(), start_time=value)
+
+
+def test_missing_timestamp_capture_is_not_reported_as_empty_success():
+    with pytest.raises(ValueError, match='returned no timestamps'):
+        build_token_timestamps(None)
+
+
+def _tokenizer():
+    return SimpleNamespace(tokens=['<pad>', 'a', 'b', '.'])
+
+
+def _span(start, end, confidence=0.5):
+    return dict(start=start, end=end, confidence=confidence, text_attention_mass=0.9, frame_count=2, confirmed=True)
+
+
+def _token(index, token_id, spans, turn=0):
+    return dict(
+        source='attention',
+        turn_index=turn,
+        token_index=index,
+        token_id=token_id,
+        start=spans[0]['start'] if spans else None,
+        end=spans[0]['end'] if spans else None,
+        confidence=0.5 if spans else None,
+        status='finalized' if spans else 'unaligned',
+        spans=spans,
+    )
+
+
+def _trace():
+    return dict(
+        source='attention',
+        audio_duration_seconds=0.64,
+        frame_step_seconds=0.08,
+        attention_layer='middle',
+        attention_head=0,
+        confirmation_frames=2,
+        turns=[dict(turn_index=0, source_token_ids=[1, 2, 1, 3])],
+        timestamps=[
+            _token(0, 1, [_span(0.0, 0.08)]),
+            _token(1, 2, [_span(0.08, 0.24)]),
+            _token(2, 1, [_span(0.24, 0.32)]),
+            _token(3, 3, []),
+        ],
+    )

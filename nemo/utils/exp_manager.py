@@ -37,7 +37,6 @@ from lightning.pytorch.callbacks import Callback, ModelCheckpoint
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.callbacks.timer import Interval, Timer
 from lightning.pytorch.loggers import MLFlowLogger, TensorBoardLogger, WandbLogger
-from lightning.pytorch.loggers.neptune import NeptuneLogger
 from lightning.pytorch.loops import _TrainingEpochLoop
 from lightning.pytorch.strategies.ddp import DDPStrategy
 from lightning.pytorch.trainer.connectors.checkpoint_connector import _CheckpointConnector
@@ -842,6 +841,11 @@ def error_checks(trainer: 'lightning.pytorch.Trainer', cfg: Optional[Union[DictC
         - Prints error messages when 1) run on multi-node and not Slurm, and
             2) run on multi-gpu without DDP
     """
+    if cfg.create_neptune_logger:
+        raise ValueError(
+            'create_neptune_logger is unsupported by the required Lightning version. '
+            'Use another exp_manager logger or pass a supported logger to the Trainer.'
+        )
     if HydraConfig.initialized() and get_original_cwd() != os.getcwd():
         raise ValueError(
             "Hydra changed the working directory. This interferes with ExpManger's functionality."
@@ -1318,19 +1322,7 @@ def configure_loggers(
         logging.info("ClearMLLogger has been set up")
 
     if create_neptune_logger:
-        if neptune_kwargs is None:
-            neptune_kwargs = {}
-        if "name" not in neptune_kwargs and "project" not in neptune_kwargs:
-            raise ValueError("name and project are required for neptune_logger")
-        if "api_key" not in neptune_kwargs and not os.getenv("NEPTUNE_API_TOKEN", None):
-            raise ValueError(
-                "either api_key should be set in neptune_kwargs or NEPTUNE_API_TOKEN should "
-                "be set in environment variable for neptune_logger"
-            )
-        neptune_logger = NeptuneLogger(**neptune_kwargs)
-
-        logger_list.append(neptune_logger)
-        logging.info("NeptuneLogger has been set up")
+        raise ValueError('create_neptune_logger is unsupported by the required Lightning version.')
 
     trainer._logger_connector.configure_logger(logger_list)
 
@@ -1341,13 +1333,13 @@ class NeMoCheckpointConnector(_CheckpointConnector):
     distributed training settings to pre-load checkpoint.
     """
 
-    def resume_start(self, checkpoint_path=None) -> None:
+    def resume_start(self, checkpoint_path=None, weights_only: Optional[bool] = None) -> None:
         """resume_start"""
         checkpoint_path = self.trainer.ckpt_path
         if checkpoint_path is not None:
             logging.info(f'Resuming from checkpoint {checkpoint_path}, rank {torch.distributed.get_rank()}')
         start_time = time.perf_counter()
-        super().resume_start(checkpoint_path)
+        super().resume_start(checkpoint_path, weights_only=weights_only)
         if checkpoint_path is not None:
             logging.info(
                 'Time elapsed loading checkpoint/optimizer states: '

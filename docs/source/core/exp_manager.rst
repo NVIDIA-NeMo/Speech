@@ -15,6 +15,11 @@ To use the Experiment Manager, call :class:`~nemo.utils.exp_manager.exp_manager`
 
 The Experiment Manager is configurable using YAML with Hydra.
 
+Lightning 2.6 uses Rich progress bars and model summaries when Rich is installed.
+For predictable cluster logs, set ``trainer.enable_progress_bar: false`` and
+``trainer.enable_model_summary: false``, or supply explicit ``TQDMProgressBar`` and
+``ModelSummary`` callbacks through the Trainer configuration.
+
 .. code-block:: bash
 
     exp_manager:
@@ -33,6 +38,9 @@ Optionally, launch TensorBoard to view the training results in ``exp_dir``, whic
 
 If ``create_checkpoint_callback`` is set to ``True``, then NeMo automatically creates checkpoints during training
 using PyTorch Lightning's `ModelCheckpoint <https://lightning.ai/docs/pytorch/stable/api/lightning.pytorch.callbacks.ModelCheckpoint.html>`_.
+With ``save_last: true``, NeMo refreshes the last checkpoint at each eligible validation or
+training-epoch boundary even when the monitored metric does not improve. Async saves update
+scheduling state immediately; unfinished markers remain until writing completes.
 We can configure the ``ModelCheckpoint`` via YAML or CLI:
 
 .. code-block:: yaml
@@ -50,6 +58,14 @@ We can configure the ``ModelCheckpoint`` via YAML or CLI:
 
 Resume Training
 ---------------
+
+New NeMo checkpoints store resolved configuration values without dataclass schema metadata;
+the live model configuration retains its schema. Previously saved built-in decoding and
+adapter configurations remain supported. For an older checkpoint containing an application-defined
+schema, import that trusted schema in application code and call
+``nemo.utils.serialization.register_checkpoint_schema_types(MyConfig)`` before loading it.
+Checkpoint data does not select which schema classes to register.
+
 
 To auto-resume training, configure the ``exp_manager``. This feature is important for long training runs that might be interrupted or
 shut down before the procedure has completed. To auto-resume training, set the following parameters via YAML or CLI:
@@ -177,25 +193,17 @@ Neptune
 
 .. _exp_manager_neptune-label:
 
-.. code-block:: yaml
-
-    exp_manager:
-        ...
-        create_checkpoint_callback: True
-        create_neptune_logger: false
-        neptune_logger_kwargs:
-            project: ${project}
-            name: ${name}
-            prefix: train
-            log_model_checkpoints: false # set to True if checkpoints need to be pushed to Neptune
-            tags: null # can specify as an array of strings in yaml array format
-            description: null
-            <Add any other arguments supported by Neptune logger here>
+NeptuneLogger is no longer supported by Lightning 2.6. Keep ``create_neptune_logger: false``.
+Setting it to ``true`` raises a configuration error before experiment files are created.
+Use another supported Experiment Manager logger, or pass a supported logger directly to the Trainer.
 
 Exponential Moving Average
 --------------------------
 
 .. _exp_manager_ema-label:
+
+EMA sidecar and optimizer state are restored when resuming training. Validation, testing,
+and prediction with a checkpoint use its model weights without requiring an EMA sidecar.
 
 NeMo supports using exponential moving average (EMA) for model parameters. This can be useful for improving model generalization
 and stability. To use EMA, set the following parameters via YAML or :class:`~nemo.utils.exp_manager.ExpManagerConfig`.

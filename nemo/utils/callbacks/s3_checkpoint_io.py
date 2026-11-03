@@ -206,7 +206,10 @@ class S3CheckpointIO(CheckpointIO):
                 _upload_bytes_to_s3(bytes, path, self.chunk_size_MB, self.max_write_concurrency)
 
     def load_checkpoint(
-        self, path: Union[str, Path], map_location: Optional[Callable] = lambda storage, loc: storage
+        self,
+        path: Union[str, Path],
+        map_location: Optional[Callable] = lambda storage, loc: storage,
+        weights_only: Optional[bool] = None,
     ) -> Dict[str, Any]:
         if os.path.exists(SHARED_MEM_DIR):
             with NamedTemporaryFile(dir=SHARED_MEM_DIR, delete=True) as tempfile:
@@ -220,12 +223,12 @@ class S3CheckpointIO(CheckpointIO):
                     chunk_size_MB=self.chunk_size_MB,
                     max_concurrency=self.max_read_concurrency,
                 )
-                checkpoint = torch.load(tempfile.name)
+                checkpoint = torch.load(tempfile.name, map_location=map_location, weights_only=weights_only)
         else:
             file_stream: BytesIO = S3Utils.download_s3_file_to_stream(
                 s3_path=path, chunk_size_MB=self.chunk_size_MB, max_concurrency=self.max_read_concurrency
             )
-            checkpoint = torch.load(file_stream)
+            checkpoint = torch.load(file_stream, map_location=map_location, weights_only=weights_only)
         return checkpoint
 
     def remove_checkpoint(self, path: Union[str, Path]) -> None:

@@ -6,6 +6,7 @@ from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import is_dataclass
 from enum import Enum
+from pathlib import Path, PosixPath, WindowsPath
 from pickle import UnpicklingError
 from typing import Any, Dict, List, Set, Tuple, Union, get_args, get_origin, get_type_hints
 
@@ -44,12 +45,18 @@ def checkpoint_config_types() -> list:
         PathNode,
         StringNode,
         ValueNode,
+        Path,
+        PosixPath,
+        WindowsPath,
         Any,
         Dict,
         List,
         Set,
         Tuple,
         Union,
+        # Typing aliases pickle through _operator.getitem. The replacement below
+        # accepts only fixed typing origins and type arguments, never arbitrary
+        # object subscription (including OmegaConf interpolation resolution).
         (_restore_checkpoint_annotation, "_operator.getitem"),
         defaultdict,
         dict,

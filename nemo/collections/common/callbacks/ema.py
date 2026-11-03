@@ -22,6 +22,7 @@ from typing import Any, Dict, Iterable
 import lightning.pytorch as pl
 import torch
 from lightning.pytorch import Callback
+from lightning.pytorch.trainer.states import TrainerFn
 from lightning.pytorch.utilities.exceptions import MisconfigurationException
 from lightning.pytorch.utilities.rank_zero import rank_zero_info
 
@@ -121,6 +122,9 @@ class EMA(Callback):
     def on_load_checkpoint(
         self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", checkpoint: Dict[str, Any]
     ) -> None:
+        # Evaluation restores callback state too, but never resumes optimizer/EMA state.
+        if getattr(getattr(trainer, 'state', None), 'fn', TrainerFn.FITTING) != TrainerFn.FITTING:
+            return
         checkpoint_callback = trainer.checkpoint_callback
 
         # Replace connector._ckpt_path with below to avoid calling into lightning's protected API
@@ -137,7 +141,10 @@ class EMA(Callback):
                 return
             ema_path = ckpt_path.replace(ext, f'-EMA{ext}')
             if os.path.exists(ema_path):
-                ema_state_dict = torch.load(ema_path, map_location=torch.device('cpu'), weights_only=False)
+                from nemo.utils.serialization import checkpoint_config_loading
+
+                with checkpoint_config_loading():
+                    ema_state_dict = torch.load(ema_path, map_location=torch.device('cpu'), weights_only=True)
 
                 checkpoint['optimizer_states'] = ema_state_dict['optimizer_states']
                 del ema_state_dict

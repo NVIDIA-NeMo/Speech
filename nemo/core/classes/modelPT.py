@@ -1694,27 +1694,33 @@ class ModelPT(LightningModule, Model):
             Please create a new model using an updated config to properly update the model.
         """
         self._cfg = cfg
-        self._set_hparams(OmegaConf.create({'cfg': self._cfg}))
+        # Checkpoints store configuration values, not application-selected schema classes.
+        self._set_hparams(OmegaConf.create({'cfg': OmegaConf.to_container(self._cfg, resolve=True, enum_to_str=True)}))
 
         # TODO: Remove in NeMo 1.7 (or when PTL fixes this on their end)
         if hasattr(self, '_hparams_initial') and 'cfg' in self._hparams_initial:
-            self._hparams_initial['cfg'] = OmegaConf.to_object(self._cfg)
+            self._hparams_initial['cfg'] = OmegaConf.to_container(self._cfg, resolve=True, enum_to_str=True)
 
     @property
     def hparams(self):
         """
-        Overwrite default hparams property to return the lastest model config.
+        Return a resolved snapshot of the latest model config for checkpointing.
+        Structured schema metadata is omitted from the snapshot; the live ``cfg``
+        retains its validation and schema types.
         Without this change, the hparams property would return the old config if there was a direct change to
         self._cfg (e.g., in self.setup_optimization()) that was not done via `self.cfg = new_cfg`.
         """
-        self._set_hparams(OmegaConf.create({'cfg': self._cfg}))
+        # Checkpoints store configuration values, not application-selected schema classes.
+        self._set_hparams(OmegaConf.create({'cfg': OmegaConf.to_container(self._cfg, resolve=True, enum_to_str=True)}))
 
         if (
             hasattr(self, '_hparams_initial')
             and 'cfg' in self._hparams_initial
             and isinstance(self._hparams_initial['cfg'], DictConfig)
         ):
-            self._hparams_initial['cfg'] = OmegaConf.to_object(self._hparams_initial['cfg'])
+            self._hparams_initial['cfg'] = OmegaConf.to_container(
+                self._hparams_initial['cfg'], resolve=True, enum_to_str=True
+            )
 
         return super().hparams
 

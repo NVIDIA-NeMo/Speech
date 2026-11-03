@@ -326,11 +326,16 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
         sharded_state_dict: Dict[str, Any] = None,
         strict: Union[None, bool, 'StrictHandling'] = None,
         validate_access_integrity: Optional[bool] = True,
+        weights_only: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Loads a distributed checkpoint.
 
         Args:
             path (_PATH): checkpoint directory
+            weights_only (bool, optional): Lightning loader-policy argument. The
+                Megatron backend has no restricted-unpickling switch; an explicit
+                True is rejected rather than silently ignored. None/False retain
+                the backend's own loading policy.
             map_location (Any, optional): required to be None in this implementation
             sharded_state_dict (Dict[str, Any], optional): state dict which
                 defines the loading procedure for the distributed checkpoint.
@@ -344,6 +349,8 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
         Returns:
             Dist[str, Any]: loaded checkpoint.
         """
+        if weights_only is True:
+            raise ValueError('DistributedCheckpointIO does not support weights_only=True with the Megatron backend.')
         if sharded_state_dict is None:
             raise ValueError('DistributedCheckpointIO requires passing sharded_state_dict argument to load_checkpoint')
         if map_location is not None:

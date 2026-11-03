@@ -183,7 +183,9 @@ def test_ctc_model_default_configuration_checkpoint(tmp_path):
         path,
     )
     restored = EncDecCTCModel.load_from_checkpoint(path, map_location='cpu', weights_only=True)
-    assert OmegaConf.to_container(restored.cfg) == OmegaConf.to_container(model.cfg)
+    assert OmegaConf.to_container(restored.cfg, resolve=True, enum_to_str=True) == OmegaConf.to_container(
+        model.cfg, resolve=True, enum_to_str=True
+    )
     for name, value in model.state_dict().items():
         torch.testing.assert_close(restored.state_dict()[name], value)
 
@@ -233,3 +235,81 @@ class _ItemAccess:
 
 class _UnregisteredObject:
     pass
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('schema', ['aed', 'adapter', 'path'])
+def test_additional_legacy_checkpoint_configurations(tmp_path, schema):
+    from pathlib import Path
+
+    from nemo.collections.asr.parts.submodules.multitask_decoding import MultiTaskDecodingConfig
+    from nemo.collections.common.parts.adapter_modules import LinearAdapterConfig
+
+    configs = {
+        'aed': OmegaConf.structured(MultiTaskDecodingConfig),
+        'adapter': OmegaConf.structured(LinearAdapterConfig(in_features=50, dim=8)),
+        'path': OmegaConf.create({'path': Path('models/checkpoint')}),
+    }
+    path = tmp_path / 'legacy.ckpt'
+    torch.save(configs[schema], path)
+    restored = torch.load(path, weights_only=True)
+    assert OmegaConf.to_container(restored) == OmegaConf.to_container(configs[schema])
+
+
+@pytest.mark.unit
+def test_aed_default_config_checkpoint(tmp_path, test_data_dir):
+    from nemo.collections.asr.parts.submodules.multitask_decoding import MultiTaskDecodingConfig
+    from tests.collections.asr.test_asr_multitask_model_bpe import asr_model
+
+    initial = asr_model.__wrapped__(test_data_dir)
+    cfg = OmegaConf.create(OmegaConf.to_container(initial.cfg))
+    del cfg.decoding
+    model = type(initial)(cfg)
+    assert OmegaConf.get_type(model.cfg.decoding) is MultiTaskDecodingConfig
+    _assert_model_checkpoint_roundtrip(model, tmp_path / 'aed.ckpt')
+
+
+@pytest.mark.unit
+def test_adapter_model_checkpoint_has_plain_schema(tmp_path):
+    from nemo.collections.common.parts.adapter_modules import LinearAdapterConfig
+    from tests.core.mixins.adapters.test_adapter_model_mixin import DefaultAdapterModel, get_model_config
+
+    model = DefaultAdapterModel(get_model_config())
+    model.add_adapter('linear', LinearAdapterConfig(in_features=50, dim=8))
+    assert model.is_adapter_available()
+    assert OmegaConf.get_type(model.hparams.cfg.adapters.linear) is dict
+    _assert_model_checkpoint_roundtrip(model, tmp_path / 'adapter.ckpt')
+
+
+@pytest.mark.unit
+def test_application_schema_is_plain_in_model_hparams(tmp_path):
+    from omegaconf import open_dict
+
+    from tests.core.test_save_restore import MockModel
+
+    model = MockModel(OmegaConf.create({}))
+    with open_dict(model.cfg):
+        model.cfg.custom = OmegaConf.structured(_UnregisteredSchema)
+        model.cfg.alias = '${custom.name}'
+    assert OmegaConf.get_type(model.cfg.custom) is _UnregisteredSchema
+    assert OmegaConf.get_type(model.hparams.cfg.custom) is dict
+    assert OmegaConf.to_container(model.cfg, resolve=False)['alias'] == '${custom.name}'
+    assert model.hparams.cfg.alias == 'model'
+    _assert_model_checkpoint_roundtrip(model, tmp_path / 'application.ckpt')
+
+
+def _assert_model_checkpoint_roundtrip(model, path):
+    torch.save(
+        {
+            'state_dict': model.state_dict(),
+            'hyper_parameters': model.hparams,
+            'pytorch-lightning_version': import_module('lightning.pytorch').__version__,
+        },
+        path,
+    )
+    restored = type(model).load_from_checkpoint(path, map_location='cpu', weights_only=True)
+    assert OmegaConf.to_container(restored.cfg, resolve=True, enum_to_str=True) == OmegaConf.to_container(
+        model.cfg, resolve=True, enum_to_str=True
+    )
+    for name, value in model.state_dict().items():
+        torch.testing.assert_close(restored.state_dict()[name], value)

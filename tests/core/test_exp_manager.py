@@ -34,7 +34,6 @@ from nemo.utils.callbacks import NeMoModelCheckpoint
 from nemo.utils.exp_manager import (
     CheckpointMisconfigurationError,
     LoggerMisconfigurationError,
-    NeptuneLogger,
     NotFoundError,
     exp_manager,
 )
@@ -211,34 +210,19 @@ class TestExpManager:
         assert isinstance(test_trainer.logger, pl.loggers.WandbLogger)
 
     @pytest.mark.unit
-    def test_trainer_neptune_logger(self, tmp_path):
-        pytest.importorskip("neptune", reason="could not import `neptune`, use `pip install neptune` to run this test")
-
-        test_trainer = pl.Trainer(accelerator='cpu', logger=False)
-        # Check that a create_neptune_logger=True errors out unless neptune_logger_kwargs is passed.
-        with pytest.raises(ValueError):
-            _ = exp_manager(
-                test_trainer,
+    @pytest.mark.parametrize('kwargs', [None, {"name": "test", "project": "test", "api_key": "unused"}])
+    def test_trainer_neptune_logger(self, tmp_path, kwargs):
+        trainer = pl.Trainer(accelerator='cpu', logger=False, enable_checkpointing=False)
+        with pytest.raises(ValueError, match='create_neptune_logger.*Lightning'):
+            exp_manager(
+                trainer,
                 {
-                    "create_tensorboard_logger": False,
-                    "create_checkpoint_callback": False,
-                    "exp_dir": str(tmp_path),
+                    "explicit_log_dir": str(tmp_path / 'experiment'),
                     "create_neptune_logger": True,
+                    "neptune_logger_kwargs": kwargs,
                 },
             )
-        # Check that a NeptuneLogger is attached to logger if create_neptune_logger=True and neptune_logger_kwargs has name
-        # and project
-        _ = exp_manager(
-            test_trainer,
-            {
-                "create_tensorboard_logger": False,
-                "create_checkpoint_callback": False,
-                "exp_dir": str(tmp_path),
-                "create_neptune_logger": True,
-                "neptune_logger_kwargs": {"name": "", "project": "", "api_key": ""},
-            },
-        )
-        assert isinstance(test_trainer.logger, NeptuneLogger)
+        assert not (tmp_path / 'experiment').exists()
 
     @pytest.mark.unit
     def test_checkpoint_configurations(self):

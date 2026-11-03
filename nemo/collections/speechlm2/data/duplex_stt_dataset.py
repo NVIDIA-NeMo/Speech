@@ -168,7 +168,6 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
             return
 
         # Update target_tokens: place eos at new_eos_pos, shift tail, pad at end
-        target_tokens[batch_idx, new_eos_pos] = eos_id
         seq_len = target_tokens.shape[1]
         cont_start_pos = original_eos_pos + overlap_tokens
         tail_length = seq_len - (cont_start_pos + 1)
@@ -176,7 +175,9 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
             target_tokens[batch_idx, new_eos_pos + 1 : new_eos_pos + 1 + tail_length] = target_tokens[
                 batch_idx, cont_start_pos + 1 : cont_start_pos + 1 + tail_length
             ].clone()
-        target_tokens[batch_idx, -frames_to_remove:] = pad_id
+        pad_start = new_eos_pos + 1 + max(0, tail_length)
+        target_tokens[batch_idx, pad_start:] = pad_id
+        target_tokens[batch_idx, new_eos_pos] = eos_id
 
         # Update source_tokens: shift tail (from cutoff_pos)
         src_frames_to_remove = original_eos_pos - cutoff_pos

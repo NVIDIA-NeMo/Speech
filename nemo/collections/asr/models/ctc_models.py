@@ -530,7 +530,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         Returns:
             A tuple of 3 elements -
             1) The log probabilities tensor of shape [B, T, D].
-            2) The lengths of the acoustic sequence after propagation through the encoder, of shape [B].
+            2) The valid CTC-output lengths after encoder and decoder temporal scaling, of shape [B].
             3) The greedy token predictions of the model of shape [B, T] (via argmax)
         """
         has_input_signal = input_signal is not None and input_signal_length is not None
@@ -557,6 +557,8 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
             log_probs = self.decoder(encoder_output=encoded, encoded_lengths=encoded_len)
         else:
             log_probs = self.decoder(encoder_output=encoded)
+        if hasattr(self.decoder, "output_lengths"):
+            encoded_len = self.decoder.output_lengths(encoded_len)
         greedy_predictions = log_probs.argmax(dim=-1, keepdim=False)
 
         return (
@@ -757,9 +759,8 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         del logits, logits_len
 
         if trcfg.timestamps:
-            hypotheses = process_timestamp_outputs(
-                hypotheses, self.encoder.subsampling_factor, self.cfg['preprocessor']['window_stride']
-            )
+            frame_stride = self.cfg['preprocessor']['window_stride'] / getattr(self.decoder, 'upsampling_factor', 1)
+            hypotheses = process_timestamp_outputs(hypotheses, self.encoder.subsampling_factor, frame_stride)
 
         return hypotheses
 

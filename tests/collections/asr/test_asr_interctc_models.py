@@ -58,8 +58,10 @@ def conformer_encoder_config() -> Dict:
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("decoder_kind", ["transformer", "conv_only", "conv"])
-def test_interctc_decoder_receives_intermediate_lengths_and_backpropagates(monkeypatch, decoder_kind):
+@pytest.mark.parametrize(
+    'decoder_kind,factor', [('transformer', 1), ('conv_only', 1), ('conv', 1), ('transformer', 2), ('conv_only', 2)]
+)
+def test_interctc_decoder_receives_intermediate_lengths_and_backpropagates(monkeypatch, decoder_kind, factor):
     from torch.nn.attention.flex_attention import create_mask
 
     from nemo.collections.asr.modules import transformer_encoder_utils
@@ -86,6 +88,7 @@ def test_interctc_decoder_receives_intermediate_lengths_and_backpropagates(monke
             n_heads=2,
             n_layers=1,
             sync_max_audio_length=False,
+            upsampling_factor=factor,
         )
     model = EncDecCTCModel(
         cfg=DictConfig(
@@ -97,6 +100,7 @@ def test_interctc_decoder_receives_intermediate_lengths_and_backpropagates(monke
                     'n_layers': 2,
                     'd_model': 32,
                     'n_heads': 2,
+                    'subsampling_factor': 8,
                 },
                 'decoder': decoder,
                 'interctc': {'apply_at_layers': [0], 'loss_weights': [0.3]},
@@ -125,19 +129,31 @@ def test_interctc_decoder_receives_intermediate_lengths_and_backpropagates(monke
         intermediate = model.get_captured_interctc_tensors()
         assert len(intermediate) == 1
         assert intermediate[0][0].shape == log_probs.shape
-        if decoder_kind == "transformer":
-            torch.testing.assert_close(calls[0]['encoded_lengths'], lengths)
+        torch.testing.assert_close(lengths, torch.tensor([8, 6]) * factor)
+        torch.testing.assert_close(intermediate[0][1], intermediate_lengths * factor)
+        if decoder_kind == "transformer" or factor > 1:
+            torch.testing.assert_close(calls[0]['encoded_lengths'], lengths // factor)
             assert calls[1]['encoded_lengths'] is intermediate_lengths
         else:
             assert all('encoded_lengths' not in call for call in calls)
         # Backpropagate the intermediate CTC loss alone, so the main loss cannot hide a broken gradient path.
+        targets = torch.tensor([[0, 1] * 5, [1, 2] * 5]) if factor == 2 else torch.tensor([[0, 1], [1, 2]])
+        target_lengths = torch.full((2,), targets.shape[1])
         loss = model.loss(
             log_probs=intermediate[0][0],
-            targets=torch.tensor([[0, 1], [1, 2]]),
-            target_lengths=torch.tensor([2, 2]),
+            targets=targets,
+            target_lengths=target_lengths,
             input_lengths=intermediate[0][1],
         )
         assert torch.isfinite(loss)
+        oracle = model.loss(
+            log_probs=intermediate[0][0],
+            targets=targets,
+            target_lengths=target_lengths,
+            input_lengths=intermediate_lengths * factor,
+        )
+        torch.testing.assert_close(loss, oracle)
+        assert loss > 0
         loss.backward()
         gradients = [parameter.grad for parameter in model.decoder.parameters() if parameter.requires_grad]
         assert gradients and all(gradient is not None and torch.isfinite(gradient).all() for gradient in gradients)

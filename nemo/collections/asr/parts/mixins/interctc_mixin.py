@@ -176,7 +176,7 @@ class InterCTCMixin:
     def get_captured_interctc_tensors(self) -> List[Tuple[torch.Tensor, torch.Tensor]]:
         """Returns a list of captured tensors from encoder: tuples of (output, length).
 
-        Will additionally apply ``ctc_decoder`` to the outputs.
+        Applies ``ctc_decoder`` and returns lengths in the decoder's output-frame domain.
         """
         if not self.is_interctc_enabled():
             return []
@@ -211,7 +211,11 @@ class InterCTCMixin:
             decoder_kwargs = {'encoder_output': layer_outputs[0]}
             if getattr(decoder, 'requires_encoded_lengths', False):
                 decoder_kwargs['encoded_lengths'] = layer_lengths[0]
-            captured_tensors.append((decoder(**decoder_kwargs), layer_lengths[0]))
+            log_probs = decoder(**decoder_kwargs)
+            output_lengths = layer_lengths[0]
+            if hasattr(decoder, 'output_lengths'):
+                output_lengths = decoder.output_lengths(output_lengths)
+            captured_tensors.append((log_probs, output_lengths))
         return captured_tensors
 
     def add_interctc_losses(

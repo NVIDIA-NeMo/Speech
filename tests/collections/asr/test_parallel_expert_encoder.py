@@ -261,7 +261,8 @@ def test_ctc_timestamp_loader_disables_distributed_length_sync(monkeypatch, tmp_
 
 
 @pytest.mark.unit
-def test_ctc_timestamp_loader_copies_the_encoder_windows_on_every_call(monkeypatch, tmp_path):
+@pytest.mark.parametrize("word_frames", [6, 12])
+def test_ctc_timestamp_loader_copies_the_encoder_windows_on_every_call(monkeypatch, tmp_path, word_frames):
     adapter_path = tmp_path / "adapter.pt"
     adapter_path.touch()
     adapter = CTCTimestampArtifact(decoder=nn.Linear(4, 4), tokenizer=object(), decoder_config={})
@@ -283,15 +284,15 @@ def test_ctc_timestamp_loader_copies_the_encoder_windows_on_every_call(monkeypat
     assert get_ctc_timestamp_aligner(encoder, str(adapter_path), torch.device("cpu")) is aligner
     assert (aligner.online_inference_length, aligner.chunk_left_context, aligner.chunk_right_context) == (250, 40, 10)
 
-    encoder.ctc_timestamp_alignment = {"max_word_frames": 6}
+    encoder.ctc_timestamp_alignment = {"max_word_frames": word_frames}
     updated = get_ctc_timestamp_aligner(encoder, str(adapter_path), torch.device("cpu"))
     assert updated is not aligner
     assert updated.ctc_decoder is aligner.ctc_decoder
-    assert updated.max_word_frames == 6
+    assert updated.max_word_frames == word_frames
     assert get_ctc_timestamp_aligner(encoder, str(adapter_path), torch.device("cpu")) is updated
     encoder.ctc_timestamp_alignment = {}
     restored = get_ctc_timestamp_aligner(encoder, str(adapter_path), torch.device("cpu"))
-    assert restored.speaker_logprob_weight == 1.0 and restored.max_word_frames == 12
+    assert restored.speaker_logprob_weight == 0.6057 and restored.max_word_frames == 19
     assert restored.ctc_decoder is updated.ctc_decoder
 
 
@@ -798,7 +799,7 @@ def test_timestamp_extractor_batch_honors_record_lengths(monkeypatch):
     assert results[1]["diarization_timestamps"] == [{"speaker": 1, "start": 0.01, "end": 0.04}]
     assert [result["diarization_frame_seconds"] for result in results] == [0.01, 0.01]
     assert [result["diarization_max_speaker_count"] for result in results] == [8, 8]
-    assert [result["diarization_activity_threshold"] for result in results] == [0.5, 0.5]
+    assert [result["diarization_activity_threshold"] for result in results] == [extractor.vad_threshold] * 2
 
 
 @pytest.mark.unit
@@ -813,12 +814,17 @@ def test_timestamp_extractor_rejects_mismatched_batch_metadata():
 
 
 @pytest.mark.unit
-def test_transformer_ctc_decoder_rejects_unsupported_modes():
-    with pytest.raises(ValueError, match="residual connections require use_transformer=True"):
-        TransformerCTCDecoder(feat_in=32, num_classes=5, use_transformer=False, residual=True)
-
-    with pytest.raises(ValueError, match="d_model to equal feat_in"):
-        TransformerCTCDecoder(feat_in=32, num_classes=5, d_model=16)
+@pytest.mark.parametrize(
+    "options,message",
+    [
+        ({"use_transformer": False, "residual": True}, "residual connections require use_transformer=True"),
+        ({"d_model": 16}, "d_model to equal feat_in"),
+    ],
+    ids=["residual-without-transformer", "mismatched-model-dimension"],
+)
+def test_transformer_ctc_decoder_rejects_unsupported_modes(options, message):
+    with pytest.raises(ValueError, match=message):
+        TransformerCTCDecoder(feat_in=32, num_classes=5, **options)
 
 
 # ----------------------------------------------------------------------------- #

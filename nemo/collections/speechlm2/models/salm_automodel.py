@@ -1030,7 +1030,16 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         if audios.shape[0] != answer_tokens.shape[0] or audio_lens.shape[0] != answer_tokens.shape[0]:
             raise ValueError("audios, audio_lens, and answer_tokens must have the same batch size.")
 
-        transcripts = [_decode_timestamp_transcript(self.tokenizer, tokens) for tokens in answer_tokens]
+        alignment = getattr(self.perception.encoder, 'ctc_timestamp_alignment', None) or {}
+        transcripts = [
+            _decode_timestamp_transcript(
+                self.tokenizer,
+                tokens,
+                special_token_ignored=alignment.get('special_token_ignored'),
+                special_token_added=alignment.get('special_token_added'),
+            )
+            for tokens in answer_tokens
+        ]
         audio_durations = [float(length) / self.sampling_rate for length in audio_lens.detach().cpu()]
         return self.perception.encoder.generate_ctc_timestamps(
             timestamp_inputs=timestamp_inputs,
@@ -1666,13 +1675,32 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         }
 
 
-def _decode_timestamp_transcript(tokenizer: Any, answer_tokens: torch.Tensor) -> str:
+def _decode_timestamp_transcript(
+    tokenizer: Any,
+    answer_tokens: torch.Tensor,
+    *,
+    special_token_ignored: list[str] | None = None,
+    special_token_added: list[str] | None = None,
+) -> str:
+    """Decode generated text while retaining speaker routing and configured acoustic tags.
+
+    Args:
+        tokenizer (Any): SALM decoding tokenizer.
+        answer_tokens (torch.Tensor): Generated token IDs for one sample.
+        special_token_ignored (list[str] | None): Excluded tag patterns; None selects aligner defaults.
+        special_token_added (list[str] | None): Acoustic tag patterns; None selects aligner defaults.
+
+    Returns:
+        str: Cleaned text for CTC word alignment.
+    """
     from nemo.collections.speechlm2.parts.ctc_timestamp_utils import MultiSpeakerSOTWordTimestampAligner
 
     token_ids = answer_tokens.detach().cpu().tolist()
     text = tokenizer.ids_to_text(token_ids, remove_special_tokens=False)
     special_tokens = getattr(getattr(tokenizer, "tokenizer", None), "all_special_tokens", ())
-    text = MultiSpeakerSOTWordTimestampAligner.clean_sot_transcript(text, special_tokens)
+    text = MultiSpeakerSOTWordTimestampAligner.clean_sot_transcript(
+        text, special_tokens, special_token_ignored=special_token_ignored, special_token_added=special_token_added
+    )
     if not text:
         raise ValueError("The generated ASR answer is empty after removing non-speaker special tokens.")
     return text

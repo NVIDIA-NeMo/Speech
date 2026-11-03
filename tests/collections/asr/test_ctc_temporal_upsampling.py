@@ -17,8 +17,9 @@ from nemo.collections.speechlm2.parts.ctc_timestamp_utils import (
     save_ctc_timestamp_artifact,
 )
 
+pytestmark = pytest.mark.unit
 
-@pytest.mark.unit
+
 @pytest.mark.parametrize('mode', ['conv_transpose', 'repeat', 'repeat_phase'])
 @pytest.mark.parametrize('factor', [1, 2])
 def test_temporal_upsampling_shapes_padding_and_artifact_roundtrip(tmp_path, mode, factor):
@@ -57,7 +58,6 @@ def test_temporal_upsampling_shapes_padding_and_artifact_roundtrip(tmp_path, mod
     torch.testing.assert_close(restored.output_lengths(lengths), lengths * factor)
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize(
     'mode,use_transformer,attention',
     [('repeat', False, 'rope'), ('repeat_phase', False, 'rope'), ('repeat', True, 'no_pos')],
@@ -74,10 +74,10 @@ def test_temporal_upsampling_rejects_invalid_bridge(mode, use_transformer, atten
         )
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize('model_class', [EncDecCTCModel, EncDecCTCModelBPE])
 @pytest.mark.parametrize('factor', [None, 1, 2])
-def test_native_transcription_uses_ctc_output_frame_rate(model_class, factor):
+@pytest.mark.parametrize('unit', ['char', 'word', 'segment'])
+def test_native_transcription_uses_ctc_output_frame_rate(model_class, factor, unit):
     hyp = Hypothesis(score=0.0, y_sequence=torch.tensor([1]), text='hello')
     hyp.timestamp = {key: [dict(start_offset=10, end_offset=11)] for key in ('char', 'word', 'segment')}
     prediction = Mock(return_value=[hyp])
@@ -95,6 +95,5 @@ def test_native_transcription_uses_ctc_output_frame_rate(model_class, factor):
     assert results[0].y_sequence.shape == (12, 4)
     assert prediction.call_args.kwargs['decoder_lengths'] is lengths
     step = 0.08 / (factor or 1)
-    for key in ('char', 'word', 'segment'):
-        assert results[0].timestamp[key][0]['start'] == pytest.approx(10 * step)
-        assert results[0].timestamp[key][0]['end'] == pytest.approx(11 * step)
+    assert results[0].timestamp[unit][0]['start'] == pytest.approx(10 * step)
+    assert results[0].timestamp[unit][0]['end'] == pytest.approx(11 * step)

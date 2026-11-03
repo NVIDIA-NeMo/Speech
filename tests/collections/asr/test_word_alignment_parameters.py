@@ -13,26 +13,9 @@ import yaml
 from nemo.collections.speechlm2.parts import ctc_timestamp_utils as ts
 
 
-@pytest.fixture
-def alignment_parameters():
-    """Use synthetic calibration, independent of any model checkpoint or packaged file."""
-    parameters = ts.load_word_alignment_parameters()
-    parameters['boundary_interpolation'] = {
-        'coefficients': (np.arange(48).reshape(2, 24) * 0.0001).tolist(),
-        'offset': [0.01, -0.02],
-    }
-    return parameters
+pytestmark = pytest.mark.unit
 
 
-@pytest.fixture
-def alignment_yaml(tmp_path, alignment_parameters):
-    """Exercise explicitly supplied YAML using a temporary, test-owned file."""
-    path = tmp_path / 'alignment.yaml'
-    path.write_text(yaml.safe_dump(alignment_parameters))
-    return str(path)
-
-
-@pytest.mark.unit
 @pytest.mark.parametrize('name', ts._WORD_ALIGNMENT_PARAMETER_NAMES)
 def test_loaded_defaults_match_constructor_signature(name):
     default = inspect.signature(ts.MultiSpeakerSOTWordTimestampAligner.__init__).parameters[name].default
@@ -41,7 +24,6 @@ def test_loaded_defaults_match_constructor_signature(name):
         assert getattr(ts.MultiSpeakerSOTWordTimestampAligner(), name) == default
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize(
     'name,expected',
     [
@@ -58,16 +40,15 @@ def test_word_alignment_defaults(name, expected):
     assert getattr(aligner, name) == expected
 
 
-@pytest.mark.unit
 def test_defaults_skip_calibration_without_yaml(monkeypatch):
     monkeypatch.setattr(ts, '_read_word_alignment_parameters', lambda _: pytest.fail('unexpected YAML read'))
     assert ts.MultiSpeakerSOTWordTimestampAligner().boundary_interpolation is None
     assert ts.load_word_alignment_parameters()['boundary_interpolation'] is None
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize('source', ['yaml', 'mapping'])
-def test_explicit_parameters_apply_boundary_calibration(alignment_yaml, alignment_parameters, source):
+@pytest.mark.parametrize('field', ['coefficients', 'offset'])
+def test_explicit_parameters_apply_boundary_calibration(alignment_yaml, alignment_parameters, source, field):
     settings = alignment_yaml if source == 'yaml' else alignment_parameters
     aligner = ts.MultiSpeakerSOTWordTimestampAligner(word_alignment_parameters=settings)
     assert aligner.boundary_interpolation is not None
@@ -75,19 +56,12 @@ def test_explicit_parameters_apply_boundary_calibration(alignment_yaml, alignmen
     assert set(aligner.boundary_interpolation) == {'weights', 'offset'}
     assert sum(np.asarray(v).size for v in aligner.boundary_interpolation.values()) == 134
     stored = ts.load_word_alignment_parameters(settings)['boundary_interpolation']
+    assert stored[field] == alignment_parameters['boundary_interpolation'][field]
     assert set(stored) == {'coefficients', 'offset'}
     assert np.asarray(stored['coefficients']).shape == (2, 24)
     assert sum(np.asarray(v).size for v in stored.values()) == 50
 
 
-@pytest.mark.unit
-@pytest.mark.parametrize('field', ['coefficients', 'offset'])
-def test_yaml_roundtrip_preserves_calibration_values(alignment_yaml, alignment_parameters, field):
-    loaded = ts.load_word_alignment_parameters(alignment_yaml)
-    assert loaded['boundary_interpolation'][field] == alignment_parameters['boundary_interpolation'][field]
-
-
-@pytest.mark.unit
 def test_calibration_is_applied_once_and_instance_local(alignment_yaml):
     settings = ts.load_word_alignment_parameters(alignment_yaml)
     first = ts.MultiSpeakerSOTWordTimestampAligner(word_alignment_parameters=alignment_yaml)
@@ -102,7 +76,6 @@ def test_calibration_is_applied_once_and_instance_local(alignment_yaml):
     assert ts.load_word_alignment_parameters(alignment_yaml)['boundary_interpolation'] == original
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize('points,count', [(33, 1), (33, 24), (33, 66), (9, 7)])
 def test_compressed_calibration_matches_fixed_basis(points, count):
     from scipy.fft import dct
@@ -124,14 +97,12 @@ def test_compressed_calibration_matches_fixed_basis(points, count):
     assert 'weights' not in calibration
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize('values', [[], [[1]], [[1], [float('nan')]], [[], []], [[0] * 67] * 2])
 def test_invalid_compressed_calibration_is_rejected(values):
     with pytest.raises(ValueError, match='coefficients'):
         ts.MultiSpeakerSOTWordTimestampAligner(boundary_interpolation=dict(coefficients=values, offset=[0, 0]))
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize('extra', ['weights', 'mean'])
 def test_mixed_calibration_formats_are_rejected(extra):
     calibration = dict(coefficients=[[1], [1]], offset=[0, 0], **{extra: [[0] * 66] * 2})
@@ -139,7 +110,6 @@ def test_mixed_calibration_formats_are_rejected(extra):
         ts.MultiSpeakerSOTWordTimestampAligner(boundary_interpolation=calibration)
 
 
-@pytest.mark.unit
 def test_folded_calibration_preserves_legacy_boundary_corrections():
     rng = np.random.default_rng(17)
     weights = rng.normal(0, 0.0001, (2, 66))
@@ -163,7 +133,6 @@ def test_folded_calibration_preserves_legacy_boundary_corrections():
     assert new_rows == old_rows
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize('weight,word_frames', [(0.0, 7), (0.25, 12)])
 @pytest.mark.parametrize('interpolation_enabled', [False, True])
 def test_explicit_options_override_yaml_and_can_disable_interpolation(
@@ -180,7 +149,6 @@ def test_explicit_options_override_yaml_and_can_disable_interpolation(
     assert (aligner.boundary_interpolation is not None) == interpolation_enabled
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize('name,yaml_value', [('speaker_logprob_weight', 0.25), ('max_word_frames', 7)])
 def test_explicit_default_value_overrides_yaml(tmp_path, name, yaml_value):
     config = tmp_path / 'override.yaml'
@@ -191,7 +159,6 @@ def test_explicit_default_value_overrides_yaml(tmp_path, name, yaml_value):
     assert getattr(ts.MultiSpeakerSOTWordTimestampAligner(word_alignment_parameters=str(config)), name) == yaml_value
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize('weight,threshold', [(0.25, 0.25), (0.0, 0.5)])
 def test_custom_yaml_is_portable(tmp_path, weight, threshold):
     config = tmp_path / 'alignment_params_40ms-to-10ms.yaml'
@@ -202,7 +169,6 @@ def test_custom_yaml_is_portable(tmp_path, weight, threshold):
     assert aligner.boundary_interpolation is None
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize('key', ['speker_logprob_weight', 'unknown_setting'])
 def test_custom_yaml_rejects_unknown_keys(tmp_path, key):
     bad = tmp_path / 'bad.yaml'
@@ -211,15 +177,9 @@ def test_custom_yaml_rejects_unknown_keys(tmp_path, key):
         ts.MultiSpeakerSOTWordTimestampAligner(word_alignment_parameters=str(bad))
 
 
-class _Tokenizer:
-    def text_to_ids(self, text):
-        return [0]
-
-
-@pytest.mark.unit
 def test_prepared_roundtrip_retains_effective_settings_and_frame_units(alignment_yaml):
     aligner = ts.MultiSpeakerSOTWordTimestampAligner(
-        tokenizer=_Tokenizer(),
+        tokenizer=SimpleNamespace(text_to_ids=lambda _: [0]),
         blank_id=1,
         ctc_decoder=SimpleNamespace(upsampling_factor=2),
         word_alignment_parameters=alignment_yaml,
@@ -240,7 +200,6 @@ def test_prepared_roundtrip_retains_effective_settings_and_frame_units(alignment
     assert prepared['config'] == before['config']
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize(
     'options,expected',
     [
@@ -257,3 +216,22 @@ def test_native_vad_threshold_uses_alignment_options(options, expected):
         owner, torch.zeros(1, 2, 3), torch.tensor([3]), native, torch.tensor([3]), native, torch.tensor([3])
     )
     assert result.diarization_labels.tolist() == [[expected, [False, False, False]]]
+
+
+@pytest.fixture
+def alignment_parameters():
+    """Use synthetic calibration, independent of any model checkpoint or packaged file."""
+    parameters = ts.load_word_alignment_parameters()
+    parameters['boundary_interpolation'] = {
+        'coefficients': (np.arange(48).reshape(2, 24) * 0.0001).tolist(),
+        'offset': [0.01, -0.02],
+    }
+    return parameters
+
+
+@pytest.fixture
+def alignment_yaml(tmp_path, alignment_parameters):
+    """Exercise explicitly supplied YAML using a temporary, test-owned file."""
+    path = tmp_path / 'alignment.yaml'
+    path.write_text(yaml.safe_dump(alignment_parameters))
+    return str(path)

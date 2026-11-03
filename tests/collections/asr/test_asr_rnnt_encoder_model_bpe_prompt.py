@@ -17,8 +17,12 @@ import os
 import shutil
 import tempfile
 
+import numpy as np
 import pytest
+import soundfile as sf
 import torch
+from lhotse import CutSet, MonoCut, Recording, SupervisionSegment
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig
 
 from nemo.collections.asr.models.rnnt_bpe_models_prompt import EncDecRNNTBPEModelWithPrompt
@@ -408,3 +412,60 @@ class TestEncDecRNNTBPEModelWithPrompt:
         assert out_a.shape == out_b.shape
         # The prompt projection should make outputs differ for different language ids.
         assert torch.max(torch.abs(out_a - out_b)) > 0
+
+    @pytest.mark.unit
+    def test_setup_training_data_lhotse_no_len_crash(self, rnnt_asr_model_with_prompt, tmp_path):
+        """Lhotse datasets have no __len__; setup_training_data must not crash with limit_train_batches=1.0."""
+        model = rnnt_asr_model_with_prompt
+        trainer = Trainer(accelerator='cpu', devices=1, limit_train_batches=1.0)
+        model.set_trainer(trainer)
+
+        cuts = []
+        for i in range(4):
+            audio_path = str(tmp_path / f'cut_{i}.wav')
+            samples = np.zeros((1, 16000), dtype=np.float32)
+            sf.write(audio_path, samples.T, 16000)
+            cuts.append(
+                MonoCut(
+                    id=f'cut_{i}',
+                    start=0.0,
+                    duration=1.0,
+                    channel=0,
+                    recording=Recording.from_file(audio_path, recording_id=f'rec_{i}'),
+                    supervisions=[
+                        SupervisionSegment(
+                            id=f'cut_{i}_sup0',
+                            recording_id=f'rec_{i}',
+                            start=0.0,
+                            duration=1.0,
+                            text='it was the first time',
+                            language='en_US',
+                        )
+                    ],
+                )
+            )
+
+        cuts_path = str(tmp_path / 'cuts.jsonl')
+        CutSet.from_cuts(cuts).to_file(cuts_path)
+
+        train_config = DictConfig(
+            {
+                'cuts_path': cuts_path,
+                'batch_size': 2,
+                'use_lhotse': True,
+                'is_tarred': True,
+                'sample_rate': 16000,
+                'shuffle': False,
+                'num_workers': 0,
+                'pretokenize': False,
+                'initialize_prompt_feature': True,
+                'num_prompts': 128,
+                'prompt_dictionary': {'en_US': 0},
+            }
+        )
+
+        model.setup_training_data(train_config)
+
+        assert not isinstance(model._train_dl.dataset, torch.utils.data.IterableDataset)
+        assert not hasattr(model._train_dl.dataset, '__len__')
+        assert trainer.limit_train_batches == 1.0

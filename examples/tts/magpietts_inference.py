@@ -427,7 +427,7 @@ def main(argv=None):
     # Select model loader and config builder based on --model_type
     is_easy_magpie = args.model_type == 'easy_magpie'
     load_fn = load_easy_magpie_model if is_easy_magpie else load_magpie_model
-    inference_config = _build_easy_magpie_config(args) if is_easy_magpie else _build_magpie_config(args)
+    inference_config = None if is_easy_magpie else _build_magpie_config(args)
     runner_cls = _select_runner_cls(args)
 
     eval_config = EvaluationConfig(
@@ -471,6 +471,8 @@ def main(argv=None):
 
             # Load model
             model, checkpoint_name = load_fn(model_config)
+            if is_easy_magpie:
+                inference_config = _build_easy_magpie_config(args, model.cfg.get('model_type', 'v1'))
             # Log architecture summary and get MoE info + FLOPs metrics
             moe_info, flops_per_component = log_model_architecture_summary(model)
 
@@ -514,6 +516,8 @@ def main(argv=None):
 
             # Load model
             model, checkpoint_name = load_fn(model_config)
+            if is_easy_magpie:
+                inference_config = _build_easy_magpie_config(args, model.cfg.get('model_type', 'v1'))
             # Log architecture summary and get MoE info + FLOPs metrics
             moe_info, flops_per_component = log_model_architecture_summary(model)
 

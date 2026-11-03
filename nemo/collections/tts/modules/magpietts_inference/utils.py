@@ -38,8 +38,9 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from nemo.collections.tts.models import EasyMagpieTTSInferenceModel, MagpieTTSModel, NemotronTTSBase
-from nemo.collections.tts.models.easy_magpietts_inference import EasyModelInferenceParameters
+from nemo.collections.tts.models.easy_magpietts_inference import EasyModelInferenceParameters as emp_v1_inf_params
 from nemo.collections.tts.models.magpietts import ModelInferenceParameters
+from nemo.collections.tts.models.nemotron_tts.v2.base import EasyModelInferenceParameters as emp_v2_inf_params
 from nemo.collections.tts.modules.magpietts_inference.evaluation_config import ASR_MODEL_TYPES
 from nemo.collections.tts.modules.magpietts_inference.inference import (
     BaseInferenceRunner,
@@ -1132,7 +1133,7 @@ def _merge_multiturn_rank_outputs(repeat_audio_dir: str, world_size: int, save_p
 def _get_shared_inference_param_names() -> set:
     """Return the field names shared by ModelInferenceParameters and EasyModelInferenceParameters."""
     magpie_fields = {f.name for f in fields(ModelInferenceParameters)}
-    easy_fields = {f.name for f in fields(EasyModelInferenceParameters)}
+    easy_fields = {f.name for f in fields(emp_v1_inf_params)}
     return magpie_fields & easy_fields
 
 
@@ -1449,14 +1450,16 @@ def _build_magpie_config(args) -> MagpieInferenceConfig:
     )
 
 
-def _build_easy_magpie_config(args) -> EasyMagpieInferenceConfig:
+def _build_easy_magpie_config(args, model_type: str = 'v1') -> EasyMagpieInferenceConfig:
+    """Instantiate version-specific inference parameters with explicit CLI overrides."""
+    param_cls = emp_v2_inf_params if model_type == 'v2' else emp_v1_inf_params
     cfg_cls = (
         EasyMagpieMultiturnUserAudioInferenceConfig
         if args.easy_magpie_inference_mode == 'multiturn_user_audio'
         else EasyMagpieInferenceConfig
     )
     kwargs = dict(
-        model_inference_parameters=_build_inference_params_from_args(EasyModelInferenceParameters, args),
+        model_inference_parameters=_build_inference_params_from_args(param_cls, args),
         batch_size=args.batch_size,
         use_cfg=args.use_cfg,
         use_local_transformer=args.use_local_transformer,

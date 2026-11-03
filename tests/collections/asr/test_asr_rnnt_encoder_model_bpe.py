@@ -323,6 +323,27 @@ class TestEncDecRNNTBPEModel:
         reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.unit
+    def test_vocab_change_preserves_loss_config(self, test_data_dir, asr_model):
+        """change_vocabulary rebuilds the loss, which must not silently drop its configuration."""
+        expected = asr_model.loss._loss.fastemit_lambda
+        assert expected == asr_model.cfg.loss.warprnnt_numba_kwargs.fastemit_lambda
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_tokenizer_dir = os.path.join(test_data_dir, "asr", "tokenizers", "an4_wpe_128", 'vocab.txt')
+            new_tokenizer_dir = os.path.join(tmpdir, 'tokenizer')
+            os.makedirs(new_tokenizer_dir, exist_ok=True)
+            shutil.copy2(old_tokenizer_dir, new_tokenizer_dir)
+
+            asr_model.change_vocabulary(new_tokenizer_dir=new_tokenizer_dir, new_tokenizer_type='wpe')
+
+        assert asr_model.loss._loss.fastemit_lambda == expected
+
+    @pytest.mark.with_downloads()
+    @pytest.mark.skipif(
+        not NUMBA_RNNT_LOSS_AVAILABLE,
+        reason='RNNTLoss has not been compiled with appropriate numba version.',
+    )
+    @pytest.mark.unit
     def test_decoding_change(self, asr_model):
         assert isinstance(asr_model.decoding.decoding, greedy_decode.GreedyBatchedRNNTInfer)
 

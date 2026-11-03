@@ -158,8 +158,18 @@ jobs:
             exit 1
           fi
 
+  notification-tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Test CI failure notification wiring
+        run: python3 .github/scripts/test_notify_ci_failure.py
+
   Nemo_Linting_Test:
-    needs: linting
+    needs: [linting, notification-tests]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -168,6 +178,7 @@ jobs:
           RESULTS: ${{ toJson(needs.linting) }}
         run: |
           RESULT=$(echo "$RESULTS" | jq -r '.result')
+          test "${{ needs.notification-tests.result }}" = "success"
 
           if [[ "$RESULT" == "success" ]]; then
             echo "All passed."

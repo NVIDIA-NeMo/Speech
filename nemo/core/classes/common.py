@@ -50,7 +50,15 @@ from nemo.utils.cloud import maybe_download_from_cloud
 from nemo.utils.data_utils import resolve_cache_dir
 from nemo.utils.model_utils import import_class_by_path, maybe_update_config_version
 
-__all__ = ['Typing', 'FileIO', 'Model', 'Serialization', 'typecheck', 'PretrainedModelInfo']
+__all__ = [
+    'Typing',
+    'FileIO',
+    'Model',
+    'Serialization',
+    'typecheck',
+    'PretrainedModelInfo',
+    'add_allowed_target_prefixes',
+]
 
 _TYPECHECK_ENABLED = True
 _TYPECHECK_SEMANTIC_CHECK_ENABLED = True
@@ -113,14 +121,86 @@ ALLOWED_LEGACY_FALLBACK_TARGETS = {
     "src.multi_classification_models.EncDecMultiClassificationModel",
 }
 
+# Module prefixes the user trusts in addition to the lists above, see `add_allowed_target_prefixes`.
+ALLOWED_TARGET_PREFIXES_ENV_VAR = "NEMO_ALLOWED_TARGET_PREFIXES"
+_ADDED_TARGET_PREFIXES: set[str] = set()
+
 
 class UnsafeTargetError(ValueError):
     """Raised when config-driven instantiation requests a disallowed target."""
 
 
+def add_allowed_target_prefixes(*prefixes: str) -> None:
+    """
+    Allow config-driven instantiation of the classes and functions defined under the given module prefixes.
+
+    A `_target_` outside NeMo's own allow-list, for example a module of another installed package,
+    is otherwise refused with `UnsafeTargetError`,
+    so that a model file cannot run arbitrary code when it is loaded.
+    Trust a package you would import yourself by naming its top-level module or one of its submodules:
+    `add_allowed_target_prefixes("my_blocks")` allows `my_blocks.RotaryAttention` and `my_blocks.layers.rms_norm`.
+    The environment variable `NEMO_ALLOWED_TARGET_PREFIXES` takes the same prefixes, comma-separated,
+    for scripts that cannot be changed.
+
+    A target under an added prefix is allowed only when the object it resolves to is defined under an added prefix,
+    so an attribute path that leads out of the trusted package (`my_blocks.os.system`) stays blocked.
+    A prefix matches whole module names: `my_blocks` does not cover `my_blocks_other`.
+
+    Args:
+        prefixes: dotted module names such as `"my_blocks"` or `"my_blocks.layers"`; a trailing dot is accepted.
+    """
+    for prefix in prefixes:
+        _ADDED_TARGET_PREFIXES.add(_checked_module_prefix(prefix))
+
+
+def _checked_module_prefix(prefix: str) -> str:
+    prefix = prefix.strip().rstrip(".")
+    if not prefix or not all(part.isidentifier() for part in prefix.split(".")):
+        raise ValueError(
+            f"Invalid module prefix {prefix!r}: expected a dotted module name such as 'my_blocks.layers'."
+        )
+    return prefix
+
+
+def _added_prefixes() -> set[str]:
+    prefixes = set(_ADDED_TARGET_PREFIXES)
+    env_value = os.environ.get(ALLOWED_TARGET_PREFIXES_ENV_VAR, "")
+    prefixes.update(_checked_module_prefix(prefix) for prefix in env_value.split(",") if prefix.strip())
+    return prefixes
+
+
+def _is_under_module_prefix(name: str, prefixes: set[str]) -> bool:
+    return any(name == prefix or name.startswith(prefix + ".") for prefix in prefixes)
+
+
 def _is_target_allowed(target: str) -> bool:
     """
     Return True if the Hydra `_target_` should be allowed to be instantiated.
+    """
+    return _is_listed_target_allowed(target) or _is_added_target_allowed(target)
+
+
+def _is_added_target_allowed(target: str) -> bool:
+    """
+    Return True if `target` lies under a prefix added by the user and resolves to an object defined under one.
+    """
+    prefixes = _added_prefixes()
+    if not _is_under_module_prefix(target, prefixes):
+        return False
+    try:
+        obj = hydra.utils.get_object(target)
+    except (ImportError, ValueError):
+        return False
+    # @experimental / @deprecated wrap the object in a wrapt proxy; unwrap to the real one.
+    while hasattr(obj, "__wrapped__"):
+        obj = obj.__wrapped__
+    module_name = getattr(obj, "__module__", "") or ""
+    return _is_under_module_prefix(module_name, prefixes)
+
+
+def _is_listed_target_allowed(target: str) -> bool:
+    """
+    Return True if the Hydra `_target_` is allowed by NeMo's own allow-lists above.
     """
     # cheap prefix check
     if not any(target.startswith(prefix) for prefix in ALLOWED_TARGET_PREFIXES):
@@ -326,7 +406,9 @@ def _unsafe_target_error(target_path: str, config_key: str) -> ValueError:
     return UnsafeTargetError(
         f"Instantiation of unsafe target '{target_path}' is blocked. "
         f"The '{config_key}' must point to a class or function within an approved namespace. "
-        f"This restriction is in place to prevent potential arbitrary code execution."
+        f"This restriction is in place to prevent potential arbitrary code execution. "
+        f"To trust another installed package, name it in the environment variable {ALLOWED_TARGET_PREFIXES_ENV_VAR} "
+        f"or call nemo.core.classes.common.add_allowed_target_prefixes()."
     )
 
 

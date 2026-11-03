@@ -664,6 +664,30 @@ as shown below we can update this config prior to restoring the model.
     # OR
     model = model_class.from_pretrained('name_of_the_model', override_config_path=config)
 
+Allowed Config Targets
+~~~~~~~~~~~~~~~~~~~~~~
+
+The ``_target_`` entries of a model config are instantiated when the model is built or restored,
+so a ``.nemo`` file from an untrusted source could otherwise run arbitrary code when it is loaded.
+NeMo therefore only instantiates targets from its own namespaces and from a short list of libraries
+(``torch.nn``, ``torch.optim``, ``lightning.pytorch``, ``torchmetrics`` and a few more),
+and refuses every other target with ``UnsafeTargetError``.
+
+To use modules from another package you installed yourself, for example a custom attention block,
+name the package in the environment variable ``NEMO_ALLOWED_TARGET_PREFIXES`` (comma-separated module prefixes),
+or call :func:`~nemo.core.classes.common.add_allowed_target_prefixes` before the model is built:
+
+.. code-block:: Python
+
+    from nemo.core.classes.common import add_allowed_target_prefixes
+
+    add_allowed_target_prefixes("my_blocks")
+    model = ModelPT.restore_from('/path/to/model.nemo')
+
+Only classes and functions defined under an added prefix are instantiated;
+an attribute path that leads out of the package stays blocked.
+Trust only packages you would import yourself.
+
 Register Artifacts
 ------------------
 

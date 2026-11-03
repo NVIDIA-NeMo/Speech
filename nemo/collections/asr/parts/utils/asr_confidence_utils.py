@@ -17,10 +17,13 @@ import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from functools import partial
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Callable, List, Optional
 
 import torch
 from omegaconf import DictConfig, OmegaConf
+
+from nemo.utils import logging
+from nemo.utils.nemo_logging import LogMode
 
 if TYPE_CHECKING:
     from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
@@ -334,6 +337,63 @@ class ConfidenceMethodMixin(ABC):
         return self._confidence_measure(torch.nan_to_num(x))
 
 
+def _fast_word_groups(pieces: List[str]) -> List[List[int]]:
+    """Token ranges per word from the SentencePiece word-start marker alone."""
+    underline = '\u2581'  # '▁'
+    groups: List[List[int]] = []
+    prev_unk = False
+    for i, piece in enumerate(pieces):
+        is_unk = piece == '<unk>'
+        starts_word = piece.startswith(underline) or is_unk or prev_unk
+        # A lone ▁ separates words; it opens the next word but is not one itself.
+        if groups and all(pieces[k] == underline for k in range(*groups[-1])):
+            groups[-1][1] = i + 1
+        elif not groups or starts_word:
+            groups.append([i, i + 1])
+        else:
+            groups[-1][1] = i + 1
+        prev_unk = is_unk
+    if groups and all(pieces[k] == underline for k in range(*groups[-1])):
+        # A trailing lone ▁ starts nothing, so it stays with the last word.
+        last = groups.pop()
+        if groups:
+            groups[-1][1] = last[1]
+    return groups
+
+
+def _decoded_word_groups(
+    token_ids: List[int], pieces: List[str], num_words: int, decode: Callable[[List[int]], str]
+) -> List[List[int]]:
+    """Token ranges per word, read from the decode: a token opens a word when the text gains one.
+
+    Byte-fallback whitespace and punctuation the decode re-spaces carry no marker in the pieces,
+    so only the decode knows where the boundaries are. Each decode starts at the previous word,
+    which is all that stripping and splitting look at, so the work stays linear.
+    """
+    underline = '\u2581'  # '▁'
+    groups: List[List[int]] = []
+    window = 0  # token where the decoded window starts, always a word start
+    before = 0  # words wholly before the window
+    for i in range(len(token_ids)):
+        count = min(before + len(decode(token_ids[window : i + 1]).split()), num_words)
+        if count > len(groups):
+            # A lone ▁ just before the token belongs to the word it opens, never empties the last.
+            start = i
+            while start > 0 and pieces[start - 1] == underline and (not groups or groups[-1][0] < start - 1):
+                start -= 1
+            if groups:
+                groups[-1][1] = start
+            # One token can add two or more words (byte-fallback whitespace); each gets its confidence.
+            groups.append([start, i + 1])
+            while len(groups) < count:
+                groups.append([i, i + 1])
+            if len(groups) >= 2 and groups[-2][0] > window:
+                window, before = groups[-2][0], len(groups) - 2
+        elif groups:
+            groups[-1][1] = i + 1
+    return groups
+
+
 class ConfidenceMixin(ABC):
     """Confidence Mixin class.
 
@@ -432,7 +492,11 @@ class ConfidenceMixin(ABC):
         return word_confidence
 
     def _aggregate_token_confidence_subwords_sentencepiece(
-        self, words: List[str], token_confidence: List[float], token_ids: List[int]
+        self,
+        words: List[str],
+        token_confidence: List[float],
+        token_ids: List[int],
+        decode_fn: Optional[Callable[[List[int]], str]] = None,
     ) -> List[float]:
         """Implementation of token confidence aggregation for subword-based models.
 
@@ -442,6 +506,9 @@ class ConfidenceMixin(ABC):
             words: List of words of a hypothesis.
             token_confidence: List of token-level confidence scores of a hypothesis.
             token_ids: List of token ids of a hypothesis.
+            decode_fn: Ids-to-text call used to locate word boundaries. Must be the one that
+                produced ``words``, or a token can be attributed to the wrong word. Defaults to
+                ``decode_ids_to_str``.
 
         Returns:
             A list of word-level confidence scores.
@@ -449,24 +516,31 @@ class ConfidenceMixin(ABC):
         word_confidence = []
         # run only if there are final words
         if len(words) > 0:
-            j = 0
-            prev_unk = False
-            prev_underline = False
-            for i, token_id in enumerate(token_ids):
-                token = self.decode_ids_to_tokens([int(token_id)])[0]
-                token_text = self.decode_ids_to_str([int(token_id)])
-                # treat `<unk>` as a separate word regardless of the next token
-                # to match the result of `tokenizer.ids_to_text`
-                if (token != token_text or prev_unk) and i > j:
-                    # do not add confidence for `▁` if the current token starts with `▁`
-                    # to match the result of `tokenizer.ids_to_text`
-                    if not prev_underline:
-                        word_confidence.append(self._aggregate_confidence(token_confidence[j:i]))
-                    j = i
-                prev_unk = token == '<unk>'
-                prev_underline = token == '▁'
-            if not prev_underline:
-                word_confidence.append(self._aggregate_confidence(token_confidence[j : len(token_ids)]))
+            decode = decode_fn if decode_fn is not None else self.decode_ids_to_str
+            num_words = len(words)
+            int_token_ids = [int(t) for t in token_ids]
+            pieces = self.decode_ids_to_tokens(int_token_ids)
+
+            groups = _fast_word_groups(pieces)
+            # The marker only suggests boundaries; trust them if each group decodes to its word.
+            if len(groups) != num_words or any(
+                decode(int_token_ids[start:end]).split() != [word] for (start, end), word in zip(groups, words)
+            ):
+                groups = _decoded_word_groups(int_token_ids, pieces, num_words, decode)
+
+            if len(groups) != num_words:
+                # Changed text or stray ids would make this wrong; a crash helps no one, so say so.
+                logging.warning(
+                    "Word-level confidence: the token ids and the words disagree on the word count, so the "
+                    "confidences were padded or cut to fit. Was the text changed after decoding?",
+                    mode=LogMode.ONCE,
+                )
+                while len(groups) < num_words:
+                    groups.append(list(groups[-1]) if groups else [0, len(int_token_ids)])
+                groups = groups[:num_words]
+
+            for start, end in groups:
+                word_confidence.append(self._aggregate_confidence(token_confidence[start:end]))
         if len(words) != len(word_confidence):
             raise RuntimeError(
                 f"""Something went wrong with word-level confidence aggregation.\n

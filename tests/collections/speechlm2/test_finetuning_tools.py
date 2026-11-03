@@ -414,6 +414,27 @@ def test_sum_label_logprob_is_exact_and_fails_on_missing_token():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "spec_k,score_labels,hybrid,expected_spec_k,expected_replayssm",
+    [
+        (2, None, True, 2, True),  # speculation on a hybrid backbone runs through ReplaySSM
+        (2, None, False, 2, False),  # a non-hybrid backbone needs no ReplaySSM
+        (0, None, True, 0, False),
+        (2, ["NEG", "POS"], True, 0, False),  # label scoring turns speculation, and with it ReplaySSM, off
+        (0, ["NEG", "POS"], True, 0, False),
+    ],
+)
+def test_resolve_speculation_records_the_effective_settings(
+    monkeypatch, spec_k, score_labels, hybrid, expected_spec_k, expected_replayssm
+):
+    ev = load("vllm_task_eval")
+    monkeypatch.setattr(ev, "speechlm_is_hybrid", lambda model: hybrid)
+    args = Namespace(model="ckpt", spec_k=spec_k, score_labels=score_labels)
+    ev.resolve_speculation(args)
+    assert (args.spec_k, args.replayssm) == (expected_spec_k, expected_replayssm)
+
+
+@pytest.mark.unit
 def test_eer_rejects_degenerate_inputs():
     tm = load("task_metrics")
     assert tm.eer([0.9, 0.1, 0.8, 0.2], [True, False, True, False]) == 0.0

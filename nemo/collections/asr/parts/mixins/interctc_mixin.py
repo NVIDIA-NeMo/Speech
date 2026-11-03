@@ -212,10 +212,10 @@ class InterCTCMixin:
             if getattr(decoder, 'requires_encoded_lengths', False):
                 decoder_kwargs['encoded_lengths'] = layer_lengths[0]
             log_probs = decoder(**decoder_kwargs)
-            output_lengths = layer_lengths[0]
+            ctc_lengths = layer_lengths[0]
             if hasattr(decoder, 'output_lengths'):
-                output_lengths = decoder.output_lengths(output_lengths)
-            captured_tensors.append((log_probs, output_lengths))
+                ctc_lengths = decoder.output_lengths(ctc_lengths)
+            captured_tensors.append((log_probs, ctc_lengths))
         return captured_tensors
 
     def add_interctc_losses(

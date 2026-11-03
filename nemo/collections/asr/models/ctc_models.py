@@ -530,7 +530,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         Returns:
             A tuple of 3 elements -
             1) The log probabilities tensor of shape [B, T, D].
-            2) The valid CTC-output lengths after encoder and decoder temporal scaling, of shape [B].
+            2) The lengths of the acoustic sequence after propagation through the encoder, of shape [B].
             3) The greedy token predictions of the model of shape [B, T] (via argmax)
         """
         has_input_signal = input_signal is not None and input_signal_length is not None

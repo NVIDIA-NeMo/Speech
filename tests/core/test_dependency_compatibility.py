@@ -270,19 +270,19 @@ def test_aed_default_config_checkpoint(tmp_path, test_data_dir):
 
 
 @pytest.mark.unit
-def test_adapter_model_checkpoint_has_plain_schema(tmp_path):
+def test_adapter_model_checkpoint_preserves_live_schema(tmp_path):
     from nemo.collections.common.parts.adapter_modules import LinearAdapterConfig
     from tests.core.mixins.adapters.test_adapter_model_mixin import DefaultAdapterModel, get_model_config
 
     model = DefaultAdapterModel(get_model_config())
     model.add_adapter('linear', LinearAdapterConfig(in_features=50, dim=8))
     assert model.is_adapter_available()
-    assert OmegaConf.get_type(model.hparams.cfg.adapters.linear) is dict
+    assert OmegaConf.get_type(model.hparams.cfg.adapters.linear) is LinearAdapterConfig
     _assert_model_checkpoint_roundtrip(model, tmp_path / 'adapter.ckpt')
 
 
 @pytest.mark.unit
-def test_application_schema_is_plain_in_model_hparams(tmp_path):
+def test_application_schema_is_preserved_in_model_hparams(tmp_path):
     from omegaconf import open_dict
 
     from tests.core.test_save_restore import MockModel
@@ -292,24 +292,45 @@ def test_application_schema_is_plain_in_model_hparams(tmp_path):
         model.cfg.custom = OmegaConf.structured(_UnregisteredSchema)
         model.cfg.alias = '${custom.name}'
     assert OmegaConf.get_type(model.cfg.custom) is _UnregisteredSchema
-    assert OmegaConf.get_type(model.hparams.cfg.custom) is dict
+    assert OmegaConf.get_type(model.hparams.cfg.custom) is _UnregisteredSchema
     assert OmegaConf.to_container(model.cfg, resolve=False)['alias'] == '${custom.name}'
-    assert model.hparams.cfg.alias == 'model'
     _assert_model_checkpoint_roundtrip(model, tmp_path / 'application.ckpt')
 
 
 def _assert_model_checkpoint_roundtrip(model, path):
-    torch.save(
-        {
-            'state_dict': model.state_dict(),
-            'hyper_parameters': model.hparams,
-            'pytorch-lightning_version': import_module('lightning.pytorch').__version__,
-        },
-        path,
+    lightning = import_module('lightning.pytorch')
+    trainer = lightning.Trainer(
+        default_root_dir=path.parent,
+        accelerator='cpu',
+        logger=False,
+        enable_checkpointing=False,
+        enable_progress_bar=False,
+        enable_model_summary=False,
     )
+    model.set_trainer(trainer)
+    trainer.strategy.connect(model)
+    trainer.save_checkpoint(path, weights_only=True)
+    saved = torch.load(path, map_location='cpu', weights_only=True)
+    assert OmegaConf.get_type(saved['hyper_parameters']['cfg']) is dict
     restored = type(model).load_from_checkpoint(path, map_location='cpu', weights_only=True)
     assert OmegaConf.to_container(restored.cfg, resolve=True, enum_to_str=True) == OmegaConf.to_container(
         model.cfg, resolve=True, enum_to_str=True
     )
     for name, value in model.state_dict().items():
         torch.testing.assert_close(restored.state_dict()[name], value)
+
+
+@pytest.mark.unit
+def test_checkpoint_snapshot_preserves_supported_enum_and_path_values(tmp_path):
+    from pathlib import Path
+
+    from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecodingConfig  # noqa: F401
+    from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import PruningMode
+    from tests.core.test_save_restore import MockModel
+
+    model = MockModel(OmegaConf.create({'mode': PruningMode.EARLY, 'path': Path('models/checkpoint')}))
+    path = tmp_path / 'values.ckpt'
+    _assert_model_checkpoint_roundtrip(model, path)
+    restored = MockModel.load_from_checkpoint(path, map_location='cpu', weights_only=True)
+    assert restored.cfg.mode is PruningMode.EARLY
+    assert restored.cfg.path == model.cfg.path == Path('models/checkpoint')

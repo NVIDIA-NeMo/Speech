@@ -228,3 +228,76 @@ def test_ema_fit_sidecar_policy(tmp_path, sidecar):
 
 class _UnsupportedValue:
     pass
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('accumulate', [1, 2])
+def test_default_resume_matches_previous_lightning_behavior(tmp_path, accumulate):
+    def make_trainer(directory, steps):
+        trainer = pl.Trainer(
+            default_root_dir=directory,
+            accelerator='cpu',
+            devices=1,
+            logger=False,
+            enable_checkpointing=False,
+            enable_progress_bar=False,
+            enable_model_summary=False,
+            max_steps=steps,
+            max_epochs=3,
+            val_check_interval=2,
+            num_sanity_val_steps=0,
+            accumulate_grad_batches=accumulate,
+        )
+        exp_manager(
+            trainer,
+            {
+                'explicit_log_dir': str(directory),
+                'create_tensorboard_logger': False,
+                'create_preemption_callback': False,
+                'checkpoint_callback_params': {
+                    'monitor': 'val_loss',
+                    'save_top_k': 1,
+                    'save_last': True,
+                    'save_nemo_on_train_end': False,
+                },
+            },
+        )
+        return trainer
+
+    first = make_trainer(tmp_path / 'first', 2)
+    first.fit(_ResumeModel())
+    resumed = make_trainer(tmp_path / 'resumed', 4)
+    model = _ResumeModel()
+    resumed.fit(model, ckpt_path=first.checkpoint_callback.last_model_path)
+    # Reference traces independently compared with Lightning 2.4. The default
+    # non-stateful dataloader restarts its iterator in both releases.
+    assert model.seen == ([1, 2] if accumulate == 1 else [1, 2, 3, 4])
+    assert model.validation_steps == ([4] if accumulate == 1 else [3, 4])
+    assert resumed.global_step == resumed.fit_loop.epoch_loop._batches_that_stepped == 4
+    assert resumed.optimizers[0].param_groups[0]['lr'] == pytest.approx(0.06561)
+    assert model.weight.item() == pytest.approx(0.24586007 if accumulate == 1 else 0.23775484)
+
+
+class _ResumeModel(_PlateauModel):
+    def __init__(self):
+        super().__init__()
+        self.weight.data.fill_(0.25)
+        self.seen = []
+        self.validation_steps = []
+
+    def training_step(self, batch, batch_idx):
+        self.seen.append(int(batch.item()))
+        return (self.weight * batch / 10).square().mean()
+
+    def on_validation_epoch_end(self):
+        self.validation_steps.append(self.global_step)
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.SGD(self.parameters(), lr=0.1)
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {'scheduler': torch.optim.lr_scheduler.StepLR(optimizer, 1, 0.9), 'interval': 'step'},
+        }
+
+    def train_dataloader(self):
+        return DataLoader(torch.arange(1, 9, dtype=torch.float32), batch_size=1)

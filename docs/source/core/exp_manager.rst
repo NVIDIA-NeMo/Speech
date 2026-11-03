@@ -15,10 +15,12 @@ To use the Experiment Manager, call :class:`~nemo.utils.exp_manager.exp_manager`
 
 The Experiment Manager is configurable using YAML with Hydra.
 
-Lightning 2.6 uses Rich progress bars and model summaries when Rich is installed.
-For predictable cluster logs, set ``trainer.enable_progress_bar: false`` and
-``trainer.enable_model_summary: false``, or supply explicit ``TQDMProgressBar`` and
-``ModelSummary`` callbacks through the Trainer configuration.
+NeMo's Lightning integration preserves the previous callback defaults: ``TQDMProgressBar``
+and a plain ``ModelSummary``. Explicit callbacks remain unchanged; selecting a
+``RichProgressBar`` also selects a Rich model summary unless a summary callback is
+already provided. ``trainer.enable_progress_bar: false``,
+``trainer.enable_model_summary: false``, and barebones mode retain their usual behavior.
+This applies to direct Lightning Trainer construction as well as NeMo's Trainer configuration helper.
 
 .. code-block:: bash
 
@@ -60,7 +62,7 @@ Resume Training
 ---------------
 
 New NeMo checkpoints store resolved configuration values without dataclass schema metadata;
-the live model configuration retains its schema. Previously saved built-in decoding and
+the live model configuration and hparams retain their schemas. Previously saved built-in decoding and
 adapter configurations remain supported. For an older checkpoint containing an application-defined
 schema, import that trusted schema in application code and call
 ``nemo.utils.serialization.register_checkpoint_schema_types(MyConfig)`` before loading it.

@@ -38,9 +38,10 @@ else:
 
 logging = _Logger()
 try:
-    from nemo.utils.lightning_logger_patch import add_memory_handlers_to_pl_logger
+    from nemo.utils.lightning_logger_patch import add_memory_handlers_to_pl_logger, preserve_trainer_callback_defaults
 
     add_memory_handlers_to_pl_logger()
+    preserve_trainer_callback_defaults()
 except ModuleNotFoundError:
     pass
 

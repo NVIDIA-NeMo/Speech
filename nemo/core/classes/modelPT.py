@@ -1694,35 +1694,39 @@ class ModelPT(LightningModule, Model):
             Please create a new model using an updated config to properly update the model.
         """
         self._cfg = cfg
-        # Checkpoints store configuration values, not application-selected schema classes.
-        self._set_hparams(OmegaConf.create({'cfg': OmegaConf.to_container(self._cfg, resolve=True, enum_to_str=True)}))
+        self._set_hparams(OmegaConf.create({'cfg': self._cfg}))
 
         # TODO: Remove in NeMo 1.7 (or when PTL fixes this on their end)
         if hasattr(self, '_hparams_initial') and 'cfg' in self._hparams_initial:
-            self._hparams_initial['cfg'] = OmegaConf.to_container(self._cfg, resolve=True, enum_to_str=True)
+            self._hparams_initial['cfg'] = OmegaConf.to_object(self._cfg)
 
     @property
     def hparams(self):
         """
-        Return a resolved snapshot of the latest model config for checkpointing.
-        Structured schema metadata is omitted from the snapshot; the live ``cfg``
-        retains its validation and schema types.
+        Overwrite default hparams property to return the lastest model config.
         Without this change, the hparams property would return the old config if there was a direct change to
         self._cfg (e.g., in self.setup_optimization()) that was not done via `self.cfg = new_cfg`.
         """
-        # Checkpoints store configuration values, not application-selected schema classes.
-        self._set_hparams(OmegaConf.create({'cfg': OmegaConf.to_container(self._cfg, resolve=True, enum_to_str=True)}))
+        self._set_hparams(OmegaConf.create({'cfg': self._cfg}))
 
         if (
             hasattr(self, '_hparams_initial')
             and 'cfg' in self._hparams_initial
             and isinstance(self._hparams_initial['cfg'], DictConfig)
         ):
-            self._hparams_initial['cfg'] = OmegaConf.to_container(
-                self._hparams_initial['cfg'], resolve=True, enum_to_str=True
-            )
+            self._hparams_initial['cfg'] = OmegaConf.to_object(self._hparams_initial['cfg'])
 
         return super().hparams
+
+    def on_save_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
+        """Store a plain configuration snapshot without changing live hparams metadata."""
+        super().on_save_checkpoint(checkpoint)
+        key = self.CHECKPOINT_HYPER_PARAMS_KEY
+        hyper_parameters = checkpoint.get(key)
+        if isinstance(hyper_parameters, (dict, DictConfig)) and 'cfg' in hyper_parameters:
+            hyper_parameters = copy.deepcopy(hyper_parameters)
+            hyper_parameters['cfg'] = OmegaConf.create(OmegaConf.to_container(self.cfg, resolve=True))
+            checkpoint[key] = hyper_parameters
 
     @property
     def validation_step_outputs(self):

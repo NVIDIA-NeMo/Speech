@@ -241,7 +241,7 @@ class S3CheckpointIO(CheckpointIO):
             super().remove_checkpoint(path)
 
     def teardown(self) -> None:
-        # this ensure we wait for final checkpoint to finish uploading at train end.
+        """Wait for uploads to finish and remove remaining temporary checkpoint files."""
         rank = torch.distributed.get_rank()
         if self.async_checkpointing:
             logging.info(f'Entering teardown, waiting for all jobs to finish, rank {rank}')
@@ -249,10 +249,7 @@ class S3CheckpointIO(CheckpointIO):
             self._executor.shutdown(wait=True)
             logging.info(f'executor shut down after {(time.perf_counter() - start_time):.2f} seconds, rank {rank}')
 
-        '''
-        This will be non-empty at the end of training with asynchronous uploading because the futures are not
-        processed with _check_uploading_results_so_far. Therefore, check that the path exists before deleting.
-        '''
+        # Async upload futures may leave temporary files until teardown.
         if self._temp_files:
             for tfile in self._temp_files:
                 if os.path.exists(tfile):

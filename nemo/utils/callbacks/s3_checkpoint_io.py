@@ -175,6 +175,7 @@ class S3CheckpointIO(CheckpointIO):
     def save_checkpoint(
         self, checkpoint: Dict[str, Any], path: Union[str, Path], storage_options: Optional[Any] = None
     ) -> None:
+        """Serialize a checkpoint and upload it to the configured S3 path."""
         # if we have a shared memory directory, we can serialize as a file to shared memory instead of as bytes.
         if os.path.exists(SHARED_MEM_DIR):
             localfile = self._serialize_checkpoint_to_shm(checkpoint, path)
@@ -211,6 +212,7 @@ class S3CheckpointIO(CheckpointIO):
         map_location: Optional[Callable] = lambda storage, loc: storage,
         weights_only: Optional[bool] = None,
     ) -> Dict[str, Any]:
+        """Download a checkpoint and forward device mapping and unpickling policy to PyTorch."""
         if os.path.exists(SHARED_MEM_DIR):
             with NamedTemporaryFile(dir=SHARED_MEM_DIR, delete=True) as tempfile:
                 logging.info(
@@ -232,6 +234,7 @@ class S3CheckpointIO(CheckpointIO):
         return checkpoint
 
     def remove_checkpoint(self, path: Union[str, Path]) -> None:
+        """Remove an S3 checkpoint or delegate local removal to the base plugin."""
         if S3Utils.is_s3_url(path):
             S3Utils.remove_object(path)
         else:

@@ -7,10 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from nemo.collections.tts.modules.magpietts_inference.token_timestamps import (
-    build_token_timestamps,
-    save_token_timestamps,
-)
+from nemo.collections.tts.modules.attention_timestamps import build_token_timestamps, save_token_timestamps
 
 pytestmark = pytest.mark.unit
 

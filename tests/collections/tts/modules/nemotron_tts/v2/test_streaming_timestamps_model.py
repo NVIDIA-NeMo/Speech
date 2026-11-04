@@ -23,6 +23,7 @@ def test_timestamp_recording_defaults_off_and_can_be_enabled_without_training_mo
     state = _init_stream(model)
     assert state.timestamp_session is None
     assert model.get_timestamps(state) is None and model.drain_timestamp_events(state) == []
+    assert model.drain_timestamp_frames(state) == []
     assert not hasattr(model, 'text_aligner') and not hasattr(model, 'aligned_text_head')
     model.configure_timestamps(enabled=True)
     assert _init_stream(model).timestamp_session is not None
@@ -52,6 +53,10 @@ def test_timestamp_recording_preserves_real_cached_backbone_outputs_and_audio_co
         for token in item['timestamps']
     )
     assert states[1].last_hidden.size(0) == (4 if use_cfg else 2)
+    frames = observed.drain_timestamp_frames(states[1])
+    assert frames and all(frame['batch_index'] < 2 for frame in frames)
+    assert len(frames) == sum(item['frame_count'] for item in trace)
+    assert observed.drain_timestamp_frames(states[1]) == []
 
 
 def test_bos_delay_five_and_stacked_frames_have_no_timestamp_index_shift():
@@ -61,6 +66,7 @@ def test_bos_delay_five_and_stacked_frames_have_no_timestamp_index_shift():
         for token in [model.bos_id, 7, 7, 8, model.eos_id]:
             state, codes, _ = model.streaming_step(state, torch.full((2,), token))
             assert codes is None and model.drain_timestamp_events(state) == []
+            assert model.drain_timestamp_frames(state) == []
         state, codes, _ = model.streaming_step(state, None)
         events = model.drain_timestamp_events(state, [0])
         assert codes is not None and events
@@ -69,16 +75,26 @@ def test_bos_delay_five_and_stacked_frames_have_no_timestamp_index_shift():
         assert events[0]['emitted_at'] == pytest.approx(0.08)
         assert all(event['batch_index'] == 0 for event in events)
         assert all(event['batch_index'] == 1 for event in model.drain_timestamp_events(state))
+        frames = model.drain_timestamp_frames(state, [0])
+        assert len(frames) == 1 and frames[0]['token_id'] == 7
+        assert frames[0]['codec_frame_start'] == 0 and frames[0]['codec_frame_end'] == 2
+        assert frames[0]['frame_index'] == 0 and frames[0]['end'] == pytest.approx(0.08)
+        assert all(frame['batch_index'] == 1 for frame in model.drain_timestamp_frames(state))
         assert not state.finished.any()
         for _ in range(4):
             state, _, _ = model.streaming_step(state, None)
             assert model.drain_timestamp_events(state)
+            frames = model.drain_timestamp_frames(state)
+            assert len(frames) == 2 and {frame['batch_index'] for frame in frames} == {0, 1}
     for trace in model.get_timestamps(state, finalize=True):
         assert [record['token_id'] for record in trace['timestamps']] == [7, 7, 8]
         assert [record['token_index'] for record in trace['timestamps']] == [0, 1, 2]
         assert [boundary for record in trace['timestamps'] for boundary in (record['start'], record['end'])] == (
             pytest.approx([0.0, 0.16, 0.16, 0.24, 0.24, 0.40])
         )
+        assert trace['frame_count'] == len(trace['frames']) == 5
+        assert [frame['token_index'] for frame in trace['frames']] == [0, 0, 1, 2, 2]
+        assert [frame['codec_frame_start'] for frame in trace['frames']] == [0, 2, 4, 6, 8]
 
 
 @pytest.mark.parametrize('eos_subframe', [0, 1])
@@ -103,6 +119,11 @@ def test_audio_eos_clips_partial_stacked_frame_before_timestamp_events(eos_subfr
         token = trace['timestamps'][0]
         assert token['token_id'] == 7
         assert token['end'] == (pytest.approx(0.04) if eos_subframe else None)
+        assert trace['frame_count'] == len(trace['frames']) == eos_subframe
+        if eos_subframe:
+            frame = trace['frames'][0]
+            assert frame['codec_frame_start'] == 0 and frame['codec_frame_end'] == 1
+            assert frame['valid_codec_frames'] == 1 and frame['end'] == pytest.approx(0.04)
     assert all(event['end'] <= eos_subframe * 0.04 + 1e-8 for event in model.drain_timestamp_events(state))
 
 
@@ -138,6 +159,35 @@ def test_text_after_eos_is_not_mistaken_for_conditioning_input():
     for token in [7, model.eos_id, 8, 9]:
         state, _, _ = model.streaming_step(state, torch.full((2,), token))
     assert model.get_timestamps(state)[0]['turns'][0]['source_token_ids'] == [7]
+
+
+def test_dropout_audio_has_an_unaligned_frame_and_cannot_reuse_warmup_attention():
+    model = _model(enabled=True)
+    state = _init_stream(model)
+    with _attention_peaks([0]):
+        for token in [7, 8, 9, model.pad_id, model.pad_id]:
+            state, codes, _ = model.streaming_step(
+                state,
+                torch.full((2,), token),
+                prefill_like_step=True,
+                timestamp_text_warmup=True,
+            )
+            assert codes is None and model.drain_timestamp_frames(state) == []
+        assert state.timestamp_session._raw_attention is not None
+        state, codes, _ = model.streaming_step(state, None, force_dropout_text=True)
+        assert codes is not None
+        missing = model.drain_timestamp_frames(state)
+        assert len(missing) == 2
+        assert all(frame['status'] == 'unaligned' and frame['token_index'] is None for frame in missing)
+        assert all(frame['confidence'] is None and frame['frame_index'] == 0 for frame in missing)
+        assert all(frame['codec_frame_start'] == 0 and frame['codec_frame_end'] == 2 for frame in missing)
+        state, codes, _ = model.streaming_step(state, None)
+        recovered = model.drain_timestamp_frames(state)
+        assert codes is not None and len(recovered) == 2
+        assert all(frame['token_id'] == 7 and frame['frame_index'] == 1 for frame in recovered)
+        assert all(frame['codec_frame_start'] == 2 and frame['codec_frame_end'] == 4 for frame in recovered)
+        assert all(frame['start'] == pytest.approx(0.08) for frame in recovered)
+    assert all(trace['frame_count'] == 2 for trace in model.get_timestamps(state))
 
 
 def _model(enabled=None):

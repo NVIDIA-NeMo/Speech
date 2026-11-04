@@ -3,12 +3,13 @@
 
 """Read-only streaming timestamps from one main-backbone attention head.
 
-This observer never changes attention, generation, or the progress of audio
-sampling. Only the latest attention row and aggregate token spans are retained.
+The observer records causal alignment decisions at each emitted audio step,
+alongside aggregate token spans and optional frame history.
 """
 
 import math
 from collections.abc import Mapping
+from copy import deepcopy
 
 import torch
 
@@ -29,6 +30,7 @@ def resolve_timestamp_config(config=None):
         force_progress=True,
         progress_threshold=0.5,
         skip_penalty=6.0,
+        retain_frame_history=True,
     )
     if config is not None and not isinstance(config, Mapping):
         raise ValueError('timestamp_config must be a mapping')
@@ -38,12 +40,18 @@ def resolve_timestamp_config(config=None):
     values.update(config or {})
     if type(values['enabled']) is not bool:
         raise ValueError('timestamp_config.enabled must be a boolean')
+    if type(values['retain_frame_history']) is not bool:
+        raise ValueError('timestamp_config.retain_frame_history must be a boolean')
     if values['layer'] != 'middle' and (type(values['layer']) is not int or values['layer'] < 0):
         raise ValueError('timestamp_config.layer must be middle or a nonnegative main-backbone attention ordinal')
     if type(values['head']) is not int or values['head'] < 0:
         raise ValueError('timestamp_config.head must be a nonnegative integer')
     AttentionTimestampTracker(
-        **{key: value for key, value in values.items() if key not in ('enabled', 'layer', 'head')}
+        **{
+            key: value
+            for key, value in values.items()
+            if key not in ('enabled', 'layer', 'head', 'retain_frame_history')
+        }
     )
     return values
 
@@ -51,8 +59,9 @@ def resolve_timestamp_config(config=None):
 class StreamingTimestampSession:
     """Per-stream timestamp state, independent from inference attention policy.
 
-    All frame indices are on the unstacked codec grid, including silent prefill
-    positions. Times are relative to the first generated audio frame, matching
+    ``frame_index`` counts emitted decoder audio steps; ``codec_frame_start``
+    and ``codec_frame_end`` identify the covered unstacked codec frames. Codec
+    indices and times are relative to the first generated audio frame, matching
     ``streaming_finalize``. ``audio_lengths`` supplied to ``snapshots`` are seconds.
     """
 
@@ -71,6 +80,13 @@ class StreamingTimestampSession:
         self._origins = [None] * batch_size
         self._ends = [None] * batch_size
         self._events = []
+        self._frames = []
+        self._frame_history = [[] for _ in range(batch_size)]
+        self._frame_counts = [0] * batch_size
+        self._raw_attention = None
+
+    def begin_step(self):
+        """Clear the previous query before a new decoding step begins."""
         self._raw_attention = None
 
     def register_text(self, row, key_position, token_id, token=None):
@@ -157,6 +173,26 @@ class StreamingTimestampSession:
             end=(self._ends[row] - self._origins[row]) * self.codec_frame_seconds,
         )
         self._collect(row, turn)
+        for record in turn['tracker'].drain_frames():
+            for assignment in record['assignments']:
+                index = assignment['token_index']
+                assignment['text_key_position'] = turn['keys'][index] if index is not None else None
+            index = record['token_index']
+            frame = dict(
+                record,
+                text_key_position=turn['keys'][index] if index is not None else None,
+                batch_index=row,
+                turn_index=turn['turn_index'],
+                turn_frame_index=record['frame_index'],
+                frame_index=self._frame_counts[row],
+                codec_frame_start=frame_start - self._origins[row],
+                codec_frame_end=self._ends[row] - self._origins[row],
+                valid_codec_frames=valid_frames,
+            )
+            self._frame_counts[row] += 1
+            self._frames.append(frame)
+            if self.config['retain_frame_history']:
+                self._frame_history[row].append(deepcopy(frame))
 
     def drain_events(self, batch_indices=None):
         if batch_indices is None:
@@ -168,6 +204,23 @@ class StreamingTimestampSession:
         events = [event for event in self._events if event['batch_index'] in selected]
         self._events = [event for event in self._events if event['batch_index'] not in selected]
         return events
+
+    def drain_frames(self, batch_indices=None):
+        """Consume current-step decisions, independently of token-span events.
+
+        A record is emitted for every positive-duration audio step, including
+        steps with unavailable or insufficient attention evidence. History in
+        ``snapshots`` remains available after draining when retention is enabled.
+        """
+        if batch_indices is None:
+            frames, self._frames = self._frames, []
+            return frames
+        selected = set(batch_indices)
+        for row in selected:
+            self._validate_row(row)
+        frames = [frame for frame in self._frames if frame['batch_index'] in selected]
+        self._frames = [frame for frame in self._frames if frame['batch_index'] not in selected]
+        return frames
 
     def snapshots(self, finalize=False, audio_lengths=None):
         results = []
@@ -188,6 +241,10 @@ class StreamingTimestampSession:
                     frame_step_seconds=self.frame_stacking_factor * self.codec_frame_seconds,
                     attention_layer=self.config['layer'],
                     attention_head=self.config['head'],
+                    codec_frame_seconds=self.codec_frame_seconds,
+                    frame_count=self._frame_counts[row],
+                    frame_history_retained=self.config['retain_frame_history'],
+                    frames=deepcopy(self._frame_history[row]),
                     timestamps=[
                         dict(record, turn_index=turn['turn_index'])
                         for turn in turns
@@ -206,10 +263,14 @@ class StreamingTimestampSession:
         return results
 
     def _new_turn(self, turn_index):
-        settings = {key: value for key, value in self.config.items() if key not in ('enabled', 'layer', 'head')}
+        settings = {
+            key: value
+            for key, value in self.config.items()
+            if key not in ('enabled', 'layer', 'head', 'retain_frame_history')
+        }
         return dict(
             turn_index=turn_index,
-            tracker=AttentionTimestampTracker(**settings),
+            tracker=AttentionTimestampTracker(record_frames=True, **settings),
             keys=[],
             ids=[],
             finalized=False,

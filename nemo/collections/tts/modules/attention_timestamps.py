@@ -48,6 +48,8 @@ class AttentionTimestampTracker:
         progress_threshold: Relative support decay needed to escape a stall.
         skip_penalty: Log-score cost per skipped text occurrence. Skips allow
             zero-evidence positions to stay unaligned instead of stalling.
+        record_frames: Enqueue one instantaneous alignment record per observed
+            audio query for ``drain_frames``. Drain this queue regularly.
 
     ``update`` returns newly generated events and also enqueues them for
     ``drain_events``. Clients should use either delivery mechanism, not both.
@@ -67,6 +69,7 @@ class AttentionTimestampTracker:
         force_progress: bool = True,
         progress_threshold: float = 0.5,
         skip_penalty: float = 6.0,
+        record_frames: bool = False,
     ):
         self.confirmation_frames = _index(confirmation_frames, 'confirmation_frames', minimum=1)
         self.min_confidence = _probability_setting(min_confidence, 'min_confidence')
@@ -80,6 +83,9 @@ class AttentionTimestampTracker:
         self.force_progress = force_progress
         self.progress_threshold = _probability_setting(progress_threshold, 'progress_threshold')
         self.skip_penalty = _nonnegative_setting(skip_penalty, 'skip_penalty')
+        if not isinstance(record_frames, bool):
+            raise ValueError('record_frames must be a boolean')
+        self.record_frames = record_frames
         self._path_decoder = (
             StreamingAttentionPathDecoder(
                 skip_penalty=self.skip_penalty,
@@ -99,6 +105,8 @@ class AttentionTimestampTracker:
         self._duration = None
         self._events = []
         self._next_span_id = 0
+        self._frames = []
+        self._next_frame_index = 0
 
     def register_token(self, token_index: int, token_id: int, token: str | None = None) -> None:
         """Register one input occurrence, preserving adjacent repeated token IDs."""
@@ -164,9 +172,20 @@ class AttentionTimestampTracker:
                 start=start,
                 end=end,
             )
-            self._consume_decisions(decisions)
+            assignments = self._consume_decisions(decisions)
         else:
-            self._apply_candidate(self._candidate(visible), start, end, end)
+            candidate = self._candidate(visible)
+            self._apply_candidate(candidate, start, end, end)
+            assignments = []
+            if self.record_frames:
+                index = candidate[0] if candidate is not None else None
+                probability = candidate[1] if candidate is not None else 0.0
+                margin = probability - max((p for p, key in visible or [] if key != index), default=0.0)
+                assignments.append(
+                    self._frame_assignment(candidate, start, end, end, margin, self._text_mass(visible))
+                )
+        if self.record_frames:
+            self._record_frame(assignments, start, end)
         return copy.deepcopy(self._events[event_start:])
 
     def _apply_candidate(self, candidate, start, end, emitted_at):
@@ -281,6 +300,17 @@ class AttentionTimestampTracker:
         events, self._events = self._events, []
         return copy.deepcopy(events)
 
+    def drain_frames(self) -> list[dict]:
+        """Consume instantaneous query records independently of token-span events.
+
+        Records are available immediately after ``update``. Each covers the
+        supplied audio interval, with its endpoint assignment and any approximate
+        subdivisions in ``assignments``. Later span confirmation or retraction
+        leaves these causal observations unchanged.
+        """
+        frames, self._frames = self._frames, []
+        return copy.deepcopy(frames)
+
     def finalize(self, duration: float) -> list[dict]:
         """Close the stream without extending observations through an unobserved tail.
 
@@ -342,6 +372,7 @@ class AttentionTimestampTracker:
         return index, confidence, text_mass, False
 
     def _consume_decisions(self, decisions):
+        assignments = []
         for decision in decisions:
             index = decision['token_index']
             confidence = decision['probability']
@@ -358,6 +389,56 @@ class AttentionTimestampTracker:
                 else:
                     self._tokens[index]['rejected_frames'] += 1
             self._apply_candidate(candidate, decision['start'], decision['end'], decision['emitted_at'])
+            if self.record_frames:
+                assignments.append(
+                    self._frame_assignment(
+                        candidate,
+                        decision['start'],
+                        decision['end'],
+                        decision['emitted_at'],
+                        decision['margin'],
+                        text_mass,
+                    )
+                )
+        return assignments
+
+    @staticmethod
+    def _text_mass(visible):
+        return math.fsum(value for value, _ in visible) if visible is not None else None
+
+    def _frame_assignment(self, candidate, start, end, emitted_at, margin, text_mass):
+        index = candidate[0] if candidate is not None else None
+        token = self._tokens[index] if index is not None else None
+        probability = candidate[1] if candidate is not None else None
+        forced = candidate[3] if candidate is not None else False
+        return {
+            'source': 'attention',
+            'method': self.method,
+            'start': start,
+            'end': end,
+            'emitted_at': emitted_at,
+            'token_index': index,
+            'token_id': token['token_id'] if token is not None else None,
+            'token': token['token'] if token is not None else None,
+            'confidence': 0.0 if forced else probability,
+            'attention_confidence': probability,
+            'forced': forced,
+            'text_attention_mass': text_mass,
+            'margin': margin if candidate is not None else None,
+            'status': 'aligned' if candidate is not None else 'unaligned',
+        }
+
+    def _record_frame(self, assignments, start, end):
+        frame = {
+            **assignments[-1],
+            'frame_index': self._next_frame_index,
+            'start': start,
+            'end': end,
+            'emitted_at': end,
+            'assignments': assignments,
+        }
+        self._next_frame_index += 1
+        self._frames.append(frame)
 
     def _begin(self, index, start, end, confidence, text_mass, forced=False, confirmed=False, emitted_at=None):
         span = {

@@ -76,7 +76,7 @@ The selected layer defaults to the middle full-attention layer of the **main
 backbone**, excluding additional acoustic-code predictor attention layers.
 
 Each waveform receives a neighboring `predicted_audio_<id>.timestamps.json`.
-Records identify each input occurrence by `turn_index`, `token_index`, and
+Its `timestamps` records identify each input occurrence by `turn_index`, `token_index`, and
 `token_id`, with `start` and `end` in seconds relative to the saved waveform.
 They include `confidence`, `attention_confidence`, and `forced`:
 
@@ -93,7 +93,8 @@ manifest and crops/rebases timestamps to each saved turn. Distributed multiturn
 merging preserves the files and rewrites their audio references. Filewise
 evaluation metrics include `timestamps_filepath` when a sidecar exists.
 
-Native inference pipelines can consume timestamps during generation:
+Native inference pipelines can consume one alignment record per emitted decoder
+audio step, before starting the next decoding step:
 
 ```python
 model.eval()
@@ -102,18 +103,63 @@ state = model.streaming_init(...)
 
 while not state.finished.all():
     state, audio_codes, phonemes = model.streaming_step(state, next_text_token)
+    frames = model.drain_timestamp_frames(state)
+    for frame in frames:
+        consume_frame_alignment(frame)  # For example, pass to a downstream decoder controller.
     events = model.drain_timestamp_events(state)
-    # Deliver audio and process the timestamp events during this same step.
+    # Deliver audio and process token-span events during this same step.
 
 output = model.streaming_finalize(state)
 timestamps = output.timestamps
+all_frames = timestamps[0]['frames']  # First batch item, including previously drained frames.
+final_events = model.drain_timestamp_events(state)
 ```
+
+Each frame record contains `frame_index`, `turn_frame_index`, `batch_index`,
+`turn_index`, `start`, `end`, `emitted_at`, `token_index`, `token_id`, `token`, `text_key_position`,
+`confidence`, `attention_confidence`, `forced`, `text_attention_mass`, and
+`status`. `start` and `end` are the current audio interval in seconds relative
+to the returned waveform; `emitted_at` records when its decision becomes
+available on that audio timeline. `codec_frame_start`, `codec_frame_end`
+(exclusive), and `valid_codec_frames` identify the corresponding unstacked
+codec frames, including a partially filled final step.
+`text_key_position` maps the selected source token to its conditioning position
+in the decoder's attention cache.
+
+The record uses the instantaneous full-key attention score for that step.
+Forced estimates have zero `confidence`, with the observed score retained as
+`attention_confidence`. Unassigned frames retain their interval and have null
+token fields and confidence. `assignments` retains any subintervals introduced
+by forced forward estimates; the frame's top-level token is its endpoint
+assignment. These causal decisions remain available as originally emitted.
+
+The resolution is one observed backbone attention query per decoder step. For
+a 25 FPS codec with a stacking factor of two, one record covers two 40 ms codec
+frames, or 80 ms. It is emitted during that same step, using current and past
+attention. The frame API adds no future-frame wait. The codec indices identify
+the frames covered by that shared observation.
+
+`drain_timestamp_frames` and `drain_timestamp_events` have independent queues;
+both accept optional `batch_indices`. Draining frames preserves the history in
+`output.timestamps[batch_index]['frames']`. For a consumer that stores each
+frame itself, use `model.configure_timestamps(enabled=True,
+retain_frame_history=False)` to avoid retaining that additional history in the
+model. The final result still reports `frame_count` and
+`frame_history_retained`, with an empty `frames` list in this mode.
 
 Events contain `start`, `end`, `event`, `emitted_at`, `confidence`, `forced`,
 `batch_index`, `turn_index`, and `span_id`. Starts and updates are available
 before utterance finalization; consumers should apply subsequent updates or
 retractions to the same positional identity. Each update uses the current
 attention frame and previous streaming state.
+
+Saved sidecars include retained `frames` as well as token spans. Multiturn
+waveform crops filter the frame history to the selected turn and rebase its
+seconds and codec indices. `source_frame_index` and source codec indices retain
+the original positions. Arbitrary crops between codec-frame boundaries retain
+exact seconds and use null local codec indices. `emitted_at` preserves actual
+availability, so it may extend beyond the end of a cropped waveform. Frame
+confidence is instantaneous; token-span confidence remains an aggregate.
 
 For another conversation turn, call `model.reset_timestamp_turn(state)` before
 the turn's text warmup. Real text tokens consumed during warmup are registered;
@@ -129,6 +175,7 @@ The model's `timestamp_config` configures recording independently of generation:
 ```yaml
 timestamp_config:
   enabled: false
+  retain_frame_history: true
   layer: middle
   head: 0
   method: monotonic
@@ -144,4 +191,6 @@ timestamp_config:
 The observer and its per-stream state live in
 `nemo/collections/tts/modules/nemotron_tts/v2/timestamps.py`. The reusable
 standard-library tracker is `nemo/collections/tts/modules/attention_timestamps.py`.
-The observer retains the latest attention row and aggregate token spans.
+The observer retains the latest attention row, aggregate token spans, and the
+optional per-frame history. Queued frame records can be consumed independently
+by other inference pipelines.

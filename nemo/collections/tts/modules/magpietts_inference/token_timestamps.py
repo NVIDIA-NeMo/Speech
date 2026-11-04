@@ -31,7 +31,9 @@ def build_token_timestamps(
     Heuristically forced spans have zero ``confidence``; ``attention_confidence``
     retains their underlying attention probability for debugging. Any retained
     forced span makes the containing token forced, even if its primary span has
-    direct attention support. These scores are not calibrated correctness odds.
+    direct attention support. Frame records preserve each causal decoder query,
+    including its instantaneous score and availability time. These scores are
+    not calibrated correctness odds.
     """
     if trace is None:
         raise ValueError('Timestamp recording was requested but the model returned no timestamps')
@@ -45,7 +47,9 @@ def build_token_timestamps(
     start_time = max(0.0, min(start_time, duration))
     end_time = max(start_time, min(end_time, duration))
     result = {
-        key: copy.deepcopy(value) for key, value in trace.items() if key not in ('timestamps', 'turns', 'events')
+        key: copy.deepcopy(value)
+        for key, value in trace.items()
+        if key not in ('timestamps', 'turns', 'events', 'frames')
     }
     result.update(
         schema_version=1,
@@ -193,6 +197,15 @@ def build_token_timestamps(
     else:
         result['token_scope'] = 'observed_streaming_input'
     result['timestamps'] = sorted(timestamps, key=lambda token: (token.get('turn_index', 0), token['token_index']))
+    if 'frames' in trace:
+        result['frames'] = _crop_frames(trace, tokenizer, start_time, end_time, turn_index)
+        result['source_frame_count'] = trace.get('frame_count', len(trace['frames']))
+        history_retained = trace.get('frame_history_retained', True)
+        if history_retained:
+            result['frame_count'] = len(result['frames'])
+        elif turn_index is not None or start_time != 0.0 or end_time != duration:
+            result['frame_count'] = None
+        result['frame_confidence_kind'] = 'instantaneous_full_key_attention_probability'
     if expected_input_text is not None:
         result['expected_input_text'] = expected_input_text
     return result
@@ -208,6 +221,86 @@ def save_token_timestamps(audio_path, trace, tokenizer=None, **kwargs):
     temporary.write_text(json.dumps(record, ensure_ascii=False, indent=2, allow_nan=False) + '\n', encoding='utf-8')
     temporary.replace(destination)
     return str(destination)
+
+
+def _crop_frames(trace, tokenizer, start_time, end_time, turn_index):
+    frames = []
+    codec_step = float(trace.get('codec_frame_seconds', 0.0))
+    for original in trace['frames']:
+        if turn_index is not None and original.get('turn_index', 0) != turn_index:
+            continue
+        frame = _crop_frame_interval(original, start_time, end_time)
+        if frame is None:
+            continue
+        frame['source_frame_index'] = original['frame_index']
+        frame['frame_index'] = len(frames)
+        for name in ('codec_frame_start', 'codec_frame_end', 'valid_codec_frames'):
+            if name in original:
+                frame[f'source_{name}'] = original[name]
+        # Seconds remain exact for arbitrary waveform crops. Integer codec
+        # indices describe only intervals whose boundaries lie on that grid.
+        left = _codec_grid_index(frame['start'], codec_step)
+        right = _codec_grid_index(frame['end'], codec_step)
+        if _codec_grid_index(start_time, codec_step) is None or left is None or right is None:
+            frame.update(codec_frame_start=None, codec_frame_end=None, valid_codec_frames=None)
+        else:
+            frame.update(codec_frame_start=left, codec_frame_end=right, valid_codec_frames=right - left)
+        assignments = []
+        for assignment in original.get('assignments', []):
+            clipped = _crop_frame_interval(assignment, start_time, end_time)
+            if clipped is not None:
+                _label_frame(clipped, tokenizer)
+                assignments.append(clipped)
+        if 'assignments' in original:
+            frame['assignments'] = assignments
+        if assignments:
+            # A partial crop may remove the source query's final subdivision.
+            # Its retained endpoint is then the last surviving assignment.
+            for name in (
+                'token_index',
+                'token_id',
+                'token',
+                'text_key_position',
+                'confidence',
+                'attention_confidence',
+                'forced',
+                'text_attention_mass',
+                'margin',
+                'status',
+            ):
+                if name in assignments[-1]:
+                    frame[name] = assignments[-1][name]
+        _label_frame(frame, tokenizer)
+        frames.append(frame)
+    return frames
+
+
+def _crop_frame_interval(record, start_time, end_time):
+    left, right = max(float(record['start']), start_time), min(float(record['end']), end_time)
+    if right <= left:
+        return None
+    clipped = copy.deepcopy(record)
+    clipped.update(start=left - start_time, end=right - start_time)
+    if left != record['start'] or right != record['end']:
+        clipped['clipped'] = True
+    if record.get('emitted_at') is not None:
+        clipped['emitted_at'] = float(record['emitted_at']) - start_time
+    if clipped.get('forced', False):
+        clipped['confidence'] = 0.0
+    return clipped
+
+
+def _codec_grid_index(seconds, step):
+    if not math.isfinite(step) or step <= 0:
+        return None
+    value = seconds / step
+    rounded = round(value)
+    return rounded if abs(value - rounded) <= 1e-7 else None
+
+
+def _label_frame(record, tokenizer):
+    if record.get('token_id') is not None:
+        record['token'] = _label(tokenizer, record['token_id'], record.get('token'))
 
 
 def _label(tokenizer, token_id, existing=None):

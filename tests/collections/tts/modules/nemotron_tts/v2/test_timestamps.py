@@ -43,6 +43,72 @@ def test_first_audio_frame_has_live_events_and_confidence_uses_the_full_key_dist
     assert session.drain_events() == []
 
 
+def test_each_audio_step_has_instantaneous_frame_confidence_and_independent_retained_history():
+    session = _session()
+    session.register_text(0, 1, 17)
+    _observe(session, [[0.7, 0.2, 0.1]], frame=10)
+    first = session.drain_frames()
+    assert len(first) == 1
+    assert first[0]['frame_index'] == first[0]['turn_frame_index'] == 0
+    assert first[0]['batch_index'] == first[0]['turn_index'] == 0
+    assert first[0]['codec_frame_start'] == 0 and first[0]['codec_frame_end'] == 2
+    assert first[0]['valid_codec_frames'] == 2
+    assert first[0]['start'] == 0.0 and first[0]['end'] == pytest.approx(0.08)
+    assert first[0]['emitted_at'] == pytest.approx(0.08)
+    assert first[0]['confidence'] == pytest.approx(0.2)
+    assert first[0]['attention_confidence'] == pytest.approx(0.2)
+    assert first[0]['token_index'] == 0 and first[0]['token_id'] == 17
+    assert first[0]['text_key_position'] == first[0]['assignments'][0]['text_key_position'] == 1
+    assert session.drain_events() and session.drain_frames() == []
+    first[0]['confidence'] = -1  # A consumer cannot mutate the retained trace.
+    first[0]['assignments'][0]['confidence'] = -1
+    _observe(session, [[0.2, 0.7, 0.1]], frame=12)
+    second = session.drain_frames()[0]
+    assert second['frame_index'] == second['turn_frame_index'] == 1
+    assert second['codec_frame_start'] == 2 and second['codec_frame_end'] == 4
+    assert second['confidence'] == pytest.approx(0.7)
+    trace = session.snapshots(finalize=True)[0]
+    assert trace['codec_frame_seconds'] == pytest.approx(0.04)
+    assert trace['frame_step_seconds'] == pytest.approx(0.08)
+    assert trace['frame_count'] == 2 and trace['frame_history_retained']
+    assert [frame['confidence'] for frame in trace['frames']] == pytest.approx([0.2, 0.7])
+    assert trace['frames'][0]['assignments'][0]['confidence'] == pytest.approx(0.2)
+    trace['frames'][0]['token_id'] = -1
+    assert session.snapshots()[0]['frames'][0]['token_id'] == 17
+    assert session.drain_frames() == []
+
+
+def test_frames_remain_explicit_when_attention_is_missing_or_gated_out():
+    session = StreamingTimestampSession(1, 0.04, 2, {'enabled': True, 'min_confidence': 0.5})
+    session.register_text(0, 0, 17)
+    session.observe_audio([True], frame_start=10)
+    _observe(session, [[0.2, 0.8]], frame=12)
+    frames = session.drain_frames()
+    assert [frame['frame_index'] for frame in frames] == [0, 1]
+    assert [frame['start'] for frame in frames] == pytest.approx([0.0, 0.08])
+    assert [frame['end'] for frame in frames] == pytest.approx([0.08, 0.16])
+    assert all(frame['status'] == 'unaligned' and frame['token_index'] is None for frame in frames)
+    assert all(frame['text_key_position'] is None for frame in frames)
+    assert all(frame['confidence'] is None for frame in frames)
+    assert session.snapshots()[0]['frame_count'] == 2
+
+
+def test_frame_history_can_be_disabled_while_frames_are_drained_per_batch():
+    session = StreamingTimestampSession(2, 0.04, 2, {'enabled': True, 'retain_frame_history': False})
+    session.register_text(0, 0, 17)
+    session.register_text(1, 0, 18)
+    _observe(session, [[1.0], [1.0]], frame=4)
+    assert [frame['token_id'] for frame in session.drain_frames([1])] == [18]
+    assert [frame['token_id'] for frame in session.drain_frames()] == [17]
+    assert session.drain_frames() == []
+    for trace in session.snapshots(finalize=True):
+        assert trace['frames'] == [] and trace['frame_count'] == 1 and not trace['frame_history_retained']
+    with pytest.raises(ValueError, match='retain_frame_history'):
+        resolve_timestamp_config({'retain_frame_history': 1})
+    with pytest.raises(ValueError, match='batch index'):
+        session.drain_frames([2])
+
+
 def test_cfg_unconditional_attention_and_future_keys_do_not_leak_into_timestamps():
     session = _session()
     session.register_text(0, 0, 17)
@@ -74,6 +140,13 @@ def test_forced_progress_is_published_in_the_same_frame_with_zero_confidence():
     assert records[1]['start'] == pytest.approx(0.08) and records[1]['end'] == pytest.approx(0.12)
     assert records[2]['start'] == pytest.approx(0.12) and records[2]['end'] == pytest.approx(0.16)
     assert records[1]['attention_confidence'] > 0
+    frames = session.drain_frames()
+    assert len(frames) == 2 and frames[1]['token_index'] == 2
+    assert frames[1]['forced'] and frames[1]['confidence'] == 0.0
+    assert frames[1]['attention_confidence'] == pytest.approx(0.799)
+    assert [assignment['token_index'] for assignment in frames[1]['assignments']] == [1, 2]
+    assert all(assignment['confidence'] == 0.0 for assignment in frames[1]['assignments'])
+    assert all(assignment['emitted_at'] == pytest.approx(0.16) for assignment in frames[1]['assignments'])
 
 
 def test_turn_reset_preserves_occurrences_and_the_global_audio_clock():
@@ -91,6 +164,13 @@ def test_turn_reset_preserves_occurrences_and_the_global_audio_clock():
     assert records[0]['start'] == first['start'] and records[0]['end'] == first['end']
     assert records[1]['start'] == pytest.approx(0.32)
     assert records[1]['end'] == pytest.approx(0.40)
+    frames = session.drain_frames()
+    assert [frame['frame_index'] for frame in frames] == [0, 1]
+    assert [frame['turn_frame_index'] for frame in frames] == [0, 0]
+    assert [frame['turn_index'] for frame in frames] == [0, 1]
+    assert [frame['codec_frame_start'] for frame in frames] == [0, 8]
+    assert [frame['codec_frame_end'] for frame in frames] == [2, 10]
+    assert [frame['text_key_position'] for frame in frames] == [0, 5]
 
 
 def test_partial_audio_eos_does_not_add_a_frame_or_fabricate_a_trailing_word():
@@ -102,6 +182,10 @@ def test_partial_audio_eos_does_not_add_a_frame_or_fabricate_a_trailing_word():
     assert snapshot['audio_duration_seconds'] == pytest.approx(0.04)
     assert snapshot['timestamps'][0]['end'] == pytest.approx(0.04)
     assert snapshot['timestamps'][1]['start'] is None
+    assert snapshot['frame_count'] == 1 and len(snapshot['frames']) == 1
+    assert snapshot['frames'][0]['codec_frame_end'] == 1
+    assert snapshot['frames'][0]['valid_codec_frames'] == 1
+    assert snapshot['frames'][0]['end'] == pytest.approx(0.04)
 
 
 def test_padding_context_and_zero_frame_eos_do_not_generate_token_intervals():
@@ -110,6 +194,7 @@ def test_padding_context_and_zero_frame_eos_do_not_generate_token_intervals():
     session.register_text(1, 0, 18)
     _observe(session, [[1.0], [1.0]], frame=0, needs_audio=[False, True], count=0)
     assert session.drain_events() == []
+    assert session.drain_frames() == []
     assert all(token['start'] is None for trace in session.snapshots() for token in trace['timestamps'])
 
 

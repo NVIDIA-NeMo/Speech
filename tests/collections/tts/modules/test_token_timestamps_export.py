@@ -277,6 +277,117 @@ def test_missing_timestamp_capture_is_not_reported_as_empty_success():
         build_token_timestamps(None)
 
 
+def test_frame_history_exports_instantaneous_confidence_and_null_labels_without_mutating_trace():
+    trace = _trace_with_frames()
+    before = copy.deepcopy(trace)
+    result = build_token_timestamps(trace, _tokenizer())
+    first, missing, forced, partial = result['frames']
+    assert first['token'] == 'a' and first['confidence'] == 0.7
+    assert first['confidence'] != result['timestamps'][0]['confidence']
+    assert missing['status'] == 'unaligned' and missing['token_id'] is missing['confidence'] is None
+    assert forced['forced'] and forced['confidence'] == 0.0 and forced['attention_confidence'] == 0.25
+    assert forced['assignments'][0]['confidence'] == 0.0
+    assert partial['valid_codec_frames'] == 1 and partial['end'] == pytest.approx(0.28)
+    assert result['frame_count'] == result['source_frame_count'] == 4
+    assert result['frame_confidence_kind'] == 'instantaneous_full_key_attention_probability'
+    assert trace == before
+
+
+def test_frame_crop_filters_turns_and_rebases_codec_grid_indices_and_availability():
+    trace = _trace_with_frames()
+    trace['turns'].append(dict(turn_index=1, source_token_ids=[2]))
+    next_turn_frame = dict(_frame(4, 0.32, 0.4, 1, 2, 0.8), turn_index=1, turn_frame_index=0)
+    next_turn_frame['assignments'] = [copy.deepcopy(next_turn_frame)]
+    trace['frames'].append(next_turn_frame)
+    trace['frame_count'] = 5
+    result = build_token_timestamps(trace, start_time=0.32, end_time=0.4, turn_index=1)
+    assert len(result['frames']) == result['frame_count'] == 1
+    frame = result['frames'][0]
+    assert frame['turn_index'] == 1 and frame['frame_index'] == 0 and frame['source_frame_index'] == 4
+    assert (frame['start'], frame['end'], frame['emitted_at']) == pytest.approx((0.0, 0.08, 0.08))
+    assert (frame['codec_frame_start'], frame['codec_frame_end'], frame['valid_codec_frames']) == (0, 2, 2)
+    assert (frame['source_codec_frame_start'], frame['source_codec_frame_end']) == (8, 10)
+    assert frame['source_valid_codec_frames'] == 2 and result['source_frame_count'] == 5
+    assert (frame['assignments'][0]['start'], frame['assignments'][0]['end']) == pytest.approx((0.0, 0.08))
+
+
+def test_arbitrary_frame_crop_keeps_exact_seconds_and_original_emission_time():
+    trace = _trace_with_frames()
+    result = build_token_timestamps(trace, start_time=0.025, end_time=0.06)
+    frame = result['frames'][0]
+    assert len(result['frames']) == 1 and frame['clipped']
+    assert (frame['start'], frame['end']) == pytest.approx((0.0, 0.035))
+    assert frame['emitted_at'] == pytest.approx(0.055)  # Available after the saved audio endpoint.
+    assert frame['codec_frame_start'] is frame['codec_frame_end'] is frame['valid_codec_frames'] is None
+    assert (frame['source_codec_frame_start'], frame['source_codec_frame_end']) == (0, 2)
+    assert frame['assignments'][0]['emitted_at'] == pytest.approx(0.055)
+
+
+def test_partial_forced_frame_keeps_only_retained_subassignments_and_their_endpoint():
+    trace = _trace_with_frames()
+    forced = trace['frames'][2]
+    forced['text_key_position'] = 12
+    forced['assignments'] = [
+        dict(_frame(2, 0.16, 0.20, 1, 2, 0.12), forced=True, emitted_at=0.24, text_key_position=11),
+        dict(_frame(2, 0.20, 0.24, 2, 1, 0.25), forced=True, emitted_at=0.24, text_key_position=12),
+    ]
+    result = build_token_timestamps(trace, start_time=0.16, end_time=0.20)
+    frame = result['frames'][0]
+    assert len(frame['assignments']) == 1 and frame['token_index'] == 1 and frame['token_id'] == 2
+    assert frame['text_key_position'] == frame['assignments'][0]['text_key_position'] == 11
+    assert frame['confidence'] == 0.0 and frame['attention_confidence'] == 0.12 and frame['forced']
+    assert frame['emitted_at'] == pytest.approx(0.08)
+    assert frame['valid_codec_frames'] == 1 and frame['source_valid_codec_frames'] == 2
+
+
+def test_drained_only_frame_history_preserves_total_count_and_does_not_invent_crop_count():
+    trace = _trace_with_frames()
+    trace.update(frames=[], frame_history_retained=False)
+    whole = build_token_timestamps(trace)
+    assert whole['frames'] == [] and whole['frame_count'] == whole['source_frame_count'] == 4
+    assert not whole['frame_history_retained']
+    cropped = build_token_timestamps(trace, start_time=0.08, end_time=0.16)
+    assert cropped['frames'] == [] and cropped['frame_count'] is None and cropped['source_frame_count'] == 4
+
+
+def _frame(index, start, end, token_index, token_id, confidence):
+    return dict(
+        frame_index=index,
+        turn_frame_index=index,
+        batch_index=0,
+        turn_index=0,
+        start=start,
+        end=end,
+        emitted_at=end,
+        codec_frame_start=round(start / 0.04),
+        codec_frame_end=round(end / 0.04),
+        valid_codec_frames=round((end - start) / 0.04),
+        token_index=token_index,
+        token_id=token_id,
+        token=None,
+        confidence=confidence,
+        attention_confidence=confidence,
+        forced=False,
+        text_attention_mass=0.9,
+        margin=0.2 if confidence is not None else None,
+        status='aligned' if token_id is not None else 'unaligned',
+    )
+
+
+def _trace_with_frames():
+    trace = _trace()
+    frames = [
+        _frame(0, 0.0, 0.08, 0, 1, 0.7),
+        _frame(1, 0.08, 0.16, None, None, None),
+        dict(_frame(2, 0.16, 0.24, 2, 1, 0.25), forced=True),
+        _frame(3, 0.24, 0.28, 2, 1, 0.4),
+    ]
+    for frame in frames:
+        frame['assignments'] = [copy.deepcopy(frame)]
+    trace.update(frames=frames, frame_count=4, frame_history_retained=True, codec_frame_seconds=0.04)
+    return trace
+
+
 def _tokenizer():
     return SimpleNamespace(tokens=['<pad>', 'a', 'b', '.'])
 

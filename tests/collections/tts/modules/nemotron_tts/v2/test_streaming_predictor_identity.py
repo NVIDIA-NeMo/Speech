@@ -30,7 +30,8 @@ def test_timestamps_preserve_actual_acoustic_predictor_sampling_and_cache_progre
     for state in states:
         state.config.temperature = 0.7
         state.config.topk = 80
-    first_audio_step = first_event_step = None
+    first_audio_step = first_event_step = first_frame_step = None
+    streamed_frames = []
     previous_progress = [cache.get_seq_length() for cache in states[0].acoustic_codes_predictor_cache]
     tokens = [7, 8, 9, 10, 11, 12, baseline.eos_id, baseline.eos_id] + [None] * 5
     with patch(
@@ -62,10 +63,26 @@ def test_timestamps_preserve_actual_acoustic_predictor_sampling_and_cache_progre
             if events:
                 first_event_step = step if first_event_step is None else first_event_step
                 assert all(not event.get('forced') or event['confidence'] == 0.0 for event in events)
+            frames = observed.drain_timestamp_frames(states[1])
+            if frames:
+                first_frame_step = step if first_frame_step is None else first_frame_step
+                assert captured[1] is not None
+                assert len(frames) == 2  # One current-query record per conditional batch row.
+                assert {frame['batch_index'] for frame in frames} == {0, 1}
+                assert all(frame['valid_codec_frames'] == observed.frame_stacking_factor for frame in frames)
+                assert all(not frame['forced'] or frame['confidence'] == 0.0 for frame in frames)
+                streamed_frames.extend(frames)
+            else:
+                assert captured[1] is None
             assert baseline.drain_timestamp_events(states[0]) == []
+            assert baseline.drain_timestamp_frames(states[0]) == []
             assert not states[0].finished.any() and not states[1].finished.any()
-    assert first_audio_step is not None and first_event_step == first_audio_step
-    assert observed.get_timestamps(states[1]) is not None
+    assert first_audio_step is not None and first_event_step == first_audio_step == first_frame_step
+    snapshots = observed.get_timestamps(states[1])
+    for row, snapshot in enumerate(snapshots):
+        assert snapshot['frames'] == [frame for frame in streamed_frames if frame['batch_index'] == row]
+        assert snapshot['frame_count'] == len(snapshot['frames'])
+        assert [frame['frame_index'] for frame in snapshot['frames']] == list(range(snapshot['frame_count']))
 
 
 def test_target_text_warmup_retains_keys_without_emitting_timestamps_for_silence():

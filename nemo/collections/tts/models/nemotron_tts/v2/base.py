@@ -1108,6 +1108,18 @@ class NemotronTTSBase(ModelPT):
             return []
         return state.timestamp_session.drain_events(batch_indices)
 
+    def drain_timestamp_frames(self, state: StreamingState, batch_indices=None) -> List[dict]:
+        """Consume causal frame decisions produced by preceding streaming steps.
+
+        Each record describes one emitted decoder audio step and its covered
+        codec-frame interval, token assignment, instantaneous confidence, and
+        forced status. Call after ``streaming_step`` to process the current
+        alignment before requesting the next audio step.
+        """
+        if state.timestamp_session is None:
+            return []
+        return state.timestamp_session.drain_frames(batch_indices)
+
     def get_timestamps(self, state: StreamingState, finalize=False, audio_lengths=None):
         """Read per-item snapshots; optional waveform lengths are measured in samples."""
         if state.timestamp_session is None:
@@ -1835,6 +1847,9 @@ class NemotronTTSBase(ModelPT):
         with grad_ctx():
             device = state.config.device
 
+            if state.timestamp_session is not None:
+                state.timestamp_session.begin_step()
+
             # Phase 1: Prepare input embedding and determine per-item phase masks
             next_input, needs_context, needs_phoneme, needs_audio = self._prepare_streaming_input(
                 state,
@@ -1956,7 +1971,7 @@ class NemotronTTSBase(ModelPT):
             audio_codes_next, pred_phoneme_tokens = self._process_predictions(
                 state, needs_context, needs_phoneme, needs_audio
             )
-            if state.timestamp_session is not None and not force_dropout_text:
+            if state.timestamp_session is not None:
                 ends = state.audio_prediction_end_idx
                 valid_frames = torch.where(
                     ends >= 0,

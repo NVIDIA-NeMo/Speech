@@ -412,6 +412,110 @@ def test_invalid_monotonic_settings_fail_early(settings):
         AttentionTimestampTracker(**settings)
 
 
+def test_frame_records_are_opt_in_and_independent_of_span_events():
+    disabled = _tracker([10])
+    tracker = _tracker([10], record_frames=True)
+    for subject in (disabled, tracker):
+        subject.update([0.8], start=0, end=0.08)
+    assert disabled.drain_frames() == []
+    first = tracker.drain_frames()
+    assert len(first) == 1
+    assert first[0]['frame_index'] == 0
+    assert first[0]['start'] == 0 and first[0]['end'] == first[0]['emitted_at'] == 0.08
+    assert first[0]['confidence'] == 0.8 and first[0]['status'] == 'aligned'
+    assert tracker.drain_frames() == []
+    assert tracker.drain_events() == disabled.drain_events()
+    tracker.update([0.4], start=0.08, end=0.12)
+    frame = tracker.drain_frames()[0]
+    assert frame['frame_index'] == 1 and frame['confidence'] == 0.4
+    assert frame['attention_confidence'] == 0.4
+    assert tracker.snapshot()[0]['confidence'] == pytest.approx((0.8 * 0.08 + 0.4 * 0.04) / 0.12)
+    tracker.finalize(0.12)
+    assert tracker.drain_frames() == []
+    assert first[0]['confidence'] == 0.8
+
+
+def test_frame_records_preserve_causal_excursions_before_span_retraction():
+    tracker = _tracker([10, 11], record_frames=True)
+    frames = []
+    for index, token in enumerate([0, 0, 1, 0, 0]):
+        tracker.update(_one_hot(token, 2), start=index * 0.08, end=(index + 1) * 0.08)
+        frames.extend(tracker.drain_frames())
+    assert [frame['token_index'] for frame in frames] == [0, 0, 1, 0, 0]
+    assert frames[2]['confidence'] == 0.9 and frames[2]['emitted_at'] == pytest.approx(0.24)
+    assert tracker.finalize(0.4)[1]['status'] == 'unaligned'
+    assert any(event['event'] == 'retract' for event in tracker.drain_events())
+    assert frames[2]['token_id'] == 11
+
+
+@pytest.mark.parametrize('method', ['argmax', 'monotonic'])
+@pytest.mark.parametrize('values', [[0.0, 0.0], [float('nan'), 0.9], [0.8, 0.8]])
+def test_frame_records_include_unaligned_queries_and_skip_zero_length_eos(method, values):
+    tracker = _tracker([10, 11], method=method, record_frames=True)
+    tracker.update(values, start=0, end=0.08)
+    frame = tracker.drain_frames()[0]
+    assert frame['status'] == 'unaligned'
+    assert frame['token_index'] is None and frame['token_id'] is None
+    assert frame['confidence'] is None and frame['attention_confidence'] is None
+    assert len(frame['assignments']) == 1
+    assert (frame['start'], frame['end'], frame['emitted_at']) == (0.0, 0.08, 0.08)
+    json.dumps(frame, allow_nan=False)
+    tracker.update([0.8, 0.1], start=0.08, end=0.08)
+    tracker.finalize(0.08)
+    assert tracker.drain_frames() == []
+
+
+@pytest.mark.parametrize('method', ['argmax', 'monotonic'])
+def test_frame_records_apply_confidence_gates_and_do_not_label_unregistered_text(method):
+    tracker = _tracker([10], method=method, min_confidence=0.6, record_frames=True)
+    tracker.update([0.4], start=0, end=0.08)
+    tracker.update([0.9], token_indices=[7], start=0.08, end=0.16)
+    frames = tracker.drain_frames()
+    assert [frame['status'] for frame in frames] == ['unaligned', 'unaligned']
+    assert all(frame['token_index'] is None for frame in frames)
+    assert frames[0]['text_attention_mass'] == 0.4
+    assert tracker.finalize(0.16)[0]['start'] is None
+
+
+def test_frame_records_keep_forced_subdivisions_and_natural_instantaneous_confidence():
+    tracker = _tracker([10, 11, 12], method='monotonic', record_frames=True)
+    tracker.update([0.9, 0.09, 0.01], start=0, end=0.08)
+    tracker.update([0.1, 0.05, 0.85], start=0.08, end=0.16)
+    forced = tracker.drain_frames()[1]
+    assert (forced['start'], forced['end'], forced['emitted_at']) == (0.08, 0.16, 0.16)
+    assert forced['token_index'] == 2 and forced['attention_confidence'] == 0.85
+    assert forced['forced'] and forced['confidence'] == 0
+    assert [assignment['token_index'] for assignment in forced['assignments']] == [1, 2]
+    assert [assignment['confidence'] for assignment in forced['assignments']] == [0, 0]
+    assert [(assignment['start'], assignment['end']) for assignment in forced['assignments']] == [
+        (0.08, 0.12),
+        (0.12, 0.16),
+    ]
+    assert all(assignment['emitted_at'] == 0.16 for assignment in forced['assignments'])
+    tracker.update([0.01, 0.01, 0.98], start=0.16, end=0.20)
+    natural = tracker.drain_frames()[0]
+    assert natural['token_index'] == 2 and not natural['forced']
+    assert natural['confidence'] == 0.98
+    assert tracker.snapshot()[2]['forced'] and tracker.snapshot()[2]['confidence'] == 0
+
+
+def test_frame_chunks_have_identical_records_and_draining_does_not_retain_history():
+    single = _tracker([10, 11], method='monotonic', record_frames=True)
+    chunked = _tracker([10, 11], method='monotonic', record_frames=True)
+    rows = [[0.8, 0.1], [0.3, 0.6], [0.1, 0.8]]
+    starts, ends = [0, 0.08, 0.16], [0.08, 0.16, 0.19]
+    frames = []
+    for row, start, end in zip(rows, starts, ends):
+        single.update(row, start=start, end=end)
+        frames.extend(single.drain_frames())
+        assert single._frames == []
+    chunked.update_many(rows, starts=starts, ends=ends)
+    assert frames == chunked.drain_frames()
+    assert single.drain_events() == chunked.drain_events()
+    with pytest.raises(ValueError, match='record_frames must be a boolean'):
+        AttentionTimestampTracker(record_frames=1)
+
+
 def _tracker(token_ids, **settings):
     tracker = AttentionTimestampTracker(**settings)
     for index, token_id in enumerate(token_ids):

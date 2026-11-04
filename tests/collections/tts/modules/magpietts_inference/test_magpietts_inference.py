@@ -32,8 +32,12 @@ from omegaconf import OmegaConf
 
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.collections.tts.models import EasyMagpieTTSInferenceModel, NemotronTTSBase
-from nemo.collections.tts.models.easy_magpietts_inference import EasyModelInferenceParameters as emp_v1_inf_params
-from nemo.collections.tts.models.nemotron_tts.v2.base import EasyModelInferenceParameters as emp_v2_inf_params
+from nemo.collections.tts.models.easy_magpietts_inference import (
+    EasyModelInferenceParameters as easymagpie_inference_parameters_v1,
+)
+from nemo.collections.tts.models.nemotron_tts.v2.base import (
+    EasyModelInferenceParameters as easymagpie_inference_parameters_v2,
+)
 from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio import (
     FILEWISE_METRICS_TO_SAVE,
     _get_record_texts,
@@ -620,7 +624,7 @@ def test_easy_magpie_cli_selects_defaults_per_model(monkeypatch, load_mode, over
     assert len(configs) == len(versions)
     for version, config, expected in zip(versions, configs, [expected_v2, expected_v1, expected_v1, expected_v2]):
         params = config.model_inference_parameters
-        expected_cls = emp_v2_inf_params if version == "v2" else emp_v1_inf_params
+        expected_cls = easymagpie_inference_parameters_v2 if version == "v2" else easymagpie_inference_parameters_v1
         assert type(params) is expected_cls
         assert (
             params.max_decoder_steps,

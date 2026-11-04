@@ -249,6 +249,9 @@ def _patch_detection() -> None:
     from vllm_omni.entrypoints.openai import serving_speech as ss
 
     ss._TTS_MODEL_STAGES.add(_TALKER_STAGE)
+    # The speech endpoint otherwise leaves the deploy-YAML max_tokens unchanged
+    # and silently ignores request.max_new_tokens for EasyMagpie.
+    ss._SAMPLING_MAX_TOKENS_TTS_MODEL_TYPES.add(MODEL_TYPE)
 
     detect = ss.OmniOpenAIServingSpeech._detect_tts_model_type
     if getattr(detect, "_easymagpie_patched", False):

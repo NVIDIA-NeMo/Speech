@@ -837,9 +837,13 @@ class FeatureMasking(NeuralModule):
         self.mask_max = mask_max
         self.dist = torch.distributions.beta.Beta(concentration1=alpha, concentration0=beta)
 
-    def _create_dropout_mask(self, input_len):
+    def _create_dropout_mask(self, input_len, maskable=None):
         batch_size = input_len.shape[0]
-        len_mask = get_mask_from_lengths(input_len)
+        if maskable is None:
+            len_mask = get_mask_from_lengths(input_len)
+        else:
+            len_mask = get_mask_from_lengths(input_len, x=maskable) & maskable
+            input_len = len_mask.sum(dim=1)
         max_len = len_mask.shape[1]
 
         # Select a fraction of tokens to mask in the range [min, max]
@@ -863,17 +867,19 @@ class FeatureMasking(NeuralModule):
 
         return mask
 
-    def forward(self, inputs, input_len):
+    def forward(self, inputs, input_len, maskable=None):
         """Randomly mask valid timesteps of ``inputs`` while training; returns ``inputs`` unchanged in eval mode.
 
         Args:
             inputs: Features to mask, shaped (B, T, hidden_size).
             input_len: Valid length of each batch item, shaped (B,).
+            maskable: Optional boolean mask shaped (B, T), True where a timestep may be hidden.
+                Defaults to every valid timestep.
         """
         if not self.training:
             return inputs
 
-        mask = self._create_dropout_mask(input_len=input_len)
+        mask = self._create_dropout_mask(input_len=input_len, maskable=maskable)
         out = self.infer(inputs=inputs, mask=mask)
         return out
 

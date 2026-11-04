@@ -37,7 +37,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
-from nemo.collections.tts.models import EasyMagpieTTSInferenceModel, MagpieTTSModel
+from nemo.collections.tts.models import EasyMagpieTTSInferenceModel, MagpieTTSModel, NemotronTTSBase
 from nemo.collections.tts.models.easy_magpietts_inference import EasyModelInferenceParameters
 from nemo.collections.tts.models.magpietts import ModelInferenceParameters
 from nemo.collections.tts.modules.magpietts_inference.evaluation_config import ASR_MODEL_TYPES
@@ -333,7 +333,7 @@ def load_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tuple[Ma
 
         # Load weights
         logging.info(f"Loading weights from checkpoint: {config.checkpoint_file}")
-        ckpt = torch.load(config.checkpoint_file)
+        ckpt = torch.load(config.checkpoint_file, weights_only=False)
         state_dict = update_checkpoint_state_dict(ckpt['state_dict'])
         model.load_state_dict(state_dict)
 
@@ -372,6 +372,16 @@ def load_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tuple[Ma
     logging.info("Model loaded and ready for inference.")
 
     return model, checkpoint_name
+
+
+def select_easy_magpie_model_class(model_cfg: DictConfig) -> type:
+    """Select the decoder-only model implementation for a saved model configuration."""
+    model_type = model_cfg.get('model_type', 'v1')
+    if model_type == 'v2':
+        return NemotronTTSBase
+    if model_type == 'v1':
+        return EasyMagpieTTSInferenceModel
+    raise ValueError(f"Unsupported model_type: {model_type!r}")
 
 
 def load_easy_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tuple[EasyMagpieTTSInferenceModel, str]:
@@ -417,10 +427,11 @@ def load_easy_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tup
             if config.phoneme_tokenizer_path and hasattr(model_cfg, 'phoneme_tokenizer'):
                 model_cfg.phoneme_tokenizer.tokenizer_path = config.phoneme_tokenizer_path
 
-        model = EasyMagpieTTSInferenceModel(cfg=model_cfg)
+        model_cls = select_easy_magpie_model_class(model_cfg)
+        model = model_cls(cfg=model_cfg)
 
         logging.info(f"Loading weights from checkpoint: {config.checkpoint_file}")
-        ckpt = torch.load(config.checkpoint_file)
+        ckpt = torch.load(config.checkpoint_file, weights_only=False)
         state_dict = ckpt['state_dict']
         model.load_state_dict(state_dict)
 
@@ -444,9 +455,10 @@ def load_easy_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tup
                     model_cfg.phoneme_tokenizer.tokenizer_path = config.phoneme_tokenizer_path
                 # Override target so restore_from instantiates the inference class,
                 # not the training subclass stored in the .nemo config.
-                model_cfg.target = 'nemo.collections.tts.models.easy_magpietts_inference.EasyMagpieTTSInferenceModel'
+                model_cls = select_easy_magpie_model_class(model_cfg)
+                model_cfg.target = f'{model_cls.__module__}.{model_cls.__name__}'
 
-            model = EasyMagpieTTSInferenceModel.restore_from(config.nemo_file, override_config_path=model_cfg)
+            model = model_cls.restore_from(config.nemo_file, override_config_path=model_cfg)
             checkpoint_name = os.path.basename(config.nemo_file).replace(".nemo", "")
 
     model.to(device)

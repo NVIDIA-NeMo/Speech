@@ -41,10 +41,11 @@ from vllm.v1.attention.backends.mamba1_attn import (
 from vllm.v1.attention.backends.registry import MambaAttentionBackendEnum
 from vllm.v1.kv_cache_interface import KVCacheSpec, MambaSpec
 
-# Largest real history is 6 * 768 = 4608 values (a k=7 skip conv).
+# Largest real history is 6 * 1024 = 6144 values (the v2 k=7 skip conv).
 # Every codec state layer advertises the same allocation so vLLM can place all
 # layers in uniform Mamba-style cache groups.
-CODEC_STATE_ELEMENTS = 4608
+# This works for both smaller v1 codec and larger v2 codec.
+CODEC_STATE_ELEMENTS = 6144
 
 
 @dataclass

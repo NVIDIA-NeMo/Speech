@@ -165,7 +165,7 @@ class EasyMagpieCodeLoop(nn.Module):
         # register the parent as a submodule (which would duplicate params).
         self._predictor_ref: tuple = ()
 
-    def bind_predictor(self, predictor: "EasyMagpieCodePredictor") -> None:
+    def bind_predictor(self, predictor: "EasyMagpieLocalTransformerPredictor") -> None:
         self._predictor_ref = (predictor,)
         self.top_k = predictor._sample_top_k
 
@@ -210,7 +210,7 @@ class EasyMagpieCodeLoop(nn.Module):
         return torch.stack(codes, dim=1)
 
 
-class EasyMagpieCodePredictor(nn.Module):
+class EasyMagpieLocalTransformerPredictor(nn.Module):
     """Predict all stacked audio codebooks from each backbone hidden state."""
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:

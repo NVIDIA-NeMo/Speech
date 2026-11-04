@@ -22,7 +22,7 @@ pytest.importorskip("vllm")
 
 from conftest import build_vllm_config  # noqa: E402
 from easymagpie_vllm_omni.config import EasyMagpieOmniArch  # noqa: E402
-from easymagpie_vllm_omni.local_transformer import EasyMagpieCodePredictor  # noqa: E402
+from easymagpie_vllm_omni.local_transformer import EasyMagpieLocalTransformerPredictor  # noqa: E402
 
 # Cover identity and linear projection paths.
 ARCH_PROFILES = {
@@ -48,7 +48,7 @@ def _build_predictor(profile_kwargs: dict):
     cfg = build_vllm_config(**profile_kwargs)
     arch = EasyMagpieOmniArch.from_hf_config(cfg.model_config.hf_config)
 
-    cp = EasyMagpieCodePredictor(vllm_config=cfg, prefix="code_predictor").eval()
+    cp = EasyMagpieLocalTransformerPredictor(vllm_config=cfg, prefix="code_predictor").eval()
     cp.init_forbidden_mask()
     return cp, arch
 

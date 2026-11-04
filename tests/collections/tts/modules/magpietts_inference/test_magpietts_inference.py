@@ -21,6 +21,8 @@ import csv
 import inspect
 import json
 import os
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -30,6 +32,12 @@ from omegaconf import OmegaConf
 
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.collections.tts.models import EasyMagpieTTSInferenceModel, NemotronTTSBase
+from nemo.collections.tts.models.easy_magpietts_inference import (
+    EasyModelInferenceParameters as easymagpie_inference_parameters_v1,
+)
+from nemo.collections.tts.models.nemotron_tts.v2.base import (
+    EasyModelInferenceParameters as easymagpie_inference_parameters_v2,
+)
 from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio import (
     FILEWISE_METRICS_TO_SAVE,
     _get_record_texts,
@@ -561,6 +569,70 @@ def test_select_easy_magpie_model_class(model_cfg, expected_class):
 def test_select_easy_magpie_model_class_rejects_unknown_type():
     with pytest.raises(ValueError, match="Unsupported model_type"):
         select_easy_magpie_model_class(OmegaConf.create({"model_type": "v3"}))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("load_mode", ["checkpoint", "nemo"])
+@pytest.mark.parametrize(
+    "overrides,expected_v1,expected_v2",
+    [
+        ([], (300, 0.7, 80, 2.5, False), (300, 0.5, 10, 2.5, False)),
+        (["--use_cfg"], (300, 0.7, 80, 2.5, True), (300, 0.5, 10, 2.5, True)),
+        (
+            ["--temperature", "0", "--topk", "17"],
+            (300, 0.0, 17, 2.5, False),
+            (300, 0.0, 17, 2.5, False),
+        ),
+    ],
+)
+def test_easy_magpie_cli_selects_defaults_per_model(monkeypatch, load_mode, overrides, expected_v1, expected_v2):
+    configs = []
+
+    def load_model(config):
+        version = Path(config.nemo_file or config.hparams_file).stem
+        model_cfg = {} if version == "legacy" else {"model_type": version}
+        return SimpleNamespace(cfg=OmegaConf.create(model_cfg)), version
+
+    def capture_inference(**kwargs):
+        configs.append(kwargs["inference_config"])
+        return None, None
+
+    monkeypatch.setattr(f"{EXAMPLE_MODULE}.load_evalset_config", lambda **kwargs: {})
+    monkeypatch.setattr(f"{EXAMPLE_MODULE}.load_easy_magpie_model", load_model)
+    monkeypatch.setattr(f"{EXAMPLE_MODULE}.log_model_architecture_summary", lambda model: ("", {}))
+    monkeypatch.setattr(f"{EXAMPLE_MODULE}._select_runner_cls", lambda args: lambda model, config: None)
+    monkeypatch.setattr(f"{EXAMPLE_MODULE}.run_inference_and_evaluation", capture_inference)
+
+    versions = ["v2", "v1", "legacy", "v2"]
+    if load_mode == "checkpoint":
+        model_args = [
+            "--hparams_files", ",".join(f"{v}.yaml" for v in versions),
+            "--checkpoint_files", ",".join(f"{v}.ckpt" for v in versions),
+        ]  # fmt: skip
+    else:
+        model_args = ["--nemo_files", ",".join(f"{v}.nemo" for v in versions)]
+
+    magpietts_inference_main(
+        [
+            "--model_type", "easy_magpie",
+            "--codecmodel_path", "codec.nemo",
+            "--datasets_json_path", "evalsets.json",
+            "--out_dir", "unused",
+        ] + model_args + overrides
+    )  # fmt: skip
+
+    assert len(configs) == len(versions)
+    for version, config, expected in zip(versions, configs, [expected_v2, expected_v1, expected_v1, expected_v2]):
+        params = config.model_inference_parameters
+        expected_cls = easymagpie_inference_parameters_v2 if version == "v2" else easymagpie_inference_parameters_v1
+        assert type(params) is expected_cls
+        assert (
+            params.max_decoder_steps,
+            params.temperature,
+            params.topk,
+            params.cfg_scale,
+            config.use_cfg,
+        ) == expected
 
 
 @pytest.mark.unit

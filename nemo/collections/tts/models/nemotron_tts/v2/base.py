@@ -200,8 +200,8 @@ class EasyModelInferenceParameters:
     """
 
     max_decoder_steps: int = 300
-    temperature: float = 0.7
-    topk: int = 80
+    temperature: float = 0.5
+    topk: int = 10
     cfg_scale: float = 2.5
 
     @classmethod

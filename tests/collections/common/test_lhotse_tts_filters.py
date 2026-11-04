@@ -134,6 +134,23 @@ def test_cut_context_speaker_similarity_filter(cut_example):
     assert f(cut_example) == True
 
 
+@pytest.mark.parametrize("skip_similarity", [True, False])
+def test_cut_context_speaker_similarity_filter_source_exemption(cut_example, skip_similarity):
+    cut_example.supervisions[0].custom["context_speaker_similarity"] = 0.1
+    cut_example.skip_context_speaker_similarity_filter = skip_similarity
+
+    assert ContextSpeakerSimilarityFilter(0.6)(cut_example) == skip_similarity
+    assert cut_example.supervisions[0].context_speaker_similarity == 0.1
+
+
+def test_cut_similarity_exemption_does_not_bypass_speaker_filter(cut_example):
+    cut_example.skip_context_speaker_similarity_filter = True
+    cut_example.supervisions[0].speaker = "| Language:vi Dataset:vi Speaker: North female vi |"
+
+    assert ContextSpeakerSimilarityFilter(0.95)(cut_example)
+    assert not SpeakerFilter(["North female vi"], speaker_fields=["speaker", "context_speaker"])(cut_example)
+
+
 def test_cut_validation_status_filter(cut_example):
     f = ValidationStatusFilter("pass")
     assert f(cut_example) == True

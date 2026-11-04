@@ -24,8 +24,7 @@ The default acoustic flow follows ST-TTS section 3.1.4: six Glow-style blocks,
 128 hidden channels, and four gated residual kernel-five layers per affine
 coupling, without additional time squeezing. A small VITS-style relative-position
 Transformer maps existing CAS features to latent means. ActNorm uses identity
-initialization without data-dependent or distributed initialization. The earlier
-compact flow remains available as ``flow_type='legacy'`` for old checkpoints.
+initialization without data-dependent or distributed initialization.
 
 References:
     https://www.isca-archive.org/interspeech_2021/kim21n_interspeech.pdf
@@ -87,24 +86,22 @@ class TinyGlowTTSAligner(nn.Module):
             vocabulary embedding is created.
         hidden_channels: Width of the acoustic coupling networks and text prior.
         num_flows: Number of normalization/mixing/coupling blocks.
-        num_text_layers: Number of Transformer blocks, or legacy CNN layers.
+        num_text_layers: Number of Transformer blocks.
         dequantization_noise: Half-width of uniform feature jitter during training.
             Quantized codec features need a continuous observation model; this
             learns the density of their jittered distribution. Set to zero for
             continuous features. No jitter is added during evaluation.
         mas_backend: ``auto``, ``cpu`` or ``triton``; see maximum_path_indices.
-        max_log_scale: Optional bound on affine log scales. The ST-TTS path
-            defaults to the reference's unrestricted log scales. Legacy defaults
-            to its original bound of two when this argument is None.
-        flow_type: ``sttts`` for the published flow configuration or ``legacy``
-            for the original compact flow and its unchanged checkpoint keys.
+        max_log_scale: Optional bound on affine log scales. None retains the
+            reference's unrestricted log scales.
+        flow_type: ``sttts``, retained in serialized architecture configurations.
         coupling_num_layers: Gated residual/skip layers in each ST-TTS coupling.
         coupling_kernel_size: Temporal kernel size of its residual layers.
         flow_n_split: Size of the shared invertible mixing matrix. A full
             channel matrix is used when the feature dimension is not divisible
             by this even split size, preserving support for odd dimensions.
-        text_encoder_type: ``relative_transformer`` for VITS-style relative
-            self-attention, or ``cnn`` to retain existing teacher checkpoints.
+        text_encoder_type: ``relative_transformer``, retained in serialized
+            architecture configurations.
         text_num_heads: Number of bidirectional text-attention heads.
         text_filter_channels: Convolutional feed-forward width; None uses four
             times hidden_channels.
@@ -161,20 +158,18 @@ class TinyGlowTTSAligner(nn.Module):
             raise ValueError('max_log_scale must be None or finite and positive')
         if mas_backend not in {'auto', 'cpu', 'triton'}:
             raise ValueError(f'Unknown MAS backend: {mas_backend}')
-        if flow_type not in {'sttts', 'legacy'}:
-            raise ValueError(f'Unknown flow type: {flow_type}')
+        if flow_type != 'sttts':
+            raise ValueError('The aligner supports only flow_type=sttts')
         if type(coupling_num_layers) is not int or coupling_num_layers < 1:
             raise ValueError('coupling_num_layers must be a positive integer')
         if type(coupling_kernel_size) is not int or coupling_kernel_size < 1 or coupling_kernel_size % 2 == 0:
             raise ValueError('coupling_kernel_size must be an odd positive integer')
         if type(flow_n_split) is not int or flow_n_split < 2 or flow_n_split % 2:
             raise ValueError('flow_n_split must be an even integer >= 2')
-        if text_encoder_type not in {'relative_transformer', 'cnn'}:
-            raise ValueError(f'Unknown text encoder type: {text_encoder_type}')
+        if text_encoder_type != 'relative_transformer':
+            raise ValueError('The aligner supports only text_encoder_type=relative_transformer')
         if type(use_speaker_conditioning) is not bool:
             raise ValueError('use_speaker_conditioning must be a boolean')
-        if use_speaker_conditioning and flow_type != 'sttts':
-            raise ValueError('Speaker conditioning requires flow_type=sttts')
         if use_speaker_conditioning:
             for name, value in (
                 ('speaker_hidden_channels', speaker_hidden_channels),
@@ -205,35 +200,27 @@ class TinyGlowTTSAligner(nn.Module):
         self.speaker_hidden_channels = speaker_hidden_channels
         self.speaker_embedding_dim = speaker_embedding_dim
         self.speaker_num_layers = speaker_num_layers
-        if text_encoder_type == 'cnn':
-            self.text_encoder = _TextPrior(text_channels, hidden_channels, audio_channels, num_text_layers)
-        else:
-            self.text_encoder = _TransformerTextPrior(
-                text_channels,
-                hidden_channels,
-                audio_channels,
-                num_text_layers,
-                text_num_heads,
-                self.text_filter_channels,
-                text_kernel_size,
-                text_dropout,
-                text_rel_attn_window_size,
-            )
-        if flow_type == 'legacy':
-            self.flow = _AudioFlow(
-                audio_channels, hidden_channels, num_flows, 2.0 if max_log_scale is None else max_log_scale
-            )
-        else:
-            self.flow = _STTTSFlow(
-                audio_channels,
-                hidden_channels,
-                num_flows,
-                coupling_num_layers,
-                coupling_kernel_size,
-                flow_n_split,
-                max_log_scale,
-                speaker_channels=speaker_embedding_dim if use_speaker_conditioning else 0,
-            )
+        self.text_encoder = _TransformerTextPrior(
+            text_channels,
+            hidden_channels,
+            audio_channels,
+            num_text_layers,
+            text_num_heads,
+            self.text_filter_channels,
+            text_kernel_size,
+            text_dropout,
+            text_rel_attn_window_size,
+        )
+        self.flow = _STTTSFlow(
+            audio_channels,
+            hidden_channels,
+            num_flows,
+            coupling_num_layers,
+            coupling_kernel_size,
+            flow_n_split,
+            max_log_scale,
+            speaker_channels=speaker_embedding_dim if use_speaker_conditioning else 0,
+        )
         self.speaker_encoder = (
             CodecSpeakerEncoder(audio_channels, speaker_hidden_channels, speaker_embedding_dim, speaker_num_layers)
             if use_speaker_conditioning
@@ -414,89 +401,6 @@ class _TransformerTextPrior(nn.Module):
         hidden = self.input_projection(features, mask) * mask
         hidden = self.encoder(hidden, mask)
         return self.output_projection(hidden, mask) * mask
-
-
-class _TextPrior(nn.Module):
-    """Small masked prior over existing token embeddings, with unit variance."""
-
-    def __init__(self, in_channels, hidden_channels, out_channels, num_layers):
-        super().__init__()
-        self.input_projection = ConvNorm(in_channels, hidden_channels, kernel_size=1)
-        self.layers = nn.ModuleList(
-            [ConvNorm(hidden_channels, hidden_channels, kernel_size=3, w_init_gain='relu') for _ in range(num_layers)]
-        )
-        self.norms = nn.ModuleList([nn.LayerNorm(hidden_channels) for _ in range(num_layers)])
-        self.output_projection = ConvNorm(hidden_channels, out_channels, kernel_size=1)
-
-    def forward(self, features, mask):
-        hidden = self.input_projection(features, mask) * mask
-        for layer, norm in zip(self.layers, self.norms):
-            residual = torch.relu(layer(hidden, mask)) * mask
-            hidden = norm((hidden + residual).transpose(1, 2)).transpose(1, 2) * mask
-        return self.output_projection(hidden, mask) * mask
-
-
-class _AffineCoupling(nn.Module):
-    """Glow-style affine coupling, with a bounded, explicitly counted log scale."""
-
-    def __init__(self, channels, hidden_channels, max_log_scale):
-        super().__init__()
-        self.first_channels = channels // 2
-        self.second_channels = channels - self.first_channels
-        self.max_log_scale = max_log_scale
-        self.input_projection = ConvNorm(self.first_channels, hidden_channels, kernel_size=1, w_init_gain='relu')
-        self.hidden_projection = ConvNorm(hidden_channels, hidden_channels, kernel_size=3, w_init_gain='relu')
-        self.output_projection = nn.Conv1d(hidden_channels, 2 * self.second_channels, kernel_size=1)
-        nn.init.zeros_(self.output_projection.weight)
-        nn.init.zeros_(self.output_projection.bias)
-
-    def forward(self, inputs, mask, reverse=False):
-        first, second = inputs.split([self.first_channels, self.second_channels], dim=1)
-        hidden = torch.relu(self.input_projection(first, mask)) * mask
-        hidden = torch.relu(self.hidden_projection(hidden, mask)) * mask
-        shift, raw_scale = (self.output_projection(hidden) * mask).chunk(2, dim=1)
-        log_scale = self.max_log_scale * torch.tanh(raw_scale / self.max_log_scale)
-        if reverse:
-            transformed = (second - shift) * torch.exp(-log_scale)
-            log_det = -(log_scale * mask).sum(dim=(1, 2))
-        else:
-            transformed = second * torch.exp(log_scale) + shift
-            log_det = (log_scale * mask).sum(dim=(1, 2))
-        return torch.cat([first, transformed], dim=1) * mask, log_det
-
-
-class _AudioFlow(nn.Module):
-    """Invertible acoustic transform with no time downsampling or bottleneck."""
-
-    def __init__(self, channels, hidden_channels, num_flows, max_log_scale):
-        super().__init__()
-        self.max_log_scale = max_log_scale
-        self.shifts = nn.ParameterList([nn.Parameter(torch.zeros(1, channels, 1)) for _ in range(num_flows)])
-        self.log_scales = nn.ParameterList([nn.Parameter(torch.zeros(1, channels, 1)) for _ in range(num_flows)])
-        self.couplings = nn.ModuleList(
-            [_AffineCoupling(channels, hidden_channels, max_log_scale) for _ in range(num_flows)]
-        )
-
-    def forward(self, inputs, mask, reverse=False):
-        hidden = inputs * mask
-        log_det = inputs.new_zeros(inputs.size(0))
-        layers = range(len(self.couplings) - 1, -1, -1) if reverse else range(len(self.couplings))
-        valid_frames = mask.sum(dim=(1, 2))
-        for layer_index in layers:
-            log_scale = self.max_log_scale * torch.tanh(self.log_scales[layer_index] / self.max_log_scale)
-            shift = self.shifts[layer_index]
-            if reverse:
-                hidden = hidden.flip(1)
-                hidden, coupling_log_det = self.couplings[layer_index](hidden, mask, reverse=True)
-                hidden = (hidden - shift) * torch.exp(-log_scale) * mask
-                log_det = log_det + coupling_log_det - log_scale.sum() * valid_frames
-            else:
-                hidden = (hidden * torch.exp(log_scale) + shift) * mask
-                log_det = log_det + log_scale.sum() * valid_frames
-                hidden, coupling_log_det = self.couplings[layer_index](hidden, mask)
-                hidden = hidden.flip(1)
-                log_det = log_det + coupling_log_det
-        return hidden, log_det
 
 
 class _STTTSFlow(nn.Module):

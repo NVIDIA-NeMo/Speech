@@ -15,13 +15,13 @@ import torch.nn.functional as F
 from omegaconf import OmegaConf, open_dict
 
 from nemo.collections.tts.modules.attention_alignment import AttentionAlignmentGuidance, AttentionAlignmentTurn
-from nemo.collections.tts.modules.nemotron_tts.v2.turn_alignment import AlignedTextTargets, align_text_turns
+from nemo.collections.tts.modules.nemotron_tts.v2.turn_alignment import TurnAlignmentOutput, align_text_turns
 from nemo.utils import logging
 
 
 @dataclass
 class AttentionAlignmentTrainingOutput:
-    teacher: AlignedTextTargets
+    teacher: TurnAlignmentOutput
     guidance: AttentionAlignmentGuidance | None
     metrics: dict
 
@@ -49,7 +49,7 @@ def init_training_alignment(model, cfg):
     )
 
     restoring = bool(model._is_model_being_restored())
-    settings = resolve_aligner_config(cfg.get('aligned_text_aligner'), restoring=restoring)
+    settings = resolve_aligner_config(cfg.get('aligned_text_aligner'))
     channels = int(model._codec_model.vector_quantizer.codebook_dim) * model.frame_stacking_factor
     dimensions = dict(audio_channels=channels, text_channels=int(cfg.embedding_dim))
     for name, actual in dimensions.items():
@@ -255,15 +255,11 @@ def prepare_attention_alignment_training(
         tokens,
         token_lens,
         turn_indices,
-        text.new_full((text.size(0), target_steps), model.pad_id),
         embed_text=lambda ids, lengths: model.embed_text_tokens(ids, text_lens=lengths),
-        pad_id=model.pad_id,
-        use_alignment=True,
         max_turns_per_batch=model.cfg.get('aligned_text_max_turns_per_batch', 32),
         max_frames_per_batch=model.cfg.get('aligned_text_max_frames_per_batch', 8192),
         speaker_reference_features=reference_features,
         speaker_reference_lens=reference_lengths,
-        return_token_indices=True,
     )
     settings = model.attention_alignment_config
     loss_scale, prior_strength = alignment_schedule(settings, model.global_step)

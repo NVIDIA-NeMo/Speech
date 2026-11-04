@@ -19,17 +19,20 @@ from nemo.collections.tts.modules.nemotron_tts.v2.alignment_checkpoint import (
 pytestmark = pytest.mark.unit
 
 
-def test_defaults_preserve_saved_text_encoder_versions():
+def test_defaults_match_current_flow_and_text_encoder_architecture():
     assert resolve_aligner_config()['text_encoder_type'] == 'relative_transformer'
     assert resolve_aligner_config()['flow_type'] == 'sttts'
     assert resolve_aligner_config({})['text_encoder_type'] == 'relative_transformer'
     assert resolve_aligner_config({'hidden_channels': 8})['text_encoder_type'] == 'relative_transformer'
     assert resolve_aligner_config({'hidden_channels': 8})['flow_type'] == 'sttts'
-    assert resolve_aligner_config({'hidden_channels': 8}, restoring=True)['text_encoder_type'] == 'cnn'
-    assert resolve_aligner_config({'hidden_channels': 8}, restoring=True)['flow_type'] == 'legacy'
-    assert resolve_aligner_config({}, restoring=True)['flow_type'] == 'legacy'
     with pytest.raises(ValueError, match='Unknown aligned_text_aligner'):
         resolve_aligner_config({'unexpected_option': True})
+
+
+@pytest.mark.parametrize('option,value', [('flow_type', 'legacy'), ('text_encoder_type', 'cnn')])
+def test_unsupported_checkpoint_architecture_is_rejected_explicitly(option, value):
+    with pytest.raises(ValueError, match=option):
+        resolve_aligner_config({option: value})
 
 
 @pytest.mark.parametrize('prefix', ['', 'text_aligner.', 'model.module.text_aligner.', 'alignment.text_aligner.'])
@@ -101,7 +104,7 @@ def test_incompatible_feature_dimensions_leave_receiving_aligner_unchanged(tmp_p
     _assert_state_equal(before, receiver.state_dict())
 
 
-@pytest.mark.parametrize('failure', ['shape', 'missing', 'unexpected', 'not_tensor'])
+@pytest.mark.parametrize('failure', ['shape', 'missing', 'unexpected', 'not_tensor', 'meta'])
 def test_invalid_state_cannot_partially_overwrite_receiver(tmp_path, failure):
     source, config = _aligner()
     receiver, _ = _aligner()
@@ -114,6 +117,8 @@ def test_invalid_state_cannot_partially_overwrite_receiver(tmp_path, failure):
         del state[key]
     elif failure == 'unexpected':
         state['unknown.weight'] = torch.zeros(1)
+    elif failure == 'meta':
+        state[key] = torch.empty_like(state[key], device='meta')
     else:
         state[key] = 7
     path = tmp_path / 'incompatible.pt'

@@ -40,6 +40,25 @@ def test_chunked_queries_reuse_an_iterator_of_registered_key_positions():
     assert chunked.snapshot() == individual.snapshot()
 
 
+def test_timestamp_tracker_uses_the_monotonic_path_and_rejects_argmax():
+    assert AttentionTimestampTracker().method == 'monotonic'
+    with pytest.raises(ValueError, match='method must be monotonic'):
+        AttentionTimestampTracker(method='argmax')
+
+
+def test_drained_queue_records_have_no_aliases_to_retained_span_state():
+    tracker = _tracker([10], confirmation_frames=1, record_frames=True)
+    tracker.update([0.8], start=0, end=0.08)
+    events, frames = tracker.drain_events(), tracker.drain_frames()
+    events[0]['end'] = 100
+    frames[0]['assignments'][0]['confidence'] = -1
+    frames[0]['token_id'] = 99
+    tracker.update([0.7], start=0.08, end=0.16)
+    assert tracker.snapshot()[0]['end'] == 0.16
+    next_frame = tracker.drain_frames()[0]
+    assert next_frame['token_id'] == 10 and next_frame['confidence'] == 0.7
+
+
 def test_streaming_tokens_do_not_require_a_complete_future_transcript():
     tracker = AttentionTimestampTracker()
     tracker.register_token(0, 17, 'hello')
@@ -84,33 +103,6 @@ def test_realistic_mix_with_thirty_percent_one_frame_tokens_does_not_erase_short
     assert all(token['start'] is not None for token in records)
     assert sum(token['short_evidence'] for token in records) == 3
     assert [token['spans'][0]['frame_count'] for token in records] == durations
-
-
-def test_single_frame_excursion_is_retracted_without_filling_the_gap_with_the_previous_token():
-    tracker = _tracker([10, 11])
-    for index, token in enumerate([0, 0, 1, 0, 0]):
-        tracker.update(_one_hot(token, 2), start=index * 0.1, end=(index + 1) * 0.1)
-    records = tracker.finalize(0.5)
-    assert records[1]['status'] == 'unaligned' and records[1]['start'] is None
-    assert [value for span in records[0]['spans'] for value in (span['start'], span['end'])] == pytest.approx(
-        [0.0, 0.2, 0.3, 0.5]
-    )
-    assert records[0]['ambiguous']
-    assert records[0]['start'] == 0.0 and records[0]['end'] == 0.2
-    assert any(event['event'] == 'retract' and event['token_index'] == 1 for event in tracker.drain_events())
-
-
-def test_confirmed_backward_revisit_has_disjoint_spans_and_a_primary_contiguous_interval():
-    tracker = _tracker([10, 11])
-    for index, token in enumerate([0, 0, 1, 1, 0, 0, 0]):
-        tracker.update(_one_hot(token, 2), start=index * 0.1, end=(index + 1) * 0.1)
-    records = tracker.finalize(0.7)
-    assert [value for span in records[0]['spans'] for value in (span['start'], span['end'])] == pytest.approx(
-        [0.0, 0.2, 0.4, 0.7]
-    )
-    assert records[0]['start'] == 0.4 and records[0]['end'] == pytest.approx(0.7)
-    assert records[0]['primary_span_index'] == 1 and records[0]['ambiguous']
-    assert records[1]['start'] == 0.2 and records[1]['end'] == 0.4
 
 
 @pytest.mark.parametrize('values', [[0.0, 0.0], [float('nan'), 0.9], [float('inf'), 0.0], [-0.1, 0.8], [0.8, 0.8]])
@@ -464,23 +456,9 @@ def test_frame_records_are_opt_in_and_independent_of_span_events():
     assert first[0]['confidence'] == 0.8
 
 
-def test_frame_records_preserve_causal_excursions_before_span_retraction():
-    tracker = _tracker([10, 11], record_frames=True)
-    frames = []
-    for index, token in enumerate([0, 0, 1, 0, 0]):
-        tracker.update(_one_hot(token, 2), start=index * 0.08, end=(index + 1) * 0.08)
-        frames.extend(tracker.drain_frames())
-    assert [frame['token_index'] for frame in frames] == [0, 0, 1, 0, 0]
-    assert frames[2]['confidence'] == 0.9 and frames[2]['emitted_at'] == pytest.approx(0.24)
-    assert tracker.finalize(0.4)[1]['status'] == 'unaligned'
-    assert any(event['event'] == 'retract' for event in tracker.drain_events())
-    assert frames[2]['token_id'] == 11
-
-
-@pytest.mark.parametrize('method', ['argmax', 'monotonic'])
 @pytest.mark.parametrize('values', [[0.0, 0.0], [float('nan'), 0.9], [0.8, 0.8]])
-def test_frame_records_include_unaligned_queries_and_skip_zero_length_eos(method, values):
-    tracker = _tracker([10, 11], method=method, record_frames=True)
+def test_frame_records_include_unaligned_queries_and_skip_zero_length_eos(values):
+    tracker = _tracker([10, 11], record_frames=True)
     tracker.update(values, start=0, end=0.08)
     frame = tracker.drain_frames()[0]
     assert frame['status'] == 'unaligned'
@@ -494,9 +472,8 @@ def test_frame_records_include_unaligned_queries_and_skip_zero_length_eos(method
     assert tracker.drain_frames() == []
 
 
-@pytest.mark.parametrize('method', ['argmax', 'monotonic'])
-def test_frame_records_apply_confidence_gates_and_do_not_label_unregistered_text(method):
-    tracker = _tracker([10], method=method, min_confidence=0.6, record_frames=True)
+def test_frame_records_apply_confidence_gates_and_do_not_label_unregistered_text():
+    tracker = _tracker([10], min_confidence=0.6, record_frames=True)
     tracker.update([0.4], start=0, end=0.08)
     tracker.update([0.9], token_indices=[7], start=0.08, end=0.16)
     frames = tracker.drain_frames()

@@ -80,39 +80,19 @@ def build_token_timestamps(
     for token in records:
         token.setdefault('turn_index', 0 if turn_index is None else turn_index)
         token.setdefault('observed', True)
-        source_spans = token.get('spans') or []
-        if not source_spans and token.get('start') is not None and token.get('end') is not None:
-            source_spans = [
-                dict(
-                    start=token['start'],
-                    end=token['end'],
-                    confidence=token.get('confidence'),
-                    attention_confidence=token.get('attention_confidence', token.get('confidence')),
-                    forced=bool(token.get('forced', False)),
-                )
-            ]
-        # Older callers may have marked only the token. Once span-level flags
-        # exist they are authoritative, so cropping away a forced span also
-        # clears the token's forced flag.
-        legacy_forced = bool(token.get('forced', False)) and not any('forced' in span for span in source_spans)
+        source_spans = token['spans']
         spans = []
         for span in source_spans:
-            left = max(float(span['start']), start_time)
-            right = min(float(span['end']), end_time)
-            if right <= left:
+            clipped = _crop_interval(span, start_time, end_time)
+            if clipped is None:
                 continue
-            clipped = dict(span, start=left - start_time, end=right - start_time)
-            clipped['forced'] = bool(span.get('forced', legacy_forced))
-            clipped['attention_confidence'] = span.get('attention_confidence', span.get('confidence'))
-            if clipped['forced']:
-                clipped['confidence'] = 0.0
-            if left != span['start'] or right != span['end']:
-                clipped['clipped'] = True
+            if clipped.get('clipped'):
                 frame_step = float(trace.get('frame_step_seconds', 0.0))
                 if 'frame_count' in clipped and frame_step > 0:
                     clipped['source_frame_count'] = clipped['frame_count']
                     clipped['frame_count'] = min(
-                        clipped['frame_count'], max(1, math.ceil((right - left) / frame_step - 1e-8))
+                        clipped['frame_count'],
+                        max(1, math.ceil((clipped['end'] - clipped['start']) / frame_step - 1e-8)),
                     )
             spans.append(clipped)
         token['spans'] = spans
@@ -229,7 +209,7 @@ def _crop_frames(trace, tokenizer, start_time, end_time, turn_index):
     for original in trace['frames']:
         if turn_index is not None and original.get('turn_index', 0) != turn_index:
             continue
-        frame = _crop_frame_interval(original, start_time, end_time)
+        frame = _crop_interval(original, start_time, end_time)
         if frame is None:
             continue
         frame['source_frame_index'] = original['frame_index']
@@ -247,7 +227,7 @@ def _crop_frames(trace, tokenizer, start_time, end_time, turn_index):
             frame.update(codec_frame_start=left, codec_frame_end=right, valid_codec_frames=right - left)
         assignments = []
         for assignment in original.get('assignments', []):
-            clipped = _crop_frame_interval(assignment, start_time, end_time)
+            clipped = _crop_interval(assignment, start_time, end_time)
             if clipped is not None:
                 _label_frame(clipped, tokenizer)
                 assignments.append(clipped)
@@ -275,7 +255,7 @@ def _crop_frames(trace, tokenizer, start_time, end_time, turn_index):
     return frames
 
 
-def _crop_frame_interval(record, start_time, end_time):
+def _crop_interval(record, start_time, end_time):
     left, right = max(float(record['start']), start_time), min(float(record['end']), end_time)
     if right <= left:
         return None

@@ -10,13 +10,10 @@ are the text slice of the ordinary full-key softmax, without text renormalizatio
 
 The causal monotonic decoder uses only the current posterior and past progress.
 It can approximate crossed weak positions when forward evidence exposes a stall;
-such estimates are explicitly forced and have zero confidence. The argmax alternative
-allows local backward revisits. Two-frame confirmation rejects isolated
-A -> B -> A excursions while retaining one-frame tokens along forward progress,
-and short initial/final evidence. Events are provisional until confirmed or
-ended; retractions explicitly remove rejected excursions. A token's main
-start/end pair describes its most supported contiguous span, rather than a
-potentially misleading first-to-last envelope over disjoint visits.
+such estimates are explicitly forced and have zero confidence. Confirmation
+tracks consecutive evidence while retaining short initial and final tokens.
+Each token retains its observed contiguous spans and uses the most supported
+span as its main start/end interval.
 
 These are model-derived estimates, not independent recognition or forced-aligned
 word boundaries. Timestamp resolution and accuracy depend on the supplied model
@@ -34,7 +31,7 @@ class AttentionTimestampTracker:
 
     Args:
         confirmation_frames: Consecutive frames confirming a new position. One
-            disables excursion filtering. Short forward runs are still retained
+            confirms the first observed frame. Short forward runs are retained
             as ``short_evidence`` when this value is greater than one.
         min_confidence: Minimum probability of the selected visible text key,
             measured in the original full-key attention distribution.
@@ -42,8 +39,7 @@ class AttentionTimestampTracker:
         min_margin: Minimum selected-key probability minus the strongest other
             visible key. Zero disables this gate in monotonic mode, permitting
             weak positions recovered from the sequence posterior.
-        method: ``argmax`` for framewise selection with local backward revisits,
-            or ``monotonic`` for a causal forward-only posterior path.
+        method: Causal forward-only posterior path, ``monotonic``.
         force_progress: Permit approximate forward progress when attention has
             left the current position. Forced portions have zero confidence.
         progress_threshold: Relative support decay needed to escape a stall.
@@ -55,8 +51,7 @@ class AttentionTimestampTracker:
     ``update`` returns newly generated events and also enqueues them for
     ``drain_events``. Clients should use either delivery mechanism, not both.
     Drain the event queue regularly during long streams. Only aggregated spans,
-    one pending candidate and one active candidate are retained. Monotonic mode
-    retains only input-position metadata and the last progress state. Events are
+    one current span and input-position metadata are retained. Events are
     returned on every update, without buffering future audio or attention frames.
     """
 
@@ -66,7 +61,7 @@ class AttentionTimestampTracker:
         min_confidence: float = 0.0,
         min_text_mass: float = 0.0,
         min_margin: float = 0.0,
-        method: str = 'argmax',
+        method: str = 'monotonic',
         force_progress: bool = True,
         progress_threshold: float = 0.5,
         skip_penalty: float = 6.0,
@@ -76,8 +71,8 @@ class AttentionTimestampTracker:
         self.min_confidence = _probability_setting(min_confidence, 'min_confidence')
         self.min_text_mass = _probability_setting(min_text_mass, 'min_text_mass')
         self.min_margin = _probability_setting(min_margin, 'min_margin')
-        if method not in ('argmax', 'monotonic'):
-            raise ValueError('method must be argmax or monotonic')
+        if method != 'monotonic':
+            raise ValueError('method must be monotonic')
         self.method = method
         if not isinstance(force_progress, bool):
             raise ValueError('force_progress must be a boolean')
@@ -87,23 +82,16 @@ class AttentionTimestampTracker:
         if not isinstance(record_frames, bool):
             raise ValueError('record_frames must be a boolean')
         self.record_frames = record_frames
-        self._path_decoder = (
-            StreamingAttentionPathDecoder(
-                skip_penalty=self.skip_penalty,
-                force_progress=self.force_progress,
-                progress_threshold=self.progress_threshold,
-                min_confidence=self.min_confidence,
-                min_text_mass=self.min_text_mass,
-                min_margin=self.min_margin,
-            )
-            if method == 'monotonic'
-            else None
+        self._path_decoder = StreamingAttentionPathDecoder(
+            skip_penalty=self.skip_penalty,
+            force_progress=self.force_progress,
+            progress_threshold=self.progress_threshold,
+            min_confidence=self.min_confidence,
+            min_text_mass=self.min_text_mass,
+            min_margin=self.min_margin,
         )
         self._tokens = {}
-        self._active = None
-        self._pending = None
-        self._previous_index = None
-        self._previous_confirmed = False
+        self._current = None
         self._last_end = None
         self._input_end = None
         self._duration = None
@@ -134,8 +122,6 @@ class AttentionTimestampTracker:
             'posterior_support': 0.0,
             'max_probability': 0.0,
             'candidate_frames': 0,
-            'rejected_frames': 0,
-            'retracted_spans': 0,
         }
 
     def update(
@@ -176,25 +162,13 @@ class AttentionTimestampTracker:
         event_start = len(self._events)
         self._input_end = end
         visible = self._observe_probabilities(values, indices, end - start)
-        if self._path_decoder is not None:
-            decisions = self._path_decoder.update(
-                [value for value, _ in visible] if visible else [],
-                token_indices=[index for _, index in visible] if visible else [],
-                start=start,
-                end=end,
-            )
-            assignments = self._consume_decisions(decisions)
-        else:
-            candidate = self._candidate(visible)
-            self._apply_candidate(candidate, start, end, end)
-            assignments = []
-            if self.record_frames:
-                index = candidate[0] if candidate is not None else None
-                probability = candidate[1] if candidate is not None else 0.0
-                margin = probability - max((p for p, key in visible or [] if key != index), default=0.0)
-                assignments.append(
-                    self._frame_assignment(candidate, start, end, end, margin, self._text_mass(visible))
-                )
+        decisions = self._path_decoder.update(
+            [value for value, _ in visible] if visible else [],
+            token_indices=[index for _, index in visible] if visible else [],
+            start=start,
+            end=end,
+        )
+        assignments = self._consume_decisions(decisions)
         if self.record_frames:
             self._record_frame(assignments, start, end)
         return copy.deepcopy(self._events[event_start:])
@@ -228,10 +202,9 @@ class AttentionTimestampTracker:
         for index, token in sorted(self._tokens.items()):
             spans = [self._span_record(span, 'finalized') for span in token['spans']]
             status = 'observed' if spans else 'unaligned'
-            for live, live_status in ((self._active, 'active'), (self._pending, 'provisional')):
-                if live is not None and live['token_index'] == index:
-                    spans.append(self._span_record(live, live_status))
-                    status = live_status
+            if self._current is not None and self._current['token_index'] == index:
+                status = 'active' if self._current['confirmed'] else 'provisional'
+                spans.append(self._span_record(self._current, status))
             if self._duration is not None and spans:
                 status = 'finalized'
             primary_index = max(range(len(spans)), key=lambda i: spans[i]['support']) if spans else None
@@ -267,18 +240,18 @@ class AttentionTimestampTracker:
     def drain_events(self) -> list[dict]:
         """Consume pending incremental events; finalized spans themselves are immutable."""
         events, self._events = self._events, []
-        return copy.deepcopy(events)
+        return events
 
     def drain_frames(self) -> list[dict]:
         """Consume instantaneous query records independently of token-span events.
 
         Records are available immediately after ``update``. Each covers the
         supplied audio interval, with its endpoint assignment and any approximate
-        subdivisions in ``assignments``. Later span confirmation or retraction
-        leaves these causal observations unchanged.
+        subdivisions in ``assignments``. These causal observations remain unchanged
+        when aggregate spans are confirmed or finalized.
         """
         frames, self._frames = self._frames, []
-        return copy.deepcopy(frames)
+        return frames
 
     def finalize(self, duration: float) -> list[dict]:
         """Close the stream without extending observations through an unobserved tail.
@@ -295,62 +268,30 @@ class AttentionTimestampTracker:
             return self.snapshot()
         if self._input_end is not None and duration < self._input_end - 1e-9:
             raise ValueError('duration cannot precede an observed audio interval; clip before update')
-        if self._path_decoder is not None:
-            self._consume_decisions(self._path_decoder.finalize(duration))
-        self._end_pending(duration, retain=True)
-        self._end_active(duration)
+        self._path_decoder.finalize(duration)
+        self._end_current(duration)
         self._duration = duration
         return self.snapshot()
 
     def _apply_candidate(self, candidate, start, end, emitted_at):
         if self._last_end is not None and start > self._last_end + 1e-9:
-            self._end_pending(emitted_at, retain=True)
-            self._end_active(emitted_at)
-            self._previous_index = None
-            self._previous_confirmed = False
+            self._end_current(emitted_at)
         self._last_end = end
         if candidate is None:
-            self._end_pending(emitted_at, retain=True)
-            self._end_active(emitted_at)
-            self._previous_index = None
-            self._previous_confirmed = False
+            self._end_current(emitted_at)
             return
         index, confidence, text_mass, forced = candidate
-        if self._active is not None:
-            if self._active['token_index'] == index:
-                self._extend(self._active, end, confidence, text_mass, forced)
-                self._emit('update', self._active, emitted_at)
-                return
-            self._end_active(emitted_at)
-        if self._pending is not None:
-            if self._pending['token_index'] == index:
-                self._extend(self._pending, end, confidence, text_mass, forced)
-                if self._pending['frame_count'] >= self.confirmation_frames:
-                    self._active, self._pending = self._pending, None
-                    self._active['confirmed'] = True
-                    self._emit('confirmed', self._active, emitted_at)
-                else:
-                    self._emit('update', self._pending, emitted_at)
-                return
-            if index == self._previous_index:
-                # A single-frame excursion is not evidence that B occupied all
-                # of the gap. Keep A's two observed spans separate as well.
-                resume_confirmed = self._previous_confirmed
-                self._end_pending(emitted_at, retain=False)
-                self._begin(
-                    index,
-                    start,
-                    end,
-                    confidence,
-                    text_mass,
-                    forced=forced,
-                    confirmed=resume_confirmed,
-                    emitted_at=emitted_at,
-                )
-                return
-            forward = self._previous_index is None or self._previous_index < self._pending['token_index'] < index
-            self._end_pending(emitted_at, retain=forward)
-        self._begin(index, start, end, confidence, text_mass, forced=forced, emitted_at=emitted_at)
+        if self._current is not None and self._current['token_index'] != index:
+            self._end_current(emitted_at)
+        if self._current is None:
+            self._begin(index, start, end, confidence, text_mass, forced, emitted_at)
+            return
+        self._extend(self._current, end, confidence, text_mass, forced)
+        event = 'update'
+        if not self._current['confirmed'] and self._current['frame_count'] >= self.confirmation_frames:
+            self._current['confirmed'] = True
+            event = 'confirmed'
+        self._emit(event, self._current, emitted_at)
 
     def _require_open(self):
         if self._duration is not None:
@@ -371,42 +312,14 @@ class AttentionTimestampTracker:
             token['max_probability'] = max(token['max_probability'], probability)
         return visible
 
-    def _candidate(self, visible):
-        if not visible:
-            return None
-        text_mass = math.fsum(value for value, _ in visible)
-        ranked = sorted(visible, key=lambda item: (-item[0], item[1]))
-        confidence, index = ranked[0]
-        runner_up = ranked[1][0] if len(ranked) > 1 else 0.0
-        if confidence <= 0 or text_mass <= 0:
-            return None
-        self._tokens[index]['candidate_frames'] += 1
-        if (
-            confidence < self.min_confidence
-            or text_mass < self.min_text_mass
-            or confidence - runner_up < self.min_margin
-        ):
-            self._tokens[index]['rejected_frames'] += 1
-            return None
-        return index, confidence, text_mass, False
-
     def _consume_decisions(self, decisions):
         assignments = []
         for decision in decisions:
             index = decision['token_index']
-            confidence = decision['probability']
-            text_mass = decision['text_attention_mass']
             candidate = None
             if index is not None:
                 self._tokens[index]['candidate_frames'] += 1
-                if (
-                    confidence >= self.min_confidence
-                    and text_mass >= self.min_text_mass
-                    and (self.min_margin == 0 or decision['margin'] >= self.min_margin)
-                ):
-                    candidate = index, confidence, text_mass, decision['forced']
-                else:
-                    self._tokens[index]['rejected_frames'] += 1
+                candidate = index, decision['probability'], decision['text_attention_mass'], decision['forced']
             self._apply_candidate(candidate, decision['start'], decision['end'], decision['emitted_at'])
             if self.record_frames:
                 assignments.append(
@@ -416,14 +329,10 @@ class AttentionTimestampTracker:
                         decision['end'],
                         decision['emitted_at'],
                         decision['margin'],
-                        text_mass,
+                        decision['text_attention_mass'],
                     )
                 )
         return assignments
-
-    @staticmethod
-    def _text_mass(visible):
-        return math.fsum(value for value, _ in visible) if visible is not None else None
 
     def _frame_assignment(self, candidate, start, end, emitted_at, margin, text_mass):
         index = candidate[0] if candidate is not None else None
@@ -459,7 +368,7 @@ class AttentionTimestampTracker:
         self._next_frame_index += 1
         self._frames.append(frame)
 
-    def _begin(self, index, start, end, confidence, text_mass, forced=False, confirmed=False, emitted_at=None):
+    def _begin(self, index, start, end, confidence, text_mass, forced, emitted_at):
         span = {
             'span_id': self._next_span_id,
             'token_index': index,
@@ -468,16 +377,13 @@ class AttentionTimestampTracker:
             'probability_weight': 0.0,
             'mass_weight': 0.0,
             'frame_count': 0,
-            'confirmed': confirmed or self.confirmation_frames == 1,
+            'confirmed': self.confirmation_frames == 1,
             'forced': False,
         }
         self._next_span_id += 1
         self._extend(span, end, confidence, text_mass, forced)
-        if span['confirmed']:
-            self._active = span
-        else:
-            self._pending = span
-        self._emit('start', span, end if emitted_at is None else emitted_at)
+        self._current = span
+        self._emit('start', span, emitted_at)
 
     @staticmethod
     def _extend(span, end, confidence, text_mass, forced=False):
@@ -488,26 +394,11 @@ class AttentionTimestampTracker:
         span['frame_count'] += 1
         span['forced'] = span['forced'] or forced
 
-    def _end_active(self, emitted_at):
-        if self._active is None:
-            return
-        span, self._active = self._active, None
-        self._tokens[span['token_index']]['spans'].append(span)
-        self._previous_index = span['token_index']
-        self._previous_confirmed = span['confirmed']
-        self._emit('end', span, emitted_at)
-
-    def _end_pending(self, emitted_at, retain):
-        if self._pending is None:
-            return
-        span, self._pending = self._pending, None
-        if retain:
+    def _end_current(self, emitted_at):
+        if self._current is not None:
+            span, self._current = self._current, None
             self._tokens[span['token_index']]['spans'].append(span)
-            self._previous_index = span['token_index']
-            self._previous_confirmed = span['confirmed']
-        else:
-            self._tokens[span['token_index']]['retracted_spans'] += 1
-        self._emit('end' if retain else 'retract', span, emitted_at)
+            self._emit('end', span, emitted_at)
 
     @staticmethod
     def _unaligned_reason(token):
@@ -515,10 +406,6 @@ class AttentionTimestampTracker:
             return 'not_observed'
         if not token['max_probability']:
             return 'no_positive_attention'
-        if token['retracted_spans']:
-            return 'unconfirmed_excursion'
-        if token['rejected_frames']:
-            return 'below_threshold'
         return 'never_selected'
 
     @staticmethod
@@ -542,8 +429,8 @@ class AttentionTimestampTracker:
     def _emit(self, event, span, emitted_at):
         token = self._tokens[span['token_index']]
         status = 'active' if span['confirmed'] else 'provisional'
-        if event in ('end', 'retract'):
-            status = 'finalized' if event == 'end' else 'retracted'
+        if event == 'end':
+            status = 'finalized'
         boundary = span['start'] if event in ('start', 'confirmed') else span['end']
         self._events.append(
             {

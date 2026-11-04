@@ -4,7 +4,7 @@
 """Compact-turn acoustic alignment restored to the V2 conversation timeline.
 
 Batches compact text and acoustic turns for MAS, then restores token positions
-and labels to the original conversation grid.
+to the original conversation grid.
 """
 
 from dataclasses import dataclass
@@ -15,17 +15,15 @@ from torch import nn
 
 
 @dataclass
-class AlignedTextTargets:
-    """Supervision on the original acoustic grid, before causal shifts or EOS."""
+class TurnAlignmentOutput:
+    """Acoustic likelihood and MAS positions on the original conversation grid."""
 
     loss: torch.Tensor
-    targets: torch.Tensor
-    loss_mask: torch.Tensor
+    token_indices: torch.Tensor
     valid_turn_count: torch.Tensor
     turn_count: torch.Tensor
     one_frame_tokens: torch.Tensor
     token_count: torch.Tensor
-    token_indices: torch.Tensor | None = None
 
 
 def align_text_turns(
@@ -34,17 +32,13 @@ def align_text_turns(
     text_tokens: torch.Tensor,
     text_lens: torch.Tensor,
     turn_indices: torch.Tensor,
-    warmup_targets: torch.Tensor,
     embed_text: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
-    pad_id: int,
-    use_alignment: bool,
     max_turns_per_batch: int = 32,
     max_frames_per_batch: int = 8192,
     speaker_reference_features: torch.Tensor | None = None,
     speaker_reference_lens: torch.Tensor | None = None,
-    return_token_indices: bool = False,
-) -> AlignedTextTargets:
-    """Align compact text turns and restore their labels to the conversation grid.
+) -> TurnAlignmentOutput:
+    """Align compact text turns and restore MAS positions to the conversation grid.
 
     ``turn_indices`` has rows ``(sample, start, end_exclusive)`` on the acoustic
     grid. Text contains content tokens only: the caller owns BOS/EOS handling,
@@ -55,15 +49,10 @@ def align_text_turns(
     Turns are sorted by audio length and packed under a padded-frame budget.
     No acoustic-score tensor is transferred to CPU. Only the small index/length
     table is copied once to organize batches. Invalid turns are excluded from
-    both likelihood and text-head supervision. A single turn longer than the
-    frame budget raises rather than truncating speech or changing its labels.
+    likelihood and attention supervision. A single turn longer than the frame
+    budget raises rather than truncating speech.
 
-    Before the curriculum switch, valid spans retain ``warmup_targets``.
-    Afterwards they contain BPE tokens repeated according to the MAS path.
-    Outside valid spans, targets are PAD and the loss mask is false.
-
-    ``return_token_indices`` also restores the detached MAS position indices to
-    the acoustic grid. Positions restart from zero in each compact transcript;
+    Detached MAS positions restart from zero in each compact transcript;
     invalid frames contain -1. These are positions, not vocabulary token IDs.
 
     Optional speaker references use the conversation batch axis, rather than
@@ -72,8 +61,8 @@ def align_text_turns(
     features are detached, while the encoder and flow conditioning learn from
     the acoustic likelihood. Missing references use zero conditioning.
     """
-    if audio_features.ndim != 3 or warmup_targets.shape != audio_features.shape[:2]:
-        raise ValueError('Expected audio_features [B,T,C] and warmup_targets [B,T]')
+    if audio_features.ndim != 3:
+        raise ValueError('Expected audio_features [B,T,C]')
     if text_tokens.ndim != 2 or text_lens.shape != (text_tokens.size(0),):
         raise ValueError('Expected compact text_tokens [turns,N] and text_lens [turns]')
     if turn_indices.shape != (text_tokens.size(0), 3):
@@ -82,8 +71,8 @@ def align_text_turns(
         raise ValueError('Turn and frame batch limits must be positive')
     if text_lens.dtype not in (torch.int32, torch.int64) or turn_indices.dtype not in (torch.int32, torch.int64):
         raise ValueError('Text lengths and turn indices must contain integers')
-    if text_tokens.device != audio_features.device or warmup_targets.device != audio_features.device:
-        raise ValueError('Audio, compact text and warmup targets must be on the same device')
+    if text_tokens.device != audio_features.device:
+        raise ValueError('Audio and compact text must be on the same device')
 
     metadata = torch.cat([turn_indices, text_lens.to(turn_indices.device).unsqueeze(1)], dim=1).detach().cpu().tolist()
     batch_size, audio_steps, channels = audio_features.shape
@@ -100,7 +89,7 @@ def align_text_turns(
                     f'Turn {row} has {end - start} frames, exceeding max_frames_per_batch={max_frames_per_batch}'
                 )
             valid_rows.append(row)
-    # Overlapping targets would make restoration depend on the sorting order.
+    # Overlapping turns would make restoration depend on the sorting order.
     previous_ends = {}
     for row in sorted(valid_rows, key=lambda index: metadata[index][:2]):
         sample, start, end, _ = metadata[row]
@@ -110,9 +99,7 @@ def align_text_turns(
     valid_rows.sort(key=lambda index: metadata[index][2] - metadata[index][1])
     batches = _turn_batches(valid_rows, metadata, max_turns_per_batch, max_frames_per_batch)
 
-    targets = torch.full_like(warmup_targets, pad_id)
-    loss_mask = torch.zeros_like(warmup_targets, dtype=torch.bool)
-    token_indices = torch.full_like(warmup_targets, -1) if return_token_indices else None
+    token_indices = text_tokens.new_full((batch_size, audio_steps), -1)
     weighted_loss = audio_features.new_zeros((), dtype=torch.float32)
     counts = torch.zeros(4, dtype=torch.long, device=audio_features.device)
     speaker_embeddings = None
@@ -159,22 +146,13 @@ def align_text_turns(
             sample, start, end, _ = metadata[row]
             path = result.token_indices[packed_row, : end - start]
             valid_frames = valid[packed_row] & (path >= 0)
-            if use_alignment:
-                labels = packed_text[packed_row].gather(0, path.clamp_min(0))
-            else:
-                labels = warmup_targets[sample, start:end]
-            targets[sample, start:end] = torch.where(valid_frames, labels, pad_id)
-            loss_mask[sample, start:end] = valid_frames
-            if token_indices is not None:
-                token_indices[sample, start:end] = torch.where(valid_frames, path, -1)
+            token_indices[sample, start:end] = torch.where(valid_frames, path, -1)
 
     loss = weighted_loss / counts[3].clamp_min(1)
     if not batches:
         loss = loss + _zero_parameter_loss(aligner, audio_features)
-    return AlignedTextTargets(
+    return TurnAlignmentOutput(
         loss=loss,
-        targets=targets,
-        loss_mask=loss_mask,
         valid_turn_count=counts[0],
         turn_count=torch.tensor(text_tokens.size(0), device=audio_features.device, dtype=torch.long),
         one_frame_tokens=counts[1],

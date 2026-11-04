@@ -14,7 +14,8 @@ pytestmark = pytest.mark.unit
 
 def test_reference_flow_has_published_capacity_and_no_duplicate_vocabulary():
     aligner = TinyGlowTTSAligner(audio_channels=80, text_channels=1536)
-    assert aligner.flow_type == 'sttts'
+    assert aligner.flow_type == 'sttts' and aligner.text_encoder_type == 'relative_transformer'
+    assert sum(parameter.numel() for parameter in aligner.parameters()) < 10_000_000
     assert len(aligner.flow.couplings) == len(aligner.flow.mixers) == len(aligner.flow.actnorms) == 6
     assert not any(isinstance(module, nn.Embedding) for module in aligner.modules())
     for coupling in aligner.flow.couplings:
@@ -163,29 +164,6 @@ def test_reference_profile_preserves_audio_grid_under_bfloat16_amp():
     assert output.token_indices.shape == (2, 9)
     torch.testing.assert_close(output.durations.sum(dim=1), torch.tensor([9, 7]))
     assert output.token_indices[1, 7:].eq(-1).all()
-
-
-def test_explicit_legacy_profile_restores_original_state_keys_and_predictions():
-    kwargs = dict(
-        audio_channels=4,
-        text_channels=6,
-        hidden_channels=8,
-        num_flows=2,
-        flow_type='legacy',
-        text_encoder_type='cnn',
-    )
-    original = TinyGlowTTSAligner(**kwargs).eval()
-    state = original.state_dict()
-    assert 'flow.shifts.0' in state and 'flow.log_scales.0' in state
-    assert 'flow.couplings.0.hidden_projection.conv.weight' in state
-    assert not any(key.startswith(('flow.mixers.', 'flow.actnorms.')) for key in state)
-    restored = TinyGlowTTSAligner(**kwargs).eval()
-    restored.load_state_dict(state, strict=True)
-    audio, text = torch.randn(1, 7, 4), torch.randn(1, 3, 6)
-    lengths = torch.tensor([7]), torch.tensor([3])
-    expected, actual = original(audio, text, *lengths), restored(audio, text, *lengths)
-    torch.testing.assert_close(actual.loss, expected.loss)
-    torch.testing.assert_close(actual.token_indices, expected.token_indices)
 
 
 def _small_flow(channels):

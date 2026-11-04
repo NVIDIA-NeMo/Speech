@@ -198,16 +198,6 @@ def test_mixed_forced_spans_zero_whole_token_confidence_and_crop_recomputes_flag
     assert not absent['forced']
 
 
-def test_legacy_token_forced_flag_is_preserved_without_span_metadata():
-    trace = _trace()
-    token = trace['timestamps'][0]
-    token.update(start=0.0, end=0.08, spans=[], forced=True, confidence=0.3)
-    result = build_token_timestamps(trace)['timestamps'][0]
-    assert result['forced'] and result['confidence'] == 0.0
-    assert result['attention_confidence'] == 0.3
-    assert result['spans'][0]['forced'] and result['spans'][0]['confidence'] == 0.0
-
-
 def test_forced_zero_confidence_does_not_change_primary_span_evidence_ranking():
     trace = _trace()
     token = trace['timestamps'][0]
@@ -393,7 +383,16 @@ def _tokenizer():
 
 
 def _span(start, end, confidence=0.5):
-    return dict(start=start, end=end, confidence=confidence, text_attention_mass=0.9, frame_count=2, confirmed=True)
+    return dict(
+        start=start,
+        end=end,
+        confidence=confidence,
+        attention_confidence=confidence,
+        forced=False,
+        text_attention_mass=0.9,
+        frame_count=2,
+        confirmed=True,
+    )
 
 
 def _token(index, token_id, spans, turn=0):

@@ -227,14 +227,7 @@ class StreamingTimestampSession:
 
     def drain_events(self, batch_indices: Iterable[int] | None = None) -> list[dict[str, Any]]:
         """Consume token-span events for the selected conditional batch rows."""
-        if batch_indices is None:
-            events, self._events = self._events, []
-            return events
-        selected = set(batch_indices)
-        for row in selected:
-            self._validate_row(row)
-        events = [event for event in self._events if event['batch_index'] in selected]
-        self._events = [event for event in self._events if event['batch_index'] not in selected]
+        self._events, events = self._drain(self._events, batch_indices)
         return events
 
     def drain_frames(self, batch_indices: Iterable[int] | None = None) -> list[dict[str, Any]]:
@@ -244,14 +237,7 @@ class StreamingTimestampSession:
         steps with unavailable or insufficient attention evidence. History in
         ``snapshots`` remains available after draining when retention is enabled.
         """
-        if batch_indices is None:
-            frames, self._frames = self._frames, []
-            return frames
-        selected = set(batch_indices)
-        for row in selected:
-            self._validate_row(row)
-        frames = [frame for frame in self._frames if frame['batch_index'] in selected]
-        self._frames = [frame for frame in self._frames if frame['batch_index'] not in selected]
+        self._frames, frames = self._drain(self._frames, batch_indices)
         return frames
 
     def snapshots(
@@ -332,6 +318,17 @@ class StreamingTimestampSession:
     def _collect(self, row: int, turn: dict[str, Any]) -> None:
         self._events.extend(
             dict(event, batch_index=row, turn_index=turn['turn_index']) for event in turn['tracker'].drain_events()
+        )
+
+    def _drain(self, queue, batch_indices):
+        if batch_indices is None:
+            return [], queue
+        selected = set(batch_indices)
+        for row in selected:
+            self._validate_row(row)
+        return (
+            [record for record in queue if record['batch_index'] not in selected],
+            [record for record in queue if record['batch_index'] in selected],
         )
 
     def _validate_row(self, row: int) -> None:

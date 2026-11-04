@@ -12,23 +12,17 @@ from omegaconf import OmegaConf
 from torch import nn
 
 
-def resolve_aligner_config(config: Mapping | None = None, *, restoring: bool = False) -> dict:
-    """Resolve new relative-transformer defaults while recognizing legacy archives."""
+def resolve_aligner_config(config: Mapping | None = None) -> dict:
+    """Resolve the ST-TTS flow and relative-transformer architecture configuration."""
     if config is not None and not isinstance(config, Mapping):
         raise ValueError('aligned_text_aligner must be a configuration mapping')
     values = dict(config or {})
-    unversioned = config is not None and 'flow_type' not in values and 'text_encoder_type' not in values
-    legacy = restoring and (unversioned or not values)
-    profile = values.get('flow_type', 'legacy' if legacy else 'sttts')
-    # Older flow checkpoints used a convolutional text prior, even when their
-    # flow was already ST-TTS. Preserve their parameter names and shapes.
-    text_profile = values.get('text_encoder_type', 'cnn' if restoring else 'relative_transformer')
     defaults = {
-        'flow_type': profile,
-        'hidden_channels': 64 if profile == 'legacy' else 128,
-        'num_flows': 4 if profile == 'legacy' else 6,
+        'flow_type': 'sttts',
+        'hidden_channels': 128,
+        'num_flows': 6,
         'num_text_layers': 2,
-        'text_encoder_type': text_profile,
+        'text_encoder_type': 'relative_transformer',
         'text_num_heads': 2,
         'text_filter_channels': None,
         'text_kernel_size': 3,
@@ -38,10 +32,10 @@ def resolve_aligner_config(config: Mapping | None = None, *, restoring: bool = F
         'speaker_hidden_channels': 64,
         'speaker_embedding_dim': 64,
         'speaker_num_layers': 2,
-        'coupling_num_layers': 1 if profile == 'legacy' else 4,
-        'coupling_kernel_size': 3 if profile == 'legacy' else 5,
+        'coupling_num_layers': 4,
+        'coupling_kernel_size': 5,
         'flow_n_split': 4,
-        'max_log_scale': 2.0 if profile == 'legacy' else None,
+        'max_log_scale': None,
         'dequantization_noise': 0.01,
         'mas_backend': 'auto',
     }
@@ -49,6 +43,9 @@ def resolve_aligner_config(config: Mapping | None = None, *, restoring: bool = F
     if unknown:
         raise ValueError(f'Unknown aligned_text_aligner options: {sorted(unknown)}')
     defaults.update(values)
+    for name, supported in (('flow_type', 'sttts'), ('text_encoder_type', 'relative_transformer')):
+        if defaults[name] != supported:
+            raise ValueError(f'aligned_text_aligner.{name} must be {supported!r}, got {defaults[name]!r}')
     return defaults
 
 
@@ -80,7 +77,7 @@ def load_pretrained_text_speech_aligner(
     source_path = str(checkpoint_path)
     state, source_config = _read_checkpoint(source_path)
     if source_config is not None:
-        config = resolve_aligner_config(source_config, restoring=True)
+        config = resolve_aligner_config(source_config)
     for name in ('audio_channels', 'text_channels'):
         supplied = getattr(aligner, name)
         requested = config.pop(name, supplied)
@@ -103,8 +100,12 @@ def load_pretrained_text_speech_aligner(
 
     expected = candidate.state_dict()
     selected = _select_aligner_weights(state, expected, source_path)
-    _validate_aligner_weights(selected, expected, source_path)
-    candidate.load_state_dict(selected, strict=True)
+    if any(isinstance(value, torch.Tensor) and value.is_meta for value in selected.values()):
+        raise ValueError(f'Checkpoint {source_path!r} is incompatible with text_aligner: meta tensors have no values.')
+    try:
+        candidate.load_state_dict(selected, strict=True)
+    except (RuntimeError, TypeError) as error:
+        raise ValueError(f'Checkpoint {source_path!r} is incompatible with text_aligner: {error}') from error
     return candidate, config
 
 
@@ -180,22 +181,3 @@ def _select_aligner_weights(state, expected, source_path):
     if expected.keys() & normalized.keys():
         return normalized
     raise ValueError(f'Checkpoint {source_path!r} contains no text_aligner weights.')
-
-
-def _validate_aligner_weights(state, expected, source_path):
-    missing = sorted(expected.keys() - state.keys())
-    unexpected = sorted(state.keys() - expected.keys())
-    incompatible = []
-    for key in expected.keys() & state.keys():
-        value = state[key]
-        if not isinstance(value, torch.Tensor):
-            incompatible.append(f'{key}: expected a tensor, got {type(value).__name__}')
-        elif value.is_meta or value.shape != expected[key].shape:
-            incompatible.append(f'{key}: checkpoint {tuple(value.shape)}, model {tuple(expected[key].shape)}')
-    details = []
-    groups = [('missing keys', missing), ('unexpected keys', unexpected), ('incompatible tensors', incompatible)]
-    for label, entries in groups:
-        if entries:
-            details.append(f'{label}: {sorted(entries)[:8]}' + (f' (of {len(entries)})' if len(entries) > 8 else ''))
-    if details:
-        raise ValueError(f'Checkpoint {source_path!r} is incompatible with text_aligner; ' + '; '.join(details))

@@ -248,7 +248,6 @@ def test_partial_speaker_reference_arguments_raise(missing):
         {'speaker_embedding_dim': 2.5},
         {'speaker_num_layers': -1},
         {'speaker_num_layers': True},
-        {'flow_type': 'legacy'},
     ],
 )
 def test_invalid_speaker_conditioning_configurations_raise(invalid):

@@ -764,14 +764,14 @@ def fl2int(x: float, decimals: int = 3) -> int:
     """
     Convert floating point number to integer.
     """
-    return torch.round(torch.tensor([x * (10**decimals)]), decimals=0).long().item()
+    return torch.round(torch.tensor([x * (10**decimals)], dtype=torch.float64), decimals=0).long().item()
 
 
 def int2fl(x: int, decimals: int = 3) -> float:
     """
     Convert integer to floating point number.
     """
-    return torch.round(torch.tensor([x / (10**decimals)]), decimals=decimals).item()
+    return torch.round(torch.tensor([x / (10**decimals)], dtype=torch.float64), decimals=decimals).item()
 
 
 def merge_float_intervals(ranges: List[List[float]], decimals: int = 5, margin: int = 2) -> List[List[float]]:

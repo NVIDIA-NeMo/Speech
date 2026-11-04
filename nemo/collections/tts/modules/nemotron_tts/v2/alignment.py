@@ -4,8 +4,7 @@
 """Training-only acoustic alignment for the modular Nemotron-TTS V2 model.
 
 The flow sees frozen codec latents and detached input-text embeddings. Its MAS
-path supervises selected backbone self-attention heads. No text prediction head,
-feedback channel, or inference attention restriction is introduced.
+path supervises selected backbone self-attention heads during training.
 """
 
 import math
@@ -64,8 +63,8 @@ def init_training_alignment(model, cfg):
             model.text_aligner, path, aligner_config=settings
         )
     model.aligned_text_aligner_config = settings
-    # Save the hydrated architecture, especially optional codec-ASP parameters,
-    # so restoring this model never needs the original warm-start archive.
+    # Persist the hydrated architecture and codec-ASP settings with the weights
+    # to keep the checkpoint self-contained.
     with open_dict(model.cfg):
         model.cfg.aligned_text_aligner = settings
     attention_blocks = [

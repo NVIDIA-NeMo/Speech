@@ -4,7 +4,7 @@
 
 `model.use_attention_alignment` defaults to `false`. Enabling it jointly trains
 a small Glow-TTS flow aligner and supervises a selected main-backbone attention
-head using its MAS path. It does not add a repeated text head or text feedback.
+head using its MAS path.
 The aligner always sees the same conditioning BPE tokens as the TTS backbone.
 If a dataset supplies normalized conditioning text, that selected input is used;
 otherwise raw input text is used directly.
@@ -31,7 +31,7 @@ supervision after 10,000 steps, and ramps it over 1,000 steps. A temporary
 training-only soft prior is annealed away over 5,000 steps; the alignment loss
 continues afterward. `look_back_tokens` and `look_ahead_tokens` can widen the
 training target/prior around the teacher path to tolerate local text-order
-differences. They never apply an inference attention window.
+differences.
 
 An already-trained aligner can initialize only the aligner weights:
 
@@ -53,8 +53,8 @@ metrics help distinguish a falling likelihood loss from useful text coverage.
 ## Streaming timestamps
 
 An attention-aligned V2 checkpoint can expose input BPE timestamps while retaining
-ordinary speech generation. Timestamp recording is disabled by default and is
-independent of the training aligner. Inference does not run MAS or the flow.
+ordinary speech generation. Timestamp recording is disabled by default. During
+inference, the timestamp observer reads the selected backbone attention head.
 External timestamp export requires a V2 checkpoint; requesting it for V1 raises
 an explicit error instead of changing legacy inference.
 
@@ -71,7 +71,7 @@ python examples/tts/magpietts_inference.py \
 ```
 
 Keep the other sampling and CFG arguments used by the experiment. This option
-records attention without applying an attention prior or changing decoding.
+records the selected attention head for timestamp estimation.
 The selected layer defaults to the middle full-attention layer of the **main
 backbone**, excluding additional acoustic-code predictor attention layers.
 
@@ -112,8 +112,8 @@ timestamps = output.timestamps
 Events contain `start`, `end`, `event`, `emitted_at`, `confidence`, `forced`,
 `batch_index`, `turn_index`, and `span_id`. Starts and updates are available
 before utterance finalization; consumers should apply subsequent updates or
-retractions to the same positional identity. No future attention frames are
-buffered and there is no timestamp lookahead option.
+retractions to the same positional identity. Each update uses the current
+attention frame and previous streaming state.
 
 For another conversation turn, call `model.reset_timestamp_turn(state)` before
 the turn's text warmup. Real text tokens consumed during warmup are registered;
@@ -144,5 +144,4 @@ timestamp_config:
 The observer and its per-stream state live in
 `nemo/collections/tts/modules/nemotron_tts/v2/timestamps.py`. The reusable
 standard-library tracker is `nemo/collections/tts/modules/attention_timestamps.py`.
-This path retains only the latest attention row and aggregate token spans,
-without storing full attention matrices for the utterance.
+The observer retains the latest attention row and aggregate token spans.

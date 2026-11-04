@@ -2883,8 +2883,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 min_text_mass=controller.timestamp_min_text_mass,
                 min_margin=controller.timestamp_min_margin,
                 method=controller.timestamp_method,
-                lookahead_frames=controller.timestamp_lookahead_frames,
                 skip_penalty=controller.timestamp_skip_penalty,
+                force_progress=controller.timestamp_force_progress,
+                progress_threshold=controller.timestamp_progress_threshold,
             ),
             'finalized': False,
             'has_audio': False,
@@ -2945,8 +2946,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         """Consume token-boundary events produced by preceding streaming steps.
 
         Event boundary times are relative to the returned generated waveform.
-        ``emitted_at`` reports availability on that audio clock; confirmation
-        may therefore publish a boundary a few frames after its audio time.
+        ``emitted_at`` reports availability on that audio clock. Starts and
+        updates are available after the same streaming step; confirmation can
+        arrive later without delaying provisional events or generated audio.
         """
         queued = getattr(state, 'timestamp_events', None)
         if queued is None:
@@ -2997,8 +2999,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     'attention_head': controller.head,
                     'confirmation_frames': controller.timestamp_confirmation_frames,
                     'method': controller.timestamp_method,
-                    'lookahead_frames': controller.timestamp_lookahead_frames,
                     'skip_penalty': controller.timestamp_skip_penalty,
+                    'force_progress': controller.timestamp_force_progress,
+                    'progress_threshold': controller.timestamp_progress_threshold,
+                    'causal': True,
                     'guidance_enabled': controller.enabled,
                     'timestamps': entries,
                     'turns': [
@@ -3105,13 +3109,18 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             'timestamp_min_text_mass': 0.0,
             'timestamp_min_margin': 0.0,
             'timestamp_method': 'monotonic',
-            'timestamp_lookahead_frames': 4,
             'timestamp_skip_penalty': 6.0,
+            'timestamp_force_progress': True,
+            'timestamp_progress_threshold': 0.5,
         }
-        unknown = set(config or {}) - values.keys()
+        configured = dict(config or {})
+        # Older archives may contain this removed timestamp-only buffering knob.
+        # Keep checkpoint loading compatible while always decoding causally.
+        configured.pop('timestamp_lookahead_frames', None)
+        unknown = configured.keys() - values.keys()
         if unknown:
             raise ValueError(f'Unknown attention_alignment_inference options: {sorted(unknown)}')
-        values.update(dict(config or {}))
+        values.update(configured)
         if type(values['enabled']) is not bool:
             raise ValueError('attention_alignment_inference.enabled must be a boolean')
         try:

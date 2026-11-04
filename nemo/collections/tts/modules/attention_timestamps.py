@@ -8,8 +8,9 @@ attention, text inputs or audio outputs. Callers register text occurrences as th
 arrive, then supply the valid audio interval for each attention query. Probabilities
 are the text slice of the ordinary full-key softmax, without text renormalization.
 
-The optional monotonic decoder uses a bounded lookahead over full posteriors to
-recover weak positions that never win framewise argmax. The argmax alternative
+The causal monotonic decoder uses only the current posterior and past progress.
+It can approximate crossed weak positions when forward evidence exposes a stall;
+such estimates are explicitly forced and have zero confidence. The argmax alternative
 allows local backward revisits. Two-frame confirmation rejects isolated
 A -> B -> A excursions while retaining one-frame tokens along forward progress,
 and short initial/final evidence. Events are provisional until confirmed or
@@ -41,9 +42,10 @@ class AttentionTimestampTracker:
             visible key. Zero disables this gate in monotonic mode, permitting
             weak positions recovered from the sequence posterior.
         method: ``argmax`` for framewise selection with local backward revisits,
-            or ``monotonic`` for a fixed-lag forward-only posterior path.
-        lookahead_frames: Query-frame delivery lag of the monotonic decoder.
-            This does not delay or otherwise change generated audio.
+            or ``monotonic`` for a causal forward-only posterior path.
+        force_progress: Permit approximate forward progress when attention has
+            left the current position. Forced portions have zero confidence.
+        progress_threshold: Relative support decay needed to escape a stall.
         skip_penalty: Log-score cost per skipped text occurrence. Skips allow
             zero-evidence positions to stay unaligned instead of stalling.
 
@@ -51,8 +53,8 @@ class AttentionTimestampTracker:
     ``drain_events``. Clients should use either delivery mechanism, not both.
     Drain the event queue regularly during long streams. Only aggregated spans,
     one pending candidate and one active candidate are retained. Monotonic mode
-    additionally retains a bounded ``lookahead_frames`` posterior buffer and
-    one score per reachable position; no full attention history is stored.
+    retains only input-position metadata and the last progress state. Events are
+    returned on every update, without buffering future audio or attention frames.
     """
 
     def __init__(
@@ -62,7 +64,8 @@ class AttentionTimestampTracker:
         min_text_mass: float = 0.0,
         min_margin: float = 0.0,
         method: str = 'argmax',
-        lookahead_frames: int = 4,
+        force_progress: bool = True,
+        progress_threshold: float = 0.5,
         skip_penalty: float = 6.0,
     ):
         self.confirmation_frames = _index(confirmation_frames, 'confirmation_frames', minimum=1)
@@ -72,10 +75,17 @@ class AttentionTimestampTracker:
         if method not in ('argmax', 'monotonic'):
             raise ValueError('method must be argmax or monotonic')
         self.method = method
-        self.lookahead_frames = _index(lookahead_frames, 'lookahead_frames')
+        if not isinstance(force_progress, bool):
+            raise ValueError('force_progress must be a boolean')
+        self.force_progress = force_progress
+        self.progress_threshold = _probability_setting(progress_threshold, 'progress_threshold')
         self.skip_penalty = _nonnegative_setting(skip_penalty, 'skip_penalty')
         self._path_decoder = (
-            StreamingAttentionPathDecoder(lookahead_frames=self.lookahead_frames, skip_penalty=self.skip_penalty)
+            StreamingAttentionPathDecoder(
+                skip_penalty=self.skip_penalty,
+                force_progress=self.force_progress,
+                progress_threshold=self.progress_threshold,
+            )
             if method == 'monotonic'
             else None
         )
@@ -172,16 +182,16 @@ class AttentionTimestampTracker:
             self._previous_index = None
             self._previous_confirmed = False
             return
-        index, confidence, text_mass = candidate
+        index, confidence, text_mass, forced = candidate
         if self._active is not None:
             if self._active['token_index'] == index:
-                self._extend(self._active, end, confidence, text_mass)
+                self._extend(self._active, end, confidence, text_mass, forced)
                 self._emit('update', self._active, emitted_at)
                 return
             self._end_active(emitted_at)
         if self._pending is not None:
             if self._pending['token_index'] == index:
-                self._extend(self._pending, end, confidence, text_mass)
+                self._extend(self._pending, end, confidence, text_mass, forced)
                 if self._pending['frame_count'] >= self.confirmation_frames:
                     self._active, self._pending = self._pending, None
                     self._active['confirmed'] = True
@@ -195,12 +205,19 @@ class AttentionTimestampTracker:
                 resume_confirmed = self._previous_confirmed
                 self._end_pending(emitted_at, retain=False)
                 self._begin(
-                    index, start, end, confidence, text_mass, confirmed=resume_confirmed, emitted_at=emitted_at
+                    index,
+                    start,
+                    end,
+                    confidence,
+                    text_mass,
+                    forced=forced,
+                    confirmed=resume_confirmed,
+                    emitted_at=emitted_at,
                 )
                 return
             forward = self._previous_index is None or self._previous_index < self._pending['token_index'] < index
             self._end_pending(emitted_at, retain=forward)
-        self._begin(index, start, end, confidence, text_mass, emitted_at=emitted_at)
+        self._begin(index, start, end, confidence, text_mass, forced=forced, emitted_at=emitted_at)
 
     def update_many(self, probabilities, *, starts, ends, token_indices=None) -> list[dict]:
         """Consume a chunk of queries with the same registered text-key mapping.
@@ -231,6 +248,7 @@ class AttentionTimestampTracker:
                 status = 'finalized'
             primary_index = max(range(len(spans)), key=lambda i: spans[i]['support']) if spans else None
             primary = spans[primary_index] if primary_index is not None else None
+            forced = any(span['forced'] for span in spans)
             result.append(
                 {
                     'source': 'attention',
@@ -240,7 +258,9 @@ class AttentionTimestampTracker:
                     'token': token['token'],
                     'start': primary['start'] if primary else None,
                     'end': primary['end'] if primary else None,
-                    'confidence': primary['confidence'] if primary else None,
+                    'confidence': 0.0 if forced else primary['confidence'] if primary else None,
+                    'attention_confidence': primary['attention_confidence'] if primary else None,
+                    'forced': forced,
                     'text_attention_mass': primary['text_attention_mass'] if primary else None,
                     'status': status,
                     'ambiguous': len(spans) > 1,
@@ -319,7 +339,7 @@ class AttentionTimestampTracker:
         ):
             self._tokens[index]['rejected_frames'] += 1
             return None
-        return index, confidence, text_mass
+        return index, confidence, text_mass, False
 
     def _consume_decisions(self, decisions):
         for decision in decisions:
@@ -334,12 +354,12 @@ class AttentionTimestampTracker:
                     and text_mass >= self.min_text_mass
                     and (self.min_margin == 0 or decision['margin'] >= self.min_margin)
                 ):
-                    candidate = index, confidence, text_mass
+                    candidate = index, confidence, text_mass, decision['forced']
                 else:
                     self._tokens[index]['rejected_frames'] += 1
             self._apply_candidate(candidate, decision['start'], decision['end'], decision['emitted_at'])
 
-    def _begin(self, index, start, end, confidence, text_mass, confirmed=False, emitted_at=None):
+    def _begin(self, index, start, end, confidence, text_mass, forced=False, confirmed=False, emitted_at=None):
         span = {
             'span_id': self._next_span_id,
             'token_index': index,
@@ -349,9 +369,10 @@ class AttentionTimestampTracker:
             'mass_weight': 0.0,
             'frame_count': 0,
             'confirmed': confirmed or self.confirmation_frames == 1,
+            'forced': False,
         }
         self._next_span_id += 1
-        self._extend(span, end, confidence, text_mass)
+        self._extend(span, end, confidence, text_mass, forced)
         if span['confirmed']:
             self._active = span
         else:
@@ -359,12 +380,13 @@ class AttentionTimestampTracker:
         self._emit('start', span, end if emitted_at is None else emitted_at)
 
     @staticmethod
-    def _extend(span, end, confidence, text_mass):
+    def _extend(span, end, confidence, text_mass, forced=False):
         duration = end - span['end']
         span['probability_weight'] += confidence * duration
         span['mass_weight'] += text_mass * duration
         span['end'] = end
         span['frame_count'] += 1
+        span['forced'] = span['forced'] or forced
 
     def _end_active(self, emitted_at):
         if self._active is None:
@@ -406,7 +428,9 @@ class AttentionTimestampTracker:
             'span_id': span['span_id'],
             'start': span['start'],
             'end': span['end'],
-            'confidence': span['probability_weight'] / duration,
+            'confidence': 0.0 if span['forced'] else span['probability_weight'] / duration,
+            'attention_confidence': span['probability_weight'] / duration,
+            'forced': span['forced'],
             'text_attention_mass': span['mass_weight'] / duration,
             'frame_count': span['frame_count'],
             'confirmed': span['confirmed'],
@@ -436,38 +460,29 @@ class AttentionTimestampTracker:
 
 
 class StreamingAttentionPathDecoder:
-    """Fixed-lag Viterbi decoding of an observed attention posterior.
+    """Causal monotonic attention decoding with explicitly marked estimates.
 
-    The path may stay, advance to the next input position, or skip positions at
-    ``skip_penalty`` cost per skipped position. Emissions use the actual global
-    attention probabilities. A zero-probability position is never assigned, and
-    the final path is not forced to cover the end of the supplied transcript.
-
-    Only the last ``lookahead_frames`` observations and their backpointers are
-    retained, plus one score per reachable text position. Committed decisions
-    constrain subsequent paths, so finalized positions never move backwards or
-    change retrospectively. Increasing the lag can recover short weak positions
-    that never win framewise argmax, at the cost of that many query frames of
-    delivery latency. The decoder does not change model attention or synthesis.
+    Ordinary transitions stay, advance, or pay ``skip_penalty`` per crossed
+    occurrence. A decayed current peak plus stronger forward evidence can escape
+    that skip penalty. Crossed positive-support positions share only the current
+    observed frame, with ``forced=True``; no prior boundary is revised. The
+    relative-support and text-mass checks avoid advancing solely because the
+    head stopped attending to text. Zero-evidence positions and unobserved tails
+    stay unaligned. This decoder does not change attention or generated audio.
     """
 
-    def __init__(self, lookahead_frames: int = 4, skip_penalty: float = 6.0):
-        self.lookahead_frames = _index(lookahead_frames, 'lookahead_frames')
+    def __init__(self, skip_penalty: float = 6.0, force_progress: bool = True, progress_threshold: float = 0.5):
         self.skip_penalty = _nonnegative_setting(skip_penalty, 'skip_penalty')
-        self._scores = {}
+        if not isinstance(force_progress, bool):
+            raise ValueError('force_progress must be a boolean')
+        self.force_progress = force_progress
+        self.progress_threshold = _probability_setting(progress_threshold, 'progress_threshold')
         self._known_indices = set()
-        self._frames = []
+        self._last_index = None
+        self._peak_current_support = 0.0
+        self._peak_text_mass = 0.0
         self._last_end = None
         self._duration = None
-
-    @property
-    def buffered_frames(self) -> int:
-        return len(self._frames)
-
-    @property
-    def buffered_state_count(self) -> int:
-        """Number of retained scalar scores/backpointers/probabilities."""
-        return len(self._scores) + sum(len(frame['parents']) + len(frame['probabilities']) for frame in self._frames)
 
     def update(self, probabilities, *, start: float, end: float, token_indices=None) -> list[dict]:
         if self._duration is not None:
@@ -491,112 +506,85 @@ class StreamingAttentionPathDecoder:
         )
         observed = dict(zip(indices, values)) if valid else {}
         self._known_indices.update(observed)
-        emissions = {index: probability for index, probability in observed.items() if probability > 0}
-        scores, parents = self._advance(emissions)
-        # A gap or a posterior that only points backwards supplies no assignable
-        # frame. Keep the previous progress state without filling the gap.
-        if not scores:
-            scores = dict(self._scores)
-            parents = {index: index for index in scores}
-            emissions = {}
-        self._scores = _normalized_scores(scores)
-        self._frames.append(
-            {
-                'start': start,
-                'end': end,
-                'parents': parents,
-                'probabilities': observed,
-                'assignable': bool(emissions),
-            }
+        text_mass = math.fsum(observed.values())
+        self._peak_text_mass = max(self._peak_text_mass, text_mass)
+        ranks = {index: rank for rank, index in enumerate(sorted(self._known_indices))}
+        current_rank = ranks[self._last_index] if self._last_index is not None else -1
+        emissions = {index: p for index, p in observed.items() if p > 0 and ranks[index] >= current_rank}
+        if not emissions:
+            return [self._decision(None, observed, start, end, end)]
+        selected = max(
+            emissions,
+            key=lambda index: (
+                math.log(emissions[index]) - self.skip_penalty * max(0, ranks[index] - current_rank - 1),
+                -index,
+            ),
         )
-        if len(self._frames) > self.lookahead_frames:
-            return [self._commit(end)]
-        return []
+        forced = False
+        force_allowed = self.force_progress and text_mass >= self.progress_threshold * self._peak_text_mass
+        if force_allowed and self._last_index is not None:
+            current_support = observed.get(self._last_index, 0.0) / text_mass
+            forward = [index for index in emissions if ranks[index] > current_rank]
+            if forward:
+                ahead = max(forward, key=lambda index: (emissions[index], -index))
+                ahead_support = emissions[ahead] / text_mass
+                threshold = self.progress_threshold
+                if (
+                    current_support <= threshold * self._peak_current_support
+                    and ahead_support > current_support
+                    and ahead_support >= threshold * self._peak_current_support
+                    and ranks[ahead] > ranks[selected]
+                ):
+                    selected, forced = ahead, True
+        crossed = []
+        if force_allowed and self._last_index is not None:
+            crossed = sorted(index for index in emissions if current_rank < ranks[index] < ranks[selected])
+        assigned = crossed + [selected]
+        forced = forced or bool(crossed)
+        # Current-frame subdivision is approximate. Mark the selected endpoint
+        # as forced too, since its boundary depends on the same subdivision.
+        step = (end - start) / len(assigned)
+        decisions = [
+            self._decision(
+                index,
+                observed,
+                start + offset * step,
+                end if offset == len(assigned) - 1 else start + (offset + 1) * step,
+                end,
+                forced=forced,
+            )
+            for offset, index in enumerate(assigned)
+        ]
+        support = emissions[selected] / text_mass
+        self._peak_current_support = (
+            max(self._peak_current_support, support) if selected == self._last_index else support
+        )
+        self._last_index = selected
+        return decisions
 
     def finalize(self, duration: float) -> list[dict]:
         duration = _time(duration, 'duration')
-        if self._duration is not None:
-            if abs(duration - self._duration) > 1e-9:
-                raise ValueError('A finalized attention path cannot change duration')
-            return []
+        if self._duration is not None and abs(duration - self._duration) > 1e-9:
+            raise ValueError('A finalized attention path cannot change duration')
         if self._last_end is not None and duration < self._last_end - 1e-9:
             raise ValueError('duration cannot precede an observed audio interval')
-        decisions = []
-        while self._frames:
-            decisions.append(self._commit(duration))
         self._duration = duration
-        return decisions
+        return []
 
-    def _advance(self, emissions):
-        if not emissions:
-            return {}, {}
-        # Identity is the input occurrence, not its numeric decoder-key offset.
-        # Adjacent supplied keys can be noncontiguous in the model sequence.
-        ranks = {index: rank for rank, index in enumerate(sorted(self._known_indices))}
-        if not self._scores:
-            return (
-                {index: math.log(p) - self.skip_penalty * ranks[index] for index, p in emissions.items()},
-                {index: None for index in emissions},
-            )
-        previous = sorted(self._scores)
-        previous_by_rank = {ranks[index]: index for index in previous}
-        prefix_score, prefix_index, prefix_position = -math.inf, None, 0
-        scores, parents = {}, {}
-        for index, probability in sorted(emissions.items()):
-            rank = ranks[index]
-            while prefix_position < len(previous) and ranks[previous[prefix_position]] < rank - 1:
-                candidate_index = previous[prefix_position]
-                candidate_score = self._scores[candidate_index] + self.skip_penalty * ranks[candidate_index]
-                if candidate_score > prefix_score:
-                    prefix_score, prefix_index = candidate_score, candidate_index
-                prefix_position += 1
-            score, parent = self._scores.get(index, -math.inf), index
-            advance_index = previous_by_rank.get(rank - 1)
-            advance_score = self._scores.get(advance_index, -math.inf)
-            if advance_score > score:
-                score, parent = advance_score, advance_index
-            skip_score = prefix_score - self.skip_penalty * (rank - 1)
-            if skip_score > score:
-                score, parent = skip_score, prefix_index
-            if math.isfinite(score):
-                scores[index] = score + math.log(probability)
-                parents[index] = parent
-        return scores, parents
-
-    def _ancestor(self, endpoint):
-        state = endpoint
-        for frame in reversed(self._frames[1:]):
-            state = frame['parents'].get(state) if state is not None else None
-        return state
-
-    def _commit(self, emitted_at):
-        endpoint = max(self._scores, key=lambda index: (self._scores[index], -index)) if self._scores else None
-        ancestor = self._ancestor(endpoint)
-        # Retain only paths consistent with this irrevocable prefix decision.
-        # Otherwise a later optimum could revise old history and cause a
-        # backwards transition in already published timestamps.
-        self._scores = {index: score for index, score in self._scores.items() if self._ancestor(index) == ancestor}
-        self._scores = _normalized_scores(self._scores)
-        frame = self._frames.pop(0)
-        index = ancestor if frame['assignable'] and ancestor in frame['probabilities'] else None
-        probability = frame['probabilities'].get(index, 0.0) if index is not None else 0.0
-        if probability <= 0:
-            index, probability = None, 0.0
-        alternatives = [p for key, p in frame['probabilities'].items() if key != index]
+    @staticmethod
+    def _decision(index, probabilities, start, end, emitted_at, forced=False):
+        probability = probabilities.get(index, 0.0) if index is not None else 0.0
+        alternatives = [p for key, p in probabilities.items() if key != index]
         return {
             'token_index': index,
             'probability': probability,
-            'text_attention_mass': math.fsum(frame['probabilities'].values()),
+            'forced': forced,
+            'text_attention_mass': math.fsum(probabilities.values()),
             'margin': probability - max(alternatives, default=0.0),
-            'start': frame['start'],
-            'end': frame['end'],
+            'start': start,
+            'end': end,
             'emitted_at': emitted_at,
         }
-
-
-def _normalized_scores(scores):
-    maximum = max(scores.values(), default=0.0)
-    return {index: score - maximum for index, score in scores.items()}
 
 
 def _index(value, name, minimum=0):

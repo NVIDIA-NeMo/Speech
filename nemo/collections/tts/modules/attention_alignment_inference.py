@@ -43,8 +43,9 @@ class AttentionAlignmentInferenceState:
         timestamp_min_text_mass: float = 0.0,
         timestamp_min_margin: float = 0.0,
         timestamp_method: str = 'monotonic',
-        timestamp_lookahead_frames: int = 4,
         timestamp_skip_penalty: float = 6.0,
+        timestamp_force_progress: bool = True,
+        timestamp_progress_threshold: float = 0.5,
     ):
         for name, value, minimum in (
             ('batch_size', batch_size, 1),
@@ -53,7 +54,6 @@ class AttentionAlignmentInferenceState:
             ('head', head, 0),
             ('min_token_frames', min_token_frames, 1),
             ('timestamp_confirmation_frames', timestamp_confirmation_frames, 1),
-            ('timestamp_lookahead_frames', timestamp_lookahead_frames, 0),
         ):
             if type(value) is not int or value < minimum:
                 raise ValueError(f'{name} must be an integer >= {minimum}')
@@ -81,6 +81,7 @@ class AttentionAlignmentInferenceState:
             ('enabled', enabled),
             ('record_alignments', record_alignments),
             ('record_timestamps', record_timestamps),
+            ('timestamp_force_progress', timestamp_force_progress),
         ):
             if type(value) is not bool:
                 raise ValueError(f'{name} must be a boolean')
@@ -90,6 +91,7 @@ class AttentionAlignmentInferenceState:
             ('timestamp_min_confidence', timestamp_min_confidence),
             ('timestamp_min_text_mass', timestamp_min_text_mass),
             ('timestamp_min_margin', timestamp_min_margin),
+            ('timestamp_progress_threshold', timestamp_progress_threshold),
         ):
             if (
                 isinstance(value, bool)
@@ -116,8 +118,9 @@ class AttentionAlignmentInferenceState:
         self.timestamp_min_text_mass = float(timestamp_min_text_mass)
         self.timestamp_min_margin = float(timestamp_min_margin)
         self.timestamp_method = timestamp_method
-        self.timestamp_lookahead_frames = timestamp_lookahead_frames
         self.timestamp_skip_penalty = float(timestamp_skip_penalty)
+        self.timestamp_force_progress = timestamp_force_progress
+        self.timestamp_progress_threshold = float(timestamp_progress_threshold)
         self.text_key_positions: list[list[int]] = [[] for _ in range(batch_size)]
         self.text_token_ids: list[list[int | None]] = [[] for _ in range(batch_size)]
         self.anchors = [0] * batch_size

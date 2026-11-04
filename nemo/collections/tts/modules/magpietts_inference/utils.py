@@ -1461,10 +1461,16 @@ def _add_easy_magpie_args(parser: argparse.ArgumentParser) -> None:
         '--timestamp_method',
         choices=['monotonic', 'argmax'],
         default=None,
-        help='Decode observed attention for timestamps only; monotonic uses a fixed-lag posterior path',
+        help='Decode observed attention for timestamps only; monotonic uses a causal forward path',
     )
-    group.add_argument('--timestamp_lookahead_frames', type=int, default=None)
     group.add_argument('--timestamp_skip_penalty', type=float, default=None)
+    group.add_argument(
+        '--timestamp_force_progress',
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help='Estimate forward progress when attention moves on; forced timestamps have confidence zero',
+    )
+    group.add_argument('--timestamp_progress_threshold', type=float, default=None)
     group.add_argument('--timestamp_confirmation_frames', type=int, default=None)
     group.add_argument('--timestamp_min_confidence', type=float, default=None)
     group.add_argument('--timestamp_min_text_mass', type=float, default=None)
@@ -1651,8 +1657,9 @@ def _alignment_inference_overrides(args):
         values['record_timestamps'] = timestamps
     for name in (
         'method',
-        'lookahead_frames',
         'skip_penalty',
+        'force_progress',
+        'progress_threshold',
         'confirmation_frames',
         'min_confidence',
         'min_text_mass',

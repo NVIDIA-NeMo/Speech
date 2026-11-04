@@ -30,6 +30,10 @@ def build_token_timestamps(
     returned waveform. A multiturn caller selects a turn and crops that waveform;
     all saved times are then rebased to the cropped audio. Requested but unseen
     input occurrences remain present with null times and ``status=unobserved``.
+    Heuristically forced spans have zero ``confidence``; ``attention_confidence``
+    retains their underlying attention probability for debugging. Any retained
+    forced span makes the containing token forced, even if its primary span has
+    direct attention support. These scores are not calibrated correctness odds.
     """
     if trace is None:
         raise ValueError('Timestamp recording was requested but the model returned no timestamps')
@@ -54,6 +58,8 @@ def build_token_timestamps(
         audio_offset_seconds=start_time,
         source_audio_duration_seconds=duration,
         primary_span_rule='largest probability-duration support; all disjoint spans are retained',
+        confidence_kind='mean_full_key_attention_probability',
+        confidence_is_calibrated=False,
     )
     if turn_index is not None:
         result['source_turn_index'] = turn_index
@@ -74,7 +80,19 @@ def build_token_timestamps(
         token.setdefault('observed', True)
         source_spans = token.get('spans') or []
         if not source_spans and token.get('start') is not None and token.get('end') is not None:
-            source_spans = [dict(start=token['start'], end=token['end'], confidence=token.get('confidence'))]
+            source_spans = [
+                dict(
+                    start=token['start'],
+                    end=token['end'],
+                    confidence=token.get('confidence'),
+                    attention_confidence=token.get('attention_confidence', token.get('confidence')),
+                    forced=bool(token.get('forced', False)),
+                )
+            ]
+        # Older callers may have marked only the token. Once span-level flags
+        # exist they are authoritative, so cropping away a forced span also
+        # clears the token's forced flag.
+        legacy_forced = bool(token.get('forced', False)) and not any('forced' in span for span in source_spans)
         spans = []
         for span in source_spans:
             left = max(float(span['start']), start_time)
@@ -82,6 +100,10 @@ def build_token_timestamps(
             if right <= left:
                 continue
             clipped = dict(span, start=left - start_time, end=right - start_time)
+            clipped['forced'] = bool(span.get('forced', legacy_forced))
+            clipped['attention_confidence'] = span.get('attention_confidence', span.get('confidence'))
+            if clipped['forced']:
+                clipped['confidence'] = 0.0
             if left != span['start'] or right != span['end']:
                 clipped['clipped'] = True
                 frame_step = float(trace.get('frame_step_seconds', 0.0))
@@ -97,14 +119,18 @@ def build_token_timestamps(
             primary = max(
                 range(len(spans)),
                 key=lambda index: (
-                    float(spans[index].get('confidence') or 0.0) * (spans[index]['end'] - spans[index]['start']),
+                    float(spans[index].get('attention_confidence') or 0.0)
+                    * (spans[index]['end'] - spans[index]['start']),
                     -spans[index]['start'],
                 ),
             )
+            forced = any(span['forced'] for span in spans)
             token.update(
                 start=spans[primary]['start'],
                 end=spans[primary]['end'],
-                confidence=spans[primary].get('confidence'),
+                confidence=0.0 if forced else spans[primary].get('confidence'),
+                attention_confidence=spans[primary].get('attention_confidence'),
+                forced=forced,
                 text_attention_mass=spans[primary].get('text_attention_mass', token.get('text_attention_mass')),
                 primary_span_index=primary,
                 ambiguous=len(spans) > 1,
@@ -115,6 +141,8 @@ def build_token_timestamps(
                 start=None,
                 end=None,
                 confidence=None,
+                attention_confidence=None,
+                forced=False,
                 text_attention_mass=None,
                 primary_span_index=None,
                 ambiguous=False,
@@ -150,6 +178,8 @@ def build_token_timestamps(
                     'start': None,
                     'end': None,
                     'confidence': None,
+                    'attention_confidence': None,
+                    'forced': False,
                     'text_attention_mass': None,
                     'status': 'unobserved',
                     'reason': 'not_observed',

@@ -193,21 +193,31 @@ def test_unsupported_source_token_has_null_timing_instead_of_borrowing_the_next_
         assert trace['timestamps'][2]['token_index'] == 2
 
 
-def test_monotonic_timestamp_path_recovers_a_supported_token_that_never_wins_argmax():
+def test_monotonic_timestamp_estimates_are_emitted_during_the_same_audio_step():
     settings = {
         'enabled': False,
         'record_timestamps': True,
         'timestamp_method': 'monotonic',
         'timestamp_confirmation_frames': 1,
-        'timestamp_lookahead_frames': 2,
     }
     model = _head_model(settings, {'frame_stacking_factor': 2, 'use_aligned_text_head': False})
     state = _init_stream(model)
-    distributions = [[0.9, 0.08, 0.02], [0.6, 0.35, 0.05], [0.5, 0.4, 0.1], [0.1, 0.35, 0.55], [0.02, 0.08, 0.9]]
+    distributions = [[0.9, 0.09, 0.01], [0.2, 0.001, 0.799], [0.01, 0.001, 0.989]]
     assert all(max(range(3), key=lambda index: row[index]) != 1 for row in distributions)
+    streamed = []
     with _attention_peaks(distributions):
-        for token in (torch.tensor([7, 10]), torch.tensor([8, 11]), torch.tensor([9, 12]), None, None, None, None):
+        for token in (torch.tensor([7, 10]), torch.tensor([8, 11]), torch.tensor([9, 12]), None, None):
             state, _, _ = model.streaming_step(state, token)
+            events = model.drain_timestamp_events(state)
+            if events:
+                traces = model.get_timestamps(state)
+                assert all(
+                    event['emitted_at'] <= traces[event['batch_index']]['audio_duration_seconds'] for event in events
+                )
+                streamed.extend(events)
+    assert not state.finished.any()
+    forced = [event for event in streamed if event['forced']]
+    assert forced and all(event['confidence'] == 0.0 for event in forced)
     traces = model.get_timestamps(state, finalize=True)
     step = traces[0]['frame_step_seconds']
     for trace in traces:
@@ -215,11 +225,11 @@ def test_monotonic_timestamp_path_recovers_a_supported_token_that_never_wins_arg
         assert middle['token_index'] == 1 and middle['start'] is not None
         assert middle['end'] > middle['start']
         assert trace['method'] == 'monotonic' and not trace['guidance_enabled']
-        assert trace['lookahead_frames'] == 2
-        assert middle['start'] == pytest.approx(2 * step)
-        assert middle['end'] == pytest.approx(3 * step)
-    events = model.drain_timestamp_events(state)
-    assert any(event['latency_seconds'] >= 2 * step - 1e-8 for event in events)
+        assert trace['causal'] and 'lookahead_frames' not in trace
+        assert middle['forced'] and middle['confidence'] == 0.0
+        assert middle['start'] == pytest.approx(step)
+        assert middle['end'] <= 2 * step
+    assert any(event['token_index'] == 1 and event['event'] == 'start' for event in streamed)
     assert state.attention_alignment_inference_state.anchors == [0, 0]
 
 

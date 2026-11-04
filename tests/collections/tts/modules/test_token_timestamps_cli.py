@@ -39,10 +39,11 @@ def test_timestamp_flag_does_not_enable_guidance_or_alignment_debug_capture():
             '0',
             '--timestamp_method',
             'monotonic',
-            '--timestamp_lookahead_frames',
-            '4',
             '--timestamp_skip_penalty',
             '6.0',
+            '--timestamp_force_progress',
+            '--timestamp_progress_threshold',
+            '0.4',
             '--timestamp_confirmation_frames',
             '1',
             '--timestamp_min_confidence',
@@ -59,8 +60,9 @@ def test_timestamp_flag_does_not_enable_guidance_or_alignment_debug_capture():
         layer='middle',
         head=0,
         timestamp_method='monotonic',
-        timestamp_lookahead_frames=4,
         timestamp_skip_penalty=6.0,
+        timestamp_force_progress=True,
+        timestamp_progress_threshold=0.4,
         timestamp_confirmation_frames=1,
         timestamp_min_confidence=0.2,
         timestamp_min_text_mass=0.3,
@@ -133,8 +135,9 @@ def test_disabled_timestamp_defaults_do_not_change_existing_guidance_run_identif
         timestamp_min_text_mass=0.2,
         timestamp_min_margin=0.0,
         timestamp_method='monotonic',
-        timestamp_lookahead_frames=4,
         timestamp_skip_penalty=6.0,
+        timestamp_force_progress=True,
+        timestamp_progress_threshold=0.5,
     )
     assert config.build_identifier() == before
     config.alignment_inference_config.update(enabled=False, record_alignments=False, record_timestamps=True)
@@ -149,6 +152,34 @@ def test_timestamp_method_selects_the_estimator_without_enabling_any_guidance():
     assert utils._alignment_inference_overrides(args) == dict(record_timestamps=True, timestamp_method='argmax')
     with pytest.raises(SystemExit):
         parser.parse_args(['--timestamp_method', 'unknown'])
+
+
+def test_timestamp_forward_estimates_can_be_disabled_and_lookahead_flag_is_removed():
+    parser = argparse.ArgumentParser()
+    utils._add_easy_magpie_args(parser)
+    args = parser.parse_args(['--save_timestamps', '--no-timestamp_force_progress'])
+    assert utils._alignment_inference_overrides(args) == dict(record_timestamps=True, timestamp_force_progress=False)
+    with pytest.raises(SystemExit):
+        parser.parse_args(['--timestamp_lookahead_frames', '1'])
+
+
+def test_older_checkpoint_lookahead_setting_is_ignored_without_enabling_guidance():
+    resolved = utils.EasyMagpieTTSInferenceModel._resolve_attention_alignment_inference_config(
+        {'timestamp_lookahead_frames': 4}
+    )
+    assert 'timestamp_lookahead_frames' not in resolved
+    assert not resolved['enabled'] and not resolved['record_timestamps']
+    assert resolved['timestamp_force_progress'] is True
+    assert resolved['timestamp_progress_threshold'] == 0.5
+
+
+@pytest.mark.parametrize(
+    'setting,value',
+    [('timestamp_force_progress', 1), ('timestamp_progress_threshold', -0.1), ('timestamp_progress_threshold', 1.1)],
+)
+def test_timestamp_forward_estimate_settings_are_validated(setting, value):
+    with pytest.raises(ValueError, match=setting):
+        utils.EasyMagpieTTSInferenceModel._resolve_attention_alignment_inference_config({setting: value})
 
 
 @pytest.mark.parametrize('mode', ['single_turn', 'multiturn'])

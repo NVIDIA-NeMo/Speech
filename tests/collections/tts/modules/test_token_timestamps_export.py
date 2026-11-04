@@ -156,13 +156,77 @@ def test_zero_audio_keeps_requested_tokens_without_fabricated_boundaries():
 
 def test_weakly_supported_monotonic_skip_keeps_null_times_and_its_evidence_reason():
     trace = _trace()
-    trace.update(method='monotonic', lookahead_frames=4, skip_penalty=6.0)
+    trace.update(method='monotonic', force_progress=True, skip_penalty=6.0)
     trace['timestamps'][3].update(reason='never_selected', posterior_support=0.001, observed_frames=8)
     result = build_token_timestamps(trace, expected_input_token_ids=[1, 2, 1, 3])
     token = result['timestamps'][3]
     assert token['token_index'] == 3 and token['start'] is token['end'] is None
     assert token['reason'] == 'never_selected' and token['posterior_support'] == 0.001
-    assert result['method'] == 'monotonic' and result['lookahead_frames'] == 4
+    assert result['method'] == 'monotonic' and result['force_progress']
+
+
+def test_forced_timestamp_keeps_raw_attention_probability_and_exports_zero_confidence():
+    trace = _trace()
+    span = trace['timestamps'][0]['spans'][0]
+    span.update(forced=True, confidence=0.12, attention_confidence=0.12)
+    before = copy.deepcopy(trace)
+    token = build_token_timestamps(trace)['timestamps'][0]
+    assert token['forced'] and token['confidence'] == 0.0
+    assert token['attention_confidence'] == 0.12
+    assert token['spans'][0]['forced'] and token['spans'][0]['confidence'] == 0.0
+    assert token['spans'][0]['attention_confidence'] == 0.12
+    assert trace == before
+
+
+def test_mixed_forced_spans_zero_whole_token_confidence_and_crop_recomputes_flags():
+    trace = _trace()
+    token = trace['timestamps'][0]
+    token.update(forced=True, confidence=0.0, attention_confidence=0.8)
+    token['spans'][0].update(forced=False, confidence=0.8, attention_confidence=0.8)
+    token['spans'].append(dict(_span(0.4, 0.48, confidence=0.0), forced=True, attention_confidence=0.2))
+    mixed = build_token_timestamps(trace)['timestamps'][0]
+    assert mixed['forced'] and mixed['confidence'] == 0.0
+    assert mixed['primary_span_index'] == 0 and mixed['attention_confidence'] == 0.8
+    supported = build_token_timestamps(trace, end_time=0.08)['timestamps'][0]
+    assert not supported['forced'] and supported['confidence'] == 0.8
+    forced = build_token_timestamps(trace, start_time=0.42, end_time=0.46)['timestamps'][0]
+    assert forced['forced'] and forced['confidence'] == 0.0
+    assert forced['attention_confidence'] == 0.2 and forced['spans'][0]['clipped']
+    assert (forced['start'], forced['end']) == pytest.approx((0.0, 0.04))
+    absent = build_token_timestamps(trace, start_time=0.5, end_time=0.6)['timestamps'][0]
+    assert absent['start'] is absent['end'] is absent['confidence'] is absent['attention_confidence'] is None
+    assert not absent['forced']
+
+
+def test_legacy_token_forced_flag_is_preserved_without_span_metadata():
+    trace = _trace()
+    token = trace['timestamps'][0]
+    token.update(start=0.0, end=0.08, spans=[], forced=True, confidence=0.3)
+    result = build_token_timestamps(trace)['timestamps'][0]
+    assert result['forced'] and result['confidence'] == 0.0
+    assert result['attention_confidence'] == 0.3
+    assert result['spans'][0]['forced'] and result['spans'][0]['confidence'] == 0.0
+
+
+def test_forced_zero_confidence_does_not_change_primary_span_evidence_ranking():
+    trace = _trace()
+    token = trace['timestamps'][0]
+    token['spans'][0].update(confidence=0.1, forced=False, attention_confidence=0.1)
+    token['spans'].append(dict(_span(0.4, 0.56, confidence=0.0), forced=True, attention_confidence=0.3))
+    result = build_token_timestamps(trace)['timestamps'][0]
+    assert result['primary_span_index'] == 1
+    assert (result['start'], result['end']) == pytest.approx((0.4, 0.56))
+    assert result['forced'] and result['confidence'] == 0.0 and result['attention_confidence'] == 0.3
+
+
+def test_unforced_and_unobserved_records_keep_distinct_confidence_semantics():
+    result = build_token_timestamps(_trace(), expected_input_token_ids=[1, 2, 1, 3, 1])['timestamps']
+    supported = result[0]
+    assert not supported['forced'] and supported['confidence'] == supported['attention_confidence'] == 0.5
+    assert not supported['spans'][0]['forced'] and supported['spans'][0]['attention_confidence'] == 0.5
+    for token in result[3:]:
+        assert token['start'] is token['end'] is token['confidence'] is token['attention_confidence'] is None
+        assert not token['forced']
 
 
 def test_crop_updates_primary_short_evidence_and_does_not_keep_ambiguity_without_visible_spans():

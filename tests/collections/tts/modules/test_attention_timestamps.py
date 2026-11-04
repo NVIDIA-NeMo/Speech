@@ -235,28 +235,33 @@ def test_malformed_key_mapping_and_overlapping_audio_intervals_fail_instead_of_m
         tracker.register_token(0, 99)
 
 
-def test_monotonic_full_posterior_recovers_a_never_argmax_middle_token_with_real_confidence():
-    rows = [[0.9, 0.08, 0.02], [0.6, 0.35, 0.05], [0.5, 0.4, 0.1], [0.1, 0.35, 0.55], [0.02, 0.08, 0.9]]
-    assert all(max(range(3), key=row.__getitem__) != 1 for row in rows)
-    tracker = _tracker([17, 17, 9], method='monotonic', lookahead_frames=2)
+def test_causal_force_progress_escapes_a_skip_penalty_stall_and_emits_estimates_immediately():
+    ordinary = _tracker([17, 17, 9, 20], method='monotonic', force_progress=False)
+    tracker = _tracker([17, 17, 9, 20], method='monotonic')
+    rows = [[0.9, 0.08, 0.02, 0], [0.1, 0.04, 0.8, 0.06], [0.01, 0.01, 0.08, 0.9]]
     for frame, row in enumerate(rows):
-        tracker.update(row, start=frame * 0.08, end=(frame + 1) * 0.08)
-    records = tracker.finalize(0.4)
-    assert [record['token_index'] for record in records] == [0, 1, 2]
-    assert records[1]['start'] == pytest.approx(0.16)
-    assert records[1]['end'] == pytest.approx(0.24)
-    assert records[1]['confidence'] == pytest.approx(0.4)
-    assert records[1]['short_evidence']
-    assert not records[1]['ambiguous']
-    middle_start = next(
-        event for event in tracker.drain_events() if event['token_index'] == 1 and event['event'] == 'start'
-    )
-    assert middle_start['emitted_at'] == pytest.approx(0.4)
-    assert middle_start['latency_seconds'] == pytest.approx(0.24)
+        start, end = frame * 0.08, (frame + 1) * 0.08
+        ordinary.update(row, start=start, end=end)
+        events = tracker.update(row, start=start, end=end)
+        assert events and all(event['emitted_at'] == pytest.approx(end) for event in events)
+        if frame == 1:
+            estimates = [event for event in events if event['forced']]
+            assert {event['token_index'] for event in estimates} == {1, 2}
+            assert all(event['confidence'] == 0 for event in estimates)
+            assert all(event['start'] >= start and event['end'] <= end for event in estimates)
+            assert all(event['attention_confidence'] > 0 for event in estimates)
+    records = tracker.finalize(0.24)
+    assert all(record['start'] is not None for record in records)
+    assert records[1]['start'] == pytest.approx(0.08) and records[1]['end'] == pytest.approx(0.12)
+    assert records[2]['start'] == pytest.approx(0.12) and records[2]['end'] == pytest.approx(0.16)
+    assert records[1]['forced'] and records[1]['confidence'] == 0
+    assert records[2]['forced'] and records[2]['confidence'] == 0
+    assert records[3]['confidence'] == pytest.approx(0.9) and not records[3]['forced']
+    assert ordinary.finalize(0.24)[3]['start'] is None
 
 
 def test_monotonic_zero_evidence_skip_and_unspoken_punctuation_remain_null():
-    tracker = _tracker([10, 11, 12, 13], method='monotonic', lookahead_frames=2)
+    tracker = _tracker([10, 11, 12, 13], method='monotonic')
     rows = [[0.9, 0, 0, 0], [0.1, 0, 0.8, 0], [0, 0, 0.9, 0]]
     for frame, row in enumerate(rows):
         tracker.update(row, start=frame * 0.08, end=(frame + 1) * 0.08)
@@ -267,7 +272,7 @@ def test_monotonic_zero_evidence_skip_and_unspoken_punctuation_remain_null():
 
 
 def test_monotonic_streaming_visibility_and_noncontiguous_decoder_keys_keep_positions():
-    tracker = AttentionTimestampTracker(method='monotonic', lookahead_frames=2)
+    tracker = AttentionTimestampTracker(method='monotonic')
     tracker.register_token(67, 17)
     tracker.update([0.8, 0.1], token_indices=[67, 90], start=0.0, end=0.08)
     tracker.register_token(90, 17)
@@ -282,8 +287,8 @@ def test_monotonic_streaming_visibility_and_noncontiguous_decoder_keys_keep_posi
 def test_monotonic_chunks_preserve_events_and_boundaries_and_do_not_move_committed_prefix():
     rows = [[0.8, 0.19, 0.01], [0.51, 0.48, 0.01], [0.01, 0.19, 0.8], [0.01, 0.1, 0.89]]
     rows += [[0.99, 0, 0.01]] * 6  # Later evidence cannot revise a committed earlier decision.
-    single = _tracker([17, 18, 19], method='monotonic', lookahead_frames=2)
-    chunked = _tracker([17, 18, 19], method='monotonic', lookahead_frames=2)
+    single = _tracker([17, 18, 19], method='monotonic')
+    chunked = _tracker([17, 18, 19], method='monotonic')
     starts, ends = [i * 0.08 for i in range(len(rows))], [(i + 1) * 0.08 for i in range(len(rows))]
     for row, start, end in zip(rows, starts, ends):
         single.update(row, start=start, end=end)
@@ -292,22 +297,24 @@ def test_monotonic_chunks_preserve_events_and_boundaries_and_do_not_move_committ
     assert single.finalize(ends[-1]) == chunked.finalize(ends[-1])
     assert single.drain_events() == chunked.drain_events()
     records = single.snapshot()
-    assert records[0]['start'] == 0 and records[0]['end'] == 0.08
+    assert records[0]['start'] == 0 and records[0]['end'] == 0.16
     assert not any(record['ambiguous'] for record in records)
 
 
-def test_monotonic_decoder_memory_is_bounded_by_lag_and_text_not_audio_length():
-    decoder = StreamingAttentionPathDecoder(lookahead_frames=4)
+def test_causal_decoder_emits_every_frame_without_retaining_attention_history():
+    decoder = StreamingAttentionPathDecoder()
     for frame in range(5000):
-        decoder.update([0.1, 0.8, 0.1], start=frame * 0.08, end=(frame + 1) * 0.08)
-        assert decoder.buffered_frames <= 4
-        assert decoder.buffered_state_count <= 3 * (2 * 4 + 1)
+        decisions = decoder.update([0.1, 0.8, 0.1], start=frame * 0.08, end=(frame + 1) * 0.08)
+        assert len(decisions) == 1
+        assert decisions[0]['emitted_at'] == pytest.approx((frame + 1) * 0.08)
+        retained = [value for value in vars(decoder).values() if isinstance(value, (dict, list, set, tuple))]
+        assert all(len(value) <= 3 for value in retained)
     decisions = decoder.finalize(400.0)
-    assert len(decisions) == 4 and decoder.buffered_frames == 0
+    assert decisions == []
 
 
 def test_monotonic_invalid_frames_and_real_audio_gaps_never_fill_in_missing_audio():
-    tracker = _tracker([10], method='monotonic', lookahead_frames=2)
+    tracker = _tracker([10], method='monotonic')
     for row, start, end in (([0.8], 0, 0.08), ([float('nan')], 0.08, 0.16), ([0.8], 0.5, 0.58)):
         tracker.update(row, start=start, end=end)
     record = tracker.finalize(0.7)[0]
@@ -315,12 +322,86 @@ def test_monotonic_invalid_frames_and_real_audio_gaps_never_fill_in_missing_audi
     assert record['ambiguous']
 
 
+def test_forced_confidence_stays_zero_when_later_frames_naturally_support_the_same_token():
+    tracker = _tracker([10, 11, 12], method='monotonic', confirmation_frames=1)
+    tracker.update([0.9, 0.09, 0.01], start=0, end=0.08)
+    tracker.update([0.1, 0.05, 0.85], start=0.08, end=0.16)
+    events = tracker.update([0.01, 0.01, 0.98], start=0.16, end=0.24)
+    record = tracker.snapshot()[2]
+    assert record['forced'] and record['confidence'] == 0
+    assert record['attention_confidence'] > 0.9
+    assert record['spans'][0]['forced'] and record['spans'][0]['confidence'] == 0
+    assert all(event['forced'] and event['confidence'] == 0 for event in events)
+
+
+def test_adjacent_natural_progress_retains_attention_probability_and_does_not_force():
+    tracker = _tracker([10, 11, 12], method='monotonic')
+    for index in range(3):
+        events = tracker.update(_one_hot(index, 3), start=index * 0.08, end=(index + 1) * 0.08)
+        assert all(not event['forced'] and event['confidence'] == pytest.approx(0.9) for event in events)
+    records = tracker.finalize(0.24)
+    assert all(not token['forced'] and token['confidence'] == token['attention_confidence'] for token in records)
+
+
+def test_forward_forcing_uses_relative_text_support_but_stops_when_text_attention_collapses():
+    tracker = _tracker([10, 11, 12], method='monotonic')
+    tracker.update([0.9, 0.09, 0.01], start=0, end=0.08)
+    tracker.update([0.001, 0.0005, 0.0085], start=0.08, end=0.16)
+    assert not any(token['forced'] for token in tracker.snapshot())
+    tracker.update([0.1, 0.05, 0.85], start=0.16, end=0.24)
+    assert tracker.snapshot()[1]['forced']
+
+
+def test_weak_diffuse_or_backward_attention_does_not_force_forward_progress():
+    tracker = _tracker([10, 11, 12, 13], method='monotonic')
+    tracker.update([0, 0.85, 0.10, 0.05], start=0, end=0.08)
+    # Current support faded, but no forward position reaches half its peak.
+    tracker.update([0.4, 0.1, 0.26, 0.24], start=0.08, end=0.16)
+    assert not any(token['forced'] for token in tracker.snapshot())
+    tracker.update([0.99, 0.01, 0, 0], start=0.16, end=0.24)
+    assert tracker.snapshot()[3]['start'] is None
+
+
+def test_collapsed_text_mass_does_not_impute_crossed_tokens_on_a_natural_skip():
+    tracker = _tracker([10, 11, 12], method='monotonic')
+    tracker.update([0.9, 0.09, 0.01], start=0, end=0.08)
+    tracker.update([0, 0.000001, 0.000999], start=0.08, end=0.16)
+    records = tracker.snapshot()
+    assert records[1]['start'] is None
+    assert not any(record['forced'] for record in records)
+
+
+def test_forced_forward_progress_never_assigns_zero_support_positions_or_unobserved_tail():
+    tracker = _tracker([10, 11, 12, 13, 14], method='monotonic')
+    tracker.update([0.9, 0.05, 0.04, 0.01, 0], start=0, end=0.08)
+    events = tracker.update([0.1, 0, 0.05, 0.85, 0], start=0.08, end=0.16)
+    assert {event['token_index'] for event in events if event['forced']} == {2, 3}
+    records = tracker.finalize(0.5)
+    assert records[1]['start'] is None and records[4]['start'] is None
+    assert records[3]['end'] == pytest.approx(0.16)
+    assert not any(event['event'] == 'start' for event in tracker.drain_events() if event['emitted_at'] == 0.5)
+
+
+def test_forced_partial_frame_subdivision_does_not_revise_previously_published_boundaries():
+    tracker = _tracker([10, 11, 12], method='monotonic')
+    tracker.update([0.9, 0.09, 0.01], start=0, end=0.08)
+    before = copy.deepcopy(tracker.snapshot()[0])
+    events = tracker.update([0.1, 0.05, 0.85], start=0.08, end=0.10)
+    assert tracker.snapshot()[0]['start'] == before['start']
+    assert tracker.snapshot()[0]['end'] == before['end']
+    forced = [event for event in events if event['forced']]
+    assert forced and all(0.08 <= event['start'] < event['end'] <= 0.10 for event in forced)
+    assert all(event['emitted_at'] == 0.10 for event in events)
+
+
 @pytest.mark.parametrize(
     'settings',
     [
         {'method': 'unknown'},
-        {'lookahead_frames': -1},
-        {'lookahead_frames': True},
+        {'force_progress': 1},
+        {'progress_threshold': -1},
+        {'progress_threshold': True},
+        {'progress_threshold': float('nan')},
         {'skip_penalty': -1},
         {'skip_penalty': float('nan')},
         {'skip_penalty': True},

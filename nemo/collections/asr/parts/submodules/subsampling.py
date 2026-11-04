@@ -662,7 +662,14 @@ class ConvSubsampling(torch.nn.Module):
             else:
                 x, lengths = self.conv(x, lengths)
         else:
-            x, lengths = self.conv(x)
+            if self.conv2d_subsampling:
+                x, lengths = self.conv(x, lengths)
+            else:
+                # Conv1d layers: MaskedConvSequential expects 4D Conv2d input,
+                # so run the layers directly.  Output lengths were pre-computed above.
+                for layer in self.conv:
+                    x = layer(x)
+                lengths = out_lengths
 
         # Flatten Channel and Frequency Axes
         if self.conv2d_subsampling:
@@ -891,9 +898,14 @@ def apply_channel_mask(tensor, mask):
     return tensor * expanded_mask
 
 
-def calculate_conv_output_size(input_size: torch.Tensor, kernel_size: int, stride: int, padding: tuple[int, int]):
-    """Calculate exact output size after convolution."""
-    return (input_size + padding[0] + padding[1] - kernel_size) // stride + 1
+def calculate_conv_output_size(
+    input_size: torch.Tensor, kernel_size: int, stride: int, padding: tuple[int, int], ceil_mode: bool = False
+):
+    """Calculate exact output size after convolution or pooling."""
+    numerator = input_size + padding[0] + padding[1] - kernel_size
+    if ceil_mode:
+        return (numerator + stride - 1) // stride + 1
+    return numerator // stride + 1
 
 
 class MaskedConvSequential(nn.Sequential):
@@ -934,12 +946,18 @@ class MaskedConvSequential(nn.Sequential):
             # Apply layer
             x = layer(x)
 
-            # Update lengths for stride operations with proper padding
-            if hasattr(layer, 'stride') and layer.stride != (1, 1):
-                current_lengths = calculate_conv_output_size(
-                    current_lengths, layer.kernel_size[0], layer.stride[0], _layer_padding(layer)
-                )
-                mask = self._create_mask(x, current_lengths.long())
+            # Update lengths for stride operations with proper padding.
+            # nn.MaxPool2d stores kernel_size/stride as int when constructed
+            # with scalar arguments, so normalise to tuple before indexing.
+            if hasattr(layer, 'stride'):
+                stride = layer.stride if isinstance(layer.stride, tuple) else (layer.stride, layer.stride)
+                if stride != (1, 1):
+                    ks = layer.kernel_size if isinstance(layer.kernel_size, tuple) else (layer.kernel_size,) * 2
+                    ceil_mode = getattr(layer, 'ceil_mode', False)
+                    current_lengths = calculate_conv_output_size(
+                        current_lengths, ks[0], stride[0], _layer_padding(layer), ceil_mode=ceil_mode
+                    )
+                    mask = self._create_mask(x, current_lengths.long())
 
         return x, current_lengths, mask
 

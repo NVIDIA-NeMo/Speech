@@ -289,6 +289,8 @@ class EasyMagpieTTSForConditionalGeneration(
         self._dec_text_mask = torch.zeros(max_num_tokens, dtype=torch.long)
         self._dec_audio_codes = torch.zeros(max_num_tokens, self.num_codebooks, dtype=torch.long)
         self._dec_audio_valid = torch.zeros(max_num_tokens, dtype=torch.long)
+        if self.arch.acoustic_predictor_type == "acoustic_codes_predictor":
+            self.use_fixed_acoustic_sampling = True
         self._acoustic_temperature = torch.full((max_num_tokens,), 0.7, dtype=torch.float32)
         self._acoustic_top_k = torch.full((max_num_tokens,), 80, dtype=torch.long)
         self._cfg_scale = torch.ones(max_num_tokens, dtype=torch.float32)
@@ -678,6 +680,7 @@ class EasyMagpieTTSForConditionalGeneration(
                         cfg_scale=self._cfg_scale[:num_tokens],
                         temperature=self._acoustic_temperature[:num_tokens],
                         top_k=self._acoustic_top_k[:num_tokens],
+                        fixed_sampling=getattr(self, "use_fixed_acoustic_sampling", False),
                     )
                 codes = self.code_predictor.generate_codes(
                     hidden_states, positions=positions, predict=predict, **sampling_kwargs
@@ -904,6 +907,9 @@ class EasyMagpieTTSForConditionalGeneration(
 
         start = self._batch_slot_offset(input_ids, start)
         settings = AcousticSamplingSettings.from_info(info_dict)
+        if hasattr(self, "use_fixed_acoustic_sampling"):
+            # The runner resets this once per batch, before all requests preprocess.
+            self.use_fixed_acoustic_sampling &= settings.uses_fixed_sampling
         if settings.use_cfg:
             if getattr(self.arch, "cfg_capability", None) is None:
                 raise ValueError("CFG requires reconversion with cfg_context_embedding and cfg_capability")

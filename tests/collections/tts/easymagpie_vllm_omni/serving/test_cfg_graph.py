@@ -494,3 +494,46 @@ def test_compiled_profile_dispatches_prefill_piecewise_and_decode_full() -> None
     # Long prefill remains supported outside the capture range, without graph replay.
     mode, _ = dispatcher.dispatch(compilation.max_cudagraph_capture_size + 1, uniform_decode=False)
     assert mode == CUDAGraphMode.NONE
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+def test_fixed_sampling_graph_replay_keeps_cfg_scale_and_shared_feedback() -> None:
+    """Replay fixed constants with live pair mappings, padding, and fresh RNG."""
+    logits = torch.zeros(4, 1, 4, device="cuda", dtype=torch.float16)
+    logits[1, 0, 1] = 90
+    logits[0, 0, 2] = 90
+    predictor, _, _ = _predictor([logits, logits], "cuda")
+    predictor._frame_gumbel_buf = torch.zeros(4, 2, 4, device="cuda")
+    mapping = CFGGraphBuffers(4, device="cuda")
+    hidden = torch.zeros(4, 2, device="cuda")
+    positions = torch.zeros(4, dtype=torch.long, device="cuda")
+
+    def run() -> torch.Tensor:
+        return predictor.generate_codes(hidden, positions=positions, graph_pairing=mapping, fixed_sampling=True)
+
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        for _ in range(3):
+            run()
+    torch.cuda.current_stream().wait_stream(stream)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        result = run()
+    for layout, expected in [
+        (CFGPairingLayout(("a",), ((1,),), ((0,),)), [[1, 1], [1, 1], [8, 8], [8, 8]]),
+        (CFGPairingLayout(("b",), ((0,),), ((1,),)), [[2, 2], [2, 2], [8, 8], [8, 8]]),
+        (None, [[2, 2], [1, 1], [8, 8], [8, 8]]),
+    ]:
+        mapping.update(layout, 2, 4)
+        graph.replay()
+        assert result.tolist() == expected
+    logits.zero_()
+    mapping.update(CFGPairingLayout(("c",), ((1,),), ((0,),)), 2, 4)
+    outputs = set()
+    for _ in range(24):
+        graph.replay()
+        assert torch.equal(result[0], result[1])
+        assert result[2:].eq(8).all()
+        outputs.add(tuple(result[1].tolist()))
+    assert len(outputs) > 1

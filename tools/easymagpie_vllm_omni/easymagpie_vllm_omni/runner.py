@@ -26,6 +26,8 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 from easymagpie_vllm_omni.cfg_pairing import build_cfg_pairing_layout, is_cfg_hidden_id
+from vllm.config import CUDAGraphMode
+from vllm.forward_context import get_forward_context
 from vllm_omni.engine.serialization import deserialize_additional_information
 from vllm_omni.worker import gpu_ar_worker
 from vllm_omni.worker.gpu_ar_model_runner import GPUARModelRunner
@@ -95,6 +97,9 @@ class EasyMagpieGPUARModelRunner(GPUARModelRunner):
         Returns:
             The base runner preprocessing result, with CFG ownership buffers staged in place.
         """
+        model = self.get_model()
+        if hasattr(model, "use_fixed_acoustic_sampling"):
+            model.use_fixed_acoustic_sampling = True
         result = super()._preprocess(scheduler_output, num_input_tokens, intermediate_tensors)
         # Input preparation may reorder requests. Build the mapping afterwards,
         # before forward, using unpadded physical rows and absolute positions.
@@ -128,6 +133,30 @@ class EasyMagpieGPUARModelRunner(GPUARModelRunner):
             if model.has_phoneme:
                 model._dec_phoneme_valid[actual_tokens:num_input_tokens].zero_()
         return result
+
+    def _model_forward(
+        self,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        """Bypass captured default constants for batches with custom settings.
+
+        Args:
+            *args: Model inputs forwarded to the Omni runner.
+            **kwargs: Model inputs forwarded to the Omni runner.
+
+        Returns:
+            The model output for this batch.
+        """
+        if getattr(self.get_model(), "use_fixed_acoustic_sampling", True):
+            return super()._model_forward(*args, **kwargs)
+        context = get_forward_context()
+        previous_mode = context.cudagraph_runtime_mode
+        context.cudagraph_runtime_mode = CUDAGraphMode.NONE
+        try:
+            return super()._model_forward(*args, **kwargs)
+        finally:
+            context.cudagraph_runtime_mode = previous_mode
 
     def _request_needs_downstream_stage_payload(self, req_id: str) -> bool:
         # Suppress private branch postprocessing/payload construction. Scheduler

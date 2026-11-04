@@ -186,3 +186,75 @@ def test_offline_demo_reuses_one_engine_with_self_contained_requests():
     assert "ASSISTANT_TURN_1_TEXT" in source
     assert "ASSISTANT_TURN_2_TEXT" in source
     assert "class MultiturnInput" not in source
+
+
+@pytest.mark.parametrize(
+    "settings,expected",
+    [
+        ({}, True),
+        ({"use_cfg": True, "cfg_scale": 2.5}, True),
+        ({"use_cfg": False, "cfg_scale": 9.0}, True),
+        ({"temperature": 0.0}, False),
+        ({"temperature": 0.8}, False),
+        ({"top_k": 40}, False),
+        ({"use_cfg": True, "cfg_scale": 1.0}, False),
+    ],
+)
+def test_shared_sampling_settings_choose_fallback(
+    settings: dict[str, Any],
+    expected: bool,
+) -> None:
+    """Only default acoustic settings qualify for the captured shared path."""
+    from easymagpie_vllm_omni.cfg import AcousticSamplingSettings
+
+    assert AcousticSamplingSettings.from_info(settings).uses_fixed_sampling is expected
+
+
+def test_sampling_fallback_disables_graphs_and_restores_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never replay a default-settings graph for a non-default batch."""
+    import easymagpie_vllm_omni.runner as runner_module
+    from vllm.config import CUDAGraphMode
+
+    runner = object.__new__(EasyMagpieGPUARModelRunner)
+    runner.model = SimpleNamespace(use_fixed_acoustic_sampling=False)
+    context = SimpleNamespace(cudagraph_runtime_mode=CUDAGraphMode.FULL)
+    monkeypatch.setattr(runner_module, "get_forward_context", lambda: context)
+    modes = []
+
+    def forward(
+        self,
+        *args: Any,
+        **kwargs: Any,
+    ) -> str:
+        """Record the graph policy observed by the parent forward."""
+        modes.append(context.cudagraph_runtime_mode)
+        return "fallback"
+
+    monkeypatch.setattr(GPUARModelRunner, "_model_forward", forward)
+    assert runner._model_forward() == "fallback"
+    assert context.cudagraph_runtime_mode == CUDAGraphMode.FULL
+    runner.model.use_fixed_acoustic_sampling = True
+    runner._model_forward()
+    assert modes == [CUDAGraphMode.NONE, CUDAGraphMode.FULL]
+
+
+def test_runner_resets_sampling_policy_before_each_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A custom batch must not force later default batches onto the fallback."""
+    runner = object.__new__(EasyMagpieGPUARModelRunner)
+    runner.model = SimpleNamespace(use_fixed_acoustic_sampling=False)
+    runner.input_batch = SimpleNamespace(req_ids=["ordinary"])
+    flags = []
+
+    def prepare(
+        self,
+        *args: Any,
+    ) -> str:
+        """Record the reset before simulating a custom request's preprocessing."""
+        flags.append(self.model.use_fixed_acoustic_sampling)
+        self.model.use_fixed_acoustic_sampling = False
+        return "prepared"
+
+    monkeypatch.setattr(GPUARModelRunner, "_preprocess", prepare)
+    for _ in range(2):
+        assert runner._preprocess(None, 1) == "prepared"
+    assert flags == [True, True]

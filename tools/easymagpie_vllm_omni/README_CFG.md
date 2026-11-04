@@ -4,6 +4,34 @@ For checkpoint conversion, serving-environment setup, and standard synthesis,
 see the [main README](README.md). This guide covers V2 CFG synthesis, cache
 pairing, deployment profiles, CUDA graphs, benchmarks, and validation.
 
+### Shared default sampling and per-request fallback
+
+V2 batches using acoustic temperature **0.7**, top-k **80**, and CFG scale
+**2.5** (when CFG is enabled) use the pre-ART sampling recipe: select exactly
+`min(80, vocabulary_size)` logits and draw one FP32 Gumbel tensor for the entire
+frame before iterating through codebooks. Temperature division happens in the
+selected logits' dtype. CFG uses the shared Python scalar 2.5 before sampling;
+conditional-only rows bypass guidance. Both branches still consume the public
+branch's sampled feedback.
+
+The runner validates settings on the CPU during each request's preprocessing.
+If any request in a batch uses another temperature, top-k, or enabled CFG scale,
+the **entire batch** uses the existing per-request sampler and bypasses CUDA
+graph replay for that forward. This includes greedy requests. The next batch
+can return to the captured default path. Custom values remain supported, with
+an eager-execution performance cost. Changing `cfg_scale` while CFG is disabled
+does not affect dispatch or apply guidance. The local-transformer V1 path is
+unchanged.
+
+The default path intentionally changes cutoff-tie behavior (exact-k rather than
+including every tied logit), low-precision sampling arithmetic, and RNG layout.
+Seeded audio can therefore differ from the previous current sampler. Eager CFG
+samples logical prediction rows; graph execution samples the fixed physical
+shape, including private/padded rows, then shares owner results and masks padding.
+Do not expect identical seeded audio across these execution modes or batch shapes.
+Historical validation and throughput figures below precede this change; they do
+not establish serving performance or speech quality for the shared default path.
+
 ### V2 CFG cache-pairing diagnostic
 
 The first CFG milestone provides an explicit diagnostic pipeline,
@@ -216,11 +244,14 @@ slots and capture sizes; the current graph profile captures decode batches throu
 The runner stages owner/partner indices and padding masks into persistent GPU buffers
 after request reordering. Captured predictor operations use fixed physical batch
 shapes and copy the public sampled frame to both histories. Random draws are fresh
-on replay, including draws for unused private/padded rows. Tensor-valued greedy
-settings still select argmax but consume draws on this graph path; exact seeded
-sample sequences and RNG advancement need not match compact eager CFG sampling.
-CFG scale, temperature, and top-k remain runtime tensor inputs. Checkpoint storage dtype
-is separate from deployment dtype; an existing BF16 artifact is cast to FP16 on loading.
+on replay, including draws for unused private/padded rows. Exact seeded sample
+sequences and RNG advancement need not match compact eager CFG sampling.
+Custom-settings batches retain tensor-valued greedy argmax semantics in the eager
+fallback; the tensor sampler may consume unused random draws. CFG scale,
+temperature, and top-k remain runtime tensor inputs for those batches.
+Default-settings graphs capture the shared constants described above.
+Checkpoint storage dtype is separate from deployment dtype; an existing BF16
+artifact is cast to FP16 on loading.
 Recasting a saved BF16 artifact cannot recover precision lost in its earlier conversion.
 
 Compare eager and graph deployments using identical artifacts, FP16 runtime settings,

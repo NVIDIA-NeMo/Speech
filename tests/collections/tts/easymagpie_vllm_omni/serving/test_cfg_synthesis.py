@@ -395,6 +395,82 @@ def test_cfg_weight_is_required_when_advertised_and_validated_before_loading() -
     torch.testing.assert_close(model.cfg_context_embedding, torch.tensor([[1.0, 2.0]]))
 
 
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+@pytest.mark.parametrize("guided", [False, True])
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_fixed_sampling_matches_original_frame_draws_and_feedback(
+    dtype: torch.dtype,
+    guided: bool,
+    device: str,
+) -> None:
+    """Match original exact-k arithmetic and one frame-level random draw.
+
+    Args:
+        dtype: Precision used for selected-logit arithmetic.
+        guided: Whether to guide a reordered pair alongside a conditional row.
+        device: Device for sampling and RNG state comparison.
+    """
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+    torch.manual_seed(41)
+    logits = [torch.randn(4, 1, 101, device=device).to(dtype) for _ in range(3)]
+    # Include cutoff ties, invalid logits, and compact EOS.
+    logits[0].zero_()
+    logits[1][..., 0] = float("nan")
+    logits[1][..., 1] = float("inf")
+    logits[2][..., 100] = 100
+    predictor, _, embedder = _predictor(logits, device)
+    predictor.num_output_tokens = 101
+    predictor.arch = SimpleNamespace(codebook_size=100, audio_eos_id=107, mask_token_id=108)
+    predictor._frame_gumbel_buf = torch.zeros(4, 3, 80, device=device)
+    layout = CFGPairingLayout(("r",), ((2,),), ((0,),)) if guided else None
+    rows = torch.tensor([2, 3], device=device) if guided else torch.arange(4, device=device)
+    owners = torch.tensor([2, 1, 2, 3], device=device) if guided else torch.arange(4, device=device)
+    predict = torch.tensor([True, False, True, True], device=device)
+    expected = torch.full((4, 3), 108, dtype=torch.long, device=device)
+    torch.manual_seed(19)
+    noise = torch.empty(len(rows), 3, 80, device=device).uniform_(1e-20, 1.0 - 1e-20)
+    noise.log_().neg_().log_().neg_()
+    for index, values in enumerate(logits):
+        values = values[rows].clone()
+        if guided:
+            values[0] = 2.5 * logits[index][2] + (1.0 - 2.5) * logits[index][0]
+        values = torch.nan_to_num(values, nan=0.0, posinf=100.0, neginf=-100.0).clamp(-100, 100)
+        values, indices = values.topk(80, dim=-1)
+        picked = (values / 0.7 + noise[:, index : index + 1]).argmax(-1, keepdim=True)
+        sampled = indices.gather(-1, picked).squeeze(-1)
+        sampled = torch.where(sampled == 100, 107, sampled)
+        expected[rows, index : index + 1] = torch.where(predict[rows, None], sampled, 108)
+        expected[:, index] = expected[owners, index]
+    expected_rng = torch.cuda.get_rng_state() if device == "cuda" else torch.get_rng_state()
+    torch.manual_seed(19)
+    actual = predictor.generate_codes(
+        torch.zeros(4, 2, device=device),
+        positions=torch.arange(4, device=device),
+        predict=predict,
+        pairing=layout,
+        fixed_sampling=True,
+    )
+    assert torch.equal(actual, expected)
+    actual_rng = torch.cuda.get_rng_state() if device == "cuda" else torch.get_rng_state()
+    assert torch.equal(actual_rng, expected_rng)
+    assert torch.equal(embedder.inputs[0], expected[:, :1])
+    assert torch.equal(embedder.inputs[1], expected[:, 1:2])
+
+
+@pytest.mark.parametrize("custom_first", [False, True])
+def test_preprocess_keeps_entire_mixed_batch_on_sampling_fallback(custom_first: bool) -> None:
+    """A later default request cannot overwrite an earlier fallback decision."""
+    model = _input_model()
+    model.use_fixed_acoustic_sampling = True
+    model._preprocess_decode = lambda *args: "decoded"
+    inputs = torch.zeros(2, dtype=torch.long)
+    settings = [{"temperature": 0.0}, {}] if custom_first else [{}, {"temperature": 0.0}]
+    for row, info in enumerate(settings):
+        model.preprocess(inputs[row : row + 1], None, _omni_is_prefill=False, **info)
+    assert model.use_fixed_acoustic_sampling is False
+
+
 def _input_model() -> EasyMagpieTTSForConditionalGeneration:
     """Construct a minimal input model for CFG embedding and feedback tests.
 

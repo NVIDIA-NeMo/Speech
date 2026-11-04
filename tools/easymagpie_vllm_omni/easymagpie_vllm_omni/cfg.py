@@ -41,6 +41,11 @@ class AcousticSamplingSettings:
     temperature: float = 0.7
     top_k: int = 80
 
+    @property
+    def uses_fixed_sampling(self) -> bool:
+        """Whether shared legacy sampling and guidance constants apply."""
+        return self.temperature == 0.7 and self.top_k == 80 and (not self.use_cfg or self.cfg_scale == 2.5)
+
     @classmethod
     def from_info(cls, info: Mapping[str, Any]) -> AcousticSamplingSettings:
         """Validate request metadata and construct acoustic sampling settings.

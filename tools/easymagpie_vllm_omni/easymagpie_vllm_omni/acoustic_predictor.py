@@ -166,6 +166,7 @@ class EasyMagpieAcousticCodesPredictor(nn.Module):
         self.num_output_tokens = arch.codebook_size + 1
         self.temperature = 0.7
         self.top_k = _DEFAULT_TOP_K
+        self._sample_top_k = min(_DEFAULT_TOP_K, self.num_output_tokens)
 
         predictor_config = vllm_config.model_config.hf_config
         self.blocks = nn.ModuleList(
@@ -188,6 +189,10 @@ class EasyMagpieAcousticCodesPredictor(nn.Module):
             1,
             self.num_output_tokens,
             dtype=torch.float32,
+        )
+        # Original frame layout: one draw for every codebook before the loop.
+        self._frame_gumbel_buf = torch.zeros(
+            max_num_tokens, self.num_codebooks, self._sample_top_k, dtype=torch.float32
         )
 
     def embed_audio_frame(self, codes: torch.Tensor) -> torch.Tensor:
@@ -223,12 +228,16 @@ class EasyMagpieAcousticCodesPredictor(nn.Module):
         cfg_scale: torch.Tensor | None = None,
         temperature: torch.Tensor | float | None = None,
         top_k: torch.Tensor | int | None = None,
+        fixed_sampling: bool = False,
     ) -> torch.Tensor:
         """Advance physical caches, guide logits, and share logical sampled feedback.
 
         ``pairing`` is an eager-only token-row map supplied after runner reordering.
         ``graph_pairing`` instead supplies fixed-shape runtime tensor mappings.
         Sampling settings index physical token rows; conditional rows own settings.
+        The runner selects ``fixed_sampling`` only for batches validated on the host
+        as temperature 0.7 / top-k 80 / CFG scale 2.5. Other batches use runtime
+        settings outside full graph replay.
         """
         num_tokens = hidden_states.shape[0]
         if predict is None:
@@ -238,8 +247,10 @@ class EasyMagpieAcousticCodesPredictor(nn.Module):
 
         temperature = self.temperature if temperature is None else temperature
         top_k = self.top_k if top_k is None else top_k
-        owners = torch.arange(num_tokens, device=hidden_states.device)
-        partners = owners.clone()
+        # Identity row gathers/scatters still launch CUDA kernels during graph replay.
+        # Keep unpaired sampling and feedback in physical-row order to avoid this
+        # repeated overhead in the per-codebook decoding loop.
+        unpaired = pairing is None and graph_pairing is None
         if graph_pairing is not None:
             owners = graph_pairing.owners[:num_tokens]
             partners = graph_pairing.partners[:num_tokens]
@@ -248,6 +259,9 @@ class EasyMagpieAcousticCodesPredictor(nn.Module):
             # Private and padding draws never feed valid acoustic histories.
             rows = torch.arange(num_tokens, device=hidden_states.device)
         elif pairing is not None:
+            # Allocate row mappings only for CFG; unpaired decoding needs no index buffers.
+            owners = torch.arange(num_tokens, device=hidden_states.device)
+            partners = owners.clone()
             for conditional, unconditional in zip(pairing.conditional_rows, pairing.unconditional_rows):
                 c = torch.tensor(conditional, device=hidden_states.device, dtype=torch.long)
                 u = torch.tensor(unconditional, device=hidden_states.device, dtype=torch.long)
@@ -257,9 +271,6 @@ class EasyMagpieAcousticCodesPredictor(nn.Module):
                 partners[c] = u
             # CFG is eager: sample only logical audio rows, including in mixed prefill.
             rows = torch.nonzero(predict & (owners == torch.arange(num_tokens, device=owners.device))).flatten()
-        else:
-            # Fixed shapes preserve the existing non-CFG CUDA graph path.
-            rows = owners
 
         def select_setting(value: float | int | torch.Tensor) -> float | int | torch.Tensor:
             """Select and broadcast sampling settings for the active physical rows.
@@ -270,12 +281,23 @@ class EasyMagpieAcousticCodesPredictor(nn.Module):
             Returns:
                 Scalar settings unchanged, or settings selected and broadcast for active rows.
             """
-            return value[rows].reshape(-1, 1, 1) if isinstance(value, torch.Tensor) else value
+            if isinstance(value, torch.Tensor):
+                # Unpaired settings already follow physical-row order; reshape without a gather.
+                return (value if unpaired else value[rows]).reshape(-1, 1, 1)
+            return value
 
-        row_temperature = select_setting(temperature)
-        row_top_k = select_setting(top_k)
+        row_temperature = 0.7 if fixed_sampling else select_setting(temperature)
+        row_top_k = _DEFAULT_TOP_K if fixed_sampling else select_setting(top_k)
         if pairing is not None and isinstance(row_temperature, torch.Tensor) and (row_temperature <= 0).all():
             row_temperature = 0.0  # Eager CFG greedy inference consumes no random draws.
+
+        frame_noise = None
+        if fixed_sampling:
+            # Use the physical batch size directly without constructing identity row indices.
+            # Keep draws for masked rows to preserve RNG consumption and fixed graph shapes.
+            frame_noise = self._frame_gumbel_buf[: num_tokens if unpaired else rows.shape[0]]
+            frame_noise.uniform_(1e-20, 1.0 - 1e-20)
+            frame_noise.log_().neg_().log_().neg_()
 
         codes = torch.full(
             (num_tokens, self.num_codebooks),
@@ -291,28 +313,49 @@ class EasyMagpieAcousticCodesPredictor(nn.Module):
                 hidden_states = hidden_states + self.audio_embedder.embed_codebooks(previous_codes, previous_indices)
             hidden_states = block(hidden_states, positions)
             logits = block.compute_logits(hidden_states)
-            logical_logits = logits[rows]
-            if pairing is not None or graph_pairing is not None:
-                scales = cfg_scale[rows].reshape(-1, 1, 1)
+            # Reuse unpaired logits directly; an identity gather would copy them in every block.
+            logical_logits = logits if unpaired else logits[rows]
+            if not unpaired:
+                # Partner lookup and guidance arithmetic are needed only for CFG rows.
+                scales = 2.5 if fixed_sampling else cfg_scale[rows].reshape(-1, 1, 1)
                 # NeMo multiplies by Python scalars: half/BF16 products use FP32
                 # arithmetic then round individually before the branch sum.
-                conditional = (scales * logical_logits.float()).to(logits.dtype)
-                unconditional = ((1.0 - scales) * logits[partners[rows]].float()).to(logits.dtype)
+                if fixed_sampling:
+                    conditional = scales * logical_logits
+                    unconditional = (1.0 - scales) * logits[partners[rows]]
+                else:
+                    conditional = (scales * logical_logits.float()).to(logits.dtype)
+                    unconditional = ((1.0 - scales) * logits[partners[rows]].float()).to(logits.dtype)
                 guided = conditional + unconditional
-                if graph_pairing is not None:
+                if graph_pairing is not None or fixed_sampling:
                     paired = partners[rows] != rows
                     logical_logits = torch.where(paired[:, None, None], guided, logical_logits)
                 else:
                     logical_logits = guided
             logits = logical_logits
             logits = torch.nan_to_num(logits, nan=0.0, posinf=100.0, neginf=-100.0).clamp(-100.0, 100.0)
-            sampled = self._sample_codes(logits, temperature=row_temperature, top_k=row_top_k)
+            if fixed_sampling:
+                values, indices = torch.topk(logits, min(_DEFAULT_TOP_K, self.num_output_tokens), dim=-1)
+                noise = frame_noise[:, code_offset : code_offset + block.num_codes]
+                picked = (values / 0.7 + noise).argmax(dim=-1, keepdim=True)
+                sampled = indices.gather(-1, picked).squeeze(-1)
+            else:
+                sampled = self._sample_codes(logits, temperature=row_temperature, top_k=row_top_k)
             sampled = torch.where(sampled == self.arch.codebook_size, self.arch.audio_eos_id, sampled)
-            previous_codes = torch.full(
-                (num_tokens, block.num_codes), self.arch.mask_token_id, dtype=torch.long, device=hidden_states.device
-            )
-            previous_codes[rows] = torch.where(predict[rows, None], sampled, self.arch.mask_token_id)
-            previous_codes = previous_codes[owners]
+            if unpaired:
+                # Physical rows already own their samples and next-block feedback.
+                # Apply masks directly, avoiding buffer fill, scatter and owner gather per block.
+                previous_codes = torch.where(predict[:, None], sampled, self.arch.mask_token_id)
+            else:
+                # CFG still needs remapping so paired branches receive their owner's feedback.
+                previous_codes = torch.full(
+                    (num_tokens, block.num_codes),
+                    self.arch.mask_token_id,
+                    dtype=torch.long,
+                    device=hidden_states.device,
+                )
+                previous_codes[rows] = torch.where(predict[rows, None], sampled, self.arch.mask_token_id)
+                previous_codes = previous_codes[owners]
             codes[:, code_offset : code_offset + block.num_codes] = previous_codes
             previous_indices = block.codebook_indices
             code_offset += block.num_codes

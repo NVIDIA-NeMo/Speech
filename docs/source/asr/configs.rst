@@ -831,6 +831,37 @@ Asking for ``use_triton: true`` on a configuration the kernels do not cover logs
 Asking for it without Triton installed raises on the first forward pass that would have used the kernels.
 
 
+Per-Stage Time Strides in Convolutional Subsampling
+---------------------------------------------------
+
+``ConvSubsampling`` with ``subsampling: striding`` halves time and frequency in every 3x3 stage,
+so its ``subsampling_factor`` is a power of two.
+``conv_strides`` gives each stage its own time stride instead, with the product of the strides as the factor,
+and the stages then keep the frequency axis;
+``freq_pools`` adds an optional max-pool over the frequency axis after each stage (1 for none).
+``conv_channels`` may name the channels per stage, and ``out_bias`` controls the bias of the output projection.
+A factor of 6 reads:
+
+.. code-block:: python
+
+   from nemo.collections.asr.parts.submodules.subsampling import ConvSubsampling
+
+   subsampling = ConvSubsampling(
+       subsampling="striding",
+       subsampling_factor=6,
+       feat_in=80,
+       feat_out=512,
+       conv_channels=[32, 64, 64],
+       conv_strides=[1, 3, 2],
+       freq_pools=[2, 1, 1],
+       out_bias=False,
+   )
+
+The output lengths follow the stages one by one,
+batch chunking (``subsampling_conv_chunking_factor``) applies as for the stride-2 form,
+and the module exports to ONNX.
+
+
 .. _Hybrid-Transducer-CTC-Prompt_model__Config:
 
 Hybrid-Transducer-CTC with Prompt Conditioning Configuration
@@ -863,7 +894,7 @@ The model introduces several prompt-specific configuration parameters in the ``m
 
 **Dataset Configuration:**
 
-The model requires training data with prompt annotations when using Lhotse datasets:
+The model requires training data with language annotations when using Lhotse datasets:
 
 .. code-block:: yaml
 
@@ -871,20 +902,35 @@ The model requires training data with prompt annotations when using Lhotse datas
     train_ds:
       use_lhotse: true
       initialize_prompt_feature: true
-      prompt_field: "target_lang"     # Field name for prompt extraction
+      lang_field: target_lang         # Manifest key holding the utterance language
       prompt_dictionary: ${model.model_defaults.prompt_dictionary}
       num_prompts: ${model.model_defaults.num_prompts}
-      
+      default_prompt_mode: unified    # langID | auto | unified
+      unified_auto_ratio: 0.5         # Probability of the "auto" prompt in unified mode
+
     validation_ds:
       use_lhotse: true
       initialize_prompt_feature: true
-      prompt_field: "target_lang"
+      lang_field: target_lang
       prompt_dictionary: ${model.model_defaults.prompt_dictionary}
       num_prompts: ${model.model_defaults.num_prompts}
+      default_prompt_mode: langID
+
+The prompt index for each utterance is chosen by its prompt mode:
+
+- ``langID``: the utterance's language.
+- ``auto``: the language-agnostic ``auto`` prompt.
+- ``unified``: ``auto`` with probability ``unified_auto_ratio``, otherwise the utterance's language.
+  This is the default; it trains one model for both prompted and language-agnostic decoding.
+
+A Lhotse input config can set the mode per dataset with ``tags: {prompt_mode: langID}``; otherwise
+``default_prompt_mode`` applies. Transcription always uses ``langID``.
 
 **Manifest Format:**
 
-Training manifests should include prompt information:
+The language is read from the manifest key named by ``lang_field`` (``lang`` by default; the example
+configs use ``target_lang``). It must be a key of ``prompt_dictionary``, or a bare code such as ``en``
+that matches exactly one locale key; unsupported languages raise an error.
 
 .. code-block:: json
 
@@ -941,7 +987,7 @@ variant:
         'fr-FR': 2,
         'es-ES': 3,
         # ... additional language codes ...
-        'auto': 127,                   # Per-sample dynamic language (read from manifest)
+        'auto': 127,                   # Language-agnostic prompt
       }
 
 **Dataset Configuration:**
@@ -955,16 +1001,21 @@ The model uses the same index-based Lhotse dataset
     train_ds:
       use_lhotse: true
       initialize_prompt_feature: true
-      prompt_field: "target_lang"     # Field name for per-sample prompt extraction
+      lang_field: target_lang
       prompt_dictionary: ${model.model_defaults.prompt_dictionary}
       num_prompts: ${model.model_defaults.num_prompts}
+      default_prompt_mode: unified    # langID | auto | unified
+      unified_auto_ratio: 0.5
 
     validation_ds:
       use_lhotse: true
       initialize_prompt_feature: true
-      prompt_field: "target_lang"
+      lang_field: target_lang
       prompt_dictionary: ${model.model_defaults.prompt_dictionary}
       num_prompts: ${model.model_defaults.num_prompts}
+      default_prompt_mode: langID
+
+Prompt modes behave as described for the hybrid model.
 
 **Manifest Format:**
 

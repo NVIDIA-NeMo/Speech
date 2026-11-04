@@ -18,15 +18,20 @@ from nemo.collections.speechlm2.parts.ctc_timestamp_utils import (
 
 
 @pytest.mark.unit
-def test_lightweight_artifact_round_trip_contains_decoder_and_tokenizer(tmp_path):
+@pytest.mark.parametrize("upsampling_factor", [1, 2])
+@pytest.mark.parametrize("use_transformer", [False, True])
+def test_lightweight_artifact_round_trip_contains_decoder_and_tokenizer(tmp_path, upsampling_factor, use_transformer):
     tokenizer_path = Path(__file__).resolve().parents[2] / ".data/asr/tokenizers/an4_spe_128/tokenizer.model"
     tokenizer = SentencePieceTokenizer(str(tokenizer_path))
     vocabulary = tokenizer.ids_to_tokens(list(range(tokenizer.vocab_size)))
     config = {
-        "feat_in": 8,
+        "feat_in": 32,
         "num_classes": tokenizer.vocab_size,
         "vocabulary": vocabulary,
-        "use_transformer": False,
+        "use_transformer": use_transformer,
+        "upsampling_factor": upsampling_factor,
+        "sync_max_audio_length": False,
+        "n_heads": 2,
     }
     decoder = TransformerCTCDecoder(**config)
     artifact_path = save_ctc_timestamp_artifact(tmp_path / "timestamp.pt", decoder, tokenizer, config)
@@ -46,6 +51,16 @@ def test_lightweight_artifact_round_trip_contains_decoder_and_tokenizer(tmp_path
     assert restored.decoder_config == config
     for name, value in decoder.state_dict().items():
         assert torch.equal(restored.decoder.state_dict()[name], value)
+    states = torch.randn(2, 32, 5)
+    lengths = torch.tensor([5, 3])
+    assert torch.equal(restored.decoder.output_lengths(lengths), lengths * upsampling_factor)
+    changed = states.clone()
+    changed[1, :, 3:] = 100
+    with torch.no_grad():
+        expected = restored.decoder(states, lengths)
+        actual = restored.decoder(changed, lengths)
+    assert expected.shape == (2, 5 * upsampling_factor, tokenizer.vocab_size + 1)
+    torch.testing.assert_close(expected[1, : 3 * upsampling_factor], actual[1, : 3 * upsampling_factor])
 
 
 @pytest.mark.unit

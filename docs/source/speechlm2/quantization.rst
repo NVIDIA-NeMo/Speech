@@ -90,7 +90,7 @@ Requirements
 * For calibration (step 4) and serving: a NeMo build with the SpeechLM plugin's
   quantized serving
   (`NVIDIA-NeMo/Speech#16341 <https://github.com/NVIDIA-NeMo/Speech/pull/16341>`__),
-  installed with its ``vllm`` extra (vLLM 0.28.0):
+  installed with its ``vllm`` extra (vLLM 0.32.0):
   ``pip install -e ".[asr,vllm]"``. See :doc:`vllm_dflash` for the extras that
   must not be combined with it.
 * Serving the CTC timestamp head needs the plugin's CTC timestamp support
@@ -186,8 +186,15 @@ Serving
    declares no KV cache scheme, so ``auto`` would keep the KV cache in BF16. FP8
    checkpoints carry calibrated KV cache scales and serve with ``auto``.
 
-* For word timestamps from the CTC timestamp head, add
-  ``--middleware nemo.collections.speechlm2.vllm.salm.ctc_serving.ctc_timestamp_middleware``.
+* For word timestamps from the CTC timestamp head, add:
+
+  .. code-block:: bash
+
+     --middleware nemo.collections.speechlm2.vllm.salm.ctc_serving.ctc_timestamp_middleware \
+     --trust-request-mm-kwargs
+
+  Requests opt in through ``mm_processor_kwargs``, which vLLM rejects without
+  ``--trust-request-mm-kwargs``; set it only when clients are trusted.
 * On SM12x GPUs with cuDNN older than 9.23.1, set
   ``VLLM_DISABLED_KERNELS=FlashInferFP8ScaledMMLinearKernel``. The FlashInfer
   FP8 GEMM can crash partway through a run there.
@@ -246,5 +253,6 @@ Limitations
   Another encoder needs its own target list in ``calibrate_activations.py`` and
   ``quantize_encoder_mtp_fp8.py``.
 * The plugin's FP8 audio encoder supports only static per-tensor scales.
-* ``calibrate_activations.py`` hooks into vLLM 0.28 internals (the worker's
-  draft model and its MoE runner); other vLLM versions may need changes to it.
+* ``calibrate_activations.py`` hooks into vLLM 0.32 internals (the V1 model
+  runner's draft model and its MoE runner, so it selects the V1 runner); other
+  vLLM versions may need changes to it.

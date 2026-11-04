@@ -394,5 +394,5 @@ For more information, see additional sections in the SpeechLM2 docs:
    configs
    training_and_scaling
    vllm_serving
-   vllm_dflash
+   speculative_decoding
    quantization

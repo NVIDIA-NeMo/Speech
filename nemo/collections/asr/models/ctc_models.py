@@ -557,6 +557,8 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
             log_probs = self.decoder(encoder_output=encoded, encoded_lengths=encoded_len)
         else:
             log_probs = self.decoder(encoder_output=encoded)
+        if hasattr(self.decoder, "output_lengths"):
+            encoded_len = self.decoder.output_lengths(encoded_len)
         greedy_predictions = log_probs.argmax(dim=-1, keepdim=False)
 
         return (
@@ -758,7 +760,9 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
 
         if trcfg.timestamps:
             hypotheses = process_timestamp_outputs(
-                hypotheses, self.encoder.subsampling_factor, self.cfg['preprocessor']['window_stride']
+                hypotheses,
+                self.encoder.subsampling_factor,
+                self.cfg['preprocessor']['window_stride'] / getattr(self.decoder, 'upsampling_factor', 1),
             )
 
         return hypotheses

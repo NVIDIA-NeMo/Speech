@@ -732,6 +732,17 @@ To enable bucketing, set ``batch_size: null`` and use the following options:
   batching. Use this option only when the dataset and model preserve a
   padding-free representation through the expensive model path.
 
+* ``batch_output_tokens`` (packed sequence sampling only) is a second cap of a packed batch
+  on the total number of output tokens, for encoder-decoder models whose decoder activations and loss grow with the targets:
+  the ``answer_ids`` of cuts tokenized with a ``prompt_format``,
+  the supervision ``tokens`` of cuts tokenized without one,
+  and the answer length of prompt-formatted text examples.
+  The best fit stays exact for ``batch_tokens``;
+  when the selected candidates exceed the output cap, the ones with the most output tokens are dropped
+  and the remaining candidates are backfilled under both limits.
+  It needs tokenized examples, so pass a tokenizer with ``pretokenize: true`` (with or without ``prompt_format``);
+  an untokenized example raises, and so does a single example above the cap, which ``max_tokens`` filters beforehand.
+
 * (non-oomptimizer-only) ``quadratic_factor`` is a quadratic penalty to equalize the GPU memory usage between buckets of short and long sequence lengths for models with quadratic memory usage. It is only a heuristic and may not be as efficient as using OOMptimizer.
 
 **Joint dataloading of text/audio/multimodal data.** The key strength of this approach is that we can easily combine audio datasets and text datasets,

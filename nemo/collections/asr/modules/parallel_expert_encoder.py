@@ -44,6 +44,7 @@ from torch import nn
 from tqdm import tqdm
 
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
+from nemo.collections.asr.modules.online_encoder_graphs import OnlineGraphs
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 from nemo.collections.asr.parts.packed_sequence import (
     PackedEncoderActivations,
@@ -639,6 +640,11 @@ class ParallelExpertEncoder(nn.Module):
 
     supports_external_speaker_targets = True
     supports_sequence_packed_output = True
+    # Online inference encodes up to this many ASR windows (rows) per forward.
+    _ASR_WINDOW_ROWS = 128
+    # CUDA graphs that replay the ASR windows and streaming Sortformer steps of online inference; ``None`` runs
+    # them eagerly.
+    online_graphs: Optional[OnlineGraphs] = None
 
     def __init__(
         self,
@@ -1018,19 +1024,23 @@ class ParallelExpertEncoder(nn.Module):
         )
         return pre_encoded.with_data(encoded_chunks.data)
 
-    def _asr_output_frame_boundary(self, input_frame_boundary: int) -> int:
+    def _asr_output_frame_boundary(self, input_frame_boundary: Union[int, torch.Tensor]) -> Union[int, torch.Tensor]:
         """
         Map an input-frame boundary to the selected ASR encoder's output grid.
         Transformer encoders use ceiling division by the subsampling factor; FastConformer rounds.
+        A tensor boundary stays on its device.
 
         Args:
-            input_frame_boundary (int): Boundary position in input feature frames.
+            input_frame_boundary (Union[int, torch.Tensor]): Boundary position in input feature frames.
 
         Returns:
-            int: Corresponding boundary in encoder output frames.
+            Union[int, torch.Tensor]: Corresponding boundary in encoder output frames.
         """
         if getattr(self, "asr_encoder_type", "fastconformer") == "transformer":
             return (input_frame_boundary + self.subsampling_factor - 1) // self.subsampling_factor
+        if isinstance(input_frame_boundary, torch.Tensor):
+            # torch.round, like Python's round, rounds halves to even.
+            return torch.round(input_frame_boundary.double() / self.subsampling_factor).to(input_frame_boundary.dtype)
         return round(input_frame_boundary / self.subsampling_factor)
 
     def freeze(self) -> None:
@@ -1895,7 +1905,10 @@ class ParallelExpertEncoder(nn.Module):
                 ``(B, D, T_out)``, per-row output lengths, and timestamp inputs or ``None``.
         """
         self._check_spk_targets(spk_targets, audio_signal.shape[0])
-        total_feat_len = min(audio_signal.shape[-1], int(length.max().item()))
+        # Windows cover the padded width: the window count must be known on the host without reading ``length``
+        # (no device sync, CUDA-graph capturable). Frames past a row's length are masked like any shorter row's
+        # padding, so extra padding costs compute but does not change the outputs.
+        total_feat_len = audio_signal.shape[-1]
         num_chunks = max(1, math.ceil(total_feat_len / self.chunk_feat_len))
 
         if self.asr_normalize_type:
@@ -1931,42 +1944,35 @@ class ParallelExpertEncoder(nn.Module):
                 dtype=stream_dtype,
             )
 
-        asr_chunks: List[torch.Tensor] = []
+        windows = []
+        for chunk_index in range(num_chunks):
+            start = chunk_index * self.chunk_feat_len
+            end = min(start + self.chunk_feat_len, total_feat_len)
+            context_start = max(start - self.left_ctx_feat_len, 0)
+            context_end = min(end + self.right_ctx_feat_len, total_feat_len)
+            windows.append((start, end, context_start, context_end))
+        # ASR windows do not depend on each other, so all of them are encoded together; only the Sortformer
+        # below carries state from window to window.
+        asr_chunks = self._encode_asr_windows(asr_signal, asr_length, windows)
         diar_chunks: List[torch.Tensor] = []
         # The window loop uses the longest row to keep every batch tensor
         # rectangular. Report each row's actual output length independently;
         # adding the longest row's scalar core length to every row would expose
         # padded frames as valid for shorter audios.
         valid_feat_lengths = length.clamp(max=audio_signal.shape[-1])
-        encoded_len = torch.as_tensor(
-            [self._asr_output_frame_boundary(int(row_len)) for row_len in valid_feat_lengths.detach().cpu()],
-            dtype=asr_length.dtype,
-            device=asr_length.device,
-        )
+        encoded_len = self._asr_output_frame_boundary(valid_feat_lengths.detach()).to(dtype=asr_length.dtype)
         for chunk_index in tqdm(
             range(num_chunks),
             total=num_chunks,
             desc="PEE online inference",
             disable=getattr(self, "_suppress_online_pbar", False),
         ):
-            start = chunk_index * self.chunk_feat_len
-            end = min(start + self.chunk_feat_len, total_feat_len)
-            context_start = max(start - self.left_ctx_feat_len, 0)
-            context_end = min(end + self.right_ctx_feat_len, total_feat_len)
+            start, end, context_start, context_end = windows[chunk_index]
             left_offset = start - context_start
             right_offset = context_end - end
-
-            asr_chunk = asr_signal[:, :, context_start:context_end]
-            chunk_length = (asr_length - context_start).clamp(min=0, max=context_end - context_start)
-            with torch.set_grad_enabled(torch.is_grad_enabled() and not self.freeze_asr):
-                encoded_context, _ = self.asr_encoder(audio_signal=asr_chunk, length=chunk_length)
-            left_drop = left_offset // self.subsampling_factor
-            core_len = self._asr_output_frame_boundary(end) - self._asr_output_frame_boundary(start)
-            core_len = max(0, min(core_len, encoded_context.shape[-1] - left_drop))
-            asr_chunks.append(encoded_context[:, :, left_drop : left_drop + core_len])
+            core_len = asr_chunks[chunk_index].shape[-1]
 
             if run_streaming_diar:
-                previous_len = total_preds.shape[1]
                 # Sortformer's streaming boundary is time-major for every
                 # supported pre-encoder. Its internal adapter performs any
                 # FeatureStacking-specific channel-first conversion.
@@ -1977,16 +1983,18 @@ class ParallelExpertEncoder(nn.Module):
                     _disable_dist_feature_sync(),
                     _default_dtype(stream_dtype),
                 ):
-                    streaming_state, total_preds = self.diarization_model.forward_streaming_step(
-                        processed_signal=diar_chunk,
-                        processed_signal_length=diar_chunk_length,
-                        streaming_state=streaming_state,
-                        total_preds=total_preds,
+                    streaming_state, chunk_preds = self._streaming_diar_step(
+                        diar_chunk,
+                        diar_chunk_length,
+                        streaming_state,
+                        empty_preds=total_preds[:, :0],
                         left_offset=left_offset,
                         right_offset=right_offset,
                         return_native_resolution=return_ctc_timestamp_inputs,
+                        # The state after the last window is discarded.
+                        update_state=chunk_index < num_chunks - 1,
                     )
-                chunk_preds = total_preds[:, previous_len:]
+                total_preds = torch.cat([total_preds, chunk_preds], dim=1)
                 if return_ctc_timestamp_inputs:
                     chunk_preds = self.diarization_model.sortformer_modules.downsample_preds(
                         chunk_preds,
@@ -2031,6 +2039,116 @@ class ParallelExpertEncoder(nn.Module):
         )
         return output, encoded_len, timestamp_inputs
 
+    def _encode_asr_windows(
+        self, asr_signal: torch.Tensor, asr_length: torch.Tensor, windows: List[tuple]
+    ) -> List[torch.Tensor]:
+        """
+        Encode context-extended ASR windows, many per forward, and return each window's core frames.
+        Windows of equal width share a forward (at most ``_ASR_WINDOW_ROWS`` rows), so no window is padded and each
+        sees exactly the input it would see alone. Only the first and last windows differ in width.
+
+        Args:
+            asr_signal (torch.Tensor): Normalized mel features shaped ``(B, D, T)``.
+            asr_length (torch.Tensor): Valid frame counts shaped ``(B,)``.
+            windows (List[tuple]): ``(start, end, context_start, context_end)`` input frames per window.
+
+        Returns:
+            List[torch.Tensor]: Per window, the encoded core frames shaped ``(B, D_out, T_core)``.
+        """
+        batch_size = asr_signal.shape[0]
+        by_width = {}
+        for index, (_, _, context_start, context_end) in enumerate(windows):
+            by_width.setdefault(context_end - context_start, []).append(index)
+        group_size = max(1, self._ASR_WINDOW_ROWS // batch_size)
+        cores: List[Optional[torch.Tensor]] = [None] * len(windows)
+        for width, indices in by_width.items():
+            for first in range(0, len(indices), group_size):
+                group = indices[first : first + group_size]
+                context_starts = [windows[i][2] for i in group]
+                rows = torch.cat([asr_signal[:, :, cs : cs + width] for cs in context_starts])
+                lengths = torch.cat([(asr_length - cs).clamp(min=0, max=width) for cs in context_starts])
+                with torch.set_grad_enabled(torch.is_grad_enabled() and not self.freeze_asr):
+                    encoded = self._asr_window_forward(rows, lengths)
+                for k, i in enumerate(group):
+                    start, end, context_start, _ = windows[i]
+                    left_drop = (start - context_start) // self.subsampling_factor
+                    core_len = self._asr_output_frame_boundary(end) - self._asr_output_frame_boundary(start)
+                    core_len = max(0, min(core_len, encoded.shape[-1] - left_drop))
+                    cores[i] = encoded[k * batch_size : (k + 1) * batch_size, :, left_drop : left_drop + core_len]
+        return cores
+
+    def _asr_window_forward(self, rows: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+        """
+        Encode a batch of equal-width ASR windows; with ``online_graphs`` set, inference replays CUDA graphs.
+
+        Args:
+            rows (torch.Tensor): Window mel features shaped ``(N, D, T)``.
+            lengths (torch.Tensor): Valid window frame counts shaped ``(N,)``.
+
+        Returns:
+            torch.Tensor: Encoded windows shaped ``(N, D_out, T_out)``.
+        """
+        if not self._online_graphable(rows):
+            return self.asr_encoder(audio_signal=rows, length=lengths)[0]
+        return self.online_graphs.asr_windows(self.asr_encoder, rows, lengths)
+
+    def _online_graphable(self, tensor: torch.Tensor) -> bool:
+        """Whether online inference on ``tensor`` may replay CUDA graphs (graphs enabled, inference on CUDA)."""
+        return (
+            self.online_graphs is not None
+            and self.online_graphs.enabled
+            and tensor.is_cuda
+            and not torch.is_grad_enabled()
+            # A graph fixes kernel and dtype choices: autocast and an enclosing capture run eagerly.
+            and not torch.is_autocast_enabled("cuda")
+            and not torch.cuda.is_current_stream_capturing()
+        )
+
+    def _streaming_diar_step(
+        self,
+        chunk: torch.Tensor,
+        chunk_length: torch.Tensor,
+        streaming_state: Any,
+        empty_preds: torch.Tensor,
+        **step_kwargs,
+    ) -> tuple[Any, torch.Tensor]:
+        """
+        Run one streaming Sortformer step and return the new state and this window's predictions.
+        With ``online_graphs`` set, steps of inference with synchronous streaming replay CUDA graphs, keyed by
+        their input shapes; any other step runs eagerly.
+
+        Args:
+            chunk (torch.Tensor): Window mel features, time-major, shaped ``(B, T, D)``.
+            chunk_length (torch.Tensor): Valid window frame counts shaped ``(B,)``.
+            streaming_state (Any): Sortformer streaming state from the previous step.
+            empty_preds (torch.Tensor): Empty prediction buffer passed to the step.
+            **step_kwargs: Extra keyword arguments of ``forward_streaming_step``.
+
+        Returns:
+            tuple[Any, torch.Tensor]: Updated streaming state and this window's speaker predictions.
+        """
+
+        def step(state, signal, signal_length):
+            return self.diarization_model.forward_streaming_step(
+                processed_signal=signal,
+                processed_signal_length=signal_length,
+                streaming_state=state,
+                # Sized from the window, whose rows a graph may have padded.
+                total_preds=empty_preds.new_empty((signal.shape[0], 0, empty_preds.shape[-1])),
+                **step_kwargs,
+            )
+
+        graphable = (
+            self._online_graphable(chunk)
+            and not self.diarization_model.async_streaming
+            and streaming_state.spk_perm is None
+        )
+        if not graphable:
+            return step(streaming_state, chunk, chunk_length)
+        return self.online_graphs.diar_step(
+            step, streaming_state, chunk, chunk_length, tuple(sorted(step_kwargs.items()))
+        )
+
     def _init_streaming_diar(self, audio_signal: torch.Tensor, length: torch.Tensor, batch_size: int):
         """
         Initialize Sortformer state for windowed inference.
@@ -2067,7 +2185,9 @@ class ParallelExpertEncoder(nn.Module):
             # Refresh the nested ModelPT/Lightning device tracker. Sortformer's
             # streaming path uses ``self.device`` when assembling chunk state,
             # which can otherwise remain stale after moving the parent encoder.
-            self.diarization_model.to(device)
+            # .to() walks every submodule; only call it when the tracker is actually stale.
+            if getattr(self.diarization_model, "device", device) != device:
+                self.diarization_model.to(device)
         diar_signal = audio_signal.to(device=device, dtype=stream_dtype)
         diar_length = length.to(device=device)
         with _disable_dist_feature_sync(), _default_dtype(stream_dtype):

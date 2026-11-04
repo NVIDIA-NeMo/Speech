@@ -186,6 +186,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         audio_codes,
         audio_codes_lens,
         agent_mask_target=None,
+        acoustic_loss_mask=None,
     ):
         """Compute the average cross-entropy loss across audio codebooks.
 
@@ -200,6 +201,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             agent_mask_target: Optional frame-level mask with shape ``(B, T)``.
                 When provided, loss is computed only at positions where the mask
                 is nonzero.
+            acoustic_loss_mask: Optional boolean mask with shape ``(B,)``.
+                Excludes disabled examples from both the numerator and denominator.
 
         Returns:
             A tuple containing:
@@ -209,6 +212,10 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         """
         loss_mask = get_mask_from_lengths(audio_codes_lens)
         loss_mask = loss_mask.unsqueeze(1).repeat(1, audio_codes.size(1), 1)
+        if acoustic_loss_mask is not None:
+            if acoustic_loss_mask.shape != (audio_codes.size(0),) or acoustic_loss_mask.dtype != torch.bool:
+                raise ValueError("acoustic_loss_mask must be boolean with shape (batch_size,)")
+            loss_mask = loss_mask & acoustic_loss_mask.to(loss_mask.device)[:, None, None]
 
         if agent_mask_target is not None:
             agent_mask_target = agent_mask_target.to(device=audio_codes.device, dtype=loss_mask.dtype)
@@ -898,6 +905,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         task: Optional[List[str]] = None,
         agent_mask: Optional[torch.Tensor] = None,
         user_audio_embedded: Optional[torch.Tensor] = None,
+        acoustic_loss_mask: Optional[torch.Tensor] = None,
     ) -> ProcessBatchOutput:
         """
         Simplified batch processing using channel-based embedding architecture.
@@ -935,10 +943,16 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             agent_mask: Optional frame-level mask identifying agent speech.
             user_audio_embedded: Optional timeline-aligned user-audio conditioning
                 embeddings with shape ``(B, T, E)``.
+            acoustic_loss_mask: Optional boolean mask with shape ``(B,)`` that
+                enables acoustic supervision independently for each example.
 
         Returns:
             ProcessBatchOutput: Contains loss values and model predictions
         """
+        if acoustic_loss_mask is not None and not acoustic_loss_mask.all():
+            if self.phoneme_tokenizer is None or phoneme_tokens is None or phoneme_tokens_lens is None:
+                raise ValueError("Disabling acoustic loss requires phoneme targets")
+
         # Select training mode
         selected_training_mode = training_mode
         if selected_training_mode is None:
@@ -1224,6 +1238,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             audio_codes_target,
             audio_codes_lens_target,
             agent_mask_target=agent_mask if self.cfg.get("mask_user_on_loss", False) else None,
+            acoustic_loss_mask=acoustic_loss_mask,
         )
         loss = self.parallel_codebook_loss_scale * codebook_loss
 
@@ -1246,6 +1261,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 audio_codes_target,
                 audio_codes_lens_target,
                 agent_mask_target=agent_mask if self.cfg.get("mask_user_on_loss", False) else None,
+                acoustic_loss_mask=acoustic_loss_mask,
             )
 
             loss = loss + self.local_transformer_loss_scale * local_transformer_loss
@@ -1525,6 +1541,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             task=batch["task"] if self.cfg.get("use_multiturn_dataset", False) else None,
             agent_mask=batch["agent_mask"] if self.cfg.get("use_multiturn_dataset", False) else None,
             user_audio_embedded=user_audio_embedded,
+            acoustic_loss_mask=batch.get("acoustic_loss_mask"),
         )
         loss = batch_output.loss
         codebook_loss = batch_output.codebook_loss
@@ -1624,6 +1641,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             mode="val",
             task=batch["task"] if "task" in batch else None,
             agent_mask=batch["agent_mask"] if "agent_mask" in batch else None,
+            acoustic_loss_mask=batch.get("acoustic_loss_mask"),
         )
         # Access ProcessBatchOutput dataclass attributes
         # logits come from the parallel prediction head

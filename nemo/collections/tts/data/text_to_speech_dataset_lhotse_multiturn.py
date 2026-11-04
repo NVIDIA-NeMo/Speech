@@ -134,7 +134,8 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         text_context_remapping_prob: Probability of remapping the original text context to a remapped text context.
         phoneme_turn_max_words_to_drop: Turns with this many words or fewer keep empty phoneme string.
         load_normalized_text_percent: Probability in `[0.0, 1.0]` of loading the normalized transcript when
-            available. Defaults to `1.0`.
+            available. Defaults to `1.0`. A cut-level `load_normalized_text_percent` tag overrides this
+            default for both input and output turns.
     """
 
     def __init__(
@@ -253,6 +254,15 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             if str(getattr(cut, "task", "tts")).lower() == "tts":
                 for supervision in cut.supervisions:
                     supervision.speaker = "agent"
+            acoustic_loss = getattr(cut, "acoustic_loss", True)
+            if type(acoustic_loss) is not bool:
+                raise ValueError(f"{cut.id}: acoustic_loss must be a boolean")
+            if not acoustic_loss:
+                if self.phoneme_tokenizer is None:
+                    raise ValueError("Disabling acoustic loss requires a phoneme tokenizer")
+                targets = [s for s in cut.supervisions if s.speaker in self.output_roles]
+                if not targets or any(not _get_supervision_ipa_text(s).strip() for s in targets):
+                    raise ValueError(f"{cut.id}: disabling acoustic loss requires nonempty IPA targets")
 
         batch_tokenizer_names = []
         for cut in cuts:
@@ -758,6 +768,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                 " ".join(s.text for s in cut.supervisions if s.speaker in self.output_roles) for cut in cuts
             ],
             "task": [getattr(cut, "task", "tts") for cut in cuts],
+            "acoustic_loss_mask": torch.tensor([getattr(cut, "acoustic_loss", True) for cut in cuts]),
             "user_audio_turn_splitted": audio_data["user_audio_turn_splitted"],
             "user_audio_turn_splitted_lens": audio_data["user_audio_turn_splitted_lens"],
             "user_audio_turn_splitted_indices": audio_data["user_audio_turn_splitted_indices"],
@@ -903,6 +914,11 @@ def build_token_channel(
     apply_partial_phoneme_text: bool = False,
     load_normalized_text_percent: float = 1.0,
 ) -> torch.Tensor:
+
+    load_normalized_text_percent = (cut.custom or {}).get("load_normalized_text_percent", load_normalized_text_percent)
+    if isinstance(load_normalized_text_percent, bool) or not isinstance(load_normalized_text_percent, (int, float)):
+        raise ValueError(f"{cut.id}: load_normalized_text_percent must be a number in [0.0, 1.0]")
+    _validate_probability(f"{cut.id}: load_normalized_text_percent", load_normalized_text_percent)
 
     total = compute_num_frames(cut.duration, frame_length, cut.sampling_rate)
     tokens = torch.ones(total, dtype=torch.long) * pad_id

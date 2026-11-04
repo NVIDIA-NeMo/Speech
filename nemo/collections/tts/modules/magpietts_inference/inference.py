@@ -197,11 +197,12 @@ class BaseInferenceRunner(abc.ABC):
         self.model = model
         self.config = config
 
-        if getattr(config, 'save_timestamps', False):
-            configure = getattr(model, 'configure_timestamps', None)
-            if not callable(configure):
-                raise ValueError('--save_timestamps requires the Nemotron-TTS V2 timestamp API')
-            configure(enabled=True)
+        save_timestamps = bool(getattr(config, 'save_timestamps', False))
+        configure = getattr(model, 'configure_timestamps', None)
+        if callable(configure):
+            configure(enabled=save_timestamps)
+        elif save_timestamps:
+            raise ValueError('--save_timestamps requires the Nemotron-TTS V2 timestamp API')
 
         # Set phoneme probability to 1 for inference
         self._configure_tokenizer()
@@ -1540,7 +1541,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                 if self.config.save_timestamps:
                     turn_phoneme_outputs[-1].update(
                         timestamp_input_token_ids=timestamp_input_token_ids,
-                        timestamp_turn_index=model.get_timestamps(state)[0]['turns'][-1]['turn_index'],
+                        timestamp_turn_index=model.get_timestamp_turn_indices(state)[0],
                     )
 
             codec_sil_codes = self._ensure_codec_silence_codes()

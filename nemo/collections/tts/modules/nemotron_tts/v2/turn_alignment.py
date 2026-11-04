@@ -3,8 +3,8 @@
 
 """Compact-turn acoustic alignment restored to the V2 conversation timeline.
 
-Reuses the shared batching and MAS restoration implementation originally added
-to aligned_text_head.py, without constructing a repeated-text prediction head.
+Batches compact text and acoustic turns for MAS, then restores token positions
+and labels to the original conversation grid.
 """
 
 from dataclasses import dataclass

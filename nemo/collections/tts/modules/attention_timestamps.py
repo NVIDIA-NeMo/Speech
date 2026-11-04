@@ -26,6 +26,7 @@ attention and audio frame intervals.
 import copy
 import math
 import operator
+from collections.abc import Iterable
 
 
 class AttentionTimestampTracker:
@@ -70,7 +71,7 @@ class AttentionTimestampTracker:
         progress_threshold: float = 0.5,
         skip_penalty: float = 6.0,
         record_frames: bool = False,
-    ):
+    ) -> None:
         self.confirmation_frames = _index(confirmation_frames, 'confirmation_frames', minimum=1)
         self.min_confidence = _probability_setting(min_confidence, 'min_confidence')
         self.min_text_mass = _probability_setting(min_text_mass, 'min_text_mass')
@@ -91,6 +92,9 @@ class AttentionTimestampTracker:
                 skip_penalty=self.skip_penalty,
                 force_progress=self.force_progress,
                 progress_threshold=self.progress_threshold,
+                min_confidence=self.min_confidence,
+                min_text_mass=self.min_text_mass,
+                min_margin=self.min_margin,
             )
             if method == 'monotonic'
             else None
@@ -134,7 +138,14 @@ class AttentionTimestampTracker:
             'retracted_spans': 0,
         }
 
-    def update(self, probabilities, *, start: float, end: float, token_indices=None) -> list[dict]:
+    def update(
+        self,
+        probabilities: Iterable[float],
+        *,
+        start: float,
+        end: float,
+        token_indices: Iterable[int] | None = None,
+    ) -> list[dict]:
         """Observe one query covering ``[start, end)`` on the audio clock.
 
         ``token_indices`` maps probabilities to registered input positions. When
@@ -188,57 +199,14 @@ class AttentionTimestampTracker:
             self._record_frame(assignments, start, end)
         return copy.deepcopy(self._events[event_start:])
 
-    def _apply_candidate(self, candidate, start, end, emitted_at):
-        if self._last_end is not None and start > self._last_end + 1e-9:
-            self._end_pending(emitted_at, retain=True)
-            self._end_active(emitted_at)
-            self._previous_index = None
-            self._previous_confirmed = False
-        self._last_end = end
-        if candidate is None:
-            self._end_pending(emitted_at, retain=True)
-            self._end_active(emitted_at)
-            self._previous_index = None
-            self._previous_confirmed = False
-            return
-        index, confidence, text_mass, forced = candidate
-        if self._active is not None:
-            if self._active['token_index'] == index:
-                self._extend(self._active, end, confidence, text_mass, forced)
-                self._emit('update', self._active, emitted_at)
-                return
-            self._end_active(emitted_at)
-        if self._pending is not None:
-            if self._pending['token_index'] == index:
-                self._extend(self._pending, end, confidence, text_mass, forced)
-                if self._pending['frame_count'] >= self.confirmation_frames:
-                    self._active, self._pending = self._pending, None
-                    self._active['confirmed'] = True
-                    self._emit('confirmed', self._active, emitted_at)
-                else:
-                    self._emit('update', self._pending, emitted_at)
-                return
-            if index == self._previous_index:
-                # A single-frame excursion is not evidence that B occupied all
-                # of the gap. Keep A's two observed spans separate as well.
-                resume_confirmed = self._previous_confirmed
-                self._end_pending(emitted_at, retain=False)
-                self._begin(
-                    index,
-                    start,
-                    end,
-                    confidence,
-                    text_mass,
-                    forced=forced,
-                    confirmed=resume_confirmed,
-                    emitted_at=emitted_at,
-                )
-                return
-            forward = self._previous_index is None or self._previous_index < self._pending['token_index'] < index
-            self._end_pending(emitted_at, retain=forward)
-        self._begin(index, start, end, confidence, text_mass, forced=forced, emitted_at=emitted_at)
-
-    def update_many(self, probabilities, *, starts, ends, token_indices=None) -> list[dict]:
+    def update_many(
+        self,
+        probabilities: Iterable[Iterable[float]],
+        *,
+        starts: Iterable[float],
+        ends: Iterable[float],
+        token_indices: Iterable[int] | None = None,
+    ) -> list[dict]:
         """Consume a chunk of queries with the same registered text-key mapping.
 
         This is equivalent to consecutive ``update`` calls, so chunk size cannot
@@ -248,6 +216,7 @@ class AttentionTimestampTracker:
         rows, starts, ends = list(probabilities), list(starts), list(ends)
         if len(rows) != len(starts) or len(rows) != len(ends):
             raise ValueError('Attention rows, starts and ends must have matching lengths')
+        token_indices = None if token_indices is None else list(token_indices)
         events = []
         for row, start, end in zip(rows, starts, ends):
             events.extend(self.update(row, start=start, end=end, token_indices=token_indices))
@@ -332,6 +301,56 @@ class AttentionTimestampTracker:
         self._end_active(duration)
         self._duration = duration
         return self.snapshot()
+
+    def _apply_candidate(self, candidate, start, end, emitted_at):
+        if self._last_end is not None and start > self._last_end + 1e-9:
+            self._end_pending(emitted_at, retain=True)
+            self._end_active(emitted_at)
+            self._previous_index = None
+            self._previous_confirmed = False
+        self._last_end = end
+        if candidate is None:
+            self._end_pending(emitted_at, retain=True)
+            self._end_active(emitted_at)
+            self._previous_index = None
+            self._previous_confirmed = False
+            return
+        index, confidence, text_mass, forced = candidate
+        if self._active is not None:
+            if self._active['token_index'] == index:
+                self._extend(self._active, end, confidence, text_mass, forced)
+                self._emit('update', self._active, emitted_at)
+                return
+            self._end_active(emitted_at)
+        if self._pending is not None:
+            if self._pending['token_index'] == index:
+                self._extend(self._pending, end, confidence, text_mass, forced)
+                if self._pending['frame_count'] >= self.confirmation_frames:
+                    self._active, self._pending = self._pending, None
+                    self._active['confirmed'] = True
+                    self._emit('confirmed', self._active, emitted_at)
+                else:
+                    self._emit('update', self._pending, emitted_at)
+                return
+            if index == self._previous_index:
+                # A single-frame excursion is not evidence that B occupied all
+                # of the gap. Keep A's two observed spans separate as well.
+                resume_confirmed = self._previous_confirmed
+                self._end_pending(emitted_at, retain=False)
+                self._begin(
+                    index,
+                    start,
+                    end,
+                    confidence,
+                    text_mass,
+                    forced=forced,
+                    confirmed=resume_confirmed,
+                    emitted_at=emitted_at,
+                )
+                return
+            forward = self._previous_index is None or self._previous_index < self._pending['token_index'] < index
+            self._end_pending(emitted_at, retain=forward)
+        self._begin(index, start, end, confidence, text_mass, forced=forced, emitted_at=emitted_at)
 
     def _require_open(self):
         if self._duration is not None:
@@ -549,15 +568,27 @@ class StreamingAttentionPathDecoder:
     observed frame, with ``forced=True``; no prior boundary is revised. The
     relative-support and text-mass checks avoid advancing solely because the
     head stopped attending to text. Zero-evidence positions and unobserved tails
-    stay unaligned. This decoder does not change attention or generated audio.
+    stay unaligned. Confidence, text-mass, and margin gates are applied before
+    committing progress, so rejected evidence cannot skip a later valid token.
     """
 
-    def __init__(self, skip_penalty: float = 6.0, force_progress: bool = True, progress_threshold: float = 0.5):
+    def __init__(
+        self,
+        skip_penalty: float = 6.0,
+        force_progress: bool = True,
+        progress_threshold: float = 0.5,
+        min_confidence: float = 0.0,
+        min_text_mass: float = 0.0,
+        min_margin: float = 0.0,
+    ) -> None:
         self.skip_penalty = _nonnegative_setting(skip_penalty, 'skip_penalty')
         if not isinstance(force_progress, bool):
             raise ValueError('force_progress must be a boolean')
         self.force_progress = force_progress
         self.progress_threshold = _probability_setting(progress_threshold, 'progress_threshold')
+        self.min_confidence = _probability_setting(min_confidence, 'min_confidence')
+        self.min_text_mass = _probability_setting(min_text_mass, 'min_text_mass')
+        self.min_margin = _probability_setting(min_margin, 'min_margin')
         self._known_indices = set()
         self._last_index = None
         self._peak_current_support = 0.0
@@ -565,7 +596,14 @@ class StreamingAttentionPathDecoder:
         self._last_end = None
         self._duration = None
 
-    def update(self, probabilities, *, start: float, end: float, token_indices=None) -> list[dict]:
+    def update(
+        self,
+        probabilities: Iterable[float],
+        *,
+        start: float,
+        end: float,
+        token_indices: Iterable[int] | None = None,
+    ) -> list[dict]:
         if self._duration is not None:
             raise ValueError('The attention path is already finalized')
         start, end = _time(start, 'start'), _time(end, 'end')
@@ -588,10 +626,21 @@ class StreamingAttentionPathDecoder:
         observed = dict(zip(indices, values)) if valid else {}
         self._known_indices.update(observed)
         text_mass = math.fsum(observed.values())
-        self._peak_text_mass = max(self._peak_text_mass, text_mass)
+        eligible = {
+            index for index, probability in observed.items() if probability > 0 and probability >= self.min_confidence
+        }
+        if text_mass < self.min_text_mass:
+            eligible.clear()
+        if self.min_margin > 0 and eligible:
+            ranked = sorted(observed, key=lambda index: (-observed[index], index))
+            best = ranked[0]
+            runner_up = observed[ranked[1]] if len(ranked) > 1 else 0.0
+            eligible.intersection_update([best] if observed[best] - runner_up >= self.min_margin else [])
+        if eligible:
+            self._peak_text_mass = max(self._peak_text_mass, text_mass)
         ranks = {index: rank for rank, index in enumerate(sorted(self._known_indices))}
         current_rank = ranks[self._last_index] if self._last_index is not None else -1
-        emissions = {index: p for index, p in observed.items() if p > 0 and ranks[index] >= current_rank}
+        emissions = {index: observed[index] for index in eligible if ranks[index] >= current_rank}
         if not emissions:
             return [self._decision(None, observed, start, end, end)]
         selected = max(

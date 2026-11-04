@@ -18,7 +18,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass, fields
 from functools import partial
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import soundfile as sf
@@ -1069,8 +1069,8 @@ class NemotronTTSBase(ModelPT):
         cache_position=None,
         attention_alignment=None,
         attention_observer=None,
+        attention_observer_layer: int | str | None = None,
     ):
-        # Only pass cache_position for NemotronH (HF transformers may not accept it)
         """Run the configured decoder backend.
 
         Args:
@@ -1079,10 +1079,16 @@ class NemotronTTSBase(ModelPT):
             use_cache: Whether to return and update the key-value cache.
             past_key_values: Optional existing key-value cache.
             cache_position: Optional absolute cache positions used by Nemotron-H.
+            attention_alignment: Optional training-time attention alignment request.
+            attention_observer: Optional callback receiving the selected attention query and keys.
+            attention_observer_layer: Main-backbone attention ordinal or ``middle``. When omitted,
+                uses the model's current timestamp configuration.
 
         Returns:
             Decoder backend output.
         """
+        if attention_observer_layer is None:
+            attention_observer_layer = self.timestamp_config['layer'] if attention_observer is not None else 'middle'
         return self.decoder(
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
@@ -1091,10 +1097,10 @@ class NemotronTTSBase(ModelPT):
             cache_position=cache_position,
             attention_alignment=attention_alignment,
             attention_observer=attention_observer,
-            attention_observer_layer=self.timestamp_config['layer'] if attention_observer is not None else 'middle',
+            attention_observer_layer=attention_observer_layer,
         )
 
-    def configure_timestamps(self, enabled=None, **options):
+    def configure_timestamps(self, enabled: Optional[bool] = None, **options: Any) -> None:
         """Configure read-only timestamp recording for subsequently created streams."""
         values = dict(self.timestamp_config)
         values.update(options)
@@ -1102,13 +1108,17 @@ class NemotronTTSBase(ModelPT):
             values['enabled'] = enabled
         self.timestamp_config = resolve_timestamp_config(values)
 
-    def drain_timestamp_events(self, state: StreamingState, batch_indices=None) -> List[dict]:
+    def drain_timestamp_events(
+        self, state: StreamingState, batch_indices: Optional[Iterable[int]] = None
+    ) -> List[Dict[str, Any]]:
         """Consume start/update/end events immediately after each streaming step."""
         if state.timestamp_session is None:
             return []
         return state.timestamp_session.drain_events(batch_indices)
 
-    def drain_timestamp_frames(self, state: StreamingState, batch_indices=None) -> List[dict]:
+    def drain_timestamp_frames(
+        self, state: StreamingState, batch_indices: Optional[Iterable[int]] = None
+    ) -> List[Dict[str, Any]]:
         """Consume causal frame decisions produced by preceding streaming steps.
 
         Each record describes one emitted decoder audio step and its covered
@@ -1120,14 +1130,22 @@ class NemotronTTSBase(ModelPT):
             return []
         return state.timestamp_session.drain_frames(batch_indices)
 
-    def get_timestamps(self, state: StreamingState, finalize=False, audio_lengths=None):
+    def get_timestamps(
+        self, state: StreamingState, finalize: bool = False, audio_lengths: Optional[torch.Tensor] = None
+    ) -> Optional[List[Dict[str, Any]]]:
         """Read per-item snapshots; optional waveform lengths are measured in samples."""
         if state.timestamp_session is None:
             return None
         seconds = None if audio_lengths is None else audio_lengths / self.output_sample_rate
         return state.timestamp_session.snapshots(finalize=finalize, audio_lengths=seconds)
 
-    def reset_timestamp_turn(self, state: StreamingState, batch_indices=None):
+    def get_timestamp_turn_indices(self, state: StreamingState) -> Optional[List[int]]:
+        """Read current response ordinals without materializing timestamp history."""
+        if state.timestamp_session is None:
+            return None
+        return state.timestamp_session.get_turn_indices()
+
+    def reset_timestamp_turn(self, state: StreamingState, batch_indices: Optional[Iterable[int]] = None) -> None:
         """Close the previous response before registering a new turn's text keys."""
         if state.timestamp_session is None:
             return
@@ -1874,6 +1892,9 @@ class NemotronTTSBase(ModelPT):
                     state.timestamp_session.observe_attention
                     if state.timestamp_session is not None and not force_dropout_text
                     else None
+                ),
+                attention_observer_layer=(
+                    state.timestamp_session.config['layer'] if state.timestamp_session is not None else None
                 ),
             )
 

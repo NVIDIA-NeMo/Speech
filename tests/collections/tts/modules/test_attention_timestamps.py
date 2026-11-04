@@ -11,6 +11,35 @@ from nemo.collections.tts.modules.attention_timestamps import AttentionTimestamp
 pytestmark = pytest.mark.unit
 
 
+@pytest.mark.parametrize(
+    'settings,rejected',
+    [
+        ({'min_text_mass': 0.5}, [1e-8, 2e-8]),
+        ({'min_confidence': 0.5}, [0.1, 0.2]),
+        ({'min_margin': 0.1}, [0.1, 0.12]),
+    ],
+)
+def test_rejected_monotonic_evidence_does_not_commit_forward_progress(settings, rejected):
+    tracker = _tracker([10, 11], method='monotonic', record_frames=True, force_progress=False, **settings)
+    for step, probabilities in enumerate([[0.6, 0.2], rejected, [0.8, 0.1]]):
+        tracker.update(probabilities, start=step * 0.08, end=(step + 1) * 0.08)
+    frames = tracker.drain_frames()
+    assert [frame['token_index'] for frame in frames] == [0, None, 0]
+    assert frames[-1]['confidence'] == pytest.approx(0.8)
+    assert tracker.snapshot()[1]['start'] is None
+
+
+def test_chunked_queries_reuse_an_iterator_of_registered_key_positions():
+    chunked, individual = (_tracker([10, 11], record_frames=True) for _ in range(2))
+    rows, starts, ends = [[0.8, 0.1], [0.1, 0.8]], [0.0, 0.08], [0.08, 0.16]
+    chunked.update_many(rows, starts=starts, ends=ends, token_indices=iter([0, 1]))
+    for row, start, end in zip(rows, starts, ends):
+        individual.update(row, start=start, end=end, token_indices=[0, 1])
+    assert chunked.drain_frames() == individual.drain_frames()
+    assert chunked.drain_events() == individual.drain_events()
+    assert chunked.snapshot() == individual.snapshot()
+
+
 def test_streaming_tokens_do_not_require_a_complete_future_transcript():
     tracker = AttentionTimestampTracker()
     tracker.register_token(0, 17, 'hello')

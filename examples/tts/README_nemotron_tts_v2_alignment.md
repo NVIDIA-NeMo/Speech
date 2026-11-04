@@ -170,6 +170,11 @@ Custom streaming pipelines that supply response text through
 disabled for user/profile prefill so that user text does not enter the agent's
 timestamp sequence. The external multiturn runner handles this distinction.
 
+`model.get_timestamp_turn_indices(state)` returns each batch item's current
+turn ordinal without copying frame history. A stream keeps the timestamp
+configuration selected at `streaming_init`; later `configure_timestamps` calls
+configure subsequently initialized streams.
+
 The model's `timestamp_config` configures recording independently of generation:
 
 ```yaml

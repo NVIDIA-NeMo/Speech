@@ -23,10 +23,31 @@ def test_timestamp_recording_defaults_off_and_can_be_enabled_without_training_mo
     state = _init_stream(model)
     assert state.timestamp_session is None
     assert model.get_timestamps(state) is None and model.drain_timestamp_events(state) == []
+    assert model.get_timestamp_turn_indices(state) is None
     assert model.drain_timestamp_frames(state) == []
     assert not hasattr(model, 'text_aligner') and not hasattr(model, 'aligned_text_head')
     model.configure_timestamps(enabled=True)
-    assert _init_stream(model).timestamp_session is not None
+    enabled_state = _init_stream(model)
+    assert enabled_state.timestamp_session is not None
+    with patch.object(enabled_state.timestamp_session, 'snapshots', side_effect=AssertionError('History copied')):
+        assert model.get_timestamp_turn_indices(enabled_state) == [0, 0]
+
+
+def test_interleaved_streams_keep_their_configured_attention_layer_after_reconfiguration():
+    model = _model(enabled=True)
+    model.configure_timestamps(layer=0)
+    first = _init_stream(model)
+    model.configure_timestamps(layer=2)
+    second = _init_stream(model)
+    with patch.object(model.decoder, 'forward', wraps=model.decoder.forward) as decoder:
+        for token_id in [7, 8, 9, 10, 11, 12]:
+            for state, expected_layer in ((first, 0), (second, 2)):
+                model.streaming_step(state, torch.full((2,), token_id))
+                assert decoder.call_args.kwargs['attention_observer_layer'] == expected_layer
+    for state, expected_layer in ((first, 0), (second, 2)):
+        trace = model.get_timestamps(state)
+        assert all(item['attention_layer'] == expected_layer for item in trace)
+        assert model.drain_timestamp_frames(state)
 
 
 @pytest.mark.parametrize('use_cfg', [False, True])

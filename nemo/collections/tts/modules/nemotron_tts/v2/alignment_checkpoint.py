@@ -12,7 +12,7 @@ from omegaconf import OmegaConf
 from torch import nn
 
 
-def resolve_aligner_config(config=None, *, restoring=False):
+def resolve_aligner_config(config: Mapping | None = None, *, restoring: bool = False) -> dict:
     """Resolve new relative-transformer defaults while recognizing legacy archives."""
     if config is not None and not isinstance(config, Mapping):
         raise ValueError('aligned_text_aligner must be a configuration mapping')
@@ -52,7 +52,9 @@ def resolve_aligner_config(config=None, *, restoring=False):
     return defaults
 
 
-def load_pretrained_text_speech_aligner(aligner: nn.Module, checkpoint_path, *, aligner_config=None):
+def load_pretrained_text_speech_aligner(
+    aligner: nn.Module, checkpoint_path: str | Path | None, *, aligner_config: Mapping | None = None
+) -> tuple[nn.Module, dict]:
     """Return a completely initialized aligner and its architecture configuration.
 
     Only ``text_aligner.*`` weights (including common model/DDP wrappers and the

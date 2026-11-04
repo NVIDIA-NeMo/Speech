@@ -6,11 +6,17 @@ from unittest.mock import patch
 
 import pytest
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 from nemo.collections.tts.modules import nemotron_h_decoder
 from nemo.collections.tts.modules.attention_alignment import AttentionAlignmentGuidance, AttentionAlignmentTurn
-from nemo.collections.tts.modules.nemotron_h_decoder import NemotronHConfig, NemotronHModel
+from nemo.collections.tts.modules.nemotron_h_decoder import (
+    HybridMambaAttentionDynamicCache,
+    NemotronHConfig,
+    NemotronHFlashAttention2,
+    NemotronHModel,
+)
 from nemo.collections.tts.modules.nemotron_tts.v2.acoustic_codes_predictor import AcousticCodesPredictorBlock
 
 pytestmark = pytest.mark.unit
@@ -101,6 +107,69 @@ def test_training_alignment_is_never_applied_to_cached_inference():
         model(inputs_embeds=torch.randn(1, 7, 16), use_cache=False, attention_observer=lambda *args, **kwargs: None)
 
 
+def test_flash_wrapper_observes_expanded_cached_keys_and_preserves_outputs():
+    config = _config('flash_attention_2')
+    observations = []
+    with (
+        patch.object(nemotron_h_decoder, 'FLASH_ATTN_AVAILABLE', True),
+        patch.object(nemotron_h_decoder, 'is_flash_attn_greater_or_equal_2_10', return_value=True),
+        patch.object(nemotron_h_decoder, '_flash_attention_forward', side_effect=_reference_flash_forward) as kernel,
+        torch.no_grad(),
+    ):
+        baseline = NemotronHFlashAttention2(config, layer_idx=0).eval()
+        observed = NemotronHFlashAttention2(config, layer_idx=0).eval()
+        observed.load_state_dict(baseline.state_dict())
+        caches = [HybridMambaAttentionDynamicCache(config, batch_size=2) for _ in range(2)]
+        for start, length in [(0, 3), (3, 1)]:
+            features = torch.randn(2, length, 16)
+            padding_mask = torch.ones(2, start + length, dtype=torch.long)
+            padding_mask[1, 0] = 0
+            position = torch.arange(start, start + length)
+            ordinary = baseline(
+                features, attention_mask=padding_mask, past_key_value=caches[0], cache_position=position
+            )
+            captured = observed(
+                features,
+                attention_mask=padding_mask,
+                past_key_value=caches[1],
+                cache_position=position,
+                attention_observer=lambda q, k, **kwargs: observations.append((q.shape, k.shape, kwargs)),
+            )
+            torch.testing.assert_close(ordinary[0], captured[0], rtol=0, atol=0)
+            query_shape, key_shape, options = observations[-1]
+            assert query_shape == (2, 2, length, 8)
+            assert key_shape == (2, 2, start + length, 8)
+            assert options['attention_mask'] is padding_mask
+            assert options['cache_position'] is position
+            assert all(cache.get_seq_length() == start + length for cache in caches)
+    assert len(observations) == 2 and kernel.call_count == 4
+
+
+@pytest.mark.parametrize('prior_strength', [0.0, 0.6])
+def test_flash_wrapper_training_alignment_preserves_zero_prior_and_backpropagates(prior_strength):
+    with (
+        patch.object(nemotron_h_decoder, 'FLASH_ATTN_AVAILABLE', True),
+        patch.object(nemotron_h_decoder, 'is_flash_attn_greater_or_equal_2_10', return_value=True),
+        patch.object(nemotron_h_decoder, '_flash_attention_forward', side_effect=_reference_flash_forward) as kernel,
+    ):
+        attention = NemotronHFlashAttention2(_config('flash_attention_2'), layer_idx=0).train()
+        features = torch.randn(2, 7, 16, requires_grad=True)
+        ordinary = attention(features)
+        guidance = _guidance(features.device)
+        guidance.prior_strength = prior_strength
+        guided = attention(features, attention_alignment=guidance)
+        if prior_strength == 0:
+            torch.testing.assert_close(ordinary[0], guided[0], rtol=0, atol=0)
+        else:
+            assert not torch.equal(ordinary[0], guided[0])
+        loss = guided[1]
+        assert torch.isfinite(loss) and loss.item() > 0
+        loss.backward()
+        assert attention.q_proj.weight.grad.abs().sum() > 0
+        assert attention.k_proj.weight.grad.abs().sum() > 0
+    assert kernel.call_count == 2
+
+
 def _config(implementation='sdpa'):
     return NemotronHConfig(
         hidden_size=16,
@@ -134,3 +203,32 @@ def _guidance(device):
         layers='middle',
         query_chunk_size=2,
     )
+
+
+def _reference_flash_forward(
+    query,
+    key,
+    value,
+    attention_mask,
+    query_length,
+    dropout,
+    sliding_window,
+    is_causal,
+    use_top_left_mask,
+):
+    """Exercise the Flash wrapper's layout through a deterministic SDPA kernel."""
+    batch, length, _, _ = query.shape
+    assert query_length == length and sliding_window is None
+    visible = torch.ones(batch, 1, length, key.size(1), device=query.device, dtype=torch.bool)
+    if is_causal:
+        positions = torch.arange(key.size(1) - length, key.size(1), device=query.device)
+        visible &= torch.arange(key.size(1), device=query.device)[None, :] <= positions[:, None]
+    if attention_mask is not None:
+        visible &= attention_mask[:, None, None, :].bool()
+    return F.scaled_dot_product_attention(
+        query.transpose(1, 2),
+        key.transpose(1, 2),
+        value.transpose(1, 2),
+        attn_mask=visible,
+        dropout_p=dropout,
+    ).transpose(1, 2)

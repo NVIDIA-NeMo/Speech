@@ -109,6 +109,52 @@ def test_frame_history_can_be_disabled_while_frames_are_drained_per_batch():
         session.drain_frames([2])
 
 
+@pytest.mark.parametrize('frame,count', [(-1, 2), (12, -1), (12, 3), (11, 2), (12.0, 2), (12, 1.5)])
+def test_invalid_audio_interval_preserves_the_previous_clock_and_remains_usable(frame, count):
+    session = _session()
+    session.register_text(0, 0, 17)
+    _observe(session, [[1.0]], frame=10)
+    before = session.snapshots()
+    with pytest.raises(ValueError):
+        session.observe_row(0, frame, count)
+    assert session.snapshots() == before
+    _observe(session, [[1.0]], frame=12)
+    assert session.snapshots(finalize=True)[0]['audio_duration_seconds'] == pytest.approx(0.16)
+
+
+@pytest.mark.parametrize('needed,counts', [([True], [2, 2]), ([True, True], [2]), ([True, True], [2, 3])])
+def test_invalid_batch_audio_metadata_is_rejected_before_any_row_is_updated(needed, counts):
+    session = _session(batch_size=2)
+    with pytest.raises(ValueError):
+        session.observe_audio(needed, frame_start=10, valid_frames=counts)
+    assert session.drain_frames() == []
+    assert all(trace['audio_duration_seconds'] == 0.0 for trace in session.snapshots())
+    session.observe_audio([True, True], frame_start=10, valid_frames=[2, 2])
+    assert [frame['frame_index'] for frame in session.drain_frames()] == [0, 0]
+
+
+@pytest.mark.parametrize('lengths', [[], [float('nan')], [float('inf')], [-0.1]])
+def test_invalid_snapshot_lengths_do_not_finalize_or_corrupt_the_stream(lengths):
+    session = _session()
+    session.register_text(0, 0, 17)
+    _observe(session, [[1.0]], frame=10)
+    with pytest.raises(ValueError):
+        session.snapshots(finalize=True, audio_lengths=lengths)
+    _observe(session, [[1.0]], frame=12)
+    assert session.snapshots(finalize=True)[0]['audio_duration_seconds'] == pytest.approx(0.16)
+
+
+def test_turn_index_accessor_reads_metadata_without_copying_timestamp_history(monkeypatch):
+    session = _session(batch_size=2)
+    session.register_text(0, 0, 17)
+    session.reset_turn(0)
+    monkeypatch.setattr(session, 'snapshots', lambda **kwargs: pytest.fail('Timestamp history was copied'))
+    indices = session.get_turn_indices()
+    assert indices == [1, 0]
+    indices[0] = -1
+    assert session.get_turn_indices() == [1, 0]
+
+
 def test_cfg_unconditional_attention_and_future_keys_do_not_leak_into_timestamps():
     session = _session()
     session.register_text(0, 0, 17)
@@ -218,7 +264,7 @@ def test_runner_enables_the_read_only_timestamp_api_and_leaves_normal_loading_un
     assert calls == [{'enabled': True}]
     calls.clear()
     EasyMagpieInferenceRunner(model, EasyMagpieInferenceConfig())
-    assert calls == []
+    assert calls == [{'enabled': False}]
     with pytest.raises(ValueError, match='V2'):
         EasyMagpieInferenceRunner(SimpleNamespace(), EasyMagpieInferenceConfig(save_timestamps=True))
 

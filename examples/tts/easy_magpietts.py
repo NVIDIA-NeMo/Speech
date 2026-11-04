@@ -78,8 +78,7 @@ def main(cfg):
 
     model.maybe_init_from_pretrained_checkpoint(cfg=cfg)
 
-    # Apply the teacher after ordinary TTS initialization; this path never
-    # replaces decoder, tokenizer, codec, or acoustic-predictor parameters.
+    # Restore the acoustic teacher after initializing the TTS model.
     aligner_checkpoint = cfg.get('pretrained_model_text_speech_aligner') or cfg.model.get(
         'pretrained_model_text_speech_aligner'
     )

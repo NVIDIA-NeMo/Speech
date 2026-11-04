@@ -8,15 +8,16 @@ alongside aggregate token spans and optional frame history.
 """
 
 import math
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
+from typing import Any
 
 import torch
 
 from nemo.collections.tts.modules.attention_timestamps import AttentionTimestampTracker
 
 
-def resolve_timestamp_config(config=None):
+def resolve_timestamp_config(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Validate independent, opt-in timestamp recording configuration."""
     values = dict(
         enabled=False,
@@ -65,7 +66,13 @@ class StreamingTimestampSession:
     ``streaming_finalize``. ``audio_lengths`` supplied to ``snapshots`` are seconds.
     """
 
-    def __init__(self, batch_size, codec_frame_seconds, frame_stacking_factor, config=None):
+    def __init__(
+        self,
+        batch_size: int,
+        codec_frame_seconds: float,
+        frame_stacking_factor: int,
+        config: Mapping[str, Any] | None = None,
+    ) -> None:
         if type(batch_size) is not int or batch_size < 1:
             raise ValueError('batch_size must be a positive integer')
         if not math.isfinite(codec_frame_seconds) or codec_frame_seconds <= 0:
@@ -85,11 +92,12 @@ class StreamingTimestampSession:
         self._frame_counts = [0] * batch_size
         self._raw_attention = None
 
-    def begin_step(self):
+    def begin_step(self) -> None:
         """Clear the previous query before a new decoding step begins."""
         self._raw_attention = None
 
-    def register_text(self, row, key_position, token_id, token=None):
+    def register_text(self, row: int, key_position: int, token_id: int, token: str | None = None) -> None:
+        """Register a source token occurrence at its current decoder key position."""
         self._validate_row(row)
         turn = self._turns[row][-1]
         if turn['finalized']:
@@ -103,7 +111,8 @@ class StreamingTimestampSession:
         turn['keys'].append(key_position)
         turn['ids'].append(token_id)
 
-    def reset_turn(self, row):
+    def reset_turn(self, row: int) -> None:
+        """Finalize a response and start its next source-token sequence."""
         self._validate_row(row)
         turn = self._turns[row][-1]
         if not turn['keys'] and not turn['has_audio']:
@@ -111,7 +120,17 @@ class StreamingTimestampSession:
         self._finish_turn(row)
         self._turns[row].append(self._new_turn(turn['turn_index'] + 1))
 
-    def observe_attention(self, query, key, attention_mask=None, cache_position=None):
+    def get_turn_indices(self) -> list[int]:
+        """Return the current response ordinal for each conditional batch row."""
+        return [turns[-1]['turn_index'] for turns in self._turns]
+
+    def observe_attention(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        cache_position: torch.Tensor | None = None,
+    ) -> None:
         """Observe expanded Q/K in ``[batch, heads, queries/keys, head_dim]``.
 
         CFG's unconditional rows are excluded. The full-key softmax is used;
@@ -143,26 +162,38 @@ class StreamingTimestampSession:
         logits = logits.masked_fill(~allowed, -torch.inf)
         self._raw_attention = torch.softmax(logits, dim=-1).nan_to_num(0.0).cpu()
 
-    def observe_audio(self, needs_audio, frame_start, valid_frames=None):
+    def observe_audio(
+        self,
+        needs_audio: torch.Tensor | Sequence[bool],
+        frame_start: int,
+        valid_frames: torch.Tensor | Sequence[int] | None = None,
+    ) -> None:
         """Publish current-frame events immediately, after clipping audio EOS."""
+        needed_rows = _values(needs_audio)
         counts = None if valid_frames is None else _values(valid_frames)
-        for row, needed in enumerate(_values(needs_audio)):
+        if len(needed_rows) != self.batch_size or (counts is not None and len(counts) != self.batch_size):
+            raise ValueError('Audio masks and frame counts must match the conditional batch size')
+        intervals = []
+        for row, needed in enumerate(needed_rows):
             if not needed:
                 continue
-            count = self.frame_stacking_factor if counts is None else int(counts[row])
+            count = self.frame_stacking_factor if counts is None else counts[row]
+            self._validate_audio_interval(row, frame_start, count)
+            intervals.append((row, count))
+        for row, count in intervals:
             self.observe_row(row, frame_start, count)
         self._raw_attention = None
 
-    def observe_row(self, row, frame_start, valid_frames):
+    def observe_row(self, row: int, frame_start: int, valid_frames: int) -> None:
+        """Record one emitted audio interval on the absolute unstacked codec grid."""
         self._validate_row(row)
+        self._validate_audio_interval(row, frame_start, valid_frames)
         if self._origins[row] is None:
             self._origins[row] = frame_start
         self._ends[row] = frame_start + valid_frames
         if valid_frames <= 0:
             return
         turn = self._turns[row][-1]
-        if turn['finalized']:
-            raise ValueError('Reset the timestamp turn before observing more audio')
         turn['has_audio'] = True
         raw = self._raw_attention[row].tolist() if self._raw_attention is not None else []
         positions = [(index, position) for index, position in enumerate(turn['keys']) if position < len(raw)]
@@ -194,7 +225,8 @@ class StreamingTimestampSession:
             if self.config['retain_frame_history']:
                 self._frame_history[row].append(deepcopy(frame))
 
-    def drain_events(self, batch_indices=None):
+    def drain_events(self, batch_indices: Iterable[int] | None = None) -> list[dict[str, Any]]:
+        """Consume token-span events for the selected conditional batch rows."""
         if batch_indices is None:
             events, self._events = self._events, []
             return events
@@ -205,7 +237,7 @@ class StreamingTimestampSession:
         self._events = [event for event in self._events if event['batch_index'] not in selected]
         return events
 
-    def drain_frames(self, batch_indices=None):
+    def drain_frames(self, batch_indices: Iterable[int] | None = None) -> list[dict[str, Any]]:
         """Consume current-step decisions, independently of token-span events.
 
         A record is emitted for every positive-duration audio step, including
@@ -222,9 +254,17 @@ class StreamingTimestampSession:
         self._frames = [frame for frame in self._frames if frame['batch_index'] not in selected]
         return frames
 
-    def snapshots(self, finalize=False, audio_lengths=None):
+    def snapshots(
+        self, finalize: bool = False, audio_lengths: torch.Tensor | Sequence[float] | None = None
+    ) -> list[dict[str, Any]]:
+        """Return independent traces; optional waveform lengths are in seconds."""
         results = []
         lengths = _values(audio_lengths) if audio_lengths is not None else None
+        if lengths is not None:
+            if len(lengths) != self.batch_size:
+                raise ValueError('Audio lengths must match the conditional batch size')
+            if any(not math.isfinite(length) or length < 0 for length in lengths):
+                raise ValueError('Audio lengths must be finite and nonnegative')
         for row, turns in enumerate(self._turns):
             if finalize:
                 self._finish_turn(row)
@@ -262,7 +302,7 @@ class StreamingTimestampSession:
             )
         return results
 
-    def _new_turn(self, turn_index):
+    def _new_turn(self, turn_index: int) -> dict[str, Any]:
         settings = {
             key: value
             for key, value in self.config.items()
@@ -277,27 +317,37 @@ class StreamingTimestampSession:
             has_audio=False,
         )
 
-    def _duration(self, row):
+    def _duration(self, row: int) -> float:
         if self._origins[row] is None or self._ends[row] is None:
             return 0.0
         return max(0, self._ends[row] - self._origins[row]) * self.codec_frame_seconds
 
-    def _finish_turn(self, row):
+    def _finish_turn(self, row: int) -> None:
         turn = self._turns[row][-1]
         if not turn['finalized']:
             turn['tracker'].finalize(self._duration(row))
             turn['finalized'] = True
             self._collect(row, turn)
 
-    def _collect(self, row, turn):
+    def _collect(self, row: int, turn: dict[str, Any]) -> None:
         self._events.extend(
             dict(event, batch_index=row, turn_index=turn['turn_index']) for event in turn['tracker'].drain_events()
         )
 
-    def _validate_row(self, row):
+    def _validate_row(self, row: int) -> None:
         if type(row) is not int or not 0 <= row < self.batch_size:
             raise ValueError('Timestamp batch index is outside the conditional batch')
 
+    def _validate_audio_interval(self, row: int, frame_start: int, valid_frames: int) -> None:
+        if self._turns[row][-1]['finalized']:
+            raise ValueError('Reset the timestamp turn before observing more audio')
+        if type(frame_start) is not int or frame_start < 0:
+            raise ValueError('Audio frame start must be a nonnegative integer')
+        if type(valid_frames) is not int or not 0 <= valid_frames <= self.frame_stacking_factor:
+            raise ValueError('Valid audio frames must be an integer between zero and the frame stacking factor')
+        if self._ends[row] is not None and frame_start < self._ends[row]:
+            raise ValueError('Audio intervals must be nonoverlapping and ordered')
 
-def _values(value):
+
+def _values(value: torch.Tensor | Sequence[Any]) -> list[Any]:
     return value.detach().cpu().tolist() if isinstance(value, torch.Tensor) else list(value)

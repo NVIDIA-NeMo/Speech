@@ -7,7 +7,7 @@ import pytest
 import torch
 from torch import nn
 
-from nemo.collections.tts.modules.glow_tts_aligner import TinyGlowTTSAligner
+from nemo.collections.tts.modules.aligner import TinyGlowTTSAligner
 
 pytestmark = pytest.mark.unit
 

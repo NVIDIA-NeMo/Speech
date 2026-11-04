@@ -35,6 +35,7 @@ from nemo.collections.tts.data.text_to_speech_dataset_lhotse import (
 )
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.collections.tts.modules import transformer_2501
+from nemo.collections.tts.modules.attention_alignment import StreamingTimestampSession, resolve_timestamp_config
 from nemo.collections.tts.modules.audio_codec_modules import (
     FiniteScalarQuantizer,
     GroupFiniteScalarQuantizer,
@@ -47,7 +48,6 @@ from nemo.collections.tts.modules.magpietts_modules import (
     add_special_tokens,
 )
 from nemo.collections.tts.modules.nemotron_tts.v2 import AcousticCodesPredictor
-from nemo.collections.tts.modules.nemotron_tts.v2.timestamps import StreamingTimestampSession, resolve_timestamp_config
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
 from nemo.collections.tts.parts.utils.tts_dataset_utils import tokenize_text_with_phoneme_spans
 from nemo.core.classes import ModelPT

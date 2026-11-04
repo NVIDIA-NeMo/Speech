@@ -11,9 +11,9 @@ from omegaconf import OmegaConf
 from torch import nn
 
 from nemo.collections.tts.models.nemotron_tts.v2.base import NemotronTTSBase, TrainingMode
+from nemo.collections.tts.modules.attention_alignment import StreamingTimestampSession, resolve_timestamp_config
 from nemo.collections.tts.modules.nemotron_h_decoder import NemotronHConfig, NemotronHModel
 from nemo.collections.tts.modules.nemotron_tts.v2.acoustic_codes_predictor import AcousticCodesPredictor
-from nemo.collections.tts.modules.nemotron_tts.v2.timestamps import StreamingTimestampSession, resolve_timestamp_config
 
 pytestmark = pytest.mark.unit
 
@@ -57,7 +57,7 @@ def test_timestamp_recording_preserves_real_cached_backbone_outputs_and_audio_co
     tokens = [torch.tensor([7, 10]), torch.tensor([8, 11]), torch.tensor([9, 12])]
     tokens += [torch.full((2,), baseline.eos_id)] * 3 + [None] * 4
     with patch(
-        'nemo.collections.tts.modules.glow_tts_aligner.TinyGlowTTSAligner.forward',
+        'nemo.collections.tts.modules.aligner.TinyGlowTTSAligner.forward',
         side_effect=AssertionError('The acoustic aligner must never run during timestamp inference'),
     ):
         for token in tokens:

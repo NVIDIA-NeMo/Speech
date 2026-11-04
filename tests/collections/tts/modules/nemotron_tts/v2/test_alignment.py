@@ -7,8 +7,8 @@ import pytest
 import torch
 from torch import nn
 
-from nemo.collections.tts.modules.glow_tts_aligner import TinyGlowTTSAligner
-from nemo.collections.tts.modules.nemotron_tts.v2.alignment import (
+from nemo.collections.tts.modules.aligner import (
+    TinyGlowTTSAligner,
     alignment_schedule,
     compact_conditioning_turns,
     compact_speaker_reference,

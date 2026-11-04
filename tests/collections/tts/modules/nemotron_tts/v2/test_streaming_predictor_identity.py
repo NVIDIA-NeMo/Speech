@@ -35,7 +35,7 @@ def test_timestamps_preserve_actual_acoustic_predictor_sampling_and_cache_progre
     previous_progress = [cache.get_seq_length() for cache in states[0].acoustic_codes_predictor_cache]
     tokens = [7, 8, 9, 10, 11, 12, baseline.eos_id, baseline.eos_id] + [None] * 5
     with patch(
-        'nemo.collections.tts.modules.glow_tts_aligner.TinyGlowTTSAligner.forward',
+        'nemo.collections.tts.modules.aligner.TinyGlowTTSAligner.forward',
         side_effect=AssertionError('Timestamp recording cannot call the acoustic teacher'),
     ):
         for step, token_id in enumerate(tokens):

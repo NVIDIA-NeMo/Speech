@@ -9,14 +9,17 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from nemo.collections.tts.modules.attention_timestamps import save_token_timestamps
+from nemo.collections.tts.modules.attention_alignment import (
+    StreamingTimestampSession,
+    resolve_timestamp_config,
+    save_token_timestamps,
+)
 from nemo.collections.tts.modules.magpietts_inference import utils
 from nemo.collections.tts.modules.magpietts_inference.inference import (
     EasyMagpieInferenceConfig,
     EasyMagpieInferenceRunner,
     _timestamp_input_ids,
 )
-from nemo.collections.tts.modules.nemotron_tts.v2.timestamps import StreamingTimestampSession, resolve_timestamp_config
 
 pytestmark = pytest.mark.unit
 

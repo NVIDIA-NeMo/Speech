@@ -36,16 +36,16 @@ from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_confi
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import MagpieTTSLhotseDataset, setup_tokenizers
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import MagpieTTSLhotseMultiturnDataset
 from nemo.collections.tts.models.nemotron_tts.v2.base import NemotronTTSBase, TrainingMode
+from nemo.collections.tts.modules.aligner import (
+    init_training_alignment,
+    prepare_attention_alignment_training,
+    reload_pretrained_aligner,
+)
 from nemo.collections.tts.modules.magpietts_modules import (
     add_special_tokens,
     remove_eos_token,
     remove_special_tokens,
     worker_init_fn,
-)
-from nemo.collections.tts.modules.nemotron_tts.v2.alignment import (
-    init_training_alignment,
-    prepare_attention_alignment_training,
-    reload_pretrained_aligner,
 )
 from nemo.collections.tts.parts.utils.helpers import (
     get_mask_from_lengths,

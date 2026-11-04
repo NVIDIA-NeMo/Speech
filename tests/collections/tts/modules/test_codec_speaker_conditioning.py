@@ -6,8 +6,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from nemo.collections.tts.modules.codec_speaker_encoder import CodecSpeakerEncoder
-from nemo.collections.tts.modules.glow_tts_aligner import TinyGlowTTSAligner
+from nemo.collections.tts.modules.aligner import CodecSpeakerEncoder, TinyGlowTTSAligner
 
 pytestmark = pytest.mark.unit
 

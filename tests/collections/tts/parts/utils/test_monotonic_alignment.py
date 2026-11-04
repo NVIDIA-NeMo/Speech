@@ -6,7 +6,7 @@ import itertools
 import pytest
 import torch
 
-from nemo.collections.tts.parts.utils.monotonic_alignment import TRITON_AVAILABLE, maximum_path_indices
+from nemo.collections.tts.modules.aligner import TRITON_AVAILABLE, maximum_path_indices
 
 pytestmark = pytest.mark.unit
 

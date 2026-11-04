@@ -98,9 +98,8 @@ Response-text warmup through `streaming_step(..., prefill_like_step=True)` also
 needs `timestamp_text_warmup=True`. User/profile prefill remains outside the
 response token sequence. The external multiturn runner handles these transitions.
 
-`tts.modules.attention_timestamps` contains the reusable streaming estimator,
-`build_token_timestamps` for waveform crops and token labels, and
-`save_token_timestamps` for adjacent JSON files. V2 model observation lives in
-`tts.modules.nemotron_tts.v2.timestamps`. The training teacher, turn batching, and
-aligner checkpoint loading share `tts.modules.nemotron_tts.v2.alignment`.
-Training alignment and timestamp recording both default to disabled.
+`tts.modules.aligner` contains the flow aligner, relative-position Transformer,
+codec speaker encoder, MAS, and training/checkpoint helpers.
+`tts.modules.attention_alignment` contains attention supervision and streaming
+estimation, including `build_token_timestamps` for waveform crops and token labels
+and `save_token_timestamps` for adjacent JSON files. Both features default to disabled.

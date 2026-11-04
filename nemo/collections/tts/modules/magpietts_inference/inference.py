@@ -45,7 +45,7 @@ from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import Agg
 from nemo.collections.tts.data.text_to_speech_dataset import ChunkedTTSInferenceDataset, MagpieTTSDataset
 from nemo.collections.tts.models.easy_magpietts_inference import EasyModelInferenceParameters
 from nemo.collections.tts.models.magpietts import ModelInferenceParameters
-from nemo.collections.tts.modules.attention_timestamps import save_token_timestamps
+from nemo.collections.tts.modules.attention_alignment import save_token_timestamps
 from nemo.collections.tts.parts.utils.tts_dataset_utils import normalize_volume, stack_tensors
 from nemo.utils import logging
 

@@ -10,7 +10,7 @@ from omegaconf import OmegaConf
 from torch import nn
 
 from nemo.collections.tts.models.nemotron_tts.v2.model import NemotronTTSModel
-from nemo.collections.tts.modules.nemotron_tts.v2.alignment import init_training_alignment
+from nemo.collections.tts.modules.aligner import init_training_alignment
 from tests.collections.tts.modules.nemotron_tts.v2.test_streaming_timestamps_model import _model
 
 pytestmark = pytest.mark.unit

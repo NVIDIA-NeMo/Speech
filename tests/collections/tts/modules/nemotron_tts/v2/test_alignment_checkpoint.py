@@ -10,8 +10,8 @@ import torch
 from omegaconf import OmegaConf
 from torch import nn
 
-from nemo.collections.tts.modules.glow_tts_aligner import TinyGlowTTSAligner
-from nemo.collections.tts.modules.nemotron_tts.v2.alignment import (
+from nemo.collections.tts.modules.aligner import (
+    TinyGlowTTSAligner,
     load_pretrained_text_speech_aligner,
     resolve_aligner_config,
 )

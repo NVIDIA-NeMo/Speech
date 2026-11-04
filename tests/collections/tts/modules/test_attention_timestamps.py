@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from nemo.collections.tts.modules.attention_timestamps import AttentionTimestampTracker, StreamingAttentionPathDecoder
+from nemo.collections.tts.modules.attention_alignment import AttentionTimestampTracker, StreamingAttentionPathDecoder
 
 pytestmark = pytest.mark.unit
 

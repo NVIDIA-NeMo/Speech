@@ -77,6 +77,7 @@ import asyncio
 import contextlib
 import functools
 import json
+import math
 import os
 import queue
 import threading
@@ -138,10 +139,6 @@ _PREPARE_TIMEOUT = 600.0
 # Maximum records a server merges into one alignment task (see _AlignmentBatcher).
 # Each record keeps its own frame support and band; no cross-record DP padding is needed.
 _SERVER_ALIGN_RECORDS = 32
-
-# Weight of the Sortformer speaker-activity prior in CTC alignment, overridable per
-# checkpoint as ctc_timestamps.speaker_logprob_weight. Matches the native aligner.
-DEFAULT_SPEAKER_PRIOR_WEIGHT = 1.0
 
 # CTCTimestampInputs tensor fields: the time axis to trim and pad along, and the
 # lengths field marking its valid frames (None for the lengths fields themselves).
@@ -207,26 +204,27 @@ def active_aligner() -> Any:
     return _registry.get("aligner")
 
 
-def read_speaker_prior_weight(ctc_config: Any) -> float:
+def read_speaker_prior_weight(ctc_config: Any) -> float | None:
     """Read the Sortformer prior weight from a checkpoint's ``ctc_timestamps`` block.
 
     The config key is ``speaker_logprob_weight``, after the aligner's constructor
-    parameter. The aligner validates it only in that constructor, and the plugin sets
-    it on an aligner that is already built, so it is validated here instead.
+    parameter. An absent override preserves the checkpoint's embedded alignment setting.
 
     Args:
         ctc_config (Any): The ``ctc_timestamps`` block, as a dict or an attribute object.
 
     Returns:
-        float: The configured weight, or ``DEFAULT_SPEAKER_PRIOR_WEIGHT`` when unset.
+        float | None: The explicit weight, or None to preserve the artifact's setting.
     """
     value = (
         ctc_config.get("speaker_logprob_weight")
         if isinstance(ctc_config, dict)
         else getattr(ctc_config, "speaker_logprob_weight", None)
     )
-    speaker_prior_weight = float(DEFAULT_SPEAKER_PRIOR_WEIGHT if value is None else value)
-    if speaker_prior_weight < 0:
+    if value is None:
+        return None
+    speaker_prior_weight = float(value)
+    if not math.isfinite(speaker_prior_weight) or speaker_prior_weight < 0:
         raise ValueError(f"ctc_timestamps.speaker_logprob_weight must be non-negative; got {speaker_prior_weight}.")
     return speaker_prior_weight
 
@@ -276,6 +274,7 @@ def ctc_timestamp_config(model_config: Any) -> Any:
             )
         return None
     return {
+        **(ctc_config if isinstance(ctc_config, dict) else vars(ctc_config) if ctc_config is not None else {}),
         "adapter_path": bundled,
         "speaker_logprob_weight": read_speaker_prior_weight(ctc_config),
         "optional": not enabled,
@@ -319,7 +318,7 @@ def _bundled_ctc_head(model: str) -> str | None:
         return None
     with safe_open(str(path), framework="pt", device="cpu") as checkpoint:
         metadata = checkpoint.metadata() or {}
-    return str(path.resolve()) if metadata.get("ctc_timestamp_format") == CTC_TIMESTAMP_ARTIFACT_FORMAT else None
+    return str(path.absolute()) if metadata.get("ctc_timestamp_format") == CTC_TIMESTAMP_ARTIFACT_FORMAT else None
 
 
 def tokenizer_special_tokens(model_config: Any) -> tuple[str, ...]:
@@ -703,8 +702,8 @@ def prepare_finished_requests(finished: Sequence[tuple[str, str]], *, release: b
     The half of :func:`align_finished_requests` that needs the captured inputs, the CTC head
     and the tokenizer, so it runs where the inputs live. Each prepared batch holds, per
     request, only the log-prob columns its transcript's tokens use; once prepared, the
-    captures are no longer needed. Each transcript first loses the special tokens the
-    decoder kept, except ``<spk:N>`` speaker tags (``clean_sot_transcript``).
+    captures are no longer needed. Each transcript keeps speaker-routing tags and the
+    aligner's configured acoustic tags (event tags by default) during decoder cleanup.
 
     Args:
         finished (Sequence[tuple[str, str]]): As in :func:`align_finished_requests`.
@@ -765,7 +764,12 @@ def _prepare_finished_requests(finished: Sequence[tuple[str, str]], isolate: boo
             # Re-insert to mark it recently used; releasing happens after preparing.
             entry = _store.pop(key)
             _store[key] = entry
-            text = MultiSpeakerSOTWordTimestampAligner.clean_sot_transcript(text, special_tokens)
+            text = MultiSpeakerSOTWordTimestampAligner.clean_sot_transcript(
+                text,
+                special_tokens,
+                special_token_ignored=getattr(aligner, 'special_token_ignored', None),
+                special_token_added=getattr(aligner, 'special_token_added', None),
+            )
             # A snapshot, so compaction on the engine thread cannot swap its tensors
             # while they are being read. An empty transcript has no words to align.
             (pending if text else wordless).append((index, text, dict(entry)))

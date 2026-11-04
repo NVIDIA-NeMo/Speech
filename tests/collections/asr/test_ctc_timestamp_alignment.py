@@ -14,15 +14,74 @@ import torch
 from nemo.collections.speechlm2.parts.ctc_timestamp_utils import (
     MultiSpeakerSOTWordTimestampAligner,
     _banded_ctc_search,
+    _boundary_profiles,
     _character_token_ids,
+    _interpolate_word_boundaries,
     _refine_word_timestamps,
     _timestamp_units,
     align_prepared_batch,
 )
 from tests.collections.asr.ctc_timestamp_test_utils import search_streams
 
+pytestmark = pytest.mark.unit
 
-@pytest.mark.unit
+
+@pytest.mark.parametrize(
+    'ignored,added,expected',
+    [
+        (None, None, ['hello', '<ev:laughter>', 'bye']),
+        (None, [], ['hello', 'bye']),
+        (['<ev:laughter>'], ['<ev:*>'], ['hello', 'bye']),
+        ([], ['<sty:*>'], ['<sty:stt:flat>', 'hello', '<sty:end:flat>', 'bye']),
+    ],
+)
+def test_special_token_policy_prepared_roundtrip(ignored, added, expected):
+    vocabulary = ['hello', '<ev:laughter>', '<sty:stt:flat>', '<sty:end:flat>', 'bye']
+
+    class Tokenizer:
+        def text_to_ids(self, text):
+            return [vocabulary.index(word) for word in text.split()]
+
+    aligner = MultiSpeakerSOTWordTimestampAligner(
+        tokenizer=Tokenizer(), blank_id=5, special_token_ignored=ignored, special_token_added=added
+    )
+    text = '<spk:1><sty:stt:flat>hello<ev:laughter><sty:end:flat> <spk:2>bye'
+    words = aligner.parse_sot_words(text, special_token_ignored=ignored, special_token_added=added)
+    assert [w['word'] for w in words] == expected
+    assert [w['speaker_tag'] for w in words] == [1] * (len(expected) - 1) + [2]
+    assert [w['word_index'] for w in words] == list(range(len(expected)))
+    prepared = aligner.prepare_alignment(torch.zeros(1, 32, 6), None, [text], audio_durations=[1.28])
+    assert [w['word'] for w in prepared['records'][0]['words']] == expected
+    assert prepared['config']['special_token_ignored'] == aligner.special_token_ignored
+    assert prepared['config']['special_token_added'] == aligner.special_token_added
+    assert align_prepared_batch(prepared) == aligner.align_prepared(prepared)
+
+
+def test_special_token_policy_cleanup_and_custom_allowlist():
+    text = '<s><spk:1><sty:stt:flat>hello<ev:laughter><sty:end:flat><noise></s>'
+    tokens = ['<s>', '</s>', '<spk:1>', '<sty:stt:flat>', '<ev:laughter>', '<sty:end:flat>', '<noise>']
+    kwargs = dict(special_token_ignored=[], special_token_added=['<sty:*>', '<noise>'])
+    cleaned = MultiSpeakerSOTWordTimestampAligner.clean_sot_transcript(text, tokens, **kwargs)
+    words = MultiSpeakerSOTWordTimestampAligner.parse_sot_words(cleaned, **kwargs)
+    assert [w['word'] for w in words] == ['<sty:stt:flat>', 'hello', '<sty:end:flat>', '<noise>']
+    assert all(w['speaker_tag'] == 1 for w in words)
+
+
+def test_special_token_policy_lists_are_instance_local():
+    first = MultiSpeakerSOTWordTimestampAligner()
+    second = MultiSpeakerSOTWordTimestampAligner()
+    first.special_token_added.append('<noise>')
+    assert second.special_token_added == ['<ev:*>']
+    assert second.special_token_ignored == ['<spk:*>', '<sty:stt:*>', '<sty:end:*>']
+
+
+@pytest.mark.parametrize('value', ['<ev:*>', [None], [''], 42])
+@pytest.mark.parametrize('key', ['special_token_added', 'special_token_ignored'])
+def test_special_token_policy_requires_lists_of_patterns(key, value):
+    with pytest.raises(ValueError, match=key):
+        MultiSpeakerSOTWordTimestampAligner(**{key: value})
+
+
 @pytest.mark.parametrize(
     'text,expected',
     [
@@ -38,18 +97,16 @@ def test_auto_timestamp_units_without_dataset_language(text, expected):
     assert [w['word'] for w in _timestamp_units(words, 'auto')] == expected
 
 
-@pytest.mark.unit
 def test_inference_cleanup_keeps_acoustic_tags():
     text = '<s> <spk:0> <sty:flat> 你好 <ev:laughter> </s>'
     assert (
         MultiSpeakerSOTWordTimestampAligner.clean_sot_transcript(
             text, ['<s>', '</s>', '<spk:0>', '<sty:flat>', '<ev:laughter>']
         )
-        == '<spk:0> <sty:flat> 你好 <ev:laughter>'
+        == '<spk:0> 你好 <ev:laughter>'
     )
 
 
-@pytest.mark.unit
 def test_normal_deferred_generation_automatically_selects_units_per_record(monkeypatch):
     import inspect
 
@@ -91,7 +148,6 @@ def test_normal_deferred_generation_automatically_selects_units_per_record(monke
     assert aligner.timestamp_language is None
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize('language', ['zh', 'ja'])
 def test_timestamp_character_units_are_instance_local(language):
     class Processor:
@@ -117,7 +173,6 @@ def test_timestamp_character_units_are_instance_local(language):
     assert align_prepared_batch(prepared) == aligner.align_prepared(prepared)
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize('language,text', [('hi', 'हिन्दी भाषा'), ('ko', '한국어 단어'), ('ar', 'أَهْلًا بالعالم')])
 def test_timestamp_word_languages_preserve_acoustic_spelling(language, text):
     class Tokenizer:
@@ -129,17 +184,15 @@ def test_timestamp_word_languages_preserve_acoustic_spelling(language, text):
     assert [w['word'] for w in prepared['records'][0]['words']] == text.split()
 
 
-@pytest.mark.unit
 def test_timestamp_units_preserve_tags_and_turns():
     words = MultiSpeakerSOTWordTimestampAligner.parse_sot_words('<spk:0> 你好 <ev:laughter> <sty:flat> <spk:1> 好')
     units = _timestamp_units(words, 'zh')
-    assert [w['word'] for w in units] == ['你', '好', '<ev:laughter>', '<sty:flat>', '好']
-    assert [w['word_index'] for w in units] == list(range(5))
-    assert [w['speaker_tag'] for w in units] == [0, 0, 0, 0, 1]
+    assert [w['word'] for w in units] == ['你', '好', '<ev:laughter>', '好']
+    assert [w['word_index'] for w in units] == list(range(4))
+    assert [w['speaker_tag'] for w in units] == [0, 0, 0, 1]
     assert units[-1]['turn_index'] != units[0]['turn_index']
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize('language', ['th', 'auto'])
 def test_thai_units_use_newmm_without_crossing_turns(language):
     pytest.importorskip('pythainlp')
@@ -149,7 +202,6 @@ def test_thai_units_use_newmm_without_crossing_turns(language):
     assert [w['speaker_tag'] for w in units] == [0, 0, 0, 0, 1, 1, 1]
 
 
-@pytest.mark.unit
 def test_character_tokenization_rejects_unknown_characters():
     processor = SimpleNamespace(
         piece_to_id=lambda _: 0, unk_id=lambda: 0, encode=lambda _: [0], id_to_piece=lambda _: '?'
@@ -158,35 +210,33 @@ def test_character_tokenization_rejects_unknown_characters():
         _character_token_ids(processor, '你', 3)
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize("target", [[1, 2], [1, 1]])
 @pytest.mark.parametrize("use_prior", [False, True])
-def test_banded_ctc_full_band_matches_exhaustive_paths(target, use_prior):
+@pytest.mark.parametrize("frames", range(3, 7))
+def test_banded_ctc_full_band_matches_exhaustive_paths(target, use_prior, frames):
     rng = np.random.default_rng(71)
     labels = np.array([0, target[0], 0, target[1], 0])
-    for frames in range(3, 7):
-        logp = rng.normal(size=(frames, 3)).astype(np.float32)
-        prior = rng.uniform(-2, 0, frames).astype(np.float32) if use_prior else None
-        path, score, _ = _banded_ctc_search(logp, labels, np.arange(frames), prior)
-        best = -np.inf
-        for states in itertools.product(range(5), repeat=frames):
-            if states[0] not in (0, 1) or states[-1] not in (3, 4):
-                continue
-            if any(
-                b - a not in (0, 1, 2) or (b - a == 2 and (labels[b] == 0 or labels[a] == labels[b]))
-                for a, b in zip(states, states[1:])
-            ):
-                continue
-            value = sum(
-                float(logp[t, labels[s]]) + (float(prior[t]) if prior is not None and labels[s] else 0)
-                for t, s in enumerate(states)
-            )
-            best = max(best, value)
-        assert score == pytest.approx(best, abs=1e-5)
-        assert path[0] in (0, 1) and path[-1] in (3, 4)
+    logp = rng.normal(size=(frames, 3)).astype(np.float32)
+    prior = rng.uniform(-2, 0, frames).astype(np.float32) if use_prior else None
+    path, score, _ = _banded_ctc_search(logp, labels, np.arange(frames), prior)
+    best = -np.inf
+    for states in itertools.product(range(5), repeat=frames):
+        if states[0] not in (0, 1) or states[-1] not in (3, 4):
+            continue
+        if any(
+            b - a not in (0, 1, 2) or (b - a == 2 and (labels[b] == 0 or labels[a] == labels[b]))
+            for a, b in zip(states, states[1:])
+        ):
+            continue
+        value = sum(
+            float(logp[t, labels[s]]) + (float(prior[t]) if prior is not None and labels[s] else 0)
+            for t, s in enumerate(states)
+        )
+        best = max(best, value)
+    assert score == pytest.approx(best, abs=1e-5)
+    assert path[0] in (0, 1) and path[-1] in (3, 4)
 
 
-@pytest.mark.unit
 def test_banded_ctc_refinement_caps_words_without_mutating_input():
     result = {
         "ctc_frame_seconds": 0.08,
@@ -209,7 +259,6 @@ def test_banded_ctc_refinement_caps_words_without_mutating_input():
     assert _refine_word_timestamps(result)['word_timestamp_refinement']['unmatched_words'] == 3
 
 
-@pytest.mark.unit
 def test_banded_ctc_serialized_worker_config_and_empty_support():
     class Tokenizer:
         def text_to_ids(self, text):
@@ -228,7 +277,6 @@ def test_banded_ctc_serialized_worker_config_and_empty_support():
     assert not len(path) and not len(starts) and score == -np.inf
 
 
-@pytest.mark.unit
 def test_banded_ctc_anchor_band_and_greedy_cache_agree():
     # Enough states/frames to exercise a real band, not the short-clip full-width path.
     labels = np.zeros(1201, dtype=np.int64)
@@ -409,7 +457,8 @@ def test_deferred_columns_reach_the_host_under_a_cuda_default_device():
 @pytest.mark.unit
 @pytest.mark.parametrize("use_transformer", [True, False])
 @pytest.mark.parametrize("upsampling_factor", [1, 2])
-def test_split_transformer_ctc_head_matches_its_whole_forward(use_transformer, upsampling_factor):
+@pytest.mark.parametrize("calibrated", [False, True])
+def test_split_transformer_ctc_head_matches_its_whole_forward(use_transformer, upsampling_factor, calibrated):
     # The deferred head runs TransformerCTCDecoder.trunk on each window and classify on slices of its frames.
     from nemo.collections.speechlm2.parts.ctc_timestamp_utils import TransformerCTCDecoder
 
@@ -434,6 +483,7 @@ def test_split_transformer_ctc_head_matches_its_whole_forward(use_transformer, u
         ctc_decoder=decoder,
         tokenizer=Tokenizer(),
         blank_id=20,  # A blank other than the last column.
+        boundary_interpolation=_boundary_calibration() if calibrated else None,
         online_inference_length=3,
         chunk_left_context=1,
         chunk_right_context=2,
@@ -477,7 +527,9 @@ def test_split_transformer_ctc_head_matches_its_whole_forward(use_transformer, u
             else:
                 assert record[key] == reference[key]
         assert record["ctc_log_probs"].dtype == torch.float32 and record["ctc_log_probs"].device.type == "cpu"
-    assert aligner.align_prepared(actual) == aligner.align_prepared(expected)
+    results = aligner.align_prepared(actual)
+    assert results == aligner.align_prepared(expected)
+    assert all(('boundary_interpolation' in result) == calibrated for result in results)
 
 
 @pytest.mark.unit
@@ -533,34 +585,29 @@ def test_banded_ctc_cannot_start_inside_an_infeasible_long_target():
     assert np.all(path == -1)
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize("cap", [0, -1, True, 1.5])
 def test_banded_ctc_rejects_invalid_word_cap(cap):
     with pytest.raises(ValueError, match="max_word_frames"):
         MultiSpeakerSOTWordTimestampAligner(max_word_frames=cap)
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize("text", ["piece—just", "piece — just", "—piece——just—"])
 def test_em_dash_separates_alignment_words(text):
     transcript = f"<spk:1> <sty:stt:flat> {text} <ev:laughter> <sty:end:flat>"
     words = MultiSpeakerSOTWordTimestampAligner.parse_sot_words(transcript)
     assert [w["word"] for w in words] == [
-        "<sty:stt:flat>",
         "piece",
         "just",
         "<ev:laughter>",
-        "<sty:end:flat>",
     ]
     assert all(w["speaker_tag"] == 1 for w in words)
-    assert [w["word_index"] for w in words] == list(range(5))
+    assert [w["word_index"] for w in words] == list(range(3))
     assert [w["word"] for w in MultiSpeakerSOTWordTimestampAligner.parse_sot_words("don't well-known")] == [
         "don't",
         "well-known",
     ]
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize("core_length", [0, 3, 7])
 @pytest.mark.parametrize("speaker_weight", [0.0, 0.25])
 @pytest.mark.parametrize("window_budget", [16 * 1024 * 1024, 768])
@@ -644,7 +691,7 @@ def test_deferred_windows_release_full_vocabulary_and_preserve_alignment(
         batch * frames * upsampling_factor * classes <= window_budget or batch == 1
         for batch, classes, frames in decoder.shapes
     )
-    assert actual["config"]["max_word_frames"] == 12 * upsampling_factor
+    assert actual["config"]["max_word_frames"] == aligner.max_word_frames * upsampling_factor
     for record, reference in zip(actual["records"], expected["records"]):
         assert record.keys() == reference.keys()
         for key in record:
@@ -657,17 +704,14 @@ def test_deferred_windows_release_full_vocabulary_and_preserve_alignment(
     assert aligner.align_prepared(actual) == aligner.align_prepared(expected)
 
 
-@pytest.mark.unit
 def test_word_timestamp_alignment_defaults_to_speaker_prior():
-    assert MultiSpeakerSOTWordTimestampAligner().speaker_logprob_weight == 1.0
+    assert MultiSpeakerSOTWordTimestampAligner().speaker_logprob_weight == 0.6057
 
 
-@pytest.mark.unit
 def test_legacy_alignment_backend_is_not_selectable():
     assert "alignment_backend" not in inspect.signature(MultiSpeakerSOTWordTimestampAligner).parameters
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize("weight", [None, 0.0, 0.25, 1.0])
 def test_default_pipeline_applies_configured_prior_and_always_refines(monkeypatch, weight):
     from nemo.collections.speechlm2.parts import ctc_timestamp_utils as utils
@@ -689,18 +733,20 @@ def test_default_pipeline_applies_configured_prior_and_always_refines(monkeypatc
     priors = []
     search = utils._banded_ctc_search
 
-    def capture(*args):
+    def capture(*args, **kwargs):
         priors.append(args[3].copy())
-        return search(*args)
+        return search(*args, **kwargs)
 
     monkeypatch.setattr(utils, '_banded_ctc_search', capture)
     result = aligner.align_prepared(prepared)[0]
     assert len(priors) == 1
-    np.testing.assert_allclose(priors[0], (1.0 if weight is None else weight) * np.log(0.8), atol=1e-7)
+    np.testing.assert_allclose(
+        priors[0], (aligner.speaker_logprob_weight if weight is None else weight) * np.log(0.8), atol=1e-7
+    )
     assert result['alignment_mode'] == 'banded'
     assert result['alignment_diagnostics']['one_pass'] is True
     assert result['word_timestamp_refinement']['method'] == 'diarization_boundary_refinement'
-    assert result['word_timestamp_refinement']['max_frames'] == 12
+    assert result['word_timestamp_refinement']['max_frames'] == 19
     assert 'alignment_backend' not in prepared['config']
 
 
@@ -769,7 +815,6 @@ def _dense_reference(
     return list(paths), [float(score) for score in final_scores]
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize("seed", [0, 7, 19])
 @pytest.mark.parametrize("speaker_weight", [0.0, 0.25])
 def test_full_band_dp_matches_dense_reference(seed, speaker_weight):
@@ -798,7 +843,6 @@ def test_full_band_dp_matches_dense_reference(seed, speaker_weight):
     assert actual_scores == pytest.approx(expected_scores, abs=1.0e-5)
 
 
-@pytest.mark.unit
 def test_banded_backpointers_use_one_byte_per_visited_cell():
     from nemo.collections.speechlm2.parts.ctc_timestamp_utils import _ctc_banded_forward
 
@@ -814,7 +858,6 @@ def test_banded_backpointers_use_one_byte_per_visited_cell():
     assert pointers.nbytes == 20 * 3
 
 
-@pytest.mark.unit
 def test_padded_record_batch_matches_independent_dp_and_backtraces():
     torch.manual_seed(23)
     blank_id = 4
@@ -850,7 +893,6 @@ def test_padded_record_batch_matches_independent_dp_and_backtraces():
         assert batched_scores[index] == pytest.approx(scores[0], abs=1.0e-6)
 
 
-@pytest.mark.unit
 def test_diarization_timestamps_are_contiguous_10ms_activity_segments():
     labels = torch.tensor(
         [
@@ -874,7 +916,6 @@ def test_diarization_timestamps_are_contiguous_10ms_activity_segments():
     ]
 
 
-@pytest.mark.unit
 def test_public_word_timestamps_only_expose_word_speaker_start_and_end():
     # A row as alignment builds it: the parsed, tokenized word with its start and end.
     rows = [
@@ -892,3 +933,301 @@ def test_public_word_timestamps_only_expose_word_speaker_start_and_end():
     timestamps = MultiSpeakerSOTWordTimestampAligner._public_word_timestamps(rows)
 
     assert timestamps == {2: [{"word": "hello", "speaker": 2, "start": 0.16, "end": 0.32}]}
+
+
+class TestBoundaryInterpolation:
+    @pytest.mark.parametrize('offset', [0.0, 10.0])
+    def test_vad_snap_keeps_calibrated_transcript_order(self, offset):
+        aligner = MultiSpeakerSOTWordTimestampAligner(boundary_max_correction_seconds=0.24)
+        rows = [_boundary_word(offset + 0.40, offset + 0.44), _boundary_word(offset + 0.56, offset + 0.60)]
+        rows[0]['word'], rows[1]['word'] = 'first', 'second'
+        segments = [dict(speaker=0, start=offset + 0.5, end=offset + 1.0)]
+        _interpolate_word_boundaries(
+            rows,
+            np.zeros((50, 2)),
+            0.04,
+            offset,
+            2.0,
+            segments,
+            {0: 0},
+            _boundary_calibration((0.2, 0.0)),
+            aligner=aligner,
+        )
+        outside_end = rows[0]['end']
+        words = _refined_boundary_words(rows, segments)
+        assert [word['word'] for word in words] == ['first', 'second']
+        assert words[0]['start'] == pytest.approx(offset + 0.6)
+        assert words[1]['start'] >= words[0]['start'] + 0.01 - 1e-9
+        assert words[0]['end'] == outside_end
+        assert all('_outside_diarization' not in word for word in words)
+
+    @pytest.mark.parametrize('offset', [0.0, 10.0])
+    @pytest.mark.parametrize('spacing,duration', [(0.03, 1.0), (0.0, 1.0), (0.03, 0.02)])
+    def test_recording_end_reserves_word_duration_before_spacing(self, offset, spacing, duration):
+        aligner = MultiSpeakerSOTWordTimestampAligner(
+            boundary_max_correction_seconds=0.24,
+            boundary_min_onset_spacing_seconds=spacing,
+            boundary_min_word_duration_seconds=0.04,
+        )
+        spans = [(0.88, 0.92), (0.92, 0.96)] if duration == 1.0 else [(0.0, 0.01), (0.01, 0.02)]
+        rows = [_boundary_word(offset + start, offset + end) for start, end in spans]
+        segments = [dict(speaker=0, start=offset, end=offset + duration)]
+        _interpolate_word_boundaries(
+            rows,
+            np.zeros((25, 2)),
+            0.04,
+            offset,
+            duration,
+            segments,
+            {0: 0},
+            _boundary_calibration((0.2, 0.0)),
+            aligner=aligner,
+        )
+        assert all(offset <= word['start'] <= word['end'] <= offset + duration for word in rows)
+        if duration == 1.0:
+            assert [word['start'] for word in rows] == pytest.approx([offset + 0.96 - spacing, offset + 0.96])
+            assert all(word['end'] - word['start'] >= 0.04 - 1e-9 for word in rows)
+
+    @pytest.mark.parametrize(
+        'start,corrections,cap,seed,grid,expected',
+        [
+            pytest.param(0.4, [-1, 1], 0.04, 0.24, 0.01, (0.36, 0.64), id='clamped-outward'),
+            pytest.param(0.4, [1, -1], 0.04, 0.24, 0.01, (0.44, 0.64), id='clamped-inward'),
+            pytest.param(0.4, [-0.02, 0.03], 0.04, 0.24, 0.01, (0.38, 0.66), id='outside-word'),
+            pytest.param(1.0, [-0.02, 0.03], 0.04, 0.24, 0.01, (0.98, 1.26), id='later-word'),
+            pytest.param(0.412, [-1, 1], 0.06, 0.40, 0.02, (0.36, 0.82), id='custom-grid'),
+            pytest.param(0.412, [-1, 1], 0.04, 0.24, 0.01, (0.372, 0.652), id='cap-before-rounding'),
+        ],
+    )
+    def test_outside_word_seed_correction_and_grid(self, start, corrections, cap, seed, grid, expected):
+        aligner = MultiSpeakerSOTWordTimestampAligner(
+            boundary_max_correction_seconds=cap,
+            boundary_outside_word_duration_seconds=seed,
+            boundary_grid_seconds=grid,
+        )
+        rows = [_boundary_word(start, start + 0.04)]
+        _interpolate_word_boundaries(
+            rows, np.zeros((50, 2)), 0.04, 0, 2.0, [], {0: 0}, _boundary_calibration(corrections), aligner=aligner
+        )
+        assert len(rows) == 1 and rows[0]['_outside_diarization']
+        assert (rows[0]['start'], rows[0]['end']) == pytest.approx(expected)
+        assert seed - cap - 1e-9 <= rows[0]['end'] - rows[0]['start'] <= seed + cap + 1e-9
+        word = _refined_boundary_words(rows, [])[0]
+        assert (word['start'], word['end']) == pytest.approx(expected)
+        assert '_outside_diarization' not in word
+
+    def test_rounding_and_onset_ordering_do_not_exceed_correction_cap(self):
+        spans = [(0.403, 0.443), (0.404, 0.444)]
+        rows = [_boundary_word(*span) for span in spans]
+        segments = [dict(speaker=0, start=0.0, end=2.0)]
+        _interpolate_word_boundaries(
+            rows, np.zeros((50, 2)), 0.04, 0, 2.0, segments, {0: 0}, _boundary_calibration((1.0, 1.0))
+        )
+        corrected = np.array([[word['start'], word['end']] for word in rows])
+        assert (np.abs(corrected - spans) <= 0.04 + 1e-9).all()
+        assert rows[0]['start'] <= rows[1]['start']
+
+    @pytest.mark.parametrize(
+        'segment_start,segment_end,expected',
+        [(0.42, 1.0, (0.38, 0.47)), (0.3, 0.5, (0.3, 0.5)), (0.3, 0.9, (0.3, 0.9))],
+    )
+    def test_overlapping_word_uses_vad_not_outside_fallback(self, segment_start, segment_end, expected):
+        rows = [_boundary_word()]
+        segments = [dict(speaker=0, start=segment_start, end=segment_end)]
+        _interpolate_word_boundaries(rows, np.zeros((50, 2)), 0.04, 0, 2.0, segments, {0: 0}, _boundary_calibration())
+        assert rows[0]['end'] == pytest.approx(0.47)
+        assert not rows[0]['_outside_diarization']
+        word = _refined_boundary_words(rows, segments)[0]
+        # Refinement uses onset membership: overlap alone must not snap a preceding onset forward.
+        assert (word['start'], word['end']) == pytest.approx(expected)
+
+    @pytest.mark.parametrize(
+        'settings',
+        [
+            None,
+            {},
+            dict(
+                boundary_profile_radius_frames=2,
+                boundary_profile_points=9,
+                boundary_logprob_floor=-5.0,
+                boundary_logprob_ceiling=-0.5,
+            ),
+        ],
+        ids=['standalone-defaults', 'aligner-defaults', 'custom-geometry'],
+    )
+    @pytest.mark.parametrize('word_index', [0, 1])
+    @pytest.mark.parametrize('edge', [0, 1], ids=['start', 'end'])
+    def test_batched_profiles_match_scalar_interpolation(self, settings, word_index, edge):
+        aligner = None if settings is None else MultiSpeakerSOTWordTimestampAligner(**settings)
+        radius, points = (2, 9) if settings else (4, 33)
+        floor, ceiling = (-5.0, -0.5) if settings else (-20.0, 0.0)
+        logp = -np.random.default_rng(0).uniform(0, 30, size=(25, 3))
+        edges, labels = np.array([[10.003, 10.116], [10.83, 10.999]]), np.array([[1, 2], [2, 1]])
+        profiles = _boundary_profiles(logp, edges, labels, 0.04, 10.0, aligner=aligner)
+        assert profiles.shape == (2, 2, 2 * points)
+        positions = (edges[word_index, edge] - 10.0) / 0.04 + np.linspace(-radius, radius, points)
+        expected = np.concatenate(
+            [
+                np.interp(positions, np.arange(25), np.clip(logp[:, col], floor, ceiling))
+                for col in (labels[word_index, edge], 0)
+            ]
+        )
+        np.testing.assert_allclose(profiles[edge, word_index], expected, atol=1e-10)
+
+    @pytest.mark.parametrize('calibration_points', [9, 33], ids=['matching', 'mismatched'])
+    def test_profile_geometry_requires_matching_calibration(self, calibration_points):
+        calibration = _boundary_calibration((0, 0), points=calibration_points)
+        if calibration_points != 9:
+            with pytest.raises(ValueError, match='boundary_interpolation weights'):
+                MultiSpeakerSOTWordTimestampAligner(boundary_profile_points=9, boundary_interpolation=calibration)
+        else:
+            aligner = MultiSpeakerSOTWordTimestampAligner(
+                boundary_profile_points=9, boundary_interpolation=calibration
+            )
+            assert aligner.boundary_interpolation == calibration
+
+    @pytest.mark.parametrize('spacing,minimum_duration', [(0.03, 0.04), (0.02, 0.03)])
+    def test_configurable_onset_spacing_and_minimum_duration(self, spacing, minimum_duration):
+        aligner = MultiSpeakerSOTWordTimestampAligner(
+            boundary_max_correction_seconds=0.1,
+            boundary_min_onset_spacing_seconds=spacing,
+            boundary_min_word_duration_seconds=minimum_duration,
+        )
+        rows = [_boundary_word(0.4, 0.401), _boundary_word(0.4, 0.401)]
+        segments = [dict(speaker=0, start=0.0, end=2.0)]
+        _interpolate_word_boundaries(
+            rows, np.zeros((50, 2)), 0.04, 0, 2.0, segments, {0: 0}, _boundary_calibration((0, 0)), aligner=aligner
+        )
+        np.testing.assert_allclose(
+            [[w['start'], w['end']] for w in rows],
+            [[0.4, 0.4 + minimum_duration], [0.4 + spacing, 0.4 + spacing + minimum_duration]],
+        )
+
+    @pytest.mark.parametrize(
+        'name,value',
+        [
+            ('boundary_profile_radius_frames', 0),
+            ('boundary_profile_radius_frames', True),
+            ('boundary_profile_points', 1),
+            ('boundary_profile_points', 3.5),
+            ('boundary_logprob_floor', 0.0),
+            ('boundary_logprob_ceiling', -21.0),
+            ('boundary_logprob_floor', float('-inf')),
+            ('boundary_max_correction_seconds', -0.1),
+            ('boundary_max_correction_seconds', float('nan')),
+            ('boundary_outside_word_duration_seconds', 0.0),
+            ('boundary_grid_seconds', 0.0),
+            ('boundary_grid_seconds', float('inf')),
+            ('boundary_min_onset_spacing_seconds', -0.1),
+            ('boundary_min_word_duration_seconds', 0.0),
+        ],
+    )
+    def test_invalid_interpolation_settings_are_rejected(self, name, value):
+        with pytest.raises(ValueError, match='boundary_'):
+            MultiSpeakerSOTWordTimestampAligner(**{name: value})
+
+    @pytest.mark.parametrize('edges', [[[0.4, 0.44], [0.6, 0.64]], [[0.2, 0.28], [0.5, 0.6]]])
+    def test_interpolation_is_batched_and_preserves_linear_profiles(self, edges):
+        logp = np.stack([-np.arange(30) * slope for slope in (0.1, 0.2)], axis=1)
+        edges = np.array(edges)
+        features = _boundary_profiles(logp, edges, np.ones(edges.shape, dtype=int), 0.04, 0.0)
+        assert features.shape == (2, len(edges), 66)
+        positions = edges[0, 0] / 0.04 + np.linspace(-4, 4, 33)
+        np.testing.assert_allclose(features[0, 0, :33], -positions * 0.2, atol=1e-6)
+
+    @pytest.mark.parametrize('word_spans', [[(10.0, 10.04), (10.98, 11.0)], []], ids=['edges', 'empty'])
+    def test_edges_and_nonzero_time_offset_are_clipped(self, word_spans):
+        rows = [_boundary_word(start, end) for start, end in word_spans]
+        _interpolate_word_boundaries(
+            rows, np.zeros((25, 2)), 0.04, 10, 1.0, [], {0: None} if rows else {}, _boundary_calibration()
+        )
+        assert all(10 <= w['start'] <= w['end'] <= 11 for w in rows)
+
+    @pytest.mark.parametrize(
+        'field,value',
+        [
+            ('weights', [[float('nan')]]),
+            ('weights', np.zeros((2, 65)).tolist()),
+            ('mean', np.zeros((2, 65)).tolist()),
+            ('offset', [0.0, float('inf')]),
+        ],
+    )
+    def test_invalid_calibration_is_rejected(self, field, value):
+        with pytest.raises(ValueError, match='boundary_interpolation'):
+            MultiSpeakerSOTWordTimestampAligner(boundary_interpolation={**_boundary_calibration(), field: value})
+
+    @pytest.mark.parametrize(
+        'options,expected_end',
+        [
+            ({'boundary_outside_word_duration_seconds': 0.24}, 0.58),
+            (
+                dict(
+                    boundary_profile_radius_frames=2,
+                    boundary_profile_points=9,
+                    boundary_logprob_floor=-8.0,
+                    boundary_logprob_ceiling=-0.1,
+                    boundary_max_correction_seconds=0.04,
+                    boundary_outside_word_duration_seconds=0.41,
+                    boundary_grid_seconds=0.02,
+                    boundary_min_onset_spacing_seconds=0.02,
+                    boundary_min_word_duration_seconds=0.02,
+                ),
+                0.75,
+            ),
+        ],
+        ids=['default-grid', 'custom-grid'],
+    )
+    def test_prepared_batch_preserves_calibration_for_cpu_worker(self, options, expected_end):
+        aligner = MultiSpeakerSOTWordTimestampAligner(
+            tokenizer=SimpleNamespace(text_to_ids=lambda _: [1]),
+            blank_id=2,
+            ctc_frame_seconds=0.04,
+            boundary_interpolation=_boundary_calibration(points=options.get('boundary_profile_points', 33)),
+            **options,
+        )
+        logits = torch.full((1, 20, 3), -10.0)
+        logits[:, :, 2] = 0
+        logits[:, 8, 1] = 10
+        prepared = aligner.prepare_alignment(logits.log_softmax(-1), None, ['hello'], audio_durations=[0.8])
+        assert all(prepared['config'][name] == value for name, value in options.items())
+        result = align_prepared_batch(prepared)
+        assert result == aligner.align_prepared(prepared)
+        word = result[0]['speaker_word_timestamps'][0][0]
+        assert (word['start'], word['end']) == pytest.approx((0.30, expected_end))
+        assert set(word) == {'word', 'speaker', 'start', 'end'}
+        assert result[0]['boundary_interpolation']['outside_words'] == 1
+        assert result[0]['boundary_interpolation']['estimated_grid_seconds'] == options.get(
+            'boundary_grid_seconds', 0.01
+        )
+
+    def test_independent_corrections_cannot_reorder_same_speaker_words(self):
+        rows = [_boundary_word(0.4, 0.44), _boundary_word(0.44, 0.48)]
+        # A token-dependent correction delays the first word, but advances the second.
+        rows[1]['_boundary_labels'] = [2, 2]
+        config = _boundary_calibration((0.2, 0.03))
+        config['weights'][0][16] = 0.4
+        _interpolate_word_boundaries(rows, np.tile([0.0, 0.0, -1.0], (40, 1)), 0.04, 0, 1.6, [], {0: 0}, config)
+        assert rows[0]['start'] <= rows[1]['start']
+        assert all(w['end'] > w['start'] for w in rows)
+
+
+def _boundary_calibration(offset=(-0.02, 0.03), *, points=33):
+    return dict(
+        weights=np.zeros((2, 2 * points)).tolist(), mean=np.zeros((2, 2 * points)).tolist(), offset=list(offset)
+    )
+
+
+def _boundary_word(start=0.4, end=0.44):
+    return dict(word='hello', speaker_tag=0, start=start, end=end, _boundary_labels=[1, 1])
+
+
+def _refined_boundary_words(rows, segments):
+    result = dict(
+        ctc_frame_seconds=0.04,
+        speaker_word_timestamps={0: rows},
+        diarization_timestamps=copy.deepcopy(segments),
+        speaker_tag_to_sortformer_column={0: 0},
+    )
+    refined = _refine_word_timestamps(result, 24)
+    assert result['diarization_timestamps'] == segments
+    return refined['speaker_word_timestamps'][0]

@@ -520,6 +520,81 @@ class TestMagpieTTSLhotseDatasets:
         assert batch["text"].shape[0] == 1
         assert dataset.text_tokenizer.encoded_texts == expected_texts
 
+    @pytest.mark.parametrize("default,override", [(1.0, 0.0), (0.0, 1.0)])
+    @pytest.mark.parametrize("dataset_type", ["train", "test"])
+    def test_multiturn_yaml_text_selection_override(self, default, override, dataset_type):
+        from nemo.collections.common.data.lhotse.cutset import attach_tags
+
+        _seed_everything()
+        normal = next(iter(_multiturn_cutset()))
+        tagged = next(iter(_multiturn_cutset()))
+        tagged.id += "-tagged"
+        tags = OmegaConf.create({"task": "duplex", "load_normalized_text_percent": override, "acoustic_loss": False})
+        attach_tags(tagged, tags)
+        for cut in (normal, tagged):
+            for supervision in cut.supervisions:
+                supervision.normalized_text = f"normalized {supervision.text}"
+                supervision.ipa = "test ipa"
+
+        kwargs = _multiturn_dataset_kwargs()
+        kwargs.update(
+            input_roles=["user"],
+            output_roles=["assistant"],
+            add_text_bos=False,
+            use_text_conditioning_tokenizer=False,
+            load_normalized_text_percent=default,
+            dataset_type=dataset_type,
+        )
+        dataset = MagpieTTSLhotseMultiturnDataset(**kwargs)
+        dataset.text_tokenizer = _FakeTextTokenizer()
+        dataset.phoneme_tokenizer = _FakeIPATokenizer()
+        dataset.bos_id = len(dataset.text_tokenizer.tokens)
+        dataset.eos_id = dataset.bos_id + 1
+        dataset.cfg_unk_token_id = dataset.bos_id + 2
+        dataset.interruption_token_id = dataset.bos_id + 3
+        dataset.pad_id = dataset.text_tokenizer.pad
+        batch = dataset[CutSet.from_cuts([normal, tagged])]
+
+        raw = ["hello", "okay", "hi", "ok"]
+        # Target turns for both cuts are encoded before source turns.
+        expected = []
+        for role_texts in (raw[:2], raw[2:]):
+            for probability in (default, override):
+                expected.extend(f"normalized {text}" if probability else text for text in role_texts)
+        assert dataset.text_tokenizer.encoded_texts == expected
+        assert batch["acoustic_loss_mask"].tolist() == [True, False]
+
+    @pytest.mark.parametrize("override", [-0.1, 1.1, float("nan"), float("inf"), "0.0", None, True])
+    def test_multiturn_invalid_text_selection_override(self, override):
+        from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import build_token_channel
+
+        cut = next(iter(_multiturn_cutset()))
+        cut.custom["load_normalized_text_percent"] = override
+        with pytest.raises(ValueError, match="load_normalized_text_percent"):
+            build_token_channel(cut, _FakeTextTokenizer(), 0.1, roles={"assistant"})
+
+    @pytest.mark.parametrize("draw,expected", [(0.2, "normalized hello"), (0.4, "hello")])
+    def test_multiturn_fractional_text_selection_override(self, monkeypatch, draw, expected):
+        from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import build_token_channel
+
+        cut = next(iter(_multiturn_cutset()))
+        cut.load_normalized_text_percent = 0.25
+        for supervision in cut.supervisions:
+            supervision.normalized_text = f"normalized {supervision.text}"
+        monkeypatch.setattr("nemo.collections.tts.parts.utils.tts_dataset_utils.random.random", lambda: draw)
+        tokenizer = _FakeTextTokenizer()
+        build_token_channel(cut, tokenizer, 0.1, roles={"assistant"}, add_text_bos=False)
+        assert tokenizer.encoded_texts[0] == expected
+
+    def test_multiturn_missing_normalized_text_falls_back_to_raw(self):
+        from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import build_token_channel
+
+        cut = next(iter(_multiturn_cutset()))
+        cut.load_normalized_text_percent = 1.0
+        tokenizer = _FakeTextTokenizer()
+        build_token_channel(cut, tokenizer, 0.1, roles={"assistant"}, add_text_bos=False)
+        assert tokenizer.encoded_texts == ["hello", "okay"]
+
     @pytest.mark.parametrize("load_normalized_text_percent", [-0.1, 1.1])
     @pytest.mark.parametrize("dataset_class", [MagpieTTSLhotseDataset, MagpieTTSLhotseMultiturnDataset])
     def test_load_normalized_text_percent_validation(self, dataset_class, load_normalized_text_percent):

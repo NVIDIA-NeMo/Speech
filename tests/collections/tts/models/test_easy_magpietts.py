@@ -651,3 +651,38 @@ def test_multiturn_lhotse_dataloader_omits_alignment_prior():
         assert batch['agent_mask'].sum().item() > 0
         # Ensure the alignment prior is not present
         assert 'align_prior_matrix' not in batch
+
+
+def test_phoneme_supervision_masks_both_acoustic_heads_without_changing_inputs():
+    from types import SimpleNamespace
+
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "autoregressive",
+                "local_transformer_hidden_dim": 32,
+                "local_transformer_n_layers": 1,
+                "local_transformer_n_heads": 4,
+            }
+        )
+    )
+    model.phoneme_tokenizer = SimpleNamespace(bos_token_id=1, eos_token_id=2, pad=0)
+    model.phoneme_vocab_size = 32
+    model.phoneme_stacking_factor = 1
+    model.phoneme_embedding = nn.Embedding(32, 32)
+    model.phoneme_final_proj = nn.Linear(32, 32)
+    model.embed_phoneme_tokens = lambda tokens: model.phoneme_embedding(tokens.long()).sum(dim=1)
+    model.eval()
+    batch = _toy_batch(model)
+    batch['phoneme_tokens'] = torch.tensor([[3, 4, 5], [6, 7, 8]])
+    batch['phoneme_tokens_lens'] = torch.tensor([3, 3])
+    unmasked = model.process_batch(**batch, mode='val')
+    masked = model.process_batch(**batch, mode='val', acoustic_loss_mask=torch.tensor([False, False]))
+    torch.testing.assert_close(unmasked.logits, masked.logits)
+    torch.testing.assert_close(unmasked.phoneme_logits, masked.phoneme_logits)
+    assert masked.codebook_loss.item() == 0
+    assert masked.local_transformer_loss.item() == 0
+    torch.testing.assert_close(masked.loss, model.phoneme_loss_weight * masked.phoneme_loss)
+    masked.loss.backward()
+    assert model.final_proj.weight.grad.count_nonzero() == 0
+    assert model.phoneme_final_proj.weight.grad.count_nonzero() > 0

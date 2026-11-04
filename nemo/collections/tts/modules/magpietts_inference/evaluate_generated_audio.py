@@ -802,6 +802,9 @@ def evaluate_dir(
             'total_gen_audio_seconds': file_duration,
             'predicted_codes_path': codes_file_lists[ridx] if has_codes else None,
         }
+        timestamp_path = os.path.splitext(pred_audio_filepath)[0] + '.timestamps.json'
+        if os.path.isfile(timestamp_path):
+            metric_row['timestamps_filepath'] = os.path.abspath(timestamp_path)
         if with_prosody_metrics:
             metric_row['pred_gt_esim'] = pred_gt_esim
             metric_row['pred_gt_ems'] = pred_gt_ems

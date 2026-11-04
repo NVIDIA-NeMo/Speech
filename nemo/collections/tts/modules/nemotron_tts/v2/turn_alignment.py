@@ -1,0 +1,205 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Compact-turn acoustic alignment restored to the V2 conversation timeline.
+
+Reuses the shared batching and MAS restoration implementation originally added
+to aligned_text_head.py, without constructing a repeated-text prediction head.
+"""
+
+from dataclasses import dataclass
+from typing import Callable
+
+import torch
+from torch import nn
+
+
+@dataclass
+class AlignedTextTargets:
+    """Supervision on the original acoustic grid, before causal shifts or EOS."""
+
+    loss: torch.Tensor
+    targets: torch.Tensor
+    loss_mask: torch.Tensor
+    valid_turn_count: torch.Tensor
+    turn_count: torch.Tensor
+    one_frame_tokens: torch.Tensor
+    token_count: torch.Tensor
+    token_indices: torch.Tensor | None = None
+
+
+def align_text_turns(
+    aligner: nn.Module,
+    audio_features: torch.Tensor,
+    text_tokens: torch.Tensor,
+    text_lens: torch.Tensor,
+    turn_indices: torch.Tensor,
+    warmup_targets: torch.Tensor,
+    embed_text: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+    pad_id: int,
+    use_alignment: bool,
+    max_turns_per_batch: int = 32,
+    max_frames_per_batch: int = 8192,
+    speaker_reference_features: torch.Tensor | None = None,
+    speaker_reference_lens: torch.Tensor | None = None,
+    return_token_indices: bool = False,
+) -> AlignedTextTargets:
+    """Align compact text turns and restore their labels to the conversation grid.
+
+    ``turn_indices`` has rows ``(sample, start, end_exclusive)`` on the acoustic
+    grid. Text contains content tokens only: the caller owns BOS/EOS handling,
+    channel delays and autoregressive shifts. Acoustic inputs and the existing
+    text embeddings are detached from the TTS generator; the likelihood still
+    trains every aligner parameter.
+
+    Turns are sorted by audio length and packed under a padded-frame budget.
+    No acoustic-score tensor is transferred to CPU. Only the small index/length
+    table is copied once to organize batches. Invalid turns are excluded from
+    both likelihood and text-head supervision. A single turn longer than the
+    frame budget raises rather than truncating speech or changing its labels.
+
+    Before the curriculum switch, valid spans retain ``warmup_targets``.
+    Afterwards they contain BPE tokens repeated according to the MAS path.
+    Outside valid spans, targets are PAD and the loss mask is false.
+
+    ``return_token_indices`` also restores the detached MAS position indices to
+    the acoustic grid. Positions restart from zero in each compact transcript;
+    invalid frames contain -1. These are positions, not vocabulary token IDs.
+
+    Optional speaker references use the conversation batch axis, rather than
+    the compact turn axis. The learnable encoder pools each reference once;
+    turn packs gather its vector using the original sample index. Reference
+    features are detached, while the encoder and flow conditioning learn from
+    the acoustic likelihood. Missing references use zero conditioning.
+    """
+    if audio_features.ndim != 3 or warmup_targets.shape != audio_features.shape[:2]:
+        raise ValueError('Expected audio_features [B,T,C] and warmup_targets [B,T]')
+    if text_tokens.ndim != 2 or text_lens.shape != (text_tokens.size(0),):
+        raise ValueError('Expected compact text_tokens [turns,N] and text_lens [turns]')
+    if turn_indices.shape != (text_tokens.size(0), 3):
+        raise ValueError('turn_indices must have shape [turns,3]')
+    if max_turns_per_batch < 1 or max_frames_per_batch < 1:
+        raise ValueError('Turn and frame batch limits must be positive')
+    if text_lens.dtype not in (torch.int32, torch.int64) or turn_indices.dtype not in (torch.int32, torch.int64):
+        raise ValueError('Text lengths and turn indices must contain integers')
+    if text_tokens.device != audio_features.device or warmup_targets.device != audio_features.device:
+        raise ValueError('Audio, compact text and warmup targets must be on the same device')
+
+    metadata = torch.cat([turn_indices, text_lens.to(turn_indices.device).unsqueeze(1)], dim=1).detach().cpu().tolist()
+    batch_size, audio_steps, channels = audio_features.shape
+    valid_rows = []
+    for row, (sample, start, end, num_text) in enumerate(metadata):
+        if (
+            0 <= sample < batch_size
+            and 0 <= start < end <= audio_steps
+            and 0 < num_text <= text_tokens.size(1)
+            and end - start >= num_text
+        ):
+            if end - start > max_frames_per_batch:
+                raise ValueError(
+                    f'Turn {row} has {end - start} frames, exceeding max_frames_per_batch={max_frames_per_batch}'
+                )
+            valid_rows.append(row)
+    # Overlapping targets would make restoration depend on the sorting order.
+    previous_ends = {}
+    for row in sorted(valid_rows, key=lambda index: metadata[index][:2]):
+        sample, start, end, _ = metadata[row]
+        if start < previous_ends.get(sample, 0):
+            raise ValueError('Alignment turn spans must not overlap within a sample')
+        previous_ends[sample] = end
+    valid_rows.sort(key=lambda index: metadata[index][2] - metadata[index][1])
+    batches = _turn_batches(valid_rows, metadata, max_turns_per_batch, max_frames_per_batch)
+
+    targets = torch.full_like(warmup_targets, pad_id)
+    loss_mask = torch.zeros_like(warmup_targets, dtype=torch.bool)
+    token_indices = torch.full_like(warmup_targets, -1) if return_token_indices else None
+    weighted_loss = audio_features.new_zeros((), dtype=torch.float32)
+    counts = torch.zeros(4, dtype=torch.long, device=audio_features.device)
+    speaker_embeddings = None
+    if getattr(aligner, 'use_speaker_conditioning', False):
+        if (speaker_reference_features is None) != (speaker_reference_lens is None):
+            raise ValueError('Speaker reference features and lengths must be provided together')
+        if speaker_reference_features is not None:
+            if speaker_reference_features.size(0) != batch_size:
+                raise ValueError('Speaker references must use the conversation batch dimension')
+            speaker_embeddings = aligner.encode_speaker_reference(
+                speaker_reference_features.detach(), speaker_reference_lens
+            )
+    # Counts: valid turns, one-frame text tokens, text tokens, acoustic frames.
+    for batch_rows in batches:
+        max_audio = max(metadata[row][2] - metadata[row][1] for row in batch_rows)
+        max_text = max(metadata[row][3] for row in batch_rows)
+        packed_audio = audio_features.new_zeros(len(batch_rows), max_audio, channels)
+        audio_lengths = []
+        for packed_row, row in enumerate(batch_rows):
+            sample, start, end, _ = metadata[row]
+            packed_audio[packed_row, : end - start] = audio_features[sample, start:end].detach()
+            audio_lengths.append(end - start)
+        row_indices = torch.tensor(batch_rows, device=text_tokens.device, dtype=torch.long)
+        packed_text = text_tokens.index_select(0, row_indices)[:, :max_text]
+        packed_text_lens = text_lens.to(audio_features.device).index_select(0, row_indices)
+        packed_audio_lens = torch.tensor(audio_lengths, device=audio_features.device, dtype=torch.long)
+        with torch.no_grad():
+            text_features = embed_text(packed_text, packed_text_lens).detach()
+        speaker_kwargs = {}
+        if speaker_embeddings is not None:
+            sample_indices = torch.tensor(
+                [metadata[row][0] for row in batch_rows], device=audio_features.device, dtype=torch.long
+            )
+            speaker_kwargs['speaker_embeddings'] = speaker_embeddings.index_select(0, sample_indices)
+        result = aligner(packed_audio, text_features, packed_audio_lens, packed_text_lens, **speaker_kwargs)
+        valid = result.valid_turns.to(dtype=torch.bool, device=audio_features.device)
+        frame_count = (packed_audio_lens * valid).sum()
+        weighted_loss = weighted_loss + result.loss * frame_count
+        counts[0] += valid.sum()
+        counts[1] += ((result.durations == 1) & valid[:, None]).sum()
+        counts[2] += (packed_text_lens * valid).sum()
+        counts[3] += frame_count
+        for packed_row, row in enumerate(batch_rows):
+            sample, start, end, _ = metadata[row]
+            path = result.token_indices[packed_row, : end - start]
+            valid_frames = valid[packed_row] & (path >= 0)
+            if use_alignment:
+                labels = packed_text[packed_row].gather(0, path.clamp_min(0))
+            else:
+                labels = warmup_targets[sample, start:end]
+            targets[sample, start:end] = torch.where(valid_frames, labels, pad_id)
+            loss_mask[sample, start:end] = valid_frames
+            if token_indices is not None:
+                token_indices[sample, start:end] = torch.where(valid_frames, path, -1)
+
+    loss = weighted_loss / counts[3].clamp_min(1)
+    if not batches:
+        loss = loss + _zero_parameter_loss(aligner, audio_features)
+    return AlignedTextTargets(
+        loss=loss,
+        targets=targets,
+        loss_mask=loss_mask,
+        valid_turn_count=counts[0],
+        turn_count=torch.tensor(text_tokens.size(0), device=audio_features.device, dtype=torch.long),
+        one_frame_tokens=counts[1],
+        token_count=counts[2],
+        token_indices=token_indices,
+    )
+
+
+def _turn_batches(rows, metadata, max_turns, max_frames):
+    batches, current = [], []
+    max_audio = 0
+    for row in rows:
+        audio_length = metadata[row][2] - metadata[row][1]
+        next_max = max(max_audio, audio_length)
+        if current and (len(current) >= max_turns or (len(current) + 1) * next_max > max_frames):
+            batches.append(current)
+            current, max_audio = [], 0
+        current.append(row)
+        max_audio = max(max_audio, audio_length)
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _zero_parameter_loss(module, reference):
+    return sum(
+        (parameter.sum() * 0.0 for parameter in module.parameters()), reference.new_zeros((), dtype=torch.float32)
+    )

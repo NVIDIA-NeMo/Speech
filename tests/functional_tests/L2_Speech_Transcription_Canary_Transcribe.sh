@@ -12,6 +12,31 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# Canary-1B-flash transcription through transcribe_speech.py: full manifest, prompt override, and audio directory.
+set -e
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/transcribe_speech.py \
+    dataset_manifest=/home/TestData/asr/canary/dev-other-wav-10-canary-fields.json \
+    output_filename=/tmp/preds.json \
+    batch_size=10 \
+    model_path=/home/TestData/asr/canary/models/canary-1b-flash_HF_20250318.nemo \
+    num_workers=0 \
+    amp=false \
+    compute_dtype=bfloat16 \
+    matmul_precision=medium
+
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/transcribe_speech.py \
+    dataset_manifest=/home/TestData/asr/canary/dev-other-wav-10.json \
+    output_filename=preds.json \
+    batch_size=10 \
+    model_path=/home/TestData/asr/canary/models/canary-1b-flash_HF_20250318.nemo \
+    num_workers=0 \
+    amp=false \
+    compute_dtype=bfloat16 \
+    matmul_precision=medium \
+    +prompt.source_lang="en" \
+    +prompt.target_lang="en" \
+    +prompt.pnc="no"
+
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/transcribe_speech.py \
     audio_dir=/home/TestData/asr/canary/dev-other-wav \
     output_filename=preds.json \

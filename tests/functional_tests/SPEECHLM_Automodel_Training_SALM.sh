@@ -23,6 +23,7 @@ torchrun --nproc-per-node 1 --no-python \
       data.train_ds.input_cfg.0.cuts_path=/home/TestData/speechlm/lhotse/libri/librispeech_cuts_lower_train-clean-5.jsonl.gz \
       data.validation_ds.datasets.val_set_0.input_cfg.0.cuts_path=/home/TestData/speechlm/lhotse/libri/librispeech_cuts_lower_dev-clean-2.jsonl.gz \
       trainer.devices=1 \
+      trainer.strategy.ep_size=1 \
       trainer.max_steps=10
 
 # Convert to HF format. Look up the checkpoint name; the quotes keep Hydra from parsing "=" in the path.

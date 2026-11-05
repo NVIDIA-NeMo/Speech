@@ -70,7 +70,7 @@ class ProcessBatchOutput:
     Output dataclass from process_batch containing loss values and model predictions.
 
     Attributes:
-        loss: Total combined loss.
+        loss: Total weighted acoustic, phoneme, predictor, and optional prosody losses.
         codebook_loss: Cross-entropy loss for parallel audio codebook prediction
         phoneme_loss: Cross-entropy loss for phoneme prediction (None if no phoneme tokenizer)
         acoustic_codes_predictor_loss: Loss from the acoustic codes predictor.
@@ -83,6 +83,10 @@ class ProcessBatchOutput:
         context_audio_codes: Processed context audio codes (B, C, T')
         context_audio_codes_lens: Length of processed context audio codes (B,)
         selected_training_mode: Name of the training mode used for this batch (e.g., "streaming_4_8")
+        prosody_loss: Prosody-code and PAD cross-entropy, or None when disabled
+        prosody_logits: Prosody logits including PAD (B, T_prosody, 2049)
+        prosody_codes_target: Clean, delayed compact prosody codes with PAD tail (B, T_prosody)
+        prosody_codes_lens_target: Prosody supervision lengths through acoustic EOS (B,)
     """
 
     loss: torch.Tensor
@@ -98,6 +102,10 @@ class ProcessBatchOutput:
     context_audio_codes: torch.Tensor
     context_audio_codes_lens: torch.Tensor
     selected_training_mode: Optional[str]
+    prosody_loss: Optional[torch.Tensor] = None
+    prosody_logits: Optional[torch.Tensor] = None
+    prosody_codes_target: Optional[torch.Tensor] = None
+    prosody_codes_lens_target: Optional[torch.Tensor] = None
 
 
 class NemotronTTSModel(NemotronTTSBase):
@@ -941,6 +949,8 @@ class NemotronTTSModel(NemotronTTSBase):
         task: Optional[List[str]] = None,
         agent_mask: Optional[torch.Tensor] = None,
         user_audio_embedded: Optional[torch.Tensor] = None,
+        audio: Optional[torch.Tensor] = None,
+        audio_lens: Optional[torch.Tensor] = None,
     ) -> ProcessBatchOutput:
         """
         Simplified batch processing using channel-based embedding architecture.
@@ -978,6 +988,8 @@ class NemotronTTSModel(NemotronTTSBase):
             agent_mask: Optional frame-level mask identifying agent speech.
             user_audio_embedded: Optional timeline-aligned user-audio conditioning
                 embeddings with shape ``(B, T, E)``.
+            audio: Target waveform at ``self.sample_rate``, required with prosody enabled.
+            audio_lens: Valid target waveform lengths in samples.
 
         Returns:
             ProcessBatchOutput: Contains loss values and model predictions
@@ -1216,6 +1228,34 @@ class NemotronTTSModel(NemotronTTSBase):
 
             combined_channel_embedding = combined_channel_embedding + user_audio_channel_embedding
 
+        prosody_targets = None
+        prosody_lens = None
+        if self.prosody is not None:
+            if audio is None or audio_lens is None:
+                raise ValueError(
+                    "Prosody training requires target 'audio' and 'audio_lens'; cached codes alone cannot train it"
+                )
+            quantized, prosody_codes, code_lens = self.prosody.encode(audio, audio_lens)
+            prosody_embedded, prosody_targets, prosody_lens = self.prosody.teacher_force(
+                quantized,
+                prosody_codes,
+                code_lens,
+                audio_codes_lens_target,
+                speech_delay=current_streaming_speech_delay,
+                apply_dropout=mode == 'train',
+            )
+            prosody_delay = text_delay
+            positions = torch.arange(max_channel_len, device=audio_codes.device)[None, :]
+            local_positions = positions - prosody_delay[:, None]
+            active = (local_positions >= 0) & (local_positions < prosody_lens[:, None])
+            channel = prosody_embedded.gather(
+                1,
+                local_positions.clamp(0, prosody_embedded.size(1) - 1)[..., None].expand(
+                    -1, -1, self.cfg.embedding_dim
+                ),
+            )
+            combined_channel_embedding = combined_channel_embedding + channel * active[..., None]
+
         # 7. Join context with combined channel embeddings
         # The combined_channel_lens is the max of all channel lens for each batch item
         combined_channel_lens = (
@@ -1269,6 +1309,17 @@ class NemotronTTSModel(NemotronTTSBase):
             agent_mask_target=agent_mask if self.cfg.get("mask_user_on_loss", False) else None,
         )
         loss = self.parallel_codebook_loss_scale * codebook_loss
+
+        prosody_loss = None
+        prosody_logits = None
+        if self.prosody is not None:
+            prosody_hidden = self.slice_sequence_embeddings(
+                transformer_hidden_states,
+                context_lens=prosody_delay,
+                target_lens=audio_codes_lens_target + current_streaming_speech_delay,
+            )
+            prosody_loss, prosody_logits = self.prosody.compute_loss(prosody_hidden, prosody_targets, prosody_lens)
+            loss = loss + self.prosody.loss_scale * prosody_loss
 
         predictor_targets, predictor_loss_mask = self._acoustic_codes_predictor_targets(
             num_positions=transformer_hidden_states.size(1),
@@ -1337,6 +1388,10 @@ class NemotronTTSModel(NemotronTTSBase):
             context_audio_codes=context_audio_codes_processed,
             context_audio_codes_lens=context_audio_codes_lens_processed,
             selected_training_mode=selected_training_mode.name if selected_training_mode is not None else None,
+            prosody_loss=prosody_loss,
+            prosody_logits=prosody_logits,
+            prosody_codes_target=prosody_targets,
+            prosody_codes_lens_target=prosody_lens,
         )
 
     def training_step(self, batch, batch_idx):
@@ -1561,11 +1616,15 @@ class NemotronTTSModel(NemotronTTSBase):
             task=batch["task"] if self.cfg.get("use_multiturn_dataset", False) else None,
             agent_mask=batch["agent_mask"] if self.cfg.get("use_multiturn_dataset", False) else None,
             user_audio_embedded=user_audio_embedded,
+            audio=batch.get('audio'),
+            audio_lens=batch.get('audio_lens'),
         )
         loss = batch_output.loss
         codebook_loss = batch_output.codebook_loss
         self.log('train/codebook_loss', codebook_loss, prog_bar=True, sync_dist=True)
         self.log('train/loss', loss, prog_bar=True, sync_dist=True)
+        if batch_output.prosody_loss is not None:
+            self.log('train/prosody_loss', batch_output.prosody_loss, prog_bar=True, sync_dist=True)
 
         if self.phoneme_tokenizer is not None:
             phoneme_loss = batch_output.phoneme_loss
@@ -1662,6 +1721,8 @@ class NemotronTTSModel(NemotronTTSBase):
             mode="val",
             task=batch["task"] if "task" in batch else None,
             agent_mask=batch["agent_mask"] if "agent_mask" in batch else None,
+            audio=batch.get('audio'),
+            audio_lens=batch.get('audio_lens'),
         )
         # Access ProcessBatchOutput dataclass attributes
         # Logits come from the auxiliary parallel prediction head.
@@ -1694,6 +1755,8 @@ class NemotronTTSModel(NemotronTTSBase):
             'val_codebook_loss': codebook_loss,
             'val_acoustic_codes_predictor_loss': batch_output.acoustic_codes_predictor_loss,
         }
+        if batch_output.prosody_loss is not None:
+            val_output['val_prosody_loss'] = batch_output.prosody_loss
 
         if self.phoneme_tokenizer is not None:
             phoneme_loss = batch_output.phoneme_loss
@@ -1930,6 +1993,8 @@ class NemotronTTSModel(NemotronTTSBase):
 
         self.log("val_loss", val_loss, prog_bar=True, sync_dist=True)
         self.log("val/codebook_loss", val_codebook_loss, prog_bar=True, sync_dist=True)
+        if self.prosody is not None:
+            self.log("val/prosody_loss", collect("val_prosody_loss"), prog_bar=True, sync_dist=True)
 
         predictor_loss = collect("val_acoustic_codes_predictor_loss")
         self.log("val/acoustic_codes_predictor_loss", predictor_loss, sync_dist=True)
@@ -1990,7 +2055,7 @@ class NemotronTTSModel(NemotronTTSBase):
             num_audio_codebooks=self.data_num_audio_codebooks,
             codec_model_samples_per_frame=self.codec_model_samples_per_frame,
             prior_scaling_factor=0.0,
-            load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
+            load_cached_codes_if_available=self.cfg.load_cached_codes_if_available and not self.prosody_enabled,
             dataset_type=dataset_type,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
             use_text_conditioning_tokenizer=True,
             text_conditioning_tokenizer_name=self.text_conditioning_tokenizer_name,
@@ -2026,7 +2091,7 @@ class NemotronTTSModel(NemotronTTSBase):
                 frame_stacking_factor=self.frame_stacking_factor,
                 num_audio_codebooks=self.data_num_audio_codebooks,
                 prior_scaling_factor=0.0,
-                load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
+                load_cached_codes_if_available=self.cfg.load_cached_codes_if_available and not self.prosody_enabled,
                 dataset_type=mode,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
                 load_16khz_audio=False,
                 load_normalized_text_percent=load_normalized_text_percent,
@@ -2062,7 +2127,7 @@ class NemotronTTSModel(NemotronTTSBase):
                 codec_model_samples_per_frame=self.codec_model_samples_per_frame,
                 num_audio_codebooks=self.data_num_audio_codebooks,
                 prior_scaling_factor=0.0,
-                load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
+                load_cached_codes_if_available=self.cfg.load_cached_codes_if_available and not self.prosody_enabled,
                 dataset_type=mode,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
                 load_16khz_audio=False,
                 load_normalized_text_percent=load_normalized_text_percent,

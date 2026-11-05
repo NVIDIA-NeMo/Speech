@@ -1,0 +1,23 @@
+# Learn target-audio prosody jointly with EasyMagpie v2.
+defaults:
+  - easy_magpietts_lhotse
+  - _self_
+
+model:
+  model_type: v2
+  decoder_type: nemotron_h
+  use_codec_latent_audio_embedding: true
+  # Supply the v2 schedule for your codec; its sum is codebooks * frame_stacking_factor.
+  acoustic_codes_predictor_schedule: ???
+  # A trainable target encoder needs waveforms, including for datasets with cached codes.
+  load_cached_codes_if_available: false
+  prosody:
+    enabled: true
+    encoder_channels: 512
+    dropout: 0.5
+    loss_scale: 1.0
+    lead_steps: 1
+  training_modes:
+    - text_input_mode: streaming
+      streaming_phonemes_delay: 0
+      streaming_speech_delay: 5

@@ -47,6 +47,7 @@ from nemo.collections.tts.modules.magpietts_modules import (
     add_special_tokens,
 )
 from nemo.collections.tts.modules.nemotron_tts.v2 import AcousticCodesPredictor
+from nemo.collections.tts.modules.nemotron_tts.v2.prosody import ProsodyChannel
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
 from nemo.collections.tts.parts.utils.tts_dataset_utils import tokenize_text_with_phoneme_spans
 from nemo.core.classes import ModelPT
@@ -160,6 +161,7 @@ class StreamingState:
     gt_audio_embeddings: Optional[torch.Tensor] = None  # (B, T', E) pre-computed GT audio embeddings
     gt_audio_lens: Optional[torch.Tensor] = None  # (B,) lengths after stacking
     acoustic_codes_predictor_cache: Optional[List] = None
+    last_prosody_codes: Optional[torch.Tensor] = None  # (B,) previous predicted prosody IDs
 
 
 @dataclass
@@ -310,6 +312,7 @@ class NemotronTTSBase(ModelPT):
             self.text_conditioning_tokenizer_name = list(cfg.text_tokenizers.keys())[0]
 
         self.cfg_unconditional_prob = cfg.get('cfg_unconditional_prob', 0.0)
+        self.prosody_enabled = cfg.get('prosody', {}).get('enabled', False)
 
         # Multi-mode training configuration
         # The model trains with multiple text input modes (full, streaming with various delays)
@@ -551,6 +554,21 @@ class NemotronTTSBase(ModelPT):
             self.audio_embedding_dim,
             self.num_audio_codebooks * self.num_all_tokens_per_codebook * self.frame_stacking_factor,
         )
+
+        self.prosody = None
+        if self.prosody_enabled:
+            prosody_cfg = {key: value for key, value in cfg.prosody.items() if key != 'enabled'}
+            self.prosody = ProsodyChannel(
+                embedding_dim=cfg.embedding_dim,
+                hidden_dim=cfg.hidden_dim,
+                input_sample_rate=self.sample_rate,
+                **prosody_cfg,
+            )
+            for mode in self.training_modes:
+                if mode.text_input_mode != 'streaming' or mode.streaming_speech_delay < self.prosody.lead_steps:
+                    raise ValueError(
+                        "Prosody requires streaming modes with streaming_speech_delay >= prosody.lead_steps"
+                    )
 
         prediction_schedule = cfg.get('acoustic_codes_predictor_schedule', None)
         if prediction_schedule is None:
@@ -1772,6 +1790,25 @@ class NemotronTTSBase(ModelPT):
             state.past_key_values = transformer_out.past_key_values
             state.cache_seq_len += 1
 
+            if self.prosody is not None:
+                start = state.config.training_mode.streaming_speech_delay - self.prosody.lead_steps
+                step = state.turn_text_tokens_seen
+                active = (~needs_context) & (~state.finished)
+                logits = self.prosody.output_projection(state.last_hidden[: state.config.batch_size, -1])
+                if state.config.temperature > 0:
+                    k = min(state.config.topk, logits.size(-1)) if state.config.topk > 0 else logits.size(-1)
+                    values, indices = (logits / state.config.temperature).topk(k, dim=-1)
+                    sampled = torch.multinomial(values.softmax(dim=-1), 1)
+                    predicted = indices.gather(1, sampled).squeeze(1)
+                else:
+                    predicted = logits.argmax(dim=-1)
+                # Read the initial text before predicting real prosody codes.
+                predicted = torch.where(step < start, self.prosody.pad_id, predicted)
+                previous = state.last_prosody_codes
+                if previous is None:
+                    previous = torch.full_like(predicted, self.prosody.pad_id)
+                state.last_prosody_codes = torch.where(active, predicted, previous)
+
             if prefill_like_step:
                 self._advance_acoustic_codes_predictor(state)
                 # Advance logical streams, keep audio silent, but predict phonemes if enabled.
@@ -2021,6 +2058,17 @@ class NemotronTTSBase(ModelPT):
 
             next_input = next_input + audio_emb
 
+        prosody_emb = None
+        if self.prosody is not None:
+            start = streaming_speech_delay - self.prosody.lead_steps
+            active = (~needs_context) & (~state.finished)
+            codes = state.last_prosody_codes
+            if codes is None:
+                codes = torch.full((batch_size,), self.prosody.pad_id, dtype=torch.long, device=device)
+            codes = torch.where(turn_text_tokens_seen <= start, self.prosody.pad_id, codes)
+            prosody_emb = self.prosody.embed(codes[:, None]) * active[:, None, None]
+            next_input = next_input + prosody_emb
+
         user_audio_cond_emb = None
         if user_audio_channel_embedding is not None:
             user_audio_cond_emb = user_audio_channel_embedding.unsqueeze(1).to(
@@ -2043,6 +2091,9 @@ class NemotronTTSBase(ModelPT):
             if needs_audio.any():
                 audio_mask = needs_audio.view(batch_size, 1, 1).float()
                 next_input_unconditional = next_input_unconditional * (1 - audio_mask) + audio_emb * audio_mask
+
+            if prosody_emb is not None:
+                next_input_unconditional = next_input_unconditional + prosody_emb
 
             next_input = torch.cat([next_input, next_input_unconditional], dim=0)
 

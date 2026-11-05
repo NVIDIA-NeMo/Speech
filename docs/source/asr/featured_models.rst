@@ -40,7 +40,6 @@ Canary models are encoder-decoder models with a :ref:`FastConformer Encoder <Fas
 They support ASR in 25 EU languages, speech translation (AST), and punctuation/capitalization (PnC).
 
 * `Canary-1B V2 <https://huggingface.co/nvidia/canary-1b-v2>`__ — Flagship: 25 languages, PnC, timestamps
-* `Canary-Qwen-2.5B <https://huggingface.co/nvidia/canary-qwen-2.5b>`__ — English speech LLM, PnC, 2.5B parameters
 * `Canary-1B Flash <https://huggingface.co/nvidia/canary-1b-flash>`__ / `180M Flash <https://huggingface.co/nvidia/canary-180m-flash>`__ — Optimized for speed
 
 Canary supports chunked and `streaming inference <https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Streaming_ASR_Pipelines.ipynb>`__.

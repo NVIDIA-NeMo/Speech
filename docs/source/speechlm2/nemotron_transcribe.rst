@@ -93,7 +93,12 @@ Use chat completions for this SpeechLM workflow.
 
    client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="EMPTY")
 
-   def transcribe(audio_path, instruction="Transcribe the recording.", timestamps=False):
+   VERBATIM_PROMPT = (
+       "Audio transcription. Language: as spoken. Wording: verbatim, including fillers and repetitions. "
+       "Formatting: punctuation and capitalization. Output: transcript only."
+   )
+
+   def transcribe(audio_path, instruction=VERBATIM_PROMPT, timestamps=False):
        audio_data = base64.b64encode(Path(audio_path).read_bytes()).decode("ascii")
        options = {
            "chat_template_kwargs": {"enable_thinking": False},
@@ -128,25 +133,27 @@ generated transcript; the one-hour audio limit alone does not guarantee that eve
 Choose the task with instructions
 ---------------------------------
 
-Pass an instruction as the second argument to ``transcribe``. Leave the system prompt empty for transcription
-and translation. For example:
+Pass an instruction as the second argument to ``transcribe``. The templates below follow the model card's
+`recommended prompts <https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B#prompt-recommendations>`_.
+Keep the system prompt empty and send the instruction alongside the audio in the user message.
+Replace angle-bracketed placeholders with the target language, vocabulary context, or accepted labels.
 
 .. list-table::
    :header-rows: 1
    :widths: 25 75
 
    * - Task
-     - Example instruction
+     - Recommended instruction
    * - Verbatim transcript
-     - ``Transcribe the recording verbatim, retaining fillers and repetitions. Add punctuation.``
+     - ``Audio transcription. Language: as spoken. Wording: verbatim, including fillers and repetitions. Formatting: punctuation and capitalization. Output: transcript only.``
    * - Readable transcript
-     - ``Transcribe the recording with punctuation. Omit fillers and accidental repetitions.``
+     - ``Audio transcription. Language: as spoken. Wording: omit fillers and accidental repetitions; keep the remaining spoken wording unchanged. Formatting: punctuation and capitalization. Output: transcript only.``
    * - Vocabulary context
-     - ``Transcribe the recording. Context terms: NeMo, Lhotse, Nemotron.``
+     - ``Transcribe with punctuation and capitalization. Context terms: <names and terms>.``
    * - Translation
-     - ``Translate the speech into English.``
+     - ``Please translate the given speech to <target language>.``
    * - Language identification
-     - ``Identify the language spoken in the recording.``
+     - ``Identify the spoken language. Respond with exactly one label from <labels> and nothing else.``
 
 For audio question answering, use the model card's
 `reasoning request settings <https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B#send-a-request>`_
@@ -155,13 +162,16 @@ and task prompts. The transcription helper above deliberately disables reasoning
 Word timestamps and speaker attribution
 ---------------------------------------
 
-Reuse the helper above with timestamp capture enabled and an instruction that requests speaker tags:
+Reuse the helper above with timestamp capture enabled and the model card's recommended speaker-attribution prompt:
 
 .. code-block:: python
 
    response = transcribe(
        "audio.wav",
-       "Transcribe all speech with punctuation and speaker tags <spk:0> <spk:1> <spk:2> <spk:3>.",
+       "Transcribe this audio with punctuation and capitalization. "
+       "Include all spoken words and verbal fillers. "
+       "Write numbers in their standard written form. "
+       "Put speaker tags <spk:0> <spk:1> <spk:2> <spk:3> on the transcription.",
        timestamps=True,
    )
    print(response.choices[0].message.content)

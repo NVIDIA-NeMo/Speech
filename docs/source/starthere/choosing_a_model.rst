@@ -19,11 +19,6 @@ ASR: Which Model Should I Use?
      - :doc:`Nemotron 3.5 Transcribe </speechlm2/nemotron_transcribe>`
      - Transcription in 40 languages, vocabulary context, and recordings up to one hour.
        The BF16 serving example targets one H100 80 GB; quantized variants are available.
-   * - Use a smaller English speech LLM
-     - `Canary-Qwen 2.5B <https://huggingface.co/nvidia/canary-qwen-2.5b>`_
-     - English transcription with a 2.5B-parameter SALM. For fast offline ASR with a smaller model,
-       use `Parakeet-TDT V2 <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2>`_
-       or `Parakeet-TDT V3 <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3>`_.
    * - Transcribe and translate with a smaller multilingual model
      - `Canary-1B V2 <https://huggingface.co/nvidia/canary-1b-v2>`_
      - Supports 25 EU languages + translation between them. AED decoder.

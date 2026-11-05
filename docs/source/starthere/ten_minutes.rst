@@ -92,23 +92,9 @@ For multilingual offline transcription with instructions, vocabulary context, sp
 timestamps, follow the :doc:`Nemotron 3.5 Transcribe quickstart </speechlm2/nemotron_transcribe>`.
 It uses a separate vLLM serving environment; the BF16 example targets one H100 80 GB.
 
-For a smaller English model, Canary-Qwen combines an ASR encoder with a Qwen LLM:
-
-.. code-block:: python
-
-   from nemo.collections.speechlm2.models import SALM
-
-   model = SALM.from_pretrained('nvidia/canary-qwen-2.5b')
-
-   answer_ids = model.generate(
-       prompts=[[{
-           "role": "user",
-           "content": f"Transcribe the following: {model.audio_locator_tag}",
-           "audio": ["speech.wav"],
-       }]],
-       max_new_tokens=128,
-   )
-   print(model.tokenizer.ids_to_text(answer_ids[0].cpu()))
+The quickstart includes Python examples for plain transcription and speaker-attributed word timestamps,
+using the model card's recommended prompts. It also links to audio question-answering settings and
+fine-tuning tutorials.
 
 
 What's Next?

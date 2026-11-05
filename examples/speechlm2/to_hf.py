@@ -27,7 +27,11 @@ from omegaconf import DictConfig, OmegaConf
 from safetensors.torch import save_file
 
 from nemo.collections.speechlm2.parts.hf_hub import LLM_BACKBONE_DIR
-from nemo.collections.speechlm2.vllm.salm.config import _mtp_pattern_from_backbone_config, _resolve_speechlm_mtp_config
+from nemo.collections.speechlm2.vllm.salm.config import (
+    _mtp_pattern_from_backbone_config,
+    _resolve_speechlm_mtp_config,
+    checkpoint_architecture,
+)
 from nemo.core.classes.common import safe_instantiate
 from nemo.core.config import hydra_runner
 from nemo.utils.dtype import str_to_dtype
@@ -51,8 +55,33 @@ class HfExportConfig:
     # Dtype used for stored parameters
     dtype: str = "bfloat16"
 
+    # Format of ckpt_path: "lightning" for a Lightning checkpoint, or "nemo_rl" for the
+    # flat DCP directory NeMo-RL saves under weights/model. The output is always HF safetensors.
+    checkpoint_format: str = "lightning"
 
-def load_checkpoint(model: torch.nn.Module, checkpoint_path: str) -> None:
+
+def prepare_native_export_model_config(model_cfg: dict) -> dict:
+    """Keep native MTP topology and enable the canonical dtype adapter."""
+    model_cfg = deepcopy(model_cfg)
+    model_cfg.pop("automodel_freeze_config", None)
+    model_cfg.pop("perception_freeze_config", None)
+    model_cfg["retain_native_mtp"] = True
+    model_cfg["mtp"] = {**(model_cfg.get("mtp") or {}), "enabled": False}
+    model_cfg["automodel_backend"] = {
+        **(model_cfg.get("automodel_backend") or {}),
+        "enable_hf_state_dict_adapter": True,
+    }
+    return model_cfg
+
+
+def load_checkpoint(model: torch.nn.Module, checkpoint_path: str, checkpoint_format: str = "lightning") -> None:
+    if checkpoint_format == "nemo_rl":
+        from nemo.collections.speechlm2.parts.weight_loading import load_nemo_rl_checkpoint
+
+        load_nemo_rl_checkpoint(model, checkpoint_path)
+        return
+    if checkpoint_format != "lightning":
+        raise ValueError(f"Unsupported checkpoint_format={checkpoint_format!r}")
     if Path(checkpoint_path).is_dir():
         from torch.distributed.checkpoint import load
 
@@ -131,6 +160,10 @@ def _hf_export_config(model: torch.nn.Module, dtype: str | torch.dtype) -> dict[
     # Remote-code trust is a runtime security decision. Do not persist a
     # training-time opt-in in checkpoints that may be loaded by another user.
     config.pop("trust_remote_code", None)
+    config.pop("preserve_parameter_dtypes", None)
+    # A new fine-tuning run chooses its own update surface.
+    config.pop("automodel_freeze_config", None)
+    config.pop("perception_freeze_config", None)
     pe_encoder_path = config.get("pe_encoder_path", None)
     pe_encoder_config = config.get("pe_encoder_config", None)
     if pe_encoder_path not in (None, "", False) or pe_encoder_config not in (
@@ -193,6 +226,8 @@ def _hf_export_config(model: torch.nn.Module, dtype: str | torch.dtype) -> dict[
 
     llm = getattr(model, "llm", None)
     text_config = getattr(llm, "config", None)
+    if config.pop("retain_native_mtp", False):
+        config["mtp"] = {**(config.get("mtp") or {}), "enabled": getattr(llm, "mtp", None) is not None}
     explicit_mtp = config.get("mtp")
     mtp_enabled = (
         bool(explicit_mtp.get("enabled", True))
@@ -276,15 +311,31 @@ def save_hf_checkpoint(model: torch.nn.Module, state_dict: dict, cfg: HfExportCo
     if callable(getattr(state_dict_adapter, "forced_hf_dtype_mapping", None)):
         forced_dtypes = state_dict_adapter.forced_hf_dtype_mapping(state_dict)
     state_dict = {
-        key: value.to(torch.float32 if forced_dtypes.get(key) == "F32" else target_dtype)
+        key: (
+            value
+            if key.startswith("ctc_timestamp.")
+            else value.to(torch.float32 if forced_dtypes.get(key) == "F32" else target_dtype)
+        )
         for key, value in state_dict.items()
     }
 
     config = _hf_export_config(model, cfg.dtype)
-    save_file(state_dict, output_dir / "model.safetensors")
+    ctc_timestamp = getattr(model, "ctc_timestamp", None)
+    metadata = ctc_timestamp.artifact_metadata if ctc_timestamp is not None else None
+    save_file(state_dict, output_dir / "model.safetensors", metadata=metadata)
     with open(output_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
     save_llm_backbone_config(model, output_dir)
+
+
+def cast_model_for_export(model: torch.nn.Module, dtype: str | torch.dtype) -> torch.nn.Module:
+    """Cast the model to the export dtype; the CTC timestamp artifact keeps its loaded storage."""
+    ctc_timestamp = getattr(model, "ctc_timestamp", None)
+    ctc_state = None if ctc_timestamp is None else ctc_timestamp.state_dict()
+    model = model.to(str_to_dtype(dtype))
+    if ctc_state is not None:
+        ctc_timestamp.load_state_dict(ctc_state, assign=True)
+    return model
 
 
 def save_llm_backbone_config(model: torch.nn.Module, output_dir: str | Path) -> None:
@@ -295,17 +346,29 @@ def save_llm_backbone_config(model: torch.nn.Module, output_dir: str | Path) -> 
 
     llm_backbone_dir = Path(output_dir) / LLM_BACKBONE_DIR
     llm_backbone_dir.mkdir(parents=True, exist_ok=True)
-    llm_config.save_pretrained(str(llm_backbone_dir))
+    if getattr(llm_config, "model_type", None) == "nemotron_h":
+        # Transformers >= 5.15 renames these discriminators in memory. Serialize
+        # the original names, which both older and newer serving runtimes accept.
+        # Keep the live model config untouched, including its native MTP topology.
+        config = json.loads(llm_config.to_json_string())
+        aliases = {"linear_attention": "mamba", "full_attention": "attention"}
+        for key in ("layers_block_type", "mtp_layers_block_type"):
+            if config.get(key) is not None:
+                config[key] = [aliases.get(block, block) for block in config[key]]
+        (llm_backbone_dir / "config.json").write_text(json.dumps(config, indent=2) + "\n")
+    else:
+        llm_config.save_pretrained(str(llm_backbone_dir))
 
 
 def _detect_vllm_architecture(model_cfg: dict) -> tuple[str, int]:
     """Determine the vLLM plugin model class and backbone vocabulary size.
 
-    The SALM plugin registers a single architecture name and selects between
-    transformer and hybrid backends at instantiation time, so this function
-    verifies the backbone config is reachable and returns the unified name
-    plus the embedding-table vocabulary bound. The hybrid-vs-transformer split
-    is handled inside the plugin.
+    The SALM plugin serves every SpeechLM with one model class and selects
+    between transformer and hybrid backends at instantiation time. This
+    function verifies the backbone config is reachable and returns the
+    architecture name (a dedicated name for a ParallelExpertEncoder on a
+    NemotronH backbone, the generic name otherwise; see
+    ``checkpoint_architecture``) plus the embedding-table vocabulary bound.
 
     Raises:
         ValueError: If the HF config cannot be loaded, has no architecture, or
@@ -329,7 +392,7 @@ def _detect_vllm_architecture(model_cfg: dict) -> tuple[str, int]:
     if isinstance(vocab_size, bool) or not isinstance(vocab_size, int) or vocab_size <= 0:
         raise ValueError(f"HF config for {pretrained_llm!r} has invalid 'vocab_size': {vocab_size!r}.")
 
-    return "NeMoSpeechLMForConditionalGeneration", vocab_size
+    return checkpoint_architecture(model_cfg, archs), vocab_size
 
 
 def prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
@@ -436,12 +499,12 @@ def prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
     if tok.pad_token_id is not None:
         gen_cfg["pad_token_id"] = tok.pad_token_id
 
-    # Build every tokenizer-side artifact in a sibling staging directory. A
+    # Build every tokenizer-side artifact inside the output filesystem. A
     # caught validation/serialization ``ValueError`` must leave the original
     # HF checkpoint untouched instead of advertising a half-prepared vLLM
     # model. Once staging succeeds, publish each file atomically and write the
     # authoritative root config last.
-    with TemporaryDirectory(prefix=f".{output_dir.name}-vllm-", dir=output_dir.parent) as staging:
+    with TemporaryDirectory(prefix=f".{output_dir.name}-vllm-", dir=output_dir) as staging:
         staging_dir = Path(staging)
         artifacts_dir = staging_dir / "artifacts"
         artifacts_dir.mkdir()
@@ -578,6 +641,8 @@ def main(cfg: HfExportConfig) -> None:
         # The vLLM prompt processor must reserve exactly as many audio
         # placeholders as the checkpoint's encoder emits.
         model_cfg["audio_token_estimator"] = audio_token_estimator
+    if cfg.checkpoint_format == "nemo_rl":
+        model_cfg = prepare_native_export_model_config(model_cfg)
     model_cfg["torch_dtype"] = _canonical_torch_dtype_name(cfg.dtype)
     cls = import_class_by_path(cfg.class_path)
 
@@ -602,7 +667,7 @@ def main(cfg: HfExportConfig) -> None:
         model = cls(model_cfg)
         model.configure_model(distributed_setup=strategy.distributed_setup)
 
-        load_checkpoint(model, cfg.ckpt_path)
+        load_checkpoint(model, cfg.ckpt_path, cfg.checkpoint_format)
 
         # Consolidate DTensors to regular tensors and save on rank 0.
         consolidated = consolidate_state_dict(model)
@@ -616,10 +681,13 @@ def main(cfg: HfExportConfig) -> None:
         model_cfg["init_configure_model"] = True
         model_cfg["pretrained_weights"] = False
         model = cls(model_cfg)
-        load_checkpoint(model, cfg.ckpt_path)
-        model = model.to(str_to_dtype(cfg.dtype))
-        model.save_pretrained(cfg.output_dir, config=_hf_export_config(model, cfg.dtype))
-        save_llm_backbone_config(model, cfg.output_dir)
+        load_checkpoint(model, cfg.ckpt_path, cfg.checkpoint_format)
+        if cfg.checkpoint_format == "nemo_rl":
+            save_hf_checkpoint(model, consolidate_state_dict(model), cfg)
+        else:
+            model = cast_model_for_export(model, cfg.dtype)
+            model.save_pretrained(cfg.output_dir, config=_hf_export_config(model, cfg.dtype))
+            save_llm_backbone_config(model, cfg.output_dir)
         _try_prepare_for_vllm(cfg.output_dir, model_cfg)
 
 

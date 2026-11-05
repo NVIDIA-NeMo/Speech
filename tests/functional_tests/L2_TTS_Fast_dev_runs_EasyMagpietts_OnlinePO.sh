@@ -55,7 +55,7 @@ TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.cover
     +model.inference_cfg_scale=2.5 \
     +model.gt_phoneme_input_prob=1.0 \
     +model.inference_temperature=0.7 \
-    +model.inference_topk=80 \
+    +model.inference_topk=0 \
     +model.inference_phoneme_sampling_method=argmax \
     +model.use_local_transformer_prob=1.0 \
     +model.cer_reward_weight=0.5 \

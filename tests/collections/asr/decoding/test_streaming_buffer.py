@@ -80,6 +80,7 @@ class TestContextSize:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_context_size_batch_total_and_subsample(self, device: torch.device):
         left = torch.tensor([4, 4], dtype=torch.long, device=device)
         chunk = torch.tensor([2, 2], dtype=torch.long, device=device)
@@ -102,6 +103,7 @@ class TestContextSize:
 # -----------------------------------------------------------------------------
 
 
+@pytest.mark.gpu
 class TestStreamingBatchedAudioBuffer:
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
@@ -253,6 +255,7 @@ class TestDynamicLengthTensor:
             ([4, 5], [4, 5]),
         ],
     )
+    @pytest.mark.gpu
     def test_init(self, device, dim_shape, expected_dim_shape):
         batch_size, init_length = 2, 5
         t = DynamicLengthTensor(
@@ -281,6 +284,7 @@ class TestDynamicLengthTensor:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_append_with_lengths(self, device):
         """Per-batch `lengths` control how many frames become valid for each item."""
         t = DynamicLengthTensor(batch_size=2, init_length=4, dim_shape=1, device=device, dtype=torch.float32)
@@ -306,6 +310,7 @@ class TestDynamicLengthTensor:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_append_without_lengths(self, device):
         """Without `lengths`, every frame in the chunk is appended for all items."""
         t = DynamicLengthTensor(batch_size=2, init_length=2, dim_shape=1, device=device, dtype=torch.float32)
@@ -319,6 +324,7 @@ class TestDynamicLengthTensor:
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
     @pytest.mark.parametrize("dim_shape", [[], [3], [2, 3], [2, 3, 4]])
+    @pytest.mark.gpu
     def test_append_without_lengths_multidim(self, device, dim_shape):
         """Append must scatter the whole feature vector for arbitrary trailing `dim_shape`."""
         batch_size = 2
@@ -335,6 +341,7 @@ class TestDynamicLengthTensor:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_append_with_lengths_multidim(self, device):
         """Per-batch `lengths` must place the full multi-dim feature vectors at the right offsets."""
         dim_shape = [2, 3]
@@ -362,6 +369,7 @@ class TestDynamicLengthTensor:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_growth_preserves_data(self, device):
         """Appending more than the initial capacity reallocates and keeps content."""
         t = DynamicLengthTensor(batch_size=1, init_length=2, dim_shape=1, device=device, dtype=torch.float32)
@@ -378,6 +386,7 @@ class TestDynamicLengthTensor:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_incremental_appends_double_capacity(self, device):
         """Repeated single-frame appends grow capacity geometrically (amortized O(1))."""
         n_appends = 9
@@ -398,6 +407,7 @@ class TestDynamicLengthTensor:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_clear(self, device):
         """`clear_` resets both lengths and storage to zero while keeping capacity."""
         t = DynamicLengthTensor(batch_size=2, init_length=4, dim_shape=1, device=device, dtype=torch.float32)
@@ -412,6 +422,7 @@ class TestDynamicLengthTensor:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_merge(self, device):
         """`merge_` concatenates another tensor's content along the length dim."""
         a = DynamicLengthTensor(batch_size=2, init_length=2, dim_shape=1, device=device, dtype=torch.float32)
@@ -433,6 +444,7 @@ class TestDynamicLengthTensor:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_clone_is_independent(self, device):
         """`clone` returns a deep copy: same data/lengths, but independent storage."""
         t = DynamicLengthTensor(batch_size=2, init_length=4, dim_shape=3, device=device, dtype=torch.float32)
@@ -454,6 +466,7 @@ class TestDynamicLengthTensor:
 
     @pytest.mark.unit
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA to verify cross-device move")
+    @pytest.mark.gpu
     def test_to_device(self):
         """`to_device` moves the underlying storage (not just the bookkeeping attr)."""
         t = DynamicLengthTensor(

@@ -242,6 +242,7 @@ def training_cutset_batch():
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_pee_uses_parallel_expert_encoder(model):
     assert isinstance(model.perception.encoder, ParallelExpertEncoder)
     assert model._uses_parallel_expert_encoder()
@@ -266,6 +267,7 @@ def test_salm_automodel_pee_dataset_emits_speaker_targets(dataset, prompt_format
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_pee_training_step(model, dataset, prompt_formatter, training_cutset_batch):
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
     batch = dataset[training_cutset_batch]
@@ -278,6 +280,7 @@ def test_salm_automodel_pee_training_step(model, dataset, prompt_formatter, trai
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_pee_validation_step(model, dataset, prompt_formatter, training_cutset_batch):
     model.on_validation_epoch_start()
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
@@ -289,6 +292,7 @@ def test_salm_automodel_pee_validation_step(model, dataset, prompt_formatter, tr
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_pee_generation(model):
     # No spk_targets at inference -> the PE encoder predicts diarization internally.
     answer = model.generate(

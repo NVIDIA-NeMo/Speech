@@ -234,6 +234,7 @@ class TestCTCDecoding:
             ),
         ],
     )
+    @pytest.mark.gpu
     def test_batched_decoding_logprobs(
         self,
         tmp_tokenizer,
@@ -316,6 +317,7 @@ class TestCTCDecoding:
             ),
         ],
     )
+    @pytest.mark.gpu
     def test_batched_decoding_labels(self, tmp_tokenizer, timestamps, length_is_none, labels_device, length_device):
         cfg = CTCBPEDecodingConfig(strategy='greedy', compute_timestamps=timestamps)
         unbatched_decoding = CTCBPEDecoding(decoding_cfg=cfg, tokenizer=tmp_tokenizer)
@@ -385,6 +387,7 @@ class TestCTCTimestamps(BaseTimestampsTest):
         super().test_word_offsets_subword_wpe_other_delimiter()
 
 
+@pytest.mark.gpu
 class TestCTCGreedyDecodingWithNGPU_LM:
     @pytest.mark.with_downloads
     @pytest.mark.unit
@@ -421,6 +424,7 @@ class TestCTCGreedyDecodingWithNGPU_LM:
         model.change_decoding_strategy(decoding_config)
 
 
+@pytest.mark.gpu
 class TestCTCGreedyDecodingCudaGrpahs:
     """
     Tests CudaGraphs implementations from CTC models greedy decoding

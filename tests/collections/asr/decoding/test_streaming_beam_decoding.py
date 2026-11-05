@@ -428,6 +428,7 @@ def _run_streaming_batched_state(
 @pytest.mark.parametrize("batch_size", [4])
 @pytest.mark.parametrize("beam_size", [4])
 @pytest.mark.parametrize("max_symbols", [10])
+@pytest.mark.gpu
 def test_malsd_streaming_batched_state(
     an4_val_manifest_corrected,
     stt_en_fastconformer_transducer_large,
@@ -465,6 +466,7 @@ def test_malsd_streaming_batched_state(
 @pytest.mark.parametrize("maes_num_steps", [2])
 @pytest.mark.parametrize("maes_expansion_beta", [2])
 @pytest.mark.parametrize("maes_expansion_gamma", [2.3])
+@pytest.mark.gpu
 def test_maes_streaming_batched_state(
     an4_val_manifest_corrected,
     stt_en_fastconformer_transducer_large,
@@ -517,6 +519,7 @@ _WB_KEY_PHRASES: list[str] = ["nineteen", "forty", "fifty", "repeat", "stop", "y
 @pytest.mark.parametrize("batch_size", [4])
 @pytest.mark.parametrize("beam_size", [4])
 @pytest.mark.parametrize("max_symbols", [10])
+@pytest.mark.gpu
 def test_malsd_streaming_batched_state_with_word_boosting(
     an4_val_manifest_corrected,
     stt_en_fastconformer_transducer_large,
@@ -565,6 +568,7 @@ def test_malsd_streaming_batched_state_with_word_boosting(
 @pytest.mark.parametrize("batch_size", [4])
 @pytest.mark.parametrize("beam_size", [4])
 @pytest.mark.parametrize("max_symbols", [10])
+@pytest.mark.gpu
 def test_malsd_streaming_boosting_with_ref_transcripts(
     an4_val_manifest_corrected,
     stt_en_fastconformer_transducer_large,

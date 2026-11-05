@@ -84,6 +84,18 @@ def pytest_addoption(parser):
         action="store_true",
         help="pass this argument to activate tests which have been marked as nightly for nightly quality assurance.",
     )
+    parser.addoption(
+        "--num-file-shards",
+        type=int,
+        default=1,
+        help="split the collected test files into this many shards balanced by `tests/test_file_durations.json`.",
+    )
+    parser.addoption("--file-shard-id", type=int, default=0, help="0-based shard to run with --num-file-shards.")
+    parser.addoption(
+        "--check-gpu-markers",
+        action="store_true",
+        help="fail the session if a test without the `gpu` marker allocates CUDA memory (GPU mode only).",
+    )
 
 
 @pytest.fixture
@@ -93,6 +105,50 @@ def device(request):
         return "CPU"
     else:
         return "GPU"
+
+
+def pytest_itemcollected(item):
+    # Runs before `-m` filtering, so `-m gpu` also selects `run_only_on('GPU')` tests.
+    _add_gpu_marker_to_gpu_only_tests([item])
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(config, items):
+    # trylast: shard only the tests that remain after `-m` deselection.
+    num_shards = config.getoption("--num-file-shards")
+    if num_shards > 1:
+        durations = _load_test_file_durations("cpu" if config.getoption("--cpu") else "gpu")
+        shard = _assign_files_to_shards(sorted({_test_file(item) for item in items}), durations, num_shards)
+        shard_id = config.getoption("--file-shard-id")
+        selected = [item for item in items if shard[_test_file(item)] == shard_id]
+        deselected = [item for item in items if shard[_test_file(item)] != shard_id]
+        if deselected:
+            config.hook.pytest_deselected(items=deselected)
+            items[:] = selected
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    if not item.config.getoption("--check-gpu-markers") or item.config.getoption("--cpu"):
+        yield
+        return
+    import torch
+
+    on_cpu_by_default = torch.get_default_device().type == "cpu"
+    before = _num_cuda_allocations(torch)
+    yield
+    if on_cpu_by_default and item.get_closest_marker("gpu") is None and _num_cuda_allocations(torch) > before:
+        item.config.stash.setdefault(_UNMARKED_CUDA_TESTS, []).append(item.nodeid)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    unmarked = session.config.stash.get(_UNMARKED_CUDA_TESTS, [])
+    if unmarked:
+        print(
+            "\nThese tests allocated CUDA memory but lack `@pytest.mark.gpu`, so the GPU unit-test jobs skip them:\n  "
+            + "\n  ".join(unmarked)
+        )
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 def pytest_runtest_setup(item):
@@ -243,6 +299,10 @@ def pytest_configure(config):
     )
     config.addinivalue_line(
         "markers",
+        "gpu: the test exercises CUDA code; GPU unit-test CI jobs run only tests with this marker",
+    )
+    config.addinivalue_line(
+        "markers",
         "nightly: runs the nightly test for QA.",
     )
     # Test dir and archive filepath.
@@ -314,3 +374,50 @@ def pytest_configure(config):
 
         print("Setting numba compat :", config.option.relax_numba_compat)
         numba_utils.set_numba_compat_strictness(strict=config.option.relax_numba_compat)
+
+
+_UNMARKED_CUDA_TESTS = pytest.StashKey[list]()
+
+
+def _add_gpu_marker_to_gpu_only_tests(items):
+    """Tests restricted to GPU need a GPU job, so `run_only_on('GPU')` implies the `gpu` marker."""
+    for item in items:
+        marker = item.get_closest_marker('run_only_on')
+        if marker is not None and marker.args[0] == "GPU" and item.get_closest_marker("gpu") is None:
+            item.add_marker(pytest.mark.gpu)
+
+
+def _num_cuda_allocations(torch) -> int:
+    """Cumulative number of CUDA allocations in this process (0 before CUDA is initialized)."""
+    if not torch.cuda.is_available() or not torch.cuda.is_initialized():
+        return 0
+    return torch.cuda.memory_stats().get("allocation.all.allocated", 0)
+
+
+def _test_file(item) -> str:
+    return item.nodeid.split("::")[0]
+
+
+def _load_test_file_durations(mode: str) -> dict:
+    """Per-file test durations in seconds for `mode` ("cpu" or "gpu"), measured in CI."""
+    import json
+
+    with open(join(dirname(__file__), "test_file_durations.json")) as f:
+        return json.load(f)[mode]
+
+
+def _assign_files_to_shards(files, durations, num_shards) -> dict:
+    """
+    Assign whole test files to shards so that shard durations are balanced (longest-processing-time first).
+    Sharding whole files, instead of individual tests, also creates each module-scoped fixture in one shard only.
+    Files without a recorded duration count as the median recorded duration.
+    """
+    known = sorted(durations.values())
+    default = known[len(known) // 2] if known else 1.0
+    loads = [0.0] * num_shards
+    assignment = {}
+    for path in sorted(files, key=lambda p: (-durations.get(p, default), p)):
+        shard = min(range(num_shards), key=lambda i: (loads[i], i))
+        assignment[path] = shard
+        loads[shard] += durations.get(path, default)
+    return assignment

@@ -140,6 +140,7 @@ def test_conditional_node_restores_previous_stream_on_body_error(monkeypatch):
     ],
 )
 @pytest.mark.parametrize("loop_labels", [False, True])
+@pytest.mark.gpu
 def test_cuda_graph_rnnt_greedy_decoder(model_name, batch_size, enable_bfloat16, loop_labels: bool, request):
     if not loop_labels:
         skip_cuda_python_test_if_cuda_graphs_conditional_nodes_not_supported()
@@ -199,6 +200,7 @@ def test_cuda_graph_rnnt_greedy_decoder(model_name, batch_size, enable_bfloat16,
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA decoder can run only on CUDA")
 @pytest.mark.parametrize("force_mode", ["no_graphs", "no_while_loops", "full_graph"])
 @pytest.mark.parametrize("enable_bfloat16", [False, True])
+@pytest.mark.gpu
 def test_loop_labels_cuda_graph_rnnt_greedy_decoder_forced_mode(
     stt_en_fastconformer_transducer_large, force_mode: str, enable_bfloat16: bool
 ):
@@ -272,6 +274,7 @@ def test_loop_labels_cuda_graph_rnnt_greedy_decoder_forced_mode(
     reason="Test requires CUDA device with bf16 support",
 )
 @pytest.mark.parametrize("is_tdt", [False, True])
+@pytest.mark.gpu
 def test_loop_labels_cuda_graph_ddp_mixed_precision(
     tmp_path_factory,
     an4_train_manifest_corrected,

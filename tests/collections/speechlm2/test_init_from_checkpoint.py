@@ -585,6 +585,7 @@ def test_salm_init_from_checkpoint(tmp_path):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="SALMAutomodel requires CUDA")
+@pytest.mark.gpu
 def test_salm_automodel_init_from_checkpoint(tmp_path):
     from nemo.collections.speechlm2.models import SALMAutomodel
 

@@ -288,6 +288,7 @@ class TestGPUBoostingTreeModel:
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
     @pytest.mark.parametrize("batch_size", [1, 3, 8])
+    @pytest.mark.gpu
     def test_advance_method(self, test_boosting_tree, device, batch_size):
         """Test advance method with different batch sizes"""
         test_boosting_tree.to(device)
@@ -300,6 +301,7 @@ class TestGPUBoostingTreeModel:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_get_final_method(self, test_boosting_tree, device):
         """Test get_final method for EOS scoring"""
         test_boosting_tree.to(device)
@@ -311,6 +313,7 @@ class TestGPUBoostingTreeModel:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_boosting_tree_inference(self, test_boosting_tree, device):
         """Test boosting tree inference with predefined sentences"""
         test_boosting_tree.to(device)
@@ -337,6 +340,7 @@ class TestGPUBoostingTreeModel:
 
     @pytest.mark.unit
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+    @pytest.mark.gpu
     def test_triton_vs_pytorch_consistency(self, test_context_graph):
         """Compare Triton vs PyTorch implementations"""
         device = torch.device("cuda")
@@ -379,6 +383,7 @@ class TestGPUBoostingTreeModel:
 
     @pytest.mark.unit
     # I need to test that the boosting tree model is built correctly from the config using model_path, key_phrases_file, key_phrases_list
+    @pytest.mark.gpu
     def test_boosting_tree_model_from_config(self, conformer_ctc_bpe_model, tmp_path):
         """Test that the boosting tree model is built correctly from the config using model_path, key_phrases_file, key_phrases_list"""
 
@@ -509,6 +514,7 @@ class TestVariativeBPE:
 class TestPerPhraseBoostingParams:
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_per_phrase_alpha_scales_whole_phrase(self, device):
         """A uniform per-phrase alpha scales every graph score (arcs + backoffs) by the same factor."""
         phrases_ids = [[1, 2, 3]]

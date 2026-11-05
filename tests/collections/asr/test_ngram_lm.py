@@ -76,6 +76,7 @@ class TestNGramGPULanguageModel:
     @pytest.mark.unit
     @pytest.mark.skipif(not TRITON_AVAILABLE, reason="Triton is not available")
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")
+    @pytest.mark.gpu
     def test_triton_vs_pytorch_random_states(self, n_gpu_lm: NGramGPULanguageModel, batch_size=2, num_iterations=100):
         """Randomly initializes the states and compares the scores from Triton and PyTorch implementations."""
         torch.manual_seed(777)

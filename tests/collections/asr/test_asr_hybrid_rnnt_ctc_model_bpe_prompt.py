@@ -368,6 +368,7 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
         reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_save_restore_artifact(self, hybrid_asr_model_with_prompt):
         hybrid_asr_model_with_prompt.train()
 
@@ -386,6 +387,7 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
         reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_save_restore_artifact_spe(self, hybrid_asr_model_with_prompt, test_data_dir):
         hybrid_asr_model_with_prompt.train()
 
@@ -405,6 +407,7 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
             assert new_model.spe_vocab_path.endswith('_tokenizer.vocab')
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_save_restore_artifact_agg(self, hybrid_asr_model_with_prompt, test_data_dir):
         tokenizer_dir = os.path.join(test_data_dir, "asr", "tokenizers", "an4_spe_128")
         tok_en = {"dir": tokenizer_dir, "type": "wpe"}

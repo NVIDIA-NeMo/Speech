@@ -40,6 +40,7 @@ class _Batch:
         "not a tensor",
     ],
 )
+@pytest.mark.gpu
 def test_move_data_to_device(batch):
     cuda_batch = move_data_to_device(batch, device="cuda")
     assert type(batch) == type(cuda_batch)

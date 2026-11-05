@@ -75,6 +75,27 @@ Each test has a 300-second timeout, set through `pytest-timeout` in `[tool.pytes
 runs longer fails on its own instead of exhausting the CI job timeout. Keep unit tests far below this limit. Put long-running checks, such as
 inference with a large released checkpoint, behind `@pytest.mark.run_only_on('GPU')` or in a functional test.
 
+### GPU tests
+
+CI runs every unit test in the CPU jobs (`--cpu`). The GPU jobs on pull requests run only the tests marked
+`@pytest.mark.gpu`, so mark every test that exercises CUDA code, for example a test parametrized over `cuda`, a CUDA
+graph or kernel test, or a test that runs a model on the GPU. `@pytest.mark.run_only_on('GPU')` implies the marker.
+Tests that run the same CPU code in both modes must not be marked.
+
+```
+pytest -m "gpu and not pleasefixme" path/to/relevant_tests   # what the GPU jobs run on a pull request
+```
+
+The scheduled nightly run executes the whole suite on GPU with `--check-gpu-markers`, which fails if a test without
+the marker allocates CUDA memory.
+
+### Test shards
+
+The large suites are split into shards of whole test files, balanced by the per-file durations in
+`tests/test_file_durations.json` (`--num-file-shards` and `--file-shard-id`). New files count as the median duration.
+When the shards drift out of balance, refresh the table from the logs of a recent CI run with
+`tests/update_test_file_durations.py`.
+
 ## Running the Github CI
 
 CI is powered by [copy-pr-bot](https://github.com/apps/copy-pr-bot), which mirrors each PR to a `pull-request/<number>` branch and triggers the workflow on push.

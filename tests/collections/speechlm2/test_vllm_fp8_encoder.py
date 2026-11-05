@@ -383,6 +383,7 @@ class TestBuildFP8Encoder:
 
 
 @pytest.mark.skipif(not _HAS_PLUGIN or not torch.cuda.is_available(), reason="needs CUDA")
+@pytest.mark.gpu
 def test_device_move_keeps_fp8_dtypes():
     perception = _quantized_perception()
 

@@ -96,7 +96,6 @@ if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
 class TestBatchedBeamHyps:
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
-    @pytest.mark.gpu
     def test_rnnt_instantiate(self, device: torch.device):
         _ = BatchedBeamHyps(batch_size=2, beam_size=3, init_length=4, device=device, blank_index=1024)
 
@@ -120,7 +119,6 @@ class TestBatchedBeamHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
-    @pytest.mark.gpu
     def test_rnnt_add_results(self, device: torch.device):
         # batch of size 2, add label for first utterance
         hyps = BatchedBeamHyps(batch_size=2, beam_size=3, init_length=1, device=device, blank_index=1024)
@@ -277,7 +275,6 @@ class TestBatchedBeamHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
-    @pytest.mark.gpu
     def test_tdt_instantiate(self, device: torch.device):
         _ = BatchedBeamHyps(
             batch_size=2, beam_size=3, init_length=4, device=device, blank_index=1024, model_type='tdt'
@@ -303,7 +300,6 @@ class TestBatchedBeamHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
-    @pytest.mark.gpu
     def test_tdt_add_results(self, device: torch.device):
         # batch of size 2, add label for first utterance
         hyps = BatchedBeamHyps(
@@ -333,7 +329,6 @@ class TestBatchedBeamHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
-    @pytest.mark.gpu
     def test_tdt_add_multiple_results(self, device: torch.device):
         hyps = BatchedBeamHyps(
             batch_size=2, beam_size=3, init_length=1, device=device, blank_index=1024, model_type='tdt'
@@ -390,7 +385,6 @@ class TestBatchedBeamHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
-    @pytest.mark.gpu
     def test_tdt_add_with_invalid_results(self, device: torch.device):
         hyps = BatchedBeamHyps(
             batch_size=2, beam_size=3, init_length=1, device=device, blank_index=1024, model_type='tdt'
@@ -446,7 +440,6 @@ class TestBatchedBeamHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
-    @pytest.mark.gpu
     def test_ctc_instantiate(self, device: torch.device):
         _ = BatchedBeamHyps(
             batch_size=2, beam_size=3, init_length=4, device=device, blank_index=1024, model_type='ctc'
@@ -480,7 +473,6 @@ class TestBatchedBeamHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
-    @pytest.mark.gpu
     def test_ctc_add_results(self, device: torch.device):
         # batch of size 2, add label for first utterance
         hyps = BatchedBeamHyps(
@@ -515,7 +507,6 @@ class TestBatchedBeamHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
-    @pytest.mark.gpu
     def test_rnnt_add_multiple_results(self, device: torch.device):
         hyps = BatchedBeamHyps(
             batch_size=2, beam_size=3, init_length=1, device=device, blank_index=1024, model_type='ctc'
@@ -578,7 +569,6 @@ class TestBatchedBeamHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
-    @pytest.mark.gpu
     def test_rnnt_add_with_invalid_results(self, device: torch.device):
         hyps = BatchedBeamHyps(
             batch_size=2, beam_size=3, init_length=1, device=device, blank_index=1024, model_type='ctc'
@@ -641,7 +631,6 @@ class TestBatchedBeamHyps:
         ]
 
 
-@pytest.mark.gpu
 class TestConvertToHypotheses:
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)

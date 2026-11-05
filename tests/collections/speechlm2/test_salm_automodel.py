@@ -551,7 +551,6 @@ def test_salm_automodel_generation_prompts_as_tensor(model):
 
 
 @pytest.mark.parametrize("device", chunking_test_devices())
-@pytest.mark.gpu
 def test_salm_automodel_prepare_inputs_chunks_long_audio(device):
     model = _make_chunking_test_model(encoder_chunk_size_seconds=1.0, sampling_rate=2, device=device)
     spk_targets = torch.arange(10, dtype=torch.float32, device=device).reshape(1, 5, 2)
@@ -576,7 +575,6 @@ def test_salm_automodel_prepare_inputs_chunks_long_audio(device):
 
 
 @pytest.mark.parametrize("device", chunking_test_devices())
-@pytest.mark.gpu
 def test_salm_automodel_prepare_inputs_merges_short_tail_chunk(device):
     model = _make_chunking_test_model(encoder_chunk_size_seconds=0.5, sampling_rate=8, hop_length=2, device=device)
     batch = {
@@ -599,7 +597,6 @@ def test_salm_automodel_prepare_inputs_merges_short_tail_chunk(device):
 
 
 @pytest.mark.parametrize("device", chunking_test_devices())
-@pytest.mark.gpu
 def test_salm_automodel_prepare_inputs_skips_chunking_when_size_is_null(device):
     model = _make_chunking_test_model(encoder_chunk_size_seconds=None, sampling_rate=2, device=device)
     batch = {
@@ -618,7 +615,6 @@ def test_salm_automodel_prepare_inputs_skips_chunking_when_size_is_null(device):
 
 @pytest.mark.parametrize("native_dataset_batch", [False, True])
 @pytest.mark.parametrize("device", chunking_test_devices())
-@pytest.mark.gpu
 def test_salm_automodel_packed_no_chunking_embeds_only_real_tokens(monkeypatch, device, native_dataset_batch):
     """Packed no-chunking batches compact IDs before the embedding lookup."""
     model = _make_chunking_test_model(encoder_chunk_size_seconds=None, sampling_rate=2, device=device)
@@ -677,7 +673,6 @@ def test_salm_automodel_packed_no_chunking_embeds_only_real_tokens(monkeypatch, 
 
 
 @pytest.mark.parametrize("device", chunking_test_devices())
-@pytest.mark.gpu
 def test_salm_automodel_prepare_inputs_preserves_chunked_audio_order(device):
     model = _make_chunking_test_model(encoder_chunk_size_seconds=1.0, sampling_rate=2, device=device)
     batch = {
@@ -704,7 +699,6 @@ def test_salm_automodel_prepare_inputs_preserves_chunked_audio_order(device):
 
 
 @pytest.mark.parametrize("device", chunking_test_devices())
-@pytest.mark.gpu
 def test_salm_automodel_generate_chunks_audio_before_llm(device):
     model = _make_chunking_test_model(encoder_chunk_size_seconds=1.0, sampling_rate=2, device=device)
     spk_targets = torch.arange(10, dtype=torch.float32, device=device).reshape(1, 5, 2)
@@ -731,7 +725,6 @@ def test_salm_automodel_generate_chunks_audio_before_llm(device):
 
 
 @pytest.mark.parametrize("device", chunking_test_devices())
-@pytest.mark.gpu
 def test_salm_automodel_limits_packed_encoder_opt_in_to_training(device):
     model = _make_chunking_test_model(encoder_chunk_size_seconds=1.0, sampling_rate=2, device=device)
     model.cfg["packed_encoder_sequences"] = True
@@ -766,7 +759,6 @@ def test_salm_automodel_limits_packed_encoder_opt_in_to_training(device):
 
 
 @pytest.mark.parametrize("device", chunking_test_devices())
-@pytest.mark.gpu
 def test_salm_automodel_packed_audio_samples_match_padded_batch(device):
     padded_model = _make_chunking_test_model(encoder_chunk_size_seconds=1.0, sampling_rate=2, device=device)
     packed_model = _make_chunking_test_model(encoder_chunk_size_seconds=1.0, sampling_rate=2, device=device)

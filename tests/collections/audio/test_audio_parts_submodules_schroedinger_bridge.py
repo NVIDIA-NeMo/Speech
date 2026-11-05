@@ -27,10 +27,12 @@ NUM_STEPS = [1, 5, 10, 20, 100]
     "device",
     [
         "cpu",
-        pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")),
+        pytest.param(
+            "cuda",
+            marks=[pytest.mark.gpu, pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")],
+        ),
     ],
 )
-@pytest.mark.gpu
 def test_sb_noise_schedule_max_properties(noise_schedule_type, device):
     if noise_schedule_type == "ve":
         noise_schedule = SBNoiseScheduleVE(k=2.0, c=0.5)

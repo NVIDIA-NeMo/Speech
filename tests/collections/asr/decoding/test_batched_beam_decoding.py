@@ -255,7 +255,6 @@ def decode_text_from_nbest_hypotheses(hyps, model):
         return [model.decoding.decode_hypothesis(nbest_hyp.n_best_hypotheses) for nbest_hyp in hyps]
 
 
-@pytest.mark.gpu
 class TestRNNTDecoding:
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE,
@@ -327,6 +326,7 @@ class TestRNNTDecoding:
     )
     @pytest.mark.parametrize("beam_size", [4])
     @pytest.mark.parametrize("batch_size", [4])
+    @pytest.mark.gpu
     def test_rnnt_beam_decoding_return_nbest(
         self, test_audio_filenames, rnnt_model, get_rnnt_encoder_output, beam_config, device, beam_size, batch_size
     ):
@@ -383,6 +383,7 @@ class TestRNNTDecoding:
     @pytest.mark.parametrize("beam_size", [4])
     @pytest.mark.parametrize("pruning_mode", ["late", "early"])
     @pytest.mark.parametrize("blank_lm_score_mode", ["no_score", "lm_weighted_full"])
+    @pytest.mark.gpu
     def test_rnnt_beam_decoding_kenlm(
         self,
         kenlm_model_path,
@@ -440,7 +441,6 @@ class TestRNNTDecoding:
             print_res_best_hyps(hyps)
 
 
-@pytest.mark.gpu
 class TestTDTDecoding:
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE,
@@ -514,6 +514,7 @@ class TestTDTDecoding:
     )
     @pytest.mark.parametrize("beam_size", [4])
     @pytest.mark.parametrize("batch_size", [4])
+    @pytest.mark.gpu
     def test_tdt_beam_decoding_return_nbest(
         self, test_audio_filenames, tdt_model, get_tdt_encoder_output, beam_config, device, beam_size, batch_size
     ):
@@ -573,6 +574,7 @@ class TestTDTDecoding:
     @pytest.mark.parametrize("beam_size", [4])
     @pytest.mark.parametrize("pruning_mode", ["late", "early"])
     @pytest.mark.parametrize("blank_lm_score_mode", ["lm_weighted_full", "no_score"])
+    @pytest.mark.gpu
     def test_tdt_beam_decoding_kenlm(
         self,
         kenlm_model_path,
@@ -743,7 +745,6 @@ class TestTransducerCudaGraphBeamDecoding:
                 model.transcribe(test_audio_filenames, batch_size=batch_size, num_workers=None)
 
 
-@pytest.mark.gpu
 class TestCTCDecoding:
     @pytest.mark.with_downloads
     @pytest.mark.unit
@@ -800,6 +801,7 @@ class TestCTCDecoding:
     )
     @pytest.mark.parametrize("beam_size", [4])
     @pytest.mark.parametrize("batch_size", [4])
+    @pytest.mark.gpu
     def test_ctc_beam_decoding_return_nbest(
         self, test_audio_filenames, ctc_model, get_ctc_output, beam_config, device, beam_size, batch_size
     ):
@@ -844,6 +846,7 @@ class TestCTCDecoding:
     )
     @pytest.mark.parametrize("batch_size", [4])
     @pytest.mark.parametrize("beam_size", [4])
+    @pytest.mark.gpu
     def test_ctc_beam_decoding_kenlm(
         self,
         kenlm_model_path,

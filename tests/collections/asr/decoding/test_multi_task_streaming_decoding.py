@@ -69,12 +69,13 @@ def get_batch_encoder_outputs_from_records(records, model, device):
 @pytest.mark.with_downloads
 @pytest.mark.parametrize(
     "device,use_cuda_graph_decoder",
-    [(device, False) for device in DEVICES] + [(device, True) for device in DEVICES if device.type == "cuda"],
+    # The `gpu` marker puts the CUDA cases in the GPU CI jobs.
+    [pytest.param(device, False, marks=pytest.mark.gpu if device.type == "cuda" else ()) for device in DEVICES]
+    + [pytest.param(device, True, marks=pytest.mark.gpu) for device in DEVICES if device.type == "cuda"],
 )
 @pytest.mark.parametrize("decoding_policy", ["waitk", "alignatt"])
 @pytest.mark.parametrize("chunk_size", [3, 4])
 @pytest.mark.parametrize("batch_size", [4])
-@pytest.mark.gpu
 def test_multi_task_streaming_decoding(
     tmp_path_factory,
     an4_val_manifest_corrected,

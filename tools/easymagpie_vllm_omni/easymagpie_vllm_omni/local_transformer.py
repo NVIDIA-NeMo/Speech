@@ -159,6 +159,7 @@ class EasyMagpieCodeLoop(nn.Module):
         super().__init__()
         arch = EasyMagpieOmniArch.from_hf_config(vllm_config.model_config.hf_config)
         self.num_codebooks = arch.num_stacked_codebooks
+        self.channel_order = arch.local_transformer_channel_order
         self.lt_hidden = arch.local_transformer_hidden_dim
         self.top_k = min(_DEFAULT_TOP_K, arch.num_all_tokens_per_codebook)
         # Set by :meth:`bind_predictor`; held in a tuple so nn.Module does not
@@ -194,19 +195,19 @@ class EasyMagpieCodeLoop(nn.Module):
         buf[:, 0, :] = cp.local_transformer_in_projection(dec_hidden)
 
         forbidden = cp.forbidden_mask
-        codes: list[torch.Tensor] = []
-        for k in range(n):
+        codes: list[torch.Tensor | None] = [None] * n
+        for position, k in enumerate(self.channel_order):
             hidden = cp.local_transformer(buf)
-            row = cp.local_transformer_audio_out_projection(hidden[:, k, :])
+            row = cp.local_transformer_audio_out_projection(hidden[:, position, :])
             logits = cp.local_transformer_out_projections[k](row)
             logits = logits.masked_fill(forbidden, float("-inf")) / temperature
             vals, idxs = torch.topk(logits, self.top_k, dim=-1)
             picked = (vals + gumbel_noise[:, k, :]).argmax(dim=-1, keepdim=True)
             code_k = idxs.gather(-1, picked).squeeze(-1)
-            codes.append(code_k)
-            if k + 1 < n:
+            codes[k] = code_k
+            if position + 1 < n:
                 emb = cp.audio_in_projection(cp.audio_embeddings[k](code_k))
-                buf[:, k + 1, :] = cp.local_transformer_in_projection(emb)
+                buf[:, position + 1, :] = cp.local_transformer_in_projection(emb)
         return torch.stack(codes, dim=1)
 
 

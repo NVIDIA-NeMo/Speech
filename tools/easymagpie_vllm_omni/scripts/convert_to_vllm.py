@@ -444,6 +444,7 @@ def build_config(
     config["local_transformer_n_layers"] = int(cfg.get("local_transformer_n_layers", 2))
     config["local_transformer_n_heads"] = int(cfg.get("local_transformer_n_heads", 1))
     config["local_transformer_hidden_dim"] = int(cfg.get("local_transformer_hidden_dim", hidden_dim))
+    config["local_transformer_order"] = str(cfg.get("local_transformer_order", "codebook_major"))
 
     # Pin the exact special-token ids (covers legacy ``forced_*`` checkpoints).
     config["forced_audio_bos_id"] = int(model.audio_bos_id)

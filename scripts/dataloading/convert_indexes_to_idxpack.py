@@ -21,9 +21,11 @@ dataset-level ``.idxpack``.
 The input YAML may contain nested groups and transform wrappers. This initial
 integration packs the formats consumed by the indexed runtime: native NeMo
 manifests/tars, Nemotron text JSONL/tars, and ShareGPT/multimodal-conversation
-JSONL manifests. Native NeMo conversion reads indexed manifest rows and tar
-headers once to embed an exact row-to-member ordinal map; it never reads audio
-payloads. Other collections are copied directly from existing ``.idx`` files,
+JSONL manifests, and uncompressed Lhotse Shar directories (``lhotse_shar`` with a
+single ``shar_path``; one pack per directory, see
+nemo.collections.common.data.lhotse.packed_shar). Native NeMo conversion reads
+indexed manifest rows and tar headers once to embed an exact row-to-member
+ordinal map; it never reads audio payloads. Other collections are copied directly from existing ``.idx`` files,
 normally from ``--indexes-root``. Native tar sidecars keep their headerless
 uint64 layout. The converter determines compatibility from the data itself: a
 sidecar is current exactly when its sentinel equals the physical local or
@@ -109,6 +111,12 @@ from nemo.collections.common.data.lhotse.nemo_tar_routing import (
     write_nemo_tar_aggregate_ordinal_maps,
     write_nemo_tar_aggregate_shard_map,
     write_nemo_tar_ordinal_map_shard,
+)
+from nemo.collections.common.data.lhotse.packed_shar import (
+    SHAR_FIELD_ROLE,
+    SHAR_FIELDS_ROLE,
+    discover_shar_shards,
+    shar_pack_collection_specs,
 )
 
 _MANIFEST_REUSE_BATCH_BYTES = 64 << 20
@@ -560,6 +568,34 @@ def _preflight_native_tar_sidecars(
     return source_size_overrides, index_path_overrides
 
 
+def _preflight_shar_tar_sidecars(collections, indexes_root) -> dict[str, int]:
+    """Accept the zero end-of-archive blocks that Lhotse Shar tars carry after the last sample.
+
+    A Shar tar's sidecar sentinel is the end of the last (data, metadata) pair, while the file is longer by the
+    tar end-of-archive padding. The padding is verified to be all zeros and the pack records the file size.
+    Any other mismatch, and a tar newer than its sidecar, is an error.
+    """
+    source_size_overrides = {}
+    validated = set()
+    for collection in collections:
+        if collection.role != SHAR_FIELD_ROLE or not collection.offsets_required:
+            continue
+        for path in map(str, collection.paths):
+            if path in validated:
+                continue
+            validated.add(path)
+            idx_path = _resolve_local_sidecar(path, indexes_root)
+            sentinel, index_stat = _read_raw_tar_sentinel(idx_path)
+            size = _source_size(path)
+            if sentinel > size:
+                raise ValueError(f"Shar tar index {idx_path} has sentinel {sentinel} beyond source size {size}.")
+            _validate_local_tar_index_freshness(path, idx_path, index_stat, None)
+            if sentinel < size:
+                _verify_trailing_zero_padding(path, sentinel, size)
+                source_size_overrides[path] = size
+    return source_size_overrides
+
+
 def _preflight_wds_v2_sidecars(collections, indexes_root) -> dict[str, Path]:
     index_path_overrides = {}
     validated = set()
@@ -582,7 +618,7 @@ def _path_only_source_sizes(collections) -> dict[str, int]:
     return {
         str(path): _source_size(str(path))
         for collection in collections
-        if not collection.offsets_required
+        if not collection.offsets_required and collection.role != SHAR_FIELDS_ROLE
         for path in collection.paths
     }
 
@@ -1601,6 +1637,20 @@ def discover_pack_collections(
         if entry.get("manifest_filepath") is None:
             return collections
 
+    if typ == "lhotse_shar":
+        shar_path = entry.get("shar_path")
+        if not isinstance(shar_path, (str, Path)):
+            raise NotImplementedError(
+                "Packed lhotse_shar requires shar_path to be a single directory string; "
+                f"got {type(shar_path).__name__}."
+            )
+        cuts_shards, field_shards = discover_shar_shards(shar_path)
+        for spec in shar_pack_collection_specs(shar_path, cuts_shards, field_shards):
+            if spec.key in {existing.key for existing in collections}:
+                continue
+            collections.append(spec)
+        return collections
+
     supported = {
         "nemo",
         "nemo_tarred",
@@ -2076,6 +2126,7 @@ def main(
                 accept_trailing_zero_padding=accept_trailing_zero_tar_padding,
                 repair_stale_local_sidecars_root=repair_stale_local_native_tar_sidecars_root,
             )
+            source_size_overrides.update(_preflight_shar_tar_sidecars(collections, indexes_root))
             source_size_overrides.update(_path_only_source_sizes(collections))
             wds_index_paths = _preflight_wds_v2_sidecars(collections, indexes_root)
             index_path_overrides.update(wds_index_paths)

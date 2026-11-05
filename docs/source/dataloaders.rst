@@ -1069,10 +1069,20 @@ between them:
 
 The converter walks nested ``group`` entries and transform wrappers. It
 currently packs native ``nemo``/``nemo_tarred`` manifests and tar shards,
-``nemotron_text_converation`` JSONL or tar paths, and ``share_gpt`` JSONL
-manifests. Unsupported data-bearing types raise instead of being silently
-omitted; types that need no sidecar (such as ``parquet``) are ignored. Other
-indexed adapters can continue to use loose sidecars.
+``nemotron_text_converation`` JSONL or tar paths, ``share_gpt`` JSONL
+manifests, and uncompressed ``lhotse_shar`` directories. Unsupported
+data-bearing types raise instead of being silently omitted; types that need no
+sidecar (such as ``parquet``) are ignored. Other indexed adapters can continue
+to use loose sidecars.
+
+A ``lhotse_shar`` entry is packed when its ``shar_path`` is a single directory
+string with uncompressed ``cuts.*.jsonl`` shards and ``<field>.*.tar`` shards
+(build the sidecars with ``build_indexes.py`` first). One pack covers the cuts
+and every field of that directory; the trailing tar end-of-archive padding is
+verified to be zeros. At runtime the packed reader yields the same cuts in the
+same order as the sidecar reader. A ``shar_path`` given as a list or as a
+per-field mapping, and ``metadata_only`` reads, are not supported with a pack
+and raise.
 
 Native tar ``.idx`` files remain the headerless sequence of
 little-endian uint64 offsets; no format marker or companion sidecar is

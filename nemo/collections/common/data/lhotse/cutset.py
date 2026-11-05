@@ -779,7 +779,26 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
         indexes_root = config.get("indexes_root", None)
         if config.get("cuts_path") is not None:
             warnings.warn("Note: lhotse.cuts_path will be ignored because lhotse.shar_path was provided.")
-        if isinstance(config.shar_path, (str, Path)):
+        index_pack = _resolve_index_pack(config)
+        if index_pack is not None:
+            if not isinstance(config.shar_path, (str, Path)):
+                raise ValueError("A packed lhotse_shar entry requires shar_path to be a single directory string.")
+            if metadata_only:
+                raise ValueError("index_pack is not supported with metadata_only for lhotse_shar.")
+            from nemo.collections.common.data.lhotse.packed_shar import LazyPackedSharIterator
+
+            cuts = CutSet(
+                LazyPackedSharIterator(
+                    index_pack,
+                    str(config.shar_path),
+                    shuffle=True,
+                    seed=shard_seed,
+                    max_open_files=config.get("index_pack_max_open_files", 32),
+                )
+            )
+            if not force_finite:
+                cuts = cuts.repeat(preserve_id=True)
+        elif isinstance(config.shar_path, (str, Path)):
             cuts = CutSet.from_shar(
                 **_resolve_shar_inputs(config.shar_path, metadata_only),
                 shuffle_shards=True,

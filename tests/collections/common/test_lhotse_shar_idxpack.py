@@ -241,3 +241,20 @@ def test_plain_shar_configs_do_not_use_a_pack(tmp_path, shar_dirs, indexed):
         )
         assert ids == expected
         assert all(c.recording.sources[0].type == "memory" for c in cuts)
+
+
+@requires_shar_index_pack
+def test_rebind_of_a_shar_pack_is_refused_with_a_clear_message(tmp_path, shar_dirs):
+    from scripts.dataloading.rebind_idxpack_collections import main as rebind_main
+
+    a, _ = shar_dirs
+    entry = {"type": "lhotse_shar", "shar_path": str(a)}
+    pack, result = _convert(tmp_path, [entry])
+    assert result.exit_code == 0, result.output
+    cfg = tmp_path / "pack.yaml"
+    result = CliRunner().invoke(
+        rebind_main, ["--source-pack", str(pack), "--output", str(tmp_path / "rebound.idxpack"), str(cfg)]
+    )
+    assert result.exit_code != 0
+    assert "Rebuild the pack" in result.output
+    assert not (tmp_path / "rebound.idxpack").exists()

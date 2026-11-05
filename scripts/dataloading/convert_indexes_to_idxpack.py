@@ -1616,7 +1616,11 @@ def discover_pack_collections(
 
     if typ == "lhotse_shar":
         if shar_sources is None:
-            raise NotImplementedError("idxpack conversion of lhotse_shar requires collecting shar_sources.")
+            raise ValueError(
+                "lhotse_shar entries are packed by write_shar_index_pack and cannot be rebound, relocated or "
+                "otherwise inspected as collections of an existing pack. Rebuild the pack from the new paths with "
+                "convert_indexes_to_idxpack.py."
+            )
         shar_sources.extend(_shar_sources(entry.get("shar_path")))
         return collections
 

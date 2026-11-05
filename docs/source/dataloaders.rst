@@ -1731,9 +1731,11 @@ The most common foot-guns when standing up a NeMo Lhotse recipe:
    ``limit_train_batches`` for the periodic validation cadence) training
    never completes the first "epoch". Always set both.
 
-3. **Compressed inputs cannot be indexed.** ``.jsonl.gz`` and ``.tar.gz``
-   work for streaming, but ``indexed: true`` requires uncompressed,
-   seekable files. Re-extract or re-write before building ``.idx``.
+3. **Most compressed inputs cannot be indexed.** ``.tar.gz`` and other
+   compressed formats work for streaming, but ``indexed: true`` requires
+   seekable files: plain JSONL, gzip JSONL (with ``lhotse[gzip]`` and the
+   ``.gzidx`` sidecar) and uncompressed tars. Re-extract or re-write
+   before building ``.idx``.
 
 4. **Mismatched** ``num_workers`` / ``world_size`` **on resume.** Exact
    per-worker resume with ``StatefulDataLoader`` requires both to match

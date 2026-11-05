@@ -38,6 +38,7 @@ NUMBA_RNNT_LOSS_AVAILABLE = numba_utils.numba_cuda_is_supported(__NUMBA_MINIMUM_
 class TestExportable:
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_EncDecCTCModel_export_to_onnx(self):
         model_config = DictConfig(
             {
@@ -60,6 +61,7 @@ class TestExportable:
 
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_EncDecClassificationModel_export_to_onnx(self, speech_classification_model):
         model = speech_classification_model.cuda()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -75,6 +77,7 @@ class TestExportable:
 
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_EncDecSpeakerLabelModel_export_to_onnx(self, speaker_label_model):
         model = speaker_label_model.cuda()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -87,6 +90,7 @@ class TestExportable:
 
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_EncDecCitrinetModel_export_to_onnx(self, citrinet_model):
         model = citrinet_model.cuda()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -116,6 +120,7 @@ class TestExportable:
 
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_EncDecCitrinetModel_limited_SE_export_to_onnx(self, citrinet_model):
         model = citrinet_model.cuda()
         asr_module_utils.change_conv_asr_se_context_window(model, context_window=24, update_config=False)
@@ -134,6 +139,7 @@ class TestExportable:
 
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_EncDecRNNTModel_export_to_onnx(self, citrinet_rnnt_model):
         model = citrinet_rnnt_model.cuda()
 
@@ -185,6 +191,7 @@ class TestExportable:
 
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_EncDecRNNTModel_export_to_ts(self, citrinet_rnnt_model):
         model = citrinet_rnnt_model.cuda()
 
@@ -231,6 +238,7 @@ class TestExportable:
 
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_EncDecCTCModel_adapted_export_to_onnx(self):
         model_config = DictConfig(
             {
@@ -669,6 +677,7 @@ class TestTransformerDecoderExportInputs:
 
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_tensor_start_position_on_cuda(self):
         # under tracing the start position derived from the input shape is a CPU tensor while the ids are on the GPU
         decoder = _small_transformer_decoder().cuda()
@@ -680,6 +689,7 @@ class TestTransformerDecoderExportInputs:
 
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_export_with_decoder_mems_on_cuda(self):
         decoder = _small_transformer_decoder().cuda()
         with tempfile.TemporaryDirectory() as tmpdir:

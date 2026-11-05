@@ -74,6 +74,7 @@ def get_batch_encoder_outputs_from_records(records, model, device):
 @pytest.mark.parametrize("decoding_policy", ["waitk", "alignatt"])
 @pytest.mark.parametrize("chunk_size", [3, 4])
 @pytest.mark.parametrize("batch_size", [4])
+@pytest.mark.gpu
 def test_multi_task_streaming_decoding(
     tmp_path_factory,
     an4_val_manifest_corrected,

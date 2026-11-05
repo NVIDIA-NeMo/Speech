@@ -288,6 +288,7 @@ def training_cutset_batch():
     return CutSet([cut])
 
 
+@pytest.mark.gpu
 def test_e2e_validation_step(model, dataset, training_cutset_batch):
     model.eval()
     model.on_validation_epoch_start()
@@ -302,6 +303,7 @@ def test_e2e_validation_step(model, dataset, training_cutset_batch):
     assert results is None  # no return value
 
 
+@pytest.mark.gpu
 def test_e2s_offline_generation(model):
     model.eval()
     # 16000 samples == 1 second == 12.5 frames ~= 14 frames after encoder padding

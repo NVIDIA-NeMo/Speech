@@ -43,6 +43,7 @@ def create_boosting_model(phrases: list[str], tokenizer, device: torch.device) -
     return model.to(device)
 
 
+@pytest.mark.gpu
 class TestGPUBiasingMultiModel:
     @pytest.mark.unit
     @pytest.mark.with_downloads

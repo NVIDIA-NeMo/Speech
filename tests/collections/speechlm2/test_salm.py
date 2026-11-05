@@ -150,6 +150,7 @@ def training_cutset_batch():
     )
 
 
+@pytest.mark.gpu
 def test_salm_dataset(dataset, prompt_formatter, training_cutset_batch):
     # This first step pre-tokenizes the examples, usually handled within `get_lhotse_dataloder_from_config`.
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
@@ -166,6 +167,7 @@ def test_salm_dataset(dataset, prompt_formatter, training_cutset_batch):
         assert torch.is_tensor(batch[key])
 
 
+@pytest.mark.gpu
 def test_salm_training_step(model, dataset, prompt_formatter, training_cutset_batch):
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
     batch = dataset[training_cutset_batch]
@@ -176,6 +178,7 @@ def test_salm_training_step(model, dataset, prompt_formatter, training_cutset_ba
     assert results["loss"] > 0
 
 
+@pytest.mark.gpu
 def test_salm_validation_step(model, dataset, prompt_formatter, training_cutset_batch):
     model.on_validation_epoch_start()
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
@@ -185,6 +188,7 @@ def test_salm_validation_step(model, dataset, prompt_formatter, training_cutset_
     assert results is None
 
 
+@pytest.mark.gpu
 def test_salm_generation(model):
     answer = model.generate(
         prompts=[
@@ -209,6 +213,7 @@ def test_salm_generation(model):
         (None, {}),
     ],
 )
+@pytest.mark.gpu
 def test_salm_generation_passes_enable_thinking(model, monkeypatch, enable_thinking, expected_formatter_kwargs):
     seen = {}
 
@@ -243,6 +248,7 @@ def test_salm_generation_passes_enable_thinking(model, monkeypatch, enable_think
     assert answer.shape == (1, 3)
 
 
+@pytest.mark.gpu
 def test_salm_generation_audios_via_prompt(model, tmp_path):
     audio_path = tmp_path / "audio.wav"
     dummy_cut(0, with_data=True).save_audio(audio_path)
@@ -266,6 +272,7 @@ def test_salm_generation_audios_via_prompt(model, tmp_path):
     assert (answer < model.text_vocab_size).all()
 
 
+@pytest.mark.gpu
 def test_salm_generation_prompts_as_tensor(model):
     answer = model.generate(
         prompts=torch.tensor([[1, 2, 3, 4, 5, 6, 7, model.audio_locator_tag_id]]),
@@ -280,6 +287,7 @@ def test_salm_generation_prompts_as_tensor(model):
 
 
 @pytest.mark.parametrize("device", chunking_test_devices())
+@pytest.mark.gpu
 def test_salm_prepare_inputs_chunks_long_audio(device):
     model = _make_chunking_test_model(encoder_chunk_size_seconds=1.0, sampling_rate=2, device=device)
     batch = {
@@ -299,6 +307,7 @@ def test_salm_prepare_inputs_chunks_long_audio(device):
 
 
 @pytest.mark.parametrize("device", chunking_test_devices())
+@pytest.mark.gpu
 def test_salm_prepare_inputs_passes_chunk_time_offsets(device):
     # sampling_rate=8, chunk=0.5s -> 4 samples/chunk; a 12-sample audio splits cleanly into
     # 3 chunks starting at samples 0, 4, 8, i.e. time offsets 0.0, 0.5, 1.0 seconds.
@@ -322,6 +331,7 @@ def test_salm_prepare_inputs_passes_chunk_time_offsets(device):
 
 
 @pytest.mark.parametrize("device", chunking_test_devices())
+@pytest.mark.gpu
 def test_salm_prepare_inputs_merges_short_tail_chunk(device):
     model = _make_chunking_test_model(encoder_chunk_size_seconds=0.5, sampling_rate=8, hop_length=2, device=device)
     batch = {
@@ -343,6 +353,7 @@ def test_salm_prepare_inputs_merges_short_tail_chunk(device):
 
 
 @pytest.mark.parametrize("device", chunking_test_devices())
+@pytest.mark.gpu
 def test_salm_prepare_inputs_skips_chunking_when_size_is_null(device):
     model = _make_chunking_test_model(encoder_chunk_size_seconds=None, sampling_rate=2, device=device)
     batch = {
@@ -360,6 +371,7 @@ def test_salm_prepare_inputs_skips_chunking_when_size_is_null(device):
 
 
 @pytest.mark.parametrize("device", chunking_test_devices())
+@pytest.mark.gpu
 def test_salm_prepare_inputs_skips_chunking_when_key_absent(device):
     """Backwards compat: missing encoder_chunk_size_seconds key matches legacy non-chunking path."""
     model = _make_chunking_test_model(encoder_chunk_size_seconds=None, sampling_rate=2, device=device)
@@ -379,6 +391,7 @@ def test_salm_prepare_inputs_skips_chunking_when_key_absent(device):
 
 
 @pytest.mark.parametrize("device", chunking_test_devices())
+@pytest.mark.gpu
 def test_salm_prepare_inputs_preserves_chunked_audio_order(device):
     model = _make_chunking_test_model(encoder_chunk_size_seconds=1.0, sampling_rate=2, device=device)
     batch = {
@@ -405,6 +418,7 @@ def test_salm_prepare_inputs_preserves_chunked_audio_order(device):
 
 
 @pytest.mark.parametrize("device", chunking_test_devices())
+@pytest.mark.gpu
 def test_salm_generate_chunks_audio_before_llm(device):
     model = _make_chunking_test_model(encoder_chunk_size_seconds=1.0, sampling_rate=2, device=device)
 

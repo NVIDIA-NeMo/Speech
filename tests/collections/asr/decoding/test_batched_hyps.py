@@ -37,6 +37,7 @@ NON_COLLIDING_BLANK_ID = 1024
 class TestBatchedHyps:
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_instantiate(self, device: torch.device):
         hyps = BatchedHyps(batch_size=2, init_length=3, blank_id=NON_COLLIDING_BLANK_ID, device=device)
         assert torch.is_tensor(hyps.timestamps)
@@ -71,6 +72,7 @@ class TestBatchedHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_instantiate_optional_storage(self, device: torch.device):
         logits_dim = 7
         hyps = BatchedHyps(
@@ -102,6 +104,7 @@ class TestBatchedHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_add_results_masked(self, device: torch.device):
         # batch of size 2, add label for first utterance only (second is inactive)
         hyps = BatchedHyps(batch_size=2, init_length=1, blank_id=NON_COLLIDING_BLANK_ID, device=device)
@@ -121,6 +124,7 @@ class TestBatchedHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_add_multiple_results_masked(self, device: torch.device):
         # batch of size 2, add label for first utterance, then add labels for both utterances
         hyps = BatchedHyps(batch_size=2, init_length=1, blank_id=NON_COLLIDING_BLANK_ID, device=device)
@@ -147,6 +151,7 @@ class TestBatchedHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_add_results_masked_no_checks(self, device: torch.device):
         # `check_lengths=False` must contain no host<->device synchronization (blocking) operations
         hyps = BatchedHyps(batch_size=2, init_length=4, blank_id=NON_COLLIDING_BLANK_ID, device=device)
@@ -172,6 +177,7 @@ class TestBatchedHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_add_results_masked_reallocates(self, device: torch.device):
         # init_length is intentionally small; storage must grow transparently when check_lengths=True
         hyps = BatchedHyps(batch_size=2, init_length=1, blank_id=NON_COLLIDING_BLANK_ID, device=device)
@@ -190,6 +196,7 @@ class TestBatchedHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_add_results_masked_with_blank_steps(self, device: torch.device):
         # with_blank_steps=True: blank labels are stored in the transcript, but they do NOT advance
         # the score / last-non-blank tracking. Single utterance for clarity.
@@ -223,6 +230,7 @@ class TestBatchedHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_get_data_without_blank_no_blank_steps(self, device: torch.device):
         # with_blank_steps=False: data is returned as-is (it never contained blanks)
         hyps = BatchedHyps(batch_size=2, init_length=2, blank_id=NON_COLLIDING_BLANK_ID, device=device)
@@ -249,6 +257,7 @@ class TestBatchedHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_get_data_without_blank_with_blank_steps(self, device: torch.device):
         # with_blank_steps=True: blanks are stripped and non-blank order is preserved
         blank_id = 0
@@ -280,6 +289,7 @@ class TestBatchedHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_get_last_labels(self, device: torch.device):
         hyps = BatchedHyps(batch_size=2, init_length=2, blank_id=NON_COLLIDING_BLANK_ID, device=device)
         # no labels yet -> pad_id everywhere
@@ -295,6 +305,7 @@ class TestBatchedHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_clear(self, device: torch.device):
         hyps = BatchedHyps(batch_size=2, init_length=2, blank_id=NON_COLLIDING_BLANK_ID, device=device)
         hyps.add_results_masked_(
@@ -313,6 +324,7 @@ class TestBatchedHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_clone(self, device: torch.device):
         logits_dim = 7
         hyps = BatchedHyps(
@@ -353,6 +365,7 @@ class TestBatchedHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_merge(self, device: torch.device):
         # merge two batched hypotheses (basic case: no blank steps, no optional storage)
         def build(labels_per_step, times_per_step, masks_per_step, scores_per_step):
@@ -389,6 +402,7 @@ class TestBatchedHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_merge_with_logits(self, device: torch.device):
         # Regression test: merge_ must use dim=1 (sequence axis) for logits scatter/cat,
         # not dim=-1 (logits-dim axis), which would silently corrupt the data.
@@ -458,6 +472,7 @@ class TestBatchedHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.gpu
     def test_merge_with_logits_triggers_reallocation(self, device: torch.device):
         # When the combined length exceeds _max_length, merge_ must reallocate logits along dim=1
         # (sequence axis). With the dim=-1 bug, the reallocation would expand the logits-dim
@@ -512,6 +527,7 @@ class TestBatchedHyps:
         assert torch.allclose(hyps_a.logits[0, 1], torch.full((logits_dim,), 2.0, device=device))
 
 
+@pytest.mark.gpu
 class TestConvertToHypotheses:
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)

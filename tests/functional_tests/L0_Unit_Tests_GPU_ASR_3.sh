@@ -12,7 +12,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+source tests/functional_tests/_gpu_unit_test_selection.sh
 python -c "from nemo.collections.asr.models import ASRModel" && NEMO_NUMBA_MINVER=0.53 CUDA_VISIBLE_DEVICES=0 coverage run -a --data-file=/workspace/.coverage --source=/workspace/ -m pytest \
     tests/collections/asr \
-    --shard-id=2 --num-shards=6 \
-    -m "not pleasefixme" --with_downloads
+    --num-file-shards=3 --file-shard-id=2 \
+    "${GPU_TEST_SELECTION[@]}" --with_downloads

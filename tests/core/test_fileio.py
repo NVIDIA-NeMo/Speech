@@ -127,6 +127,7 @@ class TestFileIO:
             assert not np.array_equal(w1, w2)
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_save_restore_from_nemo_file(self, asr_model):
         """ " Test makes sure that the second instance created from the same configuration AND checkpoint
         has the same weights."""
@@ -181,6 +182,7 @@ class TestFileIO:
             assert asr_model.num_weights == asr_model3.num_weights
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_save_restore_from_nemo_file_with_override(self, asr_model, tmpdir):
         """ " Test makes sure that the second instance created from the same configuration AND checkpoint
         has the same weights.
@@ -228,6 +230,7 @@ class TestFileIO:
             assert asr_model2.cfg.encoder.activation == 'swish'
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_save_model_level_pt_ckpt(self, asr_model):
         with tempfile.TemporaryDirectory() as ckpt_dir:
             nemo_file = os.path.join(ckpt_dir, 'asr.nemo')
@@ -262,6 +265,7 @@ class TestFileIO:
             assert np.array_equal(w1, w2)
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_save_module_level_pt_ckpt(self, asr_model):
         with tempfile.TemporaryDirectory() as ckpt_dir:
             nemo_file = os.path.join(ckpt_dir, 'asr.nemo')

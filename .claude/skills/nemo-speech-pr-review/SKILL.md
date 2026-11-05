@@ -140,6 +140,9 @@ Each rule is a position the maintainers enforced repeatedly. General good practi
   training, or an inference run that checks a WER, CER, or similar threshold. Load a `.nemo` checkpoint and local
   CI test data, not Hugging Face downloads.
 - **Isolate tests.** Add new fixtures and test files instead of changing shared ones. Seed statistical tests.
+- **Mark GPU tests.** A test that exercises CUDA code needs `@pytest.mark.gpu`; otherwise the GPU CI jobs skip it on
+  pull requests. Do not mark tests that run the same CPU code in both modes, and do not set the global default device
+  at import time.
 
 ### Docs and diffs
 

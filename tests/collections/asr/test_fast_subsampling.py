@@ -114,6 +114,7 @@ def _max_rel(actual, expected):
 @pytest.mark.parametrize("factor", [4, 8, 16])
 @pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("ragged", [False, True])
+@pytest.mark.gpu
 def test_triton_subsampling_matches_pytorch(fp32_reference, factor, causal, ragged):
     """The fused path reproduces the PyTorch stack for every supported subsampling factor.
 
@@ -140,12 +141,14 @@ def test_triton_subsampling_matches_pytorch(fp32_reference, factor, causal, ragg
         (2, None, False),  # stops after [conv, act], so there is no depthwise to absorb
     ],
 )
+@pytest.mark.gpu
 def test_fast_path_eligibility(factor, use_triton, eligible):
     assert bool(_build(factor=factor, use_triton=use_triton).conv.fuse_triton) is eligible
 
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.gpu
 def test_fast_path_requires_relu():
     """The kernels apply ReLU, so any other activation keeps the whole stack on PyTorch."""
     assert not _build(activation=torch.nn.GELU()).conv.fuse_triton
@@ -154,6 +157,7 @@ def test_fast_path_requires_relu():
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.gpu
 def test_triton_subsampling_half_precision(fp32_reference, dtype):
     """Half precision agrees to within the dtype's own resolution."""
     module = _build(dtype=dtype)
@@ -169,6 +173,7 @@ def test_triton_subsampling_half_precision(fp32_reference, dtype):
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.gpu
 def test_triton_subsampling_under_autocast(fp32_reference, dtype):
     """Parameters stay fp32 and the autocast region alone picks the compute dtype."""
     module = _build()
@@ -186,6 +191,7 @@ def test_triton_subsampling_under_autocast(fp32_reference, dtype):
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.gpu
 def test_triton_subsampling_with_utterances_shorter_than_a_tile(fp32_reference):
     """Utterances that end inside the first output tile.
 
@@ -215,6 +221,7 @@ def test_triton_subsampling_with_utterances_shorter_than_a_tile(fp32_reference):
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
 @pytest.mark.parametrize("causal", [False, True])
+@pytest.mark.gpu
 def test_triton_subsampling_backward_matches_pytorch(fp32_reference, causal):
     """Gradients agree to within the fused path's own run-to-run nondeterminism.
 
@@ -240,6 +247,7 @@ def test_triton_subsampling_backward_matches_pytorch(fp32_reference, causal):
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.gpu
 def test_input_that_requires_a_gradient_takes_the_pytorch_path():
     """The fused kernel returns no input gradient, so an input that needs one bypasses it.
 
@@ -257,6 +265,7 @@ def test_input_that_requires_a_gradient_takes_the_pytorch_path():
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.gpu
 def test_triton_subsampling_is_invariant_to_padding_and_batch_size(fp32_reference):
     """Valid frames do not depend on how much padding shares the batch, nor on batch size.
 
@@ -280,6 +289,7 @@ def test_triton_subsampling_is_invariant_to_padding_and_batch_size(fp32_referenc
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.gpu
 def test_triton_subsampling_on_streaming_chunk_shapes(fp32_reference):
     """Cache-aware streaming prepends ``subsampling_factor + 1`` real frames to every chunk."""
     module = _build(causal=True)
@@ -309,6 +319,7 @@ def test_falls_back_when_triton_is_unavailable(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
 @pytest.mark.parametrize("dynamo", [False, True])
+@pytest.mark.gpu
 def test_export_takes_the_pytorch_path(tmp_path, dynamo):
     """Both exporters trace on tensors a Triton launch cannot read."""
     onnx = pytest.importorskip("onnx")
@@ -326,6 +337,7 @@ def test_export_takes_the_pytorch_path(tmp_path, dynamo):
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.gpu
 def test_backward_survives_callers_editing_the_returned_lengths():
     """Callers own the lengths and edit them in place, e.g. speechlm2's duplex model."""
     module = _build()
@@ -341,6 +353,7 @@ def test_backward_survives_callers_editing_the_returned_lengths():
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.gpu
 def test_deterministic_algorithms_take_the_pytorch_path(monkeypatch):
     """The weight gradients accumulate through atomics, whose summation order varies per run."""
     module = _build()
@@ -373,6 +386,7 @@ def test_cpu_input_uses_the_pytorch_path():
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.gpu
 def test_state_dict_is_identical_with_and_without_triton():
     """Checkpoints must load either way; the fast path adds no persistent state."""
     with_triton = _build(use_triton=True)

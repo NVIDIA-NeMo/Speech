@@ -56,6 +56,7 @@ class TestASRModulesBasicTests:
             pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")),
         ],
     )
+    @pytest.mark.gpu
     def test_AudioToMelSpectrogramPreprocessor_packed_waveform_matches_padded(
         self, exact_pad, preemph, normalize, pad_to, frame_splicing, device
     ):
@@ -163,6 +164,7 @@ class TestASRModulesBasicTests:
             pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")),
         ],
     )
+    @pytest.mark.gpu
     def test_AudioToMelSpectrogramPreprocessor_packed_waveform_preserves_zero_length_rows(self, exact_pad, device):
         preprocessor = (
             modules.AudioToMelSpectrogramPreprocessor(dither=0, pad_to=0, exact_pad=exact_pad).eval().to(device)
@@ -662,6 +664,7 @@ class TestASRModulesBasicTests:
             assert diff <= 1e-3
 
     @pytest.mark.run_only_on('GPU')
+    @pytest.mark.gpu
     def test_AudioToMelSpectrogramPreprocessor_gpu(self):
         instance0 = modules.AudioToMelSpectrogramPreprocessor().to("cuda")
         input_signal, length = instance0.input_example()

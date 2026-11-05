@@ -254,6 +254,7 @@ def decode_text_from_nbest_hypotheses(hyps, model):
         return [model.decoding.decode_hypothesis(nbest_hyp.n_best_hypotheses) for nbest_hyp in hyps]
 
 
+@pytest.mark.gpu
 class TestRNNTDecoding:
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE,
@@ -438,6 +439,7 @@ class TestRNNTDecoding:
             print_res_best_hyps(hyps)
 
 
+@pytest.mark.gpu
 class TestTDTDecoding:
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE,
@@ -631,6 +633,7 @@ class TestTDTDecoding:
             print_res_best_hyps(hyps)
 
 
+@pytest.mark.gpu
 class TestTransducerCudaGraphBeamDecoding:
     """
     Tests CudaGraphs implementations from Transducer models (RNN-T and TDT)
@@ -739,6 +742,7 @@ class TestTransducerCudaGraphBeamDecoding:
                 model.transcribe(test_audio_filenames, batch_size=batch_size, num_workers=None)
 
 
+@pytest.mark.gpu
 class TestCTCDecoding:
     @pytest.mark.with_downloads
     @pytest.mark.unit

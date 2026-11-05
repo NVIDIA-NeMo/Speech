@@ -127,6 +127,7 @@ BASE_CFG = {
 
 
 class TestMakePeftConfig:
+    @pytest.mark.gpu
     def test_basic(self):
         cfg = DictConfig({"dim": 32, "alpha": 64, "target_modules": ["q_proj"]})
         pc = make_peft_config(cfg)
@@ -291,6 +292,7 @@ def training_cutset_batch():
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_lora_params_exist(salm_with_lora):
     """After configure_model with lora config, LLM should have lora_A/lora_B parameters."""
     lora_params = {n for n, _ in salm_with_lora.named_parameters() if ".lora_" in n}
@@ -303,6 +305,7 @@ def test_lora_params_exist(salm_with_lora):
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_no_lora_params_without_config(salm_without_lora):
     """Without lora config, no LoRA parameters should exist."""
     lora_params = [n for n, _ in salm_without_lora.named_parameters() if ".lora_" in n]
@@ -332,6 +335,7 @@ def test_base_llm_params_not_patched_elsewhere(salm_with_lora):
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_lora_training_step(salm_with_lora, dataset, prompt_formatter, training_cutset_batch):
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
     batch = dataset[training_cutset_batch]
@@ -343,6 +347,7 @@ def test_lora_training_step(salm_with_lora, dataset, prompt_formatter, training_
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_lora_generation(salm_with_lora):
     answer = salm_with_lora.generate(
         prompts=[
@@ -357,6 +362,7 @@ def test_lora_generation(salm_with_lora):
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_lora_match_all_linear():
     """Test match_all_linear=True applies LoRA to all linear layers in the LLM."""
     cfg = {**BASE_CFG}

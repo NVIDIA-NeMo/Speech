@@ -128,12 +128,13 @@ def model_and_decoder_type(request):
     from nemo.collections.asr.models import ASRModel
 
     _, nemo_file, decoder_type = request.param
-    model = ASRModel.restore_from(os.path.join(MODEL_DIR, nemo_file), map_location="cpu").to(_DEVICE)
-    yield model, decoder_type
-    del model
+    # Free the previous checkpoint before loading the next one. Collect here rather than at teardown: pytest still
+    # holds the previous parameter's yielded value during teardown, and models contain reference cycles.
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+    model = ASRModel.restore_from(os.path.join(MODEL_DIR, nemo_file), map_location="cpu").to(_DEVICE)
+    yield model, decoder_type
 
 
 def test_model_init(model_and_decoder_type):

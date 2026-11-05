@@ -24,8 +24,8 @@ from nemo.collections.common.data.utils import move_data_to_device
 from nemo.collections.speechlm2.data import DuplexSTTDataset
 from nemo.collections.speechlm2.models import DuplexSTTModel
 
-if torch.cuda.is_available():
-    torch.set_default_device('cuda')
+# Run on CUDA when available, without leaking the default device to other test modules (see conftest.py).
+pytestmark = pytest.mark.usefixtures("cuda_default_device")
 
 
 def resolve_pretrained_models():
@@ -95,12 +95,12 @@ def create_model(
     return model
 
 
-@pytest.fixture(scope="session")
-def model():
+@pytest.fixture(scope="module")
+def model(cuda_default_device):
     return create_model(predict_user_text=False)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def dataset(model):
     return DuplexSTTDataset(
         model.tokenizer,
@@ -111,8 +111,8 @@ def dataset(model):
     )
 
 
-@pytest.fixture(scope="session")
-def training_cutset_batch():
+@pytest.fixture(scope="module")
+def training_cutset_batch(cuda_default_device):
     cut = dummy_cut(0, recording=dummy_recording(0, with_data=True))
     cut.supervisions = [
         SupervisionSegment(

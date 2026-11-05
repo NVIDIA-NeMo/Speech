@@ -14,5 +14,5 @@
 # limitations under the License.
 CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 coverage run -a --data-file=/workspace/.coverage --source=/workspace/ -m pytest \
     tests/collections/asr \
-    --num-file-shards=6 --file-shard-id=3 \
+    --shard-id=3 --num-shards=6 \
     -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat

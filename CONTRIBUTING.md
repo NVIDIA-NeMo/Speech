@@ -89,13 +89,6 @@ pytest -m "gpu and not pleasefixme" path/to/relevant_tests   # what the GPU jobs
 The scheduled nightly run executes the whole suite on GPU with `--check-gpu-markers`, which fails if a test without
 the marker allocates CUDA memory.
 
-### Test shards
-
-The large suites are split into shards of whole test files, balanced by the per-file durations in
-`tests/test_file_durations.json` (`--num-file-shards` and `--file-shard-id`). New files count as the median duration.
-When the shards drift out of balance, refresh the table from the logs of a recent CI run with
-`tests/update_test_file_durations.py`.
-
 ## Running the Github CI
 
 CI is powered by [copy-pr-bot](https://github.com/apps/copy-pr-bot), which mirrors each PR to a `pull-request/<number>` branch and triggers the workflow on push.

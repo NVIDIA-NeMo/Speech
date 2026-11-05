@@ -376,34 +376,6 @@ jobs:
           - runner: ${{ inputs.runner }}
             script: L2_TTS_InferEvaluate_EasyMagpietts
             timeout: 20
-    runs-on: ${{ matrix.runner }}
-    name: ${{ matrix.is-optional && 'PLEASEFIXME_' || '' }}${{ matrix.script }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - name: Checkout NeMo
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          path: ${{ github.run_id }}
-      - name: main
-        uses: ./.github/actions/test-template
-        with:
-          runner: ${{ runner.name }}
-          script: ${{ matrix.script }}
-          tests_to_run: ${{ inputs.test_to_run }}
-          image: ${{ inputs.container-image }}
-          test-data-path: ${{ vars.DEFAULT_TEST_DATA_PATH || '/mnt/datadrive/TestData' }}
-          timeout: ${{ matrix.timeout || 10 }}
-          is_optional: ${{ matrix.is-optional || false }}
-
-  e2e-nightly-functional:
-    # Functional tests that duplicate a per-PR job's code path with another checkpoint or flag, check accuracy
-    # rather than a code path, or cover legacy models. They run nightly and with the "Run e2e nightly" label.
-    if: ${{ github.event_name == 'schedule' || inputs.run_nightly == 'true' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
           - runner: ${{ inputs.runner }}
             script: Speech_Checkpoints_tests
             timeout: 20

@@ -68,7 +68,12 @@ Reported telemetry
 
 Lifecycle spans use the ``nemo_speech`` namespace and cover model, data loader,
 and optimizer initialization; checkpoint load and save; training; and
-validation. Checkpoint save success and failure are emitted as explicit events.
+validation. Strategy checkpoint loading, including SpeechLM2 Automodel distributed
+checkpoints, is traced automatically when ``exp_manager`` attaches the enabled
+integration. The load span closes on both success and failure, and loading
+arguments, return values, and exceptions are preserved. Disabled runs leave the
+strategy unchanged. Checkpoint save success and failure are emitted as explicit
+events.
 
 Throughput is reported as the ``nemo_speech.throughput`` event. Every event
 contains:

@@ -16,6 +16,7 @@
 import atexit
 import functools
 from contextlib import contextmanager
+from types import MethodType
 from typing import Any, Callable, Iterator, List, Optional
 
 from lightning.pytorch.callbacks import Callback as PTLCallback
@@ -111,6 +112,8 @@ class CallbackGroup:
                 pass
 
         trainer.callbacks = callbacks
+        if any(self._is_enabled(cb) for cb in telemetry):
+            _instrument_checkpoint_loading(getattr(trainer, 'strategy', None))
 
     @property
     def callbacks(self) -> List['BaseCallback']:
@@ -223,6 +226,32 @@ def with_callback_context(start_callback: str, end_callback: str) -> Callable:
         return wrapped
 
     return decorator
+
+
+class _CheckpointLoadWithCallbacks:
+    """Trace a bound strategy loader without making spawn serialization recursive."""
+
+    def __init__(self, method: MethodType):
+        # A stored bound method would unpickle via getattr(instance, method_name),
+        # which now resolves to this wrapper instead of the original implementation.
+        self._function = method.__func__
+        self._instance = method.__self__
+
+    @property
+    def __wrapped__(self):
+        # Preserve the bound signature for Lightning's checkpoint-policy inspection.
+        return self._function.__get__(self._instance)
+
+    def __call__(self, *args, **kwargs):
+        with callback_context('on_load_checkpoint_start', 'on_load_checkpoint_end'):
+            return self._function(self._instance, *args, **kwargs)
+
+
+def _instrument_checkpoint_loading(strategy) -> None:
+    """Instrument the concrete strategy override once, only when telemetry is enabled."""
+    method = getattr(strategy, 'load_checkpoint', None)
+    if isinstance(method, MethodType):
+        strategy.load_checkpoint = _CheckpointLoadWithCallbacks(method)
 
 
 # Eagerly create the singleton on import so that early callers can use it

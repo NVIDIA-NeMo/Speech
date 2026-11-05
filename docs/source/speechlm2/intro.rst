@@ -5,9 +5,16 @@ SpeechLM2
    The SpeechLM2 collection is still in active development and the code is likely to keep changing.
 
 .. note::
-   Install your chosen compatible PyTorch stack first, then install SpeechLM2 with
+   For training, install your chosen compatible PyTorch stack first, then install SpeechLM2 with
    ``uv pip install 'nemo-toolkit[speechlm2]'`` (or, from a source checkout, ``uv pip install -e '.[speechlm2]'``)
    to get all required dependencies including NeMo Automodel. See :ref:`installation` for details.
+   For vLLM inference, use the separate environment described in :doc:`vllm_serving`.
+
+.. important::
+
+   :doc:`Nemotron 3.5 Transcribe <nemotron_transcribe>` is a released speech LLM for offline transcription
+   in 40 languages, instruction control, speaker-attributed transcripts, word timestamps, translation,
+   and audio question answering. Start with its model-specific quickstart to serve the checkpoint.
 
 SpeechLM2 refers to a collection that augments pre-trained Large Language Models (LLMs) with speech understanding and generation capabilities.
 
@@ -389,6 +396,7 @@ For more information, see additional sections in the SpeechLM2 docs:
 .. toctree::
    :maxdepth: 1
 
+   nemotron_transcribe
    models
    datasets
    configs

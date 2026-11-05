@@ -252,8 +252,6 @@ jobs:
       matrix:
         include:
           - runner: ${{ inputs.runner }}
-            script: ASR_dev_run_Speech_to_Text
-          - runner: ${{ inputs.runner }}
             script: ASR_dev_run_Speech_To_Text_Finetuning
           - runner: ${{ inputs.runner }}
             script: ASR_dev_run_Speech_To_Text_HF_Finetuning
@@ -274,9 +272,7 @@ jobs:
           - runner: ${{ inputs.runner }}
             script: L2_ASR_Multi-dataloader_dev_run_Speech_to_Label_multi-dataloader
           - runner: ${{ inputs.runner }}
-            script: L2_ASR_Adapters_Linear_Adapters
-          - runner: ${{ inputs.runner }}
-            script: L2_ASR_Adapters_RelPos_MHA_Adapters
+            script: L2_ASR_Adapters
           - runner: ${{ inputs.runner }}
             script: L2_Speech_to_Text_EMA
           - runner: ${{ inputs.runner }}
@@ -311,22 +307,13 @@ jobs:
           - runner: ${{ inputs.runner }}
             script: L2_Speech_Transcription_Speech_to_Text_Transcribe_Boost_GT
           - runner: ${{ inputs.runner }}
-            script: L2_Speech_Transcription_Canary_Transcribe_Full_Manifest
-          - runner: ${{ inputs.runner }}
-            script: L2_Speech_Transcription_Canary_Transcribe_With_Prompt
-          - runner: ${{ inputs.runner }}
-            script: L2_Speech_Transcription_Canary_Transcribe_Audio_Dir
+            script: L2_Speech_Transcription_Canary_Transcribe
+            timeout: 15
           - runner: ${{ inputs.runner }}
             script: L2_Speech_Transcription_Canary_Streaming_Full_Manifest
           - runner: ${{ inputs.runner }}
-            script: L2_Longform_Speech_Transcription_Canary_Chunked_Infer_from_Audio_Dir
-          - runner: ${{ inputs.runner }}
-            script: L2_Longform_Speech_Transcription_with_TimeStamps_Canary_Chunked_Infer_from_Audio_Dir
-          - runner: ${{ inputs.runner }}
-            script: L2_Longform_Speech_Transcription_with_TimeStamps_Canary_Chunked_Infer_from_Manifest
-          - runner: ${{ inputs.runner }}
-            script: Speech_Checkpoints_tests
-            timeout: 20
+            script: L2_Longform_Speech_Transcription_Canary_Chunked_Infer
+            timeout: 15
           - runner: ${{ inputs.runner }}
             script: L2_Speaker_dev_run_Speaker_Recognition
           - runner: ${{ inputs.runner }}
@@ -338,21 +325,13 @@ jobs:
           - runner: ${{ inputs.runner }}
             script: L2_Speaker_dev_run_EndtoEnd_Streaming_Diarizer_Inference
           - runner: ${{ inputs.runner }}
-            script: L2_Speaker_dev_run_Speaker_Diarization_with_ASR_Inference
-          - runner: ${{ inputs.runner }}
             script: L2_Speaker_dev_run_Clustering_Diarizer_Inference
           - runner: ${{ inputs.runner }}
             script: L2_Speaker_dev_run_Multispeaker_ASR_Data_Simulation
           - runner: ${{ inputs.runner }}
-            script: L2_TTS_Fast_dev_runs_1_FastPitch
-          - runner: ${{ inputs.runner }}
-            script: L2_TTS_Fast_dev_runs_1_Hifigan
-          - runner: ${{ inputs.runner }}
             script: L2_TTS_Fast_dev_runs_AudioCodec
           - runner: ${{ inputs.runner }}
             script: L2_TTS_Fast_dev_runs_AcousticCodec
-          - runner: ${{ inputs.runner }}
-            script: L2_G2P_Models_G2P_Conformer_training_evaluation_and_inference
           - runner: ${{ inputs.runner }}
             script: SPEECHLM_HF_Training_DuplexS2S
           - runner: ${{ inputs.runner }}
@@ -380,26 +359,10 @@ jobs:
             script: L2_TTS_InferEvaluate_Magpietts_ZeroShot
             timeout: 20
           - runner: ${{ inputs.runner }}
-            script: L2_TTS_InferEvaluate_Magpietts_SeenSpeakers
-            timeout: 20
-          - runner: ${{ inputs.runner }}
             script: L2_TTS_InferEvaluatelongform_Magpietts_ZeroShot
             timeout: 20
           - runner: ${{ inputs.runner }}
-            script: L2_TTS_InferEvaluate_Magpietts_MoE_ZeroShot
-            timeout: 20
-          - runner: ${{ inputs.runner }}
-            script: L2_TTS_InferEvaluatelongform_Magpietts_MoE_ZeroShot
-            timeout: 20
-          - runner: ${{ inputs.runner }}
-            script: L2_TTS_InferEvaluate_Magpietts_FrameStacking
-            timeout: 20
-          - runner: ${{ inputs.runner }}
             script: L2_TTS_Fast_dev_runs_Magpietts_OnlineCFGDistillation
-          - runner: ${{ inputs.runner }}
-            script: L2_TTS_Fast_dev_runs_Magpietts_MoE_OnlineCFGDistillation
-          - runner: ${{ inputs.runner }}
-            script: L2_TTS_Fast_dev_runs_Magpietts_FrameStacking_OnlineCFGDistillation
           - runner: ${{ inputs.runner }}
             script: L2_TTS_Fast_dev_runs_EasyMagpietts_Qwen
           - runner: ${{ inputs.runner }}
@@ -433,147 +396,80 @@ jobs:
           timeout: ${{ matrix.timeout || 10 }}
           is_optional: ${{ matrix.is-optional || false }}
 
-  e2e-nightly:
+  e2e-nightly-functional:
+    # Functional tests that duplicate a per-PR job's code path with another checkpoint or flag, check accuracy
+    # rather than a code path, or cover legacy models. They run nightly and with the "Run e2e nightly" label.
     if: ${{ github.event_name == 'schedule' || inputs.run_nightly == 'true' }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_de_fastconformer_hybrid_large_pc
-            timeout: 15
+            script: Speech_Checkpoints_tests
+            timeout: 20
           - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_en_fastconformer_hybrid_large_pc
-            timeout: 15
+            script: L2_Speaker_dev_run_Speaker_Diarization_with_ASR_Inference
           - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_es_fastconformer_hybrid_large_pc
-            timeout: 15
+            script: L2_TTS_Fast_dev_runs_1_FastPitch
           - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_it_fastconformer_hybrid_large_pc
-            timeout: 15
+            script: L2_TTS_Fast_dev_runs_1_Hifigan
           - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_ua_fastconformer_hybrid_large_pc
-            timeout: 15
+            script: L2_G2P_Models_G2P_Conformer_training_evaluation_and_inference
           - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_pl_fastconformer_hybrid_large_pc
-            timeout: 15
+            script: L2_TTS_InferEvaluate_Magpietts_SeenSpeakers
+            timeout: 20
           - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_hr_fastconformer_hybrid_large_pc
-            timeout: 15
+            script: L2_TTS_InferEvaluate_Magpietts_MoE_ZeroShot
+            timeout: 20
           - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_be_fastconformer_hybrid_large_pc
-            timeout: 15
+            script: L2_TTS_InferEvaluatelongform_Magpietts_MoE_ZeroShot
+            timeout: 20
           - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_fr_fastconformer_hybrid_large_pc
-            timeout: 15
+            script: L2_TTS_InferEvaluate_Magpietts_FrameStacking
+            timeout: 20
           - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_ru_fastconformer_hybrid_large_pc
-            timeout: 15
+            script: L2_TTS_Fast_dev_runs_Magpietts_MoE_OnlineCFGDistillation
           - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_nl_fastconformer_hybrid_large_pc
-            timeout: 15
+            script: L2_TTS_Fast_dev_runs_Magpietts_FrameStacking_OnlineCFGDistillation
+    runs-on: ${{ matrix.runner }}
+    name: ${{ matrix.is-optional && 'PLEASEFIXME_' || '' }}${{ matrix.script }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Checkout NeMo
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          path: ${{ github.run_id }}
+      - name: main
+        uses: ./.github/actions/test-template
+        with:
+          runner: ${{ runner.name }}
+          script: ${{ matrix.script }}
+          tests_to_run: ${{ inputs.test_to_run }}
+          image: ${{ inputs.container-image }}
+          test-data-path: ${{ vars.DEFAULT_TEST_DATA_PATH || '/mnt/datadrive/TestData' }}
+          timeout: ${{ matrix.timeout || 10 }}
+          is_optional: ${{ matrix.is-optional || false }}
+
+  e2e-nightly:
+    if: ${{ github.event_name == 'schedule' || inputs.run_nightly == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # FastConformer and Parakeet checkpoints that share a test, see test_model_support_asr_shared_architectures.py.
           - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_fa_fastconformer_hybrid_large
-            timeout: 15
+            script: L2_Model_Support_ASR_Shared_Architectures_1
+            timeout: 40
           - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_ka_fastconformer_hybrid_large_pc
-            timeout: 15
+            script: L2_Model_Support_ASR_Shared_Architectures_2
+            timeout: 40
           - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_kk_ru_fastconformer_hybrid_large
-            timeout: 15
+            script: L2_Model_Support_ASR_Shared_Architectures_3
+            timeout: 40
           - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_ka_fastconformer_hybrid_transducer_ctc_large_streaming_80ms_pc
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_uz_fastconformer_hybrid_large_pc
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_ar_fastconformer_hybrid_large_pc_v1_0
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_hy_fastconformer_hybrid_large_pc
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_en_fastconformer_hybrid_medium_streaming_80ms_pc
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_en_fastconformer_hybrid_medium_streaming_80ms
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_pt_fastconformer_hybrid_large_pc
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_es_fastconformer_hybrid_large_pc_nc
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_ar_fastconformer_hybrid_large_pcd_v1_0
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_en_fastconformer_hybrid_large_streaming_multi
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_en_fastconformer_ctc_large
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_en_fastconformer_transducer_large
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_en_fastconformer_ctc_xlarge
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_en_fastconformer_transducer_xlarge
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_en_fastconformer_transducer_xxlarge
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_en_fastconformer_ctc_xxlarge
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__stt_en_fastconformer_tdt_large
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_stt_en_fastconformer_hybrid_large_streaming_1040ms
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_stt_multilingual_fastconformer_hybrid_large_pc_blend_eu
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__parakeet_rnnt_1_1b
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__parakeet_ctc_1_1b
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__parakeet_rnnt_0_6b
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__parakeet_ctc_0_6b
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__parakeet_tdt_1_1b
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__parakeet_tdt_ctc_1_1b
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__parakeet_tdt_ctc_0_6b_ja
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__parakeet_tdt_ctc_110m
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__parakeet_tdt_0_6b_v2
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__parakeet_rnnt_110m_da_dk
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__parakeet_tdt_0_6b_v3
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__parakeet_ctc_0_6b_Vietnamese
-            timeout: 15
+            script: L2_Model_Support_ASR_Shared_Architectures_4
+            timeout: 40
           - runner: ${{ inputs.runner }}
             script: L2_Model_Support_nvidia__canary_1b
             timeout: 15
@@ -591,9 +487,6 @@ jobs:
             timeout: 15
           - runner: ${{ inputs.runner }}
             script: L2_Model_Support_nvidia__multitalker_parakeet_streaming_0_6b_v1
-            timeout: 15
-          - runner: ${{ inputs.runner }}
-            script: L2_Model_Support_nvidia__nemotron_speech_streaming_en_0_6b
             timeout: 15
           - runner: ${{ inputs.runner }}
             script: L2_Model_Support_nvidia__canary_qwen_2_5b

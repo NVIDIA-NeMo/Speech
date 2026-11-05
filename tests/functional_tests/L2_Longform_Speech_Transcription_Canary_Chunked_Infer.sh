@@ -12,15 +12,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/transcribe_speech.py \
-    dataset_manifest=/home/TestData/asr/canary/dev-other-wav-10.json \
-    output_filename=preds.json \
-    batch_size=10 \
+# Canary-1B-flash long-form chunked inference from an audio directory (with timestamps) and from a manifest.
+set -e
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/asr_chunked_inference/aed/speech_to_text_aed_chunked_infer.py \
     model_path=/home/TestData/asr/canary/models/canary-1b-flash_HF_20250318.nemo \
-    num_workers=0 \
-    amp=false \
-    compute_dtype=bfloat16 \
-    matmul_precision=medium \
-    +prompt.source_lang="en" \
-    +prompt.target_lang="en" \
-    +prompt.pnc="no"
+    audio_dir=/home/TestData/asr/longform/earnings22 \
+    output_filename=preds.json \
+    timestamps=True
+
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/asr_chunked_inference/aed/speech_to_text_aed_chunked_infer.py \
+    model_path=/home/TestData/asr/canary/models/canary-1b-flash_HF_20250318.nemo \
+    dataset_manifest=/home/TestData/asr/longform/earnings22_manifest_1sample.json \
+    output_filename=preds.json

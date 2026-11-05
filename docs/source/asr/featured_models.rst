@@ -1,9 +1,25 @@
 Featured Models
 ===============
 
-NeMo's ASR collection supports several model architectures. This page covers the key model families and their capabilities.
+NeMo Speech supports several speech recognition architectures across the ASR and SpeechLM2 collections.
+This page covers the key model families and their capabilities.
 For pretrained checkpoints, see :doc:`All Checkpoints <./asr_checkpoints>`.
 For config file details, see :doc:`Configuration Files <./configs>`.
+
+Nemotron 3.5 Transcribe
+~~~~~~~~~~~~~~~~~~~~~~~
+
+:doc:`Nemotron 3.5 Transcribe </speechlm2/nemotron_transcribe>` is an offline speech-augmented language model
+for multilingual transcription, speech translation, and audio understanding. Instructions control transcript
+style and vocabulary context; speaker attribution and word timestamps support meeting and media workflows.
+
+* `NVIDIA-Nemotron-3.5-Transcribe-30B-A4B <https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B>`__
+  — 40 languages, recordings up to one hour, BF16 reference checkpoint
+* Published FP8 and NVFP4 variants are linked in the :doc:`model guide </speechlm2/nemotron_transcribe>`.
+
+Serve this model with the SpeechLM2 vLLM plugin using the model guide. For real-time speech recognition,
+see Nemotron-3.5-ASR-Streaming below.
+
 
 Parakeet
 ~~~~~~~~
@@ -24,7 +40,7 @@ Canary models are encoder-decoder models with a :ref:`FastConformer Encoder <Fas
 They support ASR in 25 EU languages, speech translation (AST), and punctuation/capitalization (PnC).
 
 * `Canary-1B V2 <https://huggingface.co/nvidia/canary-1b-v2>`__ — Flagship: 25 languages, PnC, timestamps
-* `Canary-Qwen-2.5B <https://huggingface.co/nvidia/canary-qwen-2.5b>`__ — English only, PnC, highest accuracy
+* `Canary-Qwen-2.5B <https://huggingface.co/nvidia/canary-qwen-2.5b>`__ — English speech LLM, PnC, 2.5B parameters
 * `Canary-1B Flash <https://huggingface.co/nvidia/canary-1b-flash>`__ / `180M Flash <https://huggingface.co/nvidia/canary-180m-flash>`__ — Optimized for speed
 
 Canary supports chunked and `streaming inference <https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Streaming_ASR_Pipelines.ipynb>`__.

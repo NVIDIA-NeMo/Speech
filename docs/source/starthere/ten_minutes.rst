@@ -87,7 +87,12 @@ Speaker diarization answers "who spoke when?" in multi-speaker audio.
 4. Speech Language Models (SpeechLM2)
 -------------------------------------
 
-SpeechLM2 augments large language models with speech understanding. Canary-Qwen combines an ASR encoder with a Qwen LLM:
+SpeechLM2 augments large language models with speech understanding.
+For multilingual offline transcription with instructions, vocabulary context, speaker attribution, and word
+timestamps, follow the :doc:`Nemotron 3.5 Transcribe quickstart </speechlm2/nemotron_transcribe>`.
+It uses a separate vLLM serving environment; the BF16 example targets one H100 80 GB.
+
+For a smaller English model, Canary-Qwen combines an ASR encoder with a Qwen LLM:
 
 .. code-block:: python
 

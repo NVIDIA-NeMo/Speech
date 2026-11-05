@@ -3,7 +3,8 @@
 NeMo Speech Inference in 5 Minutes
 ===================================
 
-This guide gives you a quick, hands-on tour of NeMo Speech's core capabilities. By the end, you'll have transcribed audio, synthesized speech, identified speakers, and used a speech language model — all in about 50 lines of code.
+This guide gives you a quick, hands-on tour of NeMo Speech's core capabilities. By the end, you'll have transcribed,
+synthesized, and enhanced speech, identified speakers, and used a speech language model.
 
 .. note::
 
@@ -67,7 +68,22 @@ Text-to-Speech generates natural audio from text. NeMo Speech's **Magpie TTS** i
    print("Speech saved to output.wav")
 
 
-3. Identify Speakers (Diarization)
+3. Enhance Speech (Audio Processing)
+------------------------------------
+
+Audio processing models remove degradations such as background noise. Supply a mono speech file for this pretrained
+16 kHz denoising model:
+
+.. code-block:: python
+
+   from nemo.collections.audio.models import AudioToAudioModel
+
+   audio_model = AudioToAudioModel.from_pretrained("nvidia/se_den_sb_16k_small")
+   output_files = audio_model.process(["noisy.wav"], output_dir="enhanced")
+   print(output_files[0])
+
+
+4. Identify Speakers (Diarization)
 ----------------------------------
 
 Speaker diarization answers "who spoke when?" in multi-speaker audio.
@@ -84,7 +100,7 @@ Speaker diarization answers "who spoke when?" in multi-speaker audio.
        print(seg)  # (begin_seconds, end_seconds, speaker_index)
 
 
-4. Speech Language Models (SpeechLM2)
+5. Speech Language Models (SpeechLM2)
 -------------------------------------
 
 SpeechLM2 augments large language models with speech understanding. Canary-Qwen combines an ASR encoder with a Qwen LLM:
@@ -115,5 +131,6 @@ Now that you've seen the basics, dive deeper:
 - :doc:`choosing_a_model` — Find the best model for your specific use case
 - :doc:`../asr/intro` — Full ASR documentation
 - :doc:`../tts/intro` — Full TTS documentation
+- :doc:`../audio/intro` — Audio processing models, inference, training, and data
 - :doc:`../asr/speaker_diarization/intro` — Speaker diarization and recognition
 - :doc:`../starthere/tutorials` — Tutorial notebooks

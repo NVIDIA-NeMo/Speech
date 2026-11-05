@@ -1,6 +1,10 @@
 NeMo Audio API
 ==============
 
+Use this reference when building a custom Audio model or calling datasets and modules directly. To choose and run a
+supplied configuration or checkpoint, start with :doc:`Models <./models>` and :doc:`Inference and Evaluation
+<./inference>`.
+
 Model Classes
 -------------
 Base Classes
@@ -39,12 +43,35 @@ Processing Models
     :exclude-members: setup_training_data, setup_validation_data, training_step, on_validation_epoch_end, validation_step, setup_test_data, on_train_epoch_start
 
 
+Background Noise Removal
+~~~~~~~~~~~~~~~~~~~~~~~~
+.. autoclass:: nemo.collections.audio.models.maxine.bnr.BNR2
+    :show-inheritance:
+    :members:
+    :exclude-members: setup_training_data, setup_validation_data, training_step, on_validation_epoch_end, validation_step, setup_test_data, on_train_epoch_start
+
+
 Modules
 -------
 
 Features
 ~~~~~~~~
 .. autoclass:: nemo.collections.audio.modules.features.SpectrogramToMultichannelFeatures
+    :show-inheritance:
+    :members:
+
+
+Conformer Estimators
+~~~~~~~~~~~~~~~~~~~~
+.. autoclass:: nemo.collections.audio.parts.submodules.conformer.SpectrogramConformer
+    :show-inheritance:
+    :members:
+
+.. autoclass:: nemo.collections.audio.parts.submodules.conformer_unet.ConformerEncoderUNet
+    :show-inheritance:
+    :members:
+
+.. autoclass:: nemo.collections.audio.parts.submodules.conformer_unet.SpectrogramConformerUNet
     :show-inheritance:
     :members:
 
@@ -86,8 +113,8 @@ Projections
     :members:
 
 
-SSL Pretraining
-~~~~~~~~~~~~~~~
+Self-Supervised Pretraining
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. autoclass:: nemo.collections.audio.modules.ssl_pretrain_masking.SSLPretrainWithMaskedPatch
     :show-inheritance:
@@ -108,11 +135,8 @@ Transforms
     :members:
 
 
-Parts
------
-
-Submodules: Diffusion
-~~~~~~~~~~~~~~~~~~~~~
+Diffusion
+---------
 .. autoclass:: nemo.collections.audio.parts.submodules.diffusion.StochasticDifferentialEquation
     :show-inheritance:
     :members:
@@ -146,8 +170,8 @@ Submodules: Diffusion
     :members:
 
 
-Submodules: Flow
-~~~~~~~~~~~~~~~~
+Flow Matching
+-------------
 .. autoclass:: nemo.collections.audio.parts.submodules.flow.ConditionalFlow
     :show-inheritance:
     :members:
@@ -164,8 +188,8 @@ Submodules: Flow
     :show-inheritance:
     :members:
 
-Submodules: Multichannel
-~~~~~~~~~~~~~~~~~~~~~~~~
+Multichannel Processing
+-----------------------
 
 .. autoclass:: nemo.collections.audio.parts.submodules.multichannel.ChannelAugment
     :show-inheritance:
@@ -200,8 +224,8 @@ Submodules: Multichannel
     :members:
 
 
-Submodules: NCSN++
-~~~~~~~~~~~~~~~~~~
+NCSN++
+------
 
 .. autoclass:: nemo.collections.audio.parts.submodules.ncsnpp.SpectrogramNoiseConditionalScoreNetworkPlusPlus
     :show-inheritance:
@@ -220,8 +244,8 @@ Submodules: NCSN++
     :members:
 
 
-Submodules: Schrödinger Bridge
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Schrödinger Bridge
+--------------------
 
 .. autoclass:: nemo.collections.audio.parts.submodules.schroedinger_bridge.SBNoiseSchedule
     :show-inheritance:
@@ -240,8 +264,8 @@ Submodules: Schrödinger Bridge
     :members:
 
 
-Submodules: TransformerUNet
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Transformer U-Net
+-----------------
 
 .. autoclass:: nemo.collections.audio.parts.submodules.transformerunet.LearnedSinusoidalPosEmb
     :show-inheritance:
@@ -288,11 +312,27 @@ Losses
     :members:
 
 
+Metrics
+-------
+
+.. autoclass:: nemo.collections.audio.metrics.AudioMetricWrapper
+    :show-inheritance:
+    :members:
+
+.. autoclass:: nemo.collections.audio.metrics.SquimMOSMetric
+    :show-inheritance:
+    :members:
+
+.. autoclass:: nemo.collections.audio.metrics.SquimObjectiveMetric
+    :show-inheritance:
+    :members:
+
+
 Datasets
 --------
 
-NeMo Format
-~~~~~~~~~~~
+NeMo Manifest Datasets
+~~~~~~~~~~~~~~~~~~~~~~
 
 .. autoclass:: nemo.collections.audio.data.audio_to_audio.BaseAudioDataset
     :show-inheritance:
@@ -311,12 +351,33 @@ NeMo Format
     :members:
 
 
-Lhotse Format
-~~~~~~~~~~~~~
+Lhotse Dataset
+~~~~~~~~~~~~~~
 
 .. autoclass:: nemo.collections.audio.data.audio_to_audio_lhotse.LhotseAudioToTargetDataset
     :show-inheritance:
     :members:
 
 
+Data Simulation
+---------------
 
+.. autoclass:: nemo.collections.audio.data.data_simulation.ArrayGeometry
+    :show-inheritance:
+    :members:
+
+.. autoclass:: nemo.collections.audio.data.data_simulation.RIRCorpusGenerator
+    :show-inheritance:
+    :members:
+
+.. autoclass:: nemo.collections.audio.data.data_simulation.RIRMixGenerator
+    :show-inheritance:
+    :members:
+
+
+Callbacks
+---------
+
+.. autoclass:: nemo.collections.audio.parts.utils.callbacks.SpeechEnhancementLoggingCallback
+    :show-inheritance:
+    :members:

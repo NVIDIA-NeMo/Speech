@@ -85,8 +85,11 @@ class ProcessBatchOutput:
         selected_training_mode: Name of the training mode used for this batch (e.g., "streaming_4_8")
         prosody_loss: Prosody-code and PAD cross-entropy, or None when disabled
         prosody_logits: Prosody logits including PAD (B, T_prosody, 2049)
-        prosody_codes_target: Clean, delayed compact prosody codes with PAD tail (B, T_prosody)
-        prosody_codes_lens_target: Prosody supervision lengths through acoustic EOS (B,)
+        prosody_codes_target: Clean, delayed text-aligned prosody codes with PAD tail (B, T_prosody)
+        prosody_codes_lens_target: Prosody supervision lengths covering all text codes and acoustic EOS (B,)
+        prosody_alignment_loss: Forward-sum loss for the MAS scoring projections
+        prosody_code_lens: Number of real prosody codes, equal to text_lens (B,)
+        prosody_alignment: Hard monotonic text/audio path (B, T_text, T_audio)
     """
 
     loss: torch.Tensor
@@ -106,6 +109,9 @@ class ProcessBatchOutput:
     prosody_logits: Optional[torch.Tensor] = None
     prosody_codes_target: Optional[torch.Tensor] = None
     prosody_codes_lens_target: Optional[torch.Tensor] = None
+    prosody_alignment_loss: Optional[torch.Tensor] = None
+    prosody_code_lens: Optional[torch.Tensor] = None
+    prosody_alignment: Optional[torch.Tensor] = None
 
 
 class NemotronTTSModel(NemotronTTSBase):
@@ -1114,12 +1120,46 @@ class NemotronTTSModel(NemotronTTSBase):
             dropout_audio_conditioning=dropout_audio_conditioning,
         )
 
+        prosody_encoding = None
+        prosody_targets = None
+        prosody_lens = None
+        prosody_channel_embedding = None
+        if self.prosody is not None:
+            if audio is None or audio_lens is None:
+                raise ValueError(
+                    "Prosody training requires target 'audio' and 'audio_lens'; cached codes alone cannot train it"
+                )
+            # Keep alignment independent of text/CFG dropout and prevent its loss
+            # from modifying the shared text embedding or CAS encoder.
+            with torch.no_grad():
+                alignment_text = self.embed_text_tokens(
+                    text, text_lens=text_lens, is_multiturn=self.cfg.get('use_multiturn_dataset', False)
+                )
+            prosody_encoding = self.prosody.encode(audio, audio_lens, alignment_text, text_lens)
+            prosody_embedded, prosody_targets, prosody_lens = self.prosody.teacher_force(
+                prosody_encoding.quantized,
+                prosody_encoding.codes,
+                prosody_encoding.code_lens,
+                audio_codes_lens_target,
+                speech_delay=current_streaming_speech_delay,
+                apply_dropout=mode == 'train',
+            )
+            prosody_delay = text_delay
+            prosody_channel_embedding, prosody_channel_lens = self.join_embeddings_temporally(
+                embeddings=[
+                    prosody_embedded.new_zeros(text.size(0), int(prosody_delay.max()), self.cfg.embedding_dim),
+                    prosody_embedded,
+                ],
+                lengths=[prosody_delay, prosody_lens],
+            )
+
         # 6. Sum the channel embeddings element-wise
         # First, align all channels to the same length (max of all channel lengths)
         max_channel_len = max(
             text_channel_embedding.size(1),
             audio_channel_embedding.size(1),
             phoneme_channel_embedding.size(1) if phoneme_channel_embedding is not None else 0,
+            prosody_channel_embedding.size(1) if prosody_channel_embedding is not None else 0,
         )
 
         # Pad text channel if needed
@@ -1156,6 +1196,11 @@ class NemotronTTSModel(NemotronTTSBase):
                 )
                 phoneme_channel_embedding = torch.cat([phoneme_channel_embedding, padding], dim=1)
             combined_channel_embedding = combined_channel_embedding + phoneme_channel_embedding
+
+        if prosody_channel_embedding is not None:
+            combined_channel_embedding = combined_channel_embedding + torch.nn.functional.pad(
+                prosody_channel_embedding, (0, 0, 0, max_channel_len - prosody_channel_embedding.size(1))
+            )
 
         if user_audio_embedded is not None and not dropout_conditional_input:
             bos_user_pad = torch.zeros(
@@ -1228,34 +1273,6 @@ class NemotronTTSModel(NemotronTTSBase):
 
             combined_channel_embedding = combined_channel_embedding + user_audio_channel_embedding
 
-        prosody_targets = None
-        prosody_lens = None
-        if self.prosody is not None:
-            if audio is None or audio_lens is None:
-                raise ValueError(
-                    "Prosody training requires target 'audio' and 'audio_lens'; cached codes alone cannot train it"
-                )
-            quantized, prosody_codes, code_lens = self.prosody.encode(audio, audio_lens)
-            prosody_embedded, prosody_targets, prosody_lens = self.prosody.teacher_force(
-                quantized,
-                prosody_codes,
-                code_lens,
-                audio_codes_lens_target,
-                speech_delay=current_streaming_speech_delay,
-                apply_dropout=mode == 'train',
-            )
-            prosody_delay = text_delay
-            positions = torch.arange(max_channel_len, device=audio_codes.device)[None, :]
-            local_positions = positions - prosody_delay[:, None]
-            active = (local_positions >= 0) & (local_positions < prosody_lens[:, None])
-            channel = prosody_embedded.gather(
-                1,
-                local_positions.clamp(0, prosody_embedded.size(1) - 1)[..., None].expand(
-                    -1, -1, self.cfg.embedding_dim
-                ),
-            )
-            combined_channel_embedding = combined_channel_embedding + channel * active[..., None]
-
         # 7. Join context with combined channel embeddings
         # The combined_channel_lens is the max of all channel lens for each batch item
         combined_channel_lens = (
@@ -1264,6 +1281,7 @@ class NemotronTTSModel(NemotronTTSBase):
                     text_channel_lens,
                     audio_channel_lens,
                     phoneme_channel_lens if phoneme_channel_embedding is not None else audio_channel_lens,
+                    prosody_channel_lens if prosody_channel_embedding is not None else audio_channel_lens,
                 ],
                 dim=0,
             )
@@ -1312,14 +1330,17 @@ class NemotronTTSModel(NemotronTTSBase):
 
         prosody_loss = None
         prosody_logits = None
+        prosody_alignment_loss = None
         if self.prosody is not None:
             prosody_hidden = self.slice_sequence_embeddings(
                 transformer_hidden_states,
                 context_lens=prosody_delay,
-                target_lens=audio_codes_lens_target + current_streaming_speech_delay,
+                target_lens=prosody_lens,
             )
             prosody_loss, prosody_logits = self.prosody.compute_loss(prosody_hidden, prosody_targets, prosody_lens)
             loss = loss + self.prosody.loss_scale * prosody_loss
+            prosody_alignment_loss = prosody_encoding.alignment_loss
+            loss = loss + self.prosody.alignment_loss_scale * prosody_alignment_loss
 
         predictor_targets, predictor_loss_mask = self._acoustic_codes_predictor_targets(
             num_positions=transformer_hidden_states.size(1),
@@ -1392,6 +1413,9 @@ class NemotronTTSModel(NemotronTTSBase):
             prosody_logits=prosody_logits,
             prosody_codes_target=prosody_targets,
             prosody_codes_lens_target=prosody_lens,
+            prosody_alignment_loss=prosody_alignment_loss,
+            prosody_code_lens=prosody_encoding.code_lens if prosody_encoding is not None else None,
+            prosody_alignment=prosody_encoding.alignment if prosody_encoding is not None else None,
         )
 
     def training_step(self, batch, batch_idx):
@@ -1625,6 +1649,7 @@ class NemotronTTSModel(NemotronTTSBase):
         self.log('train/loss', loss, prog_bar=True, sync_dist=True)
         if batch_output.prosody_loss is not None:
             self.log('train/prosody_loss', batch_output.prosody_loss, prog_bar=True, sync_dist=True)
+            self.log('train/prosody_alignment_loss', batch_output.prosody_alignment_loss, sync_dist=True)
 
         if self.phoneme_tokenizer is not None:
             phoneme_loss = batch_output.phoneme_loss
@@ -1757,6 +1782,7 @@ class NemotronTTSModel(NemotronTTSBase):
         }
         if batch_output.prosody_loss is not None:
             val_output['val_prosody_loss'] = batch_output.prosody_loss
+            val_output['val_prosody_alignment_loss'] = batch_output.prosody_alignment_loss
 
         if self.phoneme_tokenizer is not None:
             phoneme_loss = batch_output.phoneme_loss
@@ -1995,6 +2021,7 @@ class NemotronTTSModel(NemotronTTSBase):
         self.log("val/codebook_loss", val_codebook_loss, prog_bar=True, sync_dist=True)
         if self.prosody is not None:
             self.log("val/prosody_loss", collect("val_prosody_loss"), prog_bar=True, sync_dist=True)
+            self.log("val/prosody_alignment_loss", collect("val_prosody_alignment_loss"), sync_dist=True)
 
         predictor_loss = collect("val_acoustic_codes_predictor_loss")
         self.log("val/acoustic_codes_predictor_loss", predictor_loss, sync_dist=True)

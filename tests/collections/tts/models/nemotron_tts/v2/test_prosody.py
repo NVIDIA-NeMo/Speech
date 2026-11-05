@@ -11,6 +11,7 @@ from nemo.collections.tts.models.nemotron_tts.v2.model import NemotronTTSModel
 from nemo.collections.tts.modules.nemotron_tts.v2.prosody import ProsodyChannel
 from tests.collections.tts.models.test_easy_magpietts import (
     _codec_restore_uses_random_initialized_audio_codec,
+    _padded_token_tensor,
     _seed_everything,
     _toy_batch,
     _toy_codes,
@@ -31,7 +32,7 @@ def _model(stacking=1, enabled=True):
             'use_codec_latent_audio_embedding': True,
             'acoustic_codes_predictor_schedule': [8 * stacking],
             'acoustic_codes_predictor_n_layers': 1,
-            'prosody': {'enabled': enabled, 'encoder_channels': 16},
+            'prosody': {'enabled': enabled, 'encoder_channels': 16, 'latent_dim': 16, 'alignment_dim': 8},
             'training_modes': [
                 {'text_input_mode': 'streaming', 'streaming_phonemes_delay': 0, 'streaming_speech_delay': 5}
             ],
@@ -63,16 +64,57 @@ def _batch(model):
 def test_prosody_encoder_rate_partial_frames_and_embedding_round_trip():
     channel = _channel()
     audio = torch.randn(2, 24000) * 0.1
-    quantized, codes, lengths = channel.encode(audio, torch.tensor([24000, 100]))
-    assert lengths.tolist() == [7, 1]  # ceil(duration * 6.25)
-    assert codes.shape == (2, 7)
-    assert codes.min() >= 0 and codes.max() < 2048
+    text = torch.randn(2, 5, 32)
+    output = channel.encode(audio, torch.tensor([24000, 100]), text, torch.tensor([5, 2]))
+    assert output.audio_lens.tolist() == [4, 1]  # ceil(duration * 3.125)
+    assert output.code_lens.tolist() == [5, 2]
+    assert output.codes.shape == (2, 5)
+    assert output.quantized.shape == (2, 4, 5)  # quantization happens after alignment
+    assert output.codes[0].min() >= 0 and output.codes[0].max() < 2048
+    assert output.codes[1, 2:].eq(channel.pad_id).all()
     assert channel.quantizer.num_codebooks == 1
-    torch.testing.assert_close(channel.embed(codes, quantized=quantized)[0], channel.embed(codes)[0])
+    torch.testing.assert_close(
+        channel.embed(output.codes, quantized=output.quantized)[0], channel.embed(output.codes)[0]
+    )
     # Every ID is reachable and stable through decode/encode.
     all_codes = torch.arange(2048)[None]
     decoded = channel.quantizer.decode(indices=all_codes[None].int())
     assert torch.equal(channel.quantizer.codes_to_indices(decoded).long(), all_codes)
+
+
+def test_mas_pools_audio_or_reuses_coarse_latents_and_detaches_text():
+    channel = _channel(latent_dim=4, alignment_dim=4, alignment_temperature=1)
+    with torch.no_grad():
+        channel.audio_alignment_projection.weight.copy_(torch.eye(4))
+        channel.audio_alignment_projection.bias.zero_()
+        channel.text_alignment_projection.weight.zero_()
+        channel.text_alignment_projection.weight[:, :4].copy_(torch.eye(4))
+        channel.text_alignment_projection.bias.zero_()
+    latents = torch.zeros(2, 4, 5)
+    latents[0, 0, :2] = torch.tensor([2, 4])
+    latents[0, 1, 2:] = torch.tensor([1, 3, 5])
+    latents[1, 0, 0] = 2
+    latents[1, 1, 1] = 4
+    latents.requires_grad_()
+    text = torch.zeros(2, 5, 32)
+    text[0, 0, 0] = text[0, 1, 1] = 1
+    text[1, :3, 0] = text[1, 3:, 1] = 1
+    text.requires_grad_()
+    pooled, path, loss = channel.align_and_pool(latents, torch.tensor([5, 2]), text, torch.tensor([2, 5]))
+    torch.testing.assert_close(path[0, :2], torch.tensor([[1.0, 1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 1.0, 1.0]]))
+    assert path[0, 2:].sum() == 0
+    torch.testing.assert_close(path[1, :, :2], torch.tensor([[1.0, 0.0]] * 3 + [[0.0, 1.0]] * 2))
+    assert path[1, :, 2:].sum() == 0
+    torch.testing.assert_close(pooled[0, :, 0], torch.tensor([3.0, 0.0, 0.0, 0.0]))
+    torch.testing.assert_close(pooled[0, :, 1], torch.tensor([0.0, 3.0, 0.0, 0.0]))
+    torch.testing.assert_close(pooled[1, 0, :3], torch.full((3,), 2.0))
+    torch.testing.assert_close(pooled[1, 1, 3:], torch.full((2,), 4.0))
+    assert torch.isfinite(loss)
+    (loss + pooled.square().mean()).backward()
+    assert text.grad is None
+    assert latents.grad is not None and torch.isfinite(latents.grad).all()
+    assert channel.text_alignment_projection.weight.grad.abs().sum() > 0
+    assert channel.audio_alignment_projection.weight.grad.abs().sum() > 0
 
 
 def test_prosody_timing_dropout_and_padding_loss():
@@ -100,6 +142,29 @@ def test_prosody_timing_dropout_and_padding_loss():
     assert hidden.grad[1, 13:].abs().sum() == 0  # unrelated batch padding is excluded
 
 
+def test_prosody_never_truncates_text_codes_at_acoustic_eos():
+    channel = _channel()
+    codes = torch.arange(12)[None]
+    quantized = channel.quantizer.decode(indices=codes[None].int())
+    _, targets, lengths = channel.teacher_force(
+        quantized, codes, torch.tensor([12]), torch.tensor([2]), speech_delay=5
+    )
+    assert lengths.tolist() == [17]
+    assert targets[0].tolist() == [channel.pad_id] * 4 + list(range(12)) + [channel.pad_id]
+
+
+def test_prosody_empty_text_has_no_codes_and_only_pad_supervision():
+    channel = _channel()
+    output = channel.encode(
+        torch.randn(1, 24000) * 0.1, torch.tensor([24000]), torch.empty(1, 0, 32), torch.tensor([0])
+    )
+    assert output.codes.shape == (1, 0)
+    assert output.code_lens.tolist() == [0]
+    assert output.alignment_loss == 0
+    _, targets, _ = channel.teacher_force(output.quantized, output.codes, output.code_lens, torch.tensor([10]), 5)
+    assert targets.eq(channel.pad_id).all()
+
+
 @pytest.mark.parametrize('stacking', [1, 2])
 @pytest.mark.parametrize('mixed_precision', [False, True])
 def test_prosody_process_batch_and_encoder_gradients(stacking, mixed_precision):
@@ -111,17 +176,42 @@ def test_prosody_process_batch_and_encoder_gradients(stacking, mixed_precision):
         output = model.process_batch(**_batch(model), mode='train')
     assert torch.isfinite(output.loss)
     torch.testing.assert_close(
-        output.loss, output.codebook_loss + output.acoustic_codes_predictor_loss + output.prosody_loss
+        output.loss,
+        output.codebook_loss
+        + output.acoustic_codes_predictor_loss
+        + output.prosody_loss
+        + model.prosody.alignment_loss_scale * output.prosody_alignment_loss,
     )
-    assert output.prosody_codes_target[0, :4].eq(model.prosody.pad_id).all()
-    assert output.prosody_codes_target[0, 4:8].lt(2048).all()
-    assert output.prosody_codes_target[0, 8:].eq(model.prosody.pad_id).all()
+    batch = _batch(model)
+    assert output.prosody_code_lens.tolist() == batch['text_lens'].tolist()
+    for row, count in enumerate(batch['text_lens'].tolist()):
+        assert output.prosody_codes_target[row, :4].eq(model.prosody.pad_id).all()
+        assert output.prosody_codes_target[row, 4 : 4 + count].lt(2048).all()
+        assert output.prosody_codes_target[row, 4 + count :].eq(model.prosody.pad_id).all()
     assert output.prosody_codes_lens_target.tolist() == (output.audio_codes_lens_target + 5).tolist()
     # Acoustic reconstruction alone must train the encoder, through FSQ and its input projection.
     output.codebook_loss.backward()
     gradients = [parameter.grad for parameter in model.prosody.encoder.parameters()]
     assert all(gradient is not None and torch.isfinite(gradient).all() for gradient in gradients)
     assert sum(gradient.abs().sum() for gradient in gradients) > 0
+
+
+def test_alignment_loss_does_not_change_shared_text_embeddings():
+    model = _model()
+    batch = _batch(model)
+    batch['text'], batch['text_lens'] = _padded_token_tensor(model, ['Please read every word here.', 'Hello.'])
+    batch['text'] = batch['text'].to(next(model.parameters()).device)
+    batch['text_lens'] = batch['text_lens'].to(next(model.parameters()).device)
+    batch['audio_codes'] = batch['audio_codes'][:, :, :2]
+    batch['audio_codes_lens'] = torch.full_like(batch['audio_codes_lens'], 2)
+    output = model.process_batch(**batch, mode='train')
+    assert output.prosody_code_lens.tolist() == batch['text_lens'].tolist()
+    assert (output.prosody_codes_target < 2048).sum(1).tolist() == batch['text_lens'].tolist()
+    assert (output.prosody_codes_lens_target >= batch['text_lens'] + 5).all()
+    output.prosody_alignment_loss.backward()
+    assert all(p.grad is None for p in model.text_embedding.parameters())
+    assert all(p.grad is None for p in model.cas_encoder.parameters())
+    assert model.prosody.text_alignment_projection.weight.grad.abs().sum() > 0
 
 
 def test_prosody_requires_waveform_and_valid_delay():
@@ -158,10 +248,11 @@ def test_prosody_streaming_delay_feedback_padding_and_batch_context(use_cfg):
     batch = _batch(model)
     channel = model.prosody
     with torch.no_grad():
-        # Predict code 17 whenever real prosody is enabled, then switch to PAD.
+        # Prefer PAD, but every valid text slot must still predict a real code.
         channel.output_projection.weight.zero_()
         channel.output_projection.bias.fill_(-100)
         channel.output_projection.bias[17] = 100
+        channel.output_projection.bias[channel.pad_id] = 200
     state = model.streaming_init(
         **{
             key: batch[key]
@@ -176,29 +267,29 @@ def test_prosody_streaming_delay_feedback_padding_and_batch_context(use_cfg):
         temperature=0,
     )
     first_real_seen = torch.zeros(2, dtype=torch.bool, device=state.config.device)
+    real_predictions = torch.zeros(2, dtype=torch.long, device=state.config.device)
     # Avoid random acoustic EOS so that the PAD feedback can be observed.
     audio_codes = torch.zeros(2, model.num_audio_codebooks, dtype=torch.long, device=state.config.device)
     with patch.object(model, '_predict_audio_codes', return_value=(audio_codes, audio_codes)):
-        for _ in range(12):
+        for _ in range(16):
             step = state.turn_text_tokens_seen.clone()
             needs_context = state.context_position < state.full_context_lens
-            previous = state.last_prosody_codes
-            if previous is None:
-                previous = torch.full_like(step, channel.pad_id)
+            positions = state.text_tokens_seen.clamp(max=batch['text'].size(1) - 1)
+            text = batch['text'][torch.arange(2, device=state.config.device), positions]
+            text = torch.where(state.text_tokens_seen >= batch['text_lens'], model.eos_id, text)
             with patch.object(channel, 'embed', wraps=channel.embed) as embed:
-                state, _, _ = model.streaming_step(state, text_tokens=None)
+                state, _, _ = model.streaming_step(state, text_tokens=text)
                 observed = embed.call_args.args[0][:, 0]
-            expected = torch.where(step <= 4, channel.pad_id, previous)
+            expected = torch.where((step >= 5) & (step < 5 + batch['text_lens']), 17, channel.pad_id)
             active = ~needs_context
             torch.testing.assert_close(observed[active], expected[active])
             if use_cfg:
                 assert state.last_hidden.size(0) == 4
             first_real_seen |= active & (observed == 17)
-            if first_real_seen.all():
-                with torch.no_grad():
-                    channel.output_projection.bias[17] = -100
-                    channel.output_projection.bias[channel.pad_id] = 100
+            real_predictions += (active & (state.last_prosody_codes < channel.pad_id)).long()
     assert first_real_seen.all()
+    assert real_predictions.tolist() == batch['text_lens'].tolist()
+    assert state.prosody_text_lens.tolist() == batch['text_lens'].tolist()
     assert state.last_prosody_codes.eq(channel.pad_id).all()
 
 

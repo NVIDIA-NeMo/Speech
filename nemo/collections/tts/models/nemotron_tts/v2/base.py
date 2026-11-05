@@ -162,6 +162,7 @@ class StreamingState:
     gt_audio_lens: Optional[torch.Tensor] = None  # (B,) lengths after stacking
     acoustic_codes_predictor_cache: Optional[List] = None
     last_prosody_codes: Optional[torch.Tensor] = None  # (B,) previous predicted prosody IDs
+    prosody_text_lens: Optional[torch.Tensor] = None  # (B,) text-token count including EOS; -1 until text ends
 
 
 @dataclass
@@ -1794,7 +1795,13 @@ class NemotronTTSBase(ModelPT):
                 start = state.config.training_mode.streaming_speech_delay - self.prosody.lead_steps
                 step = state.turn_text_tokens_seen
                 active = (~needs_context) & (~state.finished)
+                real_code = (step >= start) & (
+                    (state.prosody_text_lens < 0) | (step - start < state.prosody_text_lens)
+                )
                 logits = self.prosody.output_projection(state.last_hidden[: state.config.batch_size, -1])
+                # A valid text slot always gets a real FSQ code. Text EOS gives
+                # the exact remaining count, so the tail can deterministically use PAD.
+                logits[:, self.prosody.pad_id].masked_fill_(real_code, -torch.inf)
                 if state.config.temperature > 0:
                     k = min(state.config.topk, logits.size(-1)) if state.config.topk > 0 else logits.size(-1)
                     values, indices = (logits / state.config.temperature).topk(k, dim=-1)
@@ -1803,7 +1810,7 @@ class NemotronTTSBase(ModelPT):
                 else:
                     predicted = logits.argmax(dim=-1)
                 # Read the initial text before predicting real prosody codes.
-                predicted = torch.where(step < start, self.prosody.pad_id, predicted)
+                predicted = torch.where(real_code, predicted, self.prosody.pad_id)
                 previous = state.last_prosody_codes
                 if previous is None:
                     previous = torch.full_like(predicted, self.prosody.pad_id)
@@ -1927,6 +1934,12 @@ class NemotronTTSBase(ModelPT):
         needs_text = (~needs_context) & (~state.text_finished)
 
         turn_text_tokens_seen = getattr(state, "turn_text_tokens_seen", state.text_tokens_seen)
+        if self.prosody is not None:
+            if state.prosody_text_lens is None:
+                state.prosody_text_lens = torch.full_like(turn_text_tokens_seen, -1)
+            state.prosody_text_lens = torch.where(
+                needs_text & (turn_text_tokens_seen == 0), -1, state.prosody_text_lens
+            )
         needs_phoneme = (
             (~needs_context) & (turn_text_tokens_seen >= streaming_phonemes_delay) & (~state.phoneme_stream_ended)
         )
@@ -1965,11 +1978,15 @@ class NemotronTTSBase(ModelPT):
                 text_embedded[is_pad] = 0.0
 
             is_eos_token = (text_tokens == self.eos_id) & needs_text  # (B,) bool
+            if self.prosody is not None:
+                state.prosody_text_lens = torch.where(is_eos_token, turn_text_tokens_seen + 1, state.prosody_text_lens)
             text_add_mask = needs_text.view(batch_size, 1, 1).float()
             next_input = next_input + text_embedded * text_add_mask
             state.text_finished = state.text_finished | is_eos_token
 
         elif text_tokens is None:
+            if self.prosody is not None:
+                state.prosody_text_lens = torch.where(needs_text, turn_text_tokens_seen, state.prosody_text_lens)
             state.text_finished = state.text_finished | ~needs_context
 
         # --- Phoneme embedding for phoneme and audio phase items ---
@@ -2065,7 +2082,11 @@ class NemotronTTSBase(ModelPT):
             codes = state.last_prosody_codes
             if codes is None:
                 codes = torch.full((batch_size,), self.prosody.pad_id, dtype=torch.long, device=device)
-            codes = torch.where(turn_text_tokens_seen <= start, self.prosody.pad_id, codes)
+            previous_index = turn_text_tokens_seen - start - 1
+            real_input = (previous_index >= 0) & (
+                (state.prosody_text_lens < 0) | (previous_index < state.prosody_text_lens)
+            )
+            codes = torch.where(real_input, codes, self.prosody.pad_id)
             prosody_emb = self.prosody.embed(codes[:, None]) * active[:, None, None]
             next_input = next_input + prosody_emb
 

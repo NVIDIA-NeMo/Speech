@@ -14,6 +14,10 @@ model:
   prosody:
     enabled: true
     encoder_channels: 512
+    latent_dim: 128
+    alignment_dim: 64
+    alignment_temperature: 0.1
+    alignment_loss_scale: 0.1
     dropout: 0.5
     loss_scale: 1.0
     lead_steps: 1

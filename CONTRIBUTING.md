@@ -113,9 +113,7 @@ The CI test suites are selectively ran based on the files that are changed. In s
 Lint checks using flake8 and pylint are ran on the code based on the files that were changed. Please resolve any lint errors. It is possible but discouraged
 to ignore the lint errors by adding the "skip-linting" label to the PR.
 
-The nightly e2e suite contains the released-checkpoint model-support tests (`tests/e2e_nightly`) and the functional tests
-in the `e2e-nightly-functional` job of `.github/workflows/cicd-main-speech.yml`: accuracy checks, legacy models, and
-variants of per-PR tests that use another checkpoint or flag. To run the nightly e2e test suite on a PR, add the "Run e2e nightly" label. Labels are read once by the `pre-flight` job at the start of each run, so the label must be present before CI starts. If CI is already running when you add the label, cancel the active workflow run and re-trigger by pushing a new commit.
+To run the nightly e2e test suite on a PR, add the "Run e2e nightly" label. Labels are read once by the `pre-flight` job at the start of each run, so the label must be present before CI starts. If CI is already running when you add the label, cancel the active workflow run and re-trigger by pushing a new commit.
 
 ## Whom should you ask for review:
 Please tag @nithinraok for NeMo core and ASR related PRs and @blisc for TTS related PRs.

@@ -18,6 +18,7 @@ import pytest
 from lhotse import SupervisionSegment
 
 from nemo.collections.asr.parts.utils.vad_utils import (
+    _DetectionErrorRateAccumulator,
     align_labels_to_frames,
     convert_labels_to_speech_segments,
     frame_vad_construct_supervisions_per_file,
@@ -106,6 +107,22 @@ class TestVADUtils:
         rttm_file, speech_segments = get_simple_rttm_without_overlap(test_data_dir + "/test6.rttm")
         annotation = read_rttm_as_supervisions(rttm_file)
         assert _annotation_equals(annotation, [(0.0, 2.0, 'speech')])
+
+    @pytest.mark.unit
+    def test_detection_error_rate_counts_false_alarm_outside_reference(self):
+        def segs(*bounds):
+            return [
+                SupervisionSegment(id=f"s{i}", recording_id="r", start=s, duration=e - s, speaker="speech")
+                for i, (s, e) in enumerate(bounds)
+            ]
+
+        metric = _DetectionErrorRateAccumulator()
+        # False alarms before the first and after the last reference segment still count.
+        metric(segs((2.0, 4.0)), segs((0.0, 1.0), (2.0, 4.0), (5.0, 6.0)))
+        total = metric.report().loc["TOTAL"]
+        assert total[("false alarm", "%")] == pytest.approx(100.0)
+        assert total[("miss", "%")] == pytest.approx(0.0)
+        assert total[("detection error rate", "%")] == pytest.approx(100.0)
 
     @pytest.mark.unit
     def test_frame_vad_construct_supervisions_per_file(self, test_data_dir):

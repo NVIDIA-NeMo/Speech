@@ -180,6 +180,7 @@ def _small_aligner():
     return TinyGlowTTSAligner(
         audio_channels=4,
         text_channels=6,
+        use_speaker_conditioning=False,
         hidden_channels=8,
         num_flows=2,
         num_text_layers=1,

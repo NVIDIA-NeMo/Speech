@@ -6,8 +6,11 @@ Enable a small, jointly trained ST-TTS flow aligner to supervise selected
 main-backbone attention heads with its monotonic alignment search (MAS) path.
 Its VITS relative-position Transformer learns from detached conditioning-text
 embeddings and codec latents. The aligner uses the same BPE input as the backbone.
-Codec-reference speaker conditioning through attentive statistics pooling is
-optional and defaults to disabled.
+The flow uses 80 acoustic channels by default. Codec latents with another width
+pass through a shared, learnable orthogonal projection before the flow and
+codec-reference speaker encoder. Matching widths use an identity mapping.
+Speaker conditioning through attentive statistics pooling defaults to enabled;
+set `model.aligned_text_aligner.use_speaker_conditioning=false` to disable it.
 
 Add these overrides to the usual V2 training command:
 
@@ -32,8 +35,14 @@ To initialize from an existing ST-TTS/relative-Transformer aligner archive:
 ++model.attention_alignment.ramp_steps=0
 ```
 
-This loads the aligner independently of ordinary TTS pretraining, including its
-speaker-conditioning configuration. The text encoder and flow remain trainable.
+This loads only aligner weights and keeps the current architecture and speaker
+conditioning configuration. It reuses V2's partial initialization helper: matching
+tensors are loaded, overlapping rows are copied when trailing dimensions match,
+and missing or incompatible weights retain their current initialization. The
+loader logs partial copies and skipped weights. A new codec projection is trained
+when the source checkpoint has none. A checkpoint without aligner weights is
+rejected. Keep the default warmup when adapting a pretrained aligner to a new
+codec. The text encoder, flow, projection, and speaker encoder remain trainable.
 Logs include `aligner_nll`, `attention_alignment_loss`, valid-turn/causal-frame
 fractions, and the fraction of tokens assigned one frame.
 

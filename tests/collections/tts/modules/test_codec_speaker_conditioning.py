@@ -83,7 +83,7 @@ def test_disabled_conditioning_preserves_checkpoint_layout_and_predictions():
     torch.manual_seed(300)
     original = _tiny(use_speaker_conditioning=False).eval()
     torch.manual_seed(300)
-    default = _tiny().eval()
+    default = _tiny(use_speaker_conditioning=False).eval()
     assert not default.use_speaker_conditioning
     original_keys = set(original.state_dict())
     assert original_keys == set(default.state_dict())
@@ -93,6 +93,104 @@ def test_disabled_conditioning_preserves_checkpoint_layout_and_predictions():
     expected, actual = original(*inputs), default(*inputs)
     torch.testing.assert_close(actual.loss, expected.loss, atol=0, rtol=0)
     torch.testing.assert_close(actual.token_indices, expected.token_indices)
+
+
+def test_speaker_conditioning_is_enabled_by_default_and_explicitly_optional():
+    default = _tiny()
+    assert default.use_speaker_conditioning and default.speaker_encoder is not None
+    assert any('condition_projection' in key for key in default.state_dict())
+    disabled = _tiny(use_speaker_conditioning=False)
+    assert disabled.speaker_encoder is None
+    assert not any('speaker' in key or 'condition' in key for key in disabled.state_dict())
+
+
+@pytest.mark.parametrize('input_channels', [80, 96, 64])
+def test_codec_projection_keeps_flow_and_speaker_width_at_eighty_with_masked_gradients(input_channels):
+    torch.manual_seed(411)
+    aligner = _tiny(audio_channels=80, input_audio_channels=input_channels).eval()
+    _open_coupling_outputs(aligner)
+    assert aligner.audio_channels == 80 and aligner.input_audio_channels == input_channels
+    assert aligner.flow.actnorms[0].bias.shape == (1, 80, 1)
+    assert aligner.text_encoder.output_projection.conv.out_channels == 80
+    assert aligner.speaker_encoder.input_projection.conv.in_channels == 80
+    if input_channels == 80:
+        assert isinstance(aligner.audio_projection, nn.Identity)
+        assert not aligner.audio_projection.state_dict()
+    audio = torch.randn(2, 9, input_channels, requires_grad=True)
+    references = torch.randn(2, 8, input_channels, requires_grad=True)
+    text = torch.randn(2, 3, 6)
+    lengths, text_lengths, reference_lengths = torch.tensor([9, 6]), torch.tensor([3, 2]), torch.tensor([5, 0])
+    output = aligner(
+        audio,
+        text,
+        lengths,
+        text_lengths,
+        speaker_reference_features=references,
+        speaker_reference_lens=reference_lengths,
+    )
+    contaminated_audio, contaminated_references = audio.detach().clone(), references.detach().clone()
+    contaminated_audio[1, 6:] = 1e5
+    contaminated_references[0, 5:] = 1e5
+    contaminated_references[1] = 1e5
+    comparison = aligner(
+        contaminated_audio,
+        text,
+        lengths,
+        text_lengths,
+        speaker_reference_features=contaminated_references,
+        speaker_reference_lens=reference_lengths,
+    )
+    torch.testing.assert_close(output.loss, comparison.loss)
+    torch.testing.assert_close(output.token_indices, comparison.token_indices)
+    assert (output.token_indices[1, 6:] == -1).all()
+    pooled = aligner.encode_speaker_reference(references, reference_lengths)
+    assert pooled[1].eq(0).all()
+    output.loss.backward()
+    assert audio.grad[1, 6:].eq(0).all()
+    assert references.grad[0, 5:].eq(0).all() and references.grad[1].eq(0).all()
+    assert references.grad[0, :5].abs().sum() > 0
+    assert all(
+        parameter.grad is not None and torch.isfinite(parameter.grad).all() for parameter in aligner.parameters()
+    )
+    if input_channels != 80:
+        assert any(parameter.grad.abs().sum() > 0 for parameter in aligner.audio_projection.parameters())
+        torch.optim.SGD(aligner.parameters(), lr=1e-3).step()
+        weight = aligner.audio_projection.weight.detach()
+        gram = weight @ weight.T if input_channels > 80 else weight.T @ weight
+        torch.testing.assert_close(gram, torch.eye(min(80, input_channels)), atol=2e-5, rtol=2e-5)
+
+
+def test_projected_aligner_checkpoint_roundtrip_preserves_reference_and_alignment():
+    torch.manual_seed(412)
+    source = _tiny(audio_channels=80, input_audio_channels=96).eval()
+    _open_coupling_outputs(source)
+    restored = _tiny(audio_channels=80, input_audio_channels=96).eval()
+    restored.load_state_dict(source.state_dict(), strict=True)
+    inputs = (torch.randn(2, 7, 96), torch.randn(2, 2, 6), torch.tensor([7, 5]), torch.tensor([2, 2]))
+    kwargs = dict(speaker_reference_features=torch.randn(2, 6, 96), speaker_reference_lens=torch.tensor([6, 4]))
+    expected, actual = source(*inputs, **kwargs), restored(*inputs, **kwargs)
+    torch.testing.assert_close(actual.loss, expected.loss)
+    torch.testing.assert_close(actual.token_indices, expected.token_indices)
+    torch.testing.assert_close(
+        restored.encode_speaker_reference(kwargs['speaker_reference_features'], kwargs['speaker_reference_lens']),
+        source.encode_speaker_reference(kwargs['speaker_reference_features'], kwargs['speaker_reference_lens']),
+    )
+
+
+@pytest.mark.parametrize('audio_steps,text_steps', [(0, 2), (3, 0), (3, 4)])
+def test_projected_invalid_turns_keep_zero_parameter_gradients(audio_steps, text_steps):
+    aligner = _tiny(audio_channels=80, input_audio_channels=96)
+    output = aligner(
+        torch.randn(2, audio_steps, 96),
+        torch.randn(2, text_steps, 6),
+        torch.tensor([audio_steps, 0]),
+        torch.tensor([text_steps, 0]),
+        speaker_reference_features=torch.randn(2, 5, 96),
+        speaker_reference_lens=torch.tensor([5, 3]),
+    )
+    assert output.loss == 0 and (output.token_indices == -1).all()
+    output.loss.backward()
+    assert all(parameter.grad is not None and parameter.grad.eq(0).all() for parameter in aligner.parameters())
 
 
 def test_missing_reference_is_zero_conditioning_without_target_audio_fallback():

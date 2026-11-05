@@ -105,6 +105,7 @@ def _training_model(enabled=True, *, multiturn=True, prior_strength=0.0, alignme
     model._cfg.aligner_loss_weight = aligner_weight
     model._cfg.aligned_text_aligner = OmegaConf.create(
         dict(
+            audio_channels=4,
             hidden_channels=8,
             num_flows=1,
             num_text_layers=1,

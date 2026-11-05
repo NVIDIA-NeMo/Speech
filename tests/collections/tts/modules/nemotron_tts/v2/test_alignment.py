@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from omegaconf import OmegaConf
 from torch import nn
 
 from nemo.collections.tts.modules.aligner import (
@@ -26,6 +27,36 @@ def test_alignment_disabled_by_default_constructs_no_teacher():
     init_training_alignment(model, {})
     assert model.use_attention_alignment is False
     assert not hasattr(model, 'text_aligner')
+
+
+@pytest.mark.parametrize('stack', [1, 2])
+def test_training_alignment_defaults_to_eighty_channels_independently_of_codec_and_stacking(stack):
+    model = nn.Module()
+    model.cfg = OmegaConf.create(
+        dict(
+            embedding_dim=6,
+            use_attention_alignment=True,
+            aligned_text_aligner=dict(
+                hidden_channels=8,
+                num_flows=1,
+                num_text_layers=1,
+                coupling_num_layers=1,
+                speaker_hidden_channels=4,
+                speaker_embedding_dim=4,
+                speaker_num_layers=1,
+            ),
+        )
+    )
+    model._is_model_being_restored = lambda: False
+    model._codec_model = SimpleNamespace(vector_quantizer=SimpleNamespace(codebook_dim=96))
+    model.frame_stacking_factor = stack
+    model.decoder = SimpleNamespace(config=SimpleNamespace(layers_block_type=['attention'], num_attention_heads=2))
+    init_training_alignment(model, model.cfg)
+    assert model.text_aligner.audio_channels == 80
+    assert model.text_aligner.input_audio_channels == 96 * stack
+    assert model.text_aligner.speaker_encoder is not None
+    assert model.cfg.aligned_text_aligner.audio_channels == 80
+    assert model.cfg.aligned_text_aligner.input_audio_channels == 96 * stack
 
 
 def test_singleturn_retains_adjacent_repeated_bpes_and_actual_key_positions():
@@ -314,6 +345,7 @@ class _Teacher(nn.Module):
         super().__init__()
         self.weight = nn.Parameter(torch.tensor(1.0))
         self.audio_channels = 4
+        self.input_audio_channels = 4
         self.use_speaker_conditioning = False
 
     def forward(self, audio, text, audio_lens, text_lens):

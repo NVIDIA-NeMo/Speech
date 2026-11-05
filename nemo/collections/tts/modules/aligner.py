@@ -284,7 +284,8 @@ class TinyGlowTTSAligner(nn.Module):
     """Learn alignments using an ST-TTS flow and a unit-Gaussian text prior.
 
     Args:
-        audio_channels: Acoustic feature dimension. It is preserved by the flow.
+        audio_channels: Internal acoustic width, preserved by the flow. V2 defaults to 80.
+        input_audio_channels: Codec feature width before projection. None uses audio_channels.
         text_channels: Dimension of existing text/CAS embeddings. No duplicate
             vocabulary embedding is created.
         hidden_channels: Width of the acoustic coupling networks and text prior.
@@ -313,8 +314,7 @@ class TinyGlowTTSAligner(nn.Module):
         text_rel_attn_window_size: Maximum learned relative key/value offset.
             Content attention remains global beyond this window.
         use_speaker_conditioning: Enable learnable ASP reference conditioning of
-            the ST-TTS flow. False creates no speaker parameters and preserves
-            the existing checkpoint layout.
+            the ST-TTS flow. Defaults to True.
         speaker_hidden_channels: Width of the masked reference convolution stack.
         speaker_embedding_dim: Size of its global attentive-statistics embedding.
         speaker_num_layers: Number of residual reference convolution layers.
@@ -345,12 +345,16 @@ class TinyGlowTTSAligner(nn.Module):
         text_kernel_size: int = 3,
         text_dropout: float = 0.1,
         text_rel_attn_window_size: int = 4,
-        use_speaker_conditioning: bool = False,
+        use_speaker_conditioning: bool = True,
         speaker_hidden_channels: int = 64,
         speaker_embedding_dim: int = 64,
         speaker_num_layers: int = 2,
+        input_audio_channels: int | None = None,
     ):
         super().__init__()
+        input_audio_channels = audio_channels if input_audio_channels is None else input_audio_channels
+        if type(input_audio_channels) is not int or input_audio_channels < 1:
+            raise ValueError('input_audio_channels must be a positive integer')
         if audio_channels < 2 or text_channels < 1 or hidden_channels < 1:
             raise ValueError('Audio dimension must be >= 2; text and hidden dimensions must be positive')
         if num_flows < 1 or num_text_layers < 0:
@@ -382,6 +386,7 @@ class TinyGlowTTSAligner(nn.Module):
                 if type(value) is not int or value < 1:
                     raise ValueError(f'{name} must be a positive integer')
         self.audio_channels = audio_channels
+        self.input_audio_channels = input_audio_channels
         self.text_channels = text_channels
         self.hidden_channels = hidden_channels
         self.num_flows = num_flows
@@ -403,6 +408,13 @@ class TinyGlowTTSAligner(nn.Module):
         self.speaker_hidden_channels = speaker_hidden_channels
         self.speaker_embedding_dim = speaker_embedding_dim
         self.speaker_num_layers = speaker_num_layers
+        self.audio_projection = (
+            nn.Identity()
+            if input_audio_channels == audio_channels
+            else nn.utils.parametrizations.orthogonal(
+                nn.Linear(input_audio_channels, audio_channels, bias=False), orthogonal_map='householder'
+            )
+        )
         self.text_encoder = _TransformerTextPrior(
             text_channels,
             hidden_channels,
@@ -444,7 +456,8 @@ class TinyGlowTTSAligner(nn.Module):
 
         Turns with no text, insufficient audio frames, or out-of-range lengths
         receive no alignment and contribute no loss. The returned loss is the
-        negative acoustic log likelihood per valid frame and feature dimension.
+        negative log likelihood per valid frame and feature dimension, measured
+        in the projected acoustic space when the codec width differs.
         Invalid-only batches retain zero gradients for every trainable parameter,
         allowing mixed tasks and DDP without changing the module graph.
 
@@ -458,7 +471,7 @@ class TinyGlowTTSAligner(nn.Module):
         if audio_features.ndim != 3 or text_features.ndim != 3:
             raise ValueError('Audio and text features must have shape [batch, time, channels]')
         batch_size, audio_steps, channels = audio_features.shape
-        if channels != self.audio_channels or text_features.size(2) != self.text_channels:
+        if channels != self.input_audio_channels or text_features.size(2) != self.text_channels:
             raise ValueError('Feature dimensions do not match the aligner configuration')
         if (
             text_features.size(0) != batch_size
@@ -484,7 +497,7 @@ class TinyGlowTTSAligner(nn.Module):
             text_mask = get_mask_from_lengths(text_lens.clamp(0, text_steps), x=text)
             audio_mask = (audio_mask & valid_turns[:, None]).unsqueeze(1).float()
             text_mask = (text_mask & valid_turns[:, None]).unsqueeze(1).float()
-            audio = audio * audio_mask
+            audio = self._project_audio(audio_features, audio_mask[:, 0].bool()).transpose(1, 2)
             if self.training and self.dequantization_noise:
                 audio = audio + (2.0 * torch.rand_like(audio) - 1.0) * self.dequantization_noise * audio_mask
             if self.use_speaker_conditioning:
@@ -541,19 +554,35 @@ class TinyGlowTTSAligner(nn.Module):
             raise ValueError('Speaker reference encoding requires use_speaker_conditioning=true')
         if reference_features is None or reference_lens is None:
             raise ValueError('Speaker reference features and lengths must be provided together')
+        if (
+            reference_features.ndim != 3
+            or reference_features.size(2) != self.input_audio_channels
+            or reference_lens.shape != (reference_features.size(0),)
+            or reference_lens.device != reference_features.device
+        ):
+            raise ValueError('Speaker references must match the configured input width, lengths and device')
         with torch.autocast(device_type=reference_features.device.type, enabled=False):
-            return self.speaker_encoder(reference_features.float(), reference_lens)
+            mask = (
+                torch.arange(reference_features.size(1), device=reference_features.device)[None, :]
+                < reference_lens[:, None]
+            )
+            return self.speaker_encoder(self._project_audio(reference_features, mask), reference_lens)
+
+    def _project_audio(self, features, mask):
+        # Orthogonal weights keep the auxiliary likelihood from shrinking its input scale.
+        features = features.float().masked_fill(~mask[:, :, None], 0.0)
+        return self.audio_projection(features).masked_fill(~mask[:, :, None], 0.0)
 
     def _encode_speaker_reference(self, audio_features, reference_features, reference_lens):
         if (reference_features is None) != (reference_lens is None):
             raise ValueError('Speaker reference features and lengths must be provided together')
         if reference_features is None:
-            reference_features = audio_features.new_zeros((audio_features.size(0), 1, self.audio_channels))
+            reference_features = audio_features.new_zeros((audio_features.size(0), 1, self.input_audio_channels))
             reference_lens = torch.zeros(audio_features.size(0), device=audio_features.device, dtype=torch.long)
         elif (
             reference_features.ndim != 3
             or reference_features.size(0) != audio_features.size(0)
-            or reference_features.size(2) != self.audio_channels
+            or reference_features.size(2) != self.input_audio_channels
             or reference_features.device != audio_features.device
             or reference_lens.shape != (audio_features.size(0),)
         ):
@@ -747,7 +776,7 @@ def resolve_aligner_config(config: Mapping | None = None) -> dict:
         'text_kernel_size': 3,
         'text_dropout': 0.1,
         'text_rel_attn_window_size': 4,
-        'use_speaker_conditioning': False,
+        'use_speaker_conditioning': True,
         'speaker_hidden_channels': 64,
         'speaker_embedding_dim': 64,
         'speaker_num_layers': 2,
@@ -758,7 +787,7 @@ def resolve_aligner_config(config: Mapping | None = None) -> dict:
         'dequantization_noise': 0.01,
         'mas_backend': 'auto',
     }
-    unknown = values.keys() - defaults.keys() - {'audio_channels', 'text_channels'}
+    unknown = values.keys() - defaults.keys() - {'audio_channels', 'text_channels', 'input_audio_channels'}
     if unknown:
         raise ValueError(f'Unknown aligned_text_aligner options: {sorted(unknown)}')
     defaults.update(values)
@@ -821,60 +850,61 @@ def resolve_attention_alignment_config(config=None):
 def load_pretrained_text_speech_aligner(
     aligner: nn.Module, checkpoint_path: str | Path | None, *, aligner_config: Mapping | None = None
 ) -> tuple[nn.Module, dict]:
-    """Return a completely initialized aligner and its architecture configuration.
+    """Partially load aligner weights using the receiving model's configuration.
 
-    Only ``text_aligner.*`` weights (including common model/DDP wrappers and the
-    modular ``alignment.text_aligner.*`` namespace) are used. Bare aligner state
-    dictionaries and Lightning ``state_dict`` checkpoints are also accepted.
-    A ``.nemo`` donor supplies its own ``aligned_text_aligner`` architecture,
-    including optional codec-reference speaker conditioning. Its audio/text
-    feature dimensions must match those supplied by the receiving TTS model.
+    Accepts bare state dictionaries, Lightning checkpoints and ``.nemo`` archives.
+    Only aligner weights are selected from full TTS checkpoints. Matching tensors
+    and compatible leading rows are copied using NeMo's partial initializer;
+    missing or incompatible tensors retain their receiving-model initialization.
+    Donor configuration metadata is ignored. No source TTS model is instantiated.
 
-    No source TTS model is instantiated and no receiving module is modified.
-    Loading into a separate candidate makes failures atomic. Call before the
-    optimizer is created, then assign the returned module to ``text_aligner``.
-    ``None`` preserves the receiving object. Non-NeMo checkpoint metadata uses
-    pickle and must come from a trusted source.
+    A separate candidate keeps loading atomic and preserves receiver RNG, device,
+    dtype, training mode and parameter trainability. Call before optimizer setup.
+    ``None`` preserves the receiving object. Non-NeMo checkpoints use pickle and
+    must come from a trusted source.
     """
     config = (
         resolve_aligner_config(aligner_config)
         if aligner_config is not None
         else {key: getattr(aligner, key, default) for key, default in resolve_aligner_config().items()}
     )
+    dimensions = {
+        'audio_channels': aligner.audio_channels,
+        'text_channels': aligner.text_channels,
+        'input_audio_channels': aligner.input_audio_channels,
+    }
+    for name, supplied in dimensions.items():
+        requested = config.pop(name, supplied)
+        if requested is not None and requested != supplied:
+            raise ValueError(f'Configured aligner {name}={requested} does not match the receiving model ({supplied})')
     if checkpoint_path is None:
         return aligner, config
-    source_path = str(checkpoint_path)
-    state, source_config = _read_checkpoint(source_path)
-    if source_config is not None:
-        config = resolve_aligner_config(source_config)
-    for name in ('audio_channels', 'text_channels'):
-        supplied = getattr(aligner, name)
-        requested = config.pop(name, supplied)
-        if requested != supplied:
-            raise ValueError(
-                f'Checkpoint {source_path!r} requires aligner {name}={requested}, '
-                f'but the receiving model provides {supplied}.'
-            )
 
-    # Candidate initialization must not advance TTS dropout/dequantization RNG.
+    from nemo.collections.speechlm2.parts.pretrained import set_model_dict_for_partial_init
+
+    source_path = str(checkpoint_path)
+    state, _ = _read_checkpoint(source_path)
     with torch.random.fork_rng(devices=[]), torch.device('cpu'):
-        candidate = type(aligner)(audio_channels=aligner.audio_channels, text_channels=aligner.text_channels, **config)
+        candidate = type(aligner)(**dimensions, **config)
     parameter = next(aligner.parameters(), None)
     if parameter is not None:
         candidate = candidate.to(device=parameter.device, dtype=parameter.dtype)
     candidate.train(aligner.training)
+    candidate.load_state_dict(aligner.state_dict(), strict=True)
     trainable = {name: parameter.requires_grad for name, parameter in aligner.named_parameters()}
     for name, parameter in candidate.named_parameters():
         parameter.requires_grad_(trainable.get(name, True))
 
     expected = candidate.state_dict()
     selected = _select_aligner_weights(state, expected, source_path)
-    if any(isinstance(value, torch.Tensor) and value.is_meta for value in selected.values()):
-        raise ValueError(f'Checkpoint {source_path!r} is incompatible with text_aligner: meta tensors have no values.')
-    try:
-        candidate.load_state_dict(selected, strict=True)
-    except (RuntimeError, TypeError) as error:
-        raise ValueError(f'Checkpoint {source_path!r} is incompatible with text_aligner: {error}') from error
+    if not all(isinstance(value, torch.Tensor) for value in selected.values()):
+        raise ValueError(f'Checkpoint {source_path!r} contains non-tensor aligner weights.')
+    if any(value.is_meta for value in selected.values()):
+        raise ValueError(f'Checkpoint {source_path!r} contains meta aligner tensors with no values.')
+    if not expected.keys() & selected.keys():
+        raise ValueError(f'Checkpoint {source_path!r} contains no matching text_aligner weights.')
+    weights = set_model_dict_for_partial_init(selected, expected, allow_partial_copy=True)
+    candidate.load_state_dict(weights, strict=True)
     return candidate, config
 
 
@@ -897,10 +927,15 @@ def init_training_alignment(model, cfg):
     restoring = bool(model._is_model_being_restored())
     settings = resolve_aligner_config(cfg.get('aligned_text_aligner'))
     channels = int(model._codec_model.vector_quantizer.codebook_dim) * model.frame_stacking_factor
-    dimensions = dict(audio_channels=channels, text_channels=int(cfg.embedding_dim))
-    for name, actual in dimensions.items():
+    dimensions = dict(
+        audio_channels=settings.pop('audio_channels', 80),
+        input_audio_channels=channels,
+        text_channels=int(cfg.embedding_dim),
+    )
+    for name in ('input_audio_channels', 'text_channels'):
+        actual = dimensions[name]
         configured = settings.pop(name, actual)
-        if configured != actual:
+        if configured is not None and configured != actual:
             raise ValueError(f'aligned_text_aligner.{name}={configured} does not match model features ({actual})')
     model.text_aligner = TinyGlowTTSAligner(**dimensions, **settings)
     path = cfg.get('pretrained_model_text_speech_aligner')
@@ -909,10 +944,13 @@ def init_training_alignment(model, cfg):
             model.text_aligner, path, aligner_config=settings
         )
     model.aligned_text_aligner_config = settings
-    # Persist the hydrated architecture and codec-ASP settings with the weights
-    # to keep the checkpoint self-contained.
     with open_dict(model.cfg):
-        model.cfg.aligned_text_aligner = settings
+        model.cfg.aligned_text_aligner = dict(settings, **dimensions)
+    logging.info(
+        f'V2 aligner acoustic features: {channels} codec channels -> '
+        f'{model.text_aligner.audio_channels} flow channels; '
+        f'speaker conditioning={model.text_aligner.use_speaker_conditioning}.'
+    )
     attention_blocks = [
         index for index, kind in enumerate(model.decoder.config.layers_block_type) if kind == 'attention'
     ]
@@ -940,7 +978,12 @@ def reload_pretrained_aligner(model, checkpoint_path=None):
     )
     model.aligned_text_aligner_config = settings
     with open_dict(model.cfg):
-        model.cfg.aligned_text_aligner = settings
+        model.cfg.aligned_text_aligner = dict(
+            settings,
+            audio_channels=model.text_aligner.audio_channels,
+            input_audio_channels=model.text_aligner.input_audio_channels,
+            text_channels=model.text_aligner.text_channels,
+        )
         model.cfg.pretrained_model_text_speech_aligner = path
 
 
@@ -1244,7 +1287,7 @@ def decode_alignment_features(model, codes, lengths):
         raise ValueError('Expected original codec codes [B,C,T] and lengths [B]')
     with torch.no_grad(), torch.autocast(device_type=codes.device.type, enabled=False):
         if codes.size(2) == 0:
-            return torch.zeros(codes.size(0), 0, model.text_aligner.audio_channels, device=codes.device)
+            return torch.zeros(codes.size(0), 0, model.text_aligner.input_audio_channels, device=codes.device)
         mask = valid_original_codec_frames(model, codes, lengths)
         safe = codes.long().masked_fill(~mask[:, None, :], 0)
         features = model._codec_model.vector_quantizer.decode(indices=safe.transpose(0, 1), input_len=lengths).float()
@@ -1680,52 +1723,24 @@ class _MaskedConvolutionFFN(nn.Module):
 
 
 def _read_checkpoint(source_path):
-    config = None
     if Path(source_path).suffix.lower() == '.nemo':
-        # Read only the two required members. Do not extract tokenizer/codec
-        # assets or reconstruct the much larger source TTS model.
         with tarfile.open(source_path, 'r:*') as archive:
-            members = archive.getmembers()
-            weight_members = [
-                member for member in members if member.isfile() and Path(member.name).name == 'model_weights.ckpt'
+            members = [
+                member
+                for member in archive.getmembers()
+                if member.isfile() and Path(member.name).name == 'model_weights.ckpt'
             ]
-            config_members = [
-                member for member in members if member.isfile() and Path(member.name).name == 'model_config.yaml'
-            ]
-            if len(weight_members) != 1 or len(config_members) > 1:
+            if len(members) != 1:
                 raise ValueError(f'Checkpoint {source_path!r} must contain one unsharded model_weights.ckpt.')
-            if config_members:
-                content = archive.extractfile(config_members[0]).read().decode('utf-8')
-                config = _find_aligner_config(OmegaConf.create(content))
-            with archive.extractfile(weight_members[0]) as stream:
+            with archive.extractfile(members[0]) as stream:
                 state = torch.load(stream, map_location='cpu', weights_only=True)
     else:
         state = torch.load(source_path, map_location='cpu', weights_only=False)
-        if isinstance(state, Mapping):
-            for metadata_key in ('hyper_parameters', 'cfg', 'config', 'model_config'):
-                candidate = _find_aligner_config(state.get(metadata_key))
-                if candidate is not None:
-                    config = candidate
-                    break
     if isinstance(state, Mapping) and 'state_dict' in state:
         state = state['state_dict']
     if not isinstance(state, Mapping):
         raise ValueError(f'Checkpoint {source_path!r} does not contain a model state dictionary.')
-    return state, config
-
-
-def _find_aligner_config(config):
-    if not isinstance(config, Mapping):
-        return None
-    for wrapper in ('cfg', 'model'):
-        if isinstance(config.get(wrapper), Mapping):
-            config = config[wrapper]
-    value = config.get('aligned_text_aligner')
-    if value is None:
-        return None
-    if not isinstance(value, Mapping):
-        raise ValueError('The source aligned_text_aligner configuration must be a mapping.')
-    return OmegaConf.to_container(value, resolve=True) if OmegaConf.is_config(value) else dict(value)
+    return state, None
 
 
 def _select_aligner_weights(state, expected, source_path):

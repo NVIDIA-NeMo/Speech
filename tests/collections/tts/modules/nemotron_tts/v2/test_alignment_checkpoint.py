@@ -25,6 +25,7 @@ def test_defaults_match_current_flow_and_text_encoder_architecture():
     assert resolve_aligner_config({})['text_encoder_type'] == 'relative_transformer'
     assert resolve_aligner_config({'hidden_channels': 8})['text_encoder_type'] == 'relative_transformer'
     assert resolve_aligner_config({'hidden_channels': 8})['flow_type'] == 'sttts'
+    assert resolve_aligner_config()['use_speaker_conditioning'] is True
     with pytest.raises(ValueError, match='Unknown aligned_text_aligner'):
         resolve_aligner_config({'unexpected_option': True})
 
@@ -63,23 +64,31 @@ def test_only_aligner_weights_are_selected_from_checkpoint(tmp_path, prefix, lig
     _assert_state_equal(backbone_before, model.backbone.state_dict())
 
 
-def test_archive_restores_source_architecture_and_speaker_conditioning(tmp_path):
+def test_archive_keeps_receiver_architecture_and_speaker_configuration(tmp_path):
     source, source_config = _aligner(use_speaker_conditioning=True, hidden_channels=12)
-    receiver, target_config = _aligner()
+    receiver, target_config = _aligner(use_speaker_conditioning=False)
+    before = copy.deepcopy(receiver.state_dict())
     path = tmp_path / 'source.nemo'
     source_config = dict(source_config, audio_channels=4, text_channels=6)
     _archive(path, source, source_config)
     replacement, config = load_pretrained_text_speech_aligner(receiver, path, aligner_config=target_config)
-    assert replacement.use_speaker_conditioning and replacement.speaker_encoder is not None
-    assert replacement.hidden_channels == 12
-    assert config['use_speaker_conditioning']
-    assert 'audio_channels' not in config and 'text_channels' not in config
-    _assert_state_equal(source.state_dict(), replacement.state_dict())
+    assert replacement.use_speaker_conditioning is False and replacement.speaker_encoder is None
+    assert replacement.hidden_channels == 8
+    assert config == target_config
+    torch.testing.assert_close(
+        replacement.text_encoder.input_projection.conv.weight,
+        source.text_encoder.input_projection.conv.weight[:8],
+        rtol=0,
+        atol=0,
+    )
+    key = 'text_encoder.output_projection.conv.weight'
+    torch.testing.assert_close(replacement.state_dict()[key], before[key], rtol=0, atol=0)
 
 
-def test_lightning_metadata_can_restore_source_aligner_architecture(tmp_path):
-    source, source_config = _aligner(use_speaker_conditioning=True)
+def test_lightning_metadata_cannot_disable_receiver_speaker_conditioning(tmp_path):
+    source, source_config = _aligner(use_speaker_conditioning=False)
     receiver, target_config = _aligner()
+    before = copy.deepcopy(receiver.state_dict())
     path = tmp_path / 'source.ckpt'
     torch.save(
         {
@@ -89,45 +98,90 @@ def test_lightning_metadata_can_restore_source_aligner_architecture(tmp_path):
         path,
     )
     replacement, config = load_pretrained_text_speech_aligner(receiver, path, aligner_config=target_config)
-    assert config['use_speaker_conditioning'] and replacement.speaker_encoder is not None
-    _assert_state_equal(source.state_dict(), replacement.state_dict())
+    assert config == target_config and replacement.speaker_encoder is not None
+    for key, value in replacement.state_dict().items():
+        expected = source.state_dict().get(key, before[key])
+        torch.testing.assert_close(value, expected, rtol=0, atol=0)
 
 
-def test_incompatible_feature_dimensions_leave_receiving_aligner_unchanged(tmp_path):
+def test_archive_ignores_incompatible_configuration_metadata(tmp_path):
     source, source_config = _aligner()
     receiver, config = _aligner()
     before = copy.deepcopy(receiver.state_dict())
     path = tmp_path / 'wrong_dimensions.nemo'
-    _archive(path, source, dict(source_config, audio_channels=8))
-    with pytest.raises(ValueError, match='audio_channels=8'):
-        load_pretrained_text_speech_aligner(receiver, path, aligner_config=config)
+    _archive(path, source, dict(source_config, audio_channels=8, flow_type='unsupported'))
+    replacement, restored_config = load_pretrained_text_speech_aligner(receiver, path, aligner_config=config)
+    assert replacement.audio_channels == 4 and restored_config == config
+    _assert_state_equal(source.state_dict(), replacement.state_dict())
     _assert_state_equal(before, receiver.state_dict())
 
 
-@pytest.mark.parametrize('failure', ['shape', 'missing', 'unexpected', 'not_tensor', 'meta'])
+@pytest.mark.parametrize('failure', ['not_tensor', 'meta'])
 def test_invalid_state_cannot_partially_overwrite_receiver(tmp_path, failure):
     source, config = _aligner()
     receiver, _ = _aligner()
     before = copy.deepcopy(receiver.state_dict())
     state = dict(source.state_dict())
     key = next(iter(state))
-    if failure == 'shape':
-        state[key] = torch.zeros(1)
-    elif failure == 'missing':
-        del state[key]
-    elif failure == 'unexpected':
-        state['unknown.weight'] = torch.zeros(1)
-    elif failure == 'meta':
+    if failure == 'meta':
         state[key] = torch.empty_like(state[key], device='meta')
     else:
         state[key] = 7
     path = tmp_path / 'incompatible.pt'
     torch.save({'state_dict': {'text_aligner.' + key: value for key, value in state.items()}}, path)
     rng = torch.random.get_rng_state().clone()
-    with pytest.raises(ValueError, match='incompatible with text_aligner'):
+    message = 'meta aligner tensors' if failure == 'meta' else 'non-tensor aligner weights'
+    with pytest.raises(ValueError, match=message):
         load_pretrained_text_speech_aligner(receiver, path, aligner_config=config)
     _assert_state_equal(before, receiver.state_dict())
     assert torch.equal(torch.random.get_rng_state(), rng)
+
+
+@pytest.mark.parametrize('mismatch', ['shape', 'missing', 'unexpected', 'partial_rows'])
+def test_partial_checkpoint_keeps_initialized_tensors_and_copies_compatible_weights(tmp_path, mismatch):
+    source, config = _aligner()
+    receiver, _ = _aligner()
+    before = copy.deepcopy(receiver.state_dict())
+    original = copy.deepcopy(source.state_dict())
+    key = 'text_encoder.input_projection.conv.weight'
+    if mismatch == 'shape':
+        original[key] = torch.zeros(1)
+    elif mismatch == 'missing':
+        del original[key]
+    elif mismatch == 'partial_rows':
+        original[key] = original[key][:3].clone()
+    else:
+        original['unknown.weight'] = torch.zeros(1)
+    path = tmp_path / 'partial.pt'
+    torch.save({'state_dict': {'text_aligner.' + name: value for name, value in original.items()}}, path)
+    rng = torch.random.get_rng_state().clone()
+    replacement, restored_config = load_pretrained_text_speech_aligner(receiver, path, aligner_config=config)
+    expected = before[key].clone()
+    if mismatch == 'partial_rows':
+        expected[:3] = original[key]
+    elif mismatch == 'unexpected':
+        expected = original[key]
+    torch.testing.assert_close(replacement.state_dict()[key], expected, rtol=0, atol=0)
+    other = 'text_encoder.output_projection.conv.weight'
+    torch.testing.assert_close(replacement.state_dict()[other], original[other], rtol=0, atol=0)
+    assert restored_config == config and torch.equal(torch.random.get_rng_state(), rng)
+    _assert_state_equal(before, receiver.state_dict())
+
+
+def test_eighty_channel_donor_loads_into_projected_ninety_six_channel_receiver(tmp_path):
+    source, _ = _aligner(audio_channels=80)
+    receiver, config = _aligner(audio_channels=80, input_audio_channels=96)
+    projection = copy.deepcopy(receiver.audio_projection.state_dict())
+    path = tmp_path / 'eighty_channel.pt'
+    torch.save({'text_aligner.' + name: value for name, value in source.state_dict().items()}, path)
+    replacement, restored_config = load_pretrained_text_speech_aligner(receiver, path, aligner_config=config)
+    assert replacement.audio_channels == 80 and replacement.input_audio_channels == 96
+    assert restored_config == config
+    _assert_state_equal(projection, replacement.audio_projection.state_dict())
+    for name, value in source.state_dict().items():
+        torch.testing.assert_close(replacement.state_dict()[name], value, rtol=0, atol=0)
+    output = replacement(torch.randn(1, 6, 96), torch.randn(1, 2, 6), torch.tensor([6]), torch.tensor([2]))
+    assert torch.isfinite(output.loss)
 
 
 def test_missing_aligner_and_ambiguous_namespaces_are_rejected(tmp_path):
@@ -168,8 +222,13 @@ def _aligner(**overrides):
         speaker_num_layers=1,
     )
     values.update(overrides)
+    audio_channels = values.pop('audio_channels', 4)
+    input_audio_channels = values.pop('input_audio_channels', None)
     config = resolve_aligner_config(values)
-    return TinyGlowTTSAligner(audio_channels=4, text_channels=6, **config), config
+    dimensions = dict(audio_channels=audio_channels, text_channels=6)
+    if input_audio_channels is not None:
+        dimensions['input_audio_channels'] = input_audio_channels
+    return TinyGlowTTSAligner(**dimensions, **config), config
 
 
 def _archive(path, aligner, config):

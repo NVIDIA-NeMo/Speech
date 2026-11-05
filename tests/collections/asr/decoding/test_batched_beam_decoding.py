@@ -44,7 +44,8 @@ MAX_SAMPLES = 10
 DEVICES = [torch.device("cpu")]
 
 if torch.cuda.is_available():
-    DEVICES.append(torch.device('cuda'))
+    # The `gpu` marker puts the CUDA cases in the GPU CI jobs (see tests/functional_tests/_gpu_unit_test_selection.sh).
+    DEVICES.append(pytest.param(torch.device('cuda'), marks=pytest.mark.gpu))
 
 NUMBA_RNNT_LOSS_AVAILABLE = numba_utils.numba_cpu_is_supported(
     __NUMBA_MINIMUM_VERSION__

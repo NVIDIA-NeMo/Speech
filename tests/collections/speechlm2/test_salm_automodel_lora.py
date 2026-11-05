@@ -313,12 +313,14 @@ def test_no_lora_params_without_config(salm_without_lora):
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_lora_prevent_freeze_pattern_set(salm_with_lora):
     """The prevent_freeze_params list should include the LoRA pattern."""
     assert LORA_PARAM_PATTERN in salm_with_lora.cfg.prevent_freeze_params
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_lora_params_are_trainable(salm_with_lora):
     """LoRA parameters should have requires_grad=True."""
     for name, param in salm_with_lora.named_parameters():
@@ -327,6 +329,7 @@ def test_lora_params_are_trainable(salm_with_lora):
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_base_llm_params_not_patched_elsewhere(salm_with_lora):
     """Only targeted modules (q_proj, v_proj) should have LoRA, not others like k_proj."""
     lora_params = {n for n, _ in salm_with_lora.named_parameters() if ".lora_" in n}

@@ -33,7 +33,8 @@ from nemo.collections.common.tokenizers.tokenizer_spec import TokenWithLength, V
 DEVICES = [torch.device("cpu")]
 
 if torch.cuda.is_available():
-    DEVICES.append(torch.device("cuda"))
+    # The `gpu` marker puts the CUDA cases in the GPU CI jobs (see tests/functional_tests/_gpu_unit_test_selection.sh).
+    DEVICES.append(pytest.param(torch.device("cuda"), marks=pytest.mark.gpu))
 
 
 def _case_variant_var_bpe_representation():

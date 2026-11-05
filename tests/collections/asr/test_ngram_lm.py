@@ -27,7 +27,8 @@ from nemo.core.utils.optional_libs import KENLM_AVAILABLE, TRITON_AVAILABLE
 DEVICES = [torch.device("cpu")]
 
 if torch.cuda.is_available():
-    DEVICES.append('cuda')
+    # The `gpu` marker puts the CUDA cases in the GPU CI jobs (see tests/functional_tests/_gpu_unit_test_selection.sh).
+    DEVICES.append(pytest.param('cuda', marks=pytest.mark.gpu))
 
 
 @pytest.fixture(scope="module")

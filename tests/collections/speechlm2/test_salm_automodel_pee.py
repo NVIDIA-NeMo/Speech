@@ -254,6 +254,7 @@ def test_salm_automodel_pee_uses_parallel_expert_encoder(model):
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_pee_dataset_emits_speaker_targets(dataset, prompt_formatter, training_cutset_batch):
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
     batch = dataset[training_cutset_batch]

@@ -402,6 +402,8 @@ extend-exclude = '''
 addopts = "--verbose --pyargs --durations=0 --strict-markers"  # always add these arguments to pytest
 testpaths = ["tests"]
 pythonpath = ["tests/e2e_nightly"]
+# Fail a hung test instead of letting it consume the whole CI job timeout (requires pytest-timeout).
+timeout = 300
 # directories to ignore when discovering tests
 norecursedirs = [
     "nemo",
@@ -562,6 +564,7 @@ test = [
     "pytest-httpserver",
     "pytest-shard",
     "pytest-mock",
+    "pytest-timeout",
     "pytest-runner",
     "starlette",
     "wandb",

@@ -14,3 +14,13 @@
 # limitations under the License.
 
 """Shared fixtures for per-model functional tests."""
+
+import pytest
+
+
+def pytest_collection_modifyitems(config, items):
+    # Model-support tests download and restore released checkpoints of up to a few billion parameters,
+    # which can exceed the repository-wide 300-second per-test timeout from pyproject.toml.
+    for item in items:
+        if item.get_closest_marker("timeout") is None:
+            item.add_marker(pytest.mark.timeout(1200))

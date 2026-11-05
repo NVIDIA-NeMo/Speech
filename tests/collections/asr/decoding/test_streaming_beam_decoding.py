@@ -79,6 +79,11 @@ def get_devices_for_testing(use_cpu_always: bool = False) -> list[torch.device]:
 DEVICES = get_devices_for_testing(use_cpu_always=True)
 
 
+def _gpu_marks(device: torch.device):
+    """The `gpu` marker puts the CUDA cases in the GPU CI jobs (see tests/functional_tests/_gpu_unit_test_selection.sh)."""
+    return pytest.mark.gpu if device.type == "cuda" else ()
+
+
 def _make_device_param_matrix() -> list:
     """
     Build the ``(device, cuda_graphs_mode)`` parametrize entries with explicit, readable
@@ -99,11 +104,13 @@ def _make_device_param_matrix() -> list:
     """
     entries: list = []
     for device in DEVICES:
-        entries.append(pytest.param(device, None, id=f"{device.type}-no-graphs"))
+        entries.append(pytest.param(device, None, id=f"{device.type}-no-graphs", marks=_gpu_marks(device)))
     for device in DEVICES:
         if device.type == "cuda":
-            entries.append(pytest.param(device, "full_graph", id=f"{device.type}-full-graph"))
-            entries.append(pytest.param(device, "no_while_loops", id=f"{device.type}-no-while-loops"))
+            entries.append(pytest.param(device, "full_graph", id=f"{device.type}-full-graph", marks=pytest.mark.gpu))
+            entries.append(
+                pytest.param(device, "no_while_loops", id=f"{device.type}-no-while-loops", marks=pytest.mark.gpu)
+            )
     return entries
 
 
@@ -117,7 +124,7 @@ def _make_maes_device_param_matrix() -> list:
     available device with explicit IDs (``cpu``, ``cuda``, ...) instead of opaque
     ``device0`` / ``device1``.
     """
-    return [pytest.param(device, id=device.type) for device in DEVICES]
+    return [pytest.param(device, id=device.type, marks=_gpu_marks(device)) for device in DEVICES]
 
 
 MAES_DEVICE_PARAM_MATRIX = _make_maes_device_param_matrix()
@@ -428,7 +435,6 @@ def _run_streaming_batched_state(
 @pytest.mark.parametrize("batch_size", [4])
 @pytest.mark.parametrize("beam_size", [4])
 @pytest.mark.parametrize("max_symbols", [10])
-@pytest.mark.gpu
 def test_malsd_streaming_batched_state(
     an4_val_manifest_corrected,
     stt_en_fastconformer_transducer_large,
@@ -466,7 +472,6 @@ def test_malsd_streaming_batched_state(
 @pytest.mark.parametrize("maes_num_steps", [2])
 @pytest.mark.parametrize("maes_expansion_beta", [2])
 @pytest.mark.parametrize("maes_expansion_gamma", [2.3])
-@pytest.mark.gpu
 def test_maes_streaming_batched_state(
     an4_val_manifest_corrected,
     stt_en_fastconformer_transducer_large,
@@ -519,7 +524,6 @@ _WB_KEY_PHRASES: list[str] = ["nineteen", "forty", "fifty", "repeat", "stop", "y
 @pytest.mark.parametrize("batch_size", [4])
 @pytest.mark.parametrize("beam_size", [4])
 @pytest.mark.parametrize("max_symbols", [10])
-@pytest.mark.gpu
 def test_malsd_streaming_batched_state_with_word_boosting(
     an4_val_manifest_corrected,
     stt_en_fastconformer_transducer_large,
@@ -568,7 +572,6 @@ def test_malsd_streaming_batched_state_with_word_boosting(
 @pytest.mark.parametrize("batch_size", [4])
 @pytest.mark.parametrize("beam_size", [4])
 @pytest.mark.parametrize("max_symbols", [10])
-@pytest.mark.gpu
 def test_malsd_streaming_boosting_with_ref_transcripts(
     an4_val_manifest_corrected,
     stt_en_fastconformer_transducer_large,

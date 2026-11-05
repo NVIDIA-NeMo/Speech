@@ -187,7 +187,6 @@ class TestRNNTLossPytorch:
     @pytest.mark.unit
     @pytest.mark.parametrize('device', DEVICES)
     @pytest.mark.parametrize('dtype', DTYPES)
-    @pytest.mark.gpu
     def test_case_small(self, device, dtype):
         if device == 'cuda':
             numba_utils.skip_numba_cuda_test_if_unsupported(__NUMBA_MINIMUM_VERSION__)
@@ -245,7 +244,6 @@ class TestRNNTLossPytorch:
     @pytest.mark.unit
     @pytest.mark.parametrize('device', DEVICES)
     @pytest.mark.parametrize('dtype', DTYPES)
-    @pytest.mark.gpu
     def test_case_small_random(self, device, dtype):
         if device == 'cuda':
             numba_utils.skip_numba_cuda_test_if_unsupported(__NUMBA_MINIMUM_VERSION__)
@@ -277,7 +275,6 @@ class TestRNNTLossPytorch:
     @pytest.mark.parametrize('device', DEVICES)
     @pytest.mark.parametrize('dtype', DTYPES)
     @pytest.mark.parametrize('fastemit_lambda', [1.0, 0.01, 0.00001])
-    @pytest.mark.gpu
     def test_case_small_random_fastemit_reg(self, device, dtype, fastemit_lambda):
         if device == 'cuda':
             numba_utils.skip_numba_cuda_test_if_unsupported(__NUMBA_MINIMUM_VERSION__)
@@ -298,7 +295,6 @@ class TestRNNTLossPytorch:
     @pytest.mark.unit
     @pytest.mark.parametrize('device', DEVICES)
     @pytest.mark.parametrize('dtype', DTYPES)
-    @pytest.mark.gpu
     def test_case_big_tensor(self, device, dtype):
         if device == 'cuda':
             numba_utils.skip_numba_cuda_test_if_unsupported(__NUMBA_MINIMUM_VERSION__)
@@ -433,7 +429,6 @@ class TestRNNTLossPytorch:
     @pytest.mark.unit
     @pytest.mark.parametrize('device', DEVICES)
     @pytest.mark.parametrize('dtype', DTYPES)
-    @pytest.mark.gpu
     def test_case_large_random(self, device, dtype):
         if device == 'cuda':
             numba_utils.skip_numba_cuda_test_if_unsupported(__NUMBA_MINIMUM_VERSION__)
@@ -468,7 +463,6 @@ class TestRNNTLossPytorch:
     @pytest.mark.unit
     @pytest.mark.parametrize('device', DEVICES)
     @pytest.mark.parametrize('dtype', DTYPES)
-    @pytest.mark.gpu
     def test_case_small_clamp(self, device, dtype):
         if device == 'cuda':
             numba_utils.skip_numba_cuda_test_if_unsupported(__NUMBA_MINIMUM_VERSION__)
@@ -522,7 +516,6 @@ class TestRNNTLossPytorch:
     @pytest.mark.parametrize('device', DEVICES)
     @pytest.mark.parametrize('dtype', DTYPES)
     @pytest.mark.parametrize('fastemit_lambda', [1.0, 0.01, 0.00001])
-    @pytest.mark.gpu
     def test_case_small_fastemit_clamp(self, device, dtype, fastemit_lambda):
         if device == 'cuda':
             numba_utils.skip_numba_cuda_test_if_unsupported(__NUMBA_MINIMUM_VERSION__)
@@ -557,7 +550,6 @@ class TestRNNTLossPytorch:
 
     @pytest.mark.unit
     @pytest.mark.parametrize('device', DEVICES)
-    @pytest.mark.gpu
     def test_case_small_random_accumulated(self, device):
         if device == 'cuda':
             numba_utils.skip_numba_cuda_test_if_unsupported(__NUMBA_MINIMUM_VERSION__)
@@ -623,7 +615,6 @@ class TestRNNTLossPytorch:
         assert np.allclose(pt_grads1_p_2, np_grads1 + np_grads2, atol=1e-5)
 
 
-@pytest.mark.gpu
 class TestMultiblankRNNTLoss:
     @pytest.mark.unit
     @pytest.mark.parametrize('device', DEVICES)

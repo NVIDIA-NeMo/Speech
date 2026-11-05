@@ -214,10 +214,13 @@ class TestCTCDecoding:
             torch.device("cpu"),
             pytest.param(
                 torch.device("cuda"),
-                marks=pytest.mark.skipif(
-                    not torch.cuda.is_available(),
-                    reason='CUDA required for test.',
-                ),
+                marks=[
+                    pytest.mark.gpu,
+                    pytest.mark.skipif(
+                        not torch.cuda.is_available(),
+                        reason='CUDA required for test.',
+                    ),
+                ],
             ),
         ],
     )
@@ -227,14 +230,16 @@ class TestCTCDecoding:
             torch.device("cpu"),
             pytest.param(
                 torch.device("cuda"),
-                marks=pytest.mark.skipif(
-                    not torch.cuda.is_available(),
-                    reason='CUDA required for test.',
-                ),
+                marks=[
+                    pytest.mark.gpu,
+                    pytest.mark.skipif(
+                        not torch.cuda.is_available(),
+                        reason='CUDA required for test.',
+                    ),
+                ],
             ),
         ],
     )
-    @pytest.mark.gpu
     def test_batched_decoding_logprobs(
         self,
         tmp_tokenizer,
@@ -297,10 +302,13 @@ class TestCTCDecoding:
             torch.device("cpu"),
             pytest.param(
                 torch.device("cuda"),
-                marks=pytest.mark.skipif(
-                    not torch.cuda.is_available(),
-                    reason='CUDA required for test.',
-                ),
+                marks=[
+                    pytest.mark.gpu,
+                    pytest.mark.skipif(
+                        not torch.cuda.is_available(),
+                        reason='CUDA required for test.',
+                    ),
+                ],
             ),
         ],
     )
@@ -310,14 +318,16 @@ class TestCTCDecoding:
             torch.device("cpu"),
             pytest.param(
                 torch.device("cuda"),
-                marks=pytest.mark.skipif(
-                    not torch.cuda.is_available(),
-                    reason='CUDA required for test.',
-                ),
+                marks=[
+                    pytest.mark.gpu,
+                    pytest.mark.skipif(
+                        not torch.cuda.is_available(),
+                        reason='CUDA required for test.',
+                    ),
+                ],
             ),
         ],
     )
-    @pytest.mark.gpu
     def test_batched_decoding_labels(self, tmp_tokenizer, timestamps, length_is_none, labels_device, length_device):
         cfg = CTCBPEDecodingConfig(strategy='greedy', compute_timestamps=timestamps)
         unbatched_decoding = CTCBPEDecoding(decoding_cfg=cfg, tokenizer=tmp_tokenizer)

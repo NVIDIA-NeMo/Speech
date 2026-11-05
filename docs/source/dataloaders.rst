@@ -1070,7 +1070,8 @@ between them:
 The converter walks nested ``group`` entries and transform wrappers. It
 currently packs native ``nemo``/``nemo_tarred`` manifests and tar shards,
 ``nemotron_text_converation`` JSONL or tar paths, ``share_gpt`` JSONL
-manifests, and uncompressed ``lhotse_shar`` directories. Unsupported
+manifests, and ``lhotse_shar`` sources (tar shards must be uncompressed; gzip JSONL cuts
+require ``indexed_gzip``). Unsupported
 data-bearing types raise instead of being silently omitted; types that need no
 sidecar (such as ``parquet``) are ignored. Other indexed adapters can continue
 to use loose sidecars.

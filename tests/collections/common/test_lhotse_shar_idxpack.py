@@ -190,3 +190,54 @@ def test_converter_rejects_shar_mixed_with_other_types(tmp_path, shar_dirs):
     _, result = _convert(tmp_path, entries)
     assert result.exit_code != 0
     assert "separate input_cfg" in str(result.exception)
+
+
+requires_no_shar_index_pack = pytest.mark.skipif(
+    importlib.util.find_spec("lhotse.shar.index_pack") is not None,
+    reason="covers the behavior with a Lhotse version without Shar index-pack support",
+)
+
+
+@requires_no_shar_index_pack
+def test_declared_pack_without_lhotse_support_raises_clear_error(tmp_path, shar_dirs):
+    a, _ = shar_dirs
+    pack = tmp_path / "x.idxpack"
+    pack.write_bytes(b"")
+    for shar_path in (str(a), [str(a)], {"cuts": [str(p) for p in sorted(a.glob("cuts.*.jsonl"))]}):
+        entry = {"type": "lhotse_shar", "shar_path": shar_path, "index_pack": str(pack)}
+        with pytest.raises(RuntimeError, match="requires a Lhotse version with Shar index-pack support"):
+            _read(tmp_path, entry)
+
+
+@requires_no_shar_index_pack
+def test_converter_without_lhotse_support_raises_clear_error(tmp_path, shar_dirs):
+    a, _ = shar_dirs
+    _, result = _convert(tmp_path, [{"type": "lhotse_shar", "shar_path": str(a)}])
+    assert result.exit_code != 0
+    assert "requires a Lhotse version with Shar index-pack support" in str(result.exception)
+
+
+@pytest.mark.parametrize("indexed", [False, True])
+def test_plain_shar_configs_do_not_use_a_pack(tmp_path, shar_dirs, indexed):
+    """Entries without ``index_pack`` read exactly what ``CutSet.from_shar`` reads (the behavior before packs)."""
+    a, b = shar_dirs
+    mapping = {
+        "cuts": [str(p) for p in sorted(a.glob("cuts.*.jsonl"))],
+        "recording": [str(p) for p in sorted(a.glob("recording.*.tar"))],
+    }
+    for shar_path, direct in [
+        (str(a), CutSet.from_shar(in_dir=a)),
+        ([str(a), str(b)], None),
+        ([[str(a), 1.0], [str(b), 2.0]], None),
+        (mapping, CutSet.from_shar(fields=mapping)),
+    ]:
+        entry = {"type": "lhotse_shar", "shar_path": shar_path}
+        cuts = _read(tmp_path, entry, indexed=indexed)
+        ids = sorted(c.id for c in cuts)
+        expected = (
+            sorted(c.id for c in direct)
+            if direct is not None
+            else sorted([f"a-{i}" for i in range(11)] + [f"b-{i}" for i in range(7)])
+        )
+        assert ids == expected
+        assert all(c.recording.sources[0].type == "memory" for c in cuts)

@@ -15,12 +15,16 @@
 
 """Shared fixtures for per-model functional tests."""
 
+from pathlib import Path
+
 import pytest
 
 
 def pytest_collection_modifyitems(config, items):
     # Model-support tests download and restore released checkpoints of up to a few billion parameters,
     # which can exceed the repository-wide 300-second per-test timeout from pyproject.toml.
+    # The hook receives every collected item, so restrict it to the items in this directory.
+    nightly_dir = Path(__file__).parent
     for item in items:
-        if item.get_closest_marker("timeout") is None:
+        if Path(item.path).is_relative_to(nightly_dir) and item.get_closest_marker("timeout") is None:
             item.add_marker(pytest.mark.timeout(1200))

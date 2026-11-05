@@ -34,7 +34,8 @@ from nemo.core.utils.numba_utils import __NUMBA_MINIMUM_VERSION__
 DEVICES = ['cpu']
 
 if torch.cuda.is_available():
-    DEVICES.append('cuda')
+    # The `gpu` marker puts the CUDA cases in the GPU CI jobs (see tests/functional_tests/_gpu_unit_test_selection.sh).
+    DEVICES.append(pytest.param('cuda', marks=pytest.mark.gpu))
 
 CUDA_ONLY_DEVICE = ['cuda']
 

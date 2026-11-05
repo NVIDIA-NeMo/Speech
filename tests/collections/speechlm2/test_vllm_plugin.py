@@ -1741,6 +1741,7 @@ class TestAudioProcessing:
         assert runner(audio, lengths) is None
         assert len(attempts) == 2 and runner.graphs == {} and runner.pool is None and not runner.enabled
 
+    @pytest.mark.gpu
     def test_encoder_graph_runner_failed_capture_leaves_eager_inference_working(self, monkeypatch):
         """A capture that syncs the host fails; the eager forward still runs on the same device afterwards."""
         import torch
@@ -1762,6 +1763,7 @@ class TestAudioProcessing:
             emb, emb_len = perception(input_signal=audio, input_signal_length=lengths)
         assert torch.isfinite(emb).all() and emb_len.tolist()[0] > 0
 
+    @pytest.mark.gpu
     def test_encoder_graph_runner_matches_eager_forward(self):
         """Graph replays over padded buckets return the eager forward's per-row embeddings."""
         import torch
@@ -1787,6 +1789,7 @@ class TestAudioProcessing:
         assert runner(torch.randn(1, 30000, device="cuda"), torch.tensor([30000], device="cuda")) is None
         assert {b for b, _ in runner.graphs} <= {4, 8, 16}
 
+    @pytest.mark.gpu
     def test_perception_forward(self):
         """A small NeMo perception module should encode dummy audio to embeddings."""
         import torch

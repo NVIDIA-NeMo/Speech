@@ -375,6 +375,7 @@ def test_deterministic_algorithms_take_the_pytorch_path(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.gpu
 def test_cpu_input_uses_the_pytorch_path():
     """Eligibility is a property of the config; a CPU tensor still takes the PyTorch path."""
     module = _build(device="cpu")

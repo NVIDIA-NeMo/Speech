@@ -126,7 +126,9 @@ class TestGpuMarker:
     def test_audit_records_unmarked_test_that_allocates_cuda_memory(self):
         item = _fake_item({})
 
-        _run_protocol(item, allocations=[10, 12])
+        # Pin the CPU default device: other test modules may set a CUDA default at import time.
+        with patch("torch.get_default_device", return_value=torch.device("cpu")):
+            _run_protocol(item, allocations=[10, 12])
 
         assert item.config.stash[root_conftest._UNMARKED_CUDA_TESTS] == [item.nodeid]
 

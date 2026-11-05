@@ -87,7 +87,9 @@ pytest -m "gpu and not pleasefixme" path/to/relevant_tests   # what the GPU jobs
 ```
 
 The scheduled nightly run executes the whole suite on GPU with `--check-gpu-markers`, which fails if a test without
-the marker allocates CUDA memory.
+the marker allocates CUDA memory. The audit sees only PyTorch's CUDA allocator, so a test that runs CUDA only through
+Numba, DALI, or another library must be marked by hand. For a test parametrized over devices, mark only the CUDA case:
+`pytest.param("cuda", marks=pytest.mark.gpu)`.
 
 ## Running the Github CI
 

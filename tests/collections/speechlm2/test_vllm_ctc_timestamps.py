@@ -465,6 +465,7 @@ def test_a_submitted_call_is_prepared_on_its_own_thread_and_collected_once(align
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+@pytest.mark.gpu
 def test_a_submitted_call_runs_on_the_stream_it_was_submitted_from(aligner, monkeypatch):
     # The engine submits from its own stream. On a stream of their own, the head's kernels would share SMs with the
     # engine's, which corrupts Model Runner V2's sampled tokens.

@@ -39,7 +39,8 @@ EPS_L_INPUT = 1e-4
 DEVICES = ['cpu']
 
 if K2_AVAILABLE and torch.cuda.is_available() and k2.with_cuda:
-    DEVICES.append('cuda')
+    # The `gpu` marker puts the CUDA cases in the GPU CI jobs (see tests/functional_tests/_gpu_unit_test_selection.sh).
+    DEVICES.append(pytest.param('cuda', marks=pytest.mark.gpu))
 
 
 @pytest.mark.skipif(not K2_AVAILABLE, reason="k2 is not installed, skipping Graph-RNNT tests.")

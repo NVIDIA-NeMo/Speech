@@ -325,6 +325,7 @@ def test_loop_labels_cuda_graph_ddp_mixed_precision(
 @pytest.mark.with_downloads
 @pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.device_count() < 2, reason="Test requires 2 GPUs")
 @pytest.mark.parametrize("loop_labels", [False, True])
+@pytest.mark.gpu
 def test_change_devices(loop_labels: bool, stt_en_fastconformer_transducer_large):
     if not loop_labels:
         skip_cuda_python_test_if_cuda_graphs_conditional_nodes_not_supported()

@@ -30,6 +30,7 @@ except ImportError:
     HAVE_PARQUET = False
 
 from nemo.collections.common.data.lhotse.cutset import read_cutset_from_config
+from nemo.collections.common.data.lhotse.nemo_adapters import ParquetRowError
 
 
 @pytest.fixture
@@ -136,3 +137,152 @@ def test_read_parquet_sharding(parquet_dataset):
 
     # 5 items per file * 2 files = 10 items
     assert len(cuts_list) == 10
+
+
+@pytest.fixture
+def parquet_with_corrupt_row(tmp_path):
+    """A Parquet file whose first row has valid audio and whose second row has undecodable audio bytes."""
+    if not HAVE_PARQUET:
+        pytest.skip("PyArrow not installed, skipping Parquet tests.")
+    buf = io.BytesIO()
+    sf.write(buf, np.zeros(1600, dtype=np.float32), 16000, format='WAV')
+    table = pa.table(
+        {
+            "id": ["good", "corrupt"],
+            "audio": [buf.getvalue(), b"this is not audio"],
+            "text": ["hello", "world"],
+            "duration": [0.1, 0.1],
+        }
+    )
+    path = tmp_path / "corrupt.parquet"
+    pq.write_table(table, path)
+    return str(path)
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not HAVE_PARQUET, reason="PyArrow required for this test")
+@pytest.mark.parametrize("indexed", [False, True])
+def test_parquet_corrupt_audio_raises_by_default(parquet_with_corrupt_row, indexed):
+    it = _parquet_iterator(parquet_with_corrupt_row, indexed=indexed)
+    with pytest.raises(RuntimeError, match=r"row 1 \(id='corrupt'\) of Parquet file .*corrupt\.parquet"):
+        list(it)
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not HAVE_PARQUET, reason="PyArrow required for this test")
+def test_parquet_corrupt_audio_getitem_raises(parquet_with_corrupt_row):
+    it = _parquet_iterator(parquet_with_corrupt_row, indexed=True, fault_tolerant_audio_loading=True)
+    assert it[0].id == "good"
+    # Random access cannot skip a row, so it raises a descriptive error even in fault-tolerant mode.
+    with pytest.raises(RuntimeError, match=r"row 1 \(id='corrupt'\) of Parquet file .*failed to decode audio"):
+        it[1]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not HAVE_PARQUET, reason="PyArrow required for this test")
+@pytest.mark.parametrize("indexed", [False, True])
+def test_parquet_corrupt_audio_skipped_when_fault_tolerant(parquet_with_corrupt_row, indexed, monkeypatch):
+    from nemo.collections.common.data.lhotse import nemo_adapters
+
+    warnings = []
+    monkeypatch.setattr(nemo_adapters.logging, "warning", lambda msg, *a, **kw: warnings.append(msg))
+    it = _parquet_iterator(parquet_with_corrupt_row, indexed=indexed, fault_tolerant_audio_loading=True)
+    assert [c.id for c in it] == ["good"]
+    assert any("Skipped 1 of 2 rows" in w for w in warnings), warnings
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not HAVE_PARQUET, reason="PyArrow required for this test")
+@pytest.mark.parametrize("indexed", [False, True])
+@pytest.mark.parametrize("fault_tolerant", [False, True])
+@pytest.mark.parametrize(
+    "columns,match",
+    (
+        [
+            ({"audio": pa.array([None], type=pa.binary())}, r"audio column 'audio' holds NoneType, expected bytes"),
+            ({"audio": pa.array([1], type=pa.int64())}, r"audio column 'audio' holds int, expected bytes"),
+            ({"text": pa.array([None], type=pa.string())}, r"text column 'text' holds NoneType, expected str"),
+            ({"duration": [-1.0]}, r"duration column 'duration' holds -1.0, expected a non-negative number"),
+            ({"duration": [float("nan")]}, r"duration column 'duration' holds nan"),
+        ]
+        if HAVE_PARQUET
+        else []
+    ),
+)
+def test_parquet_malformed_row_always_raises(tmp_path, indexed, fault_tolerant, columns, match):
+    # Row-level problems are not audio-decoding failures, so fault-tolerant audio loading never skips them.
+    path = tmp_path / "malformed.parquet"
+    buf = io.BytesIO()
+    sf.write(buf, np.zeros(1600, dtype=np.float32), 16000, format='WAV')
+    table = {"audio": [buf.getvalue()], "text": ["x"], "duration": [0.1]}
+    table.update(columns)
+    pq.write_table(pa.table(table), path)
+    it = _parquet_iterator(str(path), indexed=indexed, fault_tolerant_audio_loading=fault_tolerant)
+    with pytest.raises(ParquetRowError, match=r"row 0 .*" + match):
+        list(it)
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not HAVE_PARQUET, reason="PyArrow required for this test")
+@pytest.mark.parametrize("indexed", [False, True])
+@pytest.mark.parametrize("field", ["audio", "text"])
+def test_parquet_missing_column_raises_even_when_fault_tolerant(parquet_with_corrupt_row, indexed, field):
+    with pytest.raises(ParquetRowError, match=f"has no {field} column '{field}_col'"):
+        list(
+            _parquet_iterator(
+                parquet_with_corrupt_row,
+                **{f"{field}_field": f"{field}_col"},
+                indexed=indexed,
+                fault_tolerant_audio_loading=True,
+            )
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not HAVE_PARQUET, reason="PyArrow required for this test")
+@pytest.mark.parametrize("indexed", [False, True])
+def test_read_parquet_manifest_respects_fault_tolerant_audio_loading(parquet_with_corrupt_row, indexed):
+    def make_config(fault_tolerant):
+        return OmegaConf.create(
+            {
+                "input_cfg": [{"type": "parquet", "manifest_filepath": parquet_with_corrupt_row}],
+                "indexed": indexed,
+                "force_finite": True,
+                "fault_tolerant_audio_loading": fault_tolerant,
+            }
+        )
+
+    cuts, _ = read_cutset_from_config(make_config(False))
+    with pytest.raises(RuntimeError, match=r"row 1 \(id='corrupt'\)"):
+        list(cuts)
+
+    cuts, _ = read_cutset_from_config(make_config(True))
+    assert [c.id for c in cuts] == ["good"]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not HAVE_PARQUET, reason="PyArrow required for this test")
+def test_parquet_fallback_ids_are_global_and_match_across_modes(tmp_path, monkeypatch):
+    # Rows without an ``id`` column get IDs from their position in the file. Streaming reads the file in
+    # record batches; IDs must not restart in each batch and must match the IDs from indexed mode.
+    buf = io.BytesIO()
+    sf.write(buf, np.zeros(160, dtype=np.float32), 16000, format='WAV')
+    path = tmp_path / "noid.parquet"
+    pq.write_table(pa.table({"audio": [buf.getvalue()] * 5, "text": [str(i) for i in range(5)]}), path)
+
+    original_iter_batches = pq.ParquetFile.iter_batches
+
+    def iter_small_batches(self, *args, **kwargs):
+        return original_iter_batches(self, *args, **{**kwargs, "batch_size": 2})
+
+    monkeypatch.setattr(pq.ParquetFile, "iter_batches", iter_small_batches)
+
+    expected = [f"noid_{i}" for i in range(5)]
+    assert [c.id for c in _parquet_iterator(str(path), indexed=False)] == expected
+    assert [c.id for c in _parquet_iterator(str(path), indexed=True)] == expected
+
+
+def _parquet_iterator(path, **kwargs):
+    from nemo.collections.common.data.lhotse.nemo_adapters import LazyParquetIterator
+
+    return LazyParquetIterator(path=path, **kwargs)

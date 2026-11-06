@@ -1630,6 +1630,17 @@ optional ``lang``):
     })
     pq.write_table(table, "shard_000.parquet")  # row-group stats kept by default
 
+The ``audio`` column must hold encoded audio bytes (or a struct with a
+``bytes`` field) and the ``text`` column must hold strings. Malformed files and
+rows always raise an error naming the file, row and reason, whatever
+``fault_tolerant_audio_loading`` says. That covers a missing ``audio`` or
+``text`` column, a null or non-bytes audio value, a null or non-string text
+value, and a negative or non-numeric ``duration``. Audio bytes that are present
+but cannot be decoded follow ``fault_tolerant_audio_loading``. With the default
+``true``, iteration skips the row, logs a warning naming the file and row, and
+logs the number of skipped rows at the end of each pass. With ``false``, it
+raises. Indexed random access by row index always raises on such a row.
+
 Once your manifests are written, build the indexed sidecars in one shot::
 
     python scripts/dataloading/build_indexes.py path/to/input_cfg.yaml
@@ -1758,6 +1769,8 @@ The two failure policies are independent and loader-wide:
 * ``fault_tolerant_audio_loading`` defaults to ``true`` and drops examples whose
   audio cannot be read, fetched, or decoded so training can continue past a
   small number of corrupt files. Set it to ``false`` for fail-fast diagnostics.
+  It also applies to Parquet rows with undecodable audio bytes; malformed
+  Parquet rows always raise.
 
 For example, strict manifest/tar alignment with fault-tolerant audio loading is
 the default. To tolerate filtered JSONL manifests while still failing on a bad

@@ -171,3 +171,25 @@ def test_random_draws_differ_across_epochs(cuts_path, mode):
 
     assert len(draws) == 20
     assert all(len(values) == 2 and values[0] != values[1] for values in draws.values())
+
+
+def test_load_state_dict_restores_in_place():
+    dataset = _RandomDrawDataset()
+    holder = dataset.rng  # e.g. a G2P module holding a reference to the dataset generator
+    state = dataset.state_dict()
+    expected = [dataset.rng.random() for _ in range(3)]
+
+    dataset.load_state_dict(state)
+
+    assert dataset.rng is holder
+    assert [holder.random() for _ in range(3)] == expected
+
+
+def test_rng_inherited_from_another_process_is_reseeded(monkeypatch):
+    from nemo.collections.common.data.lhotse import stateful_rng
+
+    dataset = _RandomDrawDataset()
+    parent_rng = dataset.rng
+    monkeypatch.setattr(stateful_rng.os, "getpid", lambda: -1)
+
+    assert dataset.rng is not parent_rng

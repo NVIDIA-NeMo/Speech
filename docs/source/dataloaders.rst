@@ -1481,6 +1481,11 @@ state is saved and restored with the dataloader state: by ``StatefulDataLoader``
 by NeMo's ``StatefulIterableDatasetWrapper`` for iterable-style datasets. Each epoch continues the sequence, so a
 cut gets new random draws when it is read again.
 
+Randomness inside components a dataset calls must come from the same generator. For example, the TTS datasets pass
+``self.rng`` to their tokenizers' G2P modules (``set_g2p_rng`` in ``nemo.collections.tts.parts.utils.tts_dataset_utils``),
+so ``phoneme_probability`` decisions are restored on resume as well. A G2P module used without a dataset (e.g. at
+inference) draws from its own generator, seeded per process from ``torch.initial_seed()`` and the rank.
+
 Random transforms applied to the ``CutSet`` itself (``.map(...)`` in a data type parser) can't keep a checkpointed
 generator. They seed a generator from the cut ID instead, e.g. ``random.Random(f"{seed}:{cut.id}")``, so the result
 is a pure function of the cut. A cut then gets the same draw in every epoch.

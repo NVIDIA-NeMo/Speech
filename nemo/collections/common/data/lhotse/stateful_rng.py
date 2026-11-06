@@ -28,6 +28,7 @@ How the state reaches the checkpoint:
 * Iterable-style dataloading: NeMo wraps the dataset in :class:`StatefulIterableDatasetWrapper`, which adds the
   wrapped dataset's state to the state of Lhotse's ``IterableDatasetWrapper`` (which only stores the sampler).
 """
+import os
 import random
 from typing import Any
 
@@ -42,10 +43,11 @@ class StatefulRandomMixin:
     by ``torchdata``'s ``StatefulDataLoader``.
 
     The generator is created lazily on first use in the process that uses it (a dataloader worker, or the
-    training process when ``num_workers=0``). It is seeded from ``torch.initial_seed()``, which PyTorch and
-    Lhotse's ``worker_init_fn`` set per worker from the dataloader seed, combined with the data-parallel rank.
-    The draws are therefore deterministic given the dataloader seed and the position in the data, and are
-    restored exactly on resume.
+    training process when ``num_workers=0``) with :func:`process_seeded_rng`. A generator inherited from another
+    process (e.g. a dataset copied into a dataloader worker after it was used in the training process) is replaced,
+    so workers never share a random sequence. The draws are deterministic given the dataloader seed and the
+    position in the data, and are restored exactly on resume. ``load_state_dict`` restores the state in place,
+    so objects holding a reference to ``self.rng`` (e.g. a G2P module) keep drawing from the restored generator.
 
     Example::
 
@@ -58,9 +60,10 @@ class StatefulRandomMixin:
     def rng(self) -> random.Random:
         """The dataset's private random generator for the current process."""
         rng = self.__dict__.get("_stateful_rng")
-        if rng is None:
-            rng = random.Random(f"{torch.initial_seed()}:{get_rank()}")
+        if rng is None or self.__dict__.get("_stateful_rng_pid") != os.getpid():
+            rng = process_seeded_rng()
             self._stateful_rng = rng
+            self._stateful_rng_pid = os.getpid()
         return rng
 
     def state_dict(self) -> dict[str, Any]:
@@ -71,9 +74,7 @@ class StatefulRandomMixin:
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
         """Restore the random generator state saved by :meth:`state_dict`."""
         state = state_dict["rng_state"]
-        rng = random.Random()
-        rng.setstate((state["version"], tuple(state["internal_state"]), state["gauss_next"]))
-        self._stateful_rng = rng
+        self.rng.setstate((state["version"], tuple(state["internal_state"]), state["gauss_next"]))
 
 
 class StatefulIterableDatasetWrapper(IterableDatasetWrapper):
@@ -102,6 +103,17 @@ class StatefulIterableDatasetWrapper(IterableDatasetWrapper):
                     f"{type(self.dataset).__name__} does not implement load_state_dict()."
                 )
             self.dataset.load_state_dict(sd["dataset_state"])
+
+
+def process_seeded_rng(namespace: str = "") -> random.Random:
+    """
+    Create a :class:`random.Random` seeded for the current process.
+
+    The seed combines ``namespace``, ``torch.initial_seed()`` (which PyTorch and Lhotse's ``worker_init_fn`` set
+    per dataloader worker from the dataloader seed) and the data-parallel rank, so it is deterministic given the
+    seeds and differs between workers and ranks. It never touches the global ``random`` state.
+    """
+    return random.Random(f"{namespace}{torch.initial_seed()}:{get_rank()}")
 
 
 def _is_stateful(obj: Any) -> bool:

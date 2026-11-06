@@ -70,7 +70,7 @@ def _patch_stateful_loader(monkeypatch):
     monkeypatch.setitem(sys.modules, "torchdata.stateful_dataloader", fake_module)
 
 
-def _new_wrapper(dp_rank: int, dp_world_size: int, dp_group=None) -> _PerRankStatefulDataLoader:
+def _new_wrapper(dp_rank: int, dp_world_size: int, dp_group=None, num_workers: int = 4) -> _PerRankStatefulDataLoader:
     return _PerRankStatefulDataLoader(
         dp_rank=dp_rank,
         dp_world_size=dp_world_size,
@@ -78,8 +78,27 @@ def _new_wrapper(dp_rank: int, dp_world_size: int, dp_group=None) -> _PerRankSta
         # the stub ignores constructor kwargs, but we pass something
         # representative so the call signature mirrors real usage.
         dataset=object(),
-        num_workers=4,
+        num_workers=num_workers,
     )
+
+
+def _multiprocess_inner_state(num_workers: int) -> dict:
+    """Shape of ``StatefulDataLoader.state_dict()`` for a multiprocess iterator (torchdata)."""
+    return {
+        "_snapshot": {
+            "_snapshot_step": 3,
+            "_last_yielded_worker_id": 0,
+            "_main_snapshot": {"_num_workers": num_workers, "_sampler_iter_yielded": 3},
+            "_worker_snapshots": {f"worker_{i}": {"worker_id": i} for i in range(num_workers)},
+        },
+        "_steps_since_snapshot": 0,
+        "_iterator_finished": False,
+    }
+
+
+def _single_process_inner_state() -> dict:
+    """Shape of ``StatefulDataLoader.state_dict()`` for a single-process iterator (torchdata)."""
+    return {"_num_yielded": 3, "_sampler_iter_yielded": 3, "_iterator_finished": False}
 
 
 def test_build_dataloader_forwards_dp_group():
@@ -97,6 +116,28 @@ def test_build_dataloader_forwards_dp_group():
 
     assert isinstance(dl, _PerRankStatefulDataLoader)
     assert dl._dp_group is dp_group
+
+
+@pytest.mark.parametrize("dp_world_size", [None, 1])
+def test_build_dataloader_wraps_single_rank_loader(dp_world_size):
+    """Single-GPU stateful loaders go through the same wrapper so they get the same topology checks."""
+    dl = _build_dataloader(
+        use_stateful_dataloader=True,
+        dp_rank=0,
+        dp_world_size=dp_world_size,
+        dataset=object(),
+        batch_size=None,
+        num_workers=2,
+    )
+
+    assert isinstance(dl, _PerRankStatefulDataLoader)
+    assert dl._dp_world_size == 1
+    assert dl._num_workers == 2
+
+
+def test_build_dataloader_non_stateful_is_plain_dataloader():
+    dl = _build_dataloader(use_stateful_dataloader=False, dataset=list(range(4)), batch_size=None, num_workers=0)
+    assert type(dl) is torch.utils.data.DataLoader
 
 
 def test_state_dict_all_gather_uses_dp_group(monkeypatch):
@@ -133,8 +174,79 @@ def test_state_dict_single_rank_wraps_with_per_rank_list():
     assert per_rank[0] == {
         "dp_rank": 0,
         "dp_world_size": 1,
+        "num_workers": 4,
         "state": {"position": 42, "shard_id": 0},
     }
+
+
+def test_world_size_one_round_trip():
+    src = _new_wrapper(dp_rank=0, dp_world_size=1, num_workers=2)
+    src._inner._state = _multiprocess_inner_state(num_workers=2)
+    sd = src.state_dict()
+
+    dst = _new_wrapper(dp_rank=0, dp_world_size=1, num_workers=2)
+    dst.load_state_dict(sd)
+
+    assert dst._inner.load_calls == [_multiprocess_inner_state(num_workers=2)]
+
+
+@pytest.mark.parametrize("saved,current", [(2, 0), (0, 2), (4, 2)])
+def test_load_rejects_num_workers_mismatch(saved, current):
+    src = _new_wrapper(dp_rank=0, dp_world_size=1, num_workers=saved)
+    sd = src.state_dict()
+
+    dst = _new_wrapper(dp_rank=0, dp_world_size=1, num_workers=current)
+    with pytest.raises(
+        RuntimeError, match=rf"num_workers={saved}.*num_workers={current}.*requires num_workers to match"
+    ):
+        dst.load_state_dict(sd)
+    assert dst._inner.load_calls == []
+
+
+def test_load_rejects_num_workers_mismatch_multi_rank():
+    per_rank = [
+        {"dp_rank": r, "dp_world_size": 2, "num_workers": 4, "state": _multiprocess_inner_state(4)} for r in range(2)
+    ]
+    dl = _new_wrapper(dp_rank=1, dp_world_size=2, num_workers=2)
+    with pytest.raises(RuntimeError, match=r"num_workers=4.*num_workers=2"):
+        dl.load_state_dict({"train_dataloader_per_rank": per_rank})
+    assert dl._inner.load_calls == []
+
+
+@pytest.mark.parametrize(
+    "inner_state,saved_num_workers",
+    [(_multiprocess_inner_state(4), 4), (_single_process_inner_state(), 0)],
+)
+def test_load_legacy_multi_rank_entry_without_num_workers(inner_state, saved_num_workers):
+    """Multi-rank checkpoints written before ``num_workers`` was recorded still load, and the
+    worker count is inferred from the inner torchdata state for validation."""
+    per_rank = [{"dp_rank": r, "dp_world_size": 2, "state": inner_state} for r in range(2)]
+
+    ok = _new_wrapper(dp_rank=1, dp_world_size=2, num_workers=saved_num_workers)
+    ok.load_state_dict({"train_dataloader_per_rank": per_rank})
+    assert ok._inner.load_calls == [inner_state]
+
+    bad = _new_wrapper(dp_rank=1, dp_world_size=2, num_workers=saved_num_workers + 1)
+    with pytest.raises(RuntimeError, match=rf"num_workers={saved_num_workers}"):
+        bad.load_state_dict({"train_dataloader_per_rank": per_rank})
+
+
+@pytest.mark.parametrize(
+    "legacy_state,saved_num_workers",
+    [(_multiprocess_inner_state(2), 2), (_single_process_inner_state(), 0)],
+)
+def test_load_legacy_bare_single_gpu_state(legacy_state, saved_num_workers):
+    """Single-GPU checkpoints from before the wrapper hold a bare StatefulDataLoader state."""
+    dl = _new_wrapper(dp_rank=0, dp_world_size=1, num_workers=saved_num_workers)
+    dl.load_state_dict(legacy_state)
+    assert dl._inner.load_calls == [legacy_state]
+
+
+def test_load_legacy_bare_single_gpu_state_rejects_num_workers_mismatch():
+    dl = _new_wrapper(dp_rank=0, dp_world_size=1, num_workers=0)
+    with pytest.raises(RuntimeError, match=r"num_workers=2.*num_workers=0"):
+        dl.load_state_dict(_multiprocess_inner_state(2))
+    assert dl._inner.load_calls == []
 
 
 def test_load_state_dict_single_rank_unwraps_and_applies():
@@ -213,7 +325,7 @@ def test_load_rejects_tag_mismatch():
 
 
 def test_load_rejects_bare_inner_state():
-    """Strict wire format: a state dict without the
+    """Strict wire format under multi-rank training: a state dict without the
     ``train_dataloader_per_rank`` top-level key is rejected. This guards
     against the legacy code path (``DataModule.load_state_dict`` calling
     ``dl.load_state_dict(entry["state"])`` with the raw inner state) and
@@ -221,7 +333,7 @@ def test_load_rejects_bare_inner_state():
     ``StatefulDataLoader.state_dict()`` — both would otherwise look like
     valid bare inner state and produce wrong, silently-corrupt resumes.
     """
-    dl = _new_wrapper(dp_rank=0, dp_world_size=1)
+    dl = _new_wrapper(dp_rank=0, dp_world_size=2)
 
     with pytest.raises(RuntimeError, match="train_dataloader_per_rank"):
         dl.load_state_dict({"position": 7, "shard_id": 0})

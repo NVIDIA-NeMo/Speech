@@ -56,6 +56,7 @@ from numba import jit, prange
 
 from nemo.collections.tts.parts.utils.tts_dataset_utils import stack_tensors
 from nemo.collections.tts.torch.tts_data_types import DATA_STR2DATA_CLASS, MAIN_DATA_TYPES, WithLens
+from nemo.core.optim.lr_scheduler import compute_max_steps
 from nemo.utils import logging
 from nemo.utils.decorators import deprecated
 
@@ -95,6 +96,44 @@ def get_batch_size(train_dataloader):
 
 def get_num_workers(trainer):
     return trainer.num_devices * trainer.num_nodes
+
+
+def get_max_steps(cfg, trainer, train_dataloader) -> int:
+    """
+    Resolve the total number of training steps from a model config.
+
+    Uses ``cfg.max_steps`` if set; otherwise ``cfg.max_epochs * cfg.steps_per_epoch``; otherwise derives the number
+    of steps per epoch from the length of the training dataset. The last option requires a dataset with a length:
+    an unsized dataset (e.g. Lhotse tarred/Shar/iterable data) raises a ``ValueError``.
+    """
+    if "max_steps" in cfg:
+        return cfg.get("max_steps")
+
+    if "max_epochs" not in cfg:
+        raise ValueError("Must specify 'max_steps' or 'max_epochs'.")
+
+    if "steps_per_epoch" in cfg:
+        return cfg.max_epochs * cfg.steps_per_epoch
+
+    try:
+        num_samples = len(train_dataloader.dataset)
+    except TypeError as e:
+        raise ValueError(
+            "Cannot derive the number of training steps from 'max_epochs': the training dataset "
+            f"({type(train_dataloader.dataset).__name__}) has no length, which is the case for Lhotse iterable "
+            "(tarred/Shar/parquet or force_iterable_dataset) data. Set 'max_steps' in the model config, "
+            "or set 'steps_per_epoch' alongside 'max_epochs'."
+        ) from e
+
+    return compute_max_steps(
+        max_epochs=cfg.max_epochs,
+        accumulate_grad_batches=trainer.accumulate_grad_batches,
+        limit_train_batches=trainer.limit_train_batches,
+        num_workers=get_num_workers(trainer),
+        num_samples=num_samples,
+        batch_size=get_batch_size(train_dataloader),
+        drop_last=train_dataloader.drop_last,
+    )
 
 
 def binarize_attention(attn, in_len, out_len):

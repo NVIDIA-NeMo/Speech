@@ -478,8 +478,8 @@ optimizer and step counter), set ``model.init_from_checkpoint`` in the config:
 
 This loads only model weights from the checkpoint — optimizer state, LR scheduler,
 and training step are discarded. Supports DCP directories (from FSDP2/TP training),
-HuggingFace directories, and single-file ``.ckpt`` files. Works with both ``SALM``
-and ``SALMAutomodel``.
+HuggingFace directories, and single-file ``.ckpt`` files. Works with ``SALM``,
+``SALMAutomodel`` and ``SALMWithAsrDecoder``.
 
 See :ref:`fine-tuning-from-checkpoint` in the configuration documentation for full
 details.

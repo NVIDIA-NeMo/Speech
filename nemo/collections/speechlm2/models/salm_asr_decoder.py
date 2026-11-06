@@ -48,7 +48,11 @@ from nemo.collections.speechlm2.modules.perception import AudioTranscriptionPerc
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.lora import maybe_install_lora
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
-from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, move_embedding
+from nemo.collections.speechlm2.parts.pretrained import (
+    load_pretrained_hf,
+    maybe_load_pretrained_models,
+    move_embedding,
+)
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
 from nemo.utils import logging
 
@@ -63,6 +67,12 @@ class SALMWithAsrDecoder(LightningModule, HFHubMixin):
         self.save_hyperparameters()
         self.cfg = DictConfig(cfg)
         self.audio_locator_tag = self.cfg.audio_locator_tag
+        if self.cfg.get("init_from_path") is not None and self.cfg.get("init_from_checkpoint") is not None:
+            raise ValueError(
+                "Set either init_from_path (a Hugging Face directory, loaded before the LoRA setup) or "
+                "init_from_checkpoint (a training checkpoint, loaded after it), not both: "
+                f"{self.cfg.init_from_path=} {self.cfg.init_from_checkpoint=}"
+            )
 
         tokenizer_src = self.cfg.get("tokenizer_path", None) or self.cfg.pretrained_llm
         self.tokenizer = AutoTokenizer(tokenizer_src, use_fast=True)
@@ -97,6 +107,9 @@ class SALMWithAsrDecoder(LightningModule, HFHubMixin):
             logging.warning(f"Unexpected keys: {unexpected_keys}")
 
         maybe_install_lora(self)
+        # Optionally initialize weights from a previous checkpoint (fresh optimizer/scheduler).
+        # Set model.init_from_checkpoint, model.pretrained_s2s_model or model.pretrained_perception_from_s2s.
+        maybe_load_pretrained_models(self)
 
         self._use_fsdp = False
         self._use_tp = False

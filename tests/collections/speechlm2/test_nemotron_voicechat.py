@@ -335,3 +335,28 @@ def test_e2s_offline_generation(model):
     # 14 tokens = 24696 audio frames
     gen_audio = ans["audio"]
     assert gen_audio.shape == (1, 24696)
+
+
+def test_e2s_inference_guidance_follows_the_tts_config(model, monkeypatch):
+    """offline_inference takes `inference_guidance_enabled` from the TTS model config; an argument still wins."""
+    model.eval()
+    assert model.tts_model.cfg.inference_guidance_enabled is False
+    seen = []
+    get_generation_config = model.tts_model._get_generation_config
+
+    def spy(guidance_enabled=False):
+        seen.append(guidance_enabled)
+        return get_generation_config(guidance_enabled=guidance_enabled)
+
+    monkeypatch.setattr(model.tts_model, "_get_generation_config", spy)
+    kwargs = dict(
+        input_signal=torch.randn(1, 8000, device=model.device),
+        input_signal_lens=torch.tensor([8000], device=model.device),
+        speaker_audio=torch.randn(1, 22050, device=model.device),
+        speaker_audio_lens=torch.tensor([22050], device=model.device),
+    )
+
+    model.offline_inference(**kwargs)
+    model.offline_inference(**kwargs, guidance_enabled=True)
+
+    assert seen == [False, True]

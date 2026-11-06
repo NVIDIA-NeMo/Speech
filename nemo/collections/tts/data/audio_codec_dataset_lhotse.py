@@ -13,17 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import random
 from typing import Dict
 
 import numpy as np
 import torch
 from lhotse import CutSet
 
+from nemo.collections.common.data.lhotse.stateful_rng import StatefulRandomMixin
 from nemo.utils import logging
 
 
-class AudioCodecLhotseDataset(torch.utils.data.Dataset):
+class AudioCodecLhotseDataset(StatefulRandomMixin, torch.utils.data.Dataset):
     """
     A Lhotse-based dataset for audio codec model training.
 
@@ -32,6 +32,10 @@ class AudioCodecLhotseDataset(torch.utils.data.Dataset):
     * Resampling to the target sample rate
     * Random truncation of each cut's `target_audio` to a fixed duration
     * Sanity checks on the audio
+
+    The random segment start is drawn from the dataset's checkpointed generator
+    (see :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`),
+    so a resumed run reads the same segments as an uninterrupted one.
 
     The operations below are handled directly by Lhotse according to the configuration
     applied in `AudioCodecModel._get_lhotse_dataloader()`:
@@ -85,7 +89,7 @@ class AudioCodecLhotseDataset(torch.utils.data.Dataset):
             )
 
         # Randomly select a segment of the audio
-        start = random.randint(0, num_samples - self.segment_samples)
+        start = self.rng.randint(0, num_samples - self.segment_samples)
         segment = audio[start : start + self.segment_samples]
         return torch.from_numpy(np.ascontiguousarray(segment, dtype=np.float32))
 

@@ -42,6 +42,33 @@ def test_sb_noise_schedule_max_properties(noise_schedule_type, device):
     torch.testing.assert_close(noise_schedule.sigma_t_max, noise_schedule.sigma(time_max))
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("noise_schedule_type", ["ve", "vp"])
+def test_sb_noise_schedule_drift_and_diffusion_coefficients(noise_schedule_type):
+    if noise_schedule_type == "ve":
+        k, c = 2.0, 0.5
+        noise_schedule = SBNoiseScheduleVE(k=k, c=c)
+    else:
+        beta_0, beta_1, c = 0.1, 1.0, 0.5
+        noise_schedule = SBNoiseScheduleVP(beta_0=beta_0, beta_1=beta_1, c=c)
+
+    time = torch.linspace(noise_schedule.time_min, noise_schedule.time_max, steps=5)
+    f_val = noise_schedule.f(time)
+    g_val = noise_schedule.g(time)
+
+    assert f_val.shape == time.shape
+    assert g_val.shape == time.shape
+    assert torch.isfinite(f_val).all()
+    assert torch.isfinite(g_val).all()
+    assert torch.all(g_val > 0)
+
+    if noise_schedule_type == "ve":
+        expected_f = torch.zeros_like(time)
+        expected_g = (c**0.5) * (k**time)
+        torch.testing.assert_close(f_val, expected_f)
+        torch.testing.assert_close(g_val, expected_g)
+
+
 @pytest.mark.parametrize("num_steps", NUM_STEPS)
 @pytest.mark.parametrize("process", ["sde", "ode"])
 @pytest.mark.parametrize("noise_schedule_type", ["ve", "vp"])

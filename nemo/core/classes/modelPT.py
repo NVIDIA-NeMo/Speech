@@ -1906,8 +1906,8 @@ class ModelPT(LightningModule, Model):
         To use, add the following optoins to the model config:
         ## Nsys profiling options
         nsys_profile: False
-            start_step: 10  # Global batch to start profiling
-            end_step: 10 # Global batch to end profiling
+            start_step: 10  # trainer.global_step (optimizer steps) to start profiling at
+            end_step: 10 # trainer.global_step (optimizer steps) to end profiling after
             ranks: [0] # Global rank IDs to profile
             gen_shape: False # Generate model and kernel details including input shapes
         And then wrap the model training script with:
@@ -1920,8 +1920,8 @@ class ModelPT(LightningModule, Model):
         ## CUDA memory profiling options
         memory_profile:
             enabled: True
-            start_step: 10  # Global batch to start profiling
-            end_step: 10 # Global batch to end profiling
+            start_step: 10  # trainer.global_step (optimizer steps) to start profiling at
+            end_step: 10 # trainer.global_step (optimizer steps) to end profiling after
             rank: 0 # Global rank ID to profile
             output_path: None # Path to store the profile output file
         """
@@ -2025,7 +2025,10 @@ class ModelPT(LightningModule, Model):
 
             if hasattr(self, '_nsys_profile_enabled'):
                 if self._nsys_profile_enabled and not self._nsys_profile_started:
-                    if batch_idx >= self._nsys_profile_start_step and get_rank() in self._nsys_profile_ranks:
+                    if (
+                        self.trainer.global_step >= self._nsys_profile_start_step
+                        and get_rank() in self._nsys_profile_ranks
+                    ):
                         logging.info("====== Start nsys profiling ======")
                         torch.cuda.cudart().cudaProfilerStart()
                         if self._nsys_profile_gen_shape:
@@ -2034,7 +2037,10 @@ class ModelPT(LightningModule, Model):
 
             if hasattr(self, '_memory_profile_enabled'):
                 if self._memory_profile_enabled and not self._memory_profile_started:
-                    if batch_idx >= self._memory_profile_start_step and get_rank() == self._memory_profile_rank:
+                    if (
+                        self.trainer.global_step >= self._memory_profile_start_step
+                        and get_rank() == self._memory_profile_rank
+                    ):
                         logging.info("====== Start CUDA memory profiling ======")
                         torch.cuda.memory._record_memory_history(max_entries=100000)
                         self._memory_profile_started = True
@@ -2082,14 +2088,20 @@ class ModelPT(LightningModule, Model):
 
             if hasattr(self, '_nsys_profile_enabled'):
                 if self._nsys_profile_enabled and not self._nsys_profile_complete:
-                    if batch_idx >= self._nsys_profile_end_step and get_rank() in self._nsys_profile_ranks:
+                    if (
+                        self.trainer.global_step - 1 >= self._nsys_profile_end_step
+                        and get_rank() in self._nsys_profile_ranks
+                    ):
                         logging.info("====== End nsys profiling ======")
                         torch.cuda.cudart().cudaProfilerStop()
                         self._nsys_profile_complete = True
 
             if hasattr(self, '_memory_profile_enabled'):
                 if self._memory_profile_enabled and not self._memory_profile_complete:
-                    if batch_idx >= self._memory_profile_end_step and get_rank() == self._memory_profile_rank:
+                    if (
+                        self.trainer.global_step - 1 >= self._memory_profile_end_step
+                        and get_rank() == self._memory_profile_rank
+                    ):
                         logging.info("====== End CUDA memory profiling ======")
                         torch.cuda.memory._dump_snapshot(
                             f'{self._memory_profile_output_path}/memory_profile_rank{self._memory_profile_rank}.pickle'

@@ -94,7 +94,19 @@ class BoostingTreeModelConfig:
     var_bpe_penalize_subsplits: bool = True  # penalize sub-splits; `True` is recommended value
 
     @staticmethod
-    def is_empty(cfg: "BoostingTreeModelConfig") -> bool:
+    def _with_defaults(cfg: "BoostingTreeModelConfig | DictConfig") -> "BoostingTreeModelConfig | DictConfig":
+        if isinstance(cfg, DictConfig):
+            defaults = OmegaConf.structured(BoostingTreeModelConfig)
+            cfg_type = OmegaConf.get_type(cfg)
+            if isinstance(cfg_type, type) and issubclass(cfg_type, BoostingTreeModelConfig):
+                return cfg
+            resolved_cfg = OmegaConf.to_container(cfg, resolve=True)
+            return OmegaConf.merge(defaults, resolved_cfg)
+        return cfg
+
+    @staticmethod
+    def is_empty(cfg: "BoostingTreeModelConfig | DictConfig") -> bool:
+        cfg = BoostingTreeModelConfig._with_defaults(cfg)
         return (
             cfg.model_path is None
             and cfg.key_phrases_file is None
@@ -588,10 +600,13 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
                     logging.warning(f"alpha is 0.0 for phrase '{item.phrase}': the phrase is effectively disabled")
 
     @classmethod
-    def from_config(cls, cfg: BoostingTreeModelConfig, tokenizer: TokenizerSpec) -> "GPUBoostingTreeModel":
+    def from_config(
+        cls, cfg: BoostingTreeModelConfig | DictConfig, tokenizer: TokenizerSpec
+    ) -> "GPUBoostingTreeModel":
         """
         Constructor boosting tree model from config file
         """
+        cfg = BoostingTreeModelConfig._with_defaults(cfg)
         # load boosting tree from already built model path
         if cfg.model_path is not None and os.path.exists(cfg.model_path):
             return cls.from_nemo(lm_path=cfg.model_path, vocab_size=tokenizer.vocab_size)

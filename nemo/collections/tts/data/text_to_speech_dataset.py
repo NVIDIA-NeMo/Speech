@@ -409,6 +409,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
         add_language_to_context_text: bool = False,
         default_tokenizer_name: str = "english_phoneme",
         load_normalized_text_percent: float = 1.0,
+        randomize_context: bool = True,
     ):
         super().__init__(
             dataset_meta=dataset_meta,
@@ -450,6 +451,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
         self.phoneme_text_eop_marker = phoneme_text_eop_marker
         self.add_language_to_context_text = add_language_to_context_text
         self.default_tokenizer_name = default_tokenizer_name
+        self.randomize_context = randomize_context
 
     def get_num_audio_samples_to_slice(self, duration, sample_rate):
         num_codec_frames = int(duration * sample_rate / self.codec_model_samples_per_frame)
@@ -462,6 +464,10 @@ class MagpieTTSDataset(TextToSpeechDataset):
         def _sample_context_duration_with_available_limit(available_duration_sec: float) -> float:
             effective_duration_max = min(self.context_duration_max, available_duration_sec)
             effective_duration_max = max(self.context_duration_min, effective_duration_max)
+
+            if not self.randomize_context:
+                return effective_duration_max
+
             return random.uniform(self.context_duration_min, effective_duration_max)
 
         if data.tokenizer_names is not None:
@@ -567,7 +573,10 @@ class MagpieTTSDataset(TextToSpeechDataset):
                 _context_duration_to_slice * self.sample_rate / self.codec_model_samples_per_frame
             )
             if _num_frames_to_slice < context_audio_codes.shape[1]:
-                start_idx = random.randint(0, context_audio_codes.shape[1] - _num_frames_to_slice)
+                if self.randomize_context:
+                    start_idx = random.randint(0, context_audio_codes.shape[1] - _num_frames_to_slice)
+                else:
+                    start_idx = 0
                 context_audio_codes = context_audio_codes[:, start_idx : start_idx + _num_frames_to_slice]
             else:
                 # Repeaet the audio if it is shorter than the desired duration
@@ -593,7 +602,11 @@ class MagpieTTSDataset(TextToSpeechDataset):
             _context_duration_to_slice = _sample_context_duration_with_available_limit(_available_context_duration)
             _num_samples_to_slice = self.get_num_audio_samples_to_slice(_context_duration_to_slice, self.sample_rate)
             if _num_samples_to_slice < len(context_audio_array):
-                start_idx = random.randint(0, len(context_audio_array) - _num_samples_to_slice)
+                if self.randomize_context:
+                    start_idx = random.randint(0, len(context_audio_array) - _num_samples_to_slice)
+                else:
+                    start_idx = 0
+
                 context_audio_array = context_audio_array[start_idx : start_idx + _num_samples_to_slice]
             else:
                 # Repeaet the audio if it is shorter than the desired duration

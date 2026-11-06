@@ -171,7 +171,9 @@ def canary2(cut: Cut, prompt: Canary2PromptFormatter) -> dict[str, torch.Tensor]
 
     The prompt format syntax is defined in :class:`Canary2PromptFormatter`
     """
-    if isinstance(cut, MixedCut):
+    # Padding a mixture with waveform transforms (e.g. RIR) may retain nested mixtures.
+    # Follow the speech track for prompt metadata without modifying the augmented audio.
+    while isinstance(cut, MixedCut):
         cut = cut._first_non_padding_cut
     if not isinstance(cut, MonoCut):
         raise TypeError(

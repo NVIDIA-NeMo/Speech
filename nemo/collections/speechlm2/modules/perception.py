@@ -703,21 +703,33 @@ class QformerConnector(nn.Module):
             nn.Linear(self.encoder_config.d_model, self.llm_config.hidden_size),  # project to llm hidden size
         )
 
-    def forward(self, audio_signal: list[torch.Tensor], length):
+    def forward(self, audio_signal: list[torch.Tensor], length: list[torch.Tensor]):
         """
         input:
-            audio_signal: layerwise hidden states from the encoder
+            audio_signal: layerwise hidden states from the encoder, each (b, d, t)
+            length: valid frame count of each row, one (b,) tensor per entry of ``audio_signal``
         """
         layer_prompt_outputs = []
         expected_num = len(self.target_layer_ids) + int(self.include_final_output)
         assert (
             len(audio_signal) == expected_num
         ), f"Expected {expected_num} activations from encoder layers but got {len(audio_signal)}."
-        for idx, encoder_hidden_state in enumerate(audio_signal):
+        for idx, (encoder_hidden_state, encoder_length) in enumerate(zip(audio_signal, length, strict=True)):
+            encoder_hidden_state = encoder_hidden_state.transpose(1, 2)  # (b, t, d)
             layer_prompt = self.layer_prompts[idx].expand(encoder_hidden_state.size(0), -1, -1)
+            # BertEncoder adds this mask to the cross-attention scores: 0 keeps a frame, the dtype minimum drops it
+            frame_idx = torch.arange(encoder_hidden_state.size(1), device=encoder_hidden_state.device)
+            is_padding = frame_idx[None, :] >= encoder_length.to(encoder_hidden_state.device)[:, None]
+            encoder_attention_mask = torch.zeros(
+                is_padding.shape, dtype=encoder_hidden_state.dtype, device=is_padding.device
+            )
+            encoder_attention_mask = encoder_attention_mask.masked_fill(
+                is_padding, torch.finfo(encoder_hidden_state.dtype).min
+            )[:, None, None, :]
             qformer_output = self.qformer(
                 hidden_states=layer_prompt,
-                encoder_hidden_states=encoder_hidden_state.transpose(1, 2),
+                encoder_hidden_states=encoder_hidden_state,
+                encoder_attention_mask=encoder_attention_mask,
             )
             layer_prompt_output = qformer_output.last_hidden_state
             layer_prompt_outputs.append(layer_prompt_output)
@@ -727,9 +739,9 @@ class QformerConnector(nn.Module):
         norm_weights = torch.nn.functional.softmax(self.layer_weights, dim=-1).unsqueeze(-1)
         output = (layer_prompt_outputs * norm_weights).sum(dim=2)  # (b, prompt_size, d_llm)
         output = self.proj(output)
-        output = output.transpose(1, 2)
+        output = output.transpose(1, 2)  # (b, d_llm, prompt_size)
 
-        return output, torch.tensor([output.shape[1]] * output.shape[0], device=output.device, dtype=torch.long)
+        return output, torch.full((output.shape[0],), self.prompt_size, device=output.device, dtype=torch.long)
 
 
 class MultiLayerProjectionConnector(nn.Module):

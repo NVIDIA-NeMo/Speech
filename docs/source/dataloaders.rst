@@ -1069,10 +1069,23 @@ between them:
 
 The converter walks nested ``group`` entries and transform wrappers. It
 currently packs native ``nemo``/``nemo_tarred`` manifests and tar shards,
-``nemotron_text_converation`` JSONL or tar paths, and ``share_gpt`` JSONL
-manifests. Unsupported data-bearing types raise instead of being silently
-omitted; types that need no sidecar (such as ``parquet``) are ignored. Other
-indexed adapters can continue to use loose sidecars.
+``nemotron_text_converation`` JSONL or tar paths, ``share_gpt`` JSONL
+manifests, and ``lhotse_shar`` sources (tar shards must be uncompressed; gzip JSONL cuts
+require ``indexed_gzip``). Unsupported
+data-bearing types raise instead of being silently omitted; types that need no
+sidecar (such as ``parquet``) are ignored. Other indexed adapters can continue
+to use loose sidecars.
+
+``lhotse_shar`` entries are packed by Lhotse
+(:func:`lhotse.shar.index_pack.write_shar_index_pack`, which requires a Lhotse
+version with Shar index-pack support). One pack holds every Shar source of the
+input config: a single ``shar_path`` directory, each directory of a
+``shar_path`` list (with or without weights), or a per-field ``shar_path``
+mapping. Such an input config must contain only ``lhotse_shar`` entries. Build
+the sidecars first (``build_indexes.py`` or ``SharWriter(create_index=True)``).
+At runtime the pack is passed to ``CutSet.from_shar``; the packed reader yields
+the same cuts in the same order as the sidecar reader and no sidecar is opened.
+``metadata_only`` reads ignore the pack.
 
 Native tar ``.idx`` files remain the headerless sequence of
 little-endian uint64 offsets; no format marker or companion sidecar is

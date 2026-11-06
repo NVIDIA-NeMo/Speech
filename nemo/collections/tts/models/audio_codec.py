@@ -882,6 +882,10 @@ class AudioCodecModel(ModelPT):
         Expects a config with two sub-sections:
           * `dataloader_params`: forwarded to Lhotse data loader
           * `dataset_args`: forwarded to the dataset class, `AudioCodecLhotseDataset`
+
+        Each training example is a random crop of exactly `dataset_args.segment_duration` seconds, so
+        `dataloader_params.batch_size` is required and `dataloader_params.batch_duration` is rejected
+        (it would count each cut's full duration rather than the cropped segment).
         """
         if not isinstance(cfg, DictConfig):
             cfg = OmegaConf.create(cfg)
@@ -928,9 +932,22 @@ class AudioCodecModel(ModelPT):
         # the training segment duration so the dataset class has enough samples to choose from.
         loader_cfg.min_duration = segment_duration
 
-        # Make sure batch_size is set
+        # Every example is a crop of exactly `segment_duration` seconds, so all examples cost the same compute
+        # and the batch must be sized by a fixed `batch_size`. Duration-based batching (`batch_duration`) would
+        # count each cut's full parent duration instead, producing variable batch sizes unrelated to compute.
+        if cfg.dataloader_params.get("batch_duration") is not None:
+            raise ValueError(
+                "`batch_duration` is not supported in `train_ds.dataloader_params` for AudioCodecModel. "
+                "Every training example is a fixed-length crop of `train_ds.dataset_args.segment_duration` "
+                f"(= {segment_duration}s), while `batch_duration` counts each cut's full duration, so it would "
+                "produce variable batch sizes unrelated to compute. Remove `batch_duration` and set `batch_size` "
+                "instead (for D seconds of audio per batch, use batch_size = D / segment_duration)."
+            )
         if loader_cfg.batch_size is None:
-            raise ValueError("`batch_size` must be set in `train_ds.dataloader_params`.")
+            raise ValueError(
+                "`batch_size` must be set in `train_ds.dataloader_params`. AudioCodecModel trains on fixed-length "
+                "crops of `train_ds.dataset_args.segment_duration`, so batches are sized by number of examples."
+            )
 
         # --- Create the dataset ---
 

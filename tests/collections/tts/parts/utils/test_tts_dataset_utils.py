@@ -13,14 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import random
 from pathlib import Path
+from types import SimpleNamespace
 
 import librosa
 import numpy as np
 import pytest
 import torch
 
-import nemo.collections.tts.parts.utils.tts_dataset_utils as tts_dataset_utils
 from nemo.collections.tts.modules.magpietts_modules import build_vocabs
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     LanguageThresholds,
@@ -66,24 +67,22 @@ class TestTTSDatasetUtils:
     )
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_select_text_for_tts_input(self, monkeypatch, load_normalized_text_percent, random_value, expected_text):
+    def test_select_text_for_tts_input(self, load_normalized_text_percent, random_value, expected_text):
         if random_value is None:
-            monkeypatch.setattr(
-                tts_dataset_utils.random,
-                "random",
-                lambda: pytest.fail("Endpoint probabilities should not sample the random number generator"),
+            rng = SimpleNamespace(
+                random=lambda: pytest.fail("Endpoint probabilities should not sample the random number generator")
             )
         else:
-            monkeypatch.setattr(tts_dataset_utils.random, "random", lambda: random_value)
+            rng = SimpleNamespace(random=lambda: random_value)
 
-        text = _select_text_for_tts_input("raw", "normalized", load_normalized_text_percent)
+        text = _select_text_for_tts_input("raw", "normalized", load_normalized_text_percent, rng=rng)
 
         assert text == expected_text
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_select_text_for_tts_input_falls_back_when_normalized_text_is_missing(self):
-        assert _select_text_for_tts_input("raw", None, 1.0) == "raw"
+        assert _select_text_for_tts_input("raw", None, 1.0, rng=random.Random(0)) == "raw"
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
@@ -523,14 +522,15 @@ class TestPhonemeTextInput:
             ipa_alignment=[[0, 2, "hi", "ab"], [3, 6, "how", "c"]],
             partial_phoneme_portion=1.0,
             full_ipa_text="ab c",
+            rng=random.Random(0),
         )
 
         assert text == "<bop>ab c<eop>"
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_partially_phonemize_text_samples_exact_portion(self, monkeypatch):
-        monkeypatch.setattr(tts_dataset_utils.random, "sample", lambda population, count: [0, 2])
+    def test_partially_phonemize_text_samples_exact_portion(self):
+        rng = SimpleNamespace(sample=lambda population, count: [0, 2])
 
         text = partially_phonemize_text(
             text="one two three four",
@@ -542,14 +542,15 @@ class TestPhonemeTextInput:
             ],
             partial_phoneme_portion=0.5,
             full_ipa_text="a b c d",
+            rng=rng,
         )
 
         assert text == "<bop>a<eop> two <bop>c<eop> four"
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_partially_phonemize_text_merges_adjacent_words(self, monkeypatch):
-        monkeypatch.setattr(tts_dataset_utils.random, "sample", lambda population, count: [1, 2])
+    def test_partially_phonemize_text_merges_adjacent_words(self):
+        rng = SimpleNamespace(sample=lambda population, count: [1, 2])
 
         text = partially_phonemize_text(
             text="one two three four",
@@ -561,6 +562,7 @@ class TestPhonemeTextInput:
             ],
             partial_phoneme_portion=0.5,
             full_ipa_text="a b c d",
+            rng=rng,
         )
 
         assert text == "one <bop>b c<eop> four"
@@ -575,6 +577,7 @@ class TestPhonemeTextInput:
             ipa_alignment=[[0, 3, "one", "a"], [4, 7, "two", "b"], [8, 13, "three", "c"]],
             partial_phoneme_portion=0.5,
             full_ipa_text="unmatched",
+            rng=random.Random(0),
         )
 
         assert phonemized_text == text
@@ -582,8 +585,8 @@ class TestPhonemeTextInput:
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_partially_phonemize_text_without_alignment_is_noop(self):
-        assert partially_phonemize_text("hello", None, 1.0) == "hello"
-        assert partially_phonemize_text("hello", [], 1.0) == "hello"
+        assert partially_phonemize_text("hello", None, 1.0, rng=random.Random(0)) == "hello"
+        assert partially_phonemize_text("hello", [], 1.0, rng=random.Random(0)) == "hello"
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
@@ -593,6 +596,7 @@ class TestPhonemeTextInput:
             ipa_alignment=[[0, 5, "hello", "ab"], [6, 11, "world", "c"]],
             partial_phoneme_portion=1.0,
             full_ipa_text="ab c",
+            rng=random.Random(0),
         )
         phoneme_tokenizer = _FakePhonemeTokenizer()
         tokens = tokenize_text_with_phoneme_spans(
@@ -608,16 +612,16 @@ class TestPhonemeTextInput:
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_samples_phoneme_portion_range(self, monkeypatch):
+    def test_samples_phoneme_portion_range(self):
         sampled_ranges = []
 
         def fake_uniform(min_value, max_value):
             sampled_ranges.append((min_value, max_value))
             return 0.5
 
-        monkeypatch.setattr(tts_dataset_utils.random, "uniform", fake_uniform)
-
-        probability = _sample_probability_range("partial_phoneme_portion", 0.25, 0.75)
+        probability = _sample_probability_range(
+            "partial_phoneme_portion", 0.25, 0.75, rng=SimpleNamespace(uniform=fake_uniform)
+        )
 
         assert sampled_ranges == [(0.25, 0.75)]
         assert probability == 0.5

@@ -14,7 +14,6 @@
 # limitations under the License.
 
 import pathlib
-import random
 import re
 import time
 from typing import Optional
@@ -85,7 +84,6 @@ class EnglishG2p(BaseG2p):
             else heteronyms
         )
         self.phoneme_probability = phoneme_probability
-        self._rng = random.Random()
 
     @staticmethod
     def _parse_as_cmu_dict(phoneme_dict_path=None, encoding='latin-1'):
@@ -158,7 +156,7 @@ class EnglishG2p(BaseG2p):
         `status` will be `False` if word wasn't handled, `True` otherwise.
         """
 
-        if self.phoneme_probability is not None and self._rng.random() > self.phoneme_probability:
+        if self.phoneme_probability is not None and self.rng.random() > self.phoneme_probability:
             return word, True
 
         # punctuation or whitespace.

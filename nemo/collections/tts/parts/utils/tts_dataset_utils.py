@@ -43,6 +43,7 @@ from nemo.collections.asr.parts.mixins.transcription import TranscribeConfig
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.common.parts.utils import mask_sequence_tensor
+from nemo.collections.tts.g2p.models.base import BaseG2p
 
 try:
     from nemo_text_processing.text_normalization.normalize import Normalizer
@@ -119,22 +120,32 @@ def _validate_probability(name: str, value: float):
         raise ValueError(f"`{name}` must be in range [0.0, 1.0], received {value}")
 
 
-def _select_text_for_tts_input(text: str, normalized_text: Optional[str], load_normalized_text_percent: float) -> str:
-    """Select the raw or normalized transcript used as TTS model input."""
+def _select_text_for_tts_input(
+    text: str,
+    normalized_text: Optional[str],
+    load_normalized_text_percent: float,
+    *,
+    rng: random.Random,
+) -> str:
+    """Select the raw or normalized transcript used as TTS model input.
+
+    ``rng`` is the caller's random generator (never the global ``random`` module).
+    """
     if normalized_text is None or load_normalized_text_percent == 0.0:
         return text
-    if load_normalized_text_percent == 1.0 or random.random() < load_normalized_text_percent:
+    if load_normalized_text_percent == 1.0 or rng.random() < load_normalized_text_percent:
         return normalized_text
     return text
 
 
-def _sample_probability_range(name: str, min_value: float, max_value: float) -> float:
+def _sample_probability_range(name: str, min_value: float, max_value: float, *, rng: random.Random) -> float:
     """Sample a probability uniformly from an inclusive configured range.
 
     Args:
         name: Base parameter name to include in validation errors.
         min_value: Lower bound of the probability range.
         max_value: Upper bound of the probability range.
+        rng: Random generator to draw from.
 
     Returns:
         A uniformly sampled probability between ``min_value`` and ``max_value``.
@@ -147,7 +158,7 @@ def _sample_probability_range(name: str, min_value: float, max_value: float) -> 
     _validate_probability(f"{name}_max", max_value)
     if min_value > max_value:
         raise ValueError(f"`{name}_min` must be <= `{name}_max`, received {min_value} > {max_value}")
-    return random.uniform(min_value, max_value)
+    return rng.uniform(min_value, max_value)
 
 
 def has_phoneme_text_spans(text: str, bop_marker: str = "<bop>", eop_marker: str = "<eop>") -> bool:
@@ -222,6 +233,8 @@ def partially_phonemize_text(
     full_ipa_text: Optional[str] = None,
     bop_marker: str = "<bop>",
     eop_marker: str = "<eop>",
+    *,
+    rng: random.Random,
 ) -> str:
     """Replace a sampled portion of aligned words with marked IPA spans.
 
@@ -239,6 +252,7 @@ def partially_phonemize_text(
         full_ipa_text: IPA transcription of the complete input text.
         bop_marker: Marker to place before each generated IPA span.
         eop_marker: Marker to place after each generated IPA span.
+        rng: Random generator used to select the words.
 
     Returns:
         Text with sampled words replaced by marked IPA spans, or the original
@@ -265,7 +279,7 @@ def partially_phonemize_text(
         ipa_ranges.append((ipa_start, ipa_end))
         ipa_cursor = ipa_end
 
-    selected_indices = sorted(random.sample(range(len(ipa_alignment)), num_selected))
+    selected_indices = sorted(rng.sample(range(len(ipa_alignment)), num_selected))
     selected_runs = []
     for index in selected_indices:
         if selected_runs and index == selected_runs[-1][1] + 1:
@@ -1370,3 +1384,23 @@ class WhisperTranscriber(Transcriber):
             transcriptions = self.processor.batch_decode(predicted_ids, skip_special_tokens=True)
             all_transcriptions.extend(transcriptions)
         return all_transcriptions
+
+
+def set_g2p_rng(tokenizer: Any, rng: random.Random) -> None:
+    """
+    Make every G2P module reachable from ``tokenizer`` draw its random choices (e.g. ``phoneme_probability``)
+    from ``rng``.
+
+    Datasets call this with their checkpointed generator so that G2P randomness is restored on resume together
+    with the dataset's own draws. ``tokenizer`` may be a single TTS tokenizer with a ``g2p`` attribute, an
+    ``AggregatedTTSTokenizer`` (its ``tokenizers`` are visited), or any other tokenizer (ignored).
+    """
+    if tokenizer is None:
+        return
+    sub_tokenizers = getattr(tokenizer, "tokenizers", None)
+    if isinstance(sub_tokenizers, dict):
+        for sub_tokenizer in sub_tokenizers.values():
+            set_g2p_rng(sub_tokenizer, rng)
+    g2p = getattr(tokenizer, "g2p", None)
+    if isinstance(g2p, BaseG2p):
+        g2p.rng = rng

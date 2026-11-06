@@ -235,6 +235,13 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         self.val_loss = GlobalAverageLossMetric(dist_sync_on_step=False, take_avg_loss=True)
 
         # Setup metric logger. Use `get` for backcompatibility with aed checkpointing.
+        if cfg.get("multitask_metrics_config") is not None:
+            logging.warning(
+                "Found config key `multitask_metrics_config`, which is not read by EncDecMultiTaskModel and will "
+                "be ignored. Metrics are configured via the `multitask_metrics_cfg` key; please rename the key, "
+                "otherwise any custom metric options (e.g. `use_cer`, `bleu_tokenizer`, `lowercase`, `constraint`) "
+                "will be silently dropped and default WER/BLEU metrics will be used."
+            )
         if (metric_cfg := cfg.get("multitask_metrics_cfg")) is None:
             metric_cfg = DictConfig(
                 {

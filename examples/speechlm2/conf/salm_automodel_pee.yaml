@@ -43,6 +43,8 @@ model:
   # Opt in to native token-major (THD) Transformer/MoE/PEE activations during training/validation.
   # The training dataset also keeps raw waveforms packed through preprocessing when enabled.
   # Default false preserves historical behavior; generation always keeps its streaming-safe path.
+  # A FastConformer ASR branch runs sequence-packed as well (ConformerEncoder.forward_sequence_packed):
+  # its rel_pos attention needs dropout_att 0, and its BatchNorm in training mode sees the valid frames only.
   packed_encoder_sequences: false
   # Separately opt in to the flattened differentiable CP gather.
   packed_encoder_cp: false

@@ -27,6 +27,12 @@ from torch import nn
 
 from nemo.collections.asr.models.configs import CacheAwareStreamingConfig
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
+from nemo.collections.asr.parts.packed_sequence import (
+    PackedEncoderActivations,
+    _new_packed_encoder_activations,
+    pack_encoder_output,
+    packed_slot_layout,
+)
 from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D
 from nemo.collections.asr.parts.submodules.conformer_modules import ConformerLayer, build_self_attention
 from nemo.collections.asr.parts.submodules.multi_head_attention import (
@@ -36,6 +42,7 @@ from nemo.collections.asr.parts.submodules.multi_head_attention import (
     RelPositionalEncoding,
     RotaryPositionalEncoding,
 )
+from nemo.collections.asr.parts.submodules.packed_attention import PackedAttentionContext
 from nemo.collections.asr.parts.submodules.subsampling import (
     ConvSubsampling,
     StackingSubsampling,
@@ -59,6 +66,22 @@ from nemo.core.neural_types import (
 from nemo.utils import logging
 
 __all__ = ['ConformerEncoder', 'ConformerMultiLayerFeatureExtractor']
+
+try:
+    from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import CheckpointWrapper
+except ImportError:  # a torch build without torch.distributed
+    CheckpointWrapper = ()
+
+
+def _forward_packed_module(module: nn.Module, *args, **kwargs):
+    """A module's ``forward_packed``, through its activation-checkpoint wrapper when it has one.
+
+    SpeechLM wraps the frontend and the layers in ``CheckpointWrapper`` (``_set_encoder_activation_checkpointing``):
+    its attribute access reaches the wrapped module's methods, but only ``checkpoint_fn`` checkpoints them.
+    """
+    if isinstance(module, CheckpointWrapper):
+        return module.checkpoint_fn(module._checkpoint_wrapped_module.forward_packed, *args, **kwargs)
+    return module.forward_packed(*args, **kwargs)
 
 
 class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
@@ -204,7 +227,13 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         self_attn: block of the self-attention of every layer, see `ConformerLayer`;
             `change_attention_model` rebuilds the attention from the same block
         norm: block of every layer norm, see `ConformerLayer`
+
+    Besides the padded ``forward``, the encoder runs sequence-packed through ``forward_sequence_packed``,
+    which keeps all activations token-flat with explicit utterance boundaries; see that method for its contract.
     """
+
+    # the opt-in token-flat contract that packed perception modules look for
+    supports_sequence_packed_output = True
 
     def input_example(self, max_batch=1, max_dim=256):
         """
@@ -840,6 +869,139 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             )
         else:
             return audio_signal, length
+
+    def forward_sequence_packed(
+        self,
+        audio_signal: torch.Tensor | PackedEncoderActivations,
+        length: torch.Tensor | None = None,
+        bypass_pre_encode: bool = False,
+    ) -> PackedEncoderActivations:
+        """Encode a batch with every activation token-flat, keeping the utterance boundaries explicit.
+
+        The subsampling and the depthwise convolutions run over gapped per-utterance slots
+        and the self-attention over all tokens with a block mask of the utterances, so no padded frame is computed.
+        At the valid frames the result equals ``forward`` up to floating-point summation order,
+        with one documented difference:
+        batch normalization in the convolution modules takes its training statistics from the valid frames only,
+        while the padded forward includes the padded frames (see ``ConformerConvolution.forward_packed``).
+        Dropout draws its masks per token, so same-seed elementwise equality with the padded forward is not promised.
+
+        Not supported: streaming caches, limited or chunked attention context, ``rel_pos_local_attn``,
+        reduction layers, adapters, causal subsampling,
+        intermediate layer captures (InterCTC and ``save_encoder_tensors``, whose consumers expect padded tensors),
+        and on CUDA attention dropout except through ``abs_pos`` or ``rope`` attention in half precision
+        (FlexAttention has no dropout, variable-length FlashAttention has).
+
+        Args:
+            audio_signal: packed features (``PackedEncoderActivations`` with data ``(sum(T_i), feat_in)``),
+                a padded feature batch ``(B, feat_in, T)``,
+                or with ``bypass_pre_encode`` packed or padded ``(B, T, d_model)`` pre-encoded states.
+            length: valid frames of every padded utterance; for packed input it must equal the packed lengths.
+            bypass_pre_encode: whether ``audio_signal`` already holds encoder-width states.
+
+        Returns:
+            The encoder output as ``PackedEncoderActivations`` with data ``(sum(T'_i), feat_out)``;
+            the padded ``forward`` output is ``unpack_encoder_output(...).transpose(1, 2)``.
+        """
+        if self.self_attention_model == 'rel_pos_local_attn':
+            raise NotImplementedError("rel_pos_local_attn has no sequence-packed form.")
+        if self.att_context_style != 'regular' or any(size != -1 for size in self.att_context_size):
+            raise NotImplementedError("Sequence-packed execution supports the full attention context only.")
+        if self.training and len(self.att_context_size_all) > 1:
+            raise NotImplementedError("Sequence-packed execution does not sample attention context sizes.")
+        if self.reduction_position is not None:
+            raise NotImplementedError("Reduction layers have no sequence-packed form.")
+        if self.is_access_enabled(getattr(self, "model_guid", None)):
+            if self.interctc_capture_at_layers is None:
+                self.interctc_capture_at_layers = self.access_cfg.get('interctc', {}).get('capture_layers', [])
+            if self.interctc_capture_at_layers or self.access_cfg.get('save_encoder_tensors', False):
+                raise NotImplementedError(
+                    "Intermediate layer captures (InterCTC, save_encoder_tensors) have no sequence-packed form: "
+                    "their consumers expect padded (B, D, T) tensors."
+                )
+
+        if isinstance(audio_signal, PackedEncoderActivations):
+            if (
+                length is not None
+                and length is not audio_signal.lengths
+                and not torch.equal(length.to(audio_signal.lengths), audio_signal.lengths)
+            ):
+                raise ValueError("length must match audio_signal.lengths for packed input.")
+            packed = audio_signal
+        else:
+            states = audio_signal if bypass_pre_encode else audio_signal.transpose(1, 2)
+            if length is None:
+                length = states.new_full((states.size(0),), states.size(1), dtype=torch.int64)
+            packed = pack_encoder_output(states, length)
+        expected_width = self.d_model if bypass_pre_encode else self._feat_in
+        if packed.data.shape[-1] != expected_width:
+            raise ValueError(
+                f"Packed audio_signal must have feature width {expected_width}, got {packed.data.shape[-1]}."
+            )
+
+        if not bypass_pre_encode:
+            pre_encode = self.pre_encode
+            if isinstance(pre_encode, CheckpointWrapper):
+                pre_encode = pre_encode._checkpoint_wrapped_module
+            if isinstance(pre_encode, nn.Linear):
+                # the input's padding metadata describes features, not the projected states
+                packed = _new_packed_encoder_activations(
+                    self.pre_encode(packed.data), packed.lengths, packed.cu_seqlens, packed.max_seqlen
+                )
+            elif isinstance(pre_encode, ConvSubsampling):
+                packed = _forward_packed_module(self.pre_encode, packed)
+            else:
+                raise NotImplementedError(f"{type(pre_encode).__name__} has no sequence-packed form.")
+
+        attention_context = PackedAttentionContext(packed)
+        # the relative-position table covers the padded length the attention kernels see
+        self.update_max_seq_length(seq_length=attention_context.padded_max_seqlen, device=packed.data.device)
+        x = packed.data
+        if self.self_attention_model == 'rope':
+            if self.xscale:
+                x = x * self.xscale
+            x = self.dropout_pre_encoder(x)
+            pos_emb = None
+        elif self.self_attention_model == 'abs_pos':
+            if self.pos_enc.xscale:
+                x = x * self.pos_enc.xscale
+            token_pos_emb = self.pos_enc.pe[0].index_select(0, attention_context.position_ids)
+            if self.pos_enc.dropout_emb:
+                token_pos_emb = self.pos_enc.dropout_emb(token_pos_emb)
+            x = self.pos_enc.dropout(x + token_pos_emb)
+            pos_emb = None
+        else:
+            if self.pos_enc.xscale:
+                x = x * self.pos_enc.xscale
+            x = self.pos_enc.dropout(x)
+            # the relative positions L - 1 down to -(L - 1) for the padded length L, as RelPositionalEncoding.forward
+            center_pos = self.pos_enc.pe.size(1) // 2 + 1
+            padded_len = attention_context.padded_max_seqlen
+            pos_emb = self.pos_enc.pe[:, center_pos - padded_len : center_pos + padded_len - 1]
+            if self.pos_enc.dropout_emb:
+                pos_emb = self.pos_enc.dropout_emb(pos_emb)
+
+        # one gapped layout for all depthwise convolutions, wide enough for the largest kernel
+        conv_gap = max(layer.conv.kernel_size for layer in self.layers) - 1
+        conv_layout = packed_slot_layout(packed, gap=conv_gap)
+
+        for lth, (drop_prob, layer) in enumerate(zip(self.layer_drop_probs, self.layers)):
+            original_signal = x
+            x = _forward_packed_module(
+                layer, x, attention_context=attention_context, conv_layout=conv_layout, pos_emb=pos_emb
+            )
+            # stochastic depth as in forward_internal
+            if self.training and drop_prob > 0.0:
+                should_drop = torch.rand(1) < drop_prob
+                if should_drop:
+                    x = x * 0.0 + original_signal
+                else:
+                    x = (x - original_signal) / (1.0 - drop_prob) + original_signal
+
+        if self.out_proj is not None:
+            x = self.out_proj(x)
+        # encoder outputs pad with zeros, whatever padding metadata the input carried
+        return _new_packed_encoder_activations(x, packed.lengths, packed.cu_seqlens, packed.max_seqlen)
 
     def update_max_seq_length(self, seq_length: int, device):
         """

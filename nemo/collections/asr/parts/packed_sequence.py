@@ -22,8 +22,11 @@ from torch.utils._pytree import GetAttrKey, register_pytree_node
 
 __all__ = [
     "PackedEncoderActivations",
+    "PackedSlotLayout",
     "pack_encoder_output",
     "packed_encoder_position_ids",
+    "packed_sequence_ids",
+    "packed_slot_layout",
     "split_packed_data",
     "split_encoder_output",
     "unpack_encoder_output",
@@ -92,6 +95,55 @@ class PackedEncoderActivations:
             padding_value=self.padding_value,
             padded_length=self.padded_length,
         )
+
+    def detach(self) -> "PackedEncoderActivations":
+        """Detach the token data from the autograd graph, keeping the sequence metadata."""
+        return self.with_data(self.data.detach())
+
+    def cpu(self) -> "PackedEncoderActivations":
+        """Move the token data and the sequence metadata to the CPU."""
+        padding_value = self.padding_value.cpu() if isinstance(self.padding_value, Tensor) else self.padding_value
+        return _new_packed_encoder_activations(
+            self.data.cpu(),
+            self.lengths.cpu(),
+            self.cu_seqlens.cpu(),
+            self.max_seqlen,
+            padding_value=padding_value,
+            padded_length=self.padded_length,
+        )
+
+
+@dataclass(frozen=True)
+class PackedSlotLayout:
+    """A gapped time axis on which a convolution runs over all packed utterances at once.
+
+    Every utterance owns a slot of ``slot_lengths[i]`` frames starting at ``slot_offsets[i]``:
+    its valid frames first, zeros after them.
+    The caller chooses the alignment of the slot starts and the number of empty frames after the valid ones
+    so that a convolution never reads a neighbouring utterance:
+    the frames it reads beyond an utterance are zeros, like the masked padding of a padded batch,
+    and a strided convolution keeps its phase per utterance.
+
+    Args:
+        slot_offsets: first slot of every utterance, shape ``(B,)``.
+        slot_lengths: slot count of every utterance, shape ``(B,)``.
+        total_slots: sum of ``slot_lengths``.
+        token_slots: slot index of every packed token, shape ``(T_total,)``.
+    """
+
+    slot_offsets: Tensor
+    slot_lengths: Tensor
+    total_slots: int
+    token_slots: Tensor
+
+    def scatter(self, data: Tensor) -> Tensor:
+        """Place token-flat data ``(T_total, ...)`` into its slots; every other slot is zero."""
+        slots = data.new_zeros((self.total_slots,) + tuple(data.shape[1:]))
+        return slots.index_copy(0, self.token_slots, data)
+
+    def gather(self, slots: Tensor) -> Tensor:
+        """Read the valid frames back from slot-major data ``(total_slots, ...)``."""
+        return slots.index_select(0, self.token_slots)
 
 
 def _packed_encoder_activations_flatten(packed: PackedEncoderActivations):
@@ -196,14 +248,45 @@ def split_encoder_output(packed: PackedEncoderActivations) -> tuple[Tensor, ...]
     return tuple(packed.data[offsets[i] : offsets[i + 1]] for i in range(packed.batch_size))
 
 
+def packed_sequence_ids(packed: PackedEncoderActivations) -> Tensor:
+    """Return the utterance index of every packed token."""
+
+    if packed.total_tokens == 0:
+        return packed.lengths.new_empty((0,))
+    token_indices = torch.arange(packed.total_tokens, device=packed.data.device, dtype=torch.int64)
+    return torch.bucketize(token_indices, packed.cu_seqlens[1:], right=True)
+
+
 def packed_encoder_position_ids(packed: PackedEncoderActivations) -> Tensor:
     """Return zero-based positions for every packed token, resetting per utterance."""
 
     if packed.total_tokens == 0:
         return packed.lengths.new_empty((0,))
     token_indices = torch.arange(packed.total_tokens, device=packed.data.device, dtype=torch.int64)
-    sequence_ids = torch.bucketize(token_indices, packed.cu_seqlens[1:], right=True)
-    return token_indices - packed.cu_seqlens[sequence_ids]
+    return token_indices - packed.cu_seqlens[packed_sequence_ids(packed)]
+
+
+def packed_slot_layout(packed: PackedEncoderActivations, *, alignment: int = 1, gap: int = 0) -> PackedSlotLayout:
+    """Lay the utterances of ``packed`` out on one gapped time axis.
+
+    Args:
+        packed: the packed activations whose lengths define the utterances.
+        alignment: every slot starts at a multiple of this.
+        gap: empty frames after the valid frames of every utterance.
+
+    Returns:
+        The layout; an utterance with ``L`` valid frames gets ``ceil((L + gap) / alignment) * alignment`` slots.
+    """
+
+    if alignment < 1:
+        raise ValueError(f"alignment must be positive, got {alignment}.")
+    if gap < 0:
+        raise ValueError(f"gap must be non-negative, got {gap}.")
+    slot_lengths = torch.div(packed.lengths + (gap + alignment - 1), alignment, rounding_mode="floor") * alignment
+    slot_offsets = torch.cumsum(slot_lengths, dim=0) - slot_lengths
+    total_slots = int(slot_lengths.sum().item())
+    token_slots = slot_offsets[packed_sequence_ids(packed)] + packed_encoder_position_ids(packed)
+    return PackedSlotLayout(slot_offsets, slot_lengths, total_slots, token_slots)
 
 
 def split_packed_data(data: Tensor, lengths: Tensor, cu_seqlens: Tensor) -> tuple[Tensor, ...]:

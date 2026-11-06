@@ -419,6 +419,18 @@ def test_pre_validation_constant_time_leaves_fail_for_map_style_too():
 
 
 @pytest.mark.unit
+def test_pre_validation_unset_indexed_with_stateful_counts_as_indexed():
+    # The dataloader resolves an unset 'indexed' to True when use_stateful_dataloader is on.
+    cfg = _base_cfg()
+    del cfg["indexed"]
+    cfg["input_cfg"][0]["input_cfg"][0]["slice_length"] = 50
+    checks = {c.check_id: c.status for c in pv.run_pre_validation(cfg).checks}
+    assert checks["constant-time-leaves"] == pv.PASS
+    assert checks["indexed-implies-root"] == pv.PASS
+    assert checks["slice-length-vs-indexed"] == pv.FAIL
+
+
+@pytest.mark.unit
 def test_pre_validation_slice_length_with_indexed_fail():
     cfg = _base_cfg()
     cfg["input_cfg"][0]["input_cfg"][0]["slice_length"] = 50

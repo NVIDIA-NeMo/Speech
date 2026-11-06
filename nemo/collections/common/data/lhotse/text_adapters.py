@@ -53,6 +53,7 @@ from nemo.collections.common.data.lhotse.indexed_adapters import (
     PackedTarMemberReader,
     PackedTarSampleBundleReader,
     _split_json_audio_pair,
+    open_indexed_jsonl,
     wds_v2_index_path,
 )
 from nemo.collections.common.data.lhotse.nemo_adapters import (
@@ -175,10 +176,8 @@ class LhotseTextJsonlAdapter(IteratorNode):
         self._cum_lens: list[int] = []
         self._iter_state = PartitionedIndexedIterator()
         if self.indexed:
-            from lhotse.indexing import IndexedJsonlReader, index_file_path
-
             for p in self.paths:
-                self._readers.append(IndexedJsonlReader(p, index_path=index_file_path(p, self.indexes_root)))
+                self._readers.append(open_indexed_jsonl(p, self.indexes_root))
             cum = 0
             self._cum_lens.append(cum)
             for r in self._readers:
@@ -441,10 +440,8 @@ class NeMoSFTJsonlAdapter(IteratorNode):
         self._cum_lens: list[int] = []
         self._iter_state = PartitionedIndexedIterator()
         if self.indexed:
-            from lhotse.indexing import IndexedJsonlReader, index_file_path
-
             for p in self.paths:
-                self._readers.append(IndexedJsonlReader(p, index_path=index_file_path(p, self.indexes_root)))
+                self._readers.append(open_indexed_jsonl(p, self.indexes_root))
             cum = 0
             self._cum_lens.append(cum)
             for r in self._readers:
@@ -789,7 +786,7 @@ class NemotronTextConversationAdapter(IteratorNode):
         self._packed_indexed = True
 
     def _init_indexed(self) -> None:
-        from lhotse.indexing import IndexedJsonlReader, index_file_path
+        from lhotse.indexing import index_file_path
 
         for p in self.paths:
             path = Path(p)
@@ -802,7 +799,7 @@ class NemotronTextConversationAdapter(IteratorNode):
             elif path.suffix == ".tar":
                 self._add_indexed_tar_reader(p, index_file_path(p, self.indexes_root))
             else:
-                self._readers.append(IndexedJsonlReader(p, index_path=index_file_path(p, self.indexes_root)))
+                self._readers.append(open_indexed_jsonl(p, self.indexes_root))
                 self._reader_kinds.append("jsonl")
                 self._source_paths.append(p)
         self._finish_indexed_init()
@@ -1428,12 +1425,12 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
         return self.indexed
 
     def _init_indexed(self) -> None:
-        from lhotse.indexing import IndexedJsonlReader, index_file_path
+        from lhotse.indexing import index_file_path
 
         if self.slice_length is not None:
             raise ValueError("NeMoMultimodalConversationJsonlAdapter(indexed=True) does not support slice_length.")
         for p in self.manifest_filepath:
-            self._cuts_readers.append(IndexedJsonlReader(p, index_path=index_file_path(p, self.indexes_root)))
+            self._cuts_readers.append(open_indexed_jsonl(p, self.indexes_root))
         if self.tarred_audio_filepaths is not None:
             from nemo.collections.common.data.lhotse.indexed_adapters import IndexedTarMemberReader
 
@@ -1984,14 +1981,14 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
         return self.indexed
 
     def _init_indexed(self, source_spec) -> None:
-        from lhotse.indexing import IndexedJsonlReader, index_file_path
+        from lhotse.indexing import index_file_path
 
         if self.slice_length is not None:
             raise ValueError(
                 "NeMoMultimodalConversationShareGPTJsonlAdapter(indexed=True) does not support slice_length."
             )
         for p in self.manifest_filepath:
-            self._cuts_readers.append(IndexedJsonlReader(p, index_path=index_file_path(p, self.indexes_root)))
+            self._cuts_readers.append(open_indexed_jsonl(p, self.indexes_root))
         if self.tarred_audio_filepaths is not None:
             if self.tar_lookup_mode == "collection":
                 self._collection_tar_readers = [

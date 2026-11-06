@@ -260,6 +260,28 @@ def test_read_parquet_manifest_respects_fault_tolerant_audio_loading(parquet_wit
     assert [c.id for c in cuts] == ["good"]
 
 
+@pytest.mark.unit
+@pytest.mark.skipif(not HAVE_PARQUET, reason="PyArrow required for this test")
+def test_parquet_fallback_ids_are_global_and_match_across_modes(tmp_path, monkeypatch):
+    # Rows without an ``id`` column get IDs from their position in the file. Streaming reads the file in
+    # record batches; IDs must not restart in each batch and must match the IDs from indexed mode.
+    buf = io.BytesIO()
+    sf.write(buf, np.zeros(160, dtype=np.float32), 16000, format='WAV')
+    path = tmp_path / "noid.parquet"
+    pq.write_table(pa.table({"audio": [buf.getvalue()] * 5, "text": [str(i) for i in range(5)]}), path)
+
+    original_iter_batches = pq.ParquetFile.iter_batches
+
+    def iter_small_batches(self, *args, **kwargs):
+        return original_iter_batches(self, *args, **{**kwargs, "batch_size": 2})
+
+    monkeypatch.setattr(pq.ParquetFile, "iter_batches", iter_small_batches)
+
+    expected = [f"noid_{i}" for i in range(5)]
+    assert [c.id for c in _parquet_iterator(str(path), indexed=False)] == expected
+    assert [c.id for c in _parquet_iterator(str(path), indexed=True)] == expected
+
+
 def _parquet_iterator(path, **kwargs):
     from nemo.collections.common.data.lhotse.nemo_adapters import LazyParquetIterator
 

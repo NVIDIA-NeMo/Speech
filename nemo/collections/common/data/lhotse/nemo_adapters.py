@@ -1682,11 +1682,12 @@ class LazyParquetIterator(IteratorNode):
             for batch in parquet_file.iter_batches():
                 df = batch.to_pandas()
 
-                for idx, row in df.iterrows():
-                    # ``idx`` restarts at 0 in every batch; ``row_idx`` is the row's position in the file.
+                for _, row in df.iterrows():
+                    # The pandas index restarts at 0 in every record batch, so use the row's position in the
+                    # file: fallback cut IDs stay unique and match the IDs produced in indexed mode.
                     row_idx = num_seen
                     num_seen += 1
-                    cut = self._try_build_cut(row, fallback_idx=idx, row_idx=row_idx)
+                    cut = self._try_build_cut(row, fallback_idx=row_idx, row_idx=row_idx)
                     if cut is None:
                         num_skipped += 1
                         continue

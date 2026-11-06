@@ -22,6 +22,8 @@ checkpointable dataloading.
 
 5. **Disable concurrent bucketing for resumable training.** Background producer
    threads can advance iterators outside the checkpointed main-thread state.
+   Leaving `concurrent_bucketing` unset does this automatically with
+   `use_stateful_dataloader: true`; an explicit `true` raises.
 
 ## Tier 2 - strongly recommended
 

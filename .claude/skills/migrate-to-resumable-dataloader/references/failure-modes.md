@@ -192,8 +192,10 @@ that destination exactly.
 **Trigger**: a background bucketing producer advances the source iterator outside
 the checkpointed main-thread state.
 
-**Fix**: set `concurrent_bucketing: false` for resumable training so only the
-checkpointed path advances the iterator.
+**Fix**: leave `concurrent_bucketing` unset (the auto default resolves to `false`
+with `use_stateful_dataloader: true`) or set it to `false`, so only the
+checkpointed path advances the iterator. An explicit `true` with the stateful
+dataloader raises a `ValueError`.
 
 ## §18 - Iterable mode partitions when partition signal is missing or wrong
 

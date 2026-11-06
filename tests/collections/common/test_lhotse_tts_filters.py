@@ -123,6 +123,51 @@ def test_cut_cer_filter(cut_example):
     assert f(cut_example) == True
 
 
+@pytest.mark.parametrize(
+    'scores,threshold,expected',
+    [
+        ([{'asr_cer': 0.03}], 0.04, True),
+        ([{'asr_cer': 0.03}], 0.02, False),
+        ([{'cer': 0.6}, {'cer': 0.0}], 0.4, True),
+        ([{'cer': 0.0}, {'cer': 0.9}], 0.4, False),
+        ([{'cer': 0.2}, {'asr_cer': 0.6}], 0.4, True),
+        ([{'cer': 0.1, 'asr_cer': 0.99}, {'asr_cer': 0.6}], 0.4, True),
+        ([{'cer': 0.9, 'asr_cer': 0.0}], 0.4, False),
+        ([{'cer': None, 'asr_cer': 0.3}], 0.4, True),
+        ([{'cer': 0.0, 'asr_cer': 0.9}], 0.0, True),
+        ([{}, {'asr_cer': 0.6}, {'cer': None}], 0.4, False),
+        ([{}, {'cer': None, 'asr_cer': None}], 0.0, True),
+        ([], 0.0, True),
+        ([{'asr_cer': 100.0}], None, True),
+    ],
+)
+def test_cut_cer_filter_averages_available_supervision_scores(cut_example, scores, threshold, expected):
+    cut_example.supervisions = [
+        SupervisionSegment(
+            id=f'sup-{index}',
+            recording_id=cut_example.recording_id,
+            start=0,
+            duration=cut_example.duration,
+            channel=0,
+            text='test',
+            custom=custom,
+        )
+        for index, custom in enumerate(scores)
+    ]
+    assert CERFilter(threshold)(cut_example) is expected
+
+
+def test_cer_filter_applies_to_mixed_cuts(cut_example):
+    mixed = cut_example.mix(cut_example.with_id('second-cut'))
+    assert CERFilter(0.04)(mixed)
+    assert not CERFilter(0.02)(mixed)
+
+
+@pytest.mark.parametrize('example', ['text example', None, object()])
+def test_cer_filter_passes_non_cut_examples(example):
+    assert CERFilter(0.0)(example)
+
+
 def test_cut_context_speaker_similarity_filter(cut_example):
     f = ContextSpeakerSimilarityFilter(0.6)
     assert f(cut_example) == True

@@ -18,7 +18,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass, fields
 from functools import partial
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import soundfile as sf
@@ -35,6 +35,7 @@ from nemo.collections.tts.data.text_to_speech_dataset_lhotse import (
 )
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.collections.tts.modules import transformer_2501
+from nemo.collections.tts.modules.attention_alignment import StreamingTimestampSession, resolve_timestamp_config
 from nemo.collections.tts.modules.audio_codec_modules import (
     FiniteScalarQuantizer,
     GroupFiniteScalarQuantizer,
@@ -160,6 +161,8 @@ class StreamingState:
     gt_audio_embeddings: Optional[torch.Tensor] = None  # (B, T', E) pre-computed GT audio embeddings
     gt_audio_lens: Optional[torch.Tensor] = None  # (B,) lengths after stacking
     acoustic_codes_predictor_cache: Optional[List] = None
+    timestamp_session: Optional[StreamingTimestampSession] = None
+    timestamp_turn_counters: Optional[torch.Tensor] = None
 
 
 @dataclass
@@ -172,6 +175,7 @@ class StreamingFinalizeOutput:
     audio_codes_len: torch.Tensor  # (B,) length of codes per batch item
     phoneme_tokens: List[List[int]]  # List of phoneme token sequences per batch item
     phoneme_text: List[str]  # Decoded phoneme strings per batch item
+    timestamps: Optional[List[dict]] = None
 
 
 @dataclass
@@ -186,6 +190,7 @@ class InferBatchOutput:
     predicted_phoneme_tokens: Optional[torch.Tensor] = None  # (B, phoneme_stacking_factor, T_phoneme_steps)
     predicted_phoneme_tokens_lens: Optional[torch.Tensor] = None  # (B,) number of valid phoneme steps per item
     phoneme_prediction_start_idx: Optional[torch.Tensor] = None  # (B,) start index into predicted_phoneme_tokens
+    timestamps: Optional[List[dict]] = None
 
 
 @dataclass
@@ -405,6 +410,7 @@ class NemotronTTSBase(ModelPT):
         self.ignore_phoneme_languages = cfg.get('ignore_phoneme_languages', [])
 
         super().__init__(cfg=cfg, trainer=trainer)
+        self.timestamp_config = resolve_timestamp_config(cfg.get('timestamp_config', None))
 
         # This needs to happen after super().__init__()
         self._codec_model = codec_model
@@ -659,6 +665,7 @@ class NemotronTTSBase(ModelPT):
         Returns:
             The updated streaming state.
         """
+        self.reset_timestamp_turn(state)
         grad_ctx = torch.inference_mode if use_inference_mode else torch.no_grad
         with grad_ctx():
             if text_tokens.dim() == 1:
@@ -821,6 +828,11 @@ class NemotronTTSBase(ModelPT):
                     name_with_dot = f"{name}."
                     if key.startswith(name_with_dot):
                         new_state_dict[key[len(name_with_dot) :]] = state_dict[key]
+                if name == 'text_aligner' and not new_state_dict:
+                    # A base TTS checkpoint has no training-only teacher. Preserve
+                    # its fresh or explicitly pretrained aligner when fine-tuning.
+                    logging.info('Source TTS weights have no text_aligner; keeping the configured teacher')
+                    continue
                 child.load_state_dict(new_state_dict)
 
     def setup_optimizer_param_groups(self):
@@ -1048,8 +1060,17 @@ class NemotronTTSBase(ModelPT):
         phoneme_embedding = phoneme_embedding / phoneme_tokens.size(1)
         return phoneme_embedding
 
-    def forward(self, inputs_embeds, attention_mask, use_cache=False, past_key_values=None, cache_position=None):
-        # Only pass cache_position for NemotronH (HF transformers may not accept it)
+    def forward(
+        self,
+        inputs_embeds,
+        attention_mask,
+        use_cache=False,
+        past_key_values=None,
+        cache_position=None,
+        attention_alignment=None,
+        attention_observer=None,
+        attention_observer_layer: int | str | None = None,
+    ):
         """Run the configured decoder backend.
 
         Args:
@@ -1058,17 +1079,102 @@ class NemotronTTSBase(ModelPT):
             use_cache: Whether to return and update the key-value cache.
             past_key_values: Optional existing key-value cache.
             cache_position: Optional absolute cache positions used by Nemotron-H.
+            attention_alignment: Optional training-time attention alignment request.
+            attention_observer: Optional callback receiving the selected attention query and keys.
+            attention_observer_layer: Main-backbone attention ordinal or ``middle``. When omitted,
+                uses the model's current timestamp configuration.
 
         Returns:
             Decoder backend output.
         """
+        if attention_observer_layer is None:
+            attention_observer_layer = self.timestamp_config['layer'] if attention_observer is not None else 'middle'
         return self.decoder(
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
             use_cache=use_cache,
             past_key_values=past_key_values,
             cache_position=cache_position,
+            attention_alignment=attention_alignment,
+            attention_observer=attention_observer,
+            attention_observer_layer=attention_observer_layer,
         )
+
+    def configure_timestamps(self, enabled: Optional[bool] = None, **options: Any) -> None:
+        """Configure read-only timestamp recording for subsequently created streams."""
+        values = dict(self.timestamp_config)
+        values.update(options)
+        if enabled is not None:
+            values['enabled'] = enabled
+        self.timestamp_config = resolve_timestamp_config(values)
+
+    def drain_timestamp_events(
+        self, state: StreamingState, batch_indices: Optional[Iterable[int]] = None
+    ) -> List[Dict[str, Any]]:
+        """Consume start/update/end events immediately after each streaming step."""
+        if state.timestamp_session is None:
+            return []
+        return state.timestamp_session.drain_events(batch_indices)
+
+    def drain_timestamp_frames(
+        self, state: StreamingState, batch_indices: Optional[Iterable[int]] = None
+    ) -> List[Dict[str, Any]]:
+        """Consume causal frame decisions produced by preceding streaming steps.
+
+        Each record describes one emitted decoder audio step and its covered
+        codec-frame interval, token assignment, instantaneous confidence, and
+        forced status. Call after ``streaming_step`` to process the current
+        alignment before requesting the next audio step.
+        """
+        if state.timestamp_session is None:
+            return []
+        return state.timestamp_session.drain_frames(batch_indices)
+
+    def get_timestamps(
+        self, state: StreamingState, finalize: bool = False, audio_lengths: Optional[torch.Tensor] = None
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Read per-item snapshots; optional waveform lengths are measured in samples."""
+        if state.timestamp_session is None:
+            return None
+        seconds = None if audio_lengths is None else audio_lengths / self.output_sample_rate
+        return state.timestamp_session.snapshots(finalize=finalize, audio_lengths=seconds)
+
+    def get_timestamp_turn_indices(self, state: StreamingState) -> Optional[List[int]]:
+        """Read current response ordinals without materializing timestamp history."""
+        if state.timestamp_session is None:
+            return None
+        return state.timestamp_session.get_turn_indices()
+
+    def reset_timestamp_turn(self, state: StreamingState, batch_indices: Optional[Iterable[int]] = None) -> None:
+        """Close the previous response before registering a new turn's text keys."""
+        if state.timestamp_session is None:
+            return
+        indices = range(state.config.batch_size) if batch_indices is None else batch_indices
+        for row in indices:
+            state.timestamp_session.reset_turn(row)
+            with torch.inference_mode():
+                state.timestamp_turn_counters[row] = 0
+
+    def _prepare_timestamp_step(self, state, text_tokens, needs_context, force_dropout_text):
+        session = state.timestamp_session
+        if session is None:
+            return
+        counters = state.turn_text_tokens_seen
+        restarted = counters < state.timestamp_turn_counters
+        if text_tokens is not None:
+            restarted = restarted | (~needs_context & text_tokens.eq(self.bos_id))
+        for row in restarted.nonzero(as_tuple=True)[0].tolist():
+            session.reset_turn(row)
+        if text_tokens is not None and not force_dropout_text:
+            content = (text_tokens >= 0) & (text_tokens < self.bos_id) & text_tokens.ne(self.pad_id)
+            eligible = content & ~needs_context & ~state.finished & ~state.text_finished
+            for row in eligible.nonzero(as_tuple=True)[0].tolist():
+                session.register_text(row, state.cache_seq_len, int(text_tokens[row].item()))
+
+    @staticmethod
+    def _sync_timestamp_counters(state):
+        if state.timestamp_session is not None:
+            state.timestamp_turn_counters.copy_(state.turn_text_tokens_seen)
 
     def logits_to_audio_codes(self, all_code_logits, audio_codes_lens):
         # all_code_logits: (B, T', num_codebooks * num_tokens_per_codebook)
@@ -1692,6 +1798,14 @@ class NemotronTTSBase(ModelPT):
                 gt_audio_embeddings=gt_audio_embeddings,
                 gt_audio_lens=gt_audio_lens_state,
             )
+            if self.timestamp_config['enabled']:
+                state.timestamp_session = StreamingTimestampSession(
+                    batch_size=batch_size,
+                    codec_frame_seconds=self.codec_model_samples_per_frame / self.sample_rate,
+                    frame_stacking_factor=self.frame_stacking_factor,
+                    config=self.timestamp_config,
+                )
+                state.timestamp_turn_counters = torch.zeros(batch_size, dtype=torch.long, device=device)
 
             state.acoustic_codes_predictor_cache = self.acoustic_codes_predictor.make_cache(
                 batch_size=last_hidden.size(0), device=device, dtype=last_hidden.dtype
@@ -1709,6 +1823,7 @@ class NemotronTTSBase(ModelPT):
         prefill_like_step: bool = False,
         use_inference_mode: bool = True,
         prefill_like_is_last_step: bool = False,
+        timestamp_text_warmup: bool = False,
     ) -> Tuple[StreamingState, Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
         Perform one streaming inference step with batch support.
@@ -1750,6 +1865,9 @@ class NemotronTTSBase(ModelPT):
         with grad_ctx():
             device = state.config.device
 
+            if state.timestamp_session is not None:
+                state.timestamp_session.begin_step()
+
             # Phase 1: Prepare input embedding and determine per-item phase masks
             next_input, needs_context, needs_phoneme, needs_audio = self._prepare_streaming_input(
                 state,
@@ -1757,6 +1875,10 @@ class NemotronTTSBase(ModelPT):
                 force_dropout_text,
                 user_audio_channel_embedding=user_audio_channel_embedding,
             )
+            if prefill_like_step and not timestamp_text_warmup:
+                self.reset_timestamp_turn(state)
+            else:
+                self._prepare_timestamp_step(state, text_tokens, needs_context, force_dropout_text)
 
             # Phase 2: Transformer forward pass
             cache_position = torch.tensor([state.cache_seq_len], device=device)
@@ -1766,6 +1888,14 @@ class NemotronTTSBase(ModelPT):
                 use_cache=True,
                 past_key_values=state.past_key_values,
                 cache_position=cache_position,
+                attention_observer=(
+                    state.timestamp_session.observe_attention
+                    if state.timestamp_session is not None and not force_dropout_text
+                    else None
+                ),
+                attention_observer_layer=(
+                    state.timestamp_session.config['layer'] if state.timestamp_session is not None else None
+                ),
             )
 
             state.last_hidden = transformer_out.last_hidden_state
@@ -1854,12 +1984,23 @@ class NemotronTTSBase(ModelPT):
                     )
                 else:
                     state.last_audio_codes = sil.reshape(B, C * S)
+                self._sync_timestamp_counters(state)
                 return state, None, pred_phoneme_tokens
 
             # Phase 3: Update counters and extract predictions
+            frame_start = sum(prediction.size(-1) for prediction in state.all_predictions)
             audio_codes_next, pred_phoneme_tokens = self._process_predictions(
                 state, needs_context, needs_phoneme, needs_audio
             )
+            if state.timestamp_session is not None:
+                ends = state.audio_prediction_end_idx
+                valid_frames = torch.where(
+                    ends >= 0,
+                    (ends - frame_start).clamp(0, self.frame_stacking_factor),
+                    torch.full_like(ends, self.frame_stacking_factor),
+                )
+                state.timestamp_session.observe_audio(needs_audio, frame_start, valid_frames)
+            self._sync_timestamp_counters(state)
             return state, audio_codes_next, pred_phoneme_tokens
 
     def _prepare_streaming_input(
@@ -2292,6 +2433,7 @@ class NemotronTTSBase(ModelPT):
                 audio_codes_len=torch.zeros(batch_size, dtype=torch.long, device=device),
                 phoneme_tokens=phoneme_tokens_list,
                 phoneme_text=phoneme_text_list,
+                timestamps=self.get_timestamps(state, finalize=True),
             )
 
         grad_ctx = torch.inference_mode if use_inference_mode else torch.no_grad
@@ -2324,6 +2466,7 @@ class NemotronTTSBase(ModelPT):
                     audio_codes_len=torch.zeros(batch_size, dtype=torch.long, device=device),
                     phoneme_tokens=phoneme_tokens_list,
                     phoneme_text=phoneme_text_list,
+                    timestamps=self.get_timestamps(state, finalize=True),
                 )
 
             # Create padded output tensor and slice each item's valid predictions
@@ -2352,6 +2495,7 @@ class NemotronTTSBase(ModelPT):
                 audio_codes_len=predicted_codes_lens,
                 phoneme_tokens=phoneme_tokens_list,
                 phoneme_text=phoneme_text_list,
+                timestamps=self.get_timestamps(state, finalize=True, audio_lengths=audio_len),
             )
 
     def infer_batch(
@@ -2592,6 +2736,7 @@ class NemotronTTSBase(ModelPT):
                 predicted_phoneme_tokens=predicted_phoneme_tokens,
                 predicted_phoneme_tokens_lens=predicted_phoneme_tokens_lens,
                 phoneme_prediction_start_idx=phoneme_prediction_start_idx_out,
+                timestamps=finalize_output.timestamps,
             )
 
     @staticmethod

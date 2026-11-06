@@ -45,6 +45,7 @@ from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import Agg
 from nemo.collections.tts.data.text_to_speech_dataset import ChunkedTTSInferenceDataset, MagpieTTSDataset
 from nemo.collections.tts.models.easy_magpietts_inference import EasyModelInferenceParameters
 from nemo.collections.tts.models.magpietts import ModelInferenceParameters
+from nemo.collections.tts.modules.attention_alignment import save_token_timestamps
 from nemo.collections.tts.parts.utils.tts_dataset_utils import normalize_volume, stack_tensors
 from nemo.utils import logging
 
@@ -159,6 +160,7 @@ class EasyMagpieInferenceConfig(BaseInferenceConfig):
     phoneme_sampling_method: str = "argmax"
     dropout_text_input: bool = False
     precomputed_context_audio_embeddings_path: Optional[str] = None
+    save_timestamps: bool = False
 
     def build_identifier(self) -> str:
         parts = [
@@ -168,6 +170,8 @@ class EasyMagpieInferenceConfig(BaseInferenceConfig):
             f"LT_{self.use_local_transformer}",
             f"Phoneme_{self.phoneme_input_type}_{self.phoneme_sampling_method}",
         ]
+        if self.save_timestamps:
+            parts.append('Timestamps')
         return "_".join(parts)
 
 
@@ -192,6 +196,13 @@ class BaseInferenceRunner(abc.ABC):
         """
         self.model = model
         self.config = config
+
+        save_timestamps = bool(getattr(config, 'save_timestamps', False))
+        configure = getattr(model, 'configure_timestamps', None)
+        if callable(configure):
+            configure(enabled=save_timestamps)
+        elif save_timestamps:
+            raise ValueError('--save_timestamps requires the Nemotron-TTS V2 timestamp API')
 
         # Set phoneme probability to 1 for inference
         self._configure_tokenizer()
@@ -323,6 +334,8 @@ class BaseInferenceRunner(abc.ABC):
             "predicted_codes*.pt",
             "predicted_audio*.wav",
             "cross_attn_map_*.png",
+            "predicted_audio*.timestamps.json",
+            "timestamps_manifest.jsonl",
         ]
         for pattern in patterns:
             for f in glob.glob(os.path.join(output_dir, pattern)):
@@ -1005,6 +1018,7 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
         generated_audio_paths = []
         codec_file_paths = []
         item_idx = 0
+        timestamp_records = []
         phoneme_sampling_method = (
             "argmax" if self.config.phoneme_sampling_method == "greedy" else self.config.phoneme_sampling_method
         )
@@ -1051,6 +1065,22 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
                 sf.write(audio_path, audio_np, sample_rate)
                 generated_audio_paths.append(audio_path)
 
+                if self.config.save_timestamps:
+                    traces = getattr(output, 'timestamps', None)
+                    expected_ids = _timestamp_input_ids(
+                        self.model, batch['text'][idx, : int(batch['text_lens'][idx].item())]
+                    )
+                    original = dict(manifest_records[item_idx]) if item_idx < len(manifest_records) else {}
+                    original['predicted_audio_filepath'] = os.path.abspath(audio_path)
+                    original['timestamps_filepath'] = save_token_timestamps(
+                        audio_path,
+                        traces[idx] if traces is not None else None,
+                        tokenizer=self.model.tokenizer,
+                        expected_input_text=original.get('text', original.get('original_text')),
+                        expected_input_token_ids=expected_ids,
+                    )
+                    timestamp_records.append(original)
+
                 if save_context_audio and item_idx < len(manifest_records):
                     self._copy_reference_audio(
                         manifest_records[item_idx],
@@ -1066,6 +1096,12 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
                     codec_file_paths.append(codes_path)
 
                 item_idx += 1
+
+        if self.config.save_timestamps:
+            self.timestamp_manifest_path = os.path.join(output_dir, 'timestamps_manifest.jsonl')
+            with open(self.timestamp_manifest_path, 'w', encoding='utf-8') as stream:
+                for record in timestamp_records:
+                    stream.write(json.dumps(record, ensure_ascii=False) + '\n')
 
         return all_rtf_metrics, generated_audio_paths, codec_file_paths
 
@@ -1320,6 +1356,11 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
 
                 phoneme_start_step = len(getattr(state, "all_phoneme_predictions", []) or [])
 
+                timestamp_input_token_ids = None
+                if self.config.save_timestamps:
+                    model.reset_timestamp_turn(state)
+                    timestamp_input_token_ids = _timestamp_input_ids(model, turn_text[0, : int(turn_lens[0])])
+
                 state.finished.zero_()
                 state.text_finished.zero_()
                 state.audio_prediction_end_idx.fill_(-1)
@@ -1439,6 +1480,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                         prefill_like_step=True,
                         prefill_like_is_last_step=(i == delay_tokens - 1),
                         use_inference_mode=True,
+                        **({'timestamp_text_warmup': True} if self.config.save_timestamps else {}),
                     )
 
                 turn_start_frame = sum(p.size(-1) for p in state.all_predictions)
@@ -1496,6 +1538,11 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                         "predicted_phoneme_token_labels": predicted_phoneme_token_labels,
                     }
                 )
+                if self.config.save_timestamps:
+                    turn_phoneme_outputs[-1].update(
+                        timestamp_input_token_ids=timestamp_input_token_ids,
+                        timestamp_turn_index=model.get_timestamp_turn_indices(state)[0],
+                    )
 
             codec_sil_codes = self._ensure_codec_silence_codes()
             bos_id = getattr(model, "audio_bos_id", -1)
@@ -2049,6 +2096,18 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                         "turn_id": int(turn_id),
                     }
                 )
+                if self.config.save_timestamps:
+                    traces = getattr(output, 'timestamps', None)
+                    turn_manifest_records[-1]['timestamps_filepath'] = save_token_timestamps(
+                        predicted_audio_path,
+                        traces[0] if traces is not None else None,
+                        tokenizer=self.model.tokenizer,
+                        turn_index=phoneme_output.get('timestamp_turn_index', local_turn_idx),
+                        start_time=start_sample / sample_rate,
+                        end_time=end_sample / sample_rate,
+                        expected_input_text=turn_manifest_records[-1]['text'],
+                        expected_input_token_ids=phoneme_output.get('timestamp_input_token_ids'),
+                    )
                 logging.info(
                     f"[MT_USER_AUDIO_TURN] rank={rank}/{world_size} "
                     f"global_sample_idx={sample_idx} turn_id={int(turn_id)} "
@@ -2227,3 +2286,11 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                 gt_stereo,
                 sample_rate,
             )
+
+
+def _timestamp_input_ids(model, tokens):
+    """Keep the exact input BPE occurrences while excluding timeline controls."""
+    bos_id = model.bos_id
+    pad_id = getattr(model, 'pad_id', None)
+    values = tokens.detach().cpu().tolist() if isinstance(tokens, torch.Tensor) else list(tokens)
+    return [int(token_id) for token_id in values if 0 <= int(token_id) < bos_id and int(token_id) != pad_id]

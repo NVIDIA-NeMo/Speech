@@ -1079,6 +1079,7 @@ def _merge_multiturn_rank_outputs(repeat_audio_dir: str, world_size: int, save_p
         "target_audio_*.wav",
         "context_audio_*.wav",
         "predicted_codes_*.pt",
+        "predicted_audio_*.timestamps.json",
     ]:
         for path in Path(repeat_audio_dir).glob(pattern):
             if path.is_symlink() or path.exists():
@@ -1118,6 +1119,15 @@ def _merge_multiturn_rank_outputs(repeat_audio_dir: str, world_size: int, save_p
             _copy_or_link(context_src, context_dst, required=True)
 
             merged = dict(record)
+            if record.get('timestamps_filepath'):
+                source = Path(record['timestamps_filepath'])
+                if not source.is_absolute():
+                    source = Path(rank_dir) / source
+                destination = Path(repeat_audio_dir) / f'predicted_audio_{global_idx}.timestamps.json'
+                timestamps = json.loads(source.read_text(encoding='utf-8'))
+                timestamps['predicted_audio_filepath'] = str(Path(pred_dst).resolve())
+                destination.write_text(json.dumps(timestamps, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+                merged['timestamps_filepath'] = str(destination.resolve())
             merged["audio_filepath"] = f"target_audio_{global_idx}.wav"
             merged["context_audio_filepath"] = f"context_audio_{global_idx}.wav"
             merged["rank"] = rank
@@ -1408,6 +1418,12 @@ def _add_easy_magpie_args(parser: argparse.ArgumentParser) -> None:
     )
     group.add_argument('--dropout_text_input', action='store_true', help='Force dropout on text input')
     group.add_argument(
+        '--save_timestamps',
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help='Save causal attention timestamps beside generated audio (Nemotron-TTS V2 only)',
+    )
+    group.add_argument(
         '--phoneme_tokenizer_path',
         type=str,
         default=None,
@@ -1471,6 +1487,7 @@ def _build_easy_magpie_config(args, model_type: str = 'v1') -> EasyMagpieInferen
         phoneme_sampling_method=args.phoneme_sampling_method,
         dropout_text_input=args.dropout_text_input,
         precomputed_context_audio_embeddings_path=args.precomputed_context_audio_embeddings_path,
+        save_timestamps=getattr(args, 'save_timestamps', False),
         default_tokenizer_name=args.tokenizer_name,
     )
     if cfg_cls is EasyMagpieMultiturnUserAudioInferenceConfig:

@@ -78,6 +78,15 @@ def main(cfg):
 
     model.maybe_init_from_pretrained_checkpoint(cfg=cfg)
 
+    # Restore the acoustic teacher after initializing the TTS model.
+    aligner_checkpoint = cfg.get('pretrained_model_text_speech_aligner') or cfg.model.get(
+        'pretrained_model_text_speech_aligner'
+    )
+    if aligner_checkpoint:
+        if not hasattr(model, 'restore_text_speech_aligner_from_pretrained_checkpoint'):
+            raise ValueError('pretrained_model_text_speech_aligner requires Nemotron-TTS V2')
+        model.restore_text_speech_aligner_from_pretrained_checkpoint(aligner_checkpoint)
+
     if mode in _TRAIN_MODES:
         trainer.fit(model)
     elif mode == 'test':

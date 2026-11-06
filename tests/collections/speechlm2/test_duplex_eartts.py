@@ -547,7 +547,7 @@ def test_eartts_training_step(model, dataset, training_cutset_batch):
     model.on_train_epoch_start()
     batch = dataset[training_cutset_batch]
     batch = move_data_to_device(batch, device=model.device)
-    results = model.training_step(batch, batch_idx=0)
+    results = model._training_step_batch(batch, batch_idx=0)
     assert torch.is_tensor(results["loss"])
     assert not torch.isnan(results["loss"])
     assert results["loss"] > 0

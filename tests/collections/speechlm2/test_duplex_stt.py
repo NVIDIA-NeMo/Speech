@@ -155,7 +155,7 @@ def test_stt_training_step(model, dataset, training_cutset_batch):
     model.on_train_epoch_start()
     batch = dataset[training_cutset_batch]
     batch = move_data_to_device(batch, device=model.device)
-    results = model.training_step(batch, batch_idx=0)
+    results = model._training_step_batch(batch, batch_idx=0)
     assert torch.is_tensor(results["loss"])
     assert not torch.isnan(results["loss"])
     assert results["loss"] > 0
@@ -196,7 +196,7 @@ def test_stt_training_step_with_asr(model_with_asr, dataset, training_cutset_bat
     model_with_asr.on_train_epoch_start()
     batch = dataset[training_cutset_batch]
     batch = move_data_to_device(batch, device=model_with_asr.device)
-    results = model_with_asr.training_step(batch, batch_idx=0)
+    results = model_with_asr._training_step_batch(batch, batch_idx=0)
     assert torch.is_tensor(results["loss"])
     assert not torch.isnan(results["loss"])
     assert results["loss"] > 0
@@ -211,7 +211,7 @@ def test_stt_training_step_with_noise(model_with_asr_and_noise, dataset, trainin
     model_with_asr_and_noise.on_train_epoch_start()
     batch = dataset[training_cutset_batch]
     batch = move_data_to_device(batch, device=model_with_asr_and_noise.device)
-    results = model_with_asr_and_noise.training_step(batch, batch_idx=0)
+    results = model_with_asr_and_noise._training_step_batch(batch, batch_idx=0)
     assert torch.is_tensor(results["loss"])
     assert not torch.isnan(results["loss"])
     assert results["loss"] > 0

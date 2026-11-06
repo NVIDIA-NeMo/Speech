@@ -44,6 +44,7 @@ from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, setup_audio_codec, setup_speech_encoder
 from nemo.collections.speechlm2.parts.text_utils import tokens_to_str
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
+from nemo.core.utils.lightning_utils import read_batch
 from nemo.utils import logging
 
 
@@ -283,7 +284,13 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             "loss_mask": loss_mask,
         }
 
-    def training_step(self, batch: dict, batch_idx: int):
+    def training_step(self, dataloader_iter):
+        # ``dataloader_iter`` signature -> Lightning selects ``_DataLoaderIterDataFetcher`` (no prefetch), which is
+        # required for exact checkpoint resumption with a stateful dataloader. See ``read_batch`` docstring.
+        batch, batch_idx = read_batch(dataloader_iter, self)
+        return self._training_step_batch(batch, batch_idx)
+
+    def _training_step_batch(self, batch: dict, batch_idx: int):
         for m in (self.perception.preprocessor, self.perception.encoder, self.llm, self.speech_generation):
             if is_frozen(m):
                 m.eval()
@@ -323,7 +330,9 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
             "num_frames": num_frames.to(torch.float32),  # avoid warning
             "padding_ratio": num_frames / (B * T),
         }
-        self.log_dict(ans, on_step=True)
+        # batch_size kwarg is required by Lightning when training_step uses
+        # the ``dataloader_iter`` signature (it can't auto-infer otherwise).
+        self.log_dict(ans, on_step=True, batch_size=B)
         return ans
 
     def on_train_epoch_start(self) -> None:

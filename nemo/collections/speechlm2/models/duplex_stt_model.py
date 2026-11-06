@@ -51,6 +51,7 @@ from nemo.collections.speechlm2.parts.pretrained import (
 )
 from nemo.collections.speechlm2.streaming.duplex_stt_inference import DuplexSTTStreamingInference
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
+from nemo.core.utils.lightning_utils import read_batch
 from nemo.utils import logging
 
 
@@ -333,11 +334,18 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             ans["asr_loss_scale"] = asr_loss_scale
         return ans
 
-    def training_step(self, batch: dict, batch_idx: int):
+    def training_step(self, dataloader_iter):
+        # ``dataloader_iter`` signature -> Lightning selects ``_DataLoaderIterDataFetcher`` (no prefetch), which is
+        # required for exact checkpoint resumption with a stateful dataloader. See ``read_batch`` docstring.
+        batch, batch_idx = read_batch(dataloader_iter, self)
+        return self._training_step_batch(batch, batch_idx)
+
+    def _training_step_batch(self, batch: dict, batch_idx: int):
         for m in (self.perception.preprocessor, self.perception.encoder, self.llm):
             if is_frozen(m):
                 m.eval()
 
+        batch_size = 0
         res = {
             "learning_rate": torch.as_tensor(
                 self.trainer.optimizers[0].param_groups[0]['lr'] if self._trainer is not None else 0
@@ -398,6 +406,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     loss = loss + self.cfg.get('asr_loss_weight', 1.0) * asr_loss
 
                 B, T = inputs["input_embeds"].shape[:2]
+                batch_size += B
                 ans = {
                     "audio_loss": loss,
                     "audio_to_text_loss": text_loss,
@@ -413,6 +422,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         if batch["text_data"] is not None:
             text_input_ids = batch["text_data"]["text_tokens"][:, :-1]
             text_target = batch["text_data"]["text_tokens"][:, 1:]
+            batch_size += text_input_ids.shape[0]
 
             text_out = self.llm(
                 inputs_embeds=self.embed_tokens(text_input_ids),
@@ -436,7 +446,9 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         res["loss"] = (1.0 - self.cfg.get('text_to_text_loss_weight', 0.0)) * res.get(
             "audio_loss", 0.0
         ) + self.cfg.get('text_to_text_loss_weight', 0.0) * res.get("text_to_text_loss", 0.0)
-        self.log_dict(res, on_step=True)
+        # batch_size kwarg is required by Lightning when training_step uses
+        # the ``dataloader_iter`` signature (it can't auto-infer otherwise).
+        self.log_dict(res, on_step=True, batch_size=batch_size)
 
         return res
 

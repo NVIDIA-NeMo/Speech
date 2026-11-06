@@ -31,6 +31,7 @@ from nemo.collections.asr.parts.submodules.ctc_decoding import (
     CTCDecoding,
     CTCDecodingConfig,
 )
+from nemo.collections.asr.parts.submodules.ctc_greedy_decoding import GreedyCTCInfer
 from nemo.collections.asr.parts.submodules.ngram_lm.ngram_lm_batched import NGramGPULanguageModel
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceConfig
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
@@ -350,6 +351,28 @@ class TestCTCDecoding:
                 assert torch.all(hyp.y_sequence == batched_hyp.y_sequence)
                 if timestamps:
                     assert hyp.timestamp == batched_hyp.timestamp
+
+    @pytest.mark.unit
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA required for test.')
+    @pytest.mark.parametrize('lengths_on_cpu', [True, False])
+    @pytest.mark.parametrize('input_is_labels', [True, False])
+    def test_greedy_decoding_waits_for_device_to_host_copy(self, input_is_labels: bool, lengths_on_cpu: bool):
+        blank_id = 128
+        generator = torch.Generator(device='cuda').manual_seed(2 * input_is_labels + lengths_on_cpu)
+        labels = torch.randint(blank_id + 1, size=(4, 20), device='cuda', generator=generator)
+        if input_is_labels:
+            decoder_output = labels
+        else:
+            decoder_output = torch.nn.functional.one_hot(labels, blank_id + 1).float().log()
+        lengths = torch.full((4,), 20) if lengths_on_cpu else None
+        expected = labels.tolist()
+
+        # Keep the stream busy so that a copy nobody waits for lands after the decoder reads its result.
+        torch.cuda._sleep(1_000_000_000)
+        with torch.inference_mode():
+            (hyps,) = GreedyCTCInfer(blank_id=blank_id)(decoder_output=decoder_output, decoder_lengths=lengths)
+
+        assert [torch.as_tensor(hyp.y_sequence).tolist() for hyp in hyps] == expected
 
 
 class TestCTCTimestamps(BaseTimestampsTest):

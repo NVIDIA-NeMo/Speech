@@ -17,16 +17,27 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
 import torch
 import torch.nn as nn
 from easymagpie_vllm_omni.codec.config import EasyMagpieCodecConfig
 from easymagpie_vllm_omni.codec.packed import PackedEasyMagpieCodec
+from easymagpie_vllm_omni.watermark import AudioChunk, create_audio_watermarker
 from vllm.config import VllmConfig
 from vllm.model_executor.layers.mamba.mamba_utils import MambaStateCopyFuncCalculator
 from vllm.model_executor.models.utils import AutoWeightsLoader
 from vllm_omni.model_executor.models.output_templates import OmniOutput
+
+
+def _chunk_request_id(info: dict[str, Any] | None, index: int) -> str:
+    if isinstance(info, dict):
+        for key in ("request_id", "req_id", "external_req_id"):
+            value = info.get(key)
+            if value is not None:
+                return str(value)
+    return f"codec-{index}"
 
 
 class EasyMagpieCodecForConditionalGeneration(nn.Module):
@@ -74,6 +85,24 @@ class EasyMagpieCodecForConditionalGeneration(nn.Module):
         self.has_preprocess = False
         self.has_postprocess = False
         self.requires_raw_input_tokens = True
+        self.watermarker = create_audio_watermarker(
+            vllm_config.device_config.device,
+            sample_rate=self.config.output_sample_rate,
+            models_dir=self._watermark_models_dir(self.config, vllm_config),
+        )
+
+    @staticmethod
+    def _watermark_models_dir(config: Any, vllm_config: VllmConfig) -> Path | None:
+        relative = getattr(config, "watermark_checkpoint", None)
+        if not relative:
+            return None
+        path = Path(str(relative))
+        if path.is_absolute():
+            return path
+        model = getattr(getattr(vllm_config, "model_config", None), "model", None)
+        if model:
+            return Path(str(model)) / path
+        return path
 
     def embed_input_ids(self, input_ids: torch.Tensor, **_: Any) -> torch.Tensor:
         return torch.zeros((input_ids.shape[0], 1), dtype=torch.float32, device=input_ids.device)
@@ -86,10 +115,11 @@ class EasyMagpieCodecForConditionalGeneration(nn.Module):
         runtime_infos: list[dict[str, Any]],
         device: torch.device,
         request_token_spans: list[tuple[int, int]] | None = None,
-    ) -> tuple[torch.Tensor, list[int]]:
+    ) -> tuple[torch.Tensor, list[int], list[str]]:
         q = self.config.num_stacked_codebooks
         packed: list[torch.Tensor] = []
         frame_counts: list[int] = []
+        request_ids: list[str] = []
         if request_token_spans is not None and len(request_token_spans) != len(runtime_infos):
             raise ValueError(f"got {len(request_token_spans)} request spans for {len(runtime_infos)} codec payloads")
         for index, info in enumerate(runtime_infos):
@@ -121,9 +151,10 @@ class EasyMagpieCodecForConditionalGeneration(nn.Module):
                 )
             packed.append(rows)
             frame_counts.append(int(rows.shape[0]))
+            request_ids.append(_chunk_request_id(info, index))
         if not packed:
-            return torch.empty((0, q), dtype=torch.long, device=device), []
-        return torch.cat(packed, dim=0), frame_counts
+            return torch.empty((0, q), dtype=torch.long, device=device), [], []
+        return torch.cat(packed, dim=0), frame_counts, request_ids
 
     @torch.no_grad()
     def forward(
@@ -144,8 +175,9 @@ class EasyMagpieCodecForConditionalGeneration(nn.Module):
         if codec_codes is not None:
             codes = codec_codes.to(device=input_ids.device, dtype=torch.long)
             frame_counts = [int(codes.shape[0])]
+            request_ids = ["codec-codes"]
         elif runtime_additional_information:
-            codes, frame_counts = self._payload_codes(
+            codes, frame_counts, request_ids = self._payload_codes(
                 runtime_additional_information,
                 input_ids.device,
                 request_token_spans,
@@ -160,6 +192,7 @@ class EasyMagpieCodecForConditionalGeneration(nn.Module):
                 device=input_ids.device,
             )
             frame_counts = [frames]
+            request_ids = ["profile"]
 
         if codes.shape[0] != input_ids.numel():
             raise ValueError(
@@ -167,23 +200,36 @@ class EasyMagpieCodecForConditionalGeneration(nn.Module):
                 f"got {input_ids.numel()} placeholders and {codes.shape[0]} code frames"
             )
         packed_audio = self.codec(codes)
-        outputs: list[torch.Tensor] = []
+        chunks: list[AudioChunk] = []
         frame_offset = 0
         offset = 0
-        for frames in frame_counts:
+        for chunk_index, frames in enumerate(frame_counts):
             samples = frames * self.config.samples_per_frame
             valid_samples = samples
+            is_final = False
             if frames > 0:
                 last = codes[frame_offset + frames - 1].view(-1, self.config.frame_stacking_factor)
                 control = (last >= self.config.codebook_size).any(dim=0)
                 if control.any():
+                    is_final = True
                     valid_subframes = int(control.to(torch.int64).argmax().item())
                     valid_samples -= (self.config.frame_stacking_factor - valid_subframes) * (
                         self.config.samples_per_codec_frame
                     )
-            outputs.append(packed_audio[offset : offset + valid_samples].float())
+            chunks.append(
+                AudioChunk(
+                    request_id=request_ids[chunk_index] if chunk_index < len(request_ids) else f"codec-{chunk_index}",
+                    is_final=is_final,
+                    audio=packed_audio[offset : offset + valid_samples].float(),
+                )
+            )
             frame_offset += frames
             offset += samples
+        watermarker = getattr(self, "watermarker", None)
+        if watermarker is not None and (codec_codes is not None or runtime_additional_information):
+            outputs = watermarker.apply(chunks)
+        else:
+            outputs = [chunk.audio for chunk in chunks]
         sample_rate = torch.tensor(self.config.output_sample_rate, dtype=torch.int32)
         return OmniOutput(
             text_hidden_states=None,

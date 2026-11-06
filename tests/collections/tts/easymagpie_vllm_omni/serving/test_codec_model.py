@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -29,14 +30,24 @@ def test_payload_codes_skips_active_but_unscheduled_requests():
     infos = [_payload(2), _payload(4), _payload(1)]
     spans = [(0, 2), (2, 2), (2, 3)]
 
-    codes, frame_counts = EasyMagpieCodecForConditionalGeneration._payload_codes(
+    codes, frame_counts, request_ids = EasyMagpieCodecForConditionalGeneration._payload_codes(
         model, infos, torch.device("cpu"), spans
     )
 
     assert codes.shape == (3, 16)
     assert frame_counts == [2, 1]
+    assert request_ids == ["codec-0", "codec-2"]
     assert torch.equal(codes[:2], infos[0]["codes"]["audio"])
     assert torch.equal(codes[2:], infos[2]["codes"]["audio"])
+
+
+def test_codec_watermark_models_dir_is_relative_to_codec_model_path():
+    config = SimpleNamespace(watermark_checkpoint="watermark/perth")
+    vllm_config = SimpleNamespace(model_config=SimpleNamespace(model="/converted/codec_native"))
+
+    assert EasyMagpieCodecForConditionalGeneration._watermark_models_dir(config, vllm_config) == Path(
+        "/converted/codec_native/watermark/perth"
+    )
 
 
 def test_payload_codes_rejects_scheduled_frame_mismatch():
@@ -58,7 +69,8 @@ class _FakeCodec(torch.nn.Module):
         ([1025, 3, 1025, 103], 6),
     ],
 )
-def test_forward_trims_terminal_control_subframes(terminal_row, expected_samples):
+def test_forward_trims_terminal_control_subframes(terminal_row, expected_samples, monkeypatch):
+    monkeypatch.setenv("NEMOTRON_TTS_PERTH_WATERMARK", "0")
     model = EasyMagpieCodecForConditionalGeneration.__new__(EasyMagpieCodecForConditionalGeneration)
     torch.nn.Module.__init__(model)
     model.config = SimpleNamespace(

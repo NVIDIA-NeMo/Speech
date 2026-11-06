@@ -24,7 +24,37 @@ import pytest
 import soundfile as sf
 
 from nemo.collections.asr.parts.preprocessing.perturb import NoisePerturbation, ShiftPerturbation, SilencePerturbation
-from nemo.collections.asr.parts.preprocessing.segment import AudioSegment, select_channels
+from nemo.collections.asr.parts.preprocessing.segment import AudioSegment, get_samples, select_channels
+
+
+class TestGetSamples:
+    @pytest.mark.unit
+    @pytest.mark.parametrize("sample_rate", [8000, 16000, 48000])
+    @pytest.mark.parametrize("num_channels", [1, 2, 4])
+    @pytest.mark.parametrize("dtype", ['float32', 'float64'])
+    def test_resampling_preserves_channels(self, tmp_path, sample_rate, num_channels, dtype):
+        target_sr = 16000
+        time = np.arange(sample_rate // 10) / sample_rate
+        samples = np.stack(
+            [0.5 * np.sin(2 * np.pi * 200 * (channel + 1) * time) for channel in range(num_channels)],
+            axis=1,
+        )
+        audio_file = tmp_path / 'audio.wav'
+        sf.write(audio_file, samples, sample_rate, subtype='DOUBLE')
+
+        actual = get_samples(str(audio_file), target_sr=target_sr, dtype=dtype)
+
+        expected_shape = (target_sr // 10,) if num_channels == 1 else (num_channels, target_sr // 10)
+        assert actual.shape == expected_shape
+        assert actual.dtype == np.dtype(dtype)
+
+        # Resampling all channels together must match loading each mono channel separately.
+        for channel in range(num_channels):
+            channel_file = tmp_path / f'channel_{channel}.wav'
+            sf.write(channel_file, samples[:, channel], sample_rate, subtype='DOUBLE')
+            expected = get_samples(str(channel_file), target_sr=target_sr, dtype=dtype)
+            channel_samples = actual if num_channels == 1 else actual[channel]
+            np.testing.assert_allclose(channel_samples, expected, rtol=1e-6, atol=1e-7)
 
 
 class TestSelectChannels:

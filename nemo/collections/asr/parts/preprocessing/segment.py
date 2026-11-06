@@ -131,7 +131,7 @@ def get_samples(audio_file: str, target_sr: int = 16000, dtype: str = 'float32')
     with sf.SoundFile(audio_file, 'r') as f:
         samples = f.read(dtype=dtype)
         if f.samplerate != target_sr:
-            samples = librosa.core.resample(samples, orig_sr=f.samplerate, target_sr=target_sr)
+            samples = librosa.core.resample(samples, orig_sr=f.samplerate, target_sr=target_sr, axis=0)
         samples = samples.transpose()
     return samples
 

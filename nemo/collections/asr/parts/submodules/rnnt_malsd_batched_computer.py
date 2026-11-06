@@ -39,6 +39,7 @@ from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaG
 from nemo.core.utils.cuda_python_utils import (
     NeMoCUDAPythonException,
     check_cuda_python_cuda_graphs_conditional_nodes_supported,
+    create_conditional_node_mempool,
     cu_call,
     run_nvrtc,
     with_conditional_node,
@@ -249,6 +250,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
 
     separate_graphs: Optional[SeparateGraphsMALSD]
     full_graph: Optional[torch.cuda.CUDAGraph]
+    full_graph_mempool: Optional[torch.cuda.MemPool]
     cuda_graphs_mode: Optional[CudaGraphsMode]
     state: Optional[MALSDState]
     fusion_models: Optional[List[NGramGPULanguageModel]]
@@ -314,6 +316,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
 
         self.state = None
         self.full_graph = None
+        self.full_graph_mempool = None
         self.separate_graphs = None
 
         self.cuda_graphs_mode = None
@@ -452,6 +455,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         """Reset state to release memory (for CUDA graphs implementations)"""
         self.state = None
         self.full_graph = None
+        self.full_graph_mempool = None
         self.separate_graphs = None
 
     def modified_alsd_torch(
@@ -1144,11 +1148,13 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         # ``_graph_reinitialize``) before we start capturing.
         stream_for_graph.wait_stream(torch.cuda.default_stream(self.state.device))
         self.full_graph = torch.cuda.CUDAGraph()
+        self.full_graph_mempool = create_conditional_node_mempool(self.state.device)
 
         with (
             torch.cuda.stream(stream_for_graph),
             torch.inference_mode(),
             torch.cuda.graph(self.full_graph, stream=stream_for_graph, capture_error_mode="thread_local"),
+            torch.cuda.use_mem_pool(self.full_graph_mempool),
         ):
             self._before_loop()
 

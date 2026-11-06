@@ -1,6 +1,8 @@
-.github/ @nvidia-nemo/automation
-docker/ @nvidia-nemo/automation
-requirements/ @nvidia-nemo/automation
-pyproject.toml @nvidia-nemo/automation
-setup.py @nvidia-nemo/automation
-uv.lock @nvidia-nemo/automation
+* @NVIDIA-NeMo/speech_core
+
+.github/ @nvidia-nemo/automation @NVIDIA-NeMo/speech_core
+docker/ @nvidia-nemo/automation @NVIDIA-NeMo/speech_core
+requirements/ @nvidia-nemo/automation @NVIDIA-NeMo/speech_core
+pyproject.toml @nvidia-nemo/automation @NVIDIA-NeMo/speech_core
+setup.py @nvidia-nemo/automation @NVIDIA-NeMo/speech_core
+uv.lock @nvidia-nemo/automation @NVIDIA-NeMo/speech_core

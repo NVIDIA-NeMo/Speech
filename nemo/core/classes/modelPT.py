@@ -252,12 +252,15 @@ class ModelPT(LightningModule, Model):
                 If "src" starts with "nemo:":
                     resolve its relative suffix within the current extracted model directory;
                     this takes precedence over a local filename with the same spelling.
+                elif restoring an archive without external-artifact permission:
+                    resolve the bundled relative path or its legacy bundled basename.
                 elif "src" is a local existing path:
                     return its absolute path.
                 else:
                     try legacy bundled-basename resolution, then apply missing-source handling.
 
-        Archive references must resolve within the extracted model directory.
+        Archive references must resolve within the extracted model directory. During restoration,
+        local names also refer to bundled files unless the runtime ``SaveRestoreConnector`` allows external artifacts.
 
         WARNING: use .register_artifact calls in your models' constructors.
         The returned path is not guaranteed to exist after you have exited your model's constructor.

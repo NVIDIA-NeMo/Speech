@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+set -e
 
 # Run training with SALMAutomodel
 torchrun --nproc-per-node 1 --no-python \
@@ -22,13 +23,15 @@ torchrun --nproc-per-node 1 --no-python \
       data.train_ds.input_cfg.0.cuts_path=/home/TestData/speechlm/lhotse/libri/librispeech_cuts_lower_train-clean-5.jsonl.gz \
       data.validation_ds.datasets.val_set_0.input_cfg.0.cuts_path=/home/TestData/speechlm/lhotse/libri/librispeech_cuts_lower_dev-clean-2.jsonl.gz \
       trainer.devices=1 \
+      trainer.strategy.ep_size=1 \
       trainer.max_steps=10
 
-# Convert to HF format
+# Convert to HF format. Look up the checkpoint name; the quotes keep Hydra from parsing "=" in the path.
+CKPT=$(ls -d salm_results/checkpoints/*last.ckpt | head -n 1)
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
   examples/speechlm2/to_hf.py \
   class_path=nemo.collections.speechlm2.models.SALMAutomodel \
-  ckpt_path=salm_results/checkpoints/step\=10-last.ckpt \
+  ckpt_path="'${CKPT}'" \
   ckpt_config=salm_results/exp_config.yaml \
   output_dir=test_salm_automodel_hf_model
 

@@ -42,10 +42,12 @@ jobs:
         id: cache_from
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
         run: |
-          LAST_PRS=$(gh api graphql -f query='
-            query {
-              repository(owner: "NVIDIA", name: "NeMo") {
+          LAST_PRS=$(gh api graphql -f owner="$REPO_OWNER" -f name="$REPO_NAME" -f query='
+            query($owner: String!, $name: String!) {
+              repository(owner: $owner, name: $name) {
                 pullRequests(states: MERGED, first: 100, orderBy: {field: UPDATED_AT, direction: DESC}) {
                   nodes {
                     number
@@ -78,6 +80,12 @@ jobs:
         id: cache-keys
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
+          # copy-pr-bot pushes PRs to `pull-request/<number>` branches; key their cache by PR number
+          # so that it matches the `buildcache-<number>` refs read through `cache-from`.
+          if [[ -z "$PR_NUMBER" && "${{ github.ref }}" =~ ^refs/heads/pull-request/([0-9]+)$ ]]; then
+            PR_NUMBER="${BASH_REMATCH[1]}"
+          fi
+          echo "pr-number=${PR_NUMBER:-0}" | tee -a $GITHUB_OUTPUT
           if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
             KEY="main"
           elif [[ -n "$PR_NUMBER" ]]; then
@@ -103,7 +111,7 @@ jobs:
             PR_NUMBER=${{ github.event.pull_request.number || 0 }}
           cache-from: |
             type=registry,ref=${{ inputs.registry }}/nemo-speech:${{ inputs.image-name }}-buildcache-main,mode=max
-            type=registry,ref=${{ inputs.registry }}/nemo-speech:${{ inputs.image-name }}-buildcache-${{ github.event.pull_request.number || 0 }},mode=max
+            type=registry,ref=${{ inputs.registry }}/nemo-speech:${{ inputs.image-name }}-buildcache-${{ steps.cache-keys.outputs.pr-number }},mode=max
             ${{ needs.pre-flight.outputs.cache-from }}
           cache-to: ${{ steps.cache-keys.outputs.cache-to }}
           tags: |

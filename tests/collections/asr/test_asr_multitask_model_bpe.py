@@ -1025,6 +1025,7 @@ def test_aed_forced_aligned_timestamps_audio_tensor(canary_1b_v2):
 
 @pytest.mark.with_downloads()
 @pytest.mark.unit
+@pytest.mark.run_only_on('GPU')  # Long-form Canary-1B-v2 inference takes minutes on CPU and timed out in CI.
 def test_aed_parallel_chunking(canary_1b_v2):
 
     audio_file = "/home/TestData/asr/longform/earnings22/sample_4469669.wav"

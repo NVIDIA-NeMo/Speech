@@ -95,10 +95,13 @@ def device(request):
         return "GPU"
 
 
-@pytest.fixture(autouse=True)
-def run_only_on_device_fixture(request, device):
-    if request.node.get_closest_marker('run_only_on'):
-        if request.node.get_closest_marker('run_only_on').args[0] != device:
+def pytest_runtest_setup(item):
+    # Skip in a hook rather than an autouse fixture: hooks run before any fixture is set up, so a skipped test
+    # does not first instantiate expensive session-scoped fixtures such as pretrained models.
+    marker = item.get_closest_marker('run_only_on')
+    if marker is not None:
+        device = "CPU" if item.config.getoption("--cpu") else "GPU"
+        if marker.args[0] != device:
             pytest.skip('skipped on this device: {}'.format(device))
 
 

@@ -40,7 +40,7 @@ from lhotse.dataset import (
 )
 from lhotse.dataset.dataloading import resolve_seed
 from lhotse.dataset.sampling.base import CutSampler, SamplingConstraint, TimeConstraint
-from lhotse.lazy import LazyFlattener
+from lhotse.lazy import IteratorNode, LazyFlattener, LazyIteratorMultiplexer
 from lhotse.utils import fix_random_seed
 from omegaconf import DictConfig, OmegaConf
 
@@ -1127,6 +1127,8 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
             )
         )
 
+    _validate_blend_sampling_graph(config, sampler, use_iterable_dataset=use_iterable_dataset, world_size=world_size)
+
     return sampler, use_iterable_dataset
 
 
@@ -1465,3 +1467,82 @@ def _cut_text_into_windows(cut, num_tokens: int, tokenizer) -> list:
         )
         ans.append(new_cut)
     return ans
+
+
+def _validate_blend_sampling_graph(config, sampler, *, use_iterable_dataset: bool, world_size: int) -> None:
+    """Reject sampling graphs that Lhotse can't iterate or checkpoint, before training starts.
+
+    Both checks inspect the CutSet graph the sampler was built from, so they cover every way of
+    creating a weighted blend (``input_cfg`` weights and nested groups, weighted ``manifest_filepath``
+    or ``shar_path`` lists), all of which end in a Lhotse multiplexer.
+    """
+    sources = list(getattr(sampler, "cuts", ()))
+    nodes, leaves = _walk_cut_graph(sources)
+
+    # Iterable path: each (DP rank x DataLoader worker) shard reads a disjoint slice of every indexed source.
+    # Lhotse refuses seed='randomized' for a multiplexer of indexed sources under multi-shard iteration
+    # (every shard would route to sources with a different RNG); raise here with the NeMo config key instead.
+    num_shards = world_size * max(config.num_workers, 1) if use_iterable_dataset else 1
+    if num_shards > 1 and any(
+        isinstance(n, LazyIteratorMultiplexer) and n.seed == "randomized" and n.is_indexed for n in nodes
+    ):
+        raise ValueError(
+            f"shard_seed='randomized' is not supported for a weighted blend of indexed sources when the "
+            f"iterable dataloader is split into {num_shards} shards (world_size={world_size} x "
+            f"num_workers={config.num_workers}): every shard would pick blend sources with a different RNG, "
+            f"which skews the global blend weights. Set an integer shard_seed "
+            f"(e.g. 'shard_seed: {config.seed}'). With indexed sources an integer shard_seed doesn't "
+            "duplicate data across workers or ranks, because each shard reads a disjoint slice of every "
+            "source's index."
+        )
+
+    # DynamicBucketingSampler.state_dict() saves its bucket buffers as graph-restore tokens. That works
+    # when every source is graph-restorable (indexed), and falls back to O(N) replay when none is.
+    # A graph with only some indexed sources fails in state_dict(), i.e. at the first checkpoint save.
+    if not config.use_stateful_dataloader or not isinstance(sampler, DynamicBucketingSampler):
+        return
+    restorable = [bool(getattr(leaf, "has_constant_time_access", False)) for leaf in leaves]
+    if any(restorable) and not all(bool(getattr(s, "has_constant_time_access", False)) for s in sources):
+        indexed_names = sorted({type(leaf).__name__ for leaf, r in zip(leaves, restorable) if r})
+        streaming_names = sorted({type(leaf).__name__ for leaf, r in zip(leaves, restorable) if not r})
+        raise ValueError(
+            "use_stateful_dataloader=True with use_bucketing=True can't checkpoint this data blend: some "
+            f"sources are read through an index ({', '.join(indexed_names)}) and others are streamed "
+            f"({', '.join(streaming_names)}), so the bucketing sampler would fail at the first checkpoint save. "
+            "When 'indexed' is null (the default), Lhotse 'cuts_path' manifests use their .idx file if one "
+            "exists, while other source types stream. Fix it in one of these ways: (1) set 'indexed: true' "
+            "and build indexes for every source with scripts/dataloading/build_indexes.py (exact O(1) "
+            "resume; recommended); (2) set 'indexed: false' so that no source uses an index (resume replays "
+            "the epoch up to the checkpoint); or (3) disable bucketing with 'use_bucketing: false' and no "
+            "'bucket_duration_bins' or 'bucket_batch_size' (either one turns bucketing back on)."
+        )
+
+
+def _walk_cut_graph(sources: list) -> tuple[list, list]:
+    """Return ``(nodes, leaves)`` of the Lhotse lazy-iterator graph rooted at ``sources``.
+
+    Mirrors how Lhotse's DynamicBucketingSampler finds leaf sources when it checkpoints: unwrap
+    ``CutSet.data``, then descend through ``sources`` (multiplexers, chains) or ``source`` (filters,
+    mappers, repeaters). A node with neither is a leaf data reader.
+    """
+    nodes, leaves = [], []
+    stack = list(reversed(sources))
+    while stack:
+        node = stack.pop()
+        if hasattr(node, "data") and not callable(getattr(node, "data")):
+            node = node.data
+        nodes.append(node)
+        children = None
+        if isinstance(node, IteratorNode):
+            srcs = getattr(node, "sources", None)
+            if isinstance(srcs, (list, tuple)) and srcs:
+                children = list(srcs)
+            else:
+                src = getattr(node, "source", None)
+                if src is not None and not callable(src):
+                    children = [src]
+        if children:
+            stack.extend(reversed(children))
+        else:
+            leaves.append(node)
+    return nodes, leaves

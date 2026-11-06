@@ -18,6 +18,7 @@ import copy
 import inspect
 import os
 import pathlib
+import types
 import uuid
 from abc import abstractmethod
 from os import path
@@ -26,7 +27,9 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 import torch
 from lightning.pytorch import LightningModule, Trainer
-from lightning.pytorch.utilities import model_summary, rank_zero_only
+from lightning.pytorch.utilities import CombinedLoader, model_summary, rank_zero_only
+from lightning.pytorch.utilities.data import extract_batch_size
+from lightning.pytorch.utilities.signature_utils import is_param_in_hook_signature
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo import package_info
@@ -36,6 +39,7 @@ from nemo.core.classes.module import NeuralModule
 from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.core.optim import prepare_lr_scheduler
 from nemo.core.optim.param_groups import apply_param_group_rules
+from nemo.core.utils.lightning_utils import read_batch
 from nemo.lightning.callback_group import CallbackGroup
 from nemo.utils import logging, model_utils
 from nemo.utils.app_state import AppState
@@ -958,7 +962,22 @@ class ModelPT(LightningModule, Model):
                 self.setup_multiple_test_data(test_data_config=self._cfg.test_ds)
 
         if stage == 'fit':
+            self._select_training_step_flavor()
             CallbackGroup.get_instance().update_config(nemo_version='v1', trainer=self._trainer)
+
+    def log(self, *args, **kwargs) -> None:
+        """Lightning's ``LightningModule.log``; also called by ``log_dict``.
+
+        When ``training_step`` reads its own batch from a stateful train dataloader (see
+        :meth:`_select_training_step_flavor`), Lightning can't infer ``batch_size`` and raises if it's missing.
+        In that case, a missing ``batch_size`` is inferred from the current training batch with Lightning's
+        ``extract_batch_size``, which Lightning also uses for the default ``training_step(batch, batch_idx)``.
+        """
+        if kwargs.get('batch_size') is None and self._reads_own_train_batches():
+            trainer = self._trainer
+            if trainer is not None and trainer.training:
+                kwargs['batch_size'] = self._current_train_batch_size()
+        return super().log(*args, **kwargs)
 
     def train_dataloader(self):
         """
@@ -2129,3 +2148,67 @@ class ModelPT(LightningModule, Model):
             return copy.deepcopy(optim_config)
         else:
             return OmegaConf.create(optim_config)
+
+    def _select_training_step_flavor(self) -> None:
+        """Make Lightning fetch training batches without prefetching when the train dataloader is stateful.
+
+        For the default ``training_step(batch, batch_idx)`` signature, Lightning's ``_PrefetchDataFetcher`` reads
+        one batch ahead of the step being run. A stateful dataloader then checkpoints a state that already includes
+        the prefetched batch, and resuming from a mid-epoch checkpoint skips that batch.
+
+        Lightning selects ``_DataLoaderIterDataFetcher``, which doesn't prefetch, when ``training_step`` has the
+        ``training_step(dataloader_iter)`` signature. For a stateful train dataloader we shadow this instance's
+        ``training_step`` with such an adapter: it reads the next batch with
+        :func:`nemo.core.utils.lightning_utils.read_batch` and runs the model's ``training_step(batch, batch_idx)``.
+        Models whose ``training_step`` already takes ``dataloader_iter`` and non-stateful dataloaders are unchanged.
+        This runs in ``setup(stage='fit')``, before Lightning selects the data fetcher.
+        """
+        stateful = _has_stateful_dataloader(self.train_dataloader())
+        if stateful == self._reads_own_train_batches():
+            return
+        if stateful:
+            if is_param_in_hook_signature(self.training_step, "dataloader_iter", explicit=True):
+                return
+            logging.info(
+                "The train dataloader is stateful: training_step will read its own batches (no prefetch) "
+                "so that a mid-epoch checkpoint resumes at exactly the next batch."
+            )
+            self._batch_training_step = self.training_step
+            self.training_step = types.MethodType(_training_step_from_dataloader_iter, self)
+        else:
+            self.training_step = self.__dict__.pop('_batch_training_step')
+            self._dataloader_iter_train_batch = None
+            self._dataloader_iter_train_batch_size = None
+
+    def _reads_own_train_batches(self) -> bool:
+        """Whether ``training_step`` is the adapter installed by :meth:`_select_training_step_flavor`."""
+        return '_batch_training_step' in self.__dict__
+
+    def _current_train_batch_size(self) -> int:
+        """Batch size of the current training batch, or 1 if no batch was read yet (Lightning's default)."""
+        if getattr(self, '_dataloader_iter_train_batch_size', None) is None:
+            batch = getattr(self, '_dataloader_iter_train_batch', None)
+            self._dataloader_iter_train_batch_size = 1 if batch is None else extract_batch_size(batch)
+        return self._dataloader_iter_train_batch_size
+
+
+def _training_step_from_dataloader_iter(self: ModelPT, dataloader_iter: Iterator) -> Any:
+    """``training_step(dataloader_iter)`` adapter installed by ``ModelPT._select_training_step_flavor``."""
+    batch, batch_idx = read_batch(dataloader_iter, self)
+    self._dataloader_iter_train_batch = batch
+    self._dataloader_iter_train_batch_size = None  # inferred lazily by ModelPT.log
+    return self._batch_training_step(batch, batch_idx)
+
+
+def _has_stateful_dataloader(dataloaders: Any) -> bool:
+    """Whether any of ``dataloaders`` saves its state in Lightning checkpoints (has ``state_dict``/``load_state_dict``).
+
+    This is the criterion Lightning uses to checkpoint a dataloader's state; it covers torchdata's
+    ``StatefulDataLoader`` and NeMo's ``_PerRankStatefulDataLoader``.
+    """
+    if dataloaders is None:
+        return False
+    return any(
+        callable(getattr(dl, 'state_dict', None)) and callable(getattr(dl, 'load_state_dict', None))
+        for dl in CombinedLoader(dataloaders).flattened
+    )

@@ -1250,6 +1250,22 @@ resume:
 * ``num_workers`` and ``world_size`` must match between save and restore (a
   hard requirement of ``StatefulDataLoader``).
 
+Training resumes at exactly the next batch after the checkpointed step. By
+default, Lightning reads one batch ahead of ``training_step(batch, batch_idx)``,
+so the saved loader state would already include that batch and the resumed run
+would skip it. To prevent this, a ``ModelPT`` model (ASR, TTS, audio) with a
+stateful train dataloader replaces its ``training_step`` at fit setup with a
+``training_step(dataloader_iter)`` adapter, which makes Lightning skip the
+prefetch. The adapter reads one batch with
+``nemo.core.utils.lightning_utils.read_batch`` and calls the model's own
+``training_step(batch, batch_idx)``; models don't need changes. In this mode,
+``self.log``/``self.log_dict`` calls without ``batch_size`` during training get
+the size of the current batch. Lightning's usual caveats for the
+``dataloader_iter`` mode apply: ``on_train_batch_start`` hooks get the previous
+batch (``None`` at the first step) instead of the upcoming one, and step timings include data loading.
+Models whose ``training_step`` already takes ``dataloader_iter`` (e.g.
+``SALMAutomodel``) and non-stateful dataloaders are unchanged.
+
 Non-indexed pipelines fall back to Lhotse's ``_fast_forward()`` replay (O(N)
 in batches consumed before the checkpoint) and require ``num_workers`` only to
 be consistent for replay-based restore — not exact restore.

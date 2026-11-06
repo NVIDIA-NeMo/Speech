@@ -587,3 +587,9 @@ docs = [
     "urllib3",
     "wrapt",
 ]
+
+[tool.basedpyright]
+typeCheckingMode = "basic"
+reportMissingTypeStubs = "none"
+reportPrivateImportUsage = "none"
+reportUnreachable = "none"

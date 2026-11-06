@@ -13,13 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import os
 import shutil
 import tempfile
 
 import pytest
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, open_dict
 
 from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models_prompt import EncDecHybridRNNTCTCBPEModelWithPrompt
 from nemo.collections.asr.parts.submodules import rnnt_beam_decoding as beam_decode
@@ -461,6 +462,38 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
             joint_joint = 3 * (hybrid_asr_model_with_prompt.joint.joint_hidden + 1)
             ctc_decoder = 3 * (hybrid_asr_model_with_prompt.ctc_decoder._feat_in + 1)
             assert hybrid_asr_model_with_prompt.num_weights == (nw1 + (pred_embedding + joint_joint) + ctc_decoder)
+
+    @pytest.mark.skipif(
+        not NUMBA_RNNT_LOSS_AVAILABLE,
+        reason='RNNTLoss has not been compiled with appropriate numba version.',
+    )
+    @pytest.mark.unit
+    def test_normalize_wer(self, test_data_dir, hybrid_asr_model_with_prompt):
+        assert hybrid_asr_model_with_prompt.wer.normalize_wer is False
+        assert hybrid_asr_model_with_prompt.ctc_wer.normalize_wer is False
+
+        cfg = copy.deepcopy(hybrid_asr_model_with_prompt.cfg)
+        with open_dict(cfg):
+            cfg.normalize_wer = True
+        model = EncDecHybridRNNTCTCBPEModelWithPrompt(cfg=cfg)
+        assert model.wer.normalize_wer is True
+        assert model.ctc_wer.normalize_wer is True
+
+        # flag is preserved when WER is re-created
+        model.change_decoding_strategy(decoding_cfg=DictConfig({'strategy': 'greedy', 'greedy': {'max_symbols': 10}}))
+        assert model.wer.normalize_wer is True
+        model.change_decoding_strategy(decoding_cfg=DictConfig({'strategy': 'greedy'}), decoder_type='ctc')
+        assert model.ctc_wer.normalize_wer is True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            new_tokenizer_dir = os.path.join(tmpdir, 'tokenizer')
+            os.makedirs(new_tokenizer_dir, exist_ok=True)
+            shutil.copy2(
+                os.path.join(test_data_dir, "asr", "tokenizers", "an4_wpe_128", 'vocab.txt'), new_tokenizer_dir
+            )
+            model.change_vocabulary(new_tokenizer_dir=new_tokenizer_dir, new_tokenizer_type='wpe')
+        assert model.wer.normalize_wer is True
+        assert model.ctc_wer.normalize_wer is True
 
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE,

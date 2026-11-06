@@ -130,6 +130,11 @@ class HATJoint(rnnt.RNNTJoint):
         self._return_hat_ilm = False
 
     @property
+    def supports_loss_logprobs(self) -> bool:
+        """HAT Joint uses its own blank/label factorization, so it requires the full logits path."""
+        return False
+
+    @property
     def return_hat_ilm(self):
         return self._return_hat_ilm
 

@@ -67,6 +67,7 @@ from scripts.dataloading._sharegpt_route_cli import ensure_sharegpt_route
 from nemo.collections.common.data.lhotse.indexed_adapters import create_tar_index as create_nemo_tar_index
 from nemo.collections.common.data.lhotse.indexed_adapters import (
     create_wds_v2_tar_index,
+    validate_tar_member_index_layout,
     validate_wds_v2_tar_index,
     wds_v2_index_path,
     wds_v2_metadata_path,
@@ -540,9 +541,20 @@ def _is_indexed(job: IndexJob) -> bool:
             validate_wds_v2_tar_index(job.path, idx_path=job.idx_path())
         else:
             _validate_legacy_sidecar(job)
+            if job.kind == NEMO_TAR:
+                _validate_nemo_tar_layout(job)
         return True
     except (OSError, ValueError):
         return False
+
+
+def _validate_nemo_tar_layout(job: IndexJob) -> None:
+    """Reject NeMo tar sidecars in the Shar paired layout (e.g. written by ``lhotse index tar``)."""
+    try:
+        validate_tar_member_index_layout(job.path, job.idx_path())
+    except ValueError as error:
+        logging.warning("  [WRONG LAYOUT, will rebuild] %s", error)
+        raise
 
 
 # --------------------------------------------------------------------------- #

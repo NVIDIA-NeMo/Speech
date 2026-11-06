@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import random
+
 import numpy as np
 import pytest
 import torch
@@ -69,3 +71,42 @@ def test_restored_rng_state_reproduces_random_padding(pad_distribution):
         torch.testing.assert_close(actual_eou_targets, padded_eou_targets)
     # The padding is drawn at random, so it differs between reads of the same audio.
     assert len({padded_audio_len for _, padded_audio_len, _ in expected}) > 1
+
+
+def _dataset_with_augmentor() -> LhotseSpeechToTextBpeEOUDataset:
+    cfg = OmegaConf.create(
+        {
+            "check_tokenizer": False,
+            "sample_rate": SAMPLE_RATE,
+            "augmentor": {
+                "gain": {"prob": 0.5, "min_gain_dbfs": -10, "max_gain_dbfs": 10},
+                "white_noise": {"prob": 1.0, "min_level": -60, "max_level": -40},
+            },
+        }
+    )
+    return LhotseSpeechToTextBpeEOUDataset(cfg=cfg, tokenizer=None)
+
+
+def _augment(dataset: LhotseSpeechToTextBpeEOUDataset):
+    audio = torch.sin(torch.arange(SAMPLE_RATE, dtype=torch.float32) / 10.0)
+    augmented, augmented_len = dataset._maybe_augment_audio(audio, torch.tensor(SAMPLE_RATE))
+    return augmented, int(augmented_len)
+
+
+def test_restored_rng_state_reproduces_augmentor_perturbations():
+    dataset = _dataset_with_augmentor()
+    state = dataset.state_dict()
+    expected = [_augment(dataset) for _ in range(4)]
+
+    # A resumed process does not share the global RNG states of the original one.
+    random.seed(1234)
+    np.random.seed(1234)
+    restored = _dataset_with_augmentor()
+    restored.load_state_dict(state)
+
+    for expected_audio, expected_len in expected:
+        actual_audio, actual_len = _augment(restored)
+        assert actual_len == expected_len
+        torch.testing.assert_close(actual_audio, expected_audio)
+    # The perturbations are random, so the output differs between reads of the same audio.
+    assert len({audio.numpy().tobytes() for audio, _ in expected}) == len(expected)

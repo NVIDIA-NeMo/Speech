@@ -40,6 +40,7 @@ import os
 import random
 import subprocess
 from tempfile import NamedTemporaryFile
+from types import ModuleType
 from typing import List, Optional, Union
 
 import librosa
@@ -73,7 +74,7 @@ except (ImportError, ModuleNotFoundError):
     HAVE_NUMBA = False
 
 
-def read_one_audiosegment(manifest, target_sr, tarred_audio=False, audio_dataset=None):
+def read_one_audiosegment(manifest, target_sr, tarred_audio=False, audio_dataset=None, rng=random):
     if tarred_audio:
         if audio_dataset is None:
             raise TypeError("Expected augmentation dataset but got None")
@@ -83,7 +84,7 @@ def read_one_audiosegment(manifest, target_sr, tarred_audio=False, audio_dataset
         duration = 0 if manifest_entry.duration is None else manifest_entry.duration
 
     else:
-        audio_record = random.sample(manifest.data, 1)[0]
+        audio_record = rng.sample(manifest.data, 1)[0]
         audio_file = audio_record.audio_file
         offset = 0 if audio_record.offset is None else audio_record.offset
         duration = 0 if audio_record.duration is None else audio_record.duration
@@ -92,6 +93,26 @@ def read_one_audiosegment(manifest, target_sr, tarred_audio=False, audio_dataset
 
 
 class Perturbation(object):
+    @property
+    def rng(self) -> Union[random.Random, ModuleType]:
+        """
+        Random generator used by :meth:`perturb`.
+
+        Defaults to the global ``random`` module, as before. A dataset that owns a checkpointed generator
+        (see :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`) assigns it here,
+        usually through :attr:`AudioAugmentor.rng`, so that augmentation draws are restored on resume.
+        Assigning a generator also assigns it to nested perturbations (e.g. the noise perturbers of
+        :class:`RirAndNoisePerturbation`).
+        """
+        return self.__dict__.get("_injected_rng", random)
+
+    @rng.setter
+    def rng(self, value: Union[random.Random, ModuleType]) -> None:
+        self.__dict__["_injected_rng"] = value
+        for perturbation in _nested_perturbations(vars(self).values()):
+            if perturbation is not self:
+                perturbation.rng = value
+
     def max_augmentation_length(self, length):
         return length
 
@@ -154,9 +175,9 @@ class SpeedPerturbation(Perturbation):
     def perturb(self, data):
         # Select speed rate either from choice or random sample
         if self._num_rates < 0:
-            speed_rate = random.uniform(self._min_rate, self._max_rate)
+            speed_rate = self.rng.uniform(self._min_rate, self._max_rate)
         else:
-            speed_rate = random.choice(self._rates)
+            speed_rate = self.rng.choice(self._rates)
 
         # Skip perturbation in case of identity speed rate
         if speed_rate == 1.0:
@@ -236,9 +257,9 @@ class TimeStretchPerturbation(Perturbation):
     def perturb(self, data):
         # Select speed rate either from choice or random sample
         if self._num_rates < 0:
-            speed_rate = random.uniform(self._min_rate, self._max_rate)
+            speed_rate = self.rng.uniform(self._min_rate, self._max_rate)
         else:
-            speed_rate = random.choice(self._rates)
+            speed_rate = self.rng.choice(self._rates)
 
         # Skip perturbation in case of identity speed rate
         if speed_rate == 1.0:
@@ -312,8 +333,8 @@ class SilencePerturbation(Perturbation):
         self._value = value
 
     def perturb(self, data):
-        start_silence_len = random.uniform(self._min_start_silence_secs, self._max_start_silence_secs)
-        end_silence_len = random.uniform(self._min_end_silence_secs, self._max_end_silence_secs)
+        start_silence_len = self.rng.uniform(self._min_start_silence_secs, self._max_start_silence_secs)
+        end_silence_len = self.rng.uniform(self._min_end_silence_secs, self._max_end_silence_secs)
         start = np.full((int(start_silence_len * data.sample_rate),), self._value)
         end = np.full((int(end_silence_len * data.sample_rate),), self._value)
 
@@ -336,7 +357,7 @@ class GainPerturbation(Perturbation):
         random.seed(rng) if rng else None
 
     def perturb(self, data):
-        gain = random.uniform(self._min_gain_dbfs, self._max_gain_dbfs)
+        gain = self.rng.uniform(self._min_gain_dbfs, self._max_gain_dbfs)
         data._samples = data._samples * (10.0 ** (gain / 20.0))
 
 
@@ -383,6 +404,7 @@ class ImpulsePerturbation(Perturbation):
             data.sample_rate,
             tarred_audio=self._tarred_audio,
             audio_dataset=self._data_iterator,
+            rng=self.rng,
         )
 
         # normalize if necessary
@@ -438,7 +460,7 @@ class ShiftPerturbation(Perturbation):
         random.seed(rng) if rng else None
 
     def perturb(self, data):
-        shift_ms = random.uniform(self._min_shift_ms, self._max_shift_ms)
+        shift_ms = self.rng.uniform(self._min_shift_ms, self._max_shift_ms)
         max_shift_ms = data.duration * 1000
         if abs(shift_ms) > max_shift_ms:
             shift_ms = max(-max_shift_ms, min(shift_ms, max_shift_ms))
@@ -504,7 +526,7 @@ class NoisePerturbation(Perturbation):
 
     def get_one_noise_sample(self, target_sr):
         return read_one_audiosegment(
-            self._manifest, target_sr, tarred_audio=self._tarred_audio, audio_dataset=self._data_iterator
+            self._manifest, target_sr, tarred_audio=self._tarred_audio, audio_dataset=self._data_iterator, rng=self.rng
         )
 
     def perturb(self, data, ref_mic=0):
@@ -518,6 +540,7 @@ class NoisePerturbation(Perturbation):
             data.sample_rate,
             tarred_audio=self._tarred_audio,
             audio_dataset=self._data_iterator,
+            rng=self.rng,
         )
         self.perturb_with_input_noise(data, noise, ref_mic=ref_mic)
 
@@ -539,7 +562,7 @@ class NoisePerturbation(Perturbation):
                 f" reference mic ID must be an integer in [0, {data.num_channels}), got {ref_mic} instead."
             )
 
-        snr_db = random.uniform(self._min_snr_db, self._max_snr_db)
+        snr_db = self.rng.uniform(self._min_snr_db, self._max_snr_db)
 
         if data.is_empty():
             logging.warning(
@@ -568,7 +591,7 @@ class NoisePerturbation(Perturbation):
         noise_gain_db = min(noise_gain_db, self._max_gain_db)
 
         # calculate noise segment to use
-        start_time = random.uniform(0.0, noise.duration - data.duration)
+        start_time = self.rng.uniform(0.0, noise.duration - data.duration)
         if noise.duration > (start_time + data.duration):
             noise.subsegment(start_time=start_time, end_time=start_time + data.duration)
 
@@ -576,7 +599,7 @@ class NoisePerturbation(Perturbation):
         noise.gain_db(noise_gain_db)
 
         if noise._samples.shape[0] < data._samples.shape[0]:
-            noise_idx = random.randint(0, data._samples.shape[0] - noise._samples.shape[0])
+            noise_idx = self.rng.randint(0, data._samples.shape[0] - noise._samples.shape[0])
             data._samples[noise_idx : noise_idx + noise._samples.shape[0]] += noise._samples
 
         else:
@@ -602,7 +625,7 @@ class NoisePerturbation(Perturbation):
                 f" reference mic ID must be an integer in [0, {data.num_channels}), got {ref_mic} instead."
             )
 
-        snr_db = random.uniform(self._min_snr_db, self._max_snr_db)
+        snr_db = self.rng.uniform(self._min_snr_db, self._max_snr_db)
         if not data_rms:
             data_rms = data.rms_db
 
@@ -612,11 +635,11 @@ class NoisePerturbation(Perturbation):
             noise_gain_db = data_rms - noise.rms_db - snr_db
         noise_gain_db = min(noise_gain_db, self._max_gain_db)
 
-        n_additions = random.randint(1, max_additions)
+        n_additions = self.rng.randint(1, max_additions)
 
         for i in range(n_additions):
-            noise_dur = random.uniform(0.0, max_noise_dur)
-            start_time = random.uniform(0.0, noise.duration)
+            noise_dur = self.rng.uniform(0.0, max_noise_dur)
+            start_time = self.rng.uniform(0.0, noise.duration)
             start_sample = int(round(start_time * noise.sample_rate))
             end_sample = int(round(min(noise.duration, (start_time + noise_dur)) * noise.sample_rate))
             noise_samples = np.copy(noise._samples[start_sample:end_sample])
@@ -626,7 +649,7 @@ class NoisePerturbation(Perturbation):
             if noise_samples.shape[0] > data._samples.shape[0]:
                 noise_samples = noise_samples[0 : data._samples.shape[0]]
 
-            noise_idx = random.randint(0, data._samples.shape[0] - noise_samples.shape[0])
+            noise_idx = self.rng.randint(0, data._samples.shape[0] - noise_samples.shape[0])
             data._samples[noise_idx : noise_idx + noise_samples.shape[0]] += noise_samples
 
 
@@ -727,7 +750,7 @@ class NoisePerturbationWithNormalization(Perturbation):
             duration = 0 if manifest_entry.duration is None else manifest_entry.duration
 
         else:
-            audio_record = random.sample(self._manifest.data, 1)[0]
+            audio_record = self.rng.sample(self._manifest.data, 1)[0]
             audio_file = audio_record.audio_file
             offset = 0 if audio_record.offset is None else audio_record.offset
             duration = 0 if audio_record.duration is None else audio_record.duration
@@ -823,9 +846,9 @@ class NoisePerturbationWithNormalization(Perturbation):
             )
 
         if self._snr_samples:
-            snr_db = random.sample(self._snr_samples, 1)[0]
+            snr_db = self.rng.sample(self._snr_samples, 1)[0]
         else:
-            snr_db = random.uniform(self._min_snr_db, self._max_snr_db)
+            snr_db = self.rng.uniform(self._min_snr_db, self._max_snr_db)
         if data_rms is None:
             data_rms = data.rms_db[ref_mic] if isinstance(data.rms_db, (list, np.ndarray)) else data.rms_db
 
@@ -863,8 +886,14 @@ class WhiteNoisePerturbation(Perturbation):
         np.random.seed(rng) if rng else None
 
     def perturb(self, data):
-        noise_level_db = np.random.randint(self.min_level, self.max_level, dtype='int32')
-        noise_signal = np.random.randn(data._samples.shape[0]) * (10.0 ** (noise_level_db / 20.0))
+        if self.rng is random:
+            noise_level_db = np.random.randint(self.min_level, self.max_level, dtype='int32')
+            noise_signal = np.random.randn(data._samples.shape[0]) * (10.0 ** (noise_level_db / 20.0))
+        else:
+            # Draw from the injected generator; numpy is seeded from it so the noise is reproducible too.
+            noise_level_db = self.rng.randrange(self.min_level, self.max_level)
+            noise_rng = np.random.default_rng(self.rng.getrandbits(64))
+            noise_signal = noise_rng.standard_normal(data._samples.shape[0]) * (10.0 ** (noise_level_db / 20.0))
         data._samples += noise_signal
 
 
@@ -970,14 +999,14 @@ class RirAndNoisePerturbation(Perturbation):
         self._apply_noise_rir = apply_noise_rir
 
     def perturb(self, data):
-        prob = random.uniform(0.0, 1.0)
+        prob = self.rng.uniform(0.0, 1.0)
 
         if prob < self._rir_prob:
             self._rir_perturber.perturb(data)
 
         data_rms = data.rms_db
 
-        if self._fg_noise_perturbers is not None and random.uniform(0.0, 1.0) < self._noise_prob:
+        if self._fg_noise_perturbers is not None and self.rng.uniform(0.0, 1.0) < self._noise_prob:
             orig_sr = data.orig_sr
             if orig_sr not in self._fg_noise_perturbers:
                 orig_sr = max(self._fg_noise_perturbers.keys())
@@ -989,7 +1018,7 @@ class RirAndNoisePerturbation(Perturbation):
                 data, noise, data_rms=data_rms, max_noise_dur=self._max_duration, max_additions=self._max_additions
             )
 
-        if self._bg_noise_perturbers is not None and random.uniform(0.0, 1.0) < self._bg_noise_prob:
+        if self._bg_noise_perturbers is not None and self.rng.uniform(0.0, 1.0) < self._bg_noise_prob:
             orig_sr = data.orig_sr
             if orig_sr not in self._bg_noise_perturbers:
                 orig_sr = max(self._bg_noise_perturbers.keys())
@@ -1030,11 +1059,11 @@ class TranscodePerturbation(Perturbation):
         orig_f = NamedTemporaryFile(suffix=".wav")
         sf.write(orig_f.name, norm_samples.transpose(), 16000)
 
-        codec_ind = random.randint(0, len(self._codecs) - 1)
+        codec_ind = self.rng.randint(0, len(self._codecs) - 1)
         if self._codecs[codec_ind] == "amr-nb":
             transcoded_f = NamedTemporaryFile(suffix="_amr.wav")
             rates = list(range(0, 4))
-            rate = rates[random.randint(0, len(rates) - 1)]
+            rate = rates[self.rng.randint(0, len(rates) - 1)]
             _ = subprocess.check_output(
                 f"sox {orig_f.name} -V0 -C {rate} -t amr-nb - | sox -t amr-nb - -V0 -b 16 -r 16000 {transcoded_f.name}",
                 shell=True,
@@ -1042,7 +1071,7 @@ class TranscodePerturbation(Perturbation):
         elif self._codecs[codec_ind] == "ogg":
             transcoded_f = NamedTemporaryFile(suffix="_ogg.wav")
             rates = list(range(-1, 8))
-            rate = rates[random.randint(0, len(rates) - 1)]
+            rate = rates[self.rng.randint(0, len(rates) - 1)]
             _ = subprocess.check_output(
                 f"sox {orig_f.name} -V0 -C {rate} -t ogg - | sox -t ogg - -V0 -b 16 -r 16000 {transcoded_f.name}",
                 shell=True,
@@ -1099,7 +1128,7 @@ class RandomSegmentPerturbation(Perturbation):
             pad_size = self._duration_sec * data.sample_rate - data.num_samples
             data.pad(pad_size=pad_size)
         else:
-            start_time = random.uniform(0.0, data.duration - self._duration_sec)
+            start_time = self.rng.uniform(0.0, data.duration - self._duration_sec)
 
         end_time = start_time + self._duration_sec
         new_data = copy.deepcopy(data)
@@ -1108,7 +1137,7 @@ class RandomSegmentPerturbation(Perturbation):
             rms_db = new_data.rms_db if new_data.num_channels == 1 else min(new_data.rms_db)
             trial = 0
             while rms_db < self._min_rms_db and trial < self._max_trials:
-                start_time = random.uniform(0.0, data.duration - self._duration_sec)
+                start_time = self.rng.uniform(0.0, data.duration - self._duration_sec)
                 end_time = start_time + self._duration_sec
                 new_data = copy.deepcopy(data)
                 new_data.subsegment(start_time=start_time, end_time=end_time)
@@ -1151,9 +1180,27 @@ class AudioAugmentor(object):
         random.seed(rng) if rng else None
         self._pipeline = perturbations if perturbations is not None else []
 
+    @property
+    def rng(self) -> Union[random.Random, ModuleType]:
+        """
+        Random generator used to decide which perturbations to apply and by the perturbations themselves.
+
+        Defaults to the global ``random`` module, as before. Assigning a generator (e.g. the checkpointed
+        ``self.rng`` of a :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin` dataset)
+        assigns it to every perturbation in the pipeline, so all augmentation draws come from it and are restored
+        on resume together with the dataset state.
+        """
+        return self.__dict__.get("_injected_rng", random)
+
+    @rng.setter
+    def rng(self, value: Union[random.Random, ModuleType]) -> None:
+        self.__dict__["_injected_rng"] = value
+        for perturbation in _nested_perturbations(p for _, p in self._pipeline):
+            perturbation.rng = value
+
     def perturb(self, segment):
         for prob, p in self._pipeline:
-            if random.random() < prob:
+            if self.rng.random() < prob:
                 p.perturb(segment)
         return
 
@@ -1396,3 +1443,14 @@ class AugmentationDataset(IterableDataset):
                 yield audio_file, file_id, manifest_entry
             except StopIteration:
                 audio_iter = iter(self.audio_dataset)
+
+
+def _nested_perturbations(values):
+    """Yield the :class:`Perturbation` objects in ``values``, looking one level into dicts, lists and tuples."""
+    for value in values:
+        if isinstance(value, Perturbation):
+            yield value
+        elif isinstance(value, dict):
+            yield from (v for v in value.values() if isinstance(v, Perturbation))
+        elif isinstance(value, (list, tuple)):
+            yield from (v for v in value if isinstance(v, Perturbation))

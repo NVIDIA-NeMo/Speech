@@ -141,7 +141,7 @@ class LhotseSpeechToTextBpeEOUDataset(StatefulRandomMixin, LhotseAudioLoadingDat
     Random draws use the dataset's checkpointed generator ``self.rng`` (see
     :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`), so a run resumed from a
     ``StatefulDataLoader`` checkpoint produces the same batches as an uninterrupted run.
-    The ``augmentor`` perturbations keep their own random generators, which are not checkpointed.
+    The ``augmentor`` perturbations draw from the same generator (see ``AudioAugmentor.rng``).
     """
 
     @property
@@ -522,7 +522,8 @@ class LhotseSpeechToTextBpeEOUDataset(StatefulRandomMixin, LhotseAudioLoadingDat
             offset=0,
             duration=audio_len.item() / self.sample_rate,
         )
-        # Apply augmentation
+        # Apply augmentation, drawing from the checkpointed dataset generator.
+        self.augmentor.rng = self.rng
         self.augmentor.perturb(audio_segment)
         audio = torch.from_numpy(audio_segment.samples).float()
         audio_len = audio.size(0)

@@ -1481,6 +1481,11 @@ state is saved and restored with the dataloader state: by ``StatefulDataLoader``
 by NeMo's ``StatefulIterableDatasetWrapper`` for iterable-style datasets. Each epoch continues the sequence, so a
 cut gets new random draws when it is read again.
 
+Audio augmentation with an ``AudioAugmentor`` (``nemo.collections.asr.parts.preprocessing.perturb``) uses the global
+``random`` module by default. A dataset assigns its generator with ``augmentor.rng = self.rng`` before calling
+``augmentor.perturb(...)``. That generator is then used by every perturbation in the pipeline, including nested
+ones, so augmentation is restored on resume as well. ``LhotseSpeechToTextBpeEOUDataset`` does this.
+
 Random transforms applied to the ``CutSet`` itself (``.map(...)`` in a data type parser) can't keep a checkpointed
 generator. They seed a generator from the cut ID instead, e.g. ``random.Random(f"{seed}:{cut.id}")``, so the result
 is a pure function of the cut. A cut then gets the same draw in every epoch.

@@ -762,16 +762,16 @@ def merge_int_intervals(intervals_in: List[List[int]]) -> List[List[int]]:
 
 def fl2int(x: float, decimals: int = 3) -> int:
     """
-    Convert floating point number to integer.
+    Round seconds to integer ticks at the requested decimal precision.
     """
-    return torch.round(torch.tensor([x * (10**decimals)]), decimals=0).int().item()
+    return int(round(float(x) * 10**decimals))
 
 
 def int2fl(x: int, decimals: int = 3) -> float:
     """
-    Convert integer to floating point number.
+    Convert integer ticks back to seconds at the same decimal precision.
     """
-    return torch.round(torch.tensor([x / (10**decimals)]), decimals=decimals).item()
+    return int(x) / 10**decimals
 
 
 def merge_float_intervals(ranges: List[List[float]], decimals: int = 5, margin: int = 2) -> List[List[float]]:

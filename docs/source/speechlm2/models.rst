@@ -461,7 +461,9 @@ custom code, opt in at runtime and pin the repository to a reviewed revision:
         trust_remote_code=True,
     )
 
-The ``trust_remote_code`` setting stored in a checkpoint configuration is ignored.
+The ``trust_remote_code`` setting stored in a checkpoint configuration is ignored,
+including configurations with a nested ``model`` section. The caller's runtime
+choice applies to both layouts, and exported configurations omit the setting.
 This prevents a model repository from opting itself into executing downloaded
 Python code.
 

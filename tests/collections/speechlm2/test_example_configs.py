@@ -15,6 +15,7 @@
 import dataclasses
 from pathlib import Path
 
+import pytest
 from omegaconf import OmegaConf
 
 from nemo.collections.common.data.lhotse.dataloader import LhotseDataLoadingConfig
@@ -46,3 +47,12 @@ def test_salm_nemotron_train_ds_keys_are_known_to_the_dataloader():
     known = {field.name for field in dataclasses.fields(LhotseDataLoadingConfig)}
 
     assert set(cfg.data.train_ds.keys()) <= known
+
+
+@pytest.mark.parametrize("config_name", ["salm_nemotron.yaml", "salm_automodel_pee.yaml"])
+def test_multispeaker_keys_are_read_by_the_config(config_name):
+    """MultiSpeakerConfig.from_dict reads these keys and ignores every other one silently."""
+    cfg = OmegaConf.load(REPO_ROOT / "examples/speechlm2/conf" / config_name)
+    known = {"num_speakers", "max_alignment_permutations", "window_stride", "sample_rate", "subsampling_factor"}
+
+    assert set(cfg.data.multispeaker_cfg.keys()) <= known

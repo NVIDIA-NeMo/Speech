@@ -293,10 +293,14 @@ class LhotseDataLoadingConfig:
     # The first K examples will actually be read and then discarded, incurring the IO cost, due to
     # our support of object stores and gzipped files that generally don't have indexes of byte offsets per line.
     slice_length: Optional[int] = None
-    # Forwarded to ``CutSet.from_file(path, indexed=...)`` for plain JSONL ``cuts_path`` inputs.
-    # ``None`` = lhotse auto-detect (uses .idx if present, falls back to streaming).
-    # ``True`` = require indexed reads (errors if .idx is missing).
+    # Read data sources through their ``.idx`` index sidecars (O(1) random access and exact resume).
+    # Cascades through ``read_dataset_config`` to every nested ``input_cfg`` entry.
+    # ``True`` = read every source through its index.
     # ``False`` = streaming reads only.
+    # ``None`` (unset) = with ``use_stateful_dataloader=True``, same as ``True`` but every index must
+    #   already exist (build them with ``scripts/dataloading/build_indexes.py``) and every source type must
+    #   support indexing; otherwise startup fails. Without the stateful dataloader, ``None`` keeps the
+    #   per-source auto-detection (``lhotse`` ``cuts_path`` uses its .idx if present, other types stream).
     indexed: Optional[bool] = None
     # When set, ``.idx`` sidecars are read from a mirror under this root that
     # preserves the data files' directory structure (URL schemes are stripped,
@@ -744,6 +748,10 @@ def get_lhotse_dataloader_from_multi_config(
         try:
             expanded_config = make_structured_with_schema_warnings(config)
             for k, v in shared_opts.items():
+                if k == "indexed" and v is None:
+                    # Unset at the top level: keep the sub-config's own value. With use_stateful_dataloader,
+                    # an unset value is resolved to True when the sub-config's CutSet is read.
+                    continue
                 expanded_config[k] = v
             s, t = get_lhotse_sampler_from_config(
                 config=expanded_config, global_rank=global_rank, world_size=world_size, tokenizer=tokenizer
@@ -1499,22 +1507,34 @@ def _validate_blend_sampling_graph(config, sampler, *, use_iterable_dataset: boo
     # DynamicBucketingSampler.state_dict() saves its bucket buffers as graph-restore tokens. That works
     # when every source is graph-restorable (indexed), and falls back to O(N) replay when none is.
     # A graph with only some indexed sources fails in state_dict(), i.e. at the first checkpoint save.
+    restorable = [bool(getattr(leaf, "has_constant_time_access", False)) for leaf in leaves]
+    partly_indexed = any(restorable) and not all(bool(getattr(s, "has_constant_time_access", False)) for s in sources)
+    indexed_names = sorted({type(leaf).__name__ for leaf, r in zip(leaves, restorable) if r})
+    streaming_names = sorted({type(leaf).__name__ for leaf, r in zip(leaves, restorable) if not r})
+    if partly_indexed and not config.use_stateful_dataloader and config.get("indexed") is None:
+        # Allowed without the stateful dataloader, but usually unintended: an unset 'indexed' lets each
+        # source type decide for itself, and turning use_stateful_dataloader on later indexes all of them.
+        logging.warning(
+            "This data blend is only partly indexed: some sources are read through an index "
+            f"({', '.join(indexed_names)}) and others are streamed ({', '.join(streaming_names)}), because "
+            "'indexed' is unset and each source type auto-detects it (Lhotse 'cuts_path' manifests use their "
+            ".idx file if one exists, other source types stream). Set 'indexed: true' (build the indexes with "
+            "scripts/dataloading/build_indexes.py) or 'indexed: false' to make the choice explicit."
+        )
     if not config.use_stateful_dataloader or not isinstance(sampler, DynamicBucketingSampler):
         return
-    restorable = [bool(getattr(leaf, "has_constant_time_access", False)) for leaf in leaves]
-    if any(restorable) and not all(bool(getattr(s, "has_constant_time_access", False)) for s in sources):
-        indexed_names = sorted({type(leaf).__name__ for leaf, r in zip(leaves, restorable) if r})
-        streaming_names = sorted({type(leaf).__name__ for leaf, r in zip(leaves, restorable) if not r})
+    if partly_indexed:
         raise ValueError(
             "use_stateful_dataloader=True with use_bucketing=True can't checkpoint this data blend: some "
             f"sources are read through an index ({', '.join(indexed_names)}) and others are streamed "
             f"({', '.join(streaming_names)}), so the bucketing sampler would fail at the first checkpoint save. "
-            "When 'indexed' is null (the default), Lhotse 'cuts_path' manifests use their .idx file if one "
-            "exists, while other source types stream. Fix it in one of these ways: (1) set 'indexed: true' "
-            "and build indexes for every source with scripts/dataloading/build_indexes.py (exact O(1) "
-            "resume; recommended); (2) set 'indexed: false' so that no source uses an index (resume replays "
-            "the epoch up to the checkpoint); or (3) disable bucketing with 'use_bucketing: false' and no "
-            "'bucket_duration_bins' or 'bucket_batch_size' (either one turns bucketing back on)."
+            "This happens when 'indexed: false' is set on some input_cfg entries but not on others, or when "
+            "'indexed: true' is set explicitly and a source type only supports streaming. Fix it in one of these "
+            "ways: (1) index every source: leave 'indexed' unset or set it to true, and build the indexes with "
+            "scripts/dataloading/build_indexes.py (exact O(1) resume; recommended); (2) set 'indexed: false' "
+            "for every source (resume replays the epoch up to the checkpoint); or (3) disable bucketing with "
+            "'use_bucketing: false' and no 'bucket_duration_bins' or 'bucket_batch_size' (either one turns "
+            "bucketing back on)."
         )
 
 

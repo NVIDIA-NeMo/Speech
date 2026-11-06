@@ -85,6 +85,15 @@ def _lhotse_sources(paths):
     return [{"type": "lhotse", "cuts_path": str(p)} for p in (paths["a"], paths["b"])]
 
 
+def _mixed_lhotse_sources(paths):
+    # With use_stateful_dataloader an unset 'indexed' means 'true' for every source, so a partly indexed
+    # blend needs an explicit per-entry opt-out: cuts_a.jsonl is indexed, cuts_b.jsonl is streamed.
+    return [
+        {"type": "lhotse", "cuts_path": str(paths["a"])},
+        {"type": "lhotse", "cuts_path": str(paths["b"]), "indexed": False},
+    ]
+
+
 def _build_loader(cfg, world_size=1):
     return get_lhotse_dataloader_from_config(
         OmegaConf.create(cfg), global_rank=0, world_size=world_size, dataset=_Identity()
@@ -98,15 +107,14 @@ def _build_sampler(cfg, world_size=1):
 
 @pytest.mark.unit
 def test_bucketing_blend_of_indexed_and_streamed_lhotse_sources_raises(lhotse_cuts_paths):
-    # 'indexed' is unset, so cuts_a.jsonl (has .idx) is indexed and cuts_b.jsonl is streamed.
-    with pytest.raises(ValueError, match="indexed: true"):
-        _build_loader(_blend(_lhotse_sources(lhotse_cuts_paths)))
+    with pytest.raises(ValueError, match="indexed: false"):
+        _build_loader(_blend(_mixed_lhotse_sources(lhotse_cuts_paths)))
 
 
 @pytest.mark.unit
 def test_bucketing_blend_of_nemo_and_indexed_lhotse_sources_raises(lhotse_cuts_paths, nemo_manifest_path):
     sources = [
-        {"type": "nemo", "manifest_filepath": str(nemo_manifest_path)},
+        {"type": "nemo", "manifest_filepath": str(nemo_manifest_path), "indexed": False},
         {"type": "lhotse", "cuts_path": str(lhotse_cuts_paths["a"])},
     ]
     with pytest.raises(ValueError, match="use_bucketing: false"):
@@ -123,7 +131,7 @@ def test_bucketing_blend_of_nemo_and_indexed_lhotse_sources_raises(lhotse_cuts_p
     ],
 )
 def test_bucketing_blend_mixed_indexing_passing_configs(lhotse_cuts_paths, overrides):
-    _build_loader(_blend(_lhotse_sources(lhotse_cuts_paths), **overrides))
+    _build_loader(_blend(_mixed_lhotse_sources(lhotse_cuts_paths), **overrides))
 
 
 @pytest.mark.unit

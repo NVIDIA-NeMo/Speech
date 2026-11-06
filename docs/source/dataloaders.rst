@@ -376,15 +376,17 @@ Some other Lhotse related arguments we support:
     When ``batch_duration`` is not set, it acts as a static batch size.
 * ``seed`` sets a random seed for the shuffle buffer.
 
-* ``indexed`` (default ``False``) opts the dataloader into Lhotse's indexed-manifest
+* ``indexed`` (default unset) opts the dataloader into Lhotse's indexed-manifest
   path, giving every adapter O(1) random access and graph-token-based exact restore.
-  Requires ``.idx`` sidecars next to every JSONL/tar file. See
-  :ref:`indexed-resumable-dataloading` below.
+  Requires ``.idx`` sidecars next to every JSONL/tar file. When unset, it's
+  ``true`` with ``use_stateful_dataloader: true`` and auto-detected per source
+  otherwise. See :ref:`indexed-resumable-dataloading` below.
 
 * ``use_stateful_dataloader`` (default ``False``) swaps PyTorch's
   ``DataLoader`` for ``torchdata.stateful_dataloader.StatefulDataLoader`` so
   that per-worker iterator state is captured in checkpoints and restored
-  exactly on resume. Pair with ``indexed: true`` for full O(1) restore.
+  exactly on resume. It also makes an unset ``indexed`` mean ``true``, for full
+  O(1) restore.
 
 The full and always up-to-date list of supported options can be found in ``LhotseDataLoadingConfig`` class.
 
@@ -968,6 +970,20 @@ When set at the top level, ``indexed: true`` is propagated by
 top-level flag covers every nested ``input_cfg`` group. You can still override
 it per-source if needed.
 
+With ``use_stateful_dataloader: true``, leaving ``indexed`` unset (or ``null``)
+means ``indexed: true`` for every source, including nested ``input_cfg`` groups
+and ``multi_config`` sub-configs. In that case the dataloader doesn't build
+missing indexes: when a source has no ``.idx`` sidecar, or its type only
+supports streaming (such as ``txt`` or ``txt_pair``), it raises at startup and
+names the file. Build the indexes with
+``python scripts/dataloading/build_indexes.py <input_cfg>``, or set
+``indexed: false`` explicitly, at the top level or on one ``input_cfg`` entry,
+to stream instead. Without ``use_stateful_dataloader``, an unset ``indexed``
+is auto-detected per source: a ``lhotse`` ``cuts_path`` uses its ``.idx`` file
+if one exists, while other source types stream. If a blend ends up only partly
+indexed this way, the dataloader logs a warning; set ``indexed`` explicitly to
+silence it.
+
 Per-adapter support
 ^^^^^^^^^^^^^^^^^^^
 
@@ -1267,12 +1283,12 @@ The dataloader checks two blend rules when it's built and raises a
 
 * With ``use_stateful_dataloader: true`` and ``use_bucketing: true``, either
   every source in the blend is indexed or none is. A blend of indexed and
-  streamed sources can't be checkpointed by the bucketing sampler. This is easy
-  to hit by accident: when ``indexed`` is left unset (``null``), a ``lhotse``
-  ``cuts_path`` source uses its ``.idx`` file if one exists, while ``nemo``
-  sources stream. Set ``indexed: true`` and build indexes for every source
-  (recommended), set ``indexed: false``, or disable bucketing (also remove
-  ``bucket_duration_bins`` and ``bucket_batch_size``, which turn it back on).
+  streamed sources can't be checkpointed by the bucketing sampler. Such a blend
+  usually comes from setting ``indexed: false`` on only some ``input_cfg`` entries. Index
+  every source (leave ``indexed`` unset or set it to ``true``, and build the
+  indexes; recommended), set ``indexed: false`` for every source, or disable
+  bucketing (also remove ``bucket_duration_bins`` and ``bucket_batch_size``,
+  which turn it back on).
 * An iterable blend of indexed sources that's split into more than one shard
   (``num_workers > 1``, or more than one data-parallel rank) can't use
   ``shard_seed: randomized``, because each shard would pick sources with its

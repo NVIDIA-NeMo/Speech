@@ -385,17 +385,21 @@ def test_salm_automodel_notifies_garbage_collection_after_optimizer_step(monkeyp
 
 def test_salm_automodel_record_training_stats_uses_thd_metadata():
     model = SALMAutomodel.__new__(SALMAutomodel)
-    batch = {"input_ids": torch.zeros(3, 7, dtype=torch.long)}
+    batch = {
+        "input_ids": torch.zeros(21, dtype=torch.long),
+        "text_cu_seqlens": torch.tensor([0, 7, 14, 21]),
+    }
     inputs = {
         "input_embeds": torch.zeros(5, 4),
         "attention_mask": None,
         "num_tokens": torch.tensor(11),
-        "num_examples": torch.tensor(3),
+        "num_examples": torch.tensor(99),
     }
 
     model._record_training_stats(batch, inputs)
 
-    assert model._last_batch_num_tokens == 11
+    assert torch.equal(model._last_batch_num_tokens, torch.tensor(11))
+    assert model._last_batch_num_tokens.data_ptr() == inputs["num_tokens"].data_ptr()
     assert model._last_batch_num_examples == 3
 
 

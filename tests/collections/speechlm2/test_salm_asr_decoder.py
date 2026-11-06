@@ -170,6 +170,10 @@ def test_salm_training_step(model, dataset, prompt_formatter, training_cutset_ba
     assert torch.is_tensor(results["loss"])
     assert not torch.isnan(results["loss"])
     assert results["loss"] > 0
+    assert torch.is_tensor(model._last_batch_num_tokens)
+    assert model._last_batch_num_tokens.ndim == 0
+    assert model._last_batch_num_tokens > 0
+    assert model._last_batch_num_examples == batch["input_ids"].shape[0]
 
 
 def test_salm_validation_step(model, dataset, prompt_formatter, training_cutset_batch):

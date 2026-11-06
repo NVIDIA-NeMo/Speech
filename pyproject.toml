@@ -88,7 +88,6 @@ core = [
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
-    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
 ]
 
 lightning = [
@@ -101,7 +100,6 @@ lightning = [
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
-    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
 ]
 
 common-only = [
@@ -156,7 +154,6 @@ tts = [
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
-    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
 ]
 
 audio = [
@@ -180,7 +177,6 @@ audio = [
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
-    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
 ]
 
 speechlm2-only = [
@@ -206,7 +202,6 @@ all = [
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
-    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
     "datasets>=3.2.0",
     "einops",
     "pandas",
@@ -290,7 +285,6 @@ common = [
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
-    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
 ]
 
 asr = [
@@ -316,7 +310,6 @@ asr = [
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
-    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
 ]
 
 speechlm2 = [
@@ -345,7 +338,6 @@ speechlm2 = [
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
-    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
     "janome",
     "jieba",
     "librosa",

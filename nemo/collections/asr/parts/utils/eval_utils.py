@@ -186,12 +186,16 @@ def cal_write_wer(
 
             if gt_text_attr_name not in sample:
                 if "text" in sample:
+                    logging.warning(
+                        f"ground-truth text attribute {gt_text_attr_name} is not present in manifest! "
+                        "Falling back to 'text'."
+                    )
                     gt_text_attr_name = "text"
                 else:
                     logging.info(
                         f"ground-truth text attribute {gt_text_attr_name} is not present in manifest! Cannot calculate WER. Returning!"
                     )
-                return None, None, eval_metric
+                    return None, None, eval_metric
 
             hyp = sample[pred_text_attr_name].strip()
             ref = sample[gt_text_attr_name].strip()

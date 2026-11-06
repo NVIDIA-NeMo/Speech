@@ -2852,6 +2852,127 @@ class TestMTPPlugin:
         with pytest.raises(ValueError, match=r"llm\.mtp\.\*"):
             NeMoSpeechLMForConditionalGeneration._split_perception_llm([("mtp.layers.0.weight", torch.ones(3))])
 
+    @staticmethod
+    def _streaming_load_fixture(tmp_path, monkeypatch, checkpoint_names):
+        """A bare plugin model whose weight loader and perception loader record when they see each tensor."""
+        import torch
+        from safetensors.torch import save_file
+
+        from nemo.collections.speechlm2.vllm.salm import model as model_module
+        from nemo.collections.speechlm2.vllm.salm.model import NeMoSpeechLMForConditionalGeneration
+
+        save_file({name: torch.ones(1) for name in checkpoint_names}, str(tmp_path / "model.safetensors"))
+        events = []
+        preprocess_inputs = []
+
+        def preprocess(weights):
+            preprocess_inputs.append(weights)
+            return weights
+
+        model = object.__new__(NeMoSpeechLMForConditionalGeneration)
+        torch.nn.Module.__init__(model)
+        model.config = SimpleNamespace()
+        model._checkpoint_path = str(tmp_path)
+        model._perception_weights_initialized = False
+        model._backend = SimpleNamespace(
+            preprocess_llm_weights=preprocess,
+            nemo_to_hf_llm_weights=lambda weights: ((n.replace("llm.model.", "backbone."), t) for n, t in weights),
+        )
+        model._load_perception_weights = lambda weights: (
+            events.append(("perception", sorted(weights))) or {"perception." + n for n in weights}
+        )
+
+        class _Loader:
+            def __init__(self, module):
+                pass
+
+            def load_weights(self, weights):
+                loaded = set()
+                for name, _ in weights:
+                    events.append(("loaded", name))
+                    loaded.add(name)
+                return loaded
+
+        monkeypatch.setattr(model_module, "AutoWeightsLoader", _Loader)
+
+        def checkpoint():
+            for name in checkpoint_names:
+                events.append(("read", name))
+                yield name, torch.ones(1)
+
+        return model, checkpoint, events, preprocess_inputs
+
+    def test_load_weights_streams_llm_tensors_one_at_a_time(self, tmp_path, monkeypatch):
+        """Regression: holding every LLM tensor on CPU before loading doubled peak memory on unified-memory GPUs.
+
+        On a GB10 the FP8 checkpoint (33 GiB) needed another 33 GiB of CPU memory while loading and the host
+        ran out of memory. Each LLM tensor must reach vLLM's loader before the next one is read.
+        """
+        names = ["llm.model.layers.0.weight", "llm.model.layers.1.weight", "perception.encoder.weight"]
+        model, checkpoint, events, preprocess_inputs = self._streaming_load_fixture(tmp_path, monkeypatch, names)
+
+        loaded = model.load_weights(checkpoint())
+
+        assert events == [
+            ("read", "llm.model.layers.0.weight"),
+            ("loaded", "language_model.backbone.layers.0.weight"),
+            ("read", "llm.model.layers.1.weight"),
+            ("loaded", "language_model.backbone.layers.1.weight"),
+            ("read", "perception.encoder.weight"),
+            ("perception", ["encoder.weight"]),
+        ]
+        assert preprocess_inputs == []
+        assert loaded == {
+            "language_model.backbone.layers.0.weight",
+            "language_model.backbone.layers.1.weight",
+            "perception.encoder.weight",
+        }
+
+    def test_load_weights_keeps_full_pass_when_checkpoint_has_lora(self, tmp_path, monkeypatch):
+        """LoRA merging pairs adapters with their base tensor, so it still needs every LLM tensor at once."""
+        names = [
+            "llm.model.layers.0.q_proj.weight",
+            "llm.model.layers.0.q_proj.lora_A.weight",
+            "llm.model.layers.0.q_proj.lora_B.weight",
+            "perception.encoder.weight",
+        ]
+        model, checkpoint, events, preprocess_inputs = self._streaming_load_fixture(tmp_path, monkeypatch, names)
+
+        model.load_weights(checkpoint())
+
+        assert [name for name, _ in preprocess_inputs[0]] == names[:3]
+        assert events.index(("read", "perception.encoder.weight")) < events.index(
+            ("loaded", "language_model.backbone.layers.0.q_proj.weight")
+        )
+
+    def test_load_weights_keeps_full_pass_on_refit(self, tmp_path, monkeypatch):
+        """A refit is not the checkpoint on disk: it may carry adapters the header check cannot see."""
+        names = ["llm.model.layers.0.weight", "llm.model.layers.0.q_proj.lora_A.weight", "perception.encoder.weight"]
+        model, checkpoint, _, preprocess_inputs = self._streaming_load_fixture(
+            tmp_path, monkeypatch, ["llm.model.layers.0.weight"]
+        )
+        model._perception_weights_initialized = True
+
+        def refit():
+            import torch
+
+            for name in names:
+                yield name, torch.ones(1)
+
+        model.load_weights(refit())
+
+        assert [name for name, _ in preprocess_inputs[0]] == names[:2]
+
+    def test_load_weights_keeps_full_pass_when_checkpoint_cannot_be_inspected(self, tmp_path, monkeypatch):
+        """A hub id or an unreadable path must not skip the LoRA merge."""
+        names = ["llm.model.layers.0.weight", "perception.encoder.weight"]
+        model, checkpoint, _, preprocess_inputs = self._streaming_load_fixture(tmp_path, monkeypatch, names)
+        model._checkpoint_path = "nvidia/some-hub-id"
+
+        model.load_weights(checkpoint())
+
+        assert [name for name, _ in preprocess_inputs[0]] == names[:1]
+
     def test_mtp_weight_remap_uses_vllm_embedding_alias(self):
         """Exported SpeechLM embeddings must pass NemotronHMTP's name filter."""
         import torch

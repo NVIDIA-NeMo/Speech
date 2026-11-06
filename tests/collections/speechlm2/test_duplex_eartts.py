@@ -105,12 +105,12 @@ test_eartts_config = {
             "num_quantizers": 31,
             "wav_to_token_ratio": 1764,
         },
+        "num_delay_speech_tokens": 2,
         "tts_config": {
             "use_gated_fusion_for_text_audio": True,
             "disable_eos_prediction": True,
             "use_bos_eos_emb": True,
             "use_subword_flag_emb": True,
-            "num_delay_speech_tokens": 2,
             "backbone_type": "gemma3_text",
             "backbone_model_class": None,
             "backbone_config_class": None,

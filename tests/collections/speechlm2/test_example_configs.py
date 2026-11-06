@@ -22,6 +22,32 @@ from nemo.collections.common.data.lhotse.dataloader import LhotseDataLoadingConf
 
 REPO_ROOT = Path(__file__).parents[3]
 
+# The keys of `data` that duplex_eartts_train.py (dataset construction) and DuplexEARTTS (`normalize_text`,
+# the sample rates) read; the script cannot be imported here, it selects a CUDA device at import.
+DUPLEX_EARTTS_DATA_KEYS = {
+    "train_ds",
+    "validation_ds",
+    "frame_length",
+    "source_sample_rate",
+    "target_sample_rate",
+    "input_roles",
+    "output_roles",
+    "add_text_bos_and_eos_in_each_turn",
+    "add_audio_prompt",
+    "audio_prompt_duration",
+    "normalize_text",
+}
+
+
+def test_duplex_eartts_config_keys_are_the_ones_the_training_script_reads():
+    """A data key spelled otherwise than the script reads it is ignored silently."""
+    cfg = OmegaConf.load(REPO_ROOT / "examples/speechlm2/conf/duplex_eartts.yaml")
+
+    assert set(cfg.data.keys()) <= DUPLEX_EARTTS_DATA_KEYS
+    # the script reads the speech delay from cfg.model; nothing reads it under tts_config
+    assert "num_delay_speech_tokens" in cfg.model
+    assert "num_delay_speech_tokens" not in cfg.model.tts_config
+
 
 def test_salm_automodel_uses_portable_moe_dispatcher():
     cfg = OmegaConf.load(REPO_ROOT / "examples/speechlm2/conf/salm_automodel.yaml")

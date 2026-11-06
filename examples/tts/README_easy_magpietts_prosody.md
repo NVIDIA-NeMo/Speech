@@ -48,9 +48,49 @@ The resulting path has shape `[B, T_text, T_audio]`. Normalize each text row by
 its number of assigned audio frames, then multiply it by the continuous audio
 latents. Layer normalization and a projection to four dimensions precede a
 single FSQ codebook with levels `[8, 8, 8, 4]` (2048 entries). Thus **the number of
-real prosody codes is exactly `text_lens`**, including EOS when present in the
-text input. There is no quantization before alignment. If coarse latents are
-shared, adjacent text tokens can have identical codes.
+real prosody codes is exactly the number of text tokens**, including text EOS.
+For compact single-turn input this is `text_lens`; multiturn timeline PAD and
+BOS/interruption controls are excluded. There is no quantization before
+alignment. If coarse latents are shared, adjacent text tokens can have identical
+codes. Reversing MAS retains the code count but cannot create finer acoustic
+information than the encoder supplied.
+
+Multiturn training uses the turn extraction, frame-budget packing, and timeline
+restoration adapted from reference PR #16519 at commit `bcf3a4e5`. Each assistant
+turn supplies a compact transcript and an acoustic span on the stacked codec
+grid. Its waveform is cropped **before** the learnable encoder, preventing user
+speech, inter-turn gaps, and subsequent assistant turns from entering its
+prosody representation. MAS and quantization run independently for each turn;
+both MAS orientations remain supported, including one-frame audio with several
+text tokens. The reference's content-only transcript is extended with text EOS
+to preserve the prosody stream's code-count policy.
+
+Codes are scattered back to their original text positions and shifted by
+`streaming_speech_delay - lead_steps`. Every turn therefore has its own delayed
+code sequence, with learned PAD in gaps, user turns, and after its final code.
+These PAD targets remain supervised. The backbone still processes the complete
+conversation, with the existing user-audio conditioning and acoustic masks.
+Alignment loss is averaged over valid turns independently of packing; shared
+text/CAS embeddings stay detached. Empty/user-only examples create no real
+codes. Invalid/empty acoustic spans contribute no alignment, overlapping spans
+raise, and an over-budget turn raises rather than silently truncating speech.
+
+The existing `easy_magpietts_lhotse_multiturn` configuration, data mixture, and
+collator can be kept. On the prosody branch, add these launcher arguments to
+enable the defaults above and optionally make the reference's packing limits
+explicit:
+
+```bash
+++model.prosody.enabled=true \
+++model.aligned_text_max_turns_per_batch=32 \
+++model.aligned_text_max_frames_per_batch=8192
+```
+
+Keep `model.use_multiturn_dataset=true`, acoustic delay 5, and
+`model.load_cached_codes_if_available=false`. The frame budget uses stacked
+acoustic codec frames, not the encoder's 3.125 Hz frames. Attention-guidance and
+pretrained-aligner flags from the reference PR are separate features and do not
+enable this prosody channel. Existing non-prosody runs remain unchanged.
 
 The text-aligned code sequence is predicted one code per backbone step. After
 the last text-aligned code, the target is a learned PAD token (ID 2048) through
@@ -105,6 +145,9 @@ The toy run uses a tiny randomly initialized Nemotron TTS v2 backbone/codec and 
 16-channel version of the same prosody encoder. It verifies finite losses and
 gradients, actual encoder updates, both MAS orientations, pooling before FSQ,
 detached text gradients, exact text/code counts, code/PAD feedback, delay
-alignment, and frame stacking. It is a wiring and optimization smoke test;
+alignment, and frame stacking. Multiturn coverage includes mixed ordinary TTS
+and conversations, per-turn waveform isolation, BF16, turn packing limits,
+empty transcripts, the real Lhotse collator with user-audio conditioning, and
+five optimizer steps. It is a wiring and optimization smoke test;
 speech quality, alignment quality, and prosody disentanglement require training
 on real speech. The recipe keeps its `1e-4` starting learning rate.

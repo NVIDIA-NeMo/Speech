@@ -42,6 +42,7 @@ from nemo.collections.tts.modules.magpietts_modules import (
     remove_special_tokens,
     worker_init_fn,
 )
+from nemo.collections.tts.modules.nemotron_tts.v2.prosody import compact_conditioning_turns
 from nemo.collections.tts.parts.utils.helpers import (
     get_mask_from_lengths,
     get_speaker_embeddings_from_filepaths,
@@ -88,8 +89,10 @@ class ProcessBatchOutput:
         prosody_codes_target: Clean, delayed text-aligned prosody codes with PAD tail (B, T_prosody)
         prosody_codes_lens_target: Prosody supervision lengths covering all text codes and acoustic EOS (B,)
         prosody_alignment_loss: Forward-sum loss for the MAS scoring projections
-        prosody_code_lens: Number of real prosody codes, equal to text_lens (B,)
-        prosody_alignment: Hard monotonic text/audio path (B, T_text, T_audio)
+        prosody_code_lens: Number of real prosody codes per conversation (B,), excluding timing PAD
+        prosody_alignment: Dense single-turn MAS path, or tuple of unpadded paths for compact turns
+        prosody_turn_indices: Multiturn spans (turns, 3): sample, start, end on the stacked codec grid
+        prosody_turn_code_lens: Number of codes in each compact turn, including text EOS
     """
 
     loss: torch.Tensor
@@ -111,7 +114,9 @@ class ProcessBatchOutput:
     prosody_codes_lens_target: Optional[torch.Tensor] = None
     prosody_alignment_loss: Optional[torch.Tensor] = None
     prosody_code_lens: Optional[torch.Tensor] = None
-    prosody_alignment: Optional[torch.Tensor] = None
+    prosody_alignment: Optional[torch.Tensor | tuple[torch.Tensor, ...]] = None
+    prosody_turn_indices: Optional[torch.Tensor] = None
+    prosody_turn_code_lens: Optional[torch.Tensor] = None
 
 
 class NemotronTTSModel(NemotronTTSBase):
@@ -1048,8 +1053,12 @@ class NemotronTTSModel(NemotronTTSBase):
             # Streaming mode: context_lens + speech_delay
             audio_delay = context_lens + current_streaming_speech_delay
 
+        # Turn extraction needs original EOS/interruption markers, before the
+        # normal TTS path removes controls or applies conditioning dropout.
+        prosody_text = text.clone() if self.prosody is not None else None
         speech_eos_mask = None
         if self.cfg.get("use_multiturn_dataset", False):
+            text = text.clone()
             speech_eos_mask = text == self.interruption_token_id  # (B, T)
             # remove the interruption token for all task, expect for interruption
             if not task or "interruption" not in str(task[0]):
@@ -1129,13 +1138,29 @@ class NemotronTTSModel(NemotronTTSBase):
                 raise ValueError(
                     "Prosody training requires target 'audio' and 'audio_lens'; cached codes alone cannot train it"
                 )
-            # Keep alignment independent of text/CFG dropout and prevent its loss
-            # from modifying the shared text embedding or CAS encoder.
-            with torch.no_grad():
-                alignment_text = self.embed_text_tokens(
-                    text, text_lens=text_lens, is_multiturn=self.cfg.get('use_multiturn_dataset', False)
+            is_multiturn = self.cfg.get('use_multiturn_dataset', False)
+            if is_multiturn:
+                tokens, token_lens, turn_indices, key_positions = compact_conditioning_turns(
+                    self, prosody_text, text_lens, audio_codes_lens, True, include_eos=True
                 )
-            prosody_encoding = self.prosody.encode(audio, audio_lens, alignment_text, text_lens)
+                prosody_encoding = self.prosody.encode_turns(
+                    audio,
+                    audio_lens,
+                    tokens,
+                    token_lens,
+                    turn_indices,
+                    key_positions,
+                    embed_text=lambda ids, lengths: self.embed_text_tokens(ids, text_lens=lengths),
+                    samples_per_frame=self.codec_model_samples_per_frame * self.frame_stacking_factor,
+                    timeline_lens=text_lens,
+                    max_turns_per_batch=self.cfg.get('aligned_text_max_turns_per_batch', 32),
+                    max_frames_per_batch=self.cfg.get('aligned_text_max_frames_per_batch', 8192),
+                )
+            else:
+                # Keep shared text/CAS embeddings detached on the alignment branch.
+                with torch.no_grad():
+                    alignment_text = self.embed_text_tokens(prosody_text, text_lens=text_lens)
+                prosody_encoding = self.prosody.encode(audio, audio_lens, alignment_text, text_lens)
             prosody_embedded, prosody_targets, prosody_lens = self.prosody.teacher_force(
                 prosody_encoding.quantized,
                 prosody_encoding.codes,
@@ -1143,6 +1168,7 @@ class NemotronTTSModel(NemotronTTSBase):
                 audio_codes_lens_target,
                 speech_delay=current_streaming_speech_delay,
                 apply_dropout=mode == 'train',
+                timeline_lens=text_lens if is_multiturn else None,
             )
             prosody_delay = text_delay
             prosody_channel_embedding, prosody_channel_lens = self.join_embeddings_temporally(
@@ -1416,6 +1442,8 @@ class NemotronTTSModel(NemotronTTSBase):
             prosody_alignment_loss=prosody_alignment_loss,
             prosody_code_lens=prosody_encoding.code_lens if prosody_encoding is not None else None,
             prosody_alignment=prosody_encoding.alignment if prosody_encoding is not None else None,
+            prosody_turn_indices=prosody_encoding.turn_indices if prosody_encoding is not None else None,
+            prosody_turn_code_lens=prosody_encoding.turn_code_lens if prosody_encoding is not None else None,
         )
 
     def training_step(self, batch, batch_idx):

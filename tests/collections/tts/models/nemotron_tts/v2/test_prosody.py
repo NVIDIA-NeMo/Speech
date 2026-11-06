@@ -1,14 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 import torch
+from omegaconf import OmegaConf
 from torch.nn import functional as F
 
+from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import MagpieTTSLhotseMultiturnDataset
 from nemo.collections.tts.models.nemotron_tts.v2.model import NemotronTTSModel
-from nemo.collections.tts.modules.nemotron_tts.v2.prosody import ProsodyChannel
+from nemo.collections.tts.modules.nemotron_tts.v2.prosody import ProsodyChannel, compact_conditioning_turns
+from tests.collections.tts.data.test_magpietts_dataset_lhotse import _multiturn_cutset
 from tests.collections.tts.models.test_easy_magpietts import (
     _codec_restore_uses_random_initialized_audio_codec,
     _padded_token_tensor,
@@ -25,7 +29,7 @@ def _channel(**kwargs):
     return ProsodyChannel(embedding_dim=32, hidden_dim=32, input_sample_rate=24000, encoder_channels=16, **kwargs)
 
 
-def _model(stacking=1, enabled=True):
+def _model(stacking=1, enabled=True, **overrides):
     cfg = tiny_easy_magpie_cfg(
         {
             'frame_stacking_factor': stacking,
@@ -36,6 +40,7 @@ def _model(stacking=1, enabled=True):
             'training_modes': [
                 {'text_input_mode': 'streaming', 'streaming_phonemes_delay': 0, 'streaming_speech_delay': 5}
             ],
+            **overrides,
         }
     )
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -61,6 +66,192 @@ def _batch(model):
     return batch
 
 
+def _multiturn_batch(model):
+    batch = _batch(model)
+    device = batch['text'].device
+    stacking = model.frame_stacking_factor
+    batch['text'] = torch.full((2, 80), model.pad_id, dtype=torch.long, device=device)
+    batch['text'][0, 5:9] = torch.tensor([11, 12, 13, model.eos_id], device=device)
+    batch['text'][0, 25] = model.interruption_token_id
+    batch['text'][0, 40:43] = torch.tensor([14, 15, model.eos_id], device=device)
+    batch['text'][0, 70] = model.interruption_token_id
+    # A regular TTS cut also uses the multiturn collator in the existing mixture.
+    # Its last interruption marker can lie exactly at the cropped audio boundary.
+    batch['text'][1, :5] = torch.tensor([16, 17, 18, 19, model.eos_id], device=device)
+    batch['text_lens'] = torch.tensor([80, 60], device=device)
+    batch['audio_codes'] = _toy_codes(model, 2, 80 * stacking).to(device)
+    batch['audio_codes_lens'] = torch.tensor([80, 60], device=device) * stacking
+    samples_per_frame = model.codec_model_samples_per_frame * stacking
+    time = torch.arange(80 * samples_per_frame, device=device) / model.sample_rate
+    batch['audio'] = torch.stack([0.2 * (time * hz * 2 * torch.pi).sin() for hz in (180, 240)])
+    batch['audio_lens'] = torch.tensor([80, 60], device=device) * samples_per_frame
+    batch['agent_mask'] = torch.zeros(2, 80, dtype=torch.bool, device=device)
+    batch['agent_mask'][0, 5:25] = True
+    batch['agent_mask'][0, 40:70] = True
+    batch['agent_mask'][1, :60] = True
+    batch['task'] = ['duplex', 'tts']
+    return batch
+
+
+@pytest.mark.parametrize('stacking', [1, 2])
+@pytest.mark.parametrize('mixed_precision', [False, True])
+def test_multiturn_prosody_counts_real_tokens_and_restores_delayed_positions(stacking, mixed_precision):
+    model = _model(stacking, use_multiturn_dataset=True)
+    batch = _multiturn_batch(model)
+    clean_text = batch['text'].clone()
+    with torch.autocast(device_type=batch['audio'].device.type, dtype=torch.bfloat16, enabled=mixed_precision):
+        output = model.process_batch(**batch, mode='train')
+    assert torch.isfinite(output.loss)
+    assert output.prosody_code_lens.tolist() == [7, 5]
+    assert torch.equal(batch['text'], clean_text)  # boundary markers belong to the caller
+    expected = torch.zeros_like(output.prosody_codes_target, dtype=torch.bool)
+    expected[0, 9:13] = True
+    expected[0, 44:47] = True
+    expected[1, 4:9] = True
+    assert torch.equal(output.prosody_codes_target < model.prosody.pad_id, expected)
+    assert output.prosody_codes_target[~expected].eq(model.prosody.pad_id).all()
+    assert output.prosody_turn_indices.tolist() == [[0, 5, 25], [0, 40, 70], [1, 0, 60]]
+    assert output.prosody_turn_code_lens.tolist() == [4, 3, 5]
+    assert len(output.prosody_alignment) == 3
+    for path, num_text in zip(output.prosody_alignment, [4, 3, 5]):
+        assert path.size(0) == num_text
+        assert path.sum(1).ge(1).all()  # shorter audio shares latents instead of dropping tokens
+        assert path.sum(0).ge(1).all()
+
+
+def test_compact_turns_reference_boundaries_and_explicit_prosody_eos():
+    model = SimpleNamespace(
+        pad_id=0, bos_id=1, eos_id=2, interruption_token_id=3, text_vocab_size=100, frame_stacking_factor=2
+    )
+    text = torch.zeros(2, 24, dtype=torch.long)
+    text[0, 2:6] = torch.tensor([1, 10, 11, 2])
+    text[0, 9] = 3
+    text[0, 14:17] = torch.tensor([12, 13, 2])
+    text[1, :3] = torch.tensor([14, 15, 2])
+    lens, audio_lens = torch.tensor([24, 10]), torch.tensor([48, 20])
+    tokens, counts, spans, positions = compact_conditioning_turns(model, text, lens, audio_lens, True)
+    assert tokens.tolist() == [[10, 11], [12, 13], [14, 15]]
+    assert counts.tolist() == [2, 2, 2]
+    assert spans.tolist() == [[0, 2, 9], [0, 14, 24], [1, 0, 10]]
+    assert positions.tolist() == [[3, 4], [14, 15], [0, 1]]
+    tokens, counts, spans, positions = compact_conditioning_turns(
+        model, text, lens, audio_lens, True, include_eos=True
+    )
+    assert tokens.tolist() == [[10, 11, 2], [12, 13, 2], [14, 15, 2]]
+    assert counts.tolist() == [3, 3, 3]
+    assert positions.tolist() == [[3, 4, 5], [14, 15, 16], [0, 1, 2]]
+
+
+def test_multiturn_alignment_crops_waveforms_before_encoding_and_detaches_shared_text():
+    model = _model(use_multiturn_dataset=True, aligned_text_max_turns_per_batch=1)
+    batch = _multiturn_batch(model)
+    with patch.object(model.prosody, 'encode_audio', wraps=model.prosody.encode_audio) as encode:
+        output = model.process_batch(**batch, mode='train')
+    assert encode.call_count == 3
+    samples_per_frame = model.codec_model_samples_per_frame
+    for call, (sample, start, end) in zip(encode.call_args_list, [(0, 5, 25), (0, 40, 70), (1, 0, 60)]):
+        waveform, lengths = call.args
+        torch.testing.assert_close(
+            waveform[0], batch['audio'][sample, start * samples_per_frame : end * samples_per_frame]
+        )
+        assert lengths.tolist() == [(end - start) * samples_per_frame]
+    output.prosody_alignment_loss.backward()
+    assert all(p.grad is None for p in model.text_embedding.parameters())
+    assert all(p.grad is None for p in model.cas_encoder.parameters())
+    assert model.prosody.text_alignment_projection.weight.grad.abs().sum() > 0
+    gradients = [p.grad for p in model.prosody.encoder.parameters()]
+    assert all(g is not None and torch.isfinite(g).all() for g in gradients)
+    assert sum(g.abs().sum() for g in gradients) > 0
+
+
+def test_multiturn_acoustic_loss_trains_encoder_and_other_turns_do_not_leak():
+    model = _model(use_multiturn_dataset=True)
+    model.prosody.dropout = 0
+    batch = _multiturn_batch(model)
+    output = model.process_batch(**batch, mode='train')
+    output.codebook_loss.backward()
+    gradients = [p.grad for p in model.prosody.encoder.parameters()]
+    assert all(g is not None and torch.isfinite(g).all() for g in gradients)
+    assert sum(g.abs().sum() for g in gradients) > 0
+    batch['audio'][0, : 5 * model.codec_model_samples_per_frame] += 10
+    batch['audio'][0, 25 * model.codec_model_samples_per_frame :] += 10
+    changed = model.process_batch(**batch, mode='train')
+    assert torch.equal(output.prosody_codes_target[0, 9:13], changed.prosody_codes_target[0, 9:13])
+    torch.testing.assert_close(output.prosody_alignment[0], changed.prosody_alignment[0])
+
+
+def test_multiturn_empty_transcript_and_turn_budget():
+    model = _model(use_multiturn_dataset=True, aligned_text_max_frames_per_batch=30)
+    batch = _multiturn_batch(model)
+    with pytest.raises(ValueError, match='exceeding max_frames_per_batch=30'):
+        model.process_batch(**batch, mode='train')
+    batch['text'].fill_(model.pad_id)
+    with patch.object(model.prosody, 'encode_audio', wraps=model.prosody.encode_audio) as encode:
+        output = model.process_batch(**batch, mode='train')
+    encode.assert_not_called()
+    assert torch.isfinite(output.loss)
+    assert output.prosody_code_lens.tolist() == [0, 0]
+    assert output.prosody_codes_target.eq(model.prosody.pad_id).all()
+    assert output.prosody_alignment_loss == 0
+    output.prosody_alignment_loss.backward()
+    assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in model.prosody.encoder.parameters())
+
+
+def test_multiturn_prosody_toy_training_five_steps():
+    model = _model(use_multiturn_dataset=True)
+    batch = _multiturn_batch(model)
+    batch['user_audio_turn_splitted'] = None
+    model.train()
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    before = model.prosody.encoder.post_conv.conv.weight.detach().clone()
+    with patch.object(model, 'log'):
+        for step in range(5):
+            optimizer.zero_grad()
+            loss = model.training_step(batch, step)
+            assert torch.isfinite(loss)
+            loss.backward()
+            optimizer.step()
+    assert not torch.equal(before, model.prosody.encoder.post_conv.conv.weight)
+
+
+def test_multiturn_real_collator_raw_audio_training_step():
+    model = _model(
+        use_multiturn_dataset=True,
+        condition_on_user_speech=True,
+        load_cached_codes_if_available=True,
+        context_duration_min=0.04,
+        context_duration_max=0.04,
+    )
+    cuts = _multiturn_cutset()
+    for cut in cuts:
+        cut.tokenizer_names = [model.text_conditioning_tokenizer_name]
+    dataset_cfg = OmegaConf.create({'use_lhotse': True, 'volume_norm': False, 'dataset': {'batch_size': 1}})
+    with patch('nemo.collections.common.data.lhotse.dataloader.read_cutset_from_config', return_value=(cuts, False)):
+        model.setup_training_data(dataset_cfg)
+    loader = model.train_dataloader()
+    assert isinstance(loader.dataset.dataset, MagpieTTSLhotseMultiturnDataset)
+    assert not loader.dataset.dataset.load_cached_codes_if_available
+    batch = next(iter(loader))
+    device = next(model.parameters()).device
+    batch = {key: value.to(device) if isinstance(value, torch.Tensor) else value for key, value in batch.items()}
+    real_text = (batch['text'] != model.pad_id) & (batch['text'] != model.interruption_token_id)
+    expected_counts = real_text.sum(1)
+    assert batch['user_audio_turn_splitted'].size(0) == 2
+    model.train()
+    model.prosody.dropout = 0
+    with (
+        patch.object(model, 'log'),
+        patch.object(model.prosody, 'teacher_force', wraps=model.prosody.teacher_force) as tf,
+    ):
+        loss = model.training_step(batch, 0)
+    assert torch.isfinite(loss)
+    torch.testing.assert_close(tf.call_args.args[2], expected_counts)
+    loss.backward()
+    gradients = [p.grad for p in model.prosody.encoder.parameters()]
+    assert all(g is not None and torch.isfinite(g).all() for g in gradients)
+    assert sum(g.abs().sum() for g in gradients) > 0
+
+
 def test_prosody_encoder_rate_partial_frames_and_embedding_round_trip():
     channel = _channel()
     audio = torch.randn(2, 24000) * 0.1
@@ -72,6 +263,7 @@ def test_prosody_encoder_rate_partial_frames_and_embedding_round_trip():
     assert output.quantized.shape == (2, 4, 5)  # quantization happens after alignment
     assert output.codes[0].min() >= 0 and output.codes[0].max() < 2048
     assert output.codes[1, 2:].eq(channel.pad_id).all()
+    assert output.codes[1, :2].unique().numel() == 1  # one latent cannot encode independent token-level detail
     assert channel.quantizer.num_codebooks == 1
     torch.testing.assert_close(
         channel.embed(output.codes, quantized=output.quantized)[0], channel.embed(output.codes)[0]
@@ -115,6 +307,24 @@ def test_mas_pools_audio_or_reuses_coarse_latents_and_detaches_text():
     assert latents.grad is not None and torch.isfinite(latents.grad).all()
     assert channel.text_alignment_projection.weight.grad.abs().sum() > 0
     assert channel.audio_alignment_projection.weight.grad.abs().sum() > 0
+
+
+def test_mas_single_latent_or_single_token_uses_its_unique_path():
+    channel = _channel()
+    scores = torch.randn(2, 5, 5, requires_grad=True)
+
+    def reject_single_column(*args):
+        raise AssertionError('Single-column MAS must bypass the unsafe CPU backtracking kernel')
+
+    with patch(
+        'nemo.collections.tts.modules.nemotron_tts.v2.prosody.binarize_attention_parallel', reject_single_column
+    ):
+        path, loss = channel._align(scores, torch.tensor([1, 5]), torch.tensor([5, 1]))
+    torch.testing.assert_close(path[0, :, 0], torch.ones(5))
+    torch.testing.assert_close(path[1, 0, :], torch.ones(5))
+    assert path[0, :, 1:].sum() == path[1, 1:, :].sum() == 0
+    loss.backward()
+    assert scores.grad is not None and torch.isfinite(scores.grad).all()
 
 
 def test_prosody_timing_dropout_and_padding_loss():

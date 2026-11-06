@@ -17,12 +17,82 @@ from nemo.collections.tts.parts.utils.helpers import binarize_attention_parallel
 
 @dataclass
 class ProsodyEncoding:
-    quantized: torch.Tensor  # (B, FSQ dimensions, text steps), with straight-through gradients
-    codes: torch.Tensor  # (B, text steps), PAD outside text_lens
-    code_lens: torch.Tensor
-    alignment: torch.Tensor  # (B, text steps, audio steps), binary monotonic path
+    quantized: torch.Tensor  # (B, FSQ dimensions, text slots), with straight-through gradients
+    codes: torch.Tensor  # (B, text slots), compact single-turn or sparse restored multiturn codes
+    code_lens: torch.Tensor  # (B,) number of real codes, excluding timing PAD
+    alignment: torch.Tensor | tuple[torch.Tensor, ...]  # dense single-turn or unpadded per-turn MAS paths
     audio_lens: torch.Tensor
     alignment_loss: torch.Tensor
+    turn_indices: torch.Tensor | None = None  # (turns, 3): conversation, start, end on stacked codec grid
+    turn_code_lens: torch.Tensor | None = None
+
+
+def compact_conditioning_turns(model, text, text_lens, audio_lens, is_multiturn, include_eos=False):
+    """Recover compact transcripts, original token positions, and acoustic spans.
+
+    Adapted from Speech PR #16519, commit bcf3a4e5, ``compact_conditioning_turns``.
+    BOS marks a turn start, text EOS ends its transcript, and interruption marks
+    its exclusive acoustic end. A crop may omit the final interruption marker.
+    Prosody keeps text EOS explicitly; attention alignment in the reference PR
+    excludes it. Timing PAD and interruption tokens never become prosody codes.
+    """
+    ends = torch.div(audio_lens + model.frame_stacking_factor - 1, model.frame_stacking_factor, rounding_mode='floor')
+    rows, indices, positions = [], [], []
+    interruption_id = getattr(model, 'interruption_token_id', -1)
+    special = {model.pad_id, model.bos_id, model.eos_id, interruption_id}
+    source = text.detach().cpu().tolist()
+    lengths = text_lens.detach().cpu().tolist()
+    acoustic_ends = ends.detach().cpu().tolist()
+    for sample, (values, length, acoustic_end) in enumerate(zip(source, lengths, acoustic_ends)):
+        values = values[:length]
+        if not is_multiturn:
+            keys = [
+                i
+                for i, token in enumerate(values)
+                if (token not in special and 0 <= token < model.text_vocab_size)
+                or (include_eos and token == model.eos_id)
+            ]
+            if keys:
+                rows.append([values[i] for i in keys])
+                positions.append(keys)
+                indices.append([sample, 0, acoustic_end])
+            continue
+        start, ids, keys, ended_text = None, [], [], False
+
+        def append_turn(end):
+            if ids:
+                rows.append(list(ids))
+                positions.append(list(keys))
+                indices.append([sample, start, min(end, acoustic_end)])
+
+        for position, token in enumerate(values):
+            if token == model.bos_id:
+                append_turn(position)
+                start, ids, keys, ended_text = position, [], [], False
+            elif token == interruption_id:
+                append_turn(position)
+                start, ids, keys, ended_text = None, [], [], False
+            elif token == model.eos_id:
+                if include_eos and ids and not ended_text:
+                    ids.append(token)
+                    keys.append(position)
+                ended_text = True
+            elif token not in special and 0 <= token < model.text_vocab_size:
+                if ended_text:
+                    append_turn(position)
+                    start, ids, keys, ended_text = position, [], [], False
+                if start is None:
+                    start = position
+                ids.append(token)
+                keys.append(position)
+        append_turn(acoustic_end)
+    width = max((len(row) for row in rows), default=0)
+    compact = text.new_full((len(rows), width), model.pad_id)
+    key_positions = text.new_full((len(rows), width), -1)
+    for row, (ids, keys) in enumerate(zip(rows, positions)):
+        compact[row, : len(ids)] = text.new_tensor(ids)
+        key_positions[row, : len(keys)] = text.new_tensor(keys)
+    return compact, text.new_tensor([len(row) for row in rows]), text.new_tensor(indices).reshape(-1, 3), key_positions
 
 
 class ProsodyChannel(nn.Module):
@@ -140,6 +210,115 @@ class ProsodyChannel(nn.Module):
         codes = torch.where(valid, indices[0].long(), self.pad_id)
         return ProsodyEncoding(quantized, codes, text_lens, path, encoded_lens, alignment_loss)
 
+    def encode_turns(
+        self,
+        audio,
+        audio_lens,
+        text_tokens,
+        text_lens,
+        turn_indices,
+        key_positions,
+        embed_text,
+        samples_per_frame,
+        timeline_lens,
+        max_turns_per_batch=32,
+        max_frames_per_batch=8192,
+    ):
+        """Encode independent turns and scatter one code per token onto the timeline.
+
+        Turn extraction, length sorting, padded-frame budgets, and restoration
+        follow PR #16519's ``align_text_turns``. Here waveforms are cropped *before*
+        the trainable encoder, and MAS supports either sequence being longer.
+        Frame budgets use the original stacked codec grid, matching the PR's
+        ``aligned_text_max_*_per_batch`` settings. Paths remain unpadded per turn
+        rather than allocating a conversation-wide quadratic alignment tensor.
+        """
+        if max_turns_per_batch < 1 or max_frames_per_batch < 1 or samples_per_frame < 1:
+            raise ValueError('Turn/frame batch limits and samples_per_frame must be positive')
+        num_turns = text_tokens.size(0)
+        if (
+            audio.ndim != 2
+            or audio_lens.shape != (audio.size(0),)
+            or timeline_lens.shape != (audio.size(0),)
+            or text_tokens.ndim != 2
+            or text_lens.shape != (num_turns,)
+            or turn_indices.shape != (num_turns, 3)
+            or key_positions.shape != text_tokens.shape
+        ):
+            raise ValueError('Expected conversation waveforms, compact turn tokens/positions, and (turns,3) spans')
+        batch_size = audio.size(0)
+        width = int(timeline_lens.max())
+        codes = text_tokens.new_full((batch_size, width), self.pad_id, dtype=torch.long)
+        quantized = audio.new_zeros(batch_size, self.quantizer.dim, width, dtype=torch.float32)
+        code_lens = text_lens.new_zeros(batch_size)
+        turn_code_lens = text_lens.new_zeros(num_turns)
+        encoded_lens = text_lens.new_zeros(num_turns)
+        paths = [audio.new_zeros(0, 0) for _ in range(num_turns)]
+        metadata = torch.cat([turn_indices, text_lens[:, None]], dim=1).detach().cpu().tolist()
+        sample_lens = audio_lens.detach().cpu().tolist()
+        valid_rows = []
+        for row, (sample, start, end, num_text) in enumerate(metadata):
+            if (
+                0 <= sample < batch_size
+                and 0 <= start < end
+                and 0 < num_text <= text_tokens.size(1)
+                and start * samples_per_frame < sample_lens[sample]
+            ):
+                if end - start > max_frames_per_batch:
+                    raise ValueError(
+                        f'Turn {row} has {end - start} frames, exceeding max_frames_per_batch={max_frames_per_batch}'
+                    )
+                valid_rows.append(row)
+        previous_ends = {}
+        for row in sorted(valid_rows, key=lambda index: metadata[index][:2]):
+            sample, start, end, _ = metadata[row]
+            if start < previous_ends.get(sample, 0):
+                raise ValueError('Prosody turn spans must not overlap within a sample')
+            previous_ends[sample] = end
+        valid_rows.sort(key=lambda index: metadata[index][2] - metadata[index][1])
+        batches = _turn_batches(valid_rows, metadata, max_turns_per_batch, max_frames_per_batch)
+        alignment_loss = audio.new_zeros((), dtype=torch.float32)
+        for batch_rows in batches:
+            sample_spans = [
+                (
+                    metadata[row][0],
+                    metadata[row][1] * samples_per_frame,
+                    min(metadata[row][2] * samples_per_frame, sample_lens[metadata[row][0]]),
+                )
+                for row in batch_rows
+            ]
+            max_samples = max(end - start for _, start, end in sample_spans)
+            packed_audio = audio.new_zeros(len(batch_rows), max_samples)
+            for packed_row, (sample, start, end) in enumerate(sample_spans):
+                packed_audio[packed_row, : end - start] = audio[sample, start:end]
+            packed_audio_lens = audio_lens.new_tensor([end - start for _, start, end in sample_spans])
+            row_indices = torch.tensor(batch_rows, device=text_tokens.device, dtype=torch.long)
+            max_text = max(metadata[row][3] for row in batch_rows)
+            packed_text = text_tokens.index_select(0, row_indices)[:, :max_text]
+            packed_text_lens = text_lens.index_select(0, row_indices)
+            with torch.no_grad():
+                text_features = embed_text(packed_text, packed_text_lens).detach()
+            encoded = self.encode(packed_audio, packed_audio_lens, text_features, packed_text_lens)
+            # Forward-sum loss is a mean over turns, unlike the PR's per-frame NLL.
+            alignment_loss = alignment_loss + encoded.alignment_loss * len(batch_rows)
+            for packed_row, row in enumerate(batch_rows):
+                sample, _, _, num_text = metadata[row]
+                keys = key_positions[row, :num_text].long()
+                codes[sample, keys] = encoded.codes[packed_row, :num_text]
+                quantized[sample, :, keys] = encoded.quantized[packed_row, :, :num_text]
+                code_lens[sample] += num_text
+                turn_code_lens[row] = num_text
+                encoded_lens[row] = encoded.audio_lens[packed_row]
+                paths[row] = encoded.alignment[packed_row, :num_text, : int(encoded.audio_lens[packed_row])].clone()
+        if valid_rows:
+            alignment_loss = alignment_loss / len(valid_rows)
+        else:
+            # Empty/user-only local batches still participate in DDP backward.
+            alignment_loss = sum((p.reshape(-1)[0] * 0.0 for p in self.parameters()), alignment_loss)
+        return ProsodyEncoding(
+            quantized, codes, code_lens, tuple(paths), encoded_lens, alignment_loss, turn_indices, turn_code_lens
+        )
+
     def embed(self, codes, quantized=None, apply_dropout=False):
         """Embed (B, T) IDs, optionally using training's straight-through FSQ vectors."""
         if quantized is None:
@@ -152,18 +331,23 @@ class ProsodyChannel(nn.Module):
             embedded = torch.where(drop[..., None], self.special_embeddings.weight[1], embedded)
         return embedded
 
-    def teacher_force(self, quantized, codes, code_lens, target_lens, speech_delay, apply_dropout=False):
+    def teacher_force(
+        self, quantized, codes, code_lens, target_lens, speech_delay, apply_dropout=False, timeline_lens=None
+    ):
         """Build compact AR inputs/targets, preserving the learned PAD tail.
 
         The channel starts with text. The first real target is at
         ``speech_delay - lead_steps``; that PAD input predicts code 0 for the next step.
-        There is one real code per valid text token. PAD targets continue through
+        ``timeline_lens`` selects sparse, restored multiturn codes instead of a
+        compact single-turn sequence. There is one real code per text token.
+        PAD targets continue through
         acoustic EOS, with at least one PAD target after the last delayed code.
         """
         prefix = speech_delay - self.lead_steps
         if prefix < 0:
             raise ValueError("speech_delay must be >= prosody.lead_steps")
-        sequence_lens = torch.maximum(target_lens + speech_delay, prefix + code_lens + 1)
+        source_lens = code_lens if timeline_lens is None else timeline_lens
+        sequence_lens = torch.maximum(target_lens + speech_delay, prefix + source_lens + 1)
         width = int(sequence_lens.max())
         if codes.size(1) == 0:
             targets = codes.new_full((codes.size(0), width), self.pad_id)
@@ -173,7 +357,7 @@ class ProsodyChannel(nn.Module):
         source_positions = (positions - prefix).clamp(min=0, max=codes.size(1) - 1)
         source_positions = source_positions.expand(codes.size(0), -1)
         targets = codes.gather(1, source_positions)
-        valid_code = (positions >= prefix) & (positions < prefix + code_lens[:, None])
+        valid_code = (positions >= prefix) & (positions < prefix + source_lens[:, None])
         targets = torch.where(valid_code, targets, self.pad_id)
         inputs = F.pad(targets[:, :-1], (1, 0), value=self.pad_id)
         input_positions = F.pad(source_positions[:, :-1], (1, 0))
@@ -206,12 +390,44 @@ class ProsodyChannel(nn.Module):
                 attn_logprob=group_scores[:, None], in_lens=short_lens, out_lens=long_lens
             ) * (rows.numel() / count)
             with torch.no_grad():
+                hard = torch.zeros_like(group_scores)
+                single = short_lens == 1
+                # The only valid path in a one-column problem is deterministic.
+                # Legacy CPU MAS backtracking can decrement column zero below
+                # -1 and access invalid memory for longer one-column sequences.
+                long_positions = torch.arange(group_scores.size(1), device=scores.device)
+                hard[single, :, 0] = (long_positions[None, :] < long_lens[single, None]).to(hard.dtype)
                 short_positions = torch.arange(group_scores.size(2), device=scores.device)
                 probabilities = group_scores.masked_fill(
                     short_positions[None, None, :] >= short_lens[:, None, None], -1e4
                 ).softmax(dim=-1)
-                hard = binarize_attention_parallel(probabilities[:, None].clamp_min(1e-12), short_lens, long_lens)[
-                    :, 0
-                ]
+                multiple = torch.where(~single)[0]
+                if multiple.numel():
+                    hard.index_copy_(
+                        0,
+                        multiple,
+                        binarize_attention_parallel(
+                            probabilities.index_select(0, multiple)[:, None].clamp_min(1e-12),
+                            short_lens[multiple],
+                            long_lens[multiple],
+                        )[:, 0],
+                    )
                 path.index_copy_(0, rows, hard if text_is_longer else hard.transpose(1, 2))
         return path, loss
+
+
+def _turn_batches(rows, metadata, max_turns, max_frames):
+    """PR #16519's length-sorted turn packing under a padded codec-frame budget."""
+    batches, current = [], []
+    max_audio = 0
+    for row in rows:
+        audio_length = metadata[row][2] - metadata[row][1]
+        next_max = max(max_audio, audio_length)
+        if current and (len(current) >= max_turns or (len(current) + 1) * next_max > max_frames):
+            batches.append(current)
+            current, max_audio = [], 0
+        current.append(row)
+        max_audio = max(max_audio, audio_length)
+    if current:
+        batches.append(current)
+    return batches

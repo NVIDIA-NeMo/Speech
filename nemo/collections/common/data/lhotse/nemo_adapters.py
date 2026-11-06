@@ -924,6 +924,8 @@ class LazyNeMoTarredIterator(IteratorNode):
                 if offset > 0:
                     cut = cut.truncate(offset=offset, duration=duration, preserve_id=True)
                     cut.id = f"{cut.id}-{round(offset * 1e2):06d}-{round(duration * 1e2):06d}"
+                if data["audio_filepath"] != audio_filename:
+                    cut.id = _subn_row_cut_id(data)
 
                 # Add supervision (transcript metadata)
                 cut.supervisions.append(
@@ -1076,6 +1078,8 @@ class LazyNeMoTarredIterator(IteratorNode):
         if offset > 0:
             cut = cut.truncate(offset=offset, duration=duration, preserve_id=True)
             cut.id = f"{cut.id}-{round(offset * 1e2):06d}-{round(duration * 1e2):06d}"
+        if data["audio_filepath"] != audio_filename:
+            cut.id = _subn_row_cut_id(data)
         return self._attach_supervision_and_metadata(cut, data, manifest_path, tar_path)
 
     def _resolve_packed_tar_shard(self, data: dict, location) -> int:
@@ -1311,6 +1315,8 @@ class LazyNeMoTarredIterator(IteratorNode):
                             offset=data.get("offset", 0.0),
                             duration=data.get("duration"),
                         )
+                        if data["audio_filepath"] != tar_info.name:
+                            cut.id = _subn_row_cut_id(data)
                         cut.supervisions.append(
                             SupervisionSegment(
                                 id=cut.id,
@@ -1797,3 +1803,18 @@ def _stale_tar_route_error(path: str, row: int | None) -> ValueError:
         f"Native NeMo tar route for {path!r}{where} does not match the current manifest and tar indexes. "
         "Rebuild the sidecars with 'python scripts/dataloading/build_indexes.py <input_cfg.yaml>'."
     )
+
+
+def _subn_row_cut_id(data: Mapping) -> str:
+    """Cut ID for a repeated ``-subN`` NeMo tarred manifest row.
+
+    Several ``-subN`` rows share one tar member, so cut IDs derived from the member name would collide.
+    Key them by the row's own ``audio_filepath`` (e.g. ``a-sub1.wav``) instead, with the indexed path's
+    offset suffix when the row has an offset. Streaming, AIS GetBatch, loose-indexed and ``.idxpack``
+    loading all use this, so a row gets the same ID in every mode. Other rows keep their existing IDs.
+    """
+    cut_id = data["audio_filepath"]
+    offset = data.get("offset") or 0.0
+    if offset > 0:
+        cut_id = f"{cut_id}-{round(offset * 1e2):06d}-{round(data['duration'] * 1e2):06d}"
+    return cut_id

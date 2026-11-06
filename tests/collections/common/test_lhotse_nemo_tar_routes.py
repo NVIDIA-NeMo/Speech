@@ -52,6 +52,30 @@ def test_indexed_nemo_tarred_route_loads_correct_audio_for_every_row(tmp_path, l
 
 @pytest.mark.unit
 @pytest.mark.parametrize("layout", ["subn", "aggregate"])
+def test_nemo_tarred_subn_rows_get_unique_cut_ids_identical_in_streaming_and_indexed_mode(tmp_path, layout):
+    data = _write_dataset(tmp_path, layout)
+    _build_indexes(tmp_path, data)
+
+    indexed = {cut.supervisions[0].text: cut.id for cut in _iterator(data)}
+    streaming = {
+        cut.supervisions[0].text: cut.id
+        for cut in LazyNeMoTarredIterator(
+            manifest_path=data["manifest_spec"],
+            tar_paths=data["tar_spec"],
+            fault_tolerant_audio_loading=False,
+            # The aggregate fixture's tars contain members that its manifest doesn't reference.
+            skip_missing_manifest_entries=True,
+        )
+    }
+
+    assert streaming == indexed
+    assert len(set(indexed.values())) == len(indexed)
+    # ``-subN`` rows are keyed by their own audio_filepath; other rows keep the member name as their ID.
+    assert sorted(indexed.values()) == sorted(r["audio_filepath"] for r in data["rows"] if not r.get("_skipme"))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("layout", ["subn", "aggregate"])
 def test_indexed_nemo_tarred_route_resumes_exactly_with_stateful_dataloader(tmp_path, layout):
     data = _write_dataset(tmp_path, layout)
     _build_indexes(tmp_path, data)

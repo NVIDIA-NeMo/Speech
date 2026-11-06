@@ -1554,6 +1554,7 @@ def test_projection_only_requires_pretrained_dflash2(variant, init_path):
 
 @pytest.mark.parametrize("block_size", [8, 16])
 @pytest.mark.parametrize("activation_checkpointing", [False, True])
+@pytest.mark.gpu
 def test_projection_only_warm_start_updates_only_fc_and_resumes(tmp_path, block_size, activation_checkpointing):
     torch.manual_seed(7)
     target = _TrainerTarget().requires_grad_(False)
@@ -1912,6 +1913,7 @@ def test_scheduler_can_use_default_optimizer():
 
 
 @pytest.mark.parametrize("label_source", ["ground_truth", "target_argmax"])
+@pytest.mark.gpu
 def test_batched_draft_loss_is_invariant_to_padding_features(monkeypatch, label_source):
     torch.manual_seed(7)
     target = _TrainerTarget()

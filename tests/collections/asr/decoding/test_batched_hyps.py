@@ -25,7 +25,8 @@ from tests.collections.asr.decoding.utils import avoid_sync_operations
 DEVICES: List[torch.device] = [torch.device("cpu")]
 
 if torch.cuda.is_available():
-    DEVICES.append(torch.device("cuda"))
+    # The `gpu` marker puts the CUDA cases in the GPU CI jobs (see tests/functional_tests/_gpu_unit_test_selection.sh).
+    DEVICES.append(pytest.param(torch.device("cuda"), marks=pytest.mark.gpu))
 
 if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
     DEVICES.append(torch.device("mps"))

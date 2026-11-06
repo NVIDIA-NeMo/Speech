@@ -283,6 +283,7 @@ def training_cutset_batch():
     return CutSet([cut])
 
 
+@pytest.mark.gpu
 def test_eartts_dataset(dataset, training_cutset_batch):
     batch = dataset[training_cutset_batch]
     expected_keys = {
@@ -446,6 +447,7 @@ def test_eartts_dataset(dataset, training_cutset_batch):
 
 
 # test extra functions inside of eartts dataset
+@pytest.mark.gpu
 def test_add_speech_delay():
     source_audio = torch.ones(1, 16000)
     target_audio = torch.ones(1, 22050)
@@ -492,6 +494,7 @@ def test_add_speech_delay():
     assert torch.all(out_src[:, source_audio.size(1) :] == 0)
 
 
+@pytest.mark.gpu
 def test_sample_audio_segments_repeat():
     cases = [
         # (audio, lens, n_sample, expected_when_sample_false)
@@ -542,6 +545,7 @@ def test_sample_audio_segments_repeat():
         assert out.shape == expected.shape
 
 
+@pytest.mark.gpu
 def test_eartts_training_step(model, dataset, training_cutset_batch):
     model.train()
     model.on_train_epoch_start()
@@ -553,6 +557,7 @@ def test_eartts_training_step(model, dataset, training_cutset_batch):
     assert results["loss"] > 0
 
 
+@pytest.mark.gpu
 def test_eartts_validation_step(model, dataset, training_cutset_batch):
     model.eval()
     model.on_validation_epoch_start()
@@ -562,6 +567,7 @@ def test_eartts_validation_step(model, dataset, training_cutset_batch):
     assert results is None  # no return value
 
 
+@pytest.mark.gpu
 def test_eartts_offline_generation(model):
     model.eval()
     # generate random subword_ids

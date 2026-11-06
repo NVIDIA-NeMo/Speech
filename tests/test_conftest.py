@@ -19,6 +19,7 @@ from pathlib import Path
 from unittest.mock import Mock, call, patch
 
 import pytest
+import torch
 
 ROOT_CONFTEST_PATH = Path(__file__).with_name("conftest.py")
 ROOT_CONFTEST_SPEC = importlib.util.spec_from_file_location("root_conftest", ROOT_CONFTEST_PATH)
@@ -81,3 +82,106 @@ class TestNightlyTimeout:
         nightly_marked.add_marker.assert_not_called()
         ordinary.add_marker.assert_not_called()
         ordinary_marked.add_marker.assert_not_called()
+
+
+def _fake_item(markers, check_gpu_markers=True, cpu=False):
+    item = Mock()
+    item.nodeid = "tests/test_fake.py::test_fake"
+    item.get_closest_marker.side_effect = lambda name: markers.get(name)
+    item.config.getoption.side_effect = {"--check-gpu-markers": check_gpu_markers, "--cpu": cpu}.__getitem__
+    item.config.stash = {}
+    return item
+
+
+def _run_protocol(item, allocations):
+    with patch.object(root_conftest, "_num_cuda_allocations", side_effect=allocations):
+        wrapper = root_conftest.pytest_runtest_protocol(item, None)
+        next(wrapper)
+        with pytest.raises(StopIteration):
+            next(wrapper)
+
+
+class TestGpuMarker:
+    @pytest.mark.unit
+    def test_gpu_only_tests_get_gpu_marker(self):
+        gpu_only = _fake_item({"run_only_on": pytest.mark.run_only_on("GPU").mark})
+        cpu_only = _fake_item({"run_only_on": pytest.mark.run_only_on("CPU").mark})
+        unrestricted = _fake_item({})
+
+        root_conftest._add_gpu_marker_to_gpu_only_tests([gpu_only, cpu_only, unrestricted])
+
+        gpu_only.add_marker.assert_called_once_with(pytest.mark.gpu)
+        cpu_only.add_marker.assert_not_called()
+        unrestricted.add_marker.assert_not_called()
+
+    @pytest.mark.unit
+    def test_already_marked_gpu_only_test_is_not_marked_twice(self):
+        item = _fake_item({"run_only_on": pytest.mark.run_only_on("GPU").mark, "gpu": pytest.mark.gpu.mark})
+
+        root_conftest._add_gpu_marker_to_gpu_only_tests([item])
+
+        item.add_marker.assert_not_called()
+
+    @pytest.mark.unit
+    def test_audit_records_unmarked_test_that_allocates_cuda_memory(self):
+        item = _fake_item({})
+
+        # Pin the CPU default device: other test modules may set a CUDA default at import time.
+        with patch("torch.get_default_device", return_value=torch.device("cpu")):
+            _run_protocol(item, allocations=[10, 12])
+
+        assert item.config.stash[root_conftest._UNMARKED_CUDA_TESTS] == [item.nodeid]
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "markers,allocations",
+        [({"gpu": pytest.mark.gpu.mark}, [10, 12]), ({}, [10, 10])],
+        ids=["marked", "no-cuda-allocations"],
+    )
+    def test_audit_ignores_marked_or_cpu_only_tests(self, markers, allocations):
+        item = _fake_item(markers)
+
+        _run_protocol(item, allocations=allocations)
+
+        assert root_conftest._UNMARKED_CUDA_TESTS not in item.config.stash
+
+    @pytest.mark.unit
+    def test_audit_ignores_tests_run_with_leaked_cuda_default_device(self):
+        item = _fake_item({})
+
+        with patch("torch.get_default_device", return_value=torch.device("cuda")):
+            _run_protocol(item, allocations=[10, 12])
+
+        assert root_conftest._UNMARKED_CUDA_TESTS not in item.config.stash
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("check_gpu_markers,cpu", [(False, False), (True, True)], ids=["disabled", "cpu-mode"])
+    def test_audit_is_inactive_without_option_or_in_cpu_mode(self, check_gpu_markers, cpu):
+        item = _fake_item({}, check_gpu_markers=check_gpu_markers, cpu=cpu)
+
+        with patch.object(root_conftest, "_num_cuda_allocations") as num_allocations:
+            wrapper = root_conftest.pytest_runtest_protocol(item, None)
+            next(wrapper)
+            with pytest.raises(StopIteration):
+                next(wrapper)
+
+        num_allocations.assert_not_called()
+
+    @pytest.mark.unit
+    def test_session_fails_when_unmarked_cuda_tests_were_found(self):
+        session = Mock()
+        session.config.stash = {root_conftest._UNMARKED_CUDA_TESTS: ["tests/test_fake.py::test_fake"]}
+        session.exitstatus = pytest.ExitCode.OK
+
+        root_conftest.pytest_sessionfinish(session, pytest.ExitCode.OK)
+
+        assert session.exitstatus == pytest.ExitCode.TESTS_FAILED
+
+    @pytest.mark.unit
+    def test_num_cuda_allocations_is_zero_before_cuda_initialization(self):
+        torch = Mock()
+        torch.cuda.is_available.return_value = True
+        torch.cuda.is_initialized.return_value = False
+
+        assert root_conftest._num_cuda_allocations(torch) == 0
+        torch.cuda.memory_stats.assert_not_called()

@@ -265,6 +265,10 @@ jobs:
     with:
       test_to_run: ${{ needs.configure.outputs.test_to_run }}
       runner: ${{ startsWith(needs.pre-flight.outputs.runner_prefix, 'ephe-v2-') && format('{0}-a{1}', needs.pre-flight.outputs.runner_prefix, github.run_attempt) || needs.pre-flight.outputs.runner_prefix }}
+      # CPU-only unit-test jobs can move to a CPU runner pool by setting the CPU_RUNNER_PREFIX (and, if its test-data
+      # mount differs, CPU_TEST_DATA_PATH) repository variables; by default they share the GPU runners.
+      cpu-runner: ${{ vars.CPU_RUNNER_PREFIX || (startsWith(needs.pre-flight.outputs.runner_prefix, 'ephe-v2-') && format('{0}-a{1}', needs.pre-flight.outputs.runner_prefix, github.run_attempt) || needs.pre-flight.outputs.runner_prefix) }}
+      cpu-test-data-path: ${{ vars.CPU_TEST_DATA_PATH }}
       container-image: ${{ needs.cicd-test-container-build.outputs.image }}
 
   cicd-main-speech:
@@ -288,6 +292,8 @@ jobs:
     with:
       test_to_run: ${{ needs.configure.outputs.test_to_run }}
       runner: ${{ startsWith(needs.pre-flight.outputs.runner_prefix, 'ephe-v2-') && format('{0}-a{1}', needs.pre-flight.outputs.runner_prefix, github.run_attempt) || needs.pre-flight.outputs.runner_prefix }}
+      cpu-runner: ${{ vars.CPU_RUNNER_PREFIX || (startsWith(needs.pre-flight.outputs.runner_prefix, 'ephe-v2-') && format('{0}-a{1}', needs.pre-flight.outputs.runner_prefix, github.run_attempt) || needs.pre-flight.outputs.runner_prefix) }}
+      cpu-test-data-path: ${{ vars.CPU_TEST_DATA_PATH }}
       run_nightly: ${{ needs.configure.outputs.run_nightly }}
       container-image: ${{ needs.cicd-test-container-build.outputs.image }}
 

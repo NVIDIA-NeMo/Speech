@@ -60,6 +60,7 @@ def test_cutset_from_audio_file():
     return CutSet([cut])
 
 
+@pytest.mark.gpu
 def test_force_align_audio_file(force_aligner, test_cutset_from_audio_file):
     """Test force alignment with a pre-recorded audio file."""
     import re

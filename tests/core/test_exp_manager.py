@@ -458,6 +458,7 @@ class TestExpManager:
             )
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_nemo_checkpoint_save_best_model_1(self, tmp_path):
         test_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False, max_epochs=4)
         exp_manager(
@@ -473,6 +474,7 @@ class TestExpManager:
         assert float(model(torch.tensor([1.0, 1.0], device=model.device))) == 0.0
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_nemo_checkpoint_save_best_model_2(self, tmp_path):
         test_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False, max_epochs=4)
         exp_manager(
@@ -488,6 +490,7 @@ class TestExpManager:
         assert math.fabs(float(model(torch.tensor([1.0, 1.0], device=model.device))) - 0.03) < 1e-5
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_nemo_checkpoint_always_save_nemo(self, tmp_path):
         test_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False, max_epochs=4)
         exp_manager(
@@ -506,6 +509,7 @@ class TestExpManager:
         assert float(model(torch.tensor([1.0, 1.0], device=model.device))) == 0.0
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_nemo_checkpoint_doesnt_produce_too_many_nemo_ckpts(self, tmp_path):
         test_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False, max_epochs=4)
         exp_manager(

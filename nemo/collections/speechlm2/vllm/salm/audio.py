@@ -112,6 +112,12 @@ def _load_nemo_perception(perception_cfg: dict) -> nn.Module:
         ) from e
 
     cfg = DictConfig(perception_cfg)
+    target = cfg.get("target")
+    if target not in (None, "nemo.collections.speechlm2.modules.perception.AudioPerceptionModule"):
+        raise ValueError(
+            f"The vLLM plugin serves AudioPerceptionModule; the checkpoint's perception.target {target!r} "
+            "is not supported here."
+        )
     perception = AudioPerceptionModule(cfg)
     perception.eval()
     return perception

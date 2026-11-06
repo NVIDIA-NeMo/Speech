@@ -48,6 +48,8 @@ model:
     sample_rate: ${model.sample_rate}
     num_spks: ${model.max_num_of_spks}
     session_len_sec: 60  # Maximum sampled session duration in seconds.
+    soft_label_thres: 0.5 # A threshold value for setting up the binarized labels. The higher the more conservative the model becomes. 
+
     soft_targets: true  # Use continuous activity targets; false hard-thresholds them.
     batch_size: ${batch_size}
     shuffle: true
@@ -70,6 +72,8 @@ model:
     sample_rate: ${model.sample_rate}
     num_spks: ${model.max_num_of_spks}
     session_len_sec: 90  # Maximum sampled session duration in seconds.
+    soft_label_thres: 0.5 # A threshold value for setting up the binarized labels. The higher the more conservative the model becomes. 
+
     soft_targets: false  # Use continuous activity targets; false hard-thresholds them.
     batch_size: 32
     shuffle: false

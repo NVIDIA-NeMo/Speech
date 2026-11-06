@@ -272,8 +272,12 @@ jobs:
             script: ASR_dev_run_Speech_to_Text_WPE_-_Conformer
           - runner: ${{ inputs.runner }}
             script: ASR_dev_run_Speech_to_Text_Hybrid_RNNT_CTC_Prompt
+            # On a fresh runner, the first run has spent up to 8 minutes before its first training step.
+            timeout: 20
           - runner: ${{ inputs.runner }}
             script: ASR_dev_run_Speech_to_Text_RNNT_Prompt
+            # On a fresh runner, the first run has spent up to 8 minutes before its first training step.
+            timeout: 20
           - runner: ${{ inputs.runner }}
             script: L2_ASR_Multi-dataloader_dev_run_Speech_to_Text_multi-dataloader
           - runner: ${{ inputs.runner }}

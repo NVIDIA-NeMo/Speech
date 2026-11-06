@@ -35,8 +35,8 @@ from nemo.collections.speechlm2.parts.automodel_lora import (
     maybe_install_lora,
 )
 
-if torch.cuda.is_available():
-    torch.set_default_device('cuda')
+# Run on CUDA when available, without leaking the default device to other test modules (see conftest.py).
+pytestmark = pytest.mark.usefixtures("cuda_default_device")
 
 
 def resolve_pretrained_models():
@@ -237,7 +237,7 @@ requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="Automo
 
 
 @pytest.fixture(scope="module")
-def salm_with_lora():
+def salm_with_lora(cuda_default_device):
     if not torch.cuda.is_available():
         pytest.skip("Automodel requires CUDA")
     model = SALMAutomodel(BASE_CFG)
@@ -247,7 +247,7 @@ def salm_with_lora():
 
 
 @pytest.fixture(scope="module")
-def salm_without_lora():
+def salm_without_lora(cuda_default_device):
     if not torch.cuda.is_available():
         pytest.skip("Automodel requires CUDA")
     cfg = {k: v for k, v in BASE_CFG.items() if k != "lora"}
@@ -268,7 +268,7 @@ def prompt_formatter(salm_with_lora):
 
 
 @pytest.fixture(scope="module")
-def training_cutset_batch():
+def training_cutset_batch(cuda_default_device):
     cut = dummy_cut(0, recording=dummy_recording(0, with_data=True))
     cut.supervisions = [
         SupervisionSegment(

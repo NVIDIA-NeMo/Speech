@@ -23,8 +23,8 @@ from nemo.collections.common.data.utils import move_data_to_device
 from nemo.collections.speechlm2.data import DuplexS2SDataset
 from nemo.collections.speechlm2.models import DuplexS2SModel
 
-if torch.cuda.is_available():
-    torch.set_default_device('cuda')
+# Run on CUDA when available, without leaking the default device to other test modules (see conftest.py).
+pytestmark = pytest.mark.usefixtures("cuda_default_device")
 
 
 def resolve_pretrained_models():
@@ -46,8 +46,8 @@ def resolve_pretrained_models():
         }
 
 
-@pytest.fixture(scope="session")
-def model():
+@pytest.fixture(scope="module")
+def model(cuda_default_device):
     cfg = {
         **resolve_pretrained_models(),
         "pretrained_weights": False,
@@ -108,7 +108,7 @@ def model():
     return model
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def dataset(model):
     return DuplexS2SDataset(
         model.tokenizer,
@@ -120,8 +120,8 @@ def dataset(model):
     )
 
 
-@pytest.fixture(scope="session")
-def training_cutset_batch():
+@pytest.fixture(scope="module")
+def training_cutset_batch(cuda_default_device):
     cut = dummy_cut(0, recording=dummy_recording(0, with_data=True))
     cut.target_audio = dummy_recording(1, with_data=True)
     cut.supervisions = [

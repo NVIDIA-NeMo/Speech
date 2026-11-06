@@ -31,8 +31,8 @@ from nemo.collections.speechlm2.data.duplex_ear_tts_dataset import (
 from nemo.collections.speechlm2.models import DuplexEARTTS
 
 
-if torch.cuda.is_available():
-    torch.set_default_device('cuda')
+# Run on CUDA when available, without leaking the default device to other test modules (see conftest.py).
+pytestmark = pytest.mark.usefixtures("cuda_default_device")
 
 
 def test_load_language_model_uses_configured_remote_code_policy(monkeypatch):
@@ -219,15 +219,15 @@ if os.path.exists("/home/TestData/nvidia--NVIDIA-Nemotron-Nano-9B-v2/"):
     test_eartts_config["model"]["pretrained_lm_name"] = "/home/TestData/nvidia--NVIDIA-Nemotron-Nano-9B-v2/"
 
 
-@pytest.fixture(scope="session")
-def model():
+@pytest.fixture(scope="module")
+def model(cuda_default_device):
     model = DuplexEARTTS(test_eartts_config)
     if torch.cuda.is_available():
         model.to("cuda")
     return model
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def dataset(model):
     return DuplexEARTTSDataset(
         model.tokenizer,
@@ -242,8 +242,8 @@ def dataset(model):
     )
 
 
-@pytest.fixture(scope="session")
-def training_cutset_batch():
+@pytest.fixture(scope="module")
+def training_cutset_batch(cuda_default_device):
     cut = dummy_cut(0, recording=dummy_recording(0, with_data=True, duration=1.0, sampling_rate=22050))
     cut.target_audio = dummy_recording(1, with_data=True, duration=1.0, sampling_rate=22050)
     cut.supervisions = [

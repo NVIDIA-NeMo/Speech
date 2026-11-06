@@ -27,8 +27,8 @@ from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.speechlm2.data import SALMDataset
 from nemo.collections.speechlm2.models.salm_asr_decoder import SALMWithAsrDecoder
 
-if torch.cuda.is_available():
-    torch.set_default_device('cuda')
+# Run on CUDA when available, without leaking the default device to other test modules (see conftest.py).
+pytestmark = pytest.mark.usefixtures("cuda_default_device")
 
 
 def resolve_pretrained_models():
@@ -50,8 +50,8 @@ AUDIO_LOCATOR_TAG = "<|audioplaceholder|>"
 PROMPT = "llama2"
 
 
-@pytest.fixture(scope="session")
-def model():
+@pytest.fixture(scope="module")
+def model(cuda_default_device):
     cfg = {
         **resolve_pretrained_models(),
         "pretrained_weights": True,
@@ -113,18 +113,18 @@ def model():
     return model
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def dataset(model):
     return SALMDataset(model.tokenizer)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def prompt_formatter(model):
     return PromptFormatter.resolve(PROMPT)(model.tokenizer)
 
 
-@pytest.fixture(scope="session")
-def training_cutset_batch():
+@pytest.fixture(scope="module")
+def training_cutset_batch(cuda_default_device):
     cut = dummy_cut(0, recording=dummy_recording(0, with_data=True))
     cut.supervisions = [
         SupervisionSegment(

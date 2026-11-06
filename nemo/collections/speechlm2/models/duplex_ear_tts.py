@@ -57,6 +57,7 @@ from nemo.collections.speechlm2.parts.pretrained import (
     load_pretrained_hf,
     set_model_dict_for_partial_init,
 )
+from nemo.core.utils.lightning_utils import read_batch
 from nemo.utils import logging
 
 
@@ -518,7 +519,13 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             "target_text_tokens": target_text_tokens,
         }
 
-    def training_step(self, batch: dict, batch_idx: int):
+    def training_step(self, dataloader_iter):
+        # ``dataloader_iter`` signature -> Lightning selects ``_DataLoaderIterDataFetcher`` (no prefetch), which is
+        # required for exact checkpoint resumption with a stateful dataloader. See ``read_batch`` docstring.
+        batch, batch_idx = read_batch(dataloader_iter, self)
+        return self._training_step_batch(batch, batch_idx)
+
+    def _training_step_batch(self, batch: dict, batch_idx: int):
         for m in (self.tts_model,):
             if is_frozen(m):
                 m.eval()
@@ -553,7 +560,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             **loss_dict,
         }
 
-        self.log_dict(ans, on_step=True)
+        # batch_size kwarg is required by Lightning when training_step uses
+        # the ``dataloader_iter`` signature (it can't auto-infer otherwise).
+        self.log_dict(ans, on_step=True, batch_size=B)
         return ans
 
     def ensures_codec_target_dtype(self) -> None:

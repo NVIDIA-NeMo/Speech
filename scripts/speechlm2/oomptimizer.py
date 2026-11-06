@@ -461,7 +461,10 @@ def oomptimizer(
                 try:
                     click.echo(f"\tCurrent gap: {gen.current_rel_gap}... ", nl=False)
                     optimizer.zero_grad()
-                    out = model.training_step(batch, batch_idx)
+                    # speechlm2 models with a ``training_step(dataloader_iter)`` signature expose the
+                    # per-batch step as ``_training_step_batch``.
+                    step_fn = getattr(model, "_training_step_batch", model.training_step)
+                    out = step_fn(batch, batch_idx)
                     out['loss'].sum().backward()
                     optimizer.step()
                 except torch.cuda.OutOfMemoryError as e:

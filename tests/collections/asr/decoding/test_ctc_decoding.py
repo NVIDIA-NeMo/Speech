@@ -384,6 +384,31 @@ class TestCTCTimestamps(BaseTimestampsTest):
         self.tmp_tokenizer = tmp_tokenizer
         super().test_word_offsets_subword_wpe_other_delimiter()
 
+    @pytest.mark.unit
+    @pytest.mark.parametrize("batched", [False, True])
+    def test_greedy_char_and_word_offsets_follow_frames(self, batched):
+        # Frame labels (vocabulary index, 8 is the blank):
+        #   frames 0-1 blank, 2-4 'a', 5 blank, 6-7 'b', 8 ' ', 9-10 'c', 11-40 blank, 41 ' ', 42-43 'd', 44-45 blank
+        vocab = char_vocabulary()
+        blank = len(vocab)
+        frame_labels = [blank] * 2 + [1] * 3 + [blank] + [2] * 2 + [0] + [3] * 2 + [blank] * 30 + [0] + [4] * 2
+        frame_labels += [blank] * 2
+        log_probs = torch.full((1, len(frame_labels), blank + 1), -20.0)
+        log_probs[0, torch.arange(len(frame_labels)), torch.tensor(frame_labels)] = 0.0
+
+        cfg = CTCDecodingConfig(compute_timestamps=True, strategy="greedy_batch" if batched else "greedy")
+        decoding = CTCDecoding(decoding_cfg=cfg, vocabulary=vocab)
+        hyp = decoding.ctc_decoder_predictions_tensor(
+            log_probs, decoder_lengths=torch.tensor([len(frame_labels)]), return_hypotheses=True
+        )[0]
+
+        assert hyp.text == "ab c d"
+        chars = [(o["char"], int(o["start_offset"]), int(o["end_offset"])) for o in hyp.timestamp["char"]]
+        # The span of a token is the run of frames in which it is the most likely label, end exclusive.
+        assert chars == [("a", 2, 5), ("b", 6, 8), (" ", 8, 9), ("c", 9, 11), (" ", 41, 42), ("d", 42, 44)]
+        words = [(o["word"], int(o["start_offset"]), int(o["end_offset"])) for o in hyp.timestamp["word"]]
+        assert words == [("ab", 2, 8), ("c", 9, 11), ("d", 42, 44)]
+
 
 class TestCTCGreedyDecodingWithNGPU_LM:
     @pytest.mark.with_downloads

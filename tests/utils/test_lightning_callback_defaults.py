@@ -6,7 +6,7 @@ from importlib import import_module
 
 import pytest
 
-import nemo.utils  # noqa: F401
+from nemo.utils.lightning_logger_patch import preserve_trainer_callback_defaults
 
 
 @pytest.mark.unit
@@ -65,7 +65,6 @@ def test_explicit_summary_is_retained(tmp_path, namespace, rich):
 @pytest.mark.unit
 def test_callback_patch_is_idempotent():
     from lightning.pytorch.trainer.connectors.callback_connector import _CallbackConnector
-    from nemo.utils.lightning_logger_patch import preserve_trainer_callback_defaults
 
     before = _CallbackConnector._configure_progress_bar
     preserve_trainer_callback_defaults()

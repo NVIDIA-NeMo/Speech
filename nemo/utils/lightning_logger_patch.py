@@ -105,7 +105,7 @@ def _preserve_callback_selection(connector, callbacks):
                 else callbacks.ModelSummary
             )
             self.trainer.callbacks.append(summary_type())
-            return
+            return None
         return configure_summary(self, enable_model_summary)
 
     connector._configure_progress_bar = progress_bar

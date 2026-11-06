@@ -138,6 +138,16 @@ class BufferedSALMPipeline(BasePipeline):
         state.set_options(new_options)
         return state
 
+    def delete_state(self, stream_id: int) -> None:
+        """Delete the state and the stream's audio bufferer, if an is_last frame has not already removed it."""
+        super().delete_state(stream_id)
+        self.audio_bufferer.rm_bufferer(stream_id)
+
+    def reset_session(self) -> None:
+        """Reset the state pool and all audio bufferers"""
+        super().reset_session()
+        self.audio_bufferer.reset()
+
     def get_sep(self) -> str:
         """Return the separator for the text processor."""
         return self.asr_model.word_separator

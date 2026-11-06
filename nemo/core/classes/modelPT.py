@@ -1718,6 +1718,16 @@ class ModelPT(LightningModule, Model):
 
         return super().hparams
 
+    def on_save_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
+        """Store a plain configuration snapshot without changing live hparams metadata."""
+        super().on_save_checkpoint(checkpoint)
+        key = self.CHECKPOINT_HYPER_PARAMS_KEY
+        hyper_parameters = checkpoint.get(key)
+        if isinstance(hyper_parameters, (dict, DictConfig)) and 'cfg' in hyper_parameters:
+            hyper_parameters = copy.deepcopy(hyper_parameters)
+            hyper_parameters['cfg'] = OmegaConf.create(OmegaConf.to_container(self.cfg, resolve=True))
+            checkpoint[key] = hyper_parameters
+
     @property
     def validation_step_outputs(self):
         """

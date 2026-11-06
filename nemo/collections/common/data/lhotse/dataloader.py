@@ -914,7 +914,11 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     # 2. Optional augmentations.
     # 2.a. Noise mixing.
     if config.noise_path is not None:
-        noise = guess_parse_cutset(config.noise_path)
+        # The noise is read once and LazyCutMixer draws from it repeatedly. A repeated (infinite) noise CutSet,
+        # which tarred and Shar inputs are by default, has no length, so indexed noise sampling would fail.
+        # The noise shards are shuffled with the data's shard_seed, so the noise order (and therefore the mixed
+        # audio) is reproducible and is replayed exactly on resume.
+        noise = guess_parse_cutset(config.noise_path, force_finite=True, shard_seed=config.shard_seed)
         # make sure the noise is resampled to the same sample rate as the audio cuts
         noise = noise.resample(config.sample_rate)
         cuts = cuts.mix(

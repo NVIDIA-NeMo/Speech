@@ -1957,7 +1957,11 @@ def mux(
     return cuts
 
 
-def guess_parse_cutset(inp: Union[str, dict, omegaconf.DictConfig]) -> CutSet:
+def guess_parse_cutset(
+    inp: Union[str, dict, omegaconf.DictConfig],
+    force_finite: bool = False,
+    shard_seed: Union[int, str, None] = None,
+) -> CutSet:
     """
     Utility function that supports opening a CutSet from:
     * a string path to YAML input spec (see :func:`read_dataset_config` for details)
@@ -1967,12 +1971,22 @@ def guess_parse_cutset(inp: Union[str, dict, omegaconf.DictConfig]) -> CutSet:
         :class:`nemo.collections.common.data.lhotse.dataloader.LhotseDataLoadingConfig`
 
     It's intended to be used in a generic context where we are not sure which way the user will specify the inputs.
+
+    With ``force_finite=True`` the returned CutSet is iterated once instead of being repeated indefinitely
+    (tarred and Shar inputs are otherwise repeated), which consumers that do their own repetition require.
+    ``shard_seed``, when given, is used for shard shuffling unless ``inp`` sets its own ``shard_seed``
+    (the default is ``"trng"``, which makes the shard order differ between runs).
     """
     from nemo.collections.common.data.lhotse.dataloader import make_structured_with_schema_warnings
 
     if isinstance(inp, (dict, omegaconf.DictConfig)):
         try:
-            config = make_structured_with_schema_warnings(OmegaConf.from_dotlist([f"{k}={v}" for k, v in inp.items()]))
+            dotlist = [f"{k}={v}" for k, v in inp.items()]
+            if force_finite:
+                dotlist.append("force_finite=true")
+            if shard_seed is not None and "shard_seed" not in inp:
+                dotlist.append(f"shard_seed={shard_seed}")
+            config = make_structured_with_schema_warnings(OmegaConf.from_dotlist(dotlist))
             cuts, _ = read_cutset_from_config(config)
             return cuts
         except Exception as e:
@@ -1989,6 +2003,10 @@ def guess_parse_cutset(inp: Union[str, dict, omegaconf.DictConfig]) -> CutSet:
         else:
             # Assume anything else is a NeMo non-tarred manifest
             config = make_structured_with_schema_warnings(OmegaConf.from_dotlist([f"manifest_filepath={inp}"]))
+        if force_finite:
+            config.force_finite = True
+        if shard_seed is not None:
+            config.shard_seed = shard_seed
         cuts, _ = read_cutset_from_config(config)
         return cuts
     else:

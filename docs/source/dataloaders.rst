@@ -1485,6 +1485,15 @@ Audio augmentation with an ``AudioAugmentor`` (``nemo.collections.asr.parts.prep
 ``random`` module by default. A dataset assigns its generator with ``augmentor.rng = self.rng`` before calling
 ``augmentor.perturb(...)``. That generator is then used by every perturbation in the pipeline, including nested
 ones, so augmentation is restored on resume as well. ``LhotseSpeechToTextBpeEOUDataset`` does this.
+With an injected generator, noise and RIR perturbations that read tarred audio (``audio_tar_filepaths``) choose
+the file by index with that generator. They then read it by random access (``.idx`` next to each tar, or a
+cached temporary index for local tars). The sequential tar reader is not used, because its
+position is not checkpointed.
+
+Noise mixing with ``noise_path`` (``CutSet.mix``) reads the noise once and lets Lhotse repeat and sample it. The
+noise shards are shuffled with the data's ``shard_seed`` unless ``noise_path`` sets its own. With an integer
+``shard_seed``, mixed audio is reproducible and is identical after a resume. ``rir_path`` reverb draws from a
+generator that is saved with the sampler state, and it is restored exactly as well.
 
 Random transforms applied to the ``CutSet`` itself (``.map(...)`` in a data type parser) can't keep a checkpointed
 generator. They seed a generator from the cut ID instead, e.g. ``random.Random(f"{seed}:{cut.id}")``, so the result

@@ -14,6 +14,7 @@
 # limitations under the License.
 """Lhotse CutSet utilities and Parquet manifest support for NeMo."""
 
+import inspect
 import io
 import logging
 import random
@@ -810,6 +811,7 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                 slice_length=config.get("slice_length", None),
                 indexed=indexed,
                 indexes_root=indexes_root,
+                **_shar_no_auto_index_kwargs(),
             )
             if not metadata_only and not force_finite:
                 cuts = cuts.repeat(preserve_id=True)
@@ -830,6 +832,7 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                         slice_length=config.get("slice_length", None),
                         indexed=indexed,
                         indexes_root=indexes_root,
+                        **_shar_no_auto_index_kwargs(),
                     )
                     weight = len(cs)
                 else:
@@ -849,6 +852,7 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                         slice_length=config.get("slice_length", None),
                         indexed=indexed,
                         indexes_root=indexes_root,
+                        **_shar_no_auto_index_kwargs(),
                     )
                 cutsets.append(cs)
                 weights.append(weight)
@@ -877,6 +881,7 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                 slice_length=config.get("slice_length", None),
                 indexed=indexed,
                 indexes_root=indexes_root,
+                **_shar_no_auto_index_kwargs(),
             )
             if not metadata_only and not force_finite:
                 cuts = cuts.repeat(preserve_id=True)
@@ -2155,13 +2160,25 @@ def _indexed_implied_by_stateful():
         _INDEXED_IMPLIED_BY_STATEFUL.reset(token)
 
 
+def _shar_no_auto_index_kwargs() -> dict:
+    """``{"auto_create_index": False}`` when the installed Lhotse's ``CutSet.from_shar`` accepts it, else ``{}``.
+
+    With that switch Lhotse itself refuses to build a missing Shar index, which also covers remote
+    (``s3://``, ``ais://``) Shar directories that ``_require_prebuilt_shar_indexes`` can't list. Detected by
+    signature rather than version so that older Lhotse releases (e.g. 2.0.0a6) keep working.
+    """
+    if "auto_create_index" in inspect.signature(CutSet.from_shar).parameters:
+        return {"auto_create_index": False}
+    return {}
+
+
 def _require_prebuilt_shar_indexes(shar_inputs: dict, indexes_root) -> None:
     """Check the ``.idx`` files of the Shar shards that ``CutSet.from_shar(indexed=True)`` will open.
 
     Lhotse's indexed Shar reader builds missing indexes when it opens them; NeMo requires them pre-built.
     The shard files are enumerated the same way ``scripts/dataloading/build_indexes.py`` does (every
-    uncompressed ``.jsonl`` / ``.tar`` in a local Shar directory). Remote directories can't be listed here,
-    so their indexes are left to the reader.
+    uncompressed ``.jsonl`` / ``.tar`` in a local Shar directory). Remote directories can't be listed here;
+    for those, ``_shar_no_auto_index_kwargs`` makes Lhotse raise instead, when the installed version supports it.
     """
     if (fields := shar_inputs.get("fields")) is not None:
         files = [str(p) for paths in fields.values() for p in paths]

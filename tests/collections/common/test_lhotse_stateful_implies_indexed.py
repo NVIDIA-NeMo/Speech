@@ -35,6 +35,36 @@ class _Identity:
         return cuts
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("supported", [True, False])
+def test_from_shar_gets_auto_create_index_false_when_lhotse_supports_it(monkeypatch, supported):
+    # Remote Shar directories can't be listed for the NeMo-side pre-check, so Lhotse's own
+    # 'auto_create_index=False' switch is passed whenever the installed version has it.
+    from nemo.collections.common.data.lhotse.cutset import read_cutset_from_config
+
+    calls = []
+    dummy = DummyManifest(CutSet, begin_id=0, end_id=2)
+
+    if supported:
+
+        def fake_from_shar(fields=None, in_dir=None, *, indexed=None, auto_create_index=True, **kwargs):
+            calls.append({"indexed": indexed, "auto_create_index": auto_create_index})
+            return dummy
+
+    else:
+
+        def fake_from_shar(fields=None, in_dir=None, *, indexed=None, **kwargs):
+            assert "auto_create_index" not in kwargs
+            calls.append({"indexed": indexed})
+            return dummy
+
+    monkeypatch.setattr(CutSet, "from_shar", staticmethod(fake_from_shar))
+    cfg = OmegaConf.create({"shar_path": "ais://bucket/shar", "indexed": True, "force_finite": True})
+    read_cutset_from_config(cfg)
+    expected = {"indexed": True, "auto_create_index": False} if supported else {"indexed": True}
+    assert calls == [expected]
+
+
 @pytest.fixture
 def lhotse_path(tmp_path):
     cuts = DummyManifest(CutSet, begin_id=0, end_id=20, with_data=False)

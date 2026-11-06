@@ -576,8 +576,13 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
 
     @classmethod
     def _validate_phrase_items(cls, phrase_items_list: list[PhraseItem]) -> None:
-        """Validate per-phrase boosting parameters (alpha)."""
+        """Validate per-phrase boosting parameters (phrase, alpha)."""
         for item in phrase_items_list:
+            if not item.phrase:
+                raise ValueError(
+                    "Empty context-biasing phrase is not allowed: the per-phrase score is divided "
+                    "by the phrase length"
+                )
             if item.alpha is not None:
                 if item.alpha < 0:
                     raise ValueError(

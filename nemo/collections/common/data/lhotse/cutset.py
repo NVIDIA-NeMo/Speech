@@ -38,6 +38,10 @@ from lhotse.serialization import load_yaml
 from lhotse.utils import fastcopy
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
+from nemo.collections.common.data.lhotse.indexed_adapters import (  # noqa: F401 (MissingIndexError re-export)
+    MissingIndexError,
+    require_prebuilt_indexes,
+)
 from nemo.collections.common.data.lhotse.nemo_adapters import (
     LazyNeMoIterator,
     LazyNeMoTarredIterator,
@@ -145,11 +149,11 @@ def read_cutset_from_config(config: Union[DictConfig, dict]) -> Tuple[CutSet, bo
 
     # The resumable dataloader restores indexed sources in O(1) and exactly (also under bucketing),
     # so ``use_stateful_dataloader: true`` with ``indexed`` unset reads every source through its index.
-    # Those indexes must be pre-built: a missing ``.idx`` or a source type that can't be indexed is an error.
+    # As with any indexed read, the indexes must be pre-built; a source type that can't be indexed is an error.
     # An explicit ``indexed: false`` (top-level or per input_cfg entry) opts out.
     if config.get("use_stateful_dataloader", False) and config.get("indexed") is None:
         config.indexed = True
-        with _require_prebuilt_indexes():
+        with _indexed_implied_by_stateful():
             return _read_cutset_from_config(config)
     return _read_cutset_from_config(config)
 
@@ -175,10 +179,6 @@ class IncompleteConfigError(RuntimeError):
     """Placeholder for an error raised."""
 
     pass
-
-
-class MissingIndexError(FileNotFoundError):
-    """Raised when ``use_stateful_dataloader`` with ``indexed`` unset needs an index sidecar that doesn't exist."""
 
 
 KNOWN_DATA_CONFIG_TYPES = {}
@@ -801,6 +801,8 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
         if config.get("cuts_path") is not None:
             warnings.warn("Note: lhotse.cuts_path will be ignored because lhotse.shar_path was provided.")
         if isinstance(config.shar_path, (str, Path)):
+            if indexed:
+                _require_prebuilt_shar_indexes(_resolve_shar_inputs(config.shar_path, metadata_only), indexes_root)
             cuts = CutSet.from_shar(
                 **_resolve_shar_inputs(config.shar_path, metadata_only),
                 shuffle_shards=True,
@@ -819,6 +821,8 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
             for item in config.shar_path:
                 if isinstance(item, (str, Path)):
                     path = item
+                    if indexed:
+                        _require_prebuilt_shar_indexes(_resolve_shar_inputs(path, metadata_only), indexes_root)
                     cs = CutSet.from_shar(
                         **_resolve_shar_inputs(path, metadata_only),
                         shuffle_shards=True,
@@ -836,6 +840,8 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                         f"We got: '{item}'"
                     )
                     path, weight = item
+                    if indexed:
+                        _require_prebuilt_shar_indexes(_resolve_shar_inputs(path, metadata_only), indexes_root)
                     cs = CutSet.from_shar(
                         **_resolve_shar_inputs(path, metadata_only),
                         shuffle_shards=True,
@@ -862,6 +868,8 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
             )
             if metadata_only:
                 fields = {"cuts": fields["cuts"]}
+            if indexed:
+                _require_prebuilt_shar_indexes({"fields": fields}, indexes_root)
             cuts = CutSet.from_shar(
                 fields=fields,
                 shuffle_shards=True,
@@ -885,6 +893,8 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
 
         indexes_root = config.get("indexes_root", None)
         from_file_kwargs = {"indexed": config.get("indexed", None)}
+        if from_file_kwargs["indexed"]:
+            require_prebuilt_indexes([path], indexes_root)
         if indexes_root is not None:
             from_file_kwargs["index_path"] = index_file_path(path, indexes_root)
         cuts = CutSet.from_file(path, **from_file_kwargs).map(partial(resolve_relative_paths, manifest_path=path))
@@ -2133,58 +2143,40 @@ def read_nemo_tarred_to_duplex(config) -> tuple[CutSet, bool]:
 
 
 # Set while reading a CutSet whose ``indexed`` was resolved to ``True`` by ``use_stateful_dataloader``.
-_PREBUILT_INDEXES_REQUIRED: ContextVar[bool] = ContextVar("_PREBUILT_INDEXES_REQUIRED", default=False)
-
-_BUILD_INDEXES_HINT = (
-    "Build the indexes with 'python scripts/dataloading/build_indexes.py <input_cfg>' (exact, O(1) resume), "
-    "or set 'indexed: false' explicitly (top-level, or on this input_cfg entry) to stream this data; "
-    "resume then replays the data up to the checkpoint."
-)
+_INDEXED_IMPLIED_BY_STATEFUL: ContextVar[bool] = ContextVar("_INDEXED_IMPLIED_BY_STATEFUL", default=False)
 
 
 @contextmanager
-def _require_prebuilt_indexes():
-    """Fail on a missing ``.idx`` sidecar instead of letting the reader build it.
-
-    Lhotse's and NeMo's indexed readers create a missing index when they're opened. When ``indexed``
-    was only implied by ``use_stateful_dataloader`` the user never asked for that: on a large blend it
-    reads every file at startup and writes sidecars next to the data from every rank at once. We swap the
-    index builders the readers call for one that raises, for the duration of the (synchronous) CutSet build.
-    """
-    import importlib
-
-    def _refuse(data_path, *args, output_path=None, **kwargs):
-        idx_path = output_path if output_path is not None else (args[0] if args else f"{data_path}.idx")
-        raise MissingIndexError(
-            f"use_stateful_dataloader=True with 'indexed' unset reads every data source through its index, "
-            f"but the index for '{data_path}' doesn't exist (expected '{idx_path}'). {_BUILD_INDEXES_HINT}"
-        )
-
-    targets = [
-        ("lhotse.indexing", "create_jsonl_index"),
-        ("lhotse.indexing", "create_tar_index"),
-        ("lhotse.shar.readers.indexed", "create_jsonl_index"),
-        ("lhotse.shar.readers.indexed", "create_tar_index"),
-        ("nemo.collections.common.data.lhotse.indexed_adapters", "create_tar_index"),
-    ]
-    saved = []
-    for module_name, attr in targets:
-        module = importlib.import_module(module_name)
-        if hasattr(module, attr):
-            saved.append((module, attr, getattr(module, attr)))
-            setattr(module, attr, _refuse)
-    token = _PREBUILT_INDEXES_REQUIRED.set(True)
+def _indexed_implied_by_stateful():
+    token = _INDEXED_IMPLIED_BY_STATEFUL.set(True)
     try:
         yield
     finally:
-        _PREBUILT_INDEXES_REQUIRED.reset(token)
-        for module, attr, fn in saved:
-            setattr(module, attr, fn)
+        _INDEXED_IMPLIED_BY_STATEFUL.reset(token)
+
+
+def _require_prebuilt_shar_indexes(shar_inputs: dict, indexes_root) -> None:
+    """Check the ``.idx`` files of the Shar shards that ``CutSet.from_shar(indexed=True)`` will open.
+
+    Lhotse's indexed Shar reader builds missing indexes when it opens them; NeMo requires them pre-built.
+    The shard files are enumerated the same way ``scripts/dataloading/build_indexes.py`` does (every
+    uncompressed ``.jsonl`` / ``.tar`` in a local Shar directory). Remote directories can't be listed here,
+    so their indexes are left to the reader.
+    """
+    if (fields := shar_inputs.get("fields")) is not None:
+        files = [str(p) for paths in fields.values() for p in paths]
+    else:
+        in_dir = str(shar_inputs["in_dir"])
+        if "://" in in_dir or not Path(in_dir).is_dir():
+            return
+        files = [str(p) for p in sorted(Path(in_dir).iterdir()) if p.suffix in (".jsonl", ".tar")]
+    files = [f for f in files if f.endswith((".jsonl", ".tar"))]
+    require_prebuilt_indexes(files, indexes_root)
 
 
 def _check_source_is_indexed(cuts: CutSet, config: DictConfig) -> None:
     """With ``indexed`` implied by ``use_stateful_dataloader``, reject a source that was read without an index."""
-    if not _PREBUILT_INDEXES_REQUIRED.get() or not config.get("indexed", False) or cuts.is_indexed:
+    if not _INDEXED_IMPLIED_BY_STATEFUL.get() or not config.get("indexed", False) or cuts.is_indexed:
         return
     desc = config.get("type") or "manifest"
     location = next(

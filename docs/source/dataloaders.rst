@@ -378,7 +378,8 @@ Some other Lhotse related arguments we support:
 
 * ``indexed`` (default unset) opts the dataloader into Lhotse's indexed-manifest
   path, giving every adapter O(1) random access and graph-token-based exact restore.
-  Requires ``.idx`` sidecars next to every JSONL/tar file. When unset, it's
+  Requires pre-built ``.idx`` sidecars next to every JSONL/tar file (or under
+  ``indexes_root``); the dataloader never builds them. When unset, it's
   ``true`` with ``use_stateful_dataloader: true`` and auto-detected per source
   otherwise. See :ref:`indexed-resumable-dataloading` below.
 
@@ -972,23 +973,31 @@ it per-source if needed.
 
 With ``use_stateful_dataloader: true``, leaving ``indexed`` unset (or ``null``)
 means ``indexed: true`` for every source, including nested ``input_cfg`` groups
-and ``multi_config`` sub-configs. In that case the dataloader doesn't build
-missing indexes: when a source has no ``.idx`` sidecar, or its type only
-supports streaming (such as ``txt`` or ``txt_pair``), it raises at startup and
-names the file. Build the indexes with
-``python scripts/dataloading/build_indexes.py <input_cfg>``, or set
-``indexed: false`` explicitly, at the top level or on one ``input_cfg`` entry,
-to stream instead. Without ``use_stateful_dataloader``, an unset ``indexed``
+and ``multi_config`` sub-configs. A source type that only supports streaming
+(such as ``txt`` or ``txt_pair``) then raises at startup; set ``indexed: false``
+on it. Without ``use_stateful_dataloader``, an unset ``indexed``
 is auto-detected per source: a ``lhotse`` ``cuts_path`` uses its ``.idx`` file
 if one exists, while other source types stream. If a blend ends up only partly
 indexed this way, the dataloader logs a warning; set ``indexed`` explicitly to
 silence it.
 
+Indexes must be built before training. The dataloader never builds a missing
+index, whether ``indexed: true`` is set explicitly or implied by
+``use_stateful_dataloader``: building one reads the whole data file and writes
+the sidecar next to the data, from every rank at once. Instead, it checks for
+every required index file before it opens a source, and raises a
+``MissingIndexError`` at startup that lists the missing files. This covers
+JSONL ``.idx`` files (mirrored under ``indexes_root`` when set), the ``.idx``
+files of every Shar field, NeMo tarred audio ``.idx`` files, and index packs.
+Build the indexes with ``python scripts/dataloading/build_indexes.py
+<input_cfg>`` (pass ``--indexes-root`` if you train with ``indexes_root``), or
+set ``indexed: false`` to stream the data instead.
+
 Per-adapter support
 ^^^^^^^^^^^^^^^^^^^
 
-The following ``input_cfg`` types accept ``indexed: true`` today and require an
-``.idx`` sidecar next to each data file:
+The following ``input_cfg`` types accept ``indexed: true`` today and require a
+pre-built ``.idx`` sidecar next to each data file (or under ``indexes_root``):
 
 * ``nemo`` / ``nemo_tarred`` — JSONL manifest gets ``manifest.json.idx``;
   every audio tar in ``tarred_audio_filepaths`` gets ``shard.tar.idx``.

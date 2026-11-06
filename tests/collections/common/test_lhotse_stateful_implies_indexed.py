@@ -17,16 +17,17 @@ import logging
 
 import pytest
 from lhotse import CutSet
-from lhotse.indexing import create_jsonl_index
+from lhotse.indexing import create_jsonl_index, create_tar_index, index_file_path
 from lhotse.testing.dummies import DummyManifest
 from omegaconf import OmegaConf
 
-from nemo.collections.common.data.lhotse.cutset import MissingIndexError
 from nemo.collections.common.data.lhotse.dataloader import (
     get_lhotse_dataloader_from_config,
     get_lhotse_sampler_from_config,
     make_structured_with_schema_warnings,
 )
+from nemo.collections.common.data.lhotse.indexed_adapters import IndexedTarMemberReader, MissingIndexError
+from nemo.collections.common.data.lhotse.indexed_adapters import create_tar_index as create_nemo_tar_index
 
 
 class _Identity:
@@ -112,6 +113,105 @@ def test_stateful_unset_indexed_missing_index_raises_at_startup(lhotse_path, nem
     assert "indexed: false" in msg
     # The index isn't silently built next to the data.
     assert not nemo_path.with_name(nemo_path.name + ".idx").exists()
+
+
+@pytest.fixture
+def shar_dir(tmp_path):
+    import numpy as np
+    import soundfile as sf
+    from lhotse import Recording
+
+    cuts = []
+    for i in range(4):
+        wav = tmp_path / f"{i}.wav"
+        sf.write(wav, np.zeros(1600, dtype=np.float32), 16000)
+        cuts.append(Recording.from_file(wav).to_cut())
+    out = tmp_path / "shar"
+    out.mkdir()
+    CutSet(cuts).to_shar(out, fields={"recording": "wav"}, shard_size=2, compress_jsonl=False)
+    for p in out.glob("*.idx"):  # start without indexes, whatever the Shar writer does
+        p.unlink()
+    return out
+
+
+@pytest.fixture
+def nemo_tarred_paths(tmp_path):
+    import io
+    import tarfile
+
+    import numpy as np
+    import soundfile as sf
+
+    tar_path, manifest_path = tmp_path / "audio_0.tar", tmp_path / "manifest_0.json"
+    with tarfile.open(tar_path, "w") as tar, manifest_path.open("w") as mf:
+        for i in range(4):
+            buf = io.BytesIO()
+            sf.write(buf, np.zeros(1600, dtype=np.float32), 16000, format="WAV")
+            info = tarfile.TarInfo(f"{i}.wav")
+            info.size = buf.tell()
+            buf.seek(0)
+            tar.addfile(info, buf)
+            print(json.dumps({"audio_filepath": f"{i}.wav", "duration": 0.1, "text": "x", "shard_id": 0}), file=mf)
+    return manifest_path, tar_path
+
+
+def _all_sources(paths):
+    lhotse_path, nemo_path, shar, (tarred_manifest, tar) = paths
+    return {
+        "nemo": (_nemo(nemo_path), [nemo_path]),
+        "lhotse": (_lhotse(lhotse_path), [lhotse_path]),
+        "lhotse_shar": ({"type": "lhotse_shar", "shar_path": str(shar)}, sorted(shar.glob("*.*[lr]"))),
+        "nemo_tarred": (
+            {"type": "nemo_tarred", "manifest_filepath": str(tarred_manifest), "tarred_audio_filepaths": str(tar)},
+            [tarred_manifest, tar],
+        ),
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("source", ["nemo", "lhotse", "lhotse_shar", "nemo_tarred"])
+@pytest.mark.parametrize("stateful,indexed", [(True, None), (True, True), (False, True)])
+def test_indexed_read_requires_prebuilt_indexes(
+    lhotse_path, nemo_path, shar_dir, nemo_tarred_paths, source, stateful, indexed
+):
+    # Implied (stateful + unset) and explicit 'indexed: true' alike: a missing index is an error at startup,
+    # and no index is built next to the data.
+    src, data_files = _all_sources((lhotse_path, nemo_path, shar_dir, nemo_tarred_paths))[source]
+    data_files = [f for f in data_files if f.suffix in (".jsonl", ".json", ".tar")]
+    cfg = _cfg([src], use_stateful_dataloader=stateful, indexed=indexed)
+    with pytest.raises(MissingIndexError, match="build_indexes.py") as exc:
+        _sampler_cuts(cfg)
+    assert str(data_files[0]) in str(exc.value)
+    assert not any(f.with_name(f.name + ".idx").exists() for f in data_files)
+
+    # With the indexes built ahead of time, the source is read through them.
+    for f in data_files:
+        if f.suffix == ".tar" and source == "nemo_tarred":
+            create_nemo_tar_index(f, f.with_name(f.name + ".idx"))
+        elif f.suffix == ".tar":
+            create_tar_index(f)
+        else:
+            create_jsonl_index(f)
+    assert _sampler_cuts(cfg).is_indexed
+
+
+@pytest.mark.unit
+def test_missing_index_error_respects_indexes_root(nemo_path, tmp_path):
+    idx_root = tmp_path / "idx_root"
+    create_jsonl_index(nemo_path)  # next to the data, but the config points at indexes_root
+    cfg = _cfg([_nemo(nemo_path)], indexes_root=str(idx_root))
+    with pytest.raises(MissingIndexError, match=str(idx_root)):
+        _sampler_cuts(cfg)
+    create_jsonl_index(nemo_path, output_path=index_file_path(nemo_path, str(idx_root)))
+    assert _sampler_cuts(cfg).is_indexed
+
+
+@pytest.mark.unit
+def test_offline_tools_can_still_build_tar_indexes(nemo_tarred_paths):
+    _, tar = nemo_tarred_paths
+    with pytest.raises(MissingIndexError):
+        IndexedTarMemberReader(tar)
+    assert len(IndexedTarMemberReader(tar, auto_create_index=True)) == 4  # explicit opt-in
 
 
 @pytest.mark.unit

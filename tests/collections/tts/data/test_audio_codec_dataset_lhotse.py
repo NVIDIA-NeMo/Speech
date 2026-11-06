@@ -21,6 +21,8 @@ import pytest
 import soundfile as sf
 import torch
 from lhotse import CutSet
+from lhotse.dataset import SimpleCutSampler
+from torchdata.stateful_dataloader import StatefulDataLoader
 
 from nemo.collections.tts.data.audio_codec_dataset_lhotse import AudioCodecLhotseDataset
 
@@ -153,10 +155,7 @@ class TestAudioCodecLhotseDataset:
 
         # Pin the random start so we can compare against the exact source slice.
         fixed_start = 7000
-        monkeypatch.setattr(
-            "nemo.collections.tts.data.audio_codec_dataset_lhotse.random.randint",
-            lambda low, high: fixed_start,
-        )
+        monkeypatch.setattr(dataset.rng, "randint", lambda low, high: fixed_start)
 
         batch = dataset[cuts]
         segment = batch["audio"][0].numpy()
@@ -167,3 +166,48 @@ class TestAudioCodecLhotseDataset:
         # dataset currently applies no augmentation. Once we add augmentation it makes
         # sense to remove this assertion.
         assert np.allclose(segment, full[fixed_start : fixed_start + segment_samples])
+
+    @pytest.mark.unit
+    def test_restored_rng_state_reproduces_segments(self, cutset):
+        dataset = AudioCodecLhotseDataset(sample_rate=TARGET_SAMPLE_RATE, segment_duration=0.25)
+        dataset[cutset]
+        state = dataset.state_dict()
+        expected = dataset[cutset]["audio"]
+
+        restored = AudioCodecLhotseDataset(sample_rate=TARGET_SAMPLE_RATE, segment_duration=0.25)
+        restored.load_state_dict(state)
+
+        torch.testing.assert_close(restored[cutset]["audio"], expected)
+
+    @pytest.mark.unit
+    def test_segments_differ_when_cuts_are_read_again(self, cutset):
+        dataset = AudioCodecLhotseDataset(sample_rate=TARGET_SAMPLE_RATE, segment_duration=0.25)
+        first = dataset[cutset]["audio"]
+        second = dataset[cutset]["audio"]
+
+        assert not torch.equal(first, second)
+
+    @pytest.mark.unit
+    def test_stateful_dataloader_resume_reproduces_segments(self, cutset):
+        def make_loader():
+            dataset = AudioCodecLhotseDataset(sample_rate=TARGET_SAMPLE_RATE, segment_duration=0.25)
+            sampler = SimpleCutSampler(cutset, max_cuts=1, shuffle=True, seed=0)
+            return StatefulDataLoader(dataset, sampler=sampler, batch_size=None, num_workers=0)
+
+        torch.manual_seed(0)
+        uninterrupted = [batch["audio"] for batch in make_loader()]
+
+        torch.manual_seed(0)
+        loader = make_loader()
+        it = iter(loader)
+        next(it)
+        state = loader.state_dict()
+
+        torch.manual_seed(1)  # the resumed process does not share the global RNG state
+        loader = make_loader()
+        loader.load_state_dict(state)
+        resumed = [batch["audio"] for batch in loader]
+
+        assert len(resumed) == len(uninterrupted) - 1
+        for actual, expected in zip(resumed, uninterrupted[1:]):
+            torch.testing.assert_close(actual, expected)

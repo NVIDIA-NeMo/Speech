@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import gzip
 import struct
 from pathlib import Path
 
@@ -38,6 +39,28 @@ def _spec(path: Path, declaration: str) -> IndexPackCollectionSpec:
         paths=(str(path),),
         offsets_required=False,
     )
+
+
+def test_gzip_pack_rebind_preserves_seek_metadata_but_relocation_requires_rebuild(tmp_path: Path) -> None:
+    pytest.importorskip("indexed_gzip")
+    records = tmp_path / "records.jsonl.gz"
+    with gzip.open(records, "wt") as source:
+        source.write('{"id": 1}\n')
+    create_jsonl_index(records)
+    source_spec = IndexPackCollectionSpec(role="records", kind="jsonl", source_spec="old", paths=(str(records),))
+    target_spec = IndexPackCollectionSpec(role="records", kind="jsonl", source_spec="new", paths=(str(records),))
+    source_pack = tmp_path / "source.idxpack"
+    rebound = tmp_path / "rebound.idxpack"
+    write_index_pack(source_pack, [source_spec])
+    rebind_idxpack_collections(source_pack, rebound, [target_spec])
+    with IndexPack(rebound) as pack:
+        assert pack.gzip_index_info(str(records)) is not None
+        assert pack.collection(target_spec.key).locate(0).path == str(records)
+
+    with pytest.raises(ValueError, match="cannot be relocated"):
+        relocate_idxpack_collections(
+            rebound, tmp_path / "relocated.idxpack", [target_spec], trust_relocated_payloads=True
+        )
 
 
 def test_rebinds_collection_key_and_layout_without_changing_payload(tmp_path: Path) -> None:

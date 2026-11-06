@@ -4,17 +4,23 @@ Failure signatures, triggers, and fixes for indexed + resumable Lhotse
 migrations. These are generic patterns; verify exact file names and line numbers
 against the user's checkout before citing them in a report.
 
-## §1 - Compressed JSONL, Shar cuts, or tar paths
+## §1 - Unsupported compression or missing gzip support
 
-**Signature**: index build raises a `ValueError` saying the source requires
-uncompressed JSONL or tar data but received a compressed path such as
-`*.jsonl.gz` or `*.tar.gz`.
+**Signature**: an indexed reader rejects compressed tar or non-gzip compressed
+JSONL, or gzip JSONL raises an `ImportError` for `indexed_gzip` or an error about
+missing `.gzidx`.
 
-**Trigger**: an indexed source points at compressed cuts, manifests, or tar
-files. Sidecar offsets require stable byte positions in seekable files.
+**Trigger**: an unsupported compression format, an older Lhotse version, a
+missing optional gzip dependency, or an incomplete gzip sidecar pair.
 
-**Fix**: re-export or materialize the source in an uncompressed seekable format.
-For Shar-style data, export cuts as plain JSONL when sidecar indexing is needed.
+**Fix**: keep `.jsonl.gz`/line-delimited `.json.gz` sources compressed when the
+installed Lhotse supports gzip indexing. Install `lhotse[gzip]` in both build
+and runtime environments and build `<source>.idx` plus `<source>.gzidx` in the
+same index mirror. The offsets refer to the uncompressed stream; `.gzidx`
+provides gzip seek checkpoints. Stage both sidecars for loose reads. Supported
+v4 packs embed these checkpoints and can be read without the loose sidecars.
+Compressed tar and other JSONL compression formats still require unpacking or
+conversion; remote gzip requires a seekable backend.
 
 ## §2 - `extra_fields` or `slice_length` on indexed NeMo entries
 

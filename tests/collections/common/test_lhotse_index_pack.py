@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import gzip
 import io
 import json
 import struct
@@ -33,6 +34,7 @@ from lhotse.index_pack import (
 from lhotse.indexing import create_jsonl_index
 from lhotse.shar.lazy_pointer import decode_pointer, read_payload
 from omegaconf import OmegaConf
+from scripts.dataloading import build_indexes
 from scripts.dataloading import convert_indexes_to_idxpack as converter
 from scripts.dataloading import validate_idxpack_records as record_validator
 from scripts.dataloading.convert_indexes_to_idxpack import main
@@ -52,6 +54,69 @@ from nemo.collections.common.data.lhotse.nemo_tar_routing import (
     nemo_tar_ordinal_map_source_spec,
     nemo_tar_shard_map_collection_key,
 )
+
+
+def test_gzip_jsonl_idxpack_build_and_validation(tmp_path):
+    pytest.importorskip("indexed_gzip")
+    path = tmp_path / "records.jsonl.gz"
+    records = [{"id": str(i), "text": "hello" * 100} for i in range(4)]
+    with gzip.open(path, "wt") as source:
+        for record in records:
+            source.write(json.dumps(record) + "\n")
+
+    job = build_indexes.IndexJob(str(path), build_indexes.JSONL)
+    build_indexes._build_one(job)
+    build_indexes._validate_legacy_sidecar(job)
+    assert (tmp_path / "records.jsonl.gz.gzidx").is_file()
+    assert list(nemo_tar_routing._iter_indexed_manifest_rows(str(path), job.idx_path())) == records
+
+    spec = IndexPackCollectionSpec(role="manifest", kind="jsonl", source_spec=str(path), paths=(str(path),))
+    pack_path = tmp_path / "records.idxpack"
+    write_index_pack(pack_path, [spec])
+    Path(job.idx_path()).unlink()
+    (tmp_path / "records.jsonl.gz.gzidx").unlink()
+    with IndexPack(pack_path) as pack:
+        assert pack.version == 4
+        assert list(converter._iter_packed_manifest_shard_rows(pack.collection(spec.key), 0)) == records
+    result = CliRunner().invoke(validate_records_main, [str(pack_path)])
+    assert result.exit_code == 0, result.output
+    assert "records_checked=4" in result.output
+
+
+def test_converter_rejects_truncated_gzip_sidecar(tmp_path):
+    pytest.importorskip("indexed_gzip")
+    manifest = tmp_path / "records.jsonl.gz"
+    first = b'{"text": "first"}\n'
+    manifest.write_bytes(gzip.compress(first + b'{"text": "second"}\n'))
+    index = create_jsonl_index(manifest)
+    Path(index).write_bytes(struct.pack("<QQ", 0, len(first)))
+    config = tmp_path / "dataset.yaml"
+    config.write_text(yaml.safe_dump([{"type": "materialized_sft_messages", "paths": [str(manifest)]}]))
+    target = tmp_path / "records.idxpack"
+    result = CliRunner().invoke(main, ["--output", str(target), str(config)])
+    assert result.exit_code != 0
+    assert not target.exists()
+
+
+def test_gzip_manifest_routing_and_validation_use_s3_mirror(tmp_path, monkeypatch):
+    pytest.importorskip("indexed_gzip")
+    mirror = tmp_path / "source-mirror"
+    manifest = mirror / "bucket" / "records.jsonl.gz"
+    manifest.parent.mkdir(parents=True)
+    records = [{"id": 0}, {"id": 1}]
+    manifest.write_bytes(gzip.compress(b"".join(json.dumps(row).encode() + b"\n" for row in records)))
+    remote = "s3://bucket/records.jsonl.gz"
+    indexes_root = tmp_path / "indexes"
+    job = build_indexes.IndexJob(remote, build_indexes.JSONL, str(indexes_root))
+    create_jsonl_index(manifest, output_path=job.idx_path())
+    monkeypatch.setenv("LHOTSE_S3_LOCAL_MIRROR_ROOTS", str(mirror))
+
+    def reject_remote(*args, **kwargs):
+        raise AssertionError("Mirrored gzip sources must be opened locally")
+
+    monkeypatch.setattr("lhotse.ais.AISRangeReader", reject_remote)
+    assert list(nemo_tar_routing._iter_indexed_manifest_rows(remote, job.idx_path())) == records
+    assert build_indexes._is_indexed(job)
 
 
 def _make_native_tar_dataset(tmp_path):
@@ -81,9 +146,10 @@ def _make_native_tar_dataset(tmp_path):
     return tar_path, idx_path, input_cfg
 
 
-def _make_native_tar_routing_dataset(tmp_path, rows, members, *, tar_format=None):
-    manifest = tmp_path / "manifest.jsonl"
-    manifest.write_text("".join(json.dumps(row) + "\n" for row in rows))
+def _make_native_tar_routing_dataset(tmp_path, rows, members, *, tar_format=None, compress_jsonl=False):
+    manifest = tmp_path / ("manifest.jsonl.gz" if compress_jsonl else "manifest.jsonl")
+    content = "".join(json.dumps(row) + "\n" for row in rows).encode("utf-8")
+    manifest.write_bytes(gzip.compress(content) if compress_jsonl else content)
     create_jsonl_index(manifest)
 
     tar_path = tmp_path / "audio.tar"
@@ -453,6 +519,12 @@ def test_idxpack_json_record_validator_reuses_one_remote_reader_per_shard(tmp_pa
     assert summary.records_checked == 2
     assert opens == [remote_manifest]
 
+    opens.clear()
+    with IndexPack(pack_path) as pack:
+        rows = list(converter._iter_packed_manifest_shard_rows(pack.collection(spec.key), 0))
+    assert rows == [{"id": "one"}, {"id": "two"}]
+    assert opens == [remote_manifest]
+
 
 def test_converter_does_not_publish_pack_with_malformed_json_records(tmp_path):
     manifest, _ = _make_malformed_jsonl_pack(tmp_path)
@@ -670,7 +742,12 @@ def _native_tar_route_reuse_args(source_cfg: Path, source_pack: Path) -> list[st
     ]
 
 
-def test_converter_reuses_authenticated_route_when_only_nonrouting_fields_change(tmp_path, monkeypatch):
+@pytest.mark.parametrize("compress_jsonl", [False, True])
+def test_converter_reuses_authenticated_route_when_only_nonrouting_fields_change(
+    tmp_path, monkeypatch, compress_jsonl
+):
+    if compress_jsonl:
+        pytest.importorskip("indexed_gzip")
     source_root = tmp_path / "source"
     source_root.mkdir()
     source_manifest, tar_path, source_cfg = _make_native_tar_routing_dataset(
@@ -680,10 +757,15 @@ def test_converter_reuses_authenticated_route_when_only_nonrouting_fields_change
             for name in ("C.wav", "A.wav", "D.wav", "B.wav")
         ],
         [(f"{name}.wav", name.encode()) for name in "ABCD"],
+        compress_jsonl=compress_jsonl,
     )
     source_pack = tmp_path / "source.idxpack"
     source_result = CliRunner().invoke(main, ["--output", str(source_pack), str(source_cfg)])
     assert source_result.exit_code == 0, source_result.output
+    if compress_jsonl:
+        # Reuse reads gzip seek data from the authenticated pack alone.
+        Path(f"{source_manifest}.idx").unlink()
+        Path(f"{source_manifest}.gzidx").unlink()
 
     target_manifest = tmp_path / "target-manifest.jsonl"
     target_manifest.write_text(
@@ -701,6 +783,10 @@ def test_converter_reuses_authenticated_route_when_only_nonrouting_fields_change
             for name in ("C.wav", "A.wav", "D.wav", "B.wav")
         )
     )
+    if compress_jsonl:
+        compressed = target_manifest.with_suffix(".jsonl.gz")
+        compressed.write_bytes(gzip.compress(target_manifest.read_bytes()))
+        target_manifest = compressed
     create_jsonl_index(target_manifest)
     target_cfg = tmp_path / "target.yaml"
     target_cfg.write_text(

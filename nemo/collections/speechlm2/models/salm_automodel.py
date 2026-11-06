@@ -228,16 +228,9 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         passed through Automodel's positional per-depth embedding contract.
         These values are absent for the BSHD path.
         """
-        # input_embeds: (B, T, H) for BSHD or (T_total, H) for THD packed
-        # (the THD shape mirrors Automodel's _shard_thd_chunk_for_te output —
-        # the model squeezes 3D inputs internally when qkv_format=="thd", so
-        # passing 2D directly skips that hop)
+        # The embeddings already contain the audio and text inputs. Automodel
+        # accepts input_ids=None for both padded BSHD and packed THD inputs.
         llm_input_ids = None
-        if llm_kwargs.get("qkv_format") == "thd":
-            # Automodel's THD preprocessor still squeezes input_ids even when
-            # inputs_embeds carries the real token/audio embeddings.
-            seq_len = input_embeds.shape[0] if input_embeds.ndim == 2 else input_embeds.shape[1]
-            llm_input_ids = torch.zeros((1, seq_len), device=input_embeds.device, dtype=torch.long)
 
         mtp_embed_inputs = tuple(llm_kwargs.pop("mtp_embed_inputs", ()))
         llm_positional_args = (llm_input_ids, *mtp_embed_inputs) if mtp_embed_inputs else ()

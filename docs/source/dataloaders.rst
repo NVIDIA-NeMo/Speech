@@ -1248,7 +1248,9 @@ resume:
 * ``set_epoch`` is a no-op while restored state is pending, so the resumed run
   continues the same epoch instead of starting a new one;
 * ``num_workers`` and ``world_size`` must match between save and restore (a
-  hard requirement of ``StatefulDataLoader``).
+  hard requirement of ``StatefulDataLoader``). NeMo records both in the saved
+  dataloader state and raises a ``RuntimeError`` naming the saved and current
+  values when they differ.
 
 Non-indexed pipelines fall back to Lhotse's ``_fast_forward()`` replay (O(N)
 in batches consumed before the checkpoint) and require ``num_workers`` only to

@@ -350,7 +350,10 @@ The PyTorch Lightning ``trainer`` related arguments:
     because Lhotse makes the dataloader infinite, so we'd never go past epoch 0. This approach guarantees
     we will never hang the training because the dataloader in some node has less mini-batches than the others
     in some epochs. The value provided here will be the effective length of each "pseudo-epoch" after which we'll
-    trigger the validation loop.
+    trigger the validation loop. A pseudo-epoch boundary does not restart the data stream: the next pseudo-epoch
+    continues the same dataloader iterator, so no batches already prepared by the dataloading workers are dropped.
+    Only when an iterable dataset is actually exhausted (e.g. ``force_finite: true``) does the next epoch start
+    a new pass.
 * ``max_steps`` is the total number of steps we expect to be training for. It is required for the same reason as ``limit_train_batches``; since we'd never go past epoch 0, the training would have never finished.
 
 Some other Lhotse related arguments we support:

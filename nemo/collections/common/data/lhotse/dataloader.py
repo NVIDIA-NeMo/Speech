@@ -43,6 +43,7 @@ from lhotse.dataset.sampling.base import CutSampler, SamplingConstraint, TimeCon
 from lhotse.lazy import LazyFlattener
 from lhotse.utils import fix_random_seed
 from omegaconf import DictConfig, OmegaConf
+from torch.utils.data.dataloader import _DatasetKind
 
 from nemo.collections.common.data.lhotse.audio_loading import configure_dataset_audio_loading
 from nemo.collections.common.data.lhotse.audio_token_estimator import AudioTokenEstimator
@@ -387,6 +388,9 @@ def _build_dataloader(
     ``CombinedLoader._state_dicts()`` doesn't broadcast rank-0's iterator
     state to every rank (which would corrupt per-shard partitioning — see
     the 2026-05-14 post-mortem).
+
+    For iterable-style datasets, the returned loader keeps one iterator alive across ``iter()`` calls until the
+    stream is exhausted (see :class:`_ContinueIterableStreamMixin`).
     """
     if use_stateful_dataloader:
         if dp_world_size is not None and dp_world_size > 1:
@@ -397,7 +401,36 @@ def _build_dataloader(
                 **kwargs,
             )
         return _lhotse_stateful_dataloader_cls()(**kwargs)
-    return torch.utils.data.DataLoader(**kwargs)
+    return _LhotseDataLoader(**kwargs)
+
+
+class _ContinueIterableStreamMixin:
+    """Make ``iter(loader)`` continue the live iterator of an iterable-style dataset.
+
+    Lightning calls ``iter()`` on the train loader at every epoch boundary, including the boundaries set by
+    ``limit_train_batches`` (speechlm2 uses them as an epoch length over an infinite Lhotse stream). A stock
+    ``DataLoader`` with persistent workers then resets its iterator, which discards the
+    ``prefetch_factor * num_workers`` batches the workers had already read from the stream, so that data is
+    skipped at every boundary. Here ``iter()`` returns the existing iterator as long as the stream has not ended.
+    Once it raises ``StopIteration`` (a finite stream), the next ``iter()`` starts a new pass as before.
+    Map-style datasets keep the stock behavior: each ``iter()`` starts a new epoch of the sampler.
+    """
+
+    def __iter__(self):
+        iterator = getattr(self, "_iterator", None)
+        if (
+            self._dataset_kind == _DatasetKind.Iterable
+            and iterator is not None
+            # StatefulDataLoader created this iterator in state_dict(); its own __iter__ hands it out.
+            and not getattr(self, "_initial_iter_for_state_dict", False)
+            and not _is_iterator_exhausted(iterator)
+        ):
+            return iterator
+        return super().__iter__()
+
+
+class _LhotseDataLoader(_ContinueIterableStreamMixin, torch.utils.data.DataLoader):
+    """``torch.utils.data.DataLoader`` used for Lhotse data when ``use_stateful_dataloader=False``."""
 
 
 class _PerRankStatefulDataLoader:
@@ -1472,8 +1505,12 @@ def _lhotse_stateful_dataloader_cls() -> type:
 
 @lru_cache(maxsize=None)
 def _make_lhotse_stateful_dataloader_cls(base: type) -> type:
-    class LhotseStatefulDataLoader(base):
+    class LhotseStatefulDataLoader(_ContinueIterableStreamMixin, base):
         """``StatefulDataLoader`` that leaves a restored Lhotse sampler in a normal iterating state.
+
+        Iterable-style datasets keep one live iterator across ``iter()`` calls; see
+        :class:`_ContinueIterableStreamMixin`. ``load_state_dict()`` drops that iterator, so the next
+        ``iter()`` resumes from the loaded state.
 
         When torchdata restores a map-style loader, it loads the saved state into the index
         sampler, calls ``iter()`` on it, and then loads the same state again into the sampler
@@ -1496,3 +1533,12 @@ def _make_lhotse_stateful_dataloader_cls(base: type) -> type:
             return iterator
 
     return LhotseStatefulDataLoader
+
+
+def _is_iterator_exhausted(iterator) -> bool:
+    """Whether a DataLoader iterator over an iterable-style dataset has raised ``StopIteration``."""
+    finished = getattr(iterator, "_finished", None)  # torchdata StatefulDataLoader iterators
+    if finished is not None:
+        return finished
+    # torch's persistent multi-worker iterator marks each worker as done when its stream ends.
+    return not any(getattr(iterator, "_workers_status", ()))

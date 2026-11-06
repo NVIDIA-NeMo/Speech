@@ -116,6 +116,35 @@ class BatchedCacheFeatureBufferer:
             stream_id = self.slotidx2streamidx[slot_id]
             del self.slotidx2streamidx[slot_id], self.streamidx2slotidx[stream_id]
 
+    def free_stream(self, stream_id: int) -> None:
+        """
+        Free the slot held by stream_id if any.
+
+        Idempotent: a no-op when the stream has no mapped slot (for example after an
+        is_last free in update()). Safe to call from delete_state().
+        Args:
+            stream_id (int): stream id whose slot should be returned to the free pool
+        """
+        slot_idx = self.streamidx2slotidx.get(stream_id)
+        if slot_idx is not None:
+            self.free_slots([slot_idx])
+
+    def reset(self) -> None:
+        """
+        Clear all stream-to-slot mappings and restore every slot to the free pool.
+
+        Also zeroes the feature buffer and resets each per-slot audio bufferer.
+        Used by cache-aware pipeline session open/close/reset.
+        """
+        self.streamidx2slotidx.clear()
+        self.slotidx2streamidx.clear()
+        self.available_slots = Queue(self.num_slots)
+        for i in range(self.num_slots):
+            self.available_slots.put(i)
+        self.feature_buffer.fill_(self.ZERO_LEVEL_SPEC_DB_VAL)
+        for audio_bufferer in self.audio_bufferers:
+            audio_bufferer.reset()
+
     def reset_slots(self, slot_ids: list[int]) -> None:
         """
         Reset the slots for the given slot_ids

@@ -87,3 +87,33 @@ def test_lhotse_asr_speaker_dataset(tokenizer):
     assert bg_spk_targets[1].long().sum().item() in [6, 7]
 
     assert (spk_targets[1] + bg_spk_targets[1]).long().tolist() == [1] * 13
+
+
+def _two_speaker_cuts():
+    cuts = DummyManifest(CutSet, begin_id=0, end_id=4, with_data=True)
+    for cut in cuts:
+        cut.supervisions = [
+            SupervisionSegment(
+                id=f"{cut.id}-sup0", recording_id=cut.recording_id, start=0, duration=0.5, text="first", speaker="0"
+            ),
+            SupervisionSegment(
+                id=f"{cut.id}-sup1", recording_id=cut.recording_id, start=0.5, duration=0.5, text="second", speaker="1"
+            ),
+        ]
+    return cuts
+
+
+def test_lhotse_asr_speaker_dataset_restored_rng_state_reproduces_target_speakers(tokenizer):
+    cuts = _two_speaker_cuts()
+    dataset = LhotseSpeechToTextSpkBpeDataset(cfg={}, tokenizer=tokenizer)
+    state = dataset.state_dict()
+    expected = [dataset[cuts] for _ in range(4)]
+
+    restored = LhotseSpeechToTextSpkBpeDataset(cfg={}, tokenizer=tokenizer)
+    restored.load_state_dict(state)
+
+    for expected_batch in expected:
+        for actual, exp in zip(restored[cuts], expected_batch):
+            torch.testing.assert_close(actual, exp)
+    # The target speaker is drawn at random, so the targets differ between reads of the same cuts.
+    assert len({tuple(batch[4].flatten().tolist()) for batch in expected}) > 1

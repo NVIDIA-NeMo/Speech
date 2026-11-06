@@ -18,7 +18,6 @@ Simplified Lhotse dataset that returns language ID indices instead of full promp
 The model creates the prompt tensor using the actual encoded length.
 """
 
-import random
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -28,13 +27,16 @@ from lhotse.dataset.collation import collate_vectors
 
 from nemo.collections.asr.parts.utils.prompt_language_utils import AUTO_PROMPT_LANGUAGE, resolve_prompt_index
 from nemo.collections.common.data.lhotse.audio_loading import LhotseAudioLoadingDatasetMixin
+from nemo.collections.common.data.lhotse.stateful_rng import StatefulRandomMixin
 from nemo.collections.common.tokenizers.aggregate_tokenizer import TokenizerWrapper
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 from nemo.utils import logging
 
 
-class LhotseSpeechToTextBpeDatasetWithPromptIndex(LhotseAudioLoadingDatasetMixin, torch.utils.data.Dataset):
+class LhotseSpeechToTextBpeDatasetWithPromptIndex(
+    StatefulRandomMixin, LhotseAudioLoadingDatasetMixin, torch.utils.data.Dataset
+):
     """
     Simplified dataset class for speech-to-text with prompt support.
 
@@ -48,6 +50,11 @@ class LhotseSpeechToTextBpeDatasetWithPromptIndex(LhotseAudioLoadingDatasetMixin
         transcripts: Token IDs [B, T]
         transcript_length: Token lengths [B]
         language_prompt_indices: Language ID indices [B] (NOT full tensors)
+
+    In "unified" prompt mode the auto prompt is drawn at random.
+    Random draws use the dataset's checkpointed generator ``self.rng`` (see
+    :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`), so a run resumed from a
+    ``StatefulDataLoader`` checkpoint produces the same batches as an uninterrupted run.
     """
 
     @property
@@ -136,12 +143,12 @@ class LhotseSpeechToTextBpeDatasetWithPromptIndex(LhotseAudioLoadingDatasetMixin
         elif mode == 'auto':
             return self.auto_index
         elif mode == 'unified':
-            if random.random() < self.unified_auto_ratio:
+            if self.rng.random() < self.unified_auto_ratio:
                 return self.auto_index
             return self._get_language_index(cut)
         else:
             logging.warning(f"Unknown prompt_mode '{mode}', falling back to unified")
-            if random.random() < self.unified_auto_ratio:
+            if self.rng.random() < self.unified_auto_ratio:
                 return self.auto_index
             return self._get_language_index(cut)
 

@@ -157,7 +157,7 @@ class ProfilingBatchGenerator:
                     if 0 <= position < seq_length:
                         tnsr[:, position] = token_id
             else:
-                raise RuntimeError("Unexpected item in oomptimizer schema: {item}")
+                raise RuntimeError(f"Unexpected item in oomptimizer schema: {item}")
             batch.append(tnsr)
             names.append(item.get("name"))
         args = [elem for name, elem in zip(names, batch) if name is None]

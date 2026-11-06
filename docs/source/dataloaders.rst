@@ -1248,7 +1248,13 @@ resume:
 * ``set_epoch`` is a no-op while restored state is pending, so the resumed run
   continues the same epoch instead of starting a new one;
 * ``num_workers`` and ``world_size`` must match between save and restore (a
-  hard requirement of ``StatefulDataLoader``).
+  hard requirement of ``StatefulDataLoader``);
+* ``concurrent_bucketing`` defaults to ``null`` (auto), which disables it with
+  the stateful dataloader: its background bucketing thread makes the batch
+  order nondeterministic, so exact resume is impossible. Explicitly setting
+  ``concurrent_bucketing: true`` together with
+  ``use_stateful_dataloader: true`` raises a ``ValueError``. Without the
+  stateful dataloader it stays enabled by default.
 
 Non-indexed pipelines fall back to Lhotse's ``_fast_forward()`` replay (O(N)
 in batches consumed before the checkpoint) and require ``num_workers`` only to

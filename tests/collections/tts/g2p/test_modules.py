@@ -15,6 +15,7 @@
 
 import os
 import unicodedata
+from unittest.mock import patch
 
 import pytest
 
@@ -28,6 +29,7 @@ class TestIpaG2p:
     PHONEME_DICT_PATH_DE = os.path.join(PHONEME_DICT_DIR, "test_dict_de.txt")
     PHONEME_DICT_PATH_EN = os.path.join(PHONEME_DICT_DIR, "test_dict_en.txt")
     PHONEME_DICT_PATH_ES = os.path.join(PHONEME_DICT_DIR, "test_dict_es.txt")
+    PHONEME_DICT_PATH_VI = os.path.join(PHONEME_DICT_DIR, "test_dict_vi.txt")
     GRAPHEME_PREFIX = "#"
 
     @staticmethod
@@ -39,7 +41,11 @@ class TestIpaG2p:
         phoneme_probability=None,
         grapheme_case=GRAPHEME_CASE_UPPER,
         grapheme_prefix="",
+        latin_charset_version=None,
     ):
+        kwargs = {}
+        if latin_charset_version is not None:
+            kwargs["latin_charset_version"] = latin_charset_version
         return IpaG2p(
             phoneme_dict,
             locale=locale,
@@ -48,6 +54,7 @@ class TestIpaG2p:
             phoneme_probability=phoneme_probability,
             grapheme_case=grapheme_case,
             grapheme_prefix=grapheme_prefix,
+            **kwargs,
         )
 
     @pytest.mark.run_only_on('CPU')
@@ -407,3 +414,78 @@ class TestIpaG2p:
 
         phonemes = g2p(input_text)
         assert phonemes == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_parse_phoneme_dict_with_extended_latin_entries(self, tmp_path):
+        # Words starting with a latin letter above U+00FF (Vietnamese "ĐƯỜNG" with Đ U+0110, French "ŒUVRE"
+        # with Œ U+0152) used to be silently dropped by the dictionary parser because its accepted character
+        # range stopped at the end of Latin-1 Supplement.
+        phoneme_dict_path = tmp_path / "test_dict_extended_latin.txt"
+        phoneme_dict_path.write_text("MAISON  mɛzˈɔ̃\nŒUVRE  ˈœvʁ\nĐƯỜNG  ɗˈɨəŋ\nVIỆT  vˈiət\n", encoding="utf-8")
+
+        phoneme_dict_obj = IpaG2p._parse_phoneme_dict(str(phoneme_dict_path), latin_charset_version=2)
+
+        assert set(phoneme_dict_obj.keys()) == {"MAISON", "ŒUVRE", "ĐƯỜNG", "VIỆT"}
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_forward_call_vi_vn(self):
+        # Vietnamese words containing letters above U+00FF (Ệ U+1EC6, Đ U+0110, Ư U+01AF, Ờ U+1EDC) must be
+        # kept whole by the word tokenizer and found in the phoneme dictionary.
+        input_text = "xin chào việt nam, đường!"
+        expected_output = [char for char in "sˈin tɕˈaw vˈiət nˈam, ɗˈɨəŋ!"]
+        g2p = self._create_g2p(phoneme_dict=self.PHONEME_DICT_PATH_VI, locale="vi-VN", latin_charset_version=2)
+
+        phonemes = g2p(input_text)
+        assert phonemes == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_extended_latin_is_opt_in_for_vocab_compatibility(self, tmp_path):
+        phoneme_dict_path = tmp_path / "test_dict_versioned_latin.txt"
+        phoneme_dict_path.write_text("MAISON  mɛzˈɔ̃\nŒUVRE  ˈœvʁ\n", encoding="utf-8")
+
+        with patch("nemo.collections.tts.g2p.models.i18n_ipa.logging.warning"):
+            default_g2p = self._create_g2p(phoneme_dict=phoneme_dict_path, locale="fr-FR", use_chars=True)
+            legacy_g2p = self._create_g2p(
+                phoneme_dict=phoneme_dict_path, locale="fr-FR", use_chars=True, latin_charset_version=1
+            )
+        extended_g2p = self._create_g2p(
+            phoneme_dict=phoneme_dict_path, locale="fr-FR", use_chars=True, latin_charset_version=2
+        )
+
+        assert default_g2p.symbols == legacy_g2p.symbols
+        assert "ŒUVRE" not in default_g2p.phoneme_dict
+        assert "ŒUVRE" in extended_g2p.phoneme_dict
+        assert default_g2p("œuvre") != extended_g2p("œuvre")
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_parse_phoneme_dict_warns_about_unsupported_letter_entries(self, tmp_path):
+        phoneme_dict_path = tmp_path / "test_dict_skipped.txt"
+        phoneme_dict_path.write_text("MAISON  mɛzˈɔ̃\nꝆ  ʝ\n", encoding="utf-8")
+
+        with patch("nemo.collections.tts.g2p.models.i18n_ipa.logging.warning") as mock_warning:
+            phoneme_dict_obj = IpaG2p._parse_phoneme_dict(str(phoneme_dict_path), latin_charset_version=2)
+
+        assert set(phoneme_dict_obj) == {"MAISON"}
+        mock_warning.assert_called_once()
+        assert "Skipped 1 entries" in mock_warning.call_args[0][0]
+        assert "Ꝇ" in mock_warning.call_args[0][0]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_forward_call_en_us_with_extended_latin(self, tmp_path):
+        phoneme_dict_path = tmp_path / "test_dict_extended_en.txt"
+        phoneme_dict_path.write_text("ŒUVRE  z\n", encoding="utf-8")
+        g2p = self._create_g2p(phoneme_dict=phoneme_dict_path, locale="en-US", latin_charset_version=2)
+
+        assert g2p("œuvre") == ["z"]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    @pytest.mark.parametrize('version', [True, 1.0, 3])
+    def test_invalid_latin_charset_version(self, version):
+        with pytest.raises(ValueError, match="Unsupported latin_charset_version"):
+            self._create_g2p(latin_charset_version=version)

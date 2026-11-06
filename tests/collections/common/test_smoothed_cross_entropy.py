@@ -16,7 +16,7 @@
 import pytest
 import torch
 
-from nemo.collections.common.losses import SmoothedCrossEntropyLoss
+from nemo.collections.common.losses import SmoothedCrossEntropyLoss, SmoothedNLLLoss
 
 SMOOTHING = 0.1
 
@@ -70,3 +70,42 @@ class TestSmoothedCrossEntropyLossGradientOnly:
         targets = smoothed_targets(labels, num_labels, SMOOTHING)
         (-(targets * reference.log_softmax(-1)).sum(-1)).sum().backward()
         torch.testing.assert_close(candidate.grad, reference.grad)
+
+
+class TestSmoothedNLLLoss:
+    @pytest.mark.unit
+    @pytest.mark.parametrize("reduction", ["mean", "batchmean", "batch"])
+    @pytest.mark.parametrize("label_smoothing", [0.0, 0.1])
+    def test_smoothed_nll_loss_default_mask_and_lengths_none(self, reduction, label_smoothing):
+        """Testing default case where output_mask=None and lengths=None when vocab size != seq len."""
+        torch.manual_seed(42)
+        loss_fn = SmoothedNLLLoss(reduction=reduction, label_smoothing=label_smoothing)
+        batch_size, seq_len, vocab_size = 2, 5, 10
+        logits = torch.randn(batch_size, seq_len, vocab_size, requires_grad=True)
+        log_probs = torch.log_softmax(logits, dim=-1)
+        labels = torch.randint(0, vocab_size, (batch_size, seq_len))
+
+        loss = loss_fn(log_probs=log_probs, labels=labels)
+        assert torch.isfinite(loss).all()
+        if reduction == "batch":
+            assert loss.shape == (batch_size,)
+        else:
+            assert loss.ndim == 0
+            assert loss > 0.0
+
+        loss.sum().backward()
+        assert logits.grad is not None
+        assert logits.grad.shape == logits.shape
+
+    @pytest.mark.unit
+    def test_smoothed_nll_loss_with_lengths(self):
+        torch.manual_seed(42)
+        loss_fn = SmoothedNLLLoss(reduction="mean", label_smoothing=0.0)
+        batch_size, seq_len, vocab_size = 3, 6, 8
+        log_probs = torch.log_softmax(torch.randn(batch_size, seq_len, vocab_size), dim=-1)
+        labels = torch.randint(0, vocab_size, (batch_size, seq_len))
+        lengths = torch.tensor([6, 4, 2])
+
+        loss = loss_fn(log_probs=log_probs, labels=labels, lengths=lengths)
+        assert loss.ndim == 0
+        assert torch.isfinite(loss)

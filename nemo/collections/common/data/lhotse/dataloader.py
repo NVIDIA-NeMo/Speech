@@ -60,6 +60,7 @@ from nemo.collections.common.data.lhotse.sampling import (
     CERFilter,
     ContextSpeakerSimilarityFilter,
     DurationFilter,
+    EmptyTextFilter,
     FixedBucketBatchSizeConstraint2D,
     MultimodalFixedBucketBatchSizeConstraint2D,
     MultimodalSamplingConstraint,
@@ -175,6 +176,9 @@ class LhotseDataLoadingConfig:
     min_context_speaker_similarity: float | None = -1
     excluded_speaker_ids: Any = None
     speaker_filter_fields: list[str] | None = None
+    # Reject missing/non-string raw or non-null normalized supervision text.
+    # Empty strings are allowed for non-speech turns. Opt-in for transcript-based training.
+    filter_empty_text: bool = False
 
     # 2.4 Filters on validation status. If the validation status is not "pass", the cut will be filtered out.
     keep: str = "pass"
@@ -855,6 +859,10 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
         config.audio_token_estimator,
         sample_rate=config.sample_rate,
     )
+
+    # Filter transcripts before optional tokenization and batch construction.
+    if config.filter_empty_text:
+        cuts = cuts.filter(EmptyTextFilter())
 
     # Apply channel selector
     if config.channel_selector is not None:

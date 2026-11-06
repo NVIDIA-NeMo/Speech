@@ -507,6 +507,29 @@ class ValidationStatusFilter:
             return True
 
 
+class EmptyTextFilter:
+    """Reject audio cuts with missing or non-string transcripts.
+
+    Check every supervision, including user turns. Empty and whitespace-only
+    strings are valid: multiturn non-speech events may have no spoken words.
+    Non-null normalized text must also be a string; null normalized text uses
+    the raw-text fallback. Non-audio examples pass through.
+    """
+
+    def __call__(self, example) -> bool:
+        if not isinstance(example, Cut):
+            return True
+        if not example.supervisions:
+            return False
+        for supervision in example.supervisions:
+            if not isinstance(supervision.text, str):
+                return False
+            normalized = getattr(supervision, "normalized_text", None)
+            if normalized is not None and not isinstance(normalized, str):
+                return False
+        return True
+
+
 class CERFilter:
     """
     Callable, returns ``True`` if a cut's CER is less than max_cer and ``False`` otherwise.

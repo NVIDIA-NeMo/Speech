@@ -13,15 +13,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import io
+import json
 import struct
 import tarfile
 
 import pytest
+from click.testing import CliRunner
+from lhotse.indexing import create_jsonl_index
+from lhotse.indexing import create_tar_index as create_lhotse_tar_index
 from lhotse.indexing import read_index
 from scripts.dataloading import build_indexes
 
 from nemo.collections.common.data.lhotse import indexed_adapters
-from nemo.collections.common.data.lhotse.indexed_adapters import IndexedTarMemberReader, create_tar_index
+from nemo.collections.common.data.lhotse.indexed_adapters import (
+    IndexedTarMemberReader,
+    create_tar_index,
+    validate_tar_member_index_layout,
+)
+from nemo.collections.common.data.lhotse.nemo_adapters import LazyNeMoTarredIterator
 
 
 def test_nemo_tar_index_sentinel_includes_trailing_record_padding(tmp_path):
@@ -218,3 +227,71 @@ def test_nemo_tar_index_seekable_and_streaming_reject_truncated_member(tmp_path,
     monkeypatch.setattr("lhotse.serialization.open_best", lambda path, mode: io.BytesIO(truncated))
     with pytest.raises(tarfile.ReadError, match="unexpected end of data"):
         create_tar_index("ais://bucket/truncated.tar", tmp_path / "remote-truncated.idx")
+
+
+@pytest.mark.unit
+def test_indexed_nemo_tarred_rejects_lhotse_paired_tar_index_at_construction(tmp_path):
+    manifest_path, tar_path = _write_nemo_tarred_shard(tmp_path)
+    # ``lhotse index tar`` writes the Shar paired layout: 2 entries for this 4-member tar.
+    create_lhotse_tar_index(tar_path)
+    assert len(read_index(f"{tar_path}.idx")) == 3
+
+    with pytest.raises(ValueError, match=r"has 4 rows.*lists only 2 members.*wrong layout.*build_indexes\.py"):
+        LazyNeMoTarredIterator(manifest_path=str(manifest_path), tar_paths=str(tar_path), indexed=True)
+
+
+@pytest.mark.unit
+def test_indexed_nemo_tarred_accepts_nemo_tar_index(tmp_path):
+    manifest_path, tar_path = _write_nemo_tarred_shard(tmp_path)
+    create_tar_index(tar_path, f"{tar_path}.idx")
+
+    iterator = LazyNeMoTarredIterator(manifest_path=str(manifest_path), tar_paths=str(tar_path), indexed=True)
+
+    assert [cut.recording.id for cut in iterator] == [f"utt{i}.wav" for i in range(4)]
+
+
+@pytest.mark.unit
+def test_validate_tar_member_index_layout(tmp_path):
+    _, tar_path = _write_nemo_tarred_shard(tmp_path)
+    nemo_idx = tmp_path / "nemo.idx"
+    lhotse_idx = tmp_path / "lhotse.idx"
+    create_tar_index(tar_path, nemo_idx)
+    create_lhotse_tar_index(tar_path, lhotse_idx)
+
+    validate_tar_member_index_layout(tar_path, nemo_idx)
+    with pytest.raises(ValueError, match="paired-member layout"):
+        validate_tar_member_index_layout(tar_path, lhotse_idx)
+
+
+@pytest.mark.unit
+def test_build_indexes_rebuilds_nemo_tar_index_in_lhotse_paired_layout(tmp_path):
+    manifest_path, tar_path = _write_nemo_tarred_shard(tmp_path)
+    create_lhotse_tar_index(tar_path)
+    cfg_path = tmp_path / "input_cfg.yaml"
+    entry = {"type": "nemo_tarred", "manifest_filepath": str(manifest_path), "tarred_audio_filepaths": str(tar_path)}
+    cfg_path.write_text(json.dumps([entry]))
+    job = build_indexes.IndexJob(str(tar_path), build_indexes.NEMO_TAR)
+    assert not build_indexes._is_indexed(job)
+
+    result = CliRunner().invoke(build_indexes.main, [str(cfg_path), "--executor", "thread"])
+
+    assert result.exit_code == 0, result.output
+    assert build_indexes._is_indexed(job)
+    assert len(read_index(f"{tar_path}.idx")) == 5
+
+
+def _write_nemo_tarred_shard(tmp_path, num_samples=4):
+    """Write manifest_0.json + audio_0.tar with one tar member per manifest row (NeMo tarred layout)."""
+    manifest_path = tmp_path / "manifest_0.json"
+    tar_path = tmp_path / "audio_0.tar"
+    rows = []
+    with tarfile.open(tar_path, "w") as archive:
+        for i in range(num_samples):
+            payload = f"audio-{i}".encode()
+            info = tarfile.TarInfo(f"utt{i}.wav")
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+            rows.append({"audio_filepath": f"utt{i}.wav", "duration": 1.0, "text": f"t{i}", "sampling_rate": 16000})
+    manifest_path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    create_jsonl_index(manifest_path)
+    return manifest_path, tar_path

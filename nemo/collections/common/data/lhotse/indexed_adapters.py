@@ -1158,6 +1158,52 @@ def create_tar_index(tar_path, idx_path):
     os.replace(tmp_path, idx_path)
 
 
+def validate_tar_member_index_layout(tar_path, idx_path) -> None:
+    """
+    Raise ``ValueError`` when ``idx_path`` does not use the one-entry-per-member layout
+    written by :func:`create_tar_index`.
+
+    ``lhotse index tar`` (:func:`lhotse.indexing.create_tar_index`) writes the Shar/WebDataset
+    paired layout, with one entry per *two* consecutive members. Readers such as
+    :class:`IndexedTarMemberReader` would then see only half of the samples. Only the first
+    indexed byte range is inspected: it must hold regular members of a single basename. This
+    reads just the tar headers in that range (no payloads), so it is cheap enough to run on
+    every existing sidecar.
+    """
+    from lhotse.indexing import read_index
+
+    offsets = read_index(idx_path)
+    if offsets.shape[0] < 2:
+        # No entries besides the size sentinel: nothing to validate.
+        return
+    tar_path = str(tar_path)
+    start, end = int(offsets[0]), int(offsets[1])
+
+    def read_range(range_start: int, range_end: int) -> bytes:
+        return read_exact_range(tar_path, range_start, range_end)
+
+    stems = []
+    position = start
+    while position + _TAR_BLOCK_SIZE <= end:
+        if read_range(position, position + _TAR_BLOCK_SIZE) == _TAR_ZERO_BLOCK:
+            break  # End-of-archive marker after the last member.
+        name, header_position = _read_tar_member_header(read_range, position, end, tar_path)
+        info = tarfile.TarInfo.frombuf(
+            read_range(header_position, header_position + _TAR_BLOCK_SIZE), tarfile.ENCODING, "surrogateescape"
+        )
+        stem = Path(name).stem
+        if stem not in stems:
+            stems.append(stem)
+        position = header_position + _TAR_BLOCK_SIZE + (-(-info.size // _TAR_BLOCK_SIZE) * _TAR_BLOCK_SIZE)
+    if len(stems) > 1:
+        raise ValueError(
+            f"Tar index {idx_path} does not have the one-entry-per-member layout expected for {tar_path}: "
+            f"its first entry spans members of {len(stems)} different samples ({stems[:4]}). "
+            "It was likely written by 'lhotse index tar', which uses the Lhotse Shar paired-member layout. "
+            "Rebuild it with 'python scripts/dataloading/build_indexes.py --force <input_cfg.yaml>'."
+        )
+
+
 def _scan_wds_v2_tar(tar_path: str) -> tuple[list[int], int, int]:
     offsets: list[int] = []
     seen_member_names: set[str] = set()

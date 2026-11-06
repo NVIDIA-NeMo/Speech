@@ -151,9 +151,8 @@ def inference(cfg):
         # instanciate and load the model using from_pretrained
         model = NemotronVoiceChat.from_pretrained(cfg.checkpoint_path).eval()
 
-    # update model internal configs using the new configs
-    model.full_cfg.merge_with(cfg)
-    model.cfg.merge_with(cfg.model)
+    # update model internal configs using the new configs, the sub-models' copies included
+    model.merge_cfg(cfg)
     OmegaConf.save(model.full_cfg, log_dir / "exp_config.yaml")
     model.validation_save_path = os.path.join(log_dir, "validation_logs")
 

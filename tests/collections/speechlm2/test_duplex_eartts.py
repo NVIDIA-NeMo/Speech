@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import os
 from types import SimpleNamespace
 
@@ -604,3 +605,37 @@ def test_eartts_offline_generation(model):
     assert gen_audio.shape == (2, 17640)
     assert gen_audio_len[0] == gen_audio.size(-1)
     assert gen_audio.dtype == torch.float32
+
+
+@pytest.mark.parametrize("batch_size", [1, 2])
+def test_eartts_teacher_forced_generation_keeps_every_frame_with_eos_prediction(dataset, batch_size):
+    """With EOS prediction enabled, the teacher-forced pass returns one code frame per input frame."""
+    cfg = copy.deepcopy(test_eartts_config)
+    cfg["model"]["tts_config"]["disable_eos_prediction"] = False
+    model = DuplexEARTTS(cfg).eval()
+    if torch.cuda.is_available():
+        model.to("cuda")
+    cuts = []
+    for idx, duration in enumerate((1.0, 0.6)[:batch_size]):
+        cut = dummy_cut(
+            idx,
+            duration=duration,
+            recording=dummy_recording(idx, with_data=True, duration=duration, sampling_rate=22050),
+        )
+        cut.target_audio = dummy_recording(idx + 10, with_data=True, duration=duration, sampling_rate=22050)
+        cut.supervisions = [
+            SupervisionSegment(
+                id=cut.id, recording_id=cut.recording_id, start=0, duration=0.1, text='hi', speaker="user"
+            ),
+            SupervisionSegment(
+                id=cut.id, recording_id=cut.recording_id, start=0.3, duration=0.1, text='hello', speaker="assistant"
+            ),
+        ]
+        cuts.append(cut)
+    batch = move_data_to_device(dataset[CutSet(cuts)], device=model.device)
+    inputs = model.prepare_inputs(batch)
+
+    audio, audio_len = model.get_teacher_force_inference_audio(batch)
+
+    assert audio.shape[-1] == inputs["code"].shape[1] * model.target_samples_per_frame
+    assert (audio_len <= audio.shape[-1]).all()

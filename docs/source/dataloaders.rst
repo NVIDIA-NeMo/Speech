@@ -1257,6 +1257,29 @@ be consistent for replay-based restore — not exact restore.
 For the iterator graph contract itself, see Lhotse's
 `indexed manifests guide <https://lhotse.readthedocs.io/en/latest/indexed-manifests.html>`_.
 
+Blends
+^^^^^^
+
+A weighted blend (``input_cfg`` with ``weight`` entries or nested groups, or a
+weighted ``manifest_filepath`` / ``shar_path`` list) multiplexes its sources.
+The dataloader checks two blend rules when it's built and raises a
+``ValueError`` before training starts if a rule is broken:
+
+* With ``use_stateful_dataloader: true`` and ``use_bucketing: true``, either
+  every source in the blend is indexed or none is. A blend of indexed and
+  streamed sources can't be checkpointed by the bucketing sampler. This is easy
+  to hit by accident: when ``indexed`` is left unset (``null``), a ``lhotse``
+  ``cuts_path`` source uses its ``.idx`` file if one exists, while ``nemo``
+  sources stream. Set ``indexed: true`` and build indexes for every source
+  (recommended), set ``indexed: false``, or disable bucketing (also remove
+  ``bucket_duration_bins`` and ``bucket_batch_size``, which turn it back on).
+* An iterable blend of indexed sources that's split into more than one shard
+  (``num_workers > 1``, or more than one data-parallel rank) can't use
+  ``shard_seed: randomized``, because each shard would pick sources with its
+  own RNG and skew the blend weights. Set an integer ``shard_seed``. Each shard
+  reads a disjoint slice of every indexed source, so an integer seed doesn't
+  duplicate data across workers or ranks.
+
 Pre-computing bucket duration bins
 ------------------------------------
 

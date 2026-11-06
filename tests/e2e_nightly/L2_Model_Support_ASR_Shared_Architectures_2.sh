@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
+NEMO_MODEL_SUPPORT_SHARD=1 NEMO_MODEL_SUPPORT_NUM_SHARDS=4 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     -m pytest \
-    "tests/e2e_nightly/test_model_support_nvidia__parakeet_rnnt_0_6b.py" \
+    "tests/e2e_nightly/test_model_support_asr_shared_architectures.py" \
     -v

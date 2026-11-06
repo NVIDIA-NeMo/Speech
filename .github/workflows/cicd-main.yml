@@ -33,7 +33,9 @@ on:
 concurrency:
   # group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.event.pull_request.number || github.ref }}-${{ github.event_name }}
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: true
+  # On main, let the running pipeline finish instead of cancelling it on every merge: GitHub keeps only the newest
+  # pending run per group, so merges that land while a run is in progress are tested together by the next run.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   ephemeral-runner-routing:

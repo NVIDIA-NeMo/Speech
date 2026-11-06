@@ -722,13 +722,11 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                         [init_inputs[key][i, :plen] for i, plen in enumerate(dataset_batch["prompt_lens"])]
                     )
         else:
-            sp = dataset_batch.get("system_prompts_raw")
-            system_prompt = sp[0] if sp else None
             # set init inputs and get it
             self.set_init_inputs(
                 speaker_audio=dataset_batch["audio_prompt"],
                 speaker_audio_lens=dataset_batch["audio_prompt_lens"],
-                system_prompt=system_prompt,  # use the first position of the batch as system prompt
+                system_prompt=dataset_batch.get("system_prompts_raw"),
             )
             init_inputs = self.get_init_inputs(B=inputs["subword_ids"].size(0))
 
@@ -936,19 +934,38 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
         return self.audio_prompt_latents[name].to(self.device)
 
-    def set_init_inputs(self, speaker_audio=None, speaker_audio_lens=None, system_prompt=None, speaker_name=None):
+    def set_init_inputs(
+        self,
+        speaker_audio=None,
+        speaker_audio_lens=None,
+        system_prompt: str | list[str] | None = None,
+        speaker_name=None,
+    ):
         """
         Registers and prepares initial input buffers for text/audio prompt and context, to warm up AR inference.
 
         Args:
             speaker_audio (torch.Tensor): Batch of prompt audio, (B, T).
             speaker_audio_lens (torch.Tensor): Lengths for each sample in speaker_audio, (B,).
-            system_prompt (str, optional): System prompt for context.
+            system_prompt (str or list of str, optional): System prompt for context.
+                A list holds the prompt of every row of the batch; the rows must agree,
+                since the prompt is encoded once and shared by the batch.
             speaker_name (str, optional): Speaker name.
 
         Returns:
             dict: Dictionary of input tensors to be passed to inference, with registered buffers.
         """
+        if isinstance(system_prompt, (list, tuple)):
+            prompts = list(system_prompt)
+            if self.cfg.get("use_system_prompt", None) and len(set(prompts)) > 1:
+                differing = [i for i, prompt in enumerate(prompts) if prompt != prompts[0]]
+                raise ValueError(
+                    f"set_init_inputs got different system prompts in one batch: rows {differing} "
+                    f"({[prompts[i][:40] for i in differing]}) differ from row 0 ({prompts[0][:40]!r}). "
+                    "With use_system_prompt, the prompt is encoded once per batch: evaluate with "
+                    "validation_ds.batch_size=1, group the data by system prompt, or set ignore_data_system_prompt."
+                )
+            system_prompt = prompts[0] if prompts else None
 
         # compute prompt audio size and slice it
         with fp32_precision():

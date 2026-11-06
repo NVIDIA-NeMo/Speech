@@ -16,7 +16,6 @@
 
 from typing import Any, Optional
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 from omegaconf import DictConfig, ListConfig
@@ -31,12 +30,8 @@ from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_bas
     SeparateGraphsLabelLooping,
 )
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
-from nemo.core.utils.cuda_python_utils import CUDA_GRAPH_COMPILE_ERROR_TYPES, cu_call, run_nvrtc, with_conditional_node
-from nemo.core.utils.optional_libs import CUDA_PYTHON_AVAILABLE, cuda_python_required
+from nemo.core.utils.cuda_python_utils import CUDA_GRAPH_COMPILE_ERROR_TYPES, NeMoCUDAPythonException
 from nemo.utils import logging
-
-if CUDA_PYTHON_AVAILABLE:
-    from cuda.bindings import runtime as cudart
 
 
 class LabelLoopingState:
@@ -200,7 +195,6 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
     """
 
     INITIAL_MAX_TIME = 375  # initial max time, used to init state for Cuda graphs
-    CUDA_PROGRAM_NAME = b"while_label_looping_conditional_tdt.cu"
 
     separate_graphs: Optional[SeparateGraphsLabelLooping]
     full_graph: Optional[torch.cuda.CUDAGraph]
@@ -886,44 +880,6 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
             decoding_state,
         )
 
-    @classmethod
-    def _create_outer_while_loop_kernel(cls):
-        """
-        Creates a kernel that evaluates whether to enter the outer loop body (not all hypotheses are decoded).
-        Condition: while(active_mask_any).
-        """
-        kernel_string = r"""\
-        typedef __device_builtin__ unsigned long long cudaGraphConditionalHandle;
-
-        extern "C" __device__ __cudart_builtin__ void cudaGraphSetConditional(cudaGraphConditionalHandle handle, unsigned int value);
-
-        extern "C" __global__
-        void outer_label_looping_conditional(cudaGraphConditionalHandle handle, const bool *active_mask_any)
-        {
-         cudaGraphSetConditional(handle, *active_mask_any);
-        }
-        """
-        return run_nvrtc(kernel_string, b"outer_label_looping_conditional", cls.CUDA_PROGRAM_NAME)
-
-    @classmethod
-    def _create_inner_while_loop_kernel(cls):
-        """
-        Creates a kernel that evaluates whether to enter the inner loop body (not all non-blank labels found).
-        Condition: while(advance_mask_any).
-        """
-        kernel_string = r"""\
-        typedef __device_builtin__ unsigned long long cudaGraphConditionalHandle;
-
-        extern "C" __device__ __cudart_builtin__ void cudaGraphSetConditional(cudaGraphConditionalHandle handle, unsigned int value);
-
-        extern "C" __global__
-        void inner_find_non_blank_conditional(cudaGraphConditionalHandle handle, const bool *advance_mask_any)
-        {
-         cudaGraphSetConditional(handle, *advance_mask_any);
-        }
-        """
-        return run_nvrtc(kernel_string, b"inner_find_non_blank_conditional", cls.CUDA_PROGRAM_NAME)
-
     def _graph_reinitialize(
         self,
         encoder_output_projected: torch.Tensor,
@@ -1066,58 +1022,38 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         ):
             self._after_inner_loop_step()
 
-    @cuda_python_required
     def _full_graph_compile(self):
-        """Compile full graph for decoding"""
-        # Always create a new stream, because the per-thread default stream disallows stream capture to a graph.
-        stream_for_graph = torch.cuda.Stream(self.state.device)
-        stream_for_graph.wait_stream(torch.cuda.default_stream(self.state.device))
-        self.full_graph = torch.cuda.CUDAGraph()
+        """Capture loop bodies with PyTorch so their temporary allocations stay graph-owned."""
+        if not hasattr(torch.cuda.CUDAGraph, "begin_capture_to_while_node"):
+            # Raw CUDA child-stream capture does not retain PyTorch's temporary allocations.
+            raise NeMoCUDAPythonException(
+                "Full TDT graph capture requires PyTorch-managed while nodes (PyTorch 2.14+)."
+            )
+
+        stream = torch.cuda.Stream(self.state.device)
+        stream.wait_stream(torch.cuda.current_stream(self.state.device))
+        self.full_graph = graph = torch.cuda.CUDAGraph()
         with (
-            torch.cuda.stream(stream_for_graph),
+            torch.cuda.stream(stream),
             torch.inference_mode(),
-            torch.cuda.graph(self.full_graph, stream=stream_for_graph, capture_error_mode="thread_local"),
+            torch.cuda.graph(graph, stream=stream, capture_error_mode="thread_local"),
         ):
             self._before_outer_loop()
-
-            # NB: depending on cuda-python version, cudaStreamGetCaptureInfo can return either 5 or 6 elements
-            capture_status, _, graph, *_ = cu_call(
-                cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=self.state.device).cuda_stream)
-            )
-            assert capture_status == cudart.cudaStreamCaptureStatus.cudaStreamCaptureStatusActive
-
-            # capture: while self.active_mask_any:
-            (outer_loop_conditional_handle,) = cu_call(cudart.cudaGraphConditionalHandleCreate(graph, 0, 0))
-            outer_loop_kernel = self._create_outer_while_loop_kernel()
-            active_mask_any_ptr = np.array([self.state.active_mask_any.data_ptr()], dtype=np.uint64)
-            outer_loop_args = np.array(
-                [outer_loop_conditional_handle.getPtr(), active_mask_any_ptr.ctypes.data],
-                dtype=np.uint64,
-            )
-
-            # loop while there are active utterances
-            # while self.active_mask_any:
-            with with_conditional_node(
-                outer_loop_kernel, outer_loop_args, outer_loop_conditional_handle, device=self.state.device
-            ):
+            # Raw child-stream capture bypasses PyTorch's graph allocation pool.
+            # A later graph capture can then reclaim intermediates still needed for replay.
+            graph.begin_capture_to_while_node(self.state.active_mask_any)
+            try:
                 self._before_inner_loop_get_joint_output()
-                # capture: while self.advance_mask_any.item():
-                inner_while_loop_kernel = self._create_inner_while_loop_kernel()
-                (inner_loop_conditional_handle,) = cu_call(cudart.cudaGraphConditionalHandleCreate(graph, 0, 0))
-                advance_mask_any_ptr = np.array([self.state.advance_mask_any.data_ptr()], dtype=np.uint64)
-                inner_loop_args = np.array(
-                    [
-                        inner_loop_conditional_handle.getPtr(),
-                        advance_mask_any_ptr.ctypes.data,
-                    ],
-                    dtype=np.uint64,
-                )
-                # while self.advance_mask_any.item():
-                with with_conditional_node(
-                    inner_while_loop_kernel, inner_loop_args, inner_loop_conditional_handle, device=self.state.device
-                ):
+                graph.begin_capture_to_while_node(self.state.advance_mask_any)
+                try:
                     self._inner_loop_step_find_next_non_blank()
+                    graph.set_conditional_handle_for_current_node(self.state.advance_mask_any)
+                finally:
+                    graph.end_capture_to_conditional_node()
                 self._after_inner_loop_step()
+                graph.set_conditional_handle_for_current_node(self.state.active_mask_any)
+            finally:
+                graph.end_capture_to_conditional_node()
 
     def _init_decoding_state(
         self, current_batch_size: int, prev_batched_state: Optional[BatchedLabelLoopingState] = None

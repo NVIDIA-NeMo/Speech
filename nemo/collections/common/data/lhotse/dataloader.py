@@ -825,6 +825,8 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     # 1. Load a manifest as a Lhotse CutSet.
     cuts, use_iterable_dataset = read_cutset_from_config(config)
     use_iterable_dataset = determine_use_iterable_dataset(use_iterable_dataset, config)
+    if use_iterable_dataset:
+        _validate_iterable_shard_seed(config, cuts, world_size)
 
     # Map-style + StatefulDataLoader requires shard_seed to be a fixed integer:
     #   * On the map path, cross-rank de-duplication is by ``rank/world_size``
@@ -1465,3 +1467,28 @@ def _cut_text_into_windows(cut, num_tokens: int, tokenizer) -> list:
         )
         ans.append(new_cut)
     return ans
+
+
+def _validate_iterable_shard_seed(config: DictConfig, cuts: CutSet, world_size: int) -> None:
+    """Reject an integer ``shard_seed`` on a non-indexed iterable pipeline with more than one data shard.
+
+    On the iterable path the sampler runs independently in every dataloading worker on every rank. Non-indexed
+    sources (NeMo tarred, Lhotse Shar, Parquet, plain JSONL streams) de-duplicate across those workers only through
+    a different per-worker shard seed (``"trng"`` or ``"randomized"``). With an integer ``shard_seed`` every worker
+    shuffles identically and yields the same stream, so each batch would be seen ``num_workers * world_size`` times.
+    Indexed sources partition indices by ``(rank, worker_id)`` and are safe with an integer seed.
+    """
+    shard_seed = config.get("shard_seed")
+    if not isinstance(shard_seed, int) or isinstance(shard_seed, bool):
+        return
+    num_shards = max(int(config.get("num_workers", 0) or 0), 1) * max(int(world_size), 1)
+    if num_shards <= 1 or getattr(cuts, "is_indexed", False):
+        return
+    raise ValueError(
+        f"shard_seed={shard_seed} (an integer) is not supported for a non-indexed iterable dataset with "
+        f"num_workers={config.get('num_workers', 0)} and world_size={world_size}: every one of the {num_shards} "
+        "dataloading workers would yield the identical data stream, duplicating each batch. Either set "
+        "shard_seed='randomized' (deterministic and different in each worker/rank) or 'trng', or make every "
+        "source indexed (indexed: true, with .idx files built by scripts/dataloading/build_indexes.py), which "
+        "partitions data across workers and ranks and accepts an integer shard_seed."
+    )

@@ -16,6 +16,7 @@
 """Lhotse adapters for NeMo datasets including Parquet support."""
 
 import bisect
+import numbers
 import os
 import random
 import re
@@ -1421,15 +1422,17 @@ class LazyParquetIterator(IteratorNode):
         indexed (bool): When True, enable O(1) random access via row-group lookup
             and graph-token checkpointing. Requires the parquet file to expose
             row-group statistics (the default for files written by pyarrow/pandas).
-        fault_tolerant_audio_loading (bool): Policy for rows whose audio value is
-            not bytes (or a ``{"bytes": ...}`` struct) or cannot be decoded. When
-            False (the default for direct construction), iteration raises an error
-            naming the file, row and reason. When True, iteration skips such rows
-            with a warning and reports the number of skipped rows at the end of
-            each pass. ``read_parquet_manifest`` passes the loader-wide
-            ``fault_tolerant_audio_loading`` option. A missing audio column always
-            raises, and random access (``__getitem__``) always raises because it
-            cannot skip a row.
+        fault_tolerant_audio_loading (bool): Policy for rows whose audio bytes
+            cannot be decoded. When False (the default for direct construction),
+            iteration raises :class:`ParquetAudioDecodeError` naming the file, row
+            and reason. When True, iteration skips such rows with a warning and
+            reports the number of skipped rows at the end of each pass.
+            ``read_parquet_manifest`` passes the loader-wide
+            ``fault_tolerant_audio_loading`` option. Malformed files and rows (a
+            missing audio or text column, a null or non-bytes audio value, a
+            non-string text value, an invalid duration) always raise
+            :class:`ParquetRowError`, and random access (``__getitem__``) always
+            raises because it cannot skip a row.
 
     Indexed mode reads one row group at a time on demand and caches the most
     recently used row group, so unshuffled or locality-friendly access patterns
@@ -1496,7 +1499,7 @@ class LazyParquetIterator(IteratorNode):
                 column_names = parquet_file.schema_arrow.names
         except Exception as e:
             raise RuntimeError(f"Failed to open Parquet file: {self.path}") from e
-        self._check_audio_column(column_names)
+        self._check_required_columns(column_names)
 
     def _load_row_group(self, rg_idx: int) -> list[dict]:
         if self._cached_row_group_idx == rg_idx and self._cached_row_group is not None:
@@ -1517,15 +1520,20 @@ class LazyParquetIterator(IteratorNode):
                 return rg_idx, idx - offsets[rg_idx]
         raise IndexError(f"index {idx} out of range for parquet file with {self._total_rows} rows")
 
-    def _check_audio_column(self, column_names: list[str]) -> None:
-        if self.audio_field not in column_names:
-            raise ValueError(
-                f"Parquet file {self.path} has no audio column '{self.audio_field}' "
-                f"(available columns: {list(column_names)}). Set 'audio_field' to the column holding audio bytes."
-            )
+    def _check_required_columns(self, column_names: list[str]) -> None:
+        for kind, field in (("audio", self.audio_field), ("text", self.text_field)):
+            if field not in column_names:
+                raise ParquetRowError(
+                    f"Parquet file {self.path} has no {kind} column '{field}' "
+                    f"(available columns: {list(column_names)}). Set '{kind}_field' to the column holding {kind}."
+                )
 
     def _build_cut_from_row(self, row: dict, fallback_idx: int, row_idx: int | None = None) -> Cut:
-        """Build a Cut from a row; raise :class:`ParquetRowDecodeError` if the row's audio is unusable.
+        """Build a Cut from a row.
+
+        Raises :class:`ParquetRowError` when the row itself is malformed (null or non-bytes audio value,
+        missing or non-string text, invalid duration) and :class:`ParquetAudioDecodeError` when the audio
+        bytes are present but cannot be decoded.
 
         ``fallback_idx`` derives the cut ID when the row has no ``id`` column. ``row_idx`` is the
         row's position in the file, reported in errors (defaults to ``fallback_idx``).
@@ -1535,24 +1543,40 @@ class LazyParquetIterator(IteratorNode):
         audio_data = row.get(self.audio_field)
         if isinstance(audio_data, dict) and "bytes" in audio_data:
             audio_bytes = audio_data["bytes"]
-        elif isinstance(audio_data, bytes):
-            audio_bytes = audio_data
         else:
-            raise ParquetRowDecodeError(
+            audio_bytes = audio_data
+        if not isinstance(audio_bytes, bytes):
+            raise ParquetRowError(
                 self._row_error_message(
                     row_idx,
                     row_id,
-                    f"audio column '{self.audio_field}' holds {type(audio_data).__name__}, "
+                    f"audio column '{self.audio_field}' holds {type(audio_bytes).__name__}, "
                     "expected bytes or a struct with a 'bytes' field",
                 )
             )
 
-        text = row.get(self.text_field, "")
+        text = row.get(self.text_field)
+        if not isinstance(text, str):
+            raise ParquetRowError(
+                self._row_error_message(
+                    row_idx, row_id, f"text column '{self.text_field}' holds {type(text).__name__}, expected str"
+                )
+            )
+        if self.duration_field in row:
+            duration = row[self.duration_field]
+            if isinstance(duration, bool) or not isinstance(duration, numbers.Real) or not duration >= 0:
+                raise ParquetRowError(
+                    self._row_error_message(
+                        row_idx,
+                        row_id,
+                        f"duration column '{self.duration_field}' holds {duration!r}, expected a non-negative number",
+                    )
+                )
         language = row.get(self.lang_field, None)
         try:
             recording = Recording.from_bytes(data=audio_bytes, recording_id=row_id)
         except (AudioLoadingError, RuntimeError, ValueError, TypeError) as e:
-            raise ParquetRowDecodeError(
+            raise ParquetAudioDecodeError(
                 self._row_error_message(row_idx, row_id, f"failed to decode audio bytes ({type(e).__name__}: {e})")
             ) from e
         cut = recording.to_cut()
@@ -1574,10 +1598,13 @@ class LazyParquetIterator(IteratorNode):
         return f"Cannot load row {row_idx} (id={row_id!r}) of Parquet file {self.path}: {reason}."
 
     def _try_build_cut(self, row: dict, fallback_idx: int, row_idx: int) -> Cut | None:
-        """Build a Cut, or return None for an unusable row when fault-tolerant audio loading is enabled."""
+        """Build a Cut, or return None for undecodable audio when fault-tolerant audio loading is enabled.
+
+        Row-level errors (:class:`ParquetRowError`) always propagate.
+        """
         try:
             return self._build_cut_from_row(row, fallback_idx=fallback_idx, row_idx=row_idx)
-        except ParquetRowDecodeError as e:
+        except ParquetAudioDecodeError as e:
             if not self.fault_tolerant_audio_loading:
                 raise
             logging.warning(f"Skipping row because fault_tolerant_audio_loading=true: {e}")
@@ -1586,7 +1613,7 @@ class LazyParquetIterator(IteratorNode):
     def _warn_skipped_rows(self, num_skipped: int, num_seen: int) -> None:
         if num_skipped > 0:
             logging.warning(
-                f"Skipped {num_skipped} of {num_seen} rows with unusable audio in Parquet file {self.path} "
+                f"Skipped {num_skipped} of {num_seen} rows with undecodable audio in Parquet file {self.path} "
                 "because fault_tolerant_audio_loading=true."
             )
 
@@ -1647,7 +1674,7 @@ class LazyParquetIterator(IteratorNode):
         except Exception as e:
             raise RuntimeError(f"Failed to open Parquet file: {self.path}") from e
 
-        self._check_audio_column(parquet_file.schema_arrow.names)
+        self._check_required_columns(parquet_file.schema_arrow.names)
 
         # Stream batches to keep memory usage low
         num_seen = num_skipped = 0
@@ -1668,8 +1695,12 @@ class LazyParquetIterator(IteratorNode):
             self._warn_skipped_rows(num_skipped, num_seen)
 
 
-class ParquetRowDecodeError(RuntimeError):
-    """Raised when a Parquet row's audio value is not bytes or cannot be decoded."""
+class ParquetRowError(ValueError):
+    """Raised when a Parquet file or row is malformed. Always fatal, regardless of fault-tolerant audio loading."""
+
+
+class ParquetAudioDecodeError(RuntimeError):
+    """Raised when a Parquet row's audio bytes cannot be decoded. Skippable with fault-tolerant audio loading."""
 
 
 # ---------------------------------------------------------------------------

@@ -30,6 +30,7 @@ except ImportError:
     HAVE_PARQUET = False
 
 from nemo.collections.common.data.lhotse.cutset import read_cutset_from_config
+from nemo.collections.common.data.lhotse.nemo_adapters import ParquetRowError
 
 
 @pytest.fixture
@@ -193,21 +194,46 @@ def test_parquet_corrupt_audio_skipped_when_fault_tolerant(parquet_with_corrupt_
 @pytest.mark.unit
 @pytest.mark.skipif(not HAVE_PARQUET, reason="PyArrow required for this test")
 @pytest.mark.parametrize("indexed", [False, True])
-def test_parquet_non_bytes_audio_value_raises(tmp_path, indexed):
-    path = tmp_path / "none_audio.parquet"
-    pq.write_table(pa.table({"audio": pa.array([None], type=pa.binary()), "text": ["x"]}), path)
-    with pytest.raises(RuntimeError, match=r"row 0 .* holds NoneType, expected bytes"):
-        list(_parquet_iterator(str(path), indexed=indexed))
+@pytest.mark.parametrize("fault_tolerant", [False, True])
+@pytest.mark.parametrize(
+    "columns,match",
+    (
+        [
+            ({"audio": pa.array([None], type=pa.binary())}, r"audio column 'audio' holds NoneType, expected bytes"),
+            ({"audio": pa.array([1], type=pa.int64())}, r"audio column 'audio' holds int, expected bytes"),
+            ({"text": pa.array([None], type=pa.string())}, r"text column 'text' holds NoneType, expected str"),
+            ({"duration": [-1.0]}, r"duration column 'duration' holds -1.0, expected a non-negative number"),
+            ({"duration": [float("nan")]}, r"duration column 'duration' holds nan"),
+        ]
+        if HAVE_PARQUET
+        else []
+    ),
+)
+def test_parquet_malformed_row_always_raises(tmp_path, indexed, fault_tolerant, columns, match):
+    # Row-level problems are not audio-decoding failures, so fault-tolerant audio loading never skips them.
+    path = tmp_path / "malformed.parquet"
+    buf = io.BytesIO()
+    sf.write(buf, np.zeros(1600, dtype=np.float32), 16000, format='WAV')
+    table = {"audio": [buf.getvalue()], "text": ["x"], "duration": [0.1]}
+    table.update(columns)
+    pq.write_table(pa.table(table), path)
+    it = _parquet_iterator(str(path), indexed=indexed, fault_tolerant_audio_loading=fault_tolerant)
+    with pytest.raises(ParquetRowError, match=r"row 0 .*" + match):
+        list(it)
 
 
 @pytest.mark.unit
 @pytest.mark.skipif(not HAVE_PARQUET, reason="PyArrow required for this test")
 @pytest.mark.parametrize("indexed", [False, True])
-def test_parquet_missing_audio_column_raises_even_when_fault_tolerant(parquet_with_corrupt_row, indexed):
-    with pytest.raises(ValueError, match="has no audio column 'audio_col'"):
+@pytest.mark.parametrize("field", ["audio", "text"])
+def test_parquet_missing_column_raises_even_when_fault_tolerant(parquet_with_corrupt_row, indexed, field):
+    with pytest.raises(ParquetRowError, match=f"has no {field} column '{field}_col'"):
         list(
             _parquet_iterator(
-                parquet_with_corrupt_row, audio_field="audio_col", indexed=indexed, fault_tolerant_audio_loading=True
+                parquet_with_corrupt_row,
+                **{f"{field}_field": f"{field}_col"},
+                indexed=indexed,
+                fault_tolerant_audio_loading=True,
             )
         )
 

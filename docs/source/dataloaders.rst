@@ -1024,7 +1024,8 @@ Two ways, which differ for tar files:
    Do **not** use it for ``nemo``/``nemo_tarred`` audio tars (or other tars
    with one member per sample): there it lists only half of the samples.
    Indexed ``nemo_tarred`` loading rejects such an index at startup when the
-   manifest has more rows than the tar index has entries.
+   manifest has more rows than the tar index has entries (and no route
+   sidecar, see below, maps the rows).
 
 2. NeMo's batch helper that takes a config and indexes everything it
    references in one shot. **Use this for** ``nemo_tarred`` **tars**::
@@ -1042,6 +1043,26 @@ Two ways, which differ for tar files:
    Pass ``--indexes-root /path/to/mirror`` to write the sidecars to a
    separate directory tree that mirrors the data files' layout instead of
    placing them next to the data — see :ref:`lhotse-indexes-root` below.
+
+   For ``nemo``/``nemo_tarred`` entries the script also writes **route
+   sidecars** when manifest row ``i`` can't be read positionally from tar
+   member ``i``:
+
+   * a manifest whose rows don't map 1:1 to its tar members, e.g. several
+     ``-subN`` rows that share one audio member, or a filtered manifest; and
+   * one (non-sharded) manifest paired with several tars, where each row's
+     ``shard_id`` selects its tar.
+
+   Route sidecars (``<manifest>.nemo-tar-ordinal.idx`` and, for one manifest
+   with several tars, ``<manifest>.nemo-tar-shard.idx``) hold one uint32 per
+   manifest row: the row's tar member ordinal and tar position. They are the
+   same arrays that ``convert_indexes_to_idxpack.py`` embeds in a version-3
+   ``.idxpack``, so lookup stays O(1) and resume stays exact. Members are
+   matched by name, so the selected member is validated strictly when its
+   audio loads. Route sidecars must be local: for remote manifests, pass a
+   local ``--indexes-root``. Rerunning the script rebuilds them when the
+   manifest or tar indexes they were built from are newer. Indexed loading fails at startup with
+   an actionable error when a required route sidecar is missing.
 
 Packing sidecars into dataset-level ``.idxpack`` files
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

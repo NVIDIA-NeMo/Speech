@@ -236,7 +236,7 @@ def test_indexed_nemo_tarred_rejects_lhotse_paired_tar_index_at_construction(tmp
     create_lhotse_tar_index(tar_path)
     assert len(read_index(f"{tar_path}.idx")) == 3
 
-    with pytest.raises(ValueError, match=r"has 4 rows.*lists only 2 members.*build_indexes\.py --force"):
+    with pytest.raises(ValueError, match=r"has 4 rows.*lists only 2 members.*wrong layout.*build_indexes\.py"):
         LazyNeMoTarredIterator(manifest_path=str(manifest_path), tar_paths=str(tar_path), indexed=True)
 
 

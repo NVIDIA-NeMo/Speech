@@ -32,6 +32,7 @@ try:
     HAVE_PYARROW = True
 except ImportError:
     HAVE_PYARROW = False
+import numpy as np
 import soundfile
 from cytoolz import groupby
 from lhotse import AudioSource, MonoCut, Recording, SupervisionSegment
@@ -52,9 +53,11 @@ from nemo.collections.common.data.lhotse._compat import (
 )
 from nemo.collections.common.data.lhotse.nemo_tar_routing import (
     NEMO_TAR_SKIP_ORDINAL,
+    load_nemo_tar_route_sidecar,
     manifest_entry_is_explicitly_skipped,
     nemo_tar_audio_member_name,
     nemo_tar_ordinal_map_collection_key,
+    nemo_tar_route_sidecar_paths,
     nemo_tar_shard_map_collection_key,
 )
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
@@ -62,6 +65,9 @@ from nemo.utils import logging
 from nemo.utils.data_utils import is_datastore_path
 
 ShardKey = Union[int, tuple[int, int]]
+
+_MANIFEST_SHARD_PATTERN = re.compile(r"manifest[^/]*_(\d+)[^/]*\.json")
+_TAR_SHARD_PATTERN = re.compile(r"audio[^/]*_(\d+)[^/]*\.tar")
 
 
 _MALFORMED_INDEXED_MANIFEST_WARNING_KEYS: set[tuple[str, str]] = set()
@@ -512,8 +518,7 @@ class LazyNeMoTarredIterator(IteratorNode):
             else:
                 self.shard_id_to_manifest = groupby("shard_id", self.source)
         else:
-            json_pattern = re.compile(r"manifest[^/]*_(\d+)[^/]*\.json")
-            shard_keys, _ = _extract_unique_shard_keys(self.paths, json_pattern, path_kind="manifest")
+            shard_keys, _ = _extract_unique_shard_keys(self.paths, _MANIFEST_SHARD_PATTERN, path_kind="manifest")
             self._shard_key_to_manifest_path = {key: path for key, path in zip(shard_keys, self.paths)}
             self.shard_id_to_manifest = {
                 key: LazyJsonlIterator(path) for key, path in self._shard_key_to_manifest_path.items()
@@ -521,8 +526,7 @@ class LazyNeMoTarredIterator(IteratorNode):
             self.source = LazyIteratorChain(*self.shard_id_to_manifest.values())
 
         self.tar_paths = expand_sharded_filepaths(tar_paths)
-        tar_pattern = re.compile(r"audio[^/]*_(\d+)[^/]*\.tar")
-        shard_keys, _ = _extract_unique_shard_keys(self.tar_paths, tar_pattern, path_kind="tar")
+        shard_keys, _ = _extract_unique_shard_keys(self.tar_paths, _TAR_SHARD_PATTERN, path_kind="tar")
         self.shard_id_to_tar_path: dict[ShardKey, str] = {key: path for key, path in zip(shard_keys, self.tar_paths)}
 
         self.shuffle_shards = shuffle_shards
@@ -696,41 +700,107 @@ class LazyNeMoTarredIterator(IteratorNode):
         if self.slice_length is not None:
             raise ValueError("LazyNeMoTarredIterator(indexed=True) does not support 'slice_length'.")
 
-        # Order shards by stable shard key so global indices are reproducible.
-        # Multi-bucket NeMo specs may expand to paths such as
-        # bucket_1/audio_0.tar and bucket_2/audio_0.tar; the occurrence suffix in
-        # ShardKey prevents those duplicate numeric shard ids from overwriting.
-        self._sorted_shard_ids: list[ShardKey] = sorted(self.shard_id_to_tar_path.keys())
-        self._cuts_readers: dict[ShardKey, IndexedJsonlReader] = {}
         # In USE_AIS_GET_BATCH mode we never open the tar files locally — audio is
         # fetched lazily via URL/file AudioSource by AudioSamples (typically batched).
         self._tar_readers: dict[ShardKey, IndexedTarMemberReader] = {}
+        if not self.use_ais_get_batch:
+            for sid, tar_path in self.shard_id_to_tar_path.items():
+                self._tar_readers[sid] = IndexedTarMemberReader(
+                    tar_path, idx_path=index_file_path(tar_path, self.indexes_root)
+                )
+        # Tar position in ``self.tar_paths`` order -> shard key (used by aggregate route sidecars).
+        self._tar_position_keys: list[ShardKey] = list(self.shard_id_to_tar_path.keys())
+        # Manifest row -> tar member ordinal per manifest key (None: positional row i -> member i).
+        self._tar_ordinal_routes: dict = {}
+        # Manifest row -> tar position, only for one manifest paired with several tars.
+        self._tar_shard_route: np.ndarray | None = None
+        self._cuts_readers: dict = {}
 
-        # Map shard key → manifest path (single or multi-file).
-        if len(self.paths) == 1:
-            shard_id_to_manifest_path = {sid: self.paths[0] for sid in self._sorted_shard_ids}
+        if len(self.paths) == 1 and len(self.shard_id_to_tar_path) > 1:
+            # One aggregate manifest paired with several tars: rows are routed to their tar by
+            # ``shard_id`` through route sidecars written by build_indexes.py.
+            manifest_path = self.paths[0]
+            self._manifest_keys: list = [None]
+            self._manifest_paths = {None: manifest_path}
+            self._cuts_readers[None] = IndexedJsonlReader(
+                manifest_path, index_path=index_file_path(manifest_path, self.indexes_root)
+            )
+            self._init_aggregate_tar_routes(manifest_path, len(self._cuts_readers[None]))
         else:
-            shard_id_to_manifest_path = self._shard_key_to_manifest_path
+            # Order shards by stable shard key so global indices are reproducible.
+            # Multi-bucket NeMo specs may expand to paths such as
+            # bucket_1/audio_0.tar and bucket_2/audio_0.tar; the occurrence suffix in
+            # ShardKey prevents those duplicate numeric shard ids from overwriting.
+            self._manifest_keys = sorted(self.shard_id_to_tar_path.keys())
+            if len(self.paths) == 1:
+                self._manifest_paths = {sid: self.paths[0] for sid in self._manifest_keys}
+            else:
+                self._manifest_paths = self._shard_key_to_manifest_path
+            for sid in self._manifest_keys:
+                manifest_path = self._manifest_paths[sid]
+                self._cuts_readers[sid] = IndexedJsonlReader(
+                    manifest_path, index_path=index_file_path(manifest_path, self.indexes_root)
+                )
+                if not self.use_ais_get_batch:
+                    self._tar_ordinal_routes[sid] = self._load_shard_tar_route(sid, len(self._cuts_readers[sid]))
 
         cum = 0
         cum_lens = [0]
-        for sid in self._sorted_shard_ids:
-            jsonl_path = shard_id_to_manifest_path[sid]
-            tar_path = self.shard_id_to_tar_path[sid]
-            self._cuts_readers[sid] = IndexedJsonlReader(
-                jsonl_path, index_path=index_file_path(jsonl_path, self.indexes_root)
-            )
-            if not self.use_ais_get_batch:
-                tar_idx_path = index_file_path(tar_path, self.indexes_root)
-                self._tar_readers[sid] = IndexedTarMemberReader(tar_path, idx_path=tar_idx_path)
-                _check_indexed_tar_covers_manifest(
-                    jsonl_path, len(self._cuts_readers[sid]), tar_path, tar_idx_path, len(self._tar_readers[sid])
-                )
-            cum += len(self._cuts_readers[sid])
+        for key in self._manifest_keys:
+            cum += len(self._cuts_readers[key])
             cum_lens.append(cum)
         self._cum_lens = cum_lens
         self._total_len = cum
         self._iter_state = PartitionedIndexedIterator()
+
+    def _load_shard_tar_route(self, sid: ShardKey, num_rows: int) -> np.ndarray | None:
+        """Return the row -> member route for a manifest paired with one tar, or None for positional lookup."""
+        from lhotse.indexing import index_file_path
+
+        manifest_path = self._manifest_paths[sid]
+        tar_path = self.shard_id_to_tar_path[sid]
+        num_members = len(self._tar_readers[sid])
+        try:
+            ordinal_path, _ = nemo_tar_route_sidecar_paths(manifest_path, self.indexes_root)
+        except ValueError:
+            # Remote manifest without a local indexes_root: no route sidecar can exist, so use positional lookup.
+            ordinal_path = None
+        if ordinal_path is None or not ordinal_path.is_file():
+            # Positional lookup: row i -> member i, validated by member name at audio load.
+            _check_indexed_tar_covers_manifest(
+                manifest_path,
+                num_rows,
+                tar_path,
+                index_file_path(tar_path, self.indexes_root),
+                num_members,
+                ordinal_path,
+            )
+            return None
+        route = load_nemo_tar_route_sidecar(ordinal_path, num_rows)
+        _check_tar_route_targets(route, np.array([num_members]), np.zeros_like(route), ordinal_path)
+        return route
+
+    def _init_aggregate_tar_routes(self, manifest_path: str, num_rows: int) -> None:
+        ordinal_path, shard_path = nemo_tar_route_sidecar_paths(manifest_path, self.indexes_root)
+        required = [shard_path] if self.use_ais_get_batch else [shard_path, ordinal_path]
+        missing = [str(path) for path in required if not path.is_file()]
+        if missing:
+            raise ValueError(
+                f"Indexed nemo_tarred with one manifest ({manifest_path!r}) paired with "
+                f"{len(self.shard_id_to_tar_path)} tars needs row-to-tar route sidecars, which are missing: "
+                f"{missing}. Build them with 'python scripts/dataloading/build_indexes.py <input_cfg.yaml>' "
+                "(pass the same --indexes-root as the training config, if any)."
+            )
+        shard_route = load_nemo_tar_route_sidecar(shard_path, num_rows)
+        active = shard_route != NEMO_TAR_SKIP_ORDINAL
+        if (shard_route[active] >= len(self._tar_position_keys)).any():
+            raise _stale_tar_route_error(str(shard_path), None)
+        if not self.use_ais_get_batch:
+            ordinal_route = load_nemo_tar_route_sidecar(ordinal_path, num_rows)
+            member_counts = np.array([len(self._tar_readers[key]) for key in self._tar_position_keys])
+            _check_tar_route_targets(ordinal_route, member_counts, shard_route, ordinal_path)
+            self._tar_ordinal_routes[None] = ordinal_route
+        self._tar_shard_route = shard_route
 
     def to_shards(self) -> List["LazyNeMoTarredIterator"]:
         """Convert this iterator to a list of separate iterators for each shard.
@@ -918,8 +988,8 @@ class LazyNeMoTarredIterator(IteratorNode):
         if idx < 0 or idx >= self._total_len:
             raise IndexError(f"index {idx} out of range for LazyNeMoTarredIterator with {self._total_len} cuts")
         shard_pos = bisect.bisect_right(self._cum_lens, idx) - 1
-        sid = self._sorted_shard_ids[shard_pos]
-        return sid, idx - self._cum_lens[shard_pos]
+        key = self._manifest_keys[shard_pos]
+        return key, idx - self._cum_lens[shard_pos]
 
     def _audio_member_name_from_entry(self, entry: dict) -> str:
         return nemo_tar_audio_member_name(entry["audio_filepath"])
@@ -1093,18 +1163,35 @@ class LazyNeMoTarredIterator(IteratorNode):
         """
         if getattr(self, "_packed_indexed", False):
             return self._decode_packed_cut_at(idx)
-        sid, local_idx = self._resolve_global_idx(idx)
-        cuts_reader = self._cuts_readers[sid]
+        key, local_idx = self._resolve_global_idx(idx)
+        cuts_reader = self._cuts_readers[key]
         manifest_path = cuts_reader.path
         data = cuts_reader[local_idx]
+        if self._tar_shard_route is None:
+            sid = key
+        else:
+            # Aggregate manifest: the route sidecar picks the tar (bounds validated at construction).
+            tar_position = int(self._tar_shard_route[local_idx])
+            if tar_position == NEMO_TAR_SKIP_ORDINAL:
+                if manifest_entry_is_explicitly_skipped(data):
+                    return None
+                raise _stale_tar_route_error(manifest_path, local_idx)
+            sid = self._tar_position_keys[tar_position]
         tar_path = self.shard_id_to_tar_path[sid]
         if self._indexed_entry_is_explicitly_skipped(data, manifest_path, tar_path):
             return None
         if self.use_ais_get_batch:
             return self._build_indexed_deferred_cut(data, manifest_path, tar_path)
         expected_name = self._audio_member_name_from_entry(data)
+        route = self._tar_ordinal_routes[key]
+        # With a route sidecar the member is known exactly, so the name check at audio load is strict.
+        member_idx = local_idx if route is None else int(route[local_idx])
+        if member_idx == NEMO_TAR_SKIP_ORDINAL:
+            raise _stale_tar_route_error(manifest_path, local_idx)
         try:
-            pointer = self._tar_readers[sid].resolve_member_pointer(local_idx, expected_name)
+            pointer = self._tar_readers[sid].resolve_member_pointer(
+                member_idx, expected_name, strict=route is not None
+            )
         except KeyError:
             if self.skip_missing_manifest_entries:
                 return None
@@ -1393,6 +1480,29 @@ def validate_extra_fields(extra_fields):
         )
 
 
+def pair_nemo_tarred_manifests_with_tars(
+    manifest_paths: Sequence[str], tar_paths: Sequence[str]
+) -> list[tuple[str, tuple[str, ...]]]:
+    """
+    Pair expanded NeMo tarred manifest paths with their tar paths the way
+    ``LazyNeMoTarredIterator(indexed=True)`` does: one manifest is paired with every tar, and
+    sharded manifests are paired with tars by shard id. Used by ``build_indexes.py`` to build
+    native-tar route sidecars for exactly the pairs that the dataloader reads.
+    """
+    manifest_paths, tar_paths = list(manifest_paths), list(tar_paths)
+    if len(manifest_paths) == 1:
+        return [(manifest_paths[0], tuple(tar_paths))]
+    manifest_keys, _ = _extract_unique_shard_keys(manifest_paths, _MANIFEST_SHARD_PATTERN, path_kind="manifest")
+    tar_keys, _ = _extract_unique_shard_keys(tar_paths, _TAR_SHARD_PATTERN, path_kind="tar")
+    tar_by_key = dict(zip(tar_keys, tar_paths))
+    if set(manifest_keys) != set(tar_by_key):
+        raise ValueError(
+            f"NeMo tarred manifest shard ids {sorted(map(str, manifest_keys))} do not match tar shard ids "
+            f"{sorted(map(str, tar_by_key))}."
+        )
+    return [(manifest_path, (tar_by_key[key],)) for key, manifest_path in zip(manifest_keys, manifest_paths)]
+
+
 def expand_sharded_filepaths(paths: str | Path | list[str]) -> list[str]:
     # local import to avoid circular imports
     from nemo.collections.asr.data.audio_to_text import expand_sharded_filepaths as _expand_sharded_filepaths
@@ -1642,25 +1752,48 @@ def _extract_unique_shard_keys(
 
 
 def _check_indexed_tar_covers_manifest(
-    manifest_path: str, num_rows: int, tar_path: str, tar_idx_path: str | Path, num_members: int
+    manifest_path: str,
+    num_rows: int,
+    tar_path: str,
+    tar_idx_path: str | Path,
+    num_members: int,
+    route_path: Path | None,
 ) -> None:
-    """Fail fast when manifest row ``i`` cannot be mapped to tar index entry ``i``.
+    """Fail fast when positional lookup (manifest row ``i`` -> tar index entry ``i``) cannot work.
 
-    Indexed (loose ``.idx``) ``nemo_tarred`` loading resolves manifest row ``i`` to tar index
-    entry ``i`` (and validates the member name when the audio is loaded). A tar index with
-    fewer entries than the manifest has rows would only fail mid-epoch with a bare
-    ``IndexError``. Both counts come from the already loaded ``.idx`` sidecars, so this check
-    reads no data.
+    Without a route sidecar, indexed (loose ``.idx``) ``nemo_tarred`` loading resolves manifest row ``i``
+    to tar index entry ``i`` (and validates the member name when the audio is loaded). A tar index with
+    fewer entries than the manifest has rows would only fail mid-epoch with a bare ``IndexError``. Both
+    counts come from the already loaded ``.idx`` sidecars, so this check reads no data.
     """
     if num_rows <= num_members:
         return
+    route = repr(str(route_path)) if route_path is not None else "which requires a local indexes_root"
     raise ValueError(
         f"Indexed nemo_tarred shard mismatch: manifest {manifest_path!r} has {num_rows} rows, but the tar index "
-        f"{str(tar_idx_path)!r} for {tar_path!r} lists only {num_members} members. Indexed loading maps "
-        "manifest row i to tar index entry i, so this shard would fail mid-epoch. The most common cause is a "
-        "tar index written by 'lhotse index tar', which uses the Lhotse Shar paired-member layout (one entry per "
-        "two members) instead of NeMo's one-entry-per-member layout. Rebuild the tar indexes with "
-        "'python scripts/dataloading/build_indexes.py --force <input_cfg.yaml>'. If the manifest legitimately "
-        "has more rows than the tar has members (e.g. repeated '-subN' rows), convert the dataset to an "
-        ".idxpack with 'scripts/dataloading/convert_indexes_to_idxpack.py', which stores the row-to-member mapping."
+        f"{str(tar_idx_path)!r} for {tar_path!r} lists only {num_members} members, and there is no row-to-member "
+        f"route sidecar ({route}). Either the tar index has the wrong layout (e.g. it was written "
+        "by 'lhotse index tar', which uses the Lhotse Shar paired-member layout), or several manifest rows "
+        "share one tar member (e.g. '-subN' rows). Run 'python scripts/dataloading/build_indexes.py "
+        "<input_cfg.yaml>' (with the same --indexes-root as the training config, if any): it rebuilds tar "
+        "indexes in the wrong layout and writes the route sidecar when one is needed."
+    )
+
+
+def _check_tar_route_targets(
+    ordinals: np.ndarray, member_counts: np.ndarray, tar_positions: np.ndarray, route_path: Path
+) -> None:
+    """Check that every non-skipped route entry points at an existing tar member (or tar, for shard routes)."""
+    active = ordinals != NEMO_TAR_SKIP_ORDINAL
+    if (tar_positions[active] >= len(member_counts)).any():
+        raise _stale_tar_route_error(str(route_path), None)
+    if (ordinals[active] >= member_counts[tar_positions[active]]).any():
+        raise _stale_tar_route_error(str(route_path), None)
+
+
+def _stale_tar_route_error(path: str, row: int | None) -> ValueError:
+    where = f" at row {row}" if row is not None else ""
+    return ValueError(
+        f"Native NeMo tar route for {path!r}{where} does not match the current manifest and tar indexes. "
+        "Rebuild the sidecars with 'python scripts/dataloading/build_indexes.py <input_cfg.yaml>'."
     )

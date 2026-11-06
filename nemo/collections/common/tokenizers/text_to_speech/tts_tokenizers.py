@@ -366,7 +366,7 @@ class VietnameseCharsTokenizer(BaseCharsTokenizer):
             add_blank_at=add_blank_at,
             pad_with_space=pad_with_space,
             non_default_punct_list=non_default_punct_list,
-            text_preprocessing_func=vietnamese_text_preprocessing,
+            text_preprocessing_func=text_preprocessing_func,
         )
 
 

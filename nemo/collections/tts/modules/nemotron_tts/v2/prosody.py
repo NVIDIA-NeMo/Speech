@@ -162,7 +162,9 @@ class ProsodyChannel(nn.Module):
     def encode_audio(self, audio, audio_lens):
         """Encode waveforms into continuous 3.125 Hz latents, without quantizing."""
         audio = resample(audio, self.input_sample_rate, self.sample_rate)
-        audio_lens = torch.div(audio_lens * self.sample_rate, self.input_sample_rate, rounding_mode='floor').long()
+        # Validation collators may supply int32 lengths. Promote before the
+        # sample-rate multiplication; casting its result is too late to avoid overflow.
+        audio_lens = torch.div(audio_lens.long() * self.sample_rate, self.input_sample_rate, rounding_mode='floor')
         # Codec downsampling uses floor lengths. Pad each utterance to retain its
         # final partial prosody frame, including utterances shorter than one frame.
         frame_lens = torch.div(audio_lens + self.samples_per_frame - 1, self.samples_per_frame, rounding_mode='floor')

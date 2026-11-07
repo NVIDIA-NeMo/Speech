@@ -274,6 +274,23 @@ def test_prosody_encoder_rate_partial_frames_and_embedding_round_trip():
     assert torch.equal(channel.quantizer.codes_to_indices(decoded).long(), all_codes)
 
 
+@pytest.mark.parametrize('length_dtype', [torch.int32, torch.int64])
+def test_prosody_validation_audio_lengths_do_not_overflow(length_dtype):
+    channel = _channel().eval()
+    # The single-turn validation collator uses IntTensor lengths. At 24 kHz,
+    # a 10-second clip overflows int32 when multiplied by the 16 kHz target rate.
+    audio = torch.randn(1, 240000) * 0.1
+    audio_lens = torch.tensor([240000], dtype=length_dtype)
+    text = torch.randn(1, 10, 32)
+    with torch.inference_mode():
+        output = channel.encode(audio, audio_lens, text, torch.tensor([10]))
+    assert output.audio_lens.tolist() == [32]  # ceil(10 seconds * 3.125 Hz)
+    assert output.code_lens.tolist() == [10]
+    assert torch.isfinite(output.quantized).all()
+    assert audio_lens.dtype == length_dtype
+    assert audio_lens.tolist() == [240000]
+
+
 def test_mas_pools_audio_or_reuses_coarse_latents_and_detaches_text():
     channel = _channel(latent_dim=4, alignment_dim=4, alignment_temperature=1)
     with torch.no_grad():

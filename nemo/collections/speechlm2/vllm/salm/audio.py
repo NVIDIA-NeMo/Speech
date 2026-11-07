@@ -82,7 +82,10 @@ _DUMMY_AUDIO_TEXT_TOKEN_RESERVE = 64
 _MIN_CHUNK_SIZE_SAMPLES = 320
 # vLLM 0.32 tokenizes the prompt in its renderer and calls ``_call_hf_processor(hf_data, hf_kwargs)`` with the
 # multimodal data only; vLLM 0.28 calls ``_call_hf_processor(prompt, mm_data, mm_kwargs, tok_kwargs)``.
-_PROCESSOR_TAKES_PROMPT = "prompt" in inspect.signature(BaseMultiModalProcessor._call_hf_processor).parameters
+_LEGACY_PROCESSOR_HOOK = getattr(BaseMultiModalProcessor, "_call_hf_processor", None)
+_PROCESSOR_TAKES_PROMPT = (
+    _LEGACY_PROCESSOR_HOOK is not None and "prompt" in inspect.signature(_LEGACY_PROCESSOR_HOOK).parameters
+)
 # vLLM 0.32 applies prompt updates on token ids only; vLLM 0.28 also takes text targets.
 _PROMPT_UPDATES_TAKE_TEXT = hasattr(PromptUpdateDetails, "select_text")
 
@@ -606,6 +609,26 @@ class NeMoSpeechLMMultiModalProcessor(
         if _PROCESSOR_TAKES_PROMPT:
             return self._call_hf_processor_with_prompt(*args, **kwargs)
         return self._call_hf_processor_audio_only(*args, **kwargs)
+
+    if _LEGACY_PROCESSOR_HOOK is None:
+
+        def _apply_hf_processor_main(
+            self,
+            mm_items: MultiModalDataItems,
+            hf_processor_mm_kwargs: Mapping[str, object],
+        ) -> BatchFeature:
+            """vLLM 0.29's native hook; SALM packages waveforms without an HF processor.
+
+            The renderer has already tokenized the prompt, and the normal prompt-update
+            path expands its audio placeholders. Cached calls may contain only missing
+            audio items, or no audio at all.
+            """
+            processor_data, passthrough_data = self._get_hf_mm_data(mm_items)
+            result = self._call_hf_processor_audio_only(
+                {"audio": processor_data.get("audios", [])}, hf_processor_mm_kwargs
+            )
+            result.update(passthrough_data)
+            return result
 
     def _call_hf_processor_with_prompt(
         self,

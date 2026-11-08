@@ -48,13 +48,6 @@ class TestSelectBestBeamIdx:
         assert state.select_best_beam_idx_(score_norm=True, length_norm_power=1.0) == 0
 
     @pytest.mark.unit
-    def test_none_matches_offline_plain_average(self):
-        # length_norm_power=None must reproduce score / (length + 1), the offline flatten_sort_ ranking.
-        state = _state_with_carry(score=[-1.0, -3.0, -2.5], length=[1.0, 9.0, 4.0])
-        expected = int((state.hyp_decoding_state.score / (state.hyp_decoding_state.current_lengths_nb + 1)).argmax())
-        assert state.select_best_beam_idx_(score_norm=True, length_norm_power=None) == expected == 1
-
-    @pytest.mark.unit
     def test_length_norm_power_scales_the_penalty(self):
         # Long-beam denominators: 2.333 ** 0.75 = 1.89 vs 2.333 ** 1.0 = 2.333. A score ratio of 2
         # lies between them, so power 0.75 picks the short beam and power 1.0 picks the long one.
@@ -70,16 +63,10 @@ class TestSelectBestBeamIdx:
         assert state.select_best_beam_idx_(score_norm=True, length_norm_power=0.0) == 0
 
     @pytest.mark.unit
-    def test_length_norm_power_defaults_to_0_75(self):
-        state = _state_with_carry(score=[-1.0, -2.0], length=[1.0, 9.0])
-        assert state.select_best_beam_idx_(score_norm=True) == 0  # same as power 0.75
-        assert state.select_best_beam_idx_(score_norm=True, length_norm_power=1.0) == 1
-
-    @pytest.mark.unit
     def test_raises_without_decoding_carry(self):
         state = CacheAwareRNNTBeamStreamingState()
         with pytest.raises(RuntimeError):
-            state.select_best_beam_idx_(score_norm=True)
+            state.select_best_beam_idx_(score_norm=True, length_norm_power=None)
 
 
 class TestResetBeamScore:

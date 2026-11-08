@@ -135,7 +135,7 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
         self.partial_confidences = next_confidences
         self.best_hyp_idx = best_hyp_idx
 
-    def select_best_beam_idx_(self, *, score_norm: bool = False, length_norm_power: float | None = 0.75) -> int:
+    def select_best_beam_idx_(self, *, score_norm: bool = False, length_norm_power: float | None = None) -> int:
         """Pick beam index into ``partial_*``; updates ``best_hyp_idx``.
 
         Per-chunk publish uses raw ``scores.argmax`` (via ``append_chunk_beam_``). At EOU, use
@@ -156,7 +156,7 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
           ``1.0`` for short hypotheses (where ``length + 1`` over-normalizes) while still approaching
           a plain length average as ``length`` grows. ``0.0`` disables length normalization entirely
           (raw score) -- this is unsafe with LM fusion, since an unnormalized RNNT+LM score can favor
-          near-empty hypotheses. The default ``0.75`` was the best value found empirically.
+          near-empty hypotheses. The pipeline passes ``BeamRNNTInferConfig.length_norm_power``.
         """
         if self.hyp_decoding_state is None:
             raise RuntimeError("Cannot select beam without decoding carry.")

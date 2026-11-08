@@ -480,6 +480,7 @@ class TestEncDecRNNTModel:
             'preserve_frame_confidence',
             'tdt_include_duration_confidence',
             'confidence_method_cfg',
+            'length_norm_power',  # cache-aware streaming only
         ]
 
         result = assert_dataclass_signature_match(

@@ -156,7 +156,7 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
           ``1.0`` for short hypotheses (where ``length + 1`` over-normalizes) while still approaching
           a plain length average as ``length`` grows. ``0.0`` disables length normalization entirely
           (raw score) -- this is unsafe with LM fusion, since an unnormalized RNNT+LM score can favor
-          near-empty hypotheses. The pipeline passes ``BeamRNNTInferConfig.length_norm_power``.
+          near-empty hypotheses.
         """
         if self.hyp_decoding_state is None:
             raise RuntimeError("Cannot select beam without decoding carry.")

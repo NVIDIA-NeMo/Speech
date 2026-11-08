@@ -144,11 +144,7 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
         ``score``/``current_lengths_nb`` on ``hyp_decoding_state`` are zeroed for the winning beam
         right after every EOU collapse (see ``reset_beam_score_``), so both this ranking and the raw
         per-chunk publish between EOUs already read values scoped to the current utterance -- no
-        baseline needs subtracting here. (An earlier version of this fix subtracted a
-        ``_score_baseline``/``_length_baseline`` snapshot at ranking time instead of resetting the
-        actual carry; that left the raw score used for every non-EOU chunk publish drifting
-        unboundedly for the life of the whole stream, which is what let beam scores blow up to
-        +/-inf on long audio with LM shallow fusion.)
+        baseline needs subtracting here.
 
         ``length_norm_power`` is the exponent on the length term, i.e.
         ``score / ((5 + length) / 6) ** length_norm_power`` -- the GNMT-style length penalty (Wu et

@@ -1068,9 +1068,35 @@ class CTCDecoding(AbstractCTCDecoding):
         Returns:
             A list of word-level confidence scores.
         """
-        return self._aggregate_token_confidence_chars(
-            self.decode_tokens_to_str(hypothesis.text[0]).split(), hypothesis.token_confidence
-        )
+        token_ids = [int(t) for t in hypothesis.text[0]]
+        labels = [self.labels_map[t] for t in token_ids]
+        # The hypothesis text drops the one space right before a supported punctuation mark,
+        # so that space must not split words here either.
+        if self.supported_punctuation:
+            dropped = {
+                i
+                for i in range(len(labels) - 1)
+                if labels[i].isspace() and labels[i + 1] in self.supported_punctuation
+            }
+        else:
+            dropped = set()
+
+        groups = [[]]
+        for i, label in enumerate(labels):
+            if i in dropped:
+                continue
+            if label.isspace():
+                groups.append([])
+            else:
+                groups[-1].append(i)
+        groups = [group for group in groups if group]
+
+        words = self.decode_tokens_to_str_with_strip_punctuation(token_ids).split()
+        if [''.join(labels[i] for i in group) for group in groups] != words:
+            raise RuntimeError(
+                f"Word-level confidence: could not map the characters of `{' '.join(words)}` to its words."
+            )
+        return [self._aggregate_confidence([hypothesis.token_confidence[i] for i in group]) for group in groups]
 
     def decode_tokens_to_str(self, tokens: List[str]) -> str:
         """

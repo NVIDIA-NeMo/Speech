@@ -36,8 +36,9 @@ asr:
       beam_size: 4
       allow_cuda_graphs: true
       # Length-normalization exponent for beam ranking at EOU: score / ((5 + length) / 6) ** power
-      # (GNMT, https://arxiv.org/abs/1609.08144). 0.0 = off (unsafe with LM fusion).
-      length_norm_power: 1.0
+      # (GNMT, https://arxiv.org/abs/1609.08144). 0.0 = off (unsafe with LM fusion);
+      # null = plain score / (length + 1), the same ranking as offline decoding.
+      length_norm_power: 0.75
       preserve_frame_confidence: false  # Set to true to calculate confidence (token/word etc.)
       # n-gram LM (off by default)
       ngram_lm_model: null

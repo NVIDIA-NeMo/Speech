@@ -37,44 +37,49 @@ class TestSelectBestBeamIdx:
         assert state.select_best_beam_idx_(score_norm=False) == 0
 
     @pytest.mark.unit
-    def test_score_norm_applies_gnmt_length_penalty(self):
-        # No baseline concept anymore -- the carry is reset at every EOU (see
-        # TestResetBeamScore), so ranking is always score / ((5 + length) / 6) ** power.
-        state = _state_with_carry(score=[-10.0, -6.0], length=[9.0, 1.0])
-        # beam 0: -10/((5+9)/6) = -10/2.333.. = -4.286 ; beam 1: -6/((5+1)/6) = -6/1 = -6.0 -> beam 0 wins
-        assert state.select_best_beam_idx_(score_norm=True) == 0
+    def test_gnmt_penalty_differs_from_plain_average(self):
+        # beam 0: short (length 1), beam 1: long (length 9). Plain average divides the long beam by
+        # 10 and the short one by 2 (ratio 5); GNMT (power 1) divides them by 2.333 and 1 (ratio 2.33).
+        # Scores with ratio 3 fall between the two, so the formulas disagree:
+        #   plain:   -1/2 = -0.5  vs  -3/10   = -0.3   -> long beam (1) wins
+        #   GNMT p1: -1/1 = -1.0  vs  -3/2.33 = -1.29  -> short beam (0) wins
+        state = _state_with_carry(score=[-1.0, -3.0], length=[1.0, 9.0])
+        assert state.select_best_beam_idx_(score_norm=True, length_norm_power=None) == 1
+        assert state.select_best_beam_idx_(score_norm=True, length_norm_power=1.0) == 0
+
+    @pytest.mark.unit
+    def test_none_matches_offline_plain_average(self):
+        # length_norm_power=None must reproduce score / (length + 1), the offline flatten_sort_ ranking.
+        state = _state_with_carry(score=[-1.0, -3.0, -2.5], length=[1.0, 9.0, 4.0])
+        expected = int((state.hyp_decoding_state.score / (state.hyp_decoding_state.current_lengths_nb + 1)).argmax())
+        assert state.select_best_beam_idx_(score_norm=True, length_norm_power=None) == expected == 1
+
+    @pytest.mark.unit
+    def test_length_norm_power_scales_the_penalty(self):
+        # Long-beam denominators: 2.333 ** 0.75 = 1.89 vs 2.333 ** 1.0 = 2.333. A score ratio of 2
+        # lies between them, so power 0.75 picks the short beam and power 1.0 picks the long one.
+        state = _state_with_carry(score=[-1.0, -2.0], length=[1.0, 9.0])
+        assert state.select_best_beam_idx_(score_norm=True, length_norm_power=0.75) == 0
+        assert state.select_best_beam_idx_(score_norm=True, length_norm_power=1.0) == 1
 
     @pytest.mark.unit
     def test_length_norm_power_zero_disables_length_normalization(self):
-        state = _state_with_carry(score=[-1.0, -5.0], length=[100.0, 1.0])
-        # power=0 -> denom is always 1 regardless of length, so this reduces to raw score comparison.
+        # Plain average picks the long beam (-5/101 > -1/2); power 0 ignores length, so raw score wins.
+        state = _state_with_carry(score=[-1.0, -5.0], length=[1.0, 100.0])
+        assert state.select_best_beam_idx_(score_norm=True, length_norm_power=None) == 1
         assert state.select_best_beam_idx_(score_norm=True, length_norm_power=0.0) == 0
 
     @pytest.mark.unit
-    def test_length_norm_power_defaults_to_one(self):
-        state = _state_with_carry(score=[-10.0, -6.0], length=[9.0, 1.0])
-        assert state.select_best_beam_idx_(score_norm=True) == state.select_best_beam_idx_(
-            score_norm=True, length_norm_power=1.0
-        )
+    def test_length_norm_power_defaults_to_0_75(self):
+        state = _state_with_carry(score=[-1.0, -2.0], length=[1.0, 9.0])
+        assert state.select_best_beam_idx_(score_norm=True) == 0  # same as power 0.75
+        assert state.select_best_beam_idx_(score_norm=True, length_norm_power=1.0) == 1
 
     @pytest.mark.unit
     def test_raises_without_decoding_carry(self):
         state = CacheAwareRNNTBeamStreamingState()
         with pytest.raises(RuntimeError):
             state.select_best_beam_idx_(score_norm=True)
-
-    @pytest.mark.unit
-    def test_gnmt_penalty_under_normalizes_short_hypotheses_less_than_plain_average(self):
-        # At length=1, power=1: GNMT denom is (5+1)/6 = 1.0 (score passes through unchanged), while
-        # the old plain-average denom was (length+1) = 2.0 (score halved). This is the short-utterance
-        # over-normalization the GNMT penalty is meant to fix -- drive_thru_original averages ~5
-        # words/utterance, where the old formula penalized short, correct hypotheses too harshly.
-        state = _state_with_carry(score=[-3.0], length=[1.0])
-        state.select_best_beam_idx_(score_norm=True)
-        gnmt_denom = ((5 + 1.0) / 6) ** 1.0
-        assert gnmt_denom == pytest.approx(1.0)
-        old_denom = 1.0 + 1  # length + 1, the formula this replaces
-        assert gnmt_denom < old_denom
 
 
 class TestResetBeamScore:

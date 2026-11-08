@@ -186,7 +186,8 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.residue_tokens_at_end = cfg.endpointing.residue_tokens_at_end
         self.word_boundary_tolerance = cfg.streaming.word_boundary_tolerance
         self.return_tail_result = cfg.return_tail_result
-        self.length_norm_power = cfg.asr.decoding.beam.get("length_norm_power", 1.0)
+        # None (null in YAML) selects the plain ``score / (length + 1)`` ranking used by offline decoding.
+        self.length_norm_power = cfg.asr.decoding.beam.get("length_norm_power", 0.75)
 
         self.request_type = RequestType.from_str(cfg.streaming.request_type)
         self.flush_size_in_secs = cfg.streaming.get("flush_size_in_secs", 0.0)  # 0.0 disables

@@ -135,35 +135,41 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
         self.partial_confidences = next_confidences
         self.best_hyp_idx = best_hyp_idx
 
-    def select_best_beam_idx_(self, *, score_norm: bool = False, length_norm_power: float = 1.0) -> int:
+    def select_best_beam_idx_(self, *, score_norm: bool = False, length_norm_power: float | None = 0.75) -> int:
         """Pick beam index into ``partial_*``; updates ``best_hyp_idx``.
 
-        Per-chunk publish uses raw ``scores.argmax`` (via ``append_chunk_beam_``). At EOU,
-        use ``score_norm=True`` to match offline :meth:`BatchedBeamHyps.flatten_sort_`.
+        Per-chunk publish uses raw ``scores.argmax`` (via ``append_chunk_beam_``). At EOU, use
+        ``score_norm=True`` to rank by length-normalized score; with ``length_norm_power=None`` this
+        matches offline :meth:`BatchedBeamHyps.flatten_sort_` exactly.
 
         ``score``/``current_lengths_nb`` on ``hyp_decoding_state`` are zeroed for the winning beam
         right after every EOU collapse (see ``reset_beam_score_``), so both this ranking and the raw
         per-chunk publish between EOUs already read values scoped to the current utterance -- no
         baseline needs subtracting here.
 
-        ``length_norm_power`` is the exponent on the length term, i.e.
-        ``score / ((5 + length) / 6) ** length_norm_power`` -- the GNMT-style length penalty
-        (https://arxiv.org/abs/1609.08144) rather than a plain average. The ``5``/``6`` constants keep
-        the penalty close to ``1.0`` for short hypotheses (where ``length + 1`` over-normalizes) while
-        still approaching a plain length average as ``length`` grows. ``0.0`` disables length normalization entirely
-        (raw score) -- this is unsafe with LM fusion, since an unnormalized RNNT+LM score can favor
-        near-empty hypotheses.
+        ``length_norm_power`` selects the normalization:
+
+        * ``None``: ``score / (length + 1)``, the plain average used by offline
+          :meth:`BatchedBeamHyps.flatten_sort_`; use it for a direct streaming/offline comparison.
+        * a float: ``score / ((5 + length) / 6) ** length_norm_power``, the GNMT-style length penalty
+          (https://arxiv.org/abs/1609.08144). The ``5``/``6`` constants keep the penalty close to
+          ``1.0`` for short hypotheses (where ``length + 1`` over-normalizes) while still approaching
+          a plain length average as ``length`` grows. ``0.0`` disables length normalization entirely
+          (raw score) -- this is unsafe with LM fusion, since an unnormalized RNNT+LM score can favor
+          near-empty hypotheses. The default ``0.75`` was the best value found empirically.
         """
         if self.hyp_decoding_state is None:
             raise RuntimeError("Cannot select beam without decoding carry.")
 
         scores = self.hyp_decoding_state.score
         lengths_nb = self.hyp_decoding_state.current_lengths_nb
-        if score_norm:
+        if not score_norm:
+            ranking = scores
+        elif length_norm_power is None:
+            ranking = scores / (lengths_nb.to(dtype=scores.dtype) + 1)
+        else:
             denom = ((5 + lengths_nb.to(dtype=scores.dtype)) / 6) ** length_norm_power
             ranking = scores / denom
-        else:
-            ranking = scores
 
         self.best_hyp_idx = int(ranking.argmax().item())
         return self.best_hyp_idx

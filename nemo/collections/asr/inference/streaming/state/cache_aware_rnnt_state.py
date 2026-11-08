@@ -147,10 +147,10 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
         baseline needs subtracting here.
 
         ``length_norm_power`` is the exponent on the length term, i.e.
-        ``score / ((5 + length) / 6) ** length_norm_power`` -- the GNMT-style length penalty (Wu et
-        al., 2016) rather than a plain average. The ``5``/``6`` constants keep the penalty close to
-        ``1.0`` for short hypotheses (where ``length + 1`` over- normalizes) while still approaching
-        a plain length average as ``length`` grows. ``0.0`` disables length normalization entirely
+        ``score / ((5 + length) / 6) ** length_norm_power`` -- the GNMT-style length penalty
+        (https://arxiv.org/abs/1609.08144) rather than a plain average. The ``5``/``6`` constants keep
+        the penalty close to ``1.0`` for short hypotheses (where ``length + 1`` over-normalizes) while
+        still approaching a plain length average as ``length`` grows. ``0.0`` disables length normalization entirely
         (raw score) -- this is unsafe with LM fusion, since an unnormalized RNNT+LM score can favor
         near-empty hypotheses.
         """

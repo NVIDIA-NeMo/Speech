@@ -22,13 +22,21 @@ preserving model-generated state such as ``decode_offset`` and ``text_tokens``.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
+from easymagpie_vllm_omni.cfg_pairing import build_cfg_pairing_layout, is_cfg_hidden_id
+from vllm.config import CUDAGraphMode
+from vllm.forward_context import get_forward_context
 from vllm_omni.engine.serialization import deserialize_additional_information
 from vllm_omni.worker import gpu_ar_worker
 from vllm_omni.worker.gpu_ar_model_runner import GPUARModelRunner
 from vllm_omni.worker.gpu_ar_worker import GPUARWorker
+
+if TYPE_CHECKING:
+    from vllm.sequence import IntermediateTensors
+    from vllm.v1.core.sched.output import SchedulerOutput
+    from vllm.v1.outputs import ECConnectorOutput
 
 
 def merge_streaming_additional_information(
@@ -65,6 +73,105 @@ def merge_streaming_additional_information(
 
 class EasyMagpieGPUARModelRunner(GPUARModelRunner):
     """GPU AR runner that restores streaming chunk metadata propagation."""
+
+    def _preprocess(
+        self,
+        scheduler_output: SchedulerOutput,
+        num_input_tokens: int,
+        intermediate_tensors: IntermediateTensors | None = None,
+    ) -> tuple[
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor,
+        IntermediateTensors | None,
+        dict[str, Any],
+        ECConnectorOutput | None,
+    ]:
+        """Stage CFG row ownership after the base runner reorders the input batch.
+
+        Args:
+            scheduler_output: Scheduled physical requests and token counts for this step.
+            num_input_tokens: Padded physical token count used by the model invocation.
+            intermediate_tensors: Intermediate tensors supplied by pipeline parallel execution.
+
+        Returns:
+            The base runner preprocessing result, with CFG ownership buffers staged in place.
+        """
+        model = self.get_model()
+        if hasattr(model, "use_fixed_acoustic_sampling"):
+            model.use_fixed_acoustic_sampling = True
+        result = super()._preprocess(scheduler_output, num_input_tokens, intermediate_tensors)
+        # Input preparation may reorder requests. Build the mapping afterwards,
+        # before forward, using unpadded physical rows and absolute positions.
+        model = self.get_model()  # CUDA graph wrappers do not forward attribute assignments.
+        request_ids = self.input_batch.req_ids
+        graph_buffers = getattr(model, "cfg_graph_buffers", None)
+        if not any(is_cfg_hidden_id(rid) for rid in request_ids):
+            if hasattr(model, "cfg_pairing_layout"):
+                model.cfg_pairing_layout = None
+                model.cfg_guidance_layout = None
+        else:
+            counts = [scheduler_output.num_scheduled_tokens[rid] for rid in request_ids]
+            metadata = {
+                rid: getattr(self.requests[rid], "additional_information_cpu", None) or {} for rid in request_ids
+            }
+            model.cfg_pairing_layout = build_cfg_pairing_layout(
+                request_ids,
+                counts,
+                self.input_batch.num_computed_tokens_cpu[: len(request_ids)],
+                metadata,
+            )
+            model.cfg_guidance_layout = (
+                model.cfg_pairing_layout if any(info.get("use_cfg") is True for info in metadata.values()) else None
+            )
+        if graph_buffers is not None:
+            actual_tokens = sum(scheduler_output.num_scheduled_tokens[rid] for rid in request_ids)
+            graph_buffers.update(model.cfg_guidance_layout, actual_tokens, num_input_tokens)
+            # Preprocess writes live rows only. Clear padding which may retain a
+            # completed request's audio/phoneme validity from a larger prior batch.
+            model._dec_audio_valid[actual_tokens:num_input_tokens].zero_()
+            if model.has_phoneme:
+                model._dec_phoneme_valid[actual_tokens:num_input_tokens].zero_()
+        return result
+
+    def _model_forward(
+        self,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        """Bypass captured default constants for batches with custom settings.
+
+        Args:
+            *args: Model inputs forwarded to the Omni runner.
+            **kwargs: Model inputs forwarded to the Omni runner.
+
+        Returns:
+            The model output for this batch.
+        """
+        if getattr(self.get_model(), "use_fixed_acoustic_sampling", True):
+            return super()._model_forward(*args, **kwargs)
+        context = get_forward_context()
+        previous_mode = context.cudagraph_runtime_mode
+        context.cudagraph_runtime_mode = CUDAGraphMode.NONE
+        try:
+            return super()._model_forward(*args, **kwargs)
+        finally:
+            context.cudagraph_runtime_mode = previous_mode
+
+    def _request_needs_downstream_stage_payload(self, req_id: str) -> bool:
+        # Suppress private branch postprocessing/payload construction. Scheduler
+        # filtering additionally protects terminal connector notifications.
+        """Check whether a public request needs a codec-stage payload.
+
+        Args:
+            req_id: Request identity.
+
+        Returns:
+            Whether the request should produce a downstream codec payload.
+        """
+        if is_cfg_hidden_id(req_id):
+            return False
+        return super()._request_needs_downstream_stage_payload(req_id)
 
     def _update_streaming_request(self, req_id, new_req_data):
         payload = getattr(new_req_data, "additional_information", None)

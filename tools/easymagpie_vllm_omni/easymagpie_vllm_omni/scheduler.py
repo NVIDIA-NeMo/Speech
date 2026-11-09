@@ -23,12 +23,17 @@ from __future__ import annotations
 import copy
 import threading
 from types import MethodType
+from typing import TYPE_CHECKING, Any
 
 import torch
 from vllm.v1.request import Request, RequestStatus, StreamingUpdate
 from vllm_omni.core.sched.omni_ar_scheduler import OmniARAsyncScheduler
 from vllm_omni.core.sched.omni_generation_scheduler import OmniGenerationScheduler
 from vllm_omni.distributed.omni_connectors.transfer_adapter.chunk_transfer_adapter import OmniChunkTransferAdapter
+from vllm_omni.engine.serialization import deserialize_additional_information, serialize_additional_information
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 class EasyMagpieARAsyncScheduler(OmniARAsyncScheduler):
@@ -68,6 +73,17 @@ class EasyMagpieARAsyncScheduler(OmniARAsyncScheduler):
 
     def add_request(self, request: Request) -> None:
         session = self.requests.get(request.request_id)
+        if session is None and request.resumable and self.vllm_config.model_config.stage_id == 0:
+            # Record the initial prefill boundary once. Later text updates append
+            # placeholders that vLLM can label as prefill, although they must consume
+            # new text using the retained model state. The model uses this boundary
+            # to dispatch those rows to decode; otherwise it slices past the initial
+            # speaker/context embeddings and fails the prefill-length assertion.
+            info = deserialize_additional_information(request.additional_information)
+            if "_stream_prompt_len" in info:
+                raise ValueError("Streaming prompt boundary is reserved for the scheduler")
+            info["_stream_prompt_len"] = request.num_prompt_tokens
+            request.additional_information = serialize_additional_information(info)
         if (
             session is not None
             and session.status == RequestStatus.WAITING_FOR_STREAMING_REQ
@@ -259,7 +275,94 @@ class EasyMagpieCodecScheduler(OmniGenerationScheduler):
         adapter._easymagpie_chunk_lock = threading.Lock()
         adapter._easymagpie_num_quantizers = num_quantizers
         adapter._poll_single_request = MethodType(_poll_native_codec_chunk, adapter)
+        # The legacy connector queue can preempt a partly decoded stream back
+        # through scheduled_new_reqs, replaying its cumulative placeholders
+        # against only the latest chunk. Hold excess streams on the cached
+        # request path instead, preserving their recurrent codec state.
+        if adapter._active_window <= 0:
+            adapter._active_window = adapter.scheduler_max_num_seqs
         self._easymagpie_reset_on_update: set[str] = set()
+        self._easymagpie_pending_terminal: set[str] = set()
+
+    def add_request(self, request: Request) -> None:
+        """Admit a request or apply its next streaming update.
+
+        Args:
+            request: Incoming engine request.
+        """
+        session = self.requests.get(request.request_id)
+        if request.request_id in self._easymagpie_pending_terminal:
+            # Connector completion can overtake downstream prewarm submission.
+            # Ignore remaining prewarms until the input iterator's final update;
+            # they cannot start another codec stream with the same identity.
+            if not request.resumable:
+                self._easymagpie_pending_terminal.discard(request.request_id)
+            return
+        if session is None:
+            # Prewarm tokens estimate talker input length, not codec frames.
+            # A stream outside the active window has not polled its connector
+            # yet; leave it empty so it cannot run before its first real chunk.
+            request.prompt_token_ids = []
+            request._all_token_ids[:] = []
+            request.num_prompt_tokens = 0
+            request.update_block_hashes()
+        if session is not None and session.streaming_queue is not None and not request.resumable:
+            # The frontend sentinel can overtake queued acoustic chunks. Only
+            # the ordered connector terminal payload may end the codec stream;
+            # queuing None here would stop at an earlier segment boundary.
+            session._easymagpie_terminal_prewarm_seen = True
+            return
+        super().add_request(request)
+
+    def _free_request(
+        self,
+        request: Request,
+        delay_free_blocks: bool = False,
+    ) -> dict[str, Any] | None:
+        """Free a codec request and clear its connector ownership.
+
+        Args:
+            request: Incoming engine request.
+            delay_free_blocks: Whether cache blocks must remain reserved after completion.
+
+        Returns:
+            Optional cache-transfer metadata returned by the base scheduler.
+        """
+        if (
+            getattr(request, "streaming_queue", None) is not None
+            and request.status == RequestStatus.FINISHED_STOPPED
+            and not getattr(request, "_easymagpie_terminal_prewarm_seen", False)
+        ):
+            self._easymagpie_pending_terminal.add(request.request_id)
+        try:
+            return super()._free_request(request, delay_free_blocks)
+        finally:
+            # Generation output cleanup covers normal finishes, but the base
+            # abort path leaves the connector's active-stream entry behind.
+            self.chunk_transfer_adapter.cleanup_receiver(request.request_id)
+
+    def finish_requests(
+        self,
+        request_ids: str | Iterable[str] | None,
+        finished_status: RequestStatus,
+    ) -> list[tuple[str, int]]:
+        """Finish selected requests and release their paired histories.
+
+        Args:
+            request_ids: Request identities to finish, or None for all requests.
+            finished_status: Terminal status applied to the selected requests.
+
+        Returns:
+            Public request identities and their client indices for completed aborts.
+        """
+        if request_ids is None:
+            self._easymagpie_pending_terminal.clear()
+        elif isinstance(request_ids, str):
+            self._easymagpie_pending_terminal.discard(request_ids)
+        else:
+            request_ids = tuple(request_ids)
+            self._easymagpie_pending_terminal.difference_update(request_ids)
+        return super().finish_requests(request_ids, finished_status)
 
     def _update_request_as_session(self, session: Request, update: StreamingUpdate) -> None:
         """Resume a text chunk, or reset Stage 1 for a new dialogue reply.
@@ -334,9 +437,16 @@ class EasyMagpieCodecScheduler(OmniGenerationScheduler):
         if waiting_for_input:
             self.num_waiting_for_streaming_input -= 1
 
-        session.status = RequestStatus.RUNNING
-        if session not in self.running:
-            self.running.append(session)
+        if session.num_computed_tokens == 0:
+            # A text/phoneme warmup can finish a segment before emitting any
+            # codec frames. No worker request exists yet: the first real codec
+            # payload must take scheduled_new_reqs, not the cached-request path.
+            session.status = RequestStatus.WAITING
+            self.waiting.add_request(session)
+        else:
+            session.status = RequestStatus.RUNNING
+            if session not in self.running:
+                self.running.append(session)
         self.chunk_transfer_adapter.segment_finished_requests.discard(session.request_id)
 
     def update_from_output(self, scheduler_output, model_runner_output):

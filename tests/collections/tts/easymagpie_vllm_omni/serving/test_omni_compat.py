@@ -11,12 +11,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
+
 import asyncio
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from easymagpie_vllm_omni.omni_compat import patch_streaming_lifecycle, preserve_resumable_segment
 from vllm_omni.engine.orchestrator import Orchestrator
+
+if TYPE_CHECKING:
+    import torch
+    from vllm.v1.engine import EngineCoreOutputs
 
 
 def test_resumable_segment_is_not_treated_as_request_completion():
@@ -81,7 +88,9 @@ async def test_terminal_update_publishes_completion_when_stages_are_already_wait
     patch_streaming_lifecycle()
     patched = Orchestrator._handle_streaming_update
 
-    request_state = SimpleNamespace(final_stage_id=1, stage_submit_ts={1: 42.0})
+    request_state = SimpleNamespace(
+        final_stage_id=1, final_output_stage_ids={1}, finished_final_output_stage_ids={1}, stage_submit_ts={1: 42.0}
+    )
     final_pool = SimpleNamespace(
         stage_client=SimpleNamespace(final_output_type="audio", audio_sample_rate=22050),
         get_bound_replica_id=lambda request_id: 3,
@@ -113,3 +122,102 @@ async def test_terminal_update_publishes_completion_when_stages_are_already_wait
     assert audio["audio"].numel() == 0
     assert audio["sr"] == 22050
     assert cleanups == [["request"]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("final_stages", [{1}, {0, 1}])
+@pytest.mark.parametrize("real_terminal_output", [False, True])
+async def test_terminal_update_waits_for_codec_acknowledgement(
+    monkeypatch: pytest.MonkeyPatch,
+    final_stages: set[int],
+    real_terminal_output: bool,
+) -> None:
+    """Verify terminal update waits for codec acknowledgement.
+
+    Args:
+        monkeypatch: Fixture for replacing dependencies during the test.
+        final_stages: Output stages that must acknowledge terminal input.
+        real_terminal_output: Whether the codec emits a real terminal output.
+    """
+    calls = []
+
+    async def original_update(self, msg: SimpleNamespace) -> None:
+        """Simulate upstream processing of a streaming update.
+
+        Args:
+            msg: Msg used by this operation.
+        """
+        calls.append("update")
+
+    async def original_outputs(
+        self,
+        stage_id: int,
+        replica_id: int,
+        outputs: dict[int, EngineCoreOutputs],
+    ) -> None:
+        """Simulate upstream processing of stage outputs.
+
+        Args:
+            stage_id: Stage producing the output.
+            replica_id: Replica producing the output.
+            outputs: Outputs returned by the scheduler or supplied by the test engine.
+        """
+        calls.append("outputs")
+        for output in outputs:
+            await self.output_async_queue.put(output)
+            await self._cleanup_request_ids([output.request_id])
+
+    monkeypatch.setattr(Orchestrator, "_handle_streaming_update", original_update)
+    monkeypatch.setattr(Orchestrator, "_handle_processed_outputs", original_outputs)
+    patch_streaming_lifecycle()
+    state = SimpleNamespace(
+        final_stage_id=1,
+        final_output_stage_ids=final_stages,
+        finished_final_output_stage_ids=set(),
+        stage_submit_ts={1: 42.0},
+        streaming=SimpleNamespace(enabled=True, segment_finished=False),
+    )
+    pool = SimpleNamespace(
+        stage_client=SimpleNamespace(final_output_type="audio", audio_sample_rate=32000),
+        get_bound_replica_id=lambda rid: 0,
+    )
+    cleanups = []
+
+    async def cleanup(ids: torch.Tensor) -> None:
+        """Record cleanup of the selected orchestrator request identities.
+
+        Args:
+            ids: Text token IDs.
+        """
+        cleanups.append(ids)
+        for rid in ids:
+            orchestrator.request_states.pop(rid, None)
+
+    orchestrator = SimpleNamespace(
+        request_states={"request": state},
+        stage_pools=[None, pool],
+        output_async_queue=asyncio.Queue(),
+        _cleanup_request_ids=cleanup,
+    )
+    await Orchestrator._handle_streaming_update(
+        orchestrator, SimpleNamespace(request_id="request", prompt=SimpleNamespace(resumable=False))
+    )
+    # Text completion is not proof the codec has consumed its queued chunks.
+    assert orchestrator.output_async_queue.empty()
+    assert cleanups == []
+    state.finished_final_output_stage_ids.add(0)
+    await Orchestrator._handle_processed_outputs(orchestrator, 0, 0, [])
+    assert orchestrator.output_async_queue.empty()
+    # Upstream records this raw terminal acknowledgement before processing
+    # outputs, even if the output processor drops the empty terminal output.
+    state.finished_final_output_stage_ids.add(1)
+    terminal = SimpleNamespace(request_id="request", finished=True)
+    await Orchestrator._handle_processed_outputs(orchestrator, 1, 0, [terminal] if real_terminal_output else [])
+    result = orchestrator.output_async_queue.get_nowait()
+    assert result.finished is True
+    if real_terminal_output:
+        assert result is terminal
+    assert orchestrator.output_async_queue.empty()
+    assert orchestrator._easymagpie_terminal_requests == set()
+    assert cleanups == [["request"]]
+    assert calls == ["update", "outputs", "outputs"]

@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from easymagpie_vllm_omni.serving_adapter import _build_adapter_cls
@@ -33,9 +34,217 @@ def test_input_stream_default_pacing_tolerates_loaded_service_queueing():
         max_new_tokens=32,
     )
 
-    # Segment completions took 2-3 seconds with 32 concurrent service requests.
-    # The watchdog must distinguish that normal queueing from a stalled engine.
-    assert stream.pace_timeout_s >= 30.0
+    # The configured watchdog includes both admission queueing and execution.
+    assert stream.pace_timeout_s == 67.0
+
+
+@pytest.mark.asyncio
+async def test_input_stream_accepts_small_chunks_while_first_segment_is_queued() -> None:
+    """Verify input stream accepts small chunks while first segment is queued."""
+    stream = EasyMagpieInputStream(
+        prefill_prompt={"prompt_token_ids": [0]},
+        sampling_params=SamplingParams(max_tokens=128),
+        text_eos_id=999,
+        max_new_tokens=128,
+        pace_timeout_s=0,
+    )
+    await stream.put_tokens([1, 2, 3, 4, 5])
+    inputs = stream.inputs()
+    first = await anext(inputs)
+    try:
+        # No segment completion or engine consumption while the WebSocket
+        # sends more than eight chunks. Receiving must keep draining so the
+        # transport can process heartbeat control frames during queue wait.
+        for start in range(6, 66, 5):
+            await asyncio.wait_for(stream.put_tokens(list(range(start, start + 5))), timeout=0.1)
+        await asyncio.wait_for(stream.finish(), timeout=0.1)
+        chunks = [first] + [chunk async for chunk in inputs]
+        tokens = [token for chunk in chunks for token in chunk.prompt["additional_information"]["text_token"]]
+        assert tokens == list(range(1, 66)) + [999]
+        offset = 0
+        for chunk in chunks:
+            info = chunk.prompt["additional_information"]
+            if info["text_token"]:
+                assert info["text_token_start"] == offset
+                offset += len(info["text_token"])
+    finally:
+        await inputs.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("coalesce", [False, True])
+async def test_input_stream_finish_with_full_queue_preserves_tokens_eos_and_tail(coalesce: bool) -> None:
+    """Verify input stream finish with full queue preserves tokens EOS and tail.
+
+    Args:
+        coalesce: Whether queued input chunks may be combined.
+    """
+    stream = EasyMagpieInputStream(
+        prefill_prompt={"prompt_token_ids": [0], "additional_information": {"use_cfg": True}},
+        sampling_params=SamplingParams(max_tokens=32),
+        text_eos_id=99,
+        max_new_tokens=32,
+        pace_timeout_s=0,
+        queue_depth=2,
+        coalesce_queued_tokens=coalesce,
+    )
+    await stream.put_tokens([10, 11])
+    await stream.put_tokens([12, 13])
+
+    # No consumer can free queue space until finish returns.
+    await asyncio.wait_for(stream.finish(), timeout=0.2)
+    await asyncio.wait_for(stream.finish(), timeout=0.2)
+    chunks = [chunk async for chunk in stream.inputs()]
+    tokens = [token for chunk in chunks for token in chunk.prompt["additional_information"]["text_token"]]
+    assert tokens == [10, 11, 12, 13, 99]
+    offset = 0
+    for chunk in chunks:
+        info = chunk.prompt["additional_information"]
+        if info["text_token"]:
+            assert info["text_token_start"] == offset
+            offset += len(info["text_token"])
+    assert chunks[-1].prompt["additional_information"]["text_token"] == []
+    assert sum(chunk.sampling_params.max_tokens for chunk in chunks) == 32
+    with pytest.raises(RuntimeError, match="after input.done"):
+        await stream.put_tokens([14])
+
+
+@pytest.mark.asyncio
+async def test_input_stream_finish_with_full_queue_after_segment_timeout() -> None:
+    """Verify input stream finish with full queue after segment timeout."""
+    stream = EasyMagpieInputStream(
+        prefill_prompt={"prompt_token_ids": [0]},
+        sampling_params=SamplingParams(max_tokens=128),
+        text_eos_id=99,
+        max_new_tokens=128,
+        pace_timeout_s=0.02,
+    )
+    await stream.put_tokens([1] * 5)
+    inputs = stream.inputs()
+    try:
+        await anext(inputs)
+        await stream.put_tokens([2] * 5)
+        next_segment = asyncio.create_task(anext(inputs))
+        # Let the consumer take the second chunk and wait for Stage 0.
+        await asyncio.sleep(0)
+        for _ in range(8):
+            await stream.put_tokens([3] * 5)
+        with pytest.raises(TimeoutError, match="stage-0 segment completion"):
+            await next_segment
+        # The consumer has exited; finish must not depend on it draining input.
+        await asyncio.wait_for(stream.finish(), timeout=0.2)
+        assert stream.finished
+    finally:
+        await inputs.aclose()
+
+
+@pytest.mark.asyncio
+async def test_input_stream_finish_wakes_consumer_waiting_on_empty_queue() -> None:
+    """Verify input stream finish wakes consumer waiting on empty queue."""
+    stream = EasyMagpieInputStream(
+        prefill_prompt={"prompt_token_ids": [0]},
+        sampling_params=SamplingParams(max_tokens=32),
+        text_eos_id=99,
+        max_new_tokens=32,
+    )
+    inputs = stream.inputs()
+    next_input = asyncio.create_task(anext(inputs))
+    await asyncio.sleep(0)
+    try:
+        await stream.finish()
+        with pytest.raises(StopAsyncIteration):
+            await asyncio.wait_for(next_input, timeout=0.2)
+    finally:
+        next_input.cancel()
+        await asyncio.gather(next_input, return_exceptions=True)
+        await inputs.aclose()
+
+
+@pytest.mark.asyncio
+async def test_input_stream_rejects_pending_token_overflow_without_blocking_receiver() -> None:
+    """Verify input stream rejects pending token overflow without blocking receiver."""
+    stream = EasyMagpieInputStream(
+        prefill_prompt={"prompt_token_ids": [0]},
+        sampling_params=SamplingParams(max_tokens=2048),
+        text_eos_id=999,
+        max_new_tokens=2048,
+        queue_depth=2,
+    )
+    await stream.put_tokens([1] * 256)
+    await stream.put_tokens([2] * 256)
+    with pytest.raises(ValueError, match="Pending streaming input"):
+        await asyncio.wait_for(stream.put_tokens([3]), timeout=0.1)
+
+
+@pytest.mark.asyncio
+async def test_cfg_input_stream_reserves_one_bound_across_text_eos_and_tail() -> None:
+    """Verify CFG input stream reserves one bound across text EOS and tail."""
+    stream = EasyMagpieInputStream(
+        prefill_prompt={"prompt_token_ids": [0] * 6, "additional_information": {"speaker_id": "eng", "use_cfg": True}},
+        sampling_params=SamplingParams(max_tokens=20),
+        text_eos_id=99,
+        max_new_tokens=20,
+        text_prefill_num=4,
+        pace_timeout_s=0,
+    )
+    await stream.put_tokens([1, 2])  # Buffer until the known phoneme-BOS warmup fits.
+    assert not stream._received_first_update
+    await stream.put_tokens([3, 4, 5])
+    await stream.put_tokens([6, 7])
+    await stream.finish()
+    chunks = [chunk async for chunk in stream.inputs()]
+    assert chunks[0].prompt["additional_information"]["max_stream_tokens"] == 20
+    assert chunks[0].prompt["additional_information"]["prefill_text_tokens"] == [1, 2, 3, 4]
+    assert chunks[1].prompt["additional_information"] == {"text_token": [6, 7, 99], "text_token_start": 5}
+    assert sum(chunk.sampling_params.max_tokens for chunk in chunks) == 20
+    assert [chunk.sampling_params.max_tokens for chunk in chunks] == [2, 3, 15]
+
+
+@pytest.mark.asyncio
+async def test_cfg_input_stream_rejects_text_that_exhausts_the_history_bound() -> None:
+    """Verify CFG input stream rejects text that exhausts the history bound."""
+    stream = EasyMagpieInputStream(
+        prefill_prompt={"prompt_token_ids": [0], "additional_information": {"speaker_id": "eng", "use_cfg": True}},
+        sampling_params=SamplingParams(max_tokens=4),
+        text_eos_id=99,
+        max_new_tokens=4,
+        pace_timeout_s=0,
+    )
+    await stream.put_tokens([1, 2])
+    await stream.put_tokens([3])
+    await stream.finish()
+    with pytest.raises(ValueError, match="max_stream_tokens"):
+        _ = [chunk async for chunk in stream.inputs()]
+
+
+@pytest.mark.asyncio
+async def test_cfg_input_stream_waits_for_acoustic_tail_before_final_sentinel() -> None:
+    """Verify CFG input stream waits for acoustic tail before final sentinel."""
+    stream = EasyMagpieInputStream(
+        prefill_prompt={"prompt_token_ids": [0], "additional_information": {"speaker_id": "eng", "use_cfg": True}},
+        sampling_params=SamplingParams(max_tokens=20),
+        text_eos_id=99,
+        max_new_tokens=20,
+    )
+    await stream.put_tokens([2, 3])
+    await stream.finish()
+    inputs = stream.inputs()
+    boundary = SimpleNamespace(stage_id=0, outputs=[SimpleNamespace(token_ids=[0], finish_reason="length")])
+    await anext(inputs)  # initial text
+    stream.observe_output(boundary)
+    await anext(inputs)  # text EOS
+    stream.observe_output(boundary)
+    await anext(inputs)  # acoustic tail
+    exhausted = asyncio.create_task(anext(inputs, None))
+    try:
+        await asyncio.sleep(0)
+        assert not exhausted.done(), "Final sentinel must wait for acoustic completion"
+        stream.observe_output(boundary)
+        assert await exhausted is None
+    finally:
+        exhausted.cancel()
+        await asyncio.gather(exhausted, return_exceptions=True)
+        await inputs.aclose()
 
 
 @pytest.mark.asyncio

@@ -67,6 +67,11 @@ better kernels; for an explicit sweep, run `python scripts/tune_mamba_ssu.py --m
 See the [`offline_demo.ipynb`](../../tutorials/tts/easymagpie_vllm_omni/offline_demo.ipynb) tutorial to check how
 `AsyncOmni` is initialized and used.
 
+### Classifier-free guidance (CFG)
+
+See the [V2 CFG guide](README_CFG.md) for guided synthesis, deployment profiles,
+CUDA graphs, HTTP/WebSocket usage, benchmarks, and validation.
+
 ### Request-time reference and user audio
 
 Every source EasyMagpie NeMo checkpoint contains the codec encoder and

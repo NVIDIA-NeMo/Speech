@@ -18,6 +18,7 @@ from __future__ import annotations
 import threading
 from collections import deque
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import torch
@@ -32,6 +33,12 @@ from vllm.v1.request import RequestStatus
 from vllm_omni.core.sched.omni_ar_scheduler import OmniARAsyncScheduler
 from vllm_omni.core.sched.omni_generation_scheduler import OmniGenerationScheduler
 from vllm_omni.distributed.omni_connectors.transfer_adapter.chunk_transfer_adapter import OmniChunkTransferAdapter
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from vllm.v1.request import Request
+    from vllm_omni.request import OmniRequest
 
 
 def test_no_stop_is_inert_for_non_resumable_requests(monkeypatch):
@@ -288,6 +295,225 @@ def test_native_codec_chunk_appends_prompt_without_resetting_state(monkeypatch):
     assert prewarm_request.num_computed_tokens == 0
 
 
+@pytest.mark.parametrize("capacity", [1, 2])
+def test_native_codec_pressure_keeps_computed_streams_off_new_request_path(
+    monkeypatch: pytest.MonkeyPatch,
+    capacity: int,
+) -> None:
+    """Verify native codec pressure keeps computed streams off new request path.
+
+    Args:
+        monkeypatch: Fixture for replacing dependencies during the test.
+        capacity: Maximum number of physical token rows or sequence slots.
+    """
+    adapter = object.__new__(OmniChunkTransferAdapter)
+    adapter.connector = SimpleNamespace(stage_id=1)
+    adapter.scheduler_max_num_seqs = capacity
+    adapter._active_window = 0
+    adapter._active_streams = {}
+    adapter._held_non_active = deque()
+    adapter.finished_requests = set()
+    adapter.waiting_for_chunk_waiting_requests = deque()
+    adapter.waiting_for_chunk_running_requests = deque()
+    adapter._finished_load_reqs = set()
+    adapter.requests_origin_status = {}
+    streams = [
+        SimpleNamespace(request_id=f"stream-{i}", status=RequestStatus.RUNNING, num_computed_tokens=140)
+        for i in range(capacity + 1)
+    ]
+    adapter.requests_with_ready_chunks = {stream.request_id for stream in streams}
+
+    def fake_init(
+        self,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        """Initialize the minimal scheduler state needed by the pressure test.
+
+        Args:
+            *args: Additional positional arguments forwarded to the base API or accepted by the test double.
+            **kwargs: Additional keyword arguments forwarded to the base API or accepted by the test double.
+        """
+        self.chunk_transfer_adapter = adapter
+        self.vllm_config = SimpleNamespace(
+            model_config=SimpleNamespace(hf_config=SimpleNamespace(num_stacked_codebooks=16))
+        )
+
+    monkeypatch.setattr(OmniGenerationScheduler, "__init__", fake_init)
+    EasyMagpieCodecScheduler()
+
+    class _Waiting(list):
+        """Test double for Waiting behavior."""
+
+        def prepend_requests(self, requests: Iterable[Request]) -> None:
+            """Record requests returned to the waiting queue.
+
+            Args:
+                requests: Live requests indexed by physical identity.
+            """
+            self[:0] = requests
+
+    waiting = _Waiting()
+    running = list(streams)
+    adapter.process_pending_chunks(waiting, running)
+
+    # Re-admitting a computed stream through scheduled_new_reqs schedules all
+    # 146 historical placeholders against only its current six-frame payload.
+    assert waiting == []
+    assert running == streams[:capacity]
+    assert list(adapter._held_non_active) == streams[capacity:]
+
+    # Held requests keep their cached state across ticks, and the next stream
+    # can proceed after a terminal chunk releases an active-window entry.
+    adapter.restore_queues(waiting, running)
+    running.remove(streams[0])
+    adapter.finished_requests.add(streams[0].request_id)
+    adapter._evict_finished_active_streams({streams[0].request_id})
+    adapter.process_pending_chunks(waiting, running)
+    assert waiting == []
+    assert running == streams[1:]
+    assert all(stream.num_computed_tokens == 140 for stream in running)
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+def test_native_codec_prewarm_waits_for_real_payload_before_admission(
+    monkeypatch: pytest.MonkeyPatch,
+    resumable: bool,
+) -> None:
+    """Verify native codec prewarm waits for real payload before admission.
+
+    Args:
+        monkeypatch: Fixture for replacing dependencies during the test.
+        resumable: Whether further input chunks may arrive.
+    """
+    scheduler = object.__new__(EasyMagpieCodecScheduler)
+    scheduler._easymagpie_pending_terminal = set()
+    scheduler.requests = {}
+    request = SimpleNamespace(
+        request_id="new-stream",
+        resumable=resumable,
+        prompt_token_ids=[0] * 20,
+        _all_token_ids=[0] * 20,
+        num_prompt_tokens=20,
+        num_computed_tokens=0,
+        update_block_hashes=lambda: None,
+    )
+    admitted = []
+    monkeypatch.setattr(OmniGenerationScheduler, "add_request", lambda self, req: admitted.append(req))
+
+    scheduler.add_request(request)
+
+    assert admitted == [request]
+    assert request.prompt_token_ids == []
+    assert request._all_token_ids == []
+    assert request.num_prompt_tokens == 0
+
+
+def test_native_codec_abort_releases_active_stream_for_reuse(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify native codec abort releases active stream for reuse.
+
+    Args:
+        monkeypatch: Fixture for replacing dependencies during the test.
+    """
+    scheduler = object.__new__(EasyMagpieCodecScheduler)
+    scheduler._easymagpie_pending_terminal = set()
+    request = SimpleNamespace(request_id="aborted")
+    adapter = object.__new__(OmniChunkTransferAdapter)
+    adapter._active_window = 1
+    adapter._active_streams = {"aborted": request}
+    adapter.finished_requests = set()
+    adapter.segment_finished_requests = set()
+    adapter.get_req_chunk = {"aborted": 2}
+    adapter.requests_with_ready_chunks = {"aborted"}
+    adapter.request_ids_mapping = {}
+    adapter.requests_origin_status = {}
+    adapter._cancelled_load_reqs = set()
+    adapter._finished_load_reqs = set()
+    scheduler.chunk_transfer_adapter = adapter
+    monkeypatch.setattr(OmniGenerationScheduler, "_free_request", lambda self, req, delay_free_blocks=False: "freed")
+
+    assert scheduler._free_request(request) == "freed"
+
+    replacement = SimpleNamespace(request_id="replacement")
+    adapter._promote_active_streams([replacement])
+    assert adapter._active_streams == {"replacement": replacement}
+    assert "aborted" not in adapter.requests_with_ready_chunks
+
+
+@pytest.mark.parametrize("terminal_arrives_first", [False, True])
+def test_native_codec_terminal_prewarm_cannot_recreate_finished_stream(
+    monkeypatch: pytest.MonkeyPatch,
+    terminal_arrives_first: bool,
+) -> None:
+    """Verify native codec terminal prewarm cannot recreate finished stream.
+
+    Args:
+        monkeypatch: Fixture for replacing dependencies during the test.
+        terminal_arrives_first: Whether the terminal prewarm precedes connector completion.
+    """
+    scheduler = object.__new__(EasyMagpieCodecScheduler)
+    scheduler._easymagpie_pending_terminal = set()
+    stream = SimpleNamespace(
+        request_id="completed-stream",
+        streaming_queue=deque(),
+        status=RequestStatus.FINISHED_STOPPED,
+    )
+    scheduler.requests = {stream.request_id: stream}
+    scheduler.chunk_transfer_adapter = SimpleNamespace(cleanup_receiver=lambda request_id: None)
+    admitted = []
+    monkeypatch.setattr(OmniGenerationScheduler, "add_request", lambda self, req: admitted.append(req))
+    monkeypatch.setattr(OmniGenerationScheduler, "_free_request", lambda self, req, delay_free_blocks=False: None)
+    terminal = SimpleNamespace(
+        request_id=stream.request_id,
+        resumable=False,
+        prompt_token_ids=[0],
+        _all_token_ids=[0],
+        num_prompt_tokens=1,
+        update_block_hashes=lambda: None,
+    )
+
+    if terminal_arrives_first:
+        scheduler.add_request(terminal)
+    scheduler._free_request(stream)
+    scheduler.requests.clear()
+    if not terminal_arrives_first:
+        # The connector can finish the codec before the orchestrator forwards
+        # the final prewarm. Admitting it again would own the active window but
+        # wait forever for chunk zero, which the completed stream already read.
+        late_prewarm = SimpleNamespace(**vars(terminal))
+        late_prewarm.resumable = True
+        scheduler.add_request(late_prewarm)
+        scheduler.add_request(terminal)
+
+    assert admitted == []
+    assert scheduler._easymagpie_pending_terminal == set()
+
+
+@pytest.mark.parametrize("request_ids", ["closed", ("closed",), None])
+def test_native_codec_abort_clears_pending_terminal_tracking(
+    monkeypatch: pytest.MonkeyPatch,
+    request_ids: str | Iterable[str] | None,
+) -> None:
+    """Verify native codec abort clears pending terminal tracking.
+
+    Args:
+        monkeypatch: Fixture for replacing dependencies during the test.
+        request_ids: Request identities to finish, or None for all requests.
+    """
+    scheduler = object.__new__(EasyMagpieCodecScheduler)
+    scheduler._easymagpie_pending_terminal = {"closed", "other"}
+    calls = []
+    monkeypatch.setattr(
+        OmniGenerationScheduler, "finish_requests", lambda self, ids, status: calls.append((ids, status)) or []
+    )
+
+    assert scheduler.finish_requests(request_ids, RequestStatus.FINISHED_ABORTED) == []
+
+    expected = set() if request_ids is None else {"other"}
+    assert scheduler._easymagpie_pending_terminal == expected
+    assert calls == [(request_ids, RequestStatus.FINISHED_ABORTED)]
+
+
 def test_native_codec_empty_segment_marker_wakes_scheduler_without_resetting_state(monkeypatch):
     adapter = object.__new__(OmniChunkTransferAdapter)
     adapter._easymagpie_num_quantizers = 2
@@ -327,6 +553,7 @@ def test_native_codec_empty_segment_marker_wakes_scheduler_without_resetting_sta
 
 def test_codec_segment_stop_consumes_late_boundary_readiness(monkeypatch):
     scheduler = object.__new__(EasyMagpieCodecScheduler)
+    scheduler._easymagpie_pending_terminal = set()
     scheduler.chunk_transfer_adapter = SimpleNamespace(
         segment_finished_requests={"request"},
         _finished_load_reqs={"request"},
@@ -350,6 +577,7 @@ def test_codec_segment_stop_consumes_late_boundary_readiness(monkeypatch):
 
 def test_dialogue_boundary_resets_codec_before_consuming_queued_update(monkeypatch):
     scheduler = object.__new__(EasyMagpieCodecScheduler)
+    scheduler._easymagpie_pending_terminal = set()
     scheduler.chunk_transfer_adapter = SimpleNamespace(
         segment_finished_requests={"request"},
         _finished_load_reqs={"request"},
@@ -387,6 +615,7 @@ def test_dialogue_boundary_resets_codec_before_consuming_queued_update(monkeypat
 
 def test_native_codec_update_marks_resumable_segment_output(monkeypatch):
     scheduler = object.__new__(EasyMagpieCodecScheduler)
+    scheduler._easymagpie_pending_terminal = set()
     scheduler.chunk_transfer_adapter = SimpleNamespace(segment_finished_requests=set())
     scheduler._easymagpie_reset_on_update = set()
     output = SimpleNamespace(request_id="request", is_segment_finished=False)
@@ -411,6 +640,7 @@ def test_native_codec_update_marks_resumable_segment_output(monkeypatch):
 
 def test_native_codec_streaming_update_preserves_state_and_resumes_polling():
     scheduler = object.__new__(EasyMagpieCodecScheduler)
+    scheduler._easymagpie_pending_terminal = set()
     scheduler.chunk_transfer_adapter = SimpleNamespace(segment_finished_requests={"request"})
     scheduler.num_waiting_for_streaming_input = 1
     scheduler.log_stats = False
@@ -468,23 +698,38 @@ def test_native_codec_streaming_update_preserves_state_and_resumes_polling():
         (RequestStatus.WAITING_FOR_STREAMING_REQ, "skipped_waiting", 1),
     ],
 )
-def test_native_codec_segment_resume_stays_on_cached_request_path(status, queue_name, num_waiting):
+@pytest.mark.parametrize("computed_tokens", [0, 6])
+def test_native_codec_segment_resume_stays_on_cached_request_path(
+    status,
+    queue_name,
+    num_waiting,
+    computed_tokens,
+):
     scheduler = object.__new__(EasyMagpieCodecScheduler)
+    scheduler._easymagpie_pending_terminal = set()
     scheduler.chunk_transfer_adapter = SimpleNamespace(segment_finished_requests={"request"})
     scheduler.num_waiting_for_streaming_input = num_waiting
     scheduler.running = []
 
     class _RequestQueue(list):
+        def add_request(self, request: OmniRequest) -> None:
+            """Admit a request or apply its next streaming update.
+
+            Args:
+                request: Incoming engine request.
+            """
+            self.append(request)
+
         def remove_requests(self, requests):
             for request in requests:
                 self.remove(request)
 
     session = SimpleNamespace(
         request_id="request",
-        prompt_token_ids=[0] * 6,
-        _all_token_ids=[0] * 6,
-        num_prompt_tokens=6,
-        num_computed_tokens=6,
+        prompt_token_ids=[0] * computed_tokens,
+        _all_token_ids=[0] * computed_tokens,
+        num_prompt_tokens=computed_tokens,
+        num_computed_tokens=computed_tokens,
         status=status,
     )
     scheduler.waiting = _RequestQueue()
@@ -493,13 +738,79 @@ def test_native_codec_segment_resume_stays_on_cached_request_path(status, queue_
 
     scheduler._resume_codec_after_segment(session)
 
-    assert scheduler.waiting == []
+    assert scheduler.waiting == ([] if computed_tokens else [session])
     assert scheduler.skipped_waiting == []
-    assert scheduler.running == [session]
-    assert session.status == RequestStatus.RUNNING
-    assert session.prompt_token_ids == [0] * 6
-    assert session._all_token_ids == [0] * 6
-    assert session.num_prompt_tokens == 6
-    assert session.num_computed_tokens == 6
+    assert scheduler.running == ([session] if computed_tokens else [])
+    assert session.status == (RequestStatus.RUNNING if computed_tokens else RequestStatus.WAITING)
+    assert session.prompt_token_ids == [0] * computed_tokens
+    assert session._all_token_ids == [0] * computed_tokens
+    assert session.num_prompt_tokens == computed_tokens
+    assert session.num_computed_tokens == computed_tokens
     assert scheduler.num_waiting_for_streaming_input == 0
     assert scheduler.chunk_transfer_adapter.segment_finished_requests == set()
+
+
+@pytest.mark.parametrize(
+    "status", [RequestStatus.RUNNING, RequestStatus.WAITING_FOR_CHUNK, RequestStatus.WAITING_FOR_STREAMING_REQ]
+)
+@pytest.mark.parametrize("resumable", [True, False])
+def test_codec_final_input_update_waits_for_connector_terminal_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    status: RequestStatus,
+    resumable: bool,
+) -> None:
+    """Verify codec final input update waits for connector terminal payload.
+
+    Args:
+        monkeypatch: Fixture for replacing dependencies during the test.
+        status: Final request status to exercise.
+        resumable: Whether further input chunks may arrive.
+    """
+    scheduler = object.__new__(EasyMagpieCodecScheduler)
+    scheduler._easymagpie_pending_terminal = set()
+    session = SimpleNamespace(request_id="request", status=status, resumable=resumable, streaming_queue=deque())
+    scheduler.requests = {"request": session}
+    scheduler.chunk_transfer_adapter = SimpleNamespace(finished_requests=set())
+    calls = []
+    monkeypatch.setattr(OmniGenerationScheduler, "add_request", lambda self, request: calls.append(request))
+    terminal_update = SimpleNamespace(request_id="request", resumable=False)
+
+    scheduler.add_request(terminal_update)
+
+    assert calls == []
+    assert session.streaming_queue == deque()
+    assert session.resumable is resumable
+    assert session.status == status
+
+
+@pytest.mark.parametrize("new_request", [True, False])
+@pytest.mark.parametrize("resumable", [True, False])
+def test_codec_initial_requests_and_resumable_updates_are_forwarded(
+    monkeypatch: pytest.MonkeyPatch,
+    new_request: bool,
+    resumable: bool,
+) -> None:
+    """Verify codec initial requests and resumable updates are forwarded.
+
+    Args:
+        monkeypatch: Fixture for replacing dependencies during the test.
+        new_request: Whether the request starts a new session.
+        resumable: Whether further input chunks may arrive.
+    """
+    scheduler = object.__new__(EasyMagpieCodecScheduler)
+    scheduler._easymagpie_pending_terminal = set()
+    scheduler.requests = {} if new_request else {"request": SimpleNamespace(streaming_queue=None)}
+    calls = []
+    monkeypatch.setattr(OmniGenerationScheduler, "add_request", lambda self, request: calls.append(request))
+    request = SimpleNamespace(
+        request_id="request",
+        resumable=resumable,
+        prompt_token_ids=[0],
+        _all_token_ids=[0],
+        num_prompt_tokens=1,
+        update_block_hashes=lambda: None,
+    )
+
+    scheduler.add_request(request)
+
+    assert calls == [request]

@@ -507,7 +507,7 @@ class TestBatchedBeamHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
-    def test_rnnt_add_multiple_results(self, device: torch.device):
+    def test_ctc_add_multiple_results(self, device: torch.device):
         hyps = BatchedBeamHyps(
             batch_size=2, beam_size=3, init_length=1, device=device, blank_index=1024, model_type='ctc'
         )
@@ -569,7 +569,7 @@ class TestBatchedBeamHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
-    def test_rnnt_add_with_invalid_results(self, device: torch.device):
+    def test_ctc_add_with_invalid_results(self, device: torch.device):
         hyps = BatchedBeamHyps(
             batch_size=2, beam_size=3, init_length=1, device=device, blank_index=1024, model_type='ctc'
         )

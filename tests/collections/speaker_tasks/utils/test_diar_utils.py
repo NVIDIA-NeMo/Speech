@@ -141,7 +141,7 @@ class TestDiarizationSequneceUtilFunctions:
     @pytest.mark.parametrize("Y", [[3, 3, 3, 4, 4, 5], [100, 100, 100, 104, 104, 1005]])
     @pytest.mark.parametrize("target", [[0, 0, 0, 1, 1, 2]])
     @pytest.mark.parametrize("offset", [1, 10])
-    def test_minimal_index_ex2(self, Y, target, offset):
+    def test_minimal_index_ex1(self, Y, target, offset):
         Y = torch.tensor(Y)
         target = torch.tensor(target)
         min_Y = get_minimal_indices(Y)
@@ -305,7 +305,7 @@ class TestDiarizationSequneceUtilFunctions:
     @pytest.mark.parametrize("ntbr", [3])
     @pytest.mark.parametrize("pcl", [torch.tensor([0] * 80 + [1] * 35 + [2] * 32)])
     @pytest.mark.parametrize("mspb", [0, 25])
-    def test_merge_scheduler_3clus(self, ntbr, pcl, mspb):
+    def test_merge_scheduler_3clus_long(self, ntbr, pcl, mspb):
         class_target_vol = get_merge_quantity(
             num_to_be_removed=ntbr,
             pre_clus_labels=pcl,
@@ -377,7 +377,7 @@ class TestClassExport:
         isinstance(online_clus, torch.jit._script.RecursiveScriptClass)
 
     @pytest.mark.unit
-    def test_online_speaker_clustering_instance_export(self):
+    def test_offline_speaker_clustering_instance_export(self):
         offline_speaker_clustering = SpeakerClustering(maj_vote_spk_count=False, min_samples_for_nmesc=0, cuda=True)
         offline_speaker_clustering = torch.jit.script(offline_speaker_clustering)
         isinstance(offline_speaker_clustering, torch.jit._script.RecursiveScriptClass)

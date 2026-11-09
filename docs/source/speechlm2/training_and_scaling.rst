@@ -419,15 +419,23 @@ cannot prevent the temporary memory peak. The two FP32 moments alone require
 
 Each canonical state tensor is therefore converted and transferred to CPU before
 the next one is collected. This bounds the temporary GPU copies by individual
-state tensors rather than the whole optimizer. Restore targets use the same
-CPU staging because constructing them also invokes optimizer serialization;
-the loaded state is then applied to the GPU optimizer. Live training state stays
-on GPU. Checkpoints retain the standard format, payload size, and master-weight
-remainder dtype.
+state tensors rather than the whole optimizer. Checkpoints retain the standard
+format, payload size, and master-weight remainder dtype.
 
-CPU staging uses host memory and incurs transfer and synchronization work during
-save and restore. Its latency depends on checkpoint size, storage, and the
-CPU/GPU connection; it does not add transfers to ordinary optimizer updates.
+For FusedAdam with BF16 moments and master-weight remainders enabled, sharded
+DCP restoration writes directly into the live GPU optimizer buffers. BF16 and
+FP32 parameters can share the optimizer; their master states retain int16
+remainders and FP32 values, respectively. FP32 checkpoint moments are converted
+to BF16 as they are copied; remainders retain their int16 dtype. A Speech-owned optimizer adapter delegates
+parameter-name mapping and group-metadata restoration to PyTorch without calling
+TE's bulk serializer or loader. Buffer storage is preserved, and step counters
+and learning rates are restored along with the tensors. Whole absent parameter
+states remain supported; partially missing states remain an error.
+
+Other state formats and optimizers with custom serialization or load hooks retain
+the CPU-staged restore path. Live training state stays on GPU. CPU staging during
+save or fallback restore uses host memory and incurs transfer and synchronization
+work; it does not add transfers to ordinary optimizer updates.
 
 Tensor Parallelism Configuration (HF Automodel)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

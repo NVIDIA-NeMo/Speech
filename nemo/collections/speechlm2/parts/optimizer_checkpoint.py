@@ -13,13 +13,89 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Bound temporary accelerator memory while collecting optimizer checkpoints."""
+"""Bound checkpoint memory and restore compact optimizer state in place."""
 
 from contextlib import contextmanager
+from copy import copy
 from types import MethodType
 
 import torch
 from torch.distributed.tensor import DTensor
+
+
+class _FusedAdamRestoreOptimizer(torch.optim.Optimizer):
+    """Expose live compact buffers to DCP and apply only loaded group metadata.
+
+    PyTorch's state-dict utilities retain responsibility for parameter names,
+    groups, and DTensor sharding. The adapter never calls TE's bulk serializer
+    or loader, both of which would create additional parameter-state copies.
+    """
+
+    def __init__(self, optimizer):
+        self.optimizer = optimizer
+        groups = [dict(group, step=group.get("step", 0)) for group in optimizer.param_groups]
+        super().__init__(groups, copy(optimizer.defaults))
+        for group in optimizer.param_groups:
+            for parameter in group["params"]:
+                if not optimizer.state[parameter]:
+                    optimizer.initialize_state(parameter, store_param_remainders=(parameter.dtype == torch.bfloat16))
+        self.state = optimizer.state
+
+    def step(self, closure=None):
+        """A checkpoint adapter performs no training updates."""
+
+    def state_dict(self):
+        """Return references to live compact optimizer buffers."""
+        return super().state_dict()
+
+    def load_state_dict(self, state_dict):
+        """DCP already filled the live buffers; only metadata remains to apply."""
+        parameter_ids = {key for group in state_dict["param_groups"] for key in group["params"]}
+        metadata = dict(state_dict)
+        metadata["state"] = {key: value for key, value in state_dict["state"].items() if key not in parameter_ids}
+        super().load_state_dict(metadata)
+        self.optimizer.param_groups = self.param_groups
+        self.optimizer.state.update(self.state)
+        self.state = self.optimizer.state
+
+
+def _fused_adam_restore_optimizer(optimizer):
+    """Return an in-place DCP adapter for BF16-moment FusedAdam state.
+
+    Other moment dtypes can require per-tensor scaling; their existing restore
+    path is retained. Custom serialization and load hooks retain their own semantics.
+    """
+    if not callable(getattr(optimizer, "get_unscaled_state", None)):
+        return None
+    try:
+        from transformer_engine.pytorch.optimizers import FusedAdam
+    except ImportError:
+        return None
+    if (
+        type(optimizer) is not FusedAdam  # pylint: disable=unidiomatic-typecheck
+        or "state_dict" in optimizer.__dict__
+        or "load_state_dict" in optimizer.__dict__
+        or any(
+            getattr(optimizer, name, {})
+            for name in (
+                "_optimizer_state_dict_pre_hooks",
+                "_optimizer_state_dict_post_hooks",
+                "_optimizer_load_state_dict_pre_hooks",
+                "_optimizer_load_state_dict_post_hooks",
+            )
+        )
+        or not optimizer.master_weights
+        or not optimizer.store_param_remainders
+        or optimizer.name_to_dtype_map["exp_avg"] != torch.bfloat16
+        or optimizer.name_to_dtype_map["exp_avg_sq"] != torch.bfloat16
+        or any(
+            parameter.dtype not in (torch.bfloat16, torch.float32)
+            for group in optimizer.param_groups
+            for parameter in group["params"]
+        )
+    ):
+        return None
+    return _FusedAdamRestoreOptimizer(optimizer)
 
 
 def _fused_adam_cpu_state_dict(optimizer):

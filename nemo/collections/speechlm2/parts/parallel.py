@@ -321,19 +321,29 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         metadata = FileSystemReader(path).read_metadata()
         for idx, optimizer in enumerate(self.optimizers):
             optimizer_key = f"optimizer_{idx}"
-            from nemo.collections.speechlm2.parts.optimizer_checkpoint import _cpu_optimizer_checkpoint
+            from nemo.collections.speechlm2.parts.optimizer_checkpoint import (
+                _cpu_optimizer_checkpoint,
+                _fused_adam_restore_optimizer,
+            )
 
-            with _cpu_optimizer_checkpoint(optimizer):
-                optimizer_state = {
-                    optimizer_key: get_optimizer_state_dict(self.model, optimizer, options=state_dict_options)
-                }
+            restore_optimizer = _fused_adam_restore_optimizer(optimizer)
+            if restore_optimizer is not None:
+                optimizer_state = {optimizer_key: get_optimizer_state_dict(self.model, restore_optimizer)}
+                restore_options = StateDictOptions()
+            else:
+                with _cpu_optimizer_checkpoint(optimizer):
+                    optimizer_state = {
+                        optimizer_key: get_optimizer_state_dict(self.model, optimizer, options=state_dict_options)
+                    }
+                restore_optimizer = optimizer
+                restore_options = state_dict_options
             planner, missing_parameters = _optimizer_load_planner(optimizer_state, metadata, optimizer_key)
             load(optimizer_state, checkpoint_id=path, planner=planner)
             set_optimizer_state_dict(
                 self.model,
-                optimizer,
+                restore_optimizer,
                 optim_state_dict=optimizer_state[optimizer_key],
-                options=state_dict_options,
+                options=restore_options,
             )
             if missing_parameters and self.global_rank == 0:
                 warnings.warn(

@@ -28,6 +28,7 @@ from omegaconf import OmegaConf
 from nemo.collections.common.data.lhotse.audio_token_estimator import AudioTokenEstimator
 from nemo.collections.common.data.lhotse.dataloader import (
     _auto_detect_bucketing_and_validate_batch_size,
+    get_lhotse_dataloader_from_config,
     get_lhotse_sampler_from_config,
     make_structured_with_schema_warnings,
     tokenize_with_prompt,
@@ -1196,3 +1197,25 @@ def test_indexed_packed_sampler_pending_roundtrip_and_next_epoch(tmp_path, make_
     original.set_epoch(1)
     resumed.set_epoch(1)
     assert _batch_ids(_drain(iter(resumed))) == _batch_ids(_drain(iter(original)))
+
+
+@pytest.mark.parametrize("use_bucketing", [False, True])
+def test_stateful_streaming_inputs_rejected_before_worker_start(tmp_path, use_bucketing):
+    if not hasattr(DynamicCutSampler, "_consume_pending_restore"):
+        pytest.skip("Requires Lhotse's indexed-only sampler checkpoint contract.")
+    cuts_path = tmp_path / "cuts.jsonl"
+    _make_cuts().to_file(cuts_path)
+    config = {
+        "cuts_path": str(cuts_path),
+        "batch_size": 2,
+        "use_bucketing": use_bucketing,
+        "bucket_duration_bins": [5.0] if use_bucketing else None,
+        "num_buckets": 2,
+        "indexed": False,
+        "use_stateful_dataloader": True,
+        "num_workers": 0,
+        "shard_seed": 0,
+        "seed": 0,
+    }
+    with pytest.raises(ValueError, match="use_stateful_dataloader.*indexed"):
+        get_lhotse_dataloader_from_config(config, global_rank=0, world_size=1, dataset=IdentityDataset())

@@ -1255,8 +1255,10 @@ with their source iterator positions. Saving a loaded state before consuming its
 next batch preserves that pending continuation.
 
 Lhotse versions that removed replay-based restoration require indexed lazy
-sources for sampler checkpoints. Streaming inputs cannot be checkpointed with
-those versions. Older Lhotse versions that still expose ``_fast_forward()`` can
+sources for sampler checkpoints. NeMo rejects streamed inputs at loader
+construction when ``use_stateful_dataloader: true`` is set with those versions.
+Set ``indexed: true`` and pre-build all source indexes, or use
+``use_stateful_dataloader: false`` for non-resumable streaming. Older Lhotse versions that still expose ``_fast_forward()`` can
 restore non-indexed pipelines by replaying the previously consumed batches (O(N)).
 
 For the iterator graph contract itself, see Lhotse's

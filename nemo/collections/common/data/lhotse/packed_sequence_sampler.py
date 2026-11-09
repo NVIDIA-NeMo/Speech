@@ -541,6 +541,9 @@ class PackedSequenceDynamicBucketingSampler(DynamicBucketingSampler):
         super().load_state_dict(state_dict)
 
     def __iter__(self) -> "PackedSequenceDynamicBucketingSampler":
+        # New indexed restore hooks own pending state and epoch resets upstream.
+        if hasattr(DynamicBucketingSampler, "_consume_pending_restore"):
+            return super().__iter__()
         if getattr(self, "_needs_fast_forward", False):
             self._needs_fast_forward = False
             self._fast_forward()
@@ -548,6 +551,15 @@ class PackedSequenceDynamicBucketingSampler(DynamicBucketingSampler):
         if self._just_restored_state:
             return self
 
+        if getattr(self, "_skip_diagnostics_reset_once", False):
+            self._skip_diagnostics_reset_once = False
+        else:
+            self.diagnostics.reset_current_epoch()
+
+        self._initialize_epoch_iterator()
+        return self
+
+    def _initialize_epoch_iterator(self) -> None:
         seed = resolve_seed(self.seed)
         self.rng = random.Random(seed + self.epoch)
         if self.sync_buckets:
@@ -558,11 +570,6 @@ class PackedSequenceDynamicBucketingSampler(DynamicBucketingSampler):
             bucket_rng = random.Random(bucket_rng_seed)
         else:
             bucket_rng = None
-        if getattr(self, "_skip_diagnostics_reset_once", False):
-            self._skip_diagnostics_reset_once = False
-        else:
-            self.diagnostics.reset_current_epoch()
-
         restore_sources = [resolve_iterator_source(source) for source in self.cuts]
         source_iterators = [iter(source) for source in restore_sources]
         filtered_examples = Filter(
@@ -589,7 +596,6 @@ class PackedSequenceDynamicBucketingSampler(DynamicBucketingSampler):
             packing_buffer_size=self.packing_buffer_size,
         )
         self.cuts_iter = iter(self._bucketer)
-        return self
 
 
 class PackedSequenceDynamicCutSampler(DynamicCutSampler):
@@ -689,6 +695,16 @@ class PackedSequenceDynamicCutSampler(DynamicCutSampler):
         self._restored_packing_buffer_tokens = []
         self._restored_legacy_examples = []
 
+    def _restore_iteration_state(self, pending: dict[str, Any]) -> None:
+        # Indexed restores no longer go through _fast_forward in Lhotse 2.0.
+        self._inject_restored_packing_buffer = self._uses_indexed_restore()
+        try:
+            super()._restore_iteration_state(pending)
+        finally:
+            self._inject_restored_packing_buffer = False
+        self._restored_packing_buffer_tokens = []
+        self._restored_legacy_examples = []
+
     def _restore_packing_buffer(self) -> list[tuple[Any, ...]]:
         active_sources = self._active_cuts or []
         restored = []
@@ -704,7 +720,7 @@ class PackedSequenceDynamicCutSampler(DynamicCutSampler):
         restored.extend(self._restored_legacy_examples)
         return restored
 
-    def _initialize_epoch_iterator(self, *, rebuild_sources: bool) -> None:
+    def _initialize_epoch_iterator(self, *, rebuild_sources: bool = False) -> None:
         if rebuild_sources or self._active_cuts is None:
             self._active_cuts = self._make_epoch_sources()
         source_iterators = [iter(resolve_iterator_source(source)) for source in self._active_cuts]

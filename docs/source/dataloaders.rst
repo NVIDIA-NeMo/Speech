@@ -1250,9 +1250,14 @@ resume:
 * ``num_workers`` and ``world_size`` must match between save and restore (a
   hard requirement of ``StatefulDataLoader``).
 
-Non-indexed pipelines fall back to Lhotse's ``_fast_forward()`` replay (O(N)
-in batches consumed before the checkpoint) and require ``num_workers`` only to
-be consistent for replay-based restore — not exact restore.
+Indexed packed-sequence loaders restore the packing pool and bucket queues together
+with their source iterator positions. Saving a loaded state before consuming its
+next batch preserves that pending continuation.
+
+Lhotse versions that removed replay-based restoration require indexed lazy
+sources for sampler checkpoints. Streaming inputs cannot be checkpointed with
+those versions. Older Lhotse versions that still expose ``_fast_forward()`` can
+restore non-indexed pipelines by replaying the previously consumed batches (O(N)).
 
 For the iterator graph contract itself, see Lhotse's
 `indexed manifests guide <https://lhotse.readthedocs.io/en/latest/indexed-manifests.html>`_.

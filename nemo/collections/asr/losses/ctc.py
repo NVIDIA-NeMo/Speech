@@ -109,24 +109,35 @@ class CTCLoss(nn.CTCLoss, Serialization, Typing):
                 target_lengths,
                 blank=self._blank,
                 zero_infinity=self.zero_infinity,
+                bounded=log_probs.bounded,
             )
+            # a bounded batch has unused utterance slots of length zero: the batch means count the utterances in use
+            batch_size = (log_probs.lengths > 0).sum().clamp(min=1) if log_probs.bounded else None
             if self.reduction == 'sum':
                 loss = losses.sum()
             elif self.reduction == 'mean':
                 # the padded kernel's mean: each loss over its target length, then the batch mean
-                loss = (losses / target_lengths.clamp(min=1)).mean()
+                normalized = losses / target_lengths.clamp(min=1)
+                loss = normalized.mean() if batch_size is None else normalized.sum() / batch_size
             elif self.reduction == 'none':
                 loss = losses
             else:
                 raise ValueError(f"unexpected reduction {self.reduction!r}")
             if self._apply_reduction:
-                loss = self.reduce(loss, target_lengths)
+                if batch_size is not None and self.config_reduction == 'mean_batch':
+                    loss = loss.sum() / batch_size
+                else:
+                    loss = self.reduce(loss, target_lengths)
             return loss
+        padded, input_lengths = unpack_encoder_output(log_probs), log_probs.lengths
+        if log_probs.bounded and (self.reduction != 'none' or self._apply_reduction):
+            # this fallback reads the host anyway: the unused utterance slots leave the batch, so the batch means
+            # count the utterances in use as the kernel path does (reduction 'none' keeps one loss per slot)
+            keep = input_lengths > 0
+            padded, input_lengths = padded[keep], input_lengths[keep]
+            targets, target_lengths = targets[keep.to(targets.device)], target_lengths[keep.to(target_lengths.device)]
         return self.forward(
-            log_probs=unpack_encoder_output(log_probs),
-            targets=targets,
-            input_lengths=log_probs.lengths,
-            target_lengths=target_lengths,
+            log_probs=padded, targets=targets, input_lengths=input_lengths, target_lengths=target_lengths
         )
 
     @typecheck()

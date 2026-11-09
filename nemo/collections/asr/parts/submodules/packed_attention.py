@@ -59,6 +59,23 @@ LENGTH_PADDING = 128
 RECOMPILE_LIMIT = 64
 
 
+def _zero_slack_rows(out: Tensor, context: "PackedAttentionContext") -> Tensor:
+    """Zero the rows beyond the valid tokens of a bounded batch, which the variable-length kernels leave unwritten."""
+    if not context.bounded:
+        return out
+    valid = context.valid_rows().view(-1, *([1] * (out.ndim - 1)))
+    return torch.where(valid, out, 0.0)
+
+
+def _rows_to_buffer(out: Tensor, context: "PackedAttentionContext", like: Tensor) -> Tensor:
+    """Pad the per-utterance results to the rows of the token buffer (zeros for the slack rows of a bounded batch)."""
+    if out.shape[0] == like.shape[0]:
+        return out
+    if out.shape[0] > like.shape[0]:
+        raise ValueError(f"the utterances hold {out.shape[0]} rows, more than the {like.shape[0]} rows of the buffer.")
+    return torch.cat([out, like.new_zeros((like.shape[0] - out.shape[0],) + tuple(out.shape[1:]))], dim=0)
+
+
 def _padded_size(value: int, floor: int) -> int:
     """Round ``value`` up to a power of two, at least ``floor`` (a power of two itself)."""
     return max(floor, 1 << max(value - 1, 0).bit_length())
@@ -109,11 +126,17 @@ class PackedAttentionContext:
     def __init__(self, packed: PackedEncoderActivations):
         self.lengths = packed.lengths
         self.cu_seqlens = packed.cu_seqlens
+        # a bound in capacity mode (PackedEncoderActivations.bounded), the longest utterance otherwise
         self.max_seqlen = packed.max_seqlen
+        # the rows of the token axis: the valid tokens, or the capacity of a bounded batch
         self.total_tokens = packed.total_tokens
+        self.bounded = packed.bounded
         self.device = packed.data.device
         self.sequence_ids = packed_sequence_ids(packed)
         self.position_ids = packed_encoder_position_ids(packed)
+        if packed.bounded:
+            # the slack rows past the content are no tokens: position zero keeps every position table in range
+            self.position_ids = torch.where(self.sequence_ids < packed.batch_size, self.position_ids, 0)
         # the shapes the compiled FlexAttention kernels see, see TOKEN_PADDING and LENGTH_PADDING
         self.padded_total_tokens = _padded_size(self.total_tokens, TOKEN_PADDING)
         self.padded_max_seqlen = _padded_size(self.max_seqlen, LENGTH_PADDING)
@@ -127,13 +150,32 @@ class PackedAttentionContext:
         self._seq_lens = None
 
     @classmethod
-    def from_lengths(cls, lengths: Tensor) -> "PackedAttentionContext":
-        """Metadata for token-flat ids or states whose sequences have these lengths, in packing order."""
+    def from_lengths(
+        cls, lengths: Tensor, *, total_capacity: int | None = None, max_seqlen: int | None = None
+    ) -> "PackedAttentionContext":
+        """Metadata for token-flat ids or states whose sequences have these lengths, in packing order.
+
+        With ``total_capacity`` and ``max_seqlen`` (the rows of the token buffer and a bound of the lengths)
+        the context is bounded and nothing is read on the host.
+        """
         lengths = lengths.to(torch.int64)
+        if total_capacity is not None or max_seqlen is not None:
+            if total_capacity is None or max_seqlen is None:
+                raise ValueError("total_capacity and max_seqlen come together for a bounded context.")
+            placeholder = lengths.new_empty((total_capacity, 0), dtype=torch.float32)
+            return cls(
+                _new_packed_encoder_activations(
+                    placeholder, lengths, _lengths_to_cu_seqlens(lengths), max_seqlen, bounded=True
+                )
+            )
         total_tokens = int(lengths.sum().item())
         max_seqlen = int(lengths.max().item()) if lengths.numel() else 0
         placeholder = lengths.new_empty((total_tokens, 0), dtype=torch.float32)
         return cls(_new_packed_encoder_activations(placeholder, lengths, _lengths_to_cu_seqlens(lengths), max_seqlen))
+
+    def valid_rows(self) -> Tensor:
+        """Boolean mask of the rows that hold valid tokens, shape ``(T_total,)``."""
+        return torch.arange(self.total_tokens, device=self.device) < self.cu_seqlens[-1].to(torch.int64)
 
     @property
     def sequence_slices(self) -> tuple[tuple[int, int], ...]:
@@ -158,8 +200,12 @@ class PackedAttentionContext:
     def block_mask(self) -> BlockMask:
         """The document block mask over the padded token axis, built once per batch."""
         if self._block_mask is None:
+            sequence_ids = self.sequence_ids
+            if self.bounded:
+                # the slack rows belong to no utterance: the sentinel keeps them out of every utterance's blocks
+                sequence_ids = torch.where(sequence_ids < self.lengths.numel(), sequence_ids, -1)
             self._block_mask = document_block_mask(
-                self.sequence_ids, self.cu_seqlens, self.total_tokens, padded_total_tokens=self.padded_total_tokens
+                sequence_ids, self.cu_seqlens, self.total_tokens, padded_total_tokens=self.padded_total_tokens
             )
         return self._block_mask
 
@@ -283,6 +329,12 @@ def packed_attention(
         raise ValueError("pos_query and pos_emb come together: give both or neither.")
     if scale is None:
         scale = 1.0 / math.sqrt(q.shape[-1])
+    if context.bounded:
+        # the kernels neither read nor write the slack rows, so their gradients there are undefined;
+        # zeroing the inputs routes those gradients to nothing (the backward of where drops them)
+        q, k, v = (_zero_slack_rows(t, context) for t in (q, k, v))
+        if pos_query is not None:
+            pos_query = _zero_slack_rows(pos_query, context)
     if context.total_tokens == 0:
         # keep every projection in the autograd graph when a rank holds no valid token,
         # so distributed gradient reductions see the same parameters on all ranks
@@ -295,7 +347,7 @@ def packed_attention(
             flash = _flash_attention_varlen(q)
             if flash is not None:
                 q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
-                return flash(
+                out = flash(
                     q,
                     k,
                     v,
@@ -307,6 +359,7 @@ def packed_attention(
                     softmax_scale=scale,
                     causal=False,
                 )
+                return _zero_slack_rows(out, context)
         elif context.rel_pos_kernel and q.dtype in PACKED_REL_POS_ATTENTION_DTYPES:
             return packed_rel_pos_attention(
                 q,
@@ -328,7 +381,9 @@ def packed_attention(
                 "abs_pos and rope attention through variable-length FlashAttention in float16 or bfloat16 (autocast); "
                 "otherwise set dropout_att: 0 on the encoder for packed sequences."
             )
-        return _flex_packed_attention(q, k, v, context, pos_query=pos_query, pos_emb=pos_emb, scale=scale)
+        return _zero_slack_rows(
+            _flex_packed_attention(q, k, v, context, pos_query=pos_query, pos_emb=pos_emb, scale=scale), context
+        )
     return _reference_packed_attention(
         q, k, v, context, pos_query=pos_query, pos_emb=pos_emb, dropout_p=dropout_p, scale=scale
     )
@@ -367,13 +422,16 @@ def packed_cross_attention(
         scale = 1.0 / math.sqrt(q.shape[-1])
     if query_context.lengths.numel() != key_context.lengths.numel():
         raise ValueError("query_context and key_context must describe the same number of sequences.")
+    if query_context.bounded or key_context.bounded:
+        q = _zero_slack_rows(q, query_context)
+        k, v = _zero_slack_rows(k, key_context), _zero_slack_rows(v, key_context)
     if query_context.total_tokens == 0 or key_context.total_tokens == 0:
         anchor = (q.sum() + k.sum() + v.sum()) * 0.0
         return q.new_zeros(q.shape) + anchor.to(q.dtype)
     if q.is_cuda:
         flash = _flash_attention_varlen(q)
         if flash is not None:
-            return flash(
+            out = flash(
                 q.contiguous(),
                 k.contiguous(),
                 v.contiguous(),
@@ -385,6 +443,7 @@ def packed_cross_attention(
                 softmax_scale=scale,
                 causal=causal,
             )
+            return _zero_slack_rows(out, query_context)
     return _reference_packed_cross_attention(
         q, k, v, query_context, key_context, causal=causal, dropout_p=dropout_p, scale=scale
     )
@@ -422,7 +481,7 @@ def _reference_packed_cross_attention(
         if dropout_p > 0.0:
             weights = torch.nn.functional.dropout(weights, p=dropout_p, training=True)
         outputs.append(torch.matmul(weights, vi).transpose(0, 1))
-    return torch.cat(outputs, dim=0)
+    return _rows_to_buffer(torch.cat(outputs, dim=0) if outputs else q.new_zeros((0,) + q.shape[1:]), query_context, q)
 
 
 def _flash_attention_varlen(q: Tensor) -> Callable | None:
@@ -523,4 +582,4 @@ def _reference_packed_attention(
         if dropout_p > 0.0:
             weights = torch.nn.functional.dropout(weights, p=dropout_p, training=True)
         outputs.append(torch.matmul(weights, vi).transpose(0, 1))
-    return torch.cat(outputs, dim=0)
+    return _rows_to_buffer(torch.cat(outputs, dim=0) if outputs else q.new_zeros((0,) + q.shape[1:]), context, q)

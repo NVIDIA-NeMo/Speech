@@ -603,7 +603,14 @@ class ConformerConvolution(nn.Module):
                 "kernel does not run (without Triton, on the CPU, or in float64)."
             )
 
-        x = self.batch_norm(x)
+        valid = None
+        if self.norm_type == 'batch_norm' and self.training and type(self.batch_norm) is nn.BatchNorm1d:
+            # capacity mode: the statistics exclude the slack rows of the buffer, which the layout or the context marks
+            if layout is not None and layout.token_valid is not None:
+                valid = layout.token_valid
+            elif context is not None and context.bounded:
+                valid = context.valid_rows()
+        x = self.batch_norm(x) if valid is None else _masked_batch_norm(self.batch_norm, x, valid)
         x = self.activation(x)
         return self._apply_pointwise(x, self.pointwise_conv2)
 
@@ -619,6 +626,37 @@ class ConformerConvolution(nn.Module):
                 nn.init.uniform_(self.pointwise_conv1.bias, -pw1_max, pw1_max)
                 nn.init.uniform_(self.pointwise_conv2.bias, -pw2_max, pw2_max)
                 nn.init.uniform_(self.depthwise_conv.bias, -dw_max, dw_max)
+
+
+def _masked_batch_norm(norm: nn.BatchNorm1d, x: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+    """Training-mode batch normalization over the rows of ``x`` that ``valid`` marks, with ``norm``'s state.
+
+    The semantics of ``torch.nn.functional.batch_norm`` in training: the batch is normalized by the biased
+    variance of the counted rows, the running variance moves towards the unbiased one; no host read, so the
+    update runs under CUDA-graph capture (the cumulative-average momentum uses the device counter).
+    """
+    values = x.float() if x.dtype in (torch.float16, torch.bfloat16) else x
+    mask = valid.unsqueeze(1)
+    count = mask.sum().to(values.dtype)
+    safe_count = count.clamp_min(1.0)
+    mean = torch.where(mask, values, 0.0).sum(dim=0) / safe_count
+    var = torch.where(mask, values - mean, 0.0).square().sum(dim=0) / safe_count
+    if norm.track_running_stats:
+        with torch.no_grad():
+            # the unbiased estimate needs two rows; fewer leave the running statistics as they are
+            valid = count > 1
+            norm.num_batches_tracked += valid.to(torch.long)
+            if norm.momentum is None:
+                momentum = 1.0 / norm.num_batches_tracked.clamp_min(1).to(values.dtype)
+            else:
+                momentum = norm.momentum
+            unbiased = var * (count / (count - 1).clamp_min(1.0))
+            norm.running_mean += torch.where(valid, (mean.detach() - norm.running_mean) * momentum, 0.0)
+            norm.running_var += torch.where(valid, (unbiased.detach() - norm.running_var) * momentum, 0.0)
+    out = (values - mean) * torch.rsqrt(var + norm.eps)
+    if norm.affine:
+        out = out * norm.weight + norm.bias
+    return out.to(x.dtype)
 
 
 class ConformerFeedForward(nn.Module):

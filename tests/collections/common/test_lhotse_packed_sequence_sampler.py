@@ -213,6 +213,37 @@ def test_packed_sequence_config_flag_selects_exact_sampler(tmp_path, packed, sam
     assert sampler.shuffle is not packed
 
 
+def test_packing_buffer_size_defaults_to_1024_when_unset(tmp_path):
+    cuts_path = tmp_path / "cuts.jsonl"
+    _make_cuts().to_file(cuts_path)
+    config = make_structured_with_schema_warnings(
+        OmegaConf.create(
+            {
+                "cuts_path": str(cuts_path),
+                "force_finite": True,
+                "num_workers": 0,
+                "use_multimodal_sampling": True,
+                "pretokenize": False,
+                "batch_tokens": 10,
+                "token_equivalent_duration": 1.0,
+                "audio_token_estimator": {
+                    "preprocessor": {"n_fft": 16000, "hop_length": 16000, "stft_pad_amount": 8000},
+                    "subsampling": [],
+                },
+                "use_packed_sequence_sampling": True,
+                "measure_total_length": False,
+                "seed": 0,
+                "shard_seed": 0,
+            }
+        )
+    )
+
+    sampler, _ = get_lhotse_sampler_from_config(config, global_rank=0, world_size=1, tokenizer=object())
+
+    assert type(sampler) is PackedSequenceDynamicCutSampler
+    assert sampler.packing_buffer_size == 1024
+
+
 def test_packing_buffer_legacy_alias_accepts_structured_input():
     legacy_config = OmegaConf.create({"shuffle_buffer_size": 7})
     OmegaConf.set_struct(legacy_config, True)

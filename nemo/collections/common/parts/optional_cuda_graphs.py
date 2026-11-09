@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import abc
+import contextlib
 import gc
 import math
 from typing import Any, Callable, Optional
@@ -118,7 +119,7 @@ def capture_cuda_graph(fn: Callable[[], Any], pool=None) -> tuple[torch.cuda.CUD
     gc_was_enabled = gc.isenabled()
     gc.disable()
     try:
-        with torch.cuda.graph(graph, pool=pool):
+        with _unlimited_block_splitting(), torch.cuda.graph(graph, pool=pool):
             outputs = fn()
     finally:
         if gc_was_enabled:
@@ -179,3 +180,29 @@ def copy_padded_rows(static: torch.Tensor, rows: torch.Tensor) -> None:
     n = rows.shape[0]
     static[:n].copy_(rows)
     static[n:].copy_(rows[:1].expand_as(static[n:]))
+
+
+@contextlib.contextmanager
+def _unlimited_block_splitting():
+    """
+    Lift the CUDA allocator's ``max_split_size_mb`` for the duration of a capture, restoring the settings after.
+
+    vLLM 0.32 profiles a model, and so any graphs captured at its first forward, under ``max_split_size_mb:20``. The
+    allocator then never hands a free block of 20 MiB or more to a smaller request, so a graph pool cannot reuse the
+    blocks it freed: every tensor just under 20 MiB takes a new segment, and a pool shared by many graphs grows with
+    each capture.
+    """
+    get_settings = getattr(torch._C, "_accelerator_getAllocatorSettings", None)
+    set_settings = getattr(torch._C, "_accelerator_setAllocatorSettings", None)
+    settings = get_settings() if get_settings is not None and set_settings is not None else ""
+    fields = [field.strip() for field in settings.split(",") if field.strip()]
+    kept = [field for field in fields if field.partition(":")[0].strip() != "max_split_size_mb"]
+    if len(kept) == len(fields):
+        yield
+        return
+    # The setter resets every option the string leaves out, so the other options are passed back unchanged.
+    set_settings(",".join(kept))
+    try:
+        yield
+    finally:
+        set_settings(settings)

@@ -647,3 +647,20 @@ class TestBaseClassesAreUntouched:
         assert not {'language_prompt_features', 'language_prompt_indices', 'prompt', 'prompt_indices'} & set(
             parameters
         )
+
+
+class TestPromptIndexDatasetRNG:
+    """The unified-mode auto prompt draw must be restored with the dataloader state."""
+
+    @pytest.mark.unit
+    def test_restored_rng_state_reproduces_unified_prompt_draws(self):
+        dataset = make_prompt_dataset(default_prompt_mode='unified')
+        cut = make_cut('de-DE')
+        state = dataset.state_dict()
+        expected = [dataset._get_prompt_index_for_cut(cut) for _ in range(32)]
+
+        restored = make_prompt_dataset(default_prompt_mode='unified')
+        restored.load_state_dict(state)
+
+        assert [restored._get_prompt_index_for_cut(cut) for _ in range(32)] == expected
+        assert set(expected) == {PROMPT_DICTIONARY['de-DE'], PROMPT_DICTIONARY['auto']}

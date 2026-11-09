@@ -410,32 +410,9 @@ For Fully Sharded Data Parallel training:
 FSDP2 shards the model parameters across GPUs, all-gathers them for forward/backward passes, and then de-allocates after computation. This allows training of larger models with limited GPU memory.
 See `PyTorch FSDP2 <https://pytorch.org/docs/stable/distributed.fsdp.fully_shard.html>`_ for more details.
 
-``AutomodelParallelStrategy`` collects optimizer checkpoints on CPU. Transformer
-Engine FusedAdam stores reduced-precision moments during training but serializes
-them as FP32. Its native serializer retains all converted tensors on the GPU
-before returning the state dictionary, so offloading that dictionary afterwards
-cannot prevent the temporary memory peak. The two FP32 moments alone require
-8 bytes per local parameter, in addition to the live optimizer state.
-
-Each canonical state tensor is therefore converted and transferred to CPU before
-the next one is collected. This bounds the temporary GPU copies by individual
-state tensors rather than the whole optimizer. Checkpoints retain the standard
-format, payload size, and master-weight remainder dtype.
-
-For FusedAdam with BF16 moments and master-weight remainders enabled, sharded
-DCP restoration writes directly into the live GPU optimizer buffers. BF16 and
-FP32 parameters can share the optimizer; their master states retain int16
-remainders and FP32 values, respectively. FP32 checkpoint moments are converted
-to BF16 as they are copied; remainders retain their int16 dtype. A Speech-owned optimizer adapter delegates
-parameter-name mapping and group-metadata restoration to PyTorch without calling
-TE's bulk serializer or loader. Buffer storage is preserved, and step counters
-and learning rates are restored along with the tensors. Whole absent parameter
-states remain supported; partially missing states remain an error.
-
-Other state formats and optimizers with custom serialization or load hooks retain
-the CPU-staged restore path. Live training state stays on GPU. CPU staging during
-save or fallback restore uses host memory and incurs transfer and synchronization
-work; it does not add transfers to ordinary optimizer updates.
+Sharded DCP checkpoints restore FusedAdam BF16 moments directly into existing GPU
+buffers when master-weight remainders are enabled. Other optimizer configurations
+use the standard restore path.
 
 Tensor Parallelism Configuration (HF Automodel)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

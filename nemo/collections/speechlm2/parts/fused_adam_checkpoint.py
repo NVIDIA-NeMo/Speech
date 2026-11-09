@@ -13,17 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Bound checkpoint memory and restore compact optimizer state in place."""
-
-from contextlib import contextmanager
-from copy import copy
-from types import MethodType
+"""Restore Transformer Engine FusedAdam checkpoints into live GPU buffers."""
 
 import torch
-from torch.distributed.tensor import DTensor
 
 
-class _FusedAdamRestoreOptimizer(torch.optim.Optimizer):
+__all__ = ["FusedAdamRestoreOptimizer", "get_fused_adam_restore_optimizer"]
+
+
+class FusedAdamRestoreOptimizer(torch.optim.Optimizer):
     """Expose live compact buffers to DCP and apply only loaded group metadata.
 
     PyTorch's state-dict utilities retain responsibility for parameter names,
@@ -34,7 +32,7 @@ class _FusedAdamRestoreOptimizer(torch.optim.Optimizer):
     def __init__(self, optimizer):
         self.optimizer = optimizer
         groups = [dict(group, step=group.get("step", 0)) for group in optimizer.param_groups]
-        super().__init__(groups, copy(optimizer.defaults))
+        super().__init__(groups, optimizer.defaults.copy())
         for group in optimizer.param_groups:
             for parameter in group["params"]:
                 if not optimizer.state[parameter]:
@@ -43,10 +41,6 @@ class _FusedAdamRestoreOptimizer(torch.optim.Optimizer):
 
     def step(self, closure=None):
         """A checkpoint adapter performs no training updates."""
-
-    def state_dict(self):
-        """Return references to live compact optimizer buffers."""
-        return super().state_dict()
 
     def load_state_dict(self, state_dict):
         """DCP already filled the live buffers; only metadata remains to apply."""
@@ -59,7 +53,7 @@ class _FusedAdamRestoreOptimizer(torch.optim.Optimizer):
         self.state = self.optimizer.state
 
 
-def _fused_adam_restore_optimizer(optimizer):
+def get_fused_adam_restore_optimizer(optimizer: torch.optim.Optimizer) -> FusedAdamRestoreOptimizer | None:
     """Return an in-place DCP adapter for BF16-moment FusedAdam state.
 
     Other moment dtypes can require per-tensor scaling; their existing restore
@@ -95,65 +89,4 @@ def _fused_adam_restore_optimizer(optimizer):
         )
     ):
         return None
-    return _FusedAdamRestoreOptimizer(optimizer)
-
-
-def _fused_adam_cpu_state_dict(optimizer):
-    # Keep the standard optimizer metadata/hooks, but transfer each converted
-    # state before converting the next one. TE otherwise accumulates all FP32
-    # moments on the accelerator before DCP can apply cpu_offload.
-    state_dict = torch.optim.Optimizer.state_dict(optimizer)
-    parameters = {
-        saved: parameter
-        for saved_group, group in zip(state_dict["param_groups"], optimizer.param_groups)
-        for saved, parameter in zip(saved_group["params"], group["params"])
-    }
-    for key, state in state_dict["state"].items():
-        if key not in parameters:
-            continue
-        parameter = parameters[key]
-        converted = {}
-        for name in state:
-            value = optimizer.get_unscaled_state(parameter, name)
-            if isinstance(parameter, DTensor):
-                value = DTensor.from_local(
-                    value,
-                    device_mesh=parameter.device_mesh,
-                    placements=parameter.placements,
-                    shape=parameter.size(),
-                    stride=parameter.stride(),
-                )
-            converted[name] = value.cpu()
-            del value
-        state_dict["state"][key] = converted
-    return state_dict
-
-
-@contextmanager
-def _cpu_optimizer_checkpoint(optimizer):
-    """Collect TE FusedAdam's canonical state on CPU without retaining FP32 GPU copies.
-
-    The live low-precision state is unchanged. The temporary instance method is
-    restored even if checkpoint collection raises; other optimizers are untouched.
-    """
-    if not callable(getattr(optimizer, "get_unscaled_state", None)):
-        yield
-        return
-    try:
-        from transformer_engine.pytorch.optimizers import FusedAdam
-    except ImportError:
-        yield
-        return
-
-    if (
-        not isinstance(optimizer, FusedAdam)
-        or type(optimizer).state_dict is not FusedAdam.state_dict
-        or "state_dict" in optimizer.__dict__
-    ):
-        yield
-        return
-    optimizer.state_dict = MethodType(_fused_adam_cpu_state_dict, optimizer)
-    try:
-        yield
-    finally:
-        del optimizer.state_dict
+    return FusedAdamRestoreOptimizer(optimizer)

@@ -6,19 +6,12 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
-from lightning.pytorch.strategies.model_parallel import ModelParallelStrategy
 
 from nemo.collections.speechlm2.parts.parallel import AutomodelParallelStrategy
 
 
-class _ConvertedState(torch.Tensor):
-    def cpu(self):
-        self.owner.live_buffers -= 1
-        return self.as_subclass(torch.Tensor).clone()
-
-
 class _FusedAdam(torch.optim.Optimizer):
-    """Model TE's canonical conversion with a one-buffer accelerator budget."""
+    """Model TE's FP32 checkpoint moments and compact live state."""
 
     def __init__(self, parameter=None):
         if parameter is None:
@@ -38,18 +31,10 @@ class _FusedAdam(torch.optim.Optimizer):
                 parameter.numel(), dtype=torch.int16 if parameter.dtype == torch.bfloat16 else torch.float32
             ).reshape(parameter.shape),
         }
-        self.live_buffers = 0
 
     def get_unscaled_state(self, parameter, name):
-        self.live_buffers += 1
-        if self.live_buffers > 1:
-            raise RuntimeError('retained converted accelerator buffers')
         value = self.state[parameter][name]
-        if value.dtype != torch.int16:
-            value = value.float()
-        result = value.as_subclass(_ConvertedState)
-        result.owner = self
-        return result
+        return value.float() if value.dtype != torch.int16 else value
 
     def state_dict(self):
         state = super().state_dict()
@@ -72,42 +57,6 @@ def fused_adam_module(monkeypatch):
     module = ModuleType('transformer_engine.pytorch.optimizers')
     module.FusedAdam = _FusedAdam
     monkeypatch.setitem(sys.modules, module.__name__, module)
-    monkeypatch.setattr(ModelParallelStrategy, 'optimizer_state', lambda self, optimizer: optimizer.state_dict())
-
-
-def test_fused_adam_checkpoint_offloads_each_converted_state(fused_adam_module):
-    optimizer = _FusedAdam()
-    parameter = optimizer.param_groups[0]['params'][0]
-    original = dict(optimizer.state[parameter])
-    state = AutomodelParallelStrategy().optimizer_state(optimizer)
-    saved = state['state'][0]
-    assert optimizer.live_buffers == 0
-    assert saved['exp_avg'].dtype == saved['exp_avg_sq'].dtype == torch.float32
-    assert saved['master_param'].dtype == torch.int16
-    for name, value in original.items():
-        assert optimizer.state[parameter][name] is value
-        assert torch.equal(saved[name], value.float() if value.dtype == torch.bfloat16 else value)
-    assert 'state_dict' not in optimizer.__dict__
-
-
-def test_fused_adam_checkpoint_restores_method_after_failure(fused_adam_module, monkeypatch):
-    optimizer = _FusedAdam()
-
-    def fail(*args):
-        raise RuntimeError('serialization failed')
-
-    monkeypatch.setattr(optimizer, 'get_unscaled_state', fail)
-    with pytest.raises(RuntimeError, match='serialization failed'):
-        AutomodelParallelStrategy().optimizer_state(optimizer)
-    assert 'state_dict' not in optimizer.__dict__
-
-
-def test_custom_state_dict_override_is_preserved(fused_adam_module):
-    optimizer = _FusedAdam()
-    custom = lambda: {'custom': True}
-    optimizer.state_dict = custom
-    assert AutomodelParallelStrategy().optimizer_state(optimizer) == {'custom': True}
-    assert optimizer.state_dict is custom
 
 
 def test_plain_optimizer_does_not_import_transformer_engine(monkeypatch):
@@ -121,12 +70,10 @@ def test_plain_optimizer_does_not_import_transformer_engine(monkeypatch):
         return original_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, '__import__', guarded_import)
-    monkeypatch.setattr(ModelParallelStrategy, 'optimizer_state', lambda self, optimizer: optimizer.state_dict())
     optimizer = torch.optim.SGD([torch.nn.Parameter(torch.ones(1))], lr=0.1)
-    assert AutomodelParallelStrategy().optimizer_state(optimizer)['state'] == {}
-    from nemo.collections.speechlm2.parts.optimizer_checkpoint import _fused_adam_restore_optimizer
+    from nemo.collections.speechlm2.parts.fused_adam_checkpoint import get_fused_adam_restore_optimizer
 
-    assert _fused_adam_restore_optimizer(optimizer) is None
+    assert get_fused_adam_restore_optimizer(optimizer) is None
 
 
 def test_strategy_restores_fused_adam_into_live_buffers(fused_adam_module, monkeypatch, tmp_path):
@@ -161,7 +108,6 @@ def test_strategy_restores_fused_adam_into_live_buffers(fused_adam_module, monke
 
     monkeypatch.setattr(dcp, 'load', load)
     strategy.load_checkpoint(tmp_path)
-    assert optimizer.live_buffers == 0
     assert optimizer.param_groups[0]['step'] == 13
     assert optimizer.param_groups[0]['lr'] == 0.02
     for name, value in optimizer.state[model.weight].items():
@@ -170,10 +116,11 @@ def test_strategy_restores_fused_adam_into_live_buffers(fused_adam_module, monke
 
 
 @pytest.mark.parametrize(
-    'unsupported', ['moment_dtype', 'remainders', 'master_weights', 'save_hook', 'load_hook', 'override']
+    'unsupported',
+    ['moment_dtype', 'remainders', 'master_weights', 'save_hook', 'load_hook', 'save_override', 'load_override'],
 )
 def test_in_place_restore_preserves_unsupported_optimizer_paths(fused_adam_module, unsupported):
-    from nemo.collections.speechlm2.parts.optimizer_checkpoint import _fused_adam_restore_optimizer
+    from nemo.collections.speechlm2.parts.fused_adam_checkpoint import get_fused_adam_restore_optimizer
 
     optimizer = _FusedAdam()
     if unsupported == 'moment_dtype':
@@ -186,9 +133,11 @@ def test_in_place_restore_preserves_unsupported_optimizer_paths(fused_adam_modul
         optimizer.register_state_dict_post_hook(lambda *args: None)
     elif unsupported == 'load_hook':
         optimizer.register_load_state_dict_post_hook(lambda *args: None)
+    elif unsupported == 'save_override':
+        optimizer.state_dict = lambda: {'custom': True}
     else:
         optimizer.load_state_dict = lambda state: None
-    assert _fused_adam_restore_optimizer(optimizer) is None
+    assert get_fused_adam_restore_optimizer(optimizer) is None
 
 
 @pytest.mark.parametrize('partial', [False, True])
@@ -197,25 +146,21 @@ def test_in_place_restore_reads_canonical_dcp(fused_adam_module, tmp_path, parti
     import torch.distributed.checkpoint as dcp
     from torch.distributed.checkpoint.state_dict import get_optimizer_state_dict, set_optimizer_state_dict
 
-    from nemo.collections.speechlm2.parts.optimizer_checkpoint import (
-        _cpu_optimizer_checkpoint,
-        _fused_adam_restore_optimizer,
-    )
+    from nemo.collections.speechlm2.parts.fused_adam_checkpoint import get_fused_adam_restore_optimizer
     from nemo.collections.speechlm2.parts.parallel import _optimizer_load_planner
 
     model = torch.nn.Linear(4, 1, bias=False, dtype=param_dtype)
     source = _FusedAdam(model.weight)
     source.param_groups[0].update(step=17, lr=0.02)
     expected = {k: v.clone() for k, v in source.state[model.weight].items()}
-    with _cpu_optimizer_checkpoint(source):
-        saved = get_optimizer_state_dict(model, source)
+    saved = get_optimizer_state_dict(model, source)
     if partial:
         del saved['state']['weight']['exp_avg_sq']
     dcp.save({'optimizer_0': saved}, checkpoint_id=tmp_path)
 
     optimizer = _FusedAdam(model.weight)
     optimizer.state.clear()
-    adapter = _fused_adam_restore_optimizer(optimizer)
+    adapter = get_fused_adam_restore_optimizer(optimizer)
     live = dict(optimizer.state[model.weight])
     target = {'optimizer_0': get_optimizer_state_dict(model, adapter)}
     metadata = dcp.FileSystemReader(tmp_path).read_metadata()
@@ -235,46 +180,7 @@ def test_in_place_restore_reads_canonical_dcp(fused_adam_module, tmp_path, parti
         assert torch.equal(value, expected[key])
 
 
-@pytest.mark.run_only_on('GPU')
-def test_fused_adam_gpu_checkpoint_values_and_peak_memory():
-    if not torch.cuda.is_available():
-        pytest.skip('CUDA required for the real optimizer integration')
-    fused_adam = pytest.importorskip('transformer_engine.pytorch.optimizers').FusedAdam
-    from nemo.collections.speechlm2.parts.optimizer_checkpoint import _cpu_optimizer_checkpoint
-
-    parameters = [torch.nn.Parameter(torch.randn(2048, 2048, device='cuda', dtype=torch.bfloat16)) for _ in range(3)]
-    optimizer = fused_adam(
-        parameters,
-        lr=0.01,
-        master_weights=True,
-        store_param_remainders=True,
-        exp_avg_dtype=torch.bfloat16,
-        exp_avg_sq_dtype=torch.bfloat16,
-    )
-    for parameter in parameters:
-        parameter.grad = torch.ones_like(parameter)
-    optimizer.step()
-    optimizer.zero_grad(set_to_none=True)
-    torch.cuda.synchronize()
-    baseline = torch.cuda.memory_allocated()
-    torch.cuda.reset_peak_memory_stats()
-    native = optimizer.state_dict()
-    native_peak = torch.cuda.max_memory_allocated() - baseline
-    expected = {key: {name: value.cpu() for name, value in state.items()} for key, state in native['state'].items()}
-    del native
-    torch.cuda.synchronize()
-    torch.cuda.reset_peak_memory_stats()
-    with _cpu_optimizer_checkpoint(optimizer):
-        saved = optimizer.state_dict()
-    incremental_peak = torch.cuda.max_memory_allocated() - baseline
-    for key, state in saved['state'].items():
-        for name, value in state.items():
-            assert value.device.type == 'cpu'
-            assert torch.equal(value, expected[key][name])
-    assert incremental_peak < native_peak
-    assert 'state_dict' not in optimizer.__dict__
-
-
+@pytest.mark.gpu
 @pytest.mark.run_only_on('GPU')
 @pytest.mark.parametrize('mixed_parameters', [False, True])
 def test_fused_adam_gpu_in_place_dcp_resume(tmp_path, monkeypatch, mixed_parameters):
@@ -284,10 +190,7 @@ def test_fused_adam_gpu_in_place_dcp_resume(tmp_path, monkeypatch, mixed_paramet
     import torch.distributed.checkpoint as dcp
     from torch.distributed.checkpoint.state_dict import get_optimizer_state_dict, set_optimizer_state_dict
 
-    from nemo.collections.speechlm2.parts.optimizer_checkpoint import (
-        _cpu_optimizer_checkpoint,
-        _fused_adam_restore_optimizer,
-    )
+    from nemo.collections.speechlm2.parts.fused_adam_checkpoint import get_fused_adam_restore_optimizer
 
     def make_optimizer(model):
         return fused_adam(
@@ -307,8 +210,7 @@ def test_fused_adam_gpu_in_place_dcp_resume(tmp_path, monkeypatch, mixed_paramet
         parameter.grad = torch.ones_like(parameter)
     original.step()
     original.zero_grad(set_to_none=True)
-    with _cpu_optimizer_checkpoint(original):
-        saved = {'optimizer_0': get_optimizer_state_dict(model, original)}
+    saved = {'optimizer_0': get_optimizer_state_dict(model, original)}
     dcp.save(saved, checkpoint_id=tmp_path)
     del saved
 
@@ -317,7 +219,7 @@ def test_fused_adam_gpu_in_place_dcp_resume(tmp_path, monkeypatch, mixed_paramet
         restored.register_parameter('extra', torch.nn.Parameter(torch.zeros(16, dtype=torch.float32, device='cuda')))
     restored.load_state_dict(model.state_dict())
     optimizer = make_optimizer(restored)
-    adapter = _fused_adam_restore_optimizer(optimizer)
+    adapter = get_fused_adam_restore_optimizer(optimizer)
     pointers = {
         id(parameter): {name: value.data_ptr() for name, value in state.items()}
         for parameter, state in optimizer.state.items()

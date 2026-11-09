@@ -278,17 +278,6 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
     """
 
     @override
-    def optimizer_state(self, optimizer):
-        from lightning.pytorch.core.optimizer import LightningOptimizer
-
-        from nemo.collections.speechlm2.parts.optimizer_checkpoint import _cpu_optimizer_checkpoint
-
-        if isinstance(optimizer, LightningOptimizer):
-            optimizer = optimizer._optimizer
-        with _cpu_optimizer_checkpoint(optimizer):
-            return super().optimizer_state(optimizer)
-
-    @override
     def load_checkpoint(self, checkpoint_path, weights_only: Optional[bool] = None):
         """Load DCP optimizer state while preserving lazy-state semantics.
 
@@ -305,11 +294,12 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
 
         from torch.distributed.checkpoint import FileSystemReader, load
         from torch.distributed.checkpoint.state_dict import (
-            StateDictOptions,
             get_model_state_dict,
             get_optimizer_state_dict,
             set_optimizer_state_dict,
         )
+
+        from nemo.collections.speechlm2.parts.fused_adam_checkpoint import get_fused_adam_restore_optimizer
 
         assert self.model is not None
         assert self.lightning_module is not None
@@ -317,33 +307,17 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         load(module_state, checkpoint_id=path)
         self.model.load_state_dict(module_state["state_dict"], strict=self.lightning_module.strict_loading)
 
-        state_dict_options = StateDictOptions(cpu_offload=True)
         metadata = FileSystemReader(path).read_metadata()
         for idx, optimizer in enumerate(self.optimizers):
             optimizer_key = f"optimizer_{idx}"
-            from nemo.collections.speechlm2.parts.optimizer_checkpoint import (
-                _cpu_optimizer_checkpoint,
-                _fused_adam_restore_optimizer,
-            )
-
-            restore_optimizer = _fused_adam_restore_optimizer(optimizer)
-            if restore_optimizer is not None:
-                optimizer_state = {optimizer_key: get_optimizer_state_dict(self.model, restore_optimizer)}
-                restore_options = StateDictOptions()
-            else:
-                with _cpu_optimizer_checkpoint(optimizer):
-                    optimizer_state = {
-                        optimizer_key: get_optimizer_state_dict(self.model, optimizer, options=state_dict_options)
-                    }
-                restore_optimizer = optimizer
-                restore_options = state_dict_options
+            restore_optimizer = get_fused_adam_restore_optimizer(optimizer) or optimizer
+            optimizer_state = {optimizer_key: get_optimizer_state_dict(self.model, restore_optimizer)}
             planner, missing_parameters = _optimizer_load_planner(optimizer_state, metadata, optimizer_key)
             load(optimizer_state, checkpoint_id=path, planner=planner)
             set_optimizer_state_dict(
                 self.model,
                 restore_optimizer,
                 optim_state_dict=optimizer_state[optimizer_key],
-                options=restore_options,
             )
             if missing_parameters and self.global_rank == 0:
                 warnings.warn(

@@ -158,6 +158,10 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             Defaults to 0.1.
         dropout_att (float): the dropout rate used for the attention layer
             Defaults to 0.0.
+        dropout_broadcast (bool): draw the masks of the feed-forward and residual dropouts of every layer
+            once per call over the feature axis and share them over batch and time, instead of a mask per element
+            (see `ConformerLayer`); the pre-encoder, positional-embedding and attention dropouts stay per element.
+            Defaults to False.
         stochastic_depth_drop_prob (float): if non-zero, will randomly drop
             layers during training. The higher this value, the more often layers
             are dropped. Defaults to 0.0.
@@ -349,6 +353,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         dropout_pre_encoder=0.1,
         dropout_emb=0.1,
         dropout_att=0.0,
+        dropout_broadcast: bool = False,
         stochastic_depth_drop_prob: float = 0.0,
         stochastic_depth_mode: str = "linear",
         stochastic_depth_start_layer: int = 1,
@@ -532,6 +537,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 conv_context_size=self.conv_context_size,
                 dropout=dropout,
                 dropout_att=dropout_att,
+                dropout_broadcast=dropout_broadcast,
                 pos_bias_u=pos_bias_u,
                 pos_bias_v=pos_bias_v,
                 att_context_size=self.att_context_size,

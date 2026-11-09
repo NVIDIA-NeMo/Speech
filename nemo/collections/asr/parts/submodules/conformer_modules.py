@@ -35,11 +35,51 @@ from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 if TRITON_AVAILABLE:
     from nemo.collections.asr.parts.triton.activation_dropout import (
         ACTIVATION_DROPOUT_DTYPES,
+        activation_dropout,
         activation_dropout_linear,
         fused_activation_name,
     )
 
-__all__ = ['ConformerConvolution', 'ConformerFeedForward', 'ConformerLayer', 'build_self_attention']
+__all__ = [
+    'BroadcastDropout',
+    'ConformerConvolution',
+    'ConformerFeedForward',
+    'ConformerLayer',
+    'build_self_attention',
+]
+
+
+class BroadcastDropout(nn.Module):
+    """Dropout with one mask over the last axis, shared by every position of the batch.
+
+    ``torch.nn.Dropout`` draws a mask per element.
+    This module draws one mask of the feature width per call and broadcasts it over the leading axes, batch and time,
+    as RETURNN's ``rf_dropout_broadcast`` does for the feed-forward and residual dropouts of its Conformer;
+    the kept features are scaled by ``1 / (1 - p)``.
+    In training on CUDA with Triton installed the mask and the scaling run in one kernel
+    (:func:`nemo.collections.asr.parts.triton.activation_dropout.activation_dropout` with the identity activation),
+    which saves the mask alone for the backward; elsewhere the mask is drawn with ``torch.rand`` and multiplied in.
+
+    Args:
+        p: dropout probability in ``[0, 1)``
+    """
+
+    def __init__(self, p: float = 0.5):
+        super().__init__()
+        if not 0.0 <= p < 1.0:
+            raise ValueError(f"dropout probability has to be in [0, 1), got {p}")
+        self.p = p
+
+    def extra_repr(self):
+        return f"p={self.p}"
+
+    def forward(self, x):
+        if not self.training or self.p == 0.0:
+            return x
+        if TRITON_AVAILABLE and x.is_cuda and x.dtype in ACTIVATION_DROPOUT_DTYPES:
+            return activation_dropout(x, "identity", self.p, broadcast=True)
+        keep = torch.rand(x.shape[-1], device=x.device) >= self.p
+        return x * keep.to(x.dtype) * (1.0 / (1.0 - self.p))
 
 
 def build_self_attention(
@@ -155,6 +195,10 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         conv_kernel_size (int): kernel size for depthwise convolution in convolution module
         dropout (float): dropout probabilities for linear layers
         dropout_att (float): dropout probabilities for attention distributions
+        dropout_broadcast (bool): draw the masks of the feed-forward and residual dropouts once per call
+            over the feature axis and share them over batch and time (`BroadcastDropout`),
+            instead of a mask per element; the attention dropout stays per element.
+            Defaults to False.
         use_bias (bool): Apply bias to all Linear and Conv1d layers from each ConformerLayer to improve activation flow and stabilize training of huge models.
             Defaults to True.
         feed_forward: block of both feed-forward modules, default `ConformerFeedForward`;
@@ -179,6 +223,7 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         conv_context_size=None,
         dropout=0.1,
         dropout_att=0.1,
+        dropout_broadcast=False,
         pos_bias_u=None,
         pos_bias_v=None,
         att_context_size=[-1, -1],
@@ -203,10 +248,14 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
 
         norm = norm or LayerNorm
         feed_forward = feed_forward or ConformerFeedForward
+        ff_defaults = dict(d_model=d_model, d_ff=d_ff, dropout=dropout, use_bias=use_bias)
+        if dropout_broadcast:
+            # passed only when set, so a feed-forward block without the argument keeps working with the default
+            ff_defaults['dropout_broadcast'] = True
 
         # first feed forward module
         self.norm_feed_forward1 = build_module(norm, normalized_shape=d_model)
-        self.feed_forward1 = build_module(feed_forward, d_model=d_model, d_ff=d_ff, dropout=dropout, use_bias=use_bias)
+        self.feed_forward1 = build_module(feed_forward, **ff_defaults)
 
         # convolution module
         self.norm_conv = build_module(norm, normalized_shape=d_model)
@@ -244,9 +293,9 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
 
         # second feed forward module
         self.norm_feed_forward2 = build_module(norm, normalized_shape=d_model)
-        self.feed_forward2 = build_module(feed_forward, d_model=d_model, d_ff=d_ff, dropout=dropout, use_bias=use_bias)
+        self.feed_forward2 = build_module(feed_forward, **ff_defaults)
 
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = BroadcastDropout(dropout) if dropout_broadcast else nn.Dropout(dropout)
         self.norm_out = build_module(norm, normalized_shape=d_model)
 
     def forward(self, x, att_mask=None, pos_emb=None, pad_mask=None, cache_last_channel=None, cache_last_time=None):
@@ -489,6 +538,8 @@ class ConformerFeedForward(nn.Module):
         activation: the activation module, or its name in the activation registry
             (`swish`, `relu`, `gelu`, `squared_relu`, ...); default `Swish`
         use_bias: bias in both linear layers
+        dropout_broadcast: one dropout mask of width ``d_ff`` per call, shared by every position
+            (`BroadcastDropout`), instead of a mask per element; default False
 
     In training with dropout on CUDA, the activation, the dropout and the second linear layer run fused
     (:mod:`nemo.collections.asr.parts.triton.activation_dropout`) for the activations the kernel implements:
@@ -498,7 +549,15 @@ class ConformerFeedForward(nn.Module):
     run the modules one after the other.
     """
 
-    def __init__(self, d_model, d_ff, dropout, activation: nn.Module | str = Swish(), use_bias=True):
+    def __init__(
+        self,
+        d_model,
+        d_ff,
+        dropout,
+        activation: nn.Module | str = Swish(),
+        use_bias=True,
+        dropout_broadcast: bool = False,
+    ):
         super(ConformerFeedForward, self).__init__()
         self.d_model = d_model
         self.d_ff = d_ff
@@ -507,7 +566,7 @@ class ConformerFeedForward(nn.Module):
         if isinstance(activation, str):
             activation = activation_registry[activation]()
         self.activation = activation
-        self.dropout = nn.Dropout(p=dropout)
+        self.dropout = BroadcastDropout(dropout) if dropout_broadcast else nn.Dropout(p=dropout)
         self.linear2 = nn.Linear(d_ff, d_model, bias=self.use_bias)
 
     def forward(self, x):
@@ -515,7 +574,12 @@ class ConformerFeedForward(nn.Module):
         fused_activation = self._fused_activation(x)
         if fused_activation is not None:
             return activation_dropout_linear(
-                x, fused_activation, self.dropout.p, self.linear2.weight, self.linear2.bias
+                x,
+                fused_activation,
+                self.dropout.p,
+                self.linear2.weight,
+                self.linear2.bias,
+                broadcast=type(self.dropout) is BroadcastDropout,
             )
         x = self.activation(x)
         x = self.dropout(x)
@@ -527,7 +591,9 @@ class ConformerFeedForward(nn.Module):
         if not (TRITON_AVAILABLE and self.training and hidden.is_cuda and hidden.dtype in ACTIVATION_DROPOUT_DTYPES):
             return None
         # the fused path stands in for the plain modules only, not for a replaced dropout or linear layer
-        if type(self.dropout) is not nn.Dropout or self.dropout.p <= 0.0 or type(self.linear2) is not nn.Linear:
+        if type(self.dropout) not in (nn.Dropout, BroadcastDropout) or self.dropout.p <= 0.0:
+            return None
+        if type(self.linear2) is not nn.Linear:
             return None
         return fused_activation_name(self.activation)
 

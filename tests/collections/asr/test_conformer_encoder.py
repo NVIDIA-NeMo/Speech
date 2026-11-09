@@ -20,7 +20,9 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
+from nemo.collections.asr.parts.submodules import conformer_modules
 from nemo.collections.asr.parts.submodules.conformer_modules import (
+    BroadcastDropout,
     ConformerConvolution,
     ConformerFeedForward,
     ConformerLayer,
@@ -362,6 +364,122 @@ class TestConformerFeedForwardActivationDropout:
         states, _ = encoder(audio_signal=features, length=lengths)
         states.sum().backward()
         assert all(p.grad is not None for p in encoder.parameters())
+
+
+class TestDropoutBroadcast:
+    """`dropout_broadcast`: one mask over the feature axis per call, shared over batch and time."""
+
+    @staticmethod
+    def _dropouts(encoder):
+        for layer in encoder.layers:
+            yield layer.dropout
+            yield layer.feed_forward1.dropout
+            yield layer.feed_forward2.dropout
+
+    @pytest.mark.unit
+    def test_default_drops_per_element(self):
+        encoder = _composed_encoder(dropout=0.1)
+        assert all(type(module) is torch.nn.Dropout and module.p == 0.1 for module in self._dropouts(encoder))
+        assert type(ConformerFeedForward(16, 32, 0.1).dropout) is torch.nn.Dropout
+        assert type(ConformerLayer(16, 32).dropout) is torch.nn.Dropout
+
+    @pytest.mark.unit
+    def test_option_reaches_every_layer_and_leaves_evaluation_unchanged(self):
+        torch.manual_seed(0)
+        encoder = _composed_encoder(dropout=0.1, dropout_broadcast=True)
+        assert all(type(module) is BroadcastDropout and module.p == 0.1 for module in self._dropouts(encoder))
+        assert type(encoder.layers[0].self_attn.dropout) is torch.nn.Dropout
+        default = _composed_encoder(dropout=0.1)
+        default.load_state_dict(encoder.state_dict())
+        features = torch.randn(2, 8, 40)
+        lengths = torch.tensor([40, 25])
+        with torch.no_grad():
+            states, _ = encoder(audio_signal=features, length=lengths)
+            expected, _ = default(audio_signal=features, length=lengths)
+        assert torch.equal(states, expected)
+
+        # a feed-forward block without the argument keeps working with the default
+        class PlainFeedForward(ConformerFeedForward):
+            def __init__(self, d_model, d_ff, dropout, use_bias=True):
+                super().__init__(d_model, d_ff, dropout, use_bias=use_bias)
+
+        plain = _composed_encoder(dropout=0.1, feed_forward=PlainFeedForward)
+        assert type(plain.layers[0].feed_forward1.dropout) is torch.nn.Dropout
+        with pytest.raises(TypeError):
+            _composed_encoder(dropout=0.1, dropout_broadcast=True, feed_forward=PlainFeedForward)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device_type", ["cpu", pytest.param("cuda", marks=pytest.mark.run_only_on("GPU"))])
+    def test_module_shares_one_mask_over_the_leading_axes(self, device_type):
+        torch.manual_seed(0)
+        module = BroadcastDropout(0.5).to(device_type).train()
+        assert repr(module) == "BroadcastDropout(p=0.5)"
+        x = torch.ones(4, 7, 1000, device=device_type, requires_grad=True)
+        out = module(x)
+        kept = out != 0
+        assert torch.equal(kept, kept[:1, :1].expand_as(kept))
+        assert 0.4 < kept[0, 0].float().mean().item() < 0.6
+        torch.testing.assert_close(out[kept], torch.full_like(out[kept], 2.0))
+        out.sum().backward()
+        assert torch.equal(x.grad != 0, kept) and torch.equal(x.grad[kept], torch.full_like(out[kept], 2.0))
+        assert not torch.equal(module(x) != 0, kept)
+        module.eval()
+        assert module(x) is x
+        assert BroadcastDropout(0.0).train()(x) is x
+        with pytest.raises(ValueError, match=r"\[0, 1\)"):
+            BroadcastDropout(1.0)
+        half = module.train()(x.detach().to(torch.bfloat16))
+        assert half.dtype == torch.bfloat16 and set(half.unique().tolist()) == {0.0, 2.0}
+
+    @pytest.mark.unit
+    def test_feed_forward_on_cpu_runs_the_modules_with_the_broadcast_mask(self):
+        torch.manual_seed(0)
+        module = ConformerFeedForward(16, 32, 0.5, activation="squared_relu", dropout_broadcast=True).train()
+        x = torch.randn(3, 7, 16)
+        torch.manual_seed(1)
+        out = module(x)
+        torch.manual_seed(1)
+        expected = module.linear2(module.dropout(module.activation(module.linear1(x))))
+        torch.testing.assert_close(out, expected)
+
+    @pytest.mark.run_only_on('GPU')
+    @pytest.mark.unit
+    @pytest.mark.skipif(not TRITON_AVAILABLE, reason="requires Triton")
+    def test_feed_forward_fuses_with_the_broadcast_mask(self, monkeypatch):
+        torch.manual_seed(0)
+        module = ConformerFeedForward(16, 64, 0.5, activation="squared_relu", dropout_broadcast=True).cuda().train()
+        x = torch.randn(4, 50, 16, device="cuda")
+        assert module._fused_activation(module.linear1(x)) == "squared_relu"
+        calls = []
+        fused = conformer_modules.activation_dropout_linear
+
+        def spy(*args, **kwargs):
+            calls.append(kwargs)
+            return fused(*args, **kwargs)
+
+        monkeypatch.setattr(conformer_modules, "activation_dropout_linear", spy)
+        out = module(x)
+        assert calls == [{"broadcast": True}] and out.shape == (4, 50, 16)
+        # the expectation over draws is the evaluation output, as with the per-element mask
+        module.eval()
+        with torch.no_grad():
+            expected = module(x)
+            module.train()
+            draws = torch.stack([module(x) for _ in range(1000)])
+        torch.testing.assert_close(draws.mean(0), expected, atol=0.1, rtol=0.0)
+        assert not torch.equal(draws[0], draws[1])
+
+    @pytest.mark.run_only_on('GPU')
+    @pytest.mark.unit
+    def test_encoder_trains_with_the_option(self):
+        torch.manual_seed(0)
+        encoder = _composed_encoder(dropout=0.1, dropout_broadcast=True).cuda().train()
+        features = torch.randn(2, 8, 40, device="cuda")
+        lengths = torch.tensor([40, 25], device="cuda")
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            states, _ = encoder(audio_signal=features, length=lengths)
+        states.float().sum().backward()
+        assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in encoder.parameters())
 
 
 def _composed_encoder(**overrides):

@@ -226,6 +226,7 @@ class TestEncDecRNNTBPEModel:
         reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_save_restore_artifact(self, asr_model):
         asr_model.train()
 
@@ -245,6 +246,7 @@ class TestEncDecRNNTBPEModel:
         reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_save_restore_artifact_spe(self, asr_model, test_data_dir):
         asr_model.train()
 
@@ -265,6 +267,7 @@ class TestEncDecRNNTBPEModel:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_save_restore_artifact_agg(self, asr_model, test_data_dir):
         tokenizer_dir = os.path.join(test_data_dir, "asr", "tokenizers", "an4_spe_128")
         tok_en = {"dir": tokenizer_dir, "type": "wpe"}

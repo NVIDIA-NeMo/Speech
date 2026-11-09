@@ -127,5 +127,6 @@ def _run_remote_gradient_test(rank: int, world_size: int, init_file: str):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.device_count() < 2, reason='Test requires 2 GPUs')
+@pytest.mark.gpu
 def test_packed_cp_gather_handles_uneven_batches_dummies_and_remote_gradients(tmp_path):
     mp.spawn(_run_remote_gradient_test, args=(2, str(tmp_path / 'cp_init')), nprocs=2, join=True)

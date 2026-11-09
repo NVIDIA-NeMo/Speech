@@ -67,6 +67,7 @@ EMPHASIS_REFERENCE = (
 )
 
 
+@pytest.mark.gpu
 class TestMagpieTTSInferenceCLI:
     """Tests for MagpieTTS inference command-line interface options."""
 

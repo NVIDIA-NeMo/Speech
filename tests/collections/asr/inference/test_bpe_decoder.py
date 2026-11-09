@@ -51,6 +51,7 @@ class TestBPEDecoder:
             "this a test sentence",
         ],
     )
+    @pytest.mark.gpu
     def test_group_tokens_into_words(self, bpe_decoder, text):
         ground_truth_words = text.split()
         tokens = bpe_decoder.tokenizer.text_to_ids(text)

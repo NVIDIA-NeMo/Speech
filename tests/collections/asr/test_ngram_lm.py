@@ -27,7 +27,8 @@ from nemo.core.utils.optional_libs import KENLM_AVAILABLE, TRITON_AVAILABLE
 DEVICES = [torch.device("cpu")]
 
 if torch.cuda.is_available():
-    DEVICES.append('cuda')
+    # The `gpu` marker puts the CUDA cases in the GPU CI jobs (see tests/functional_tests/_gpu_unit_test_selection.sh).
+    DEVICES.append(pytest.param('cuda', marks=pytest.mark.gpu))
 
 
 @pytest.fixture(scope="module")
@@ -76,6 +77,7 @@ class TestNGramGPULanguageModel:
     @pytest.mark.unit
     @pytest.mark.skipif(not TRITON_AVAILABLE, reason="Triton is not available")
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")
+    @pytest.mark.gpu
     def test_triton_vs_pytorch_random_states(self, n_gpu_lm: NGramGPULanguageModel, batch_size=2, num_iterations=100):
         """Randomly initializes the states and compares the scores from Triton and PyTorch implementations."""
         torch.manual_seed(777)

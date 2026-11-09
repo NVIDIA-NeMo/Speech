@@ -15,6 +15,7 @@
 """Shared fakes for SALM / SALMAutomodel encoder-chunking tests."""
 from types import SimpleNamespace
 
+import pytest
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
@@ -24,7 +25,8 @@ from nemo.collections.asr.parts.packed_sequence import pack_encoder_output
 def chunking_test_devices():
     devices = [torch.device("cpu")]
     if torch.cuda.is_available():
-        devices.append(torch.device("cuda"))
+        # The `gpu` marker puts the CUDA cases in the GPU CI jobs.
+        devices.append(pytest.param(torch.device("cuda"), marks=pytest.mark.gpu))
     return devices
 
 

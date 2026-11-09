@@ -115,10 +115,24 @@ class CompositeLoss(Loss):
         self.scales = {str(name): float(scale) for name, scale in (scales or {}).items()}
         self.default_scale = float(default_scale)
         self.normalization = normalization
+        self._scale_tensors: Dict[Tuple[Tuple[str, ...], torch.dtype, torch.device], torch.Tensor] = {}
 
     def scale(self, name: str) -> float:
         """The scale of the term ``name``."""
         return self.scales.get(name, self.default_scale)
+
+    def _scales_tensor(self, names: list, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+        """The scales of ``names`` as a device tensor, built once per combination.
+
+        A fresh tensor from the Python floats would be a host-to-device copy in every step,
+        which a CUDA-graph capture of the training step refuses.
+        """
+        key = (tuple(names), dtype, device)
+        scales = self._scale_tensors.get(key)
+        if scales is None:
+            scales = torch.tensor([self.scale(name) for name in names], dtype=dtype, device=device)
+            self._scale_tensors[key] = scales
+        return scales
 
     def forward(self, terms: Mapping[str, LossTerm]) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """
@@ -149,8 +163,7 @@ class CompositeLoss(Loss):
             denominators = counts.clamp(min=1.0)
             normalized = summed / denominators
             reported = normalized.detach()
-        scales = torch.tensor([self.scale(name) for name in names], dtype=summed.dtype, device=summed.device)
-        total = (normalized * scales).sum()
+        total = (normalized * self._scales_tensor(names, summed.dtype, summed.device)).sum()
         return total, {name: value for name, value in zip(names, reported.unbind())}
 
 

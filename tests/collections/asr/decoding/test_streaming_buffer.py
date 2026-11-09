@@ -38,7 +38,8 @@ from nemo.collections.asr.parts.utils.streaming_utils import (
 
 DEVICES: list[torch.device] = [torch.device("cpu")]
 if torch.cuda.is_available():
-    DEVICES.append(torch.device("cuda:0"))
+    # The `gpu` marker puts the CUDA cases in the GPU CI jobs (see tests/functional_tests/_gpu_unit_test_selection.sh).
+    DEVICES.append(pytest.param(torch.device("cuda:0"), marks=pytest.mark.gpu))
 
 
 def _create_audio_batch(batch_size: int, length: int, device: torch.device, dtype: torch.dtype = torch.float32):
@@ -454,6 +455,7 @@ class TestDynamicLengthTensor:
 
     @pytest.mark.unit
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA to verify cross-device move")
+    @pytest.mark.gpu
     def test_to_device(self):
         """`to_device` moves the underlying storage (not just the bookkeeping attr)."""
         t = DynamicLengthTensor(

@@ -89,6 +89,9 @@ class AudioCodecModel(ModelPT):
 
         # Encoder setup
         self.audio_encoder = safe_instantiate(cfg.audio_encoder)
+        self.freeze_encoder = cfg.get("freeze_encoder", False)
+        if self.freeze_encoder:
+            self._freeze_encoder()
 
         # Optionally, add gaussian noise to encoder output as an information bottleneck
         encoder_noise_stdev = cfg.get("encoder_noise_stdev", 0.0)
@@ -100,6 +103,7 @@ class AudioCodecModel(ModelPT):
         if "vector_quantizer" in cfg:
             self.vector_quantizer = safe_instantiate(cfg.vector_quantizer)
             self.codebook_dropout_rate = cfg.get("codebook_dropout_rate", 0.0)
+            logging.info(f"Codebook dropout rate: {self.codebook_dropout_rate}")
 
             vq_output_types = list(self.vector_quantizer.output_types.keys())
 
@@ -249,6 +253,19 @@ class AudioCodecModel(ModelPT):
 
         self.clip_grad_norm = cfg.get("clip_grad_norm", None)
         self.skip_nan_gradients = cfg.get("skip_nan_gradients", False)
+
+    def train(self, mode: bool = True):
+        # Override the train method to keep a frozen encoder in evaluation mode after validation.
+        super().train(mode)
+        if getattr(self, "freeze_encoder", False):
+            self.audio_encoder.eval()
+        return self
+
+    def _freeze_encoder(self):
+        for p in self.audio_encoder.parameters():
+            p.requires_grad = False
+        self.audio_encoder.eval()
+        logging.info("Encoder frozen: excluded from generator optimizer.")
 
     @property
     def dtype(self):
@@ -974,11 +991,14 @@ class AudioCodecModel(ModelPT):
         sched_config = optim_config.pop("sched", None)
         OmegaConf.set_struct(optim_config, True)
 
+        if self.freeze_encoder:
+            encoder_params = []
+        else:
+            encoder_params = list(self.audio_encoder.parameters())
+
         se_params = self.speaker_encoder.parameters() if self.use_scl_loss else []
         vq_params = self.vector_quantizer.parameters() if self.vector_quantizer else []
-        self.gen_params = list(
-            itertools.chain(self.audio_encoder.parameters(), self.audio_decoder.parameters(), vq_params, se_params)
-        )
+        self.gen_params = list(itertools.chain(encoder_params, self.audio_decoder.parameters(), vq_params, se_params))
         optim_g = safe_instantiate(optim_config, params=self.gen_params)
 
         if self.discriminator is None:

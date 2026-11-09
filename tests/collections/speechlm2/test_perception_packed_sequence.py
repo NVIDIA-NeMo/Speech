@@ -111,7 +111,13 @@ def test_perception_sequence_packed_rejects_adapter_that_cannot_preserve_thd():
 
 @pytest.mark.parametrize(
     "device",
-    ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable"))],
+    [
+        "cpu",
+        pytest.param(
+            "cuda",
+            marks=[pytest.mark.gpu, pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")],
+        ),
+    ],
 )
 @pytest.mark.parametrize("encoder_kind", ["transformer", "pee"])
 def test_perception_packed_waveform_matches_padded_waveform_for_supported_encoders(encoder_kind, device):
@@ -176,6 +182,7 @@ def test_perception_legacy_forward_accepts_packed_waveform(encoder_kind):
 
 
 @pytest.mark.parametrize("encoder_kind", ["transformer", "pee"])
+@pytest.mark.gpu
 def test_perception_packed_waveform_all_empty_batch(encoder_kind, device):
     torch_device = "cuda" if device == "GPU" and torch.cuda.is_available() else "cpu"
     perception = _make_waveform_perception(encoder_kind).to(torch_device)

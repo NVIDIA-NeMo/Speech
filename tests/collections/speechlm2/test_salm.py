@@ -33,8 +33,8 @@ from tests.collections.speechlm2._chunking_helpers import (
     chunking_test_devices,
 )
 
-if torch.cuda.is_available():
-    torch.set_default_device('cuda')
+# Run on CUDA when available, without leaking the default device to other test modules (see conftest.py).
+pytestmark = pytest.mark.usefixtures("cuda_default_device")
 
 
 def resolve_pretrained_models():
@@ -56,8 +56,8 @@ AUDIO_LOCATOR_TAG = "<|audioplaceholder|>"
 PROMPT = "llama2"
 
 
-@pytest.fixture(scope="session")
-def model():
+@pytest.fixture(scope="module")
+def model(cuda_default_device):
     cfg = {
         **resolve_pretrained_models(),
         "pretrained_weights": False,
@@ -117,18 +117,18 @@ def model():
     return model
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def dataset(model):
     return SALMDataset(model.tokenizer)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def prompt_formatter(model):
     return PromptFormatter.resolve(PROMPT)(model.tokenizer)
 
 
-@pytest.fixture(scope="session")
-def training_cutset_batch():
+@pytest.fixture(scope="module")
+def training_cutset_batch(cuda_default_device):
     cut = dummy_cut(0, recording=dummy_recording(0, with_data=True))
     cut.supervisions = [
         SupervisionSegment(
@@ -150,6 +150,7 @@ def training_cutset_batch():
     )
 
 
+@pytest.mark.gpu
 def test_salm_dataset(dataset, prompt_formatter, training_cutset_batch):
     # This first step pre-tokenizes the examples, usually handled within `get_lhotse_dataloder_from_config`.
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
@@ -166,6 +167,7 @@ def test_salm_dataset(dataset, prompt_formatter, training_cutset_batch):
         assert torch.is_tensor(batch[key])
 
 
+@pytest.mark.gpu
 def test_salm_training_step(model, dataset, prompt_formatter, training_cutset_batch):
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
     batch = dataset[training_cutset_batch]
@@ -176,6 +178,7 @@ def test_salm_training_step(model, dataset, prompt_formatter, training_cutset_ba
     assert results["loss"] > 0
 
 
+@pytest.mark.gpu
 def test_salm_validation_step(model, dataset, prompt_formatter, training_cutset_batch):
     model.on_validation_epoch_start()
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
@@ -185,6 +188,7 @@ def test_salm_validation_step(model, dataset, prompt_formatter, training_cutset_
     assert results is None
 
 
+@pytest.mark.gpu
 def test_salm_generation(model):
     answer = model.generate(
         prompts=[
@@ -209,6 +213,7 @@ def test_salm_generation(model):
         (None, {}),
     ],
 )
+@pytest.mark.gpu
 def test_salm_generation_passes_enable_thinking(model, monkeypatch, enable_thinking, expected_formatter_kwargs):
     seen = {}
 
@@ -243,6 +248,7 @@ def test_salm_generation_passes_enable_thinking(model, monkeypatch, enable_think
     assert answer.shape == (1, 3)
 
 
+@pytest.mark.gpu
 def test_salm_generation_audios_via_prompt(model, tmp_path):
     audio_path = tmp_path / "audio.wav"
     dummy_cut(0, with_data=True).save_audio(audio_path)
@@ -266,6 +272,7 @@ def test_salm_generation_audios_via_prompt(model, tmp_path):
     assert (answer < model.text_vocab_size).all()
 
 
+@pytest.mark.gpu
 def test_salm_generation_prompts_as_tensor(model):
     answer = model.generate(
         prompts=torch.tensor([[1, 2, 3, 4, 5, 6, 7, model.audio_locator_tag_id]]),

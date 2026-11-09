@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import datasets as hf_datasets
+import numpy as np
 import torch
 from datasets import concatenate_datasets
 from datasets.distributed import split_dataset_by_node
@@ -193,7 +194,8 @@ class _HFAudioTextDataset(Dataset):
     def __getitem__(self, index) -> Tuple:
         item = self.dataset[index]
 
-        audio_array = get_nested_dict_value(item, self.audio_key)
+        # Decoded `Audio` features yield NumPy arrays; datasets that store raw samples (e.g. Parquet) yield lists.
+        audio_array = np.asarray(get_nested_dict_value(item, self.audio_key))
         origin_sr = get_nested_dict_value(item, self.sample_rate_key)
         audio_segment = AudioSegment(
             samples=audio_array,
@@ -504,7 +506,8 @@ class _HFIterableAudioTextDataset(IterableDataset):
         return _speech_collate_fn(batch_list, pad_id=self.text_processor.pad_id)
 
     def _build_sample(self, sample):
-        audio_array = get_nested_dict_value(sample, self.audio_key)
+        # Decoded `Audio` features yield NumPy arrays; datasets that store raw samples (e.g. Parquet) yield lists.
+        audio_array = np.asarray(get_nested_dict_value(sample, self.audio_key))
         origin_sr = get_nested_dict_value(sample, self.sample_rate_key)
         audio_segment = AudioSegment(
             samples=audio_array,

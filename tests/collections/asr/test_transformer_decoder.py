@@ -32,6 +32,8 @@ from nemo.collections.asr.modules.transformer.transformer_modules import (
     TransformerEmbedding,
 )
 from nemo.collections.asr.modules.transformer.transformer_utils import get_nemo_transformer
+from nemo.collections.asr.parts.packed_sequence import pack_encoder_output
+from nemo.collections.asr.parts.submodules.packed_attention import PackedAttentionContext
 
 
 def _composed_decoder(**overrides):
@@ -246,3 +248,107 @@ class TestTransformerDecoderBlockComposition:
             isinstance(decoder.embedding.layer_norm, torch.nn.LayerNorm) and decoder.embedding.embedding_scale is None
         )
         assert decoder.decoder.final_layer_norm is None
+
+
+def _packed_inputs(input_ids, input_lengths, encoder_states, encoder_lengths):
+    """Token-flat ids and encoder states with their packing metadata, in batch order."""
+    valid = torch.arange(input_ids.shape[1])[None, :] < input_lengths[:, None]
+    packed_encoder = pack_encoder_output(encoder_states, encoder_lengths)
+    return (
+        input_ids[valid],
+        PackedAttentionContext.from_lengths(input_lengths),
+        packed_encoder.data,
+        PackedAttentionContext(packed_encoder),
+    )
+
+
+def _valid_rows(padded, lengths):
+    return padded[torch.arange(padded.shape[1])[None, :] < lengths[:, None]]
+
+
+class TestPackedTransformerDecoder:
+    """Sequence-packed teacher forcing against the padded forward: outputs at valid positions and gradients."""
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("pre_ln", [True, False])
+    def test_matches_padded_forward(self, pre_ln):
+        torch.manual_seed(0)
+        if pre_ln:
+            decoder = _composed_decoder().double()
+        else:
+            options = dict(vocab_size=11, hidden_size=16, num_layers=2, inner_size=24, num_attention_heads=2)
+            decoder = TransformerDecoderNM(num_token_types=0, **options).double().eval()
+        for parameter in decoder.parameters():
+            parameter.data.normal_(0, 0.3)
+        input_ids = torch.tensor([[10, 1, 5, 7, 2], [10, 3, 4, 0, 0], [10, 6, 0, 0, 0]])
+        input_lengths = torch.tensor([5, 3, 2])
+        encoder_lengths = torch.tensor([9, 4, 7])
+        encoder_states = torch.randn(3, 9, 16, dtype=torch.float64, requires_grad=True)
+        decoder_mask = (torch.arange(5)[None, :] < input_lengths[:, None]).to(torch.int64)
+        encoder_mask = (torch.arange(9)[None, :] < encoder_lengths[:, None]).to(torch.int64)
+
+        padded = decoder(
+            input_ids=input_ids,
+            decoder_mask=decoder_mask,
+            encoder_embeddings=encoder_states,
+            encoder_mask=encoder_mask,
+        )
+        packed_encoder_states = encoder_states.detach().clone().requires_grad_()
+        ids, decoder_context, states, encoder_context = _packed_inputs(
+            input_ids, input_lengths, packed_encoder_states, encoder_lengths
+        )
+        packed = decoder.forward_packed(ids, decoder_context, states, encoder_context)
+
+        torch.testing.assert_close(packed, _valid_rows(padded, input_lengths))
+        _valid_rows(padded, input_lengths).square().sum().backward()
+        reference_grads = {name: p.grad.clone() for name, p in decoder.named_parameters() if p.grad is not None}
+        decoder.zero_grad()
+        packed.square().sum().backward()
+        torch.testing.assert_close(
+            _valid_rows(packed_encoder_states.grad, encoder_lengths), _valid_rows(encoder_states.grad, encoder_lengths)
+        )
+        for name, parameter in decoder.named_parameters():
+            if name in reference_grads:
+                torch.testing.assert_close(parameter.grad, reference_grads[name], msg=name)
+
+    @pytest.mark.unit
+    def test_rejects_other_diagonals(self):
+        decoder = _composed_decoder()
+        decoder.decoder.diagonal = 1
+        ids, decoder_context, states, encoder_context = _packed_inputs(
+            torch.tensor([[10, 1]]), torch.tensor([2]), torch.randn(1, 3, 16), torch.tensor([3])
+        )
+        with pytest.raises(NotImplementedError, match="diagonal"):
+            decoder.forward_packed(ids, decoder_context, states, encoder_context)
+
+    @pytest.mark.unit
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+    def test_bf16_matches_padded_on_cuda(self):
+        torch.manual_seed(1)
+        decoder = _composed_decoder(hidden_size=64, num_attention_heads=2, inner_size=96).cuda()
+        for parameter in decoder.parameters():
+            parameter.data.normal_(0, 0.1)
+        input_ids = torch.randint(1, 11, (3, 30), device="cuda")
+        input_lengths = torch.tensor([30, 17, 2], device="cuda")
+        encoder_lengths = torch.tensor([200, 45, 130], device="cuda")
+        encoder_states = torch.randn(3, 200, 64, device="cuda")
+        decoder_mask = (torch.arange(30, device="cuda")[None, :] < input_lengths[:, None]).to(torch.int64)
+        encoder_mask = (torch.arange(200, device="cuda")[None, :] < encoder_lengths[:, None]).to(torch.int64)
+        with torch.autocast("cuda", dtype=torch.bfloat16), torch.no_grad():
+            padded = decoder(
+                input_ids=input_ids,
+                decoder_mask=decoder_mask,
+                encoder_embeddings=encoder_states,
+                encoder_mask=encoder_mask,
+            )
+            ids, decoder_context, states, encoder_context = _packed_inputs(
+                input_ids.cpu(), input_lengths.cpu(), encoder_states.cpu(), encoder_lengths.cpu()
+            )
+            packed = decoder.forward_packed(
+                ids.cuda(),
+                PackedAttentionContext.from_lengths(input_lengths),
+                states.cuda(),
+                PackedAttentionContext(pack_encoder_output(encoder_states, encoder_lengths)),
+            )
+        valid = torch.arange(30, device="cuda")[None, :] < input_lengths[:, None]
+        torch.testing.assert_close(packed.float(), padded[valid].float(), atol=5e-2, rtol=5e-2)

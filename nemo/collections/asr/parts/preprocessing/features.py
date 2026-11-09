@@ -43,7 +43,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, _new_packed_encoder_activations
+from nemo.collections.asr.parts.packed_sequence import (
+    PackedCapacity,
+    PackedEncoderActivations,
+    _new_packed_encoder_activations,
+)
 from nemo.collections.asr.parts.preprocessing.perturb import AudioAugmentor
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.collections.common.parts.utils import build_module
@@ -503,7 +507,19 @@ class FilterbankFeatures(nn.Module):
     def filter_banks(self):
         return self.fb
 
-    def forward_packed(self, x, seq_len, cu_seqlens, linear_spec=False) -> PackedEncoderActivations:
+    def packed_frame_capacity(self, capacity: PackedCapacity) -> tuple[int, int]:
+        """Rows of the packed feature buffer and the frame bound per utterance for a waveform capacity.
+
+        The framing ``f`` is subadditive up to one frame per utterance (``f(a) + f(b) <= f(a + b) + f(0) + 1``),
+        so the frames of any batch within the capacity fit ``f(samples) + utterances * (f(0) + 1)`` rows.
+        """
+        frames = self.get_seq_len(torch.tensor([capacity.samples, capacity.max_samples, 0], dtype=torch.int64))
+        total = int(frames[0]) + capacity.utterances * (int(frames[2]) + 1)
+        return total, int(frames[1])
+
+    def forward_packed(
+        self, x, seq_len, cu_seqlens, linear_spec=False, *, capacity: PackedCapacity | None = None
+    ) -> PackedEncoderActivations:
         """Compute features from concatenated waveforms with one vectorized STFT.
 
         Each utterance is placed in a hop-aligned block with the same zero guard
@@ -513,41 +529,71 @@ class FilterbankFeatures(nn.Module):
 
         ``pad_to`` is intentionally ignored: it is a dense-layout optimization and
         packed output contains exactly ``sum(output_lengths)`` frames.
-        """
-        seq_len, cu_seqlens, host_seq_len = _validate_packed_waveforms(x, seq_len, cu_seqlens)
-        feature_lengths = torch.where(seq_len == 0, 0, self.get_seq_len(seq_len))
-        host_feature_lengths = torch.where(host_seq_len == 0, 0, self.get_seq_len(host_seq_len))
-        padded_length = _dense_feature_width(
-            host_feature_lengths, self.pad_to, self.max_length, extra_frame=not self.snip_edges
-        )
-        max_seqlen = int(host_feature_lengths.max()) if host_feature_lengths.numel() else 0
-        total_frames = int(host_feature_lengths.sum())
-        if bool((host_feature_lengths < 0).any()):
-            raise ValueError(
-                "Packed waveform lengths are too short for this STFT configuration; "
-                f"computed feature lengths {host_feature_lengths.tolist()}."
-            )
-        if seq_len.numel() == 0 or total_frames == 0:
-            feature_dim = self.n_fft // 2 + 1 if linear_spec else self.nfilt * self.frame_splicing
-            return _empty_packed_features(
-                x,
-                feature_lengths,
-                feature_dim,
-                padding_value=self.pad_value,
-                padded_length=padded_length,
-                max_seqlen=max_seqlen,
-            )
 
-        pad_left, pad_right = self._signal_padding()
+        With ``capacity`` (capacity mode) ``x`` is a buffer of ``capacity.samples`` rows whose first
+        ``cu_seqlens[-1]`` samples are the batch, the output is a bounded ``PackedEncoderActivations``
+        of :meth:`packed_frame_capacity` rows, and nothing is read on the host, so the call can run
+        under CUDA-graph capture.
+        """
+        if capacity is None:
+            seq_len, cu_seqlens, host_seq_len = _validate_packed_waveforms(x, seq_len, cu_seqlens)
+            feature_lengths = torch.where(seq_len == 0, 0, self.get_seq_len(seq_len))
+            host_feature_lengths = torch.where(host_seq_len == 0, 0, self.get_seq_len(host_seq_len))
+            padded_length = _dense_feature_width(
+                host_feature_lengths, self.pad_to, self.max_length, extra_frame=not self.snip_edges
+            )
+            max_seqlen = int(host_feature_lengths.max()) if host_feature_lengths.numel() else 0
+            total_frames = int(host_feature_lengths.sum())
+            if bool((host_feature_lengths < 0).any()):
+                raise ValueError(
+                    "Packed waveform lengths are too short for this STFT configuration; "
+                    f"computed feature lengths {host_feature_lengths.tolist()}."
+                )
+            if seq_len.numel() == 0 or total_frames == 0:
+                feature_dim = self.n_fft // 2 + 1 if linear_spec else self.nfilt * self.frame_splicing
+                return _empty_packed_features(
+                    x,
+                    feature_lengths,
+                    feature_dim,
+                    padding_value=self.pad_value,
+                    padded_length=padded_length,
+                    max_seqlen=max_seqlen,
+                )
+            pad_left, pad_right = self._signal_padding()
+            guarded_size = int(_round_up(host_seq_len + pad_left + pad_right, self.hop_length).sum())
+            dump_sample = None
+        else:
+            if self.stft_pad_amount is not None or (self.normalize and self.norm is None):
+                raise NotImplementedError(
+                    "capacity mode supports the centered framing and a normalization block only "
+                    "(exact_pad and per-utterance normalization read the batch on the host)."
+                )
+            if self.training and self.nb_augmentation_prob > 0.0:
+                raise NotImplementedError("capacity mode has no narrowband augmentation (it draws on the host).")
+            if x.ndim != 1 or x.numel() != capacity.samples or seq_len.numel() != capacity.utterances:
+                raise ValueError(
+                    f"capacity mode needs {capacity.samples} samples and {capacity.utterances} lengths, "
+                    f"got {tuple(x.shape)} and {tuple(seq_len.shape)}."
+                )
+            seq_len = seq_len.to(torch.int64)
+            cu_seqlens = cu_seqlens.to(torch.int64)
+            feature_lengths = torch.where(seq_len == 0, 0, self.get_seq_len(seq_len))
+            total_frames, max_seqlen = self.packed_frame_capacity(capacity)
+            padded_length = max_seqlen + int(not self.snip_edges)
+            pad_left, pad_right = self._signal_padding()
+            # the blocks of any batch, plus one dump sample for the slack rows of the buffer
+            guarded_size = capacity.samples + capacity.utterances * (pad_left + pad_right + self.hop_length - 1) + 1
+            dump_sample = guarded_size - 1
+        guarded = x.new_zeros(guarded_size)
         block_lengths = _round_up(seq_len + pad_left + pad_right, self.hop_length)
         block_offsets = torch.cat([seq_len.new_zeros(1), block_lengths.cumsum(0)])
-        guarded_size = int(_round_up(host_seq_len + pad_left + pad_right, self.hop_length).sum())
-        guarded = x.new_zeros(guarded_size)
 
-        guarded_positions = torch.arange(x.numel(), device=x.device)
-        sample_sequence_ids = torch.bucketize(guarded_positions, cu_seqlens[1:], right=True)
-        guarded_positions -= cu_seqlens[sample_sequence_ids]
+        sample_indices = torch.arange(x.numel(), device=x.device)
+        sample_sequence_ids = torch.bucketize(sample_indices, cu_seqlens[1:], right=True)
+        guarded_positions = sample_indices - cu_seqlens[sample_sequence_ids]
         guarded_positions += block_offsets[sample_sequence_ids] + pad_left
+        if dump_sample is not None:
+            guarded_positions = torch.where(sample_indices < cu_seqlens[-1], guarded_positions, dump_sample)
 
         if self.stft_pad_amount is None:
             samples = _dither_and_preemphasize_packed(
@@ -575,6 +621,9 @@ class FilterbankFeatures(nn.Module):
         local_frames = frame_indices - frame_cu_seqlens[frame_sequence_ids]
         global_frames = torch.div(block_offsets[frame_sequence_ids], self.hop_length, rounding_mode="floor")
         global_frames = global_frames + local_frames
+        if capacity is not None:
+            # the slack frames of the buffer read the last frame of the guard, whose content is never used
+            global_frames = global_frames.clamp(max=spectra.shape[-1] - 1)
         spectra = spectra.index_select(-1, global_frames).transpose(0, 1)
 
         guard_value = 0 if not self.use_grads else CONSTANT
@@ -615,7 +664,8 @@ class FilterbankFeatures(nn.Module):
         if self.frame_splicing > 1:
             features = features.repeat(1, self.frame_splicing)
         if self.norm is not None:
-            features = self.norm.forward_packed(features)
+            valid = frame_indices < frame_cu_seqlens[-1] if capacity is not None else None
+            features = self.norm.forward_packed(features, valid)
         elif self.normalize:
             features = _normalize_packed_features(features, feature_lengths, frame_sequence_ids, self.normalize)
         return _make_packed_features(
@@ -624,6 +674,7 @@ class FilterbankFeatures(nn.Module):
             padding_value=self.pad_value,
             padded_length=padded_length,
             max_seqlen=max_seqlen,
+            bounded=capacity is not None,
         )
 
     def forward(self, x, seq_len, linear_spec=False):
@@ -769,8 +820,11 @@ def _dither_and_preemphasize_packed(x, lengths, cu_seqlens, preemph, dither):
     if preemph is None or samples.numel() == 0:
         return samples
     emphasized = torch.cat([samples[:1], samples[1:] - preemph * samples[:-1]])
-    starts = cu_seqlens[:-1][lengths > 0]
-    return emphasized.scatter(0, starts, samples.index_select(0, starts))
+    # the first sample of every utterance keeps its value; an empty utterance starts where the next one does,
+    # so marking every start (one past the end for trailing empty ones) needs no data-dependent selection
+    is_start = torch.zeros(samples.numel() + 1, dtype=torch.bool, device=samples.device)
+    is_start[cu_seqlens[:-1]] = True
+    return torch.where(is_start[:-1], samples, emphasized)
 
 
 def _dither_and_preemphasize_exact_pad_blocks(guarded, lengths, block_lengths, block_offsets, preemph, dither):
@@ -867,12 +921,12 @@ def _expand_packed_padding(padding_value, features, lengths):
     return features.new_full((lengths.numel(), features.shape[1]), padding_value)
 
 
-def _make_packed_features(features, lengths, *, padding_value=0.0, padded_length=None, max_seqlen=None):
+def _make_packed_features(features, lengths, *, padding_value=0.0, padded_length=None, max_seqlen=None, bounded=False):
     cu_seqlens = torch.cat([lengths.new_zeros(1, dtype=torch.int32), lengths.cumsum(0, dtype=torch.int32)])
     if max_seqlen is None:
         max_seqlen = int(lengths.max().item()) if lengths.numel() else 0
     return _new_packed_encoder_activations(
-        features, lengths.to(torch.int64), cu_seqlens, max_seqlen, padding_value, padded_length
+        features, lengths.to(torch.int64), cu_seqlens, max_seqlen, padding_value, padded_length, bounded
     )
 
 

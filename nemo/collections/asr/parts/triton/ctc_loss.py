@@ -70,6 +70,7 @@ def packed_ctc_loss(
     *,
     blank: int,
     zero_infinity: bool = False,
+    bounded: bool = False,
 ) -> Tensor:
     """CTC loss per utterance over token-flat log probabilities.
 
@@ -91,6 +92,8 @@ def packed_ctc_loss(
             (checked outside a CUDA graph capture, where no host read is possible).
         blank: index of the blank class.
         zero_infinity: replace an infinite loss and its gradient by zero.
+        bounded: capacity mode: ``log_probs`` holds slack rows after the utterances and ``targets`` is
+            padded to the target capacity; the host checks are skipped and the width sizes the states.
 
     Returns:
         The loss per utterance, shape ``(B,)``, float32.
@@ -114,7 +117,7 @@ def packed_ctc_loss(
     # and the longest target sizes the states, so that an over-allocated targets buffer costs nothing.
     # A graph capture cannot sync: there the width stands in, and the sampler guarantees the bounds.
     longest = targets.shape[1]
-    if batch_size and not torch.cuda.is_current_stream_capturing():
+    if batch_size and not bounded and not torch.cuda.is_current_stream_capturing():
         shortest, longest = (int(bound) for bound in torch.aminmax(target_lengths))
         if shortest < 0:
             raise ValueError(f"target_lengths must not be negative, got {shortest}.")

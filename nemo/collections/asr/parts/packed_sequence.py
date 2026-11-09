@@ -21,6 +21,7 @@ from torch import Tensor
 from torch.utils._pytree import GetAttrKey, register_pytree_node
 
 __all__ = [
+    "PackedCapacity",
     "PackedEncoderActivations",
     "PackedSlotLayout",
     "pack_encoder_output",
@@ -31,6 +32,25 @@ __all__ = [
     "split_encoder_output",
     "unpack_encoder_output",
 ]
+
+
+@dataclass(frozen=True)
+class PackedCapacity:
+    """Fixed sizes of a packed waveform batch, for buffers whose shapes never change (CUDA-graph capture).
+
+    Args:
+        utterances: slots for utterances, at least the utterances of any batch (unused slots have length zero).
+        samples: rows of the waveform buffer, at least the samples of any batch.
+        max_samples: samples of the longest utterance any batch may hold.
+    """
+
+    utterances: int
+    samples: int
+    max_samples: int
+
+    def __post_init__(self) -> None:
+        if self.utterances < 1 or self.samples < 1 or not 1 <= self.max_samples <= self.samples:
+            raise ValueError(f"capacities must be positive with max_samples <= samples, got {self}.")
 
 
 @dataclass(frozen=True)
@@ -49,6 +69,12 @@ class PackedEncoderActivations:
         padded_length: Optional dense time dimension associated with the packed
             data. Frontends preserve it solely for dense-compatible augmentation
             RNG ranges; packed kernels continue to use ``max_seqlen``.
+        bounded: Capacity mode: ``data`` holds a fixed number of rows of which the first
+            ``cu_seqlens[-1]`` are the valid tokens and the rest is slack, ``max_seqlen`` is an
+            upper bound of the lengths and unused utterance slots have length zero.
+            Nothing about the batch is read on the host, so the batch can run under CUDA-graph
+            capture; per-utterance kernels read the lengths and never touch the slack rows,
+            row-wise kernels compute on them and their consumers mask them.
 
     The representation deliberately has an ASR-specific name rather than reusing
     :class:`torch.nn.utils.rnn.PackedSequence`: the latter stores sort/unsort metadata
@@ -61,9 +87,21 @@ class PackedEncoderActivations:
     max_seqlen: int
     padding_value: float | Tensor = 0.0
     padded_length: int | None = None
+    bounded: bool = False
 
     def __post_init__(self) -> None:
         _validate_packed_encoder_activations(self)
+
+    @property
+    def total_valid(self) -> Tensor:
+        """Number of valid tokens as a device scalar (``cu_seqlens[-1]``), the content of a bounded batch."""
+
+        return self.cu_seqlens[-1]
+
+    def valid_rows(self) -> Tensor:
+        """Boolean mask of the rows that hold valid tokens, shape ``(T_total,)``."""
+
+        return torch.arange(self.data.shape[0], device=self.data.device) < self.cu_seqlens[-1].to(torch.int64)
 
     @property
     def batch_size(self) -> int:
@@ -73,7 +111,7 @@ class PackedEncoderActivations:
 
     @property
     def total_tokens(self) -> int:
-        """Number of valid (unpadded) encoder tokens."""
+        """Number of rows of ``data``: the valid tokens, or the capacity of a bounded batch."""
 
         return int(self.data.shape[0])
 
@@ -94,6 +132,7 @@ class PackedEncoderActivations:
             self.max_seqlen,
             padding_value=self.padding_value,
             padded_length=self.padded_length,
+            bounded=self.bounded,
         )
 
     def detach(self) -> "PackedEncoderActivations":
@@ -110,6 +149,7 @@ class PackedEncoderActivations:
             self.max_seqlen,
             padding_value=padding_value,
             padded_length=self.padded_length,
+            bounded=self.bounded,
         )
 
 
@@ -135,6 +175,7 @@ class PackedSlotLayout:
     slot_lengths: Tensor
     total_slots: int
     token_slots: Tensor
+    token_valid: Tensor | None = None
 
     def scatter(self, data: Tensor) -> Tensor:
         """Place token-flat data ``(T_total, ...)`` into its slots; every other slot is zero."""
@@ -154,6 +195,7 @@ def _packed_encoder_activations_flatten(packed: PackedEncoderActivations):
         packed.max_seqlen,
         packed.padding_value,
         packed.padded_length,
+        packed.bounded,
     ]
     return values, None
 
@@ -167,6 +209,7 @@ def _packed_encoder_activations_flatten_with_keys(packed: PackedEncoderActivatio
         "max_seqlen",
         "padding_value",
         "padded_length",
+        "bounded",
     )
     keyed_values = [(GetAttrKey(name), value) for name, value in zip(names, values, strict=True)]
     return keyed_values, context
@@ -237,7 +280,11 @@ def unpack_encoder_output(packed: PackedEncoderActivations, *, total_length: int
     else:
         output = packed.data.new_full((packed.batch_size, total_length, packed.data.shape[-1]), packed.padding_value)
     if packed.total_tokens:
-        output[_length_mask(packed.lengths, total_length)] = packed.data
+        data = packed.data
+        if packed.bounded:
+            # the slack rows of a bounded batch are not tokens (one device read, outside any capture)
+            data = data[: int(packed.cu_seqlens[-1].item())]
+        output[_length_mask(packed.lengths, total_length)] = data
     return output
 
 
@@ -284,6 +331,17 @@ def packed_slot_layout(packed: PackedEncoderActivations, *, alignment: int = 1, 
         raise ValueError(f"gap must be non-negative, got {gap}.")
     slot_lengths = torch.div(packed.lengths + (gap + alignment - 1), alignment, rounding_mode="floor") * alignment
     slot_offsets = torch.cumsum(slot_lengths, dim=0) - slot_lengths
+    if packed.bounded:
+        # the slots of any batch fit the capacity rows plus the rounding of every utterance;
+        # the last slot of one extra aligned block at the end takes the slack rows, which no utterance reads
+        total_slots = packed.total_tokens + packed.batch_size * (gap + alignment - 1) + alignment
+        sequence_ids = packed_sequence_ids(packed)
+        token_valid = sequence_ids < packed.batch_size
+        clamped = sequence_ids.clamp(max=max(packed.batch_size - 1, 0))
+        token_slots = torch.where(
+            token_valid, slot_offsets[clamped] + packed_encoder_position_ids(packed), total_slots - 1
+        )
+        return PackedSlotLayout(slot_offsets, slot_lengths, total_slots, token_slots, token_valid)
     total_slots = int(slot_lengths.sum().item())
     token_slots = slot_offsets[packed_sequence_ids(packed)] + packed_encoder_position_ids(packed)
     return PackedSlotLayout(slot_offsets, slot_lengths, total_slots, token_slots)
@@ -369,6 +427,16 @@ def _validate_packed_encoder_activations(packed: PackedEncoderActivations) -> No
         raise ValueError("data, lengths, and cu_seqlens must be on the same device.")
     if packed.cu_seqlens.numel() != packed.lengths.numel() + 1:
         raise ValueError("cu_seqlens must have exactly batch_size + 1 entries.")
+    if packed.bounded:
+        # no device read: the content is unknown on the host by design
+        if int(packed.max_seqlen) != packed.max_seqlen or packed.max_seqlen < 0:
+            raise ValueError(f"max_seqlen must be a non-negative bound, got {packed.max_seqlen}.")
+        if isinstance(packed.padding_value, Tensor) and packed.padding_value.shape != (
+            packed.batch_size,
+            packed.data.shape[1],
+        ):
+            raise ValueError("tensor padding_value must have shape (batch_size, D).")
+        return
     expected = _lengths_to_cu_seqlens(packed.lengths)
     if not torch.equal(packed.cu_seqlens, expected):
         raise ValueError("cu_seqlens must start at zero and have differences equal to lengths.")
@@ -395,7 +463,9 @@ def _validate_packed_encoder_activations(packed: PackedEncoderActivations) -> No
         )
 
 
-def _new_packed_encoder_activations(data, lengths, cu_seqlens, max_seqlen, padding_value=0.0, padded_length=None):
+def _new_packed_encoder_activations(
+    data, lengths, cu_seqlens, max_seqlen, padding_value=0.0, padded_length=None, bounded=False
+):
     """Construct from metadata that a public constructor already validated."""
     packed = object.__new__(PackedEncoderActivations)
     object.__setattr__(packed, "data", data)
@@ -404,4 +474,5 @@ def _new_packed_encoder_activations(data, lengths, cu_seqlens, max_seqlen, paddi
     object.__setattr__(packed, "max_seqlen", max_seqlen)
     object.__setattr__(packed, "padding_value", padding_value)
     object.__setattr__(packed, "padded_length", padded_length)
+    object.__setattr__(packed, "bounded", bounded)
     return packed

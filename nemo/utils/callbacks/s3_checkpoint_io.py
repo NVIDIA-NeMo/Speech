@@ -175,6 +175,7 @@ class S3CheckpointIO(CheckpointIO):
     def save_checkpoint(
         self, checkpoint: Dict[str, Any], path: Union[str, Path], storage_options: Optional[Any] = None
     ) -> None:
+        """Serialize a checkpoint and upload it to the configured S3 path."""
         # if we have a shared memory directory, we can serialize as a file to shared memory instead of as bytes.
         if os.path.exists(SHARED_MEM_DIR):
             localfile = self._serialize_checkpoint_to_shm(checkpoint, path)
@@ -206,8 +207,12 @@ class S3CheckpointIO(CheckpointIO):
                 _upload_bytes_to_s3(bytes, path, self.chunk_size_MB, self.max_write_concurrency)
 
     def load_checkpoint(
-        self, path: Union[str, Path], map_location: Optional[Callable] = lambda storage, loc: storage
+        self,
+        path: Union[str, Path],
+        map_location: Optional[Callable] = lambda storage, loc: storage,
+        weights_only: Optional[bool] = None,
     ) -> Dict[str, Any]:
+        """Download a checkpoint and forward device mapping and unpickling policy to PyTorch."""
         if os.path.exists(SHARED_MEM_DIR):
             with NamedTemporaryFile(dir=SHARED_MEM_DIR, delete=True) as tempfile:
                 logging.info(
@@ -220,22 +225,23 @@ class S3CheckpointIO(CheckpointIO):
                     chunk_size_MB=self.chunk_size_MB,
                     max_concurrency=self.max_read_concurrency,
                 )
-                checkpoint = torch.load(tempfile.name)
+                checkpoint = torch.load(tempfile.name, map_location=map_location, weights_only=weights_only)
         else:
             file_stream: BytesIO = S3Utils.download_s3_file_to_stream(
                 s3_path=path, chunk_size_MB=self.chunk_size_MB, max_concurrency=self.max_read_concurrency
             )
-            checkpoint = torch.load(file_stream)
+            checkpoint = torch.load(file_stream, map_location=map_location, weights_only=weights_only)
         return checkpoint
 
     def remove_checkpoint(self, path: Union[str, Path]) -> None:
+        """Remove an S3 checkpoint or delegate local removal to the base plugin."""
         if S3Utils.is_s3_url(path):
             S3Utils.remove_object(path)
         else:
             super().remove_checkpoint(path)
 
     def teardown(self) -> None:
-        # this ensure we wait for final checkpoint to finish uploading at train end.
+        """Wait for uploads to finish and remove remaining temporary checkpoint files."""
         rank = torch.distributed.get_rank()
         if self.async_checkpointing:
             logging.info(f'Entering teardown, waiting for all jobs to finish, rank {rank}')
@@ -243,10 +249,7 @@ class S3CheckpointIO(CheckpointIO):
             self._executor.shutdown(wait=True)
             logging.info(f'executor shut down after {(time.perf_counter() - start_time):.2f} seconds, rank {rank}')
 
-        '''
-        This will be non-empty at the end of training with asynchronous uploading because the futures are not
-        processed with _check_uploading_results_so_far. Therefore, check that the path exists before deleting.
-        '''
+        # Async upload futures may leave temporary files until teardown.
         if self._temp_files:
             for tfile in self._temp_files:
                 if os.path.exists(tfile):

@@ -278,7 +278,7 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
     """
 
     @override
-    def load_checkpoint(self, checkpoint_path):
+    def load_checkpoint(self, checkpoint_path, weights_only: Optional[bool] = None):
         """Load DCP optimizer state while preserving lazy-state semantics.
 
         Model tensors remain strict. Optimizer loading alone permits a complete
@@ -290,7 +290,7 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
 
         path = Path(self.broadcast(checkpoint_path))
         if not _is_sharded_checkpoint(path):
-            return super().load_checkpoint(path)
+            return super().load_checkpoint(path, weights_only=weights_only)
 
         from torch.distributed.checkpoint import FileSystemReader, load
         from torch.distributed.checkpoint.state_dict import (
@@ -331,7 +331,7 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         # of resume. Keep this metadata-only payload alive for consumers whose
         # restored state can outlive that connector reference; model and
         # optimizer tensors were loaded separately through DCP above.
-        checkpoint = torch.load(path / _METADATA_FILENAME)
+        checkpoint = torch.load(path / _METADATA_FILENAME, weights_only=weights_only)
         self._checkpoint_keepalive = checkpoint
         return checkpoint
 

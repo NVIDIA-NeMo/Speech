@@ -172,11 +172,17 @@ setuptools.setup(
         'Natural Language :: English',
         'Operating System :: OS Independent',
     ],
-    packages=setuptools.find_packages(),
+    packages=setuptools.find_packages(
+        exclude=[
+            'tests*',
+            'tools*',
+            'scripts*',
+            'examples*'
+        ]
+    ),
     python_requires='>=3.10',
     # Add in any packaged data.
     include_package_data=True,
-    exclude=['tools', 'tests'],
     package_data={'': ['*.tsv', '*.txt', '*.far', '*.fst', '*.cpp', 'Makefile']},
     zip_safe=False,
     # PyPI package information.

@@ -14,6 +14,11 @@
 # limitations under the License.
 
 import importlib.util
+import json
+import os
+import subprocess
+import sys
+import textwrap
 import urllib.error
 from pathlib import Path
 from unittest.mock import Mock, call, patch
@@ -185,3 +190,100 @@ class TestGpuMarker:
 
         assert root_conftest._num_cuda_allocations(torch) == 0
         torch.cuda.memory_stats.assert_not_called()
+
+
+# Run in a separate pytest session: it replaces checkpoint restoration with a lightweight model that has a reference
+# cycle (like ModelPT) and disables automatic garbage collection, so only the fixture's own cleanup can free a model.
+_CHECKPOINT_LIFETIME_PLUGIN = textwrap.dedent(
+    """
+    import gc
+    import json
+    import os
+    import types
+    import weakref
+
+    import torch
+
+    _refs = []
+    _alive_at_restore = []
+
+
+    class _FakeModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.lin = torch.nn.Linear(2, 2)
+            self.cycle = types.MethodType(lambda self: self, self)
+            self.joint = types.SimpleNamespace(num_classes_with_blank=5)
+            self.decoder = types.SimpleNamespace(vocab_size=4)
+            self.tokenizer = types.SimpleNamespace(vocab_size=4)
+
+        def to_config_dict(self):
+            return {}
+
+        def training_step(self, batch, batch_idx):
+            return self.lin(torch.ones(2)).sum()
+
+        def transcribe(self, audio, batch_size, return_hypotheses=False):
+            return [types.SimpleNamespace(text="x")] if return_hypotheses else ["x"]
+
+
+    def _fake_restore(*args, **kwargs):
+        _alive_at_restore.append(sum(ref() is not None for ref in _refs))
+        model = _FakeModel()
+        _refs.append(weakref.ref(model))
+        return model
+
+
+    def pytest_configure(config):
+        gc.disable()
+        from nemo.collections.asr.models import ASRModel
+
+        ASRModel.restore_from = staticmethod(_fake_restore)
+
+
+    def pytest_sessionfinish(session, exitstatus):
+        with open(os.environ["LIFETIME_REPORT"], "w") as f:
+            json.dump({"alive_at_restore": _alive_at_restore}, f)
+    """
+)
+
+
+@pytest.mark.unit
+def test_shared_architecture_fixture_frees_previous_checkpoint_before_next_restore(tmp_path):
+    (tmp_path / "checkpoint_lifetime_plugin.py").write_text(_CHECKPOINT_LIFETIME_PLUGIN)
+    report = tmp_path / "report.json"
+    nightly_dir = NIGHTLY_CONFTEST_PATH.parent
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join([str(tmp_path), str(nightly_dir), os.environ.get("PYTHONPATH", "")]),
+        "LIFETIME_REPORT": str(report),
+        "CUDA_VISIBLE_DEVICES": "",
+        # Select two checkpoints so the fixture switches parameters once.
+        "NEMO_MODEL_SUPPORT_SHARD": "0",
+        "NEMO_MODEL_SUPPORT_NUM_SHARDS": "23",
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "checkpoint_lifetime_plugin",
+            "-p",
+            "no:cacheprovider",
+            "--noconftest",
+            "-c",
+            os.devnull,
+            "--rootdir",
+            str(tmp_path),
+            str(nightly_dir / "test_model_support_asr_shared_architectures.py"),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    # One restore per checkpoint, shared by its three tests; no earlier checkpoint is alive at the second restore.
+    assert json.loads(report.read_text()) == {"alive_at_restore": [0, 0]}

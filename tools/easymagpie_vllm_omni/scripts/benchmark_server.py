@@ -27,11 +27,12 @@ from __future__ import annotations
 import argparse
 import base64
 import io
+import json
 import random
 import time
 import wave
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -71,6 +72,8 @@ def _do_request(task: dict) -> RequestResult:
         "stream_format": "audio",
         "max_new_tokens": task["max_new_tokens"],
     }
+    if task.get("extra_params"):
+        payload["extra_params"] = task["extra_params"]
     if task.get("ref_audio") is not None:
         payload["ref_audio"] = task["ref_audio"]
     else:
@@ -152,6 +155,7 @@ def _make_tasks(
     output_dir,
     reference_audio=None,
     randomize_reference_audio=False,
+    extra_params=None,
 ) -> list[dict]:
     selected_items = random.sample(items, n) if n <= len(items) else random.choices(items, k=n)
     tasks = []
@@ -166,6 +170,7 @@ def _make_tasks(
                 "sample_rate": sample_rate,
                 "timeout": timeout,
                 "output_dir": output_dir,
+                "extra_params": dict(extra_params or {}),
                 "ref_audio": (
                     _reference_audio_data_url(reference_audio, randomize_reference_audio)
                     if reference_audio is not None
@@ -397,9 +402,23 @@ def main() -> None:
     parser.add_argument("--timeout", type=float, default=300, help="Per-request timeout, s (default: 300)")
     parser.add_argument("--no-warmup", action="store_true", help="Skip warmup phase (concurrency requests)")
     parser.add_argument("--output-dir", default=None, help="If set, write each waveform to <output-dir>/<uttid>.wav")
+    parser.add_argument("--temperature", type=float, default=None, help="Audio sampling temperature")
+    parser.add_argument("--top-k", type=int, default=None, help="Audio sampling top-k (fixed at graph capture)")
+    parser.add_argument("--cfg-scale", type=float, default=None, help="Guidance scale for a CFG-enabled server")
+    parser.add_argument("--seed", type=int, default=None, help="Reproducible client task order; not a model RNG seed")
+    parser.add_argument(
+        "--json-output", default=None, help="Save summaries, request timings and exact client settings"
+    )
     args = parser.parse_args()
     if args.randomize_reference_audio and args.reference_audio is None:
         parser.error("--randomize-reference-audio requires --reference-audio")
+    if args.seed is not None:
+        random.seed(args.seed)
+    extra_params = {
+        key: value
+        for key, value in {"temperature": args.temperature, "top_k": args.top_k, "cfg_scale": args.cfg_scale}.items()
+        if value is not None
+    }
 
     items = _load_items(args.text_file)
     if not items:
@@ -416,6 +435,7 @@ def main() -> None:
     )
 
     summaries = []
+    request_details = []
     for concurrency in args.concurrency:
         if not args.no_warmup:
             warmup = _make_tasks(
@@ -429,6 +449,7 @@ def main() -> None:
                 None,
                 reference_audio=args.reference_audio,
                 randomize_reference_audio=args.randomize_reference_audio,
+                extra_params=extra_params,
             )
             _run_level(warmup, concurrency, None)
 
@@ -443,15 +464,25 @@ def main() -> None:
             output_dir,
             reference_audio=args.reference_audio,
             randomize_reference_audio=args.randomize_reference_audio,
+            extra_params=extra_params,
         )
         results, wall = _run_level(tasks, concurrency, output_dir)
         summary = _summarize(results, wall, concurrency)
         summaries.append(summary)
+        request_details.append({"concurrency": concurrency, "requests": [asdict(result) for result in results]})
         _print_detailed(summary)
 
     print("\n=== Summary ===")
     for s in summaries:
         _print_summary(s)
+    if args.json_output:
+        destination = Path(args.json_output)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_suffix(destination.suffix + ".partial")
+        temporary.write_text(
+            json.dumps({"settings": vars(args), "summaries": summaries, "details": request_details}, indent=2) + "\n"
+        )
+        temporary.replace(destination)
 
 
 if __name__ == "__main__":

@@ -82,6 +82,23 @@ class TestCompositeLoss:
         assert terms["ce"].summed.grad.item() == 0.0
 
     @pytest.mark.unit
+    def test_scales_live_on_the_device_once(self):
+        """The scales tensor is built once per device and dtype and reused: a fresh tensor from Python floats
+        would be a host-to-device copy in every step, which a CUDA-graph capture of the training step refuses."""
+        loss = CompositeLoss(scales={"a": 2.0}, default_scale=1.0)
+        terms = {
+            "a": LossTerm(torch.tensor(4.0), torch.tensor(2.0)),
+            "b": LossTerm(torch.tensor(3.0), torch.tensor(3.0)),
+        }
+        first, _ = loss(terms)
+        scales = loss._scales_tensor(["a", "b"], torch.float32, torch.device("cpu"))
+        assert scales.tolist() == [2.0, 1.0] and scales is loss._scales_tensor(
+            ["a", "b"], torch.float32, torch.device("cpu")
+        )
+        second, _ = loss(terms)
+        assert torch.equal(first, second) and float(first) == 2.0 * 2.0 + 1.0
+        assert loss._scales_tensor(["b", "a"], torch.float32, torch.device("cpu")).tolist() == [1.0, 2.0]
+
     def test_unknown_scale_names_and_normalizations_are_rejected(self):
         with pytest.raises(ValueError, match="not provided"):
             CompositeLoss(scales={"rnnt": 1.0})(_terms())

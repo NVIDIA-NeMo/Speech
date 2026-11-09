@@ -1254,13 +1254,6 @@ Indexed packed-sequence loaders restore the packing pool and bucket queues toget
 with their source iterator positions. Saving a loaded state before consuming its
 next batch preserves that pending continuation.
 
-Lhotse versions that removed replay-based restoration require indexed lazy
-sources for sampler checkpoints. NeMo rejects streamed inputs at loader
-construction when ``use_stateful_dataloader: true`` is set with those versions.
-Set ``indexed: true`` and pre-build all source indexes, or use
-``use_stateful_dataloader: false`` for non-resumable streaming. Older Lhotse versions that still expose ``_fast_forward()`` can
-restore non-indexed pipelines by replaying the previously consumed batches (O(N)).
-
 For the iterator graph contract itself, see Lhotse's
 `indexed manifests guide <https://lhotse.readthedocs.io/en/latest/indexed-manifests.html>`_.
 

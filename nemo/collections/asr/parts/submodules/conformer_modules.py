@@ -30,6 +30,14 @@ from nemo.collections.asr.parts.submodules.multi_head_attention import (
 from nemo.collections.asr.parts.utils.activations import Swish
 from nemo.collections.common.parts.utils import ModuleBlock, activation_registry, block_binds, build_module
 from nemo.core.classes.mixins import AccessMixin
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE
+
+if TRITON_AVAILABLE:
+    from nemo.collections.asr.parts.triton.activation_dropout import (
+        ACTIVATION_DROPOUT_DTYPES,
+        activation_dropout_linear,
+        fused_activation_name,
+    )
 
 __all__ = ['ConformerConvolution', 'ConformerFeedForward', 'ConformerLayer', 'build_self_attention']
 
@@ -481,6 +489,13 @@ class ConformerFeedForward(nn.Module):
         activation: the activation module, or its name in the activation registry
             (`swish`, `relu`, `gelu`, `squared_relu`, ...); default `Swish`
         use_bias: bias in both linear layers
+
+    In training with dropout on CUDA, the activation, the dropout and the second linear layer run fused
+    (:mod:`nemo.collections.asr.parts.triton.activation_dropout`) for the activations the kernel implements:
+    the pre-activation is the one tensor of width ``d_ff`` saved for the backward,
+    instead of the activation output, the mask and the second linear layer's input.
+    The other activations, a replaced ``dropout`` or ``linear2`` module, evaluation and other devices
+    run the modules one after the other.
     """
 
     def __init__(self, d_model, d_ff, dropout, activation: nn.Module | str = Swish(), use_bias=True):
@@ -497,10 +512,24 @@ class ConformerFeedForward(nn.Module):
 
     def forward(self, x):
         x = self.linear1(x)
+        fused_activation = self._fused_activation(x)
+        if fused_activation is not None:
+            return activation_dropout_linear(
+                x, fused_activation, self.dropout.p, self.linear2.weight, self.linear2.bias
+            )
         x = self.activation(x)
         x = self.dropout(x)
         x = self.linear2(x)
         return x
+
+    def _fused_activation(self, hidden: torch.Tensor) -> str | None:
+        """The kernel's name of the activation when the fused path applies to this hidden, else None."""
+        if not (TRITON_AVAILABLE and self.training and hidden.is_cuda and hidden.dtype in ACTIVATION_DROPOUT_DTYPES):
+            return None
+        # the fused path stands in for the plain modules only, not for a replaced dropout or linear layer
+        if type(self.dropout) is not nn.Dropout or self.dropout.p <= 0.0 or type(self.linear2) is not nn.Linear:
+            return None
+        return fused_activation_name(self.activation)
 
     def reset_parameters_ff(self):
         ffn1_max = self.d_model**-0.5

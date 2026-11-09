@@ -30,6 +30,8 @@ from nemo.collections.asr.parts.submodules.multi_head_attention import (
     RelPositionMultiHeadAttention,
 )
 from nemo.collections.asr.parts.submodules.subsampling import ConvSubsampling
+from nemo.collections.common.parts.utils import SquaredReLU
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
 
 class TestStochasticDepth:
@@ -236,6 +238,130 @@ class TestBypassPreEncode:
         model.eval()
         fwd_outputs = model(audio_signal=feat_input, length=input_length, bypass_pre_encode=False)[0]
         assert fwd_outputs.shape == (batch_size, feat_out, sub_sampled_n_frames)
+
+
+class TestConformerFeedForwardActivationDropout:
+    """Activation, dropout and the second linear layer of the feed-forward as one fused path in training on CUDA."""
+
+    class SeparateSquaredReLU(SquaredReLU):
+        """The same activation as a subclass, which the fused path does not take: the separate modules run."""
+
+    @staticmethod
+    def _saved(module, x):
+        saved = []
+        with torch.autograd.graph.saved_tensors_hooks(lambda t: saved.append(t) or t, lambda t: t):
+            out = module(x)
+        return out, saved
+
+    @classmethod
+    def _pair(cls, d_ff, dropout, activation="squared_relu"):
+        """The same feed-forward twice: with the fusable activation and with its unfused subclass."""
+        torch.manual_seed(0)
+        fused = ConformerFeedForward(16, d_ff, dropout, activation=activation, use_bias=False)
+        separate = ConformerFeedForward(16, d_ff, dropout, activation=cls.SeparateSquaredReLU(), use_bias=False)
+        separate.load_state_dict(fused.state_dict())
+        return fused, separate
+
+    @pytest.mark.unit
+    def test_eval_and_cpu_run_the_modules(self):
+        torch.manual_seed(0)
+        module = ConformerFeedForward(16, 32, 0.5, activation="squared_relu")
+        x = torch.randn(3, 7, 16)
+        module.eval()
+        with torch.no_grad():
+            torch.testing.assert_close(module(x), module.linear2(module.activation(module.linear1(x))))
+        module.train()
+        torch.manual_seed(1)
+        out = module(x)
+        torch.manual_seed(1)
+        expected = module.linear2(module.dropout(module.activation(module.linear1(x))))
+        torch.testing.assert_close(out, expected)
+
+    @pytest.mark.run_only_on('GPU')
+    @pytest.mark.unit
+    @pytest.mark.skipif(not TRITON_AVAILABLE, reason="requires Triton")
+    def test_training_on_cuda_saves_the_hidden_once(self):
+        fused, separate = self._pair(4096, 0.1)
+        fused.cuda().train()
+        separate.cuda().train()
+        x = torch.randn(3, 7, 16, device="cuda", requires_grad=True)
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            out, saved = self._saved(fused, x)
+            _, saved_separate = self._saved(separate, x)
+        hidden = [t for t in saved if t.numel() == 3 * 7 * 4096]
+        assert len(hidden) == 1 and hidden[0].dtype == torch.bfloat16
+        assert out.dtype == torch.bfloat16
+        # the separate modules keep at least the activation output, the mask and the second linear layer's input
+        assert len({t.untyped_storage().data_ptr() for t in saved_separate if t.numel() == 3 * 7 * 4096}) >= 3
+        out.float().sum().backward()
+        assert x.grad is not None and fused.linear1.weight.grad is not None and fused.linear2.weight.grad is not None
+        assert torch.isfinite(fused.linear1.weight.grad).all() and torch.isfinite(fused.linear2.weight.grad).all()
+
+    @pytest.mark.run_only_on('GPU')
+    @pytest.mark.unit
+    @pytest.mark.skipif(not TRITON_AVAILABLE, reason="requires Triton")
+    def test_the_fused_path_stands_in_for_the_plain_modules_only(self):
+        """Dropout zero, a float64 module, a replaced dropout or linear layer run the modules as they are."""
+        x = torch.randn(3, 7, 16, device="cuda", requires_grad=True)
+        hidden_count = lambda saved: len({t.untyped_storage().data_ptr() for t in saved if t.numel() == 3 * 7 * 64})
+        no_dropout = ConformerFeedForward(16, 64, 0.0, activation="squared_relu").cuda().train()
+        _, saved = self._saved(no_dropout, x)
+        assert no_dropout._fused_activation(no_dropout.linear1(x)) is None and hidden_count(saved) >= 2
+        double = ConformerFeedForward(16, 64, 0.1, activation="squared_relu").cuda().double().train()
+        torch.manual_seed(2)
+        out = double(x.double())
+        torch.manual_seed(2)
+        expected = double.linear2(double.dropout(double.activation(double.linear1(x.double()))))
+        torch.testing.assert_close(out, expected)
+
+        class ScaledLinear(torch.nn.Linear):
+            def forward(self, x):
+                return 2 * super().forward(x)
+
+        replaced = ConformerFeedForward(16, 64, 0.1, activation="squared_relu").cuda().train()
+        replaced.linear2 = ScaledLinear(64, 16).cuda()
+        with torch.no_grad():
+            replaced.linear2.weight.zero_()
+            replaced.linear2.bias.fill_(1.0)
+        assert torch.equal(replaced(x), torch.full((3, 7, 16), 2.0, device="cuda"))
+        replaced.linear2 = torch.nn.Linear(64, 16).cuda()
+        replaced.dropout = torch.nn.Identity()
+        assert replaced._fused_activation(replaced.linear1(x)) is None
+        assert replaced(x).shape == (3, 7, 16)
+
+    @pytest.mark.run_only_on('GPU')
+    @pytest.mark.unit
+    @pytest.mark.skipif(not TRITON_AVAILABLE, reason="requires Triton")
+    @pytest.mark.parametrize("activation", ["squared_relu", "swish", "relu", "gelu"])
+    def test_fused_path_matches_the_modules_in_expectation(self, activation):
+        torch.manual_seed(0)
+        module = ConformerFeedForward(16, 64, 0.5, activation=activation).cuda()
+        x = torch.randn(4, 50, 16, device="cuda")
+        module.eval()
+        with torch.no_grad():
+            expected = module(x)
+            module.train()
+            assert module._fused_activation(module.linear1(x)) is not None
+            fused = torch.stack([module(x) for _ in range(400)])
+            separate = torch.stack(
+                [module.linear2(module.dropout(module.activation(module.linear1(x)))) for _ in range(400)]
+            )
+        # dropout is unbiased: the mean over draws is the evaluation output, with the same spread for both paths
+        torch.testing.assert_close(fused.mean(0), expected, atol=0.08, rtol=0.0)
+        torch.testing.assert_close(fused.std(0).mean(), separate.std(0).mean(), rtol=0.05, atol=0.0)
+        assert not torch.equal(fused[0], fused[1])
+
+    @pytest.mark.run_only_on('GPU')
+    @pytest.mark.unit
+    @pytest.mark.skipif(not TRITON_AVAILABLE, reason="requires Triton")
+    def test_encoder_trains_through_the_fused_path(self):
+        torch.manual_seed(0)
+        encoder = _composed_encoder(dropout=0.1).cuda().train()
+        features = torch.randn(2, 8, 40, device="cuda")
+        lengths = torch.tensor([40, 25], device="cuda")
+        states, _ = encoder(audio_signal=features, length=lengths)
+        states.sum().backward()
+        assert all(p.grad is not None for p in encoder.parameters())
 
 
 def _composed_encoder(**overrides):

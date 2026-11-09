@@ -1234,6 +1234,12 @@ class RotaryPositionalEncoding(torch.nn.Module):
 
         inv_freq = 1.0 / (rope_base ** (torch.arange(0, d_k_rot, 2, dtype=torch.float32, device="cpu") / d_k_rot))
         self.register_buffer('inv_freq', inv_freq, persistent=False)
+        # the tables cover max_len from construction on,
+        # so that their size does not depend on the batches a module has seen:
+        # a distributed training broadcasts the buffers, and a size that differs per rank hangs it
+        cos, sin = self._tables(torch.arange(0, max_len, dtype=torch.float32, device="cpu"), torch.float32)
+        self.register_buffer('cos', cos, persistent=False)
+        self.register_buffer('sin', sin, persistent=False)
 
     def _rotate_half(self, x):
         """Split the last dim of x in half and rotate: (x1, x2) -> (-x2, x1)."""
@@ -1249,15 +1255,15 @@ class RotaryPositionalEncoding(torch.nn.Module):
         t_rot = t_rot * cos + self._rotate_half(t_rot) * sin
         return torch.cat((t_rot, t_pass), dim=-1)
 
-    def create_pe(self, positions, dtype):
-        """Build cos/sin buffers covering ``positions`` (1D fp32 tensor).
+    def _tables(self, positions, dtype):
+        """The cos and sin tables of ``positions`` (1D fp32 tensor), stored in ``dtype`` on the positions' device.
 
         Frequencies are computed in fp32 for numerical stability and cast to
         ``dtype`` for storage. The final cast to Q/K runtime dtype happens in
         ``forward``.
         """
-        # Build this non-persistent cache with one device-independent fp32
-        # reference. CPU and CUDA transcendental kernels can round differently
+        # Build the tables with one device-independent fp32 reference.
+        # CPU and CUDA transcendental kernels can round differently
         # before the model-dtype cast, making identical weights produce different
         # rotations solely because the model was constructed on another device.
         target_device = positions.device
@@ -1266,18 +1272,19 @@ class RotaryPositionalEncoding(torch.nn.Module):
         freqs = torch.outer(positions_cpu, inv_freq_cpu)
         # Duplicate to align with `_rotate_half`: tail half mirrors the head half.
         emb = torch.cat((freqs, freqs), dim=-1)
-        cos = emb.cos().to(device=target_device, dtype=dtype)
-        sin = emb.sin().to(device=target_device, dtype=dtype)
-        if hasattr(self, 'cos'):
-            self.cos = cos
-            self.sin = sin
-        else:
-            self.register_buffer('cos', cos, persistent=False)
-            self.register_buffer('sin', sin, persistent=False)
+        return emb.cos().to(device=target_device, dtype=dtype), emb.sin().to(device=target_device, dtype=dtype)
+
+    def create_pe(self, positions, dtype):
+        """Rebuild the cos/sin buffers to cover ``positions`` (1D fp32 tensor), see ``_tables``."""
+        self.cos, self.sin = self._tables(positions, dtype)
 
     def extend_pe(self, length, device, dtype):
-        """Reset and extend the cos/sin buffers if needed."""
-        if hasattr(self, 'cos') and self.cos.size(0) >= length:
+        """Extend the cos/sin buffers when ``length`` exceeds them; they cover ``max_len`` from construction on.
+
+        A caller that extends them in a distributed training does so on every rank alike,
+        since the buffers are broadcast.
+        """
+        if self.cos.size(0) >= length:
             return
         positions = torch.arange(0, length, dtype=torch.float32, device=device)
         self.create_pe(positions=positions, dtype=dtype)

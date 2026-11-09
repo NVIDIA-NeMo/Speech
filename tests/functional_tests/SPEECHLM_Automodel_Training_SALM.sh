@@ -14,11 +14,13 @@
 # limitations under the License.
 set -e
 
-# Run training with SALMAutomodel
+# Run training with SALMAutomodel. The LLM is Qwen3 because Automodel's native Llama implementation has no generate().
 torchrun --nproc-per-node 1 --no-python \
   coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     examples/speechlm2/salm_train.py --config-name=salm_automodel \
-      model.pretrained_llm=/home/TestData/speechlm/pretrained_models/TinyLlama--TinyLlama_v1.1 \
+      model.pretrained_llm=/home/TestData/speechlm/pretrained_models/Qwen--Qwen3-1.7B \
+      model.prompt_format=qwen \
+      'model.audio_locator_tag="<|audioplaceholder|>"' \
       model.pretrained_asr=/home/TestData/speechlm/pretrained_models/canary-1b-flash.nemo \
       data.train_ds.input_cfg.0.cuts_path=/home/TestData/speechlm/lhotse/libri/librispeech_cuts_lower_train-clean-5.jsonl.gz \
       data.validation_ds.datasets.val_set_0.input_cfg.0.cuts_path=/home/TestData/speechlm/lhotse/libri/librispeech_cuts_lower_dev-clean-2.jsonl.gz \

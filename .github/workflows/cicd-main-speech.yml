@@ -153,7 +153,8 @@ jobs:
           - script: L0_Unit_Tests_CPU_ASR_1
             runner: ${{ inputs.runner }}
             cpu-only: true
-            timeout: 12
+            # The heaviest shard takes 11-12 minutes.
+            timeout: 15
           - script: L0_Unit_Tests_CPU_ASR_2
             runner: ${{ inputs.runner }}
             cpu-only: true

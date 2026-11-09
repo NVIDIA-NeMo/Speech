@@ -28,11 +28,20 @@ from nemo.utils.dtype import str_to_dtype
 from nemo.utils.nemo_logging import Logger as _Logger
 from nemo.utils.nemo_logging import LogMode as logging_mode
 
+try:
+    from nemo.utils.serialization import register_checkpoint_config_types
+except ModuleNotFoundError as error:
+    if error.name != 'omegaconf':
+        raise
+else:
+    register_checkpoint_config_types()
+
 logging = _Logger()
 try:
-    from nemo.utils.lightning_logger_patch import add_memory_handlers_to_pl_logger
+    from nemo.utils.lightning_logger_patch import add_memory_handlers_to_pl_logger, preserve_trainer_callback_defaults
 
     add_memory_handlers_to_pl_logger()
+    preserve_trainer_callback_defaults()
 except ModuleNotFoundError:
     pass
 

@@ -34,6 +34,7 @@ from nemo.collections.common.tokenizers.aggregate_tokenizer import AggregateToke
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.utils import logging
 from nemo.utils.enum import PrettyStrEnum
+from nemo.utils.serialization import register_checkpoint_schema_types
 
 try:
     import kenlm
@@ -1927,3 +1928,6 @@ class RNNTBPEDecodingConfig(RNNTDecodingConfig):
     """
 
     pass
+
+
+register_checkpoint_schema_types(RNNTDecodingConfig, RNNTBPEDecodingConfig)

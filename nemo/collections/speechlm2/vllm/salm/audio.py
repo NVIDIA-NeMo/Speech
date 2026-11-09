@@ -324,6 +324,7 @@ def _pad_to_vocab_size(tensor: torch.Tensor, target_vocab: int) -> torch.Tensor:
             target_vocab - tensor.shape[0],
             *tensor.shape[1:],
             dtype=tensor.dtype,
+            device=tensor.device,
         )
         tensor = torch.cat([tensor, pad], dim=0)
     return tensor

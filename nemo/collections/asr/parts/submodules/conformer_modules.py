@@ -32,8 +32,21 @@ from nemo.collections.asr.parts.submodules.packed_attention import PackedAttenti
 from nemo.collections.asr.parts.utils.activations import Swish
 from nemo.collections.common.parts.utils import ModuleBlock, activation_registry, block_binds, build_module
 from nemo.core.classes.mixins import AccessMixin
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
-__all__ = ['ConformerConvolution', 'ConformerFeedForward', 'ConformerLayer', 'build_self_attention']
+if TRITON_AVAILABLE:
+    from nemo.collections.asr.parts.triton.packed_depthwise_conv import (
+        PACKED_DEPTHWISE_CONV_DTYPES,
+        packed_depthwise_conv1d,
+    )
+
+__all__ = [
+    'ConformerConvolution',
+    'ConformerFeedForward',
+    'ConformerLayer',
+    'build_self_attention',
+    'packed_depthwise_conv_kernel_available',
+]
 
 
 def build_self_attention(
@@ -325,7 +338,7 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         x: torch.Tensor,
         *,
         attention_context: PackedAttentionContext,
-        conv_layout: PackedSlotLayout,
+        conv_layout: PackedSlotLayout | None = None,
         pos_emb: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """The layer over token-flat input of all utterances, with explicit boundaries instead of padding masks.
@@ -335,8 +348,9 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
 
         Args:
             x: input signals, shape ``(T_total, d_model)``.
-            attention_context: packing metadata for the self-attention.
-            conv_layout: gapped layout for the depthwise convolution, see ``ConformerConvolution.forward_packed``.
+            attention_context: packing metadata for the self-attention and the depthwise convolution.
+            conv_layout: gapped layout for the depthwise convolution where its Triton kernel does not run
+                (see ``ConformerConvolution.forward_packed``), None where it does.
             pos_emb: relative positional embedding ``(1, 2 * max_seqlen - 1, d_model)`` for ``rel_pos`` attention,
                 else None.
 
@@ -358,7 +372,7 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         residual = residual + self.dropout(x)
 
         x = self.norm_conv(residual)
-        x = self.conv.forward_packed(x, conv_layout)
+        x = self.conv.forward_packed(x, conv_layout, context=attention_context)
         residual = residual + self.dropout(x)
 
         x = self.norm_feed_forward2(residual)
@@ -366,6 +380,16 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         residual = residual + self.dropout(x) * self.fc_factor
 
         return self.norm_out(residual)
+
+
+def packed_depthwise_conv_kernel_available(x: torch.Tensor) -> bool:
+    """Whether the depthwise convolution of ``ConformerConvolution.forward_packed`` runs its Triton kernel for ``x``.
+
+    The kernel runs on CUDA with Triton installed, in float32, bfloat16 and float16
+    (:mod:`nemo.collections.asr.parts.triton.packed_depthwise_conv`); the encoder then builds no gapped layout.
+    Elsewhere the convolution runs over the gapped layout of the utterances.
+    """
+    return TRITON_AVAILABLE and x.is_cuda and x.dtype in PACKED_DEPTHWISE_CONV_DTYPES
 
 
 class ConformerConvolution(nn.Module):
@@ -506,9 +530,18 @@ class ConformerConvolution(nn.Module):
         else:
             return x, cache
 
-    def forward_packed(self, x: torch.Tensor, layout: PackedSlotLayout) -> torch.Tensor:
+    def forward_packed(
+        self,
+        x: torch.Tensor,
+        layout: PackedSlotLayout | None = None,
+        *,
+        context: PackedAttentionContext | None = None,
+    ) -> torch.Tensor:
         """The module over token-flat input of all utterances.
 
+        The depthwise convolution runs its Triton kernel over the token-flat rows, with the utterance boundaries
+        from ``context`` (see ``packed_depthwise_conv_kernel_available``); where the kernel does not run,
+        it runs over the gapped ``layout``, whose empty frames are the zero padding between the utterances.
         Batch normalization takes its statistics from the valid frames only.
         The padded forward includes the padded frames,
         which hold the bias and the boundary tails of the depthwise convolution,
@@ -521,7 +554,9 @@ class ConformerConvolution(nn.Module):
             x: input signals, shape ``(T_total, d_model)``.
             layout: gapped layout of the utterances with at least ``kernel_size - 1`` empty frames after each,
                 so the depthwise convolution reads zeros beyond an utterance,
-                as it does beyond the masked padding of a padded batch.
+                as it does beyond the masked padding of a padded batch; needed where the kernel does not run.
+            context: packing metadata of the batch (the utterance starts, lengths and the longest utterance),
+                which the kernel reads the boundaries from; needed where it runs.
 
         Returns:
             The module output, shape ``(T_total, d_model)``.
@@ -542,11 +577,31 @@ class ConformerConvolution(nn.Module):
             for parameter in self.depthwise_conv.parameters():
                 anchor = anchor + parameter.sum().to(anchor.dtype) * 0.0
             x = x + anchor
-        else:
+        elif context is not None and packed_depthwise_conv_kernel_available(x):
+            # the kernel over the token-flat rows;
+            # it is opaque to autocast, so the parameters take the activations' dtype here, as nn.Conv1d's would
+            conv = self.depthwise_conv
+            weight = conv.weight.squeeze(1).to(x.dtype)
+            bias = conv.bias.to(x.dtype) if conv.bias is not None else None
+            x = packed_depthwise_conv1d(
+                x,
+                weight,
+                bias,
+                context.seq_starts,
+                context.seq_lens,
+                context.max_seqlen,
+                pad_left=self.conv_context_size[0],
+            )
+        elif layout is not None:
             # one channel-first sequence over the gapped slots; the empty slots are the zero padding between utterances
             slots = layout.scatter(x).transpose(0, 1).unsqueeze(0)
             slots = self.depthwise_conv(slots)
             x = layout.gather(slots.squeeze(0).transpose(0, 1))
+        else:
+            raise ValueError(
+                "ConformerConvolution.forward_packed needs the gapped layout where the Triton depthwise convolution "
+                "kernel does not run (without Triton, on the CPU, or in float64)."
+            )
 
         x = self.batch_norm(x)
         x = self.activation(x)

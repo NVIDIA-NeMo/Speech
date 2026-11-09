@@ -34,7 +34,11 @@ from nemo.collections.asr.parts.packed_sequence import (
     packed_slot_layout,
 )
 from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D
-from nemo.collections.asr.parts.submodules.conformer_modules import ConformerLayer, build_self_attention
+from nemo.collections.asr.parts.submodules.conformer_modules import (
+    ConformerLayer,
+    build_self_attention,
+    packed_depthwise_conv_kernel_available,
+)
 from nemo.collections.asr.parts.submodules.multi_head_attention import (
     LocalAttRelPositionalEncoding,
     MultiHeadAttention,
@@ -878,8 +882,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
     ) -> PackedEncoderActivations:
         """Encode a batch with every activation token-flat, keeping the utterance boundaries explicit.
 
-        The subsampling and the depthwise convolutions run over gapped per-utterance slots
-        and the self-attention over all tokens with a block mask of the utterances, so no padded frame is computed.
+        The subsampling runs over gapped per-utterance slots, the depthwise convolutions over the token-flat rows
+        through a Triton kernel on CUDA (over gapped slots elsewhere), and the self-attention over all tokens
+        with the utterance boundaries, so no padded frame is computed.
         At the valid frames the result equals ``forward`` up to floating-point summation order,
         with one documented difference:
         batch normalization in the convolution modules takes its training statistics from the valid frames only,
@@ -982,9 +987,12 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             if self.pos_enc.dropout_emb:
                 pos_emb = self.pos_enc.dropout_emb(pos_emb)
 
-        # one gapped layout for all depthwise convolutions, wide enough for the largest kernel
-        conv_gap = max(layer.conv.kernel_size for layer in self.layers) - 1
-        conv_layout = packed_slot_layout(packed, gap=conv_gap)
+        # where their Triton kernel runs, the depthwise convolutions take the utterance boundaries from the context;
+        # elsewhere they run over one gapped layout, wide enough for the largest kernel
+        conv_layout = None
+        if not packed_depthwise_conv_kernel_available(x):
+            conv_gap = max(layer.conv.kernel_size for layer in self.layers) - 1
+            conv_layout = packed_slot_layout(packed, gap=conv_gap)
 
         for lth, (drop_prob, layer) in enumerate(zip(self.layer_drop_probs, self.layers)):
             original_signal = x

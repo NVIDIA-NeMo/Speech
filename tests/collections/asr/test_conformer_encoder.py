@@ -28,6 +28,7 @@ from nemo.collections.asr.parts.packed_sequence import (
     packed_slot_layout,
     unpack_encoder_output,
 )
+from nemo.collections.asr.parts.submodules import packed_attention as packed_attention_module
 from nemo.collections.asr.parts.submodules.conformer_modules import (
     ConformerConvolution,
     ConformerFeedForward,
@@ -38,6 +39,7 @@ from nemo.collections.asr.parts.submodules.multi_head_attention import (
     RelPositionMultiHeadAttention,
 )
 from nemo.collections.asr.parts.submodules.subsampling import ConvSubsampling
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
 
 class TestStochasticDepth:
@@ -829,7 +831,7 @@ class TestPackedConformerEncoderCuda:
     @pytest.mark.unit
     @pytest.mark.parametrize("self_attention_model", ["rel_pos", "abs_pos", "rope"])
     def test_bf16_autocast_matches_padded_outputs_and_gradients(self, self_attention_model):
-        """rel_pos runs FlexAttention with the position bias; abs_pos and rope run variable-length FlashAttention."""
+        """rel_pos runs the Triton kernel with the position term; abs_pos and rope run variable-length FlashAttention."""
         if self_attention_model != "rel_pos" and not self._half_precision_flash_attention_available():
             pytest.skip("requires a variable-length FlashAttention provider")
         torch.manual_seed(9)
@@ -868,8 +870,28 @@ class TestPackedConformerEncoderCuda:
         assert encoder.layers[0].self_attn.linear_q.weight.grad is not None
 
     @pytest.mark.unit
-    def test_attention_dropout_without_flash_attention_is_rejected(self):
-        """FlexAttention has no dropout: rel_pos attention, and abs_pos attention in float32, refuse dropout_att."""
+    @pytest.mark.skipif(not TRITON_AVAILABLE, reason="requires Triton")
+    def test_rel_pos_attention_dropout_runs_through_the_kernel(self):
+        """Attention dropout with rel_pos trains packed, in float32 and under bf16 autocast, without FlexAttention."""
+        torch.manual_seed(11)
+        encoder = _packed_encoder(self_attention_model="rel_pos", dropout_att=0.1, d_model=32, n_heads=2)
+        encoder = encoder.cuda().train()
+        lengths = torch.tensor([300, 7, 150], device="cuda")
+        features = _packed_test_features(lengths, dtype=torch.float32, device="cuda")
+        for autocast in (False, True):
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=autocast):
+                packed = encoder.forward_sequence_packed(features, lengths)
+            assert packed.data.shape == (int(packed.lengths.sum()), 32) and torch.isfinite(packed.data).all()
+            encoder.zero_grad()
+            packed.data.float().square().mean().backward()
+            assert encoder.layers[0].self_attn.linear_pos.weight.grad is not None
+            assert encoder.layers[0].self_attn.pos_bias_v.grad.abs().sum() > 0
+
+    @pytest.mark.unit
+    def test_attention_dropout_without_a_kernel_is_rejected(self, monkeypatch):
+        """FlexAttention has no dropout: rel_pos attention without Triton, and abs_pos attention in float32,
+        refuse dropout_att."""
+        monkeypatch.setattr(packed_attention_module, "TRITON_AVAILABLE", False)
         lengths = torch.tensor([30, 7], device="cuda")
         features = _packed_test_features(lengths, dtype=torch.float32, device="cuda")
         for self_attention_model in ("rel_pos", "abs_pos"):

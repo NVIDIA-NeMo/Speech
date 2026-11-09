@@ -954,8 +954,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 raise NotImplementedError(f"{type(pre_encode).__name__} has no sequence-packed form.")
 
         attention_context = PackedAttentionContext(packed)
-        # the relative-position table covers the padded length the attention kernels see
-        self.update_max_seq_length(seq_length=attention_context.padded_max_seqlen, device=packed.data.device)
+        # the relative-position table covers the length the attention backend reads:
+        # the longest utterance for the Triton kernel, the rounded kernel shape for FlexAttention
+        self.update_max_seq_length(seq_length=attention_context.rel_pos_max_seqlen, device=packed.data.device)
         x = packed.data
         if self.self_attention_model == 'rope':
             if self.xscale:
@@ -974,10 +975,10 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             if self.pos_enc.xscale:
                 x = x * self.pos_enc.xscale
             x = self.pos_enc.dropout(x)
-            # the relative positions L - 1 down to -(L - 1) for the padded length L, as RelPositionalEncoding.forward
+            # the relative positions L - 1 down to -(L - 1) for the table length L, as RelPositionalEncoding.forward
             center_pos = self.pos_enc.pe.size(1) // 2 + 1
-            padded_len = attention_context.padded_max_seqlen
-            pos_emb = self.pos_enc.pe[:, center_pos - padded_len : center_pos + padded_len - 1]
+            table_len = attention_context.rel_pos_max_seqlen
+            pos_emb = self.pos_enc.pe[:, center_pos - table_len : center_pos + table_len - 1]
             if self.pos_enc.dropout_emb:
                 pos_emb = self.pos_enc.dropout_emb(pos_emb)
 

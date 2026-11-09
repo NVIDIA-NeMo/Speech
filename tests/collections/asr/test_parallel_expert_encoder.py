@@ -42,6 +42,7 @@ from nemo.collections.asr.modules.parallel_expert_encoder import (
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 from nemo.collections.asr.parts.packed_sequence import pack_encoder_output, unpack_encoder_output
 from nemo.collections.asr.parts.preprocessing.features import normalize_batch, normalize_packed_batch
+from nemo.collections.asr.parts.submodules import packed_attention as packed_attention_module
 from nemo.collections.common.parts.optional_cuda_graphs import capture_cuda_graph
 from nemo.collections.speechlm2.parts import ctc_timestamp_utils
 from nemo.collections.speechlm2.parts.ctc_timestamp_utils import (
@@ -53,6 +54,7 @@ from nemo.collections.speechlm2.parts.ctc_timestamp_utils import (
     get_ctc_timestamp_aligner,
     merge_prepared_batches,
 )
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 from tests.collections.asr.ctc_timestamp_test_utils import search_streams
 
 # ``@experimental`` wraps the class in a wrapt proxy, so ``__new__`` (used to build
@@ -1998,9 +2000,9 @@ def test_fastconformer_asr_branch_runs_packed_in_training_mode(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.run_only_on("GPU")
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="PEE GPU test requires CUDA")
-def test_fastconformer_asr_branch_rejects_attention_dropout_in_packed_training_on_gpu():
-    """rel_pos attention runs FlexAttention on CUDA, which has no dropout; the error names the encoder option."""
-    # FlexAttention lowers head dimensions of at least 16: two heads over the 32-wide toy encoders
+def test_fastconformer_asr_branch_attention_dropout_in_packed_training_on_gpu(monkeypatch):
+    """rel_pos attention with dropout runs its Triton kernel; without Triton the error names the encoder option."""
+    # two heads over the 32-wide toy encoders: head dimension 16
     asr_encoder_cfg = toy_asr_encoder_cfg()
     asr_encoder_cfg.n_heads = 2
     asr_encoder_cfg.dropout_att = 0.1
@@ -2011,6 +2013,10 @@ def test_fastconformer_asr_branch_rejects_attention_dropout_in_packed_training_o
     lengths = torch.tensor([80, 53], device="cuda")
     mels = torch.randn(2, _MEL_FEATURES, 80, device="cuda")
     targets = torch.ones(2, 10, _N_SPK, device="cuda")  # external speaker targets: Sortformer is skipped
+    if TRITON_AVAILABLE:
+        packed = encoder.forward_sequence_packed(mels, lengths, spk_targets=targets)
+        assert packed.data.shape[0] == int(packed.lengths.sum()) and torch.isfinite(packed.data).all()
+    monkeypatch.setattr(packed_attention_module, "TRITON_AVAILABLE", False)
     with pytest.raises(NotImplementedError, match="dropout_att"):
         encoder.forward_sequence_packed(mels, lengths, spk_targets=targets)
 

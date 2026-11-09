@@ -223,7 +223,7 @@ class MultiHeadAttention(nn.Module):
         Args:
             x: layer input of all utterances, shape ``(T_total, n_feat)``.
             context: packing metadata of the batch.
-            pos_emb: relative positional embedding ``(1, 2 * max_seqlen - 1, n_feat)``,
+            pos_emb: relative positional embedding ``(1, 2 * context.rel_pos_max_seqlen - 1, n_feat)``,
                 used by the Transformer-XL subclass only.
 
         Returns:
@@ -237,13 +237,14 @@ class MultiHeadAttention(nn.Module):
             k = self.linear_k(x).view(-1, self.h, self.d_k)
             v = self.linear_v(x).view(-1, self.h, self.d_k)
             q, k = self._apply_packed_pos_emb(q, k, context)
-            q, rel_pos_bias = self._packed_rel_pos_terms(q, pos_emb)
+            q, pos_query, pos_emb = self._packed_rel_pos_terms(q, pos_emb)
             out = packed_attention(
                 q,
                 k,
                 v,
                 context,
-                rel_pos_bias=rel_pos_bias,
+                pos_query=pos_query,
+                pos_emb=pos_emb,
                 dropout_p=self.dropout_rate if self.training else 0.0,
             )
             return self.linear_out(out.reshape(-1, self.h * self.d_k))
@@ -256,9 +257,9 @@ class MultiHeadAttention(nn.Module):
 
     def _packed_rel_pos_terms(
         self, q: torch.Tensor, pos_emb: torch.Tensor | None
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        """Hook for the Transformer-XL subclass: the query with its content bias and the position bias, or None."""
-        return q, None
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+        """Hook for the Transformer-XL subclass: the query with its content bias and the two position-term factors."""
+        return q, None, None
 
     def update_cache(self, key, value, query, cache):
         if cache is not None:
@@ -418,20 +419,20 @@ class RelPositionMultiHeadAttention(MultiHeadAttention):
 
     def _packed_rel_pos_terms(
         self, q: torch.Tensor, pos_emb: torch.Tensor | None
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        """Matrix (c) folded into the query and matrices (b) + (d) as a bias over relative positions.
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+        """Matrix (c) folded into the query, and the factors of matrices (b) + (d).
 
-        The bias has shape (T_total, head, 2 * max_seqlen - 1);
-        entry ``max_seqlen - 1 - (i - j)`` of the last axis is the term of query position i and key position j,
+        The position query ``(T_total, head, d_k)`` and the projected embedding ``(R, head, d_k)`` form the bias
+        over relative positions inside the attention kernel;
+        its entry ``(R - 1) / 2 - (i - j)`` is the term of query position i and key position j,
         which is what ``rel_shift`` selects in the padded forward.
         """
         if pos_emb is None:
             raise ValueError("Transformer-XL attention over packed sequences needs pos_emb.")
-        p = self.linear_pos(pos_emb).view(-1, self.h, self.d_k)  # (2 * max_seqlen - 1, head, d_k)
+        p = self.linear_pos(pos_emb).view(-1, self.h, self.d_k)  # (R, head, d_k)
         bias_u = self.pos_bias_u.to(q.dtype)
         bias_v = self.pos_bias_v.to(q.dtype)
-        rel_pos_bias = torch.einsum('thd,phd->thp', q + bias_v, p)
-        return q + bias_u, rel_pos_bias
+        return q + bias_u, q + bias_v, p
 
 
 class RelPositionMultiHeadAttentionLongformer(RelPositionMultiHeadAttention):

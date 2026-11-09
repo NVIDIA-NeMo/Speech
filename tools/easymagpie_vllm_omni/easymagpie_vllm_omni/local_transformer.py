@@ -15,9 +15,13 @@
 """Autoregressive intra-frame codebook predictor for EasyMagpieTTS."""
 from __future__ import annotations
 
+import os
+
 import torch
+from easymagpie_vllm_omni.cfg import CFGOptions, guided_logits
 from easymagpie_vllm_omni.config import EasyMagpieOmniArch
 from torch import nn
+from vllm.compilation.backends import set_model_tag
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import VllmConfig
 
@@ -210,6 +214,58 @@ class EasyMagpieCodeLoop(nn.Module):
         return torch.stack(codes, dim=1)
 
 
+@support_torch_compile(dynamic_arg_dims={"conditional": 0, "unconditional": 0, "gumbel_noise": 0, "scales": 0})
+class EasyMagpieCFGCodeLoop(nn.Module):
+    """One compiled loop, batched branches, one shared sample per codebook."""
+
+    def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
+        super().__init__()
+        self._predictor_ref: tuple = ()
+        self.trace = bool(os.environ.get('EASYMAGPIE_CFG_TRACE_PATH'))
+
+    def bind_predictor(self, predictor: 'EasyMagpieCodePredictor') -> None:
+        self._predictor_ref = (predictor,)
+
+    def forward(self, conditional, unconditional, gumbel_noise, temperature, scales):
+        cp = self._predictor_ref[0]
+        batch = conditional.shape[0]
+        n = cp.num_codebooks
+        buf = conditional.new_zeros(2 * batch, n, cp.lt_hidden)
+        buf[:, 0, :] = cp.local_transformer_in_projection(torch.cat((conditional, unconditional), dim=0))
+        codes = []
+        diagnostics = conditional.new_zeros(batch, 3, dtype=torch.float32)
+        for k in range(n):
+            # The expensive transformer and projection run ONCE over both branches.
+            hidden = cp.local_transformer(buf)
+            row = cp.local_transformer_audio_out_projection(hidden[:, k, :])
+            logits = cp.local_transformer_out_projections[k](row)
+            cond, uncond = logits[:batch], logits[batch:]
+            guided = guided_logits(cond, uncond, scales)
+            if self.trace and k == 0:
+                diagnostics = torch.stack(
+                    (
+                        (cond.float() - uncond.float()).abs().amax(-1),
+                        (guided - cond.float()).abs().amax(-1),
+                        (guided.argmax(-1) != cond.argmax(-1)).float(),
+                    ),
+                    dim=-1,
+                )
+            # Mix before masking: multiplying -inf by a zero/negative CFG weight
+            # would otherwise create NaNs or unmask forbidden special tokens.
+            guided = guided.masked_fill(cp.forbidden_mask, float('-inf')) / temperature
+            values, indices = torch.topk(guided, cp._sample_top_k, dim=-1)
+            selected = (values + gumbel_noise[:, k, :]).argmax(-1, keepdim=True)
+            code = indices.gather(-1, selected).squeeze(-1)
+            codes.append(code)
+            if k + 1 < n:
+                embedding = cp.local_transformer_in_projection(cp.audio_in_projection(cp.audio_embeddings[k](code)))
+                # Both branches consume the SAME guided sample, never independently
+                # sampled audio histories (the native NeMo CFG contract).
+                buf[:batch, k + 1, :] = embedding
+                buf[batch:, k + 1, :] = embedding
+        return torch.stack(codes, dim=1), diagnostics
+
+
 class EasyMagpieCodePredictor(nn.Module):
     """Predict all stacked audio codebooks from each backbone hidden state."""
 
@@ -287,6 +343,29 @@ class EasyMagpieCodePredictor(nn.Module):
         # so the small ``-log(-log(u))`` values don't underflow in fp16.
         self._gumbel_buf = torch.zeros(max_num_tokens, self.num_codebooks, self._sample_top_k, dtype=torch.float32)
         self._temperature_buf = torch.zeros(1, dtype=torch.float32)
+        self._cfg_unconditional_buf = torch.zeros(max_num_tokens, self.embedding_dim, dtype=dtype)
+        self._cfg_scales_buf = torch.zeros(max_num_tokens, 1, dtype=torch.float32)
+        # vLLM's AOT cache keys use the model tag. The existing three-input
+        # sampler and five-input CFG sampler must never share an AOT artifact.
+        cfg_tag = (
+            'local_transformer_cfg_trace' if os.environ.get('EASYMAGPIE_CFG_TRACE_PATH') else 'local_transformer_cfg'
+        )
+        with set_model_tag(cfg_tag):
+            self._cfg_code_loop = EasyMagpieCFGCodeLoop(vllm_config=vllm_config, prefix=f"{prefix}.cfg_code_loop")
+        self._cfg_code_loop.bind_predictor(self)
+        self._cfg_loop_forward = (self._cfg_code_loop,)
+        mode = getattr(vllm_config.compilation_config, 'cudagraph_mode', None)
+        if (
+            CFGOptions.from_hf_config(vllm_config.model_config.hf_config).enabled
+            and mode is not None
+            and mode.has_full_cudagraphs()
+        ):
+            from vllm.compilation.cuda_graph import CUDAGraphWrapper
+            from vllm.config import CUDAGraphMode
+
+            self._cfg_loop_forward = (
+                CUDAGraphWrapper(self._cfg_code_loop, vllm_config, runtime_mode=CUDAGraphMode.FULL),
+            )
 
     @torch.no_grad()
     def init_forbidden_mask(self) -> None:
@@ -353,3 +432,36 @@ class EasyMagpieCodePredictor(nn.Module):
 
         self._temperature_buf.fill_(max(float(self.temperature), _MIN_SAMPLING_TEMPERATURE))
         return self._code_loop(in_buf, noise, self._temperature_buf)
+
+    @torch.no_grad()
+    def generate_codes_cfg(
+        self,
+        conditional: torch.Tensor,
+        unconditional: torch.Tensor,
+        scales: torch.Tensor,
+        *,
+        padded_batch: int | None = None,
+    ):
+        """Run paired CFG without duplicating weights or sampling two audio streams."""
+        batch = conditional.shape[0]
+        padded_batch = batch if padded_batch is None else padded_batch
+        if padded_batch < batch:
+            raise ValueError('CFG graph batch cannot be smaller than the real logical batch')
+        conditional_buf = self._dec_hidden_buf[:padded_batch]
+        unconditional_buf = self._cfg_unconditional_buf[:padded_batch]
+        conditional_buf[:batch].copy_(conditional)
+        unconditional_buf[:batch].copy_(unconditional)
+        scale_buf = self._cfg_scales_buf[:padded_batch]
+        scale_buf[:batch].copy_(scales.reshape(batch, 1))
+        if padded_batch > batch:
+            conditional_buf[batch:].zero_()
+            unconditional_buf[batch:].zero_()
+            scale_buf[batch:] = 1.0
+        noise = self._gumbel_buf[:padded_batch]
+        noise.uniform_(1e-20, 1.0 - 1e-20)
+        noise.log_().neg_().log_().neg_()
+        self._temperature_buf.fill_(max(float(self.temperature), _MIN_SAMPLING_TEMPERATURE))
+        codes, diagnostics = self._cfg_loop_forward[0](
+            conditional_buf, unconditional_buf, noise, self._temperature_buf, scale_buf
+        )
+        return codes[:batch], diagnostics[:batch]

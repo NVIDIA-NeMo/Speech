@@ -22,6 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable
 
+from easymagpie_vllm_omni.cfg import CFGOptions
 from easymagpie_vllm_omni.config import EasyMagpieOmniArch
 from easymagpie_vllm_omni.tokenizer import EasyMagpieTextTokenizer
 
@@ -144,6 +145,16 @@ def _build_adapter_cls() -> type:
             extra = request.extra_params
             if extra is not None and not isinstance(extra, dict):
                 return "extra_params must be a JSON object/dict"
+            try:
+                options = self._cfg_options()
+                if extra and 'cfg_scale' in extra:
+                    if not options.enabled:
+                        return 'cfg_scale requires the EasyMagpie CFG deployment; CFG is disabled on this server'
+                    options.resolve_scale(extra['cfg_scale'])
+                if options.enabled and request.ref_audio is not None:
+                    return 'CFG currently requires a known voice; raw reference audio is unsupported'
+            except ValueError as error:
+                return str(error)
             ref_audio = request.ref_audio
             if ref_audio is None:
                 return None
@@ -168,6 +179,12 @@ def _build_adapter_cls() -> type:
         ) -> "PreparedRequest":
             del sampling_params_list, has_inline_ref_audio
             extra = request.extra_params or {}
+            cfg_options = self._cfg_options()
+            cfg_scale = extra.get('cfg_scale')
+            if cfg_scale is not None and not cfg_options.enabled:
+                raise ValueError('cfg_scale requires the EasyMagpie CFG deployment; CFG is disabled on this server')
+            if cfg_scale is not None:
+                cfg_scale = cfg_options.resolve_scale(cfg_scale)
             text_eos_id, text_prefill_num = self._text_stream_metadata()
             text_tokens = self._model_tokenizer().encode(request.input, add_special_tokens=False)
             text_tokens.append(text_eos_id)
@@ -183,6 +200,10 @@ def _build_adapter_cls() -> type:
                 },
             }
             ref_audio = request.ref_audio
+            if cfg_options.enabled:
+                if ref_audio is not None:
+                    raise ValueError('CFG currently requires a known voice; raw reference audio is unsupported')
+                prompt['additional_information']['cfg_scale'] = cfg_options.resolve_scale(cfg_scale)
             if ref_audio is None:
                 speaker_id = (request.voice or _DEFAULT_SPEAKER).strip()
                 prompt["prompt_token_ids"] = [0] * (self._prompt_len(speaker_id) + text_prefill_num)
@@ -207,6 +228,8 @@ def _build_adapter_cls() -> type:
 
         def build_streaming_spec(self, request: OpenAICreateSpeechRequest) -> EasyMagpieStreamingSpec:
             """Build the speaker prefill and tokenizer metadata without complete text."""
+            if self._cfg_options().enabled:
+                raise ValueError('CFG currently requires whole-text input; incremental text sessions are unsupported')
             speaker_id = (request.voice or _DEFAULT_SPEAKER).strip()
             model_path = Path(self._model_path())
             text_eos_id, text_prefill_num = self._text_stream_metadata()
@@ -233,6 +256,27 @@ def _build_adapter_cls() -> type:
                 sample_rate=sample_rate,
                 text_prefill_num=text_prefill_num,
             )
+
+        def _cfg_options(self) -> CFGOptions:
+            cfg_config = {}
+            engine_client = getattr(self.ctx, 'engine_client', None)
+            hf_config = getattr(getattr(engine_client, 'model_config', None), 'hf_config', None)
+            for name in ('easymagpie_cfg', 'easymagpie_cfg_scale', 'easymagpie_cfg_max_prefill_tokens'):
+                value = getattr(hf_config, name, None)
+                if value is not None:
+                    cfg_config[name] = value
+            for stage in getattr(engine_client, 'stage_configs', None) or []:
+                engine_args = (
+                    stage.get('engine_args', {}) if isinstance(stage, dict) else getattr(stage, 'engine_args', None)
+                )
+                overrides = (
+                    engine_args.get('hf_overrides')
+                    if isinstance(engine_args, dict)
+                    else getattr(engine_args, 'hf_overrides', None)
+                )
+                if isinstance(overrides, dict):
+                    cfg_config.update(overrides)
+            return CFGOptions.from_hf_config(SimpleNamespace(**cfg_config))
 
     return EasyMagpieTTSAdapter
 

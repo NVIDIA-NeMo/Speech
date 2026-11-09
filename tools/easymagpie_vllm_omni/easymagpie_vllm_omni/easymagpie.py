@@ -39,6 +39,7 @@ from easymagpie_vllm_omni.backbone_patches import (
     patch_moe_routed_scale,
     patch_shared_expert_activation,
 )
+from easymagpie_vllm_omni.cfg_model import CFGModelMixin
 from easymagpie_vllm_omni.codec.encoder import EasyMagpieCodecEncoder
 from easymagpie_vllm_omni.codec.encoder_config import EasyMagpieCodecEncoderConfig
 from easymagpie_vllm_omni.config import EasyMagpieOmniArch
@@ -121,6 +122,7 @@ _DEFAULT_CONTEXT_TEXT = "[EN]"
     dummy_inputs=EasyMagpieDummyInputsBuilder,
 )
 class EasyMagpieTTSForConditionalGeneration(
+    CFGModelMixin,
     nn.Module,
     HasInnerState,
     IsHybrid,
@@ -316,6 +318,7 @@ class EasyMagpieTTSForConditionalGeneration(
         # for that combo (see :meth:`_load_known_speaker_embedding`), then never
         # again. Raw-reference embeddings are owned by vLLM's multimodal cache.
         self._prefill_cache: dict[tuple, torch.Tensor] = {}
+        self._init_cfg(vllm_config)
 
     # ------------------------------------------------------------------
     # Embedding helpers
@@ -589,6 +592,8 @@ class EasyMagpieTTSForConditionalGeneration(
         per-token buffers, run the backbone, then sample the codebooks with the
         local transformer (skipping prefill positions).
         """
+        if self._cfg_enabled:
+            return self._forward_cfg(input_ids, positions, intermediate_tensors, inputs_embeds, **kwargs)
         num_tokens = input_ids.shape[0]
         combined = self._combined_embeddings[:num_tokens]
         if inputs_embeds is not None:
@@ -675,12 +680,16 @@ class EasyMagpieTTSForConditionalGeneration(
 
         # Text: current subword token (gated by validity).
         text_emb = self.text_embedding(self._dec_text_tokens[idx])
+        if self._cfg_enabled:
+            text_emb = text_emb * self._cfg_conditional_mask[idx].unsqueeze(-1).to(text_emb.dtype)
         text_emb = text_emb * self._dec_text_mask[idx].unsqueeze(-1).to(text_emb.dtype)
         combined[idx] += text_emb
 
         # Phoneme: previous predicted phoneme (gated by validity).
         if self.has_phoneme:
             phon_emb = self._embed_phoneme(self._dec_phoneme_tokens[idx])
+            if self._cfg_enabled:
+                phon_emb = phon_emb * self._cfg_conditional_mask[idx].unsqueeze(-1).to(phon_emb.dtype)
             phon_emb = phon_emb * self._dec_phoneme_valid[idx].unsqueeze(-1).to(phon_emb.dtype)
             combined[idx] += phon_emb
 
@@ -810,6 +819,7 @@ class EasyMagpieTTSForConditionalGeneration(
 
         device = input_ids.device
         span_len = int(input_ids.shape[0])
+        self._register_cfg_query(input_ids, info_dict, start)
         if span_len <= 0:
             base = input_embeds if input_embeds is not None else self.embed_input_ids(input_ids)
             return input_ids, base, {}
@@ -944,6 +954,7 @@ class EasyMagpieTTSForConditionalGeneration(
                 )
                 decode_offset = int(info_dict.get("text_prefill_num", 0) or 0)
 
+        take = self._mask_cfg_prefill(take, conditioning_len, offset, info_dict)
         info_update: dict[str, Any] = {"decode_offset": decode_offset}
         if uses_raw_reference and conditioning_len > 0:
             info_update.update(

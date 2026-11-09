@@ -15,6 +15,65 @@ Model definition and pipeline registration live in
 [`vllm_plugin_easymagpie_omni/`](vllm_plugin_easymagpie_omni/).
 Deployment knobs are in [`deploy/easymagpie.yaml`](deploy/easymagpie.yaml).
 
+### Classifier-free guidance (CFG)
+
+For checkpoints that need runtime guidance, use
+[`deploy/easymagpie_cfg.yaml`](deploy/easymagpie_cfg.yaml). The default scale is
+**2.5**, with the native NeMo convention
+`logits = scale * conditional + (1 - scale) * unconditional`.
+CFG is opt-in; the existing deployment keeps its original sampling path.
+This is inference guidance and does not train or distill a checkpoint.
+
+```bash
+export VLLM_PLUGINS=easymagpie_omni
+export CFG_SCALE=2.5
+vllm serve /path/to/converted_model \
+  --deploy-config deploy/easymagpie_cfg.yaml \
+  --trust-remote-code --omni --host 127.0.0.1 --port 8091
+```
+
+Whole-text HTTP requests select a known `voice`. Override the scale per request
+with `extra_params={"cfg_scale": 2.5, "temperature": 0.7, "top_k": 80}`.
+Scale 1 is a useful identity control but still evaluates both branches in a CFG
+deployment; use the original deployment to measure the CFG-off baseline.
+Current CFG supports single-turn whole-text synthesis with precomputed speaker
+embeddings. Raw reference/user audio and incremental text sessions are rejected.
+
+Both branches share one model and run in the same backbone batch with independent
+native KV/Mamba state. The local transformer also batches both branches for each
+codebook, combines finite logits before masking/top-k, and samples once. That
+sample is fed back to both branches. Phonemes are predicted from the conditional
+branch. The unconditional branch replaces context conditioning with `CFG_UNK`
+and removes text/phoneme inputs, matching native NeMo CFG.
+
+The CFG deployment has 16 physical sequence slots, allowing eight concurrent
+speech requests. Chunked prefill and prefix caching are disabled; the scheduler
+checks token and KV budgets to keep pairs together. Reduce `max_num_seqs` or
+`max_model_len` if the GPU cannot reserve enough native cache pages. Increase
+`easymagpie_cfg_max_prefill_tokens` and the matching batch-token budget together
+for longer conditioning prefixes.
+
+For activation verification, set `EASYMAGPIE_CFG_TRACE_PATH` to a writable JSONL
+path before starting the service. Each request records the first actual acoustic
+frame's branch-logit difference and the change caused by guidance. Disable tracing
+for performance measurements: diagnostics include GPU synchronization.
+
+[`scripts/benchmark_cfg.py`](scripts/benchmark_cfg.py) launches the two deployments
+sequentially on the same GPU, saves exact input text and greedy comparison WAVs
+(off, CFG scale 1, and CFG scale 2.5), then measures warm steady-state throughput
+at concurrency 1 and 4 with temperature 0.7. Inputs are ordinary JSONL records
+containing unique `id` and `text` fields, so additional datasets need no model changes.
+
+```bash
+python scripts/benchmark_cfg.py \
+  --model /path/to/converted_model --voice eng \
+  --inputs comparison.jsonl --output /path/to/results \
+  --sample-temperature 0.7
+```
+
+`--sample-temperature` applies equally to CFG-off and CFG-on comparison audio.
+Its default is 0 for controlled comparisons; use 0.7 to match normal sampling.
+
 ### Convert a NeMo checkpoint
 
 This step converts the EasyMagpie LM, precomputes the text-embedding lookup,

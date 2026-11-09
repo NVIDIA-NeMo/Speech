@@ -7118,6 +7118,7 @@ test = [
     { name = "pytest-mock" },
     { name = "pytest-runner" },
     { name = "pytest-shard" },
+    { name = "pytest-timeout" },
     { name = "starlette", version = "1.0.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux' or (extra == 'extra-12-nemo-toolkit-all' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu13' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2-only' and extra == 'extra-12-nemo-toolkit-vllm')" },
     { name = "starlette", version = "1.6.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux' or (extra == 'extra-12-nemo-toolkit-all' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu13' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2-only' and extra == 'extra-12-nemo-toolkit-vllm')" },
     { name = "wandb" },
@@ -7409,6 +7410,7 @@ test = [
     { name = "pytest-mock" },
     { name = "pytest-runner" },
     { name = "pytest-shard" },
+    { name = "pytest-timeout" },
     { name = "starlette" },
     { name = "wandb" },
     { name = "wrapt" },
@@ -11459,6 +11461,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c6/ca/3efa6f3b84dab83220db45997e785be726684c2c2c4267bffb7d80101c7f/pytest-shard-0.1.2.tar.gz", hash = "sha256:b86a967fbfd1c8e50295095ccda031b7e890862ee06531d5142844f4c1d1cd67", size = 3579, upload-time = "2020-12-11T19:52:55.083Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/65/7a/dbeb4c54e9fc3b59622f410091365f354a69cda1af10c3b83ac0ca6e6f4f/pytest_shard-0.1.2-py3-none-any.whl", hash = "sha256:407a1df385cebe1feb9b4d2e7eeee8b044f8a24f0919421233159a17c59be2b9", size = 4608, upload-time = "2020-12-11T19:52:54.226Z" },
+]
+
+[[package]]
+name = "pytest-timeout"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ac/82/4c9ecabab13363e72d880f2fb504c5f750433b2b6f16e99f4ec21ada284c/pytest_timeout-2.4.0.tar.gz", hash = "sha256:7e68e90b01f9eff71332b25001f85c75495fc4e3a836701876183c4bcfd0540a", size = 17973, upload-time = "2025-05-05T19:44:34.99Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fa/b6/3127540ecdf1464a00e5a01ee60a1b09175f6913f0644ac748494d9c4b21/pytest_timeout-2.4.0-py3-none-any.whl", hash = "sha256:c42667e5cdadb151aeb5b26d114aff6bdf5a907f176a007a30b940d3d865b5c2", size = 14382, upload-time = "2025-05-05T19:44:33.502Z" },
 ]
 
 [[package]]

@@ -30,6 +30,10 @@ from nemo.collections.speechlm2.models.salm_asr_decoder import SALMWithAsrDecode
 if torch.cuda.is_available():
     torch.set_default_device('cuda')
 
+# A TinyLlama training or generation step usually takes under a minute on a CPU runner but has exceeded 300 s on
+# busy ones.
+pytestmark = pytest.mark.timeout(600)
+
 
 def resolve_pretrained_models():
     if os.path.exists("/home/TestData/speechlm/pretrained_models"):

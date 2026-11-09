@@ -268,7 +268,7 @@ jobs:
       container-image: ${{ needs.cicd-test-container-build.outputs.image }}
 
   cicd-main-speech:
-    needs: [pre-flight, configure, cicd-test-container-build, cicd-main-unit-tests]
+    needs: [pre-flight, configure, cicd-test-container-build]
     uses: ./.github/workflows/cicd-main-speech.yml
     if: |
       (
@@ -289,6 +289,7 @@ jobs:
       test_to_run: ${{ needs.configure.outputs.test_to_run }}
       runner: ${{ startsWith(needs.pre-flight.outputs.runner_prefix, 'ephe-v2-') && format('{0}-a{1}', needs.pre-flight.outputs.runner_prefix, github.run_attempt) || needs.pre-flight.outputs.runner_prefix }}
       run_nightly: ${{ needs.configure.outputs.run_nightly }}
+      container-image: ${{ needs.cicd-test-container-build.outputs.image }}
 
   Nemo_CICD_Test:
     needs:

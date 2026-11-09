@@ -71,6 +71,10 @@ Replace `path/to/relevant_tests` with the test directory to run such as `tests/c
 that begin with `L0_Unit_Tests_` for the specific test configuration used by different parts of the unit test suite. Different suites may expect
 different environment variables to be set.
 
+Each test has a 300-second timeout, set through `pytest-timeout` in `[tool.pytest.ini_options]` in `pyproject.toml`. A test that hangs or
+runs longer fails on its own instead of exhausting the CI job timeout. Keep unit tests far below this limit. Put long-running checks, such as
+inference with a large released checkpoint, behind `@pytest.mark.run_only_on('GPU')` or in a functional test.
+
 ## Running the Github CI
 
 CI is powered by [copy-pr-bot](https://github.com/apps/copy-pr-bot), which mirrors each PR to a `pull-request/<number>` branch and triggers the workflow on push.

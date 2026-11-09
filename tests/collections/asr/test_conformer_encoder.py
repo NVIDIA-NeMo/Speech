@@ -20,10 +20,12 @@ import pytest
 import torch
 from omegaconf import DictConfig, OmegaConf
 
+from nemo.collections.asr.modules import conformer_encoder as conformer_encoder_module
 from nemo.collections.asr.modules import transformer_encoder_utils
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
 from nemo.collections.asr.parts.packed_sequence import (
     PackedEncoderActivations,
+    PackedSlotLayout,
     pack_encoder_output,
     packed_slot_layout,
     unpack_encoder_output,
@@ -33,6 +35,7 @@ from nemo.collections.asr.parts.submodules.conformer_modules import (
     ConformerConvolution,
     ConformerFeedForward,
     ConformerLayer,
+    packed_depthwise_conv_kernel_available,
 )
 from nemo.collections.asr.parts.submodules.multi_head_attention import (
     MultiHeadAttention,
@@ -532,6 +535,10 @@ def _valid_frames(padded_bdt, lengths):
     return padded[mask]
 
 
+def _fail(*args, **kwargs):
+    raise AssertionError("this path must not run")
+
+
 class TestPackedConformerConvolution:
     @pytest.mark.unit
     @pytest.mark.parametrize("kernel_size", [4, 31])
@@ -550,6 +557,54 @@ class TestPackedConformerConvolution:
         padded_out[valid].square().sum().backward()
         packed_out.square().sum().backward()
         torch.testing.assert_close(packed_in.grad[valid], padded_in.grad[valid])
+
+    @pytest.mark.unit
+    @pytest.mark.skipif(not (torch.cuda.is_available() and TRITON_AVAILABLE), reason="requires CUDA and Triton")
+    @pytest.mark.parametrize("autocast", [False, True])
+    def test_kernel_matches_padded_without_a_gapped_copy(self, monkeypatch, autocast):
+        """On CUDA with Triton the depthwise convolution runs the kernel over the token-flat rows:
+        no slot layout is needed, no padded or gapped tensor forms,
+        and the outputs and all gradients match the padded module (in float64) at the valid frames."""
+        torch.manual_seed(2)
+        module = ConformerConvolution(d_model=24, kernel_size=32).cuda().eval()
+        reference = copy.deepcopy(module).double()
+        lengths = torch.tensor([9, 2, 40, 0, 1], device="cuda")
+        padded_in = torch.randn(5, 40, 24, device="cuda", dtype=torch.float64, requires_grad=True)
+        valid = torch.arange(40, device="cuda")[None, :] < lengths[:, None]
+        padded_out = reference(padded_in, pad_mask=~valid)
+        padded_out[valid].square().sum().backward()
+
+        packed_in = padded_in.detach().float().clone().requires_grad_()
+        packed = pack_encoder_output(packed_in, lengths)
+        context = packed_attention_module.PackedAttentionContext(packed)
+        assert packed_depthwise_conv_kernel_available(packed.data)
+        monkeypatch.setattr(PackedSlotLayout, "scatter", _fail)
+        monkeypatch.setattr(torch.nn.functional, "pad", _fail)
+        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=autocast):
+            packed_out = module.forward_packed(packed.data, context=context)
+        packed_out.float().square().sum().backward()
+        tolerance = dict(rtol=3e-2, atol=3e-2) if autocast else dict(rtol=1e-4, atol=1e-4)
+        torch.testing.assert_close(packed_out.float(), padded_out[valid].float(), **tolerance)
+        torch.testing.assert_close(packed_in.grad[valid], padded_in.grad[valid].float(), **tolerance)
+        reference_grads = dict(reference.named_parameters())
+        for name, parameter in module.named_parameters():
+            torch.testing.assert_close(parameter.grad, reference_grads[name].grad.float(), msg=name, **tolerance)
+
+    @pytest.mark.unit
+    def test_without_the_kernel_the_gapped_layout_is_required(self):
+        """Where the kernel does not run (here: float64 on the CPU) the module needs the gapped layout
+        and ignores the context."""
+        torch.manual_seed(3)
+        module = ConformerConvolution(d_model=6, kernel_size=4).double().eval()
+        lengths = torch.tensor([3, 5])
+        packed = pack_encoder_output(torch.randn(2, 5, 6, dtype=torch.float64), lengths)
+        context = packed_attention_module.PackedAttentionContext(packed)
+        with pytest.raises(ValueError, match="gapped layout"):
+            module.forward_packed(packed.data, context=context)
+        layout = packed_slot_layout(packed, gap=3)
+        torch.testing.assert_close(
+            module.forward_packed(packed.data, layout, context=context), module.forward_packed(packed.data, layout)
+        )
 
 
 class TestPackedConformerEncoder:
@@ -815,6 +870,28 @@ class TestPackedConformerEncoderCuda:
         lengths = torch.tensor([300, 7, 150, 1, 260], device="cuda")
         features = _packed_test_features(lengths, dtype=torch.float32, device="cuda")
         padded_out, padded_lengths = padded_encoder(audio_signal=features, length=lengths)
+        packed = packed_encoder.forward_sequence_packed(features, lengths)
+        padded_valid = _valid_frames(padded_out, padded_lengths)
+        torch.testing.assert_close(packed.data, padded_valid, atol=1e-4, rtol=1e-4)
+        padded_valid.square().mean().backward()
+        packed.data.square().mean().backward()
+        padded_grads = dict(padded_encoder.named_parameters())
+        for name, parameter in packed_encoder.named_parameters():
+            torch.testing.assert_close(parameter.grad, padded_grads[name].grad, atol=1e-4, rtol=1e-3, msg=name)
+
+    @pytest.mark.unit
+    @pytest.mark.skipif(not TRITON_AVAILABLE, reason="requires Triton")
+    def test_convolutions_run_the_kernel_without_a_slot_layout(self, monkeypatch):
+        """With Triton the encoder passes the utterance boundaries to the convolution modules and builds
+        no gapped layout; the outputs and gradients match the padded forward."""
+        torch.manual_seed(12)
+        padded_encoder = _packed_encoder(self_attention_model="rel_pos", d_model=32, n_heads=2).cuda().eval()
+        packed_encoder = copy.deepcopy(padded_encoder)
+        lengths = torch.tensor([300, 7, 150, 1, 260], device="cuda")
+        features = _packed_test_features(lengths, dtype=torch.float32, device="cuda")
+        padded_out, padded_lengths = padded_encoder(audio_signal=features, length=lengths)
+        # the encoder's own layout construction (the subsampling block keeps its gapped slots through its own import)
+        monkeypatch.setattr(conformer_encoder_module, "packed_slot_layout", _fail)
         packed = packed_encoder.forward_sequence_packed(features, lengths)
         padded_valid = _valid_frames(padded_out, padded_lengths)
         torch.testing.assert_close(packed.data, padded_valid, atol=1e-4, rtol=1e-4)

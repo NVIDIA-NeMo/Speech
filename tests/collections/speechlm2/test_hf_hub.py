@@ -97,7 +97,8 @@ def test_from_pretrained_remote_code_requires_explicit_opt_in(
     assert cfg["trust_remote_code"] is expected
 
 
-def test_save_pretrained_does_not_persist_remote_code_trust(tmp_path, monkeypatch):
+@pytest.mark.parametrize('nested', [False, True])
+def test_save_pretrained_does_not_persist_remote_code_trust(tmp_path, monkeypatch, nested):
     captured = {}
 
     def fake_save_pretrained(_self, **kwargs):
@@ -105,12 +106,14 @@ def test_save_pretrained_does_not_persist_remote_code_trust(tmp_path, monkeypatc
 
     monkeypatch.setattr(PyTorchModelHubMixin, "save_pretrained", fake_save_pretrained)
     model = object.__new__(_DummyHubModel)
-    model.cfg = {"trust_remote_code": True}
+    model.cfg = {"model": {"trust_remote_code": True}} if nested else {"trust_remote_code": True}
 
     model.save_pretrained(tmp_path)
 
-    assert "trust_remote_code" not in captured["config"]
-    assert model.cfg["trust_remote_code"] is True
+    effective_saved = captured["config"]["model"] if nested else captured["config"]
+    effective_original = model.cfg["model"] if nested else model.cfg
+    assert "trust_remote_code" not in effective_saved
+    assert effective_original["trust_remote_code"] is True
 
 
 @pytest.mark.parametrize(

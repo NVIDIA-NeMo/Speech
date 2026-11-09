@@ -831,6 +831,37 @@ Asking for ``use_triton: true`` on a configuration the kernels do not cover logs
 Asking for it without Triton installed raises on the first forward pass that would have used the kernels.
 
 
+Per-Stage Time Strides in Convolutional Subsampling
+---------------------------------------------------
+
+``ConvSubsampling`` with ``subsampling: striding`` halves time and frequency in every 3x3 stage,
+so its ``subsampling_factor`` is a power of two.
+``conv_strides`` gives each stage its own time stride instead, with the product of the strides as the factor,
+and the stages then keep the frequency axis;
+``freq_pools`` adds an optional max-pool over the frequency axis after each stage (1 for none).
+``conv_channels`` may name the channels per stage, and ``out_bias`` controls the bias of the output projection.
+A factor of 6 reads:
+
+.. code-block:: python
+
+   from nemo.collections.asr.parts.submodules.subsampling import ConvSubsampling
+
+   subsampling = ConvSubsampling(
+       subsampling="striding",
+       subsampling_factor=6,
+       feat_in=80,
+       feat_out=512,
+       conv_channels=[32, 64, 64],
+       conv_strides=[1, 3, 2],
+       freq_pools=[2, 1, 1],
+       out_bias=False,
+   )
+
+The output lengths follow the stages one by one,
+batch chunking (``subsampling_conv_chunking_factor``) applies as for the stride-2 form,
+and the module exports to ONNX.
+
+
 .. _Hybrid-Transducer-CTC-Prompt_model__Config:
 
 Hybrid-Transducer-CTC with Prompt Conditioning Configuration

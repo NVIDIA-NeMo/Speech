@@ -855,7 +855,7 @@ class _TinyPerception(torch.nn.Module):
 
 def test_inline_pe_encoder_config_mounts_through_setup_speech_encoder_and_restores_weights(tmp_path):
     from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
-    from tests.collections.asr.test_parallel_expert_encoder_two_branch import bundle_config
+    from tests.collections.asr.test_parallel_expert_encoder import bundle_config
 
     inline = OmegaConf.to_container(bundle_config(), resolve=True)
     reference = ParallelExpertEncoderPT.from_inline_config(inline)

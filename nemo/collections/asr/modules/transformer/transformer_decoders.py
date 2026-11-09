@@ -45,10 +45,13 @@ class TransformerDecoderBlock(nn.Module, AttentionAdapterModuleMixin):
             attention layers, but before layer normalization
         ffn_dropout: probability of dropout applied to FFN output
         hidden_act: activation function used between two linear layers in FFN
-        norm, self_attn, cross_attn, feed_forward: configurable blocks, each a class, a callable or a Hydra
-            partial (``_target_`` with ``_partial_: true``) built from the arguments the block supplies
-            (sizes, dropouts, hidden_act); a block section only names what deviates. Defaults to
-            LayerNorm, MultiHeadAttention (both attentions) and PositionWiseFF.
+        pre_ln: whether to apply the layer norms before the sub-layers instead of after them
+        norm: block of the three layer norms, default `torch.nn.LayerNorm`;
+            a block is a class, a callable or a Hydra partial (``_target_`` with ``_partial_: true``),
+            built from the arguments the parent supplies, so a block section only names what deviates
+        self_attn: block of the self-attention, default `MultiHeadAttention`
+        cross_attn: block of the attention over the encoder states, default `MultiHeadAttention`
+        feed_forward: block of the feed-forward sub-layer, default `PositionWiseFF`
     """
 
     def __init__(
@@ -247,6 +250,27 @@ class TransformerDecoderBlock(nn.Module, AttentionAdapterModuleMixin):
 
 
 class TransformerDecoder(nn.Module):
+    """
+    Stack of Transformer decoder blocks with an optional final layer norm.
+
+    Args:
+        num_layers: number of decoder blocks
+        hidden_size: size of the embeddings in the model, also known as d_model
+        inner_size: number of neurons in the intermediate part of the feed-forward net
+        num_attention_heads: number of heads in multi-head attention
+        attn_score_dropout: probability of dropout applied to attention scores
+        attn_layer_dropout: probability of dropout applied to the output of the attention layers,
+            but before layer normalization
+        ffn_dropout: probability of dropout applied to the feed-forward output
+        hidden_act: activation function used between the two linear layers of the feed-forward net
+        pre_ln: whether to apply the layer norms before the sub-layers instead of after them
+        pre_ln_final_layer_norm: with `pre_ln`, whether a final layer norm follows the last block
+        norm: block of every layer norm, including the final one, see `TransformerDecoderBlock`
+        self_attn: block of the self-attention of every block, see `TransformerDecoderBlock`
+        cross_attn: block of the attention over the encoder states of every block, see `TransformerDecoderBlock`
+        feed_forward: block of the feed-forward sub-layer of every block, see `TransformerDecoderBlock`
+    """
+
     def __init__(
         self,
         num_layers: int,

@@ -403,10 +403,10 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
             verbose: (bool) whether to display tqdm progress bar
             timestamps: (Optional[bool]) timestamps will be returned if set to True as part of hypothesis object
             override_config: (Optional[HybridRNNTCTCPromptTranscribeConfig]) override transcription config pre-defined by the user.
-            **prompt: Optional input to construct the prompts for the model. Accepted formats include:
-                target_lang: (str) language of every utterance (e.g., "en-US", "de", or the language-agnostic
-                    "auto"). When omitted, each manifest entry's ``lang_field`` is used, or "auto" if it has none.
-                    A language the model does not support raises an error.
+            **prompt: Optional input to construct the prompts for the model.
+                ``target_lang`` (str) is the language of every utterance (e.g., "en-US", "de", or the
+                language-agnostic "auto"); when omitted, each manifest entry's ``lang_field`` is used, or "auto"
+                if it has none, and a language the model does not support raises an error.
                 Additional prompt parameters can be passed and will be forwarded to the transcription config.
 
         Returns:

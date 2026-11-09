@@ -17,6 +17,7 @@ from typing import Optional
 
 import torch
 
+from nemo.collections.common.losses.label_smoothing import label_smoothed_log_prob_gradient
 from nemo.core.classes import Exportable, Loss, NeuralModule, typecheck
 from nemo.core.neural_types import LabelsType, LogprobsType, LossType, MaskType, NeuralType
 
@@ -43,6 +44,10 @@ class SmoothedCrossEntropyLoss(Loss):
             (proportional to the number of context tokens)
         pad_id (int): padding id
         eps (float): the small eps number to avoid division buy zero
+        label_smoothing_gradient_only: apply the label smoothing to the gradient of the log-probabilities only
+            (see :func:`label_smoothed_log_prob_gradient`);
+            the returned loss is then the unsmoothed negative log-likelihood,
+            while its gradient equals the gradient of the label-smoothed loss
     """
 
     @property
@@ -66,6 +71,7 @@ class SmoothedCrossEntropyLoss(Loss):
         predict_last_k: Optional[int] = 0,
         eps: float = 1e-6,
         per_token_reduction: bool = True,
+        label_smoothing_gradient_only: bool = False,
     ):
         super().__init__()
         self._pad_id = pad_id
@@ -73,6 +79,7 @@ class SmoothedCrossEntropyLoss(Loss):
         self._predict_last_k = predict_last_k
         self._label_smoothing = label_smoothing
         self._per_token_reduction = per_token_reduction
+        self._label_smoothing_gradient_only = label_smoothing_gradient_only
 
     @typecheck()
     def forward(self, log_probs, labels, output_mask=None):
@@ -92,11 +99,18 @@ class SmoothedCrossEntropyLoss(Loss):
             output_mask = output_mask.to(log_probs.dtype)
 
         batch_size, seq_len, vocab_size = log_probs.size()
-        smoothing = vocab_size * self._label_smoothing / (vocab_size - 1)
+        if self._label_smoothing_gradient_only:
+            log_probs = label_smoothed_log_prob_gradient(log_probs, self._label_smoothing)
+            smoothing = 0.0  # the value stays the plain negative log-likelihood
+        else:
+            smoothing = vocab_size * self._label_smoothing / (vocab_size - 1)
         target_log_probs = log_probs.gather(2, labels.unsqueeze(2)).squeeze(2)
 
-        smoothing_log_probs = log_probs.mean(dim=-1)
-        neg_log_likelihood = (1.0 - smoothing) * target_log_probs + smoothing * smoothing_log_probs
+        if smoothing:
+            smoothing_log_probs = log_probs.mean(dim=-1)
+            neg_log_likelihood = (1.0 - smoothing) * target_log_probs + smoothing * smoothing_log_probs
+        else:
+            neg_log_likelihood = target_log_probs
         neg_log_likelihood = neg_log_likelihood[:, -self._predict_last_k :]
         output_mask = output_mask[:, -self._predict_last_k :]
 

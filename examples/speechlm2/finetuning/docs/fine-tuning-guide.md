@@ -44,7 +44,7 @@ Training and inference need **two separate Python environments**:
 | Environment | Contents | Runs |
 |---|---|---|
 | Training | NeMo Speech with `speechlm2` and the exact NeMo Automodel revision this repository pins | `salm_train.py`, `to_hf.py`, the config, export, and data tools |
-| Inference | vLLM 0.28.0 plus this repository installed in editable mode | `vllm_task_eval.py`, `vllm_label_scores.py`, `prompt_search.py` |
+| Inference | vLLM 0.32.0 plus this repository installed in editable mode | `vllm_task_eval.py`, `vllm_label_scores.py`, `prompt_search.py` |
 
 **Use the repository's exact Automodel pin for training.** `pyproject.toml` pins `nemo_automodel` to a specific git
 revision (`[tool.uv.sources]`); install the training environment from the lockfile
@@ -52,25 +52,25 @@ revision (`[tool.uv.sources]`); install the training environment from the lockfi
 Automodel imports cleanly but fails at the first loss call, because the API changed between revisions. Check with
 `python -c "import nemo_automodel, importlib.metadata as m; print(m.version('nemo_automodel'))"` against the pin.
 
-vLLM 0.27 through 0.29 pin a newer torch than the training stack's TransformerEngine and flash-attn are compiled
+vLLM 0.27 through 0.32 pin a newer torch than the training stack's TransformerEngine and flash-attn are compiled
 against, so installing vLLM into the training environment breaks training. Set up the inference environment
 separately:
 
 ```bash
 uv venv --python 3.13 "$VLLM_VENV"
-VIRTUAL_ENV="$VLLM_VENV" uv pip install vllm==0.28.0
+VIRTUAL_ENV="$VLLM_VENV" uv pip install vllm==0.32.0
 # expose NeMo and its vLLM plugin entry point to the inference environment
 cd /path/to/Speech
-VIRTUAL_ENV="$VLLM_VENV" uv pip install -e ".[core,asr-only,common-only]" torch==2.13.0   # the torch vLLM 0.28 pins
+VIRTUAL_ENV="$VLLM_VENV" uv pip install -e ".[core,asr-only,common-only]" torch==2.13.0   # the torch vLLM 0.32 pins
 VIRTUAL_ENV="$VLLM_VENV" uv pip install "peft>=0.18.1" kaldialign   # kaldialign: WER/MER scoring in task_metrics.py
 ```
 
 `vllm_task_eval.py` checks that the metric's dependencies are importable *before* it loads the model, so a missing
 scoring package fails in seconds rather than after a full decode.
 
-**Pin vLLM to 0.28.0.** vLLM 0.29 invokes multimodal processors differently, and the SpeechLM plugin (which has no
-HuggingFace `ProcessorMixin`) fails at startup with `TypeError: Invalid type of HuggingFace processor`. In the
-training environment, `cross_entropy_backend: fused_linear` additionally requires `uv pip install cut-cross-entropy`.
+**Pin vLLM to 0.32.0** (it needs Python 3.11 or newer). The SpeechLM plugin and these scripts are tested on that
+release only. In the training environment, `cross_entropy_backend: fused_linear` additionally requires
+`uv pip install cut-cross-entropy`.
 
 **Match the pip cuDNN to the system cuDNN.** If the pip wheel (`nvidia-cudnn-cu13`) is an older minor version than
 the system cuDNN, it lacks sublibraries the system copy provides, cuDNN mixes the two, and every GPU `Conv1d` fails
@@ -445,7 +445,7 @@ with 60 to 150 in vLLM).
 ```bash
 python vllm_task_eval.py --model /path/to/merged --task asr \
   --manifest manifests/dev.json manifests/test.json --out eval/dev.jsonl eval/test.jsonl \
-  --spec-k 2 --mamba-cache-mode all --max-num-seqs 64 --gpu-memory-utilization 0.85
+  --spec-k 2 --max-num-seqs 64 --gpu-memory-utilization 0.85
 ```
 
 `--task` takes `asr`, `bleu`, `cls`, `squad`, `mer`, `pcc`, `eer`, or `multilabel`. Loading the engine once and
@@ -478,21 +478,11 @@ Keep the `mtp` config block unchanged; vLLM requires `use_repeated_layer: true` 
 **Speculative decoding is not automatically exact.** Under greedy sampling, vLLM's rejection sampler always emits the
 target model's argmax, so drafts should affect only speed. Output can change only if the target model's own state is
 corrupted. On hybrid state-space backbones, the recurrent state must be rolled back to the exact rejection point.
-With prefix caching on, vLLM's default cache mode (`align`) checkpoints that state too coarsely, and with two or
-more speculative tokens the output degrades silently (about 1 WER point on ASR):
 
-| Configuration | Exact? |
-|---|---|
-| `--spec-k 0` (no speculation) | yes |
-| `--spec-k 1`, defaults | yes |
-| `--spec-k 2`, defaults (prefix caching on, cache mode `align`) | **no** |
-| `--spec-k 2 --mamba-cache-mode all` | yes, and keeps prefix caching and the speed-up |
-| `--spec-k 2` with prefix caching disabled | yes |
-
-`--mamba-cache-mode all` is required for exact speculative decoding on hybrid state-space backbones, and it is
-`vllm_task_eval.py`'s default. For other backbones, or other optimizations (quantization, caching, batching), verify
-the same way: decode a few hundred utterances with the optimization on and off, and compare the *outputs*, not just
-the scores.
+`vllm_task_eval.py` runs speculative decoding on hybrid backbones through vLLM's ReplaySSM, with prefix caching off.
+Batch composition changes greedy outputs too, so compare an optimization against two runs without it: decode a few
+hundred utterances twice without the optimization and once with it, and compare the scores and the number of changed
+hypotheses.
 
 ### Choose and report the normalizer
 
@@ -684,7 +674,7 @@ needs no further training.
 | WER > 100%, hypotheses unrelated to the audio | thinking mode enabled | `enable_thinking=False` in the chat template |
 | Output fluent but wrong, WER very high, no errors anywhere | encoder never loaded | carry `pe_encoder_config` over verbatim; run `check_checkpoint_coverage.py` |
 | Fine-tune decodes identically to the base model | LoRA adapters never applied, or the wrong checkpoint was served | export with `export_checkpoint.py` (checks `lora_B`, merges); diff against the base |
-| WER about 1 point worse with speculative decoding on | inexact state rollback on a hybrid backbone | `--mamba-cache-mode all`, or disable prefix caching |
+| WER about 1 point worse with speculative decoding on | inexact state rollback on a hybrid backbone | ReplaySSM with prefix caching off (`vllm_task_eval.py`'s default on hybrid backbones), or disable prefix caching |
 | `SupervisionSegment.__init__() got an unexpected keyword argument 'audio_filepath'` | NeMo manifest named `.jsonl` | rename it to `.json` |
 | `AttributeError: No such attribute: duration` | duration batching on multimodal conversations | `use_multimodal_sampling: true` and `batch_tokens` |
 | `AttributeError: No such attribute: context_ids` | `pretokenize: false` with multimodal sampling | leave `pretokenize` at its default |
@@ -700,7 +690,6 @@ needs no further training.
 | Target metric improves, general-domain WER collapses | reference surface style differs from model output | audit style before training; blend in a cased, punctuated source |
 | `OverrideParseException: mismatched input '='` | Hydra override value contains `=` | symlink the checkpoint to a name without `=` (`export_checkpoint.py` does this) |
 | `to_hf.py`: `No such file or directory` on an existing checkpoint | the save is still in progress | wait until `<step>-unfinished` is gone |
-| `TypeError: Invalid type of HuggingFace processor` | vLLM 0.29 or later | pin vLLM 0.28.0 |
 | `RuntimeError: CUDA driver initialization failed` in `EngineCore` | fork start method | `VLLM_WORKER_MULTIPROC_METHOD=spawn` |
 | vLLM appears hung on its first start | one-time kernel JIT compilation (about 15 minutes) | wait; persist the flashinfer and vLLM caches |
 | `incorrect regex pattern … set fix_mistral_regex=True` when loading the tokenizer | transformers assumes an old Mistral tokenizer because the SALM `config.json` has no `transformers_version` | harmless: the checkpoint's `tokenizer.json` already has the corrected pattern, and token IDs are identical with or without the flag |

@@ -74,9 +74,7 @@ class AlignerModel(NeedsNormalizer, ModelPT):
         self.forward_sum_loss = ForwardSumLoss()
         self.bin_loss = BinLoss()
         self.add_bin_loss = False
-        self.bin_loss_scale = 0.0
         self.bin_loss_start_ratio = cfg.bin_loss_start_ratio
-        self.bin_loss_warmup_epochs = cfg.bin_loss_warmup_epochs
 
     def _setup_tokenizer(self, cfg):
         text_tokenizer_kwargs = {}
@@ -140,9 +138,6 @@ class AlignerModel(NeedsNormalizer, ModelPT):
         if not self.add_bin_loss and self.current_epoch >= bin_loss_start_epoch:
             logging.info(f"Using hard attentions after epoch: {self.current_epoch}")
             self.add_bin_loss = True
-
-        if self.add_bin_loss:
-            self.bin_loss_scale = min((self.current_epoch - bin_loss_start_epoch) / self.bin_loss_warmup_epochs, 1.0)
 
     def training_step(self, batch, batch_idx):
         audio, audio_len, text, text_len, attn_prior = batch

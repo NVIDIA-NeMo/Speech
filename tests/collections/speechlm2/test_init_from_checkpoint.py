@@ -268,6 +268,16 @@ def test_distributed_hf_loader_requires_complete_parameters_only_when_strict(tmp
                 torch.testing.assert_close(parameter, original[name])
 
 
+@pytest.mark.unit
+def test_distributed_hf_loader_rejects_unexpected_tensors_only_when_exact(tmp_path):
+    model = torch.nn.Linear(3, 2)
+    save_file({**model.state_dict(), "extra": torch.ones(1)}, str(tmp_path / "model.safetensors"))
+
+    _load_state_dict_with_dtensors(model, str(tmp_path), strict=True)
+    with pytest.raises(ValueError, match=r"unexpected tensors=\['extra'\]"):
+        _load_state_dict_with_dtensors(model, str(tmp_path), exact=True)
+
+
 # ---------------------------------------------------------------------------
 # init_from_training_checkpoint — DCP path (mocked)
 # ---------------------------------------------------------------------------

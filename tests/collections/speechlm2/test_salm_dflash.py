@@ -599,7 +599,7 @@ def test_build_dflash2_config_matches_automodel_recipe_fields():
     )
 
     assert layer_ids == [1, 6]
-    assert draft_config.architectures == ["Qwen3DFlash2DraftModel"]
+    assert draft_config.architectures == ["DFlash2DraftModel"]
     assert draft_config.layer_types == ["sliding_attention", "sliding_attention"]
     assert draft_config.sliding_window == 32
     assert draft_config.use_sliding_window is True
@@ -836,7 +836,7 @@ def test_dflash2_defaults_match_nemotron_3_5_lightning():
         "selector_top_k": 16,
     }
     assert draft_config.block_size == 8
-    assert draft_config.architectures == ["Qwen3DFlash2DraftModel"]
+    assert draft_config.architectures == ["DFlash2DraftModel"]
 
 
 class _TargetLLM(nn.Module):

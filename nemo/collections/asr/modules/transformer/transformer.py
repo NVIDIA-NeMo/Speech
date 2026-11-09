@@ -24,6 +24,7 @@ from nemo.collections.asr.modules.transformer.encoder_module import EncoderModul
 from nemo.collections.asr.modules.transformer.transformer_decoders import TransformerDecoder, TransformerDecoderAdapter
 from nemo.collections.asr.modules.transformer.transformer_encoders import TransformerEncoder
 from nemo.collections.asr.modules.transformer.transformer_modules import TransformerEmbedding
+from nemo.collections.asr.parts.submodules.multi_head_attention import RotaryPositionalEncoding
 from nemo.collections.asr.parts.submodules.packed_attention import PackedAttentionContext
 from nemo.collections.asr.parts.utils import adapter_utils
 from nemo.collections.common.parts.utils import ModuleBlock, build_module
@@ -167,6 +168,36 @@ class TransformerEncoderNM(EncoderModule, Exportable):
 
 
 class TransformerDecoderNM(DecoderModule, Exportable):
+    """
+    Transformer decoder with its token and position embedding, as a NeMo decoder module.
+
+    Args:
+        vocab_size: size of the vocabulary
+        hidden_size: size of the embeddings in the model, also known as d_model
+        num_layers: number of decoder blocks
+        inner_size: number of neurons in the intermediate part of the feed-forward net
+        num_attention_heads: number of heads in multi-head attention
+        max_sequence_length: maximum allowed length of the input sequence
+        num_token_types: number of different token types, 0 for none
+        embedding_dropout: probability of dropout applied to embeddings
+        learn_positional_encodings: whether to learn positional encodings or use fixed (sine-cosine) ones
+        ffn_dropout: probability of dropout applied to the feed-forward output
+        attn_score_dropout: probability of dropout applied to attention scores
+        attn_layer_dropout: probability of dropout applied to the output of the attention layers,
+            but before layer normalization
+        hidden_act: activation function used between the two linear layers of the feed-forward net
+        pre_ln: whether to apply the layer norms before the sub-layers instead of after them
+        pre_ln_final_layer_norm: with `pre_ln`, whether a final layer norm follows the last block
+        embedding: block of the embedding, default `TransformerEmbedding`,
+            built with the vocabulary and embedding arguments above;
+            a block is a class, a callable or a Hydra partial (``_target_`` with ``_partial_: true``),
+            built from the arguments the parent supplies, so a block section only names what deviates
+        norm: block of every layer norm of the decoder, see `TransformerDecoderBlock`
+        self_attn: block of the self-attention of every block, see `TransformerDecoderBlock`
+        cross_attn: block of the attention over the encoder states of every block, see `TransformerDecoderBlock`
+        feed_forward: block of the feed-forward sub-layer of every block, see `TransformerDecoderBlock`
+    """
+
     DECODER_TYPE: type = TransformerDecoder
 
     def __init__(
@@ -314,8 +345,10 @@ class TransformerDecoderNM(DecoderModule, Exportable):
             A tuple of input examples.
         """
         sample = next(self.parameters())
+        # ids must exist in the vocabulary and positions in the fixed positional table
+        max_dim = min(max_dim, self._max_sequence_length)
         sz = (max_batch, max_dim)
-        input_ids = torch.randint(low=0, high=2048, size=sz, device=sample.device)
+        input_ids = torch.randint(low=0, high=self._vocab_size, size=sz, device=sample.device)
         encoder_mask = torch.randint(low=0, high=1, size=sz, device=sample.device)
         mem_size = [max_batch, self.num_states, max_dim - 1, self._hidden_size]
         decoder_mems = torch.rand(mem_size, device=sample.device)
@@ -324,6 +357,12 @@ class TransformerDecoderNM(DecoderModule, Exportable):
     def _prepare_for_export(self, **kwargs):
         self._decoder.diagonal = None
         self.return_mems = True
+        # rotary tables grow with the key length in eager mode but are constants in the exported graph,
+        # so they cover every position the decoder supports before the example is traced
+        sample = next(self.parameters())
+        for module in self._decoder.modules():
+            if isinstance(module, RotaryPositionalEncoding):
+                module.extend_pe(self.max_sequence_length, sample.device, sample.dtype)
         super()._prepare_for_export(**kwargs)
 
     @property

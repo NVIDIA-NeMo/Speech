@@ -18,8 +18,7 @@ Adapted EasyMagpieTTSModel class for classifier-free guidance distillation.
 import copy
 import json
 import random
-from dataclasses import dataclass, field
-from enum import Enum
+from dataclasses import dataclass
 from io import TextIOWrapper
 from pathlib import Path
 from typing import Callable, Optional
@@ -33,39 +32,37 @@ from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 from lightning.pytorch.utilities import rank_zero_only
 from omegaconf import DictConfig, OmegaConf, open_dict
 from torch import Tensor
-from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
-import nemo.collections.asr as nemo_asr
-from nemo.collections.asr.metrics.wer import word_error_rate
-from nemo.collections.asr.parts.mixins.transcription import TranscribeConfig
 from nemo.collections.tts.losses.magpietts_cfg_distillation import (
     CodesCrossEntropyLoss,
     KLDivergenceLoss,
     NRMSELogitsLoss,
 )
 from nemo.collections.tts.models.easy_magpietts import EasyMagpieTTSModel
-from nemo.collections.tts.models.easy_magpietts_inference import InferBatchOutput, StreamingConfig, TrainingMode
-from nemo.collections.tts.modules.magpietts_modules import (
-    LocalTransformerType,
-    clear_forbidden_logits,
-    remove_special_tokens,
+from nemo.collections.tts.models.easy_magpietts_inference import InferBatchOutput, TrainingMode
+from nemo.collections.tts.modules.easy_magpietts_cfg_distillation import (
+    MONITORED_KEYS_TRAIN,
+    MONITORED_KEYS_VALID,
+    ON_EPOCH_TRAIN_KEYS,
+    ROLLOUT_TIMING_KEYS,
+    LossKey,
+    LossMode,
+    MetricKey,
+    StudentOutput,
+    TeacherInferenceEngine,
+    TeacherOutput,
+    ValidationAudioPaths,
+    ValidationInferenceEngine,
+    ValidationInferenceParams,
+    aggregate_language_metrics,
+    collect_validation_outputs,
+    compute_validation_metrics,
+    get_loss_key,
 )
-from nemo.collections.tts.parts.utils.helpers import (
-    get_mask_from_lengths,
-    get_speaker_embeddings_from_filepaths,
-    process_text_for_cer,
-    transcribe_with_whisper,
-    transcribe_with_whisper_from_filepaths,
-)
+from nemo.collections.tts.modules.magpietts_modules import LocalTransformerType, remove_special_tokens
+from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
 from nemo.lightning.callback_group import CallbackGroup
 from nemo.utils import logging
-
-try:
-    from nemo.collections.tts.modules.utmosv2 import UTMOSv2Calculator
-
-    _HAVE_UTMOSV2 = True
-except (ImportError, ModuleNotFoundError):
-    _HAVE_UTMOSV2 = False
 
 __all__ = ["EasyMagpieCFGDistillation"]
 
@@ -219,1917 +216,6 @@ def _get_teacher_model(cfg: DictConfig) -> EasyMagpieTTSModel:
 
 
 @dataclass
-class _StudentOutput:
-    """Outputs produced by the student forward pass for distillation."""
-
-    logits: Tensor
-    logits_lt: Optional[Tensor]
-    logits_phonemes: Optional[Tensor]
-    audio_codes_gt_lt: Optional[Tensor]
-    audio_codes_lens_gt_lt: Optional[Tensor]
-
-
-def _lt_sample_autoregressive(
-    model: EasyMagpieTTSModel,
-    dec_output: Tensor,
-    temperature: float = 0.7,
-    topk: int = 80,
-    cfg_scale: float = 1.0,
-    use_kv_cache: bool = True,
-    forbid_audio_eos: bool = False,
-    sanitize_logits: bool = False,
-) -> tuple[Tensor, Tensor]:
-    """Sample stacked audio codes autoregressively with the local transformer.
-
-    Args:
-        model: EasyMagpie model providing the local transformer and audio-token
-            projections.
-        dec_output: Decoder output for the current audio frame, including
-            conditional and unconditional CFG batches.
-        temperature: Sampling temperature. Values less than or equal to zero use
-            greedy decoding.
-        topk: Number of highest-logit tokens retained for sampling per codebook.
-        cfg_scale: Classifier-free guidance scale applied to conditional and
-            unconditional logits.
-        use_kv_cache: Whether to use the local transformer's key-value cache.
-        forbid_audio_eos: Whether to prevent sampling audio EOS tokens.
-        sanitize_logits: Whether to replace non-finite logits and clamp their
-            range before sampling.
-
-    Returns:
-        A tuple containing the sampled codec codes with shape
-        `(batch_size, num_audio_codebooks, frame_stacking_factor)` and the
-        corresponding CFG logits for the conditional batch.
-    """
-    model.local_transformer.reset_cache(use_cache=use_kv_cache)
-    dec_output = dec_output.unsqueeze(1)
-    local_transformer_input = model.local_transformer_in_projection(dec_output)
-    predicted_codes = []
-    predicted_logits = []
-
-    for codebook_num in range(model.num_audio_codebooks * model.frame_stacking_factor):
-        size = (local_transformer_input.size(0), local_transformer_input.size(1))
-        _mask = torch.ones(*size, device=local_transformer_input.device)
-        local_transformer_output = model.local_transformer(local_transformer_input, _mask)["output"]
-
-        lt_out_for_proj = model.local_transformer_audio_out_projection(local_transformer_output[:, -1, :])
-        codebook_logits = model.local_transformer_out_projections[codebook_num](lt_out_for_proj)
-
-        bs = codebook_logits.size(0) // 2
-        conditional_logits = codebook_logits[:bs]
-        unconditional_logits = codebook_logits[bs:]
-        cfg_logits = cfg_scale * conditional_logits + (1.0 - cfg_scale) * unconditional_logits
-        codebook_logits[:bs] = cfg_logits
-        predicted_logits.append(codebook_logits.clone())
-
-        if sanitize_logits:
-            codebook_logits = torch.nan_to_num(codebook_logits, nan=0.0, posinf=100.0, neginf=-100.0)
-            codebook_logits = codebook_logits.clamp(min=-100.0, max=100.0)
-
-        codebook_logits = clear_forbidden_logits(
-            logits=codebook_logits.unsqueeze(1),
-            codebook_size=model.codebook_size,
-            forbid_audio_eos=forbid_audio_eos,
-        )
-        codebook_logits = codebook_logits.squeeze(1)
-
-        codebook_logits_topk = torch.topk(codebook_logits, topk, dim=-1)[0]
-        indices_to_remove = codebook_logits < codebook_logits_topk[:, -1].unsqueeze(-1)
-        codebook_logits_rescored = codebook_logits.clone()
-        codebook_logits_rescored[indices_to_remove] = float("-inf")
-
-        if temperature <= 0.0:
-            codebook_preds = codebook_logits_rescored.argmax(dim=-1, keepdim=True)
-        else:
-            codebook_probs = torch.softmax(codebook_logits_rescored / temperature, dim=-1)
-            codebook_preds = torch.multinomial(codebook_probs, 1)
-
-        codebook_preds[bs:] = codebook_preds[:bs]
-        predicted_codes.append(codebook_preds)
-
-        next_local_transformer_input = model.audio_embeddings[codebook_num](codebook_preds.squeeze(-1)).unsqueeze(1)
-        next_local_transformer_input = model.audio_in_projection(next_local_transformer_input)
-        next_local_transformer_input = model.local_transformer_in_projection(next_local_transformer_input)
-        local_transformer_input = torch.cat([local_transformer_input, next_local_transformer_input], dim=1)
-
-    predicted_codes = torch.cat(predicted_codes, dim=1)[:bs]
-    predicted_codes = predicted_codes.view(bs, model.num_audio_codebooks, model.frame_stacking_factor)
-    predicted_logits = torch.cat(predicted_logits, dim=1)[:bs]
-
-    return predicted_codes, predicted_logits
-
-
-@dataclass
-class _AudioCodesStep:
-    """Predicted audio-code data for one rollout step."""
-
-    codes_t: Tensor
-    codes_t_argmax: Tensor
-    logits_t: Tensor
-
-    codes_t_lt: Optional[Tensor]
-    codes_t_argmax_lt: Optional[Tensor]
-    logits_t_lt: Optional[Tensor]
-
-    def unstack(
-        self,
-        batch_size: int,
-        num_codebooks: int,
-        fs_factor: int,
-    ) -> None:
-        """Reshape flattened audio-code predictions into codec layout.
-
-        Args:
-            batch_size: Number of batch items represented by the flattened tensors.
-            num_codebooks: Number of codec codebooks.
-            fs_factor: Number of audio frames stacked into each prediction step.
-        """
-        self.codes_t = self.codes_t.view(batch_size, num_codebooks, fs_factor)
-        self.codes_t_argmax = self.codes_t_argmax.view(batch_size, num_codebooks, fs_factor)
-
-        if self.codes_t_lt is not None and self.codes_t_argmax_lt is not None and self.logits_t_lt is not None:
-            self.codes_t_lt = self.codes_t_lt.view(batch_size, num_codebooks, fs_factor)
-            self.codes_t_argmax_lt = self.codes_t_argmax_lt.view(batch_size, num_codebooks, fs_factor)
-
-
-@dataclass
-class _PhonemeTokensStep:
-    """Predicted phoneme data for one rollout step."""
-
-    tokens_t: Tensor
-    logits_t: Tensor
-
-
-@dataclass
-class _ChannelStatus:
-    """Track status masks for each model input channel."""
-
-    context: Tensor
-    text: Tensor
-    phoneme: Tensor
-    audio: Tensor
-
-
-@dataclass
-class _StreamingState:
-    """Maintain state across streaming teacher-rollout steps."""
-
-    config: StreamingConfig
-    past_key_values: Optional[tuple]
-    cache_seq_len: int
-
-    pred_codes: list[Tensor]
-    pred_codes_logits: list[Tensor]
-    pred_codes_lt: list[Tensor]
-    pred_codes_logits_lt: list[Tensor]
-    pred_phoneme_tokens: list[Tensor]
-    pred_phoneme_logits: list[Tensor]
-
-    context_audio_codes: Tensor
-    context_audio_codes_lens: Tensor
-    context_lens: Tensor
-    full_context_embedding: Tensor
-    full_context_lens: Tensor
-
-    context_position: Tensor
-    text_tokens_seen: Tensor
-    phoneme_steps: Tensor
-    audio_steps: Tensor
-    phoneme_stream_ended: Tensor
-    phoneme_eos_detected: Tensor
-    finished: Tensor
-    last_hidden: Tensor
-    text_finished: Tensor
-
-    last_audio_codes: Optional[Tensor]
-    last_audio_codes_lt: Optional[Tensor]
-    last_phoneme_tokens: Optional[Tensor]
-
-    audio_prediction_start_idx: Tensor
-    audio_prediction_end_idx: Tensor
-    phoneme_prediction_start_idx: Tensor
-    phoneme_prediction_end_idx: Tensor
-
-    gt_phoneme_embeddings: Optional[Tensor] = None
-    gt_phoneme_lens: Optional[Tensor] = None
-
-    rejected: Optional[Tensor] = None
-    sample_weights: Optional[Tensor] = None
-
-    @classmethod
-    def create(
-        cls,
-        config: StreamingConfig,
-        last_hidden: Tensor,
-        past_kv: list[Tensor],
-        min_context_len: Tensor,
-        context_audio_codes: Tensor,
-        context_audio_codes_lens: Tensor,
-        context_lens: Tensor,
-        full_context_embedding: Tensor,
-        full_context_lens: Tensor,
-        gt_phoneme_embeddings: Tensor,
-        gt_phoneme_lens: Tensor,
-        use_rollout_rejection: bool,
-        rejection_weight: Optional[float],
-    ) -> "_StreamingState":
-        """Create an initialized streaming state for a teacher rollout.
-
-        Initializes cache metadata, per-item counters, prediction buffers, and optional
-        rollout-rejection state.
-
-        Args:
-            config: Static configuration for the streaming rollout.
-            last_hidden: Hidden states from the prepared context forward pass.
-            past_kv: Initial transformer key-value cache.
-            min_context_len: Shared cached-context-prefix length, equal to the minimum
-                prepared-context length across the batch.
-            context_audio_codes: Prepared context audio codec tokens.
-            context_audio_codes_lens: Lengths of the context audio-code sequences.
-            context_lens: Lengths of the prepared context sequences.
-            full_context_embedding: Embeddings for the complete prepared context.
-            full_context_lens: Lengths of the complete prepared-context embeddings.
-            gt_phoneme_embeddings: Ground-truth phoneme embeddings used for guidance.
-            gt_phoneme_lens: Lengths of the ground-truth phoneme sequences.
-            use_rollout_rejection: Whether to initialize per-item rejection tracking.
-            rejection_weight: Optional loss weight to assign to rejected rollouts.
-
-        Returns:
-            An initialized streaming state.
-        """
-        bs = config.batch_size
-        device = config.device
-        rejected = None
-        sample_weights = None
-
-        if use_rollout_rejection:
-            rejected = torch.zeros(bs, dtype=torch.bool, device=device)
-
-        if rejection_weight is not None:
-            sample_weights = torch.ones(bs, dtype=torch.float, device=device)
-
-        obj = _StreamingState(
-            config=config,
-            past_key_values=past_kv,
-            cache_seq_len=min_context_len,
-            pred_codes=[],
-            pred_codes_logits=[],
-            pred_codes_lt=[],
-            pred_codes_logits_lt=[],
-            pred_phoneme_tokens=[],
-            pred_phoneme_logits=[],
-            context_audio_codes=context_audio_codes,
-            context_audio_codes_lens=context_audio_codes_lens,
-            context_lens=context_lens,
-            full_context_embedding=full_context_embedding,
-            full_context_lens=full_context_lens,
-            context_position=torch.full((bs,), min_context_len, dtype=torch.long, device=device),
-            text_tokens_seen=torch.zeros(bs, dtype=torch.long, device=device),
-            phoneme_steps=torch.zeros(bs, dtype=torch.long, device=device),
-            audio_steps=torch.zeros(bs, dtype=torch.long, device=device),
-            phoneme_stream_ended=torch.zeros(bs, dtype=torch.bool, device=device),
-            phoneme_eos_detected=torch.zeros(bs, dtype=torch.bool, device=device),
-            finished=torch.zeros(bs, dtype=torch.bool, device=device),
-            last_hidden=last_hidden,
-            text_finished=torch.zeros(bs, dtype=torch.bool, device=device),
-            last_audio_codes=None,
-            last_audio_codes_lt=None,
-            last_phoneme_tokens=None,
-            audio_prediction_start_idx=torch.full((bs,), -1, dtype=torch.long, device=device),
-            audio_prediction_end_idx=torch.full((bs,), -1, dtype=torch.long, device=device),
-            phoneme_prediction_start_idx=torch.full((bs,), -1, dtype=torch.long, device=device),
-            phoneme_prediction_end_idx=torch.full((bs,), -1, dtype=torch.long, device=device),
-            gt_phoneme_embeddings=gt_phoneme_embeddings,
-            gt_phoneme_lens=gt_phoneme_lens,
-            rejected=rejected,
-            sample_weights=sample_weights,
-        )
-        return obj
-
-    def update_counters(self, status: _ChannelStatus) -> None:
-        """Update per-item context, text, phoneme and audio rollout counters.
-
-        Args:
-            status: Status masks indicating which channels progress for each batch item.
-        """
-        self.context_position = self.context_position + status.context.long()
-        self.text_tokens_seen = self.text_tokens_seen + (~status.context).long()
-        self.phoneme_steps = self.phoneme_steps + status.phoneme.long()
-        self.audio_steps = self.audio_steps + status.audio.long()
-
-    def update_phoneme_start_idx(self, needs_phoneme: Tensor) -> None:
-        """Record the first rollout step that predicts phonemes for each item.
-
-        Args:
-            needs_phoneme: Mask identifying items that require phoneme prediction.
-        """
-        first_phoneme_step = needs_phoneme & (self.phoneme_prediction_start_idx == -1)
-
-        if not first_phoneme_step.any():
-            return
-
-        self.phoneme_prediction_start_idx = torch.where(
-            condition=first_phoneme_step,
-            input=torch.full_like(self.phoneme_prediction_start_idx, self.current_phoneme_step_idx),
-            other=self.phoneme_prediction_start_idx,
-        )
-
-    def update_phoneme_end_status(
-        self,
-        tokens: _PhonemeTokensStep,
-        needs_phoneme: Tensor,
-        eos_id: int,
-    ) -> None:
-        """Track phoneme EOS predictions and record phoneme end steps.
-
-        Args:
-            tokens: Predicted phoneme tokens for the current rollout step.
-            needs_phoneme: Mask identifying items that require phoneme prediction.
-            eos_id: Phoneme end-of-sequence token ID.
-        """
-        eos_detected = needs_phoneme & (tokens.tokens_t == eos_id).any(dim=1)
-        self.phoneme_eos_detected = self.phoneme_eos_detected | eos_detected
-
-        newly_ended = eos_detected & (self.phoneme_prediction_end_idx == -1)
-
-        if newly_ended.any():
-            self.phoneme_prediction_end_idx = torch.where(
-                condition=newly_ended,
-                input=torch.full_like(self.phoneme_prediction_end_idx, self.current_phoneme_step_idx),
-                other=self.phoneme_prediction_end_idx,
-            )
-
-    def update_phoneme_step(
-        self,
-        tokens: _PhonemeTokensStep,
-        fs_factor: int,
-        vocab_size: int,
-    ) -> None:
-        """Store phoneme predictions and logits from the current rollout step.
-
-        Args:
-            tokens: Predicted phoneme tokens and their logits.
-            fs_factor: Number of phoneme frames stacked per rollout step.
-            vocab_size: Size of the phoneme vocabulary.
-        """
-        self.last_phoneme_tokens = tokens.tokens_t
-        self.pred_phoneme_tokens.append(tokens.tokens_t.unsqueeze(1))  # (B, 1, FS)
-        logits = tokens.logits_t.view(self.batch_size, 1, fs_factor * vocab_size)
-        self.pred_phoneme_logits.append(logits)
-
-    def update_audio_start_idx(self, needs_audio: Tensor) -> None:
-        """Record the first rollout frame that predicts audio for each item.
-
-        Args:
-            needs_audio: Mask identifying items that require audio prediction.
-        """
-        first_audio_step = needs_audio & (self.audio_prediction_start_idx == -1)
-
-        if not first_audio_step.any():
-            return
-
-        self.audio_prediction_start_idx = torch.where(
-            condition=first_audio_step,
-            input=torch.full_like(self.audio_prediction_start_idx, self.current_frame_idx),
-            other=self.audio_prediction_start_idx,
-        )
-
-    def update_last_audio_codes(
-        self,
-        audio_codes: _AudioCodesStep,
-        needs_audio: Tensor,
-    ) -> None:
-        """Update the most recently predicted audio codes for active items.
-
-        Args:
-            audio_codes: Backbone and optional local-transformer audio-code predictions.
-            needs_audio: Mask identifying items that require audio prediction.
-        """
-        codes_t = audio_codes.codes_t.reshape(self.batch_size, -1)
-
-        if self.last_audio_codes is None:
-            self.last_audio_codes = codes_t
-        else:
-            update_mask = needs_audio.view(self.batch_size, 1).expand_as(codes_t)
-            self.last_audio_codes = torch.where(update_mask, codes_t, self.last_audio_codes)
-
-        if self.use_lt:
-            codes_t_lt = audio_codes.codes_t_lt.reshape(self.batch_size, -1)
-
-            if self.last_audio_codes_lt is None:
-                self.last_audio_codes_lt = codes_t_lt
-            else:
-                update_mask = needs_audio.view(self.batch_size, 1).expand_as(codes_t_lt)
-                self.last_audio_codes_lt = torch.where(update_mask, codes_t_lt, self.last_audio_codes_lt)
-
-    def update_audio_end_status(
-        self,
-        audio_codes: _AudioCodesStep,
-        needs_audio: Tensor,
-        eos_id: int,
-        fs_factor: int,
-    ) -> list[int]:
-        """Track audio EOS predictions and record completed rollout end frames.
-
-        Args:
-            audio_codes: Sampled and greedy audio-code predictions for the current step.
-            needs_audio: Mask identifying items that require audio prediction.
-            eos_id: Audio end-of-sequence token ID.
-            fs_factor: Number of audio frames stacked per rollout step.
-
-        Returns:
-            Batch indices of items whose audio rollout ended at the current step.
-        """
-        # Use backbone codes to preserve EOS prediction policy.
-        codes_t = audio_codes.codes_t
-        codes_t_argmax = audio_codes.codes_t_argmax
-
-        eos_in_sampled = codes_t == eos_id
-        eos_in_argmax = codes_t_argmax == eos_id
-        eos_any_codebook = eos_in_sampled.any(dim=1) | eos_in_argmax.any(dim=1)
-        eos_detected = eos_any_codebook.any(dim=1) & needs_audio
-        self.finished = self.finished | eos_detected
-
-        newly_ended = eos_detected & (self.audio_prediction_end_idx == -1)
-
-        if not newly_ended.any():
-            return []
-
-        # Intentionally retain the full stacked frame containing EOS.
-        current_frame_count = len(self.pred_codes) * fs_factor
-        end_frame_idx = torch.full_like(self.audio_prediction_end_idx, current_frame_count + fs_factor)
-        self.audio_prediction_end_idx = torch.where(newly_ended, end_frame_idx, self.audio_prediction_end_idx)
-
-        return torch.nonzero(newly_ended, as_tuple=False).flatten().tolist()
-
-    def add_audio_codes(
-        self,
-        audio_codes: _AudioCodesStep,
-    ) -> None:
-        """Append audio-code predictions from the current rollout step.
-
-        Args:
-            audio_codes: Backbone and optional local-transformer audio-code predictions.
-        """
-        self.pred_codes.append(audio_codes.codes_t)
-        self.pred_codes_logits.append(audio_codes.logits_t.unsqueeze(1))
-
-        if self.use_lt:
-            self.pred_codes_lt.append(audio_codes.codes_t_lt)
-            self.pred_codes_logits_lt.append(audio_codes.logits_t_lt.unsqueeze(1))
-
-    @property
-    def current_phoneme_step_idx(self) -> int:
-        """Get the current phoneme rollout step index."""
-        return len(self.pred_phoneme_tokens)
-
-    @property
-    def current_frame_idx(self) -> int:
-        """Get the current audio frame index."""
-        return sum(p.size(-1) for p in self.pred_codes)
-
-    @property
-    def batch_size(self) -> int:
-        """Get the rollout batch size."""
-        return self.config.batch_size
-
-    @property
-    def temperature(self) -> float:
-        """Get the audio sampling temperature."""
-        return self.config.temperature
-
-    @property
-    def topk(self) -> int:
-        """Get the top-k audio sampling limit."""
-        return self.config.topk
-
-    @property
-    def cfg_scale(self) -> float:
-        """Get the classifier-free guidance scale."""
-        return self.config.cfg_scale
-
-    @property
-    def device(self) -> torch.device:
-        """Get the rollout device."""
-        return self.config.device
-
-    @property
-    def use_lt(self) -> bool:
-        """Get whether local-transformer rollout is enabled."""
-        return self.config.use_local_transformer
-
-    @property
-    def phoneme_sampling_method(self) -> str:
-        """Get the phoneme sampling method."""
-        return self.config.phoneme_sampling_method
-
-    @property
-    def streaming_speech_delay(self) -> int:
-        """Get the text-token delay before audio generation begins."""
-        return self.config.training_mode.streaming_speech_delay
-
-    @property
-    def streaming_phonemes_delay(self) -> int:
-        """Get the text-token delay before phoneme generation begins."""
-        return self.config.training_mode.streaming_phonemes_delay
-
-
-def _create_status_from_state(state: _StreamingState) -> _ChannelStatus:
-    """Create per-channel status masks for the current rollout step.
-
-    Args:
-        state: Current streaming rollout state.
-
-    Returns:
-        A container with status masks indicating which context, text,
-        phoneme and audio channels are active for each batch item.
-    """
-    context = state.context_position < state.full_context_lens
-    text = (~context) & (~state.text_finished)
-    phoneme = (~context) & (state.text_tokens_seen >= state.streaming_phonemes_delay) & (~state.phoneme_stream_ended)
-    audio = (~context) & (state.text_tokens_seen >= state.streaming_speech_delay) & (~state.finished)
-
-    return _ChannelStatus(
-        context=context,
-        text=text,
-        phoneme=phoneme,
-        audio=audio,
-    )
-
-
-@dataclass
-class _InitContext:
-    """Store prepared context inputs used to initialize a teacher rollout."""
-
-    embeds: Tensor
-    lens: Tensor
-    min_len: Tensor
-    full_embeds: Tensor
-    full_lens: Tensor
-    dummy_embeds_uncond: Tensor
-    cache_position: Tensor
-    audio_codes: Tensor
-    audio_codes_lens: Tensor
-
-
-@dataclass
-class _TeacherPredictedCodes:
-    """Store audio-code predictions generated during a teacher rollout."""
-
-    codes: Tensor
-    logits: Tensor
-    codes_len: Tensor
-    codes_lt: Optional[Tensor]
-    logits_lt: Optional[Tensor]
-
-
-@dataclass
-class _TeacherOutput:
-    """Outputs produced by the teacher rollout used as distillation targets."""
-
-    codes: Tensor
-    logits: Tensor
-    lens: Tensor
-    sample_weights: Optional[Tensor]
-    rejected: Optional[Tensor]
-
-    codes_lt: Optional[Tensor]
-    logits_lt: Optional[Tensor]
-
-
-def _validate_predicted_codes(
-    codes: Tensor,
-    pred_codes_lens: Tensor,
-    start_indices: Tensor,
-    end_indices: Tensor,
-    fs_factor: int,
-) -> None:
-    """Validate teacher rollout audio-code boundaries and lengths.
-
-    Args:
-        codes: Predicted audio codes for the rollout.
-        pred_codes_lens: Finalized predicted-code lengths for each batch item.
-        start_indices: Audio prediction start indices for each batch item.
-        end_indices: Audio prediction end indices for each batch item.
-        fs_factor: Number of audio frames stacked per decoder step.
-
-    Raises:
-        RuntimeError: If rollout boundaries or lengths are invalid, unaligned with
-            stacked decoder steps or contain no audio predictions.
-    """
-    # If an item never entered audio generation, give it zero length by
-    # using its end position as its start position. Clamping -1 to zero
-    # would incorrectly assign predictions generated for other batch items to this item.
-    invalid_bounds = (start_indices < 0) | (end_indices < start_indices) | (end_indices > codes.size(-1))
-
-    if invalid_bounds.any():
-        invalid_items = torch.nonzero(invalid_bounds, as_tuple=False).flatten()
-        raise RuntimeError(
-            "Invalid teacher rollout boundaries: "
-            f"items={invalid_items.tolist()}, "
-            f"starts={start_indices[invalid_items].tolist()}, "
-            f"ends={end_indices[invalid_items].tolist()}, "
-            f"available_frames={codes.size(-1)}."
-        )
-
-    # All boundaries must align with complete stacked decoder steps because
-    # each stored logit position corresponds to one block of fs_factor unstacked codec frames.
-    unaligned_bounds = (
-        (start_indices % fs_factor != 0) | (end_indices % fs_factor != 0) | (pred_codes_lens % fs_factor != 0)
-    )
-    if unaligned_bounds.any():
-        invalid_items = torch.nonzero(unaligned_bounds, as_tuple=False).flatten()
-        raise RuntimeError(
-            "Teacher rollout boundaries are not aligned with the audio "
-            f"items={invalid_items.tolist()}, "
-            f"starts={start_indices[invalid_items].tolist()}, "
-            f"ends={end_indices[invalid_items].tolist()}, "
-            f"lengths={pred_codes_lens[invalid_items].tolist()}."
-        )
-
-    if pred_codes_lens.max().item() == 0:
-        raise RuntimeError("Teacher rollout produced no audio predictions.")
-
-
-class _TeacherInferenceEngine:
-    """Teacher-model inference engine for generating distillation targets."""
-
-    def __init__(
-        self,
-        model: EasyMagpieTTSModel,
-    ) -> None:
-        self.model = model
-
-    @property
-    def phoneme_stacking_factor(self) -> int:
-        """Get the number of phoneme frames stacked per prediction step."""
-        return self.model.phoneme_stacking_factor
-
-    @property
-    def audio_stacking_factor(self) -> int:
-        """Get the number of audio frames stacked per prediction step."""
-        return self.model.frame_stacking_factor
-
-    @property
-    def phoneme_vocab_size(self) -> int:
-        """Get the phoneme vocabulary size."""
-        return self.model.phoneme_vocab_size
-
-    @property
-    def num_audio_codebooks(self) -> int:
-        """Get the number of audio codebooks."""
-        return self.model.num_audio_codebooks
-
-    @property
-    def num_audio_tokens_per_codebook(self) -> int:
-        """Get the number of tokens in each audio codebook."""
-        return self.model.num_all_tokens_per_codebook
-
-    @property
-    def phoneme_bos_id(self) -> int:
-        """Get the phoneme BOS token ID."""
-        return self.model.phoneme_tokenizer.bos_token_id
-
-    @property
-    def phoneme_eos_id(self) -> int:
-        """Get the phoneme EOS token ID."""
-        return self.model.phoneme_tokenizer.eos_token_id
-
-    @property
-    def audio_bos_id(self) -> int:
-        """Get the audio BOS token ID."""
-        return self.model.audio_bos_id
-
-    @property
-    def audio_eos_id(self) -> int:
-        """Get the audio EOS token ID."""
-        return self.model.audio_eos_id
-
-    @property
-    def eos_id(self) -> int:
-        """Get the model EOS token ID."""
-        return self.model.eos_id
-
-    @property
-    def embedding_dim(self) -> int:
-        """Get the model embedding dimension."""
-        return self.model.cfg.embedding_dim
-
-    @property
-    def use_multiturn_dataset(self) -> bool:
-        """Get whether the model uses the multiturn dataset format."""
-        return self.model.cfg.get("use_multiturn_dataset", False)
-
-    def _prepare_init_context(
-        self,
-        context_audio_codes: Tensor,
-        context_audio_codes_lens: Tensor,
-        context_text_tokens: Tensor,
-        context_text_tokens_lens: Tensor,
-        training_mode: TrainingMode,
-    ) -> _InitContext:
-        """Prepare context tensors for initializing a CFG teacher rollout.
-
-        Args:
-            context_audio_codes: Context audio codec tokens.
-            context_audio_codes_lens: Lengths of the context audio-code sequences.
-            context_text_tokens: Context text token IDs.
-            context_text_tokens_lens: Lengths of the context text-token sequences.
-            training_mode: Training-mode settings used to prepare context inputs.
-
-        Returns:
-            A container with prepared context tensors, cache positions and embeddings
-            for the unconditional CFG branch.
-        """
-        bs = context_audio_codes.size(0)
-        device = context_audio_codes.device
-
-        embeds, lens, audio_codes, audio_codes_lens = self.model.prepare_context_tensors(
-            context_text_tokens=context_text_tokens,
-            context_text_tokens_lens=context_text_tokens_lens,
-            context_audio_codes=context_audio_codes,
-            context_audio_codes_lens=context_audio_codes_lens,
-            training_mode=training_mode,
-            dropout_conditional_input=False,
-        )
-        full_embeds, full_lens = embeds.clone(), lens.clone()
-        min_len = lens.min().item()
-        cache_position = torch.arange(min_len, device=device)
-
-        dummy_embeds_uncond = self.model.embed_text_tokens(
-            torch.full((1, 1), self.model.cfg_unk_token_id, device=device),
-            text_lens=torch.ones(1, dtype=torch.long, device=device),
-            disable_cas_embedding=self.model.disable_cas_for_context_text,
-        )
-        dummy_embeds_expanded = dummy_embeds_uncond.expand(bs, embeds.size(1), -1)
-        embeds = torch.cat([embeds, dummy_embeds_expanded], dim=0)
-
-        return _InitContext(
-            embeds=embeds,
-            lens=lens,
-            min_len=min_len,
-            full_embeds=full_embeds,
-            full_lens=full_lens,
-            dummy_embeds_uncond=dummy_embeds_uncond,
-            cache_position=cache_position,
-            audio_codes=audio_codes,
-            audio_codes_lens=audio_codes_lens,
-        )
-
-    def _prepare_phoneme_embeds(
-        self,
-        gt_phoneme_tokens: Optional[Tensor],
-        gt_phoneme_tokens_lens: Optional[Tensor],
-    ) -> tuple[Optional[Tensor], Optional[Tensor]]:
-        """Prepare stacked embeddings for optional ground-truth phoneme tokens.
-
-        Args:
-            gt_phoneme_tokens: Optional ground-truth phoneme token IDs.
-            gt_phoneme_tokens_lens: Optional lengths of the phoneme-token sequences.
-
-        Returns:
-            A tuple with ground-truth phoneme embeddings and their stacked sequence lengths.
-        """
-        embeds, lens = None, None
-
-        if gt_phoneme_tokens is not None and gt_phoneme_tokens_lens is not None:
-            gt_phoneme_expanded = gt_phoneme_tokens.unsqueeze(1)
-            gt_phoneme_stacked, lens = self.model.stack_codes(
-                codes=gt_phoneme_expanded,
-                codes_lens=gt_phoneme_tokens_lens,
-                bos_id=self.phoneme_bos_id,
-                eos_id=self.phoneme_eos_id,
-                stacking_factor=self.phoneme_stacking_factor,
-                num_codebooks=1,
-            )
-            embeds = self.model.embed_phoneme_tokens(gt_phoneme_stacked)
-
-            if self.use_multiturn_dataset:
-                phoneme_pad_id = getattr(self.model.phoneme_tokenizer, "pad", -1)
-                phoneme_mask = gt_phoneme_stacked[:, 0, :] != phoneme_pad_id
-                embeds = embeds * phoneme_mask.unsqueeze(2)
-
-        return embeds, lens
-
-    def _streaming_init(
-        self,
-        context_audio_codes: Tensor,
-        context_audio_codes_lens: Tensor,
-        context_text_tokens: Tensor,
-        context_text_tokens_lens: Tensor,
-        cfg_scale: float = 1.0,
-        use_lt: bool = False,
-        temperature: float = 0.7,
-        topk: int = 80,
-        phoneme_input_type: str = "predicted",
-        phoneme_sampling_method: str = "argmax",
-        gt_phoneme_tokens: Optional[Tensor] = None,
-        gt_phoneme_tokens_lens: Optional[Tensor] = None,
-        use_rollout_rejection: bool = False,
-        rejection_weight: Optional[float] = None,
-    ) -> _StreamingState:
-        """Initialize the streaming state and transformer cache for a teacher rollout.
-
-        Args:
-            context_audio_codes: Context audio codec tokens.
-            context_audio_codes_lens: Lengths of the context audio-code sequences.
-            context_text_tokens: Context text token IDs.
-            context_text_tokens_lens: Lengths of the context text-token sequences.
-            cfg_scale: Classifier-free guidance scale for the rollout.
-            use_lt: Whether to enable local-transformer predictions.
-            temperature: Audio sampling temperature.
-            topk: Number of highest-logit audio tokens retained for sampling.
-            phoneme_input_type: Source of phoneme inputs during rollout.
-            phoneme_sampling_method: Method used to sample predicted phoneme tokens.
-            gt_phoneme_tokens: Optional ground-truth phoneme token IDs.
-            gt_phoneme_tokens_lens: Optional lengths of the ground-truth phoneme sequences.
-            use_rollout_rejection: Whether to track rejected rollouts.
-            rejection_weight: Optional loss weight for rejected rollouts.
-
-        Returns:
-            An initialized streaming-state container.
-        """
-        with torch.no_grad():
-            training_mode = self.model.mode_name_to_mode[self.model.default_inference_mode]
-
-            init_context = self._prepare_init_context(
-                context_audio_codes=context_audio_codes,
-                context_audio_codes_lens=context_audio_codes_lens,
-                context_text_tokens=context_text_tokens,
-                context_text_tokens_lens=context_text_tokens_lens,
-                training_mode=training_mode,
-            )
-            transformer_out = self.model.forward(
-                inputs_embeds=init_context.embeds[:, : init_context.min_len, :],
-                attention_mask=None,
-                use_cache=True,
-                past_key_values=None,
-                cache_position=init_context.cache_position,
-            )
-            gt_phoneme_embeds, gt_phoneme_lens = self._prepare_phoneme_embeds(
-                gt_phoneme_tokens, gt_phoneme_tokens_lens
-            )
-            config = StreamingConfig(
-                batch_size=context_audio_codes.size(0),
-                device=context_audio_codes.device,
-                training_mode=training_mode,
-                use_cfg=True,
-                cfg_scale=cfg_scale,
-                use_local_transformer=use_lt,
-                temperature=temperature,
-                topk=topk,
-                phoneme_input_type=phoneme_input_type,
-                phoneme_sampling_method=phoneme_sampling_method,
-                dummy_context_embedding_unconditional=init_context.dummy_embeds_uncond,
-            )
-            state = _StreamingState.create(
-                config=config,
-                last_hidden=transformer_out.last_hidden_state,
-                past_kv=transformer_out.past_key_values,
-                min_context_len=init_context.min_len,
-                context_audio_codes=init_context.audio_codes,
-                context_audio_codes_lens=init_context.audio_codes_lens,
-                context_lens=init_context.lens,
-                full_context_embedding=init_context.full_embeds,
-                full_context_lens=init_context.full_lens,
-                gt_phoneme_embeddings=gt_phoneme_embeds,
-                gt_phoneme_lens=gt_phoneme_lens,
-                use_rollout_rejection=use_rollout_rejection,
-                rejection_weight=rejection_weight,
-            )
-            return state
-
-    def _prepare_input_context_phase(
-        self,
-        next_input: Tensor,
-        state: _StreamingState,
-        status: _ChannelStatus,
-    ) -> Tensor:
-        """Add active context embeddings to the next streaming-model input.
-
-        Args:
-            next_input: Input embeddings for the next rollout step.
-            state: Current streaming rollout state.
-            status: Status masks for the current rollout step.
-
-        Returns:
-            Next-step input embeddings with active context embeddings added.
-        """
-        if status.context.any():
-            ctx_positions = state.context_position.clone()
-            ctx_positions = ctx_positions.clamp(max=state.full_context_embedding.size(1) - 1)
-            indexes = torch.arange(state.batch_size, device=state.device)
-            ctx_emb = state.full_context_embedding[indexes, ctx_positions, :].unsqueeze(1)
-            context_mask = status.context.view(state.batch_size, 1, 1).float()
-            next_input = next_input + ctx_emb * context_mask
-        return next_input
-
-    def _prepare_input_text_phase(
-        self,
-        next_input: Tensor,
-        state: _StreamingState,
-        status: _ChannelStatus,
-        text_tokens: Optional[Tensor],
-    ) -> tuple[Tensor, _StreamingState]:
-        """Add active text embeddings to the next streaming-model input.
-
-        Args:
-            next_input: Input embeddings for the next rollout step.
-            state: Current streaming rollout state.
-            status: Status masks for the current rollout step.
-            text_tokens: Optional text token IDs for the current step.
-
-        Returns:
-            A tuple containing the updated input embeddings and streaming state.
-        """
-        if text_tokens is not None and status.text.any():
-            text_tokens_2d = text_tokens.unsqueeze(1)
-            text_lens = torch.ones(state.batch_size, dtype=torch.long, device=state.device)
-
-            text_embedded = self.model.embed_text_tokens(
-                text_tokens=text_tokens_2d,
-                text_lens=text_lens,
-                is_multiturn=self.use_multiturn_dataset,
-            )
-            if self.use_multiturn_dataset:
-                text_embedded[text_tokens_2d == self.model.pad_id] = 0.0
-
-            is_eos_token = (text_tokens == self.eos_id) & status.text
-            text_add_mask = status.text.view(state.batch_size, 1, 1).float()
-            next_input = next_input + text_embedded * text_add_mask
-            state.text_finished = state.text_finished | is_eos_token
-
-        elif text_tokens is None:
-            state.text_finished = state.text_finished | ~status.context
-
-        return next_input, state
-
-    def _prepare_input_phoneme_phase(
-        self,
-        next_input: Tensor,
-        state: _StreamingState,
-        status: _ChannelStatus,
-    ) -> tuple[Tensor, _StreamingState]:
-        """Add active phoneme embeddings to the next streaming-model input.
-
-        Args:
-            next_input: Input embeddings for the next rollout step.
-            state: Current streaming rollout state.
-            status: Status masks for the current rollout step.
-
-        Returns:
-            A tuple containing the updated input embeddings and streaming state.
-        """
-        if self.model.phoneme_tokenizer is None:
-            return next_input, state
-
-        bs = state.batch_size
-        device = state.device
-
-        if status.phoneme.any():
-            phoneme_emb = torch.zeros(bs, 1, self.embedding_dim, device=device)
-
-            if state.config.phoneme_input_type == "gt" and state.gt_phoneme_embeddings is not None:
-                within_gt_len = state.phoneme_steps < state.gt_phoneme_lens
-                positions = state.phoneme_steps.clamp(max=state.gt_phoneme_embeddings.size(1) - 1)
-                gt_emb = state.gt_phoneme_embeddings[torch.arange(bs, device=device), positions, :].unsqueeze(1)
-                phoneme_mask = (status.phoneme & within_gt_len).view(bs, 1, 1).float()
-                phoneme_emb = phoneme_emb + gt_emb * phoneme_mask
-            else:
-                first_phoneme_step = status.phoneme & (state.phoneme_steps == 0)
-                has_last_phoneme = status.phoneme & (~first_phoneme_step) & (state.last_phoneme_tokens is not None)
-
-                if first_phoneme_step.any():
-                    size = (bs, self.phoneme_stacking_factor, 1)
-                    phoneme_bos = torch.full(size, self.phoneme_bos_id, device=device).long()
-                    phoneme_bos_emb = self.model.embed_phoneme_tokens(phoneme_bos)
-                    first_mask = first_phoneme_step.view(bs, 1, 1).float()
-                    phoneme_emb = phoneme_emb + phoneme_bos_emb * first_mask
-
-                if has_last_phoneme.any() and state.last_phoneme_tokens is not None:
-                    last_phoneme_emb = self.model.embed_phoneme_tokens(state.last_phoneme_tokens.unsqueeze(2))
-                    last_mask = has_last_phoneme.view(bs, 1, 1).float()
-                    phoneme_emb = phoneme_emb + last_phoneme_emb * last_mask
-
-                state.phoneme_stream_ended = state.phoneme_stream_ended | state.phoneme_eos_detected
-
-            next_input = next_input + phoneme_emb
-
-        return next_input, state
-
-    def _prepare_input_audio_phase(
-        self,
-        next_input: Tensor,
-        state: _StreamingState,
-        status: _ChannelStatus,
-    ) -> tuple[Tensor, Optional[Tensor]]:
-        """Add active audio embeddings to the next streaming-model input.
-
-        Args:
-            next_input: Input embeddings for the next rollout step.
-            state: Current streaming rollout state.
-            status: Status masks for the current rollout step.
-
-        Returns:
-            A tuple containing the updated input embeddings and the optional audio
-            embeddings used for the current step.
-        """
-        bs = state.batch_size
-        device = state.device
-        audio_emb = None
-
-        if status.audio.any():
-            audio_emb = torch.zeros(bs, 1, self.embedding_dim, device=device)
-            # Use backbone codes to preserve rollout policy.
-            last_audio_codes = state.last_audio_codes
-
-            first_audio_step = status.audio & (state.audio_steps == 0)
-            has_last_audio = status.audio & ~first_audio_step & (last_audio_codes is not None)
-
-            if first_audio_step.any():
-                size = (bs, self.num_audio_codebooks * self.audio_stacking_factor, 1)
-                audio_bos = torch.full(size, self.audio_bos_id, device=device).long()
-                audio_bos_emb = self.model.embed_audio_tokens(audio_bos)
-                first_mask = first_audio_step.view(bs, 1, 1).float()
-                audio_emb = audio_emb + audio_bos_emb * first_mask
-
-            if has_last_audio.any() and last_audio_codes is not None:
-                last_audio_emb = self.model.embed_audio_tokens(last_audio_codes.unsqueeze(2))
-                last_mask = has_last_audio.view(bs, 1, 1).float()
-                audio_emb = audio_emb + last_audio_emb * last_mask
-
-            next_input = next_input + audio_emb
-
-        return next_input, audio_emb
-
-    def _prepare_input_cfg_phase(
-        self,
-        next_input: Tensor,
-        state: _StreamingState,
-        status: _ChannelStatus,
-        audio_emb: Optional[Tensor],
-    ) -> Tensor:
-        """Append unconditional CFG inputs to the next streaming-model input.
-
-        Args:
-            next_input: Conditional input embeddings for the next rollout step.
-            state: Current streaming rollout state.
-            status: Status masks for the current rollout step.
-            audio_emb: Optional audio embeddings for the current step.
-
-        Returns:
-            Input embeddings containing conditional and unconditional CFG branches.
-        """
-        uncond_context = state.config.dummy_context_embedding_unconditional.expand(state.batch_size, 1, -1)
-        uncond_zeros = torch.zeros_like(uncond_context)
-        context_mask = status.context.view(state.batch_size, 1, 1).float()
-        uncond_next_input = context_mask * uncond_context + (1 - context_mask) * uncond_zeros
-
-        if status.audio.any():
-            audio_mask = status.audio.view(state.batch_size, 1, 1).float()
-            uncond_next_input = uncond_next_input * (1 - audio_mask) + audio_emb * audio_mask
-
-        next_input = torch.cat([next_input, uncond_next_input], dim=0)
-
-        return next_input
-
-    def _prepare_streaming_input(
-        self,
-        state: _StreamingState,
-        text_tokens: Optional[Tensor],
-    ) -> tuple[Tensor, _ChannelStatus]:
-        """Prepare the combined CFG input for a streaming rollout step.
-
-        Args:
-            state: Current streaming rollout state.
-            text_tokens: Optional text token IDs at the current rollout position.
-
-        Returns:
-            A tuple containing the combined next-step input embeddings and the
-            masks that indicate active channels for each batch item.
-        """
-        bs = state.batch_size
-        device = state.device
-
-        status = _create_status_from_state(state)
-        next_input = torch.zeros(bs, 1, self.embedding_dim, device=device)
-
-        next_input = self._prepare_input_context_phase(next_input, state, status)
-        next_input, state = self._prepare_input_text_phase(next_input, state, status, text_tokens)
-        next_input, state = self._prepare_input_phoneme_phase(next_input, state, status)
-        next_input, audio_emb = self._prepare_input_audio_phase(next_input, state, status)
-        next_input = self._prepare_input_cfg_phase(next_input, state, status, audio_emb)
-
-        return next_input, status
-
-    def _predict_phoneme_tokens(
-        self,
-        state: _StreamingState,
-    ) -> _PhonemeTokensStep:
-        """Predict phoneme tokens for the current streaming rollout step.
-
-        Args:
-            state: Current streaming rollout state.
-
-        Returns:
-            A container with the sampled phoneme tokens and their prediction logits.
-        """
-        bs = state.batch_size
-        last_hidden = state.last_hidden
-        temp = state.temperature
-        topk = state.topk
-
-        logits_t = self.model.phoneme_final_proj(last_hidden[:, -1, :])
-        logits_t = logits_t[:bs]
-
-        if state.phoneme_sampling_method == "argmax":
-            tokens_t = self.model.sample_codes_from_logits_phoneme(logits_t, temperature=0.0)
-        else:
-            tokens_t = self.model.sample_codes_from_logits_phoneme(logits_t, temperature=temp, topk=topk)
-
-        logits_t = logits_t.view(bs, self.phoneme_stacking_factor, self.phoneme_vocab_size)
-
-        return _PhonemeTokensStep(tokens_t=tokens_t, logits_t=logits_t)
-
-    def _predict_audio_codes(
-        self,
-        state: _StreamingState,
-        use_lt: bool,
-    ) -> _AudioCodesStep:
-        """Predict backbone and optional local-transformer audio codes for one rollout step.
-
-        Args:
-            state: Current streaming rollout state.
-            use_lt: Whether to generate local-transformer audio-code predictions.
-
-        Returns:
-            A container with sampled and greedy backbone codes, backbone logits and
-            optional local-transformer predictions.
-        """
-        bs = state.batch_size
-        last_hidden = state.last_hidden
-        temp = state.temperature
-        topk = state.topk
-        cfg_scale = state.cfg_scale
-
-        last_hidden_audio = self.model.audio_out_projection(last_hidden[:, -1, :])
-        code_logits_t = self.model.final_proj(last_hidden_audio)
-
-        cond_logits = code_logits_t[:bs]
-        uncond_logits = code_logits_t[bs:]
-        logits_t = cfg_scale * cond_logits + (1.0 - cfg_scale) * uncond_logits
-
-        codes_t = self.model.sample_codes_from_logits(logits_t, temperature=temp, topk=topk)
-        codes_t_argmax = codes_t if temp <= 0.0 else self.model.sample_codes_from_logits(logits_t, temperature=0.01)
-        codes_t_lt, codes_t_argmax_lt, logits_t_lt = None, None, None
-
-        if use_lt:
-            codes_t_lt, logits_t_lt = _lt_sample_autoregressive(
-                model=self.model,
-                dec_output=last_hidden[:, -1, :],
-                temperature=temp,
-                topk=topk,
-                cfg_scale=cfg_scale,
-                use_kv_cache=True,
-                sanitize_logits=True,
-            )
-            codes_t_lt = codes_t_lt.reshape(bs, -1)
-            # As in the pre-training stage, we do not use greedy sampling for LT.
-            codes_t_argmax_lt = codes_t_lt
-
-        return _AudioCodesStep(
-            codes_t=codes_t,
-            codes_t_argmax=codes_t_argmax,
-            logits_t=logits_t,
-            codes_t_lt=codes_t_lt,
-            codes_t_argmax_lt=codes_t_argmax_lt,
-            logits_t_lt=logits_t_lt,
-        )
-
-    def _process_predictions(
-        self,
-        state: _StreamingState,
-        status: _ChannelStatus,
-    ) -> _StreamingState:
-        """Update rollout state with predictions from the current streaming step.
-
-        The method updates per-channel counters, generates active phoneme and audio
-        predictions, records them in the state and tracks detected sequence endings.
-
-        Args:
-            state: Current streaming rollout state.
-            status: Status masks for the current rollout step.
-
-        Returns:
-            Updated streaming rollout state.
-        """
-        state.update_counters(status)
-
-        if status.phoneme.any() and self.model.phoneme_tokenizer is not None:
-            state.update_phoneme_start_idx(status.phoneme)
-            phoneme_tokens = self._predict_phoneme_tokens(state)
-
-            # Retain predicted phoneme tokens/logits for rollout debugging.
-            # They are not used by the regular ground-truth phoneme training loss.
-            state.update_phoneme_step(
-                tokens=phoneme_tokens,
-                fs_factor=self.phoneme_stacking_factor,
-                vocab_size=self.phoneme_vocab_size,
-            )
-            state.update_phoneme_end_status(
-                tokens=phoneme_tokens,
-                needs_phoneme=status.phoneme,
-                eos_id=self.phoneme_eos_id,
-            )
-
-        if status.audio.any():
-            state.update_audio_start_idx(status.audio)
-            audio_codes = self._predict_audio_codes(state, use_lt=state.use_lt)
-
-            audio_codes.unstack(
-                batch_size=state.batch_size,
-                num_codebooks=self.num_audio_codebooks,
-                fs_factor=self.audio_stacking_factor,
-            )
-            state.update_last_audio_codes(
-                audio_codes=audio_codes,
-                needs_audio=status.audio,
-            )
-            newly_ended_items = state.update_audio_end_status(
-                audio_codes=audio_codes,
-                needs_audio=status.audio,
-                eos_id=self.audio_eos_id,
-                fs_factor=self.audio_stacking_factor,
-            )
-            for idx in newly_ended_items:
-                logging.info(f"End detected for item {idx} at streaming generation step {len(state.pred_codes) + 1}.")
-
-            state.add_audio_codes(audio_codes)
-
-        return state
-
-    def _streaming_step(
-        self,
-        state: _StreamingState,
-        text_tokens: Optional[Tensor] = None,
-    ) -> _StreamingState:
-        """Run one teacher-model streaming inference step.
-
-        The method prepares the next CFG input, updates the transformer cache and
-        hidden state and processes any phoneme or audio predictions.
-
-        Args:
-            state: Current streaming rollout state.
-            text_tokens: Optional text token IDs at the current rollout position.
-
-        Returns:
-            Updated streaming rollout state.
-        """
-        if state.finished.all():
-            return state
-
-        with torch.no_grad():
-            device = state.config.device
-
-            next_input, status = self._prepare_streaming_input(state, text_tokens)
-            cache_position = torch.tensor([state.cache_seq_len], device=device)
-
-            transformer_out = self.model.forward(
-                inputs_embeds=next_input,
-                attention_mask=None,
-                use_cache=True,
-                past_key_values=state.past_key_values,
-                cache_position=cache_position,
-            )
-            state.last_hidden = transformer_out.last_hidden_state
-            state.past_key_values = transformer_out.past_key_values
-            state.cache_seq_len += 1
-            state = self._process_predictions(state, status)
-
-        return state
-
-    def _finalize_predicted_codes(
-        self,
-        state: _StreamingState,
-    ) -> _TeacherPredictedCodes:
-        """Finalize teacher-rollout predictions into padded batch tensors.
-
-        The method extracts each item's predicted audio span, pads codes and logits to
-        the batch maximum length and includes local-transformer predictions when enabled.
-
-        Args:
-            state: Streaming state containing buffered rollout predictions and their
-                start and end indices.
-
-        Returns:
-            A container with finalized teacher audio codes, logits, sequence lengths
-            and optional local-transformer predictions.
-
-        Raises:
-            RuntimeError: If the rollout contains no audio predictions or invalid prediction boundaries.
-        """
-        bs = state.batch_size
-        device = state.device
-        use_lt = state.use_lt
-        fs_factor = self.audio_stacking_factor
-
-        if len(state.pred_codes) == 0:
-            raise RuntimeError("Teacher rollout produced no audio predictions.")
-
-        pred_codes_lt, pred_logits_lt = None, None
-
-        with torch.no_grad():
-            codes = torch.cat(state.pred_codes, dim=-1)
-            logits = torch.cat(state.pred_codes_logits, dim=1)
-
-            if use_lt:
-                codes_lt = torch.cat(state.pred_codes_lt, dim=-1)
-                logits_lt = torch.cat(state.pred_codes_logits_lt, dim=1)
-
-            raw_start_indices = state.audio_prediction_start_idx
-            end_indices = torch.where(
-                condition=state.audio_prediction_end_idx >= 0,
-                input=state.audio_prediction_end_idx,
-                other=torch.full_like(state.audio_prediction_end_idx, codes.size(-1)),
-            )
-
-            never_started = raw_start_indices < 0
-            start_indices = torch.where(
-                condition=never_started,
-                input=end_indices,
-                other=raw_start_indices,
-            )
-            pred_codes_lens = end_indices - start_indices
-
-            _validate_predicted_codes(codes, pred_codes_lens, start_indices, end_indices, fs_factor)
-
-            max_len = pred_codes_lens.max().item()
-            max_stacked_len = max_len // self.audio_stacking_factor
-            codes_size = (bs, self.num_audio_codebooks, max_len)
-            logits_dim = self.num_audio_codebooks * self.num_audio_tokens_per_codebook * self.audio_stacking_factor
-            logits_size = (bs, max_stacked_len, logits_dim)
-            pred_codes = torch.zeros(*codes_size, dtype=codes.dtype, device=device)
-            pred_logits = torch.zeros(*logits_size, dtype=logits.dtype, device=device)
-
-            if use_lt:
-                pred_codes_lt = torch.zeros(*codes_size, dtype=codes.dtype, device=device)
-                pred_logits_lt = torch.zeros(*logits_size, dtype=logits.dtype, device=device)
-
-            for i in range(bs):
-                start, end = start_indices[i].item(), end_indices[i].item()
-                start_, end_ = start // self.audio_stacking_factor, end // self.audio_stacking_factor
-                length = end - start
-
-                if length == 0:
-                    continue
-
-                pred_codes[i, :, :length] = codes[i, :, start:end]
-                pred_logits[i, : end_ - start_, :] = logits[i, start_:end_, :]
-
-                if use_lt:
-                    pred_codes_lt[i, :, :length] = codes_lt[i, :, start:end]
-                    pred_logits_lt[i, : end_ - start_, :] = logits_lt[i, start_:end_, :]
-
-        return _TeacherPredictedCodes(
-            codes=pred_codes,
-            logits=pred_logits,
-            codes_len=pred_codes_lens,
-            codes_lt=pred_codes_lt,
-            logits_lt=pred_logits_lt,
-        )
-
-    def _apply_rollout_upper_bound_rejection(
-        self,
-        state: _StreamingState,
-        batch: dict[str, Tensor],
-        upper_rejection_threshold: Optional[float],
-        rejection_weight: Optional[float],
-    ) -> _StreamingState:
-        """Reject unfinished rollouts that reach their per-item upper length bound.
-
-        Args:
-            state: Current streaming rollout state.
-            batch: Batch containing ground-truth audio lengths and optional metadata.
-            upper_rejection_threshold: Maximum allowed generated-length fraction of the
-                ground-truth audio length, or `None` to disable this rejection rule.
-            rejection_weight: Optional loss weight assigned to rejected items.
-
-        Returns:
-            Streaming rollout state updated with rejected items, final audio end
-            indices and optional sample weights.
-        """
-        gt_audio_lens = batch["audio_codes_lens"]
-
-        if upper_rejection_threshold is None or gt_audio_lens is None:
-            return state
-
-        if len(state.pred_codes) == 0:
-            return state
-
-        # Indices in pred_codes use the global rollout-frame coordinate system.
-        current_frame_count = state.current_frame_idx
-        upper_thresholds = torch.round(upper_rejection_threshold * gt_audio_lens).long().to(state.device)
-
-        # Compare the threshold with the number of frames generated for each item,
-        # not with the global rollout position. Items may start audio generation at
-        # different global positions because their context lengths differ.
-        has_started = state.audio_prediction_start_idx >= 0
-        start_indices = state.audio_prediction_start_idx.clamp_min(0)
-        generated_lens = current_frame_count - start_indices
-
-        should_reject = has_started & (~state.finished) & (generated_lens >= upper_thresholds)
-
-        if not should_reject.any():
-            return state
-
-        state.finished = state.finished | should_reject
-
-        if state.rejected is None:
-            state.rejected = torch.zeros_like(state.finished)
-
-        state.rejected = state.rejected | should_reject
-        newly_rejected = should_reject & (state.audio_prediction_end_idx == -1)
-
-        if newly_rejected.any():
-            state.audio_prediction_end_idx = torch.where(
-                condition=newly_rejected,
-                input=torch.full_like(state.audio_prediction_end_idx, current_frame_count),
-                other=state.audio_prediction_end_idx,
-            )
-
-        if rejection_weight is not None:
-            if state.sample_weights is None:
-                state.sample_weights = torch.ones(
-                    state.batch_size,
-                    dtype=torch.float,
-                    device=state.device,
-                )
-            state.sample_weights = torch.where(
-                condition=should_reject,
-                input=torch.full_like(state.sample_weights, rejection_weight),
-                other=state.sample_weights,
-            )
-
-        dataset_names = batch.get("dataset_names")
-        languages = batch.get("languages")
-
-        for item_idx in torch.nonzero(should_reject, as_tuple=False).flatten().tolist():
-            dataset_name = dataset_names[item_idx] if dataset_names is not None else "Unknown"
-            language = languages[item_idx] if languages is not None else "Unknown"
-            logging.info(
-                f"Item {item_idx} rejected by upper length bound at generation step "
-                f"{len(state.pred_codes)} (current length: {current_frame_count}, "
-                f"dataset: {dataset_name}, language: {language})."
-            )
-        return state
-
-    def _apply_max_steps_rejection(
-        self,
-        state: _StreamingState,
-        batch: dict[str, Tensor],
-        rejection_weight: Optional[float],
-    ) -> _StreamingState:
-        """Reject rollouts that remain unfinished at the decoding-step limit.
-
-        Args:
-            state: Current streaming rollout state.
-            batch: Batch containing optional dataset and language metadata.
-            rejection_weight: Optional loss weight assigned to rejected items.
-
-        Returns:
-            Streaming rollout state updated with rejected unfinished items, final audio
-            boundaries and optional sample weights.
-        """
-        should_reject = ~state.finished
-
-        if not should_reject.any():
-            return state
-
-        current_frame_count = state.current_frame_idx
-        has_started = state.audio_prediction_start_idx >= 0
-        never_started = should_reject & (~has_started)
-
-        # A never-started item must have zero finalized length. Using the current
-        # position as both start and end prevents it from inheriting predictions
-        # generated for other batch items.
-        state.audio_prediction_start_idx = torch.where(
-            condition=never_started,
-            input=torch.full_like(state.audio_prediction_start_idx, current_frame_count),
-            other=state.audio_prediction_start_idx,
-        )
-        state.audio_prediction_end_idx = torch.where(
-            condition=should_reject & (state.audio_prediction_end_idx == -1),
-            input=torch.full_like(state.audio_prediction_end_idx, current_frame_count),
-            other=state.audio_prediction_end_idx,
-        )
-        state.finished = state.finished | should_reject
-
-        if state.rejected is None:
-            state.rejected = torch.zeros_like(state.finished)
-
-        state.rejected = state.rejected | should_reject
-
-        if rejection_weight is not None:
-            if state.sample_weights is None:
-                state.sample_weights = torch.ones(
-                    state.batch_size,
-                    dtype=torch.float,
-                    device=state.device,
-                )
-            state.sample_weights = torch.where(
-                condition=should_reject,
-                input=torch.full_like(state.sample_weights, rejection_weight),
-                other=state.sample_weights,
-            )
-
-        dataset_names = batch.get("dataset_names")
-        languages = batch.get("languages")
-
-        for item_idx in torch.nonzero(should_reject, as_tuple=False).flatten().tolist():
-            dataset_name = dataset_names[item_idx] if dataset_names is not None else "Unknown"
-            language = languages[item_idx] if languages is not None else "Unknown"
-            logging.info(
-                f"Item {item_idx} rejected after reaching max_decoder_steps, "
-                f"(global frame position: {current_frame_count}, "
-                f"audio generation started: {bool(has_started[item_idx].item())}, "
-                f"dataset: {dataset_name}, language: {language})."
-            )
-
-        return state
-
-    def _apply_final_lower_bound_rejection(
-        self,
-        teacher_output: _TeacherOutput,
-        batch: dict[str, Tensor],
-        lower_rejection_threshold: Optional[float],
-        rejection_weight: Optional[float],
-    ) -> _TeacherOutput:
-        """Apply final lower-bound rejection to finalized teacher rollouts.
-
-        Marks previously accepted rollouts as rejected when their finalized generated
-        audio-code length is at or below the inclusive per-item lower bound. Optionally
-        assigns the configured loss weight to newly rejected items.
-
-        Args:
-            teacher_output: Finalized teacher-rollout predictions and metadata.
-            batch: Batch containing `"audio_codes_lens"` and optional sample metadata.
-            lower_rejection_threshold: Fraction of each ground-truth audio-code length
-                used to compute the inclusive lower rejection bound. A rollout at or
-                below the rounded bound is rejected, or `None` to disable this rule.
-            rejection_weight: Optional loss weight assigned to newly rejected items.
-
-        Returns:
-            Teacher output updated with lower-bound rejection flags and sample weights.
-
-        Raises:
-            KeyError: If `batch` does not contain `"audio_codes_lens"`.
-        """
-        dataset_names = batch.get("dataset_names")
-        languages = batch.get("languages")
-        gt_audio_lens = batch["audio_codes_lens"]
-
-        if lower_rejection_threshold is None or gt_audio_lens is None:
-            return teacher_output
-
-        device = teacher_output.lens.device
-        lower_thresholds = torch.round(lower_rejection_threshold * gt_audio_lens).long().to(device)
-        should_reject = teacher_output.lens <= lower_thresholds
-
-        # Do not apply lower-bound rejection to samples already rejected earlier.
-        if teacher_output.rejected is not None:
-            should_reject = should_reject & (~teacher_output.rejected)
-
-        if not should_reject.any():
-            return teacher_output
-
-        if teacher_output.rejected is None:
-            rejected = should_reject.clone()
-        else:
-            rejected = teacher_output.rejected | should_reject
-
-        teacher_output.rejected = rejected
-
-        if teacher_output.sample_weights is None:
-            sample_weights = torch.ones_like(teacher_output.lens, dtype=torch.float, device=device)
-        else:
-            sample_weights = teacher_output.sample_weights.clone()
-
-        if rejection_weight is not None:
-            sample_weights = torch.where(
-                condition=should_reject,
-                input=torch.full_like(sample_weights, rejection_weight),
-                other=sample_weights,
-            )
-
-        teacher_output.sample_weights = sample_weights
-
-        for item_idx in torch.nonzero(should_reject, as_tuple=False).flatten().tolist():
-            dataset_name = dataset_names[item_idx] if dataset_names is not None else "Unknown"
-            language = languages[item_idx] if languages is not None else "Unknown"
-            logging.info(
-                f"Item {item_idx} rejected by lower length bound after finalization "
-                f"(threshold: {lower_thresholds[item_idx].item()}, "
-                f"predicted length: {teacher_output.lens[item_idx].item()}, "
-                f"dataset: {dataset_name}, language: {language})."
-            )
-        return teacher_output
-
-    def infer_batch(
-        self,
-        batch: dict[str, Tensor],
-        use_lt: bool,
-        max_decoder_steps: int = 500,
-        temperature: float = 0.7,
-        topk: int = 80,
-        cfg_scale: float = 1.0,
-        phoneme_input_type: str = "pred",
-        phoneme_sampling_method: str = "argmax",
-        lower_rejection_threshold: Optional[float] = None,
-        upper_rejection_threshold: Optional[float] = None,
-        rejection_weight: Optional[float] = None,
-    ) -> _TeacherOutput:
-        """Generate finalized teacher-rollout distillation targets for a batch.
-
-        Performs streaming autoregressive generation from batch context and text
-        inputs, applies optional rollout-length rejection, and finalizes generated
-        audio-code targets and logits.
-
-        Args:
-            batch: Input batch.
-            use_lt: Whether to generate local-transformer predictions.
-            max_decoder_steps: Maximum number of streaming audio decoding steps.
-            temperature: Audio sampling temperature.
-            topk: Number of highest-logit audio tokens retained for sampling.
-            cfg_scale: Classifier-free guidance scale.
-            phoneme_input_type: Source used for phoneme inputs during rollout.
-            phoneme_sampling_method: Method used to sample predicted phoneme tokens.
-            lower_rejection_threshold: Fraction of ground-truth audio-code length used
-                for final inclusive lower-bound rejection, or `None` to disable it.
-            upper_rejection_threshold: Fraction of ground-truth audio-code length used
-                for upper-bound rejection during rollout, or `None` to disable it.
-            rejection_weight: Optional loss weight assigned to rejected rollouts.
-
-        Returns:
-            Teacher-rollout output containing finalized backbone codes, logits, and
-            lengths; optional local-transformer predictions; and rejection metadata.
-
-        Raises:
-            ValueError: If local-transformer predictions are requested for a non-AR
-                local transformer, or `batch` lacks `"context_audio_codes"`.
-            KeyError: If `batch` lacks another required input field, or lacks
-                `"audio_codes_lens"` while length-based rejection is enabled.
-            RuntimeError: If finalized backbone and local-transformer outputs have
-                inconsistent lengths.
-        """
-        if use_lt and self.model.local_transformer_type != LocalTransformerType.AR:
-            raise ValueError(
-                f"Only `LocalTransformerType.AR` is supported for local-transformer distillation, "
-                f"but got `{self.model.local_transformer_type}`."
-            )
-        if "context_audio_codes" not in batch:
-            raise ValueError("Missing required batch field `context_audio_codes` for teacher rollout inference.")
-
-        text = batch["text"]
-        bs = text.size(0)
-        device = text.device
-        text_lens = batch["text_lens"]
-        use_rollout_rejection = lower_rejection_threshold is not None or upper_rejection_threshold is not None
-
-        with torch.no_grad():
-            state = self._streaming_init(
-                context_audio_codes=batch["context_audio_codes"],
-                context_audio_codes_lens=batch["context_audio_codes_lens"],
-                context_text_tokens=batch["context_text_tokens"],
-                context_text_tokens_lens=batch["context_text_tokens_lens"],
-                cfg_scale=cfg_scale,
-                use_lt=use_lt,
-                temperature=temperature,
-                topk=topk,
-                phoneme_input_type=phoneme_input_type,
-                phoneme_sampling_method=phoneme_sampling_method,
-                gt_phoneme_tokens=batch.get("phoneme_tokens"),
-                gt_phoneme_tokens_lens=batch.get("phoneme_tokens_lens"),
-                use_rollout_rejection=use_rollout_rejection,
-                rejection_weight=rejection_weight,
-            )
-            logging.info("Generation started")
-
-            while not state.finished.all() and len(state.pred_codes) < max_decoder_steps:
-                positions = state.text_tokens_seen.clamp(max=text.size(1) - 1)
-                current_tokens = text[torch.arange(bs, device=device), positions]
-
-                current_tokens = torch.where(
-                    condition=state.text_tokens_seen >= text_lens,
-                    input=torch.full_like(current_tokens, self.eos_id),
-                    other=current_tokens,
-                )
-                state = self._streaming_step(state, text_tokens=current_tokens)
-
-                if upper_rejection_threshold is not None:
-                    state = self._apply_rollout_upper_bound_rejection(
-                        state, batch, upper_rejection_threshold, rejection_weight
-                    )
-
-            if use_rollout_rejection and not state.finished.all():
-                state = self._apply_max_steps_rejection(
-                    state=state,
-                    batch=batch,
-                    rejection_weight=rejection_weight,
-                )
-
-            teacher_codes = self._finalize_predicted_codes(state)
-
-            if teacher_codes.codes_lt is not None and teacher_codes.codes.size(-1) != teacher_codes.codes_lt.size(-1):
-                raise RuntimeError(
-                    "Mismatch between backbone and local-transformer generated code lengths: "
-                    f"`teacher_codes.codes` has length {teacher_codes.codes.size(-1)}, "
-                    f"while `teacher_codes.codes_lt` has length {teacher_codes.codes_lt.size(-1)}."
-                )
-            teacher_output = _TeacherOutput(
-                codes=teacher_codes.codes,
-                logits=teacher_codes.logits,
-                lens=teacher_codes.codes_len,
-                sample_weights=state.sample_weights,
-                codes_lt=teacher_codes.codes_lt,
-                logits_lt=teacher_codes.logits_lt,
-                rejected=state.rejected.clone() if use_rollout_rejection else None,
-            )
-            if lower_rejection_threshold is not None:
-                teacher_output = self._apply_final_lower_bound_rejection(
-                    teacher_output, batch, lower_rejection_threshold, rejection_weight
-                )
-
-        if use_rollout_rejection:
-            rejected_count = int(teacher_output.rejected.sum().item())
-            logging.info(f"Total rejected samples in batch: {rejected_count}/{bs}.")
-
-        return teacher_output
-
-
-def _collect_validation_outputs(
-    outputs: list[dict[str, Tensor]] | list[list[dict[str, Tensor]]],
-    key: str,
-) -> Optional[Tensor]:
-    """Average a validation metric across flat or nested step outputs.
-
-    Args:
-        outputs: Validation-step outputs, optionally grouped by dataloader.
-        key: Metric key to collect from each output dictionary.
-
-    Returns:
-        Mean value for the collected metric or `None` when no output contains
-        the requested key.
-    """
-    values = []
-
-    def _add(items: list[dict[str, Tensor]]) -> None:
-        for item in items:
-            val = item.get(key)
-            if val is not None:
-                values.append(val)
-
-    if outputs and isinstance(outputs[0], list):
-        for items in outputs:
-            _add(items)
-    else:
-        _add(outputs)
-
-    if not values:
-        return None
-
-    return torch.stack(values).mean()
-
-
-def _aggregate_language_metrics(
-    outputs: list[dict[str, Tensor]] | list[list[dict[str, Tensor]]],
-    device: torch.device,
-) -> Optional[dict[str, Tensor]]:
-    """Aggregate CER and WER by language.
-
-    Args:
-        outputs: Validation-step outputs, optionally grouped by dataloader.
-        device: Device for the returned metric tensors.
-
-    Returns:
-        A mapping of language-specific CER and WER metric names to their mean
-        values, or `None` when no language metrics are available.
-    """
-    lang_wer, lang_cer, output = {}, {}, {}
-
-    def _add(items: list[dict[str, Tensor]]):
-        for item in items:
-            languages = item.get(_LanguageMetricKey.languages)
-            cer_list = item.get(_LanguageMetricKey.cer_list)
-            wer_list = item.get(_LanguageMetricKey.wer_list)
-
-            if languages is None or cer_list is None or wer_list is None:
-                continue
-
-            for lang, cer, wer in zip(languages, cer_list, wer_list):
-                lang_cer.setdefault(lang, []).append(float(cer))
-                lang_wer.setdefault(lang, []).append(float(wer))
-
-    if outputs and isinstance(outputs[0], list):
-        for items in outputs:
-            _add(items)
-    else:
-        _add(outputs)
-
-    for lang in lang_wer:
-        key = f"{_MetricKey.cer}_lang_{lang}"
-        output[key] = torch.tensor(np.mean(lang_cer[lang]), device=device)
-
-        key = f"{_MetricKey.wer}_lang_{lang}"
-        output[key] = torch.tensor(np.mean(lang_wer[lang]), device=device)
-
-    if not output:
-        return None
-
-    return output
-
-
-class _LossKey(str, Enum):
-    """Enumeration of names used for logged loss values."""
-
-    loss = "loss"
-    kl_loss = "kl_loss"
-    ce_loss = "ce_loss"
-    nrmse_loss = "nrmse_loss"
-
-
-class _LossMode(str, Enum):
-    """Enumeration of model components associated with a loss."""
-
-    main = ""
-    local_transformer = "lt"
-    phoneme = "phoneme"
-
-
-def _get_loss_key(
-    key: _LossKey,
-    mode: _LossMode = _LossMode.main,
-) -> str:
-    """Build a logged loss key for a model component.
-
-    Args:
-        key: Base loss key.
-        mode: Model component associated with the loss.
-
-    Returns:
-        Loss key.
-    """
-    if mode == _LossMode.main:
-        return key.value
-    return f"{key.value}_{mode.value}"
-
-
-class _MetricKey(str, Enum):
-    """Enumeration of names used for validation metrics."""
-
-    cer = "cer"
-    wer = "wer"
-    ssim = "ssim"
-    utmos = "utmos"
-    rejection_rate = "rejection_rate"
-
-    def __str__(self) -> str:
-        return self.value
-
-    def __repr__(self) -> str:
-        return self.value
-
-
-class _LanguageMetricKey(str, Enum):
-    """Enumeration of keys used to collect per-language error metrics."""
-
-    languages = "languages"
-    cer_list = "cer_list"
-    wer_list = "wer_list"
-
-
-_MONITORED_KEYS_TRAIN: list[str] = [
-    _get_loss_key(_LossKey.kl_loss),
-    _get_loss_key(_LossKey.ce_loss),
-    _get_loss_key(_LossKey.nrmse_loss),
-    _get_loss_key(key=_LossKey.kl_loss, mode=_LossMode.local_transformer),
-    _get_loss_key(key=_LossKey.ce_loss, mode=_LossMode.local_transformer),
-    _get_loss_key(key=_LossKey.nrmse_loss, mode=_LossMode.local_transformer),
-    _get_loss_key(key=_LossKey.loss, mode=_LossMode.phoneme),
-    _get_loss_key(key=_LossKey.ce_loss, mode=_LossMode.phoneme),
-    _MetricKey.rejection_rate.value,
-]
-
-
-_MONITORED_KEYS_VALID: list[str] = [
-    *_MONITORED_KEYS_TRAIN,
-    _MetricKey.cer.value,
-    _MetricKey.wer.value,
-    _MetricKey.ssim.value,
-    _MetricKey.utmos.value,
-]
-
-
-@dataclass
 class _TextAugParams:
     """Text and phoneme augmentation settings."""
 
@@ -2203,22 +289,6 @@ class _ContextAudio:
 
     audio: Tensor
     lens: Tensor
-
-
-@dataclass
-class _ValidationAudioPaths:
-    """Generated and context audio file paths for validation."""
-
-    generated: list[Path] = field(default_factory=list)
-    context: list[Path] = field(default_factory=list)
-
-
-@dataclass
-class _ValidationSpeakerEmbeddings:
-    """Generated and context speaker embeddings for validation."""
-
-    generated: Optional[np.ndarray]
-    context: Optional[np.ndarray]
 
 
 def _compute_channel_delays(
@@ -2317,426 +387,8 @@ def _combine_channels(
     )
 
 
-@dataclass
-class _ValidationInferenceParams:
-    """Configuration for validation-time inference and quality evaluation."""
-
-    run_val_inference: bool
-    use_multilingual_asr: bool
-    use_utmos: bool
-    whisper_model_name: str
-    nemo_asr_model_name: str
-    ssim_model_name: str
-
-    @classmethod
-    def create_from_config(
-        cls,
-        cfg: DictConfig,
-    ) -> "_ValidationInferenceParams":
-        """Create validation-inference parameters from a model configuration.
-
-        Args:
-            cfg: Model configuration containing validation-inference settings.
-
-        Returns:
-            Validation-inference parameter container.
-        """
-        obj = cls(
-            run_val_inference=cfg.get("run_val_inference", False),
-            use_multilingual_asr=cfg.get("use_multilingual_asr", False),
-            use_utmos=cfg.get("use_utmos", False),
-            whisper_model_name=cfg.get("whisper_model_name", "openai/whisper-large-v3"),
-            nemo_asr_model_name=cfg.get("nemo_asr_model_name", "nvidia/parakeet-ctc-0.6b"),
-            ssim_model_name=cfg.get("ssim_model_name", "titanet_large"),
-        )
-        return obj
-
-
-class _ValidationInferenceEngine:
-    """Validation-time inference and quality-evaluation engine."""
-
-    def __init__(self, params: _ValidationInferenceParams) -> None:
-        self.params = params
-        self._is_active = False
-
-        self.default_device: torch.device = torch.device("cpu")
-
-        self.whisper_processor: Optional[WhisperProcessor] = None
-        self.whisper_model: Optional[WhisperForConditionalGeneration] = None
-        self.nemo_asr_model: Optional[nemo_asr.models.EncDecRNNTBPEModel] = None
-        self.speaker_verification_model: Optional[nemo_asr.models.EncDecSpeakerLabelModel] = None
-        self.utmos_calculator = None
-
-        if self.params.use_utmos and not _HAVE_UTMOSV2:
-            raise ImportError(
-                "UTMOSv2 is required for UTMOS scoring but is not installed. "
-                "Install it with: `pip install git+https://github.com/sarulab-speech/UTMOSv2.git@v1.2.1`."
-            )
-
-    @property
-    def is_active(self) -> bool:
-        """Get whether validation inference is initialized and active."""
-        return self._is_active
-
-    @property
-    def use_multilingual_asr(self) -> bool:
-        """Get whether validation uses the multilingual ASR model."""
-        return self.params.use_multilingual_asr
-
-    def _setup_asr_model(self) -> None:
-        """Initialize the ASR model used for validation transcription."""
-        if self.use_multilingual_asr:
-            self.whisper_processor = WhisperProcessor.from_pretrained(
-                pretrained_model_name_or_path=self.params.whisper_model_name
-            )
-            self.whisper_model = WhisperForConditionalGeneration.from_pretrained(
-                pretrained_model_name_or_path=self.params.whisper_model_name
-            )
-            self.whisper_model.eval()
-            self.whisper_model.to(self.default_device)
-            self.nemo_asr_model = None
-
-            for p in self.whisper_model.parameters():
-                p.requires_grad = False
-
-        else:
-            self.nemo_asr_model = nemo_asr.models.EncDecRNNTBPEModel.from_pretrained(
-                model_name=self.params.nemo_asr_model_name
-            )
-            self.nemo_asr_model.freeze()
-            self.nemo_asr_model.to(self.default_device)
-            self.whisper_processor = None
-            self.whisper_model = None
-
-    def _setup_ssim_model(self) -> None:
-        """Initialize the speaker-verification model used for similarity scoring."""
-        self.speaker_verification_model = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(
-            model_name=self.params.ssim_model_name
-        )
-        self.speaker_verification_model.freeze()
-        self.speaker_verification_model.to(self.default_device)
-
-    def _setup_utmos_model(self) -> None:
-        """Initialize the UTMOS calculator used for audio-quality scoring."""
-        self.utmos_calculator = UTMOSv2Calculator(device="cpu")
-
-    def setup(self) -> None:
-        """Initialize validation inference and quality-evaluation models when enabled."""
-        if not self.params.run_val_inference:
-            return
-
-        logging.info("Loading eval models for validation inference...")
-        self._setup_asr_model()
-        logging.info("ASR model initialized.")
-        self._setup_ssim_model()
-        logging.info("Speaker verification model initialized.")
-
-        if self.params.use_utmos:
-            self._setup_utmos_model()
-            logging.info("UTMOSv2 calculator initialized.")
-
-        logging.info("Eval models loaded successfully.")
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-        self._is_active = True
-
-    def switch_device(self, device: torch.device | str) -> None:
-        """Move loaded validation models to a target device.
-
-        Args:
-            device: Target device for the loaded ASR and speaker-verification models.
-        """
-        target = torch.device(device)
-
-        if self.whisper_model is not None:
-            self.whisper_model.to(target)
-
-        if self.nemo_asr_model is not None:
-            self.nemo_asr_model.to(target)
-
-        if self.speaker_verification_model is not None:
-            self.speaker_verification_model.to(target)
-
-        if target.type == "cpu" and torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-    def _transcribe_using_whisper(
-        self,
-        paths: list[Path],
-        languages: list[str],
-    ) -> list[str | None]:
-        """Transcribe audio files with the multilingual Whisper model.
-
-        Args:
-            paths: Audio file paths to transcribe.
-            languages: Language codes corresponding to the audio files.
-
-        Returns:
-            Normalized transcripts, with `None` for files that could not be transcribed.
-        """
-        if self.whisper_processor is None:
-            return [None] * len(paths)
-
-        device = self.whisper_model.device
-
-        try:
-            transcripts = transcribe_with_whisper_from_filepaths(
-                audio_filepaths=paths,
-                language=languages,
-                whisper_processor=self.whisper_processor,
-                whisper_model=self.whisper_model,
-                device=device,
-                normalizer=None,
-            )
-            transcripts = [process_text_for_cer(x) for x in transcripts]
-
-        except Exception as e:
-            logging.warning(f"Batched transcription failed, falling back to per-file mode: {e}.")
-
-            transcripts = []
-
-            for i, p in enumerate(paths):
-                lang = languages[i] if i < len(languages) else "en"
-
-                try:
-                    transcript = transcribe_with_whisper(
-                        audio_filepath=p,
-                        language=lang,
-                        whisper_processor=self.whisper_processor,
-                        whisper_model=self.whisper_model,
-                        device=device,
-                        normalizer=None,
-                    )
-                    transcripts.append(process_text_for_cer(transcript))
-
-                except Exception as inner_e:
-                    logging.warning(f"Transcription failed for {p}: {inner_e}.")
-                    transcripts.append(None)
-
-        return transcripts
-
-    def _transcribe_using_nemo(
-        self,
-        paths: list[Path],
-    ) -> list[str | None]:
-        """Transcribe audio files with the configured NeMo ASR model.
-
-        Args:
-            paths: Audio file paths to transcribe.
-
-        Returns:
-            Normalized transcripts, or `None` values when the ASR model is not available.
-        """
-        if self.nemo_asr_model is None:
-            return [None] * len(paths)
-
-        config = TranscribeConfig(
-            use_lhotse=False,
-            batch_size=len(paths),
-            num_workers=0,
-        )
-        transcripts = self.nemo_asr_model.transcribe(
-            audio=paths,
-            batch_size=len(paths),
-            override_config=config,
-        )
-        transcripts = [process_text_for_cer(t.text) for t in transcripts]
-
-        return transcripts
-
-    @torch.no_grad()
-    def transcribe_files(
-        self,
-        paths: list[Path],
-        languages: Optional[list[str]],
-    ) -> list[str | None]:
-        """Transcribe audio files with the configured validation ASR backend.
-
-        Args:
-            paths: Audio file paths to transcribe.
-            languages: Optional language codes corresponding to the audio files.
-                English is used when no languages are supplied.
-
-        Returns:
-            Normalized transcripts, with `None` for files that could not be transcribed.
-        """
-        if self.use_multilingual_asr:
-            if languages is None:
-                languages = ["en"] * len(paths)
-            transcripts = self._transcribe_using_whisper(paths, languages)
-        else:
-            transcripts = self._transcribe_using_nemo(paths)
-
-        return transcripts
-
-    @torch.no_grad()
-    def verify_speakers(self, paths: _ValidationAudioPaths):
-        """Extract speaker embeddings for generated and context audio.
-
-        Args:
-            paths: Generated and context audio file paths.
-
-        Returns:
-            A container with generated and context speaker embeddings or `None`
-            values when speaker verification is unavailable or fails.
-        """
-        generated_embeds, context_embeds = None, None
-
-        if self.speaker_verification_model is None:
-            return _ValidationSpeakerEmbeddings(generated=generated_embeds, context=context_embeds)
-
-        device = self.speaker_verification_model.device
-
-        try:
-            generated_embeds = get_speaker_embeddings_from_filepaths(
-                filepaths=paths.generated,
-                speaker_verification_model=self.speaker_verification_model,
-                device=device,
-            )
-            generated_embeds = generated_embeds.cpu().float().numpy()
-
-            context_embeds = get_speaker_embeddings_from_filepaths(
-                filepaths=paths.context,
-                speaker_verification_model=self.speaker_verification_model,
-                device=device,
-            )
-            context_embeds = context_embeds.cpu().float().numpy()
-
-        except Exception as e:
-            logging.warning(f"Speaker verification failed: {e}.")
-
-        return _ValidationSpeakerEmbeddings(generated=generated_embeds, context=context_embeds)
-
-    @torch.no_grad()
-    def get_utmos_scores(
-        self,
-        input_dir: Path,
-        filenames: list[str],
-    ) -> Optional[list[float]]:
-        """Calculate UTMOS quality scores for generated audio files.
-
-        Args:
-            input_dir: Directory containing the audio files.
-            filenames: Audio filenames to score.
-
-        Returns:
-            UTMOS scores in filename order or `None` when UTMOS scoring is not configured.
-
-        Raises:
-            RuntimeError: If UTMOS scoring fails.
-        """
-        scores = None
-
-        if self.utmos_calculator is None:
-            return scores
-
-        try:
-            res = self.utmos_calculator.process_directory(
-                input_dir=input_dir.as_posix(),
-                batch_size=len(filenames),
-                num_workers=0,
-                val_list=filenames,
-            )
-            scores = [float(item["predicted_mos"]) for item in res]
-
-        except Exception as e:
-            raise RuntimeError(f"UTMOSv2 scoring failed: {e}.") from e
-
-        return scores
-
-
-def _compute_ssim_score(x: np.ndarray, y: np.ndarray) -> float:
-    """Compute cosine similarity between two speaker-embedding vectors.
-
-    Args:
-        x: First speaker-embedding vector.
-        y: Second speaker-embedding vector.
-
-    Returns:
-        Cosine similarity, or `0.0` when either embedding has zero norm.
-    """
-    norm = np.linalg.norm(x) * np.linalg.norm(y)
-
-    if norm == 0.0:
-        return 0.0
-
-    score = float(np.dot(x, y) / norm)
-    return score
-
-
-def _compute_validation_metrics(
-    batch: dict[str, Tensor | list],
-    transcripts: list[str | None],
-    speaker_embeds: _ValidationSpeakerEmbeddings,
-    utmos_scores: Optional[list[float]],
-    device: torch.device,
-    use_multilingual_asr: bool,
-) -> dict[str, Tensor | list[float] | list[str]]:
-    """Compute validation metrics from generated audio and reference data.
-
-    Args:
-        batch: Validation batch containing reference transcripts and optional
-            language metadata.
-        transcripts: Generated-audio transcripts, with `None` for failed
-            transcriptions.
-        speaker_embeds: Generated and context speaker embeddings.
-        utmos_scores: Optional UTMOS scores for generated audio.
-        device: Device for aggregate metric tensors.
-        use_multilingual_asr: Whether to include per-language CER and WER values.
-
-    Returns:
-        Mapping containing available aggregate CER, WER, speaker-similarity and
-        UTMOS metrics, plus per-language error values when requested.
-    """
-    output = {}
-    bs = len(transcripts)
-    batch_cer, batch_wer, batch_ssim, batch_utmos = [], [], [], []
-
-    for i in range(bs):
-        if transcripts[i] is None:
-            continue
-
-        gt_transcript = process_text_for_cer(batch["raw_texts"][i])
-        cer = min(word_error_rate([transcripts[i]], [gt_transcript], use_cer=True), 1.0)
-        wer = min(word_error_rate([transcripts[i]], [gt_transcript], use_cer=False), 1.0)
-        utmos = None if utmos_scores is None else float(utmos_scores[i])
-        ssim = None
-
-        if speaker_embeds.generated is not None and speaker_embeds.context is not None:
-            ssim = _compute_ssim_score(speaker_embeds.generated[i], speaker_embeds.context[i])
-
-        batch_cer.append(cer)
-        batch_wer.append(wer)
-
-        if ssim is not None:
-            batch_ssim.append(ssim)
-
-        if utmos is not None:
-            batch_utmos.append(utmos)
-
-    if batch_cer and batch_wer:
-        output[_MetricKey.cer] = torch.tensor(np.mean(batch_cer), device=device)
-        output[_MetricKey.wer] = torch.tensor(np.mean(batch_wer), device=device)
-
-        if use_multilingual_asr:
-            langs = batch.get("languages", ["en"] * bs)
-            output[_LanguageMetricKey.languages] = [langs[i] for i in range(bs) if transcripts[i] is not None]
-            output[_LanguageMetricKey.cer_list] = batch_cer
-            output[_LanguageMetricKey.wer_list] = batch_wer
-
-    if batch_ssim:
-        output[_MetricKey.ssim] = torch.tensor(np.mean(batch_ssim), device=device)
-
-    if batch_utmos:
-        output[_MetricKey.utmos] = torch.tensor(np.mean(batch_utmos), device=device)
-
-    return output
-
-
 def _compute_rejection_rate(
-    teacher_output: _TeacherOutput,
+    teacher_output: TeacherOutput,
 ) -> Tensor:
     """Compute the fraction of teacher rollouts rejected in a batch.
 
@@ -2814,7 +466,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
         trainer: "Trainer" = None,
     ) -> None:
         _validate_configuration(cfg)
-        val_inference_params = _ValidationInferenceParams.create_from_config(cfg)
+        val_inference_params = ValidationInferenceParams.create_from_config(cfg)
         cfg = _disable_default_val_inference(cfg)
 
         super().__init__(cfg, trainer)
@@ -2823,8 +475,8 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
 
         self.audio_dir: Optional[Path] = None
         self._teacher_model: Optional[EasyMagpieTTSModel] = None
-        self._teacher_inference_engine: Optional[_TeacherInferenceEngine] = None
-        self._val_inference_engine = _ValidationInferenceEngine(params=val_inference_params)
+        self._teacher_inference_engine: Optional[TeacherInferenceEngine] = None
+        self._val_inference_engine = ValidationInferenceEngine(params=val_inference_params)
 
         self.rejection_debug_dir: Optional[Path] = None
         self.rejection_debug_meta_path: Optional[Path] = None
@@ -2987,7 +639,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
         if self._teacher_model is None:
             logging.info("Loading teacher model from checkpoint.")
             self._teacher_model = _get_teacher_model(self.cfg).to(self.device)
-            self._teacher_inference_engine = _TeacherInferenceEngine(model=self._teacher_model)
+            self._teacher_inference_engine = TeacherInferenceEngine(model=self._teacher_model)
             logging.info("Teacher model loaded and frozen.")
 
     def _configure_rejection_debug_attributes(self) -> None:
@@ -3337,7 +989,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
         use_lt: bool,
         mode: str = "train",
         training_mode: Optional[TrainingMode] = None,
-    ) -> _StudentOutput:
+    ) -> StudentOutput:
         """Prepare a distillation batch and run the student forward pass.
 
         The method combines the context, text, phoneme and teacher-audio channels,
@@ -3393,7 +1045,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
             )
             logits_phonemes = self.phoneme_final_proj(pred_embeddings_phoneme)
 
-        return _StudentOutput(
+        return StudentOutput(
             logits=logits,
             logits_lt=logits_lt,
             logits_phonemes=logits_phonemes,
@@ -3404,7 +1056,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
     def _update_batch(
         self,
         batch: dict[str, Tensor | list],
-        teacher_output: _TeacherOutput,
+        teacher_output: TeacherOutput,
         use_lt: bool,
     ) -> dict[str, Tensor | list]:
         """Add teacher-rollout audio targets to a batch in place.
@@ -3465,7 +1117,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
 
         return weight
 
-    def _get_kl_criterion(self, mode: _LossMode) -> Callable:
+    def _get_kl_criterion(self, mode: LossMode) -> Callable:
         """Return the KL-divergence criterion for the requested model component.
 
         Args:
@@ -3474,9 +1126,9 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
         Returns:
             Configured KL-divergence loss criterion.
         """
-        return self._lt_codes_kl_criterion if mode == _LossMode.local_transformer else self._codes_kl_criterion
+        return self._lt_codes_kl_criterion if mode == LossMode.local_transformer else self._codes_kl_criterion
 
-    def _get_ce_criterion(self, mode: _LossMode) -> Callable:
+    def _get_ce_criterion(self, mode: LossMode) -> Callable:
         """Return the cross-entropy criterion for the requested model component.
 
         Args:
@@ -3485,9 +1137,9 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
         Returns:
             Configured cross-entropy loss criterion.
         """
-        return self._lt_codes_ce_criterion if mode == _LossMode.local_transformer else self._codes_ce_criterion
+        return self._lt_codes_ce_criterion if mode == LossMode.local_transformer else self._codes_ce_criterion
 
-    def _get_nrmse_criterion(self, mode: _LossMode) -> Callable:
+    def _get_nrmse_criterion(self, mode: LossMode) -> Callable:
         """Return the NRMSE criterion for the requested model component.
 
         Args:
@@ -3496,7 +1148,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
         Returns:
             Configured normalized root-mean-square-error loss criterion.
         """
-        return self._lt_codes_nrmse_criterion if mode == _LossMode.local_transformer else self._codes_nrmse_criterion
+        return self._lt_codes_nrmse_criterion if mode == LossMode.local_transformer else self._codes_nrmse_criterion
 
     def _compute_codes_loss_helper(
         self,
@@ -3505,7 +1157,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
         student_logits: Tensor,
         mask: Tensor,
         sample_weights: Optional[Tensor],
-        mode: _LossMode,
+        mode: LossMode,
     ) -> dict[str, Tensor]:
         """Compute audio-code distillation loss terms.
 
@@ -3543,7 +1195,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
             )
             kl_loss = kl_loss * (temperature**2)
 
-            output[_get_loss_key(_LossKey.kl_loss, mode)] = kl_loss
+            output[get_loss_key(LossKey.kl_loss, mode)] = kl_loss
 
         if self.audio_ce_loss_weight > 0.0:
             ce_loss = self._get_ce_criterion(mode)(
@@ -3552,10 +1204,10 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
                 mask=mask,
                 sample_weights=sample_weights,
             )
-            output[_get_loss_key(_LossKey.ce_loss, mode)] = ce_loss
+            output[get_loss_key(LossKey.ce_loss, mode)] = ce_loss
 
-        kl_term = output.get(_get_loss_key(_LossKey.kl_loss, mode), 0.0)
-        ce_term = output.get(_get_loss_key(_LossKey.ce_loss, mode), 0.0)
+        kl_term = output.get(get_loss_key(LossKey.kl_loss, mode), 0.0)
+        ce_term = output.get(get_loss_key(LossKey.ce_loss, mode), 0.0)
         loss = self.audio_kl_loss_weight * kl_term + self.audio_ce_loss_weight * ce_term
 
         if self.audio_nrmse_loss_weight > 0.0:
@@ -3565,10 +1217,10 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
                 mask=mask,
                 sample_weights=sample_weights,
             )
-            output[_get_loss_key(_LossKey.nrmse_loss, mode)] = nrmse_loss
+            output[get_loss_key(LossKey.nrmse_loss, mode)] = nrmse_loss
             loss = loss + self.audio_nrmse_loss_weight * nrmse_loss
 
-        output[_get_loss_key(_LossKey.loss, mode)] = loss
+        output[get_loss_key(LossKey.loss, mode)] = loss
 
         return output
 
@@ -3596,7 +1248,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
             RuntimeError: If a phoneme target length exceeds the time coverage of the student logits.
         """
         output: dict[str, Tensor] = {}
-        mode = _LossMode.phoneme
+        mode = LossMode.phoneme
 
         target_tokens = batch.get("phoneme_tokens")
         tokens_lens = batch.get("phoneme_tokens_lens")
@@ -3643,15 +1295,15 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
         else:
             loss = torch.tensor(0.0, device=student_logits.device)
 
-        output[_get_loss_key(_LossKey.loss, mode)] = loss
+        output[get_loss_key(LossKey.loss, mode)] = loss
 
         return output
 
     def _compute_loss(
         self,
         batch: dict[str, Tensor | list],
-        teacher_output: _TeacherOutput,
-        student_output: _StudentOutput,
+        teacher_output: TeacherOutput,
+        student_output: StudentOutput,
         use_lt: bool,
     ) -> dict[str, Tensor]:
         """Compute the total distillation loss for a batch.
@@ -3677,9 +1329,9 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
             student_logits=student_output.logits,
             mask=codes_mask,
             sample_weights=teacher_output.sample_weights,
-            mode=_LossMode.main,
+            mode=LossMode.main,
         )
-        backbone_loss_key = _get_loss_key(key=_LossKey.loss, mode=_LossMode.main)
+        backbone_loss_key = get_loss_key(key=LossKey.loss, mode=LossMode.main)
         output["loss"] = output[backbone_loss_key]
 
         if use_lt:
@@ -3691,11 +1343,11 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
                 student_logits=student_output.logits_lt,
                 mask=lt_codes_mask,
                 sample_weights=teacher_output.sample_weights,
-                mode=_LossMode.local_transformer,
+                mode=LossMode.local_transformer,
             )
             output.update(lt_output)
             lt_weight = self._get_local_transformer_loss_weight()
-            lt_loss_key = _get_loss_key(key=_LossKey.loss, mode=_LossMode.local_transformer)
+            lt_loss_key = get_loss_key(key=LossKey.loss, mode=LossMode.local_transformer)
             output["loss"] = (1 - lt_weight) * output["loss"] + lt_weight * output[lt_loss_key]
             del output[lt_loss_key]
 
@@ -3706,7 +1358,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
                 sample_weights=teacher_output.sample_weights,
             )
             output.update(phonemes_output)
-            phoneme_loss_key = _get_loss_key(key=_LossKey.loss, mode=_LossMode.phoneme)
+            phoneme_loss_key = get_loss_key(key=LossKey.loss, mode=LossMode.phoneme)
             output["loss"] = output["loss"] + self.phoneme_ce_loss_weight * output[phoneme_loss_key]
 
         return output
@@ -3765,7 +1417,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
     def _log_rejections(
         self,
         batch: dict[str, Tensor | list],
-        teacher_output: _TeacherOutput,
+        teacher_output: TeacherOutput,
     ) -> None:
         """Save debugging artifacts for rejected teacher-rollout samples.
 
@@ -3878,7 +1530,8 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
 
         Generates teacher targets for the batch, optionally records rejected rollouts,
         updates the batch with teacher outputs, and computes student distillation
-        losses. During training with rollout rejection enabled, also reports the
+        losses. Reports generation-loop and total teacher rollout wall times in
+        seconds. During training with rollout rejection enabled, also reports the
         teacher-rollout rejection rate.
 
         Args:
@@ -3918,8 +1571,11 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
         student_output = self._process_batch(batch, use_lt, mode)
         output = self._compute_loss(batch, teacher_output, student_output, use_lt)
 
+        for key, value in teacher_output.timing_metrics.items():
+            output[key] = torch.tensor(value, device=self.device)
+
         if mode == "train" and self.use_rollout_rejection:
-            output[_MetricKey.rejection_rate.value] = _compute_rejection_rate(teacher_output)
+            output[MetricKey.rejection_rate.value] = _compute_rejection_rate(teacher_output)
 
         return output
 
@@ -3928,7 +1584,10 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
         batch: dict[str, Tensor | list],
         batch_idx: int,
     ) -> Tensor:
-        """Run one CFG-distillation optimization step and logs training metrics.
+        """Run one CFG-distillation optimization step and log training metrics.
+
+        Logs worker-averaged ``train/rollout_generation_time`` and ``train/rollout_total_time``
+        in seconds per batch, on each step and averaged over the epoch.
 
         Args:
             batch: Collated training batch.
@@ -3952,7 +1611,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
             on_step=True,
             on_epoch=True,
         )
-        for key in _MONITORED_KEYS_TRAIN:
+        for key in (*MONITORED_KEYS_TRAIN, *ROLLOUT_TIMING_KEYS):
             if key in outputs:
                 self.log(
                     name=f"train/{key}",
@@ -3961,7 +1620,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
                     sync_dist=True,
                     batch_size=bs,
                     on_step=True,
-                    on_epoch=True,
+                    on_epoch=key in ON_EPOCH_TRAIN_KEYS,
                 )
 
         if (
@@ -4054,7 +1713,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
         infer_output: InferBatchOutput,
         context_audio: _ContextAudio,
         batch_idx: int,
-    ) -> _ValidationAudioPaths:
+    ) -> ValidationAudioPaths:
         """Save generated and context audio for a validation batch.
 
         Writes each generated waveform and its corresponding context waveform to the
@@ -4070,7 +1729,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
             A container with paths to the saved generated and context audio files.
         """
         bs = infer_output.predicted_audio.size(0)
-        paths = _ValidationAudioPaths()
+        paths = ValidationAudioPaths()
 
         for idx in range(bs):
             audio_np = infer_output.predicted_audio[idx].float().detach().cpu().numpy()
@@ -4135,7 +1794,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
             input_dir=self.audio_dir,
             filenames=[p.name for p in paths.generated],
         )
-        output = _compute_validation_metrics(
+        output = compute_validation_metrics(
             batch=batch,
             transcripts=transcripts,
             speaker_embeds=speaker_embeds,
@@ -4183,6 +1842,8 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
     ) -> None:
         """Aggregate and log validation loss and monitored metrics.
 
+        Rollout times are averaged over validation batches and workers, in seconds.
+
         Args:
             val_outputs: Per-batch validation outputs from one dataloader or from all
                 validation dataloaders.
@@ -4190,7 +1851,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
             aggregated: Whether the outputs represent the aggregate across validation
                 dataloaders. When `True`, also logs `"val_loss"` metric.
         """
-        val_loss = _collect_validation_outputs(val_outputs, key="loss")
+        val_loss = collect_validation_outputs(val_outputs, key="loss")
 
         if val_loss is not None:
             self.log(
@@ -4211,8 +1872,8 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
                     enable_graph=False,
                 )
 
-        for key in _MONITORED_KEYS_VALID:
-            value = _collect_validation_outputs(val_outputs, key)
+        for key in (*MONITORED_KEYS_VALID, *ROLLOUT_TIMING_KEYS):
+            value = collect_validation_outputs(val_outputs, key)
             if value is not None:
                 self.log(
                     name=f"{prefix}/{key}",
@@ -4237,7 +1898,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
                 validation dataloaders.
             prefix: Metric namespace to use when logging values.
         """
-        metrics = _aggregate_language_metrics(val_outputs, device=self.device)
+        metrics = aggregate_language_metrics(val_outputs, device=self.device)
 
         if metrics is None:
             return

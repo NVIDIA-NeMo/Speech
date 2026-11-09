@@ -42,6 +42,25 @@ Glossary
    * - **EU25**
      - English, German, Spanish, French, Italian, Polish, Portuguese, Dutch, Russian, Ukrainian, Belarusian, Croatian, Czech, Bulgarian, Danish, Estonian, Finnish, Greek, Hungarian, Latvian, Lithuanian, Maltese, Romanian, Slovak, Slovenian, Swedish
 
+Speech Language Models (SALM)
+-----------------------------
+
+These checkpoints use the SpeechLM2 collection. Follow the
+:doc:`Nemotron Transcribe guide </speechlm2/nemotron_transcribe>` for serving and task prompts.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Model
+     - Capabilities
+     - Languages
+     - Parameters
+   * - `Nemotron 3.5 Transcribe <https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B>`__
+     - Offline ASR, translation, contextual and speaker-attributed transcription, word timestamps, audio QA
+     - 40; task coverage varies by language (see model card)
+     - 34B total, approximately 4.3B active, including the audio encoder
+
+
 Canary Models (AED)
 -------------------
 

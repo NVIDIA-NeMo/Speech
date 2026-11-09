@@ -899,7 +899,9 @@ def _build_draft_config(
     draft_dict.update(
         {
             "model_type": "qwen3",
-            "architectures": ["Qwen3DFlash2DraftModel" if variant == "dflash2" else "Qwen3DFlashDraftModel"],
+            # vLLM serves DFlash2 drafts only under its own name; NeMo picks the
+            # draft class from dflash.variant, not from this field.
+            "architectures": ["DFlash2DraftModel" if variant == "dflash2" else "Qwen3DFlashDraftModel"],
             "num_hidden_layers": draft_layers,
             "max_window_layers": draft_layers,
             "is_causal": False,

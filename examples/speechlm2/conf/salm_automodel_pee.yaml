@@ -43,6 +43,8 @@ model:
   # Opt in to native token-major (THD) Transformer/MoE/PEE activations during training/validation.
   # The training dataset also keeps raw waveforms packed through preprocessing when enabled.
   # Default false preserves historical behavior; generation always keeps its streaming-safe path.
+  # A FastConformer ASR branch runs sequence-packed as well (ConformerEncoder.forward_sequence_packed):
+  # its rel_pos attention needs dropout_att 0, and its BatchNorm in training mode sees the valid frames only.
   packed_encoder_sequences: false
   # Separately opt in to the flattened differentiable CP gather.
   packed_encoder_cp: false
@@ -287,7 +289,7 @@ data:
     # use_bucketing: true
     # use_multimodal_sampling: true
     # use_packed_sequence_sampling: false  # Sum lengths; requires a padding-free model path
-    # packing_buffer_size: 128  # Packed best-fit lookahead, with or without bucketing
+    # packing_buffer_size: 1024  # Packed best-fit lookahead, with or without bucketing
     # shuffle_buffer_size: 10000  # Reservoir size for ordinary non-packed samplers; legacy packed configs are aliased
     # measure_total_length: true
     # Note: `batch_tokens`, `bucket_duration_bins`, and `max_tokens` all represent tokens as

@@ -330,7 +330,8 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
     ) -> torch.Tensor:
         """The layer over token-flat input of all utterances, with explicit boundaries instead of padding masks.
 
-        Streaming caches, adapters and local attention are not supported in this form.
+        Streaming caches, adapters, local attention and the ``save_encoder_tensors`` capture
+        are not supported in this form.
 
         Args:
             x: input signals, shape ``(T_total, d_model)``.
@@ -364,12 +365,7 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         x = self.feed_forward2(x)
         residual = residual + self.dropout(x) * self.fc_factor
 
-        x = self.norm_out(residual)
-        if self.is_access_enabled(getattr(self, "model_guid", None)) and self.access_cfg.get(
-            'save_encoder_tensors', False
-        ):
-            self.register_accessible_tensor(name='encoder', tensor=x)
-        return x
+        return self.norm_out(residual)
 
 
 class ConformerConvolution(nn.Module):
@@ -518,6 +514,8 @@ class ConformerConvolution(nn.Module):
         which hold the bias and the boundary tails of the depthwise convolution,
         so the two forms differ in training mode by the share of padding in the batch and agree in evaluation mode.
         Instance and group normalization need per-utterance statistics and are not supported here.
+        Without any frame (a rank whose share of a batch is empty) the convolution is skipped
+        and its parameters keep a zero gradient edge.
 
         Args:
             x: input signals, shape ``(T_total, d_model)``.
@@ -536,10 +534,19 @@ class ConformerConvolution(nn.Module):
         else:
             x = self.pointwise_activation(x)
 
-        # one channel-first sequence over the gapped slots; the empty slots are the zero padding between utterances
-        slots = layout.scatter(x).transpose(0, 1).unsqueeze(0)
-        slots = self.depthwise_conv(slots)
-        x = layout.gather(slots.squeeze(0).transpose(0, 1))
+        if x.shape[0] == 0:
+            # no frame to convolve, and a batch without utterances has a layout without slots,
+            # which the convolution cannot take; the kernel keeps its zero gradient edge
+            # as the empty matmuls keep the other parameters'
+            anchor = x.new_zeros(())
+            for parameter in self.depthwise_conv.parameters():
+                anchor = anchor + parameter.sum().to(anchor.dtype) * 0.0
+            x = x + anchor
+        else:
+            # one channel-first sequence over the gapped slots; the empty slots are the zero padding between utterances
+            slots = layout.scatter(x).transpose(0, 1).unsqueeze(0)
+            slots = self.depthwise_conv(slots)
+            x = layout.gather(slots.squeeze(0).transpose(0, 1))
 
         x = self.batch_norm(x)
         x = self.activation(x)

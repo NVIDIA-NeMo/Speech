@@ -72,6 +72,26 @@ class CacheAwareRNNTStreamingState(CacheAwareStreamingState):
         """
         self.previous_hypothesis = None
 
+    def trim_consumed_hypothesis_(self) -> None:
+        """
+        Drop the part of the previous hypothesis that the greedy decoder has already consumed.
+        The hypothesis is carried for the whole stream and merged with every new chunk, so without
+        trimming each step re-processes all tokens since the stream started and gets slower as the
+        stream gets longer. Decoding continues from ``dec_state``; the greedy decoder only reads
+        tokens past ``offset``, so the transcript is unchanged.
+        """
+        hyp = self.previous_hypothesis
+        if hyp is None or self.offset == 0:
+            return
+        hyp.y_sequence = hyp.y_sequence[self.offset :]
+        if hyp.timestamp is not None:
+            hyp.timestamp = hyp.timestamp[self.offset :]
+        if hyp.non_blank_step_confidence_precomputed is not None:
+            hyp.non_blank_step_confidence_precomputed = hyp.non_blank_step_confidence_precomputed[self.offset :]
+        hyp.alignments = None
+        hyp.frame_confidence = None
+        self.offset = 0
+
 
 class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
     """Beam search streaming state; decoder carry + cumulative/partial tokens.

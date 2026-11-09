@@ -497,6 +497,8 @@ class CacheAwareRNNTPipeline(BasePipeline):
             eou_detected = self.run_greedy_decoder(state, request, hyp)
             if self.beam_decoder_computer is not None:
                 self._apply_beam_update_(state, eou_detected)
+            elif not request.is_last:
+                state.trim_consumed_hypothesis_()
             if eou_detected:
                 self.bpe_decoder.decode_bpe_tokens(state)
                 state.cleanup_after_eou()

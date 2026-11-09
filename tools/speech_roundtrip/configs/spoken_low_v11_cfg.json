@@ -1,0 +1,18 @@
+{
+  "name": "v11_ft101k_cfg25_spoken_low",
+  "model_label": "V1.1 FT101k + monotonic loss + hard repeats + single-turn TN",
+  "model_dir": "speech_roundtrip_runtime/converted/v11_ft101k_monotonic_tn_compat",
+  "input_run": "spoken_low_replication_20261105/audio_evals/runs/m4a_kl_sft2_iter6000",
+  "datasets": {"voicebench_alpaca": 636, "voicebench_commoneval": 200, "voicebench_wildvoice": 1000},
+  "voice": "Mg_a_00759",
+  "voice_sha256": "b3785260a939849961fa52a006145d6c9d0f97679ddc217705752489f012a201",
+  "cfg_scale": 2.5,
+  "temperature": 0.7,
+  "top_k": 80,
+  "concurrency": 4,
+  "max_chars_per_chunk": 600,
+  "max_new_tokens": 2048,
+  "asr_source": "Speech",
+  "asr_checkpoint": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speech_tts/data/evaluation_datasets/eval_models/parakeet-tdt-1.1b.nemo",
+  "judge_model": "azure/anthropic/claude-haiku-5-5"
+}

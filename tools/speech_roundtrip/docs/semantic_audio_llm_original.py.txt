@@ -1,0 +1,300 @@
+#!/usr/bin/env python
+"""LLM-as-judge scoring of synthesized audio against its input text (1-3 scale).
+
+An audio-capable chat model (default ``gcp/google/gemini-3.8-flash`` on the inference gateway,
+``OPENAI_API_BASE`` / ``OPENAI_API_KEY`` from ~/.env) listens to each generated clip together with
+the text it should contain and returns
+
+    3  everything is spoken correctly (all words, names and digits, in order),
+    2  minor issues that do not change the meaning and would not lead to a wrong action,
+    1  semantically wrong, or a name / identity element (name, digits, address, code, date, amount)
+       mispronounced, missing, altered or garbled, or unintelligible / truncated / babbling audio.
+
+Scoring one run (writes judge.json, judge.utterances.jsonl and the cache judge.cache.jsonl
+next to results.jsonl):
+
+    python benchmarks/judge.py --results benchmarks/results/<model>/latency_<variant>/<set>/results.jsonl
+
+Summary table over all scored runs (mean score and score distribution per variant and set):
+
+    python benchmarks/judge.py --table benchmarks/results [--variants vllm_backend optimized]
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import base64
+import json
+import os
+import re
+import statistics
+import sys
+import time
+from pathlib import Path
+
+import httpx
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from common import load_jsonl
+
+JUDGE_MODEL = "gcp/google/gemini-3.8-flash"
+
+RUBRIC = """You are grading a text-to-speech system. You get an audio clip and the exact text the \
+system was asked to read. Listen carefully to the whole clip.
+
+Step 1: transcribe what is actually spoken, as literally as you can (write digits as spoken).
+Step 2: compare it with the reference text and give ONE score:
+  3 = completely right: every word is spoken correctly and in the right order; names, numbers, \
+addresses, codes and dates are all correct. Accent, speaking rate, prosody, pauses, breaths and \
+different but equivalent readings of numbers (e.g. "zero" vs "oh", "nineteen ninety" vs "one nine \
+nine zero") do NOT lower the score.
+  2 = minor issues that do not change the meaning and would not lead to a wrong action: e.g. a \
+slightly mispronounced common word that is still recognizable, a dropped or added function word, \
+a repeated word, an added filler, a stutter, or cutting off after the last meaningful word. Issues \
+in names or identity elements never count as minor.
+  1 = semantically wrong, OR any named entity / identity element (a person's or place's name, a \
+phone/card/account number, postcode, address, email, date, time, amount) is mispronounced so it \
+would be misunderstood, missing, altered, added or garbled, OR the clip is unintelligible, empty, \
+truncated before the content is complete, or contains babbling / repetition loops.
+
+Reference text:
+\"\"\"{text}\"\"\"
+
+Answer with JSON only, no prose, exactly in this form:
+{{"heard": "<literal transcription>", "score": <1|2|3>, "issues": "<short explanation, or 'none'>"}}"""
+
+
+def load_rows(path: Path) -> list[dict]:
+    rows = [r for r in load_jsonl(path) if r.get("status") == 200 and r.get("audio_path")]
+    missing = [r["id"] for r in rows if not Path(r["audio_path"]).exists()]
+    if missing:
+        print(f"warning: {len(missing)} audio files missing (e.g. {missing[0]})", file=sys.stderr)
+    return [r for r in rows if Path(r["audio_path"]).exists()]
+
+
+def parse_verdict(content: str) -> dict | None:
+    """Extract {"heard","score","issues"} from the model output (tolerates code fences / prose)."""
+    if not content:
+        return None
+    text = content.strip()
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.DOTALL)
+    m = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if m:
+        try:
+            obj = json.loads(m.group(0))
+            score = int(obj.get("score"))
+            if score in (1, 2, 3):
+                return {"heard": str(obj.get("heard", "")), "score": score,
+                        "issues": str(obj.get("issues", ""))}
+        except (ValueError, TypeError, json.JSONDecodeError):
+            pass
+    m = re.search(r'"?score"?\s*[:=]\s*([123])\b', text)
+    if m:
+        return {"heard": "", "score": int(m.group(1)), "issues": text[:200]}
+    return None
+
+
+async def judge_one(client: httpx.AsyncClient, url: str, key: str, model: str, row: dict,
+                    retries: int = 5) -> dict:
+    audio_b64 = base64.b64encode(Path(row["audio_path"]).read_bytes()).decode()
+    prompt = RUBRIC.format(text=row["text"])
+    body = {"model": model, "temperature": 0, "max_tokens": 1200,
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "input_audio", "input_audio": {"data": audio_b64, "format": "wav"}}]}]}
+    delay = 2.0
+    last = ""
+    for attempt in range(retries):
+        try:
+            r = await client.post(url, headers={"Authorization": f"Bearer {key}"}, json=body, timeout=180)
+        except httpx.HTTPError as e:
+            last = f"{type(e).__name__}: {e}"
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 30)
+            continue
+        if r.status_code != 200:
+            last = f"HTTP {r.status_code}: {r.text[:200]}"
+            if r.status_code in (429, 500, 502, 503, 504, 529):
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30)
+                continue
+            break
+        data = r.json()
+        choice = (data.get("choices") or [{}])[0]
+        content = (choice.get("message") or {}).get("content") or ""
+        verdict = parse_verdict(content)
+        if verdict is None:
+            last = f"unparsable output (finish={choice.get('finish_reason')}): {content[:200]!r}"
+            body["max_tokens"] = 4000  # long identity texts: the literal transcription needs room
+            await asyncio.sleep(1)
+            continue
+        verdict["raw"] = content[:1000]
+        verdict["usage"] = data.get("usage")
+        return verdict
+    return {"error": last}
+
+
+async def run_judge(args: argparse.Namespace) -> dict:
+    results_path = Path(args.results)
+    out_path = Path(args.out) if args.out else results_path.with_name("judge.json")
+    cache_path = out_path.with_name("judge.cache.jsonl")
+    rows = load_rows(results_path)
+    if args.limit:
+        rows = rows[:args.limit]
+    cache: dict[str, dict] = {}
+    if cache_path.exists() and not args.no_cache:
+        for r in load_jsonl(cache_path):
+            if r.get("model") == args.model and "score" in r:
+                cache[r["id"]] = r
+    todo = [r for r in rows if r["id"] not in cache]
+    base = (args.api_base or os.environ.get("OPENAI_API_BASE") or "").rstrip("/")
+    key = args.api_key or os.environ.get("OPENAI_API_KEY") or ""
+    if todo and (not base or not key):
+        raise SystemExit("set OPENAI_API_BASE / OPENAI_API_KEY (source ~/.env)")
+    if base and not base.endswith("/v1"):
+        base += "/v1"
+    url = f"{base}/chat/completions"
+    print(f"{len(rows)} utterances, {len(todo)} to judge with {args.model}" +
+          (f" via {base}" if todo else " (all cached)"))
+
+    sem = asyncio.Semaphore(args.concurrency)
+    done = 0
+    t0 = time.perf_counter()
+    limits = httpx.Limits(max_connections=args.concurrency + 4)
+    async with httpx.AsyncClient(limits=limits) as client:
+        with cache_path.open("a") as cache_f:
+            async def work(row: dict) -> None:
+                nonlocal done
+                async with sem:
+                    v = await judge_one(client, url, key, args.model, row)
+                rec = {"id": row["id"], "model": args.model, **v}
+                if "score" in v:
+                    cache[row["id"]] = rec
+                    cache_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                    cache_f.flush()
+                else:
+                    print(f"  FAILED {row['id']}: {v.get('error')}", file=sys.stderr)
+                done += 1
+                if done % 100 == 0:
+                    print(f"  {done}/{len(todo)} judged, {time.perf_counter() - t0:.0f}s", flush=True)
+
+            await asyncio.gather(*(work(r) for r in todo))
+
+    # per-utterance WER (if the WER pass ran) for calibration
+    wer_by_id: dict[str, float] = {}
+    for name in ("wer_digitsplit.utterances.jsonl", "wer.utterances.jsonl"):
+        p = results_path.with_name(name)
+        if p.exists():
+            for r in load_jsonl(p):
+                if "wer" in r:
+                    wer_by_id[r["id"]] = float(r["wer"])
+            break
+
+    utt = []
+    for r in rows:
+        v = cache.get(r["id"])
+        if not v:
+            continue
+        utt.append({"id": r["id"], "set": r.get("set"), "score": v["score"], "heard": v.get("heard", ""),
+                    "issues": v.get("issues", ""), "ref": r["text"], "audio_s": r.get("audio_s"),
+                    "wer": wer_by_id.get(r["id"])})
+    scores = [u["score"] for u in utt]
+    by_set: dict[str, dict] = {}
+    for s in sorted({u["set"] for u in utt}):
+        sc = [u["score"] for u in utt if u["set"] == s]
+        by_set[s] = {"n": len(sc), "mean": round(statistics.fmean(sc), 3),
+                     "dist": {str(k): sc.count(k) for k in (1, 2, 3)},
+                     "frac_3": round(sc.count(3) / len(sc), 3), "frac_1": round(sc.count(1) / len(sc), 3)}
+    by_score_wer = {}
+    for k in (1, 2, 3):
+        ws = [u["wer"] for u in utt if u["score"] == k and u["wer"] is not None]
+        if ws:
+            by_score_wer[str(k)] = {"n": len(ws), "mean_utt_wer": round(statistics.fmean(ws), 3)}
+    summary = {
+        "results": str(results_path), "model": args.model, "n_judged": len(utt), "n_failed": len(rows) - len(utt),
+        "mean_score": round(statistics.fmean(scores), 3) if scores else None,
+        "dist": {str(k): scores.count(k) for k in (1, 2, 3)},
+        "per_set": by_set, "mean_utt_wer_by_score": by_score_wer,
+        "worst": sorted([u for u in utt if u["score"] < 3], key=lambda u: (u["score"], -(u["audio_s"] or 0)))[:25],
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    out_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False))
+    with out_path.with_name("judge.utterances.jsonl").open("w") as f:
+        for u in utt:
+            f.write(json.dumps(u, ensure_ascii=False) + "\n")
+    print(json.dumps({k: v for k, v in summary.items() if k not in ("worst",)}, indent=2, ensure_ascii=False))
+    return summary
+
+
+def table(root: Path, variants: list[str] | None, labels: dict[str, str]) -> str:
+    sets = ("identity", "name_entity", "seed_tts_eval_en")
+    rows = []
+    for jp in sorted(root.glob("*/latency_*/*/judge.json")):
+        set_name = jp.parent.name
+        variant = jp.parent.parent.name.split("_", 1)[1]
+        model = jp.parent.parent.parent.name
+        if variants and variant not in variants:
+            continue
+        j = json.loads(jp.read_text())
+        rows.append((model, variant, set_name, j))
+    lines = ["| model | variant | set | n | mean score (1-3) | 3 (right) | 2 (minor) | 1 (wrong) | mean utterance WER of score-1 / score-3 clips |",
+             "|---|---|---|---:|---:|---:|---:|---:|---|"]
+    for model, variant, set_name, j in sorted(rows, key=lambda r: (r[0], r[1], sets.index(r[2]) if r[2] in sets else 9)):
+        d = j["dist"]
+        n = j["n_judged"]
+        w = j.get("mean_utt_wer_by_score", {})
+        wtxt = f"{w.get('1', {}).get('mean_utt_wer', '-')} / {w.get('3', {}).get('mean_utt_wer', '-')}"
+        lines.append(f"| {model} | {labels.get(variant, variant)} | {set_name} | {n} | {j['mean_score']:.2f} | "
+                     f"{100 * d['3'] / n:.1f} % | {100 * d['2'] / n:.1f} % | {100 * d['1'] / n:.1f} % | {wtxt} |")
+    # compact pivot: share of clips scored 1 (wrong meaning / wrong name or identity element)
+    pivot: dict[tuple[str, str], dict[str, str]] = {}
+    for model, variant, set_name, j in rows:
+        d, n = j["dist"], j["n_judged"]
+        pivot.setdefault((model, variant), {})[set_name] = f"{100 * d['1'] / n:.1f} % ({d['1']}/{n})"
+    lines += ["", "Share of clips scored 1 (semantically wrong, or a name / identity element mispronounced, "
+                  "missing, altered or garbled):", "",
+              "| model | variant | Seed-TTS | name_entity | identity |", "|---|---|---:|---:|---:|"]
+    for (model, variant), cells in sorted(pivot.items()):
+        lines.append(f"| {model} | {labels.get(variant, variant)} | " +
+                     " | ".join(cells.get(s, "-") for s in ("seed_tts_eval_en", "name_entity", "identity")) + " |")
+    return "\n".join(lines)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--results", help="results.jsonl of one run/set (with audio_path)")
+    ap.add_argument("--out", default=None, help="judge.json path (default: next to results.jsonl)")
+    ap.add_argument("--model", default=JUDGE_MODEL)
+    ap.add_argument("--api-base", default=None)
+    ap.add_argument("--api-key", default=None)
+    ap.add_argument("--concurrency", type=int, default=8)
+    ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--no-cache", action="store_true")
+    ap.add_argument("--table", default=None, help="results root: print a markdown table of all judge.json files")
+    ap.add_argument("--variants", nargs="*", default=None)
+    ap.add_argument("--inject-into", default=None,
+                    help="with --table: replace the block between <!-- JUDGE:BEGIN/END --> in this markdown file")
+    args = ap.parse_args()
+    if args.table:
+        labels = {"optimized": "former in-process optimized engine (removed)",
+                  "stock": "former in-process stock engine (removed)",
+                  "vllm_backend": "vllm_omni backend (production)", "cpu_int8": "CPU int8, 32 workers"}
+        text = table(Path(args.table), args.variants, labels)
+        if args.inject_into:
+            target = Path(args.inject_into)
+            doc = target.read_text()
+            begin, end = "<!-- JUDGE:BEGIN -->", "<!-- JUDGE:END -->"
+            i, j = doc.index(begin) + len(begin), doc.index(end)
+            target.write_text(doc[:i] + "\n" + text + "\n" + doc[j:])
+            print(f"injected table into {target}")
+        else:
+            print(text)
+        return
+    if not args.results:
+        ap.error("--results or --table is required")
+    asyncio.run(run_judge(args))
+
+
+if __name__ == "__main__":
+    main()

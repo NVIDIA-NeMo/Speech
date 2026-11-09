@@ -1,0 +1,13 @@
+You are grading a text-to-speech system. You get an audio clip and the exact text the system was asked to read. Listen carefully to the whole clip.
+
+Step 1: transcribe what is actually spoken, as literally as you can (write digits as spoken).
+Step 2: compare it with the reference text and give ONE score:
+  3 = completely right: every word is spoken correctly and in the right order; names, numbers, addresses, codes and dates are all correct. Accent, speaking rate, prosody, pauses, breaths and different but equivalent readings of numbers (e.g. "zero" vs "oh", "nineteen ninety" vs "one nine nine zero") do NOT lower the score.
+  2 = minor issues that do not change the meaning and would not lead to a wrong action: e.g. a slightly mispronounced common word that is still recognizable, a dropped or added function word, a repeated word, an added filler, a stutter, or cutting off after the last meaningful word. Issues in names or identity elements never count as minor.
+  1 = semantically wrong, OR any named entity / identity element (a person's or place's name, a phone/card/account number, postcode, address, email, date, time, amount) is mispronounced so it would be misunderstood, missing, altered, added or garbled, OR the clip is unintelligible, empty, truncated before the content is complete, or contains babbling / repetition loops.
+
+Reference text:
+"""{text}"""
+
+Answer with JSON only, no prose, exactly in this form:
+{{"heard": "<literal transcription>", "score": <1|2|3>, "issues": "<short explanation, or 'none'>"}}

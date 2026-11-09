@@ -1,0 +1,55 @@
+schema_version: 1
+datasets:
+- name: voicebench_alpaca
+  format: audio_evals
+  path: /lustre/fsw/portfolios/nemotron/projects/nemotron_speech_tts/users/ecasanova/Nemotron-VoiceChat/Evaluations/spoken_low_replication_20261105/audio_evals/runs/m4a_kl_sft2_iter6000/eval/spoken_low/benchmarks/voicebench_alpaca/rollouts.jsonl
+  expected_rows: 636
+- name: voicebench_commoneval
+  format: audio_evals
+  path: /lustre/fsw/portfolios/nemotron/projects/nemotron_speech_tts/users/ecasanova/Nemotron-VoiceChat/Evaluations/spoken_low_replication_20261105/audio_evals/runs/m4a_kl_sft2_iter6000/eval/spoken_low/benchmarks/voicebench_commoneval/rollouts.jsonl
+  expected_rows: 200
+- name: voicebench_wildvoice
+  format: audio_evals
+  path: /lustre/fsw/portfolios/nemotron/projects/nemotron_speech_tts/users/ecasanova/Nemotron-VoiceChat/Evaluations/spoken_low_replication_20261105/audio_evals/runs/m4a_kl_sft2_iter6000/eval/spoken_low/benchmarks/voicebench_wildvoice/rollouts.jsonl
+  expected_rows: 1000
+tts:
+  url: http://127.0.0.1:8091
+  implementation: easymagpie_vllm_omni
+  checkpoint: /lustre/fsw/portfolios/nemotron/projects/nemotron_speech_tts/users/ecasanova/Nemotron-TTS/Checkpoints/Nemotron-TTS-RC-2.3_Exact-KL_GRPO_step_390/checkpoints/Magpie-TTS-DecoderOnly-EN.nemo
+  converted_model: /lustre/fsw/portfolios/nemotron/projects/nemotron_speech_tts/users/ecasanova/Nemotron-VoiceChat/Evaluations/speech_roundtrip_runtime/converted/rc23_step390
+  reference_audio: /lustre/fsw/portfolios/nemotron/projects/nemotron_speech_tts/users/ecasanova/Nemotron-VoiceChat/Mg_a_00759.wav
+  reference_sha256: b3785260a939849961fa52a006145d6c9d0f97679ddc217705752489f012a201
+  voice: Mg_a_00759
+  sample_rate: 22050
+  vllm_version: 0.24.0
+  vllm_omni_version: 0.24.0
+  speech_revision: f6f61caaab4b13c94c787e7c4b75ab24418a79ed
+  max_chars_per_chunk: 600
+  max_new_tokens: 2048
+  request_timeout_s: 300
+  startup_timeout_s: 1800
+  concurrency: 8
+asr:
+  url: http://127.0.0.1:8092
+  model: nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B
+  vllm_version: 0.32.0
+  precision: bfloat16
+  speech_revision: f6f61caaab4b13c94c787e7c4b75ab24418a79ed
+  prompt: 'Audio transcription. Language: as spoken. Wording: verbatim, including
+    fillers and repetitions. Formatting: punctuation and capitalization. Output: transcript
+    only.'
+  max_tokens: 16384
+  seed: 0
+  request_timeout_s: 600
+  startup_timeout_s: 1800
+  concurrency: 8
+  revision: c17667641642c4265ff2b7037dd101b7d4567634
+judge:
+  script: /lustre/fsw/portfolios/nemotron/projects/nemotron_speech_tts/users/ecasanova/Nemotron-VoiceChat/Evaluations/spoken_low_replication_20261105/code/audio-reasoning-length-control/tools/judge_verbal_rollouts.py
+  prompt: /lustre/fsw/portfolios/nemotron/projects/nemotron_speech_tts/users/ecasanova/Nemotron-VoiceChat/Evaluations/spoken_low_replication_20261105/code/audio-reasoning-length-control/configs/spoken/judge_verbal_open_v1.yaml
+  model: azure/anthropic/claude-haiku-5-5
+  transport_module: httpx2
+  max_tokens: 2048
+  workers: 16
+  rate: 5
+  missing_grade_retries: 3

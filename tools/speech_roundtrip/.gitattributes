@@ -1,0 +1,2 @@
+docs/semantic_preservation_original.txt -text whitespace=cr-at-eol
+docs/semantic_audio_llm_original.py.txt -text whitespace=cr-at-eol

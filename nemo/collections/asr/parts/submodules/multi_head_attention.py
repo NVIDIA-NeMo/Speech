@@ -1279,14 +1279,18 @@ class RotaryPositionalEncoding(torch.nn.Module):
         self.cos, self.sin = self._tables(positions, dtype)
 
     def extend_pe(self, length, device, dtype):
-        """Extend the cos/sin buffers when ``length`` exceeds them; they cover ``max_len`` from construction on.
+        """Extend the cos/sin buffers when ``length`` exceeds them, or rebuild them on ``device`` when it differs.
 
+        They cover ``max_len`` from construction on, built on the CPU like ``inv_freq``,
+        so a module built under another default device gets them there at its first call.
         A caller that extends them in a distributed training does so on every rank alike,
         since the buffers are broadcast.
         """
-        if self.cos.size(0) >= length:
+        device = torch.device(device)
+        same_device = self.cos.device.type == device.type and device.index in (None, self.cos.device.index)
+        if self.cos.size(0) >= length and same_device:
             return
-        positions = torch.arange(0, length, dtype=torch.float32, device=device)
+        positions = torch.arange(0, max(length, self.cos.size(0)), dtype=torch.float32, device=device)
         self.create_pe(positions=positions, dtype=dtype)
 
     def forward(self, q, k):

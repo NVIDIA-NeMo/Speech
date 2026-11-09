@@ -102,6 +102,25 @@ class TestRotaryPositionalEncoding:
         assert [tuple(b.shape) for _, b in short.named_buffers()] == [tuple(b.shape) for _, b in long.named_buffers()]
         assert [b.dtype for _, b in short.named_buffers()] == [b.dtype for _, b in long.named_buffers()]
 
+    @pytest.mark.run_only_on('GPU')
+    @pytest.mark.unit
+    def test_tables_follow_the_device_of_the_first_call(self):
+        # a module built under a CUDA default device keeps its parameters there but builds the tables on the CPU;
+        # the first extend_pe call moves them without changing their size, as a .to() of the module does
+        with torch.device('cuda'):
+            pe = RotaryPositionalEncoding(d_k=16, max_len=64)
+        assert pe.cos.device.type == 'cpu'
+        pe.extend_pe(8, device=torch.device('cuda'), dtype=torch.float32)
+        assert pe.cos.device.type == 'cuda' and pe.cos.shape == (64, 16)
+        q = torch.randn(1, 2, 8, 16, device='cuda')
+        q_rot, _ = pe(q, q)
+        assert q_rot.device.type == 'cuda'
+        moved = RotaryPositionalEncoding(d_k=16, max_len=64).to('cuda')
+        torch.testing.assert_close(moved.cos, pe.cos)
+        prev = moved.cos.data_ptr()
+        moved.extend_pe(32, device=q.device, dtype=torch.float32)
+        assert moved.cos.data_ptr() == prev
+
     @pytest.mark.unit
     def test_forward_first_token_is_identity(self):
         # Position 0 has zero phase, so cos=1, sin=0 -> rotation is identity.

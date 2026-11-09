@@ -742,6 +742,10 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
                 logged_languages[language] = num_logged + 1
         return pred_transcripts
 
+    def _transcribe_validation_audio(self, predicted_audio_paths: List[str], batch: Dict) -> List[str]:
+        """Validate with the reward ASR router, so validation CER matches the CER reward."""
+        return self._compute_pred_transcripts(predicted_audio_paths, batch)
+
     def _compute_speaker_embeddings_parallel(
         self, predicted_audio_paths: List[str], batch: Dict, num_generations_per_item: int
     ):

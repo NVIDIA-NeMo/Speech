@@ -876,3 +876,164 @@ class TestPackedConformerEncoderCuda:
             encoder = _packed_encoder(self_attention_model=self_attention_model, dropout_att=0.1).cuda().train()
             with pytest.raises(NotImplementedError, match="dropout_att"):
                 encoder.forward_sequence_packed(features, lengths)
+
+
+class TestConformerLayerAutocastResidual:
+    """The opt-in autocast-dtype residual stream and layer norms of `ConformerLayer`."""
+
+    @staticmethod
+    def _run(encoder, features, lengths, device_type, dtype=torch.bfloat16, packed=False):
+        saved = []
+        with torch.autocast(device_type, dtype=dtype):
+            with torch.autograd.graph.saved_tensors_hooks(lambda t: saved.append(t) or t, lambda t: t):
+                if packed:
+                    out = encoder.forward_sequence_packed(features, lengths).data
+                else:
+                    out = encoder(audio_signal=features, length=lengths)[0]
+        return out, saved
+
+    @staticmethod
+    def _encoders(**overrides):
+        """The same small encoder twice, with the float32 stream and with the option, in training mode."""
+        torch.manual_seed(0)
+        reference = _composed_encoder(dropout=0.0, **overrides).train()
+        encoder = _composed_encoder(dropout=0.0, autocast_residual=True, **overrides).train()
+        encoder.load_state_dict(reference.state_dict())
+        return reference, encoder
+
+    @staticmethod
+    def _float32_stream_tensors(saved, width=16):
+        """The saved float32 tensors of the stream's shape: the layer norm inputs of the float32 stream."""
+        return [t for t in saved if t.dtype == torch.float32 and t.ndim in (2, 3) and t.shape[-1] == width]
+
+    @staticmethod
+    def _readout_loss(out):
+        """A loss whose gradient reaches every parameter (the mean square of a norm output nearly does not)."""
+        generator = torch.Generator().manual_seed(7)
+        readout = torch.randn(out.shape[-2:], generator=generator).to(out.device)
+        return (out.float() * readout).sum()
+
+    @staticmethod
+    def _assert_gradients_close(encoder, reference, tolerance):
+        """The option's parameter gradients within a relative L2 distance of the default's, as a whole and each.
+
+        A parameter whose gradient is nearly zero by construction (a convolution bias before a batch norm)
+        holds rounding noise under autocast and is measured against one percent of the whole gradient's norm.
+        """
+        reference_grads = dict(reference.named_parameters())
+        whole = torch.cat([p.grad.flatten() for p in reference.parameters()]).norm()
+        total_distance = 0.0
+        for name, parameter in encoder.named_parameters():
+            expected = reference_grads[name].grad
+            assert parameter.grad is not None and parameter.grad.dtype == torch.float32, name
+            distance = (parameter.grad - expected).norm()
+            total_distance += float(distance) ** 2
+            assert distance <= tolerance * expected.norm() + 1e-2 * whole, (name, float(distance / whole))
+        assert total_distance**0.5 <= tolerance * whole
+
+    @pytest.mark.unit
+    def test_option_reaches_every_layer_and_defaults_to_off(self):
+        reference, encoder = self._encoders()
+        assert all(layer.autocast_residual is False for layer in reference.layers)
+        assert all(layer.autocast_residual is True for layer in encoder.layers)
+        assert ConformerEncoder(feat_in=8, n_layers=1, d_model=16, n_heads=2).layers[0].autocast_residual is False
+
+    @pytest.mark.unit
+    def test_without_autocast_the_option_changes_nothing(self):
+        reference, encoder = self._encoders()
+        features, lengths = torch.randn(2, 8, 40), torch.tensor([40, 25])
+        expected = reference(audio_signal=features, length=lengths)[0]
+        out = encoder(audio_signal=features, length=lengths)[0]
+        assert out.dtype == torch.float32
+        torch.testing.assert_close(out, expected, atol=0.0, rtol=0.0)
+        expected.square().mean().backward()
+        out.square().mean().backward()
+        for (name, parameter), (_, reference_parameter) in zip(
+            encoder.named_parameters(), reference.named_parameters()
+        ):
+            torch.testing.assert_close(parameter.grad, reference_parameter.grad, atol=0.0, rtol=0.0, msg=name)
+
+    @pytest.mark.unit
+    def test_cpu_autocast_matches_the_default(self):
+        # CPU autocast leaves layer norms in the input dtype, so the float32 stream is bfloat16 there as well;
+        # the option changes the computation path and must give the same result
+        reference, encoder = self._encoders()
+        features, lengths = torch.randn(2, 8, 40), torch.tensor([40, 25])
+        expected, _ = self._run(reference, features, lengths, "cpu")
+        out, saved = self._run(encoder, features, lengths, "cpu")
+        assert out.dtype == expected.dtype == torch.bfloat16
+        assert not self._float32_stream_tensors(saved)
+        torch.testing.assert_close(out, expected, atol=0.1, rtol=0.1)
+        self._readout_loss(expected).backward()
+        self._readout_loss(out).backward()
+        self._assert_gradients_close(encoder, reference, tolerance=0.1)
+
+    @pytest.mark.unit
+    def test_other_norm_blocks_receive_the_stream(self):
+        class ScaledNorm(torch.nn.Module):
+            """A norm block without the LayerNorm kernel's dtype rule: it records the dtype it is given."""
+
+            def __init__(self, normalized_shape, eps=1e-6):
+                super().__init__()
+                self.eps = eps
+                self.weight = torch.nn.Parameter(torch.ones(normalized_shape))
+                self.seen = []
+
+            def forward(self, x):
+                self.seen.append(x.dtype)
+                variance = x.float().square().mean(dim=-1, keepdim=True)
+                return x * torch.rsqrt(variance + self.eps).to(x.dtype) * self.weight.to(x.dtype)
+
+        reference, encoder = self._encoders(norm=ScaledNorm)
+        features, lengths = torch.randn(2, 8, 40), torch.tensor([40, 25])
+        expected, _ = self._run(reference, features, lengths, "cpu")
+        out, _ = self._run(encoder, features, lengths, "cpu")
+        assert set(encoder.layers[0].norm_out.seen) == {torch.bfloat16}
+        torch.testing.assert_close(out, expected, atol=0.1, rtol=0.1)
+
+    @pytest.mark.run_only_on('GPU')
+    @pytest.mark.unit
+    @pytest.mark.skipif(not torch._dynamo.is_dynamo_supported(), reason="requires Dynamo")
+    def test_compiles_with_the_option(self):
+        # Dynamo traces the autocast context manager of the norms; its arguments must be bound by keyword
+        torch.manual_seed(0)
+        layer = ConformerLayer(d_model=16, d_ff=32, n_heads=2, conv_kernel_size=5, dropout=0.0, autocast_residual=True)
+        layer = layer.cuda()
+        x = torch.randn(2, 20, 16, device="cuda")
+        pos_emb = torch.randn(1, 39, 16, device="cuda")
+        try:
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                eager = layer(x, pos_emb=pos_emb)
+                out = torch.compile(layer, fullgraph=True)(x, pos_emb=pos_emb)
+            assert out.dtype == torch.bfloat16
+            # compiled kernels round differently than the eager ones; the default layer differs by as much
+            assert (out.float() - eager.float()).norm() <= 0.1 * eager.float().norm()
+            out.float().square().mean().backward()
+            assert all(p.grad is not None for p in layer.parameters())
+        finally:
+            torch._dynamo.reset()
+
+    @pytest.mark.run_only_on('GPU')
+    @pytest.mark.unit
+    @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+    @pytest.mark.parametrize("norm", [torch.nn.LayerNorm, torch.nn.RMSNorm])
+    def test_cuda_autocast_stream(self, dtype, norm):
+        reference, encoder = self._encoders(norm=functools.partial(norm, eps=1e-6))
+        reference.cuda()
+        encoder.cuda()
+        features, lengths = torch.randn(2, 8, 40, device="cuda"), torch.tensor([40, 25], device="cuda")
+        expected, saved_reference = self._run(reference, features, lengths, "cuda", dtype)
+        out, saved = self._run(encoder, features, lengths, "cuda", dtype)
+        packed, saved_packed = self._run(encoder, features, lengths, "cuda", dtype, packed=True)
+        # the float32 stream: CUDA autocast runs the layer norms in float32 and saves their inputs in float32
+        assert expected.dtype == torch.float32 and self._float32_stream_tensors(saved_reference)
+        # the autocast-dtype stream: nothing of the stream's shape is saved in float32
+        assert out.dtype == dtype and packed.dtype == dtype
+        assert not self._float32_stream_tensors(saved) and not self._float32_stream_tensors(saved_packed)
+        valid = (torch.arange(10, device="cuda")[None, None, :] < (lengths // 4)[:, None, None]).float()
+        torch.testing.assert_close(out.float() * valid, expected * valid, atol=0.1, rtol=0.1)
+        self._readout_loss(expected * valid).backward()
+        self._readout_loss(out.float() * valid).backward()
+        self._assert_gradients_close(encoder, reference, tolerance=0.1)
+        self._readout_loss(packed).backward()
+        assert all(torch.isfinite(p.grad).all() for p in encoder.parameters())

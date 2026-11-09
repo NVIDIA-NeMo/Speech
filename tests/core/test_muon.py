@@ -15,6 +15,7 @@
 
 import copy
 import math
+from typing import Tuple
 from unittest import mock
 
 import pytest
@@ -516,6 +517,26 @@ def _assert_close_result(reference: Muon, other: Muon, reference_params, other_p
                 torch.testing.assert_close(other_state[key], value, **CAPTURABLE_TOLERANCE, msg=name)
 
 
+def _optimizer_with_tensor_learning_rate(device: str, foreach: bool = True) -> Tuple[torch.nn.ParameterDict, Muon]:
+    """A capturable layered optimizer with a tensor learning rate on `device`; the gradients are allocated."""
+    parameters = _layered_parameters().to(device)
+    for param in parameters.values():
+        param.grad = torch.zeros_like(param)
+    optimizer = _layered_optimizer(parameters, foreach=foreach, capturable=True)
+    for group in optimizer.param_groups:
+        group['lr'] = torch.tensor(LR, device=device)
+    return parameters, optimizer
+
+
+def _feed(parameters: torch.nn.ParameterDict, optimizer: Muon, seed: int, learning_rate: float) -> None:
+    """Writes new gradients and the learning rate in place, as a captured or compiled step expects."""
+    generator = torch.Generator().manual_seed(seed)
+    for param in parameters.values():
+        param.grad.copy_(torch.randn(param.shape, generator=generator))
+    for group in optimizer.param_groups:
+        group['lr'].fill_(learning_rate)
+
+
 class TestMuonCapturable:
     @pytest.mark.unit
     def test_option_default_and_parsing(self):
@@ -634,45 +655,68 @@ class TestMuonCapturable:
             _assert_close_result(optimizer, continued, parameters, continued_params)
 
     @pytest.mark.unit
+    @pytest.mark.parametrize('foreach', [False, True])
+    def test_compiled_step_traces_as_one_graph(self, foreach):
+        # the capture checks are skipped while Dynamo traces (`torch.cuda.is_current_stream_capturing` has no trace)
+        graphs = []
+
+        def record(graph_module, example_inputs):
+            graphs.append(graph_module)
+            return graph_module.forward
+
+        eager_params, eager = _optimizer_with_tensor_learning_rate('cpu', foreach=foreach)
+        compiled_params, compiled = _optimizer_with_tensor_learning_rate('cpu', foreach=foreach)
+        schedule = [(1000, LR), (1001, LR), (1002, LR / 2), (1003, LR / 4)]
+        # one eager step creates the state, as the warm-up before a capture does; the compiled step runs the rest
+        _feed(compiled_params, compiled, *schedule[0])
+        compiled.step()
+        torch._dynamo.reset()
+        step = torch.compile(compiled.step, fullgraph=True, backend=record)
+        for seed, learning_rate in schedule[1:]:
+            _feed(compiled_params, compiled, seed, learning_rate)
+            step()
+        for seed, learning_rate in schedule:
+            _feed(eager_params, eager, seed, learning_rate)
+            eager.step()
+        assert len(graphs) == 1
+        _assert_close_result(eager, compiled, eager_params, compiled_params)
+        assert float(compiled.state[compiled_params['bias_0']]['step']) == len(schedule)
+
+    @pytest.mark.unit
+    def test_compiled_multi_tensor_step_needs_device_step_counts(self):
+        # Dynamo runs the capturable form: Python step counts from eager steps without `capturable` are rejected
+        parameters = _layered_parameters()
+        optimizer = _layered_optimizer(parameters)
+        _run_with_learning_rates(optimizer, parameters, [LR])
+        assert optimizer.state[parameters['bias_0']]['step'] == 1
+        torch._dynamo.reset()
+        step = torch.compile(optimizer.step, fullgraph=True, backend='eager')
+        _set_gradients(parameters, 901)
+        with pytest.raises(RuntimeError, match="capturable=True"):
+            step()
+
+    @pytest.mark.unit
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph capture needs a GPU")
     def test_captured_step_replays_with_new_gradients_and_learning_rate(self):
-        device = torch.device('cuda')
-
-        def setup():
-            parameters = _layered_parameters().to(device)
-            for param in parameters.values():
-                param.grad = torch.zeros_like(param)
-            optimizer = _layered_optimizer(parameters, capturable=True)
-            for group in optimizer.param_groups:
-                group['lr'] = torch.tensor(LR, device=device)
-            return parameters, optimizer
-
-        def feed(parameters, optimizer, seed, learning_rate):
-            generator = torch.Generator().manual_seed(seed)
-            for param in parameters.values():
-                param.grad.copy_(torch.randn(param.shape, generator=generator))
-            for group in optimizer.param_groups:
-                group['lr'].fill_(learning_rate)
-
-        eager_params, eager = setup()
-        captured_params, captured = setup()
+        eager_params, eager = _optimizer_with_tensor_learning_rate('cuda')
+        captured_params, captured = _optimizer_with_tensor_learning_rate('cuda')
         schedule = [(1000, LR), (1001, LR), (1002, LR / 2), (1003, LR / 4), (1004, LR / 8), (1005, LR / 16)]
         # warm-up on a side stream, then the capture, then replays with new gradients and learning rates
         stream = torch.cuda.Stream()
         stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(stream):
             for seed, learning_rate in schedule[:3]:
-                feed(captured_params, captured, seed, learning_rate)
+                _feed(captured_params, captured, seed, learning_rate)
                 captured.step()
         torch.cuda.current_stream().wait_stream(stream)
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph):
             captured.step()
         for seed, learning_rate in schedule[3:]:
-            feed(captured_params, captured, seed, learning_rate)
+            _feed(captured_params, captured, seed, learning_rate)
             graph.replay()
         for seed, learning_rate in schedule:
-            feed(eager_params, eager, seed, learning_rate)
+            _feed(eager_params, eager, seed, learning_rate)
             eager.step()
         torch.cuda.synchronize()
         _assert_close_result(eager, captured, eager_params, captured_params)

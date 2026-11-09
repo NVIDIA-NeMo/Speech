@@ -515,6 +515,10 @@ For a training step captured in a CUDA graph, pass the learning rate as a one-el
 which the scheduler updates in place and the step reads every time,
 and set ``capturable: true``, which keeps the AdamW step count on the device;
 the updates then differ from the plain step at float32 rounding.
+Under ``torch.compile`` the step traces as one graph and runs the capturable form,
+so construct the optimizer with ``capturable: true`` (or compile the step before the first one),
+and pass the learning rate as a tensor when the compiled step is captured,
+since the compiled step performs no capture check.
 
 Optimizer Params
 ~~~~~~~~~~~~~~~~

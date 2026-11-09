@@ -97,6 +97,14 @@ class Muon(Optimizer):
     and set ``capturable=True``, which keeps each parameter's AdamW step count as a float tensor on its device
     and computes the bias corrections there.
     A capture of the step without both raises.
+    Under ``torch.compile`` the step traces as one graph and runs the capturable form
+    (Dynamo sets ``capturable`` while tracing, as for ``torch.optim``), so construct the optimizer with
+    ``capturable=True`` or compile it before its first step; the multi-tensor form raises on Python step counts
+    (with ``fullgraph=True``; otherwise Dynamo breaks the graph there and runs the AdamW update eagerly).
+    The compiled step performs no capture check (``torch.cuda.is_current_stream_capturing`` has no trace),
+    so pass the learning rate as a tensor when the compiled step is captured; a Python one is baked in at the capture.
+    The Muon update of a compiled step differs from the eager one at the bfloat16 rounding of the Newton-Schulz
+    iteration, whose fused kernels round differently.
     For float32 parameters, a tensor learning rate changes the updates at float32 rounding
     (the orthogonal factor is scaled as a separate product, the AdamW step size is folded into the denominator)
     and the device step count changes the AdamW update at float32 rounding, the Muon update not at all;
@@ -253,7 +261,12 @@ class Muon(Optimizer):
             with torch.enable_grad():
                 loss = closure()
 
-        capturing = torch.cuda.is_available() and torch.cuda.is_current_stream_capturing()
+        # checks of the eager step: Dynamo folds them away and runs the capturable form, see the class docstring
+        capturing = (
+            not torch.compiler.is_compiling()
+            and torch.cuda.is_available()
+            and torch.cuda.is_current_stream_capturing()
+        )
         for group in self.param_groups:
             muon_params: List[torch.Tensor] = []
             adamw_params: List[torch.Tensor] = []
@@ -506,7 +519,15 @@ def _adamw_update_foreach(
     # the device step counts of the capturable form carry it per parameter,
     # the Python counts need one batch per count
     if capturable:
-        torch._foreach_add_([state['step'] for state in states], 1)
+        steps = [state['step'] for state in states]
+        if not all(isinstance(step, torch.Tensor) for step in steps):
+            # reached under torch.compile only, which runs this form (Dynamo sets `capturable` while tracing)
+            raise RuntimeError(
+                "The multi-tensor capturable Muon step needs the AdamW step counts on the device: "
+                "construct the optimizer with capturable=True (a loaded state dict is converted) "
+                "or compile the step before the first one"
+            )
+        torch._foreach_add_(steps, 1)
         batches: Dict[Any, List[int]] = {None: list(range(len(params)))}
     else:
         batches = {}

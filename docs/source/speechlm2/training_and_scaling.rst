@@ -410,12 +410,24 @@ For Fully Sharded Data Parallel training:
 FSDP2 shards the model parameters across GPUs, all-gathers them for forward/backward passes, and then de-allocates after computation. This allows training of larger models with limited GPU memory.
 See `PyTorch FSDP2 <https://pytorch.org/docs/stable/distributed.fsdp.fully_shard.html>`_ for more details.
 
-``AutomodelParallelStrategy`` collects optimizer checkpoints on CPU. For Transformer
-Engine FusedAdam with reduced-precision moments, each canonical state tensor is
-converted and transferred before the next one is collected, avoiding a full FP32
-optimizer copy on the GPU. Checkpoints retain the optimizer's standard format and
-master-weight remainder dtype; live training state is unchanged. Distributed
-optimizer restore targets are CPU-offloaded before the loaded state is applied.
+``AutomodelParallelStrategy`` collects optimizer checkpoints on CPU. Transformer
+Engine FusedAdam stores reduced-precision moments during training but serializes
+them as FP32. Its native serializer retains all converted tensors on the GPU
+before returning the state dictionary, so offloading that dictionary afterwards
+cannot prevent the temporary memory peak. The two FP32 moments alone require
+8 bytes per local parameter, in addition to the live optimizer state.
+
+Each canonical state tensor is therefore converted and transferred to CPU before
+the next one is collected. This bounds the temporary GPU copies by individual
+state tensors rather than the whole optimizer. Restore targets use the same
+CPU staging because constructing them also invokes optimizer serialization;
+the loaded state is then applied to the GPU optimizer. Live training state stays
+on GPU. Checkpoints retain the standard format, payload size, and master-weight
+remainder dtype.
+
+CPU staging uses host memory and incurs transfer and synchronization work during
+save and restore. Its latency depends on checkpoint size, storage, and the
+CPU/GPU connection; it does not add transfers to ordinary optimizer updates.
 
 Tensor Parallelism Configuration (HF Automodel)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

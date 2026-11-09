@@ -993,6 +993,28 @@ class TestConformerLayerAutocastResidual:
 
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
+    @pytest.mark.skipif(not torch._dynamo.is_dynamo_supported(), reason="requires Dynamo")
+    def test_compiles_with_the_option(self):
+        # Dynamo traces the autocast context manager of the norms; its arguments must be bound by keyword
+        torch.manual_seed(0)
+        layer = ConformerLayer(d_model=16, d_ff=32, n_heads=2, conv_kernel_size=5, dropout=0.0, autocast_residual=True)
+        layer = layer.cuda()
+        x = torch.randn(2, 20, 16, device="cuda")
+        pos_emb = torch.randn(1, 39, 16, device="cuda")
+        try:
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                eager = layer(x, pos_emb=pos_emb)
+                out = torch.compile(layer, fullgraph=True)(x, pos_emb=pos_emb)
+            assert out.dtype == torch.bfloat16
+            # compiled kernels round differently than the eager ones; the default layer differs by as much
+            assert (out.float() - eager.float()).norm() <= 0.1 * eager.float().norm()
+            out.float().square().mean().backward()
+            assert all(p.grad is not None for p in layer.parameters())
+        finally:
+            torch._dynamo.reset()
+
+    @pytest.mark.run_only_on('GPU')
+    @pytest.mark.unit
     @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
     @pytest.mark.parametrize("norm", [torch.nn.LayerNorm, torch.nn.RMSNorm])
     def test_cuda_autocast_stream(self, dtype, norm):

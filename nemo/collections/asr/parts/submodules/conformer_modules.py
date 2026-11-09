@@ -404,7 +404,8 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         """
         if dtype is None:
             return norm(x)
-        with torch.autocast(x.device.type, enabled=False):
+        # the keyword form: Dynamo binds autocast's arguments by name when it traces the context manager
+        with torch.autocast(device_type=x.device.type, enabled=False):
             if isinstance(norm, LayerNorm):
                 weight = norm.weight.to(dtype) if norm.weight is not None else None
                 bias = norm.bias.to(dtype) if norm.bias is not None else None

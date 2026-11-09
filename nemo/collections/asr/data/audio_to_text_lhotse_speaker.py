@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import random
 from typing import Dict, Optional, Tuple
 
 import torch.utils.data
@@ -23,11 +22,12 @@ from lhotse.dataset.collation import collate_vectors
 from nemo.collections.asr.data.audio_to_text_lhotse import TokenizerWrapper
 from nemo.collections.asr.parts.utils.asr_multispeaker_utils import speaker_to_target
 from nemo.collections.common.data.lhotse.audio_loading import LhotseAudioLoadingDatasetMixin
+from nemo.collections.common.data.lhotse.stateful_rng import StatefulRandomMixin
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 
 
-class LhotseSpeechToTextSpkBpeDataset(LhotseAudioLoadingDatasetMixin, torch.utils.data.Dataset):
+class LhotseSpeechToTextSpkBpeDataset(StatefulRandomMixin, LhotseAudioLoadingDatasetMixin, torch.utils.data.Dataset):
     """
     This dataset is based on BPE datasets from audio_to_text.py. It has the same functionality of LhotseSpeechToTextBpeDataset but also yield speaker target tensor.
     Unlike native NeMo datasets, Lhotse dataset defines only the mapping from
@@ -35,6 +35,11 @@ class LhotseSpeechToTextSpkBpeDataset(LhotseAudioLoadingDatasetMixin, torch.util
     Specifically, it performs tokenization, I/O, augmentation, and feature extraction (if any).
     Managing data, sampling, de-duplication across workers/nodes etc. is all handled
     by Lhotse samplers instead.
+
+    The target speaker of each cut is drawn at random.
+    Random draws use the dataset's checkpointed generator ``self.rng`` (see
+    :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`), so a run resumed from a
+    ``StatefulDataLoader`` checkpoint produces the same batches as an uninterrupted run.
     """
 
     @property
@@ -81,7 +86,7 @@ class LhotseSpeechToTextSpkBpeDataset(LhotseAudioLoadingDatasetMixin, torch.util
             )
             speaker_targets = speaker_targets.transpose(0, 1)[: len(texts)]
 
-            target_speaker_id = random.choice(range(len(texts)))
+            target_speaker_id = self.rng.randrange(len(texts))
             non_target_speaker_ids = [i for i in range(len(texts)) if i != target_speaker_id]
             text = texts[target_speaker_id]
             speaker_target = speaker_targets[target_speaker_id]

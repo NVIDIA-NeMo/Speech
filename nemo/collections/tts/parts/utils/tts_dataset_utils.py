@@ -119,22 +119,33 @@ def _validate_probability(name: str, value: float):
         raise ValueError(f"`{name}` must be in range [0.0, 1.0], received {value}")
 
 
-def _select_text_for_tts_input(text: str, normalized_text: Optional[str], load_normalized_text_percent: float) -> str:
-    """Select the raw or normalized transcript used as TTS model input."""
+def _select_text_for_tts_input(
+    text: str,
+    normalized_text: Optional[str],
+    load_normalized_text_percent: float,
+    rng: Optional[random.Random] = None,
+) -> str:
+    """Select the raw or normalized transcript used as TTS model input.
+
+    ``rng`` is the caller's random generator; when omitted, the global ``random`` module is used.
+    """
     if normalized_text is None or load_normalized_text_percent == 0.0:
         return text
-    if load_normalized_text_percent == 1.0 or random.random() < load_normalized_text_percent:
+    if load_normalized_text_percent == 1.0 or (rng or random).random() < load_normalized_text_percent:
         return normalized_text
     return text
 
 
-def _sample_probability_range(name: str, min_value: float, max_value: float) -> float:
+def _sample_probability_range(
+    name: str, min_value: float, max_value: float, rng: Optional[random.Random] = None
+) -> float:
     """Sample a probability uniformly from an inclusive configured range.
 
     Args:
         name: Base parameter name to include in validation errors.
         min_value: Lower bound of the probability range.
         max_value: Upper bound of the probability range.
+        rng: Random generator to draw from. Defaults to the global ``random`` module.
 
     Returns:
         A uniformly sampled probability between ``min_value`` and ``max_value``.
@@ -147,7 +158,7 @@ def _sample_probability_range(name: str, min_value: float, max_value: float) -> 
     _validate_probability(f"{name}_max", max_value)
     if min_value > max_value:
         raise ValueError(f"`{name}_min` must be <= `{name}_max`, received {min_value} > {max_value}")
-    return random.uniform(min_value, max_value)
+    return (rng or random).uniform(min_value, max_value)
 
 
 def has_phoneme_text_spans(text: str, bop_marker: str = "<bop>", eop_marker: str = "<eop>") -> bool:
@@ -222,6 +233,7 @@ def partially_phonemize_text(
     full_ipa_text: Optional[str] = None,
     bop_marker: str = "<bop>",
     eop_marker: str = "<eop>",
+    rng: Optional[random.Random] = None,
 ) -> str:
     """Replace a sampled portion of aligned words with marked IPA spans.
 
@@ -239,6 +251,7 @@ def partially_phonemize_text(
         full_ipa_text: IPA transcription of the complete input text.
         bop_marker: Marker to place before each generated IPA span.
         eop_marker: Marker to place after each generated IPA span.
+        rng: Random generator used to select the words. Defaults to the global ``random`` module.
 
     Returns:
         Text with sampled words replaced by marked IPA spans, or the original
@@ -265,7 +278,7 @@ def partially_phonemize_text(
         ipa_ranges.append((ipa_start, ipa_end))
         ipa_cursor = ipa_end
 
-    selected_indices = sorted(random.sample(range(len(ipa_alignment)), num_selected))
+    selected_indices = sorted((rng or random).sample(range(len(ipa_alignment)), num_selected))
     selected_runs = []
     for index in selected_indices:
         if selected_runs and index == selected_runs[-1][1] + 1:

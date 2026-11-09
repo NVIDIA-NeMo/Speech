@@ -553,3 +553,77 @@ class TestMagpieTTSLhotseDatasets:
         )
         assert context_audio_codes is None
         torch.testing.assert_close(context_audio, torch.from_numpy(expected))
+
+
+def _dataset_with_fake_tokenizers(dataset_class):
+    kwargs = _dataset_kwargs()
+    kwargs.update(
+        {
+            "use_text_conditioning_tokenizer": False,
+            "context_duration_min": 0.1,
+            "context_duration_max": 0.6,
+        }
+    )
+    if dataset_class is MagpieTTSLhotseMultiturnDataset:
+        kwargs.update(
+            {
+                "codec_model_input_sample_rate": CODEC_MODEL_INPUT_SAMPLE_RATE,
+                "frame_stacking_factor": FRAME_STACKING_FACTOR,
+                "source_sample_rate": SAMPLE_RATE,
+                "input_roles": ["user"],
+                "output_roles": ["assistant"],
+                "add_text_bos": False,
+            }
+        )
+    dataset = dataset_class(**kwargs)
+    dataset.text_tokenizer = _FakeTextTokenizer()
+    dataset.bos_id = len(dataset.text_tokenizer.tokens)
+    dataset.eos_id = dataset.bos_id + 1
+    dataset.cfg_unk_token_id = dataset.bos_id + 2
+    dataset.interruption_token_id = dataset.bos_id + 3
+    dataset.pad_id = dataset.text_tokenizer.pad
+    return dataset
+
+
+def _cutset_with_long_context(dataset_class):
+    cuts = _multiturn_cutset() if dataset_class is MagpieTTSLhotseMultiturnDataset else _single_turn_cutset()
+    cut = next(iter(cuts))
+    # 40 codec frames (0.8 s) of context, so that context slicing has to pick a random duration and offset.
+    cut.context_codes = _memory_temporal_array(_cached_codes(num_frames=40))
+    return cuts
+
+
+def _assert_batches_equal(actual, expected):
+    assert actual.keys() == expected.keys()
+    for key, value in expected.items():
+        if isinstance(value, torch.Tensor):
+            torch.testing.assert_close(actual[key], value, msg=key)
+        else:
+            assert actual[key] == value, key
+
+
+@pytest.mark.parametrize("dataset_class", [MagpieTTSLhotseDataset, MagpieTTSLhotseMultiturnDataset])
+class TestMagpieTTSLhotseDatasetRNG:
+    def test_restored_rng_state_reproduces_batches(self, dataset_class):
+        cuts = _cutset_with_long_context(dataset_class)
+        dataset = _dataset_with_fake_tokenizers(dataset_class)
+        dataset[cuts]
+        state = dataset.state_dict()
+        expected = [dataset[cuts] for _ in range(3)]
+
+        # A resumed process does not share the global RNG state of the original one.
+        random.seed(1234)
+        np.random.seed(1234)
+        restored = _dataset_with_fake_tokenizers(dataset_class)
+        restored.load_state_dict(state)
+
+        for expected_batch in expected:
+            _assert_batches_equal(restored[cuts], expected_batch)
+
+    def test_context_slice_differs_when_cut_is_read_again(self, dataset_class):
+        cuts = _cutset_with_long_context(dataset_class)
+        dataset = _dataset_with_fake_tokenizers(dataset_class)
+
+        contexts = [tuple(dataset[cuts]["context_audio_codes"].flatten().tolist()) for _ in range(5)]
+
+        assert len(set(contexts)) > 1

@@ -1462,6 +1462,43 @@ Other, more exotic configurations:
 
 * With ``seed="randomized"``, the base random seed is set to Python's global RNG seed. It might be different on each GPU training process. This setting is not recommended.
 
+Randomness inside datasets
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Per-example randomness in a dataset's ``__getitem__`` (random crops, context slicing, text augmentation, ...)
+must not use the global ``random`` / ``np.random`` generators: their state is not part of the
+``StatefulDataLoader`` checkpoint, so a resumed run would read the same cuts as the uninterrupted run but
+transform them differently. Datasets inherit
+``nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`` and draw from ``self.rng`` instead::
+
+    class MyDataset(StatefulRandomMixin, torch.utils.data.Dataset):
+        def __getitem__(self, cuts):
+            offsets = [self.rng.uniform(0, cut.duration) for cut in cuts]
+            ...
+
+The generator is seeded per dataloading process from the dataloader seed and the data-parallel rank, and its
+state is saved and restored with the dataloader state: by ``StatefulDataLoader`` itself for map-style datasets, and
+by NeMo's ``StatefulIterableDatasetWrapper`` for iterable-style datasets. Each epoch continues the sequence, so a
+cut gets new random draws when it is read again.
+
+Audio augmentation with an ``AudioAugmentor`` (``nemo.collections.asr.parts.preprocessing.perturb``) uses the global
+``random`` module by default. A dataset assigns its generator with ``augmentor.rng = self.rng`` before calling
+``augmentor.perturb(...)``. That generator is then used by every perturbation in the pipeline, including nested
+ones, so augmentation is restored on resume as well. ``LhotseSpeechToTextBpeEOUDataset`` does this.
+With an injected generator, noise and RIR perturbations that read tarred audio (``audio_tar_filepaths``) choose
+the file by index with that generator. They then read it by random access (``.idx`` next to each tar, or a
+cached temporary index for local tars). The sequential tar reader is not used, because its
+position is not checkpointed.
+
+Noise mixing with ``noise_path`` (``CutSet.mix``) reads the noise once and lets Lhotse repeat and sample it. The
+noise shards are shuffled with the data's ``shard_seed`` unless ``noise_path`` sets its own. With an integer
+``shard_seed``, mixed audio is reproducible and is identical after a resume. ``rir_path`` reverb draws from a
+generator that is saved with the sampler state, and it is restored exactly as well.
+
+Random transforms applied to the ``CutSet`` itself (``.map(...)`` in a data type parser) can't keep a checkpointed
+generator. They seed a generator from the cut ID instead, e.g. ``random.Random(f"{seed}:{cut.id}")``, so the result
+is a pure function of the cut. A cut then gets the same draw in every epoch.
+
 CP/TP-safe batches with ``BroadcastingDataLoader``
 ---------------------------------------------------
 

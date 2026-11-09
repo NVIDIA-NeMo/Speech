@@ -28,7 +28,8 @@ One optimizer instance handles both kinds,
 so one learning-rate schedule drives both with a fixed ratio.
 """
 
-from typing import Any, Callable, Dict, Iterable, Optional, Sequence, Tuple, Union
+import math
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import torch
 from torch.optim.optimizer import Optimizer
@@ -72,6 +73,22 @@ class Muon(Optimizer):
     so the relative decay per step is the same fraction of the respective learning rate;
     set ``weight_decay: 0.0`` on a parameter group to exclude it.
 
+    ``foreach`` selects the form of the step.
+    The multi-tensor form (``True``, the default) runs one batched Newton-Schulz iteration
+    for all matrices of one shape
+    and the momentum, weight decay and AdamW arithmetic as ``torch._foreach`` operations,
+    a few dozen kernel launches per step instead of a sequence per parameter;
+    it allocates the stacked copies of the largest shape group and their iteration intermediates
+    while it runs.
+    The per-parameter loop (``False``) updates one parameter after the other.
+    Both forms keep the same per-parameter state, so a state dict moves between them,
+    and compute the same arithmetic for float32 parameters;
+    their updates differ only where the batched matrix products of the Newton-Schulz iteration
+    round differently in bfloat16.
+    With bfloat16 or float16 parameters on CPU the multi-tensor form applies the scalar coefficients
+    (``momentum``, the AdamW coefficients, the decay factor) rounded to the parameter dtype,
+    as the CPU ``torch._foreach`` scalar operations do; the CUDA operations apply them exactly.
+
     Args:
         params: iterable of parameters or of parameter-group dicts
         lr: learning rate of the Muon update
@@ -85,6 +102,8 @@ class Muon(Optimizer):
         adam_lr_ratio: the AdamW learning rate is ``lr * adam_lr_ratio``
         adam_dim_threshold: matrices with a dimension of at least this size fall back to AdamW
         use_muon: force (``True``) or exclude (``False``) the Muon update; ``None`` selects by shape
+        foreach: the multi-tensor form of the step (``True``, faster, more transient memory)
+            or the per-parameter loop (``False``), see above
     """
 
     def __init__(
@@ -101,6 +120,7 @@ class Muon(Optimizer):
         adam_lr_ratio: float = 0.025,
         adam_dim_threshold: int = 8192,
         use_muon: Optional[bool] = None,
+        foreach: bool = True,
     ) -> None:
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -132,6 +152,7 @@ class Muon(Optimizer):
             adam_lr_ratio=adam_lr_ratio,
             adam_dim_threshold=adam_dim_threshold,
             use_muon=use_muon,
+            foreach=foreach,
         )
         super().__init__(params, defaults)
         for group in self.param_groups:
@@ -143,6 +164,12 @@ class Muon(Optimizer):
                         raise ValueError(
                             f"use_muon=True needs at least two dimensions, got shape {tuple(param.shape)}"
                         )
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        super().__setstate__(state)
+        # an optimizer state saved before the option existed has no `foreach` in its parameter groups
+        for group in self.param_groups:
+            group.setdefault('foreach', True)
 
     @staticmethod
     def selects_muon(param: torch.Tensor, *, use_muon: Optional[bool], adam_dim_threshold: int) -> bool:
@@ -176,39 +203,56 @@ class Muon(Optimizer):
                 loss = closure()
 
         for group in self.param_groups:
+            muon_params: List[torch.Tensor] = []
+            adamw_params: List[torch.Tensor] = []
             for param in group['params']:
                 if param.grad is None:
                     continue
-                state = self.state[param]
                 if self.selects_muon(
                     param, use_muon=group['use_muon'], adam_dim_threshold=group['adam_dim_threshold']
                 ):
-                    _muon_update(
-                        param,
-                        param.grad,
-                        state,
-                        lr=group['lr'],
-                        momentum=group['momentum'],
-                        nesterov=group['nesterov'],
-                        ns_steps=group['ns_steps'],
-                        weight_decay=group['weight_decay'],
-                        scale_mode=group['scale_mode'],
-                    )
+                    muon_params.append(param)
                 else:
-                    _adamw_update(
-                        param,
-                        param.grad,
-                        state,
-                        lr=group['lr'] * group['adam_lr_ratio'],
-                        betas=group['adam_betas'],
-                        eps=group['adam_eps'],
-                        weight_decay=group['weight_decay'],
+                    adamw_params.append(param)
+            muon_options = dict(
+                lr=group['lr'],
+                momentum=group['momentum'],
+                nesterov=group['nesterov'],
+                ns_steps=group['ns_steps'],
+                weight_decay=group['weight_decay'],
+                scale_mode=group['scale_mode'],
+            )
+            adamw_options = dict(
+                lr=group['lr'] * group['adam_lr_ratio'],
+                betas=group['adam_betas'],
+                eps=group['adam_eps'],
+                weight_decay=group['weight_decay'],
+            )
+            if group['foreach']:
+                if muon_params:
+                    _muon_update_foreach(
+                        muon_params,
+                        [param.grad for param in muon_params],
+                        [self.state[param] for param in muon_params],
+                        **muon_options,
                     )
+                if adamw_params:
+                    _adamw_update_foreach(
+                        adamw_params,
+                        [param.grad for param in adamw_params],
+                        [self.state[param] for param in adamw_params],
+                        **adamw_options,
+                    )
+            else:
+                for param in muon_params:
+                    _muon_update(param, param.grad, self.state[param], **muon_options)
+                for param in adamw_params:
+                    _adamw_update(param, param.grad, self.state[param], **adamw_options)
         return loss
 
 
 def zeropower_via_newtonschulz5(grad: torch.Tensor, steps: int = 5) -> torch.Tensor:
-    """Approximate the orthogonal factor of a matrix with a quintic Newton-Schulz iteration.
+    """Approximate the orthogonal factor of a matrix or of a batch of matrices with a quintic Newton-Schulz iteration.
 
     For the singular value decomposition ``grad = U S V^T`` the result approximates ``U V^T``:
     the iteration pushes the singular values towards one, not exactly onto it,
@@ -217,28 +261,29 @@ def zeropower_via_newtonschulz5(grad: torch.Tensor, steps: int = 5) -> torch.Ten
     The iteration runs in bfloat16 on the wide orientation of the matrix (rows <= columns),
     so transposing the input transposes the result;
     the result has the dtype of the input.
+    A batch of matrices is iterated as one, with batched matrix products.
 
     Args:
-        grad: a matrix of shape (rows, columns), any float dtype
+        grad: a matrix of shape (rows, columns) or a batch of matrices of shape (n, rows, columns), any float dtype
         steps: number of Newton-Schulz iterations
 
     Returns:
-        the approximately semi-orthogonal matrix, same shape and dtype as ``grad``
+        the approximately semi-orthogonal matrix or matrices, same shape and dtype as ``grad``
     """
-    if grad.ndim != 2:
-        raise ValueError(f"Expected a matrix, got a tensor of shape {tuple(grad.shape)}")
+    if grad.ndim not in (2, 3):
+        raise ValueError(f"Expected a matrix or a batch of matrices, got a tensor of shape {tuple(grad.shape)}")
     a, b, c = 3.4445, -4.7750, 2.0315
     x = grad.bfloat16()
-    transpose = grad.size(0) > grad.size(1)
+    transpose = grad.size(-2) > grad.size(-1)
     if transpose:
-        x = x.T
-    x = x / (x.norm() + 1e-7)
+        x = x.mT
+    x = x / (x.norm(dim=(-2, -1), keepdim=True) + 1e-7)
     for _ in range(steps):
-        aa = x @ x.T
+        aa = x @ x.mT
         bb = b * aa + c * (aa @ aa)
         x = a * x + bb @ x
     if transpose:
-        x = x.T
+        x = x.mT
     return x.to(grad.dtype)
 
 
@@ -286,6 +331,45 @@ def _muon_update(
     param.add_(orthogonal.reshape_as(param), alpha=-lr * update_scale(matrix.shape, scale_mode))
 
 
+def _muon_update_foreach(
+    params: List[torch.Tensor],
+    grads: List[torch.Tensor],
+    states: List[Dict[str, Any]],
+    *,
+    lr: float,
+    momentum: float,
+    nesterov: bool,
+    ns_steps: int,
+    weight_decay: float,
+    scale_mode: str,
+) -> None:
+    bufs: List[torch.Tensor] = []
+    for param, state in zip(params, states):
+        if 'momentum_buffer' not in state:
+            state['momentum_buffer'] = torch.zeros_like(param)
+        bufs.append(state['momentum_buffer'])
+    torch._foreach_mul_(bufs, momentum)
+    torch._foreach_add_(bufs, grads)
+    if weight_decay != 0:
+        torch._foreach_mul_(params, 1 - lr * weight_decay)
+    # one batched Newton-Schulz iteration per matrix shape; torch.stack needs one device and dtype per batch
+    batches: Dict[Tuple[torch.device, torch.dtype, int, int], List[int]] = {}
+    for index, param in enumerate(params):
+        rows, columns = param.size(0), math.prod(param.shape[1:])
+        batches.setdefault((param.device, param.dtype, rows, columns), []).append(index)
+    for (_, _, rows, columns), indices in batches.items():
+        source = grads if nesterov else bufs
+        update = torch.stack([source[index].reshape(rows, columns) for index in indices])
+        if nesterov:
+            update.add_(torch.stack([bufs[index].reshape(rows, columns) for index in indices]), alpha=momentum)
+        orthogonal = zeropower_via_newtonschulz5(update, steps=ns_steps)
+        torch._foreach_add_(
+            [params[index] for index in indices],
+            [matrix.reshape_as(params[index]) for index, matrix in zip(indices, orthogonal.unbind(0))],
+            alpha=-lr * update_scale((rows, columns), scale_mode),
+        )
+
+
 def _adamw_update(
     param: torch.Tensor,
     grad: torch.Tensor,
@@ -312,3 +396,43 @@ def _adamw_update(
     if weight_decay != 0:
         param.mul_(1 - lr * weight_decay)
     param.addcdiv_(exp_avg, denom, value=-lr / bias_correction1)
+
+
+def _adamw_update_foreach(
+    params: List[torch.Tensor],
+    grads: List[torch.Tensor],
+    states: List[Dict[str, Any]],
+    *,
+    lr: float,
+    betas: Tuple[float, float],
+    eps: float,
+    weight_decay: float,
+) -> None:
+    # the bias corrections depend on the step count, which differs between parameters
+    # when one of them had no gradient in an earlier step
+    by_step: Dict[int, List[int]] = {}
+    for index, (param, state) in enumerate(zip(params, states)):
+        if 'exp_avg' not in state:
+            state['step'] = 0
+            state['exp_avg'] = torch.zeros_like(param)
+            state['exp_avg_sq'] = torch.zeros_like(param)
+        state['step'] += 1
+        by_step.setdefault(state['step'], []).append(index)
+    beta1, beta2 = betas
+    for step, indices in by_step.items():
+        step_params = [params[index] for index in indices]
+        step_grads = [grads[index] for index in indices]
+        exp_avgs = [states[index]['exp_avg'] for index in indices]
+        exp_avg_sqs = [states[index]['exp_avg_sq'] for index in indices]
+        torch._foreach_mul_(exp_avgs, beta1)
+        torch._foreach_add_(exp_avgs, step_grads, alpha=1 - beta1)
+        torch._foreach_mul_(exp_avg_sqs, beta2)
+        torch._foreach_addcmul_(exp_avg_sqs, step_grads, step_grads, value=1 - beta2)
+        bias_correction1 = 1 - beta1**step
+        bias_correction2 = 1 - beta2**step
+        denoms = torch._foreach_sqrt(exp_avg_sqs)
+        torch._foreach_div_(denoms, bias_correction2**0.5)
+        torch._foreach_add_(denoms, eps)
+        if weight_decay != 0:
+            torch._foreach_mul_(step_params, 1 - lr * weight_decay)
+        torch._foreach_addcdiv_(step_params, exp_avgs, denoms, value=-lr / bias_correction1)

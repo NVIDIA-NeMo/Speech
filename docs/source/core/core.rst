@@ -504,6 +504,14 @@ in Python or, for a model attribute, through ``optim_param_groups``:
                 use_muon: false
                 weight_decay: 0.0
 
+The step runs in its multi-tensor form by default (``foreach: true``):
+one batched Newton-Schulz iteration per matrix shape and ``torch._foreach`` operations for the rest,
+a few dozen kernel launches per step instead of a sequence per parameter,
+at the cost of transient memory for the stacked copies of the largest shape group.
+``foreach: false`` selects the per-parameter loop,
+which computes the same update up to the bfloat16 rounding of the batched matrix products
+(and, for bfloat16 or float16 parameters on CPU, the rounding of the scalar coefficients to the parameter dtype).
+
 Optimizer Params
 ~~~~~~~~~~~~~~~~
 

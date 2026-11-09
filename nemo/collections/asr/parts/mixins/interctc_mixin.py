@@ -176,7 +176,7 @@ class InterCTCMixin:
     def get_captured_interctc_tensors(self) -> List[Tuple[torch.Tensor, torch.Tensor]]:
         """Returns a list of captured tensors from encoder: tuples of (output, length).
 
-        Will additionally apply ``ctc_decoder`` to the outputs.
+        Applies ``ctc_decoder`` and returns lengths in the decoder's output-frame domain.
         """
         if not self.is_interctc_enabled():
             return []

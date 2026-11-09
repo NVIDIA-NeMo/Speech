@@ -103,6 +103,7 @@ def test_interctc_decoder_receives_intermediate_lengths_and_backpropagates(
                     'n_layers': 2,
                     'd_model': 32,
                     'n_heads': 2,
+                    'subsampling_factor': 8,
                 },
                 'decoder': decoder,
                 'interctc': {'apply_at_layers': [0], 'loss_weights': [0.3]},

@@ -881,13 +881,14 @@ def prepare_lr_scheduler(
 
         # <scheduler config override>
         args:
-          name: auto  # special keyword, resolves to correct optimizer config for given optimizer name
+          name: auto  # special keyword, resolves to correct scheduler config for given scheduler name
           # cls: nemo.core.config.schedulers.CosineAnnealingParams  # explicit instantiation by class path
-          params:  # optional override parameters for the optimizer config
-            warmup_steps: null
-            warmup_ratio: null
-            min_lr: 0.0
-            last_epoch: -1
+          # optional override parameters for the scheduler config, next to `name`
+          # (the legacy nesting under `params` is accepted as well and flattened)
+          warmup_steps: null
+          warmup_ratio: null
+          min_lr: 0.0
+          last_epoch: -1
 
     Args:
         optimizer: An instantiated Optimizer.
@@ -972,13 +973,15 @@ def prepare_lr_scheduler(
             else:
                 scheduler_params_name = scheduler_args['name']
 
-            # Get override arguments provided in the config yaml file / Dict Config
-            scheduler_params_override = scheduler_args.get('params', {})
-
-            # If params is itself a dict config object provided explicitly in Dict Config
-            # Resolve to dictionary for convenience
-            if isinstance(scheduler_params_override, DictConfig):
-                scheduler_params_override = OmegaConf.to_container(scheduler_params_override, resolve=True)
+            # Get override arguments provided in the config yaml file / Dict Config.
+            # `maybe_update_config_version` has normally flattened the legacy `params` block next to `name`;
+            # `params` only survives when that conversion was skipped, so merge it into the flat arguments.
+            scheduler_params_override = {key: value for key, value in scheduler_args.items() if key != 'name'}
+            legacy_params = scheduler_params_override.pop('params', None)
+            if isinstance(legacy_params, DictConfig):
+                legacy_params = OmegaConf.to_container(legacy_params, resolve=True)
+            if legacy_params:
+                scheduler_params_override.update(legacy_params)
 
             # Get and instantiate the Config dataclass for this scheduler
             scheduler_params_cls = get_scheduler_config(scheduler_params_name, **scheduler_params_override)

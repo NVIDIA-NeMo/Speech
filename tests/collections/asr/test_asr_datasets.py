@@ -15,6 +15,7 @@
 import copy
 import filecmp
 import json
+import math
 import os
 import shutil
 import tempfile
@@ -71,6 +72,33 @@ def decode_subwords(tokens, token_length, tokenizer: tokenizers.TokenizerSpec):
     tokens = tokens[:token_length]
     text = tokenizer.ids_to_text(tokens)
     return text
+
+
+def write_random_wav_manifest(
+    directory: str, num_samples: list[int], sample_rate: int
+) -> tuple[str, list[np.ndarray]]:
+    """Writes one 16-bit WAV file of uniform noise per entry of `num_samples` and a manifest listing them.
+
+    Args:
+        directory: where the files are written.
+        num_samples: the length of each waveform in samples.
+        sample_rate: the sample rate written to the files and the manifest durations.
+
+    Returns:
+        The manifest path and the waveforms as the float32 arrays a reader decodes from the files,
+        so that a reference computed from them sees the same samples as the DALI reader.
+    """
+    generator = np.random.default_rng(0)
+    manifest_path = os.path.join(directory, 'manifest.json')
+    waveforms = []
+    with open(manifest_path, 'w', encoding='utf-8') as manifest:
+        for idx, length in enumerate(num_samples):
+            audio_path = os.path.join(directory, f'{idx}.wav')
+            sf.write(audio_path, generator.uniform(-0.5, 0.5, size=length), sample_rate, subtype='PCM_16')
+            waveforms.append(sf.read(audio_path, dtype='float32')[0])
+            entry = {'audio_filepath': audio_path, 'duration': length / sample_rate, 'text': 'a'}
+            manifest.write(json.dumps(entry) + '\n')
+    return manifest_path, waveforms
 
 
 class TestASRDatasets:
@@ -614,6 +642,115 @@ class TestASRDatasets:
                 err = np.abs(a - b)
                 assert np.mean(err) < 0.0001
                 assert np.max(err) < 0.01
+
+    @pytest.mark.skipif(not HAVE_DALI, reason="NVIDIA DALI is not installed or incompatible version")
+    @pytest.mark.unit
+    @pytest.mark.parametrize("log", [True, False])
+    def test_dali_frontend_options_vs_ref_preprocessor(self, log):
+        """The DALI pipeline applies the front-end options of the mel preprocessor as the regular front end does.
+
+        Two waveforms of 3000 and 2300 samples with snipped framing, the periodic window,
+        HTK mel filters without area normalization, no pre-emphasis,
+        and the base-10 logarithm or no logarithm at all.
+        """
+        sample_rate = 16000
+        num_samples = [3000, 2300]
+        device = 'gpu' if torch.cuda.is_available() else 'cpu'
+        preprocessor_cfg = DictConfig(
+            {
+                '_target_': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor',
+                'sample_rate': sample_rate,
+                'window_size': 0.025,
+                'window_stride': 0.01,
+                'n_fft': 512,
+                'features': 80,
+                'dither': 0.0,
+                'preemph': None,
+                'periodic_window': True,
+                'snip_edges': True,
+                'mel_scale': 'htk',
+                'mel_norm': None,
+                'log': log,
+                'log_zero_guard_type': 'clamp',
+                'log_zero_guard_value': 1e-10,
+                'log_base': 10.0,
+                'normalize': 'per_feature',
+                'pad_to': 0,
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path, waveforms = write_random_wav_manifest(tmpdir, num_samples, sample_rate)
+            dali_dataset = AudioToCharDALIDataset(
+                manifest_filepath=manifest_path,
+                device=device,
+                batch_size=len(num_samples),
+                labels=self.labels,
+                sample_rate=sample_rate,
+                max_duration=1.0,  # the default of 0 filters every manifest entry
+                parser='en',
+                shuffle=False,
+                preprocessor_cfg=preprocessor_cfg,
+            )
+            dali_features, dali_features_len, _, _ = next(iter(dali_dataset))
+
+        audio = torch.zeros(len(waveforms), max(num_samples))
+        for idx, waveform in enumerate(waveforms):
+            audio[idx, : len(waveform)] = torch.from_numpy(waveform)
+        ref_preprocessor = EncDecCTCModel.from_config_dict(preprocessor_cfg)
+        ref_features, ref_features_len = ref_preprocessor(input_signal=audio, length=torch.tensor(num_samples))
+
+        # Snipped framing: (3000 - 400) // 160 + 1 and (2300 - 400) // 160 + 1 frames, all of them valid.
+        assert ref_features_len.tolist() == [17, 12]
+        assert dali_features_len.cpu().tolist() == [17, 12]
+        for idx, n_frames in enumerate([17, 12]):
+            err = np.abs(ref_features[idx, :, :n_frames].numpy() - dali_features[idx, :, :n_frames].cpu().numpy())
+            assert np.mean(err) < 0.0001
+            assert np.max(err) < 0.01
+
+    @pytest.mark.skipif(not HAVE_DALI, reason="NVIDIA DALI is not installed or incompatible version")
+    @pytest.mark.unit
+    @pytest.mark.parametrize("log_base", [None, 10.0])
+    def test_dali_log_arguments(self, log_base):
+        """The decibel operator of the DALI pipeline gets the multiplier and cutoff of the configured logarithm.
+
+        Per-feature normalization cancels a positive scaling of the features,
+        so a parity test cannot tell the natural logarithm from the base-10 one; the operator arguments can.
+        """
+        import nvidia.dali as dali
+
+        guard = 1e-10
+        preprocessor_cfg = DictConfig(
+            {
+                '_target_': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor',
+                'dither': 0.0,
+                'log_zero_guard_type': 'clamp',
+                'log_zero_guard_value': guard,
+                'log_base': log_base,
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path, _ = write_random_wav_manifest(tmpdir, [3000], 16000)
+            with mock.patch.object(dali.fn, 'to_decibels', wraps=dali.fn.to_decibels) as to_decibels:
+                AudioToCharDALIDataset(
+                    manifest_filepath=manifest_path,
+                    device='gpu' if torch.cuda.is_available() else 'cpu',
+                    batch_size=1,
+                    labels=self.labels,
+                    max_duration=1.0,
+                    parser='en',
+                    shuffle=False,
+                    preprocessor_cfg=preprocessor_cfg,
+                )
+
+        # to_decibels computes multiplier * log10(x) with the cutoff in the same units.
+        if log_base is None:
+            expected_multiplier, expected_cutoff = math.log(10), math.log(guard)
+        else:
+            expected_multiplier, expected_cutoff = 1.0, math.log10(guard)
+        kwargs = to_decibels.call_args.kwargs
+        assert kwargs['multiplier'] == pytest.approx(expected_multiplier)
+        assert kwargs['cutoff_db'] == pytest.approx(expected_cutoff)
 
     @pytest.mark.unit
     def test_feature_to_text_char_dataset(self):

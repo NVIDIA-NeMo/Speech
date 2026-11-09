@@ -1099,9 +1099,23 @@ class TestAudioProcessing:
         torch.nn.Module.__init__(model)
         model.perception = _Perception()
         model._uses_pe_encoder = True
+        model._perception_weights_initialized = False
 
         with pytest.raises(RuntimeError, match="does not exactly match"):
             model._load_perception_weights({})
+
+        assert not model._perception_weights_initialized
+        seed = {key: value.clone() for key, value in model.perception.state_dict().items()}
+        model._load_perception_weights(seed)
+        assert model._perception_weights_initialized
+        before_bias = model.perception.encoder.bias.detach().clone()
+        update = torch.full_like(model.perception.encoder.weight, 0.5)
+        assert model._load_perception_weights({"encoder.weight": update}) == {"perception.encoder.weight"}
+        torch.testing.assert_close(model.perception.encoder.weight, update)
+        torch.testing.assert_close(model.perception.encoder.bias, before_bias)
+        assert model._load_perception_weights({}) == set()
+        with pytest.raises(RuntimeError, match="unexpected"):
+            model._load_perception_weights({"wrong.weight": update})
 
         model._uses_pe_encoder = False
         assert model._load_perception_weights({}) == set()

@@ -339,6 +339,9 @@ class TestSaveRestore:
                 strict=strict,
                 return_config=return_config,
                 override_config_path=override_config_path,
+                save_restore_connector=save_restore_connector.SaveRestoreConnector(
+                    allow_external_artifacts=override_config_path is not None
+                ),
             )
 
             if return_config:

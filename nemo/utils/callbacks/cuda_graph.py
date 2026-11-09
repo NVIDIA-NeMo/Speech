@@ -32,6 +32,7 @@
 #    have to ensure that data is copied to static tensors. Otherwise this
 #    can also lead to silent failure.
 
+import functools
 import os
 import time
 from dataclasses import dataclass
@@ -211,10 +212,16 @@ def get_optimizer_step(state):
 
 
 def get_training_step(state):
-    """Create the training-step function for the current capture state."""
+    """Create the training-step function for the current capture state.
 
-    def training_step(self, batch):
-        results = self.__orig_training_step__(batch)
+    The function forwards what Lightning passes to the module's ``training_step``:
+    the batch, and the batch index when the step takes a second parameter after ``self``
+    (Lightning checks the parameter count, not the name).
+    ``on_train_start`` gives it the original's signature, which Lightning reads for that.
+    """
+
+    def training_step(self, *args, **kwargs):
+        results = self.__orig_training_step__(*args, **kwargs)
         if state.output is None:
             state.output = struct_copy_one(results)
 
@@ -227,12 +234,20 @@ def get_training_step(state):
 
 
 def get_amp_autocast_init(state):
-    def amp_autocast_init(self, *args, **kwargs):
-        if "cache_enabled" not in kwargs:
-            kwargs["cache_enabled"] = False
-        if state.current_iteration == 0:
-            rank_zero_info("CUDAGraphCallback: disable autocast cache.")
-        return self.__orig_init__(*args, **kwargs)
+    """Create the replacement of ``torch.autocast.__init__`` that turns the autocast cache off unless asked for.
+
+    The replacement keeps the original's parameters:
+    Dynamo binds the arguments of an autocast scope inside compiled code against ``inspect.signature(torch.autocast)``
+    and re-enters the scope with positional values,
+    which a ``(*args, **kwargs)`` replacement cannot take.
+    """
+
+    def amp_autocast_init(self, device_type, dtype=None, enabled=True, cache_enabled=None):
+        if cache_enabled is None:
+            cache_enabled = False
+            if state.current_iteration == 0:
+                rank_zero_info("CUDAGraphCallback: disable autocast cache.")
+        return self.__orig_init__(device_type, dtype=dtype, enabled=enabled, cache_enabled=cache_enabled)
 
     return amp_autocast_init
 
@@ -366,6 +381,9 @@ class CUDAGraphCallback(Callback):
         # Save model outputs to static buffer for PL states reconstruct
         pl_module.__orig_training_step__ = pl_module.training_step
         training_step = get_training_step(self.state)
+        # Lightning reads the signature of training_step to decide whether it passes the batch index
+        original = pl_module.training_step
+        functools.update_wrapper(training_step, original.__func__ if isinstance(original, MethodType) else original)
         pl_module.training_step = MethodType(training_step, pl_module)
 
         # Capture CUDA graph from model forward propagation to optimizer step

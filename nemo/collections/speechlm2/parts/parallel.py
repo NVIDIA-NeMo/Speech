@@ -278,6 +278,17 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
     """
 
     @override
+    def optimizer_state(self, optimizer):
+        from lightning.pytorch.core.optimizer import LightningOptimizer
+
+        from nemo.collections.speechlm2.parts.optimizer_checkpoint import _cpu_optimizer_checkpoint
+
+        if isinstance(optimizer, LightningOptimizer):
+            optimizer = optimizer._optimizer
+        with _cpu_optimizer_checkpoint(optimizer):
+            return super().optimizer_state(optimizer)
+
+    @override
     def load_checkpoint(self, checkpoint_path, weights_only: Optional[bool] = None):
         """Load DCP optimizer state while preserving lazy-state semantics.
 
@@ -310,7 +321,12 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         metadata = FileSystemReader(path).read_metadata()
         for idx, optimizer in enumerate(self.optimizers):
             optimizer_key = f"optimizer_{idx}"
-            optimizer_state = {optimizer_key: get_optimizer_state_dict(self.model, optimizer)}
+            from nemo.collections.speechlm2.parts.optimizer_checkpoint import _cpu_optimizer_checkpoint
+
+            with _cpu_optimizer_checkpoint(optimizer):
+                optimizer_state = {
+                    optimizer_key: get_optimizer_state_dict(self.model, optimizer, options=state_dict_options)
+                }
             planner, missing_parameters = _optimizer_load_planner(optimizer_state, metadata, optimizer_key)
             load(optimizer_state, checkpoint_id=path, planner=planner)
             set_optimizer_state_dict(

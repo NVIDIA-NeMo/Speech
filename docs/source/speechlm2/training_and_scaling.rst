@@ -410,6 +410,13 @@ For Fully Sharded Data Parallel training:
 FSDP2 shards the model parameters across GPUs, all-gathers them for forward/backward passes, and then de-allocates after computation. This allows training of larger models with limited GPU memory.
 See `PyTorch FSDP2 <https://pytorch.org/docs/stable/distributed.fsdp.fully_shard.html>`_ for more details.
 
+``AutomodelParallelStrategy`` collects optimizer checkpoints on CPU. For Transformer
+Engine FusedAdam with reduced-precision moments, each canonical state tensor is
+converted and transferred before the next one is collected, avoiding a full FP32
+optimizer copy on the GPU. Checkpoints retain the optimizer's standard format and
+master-weight remainder dtype; live training state is unchanged. Distributed
+optimizer restore targets are CPU-offloaded before the loaded state is applied.
+
 Tensor Parallelism Configuration (HF Automodel)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

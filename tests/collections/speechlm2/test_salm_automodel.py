@@ -38,24 +38,8 @@ from tests.collections.speechlm2._chunking_helpers import (
 requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="SALMAutomodel requires CUDA")
 
 
-@pytest.fixture(autouse=True, scope="module")
-def _default_device_cuda():
-    """Run this module's tests on CUDA by default, but scope the change so it does
-    not leak. ``torch.set_default_device`` is a global, process-wide mutation; setting
-    it at import time bleeds into other modules collected in the same pytest session
-    (e.g. device-agnostic ASR module tests),
-    causing spurious cuda/cpu device-mismatch failures. The previous default device
-    is always restored on teardown.
-    """
-    if not torch.cuda.is_available():
-        yield
-        return
-    prev = torch.get_default_device()
-    torch.set_default_device('cuda')
-    try:
-        yield
-    finally:
-        torch.set_default_device(prev)
+# Run on CUDA when available, without leaking the default device to other test modules (see conftest.py).
+pytestmark = pytest.mark.usefixtures("cuda_default_device")
 
 
 def resolve_pretrained_models():
@@ -77,8 +61,8 @@ AUDIO_LOCATOR_TAG = "<|audioplaceholder|>"
 PROMPT = "qwen"
 
 
-@pytest.fixture(scope="session")
-def model():
+@pytest.fixture(scope="module")
+def model(cuda_default_device):
     if not torch.cuda.is_available():
         pytest.skip("SALMAutomodel requires CUDA")
     cfg = {
@@ -143,18 +127,18 @@ def model():
     return model
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def dataset(model):
     return SALMDataset(model.tokenizer)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def prompt_formatter(model):
     return PromptFormatter.resolve(PROMPT)(model.tokenizer)
 
 
-@pytest.fixture(scope="session")
-def training_cutset_batch():
+@pytest.fixture(scope="module")
+def training_cutset_batch(cuda_default_device):
     cut = dummy_cut(0, recording=dummy_recording(0, with_data=True))
     cut.supervisions = [
         SupervisionSegment(

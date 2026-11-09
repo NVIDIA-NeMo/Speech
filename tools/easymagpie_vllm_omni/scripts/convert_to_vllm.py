@@ -61,12 +61,16 @@ import os
 import subprocess
 import sys
 from math import prod
+from typing import TYPE_CHECKING
 
 import torch
 import tqdm
 from easymagpie_vllm_omni.config import EasyMagpieOmniArch
 from omegaconf import OmegaConf
 from safetensors.torch import load_file, save_file
+
+if TYPE_CHECKING:
+    from nemo.collections.tts.models.easy_magpietts import EasyMagpieTTSModel
 
 
 # Top-level checkpoint key prefixes the vLLM model's ``load_weights`` consumes
@@ -242,6 +246,28 @@ def precompute_text_embeddings(model, batch_size: int) -> torch.Tensor:
         embeds = model.embed_text_tokens(ids, text_lens=lens, disable_cas_embedding=False)  # (1, n, E)
         table[start:end] = embeds.squeeze(0).to(torch.float32)
     return table.cpu()
+
+
+@torch.no_grad()
+def precompute_cfg_context_embedding(model: EasyMagpieTTSModel) -> torch.Tensor:
+    """Match V2 streaming_init's one-token, context-specific CFG_UNK embedding.
+
+    Args:
+        model: NeMo model supplying the context text embedder.
+
+    Returns:
+        The finite one-token context embedding on CPU in float32, shaped (1, embedding_dim).
+    """
+    from easymagpie_vllm_omni.cfg import validate_cfg_context_embedding
+
+    device = next(model.parameters()).device
+    embedding = model.embed_text_tokens(
+        torch.full((1, 1), model.cfg_unk_token_id, device=device, dtype=torch.long),
+        text_lens=torch.ones(1, device=device, dtype=torch.long),
+        disable_cas_embedding=model.disable_cas_for_context_text,
+    ).squeeze(0)
+    validate_cfg_context_embedding(embedding, int(model.cfg.embedding_dim))
+    return embedding.float().cpu()
 
 
 @torch.no_grad()
@@ -478,6 +504,12 @@ def build_config(
 
     predictor_type = acoustic_predictor_type(model)
     config["acoustic_predictor_type"] = predictor_type
+    if predictor_type == "acoustic_codes_predictor":
+        config["cfg_unk_token_id"] = int(model.cfg_unk_token_id)
+        config["cfg_capability"] = {
+            "version": 1,
+            "context_cas_disabled": bool(model.disable_cas_for_context_text),
+        }
     if predictor_type == "local_transformer":
         config["local_transformer_n_layers"] = int(cfg.get("local_transformer_n_layers", 2))
         config["local_transformer_n_heads"] = int(cfg.get("local_transformer_n_heads", 1))
@@ -754,6 +786,8 @@ def convert(args) -> None:
         append_reference_speaker_encoder_weights(encoder_path, state_dict)
     weights = select_weights(state_dict, hidden_dim, dtype)
     weights["text_embedding.weight"] = text_table.to(dtype)
+    if config.get("cfg_capability") is not None:
+        weights["cfg_context_embedding"] = precompute_cfg_context_embedding(model).to(dtype)
 
     safetensors_path = os.path.join(args.outdir, "model.safetensors")
     save_file(weights, safetensors_path, metadata={"format": "pt"})

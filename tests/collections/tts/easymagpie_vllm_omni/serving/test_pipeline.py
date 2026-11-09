@@ -12,14 +12,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tests for the standalone EasyMagpie LM pipeline topology."""
+"""Tests for EasyMagpie standard, LM, and compiled CFG deployment contracts."""
 from __future__ import annotations
 
 import pytest
 
 pytest.importorskip("vllm_omni")
 
-from easymagpie_vllm_omni.pipeline import EASYMAGPIE_LM_PIPELINE, EASYMAGPIE_PIPELINE  # noqa: E402
+from easymagpie_vllm_omni.pipeline import (  # noqa: E402
+    EASYMAGPIE_CFG_PIPELINE,
+    EASYMAGPIE_LM_PIPELINE,
+    EASYMAGPIE_PIPELINE,
+)
 
 
 def test_lm_pipeline_is_single_stage():
@@ -40,3 +44,108 @@ def test_two_stage_pipeline_unchanged():
     assert len(EASYMAGPIE_PIPELINE.stages) == 2
     assert EASYMAGPIE_PIPELINE.stages[1].final_output is True
     assert EASYMAGPIE_PIPELINE.stages[1].final_output_type == "audio"
+
+
+def test_cfg_pipeline_requires_explicit_selection_and_keeps_standard_pipeline() -> None:
+    """Verify CFG pipeline requires explicit selection and keeps standard pipeline."""
+    pipeline = EASYMAGPIE_CFG_PIPELINE
+    assert pipeline.model_type == "easymagpie_cfg"
+    assert pipeline.hf_architectures == ()
+    assert pipeline.validate() == []
+    assert pipeline.stages[0].scheduler_cls == "easymagpie_vllm_omni.cfg_scheduler.EasyMagpieCFGScheduler"
+    assert pipeline.stages[1] == EASYMAGPIE_PIPELINE.stages[1]
+    assert EASYMAGPIE_PIPELINE.stages[0].scheduler_cls.endswith(".EasyMagpieARAsyncScheduler")
+
+
+def test_plugin_registers_only_standard_lm_and_cfg_pipelines(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the removed diagnostic topology out of the plugin registry."""
+    import vllm_plugin_easymagpie_omni
+    from vllm_omni.config import pipeline_registry
+
+    registered = []
+    monkeypatch.setattr(pipeline_registry, "register_pipeline", registered.append)
+    vllm_plugin_easymagpie_omni._register_pipeline()
+    assert [pipeline.model_type for pipeline in registered] == ["easymagpie", "easymagpie_lm", "easymagpie_cfg"]
+
+
+def test_cfg_synthesis_deployment_uses_compiled_synchronous_paired_execution() -> None:
+    """Verify compiled CFG retains synchronous paired execution and an eager codec."""
+    from conftest import EASYMAGPIE_ROOT
+    from easymagpie_vllm_omni.pipeline import EASYMAGPIE_CFG_PIPELINE
+    from vllm_omni.config.stage_config import load_deploy_config, merge_pipeline_deploy
+
+    deploy = load_deploy_config(EASYMAGPIE_ROOT / "deploy" / "easymagpie_cfg.yaml")
+    assert deploy.pipeline == "easymagpie_cfg"
+    assert EASYMAGPIE_CFG_PIPELINE.validate() == []
+    stages = merge_pipeline_deploy(EASYMAGPIE_CFG_PIPELINE, deploy)
+    assert stages[0].scheduler_cls.endswith(".EasyMagpieCFGScheduler")
+    assert stages[0].yaml_engine_args["max_num_seqs"] == 64
+    assert stages[1].yaml_engine_args["max_num_seqs"] == 32
+    assert stages[0].yaml_engine_args["enforce_eager"] is False
+    assert stages[1].yaml_engine_args["enforce_eager"] is True
+    for stage in stages:
+        args = stage.yaml_engine_args
+        assert args["async_scheduling"] is False
+        assert args["enable_prefix_caching"] is False
+        assert args["enable_chunked_prefill"] is False
+
+
+def test_cfg_synthesis_batch_capacity_matches_standard_with_two_branches() -> None:
+    """Verify CFG synthesis batch capacity matches standard with two branches."""
+    import yaml
+    from conftest import EASYMAGPIE_ROOT
+
+    deploy = EASYMAGPIE_ROOT / "deploy"
+    standard = yaml.safe_load((deploy / "easymagpie.yaml").read_text())
+    cfg = yaml.safe_load((deploy / "easymagpie_cfg.yaml").read_text())
+    acoustic, codec = cfg["stages"]
+    standard_acoustic, standard_codec = standard["stages"]
+    # Sequence and prefill/decode token budgets count both physical branches.
+    assert acoustic["max_num_seqs"] == 2 * standard_acoustic["max_num_seqs"]
+    assert acoustic["max_num_batched_tokens"] == 2 * standard_acoustic["max_num_batched_tokens"]
+    assert acoustic["max_model_len"] == standard_acoustic["max_model_len"]
+    # Only the public branch transfers a codec stream. Unchunked scheduling
+    # additionally requires its token budget to cover retained prompt history.
+    assert codec["max_num_seqs"] == standard_codec["max_num_seqs"]
+    assert codec["max_num_batched_tokens"] == max(standard_codec["max_num_batched_tokens"], codec["max_model_len"])
+    for stage, reference in zip(cfg["stages"], standard["stages"]):
+        assert stage["gpu_memory_utilization"] == reference["gpu_memory_utilization"]
+        assert stage["devices"] == reference["devices"]
+    compilation = acoustic["compilation_config"]
+    assert acoustic["max_num_seqs"] in compilation["cudagraph_capture_sizes"]
+
+
+def test_cfg_codec_history_fits_full_acoustic_generation() -> None:
+    """Verify CFG codec history fits full acoustic generation."""
+    import yaml
+    from conftest import EASYMAGPIE_ROOT
+
+    config = yaml.safe_load((EASYMAGPIE_ROOT / "deploy" / "easymagpie_cfg.yaml").read_text())
+    acoustic, codec = config["stages"]
+    # Omni's generation runner stores the cumulative codec prompt in InputBatch,
+    # even though each forward consumes only the next small streaming chunk.
+    assert codec["max_model_len"] >= acoustic["default_sampling_params"]["max_tokens"]
+
+
+def test_cfg_profile_matches_standard_precision() -> None:
+    """Verify CFG profile matches standard precision."""
+    from pathlib import Path
+
+    import yaml
+
+    deploy = Path(__file__).resolve().parents[5] / "tools/easymagpie_vllm_omni/deploy"
+    standard = yaml.safe_load((deploy / "easymagpie.yaml").read_text())
+    lm = yaml.safe_load((deploy / "easymagpie_lm.yaml").read_text())
+    cfg = yaml.safe_load((deploy / "easymagpie_cfg.yaml").read_text())
+    # Compare every explicit dtype, including inherited model/attention/conv
+    # defaults: missing fields must stay missing on both sides as well.
+    for reference in (standard, lm):
+        assert {k: v for k, v in cfg.items() if k.endswith("dtype")} == {
+            k: v for k, v in reference.items() if k.endswith("dtype")
+        }
+        assert {k: v for k, v in cfg["stages"][0].items() if k.endswith("dtype")} == {
+            k: v for k, v in reference["stages"][0].items() if k.endswith("dtype")
+        }
+    assert {k: v for k, v in cfg["stages"][1].items() if k.endswith("dtype")} == {
+        k: v for k, v in standard["stages"][1].items() if k.endswith("dtype")
+    }

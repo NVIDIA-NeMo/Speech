@@ -113,7 +113,7 @@ def test_embed_multimodal_rejects_reference_audio_when_codec_encoder_is_absent()
 def _raw_reference_prefill_model():
     model = EasyMagpieTTSForConditionalGeneration.__new__(EasyMagpieTTSForConditionalGeneration)
     nn.Module.__init__(model)
-    model._maybe_set_lt_sampling_params = lambda info: None
+    model._maybe_set_code_sampling_params = lambda info: None
     model._build_reference_audio_prefill_chunk = lambda **kwargs: (
         torch.full((kwargs["span_len"], 2), 7.0),
         2,
@@ -294,7 +294,7 @@ def test_reference_only_prefill_state_remains_reference_layout_across_scheduler_
     model = _reference_prefill_model()
     model.speech_delay = 2
     model._combined_embeddings = torch.zeros(1, 3)
-    model._maybe_set_lt_sampling_params = lambda info: None
+    model._maybe_set_code_sampling_params = lambda info: None
     base_info = {
         "_omni_prompt_len": 7,
         "context_text": "[EN]",

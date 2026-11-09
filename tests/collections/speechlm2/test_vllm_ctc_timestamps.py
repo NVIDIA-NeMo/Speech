@@ -62,7 +62,8 @@ def _capture_nemo_logs(caplog):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_host_buffers_ignore_a_cuda_default_device(aligner):
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_host_buffers_ignore_a_cuda_default_device(aligner, device):
     with torch.device("cuda"):
         inputs = _inputs(1, 4)
         _capture(1, 4, ["hash-a"], inputs=inputs)
@@ -72,10 +73,9 @@ def test_host_buffers_ignore_a_cuda_default_device(aligner):
         assert entry["asr_encoded"].device.type == "cpu"
         assert entry["asr_encoded"].is_pinned()
         assert entry["duration"].device.type == "cpu"
-        for device in (torch.device("cpu"), torch.device("cuda")):
-            collated = ct._collate([entry], device)
-            assert collated.asr_encoded.device.type == device.type
-            torch.testing.assert_close(collated.asr_encoded.cpu(), inputs.asr_encoded.cpu())
+        collated = ct._collate([entry], torch.device(device))
+        assert collated.asr_encoded.device.type == device
+        torch.testing.assert_close(collated.asr_encoded.cpu(), inputs.asr_encoded.cpu())
         unpacked = ct._unpack(ct._pack({"empty": torch.empty(0, 3), "values": torch.arange(3)}))
         assert all(tensor.device.type == "cpu" for tensor in unpacked.values())
         assert unpacked["empty"].shape == (0, 3)
@@ -827,7 +827,7 @@ def test_evicted_rows_are_not_compacted(aligner, monkeypatch):
 
 
 def test_speaker_prior_weight_defaults_and_rejects_negative_values():
-    assert ct.read_speaker_prior_weight({}) == 1.0
+    assert ct.read_speaker_prior_weight({}) is None
     assert ct.read_speaker_prior_weight(SimpleNamespace(speaker_logprob_weight=0)) == 0.0
     with pytest.raises(ValueError, match="non-negative"):
         ct.read_speaker_prior_weight({"speaker_logprob_weight": -0.1})
@@ -1557,12 +1557,12 @@ def test_alignment_uses_the_request_id_vllm_reports(server, caplog):
     assert server.rpcs == [ct.WORKER_PREPARE_METHOD] and ct._store == {}
 
 
-def test_opted_in_requests_refuse_n_above_1(server):
-    for fields in ({"n": 2}, {"stream": True, "n": 2}):
-        response = server.post(**fields)
+@pytest.mark.parametrize("fields", [{"n": 2}, {"stream": True, "n": 2}], ids=["non-streaming", "streaming"])
+def test_opted_in_requests_refuse_n_above_1(server, fields):
+    response = server.post(**fields)
 
-        assert response.status_code == 400
-        assert "n > 1" in response.json()["error"]["message"]
+    assert response.status_code == 400
+    assert "n > 1" in response.json()["error"]["message"]
     assert server.rpcs == []
 
 
@@ -1976,7 +1976,7 @@ def test_a_checkpoint_that_bundles_the_ctc_head_is_its_own_adapter(tmp_path):
     # Found on its own, the head is optional: an engine that cannot use it serves without it.
     assert ct.ctc_timestamp_config(model_config(None)) == {
         "adapter_path": bundled,
-        "speaker_logprob_weight": ct.DEFAULT_SPEAKER_PRIOR_WEIGHT,
+        "speaker_logprob_weight": None,
         "optional": True,
     }
     assert ct.ctc_timestamp_config(model_config({"speaker_logprob_weight": 0.5}))["speaker_logprob_weight"] == 0.5
@@ -1995,6 +1995,32 @@ def test_a_checkpoint_without_a_bundled_head_keeps_timestamps_off(tmp_path):
     model_config.hf_config.ctc_timestamps = {"enabled": True}
     with pytest.raises(ValueError, match="bundles no CTC timestamp head"):
         ct.ctc_timestamp_config(model_config)
+
+
+@pytest.mark.parametrize('as_namespace', [False, True])
+@pytest.mark.parametrize('symlink', [False, True])
+def test_bundled_ctc_keeps_json_options_and_snapshot_path(tmp_path, as_namespace, symlink):
+    from pathlib import Path
+
+    path = Path(_checkpoint(tmp_path))
+    model_dir = tmp_path
+    if symlink:
+        model_dir = tmp_path / 'snapshot'
+        model_dir.mkdir()
+        (model_dir / 'model.safetensors').symlink_to(path)
+    block = {
+        'decoder_config': {'upsampling_factor': 2},
+        'tokenizer_config': {'legacy': False},
+        'alignment_config': {'parameters': {'speaker_logprob_weight': 0.37}},
+    }
+    model_config = SimpleNamespace(
+        model=str(model_dir),
+        hf_config=SimpleNamespace(ctc_timestamps=SimpleNamespace(**block) if as_namespace else block),
+    )
+    resolved = ct.ctc_timestamp_config(model_config)
+    assert resolved['adapter_path'] == str(model_dir / 'model.safetensors')
+    assert all(resolved[key] == value for key, value in block.items())
+    assert resolved['speaker_logprob_weight'] is None
 
 
 def _sharded_checkpoint(directory, ctc_shards):
@@ -2027,7 +2053,14 @@ def test_a_sharded_checkpoint_bundles_its_head_in_one_shard(tmp_path, caplog):
     assert ct.ctc_timestamp_config(model_config) is None and "spans 2 shards" in caplog.text
 
 
-def test_a_bundled_head_this_engine_cannot_use_is_skipped_but_requested_timestamps_fail(monkeypatch, caplog):
+@pytest.mark.parametrize(
+    "requested",
+    [{"adapter_path": "/adapter.pt"}, {"adapter_path": "/model.safetensors", "optional": False}],
+    ids=["named-adapter", "required-bundled-head"],
+)
+def test_a_bundled_head_this_engine_cannot_use_is_skipped_but_requested_timestamps_fail(
+    monkeypatch, caplog, requested
+):
     pytest.importorskip("vllm")
     from nemo.collections.speechlm2.vllm.salm.model import NeMoSpeechLMForConditionalGeneration
 
@@ -2042,9 +2075,8 @@ def test_a_bundled_head_this_engine_cannot_use_is_skipped_but_requested_timestam
     assert ct.active_aligner() is None and "Serving without CTC timestamps" in caplog.text
 
     # A named adapter, or a bundled head with enabled: true, asked for timestamps, so startup fails.
-    for requested in ({"adapter_path": "/adapter.pt"}, {"adapter_path": "/model.safetensors", "optional": False}):
-        with pytest.raises(ValueError, match="unchunked"):
-            model._maybe_enable_ctc_timestamps(requested, SimpleNamespace())
+    with pytest.raises(ValueError, match="unchunked"):
+        model._maybe_enable_ctc_timestamps(requested, SimpleNamespace())
 
 
 @pytest.mark.parametrize("model_runner_v2", [False, True])
@@ -2054,7 +2086,7 @@ def test_timestamps_bind_the_model_runner_the_engine_uses(monkeypatch, model_run
     from nemo.collections.speechlm2.vllm.salm import model as model_module
 
     monkeypatch.setattr(ct, "_registry", {})
-    monkeypatch.setattr(ctc_timestamp_utils, "get_ctc_timestamp_aligner", lambda *args: SimpleNamespace())
+    monkeypatch.setattr(ctc_timestamp_utils, "get_ctc_timestamp_aligner", lambda *args, **kwargs: SimpleNamespace())
     monkeypatch.setattr(model_module, "tokenizer_special_tokens", lambda model_config: ())
     bound = []
     monkeypatch.setattr(ct, "install_encoder_cache_binding", bound.append)
@@ -2340,6 +2372,24 @@ def test_prepared_transcripts_lose_special_tokens_but_keep_speaker_tags(aligner)
     _align_one("req", "<spk:0> hi <|im_end|>", release=True)
 
     assert aligner.calls[-1][1] == ["<spk:0> hi"]
+
+
+@pytest.mark.parametrize(
+    'ignored,added,expected',
+    [
+        (None, None, '<spk:0> hi <ev:laughter>'),
+        ([], ['<sty:*>', '<noise>'], '<spk:0> <sty:stt:flat> hi <sty:end:flat> <noise>'),
+    ],
+)
+def test_prepared_transcripts_use_aligner_special_token_policy(aligner, ignored, added, expected):
+    aligner.special_token_ignored = ignored
+    aligner.special_token_added = added
+    text = '<s> <spk:0> <sty:stt:flat> hi <ev:laughter> <sty:end:flat> <noise> </s>'
+    ct.register_aligner(aligner, [word for word in text.split() if word.startswith('<')])
+    _capture(1, 4, ['hash-a'])
+    ct._record_request_hashes([('req', 'hash-a')])
+    _align_one('req', text, release=True)
+    assert aligner.calls[-1][1] == [expected]
 
 
 def test_requests_without_recorded_audio_are_not_reported_as_evicted(aligner, caplog):

@@ -253,6 +253,28 @@ class NeMoModelCheckpoint(ModelCheckpoint):
             get_filesystem(backup_path).rm(backup_path)
         return output
 
+    def on_validation_end(self, trainer, pl_module):
+        # Lightning 2.6.0 stopped refreshing last when top-k does not improve; preserve NeMo's prior behavior.
+        refresh_last = (
+            self.save_last is True
+            and not self._should_skip_saving_checkpoint(trainer)
+            and not self._should_save_on_train_epoch_end(trainer)
+        )
+        super().on_validation_end(trainer, pl_module)
+        if refresh_last and self._last_global_step_saved != trainer.global_step:
+            self._save_last_checkpoint(trainer, self._monitor_candidates(trainer))
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        # Lightning 2.6.0 stopped refreshing last when top-k does not improve; preserve NeMo's prior behavior.
+        refresh_last = (
+            self.save_last is True
+            and not self._should_skip_saving_checkpoint(trainer)
+            and self._should_save_on_train_epoch_end(trainer)
+        )
+        super().on_train_epoch_end(trainer, pl_module)
+        if refresh_last and self._last_global_step_saved != trainer.global_step:
+            self._save_last_checkpoint(trainer, self._monitor_candidates(trainer))
+
     def on_train_end(self, trainer, pl_module):
         """
         Save the checkpoint on train end.
@@ -588,6 +610,10 @@ class NeMoModelCheckpoint(ModelCheckpoint):
                 storage_options = None
             logging.info(f'Checkpoint save for step {trainer.global_step} started at {time.time()}.')
             trainer.save_checkpoint(filepath, self.save_weights_only, storage_options=storage_options)
+            # Lightning uses these to schedule subsequent saves in this hook.
+            # Async completion may happen several steps later and must not rewind them.
+            self._last_global_step_saved = trainer.global_step
+            self._last_checkpoint_saved = filepath
             if self.async_save:
                 logging.info(f'Scheduled async checkpoint save for {filepath}')
             else:
@@ -603,9 +629,6 @@ class NeMoModelCheckpoint(ModelCheckpoint):
 
         def _cb():
             logging.debug(f'Finalize callback called for step {global_step}, filepath {filepath}')
-            self._last_global_step_saved = global_step
-            self._last_checkpoint_saved = filepath
-
             # notify loggers
             if trainer.is_global_zero:
                 for logger in trainer.loggers:

@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import random
 from itertools import islice
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from lhotse import CutSet, SupervisionSegment
 from omegaconf import OmegaConf
 
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
+from nemo.collections.common.data.lhotse.cutset import read_cutset_from_config
 
 
 class Identity(torch.utils.data.Dataset):
@@ -355,3 +357,40 @@ def test_data_input_cfg_reverse_role_multi_config_with_workers(regular_duplex_s2
         sups = sorted(cut.supervisions, key=lambda s: s.start)
         assert sups[0].speaker == "swapped_agent"
         assert sups[1].speaker == "swapped_user"
+
+
+def test_magpietts_extra_end_silence_is_a_function_of_the_cut(cutset_shar_magpietts_path):
+    config = OmegaConf.create(
+        {
+            "input_cfg": [
+                {
+                    "type": "lhotse_magpietts_data_as_continuation",
+                    "shar_path": str(cutset_shar_magpietts_path),
+                    "sample_rate": 22050,
+                    "add_extra_end_silence": True,
+                    "extra_end_silence_range": [0.5, 3.0],
+                },
+            ],
+            "sample_rate": 22050,
+            "force_finite": True,
+            "shuffle": False,
+            "seed": 0,
+            "shard_seed": 0,
+        }
+    )
+
+    def read_durations():
+        # Cut IDs of padded cuts are random, so compare durations in (unshuffled) input order.
+        cuts, _ = read_cutset_from_config(config)
+        return [cut.duration for cut in cuts]
+
+    # A resumed run re-creates the cuts in a process whose global RNG state differs from the original run.
+    random.seed(0)
+    first = read_durations()
+    random.seed(1)
+    second = read_durations()
+
+    assert len(first) == 5
+    assert first == second
+    # The extra silence is drawn per cut, not shared by all cuts.
+    assert len(set(first)) > 1

@@ -31,7 +31,6 @@ from lhotse.dataset import (
     CutConcatenate,
     DynamicBucketingSampler,
     DynamicCutSampler,
-    IterableDatasetWrapper,
     LowpassUsingResampling,
     ReverbWithImpulseResponse,
     RoundRobinSampler,
@@ -69,6 +68,7 @@ from nemo.collections.common.data.lhotse.sampling import (
     TokenPerTokenFilter,
     ValidationStatusFilter,
 )
+from nemo.collections.common.data.lhotse.stateful_rng import StatefulIterableDatasetWrapper
 from nemo.collections.common.data.prompt_fn import apply_prompt_format_fn
 from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.common.tokenizers.aggregate_tokenizer import TokenizerWrapper
@@ -643,7 +643,7 @@ def get_lhotse_dataloader_from_single_config(
         # This together with infinite datasets removes the need to split data across nodes/workers.
         _maybe_init_main_process_for_iterable(config.num_workers, global_rank, world_size, config.seed)
         dloader_kwargs = dict(
-            dataset=IterableDatasetWrapper(dataset=dataset, sampler=sampler),
+            dataset=StatefulIterableDatasetWrapper(dataset=dataset, sampler=sampler),
             worker_init_fn=make_worker_init_fn(rank=global_rank, world_size=world_size, seed=config.seed),
             persistent_workers=config.num_workers > 0,  # helps Lhotse Shar maintain shuffling state
         )
@@ -790,7 +790,7 @@ def get_lhotse_dataloader_from_multi_config(
         # This together with infinite datasets removes the need to split data across nodes/workers.
         _maybe_init_main_process_for_iterable(shared_opts.num_workers, global_rank, world_size, shared_opts.seed)
         dloader_kwargs = dict(
-            dataset=IterableDatasetWrapper(dataset=dataset, sampler=sampler),
+            dataset=StatefulIterableDatasetWrapper(dataset=dataset, sampler=sampler),
             worker_init_fn=make_worker_init_fn(rank=global_rank, world_size=world_size, seed=shared_opts.seed),
             persistent_workers=shared_opts.num_workers > 0,  # helps Lhotse Shar maintain shuffling state
         )

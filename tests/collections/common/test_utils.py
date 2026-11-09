@@ -458,3 +458,39 @@ class TestBuildModule:
         assert build_activation(module) is module
         with pytest.raises(ValueError, match="unknown activation 'tanh'"):
             build_activation("tanh")
+
+
+class TestSquaredReLU:
+    @pytest.mark.unit
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+    def test_matches_relu_squared_with_its_gradient(self, dtype):
+        torch.manual_seed(0)
+        x = torch.randn(64, 37, dtype=dtype, requires_grad=True)
+        grad_out = torch.randn(64, 37, dtype=dtype)
+        reference = torch.relu(x.detach().double()).requires_grad_()
+        (reference**2).backward(grad_out.double())
+        out = SquaredReLU()(x)
+        out.backward(grad_out)
+        tolerance = dict(rtol=1e-6, atol=1e-6) if dtype == torch.float32 else dict(rtol=2e-2, atol=2e-2)
+        assert out.dtype == dtype
+        torch.testing.assert_close(out.double(), torch.relu(x.detach().double()) ** 2, **tolerance)
+        torch.testing.assert_close(x.grad.double(), torch.where(x.detach() > 0, reference.grad, 0.0), **tolerance)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device_type", ["cpu", pytest.param("cuda", marks=pytest.mark.run_only_on('GPU'))])
+    def test_saves_one_tensor_of_the_input_dtype_under_autocast(self, device_type):
+        # the hidden of a feed-forward block arrives in the autocast dtype; the backward needs it once
+        x = torch.randn(8, 16, device=device_type, dtype=torch.bfloat16, requires_grad=True)
+        saved = {}
+
+        def pack(tensor):
+            saved[tensor.untyped_storage().data_ptr()] = (tensor.dtype, tensor.numel())
+            return tensor
+
+        autocast = torch.autocast(device_type, dtype=torch.bfloat16)
+        with autocast, torch.autograd.graph.saved_tensors_hooks(pack, lambda t: t):
+            out = SquaredReLU()(x)
+        assert out.dtype == torch.bfloat16
+        assert list(saved.values()) == [(torch.bfloat16, x.numel())]
+        out.sum().backward()
+        torch.testing.assert_close(x.grad.float(), 2 * torch.relu(x.detach().float()))

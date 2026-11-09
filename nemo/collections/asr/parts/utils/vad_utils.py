@@ -559,7 +559,6 @@ def binarization(sequence: torch.Tensor, per_args: Dict[str, float]) -> torch.Te
 
     speech = False
     start = 0.0
-    i = 0
 
     speech_segments = torch.empty(0)
 
@@ -586,7 +585,9 @@ def binarization(sequence: torch.Tensor, per_args: Dict[str, float]) -> torch.Te
 
     # if it's speech at the end, add final segment
     if speech:
-        new_seg = torch.tensor([max(0, start - pad_onset), i * frame_length_in_sec + pad_offset]).unsqueeze(0)
+        # The last frame is active, so the segment ends where that frame ends, not where it starts.
+        seg_end = len(sequence) * frame_length_in_sec + pad_offset
+        new_seg = torch.tensor([max(0, start - pad_onset), seg_end]).unsqueeze(0)
         speech_segments = torch.cat((speech_segments, new_seg), 0)
 
     # Merge the overlapped speech segments due to padding

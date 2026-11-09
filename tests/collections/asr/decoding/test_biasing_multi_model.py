@@ -28,7 +28,8 @@ from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
 DEVICES = [torch.device("cpu")]
 if torch.cuda.is_available():
-    DEVICES.append(torch.device("cuda"))
+    # The `gpu` marker puts the CUDA cases in the GPU CI jobs (see tests/functional_tests/_gpu_unit_test_selection.sh).
+    DEVICES.append(pytest.param(torch.device("cuda"), marks=pytest.mark.gpu))
 if hasattr(torch, "mps") and torch.mps.is_available():
     DEVICES.append(torch.device("mps"))
 

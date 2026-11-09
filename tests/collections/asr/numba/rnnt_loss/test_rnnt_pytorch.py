@@ -34,7 +34,8 @@ from nemo.core.utils.numba_utils import __NUMBA_MINIMUM_VERSION__
 DEVICES = ['cpu']
 
 if torch.cuda.is_available():
-    DEVICES.append('cuda')
+    # The `gpu` marker puts the CUDA cases in the GPU CI jobs (see tests/functional_tests/_gpu_unit_test_selection.sh).
+    DEVICES.append(pytest.param('cuda', marks=pytest.mark.gpu))
 
 CUDA_ONLY_DEVICE = ['cuda']
 
@@ -143,6 +144,7 @@ class TestRNNTLossPytorch:
     @pytest.mark.unit
     @pytest.mark.parametrize('blank', [0, 3])
     @pytest.mark.parametrize('dtypes', [(torch.float32,), (torch.float32, torch.float16)])
+    @pytest.mark.gpu
     def test_warmup_cuda(self, blank, dtypes):
         numba_utils.skip_numba_cuda_test_if_unsupported(__NUMBA_MINIMUM_VERSION__)
         if not torch.cuda.is_available():
@@ -683,6 +685,7 @@ class TestTDTLoss:
 
     @pytest.mark.unit
     @pytest.mark.parametrize('blank', [0, 3])
+    @pytest.mark.gpu
     def test_warmup_cuda(self, blank):
         numba_utils.skip_numba_cuda_test_if_unsupported(__NUMBA_MINIMUM_VERSION__)
         if not torch.cuda.is_available():
@@ -701,6 +704,7 @@ class TestTDTLoss:
 
     @pytest.mark.unit
     @pytest.mark.parametrize('device', CUDA_ONLY_DEVICE)
+    @pytest.mark.gpu
     def test_case_randomized_act_label(self, device):
         numba_utils.skip_numba_cuda_test_if_unsupported(__NUMBA_MINIMUM_VERSION__)
 
@@ -724,6 +728,7 @@ class TestTDTLoss:
 
     @pytest.mark.unit
     @pytest.mark.parametrize('device', CUDA_ONLY_DEVICE)
+    @pytest.mark.gpu
     def test_case_randomized_act_label_no_0_duration(self, device):
         numba_utils.skip_numba_cuda_test_if_unsupported(__NUMBA_MINIMUM_VERSION__)
 
@@ -747,6 +752,7 @@ class TestTDTLoss:
 
     @pytest.mark.unit
     @pytest.mark.parametrize('device', CUDA_ONLY_DEVICE)
+    @pytest.mark.gpu
     def test_case_fixed_case_act_label(self, device):
         numba_utils.skip_numba_cuda_test_if_unsupported(__NUMBA_MINIMUM_VERSION__)
 

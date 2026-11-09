@@ -44,7 +44,8 @@ MAX_SAMPLES = 10
 DEVICES = [torch.device("cpu")]
 
 if torch.cuda.is_available():
-    DEVICES.append(torch.device('cuda'))
+    # The `gpu` marker puts the CUDA cases in the GPU CI jobs (see tests/functional_tests/_gpu_unit_test_selection.sh).
+    DEVICES.append(pytest.param(torch.device('cuda'), marks=pytest.mark.gpu))
 
 NUMBA_RNNT_LOSS_AVAILABLE = numba_utils.numba_cpu_is_supported(
     __NUMBA_MINIMUM_VERSION__
@@ -325,6 +326,7 @@ class TestRNNTDecoding:
     )
     @pytest.mark.parametrize("beam_size", [4])
     @pytest.mark.parametrize("batch_size", [4])
+    @pytest.mark.gpu
     def test_rnnt_beam_decoding_return_nbest(
         self, test_audio_filenames, rnnt_model, get_rnnt_encoder_output, beam_config, device, beam_size, batch_size
     ):
@@ -381,6 +383,7 @@ class TestRNNTDecoding:
     @pytest.mark.parametrize("beam_size", [4])
     @pytest.mark.parametrize("pruning_mode", ["late", "early"])
     @pytest.mark.parametrize("blank_lm_score_mode", ["no_score", "lm_weighted_full"])
+    @pytest.mark.gpu
     def test_rnnt_beam_decoding_kenlm(
         self,
         kenlm_model_path,
@@ -511,6 +514,7 @@ class TestTDTDecoding:
     )
     @pytest.mark.parametrize("beam_size", [4])
     @pytest.mark.parametrize("batch_size", [4])
+    @pytest.mark.gpu
     def test_tdt_beam_decoding_return_nbest(
         self, test_audio_filenames, tdt_model, get_tdt_encoder_output, beam_config, device, beam_size, batch_size
     ):
@@ -570,6 +574,7 @@ class TestTDTDecoding:
     @pytest.mark.parametrize("beam_size", [4])
     @pytest.mark.parametrize("pruning_mode", ["late", "early"])
     @pytest.mark.parametrize("blank_lm_score_mode", ["lm_weighted_full", "no_score"])
+    @pytest.mark.gpu
     def test_tdt_beam_decoding_kenlm(
         self,
         kenlm_model_path,
@@ -631,6 +636,7 @@ class TestTDTDecoding:
             print_res_best_hyps(hyps)
 
 
+@pytest.mark.gpu
 class TestTransducerCudaGraphBeamDecoding:
     """
     Tests CudaGraphs implementations from Transducer models (RNN-T and TDT)
@@ -795,6 +801,7 @@ class TestCTCDecoding:
     )
     @pytest.mark.parametrize("beam_size", [4])
     @pytest.mark.parametrize("batch_size", [4])
+    @pytest.mark.gpu
     def test_ctc_beam_decoding_return_nbest(
         self, test_audio_filenames, ctc_model, get_ctc_output, beam_config, device, beam_size, batch_size
     ):
@@ -839,6 +846,7 @@ class TestCTCDecoding:
     )
     @pytest.mark.parametrize("batch_size", [4])
     @pytest.mark.parametrize("beam_size", [4])
+    @pytest.mark.gpu
     def test_ctc_beam_decoding_kenlm(
         self,
         kenlm_model_path,

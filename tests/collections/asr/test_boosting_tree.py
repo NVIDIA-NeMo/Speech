@@ -33,7 +33,8 @@ from nemo.collections.common.tokenizers.tokenizer_spec import TokenWithLength, V
 DEVICES = [torch.device("cpu")]
 
 if torch.cuda.is_available():
-    DEVICES.append(torch.device("cuda"))
+    # The `gpu` marker puts the CUDA cases in the GPU CI jobs (see tests/functional_tests/_gpu_unit_test_selection.sh).
+    DEVICES.append(pytest.param(torch.device("cuda"), marks=pytest.mark.gpu))
 
 
 def _case_variant_var_bpe_representation():
@@ -337,6 +338,7 @@ class TestGPUBoostingTreeModel:
 
     @pytest.mark.unit
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+    @pytest.mark.gpu
     def test_triton_vs_pytorch_consistency(self, test_context_graph):
         """Compare Triton vs PyTorch implementations"""
         device = torch.device("cuda")
@@ -379,6 +381,7 @@ class TestGPUBoostingTreeModel:
 
     @pytest.mark.unit
     # I need to test that the boosting tree model is built correctly from the config using model_path, key_phrases_file, key_phrases_list
+    @pytest.mark.gpu
     def test_boosting_tree_model_from_config(self, conformer_ctc_bpe_model, tmp_path):
         """Test that the boosting tree model is built correctly from the config using model_path, key_phrases_file, key_phrases_list"""
 

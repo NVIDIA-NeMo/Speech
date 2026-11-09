@@ -161,6 +161,7 @@ def training_cutset_batch():
     return CutSet([cut])
 
 
+@pytest.mark.gpu
 def test_s2s_dataset(dataset, training_cutset_batch):
     batch = dataset[training_cutset_batch]
     for key in (
@@ -182,6 +183,7 @@ def test_s2s_dataset(dataset, training_cutset_batch):
     assert batch["source_tokens"].tolist() == [[1, 2, 0, 0, 0, 0, 1, 3431, 2, 0, 0, 0, 0]]
 
 
+@pytest.mark.gpu
 def test_s2s_training_step(model, dataset, training_cutset_batch):
     model.on_train_epoch_start()
     batch = dataset[training_cutset_batch]
@@ -192,6 +194,7 @@ def test_s2s_training_step(model, dataset, training_cutset_batch):
     assert results["loss"] > 0
 
 
+@pytest.mark.gpu
 def test_s2s_validation_step(model, dataset, training_cutset_batch):
     model.on_validation_epoch_start()
     batch = dataset[training_cutset_batch]
@@ -200,6 +203,7 @@ def test_s2s_validation_step(model, dataset, training_cutset_batch):
     assert results is None  # no return value
 
 
+@pytest.mark.gpu
 def test_s2s_offline_generation(model):
     # 16000 samples == 1 second == 12.5 frames ~= 14 frames after encoder padding
     ans = model.offline_inference(

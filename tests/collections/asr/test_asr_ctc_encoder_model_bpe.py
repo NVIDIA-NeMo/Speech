@@ -137,6 +137,7 @@ class TestEncDecCTCModel:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_save_restore_artifact(self, asr_model):
         with tempfile.TemporaryDirectory() as tmpdir:
             save_path = os.path.join(tmpdir, 'ctc_bpe.nemo')
@@ -151,6 +152,7 @@ class TestEncDecCTCModel:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_save_restore_artifact_spe(self, asr_model, test_data_dir):
         with tempfile.TemporaryDirectory() as tmpdir:
             tokenizer_dir = os.path.join(test_data_dir, "asr", "tokenizers", "an4_spe_128")
@@ -172,6 +174,7 @@ class TestEncDecCTCModel:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_save_restore_artifact_agg(self, asr_model, test_data_dir):
         tokenizer_dir = os.path.join(test_data_dir, "asr", "tokenizers", "an4_spe_128")
         tok_en = {"dir": tokenizer_dir, "type": "wpe"}
@@ -195,6 +198,7 @@ class TestEncDecCTCModel:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_vocab_change(self, test_data_dir, asr_model):
         old_vocab = copy.deepcopy(asr_model.decoder.vocabulary)
 

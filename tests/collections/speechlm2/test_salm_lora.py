@@ -62,6 +62,7 @@ def _import_peft_lora_dependencies():
     return PeftModel, maybe_install_lora
 
 
+@pytest.mark.gpu
 def test_maybe_install_lora_restores_qwen3_input_embeddings_temporarily():
     PeftModel, maybe_install_lora = _import_peft_lora_dependencies()
     model = _make_qwen3_stub()

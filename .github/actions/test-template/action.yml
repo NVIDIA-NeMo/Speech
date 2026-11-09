@@ -144,6 +144,7 @@ runs:
           --env HYDRA_FULL_ERROR=1 \
           --env HF_HOME=/home/TestData/HF_HOME \
           --env RUN_ID=${{ github.run_id }} \
+          --env CI_EVENT_NAME=${{ github.event_name }} \
           --volume $(pwd)/${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo:/workspace \
           --volume ${{ inputs.test-data-path }}:/home/TestData ${{ inputs.image }} \
           bash -c "sleep $(( ${{ inputs.timeout }} * 60 + 60 ))"

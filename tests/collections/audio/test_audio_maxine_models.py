@@ -69,6 +69,7 @@ def maxine_model_fixture():
     return bnr
 
 
+@pytest.mark.gpu
 class TestBNR2Model:
     """Test BNR 2 model."""
 

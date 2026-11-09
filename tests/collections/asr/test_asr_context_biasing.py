@@ -51,6 +51,7 @@ class TestContextGraphCTC:
         assert context_graph.root.next['▁g'].next['▁p'].next['▁u'].word == 'gpu'
 
 
+@pytest.mark.gpu
 class TestCTCWordSpotter:
     @pytest.mark.unit
     @pytest.mark.with_downloads

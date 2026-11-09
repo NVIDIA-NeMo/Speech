@@ -169,6 +169,7 @@ def training_cutset_batch():
     return CutSet([cut])
 
 
+@pytest.mark.gpu
 def test_s2s_speech_decoder_training_step(model, dataset, training_cutset_batch):
     model.on_train_epoch_start()
     batch = dataset[training_cutset_batch]
@@ -179,6 +180,7 @@ def test_s2s_speech_decoder_training_step(model, dataset, training_cutset_batch)
     assert results["loss"] > 0
 
 
+@pytest.mark.gpu
 def test_s2s_speech_decoder_validation_step(model, dataset, training_cutset_batch):
     model.on_validation_epoch_start()
     batch = dataset[training_cutset_batch]
@@ -187,6 +189,7 @@ def test_s2s_speech_decoder_validation_step(model, dataset, training_cutset_batc
     assert results is None  # no return value
 
 
+@pytest.mark.gpu
 def test_s2s_speech_decoder_offline_generation(model):
     # 16000 samples == 1 second == 12.5 frames ~= 14 frames after encoder padding
     ans = model.offline_inference(

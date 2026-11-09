@@ -308,6 +308,7 @@ class TestEncDecMultiTaskModel:
         )
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_save_restore_artifact(self, asr_model):
         asr_model.train()
 
@@ -322,6 +323,7 @@ class TestEncDecMultiTaskModel:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_restore_with_timestamps_asr_model(self, canary_1b_v2):
         assert canary_1b_v2.timestamps_asr_model is not None
 
@@ -486,6 +488,7 @@ class TestEncDecMultiTaskModel:
     # test transcribe with canary2 model with torch tensor input
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_transcribe_with_canary2_model_with_torch_tensor_input(self, canary_1b_v2, test_data_dir):
         import soundfile as sf
 
@@ -571,6 +574,7 @@ class TestEncDecMultiTaskModel:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_FrameBatchMultiTaskAED_with_timestamps(self, canary_1b_flash):
         canary_1b_flash.eval()
         model = FrameBatchMultiTaskAED(
@@ -918,6 +922,7 @@ def test_aed_timestamp_processing():
 
 @pytest.mark.with_downloads()
 @pytest.mark.unit
+@pytest.mark.gpu
 def test_aed_forced_aligned_timestamps(canary_1b_v2):
 
     audio_file = "/home/TestData/asr/canary/dev-other-wav/8173-294714-0040.wav"
@@ -969,6 +974,7 @@ def test_aed_forced_aligned_timestamps(canary_1b_v2):
 
 @pytest.mark.with_downloads()
 @pytest.mark.unit
+@pytest.mark.gpu
 def test_aed_forced_aligned_timestamps_audio_tensor(canary_1b_v2):
     import librosa
 

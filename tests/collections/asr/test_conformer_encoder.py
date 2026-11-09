@@ -21,14 +21,15 @@ from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
 from nemo.collections.asr.parts.submodules import conformer_modules
+from nemo.collections.asr.parts.submodules.broadcast_dropout import BroadcastDropout
 from nemo.collections.asr.parts.submodules.conformer_modules import (
-    BroadcastDropout,
     ConformerConvolution,
     ConformerFeedForward,
     ConformerLayer,
 )
 from nemo.collections.asr.parts.submodules.multi_head_attention import (
     MultiHeadAttention,
+    RelPositionalEncoding,
     RelPositionMultiHeadAttention,
 )
 from nemo.collections.asr.parts.submodules.subsampling import ConvSubsampling
@@ -371,6 +372,7 @@ class TestDropoutBroadcast:
 
     @staticmethod
     def _dropouts(encoder):
+        yield encoder.pos_enc.dropout
         for layer in encoder.layers:
             yield layer.dropout
             yield layer.feed_forward1.dropout
@@ -378,7 +380,7 @@ class TestDropoutBroadcast:
 
     @pytest.mark.unit
     def test_default_drops_per_element(self):
-        encoder = _composed_encoder(dropout=0.1)
+        encoder = _composed_encoder(dropout=0.1, dropout_pre_encoder=0.1)
         assert all(type(module) is torch.nn.Dropout and module.p == 0.1 for module in self._dropouts(encoder))
         assert type(ConformerFeedForward(16, 32, 0.1).dropout) is torch.nn.Dropout
         assert type(ConformerLayer(16, 32).dropout) is torch.nn.Dropout
@@ -386,10 +388,10 @@ class TestDropoutBroadcast:
     @pytest.mark.unit
     def test_option_reaches_every_layer_and_leaves_evaluation_unchanged(self):
         torch.manual_seed(0)
-        encoder = _composed_encoder(dropout=0.1, dropout_broadcast=True)
+        encoder = _composed_encoder(dropout=0.1, dropout_pre_encoder=0.1, dropout_broadcast=True)
         assert all(type(module) is BroadcastDropout and module.p == 0.1 for module in self._dropouts(encoder))
         assert type(encoder.layers[0].self_attn.dropout) is torch.nn.Dropout
-        default = _composed_encoder(dropout=0.1)
+        default = _composed_encoder(dropout=0.1, dropout_pre_encoder=0.1)
         default.load_state_dict(encoder.state_dict())
         features = torch.randn(2, 8, 40)
         lengths = torch.tensor([40, 25])
@@ -430,6 +432,50 @@ class TestDropoutBroadcast:
             BroadcastDropout(1.0)
         half = module.train()(x.detach().to(torch.bfloat16))
         assert half.dtype == torch.bfloat16 and set(half.unique().tolist()) == {0.0, 2.0}
+
+    @pytest.mark.unit
+    def test_option_reaches_the_input_dropout_of_every_attention_model(self):
+        """The pre-encoder dropout follows the option in the positional encodings and in the rope path."""
+        pre = dict(dropout=0.1, dropout_pre_encoder=0.2, dropout_emb=0.1, dropout_broadcast=True)
+        rel_pos = _composed_encoder(**pre)
+        assert type(rel_pos.pos_enc.dropout) is BroadcastDropout and rel_pos.pos_enc.dropout.p == 0.2
+        # the positional-embedding dropout stays per element, as the attention dropout
+        assert type(rel_pos.pos_enc.dropout_emb) is torch.nn.Dropout
+        abs_pos = _composed_encoder(self_attention_model="abs_pos", **pre)
+        assert type(abs_pos.pos_enc.dropout) is BroadcastDropout and abs_pos.pos_enc.dropout.p == 0.2
+        # the local-attention encoding receives the keyword through its own constructor (its rate is `dropout`)
+        local = _composed_encoder(self_attention_model="rel_pos_local_attn", att_context_size=[2, 2], **pre)
+        assert type(local.pos_enc.dropout) is BroadcastDropout and local.pos_enc.dropout.p == 0.1
+        rope = _composed_encoder(self_attention_model="rope", **pre)
+        assert type(rope.dropout_pre_encoder) is BroadcastDropout and rope.dropout_pre_encoder.p == 0.2
+        assert type(_composed_encoder(self_attention_model="rope", dropout_pre_encoder=0.2).dropout_pre_encoder) is (
+            torch.nn.Dropout
+        )
+        # a positional encoding with the option drops whole features of the input in training
+        encoding = RelPositionalEncoding(d_model=16, dropout_rate=0.5, max_len=64, dropout_broadcast=True).train()
+        encoding.extend_pe(5, torch.device("cpu"), torch.float32)
+        torch.manual_seed(0)
+        out, _ = encoding(torch.ones(2, 5, 16))
+        kept = out != 0
+        assert torch.equal(kept, kept[:1, :1].expand_as(kept)) and 0 < kept[0, 0].sum() < 16
+        assert type(RelPositionalEncoding(d_model=16, dropout_rate=0.5).dropout) is torch.nn.Dropout
+        # a change of the attention model keeps the option from the config
+        rel_pos._cfg = OmegaConf.create(
+            {
+                "d_model": 16,
+                "n_heads": 2,
+                "dropout": 0.1,
+                "dropout_att": 0.0,
+                "dropout_emb": 0.1,
+                "dropout_pre_encoder": 0.2,
+                "dropout_broadcast": True,
+                "pos_emb_max_len": 5000,
+            }
+        )
+        rel_pos.change_attention_model(att_context_size=[2, 2])
+        assert type(rel_pos.pos_enc.dropout) is BroadcastDropout
+        rel_pos.change_attention_model(self_attention_model="rope")
+        assert type(rel_pos.dropout_pre_encoder) is BroadcastDropout and rel_pos.dropout_pre_encoder.p == 0.2
 
     @pytest.mark.unit
     def test_feed_forward_on_cpu_runs_the_modules_with_the_broadcast_mask(self):

@@ -27,6 +27,7 @@ from torch import nn
 
 from nemo.collections.asr.models.configs import CacheAwareStreamingConfig
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
+from nemo.collections.asr.parts.submodules.broadcast_dropout import BroadcastDropout
 from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D
 from nemo.collections.asr.parts.submodules.conformer_modules import ConformerLayer, build_self_attention
 from nemo.collections.asr.parts.submodules.multi_head_attention import (
@@ -158,9 +159,10 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             Defaults to 0.1.
         dropout_att (float): the dropout rate used for the attention layer
             Defaults to 0.0.
-        dropout_broadcast (bool): draw the masks of the feed-forward and residual dropouts of every layer
-            once per call over the feature axis and share them over batch and time, instead of a mask per element
-            (see `ConformerLayer`); the pre-encoder, positional-embedding and attention dropouts stay per element.
+        dropout_broadcast (bool): draw the masks of the pre-encoder dropout and of the feed-forward and residual
+            dropouts of every layer once per call over the feature axis and share them over batch and time,
+            instead of a mask per element (see `ConformerLayer` and `PositionalEncoding`);
+            the positional-embedding and attention dropouts stay per element.
             Defaults to False.
         stochastic_depth_drop_prob (float): if non-zero, will randomly drop
             layers during training. The higher this value, the more often layers
@@ -492,6 +494,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 max_len=pos_emb_max_len,
                 xscale=self.xscale,
                 dropout_rate_emb=dropout_emb,
+                dropout_broadcast=dropout_broadcast,
             )
         elif self_attention_model == 'rel_pos_local_attn':
             if max(att_context_size) <= 0:
@@ -503,15 +506,22 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 max_len=pos_emb_max_len,
                 xscale=self.xscale,
                 dropout_rate_emb=dropout_emb,
+                dropout_broadcast=dropout_broadcast,
             )
         elif self_attention_model == "abs_pos":
             pos_bias_u = None
             pos_bias_v = None
             self.pos_enc = PositionalEncoding(
-                d_model=d_model, dropout_rate=dropout_pre_encoder, max_len=pos_emb_max_len, xscale=self.xscale
+                d_model=d_model,
+                dropout_rate=dropout_pre_encoder,
+                max_len=pos_emb_max_len,
+                xscale=self.xscale,
+                dropout_broadcast=dropout_broadcast,
             )
         elif self_attention_model == "rope":
-            self.dropout_pre_encoder = torch.nn.Dropout(dropout_pre_encoder)
+            self.dropout_pre_encoder = (
+                BroadcastDropout(dropout_pre_encoder) if dropout_broadcast else torch.nn.Dropout(dropout_pre_encoder)
+            )
             self.pos_enc = RotaryPositionalEncoding(
                 d_k=d_model // n_heads,
                 rotary_fraction=rotary_fraction,
@@ -1271,6 +1281,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         if self_attention_model == 'rel_pos_local_attn' and max(att_context_size) <= 0:
             raise ValueError("When using local attention, context size must be set > 0")
 
+        dropout_broadcast = getattr(self._cfg, 'dropout_broadcast', False)
         if self_attention_model == "rel_pos":
             new_pos_enc = RelPositionalEncoding(
                 d_model=self._cfg.d_model,
@@ -1278,6 +1289,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 max_len=self._cfg.pos_emb_max_len,
                 xscale=self.xscale,
                 dropout_rate_emb=self._cfg.dropout_emb,
+                dropout_broadcast=dropout_broadcast,
             )
         elif self_attention_model == 'rel_pos_local_attn':
             new_pos_enc = LocalAttRelPositionalEncoding(
@@ -1287,6 +1299,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 max_len=self._cfg.pos_emb_max_len,
                 xscale=self.xscale,
                 dropout_rate_emb=self._cfg.dropout_emb,
+                dropout_broadcast=dropout_broadcast,
             )
         elif self_attention_model == "abs_pos":
             new_pos_enc = PositionalEncoding(
@@ -1294,9 +1307,13 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 dropout_rate=self._cfg.dropout,
                 max_len=self._cfg.pos_emb_max_len,
                 xscale=self.xscale,
+                dropout_broadcast=dropout_broadcast,
             )
         elif self_attention_model == "rope":
-            self.dropout_pre_encoder = torch.nn.Dropout(getattr(self._cfg, 'dropout_pre_encoder', 0.1))
+            dropout_pre_encoder = getattr(self._cfg, 'dropout_pre_encoder', 0.1)
+            self.dropout_pre_encoder = (
+                BroadcastDropout(dropout_pre_encoder) if dropout_broadcast else torch.nn.Dropout(dropout_pre_encoder)
+            )
             new_pos_enc = RotaryPositionalEncoding(
                 d_k=self._cfg.d_model // self._cfg.n_heads,
                 rotary_fraction=rotary_fraction,

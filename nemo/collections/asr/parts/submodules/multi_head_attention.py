@@ -47,6 +47,7 @@ import torch.nn as nn
 import torch.nn.attention
 import torch.nn.functional as F
 
+from nemo.collections.asr.parts.submodules.broadcast_dropout import BroadcastDropout
 from nemo.utils import avoid_float16_autocast_context
 
 __all__ = [
@@ -1053,18 +1054,23 @@ class PositionalEncoding(torch.nn.Module):
     """Fixed sinusoidal positional encoding.
     Args:
         d_model (int): embedding dim
-        dropout_rate (float): dropout rate
+        dropout_rate (float): dropout rate of the input
         max_len (int): maximum input length
         xscale (bool): whether to scale the input by sqrt(d_model)
         dropout_rate_emb (float): dropout rate for the positional embeddings
+        dropout_broadcast (bool): one input dropout mask over the feature axis per call, shared over batch and time
+            (`BroadcastDropout`), instead of a mask per element; the embedding dropout stays per element.
+            Defaults to False.
     """
 
-    def __init__(self, d_model, dropout_rate, max_len=5000, xscale=None, dropout_rate_emb=0.0):
+    def __init__(
+        self, d_model, dropout_rate, max_len=5000, xscale=None, dropout_rate_emb=0.0, dropout_broadcast=False
+    ):
         """Construct an PositionalEncoding object."""
         super(PositionalEncoding, self).__init__()
         self.d_model = d_model
         self.xscale = xscale
-        self.dropout = torch.nn.Dropout(p=dropout_rate)
+        self.dropout = BroadcastDropout(dropout_rate) if dropout_broadcast else torch.nn.Dropout(p=dropout_rate)
         self.max_len = max_len
         if dropout_rate_emb > 0:
             self.dropout_emb = nn.Dropout(dropout_rate_emb)
@@ -1117,10 +1123,12 @@ class RelPositionalEncoding(PositionalEncoding):
     See : Appendix B in https://arxiv.org/abs/1901.02860
     Args:
         d_model (int): embedding dim
-        dropout_rate (float): dropout rate
+        dropout_rate (float): dropout rate of the input
         max_len (int): maximum input length
         xscale (bool): whether to scale the input by sqrt(d_model)
         dropout_rate_emb (float): dropout rate for the positional embeddings
+        dropout_broadcast (bool): one input dropout mask over the feature axis, shared over batch and time;
+            see `PositionalEncoding`
     """
 
     def extend_pe(self, length, device, dtype):
@@ -1166,10 +1174,12 @@ class LocalAttRelPositionalEncoding(PositionalEncoding):
         left_chunk_size (int): number of frames to in past chunks
         chunk size (int): number of frames (max frames if using multimode) in current chunk
         d_model (int): embedding dim
-        dropout_rate (float): dropout rate
+        dropout_rate (float): dropout rate of the input
         max_len (int): maximum input length
         xscale (bool): whether to scale the input by sqrt(d_model)
         dropout_rate_emb (float): dropout rate for the positional embeddings
+        dropout_broadcast (bool): one input dropout mask over the feature axis, shared over batch and time;
+            see `PositionalEncoding`
     """
 
     def __init__(self, att_context_size, **kwargs):

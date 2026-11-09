@@ -25,6 +25,8 @@ import lightning.pytorch as pl
 import pytest
 import torch
 from lhotse import CutSet
+from lhotse.dataset import DynamicCutSampler
+from lhotse.indexing import create_jsonl_index
 from lhotse.testing.dummies import DummyManifest
 
 from nemo.collections.common.data.lhotse.dataloader import get_lhotse_dataloader_from_config
@@ -32,6 +34,10 @@ from nemo.core.utils.lightning_utils import read_batch
 from nemo.utils.callbacks.nemo_model_checkpoint import NeMoModelCheckpoint
 
 pytest.importorskip("torchdata.stateful_dataloader")
+
+# Newer Lhotse cannot checkpoint a streaming sampler; retain the old fixture on
+# versions that still support replay, so the same tests cover the current pin.
+INDEXED_ONLY_CHECKPOINTS = hasattr(DynamicCutSampler, "_consume_pending_restore")
 
 NUM_WORKERS, LIMIT, SPLIT, TOTAL = 2, 4, 6, 12
 NUM_CUTS, BATCH_SIZE = 60, 3
@@ -41,6 +47,7 @@ NUM_CUTS, BATCH_SIZE = 60, 3
 def cuts_path(tmp_path_factory):
     path = tmp_path_factory.mktemp("iterable_stream") / "cuts.jsonl"
     DummyManifest(CutSet, begin_id=0, end_id=NUM_CUTS).to_jsonl(path)
+    create_jsonl_index(path)
     return path
 
 
@@ -54,9 +61,14 @@ def test_dataloader_does_not_drop_batches_at_epoch_boundaries(cuts_path, use_sta
     # The stream is finite: the next iter() continues it to the end ...
     consumed.extend(dloader)
     _assert_no_gaps(consumed)
-    # ... every cut is seen once per worker (each worker reads its own shuffled copy here) ...
+    # Indexed inputs partition the source; legacy streaming workers each read
+    # their own copy. In both cases every produced batch must be consumed.
     num_batches_per_pass = len(consumed)
-    assert num_batches_per_pass == NUM_WORKERS * NUM_CUTS // BATCH_SIZE
+    copies = 1 if INDEXED_ONLY_CHECKPOINTS else NUM_WORKERS
+    assert num_batches_per_pass == copies * NUM_CUTS // BATCH_SIZE
+    if INDEXED_ONLY_CHECKPOINTS:
+        cut_ids = [cut_id for batch in consumed for cut_id in batch["cut_ids"]]
+        assert len(cut_ids) == len(set(cut_ids)) == NUM_CUTS
     # ... and once it has ended, iter() starts a new pass.
     assert len(list(dloader)) == num_batches_per_pass
 
@@ -137,6 +149,7 @@ def _fit(root: Path, cuts_path: Path, ckpt_path: Path | None = None) -> list[tup
 def _make_dataloader(cuts_path: Path, use_stateful_dataloader: bool):
     config = {
         "cuts_path": str(cuts_path),
+        "indexed": INDEXED_ONLY_CHECKPOINTS,
         "batch_size": BATCH_SIZE,
         "shuffle": True,
         "seed": 0,

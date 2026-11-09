@@ -24,11 +24,17 @@ from copy import deepcopy
 import pytest
 import torch
 from lhotse import CutSet
+from lhotse.dataset import DynamicCutSampler
+from lhotse.indexing import create_jsonl_index
 from lhotse.testing.dummies import DummyManifest
 
 from nemo.collections.common.data.lhotse.dataloader import get_lhotse_dataloader_from_config
 
 pytest.importorskip("torchdata.stateful_dataloader")
+
+# Newer Lhotse cannot checkpoint a streaming sampler; retain the old fixture on
+# versions that still support replay, so the same tests cover the current pin.
+INDEXED_ONLY_CHECKPOINTS = hasattr(DynamicCutSampler, "_consume_pending_restore")
 
 LIMIT, SPLIT, TOTAL = 4, 6, 12
 
@@ -37,6 +43,7 @@ LIMIT, SPLIT, TOTAL = 4, 6, 12
 def cuts_path(tmp_path_factory):
     path = tmp_path_factory.mktemp("epoch_boundary") / "cuts.jsonl"
     DummyManifest(CutSet, begin_id=0, end_id=30).to_jsonl(path)
+    create_jsonl_index(path)
     return path
 
 
@@ -76,6 +83,7 @@ class _CutIds(torch.utils.data.Dataset):
 def _make_dataloader(cuts_path):
     config = {
         "cuts_path": str(cuts_path),
+        "indexed": INDEXED_ONLY_CHECKPOINTS,
         "batch_size": 3,
         "shuffle": True,
         "seed": 0,

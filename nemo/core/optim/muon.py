@@ -89,9 +89,26 @@ class Muon(Optimizer):
     (``momentum``, the AdamW coefficients, the decay factor) rounded to the parameter dtype,
     as the CPU ``torch._foreach`` scalar operations do; the CUDA operations apply them exactly.
 
+    For a step captured in a CUDA graph, the learning rate and the AdamW step count must live on the device,
+    since the capture bakes Python numbers in:
+    pass ``lr`` as a one-element tensor on the parameters' device,
+    which the step reads from ``param_groups[i]['lr']`` every time
+    (a scheduler writes the new value into that tensor in place, as ``torch.optim.lr_scheduler`` does),
+    and set ``capturable=True``, which keeps each parameter's AdamW step count as a float tensor on its device
+    and computes the bias corrections there.
+    A capture of the step without both raises.
+    For float32 parameters, a tensor learning rate changes the updates at float32 rounding
+    (the orthogonal factor is scaled as a separate product, the AdamW step size is folded into the denominator)
+    and the device step count changes the AdamW update at float32 rounding, the Muon update not at all;
+    the step then performs no host synchronization and no Python control flow on tensor values.
+    A state dict moves between ``capturable`` and ``foreach`` settings:
+    a loaded state keeps the options this instance was constructed with, and the step count is converted;
+    the learning rate is taken from the state dict, as in ``torch.optim``,
+    so load it before constructing the scheduler.
+
     Args:
         params: iterable of parameters or of parameter-group dicts
-        lr: learning rate of the Muon update
+        lr: learning rate of the Muon update, a float or a one-element tensor on the parameters' device
         momentum: momentum factor of the gradient buffer
         nesterov: apply the momentum buffer in Nesterov form
         ns_steps: number of Newton-Schulz iterations
@@ -104,12 +121,13 @@ class Muon(Optimizer):
         use_muon: force (``True``) or exclude (``False``) the Muon update; ``None`` selects by shape
         foreach: the multi-tensor form of the step (``True``, faster, more transient memory)
             or the per-parameter loop (``False``), see above
+        capturable: keep the AdamW step count on the device, for a step captured in a CUDA graph, see above
     """
 
     def __init__(
         self,
         params: Union[Iterable[torch.Tensor], Iterable[Dict[str, Any]]],
-        lr: float = 2e-2,
+        lr: Union[float, torch.Tensor] = 2e-2,
         momentum: float = 0.95,
         nesterov: bool = True,
         ns_steps: int = 5,
@@ -121,7 +139,10 @@ class Muon(Optimizer):
         adam_dim_threshold: int = 8192,
         use_muon: Optional[bool] = None,
         foreach: bool = True,
+        capturable: bool = False,
     ) -> None:
+        if isinstance(lr, torch.Tensor) and lr.numel() != 1:
+            raise ValueError(f"A tensor learning rate needs one element, got shape {tuple(lr.shape)}")
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
         if not 0.0 <= momentum < 1.0:
@@ -153,6 +174,7 @@ class Muon(Optimizer):
             adam_dim_threshold=adam_dim_threshold,
             use_muon=use_muon,
             foreach=foreach,
+            capturable=capturable,
         )
         super().__init__(params, defaults)
         for group in self.param_groups:
@@ -167,9 +189,38 @@ class Muon(Optimizer):
 
     def __setstate__(self, state: Dict[str, Any]) -> None:
         super().__setstate__(state)
-        # an optimizer state saved before the option existed has no `foreach` in its parameter groups
         for group in self.param_groups:
+            # an optimizer state saved before the options existed has neither in its parameter groups
             group.setdefault('foreach', True)
+            group.setdefault('capturable', False)
+        self._convert_step_counts()
+
+    def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
+        """Loads the optimizer state; ``foreach`` and ``capturable`` stay as this instance was constructed.
+
+        The other group options, the learning rate included, come from the state dict, as in ``torch.optim``.
+
+        Args:
+            state_dict: an optimizer state as :meth:`state_dict` returns it
+        """
+        # the two options describe how this instance executes, not the saved training
+        options = [(group['foreach'], group['capturable']) for group in self.param_groups]
+        super().load_state_dict(state_dict)
+        for group, (foreach, capturable) in zip(self.param_groups, options):
+            group['foreach'], group['capturable'] = foreach, capturable
+        self._convert_step_counts()
+
+    def _convert_step_counts(self) -> None:
+        # the AdamW step count follows the group's `capturable`: a float tensor on the device, or an int
+        for group in self.param_groups:
+            for param in group['params']:
+                param_state = self.state.get(param)
+                if param_state is None or 'step' not in param_state:
+                    continue
+                if group['capturable'] and not isinstance(param_state['step'], torch.Tensor):
+                    param_state['step'] = torch.tensor(float(param_state['step']), device=param.device)
+                elif not group['capturable'] and isinstance(param_state['step'], torch.Tensor):
+                    param_state['step'] = int(param_state['step'])
 
     @staticmethod
     def selects_muon(param: torch.Tensor, *, use_muon: Optional[bool], adam_dim_threshold: int) -> bool:
@@ -202,6 +253,7 @@ class Muon(Optimizer):
             with torch.enable_grad():
                 loss = closure()
 
+        capturing = torch.cuda.is_available() and torch.cuda.is_current_stream_capturing()
         for group in self.param_groups:
             muon_params: List[torch.Tensor] = []
             adamw_params: List[torch.Tensor] = []
@@ -214,8 +266,23 @@ class Muon(Optimizer):
                     muon_params.append(param)
                 else:
                     adamw_params.append(param)
+            lr = group['lr']
+            if isinstance(lr, torch.Tensor):
+                lr = lr.reshape(())
+            if capturing:
+                # a captured step bakes Python numbers in: the step count and the learning rate must live on the device
+                if not group['capturable']:
+                    raise RuntimeError(
+                        "A CUDA graph capture of Muon.step needs capturable=True in every parameter group"
+                    )
+                devices = {param.device for param in muon_params + adamw_params}
+                if not isinstance(lr, torch.Tensor) or (devices and lr.device not in devices):
+                    raise RuntimeError(
+                        "A CUDA graph capture of Muon.step needs the learning rate as a tensor "
+                        f"on the parameters' device, got {lr!r}"
+                    )
             muon_options = dict(
-                lr=group['lr'],
+                lr=lr,
                 momentum=group['momentum'],
                 nesterov=group['nesterov'],
                 ns_steps=group['ns_steps'],
@@ -223,10 +290,11 @@ class Muon(Optimizer):
                 scale_mode=group['scale_mode'],
             )
             adamw_options = dict(
-                lr=group['lr'] * group['adam_lr_ratio'],
+                lr=lr * group['adam_lr_ratio'],
                 betas=group['adam_betas'],
                 eps=group['adam_eps'],
                 weight_decay=group['weight_decay'],
+                capturable=group['capturable'],
             )
             if group['foreach']:
                 if muon_params:
@@ -328,7 +396,11 @@ def _muon_update(
     orthogonal = zeropower_via_newtonschulz5(matrix, steps=ns_steps)
     if weight_decay != 0:
         param.mul_(1 - lr * weight_decay)
-    param.add_(orthogonal.reshape_as(param), alpha=-lr * update_scale(matrix.shape, scale_mode))
+    scale = update_scale(matrix.shape, scale_mode)
+    if isinstance(lr, torch.Tensor):
+        param.addcmul_(orthogonal.reshape_as(param), lr, value=-scale)
+    else:
+        param.add_(orthogonal.reshape_as(param), alpha=-lr * scale)
 
 
 def _muon_update_foreach(
@@ -363,10 +435,17 @@ def _muon_update_foreach(
         if nesterov:
             update.add_(torch.stack([bufs[index].reshape(rows, columns) for index in indices]), alpha=momentum)
         orthogonal = zeropower_via_newtonschulz5(update, steps=ns_steps)
+        scale = update_scale((rows, columns), scale_mode)
+        if isinstance(lr, torch.Tensor):
+            # `alpha` takes no tensor: scale the stack by the learning rate first
+            orthogonal.mul_(lr * -scale)
+            alpha = 1.0
+        else:
+            alpha = -lr * scale
         torch._foreach_add_(
             [params[index] for index in indices],
             [matrix.reshape_as(params[index]) for index, matrix in zip(indices, orthogonal.unbind(0))],
-            alpha=-lr * update_scale((rows, columns), scale_mode),
+            alpha=alpha,
         )
 
 
@@ -375,13 +454,14 @@ def _adamw_update(
     grad: torch.Tensor,
     state: Dict[str, Any],
     *,
-    lr: float,
+    lr: Union[float, torch.Tensor],
     betas: Tuple[float, float],
     eps: float,
     weight_decay: float,
+    capturable: bool,
 ) -> None:
     if 'exp_avg' not in state:
-        state['step'] = 0
+        state['step'] = _initial_step(param, capturable)
         state['exp_avg'] = torch.zeros_like(param)
         state['exp_avg_sq'] = torch.zeros_like(param)
     state['step'] += 1
@@ -392,10 +472,16 @@ def _adamw_update(
     exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
     bias_correction1 = 1 - beta1**step
     bias_correction2 = 1 - beta2**step
-    denom = (exp_avg_sq.sqrt() / (bias_correction2**0.5)).add_(eps)
     if weight_decay != 0:
         param.mul_(1 - lr * weight_decay)
-    param.addcdiv_(exp_avg, denom, value=-lr / bias_correction1)
+    step_size = lr / bias_correction1
+    if isinstance(step_size, torch.Tensor):
+        # a tensor learning rate or step count: the step size folds into the denominator, since `value` takes no tensor
+        denom = (exp_avg_sq.sqrt() / (bias_correction2**0.5 * step_size)).add_(eps / step_size)
+        param.addcdiv_(exp_avg, denom, value=-1.0)
+    else:
+        denom = (exp_avg_sq.sqrt() / (bias_correction2**0.5)).add_(eps)
+        param.addcdiv_(exp_avg, denom, value=-step_size)
 
 
 def _adamw_update_foreach(
@@ -403,23 +489,31 @@ def _adamw_update_foreach(
     grads: List[torch.Tensor],
     states: List[Dict[str, Any]],
     *,
-    lr: float,
+    lr: Union[float, torch.Tensor],
     betas: Tuple[float, float],
     eps: float,
     weight_decay: float,
+    capturable: bool,
 ) -> None:
-    # the bias corrections depend on the step count, which differs between parameters
-    # when one of them had no gradient in an earlier step
-    by_step: Dict[int, List[int]] = {}
-    for index, (param, state) in enumerate(zip(params, states)):
+    for param, state in zip(params, states):
         if 'exp_avg' not in state:
-            state['step'] = 0
+            state['step'] = _initial_step(param, capturable)
             state['exp_avg'] = torch.zeros_like(param)
             state['exp_avg_sq'] = torch.zeros_like(param)
-        state['step'] += 1
-        by_step.setdefault(state['step'], []).append(index)
     beta1, beta2 = betas
-    for step, indices in by_step.items():
+    # the bias corrections depend on the step count, which differs between parameters
+    # when one of them had no gradient in an earlier step:
+    # the device step counts of the capturable form carry it per parameter,
+    # the Python counts need one batch per count
+    if capturable:
+        torch._foreach_add_([state['step'] for state in states], 1)
+        batches: Dict[Any, List[int]] = {None: list(range(len(params)))}
+    else:
+        batches = {}
+        for index, state in enumerate(states):
+            state['step'] += 1
+            batches.setdefault(state['step'], []).append(index)
+    for step, indices in batches.items():
         step_params = [params[index] for index in indices]
         step_grads = [grads[index] for index in indices]
         exp_avgs = [states[index]['exp_avg'] for index in indices]
@@ -428,11 +522,39 @@ def _adamw_update_foreach(
         torch._foreach_add_(exp_avgs, step_grads, alpha=1 - beta1)
         torch._foreach_mul_(exp_avg_sqs, beta2)
         torch._foreach_addcmul_(exp_avg_sqs, step_grads, step_grads, value=1 - beta2)
-        bias_correction1 = 1 - beta1**step
-        bias_correction2 = 1 - beta2**step
-        denoms = torch._foreach_sqrt(exp_avg_sqs)
-        torch._foreach_div_(denoms, bias_correction2**0.5)
-        torch._foreach_add_(denoms, eps)
         if weight_decay != 0:
             torch._foreach_mul_(step_params, 1 - lr * weight_decay)
-        torch._foreach_addcdiv_(step_params, exp_avgs, denoms, value=-lr / bias_correction1)
+        denoms = torch._foreach_sqrt(exp_avg_sqs)
+        if capturable:
+            # on the device, as torch's capturable Adam: the denominator ends up divided by `-lr / (1 - beta1^t)`;
+            # the two divisions by per-parameter scalars run one kernel per parameter
+            steps = [states[index]['step'] for index in indices]
+            negative_step_sizes = torch._foreach_pow(beta1, steps)
+            torch._foreach_sub_(negative_step_sizes, 1)
+            torch._foreach_div_(negative_step_sizes, lr)
+            torch._foreach_reciprocal_(negative_step_sizes)
+            bias_correction2_sqrts = torch._foreach_pow(beta2, steps)
+            torch._foreach_sub_(bias_correction2_sqrts, 1)
+            torch._foreach_neg_(bias_correction2_sqrts)
+            torch._foreach_sqrt_(bias_correction2_sqrts)
+            torch._foreach_div_(denoms, bias_correction2_sqrts)
+            torch._foreach_add_(denoms, eps)
+            torch._foreach_div_(denoms, negative_step_sizes)
+            torch._foreach_addcdiv_(step_params, exp_avgs, denoms)
+        else:
+            bias_correction1 = 1 - beta1**step
+            bias_correction2 = 1 - beta2**step
+            torch._foreach_div_(denoms, bias_correction2**0.5)
+            torch._foreach_add_(denoms, eps)
+            step_size = lr / bias_correction1
+            if isinstance(step_size, torch.Tensor):
+                # a tensor learning rate: the step size folds into the denominator, since `value` takes no tensor
+                torch._foreach_div_(denoms, -step_size)
+                torch._foreach_addcdiv_(step_params, exp_avgs, denoms)
+            else:
+                torch._foreach_addcdiv_(step_params, exp_avgs, denoms, value=-step_size)
+
+
+def _initial_step(param: torch.Tensor, capturable: bool) -> Union[int, torch.Tensor]:
+    # the device step count is a float tensor of the default dtype, as torch's capturable optimizers keep it
+    return torch.zeros((), device=param.device) if capturable else 0

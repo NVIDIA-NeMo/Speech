@@ -255,6 +255,7 @@ class MuonParams(OptimizerParams):
         use_muon: force or exclude the Muon update; None selects by shape
         foreach: the multi-tensor form of the step (batched Newton-Schulz, ``torch._foreach`` arithmetic;
             faster, more transient memory) or the per-parameter loop
+        capturable: keep the AdamW step count on the device, for a step captured in a CUDA graph
     """
 
     momentum: float = 0.95
@@ -268,6 +269,7 @@ class MuonParams(OptimizerParams):
     adam_dim_threshold: int = 8192
     use_muon: Optional[bool] = None
     foreach: bool = True
+    capturable: bool = False
 
 
 def register_optimizer_params(name: str, optimizer_params: OptimizerParams):

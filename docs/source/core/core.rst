@@ -511,6 +511,10 @@ at the cost of transient memory for the stacked copies of the largest shape grou
 ``foreach: false`` selects the per-parameter loop,
 which computes the same update up to the bfloat16 rounding of the batched matrix products
 (and, for bfloat16 or float16 parameters on CPU, the rounding of the scalar coefficients to the parameter dtype).
+For a training step captured in a CUDA graph, pass the learning rate as a one-element tensor on the device,
+which the scheduler updates in place and the step reads every time,
+and set ``capturable: true``, which keeps the AdamW step count on the device;
+the updates then differ from the plain step at float32 rounding.
 
 Optimizer Params
 ~~~~~~~~~~~~~~~~

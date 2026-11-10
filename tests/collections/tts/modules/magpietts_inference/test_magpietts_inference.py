@@ -538,7 +538,7 @@ def test_inference_runner_forwards_normalized_text_probability(tmp_path, monkeyp
 
     runner.create_dataset({"ds": meta})
 
-    expected = probability if probability is not None else (0.0 if multiturn else 1.0)
+    expected = probability if probability is not None else 1.0
     assert captured["load_normalized_text_percent"] == expected
     assert meta.get("load_normalized_text_percent") == probability
     if not multiturn:
@@ -595,14 +595,14 @@ def test_multiturn_dataset_selects_each_turn_and_falls_back(tmp_path, monkeypatc
 
 
 @pytest.mark.unit
-def test_multiturn_dataset_keeps_raw_input_when_probability_is_omitted(tmp_path, monkeypatch):
+def test_multiturn_dataset_prefers_normalized_input_when_probability_is_omitted(tmp_path, monkeypatch):
     dataset, _, encoded_texts = _multiturn_text_dataset(
         tmp_path, monkeypatch, {"text": "July 15th", "normalized_text": "july fifteenth"}
     )
 
     dataset.collate_fn([dataset[0]])
 
-    assert encoded_texts == ["July 15th"]
+    assert encoded_texts == ["july fifteenth"]
 
 
 @pytest.mark.unit

@@ -83,8 +83,8 @@ Set `load_normalized_text_percent` per dataset in the JSON passed to
 
 Use `0.0` for raw `text`, `1.0` for `normalized_text`, or a probability between
 them to sample the input per example/turn. Missing normalized text falls back to
-raw text, including missing entries in multiturn lists. Omitting the key retains
-the existing defaults: normalized text for single-turn and raw text for multiturn.
+raw text, including missing entries in multiturn lists. Omitting the key defaults
+to `1.0` (normalized text) for both single-turn and multiturn evaluation.
 Saved evaluation manifests record the selected input separately from the
 normalized CER/WER reference. Use distinct dataset names for raw and normalized
 runs to keep their output directories separate.

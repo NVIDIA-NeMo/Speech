@@ -739,7 +739,7 @@ class EasyMagpieMultiturnUserAudioDataset(torch.utils.data.Dataset):
         model,
         max_eval_turns: int = 6,
         normalize_audio: bool = True,
-        load_normalized_text_percent: float = 0.0,
+        load_normalized_text_percent: float = 1.0,
     ):
         self.manifest_path = manifest_path
         self.audio_dir = audio_dir or ""
@@ -1173,7 +1173,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
             model=self.model,
             max_eval_turns=self.config.max_eval_turns,
             normalize_audio=True,
-            load_normalized_text_percent=next(iter(dataset_meta.values())).get("load_normalized_text_percent", 0.0),
+            load_normalized_text_percent=next(iter(dataset_meta.values())).get("load_normalized_text_percent", 1.0),
         )
 
     def set_distributed_context(self, rank: int, world_size: int) -> None:

@@ -60,7 +60,7 @@ For technical documentation, please see the
 
 NeMo Speech works with the **Python, PyTorch, and CUDA versions of your choosing**:
 
-- Python 3.12 or above
+- Python 3.11 or above
 - PyTorch 2.7 or above (CPU, CUDA, etc. — your choice)
 - NVIDIA GPU + CUDA (required for training; recommended for inference)
 

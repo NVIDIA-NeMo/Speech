@@ -23,7 +23,7 @@ dynamic = ["version"]
 description = "NeMo - a toolkit for Conversational AI"
 readme = "README.md"
 license = {file = "LICENSE"}
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "aistore",
     "huggingface_hub>=0.24",
@@ -67,7 +67,7 @@ classifiers = [
     "Natural Language :: English",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Scientific/Engineering :: Image Recognition",
     "Topic :: Scientific/Engineering :: Mathematics",
@@ -472,17 +472,21 @@ conflicts = [
     ],
 ]
 override-dependencies = [
+    "nltk>=3.10.4",
+    "accelerate>=1.14.0",
+    "msgpack>=1.2.3",
+    "fsspec>=2026.6.0",
     "mlflow>=3.11.1",
     "cryptography>=46.0.5",
-    "wandb>=0.28.0",
-    "urllib3>=2.6.0",
+    "wandb>=0.31.0",
+    "urllib3>=2.8.0",
     "opencv-python-headless; sys_platform == 'never'",
     "lxml>=6.1.0",
     "gitpython>=3.1.50",
     "mako>=1.3.12",
     "pyarrow>=23.0.1",
-    "aiohttp>=3.14.3",
-    "pillow>=12.3.0"
+    "aiohttp>=3.14.4",
+    "pillow>=13.0.0"
 ]
 no-binary-package = [
     "causal-conv1d",
@@ -518,7 +522,6 @@ torch = [
   { index = "pypi", marker = "sys_platform == 'darwin'" },
 ]
 transformer-engine = { git = "https://github.com/NVIDIA/TransformerEngine.git", tag = "v2.15" }
-nltk = { git = "https://github.com/nltk/nltk.git", tag = "v3.10.0-rc1" }
 
 [[tool.uv.index]]
 name = "pypi"

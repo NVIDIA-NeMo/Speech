@@ -43,13 +43,14 @@
 ARG BASE_IMAGE=nvcr.io/nvidia/cuda-dl-base:26.04-cuda13.2-devel-ubuntu24.04
 FROM ${BASE_IMAGE} AS base-image
 ARG BASE_IMAGE
-ARG UV_VERSION=0.11.27
+ARG UV_VERSION=0.13.7
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TRANSFORMERS_OFFLINE=0
 ENV HYDRA_FULL_ERROR=1
 ENV PYTHONUNBUFFERED=1
-ENV UV_PYTHON=3.13
+ENV UV_PYTHON=3.13.16
+ENV PYTHON_MAJOR_MINOR=3.13
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 ENV UV_LINK_MODE=copy
 ENV UV_NO_CACHE=1
@@ -68,6 +69,12 @@ apt-get install -y \
 apt-get clean
 EOF
 # NOTE: removed libsndfile1. Soundfile ships with its own version of libsndfile1
+
+# Remove the entire EFA metrics plugin from inherited Nsight Systems installations.
+# The plugin bundles a vulnerable Go toolchain; keep the rest of the CLI intact.
+RUN rm -rf /usr/local/cuda*/NsightSystems-cli-*/target-linux-*/plugins/efa_metrics \
+    /opt/nvidia/nsight-systems*/target-linux-*/plugins/efa_metrics \
+    /opt/nvidia/nsight-systems*/*/target-linux-*/plugins/efa_metrics
 
 RUN <<"EOF" bash -ex
 curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
@@ -180,7 +187,7 @@ esac
 
 CUDA_FLAVOR="$(nemo-cuda-flavor)"
 AUTOMODEL_CCCL_INCLUDES="/usr/local/cuda/include/cccl"
-PYTHON_CCCL_INCLUDE="${VIRTUAL_ENV}/lib/python${UV_PYTHON}/site-packages/nvidia/${CUDA_FLAVOR}/include/cccl"
+PYTHON_CCCL_INCLUDE="${VIRTUAL_ENV}/lib/python${PYTHON_MAJOR_MINOR}/site-packages/nvidia/${CUDA_FLAVOR}/include/cccl"
 if [[ -d "${PYTHON_CCCL_INCLUDE}" ]]; then
     AUTOMODEL_CCCL_INCLUDES="${AUTOMODEL_CCCL_INCLUDES}:${PYTHON_CCCL_INCLUDE}"
 fi
@@ -277,7 +284,7 @@ EOF
 COPY external/patches/flash_attn_4_cutlass46_compat.patch /tmp/patches/
 RUN <<"EOF" bash -euxo pipefail
 if [[ "${GPU_TARGET}" == "h100plus" ]]; then
-    patch -d "${VIRTUAL_ENV}/lib/python${UV_PYTHON}/site-packages/flash_attn/cute" -p1 \
+    patch -d "${VIRTUAL_ENV}/lib/python${PYTHON_MAJOR_MINOR}/site-packages/flash_attn/cute" -p1 \
         < /tmp/patches/flash_attn_4_cutlass46_compat.patch
 fi
 EOF
@@ -286,10 +293,10 @@ FROM base-image
 COPY --from=automodel-deps /opt/venv /opt/venv
 
 # Prefer the locked wheel libraries so PyTorch and compiled extensions resolve one CUDA runtime stack.
-ENV PYTHON_SITE_PACKAGES="${VIRTUAL_ENV}/lib/python${UV_PYTHON}/site-packages" \
-    CUDNN_HOME="${VIRTUAL_ENV}/lib/python${UV_PYTHON}/site-packages/nvidia/cudnn" \
-    CURAND_HOME="${VIRTUAL_ENV}/lib/python${UV_PYTHON}/site-packages/nvidia/curand" \
-    NVRTC_HOME="${VIRTUAL_ENV}/lib/python${UV_PYTHON}/site-packages/nvidia/cuda_nvrtc" \
+ENV PYTHON_SITE_PACKAGES="${VIRTUAL_ENV}/lib/python${PYTHON_MAJOR_MINOR}/site-packages" \
+    CUDNN_HOME="${VIRTUAL_ENV}/lib/python${PYTHON_MAJOR_MINOR}/site-packages/nvidia/cudnn" \
+    CURAND_HOME="${VIRTUAL_ENV}/lib/python${PYTHON_MAJOR_MINOR}/site-packages/nvidia/curand" \
+    NVRTC_HOME="${VIRTUAL_ENV}/lib/python${PYTHON_MAJOR_MINOR}/site-packages/nvidia/cuda_nvrtc" \
     NVTE_FRAMEWORK=pytorch
 ENV LD_LIBRARY_PATH="${PYTHON_SITE_PACKAGES}/torch/lib:${PYTHON_SITE_PACKAGES}/nvidia/cublas/lib:${PYTHON_SITE_PACKAGES}/nvidia/cuda_cupti/lib:${PYTHON_SITE_PACKAGES}/nvidia/cuda_nvrtc/lib:${PYTHON_SITE_PACKAGES}/nvidia/cuda_runtime/lib:${PYTHON_SITE_PACKAGES}/nvidia/cudnn/lib:${PYTHON_SITE_PACKAGES}/nvidia/cufft/lib:${PYTHON_SITE_PACKAGES}/nvidia/cufile/lib:${PYTHON_SITE_PACKAGES}/nvidia/curand/lib:${PYTHON_SITE_PACKAGES}/nvidia/cusolver/lib:${PYTHON_SITE_PACKAGES}/nvidia/cusparse/lib:${PYTHON_SITE_PACKAGES}/nvidia/cusparselt/lib:${PYTHON_SITE_PACKAGES}/nvidia/nccl/lib:${PYTHON_SITE_PACKAGES}/nvidia/nvjitlink/lib:${PYTHON_SITE_PACKAGES}/nvidia/nvshmem/lib:${PYTHON_SITE_PACKAGES}/nvidia/nvtx/lib:${LD_LIBRARY_PATH}"
 

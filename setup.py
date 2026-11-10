@@ -166,14 +166,14 @@ setuptools.setup(
         'License :: OSI Approved :: Apache Software License',
         # Supported python versions
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.10',
+        'Programming Language :: Python :: 3.11',
         # Additional Setting
         'Environment :: Console',
         'Natural Language :: English',
         'Operating System :: OS Independent',
     ],
     packages=setuptools.find_packages(),
-    python_requires='>=3.10',
+    python_requires='>=3.11',
     # Add in any packaged data.
     include_package_data=True,
     exclude=['tools', 'tests'],

@@ -66,11 +66,14 @@ class _CFGHistoryScheduler(OmniARScheduler):
             **kwargs: Keyword arguments forwarded to the base scheduler implementation.
         """
         super().__init__(*args, **kwargs)
-        validate_cfg_config(self.vllm_config)
+        self._validate_config(self.vllm_config)
         self.cfg_pairs: dict[str, CFGPair] = {}
         self._cfg_step_pending = False
         if self.chunk_transfer_adapter is not None:
             self.chunk_transfer_adapter = CFGPairingTransferFilter(self.chunk_transfer_adapter)
+
+    def _validate_config(self, config: VllmConfig) -> None:
+        validate_cfg_config(config)
 
     def add_request(self, request: OmniRequest) -> None:
         """Admit a logical request and allocate its physical CFG histories.
@@ -560,6 +563,9 @@ class EasyMagpieCFGScheduler(_CFGHistoryScheduler):
         if needed + manager.watermark_blocks > manager.block_pool.num_gpu_blocks - 1:
             raise ValueError("Logical request's full cache reservation exceeds total cache capacity")
 
+    def _running_token_cost(self) -> int:
+        return sum(r.num_tokens - r.num_computed_tokens for r in self.running)
+
     def _admit_waiting_units(self) -> RequestQueue:
         """Reserve and admit complete logical units in FCFS order.
 
@@ -568,7 +574,7 @@ class EasyMagpieCFGScheduler(_CFGHistoryScheduler):
         """
         admitted = create_request_queue(self.policy)
         slots = self.max_num_running_reqs - len(self.running)
-        tokens = self.max_num_scheduled_tokens - sum(r.num_tokens - r.num_computed_tokens for r in self.running)
+        tokens = self.max_num_scheduled_tokens - self._running_token_cost()
         seen = set()
         # A parked stream owns its reservation. Resume owners before fresh
         # admissions so a new request waiting for those blocks cannot deadlock

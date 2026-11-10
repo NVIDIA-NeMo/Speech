@@ -48,10 +48,9 @@ fractions, and the fraction of tokens assigned one frame.
 
 ## Training precision
 
-V2 supports `bf16-true` and `16-true` training. The training entrypoint also accepts
-`fp16-true` as an alias for `16-true`. The codec, quantizer conversion, resampling,
-evaluation models, and acoustic aligner remain in FP32; the backbone and prediction
-heads use the requested dtype. Token losses accumulate in FP32.
+V2 supports `bf16-true` and `16-true` training. The codec, quantizer conversion,
+resampling, evaluation models, and acoustic aligner remain in FP32; the backbone
+and prediction heads use the requested dtype. Token losses accumulate in FP32.
 
 With the default AdamW optimizer, enable its fused implementation and use an
 epsilon representable in FP16:
@@ -62,7 +61,7 @@ trainer.precision=bf16-true \
 ++model.optim.eps=1e-4
 ```
 
-Change `trainer.precision` to `fp16-true` for FP16. AdamW moments follow parameter
+Change `trainer.precision` to `16-true` for FP16. AdamW moments follow parameter
 precision in these modes. Existing mixed-precision recipes and optimizer defaults
 are unchanged.
 

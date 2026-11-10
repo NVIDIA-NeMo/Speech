@@ -50,10 +50,6 @@ def main(cfg):
     # each worker, avoding the problematic CUDA state inheritance.
     mp.set_start_method("spawn", force=True)
 
-    if cfg.trainer.get('precision') == 'fp16-true':
-        with open_dict(cfg.trainer):
-            cfg.trainer.precision = '16-true'
-
     trainer = pl.Trainer(**cfg.trainer)
     trainer.callbacks.append(pl.callbacks.LearningRateMonitor(logging_interval='step', log_weight_decay=True))
     exp_manager(trainer, cfg.get("exp_manager", None))

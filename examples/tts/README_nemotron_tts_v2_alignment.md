@@ -65,6 +65,30 @@ Change `trainer.precision` to `16-true` for FP16. AdamW moments follow parameter
 precision in these modes. Existing mixed-precision recipes and optimizer defaults
 are unchanged.
 
+## Evaluation text selection
+
+Set `load_normalized_text_percent` per dataset in the JSON passed to
+`--datasets_json_path`, for both single-turn and multiturn evaluation:
+
+```json
+{
+  "en_raw": {
+    "manifest_path": "/path/to/manifest.json",
+    "audio_dir": "/path/to/audio",
+    "language": "en",
+    "load_normalized_text_percent": 0.0
+  }
+}
+```
+
+Use `0.0` for raw `text`, `1.0` for `normalized_text`, or a probability between
+them to sample the input per example/turn. Missing normalized text falls back to
+raw text, including missing entries in multiturn lists. Omitting the key retains
+the existing defaults: normalized text for single-turn and raw text for multiturn.
+Saved evaluation manifests record the selected input separately from the
+normalized CER/WER reference. Use distinct dataset names for raw and normalized
+runs to keep their output directories separate.
+
 ## Streaming timestamps
 
 Recording is opt-in and observes one attention head during ordinary generation.

@@ -195,6 +195,8 @@ def run_inference_and_evaluation(
             "language": language,
             "tokenizer_names": tokenizer_names,
         }
+        if "load_normalized_text_percent" in meta:
+            dataset_meta_for_dl["load_normalized_text_percent"] = meta["load_normalized_text_percent"]
         if "precomputed_context_audio_embedding_key" in meta:
             dataset_meta_for_dl["precomputed_context_audio_embedding_key"] = meta[
                 "precomputed_context_audio_embedding_key"

@@ -46,7 +46,12 @@ from nemo.collections.tts.data.text_to_speech_dataset import ChunkedTTSInference
 from nemo.collections.tts.models.easy_magpietts_inference import EasyModelInferenceParameters
 from nemo.collections.tts.models.magpietts import ModelInferenceParameters
 from nemo.collections.tts.modules.attention_alignment import save_token_timestamps
-from nemo.collections.tts.parts.utils.tts_dataset_utils import normalize_volume, stack_tensors
+from nemo.collections.tts.parts.utils.tts_dataset_utils import (
+    _select_text_for_tts_input,
+    _validate_probability,
+    normalize_volume,
+    stack_tensors,
+)
 from nemo.utils import logging
 
 
@@ -454,9 +459,12 @@ class MagpieInferenceRunner(BaseInferenceRunner):
         Returns:
             Configured ChunkedTTSInferenceDataset instance.
         """
+        dataset_info = dict(next(iter(dataset_meta.values())))
+        load_normalized_text_percent = dataset_info.pop("load_normalized_text_percent", 1.0)
         # Create unified dataset - language and tokenizer are determined per-sample from manifest
         dataset = ChunkedTTSInferenceDataset(
-            dataset_meta=dataset_meta,
+            dataset_meta={next(iter(dataset_meta)): dataset_info},
+            load_normalized_text_percent=load_normalized_text_percent,
             sample_rate=self.model.output_sample_rate,
             codec_model_samples_per_frame=self.model.codec_model_samples_per_frame,
             eos_id=self.model.eos_id,
@@ -731,12 +739,15 @@ class EasyMagpieMultiturnUserAudioDataset(torch.utils.data.Dataset):
         model,
         max_eval_turns: int = 6,
         normalize_audio: bool = True,
+        load_normalized_text_percent: float = 0.0,
     ):
         self.manifest_path = manifest_path
         self.audio_dir = audio_dir or ""
         self.model = model
         self.max_eval_turns = max_eval_turns
         self.normalize_audio = normalize_audio
+        _validate_probability("load_normalized_text_percent", load_normalized_text_percent)
+        self.load_normalized_text_percent = load_normalized_text_percent
         self.records = read_manifest(manifest_path)
 
     def __len__(self):
@@ -794,6 +805,17 @@ class EasyMagpieMultiturnUserAudioDataset(torch.utils.data.Dataset):
         main_tokenizer_name = list(model.cfg.text_tokenizers.keys())[0]
 
         raw_turn_texts = self._as_turn_list(sample["text"])[: self.max_eval_turns]
+        normalized_texts = sample.get("normalized_text", [])
+        if not isinstance(normalized_texts, list):
+            normalized_texts = [normalized_texts]
+        raw_turn_texts = [
+            _select_text_for_tts_input(
+                text,
+                (normalized_texts[i] or None) if i < len(normalized_texts) else None,
+                self.load_normalized_text_percent,
+            )
+            for i, text in enumerate(raw_turn_texts)
+        ]
         max_turns = len(raw_turn_texts)
 
         user_audio_paths = sample.get("user_audio_file_path", None)
@@ -921,6 +943,7 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
         )
         self._read_and_cache_manifest(dataset_meta)
         dataset_name = next(iter(dataset_meta))
+        load_normalized_text_percent = dataset_meta[dataset_name].get("load_normalized_text_percent", 1.0)
         embedding_key = dataset_meta[dataset_name].get("precomputed_context_audio_embedding_key")
         if embedding_key is None:
             self._current_precomputed_audio_embedding = None
@@ -939,7 +962,7 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
             dataset_name: {
                 key: value
                 for key, value in dataset_meta[dataset_name].items()
-                if key != "precomputed_context_audio_embedding_key"
+                if key not in {"precomputed_context_audio_embedding_key", "load_normalized_text_percent"}
             }
         }
 
@@ -970,6 +993,7 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
             phoneme_text_eop_marker=self.model.phoneme_text_eop_marker,
             add_language_to_context_text=self.model.add_language_to_context_text,
             default_tokenizer_name=self.config.default_tokenizer_name,
+            load_normalized_text_percent=load_normalized_text_percent,
         )
         dataset.text_tokenizer = self.model.tokenizer
 
@@ -1018,7 +1042,11 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
         generated_audio_paths = []
         codec_file_paths = []
         item_idx = 0
-        timestamp_records = []
+        self.evaluation_manifest_records = [
+            dict(record, text=sample.text, original_text=record.get("original_text") or record["text"])
+            for record, sample in zip(manifest_records, dataset.data_samples)
+        ]
+        manifest_records = self.evaluation_manifest_records
         phoneme_sampling_method = (
             "argmax" if self.config.phoneme_sampling_method == "greedy" else self.config.phoneme_sampling_method
         )
@@ -1065,13 +1093,13 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
                 sf.write(audio_path, audio_np, sample_rate)
                 generated_audio_paths.append(audio_path)
 
+                original = manifest_records[item_idx]
+                original["predicted_audio_filepath"] = os.path.abspath(audio_path)
                 if self.config.save_timestamps:
                     traces = getattr(output, 'timestamps', None)
                     expected_ids = _timestamp_input_ids(
                         self.model, batch['text'][idx, : int(batch['text_lens'][idx].item())]
                     )
-                    original = dict(manifest_records[item_idx]) if item_idx < len(manifest_records) else {}
-                    original['predicted_audio_filepath'] = os.path.abspath(audio_path)
                     original['timestamps_filepath'] = save_token_timestamps(
                         audio_path,
                         traces[idx] if traces is not None else None,
@@ -1079,7 +1107,6 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
                         expected_input_text=original.get('text', original.get('original_text')),
                         expected_input_token_ids=expected_ids,
                     )
-                    timestamp_records.append(original)
 
                 if save_context_audio and item_idx < len(manifest_records):
                     self._copy_reference_audio(
@@ -1097,11 +1124,14 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
 
                 item_idx += 1
 
+        manifest_name = 'timestamps_manifest.jsonl' if self.config.save_timestamps else 'evaluation_manifest.jsonl'
+        self.evaluation_manifest_path = os.path.join(output_dir, manifest_name)
+        self.evaluation_audio_dir = audio_base_dir
         if self.config.save_timestamps:
-            self.timestamp_manifest_path = os.path.join(output_dir, 'timestamps_manifest.jsonl')
-            with open(self.timestamp_manifest_path, 'w', encoding='utf-8') as stream:
-                for record in timestamp_records:
-                    stream.write(json.dumps(record, ensure_ascii=False) + '\n')
+            self.timestamp_manifest_path = self.evaluation_manifest_path
+        with open(self.evaluation_manifest_path, 'w', encoding='utf-8') as stream:
+            for record in manifest_records:
+                stream.write(json.dumps(record, ensure_ascii=False) + '\n')
 
         return all_rtf_metrics, generated_audio_paths, codec_file_paths
 
@@ -1143,6 +1173,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
             model=self.model,
             max_eval_turns=self.config.max_eval_turns,
             normalize_audio=True,
+            load_normalized_text_percent=next(iter(dataset_meta.values())).get("load_normalized_text_percent", 0.0),
         )
 
     def set_distributed_context(self, rank: int, world_size: int) -> None:
@@ -1989,6 +2020,10 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
             sample_idx = int(batch["idx"][0].item())
             raw_record = batch["raw_record"]
             raw_turn_texts = batch["raw_turn_texts"][0]
+            source_turn_texts = dataset._as_turn_list(raw_record["text"])
+            normalized_turn_texts = raw_record.get("normalized_text", [])
+            if not isinstance(normalized_turn_texts, list):
+                normalized_turn_texts = [normalized_turn_texts]
             logging.info(
                 f"[MT_USER_AUDIO_PROCESS] rank={rank}/{world_size} "
                 f"local_batch={batch_idx} global_sample_idx={sample_idx} "
@@ -2088,6 +2123,12 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                         "audio_filepath": f"target_audio_{item_idx}.wav",
                         "context_audio_filepath": f"context_audio_{item_idx}.wav",
                         "text": raw_turn_texts[source_turn_idx] if source_turn_idx < len(raw_turn_texts) else "",
+                        "original_text": source_turn_texts[source_turn_idx],
+                        "normalized_text": (
+                            normalized_turn_texts[source_turn_idx] or None
+                            if source_turn_idx < len(normalized_turn_texts)
+                            else None
+                        ),
                         "predicted_phoneme_text": phoneme_output.get("predicted_phoneme_text", ""),
                         "predicted_phoneme_tokens": phoneme_output.get("predicted_phoneme_tokens", []),
                         "predicted_phoneme_token_labels": phoneme_output.get("predicted_phoneme_token_labels", []),

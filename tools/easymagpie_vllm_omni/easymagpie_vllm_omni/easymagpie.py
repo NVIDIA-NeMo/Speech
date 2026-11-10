@@ -156,6 +156,7 @@ class EasyMagpieTTSForConditionalGeneration(
     omni_pooler_payload_include_hidden: bool = False
 
     # Keep small per-step tensors GPU-resident across steps (no D2H/H2D).
+    strict_worker_feedback = True
     gpu_resident_buffer_keys: set[str] = {"last_audio_codes", "last_phoneme_token"}
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:

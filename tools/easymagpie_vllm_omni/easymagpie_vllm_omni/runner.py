@@ -25,6 +25,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import torch
+import vllm
+import vllm_omni
 from easymagpie_vllm_omni.cfg_pairing import build_cfg_pairing_layout, is_cfg_hidden_id
 from vllm.config import CUDAGraphMode
 from vllm.forward_context import get_forward_context
@@ -72,7 +74,163 @@ def merge_streaming_additional_information(
 
 
 class EasyMagpieGPUARModelRunner(GPUARModelRunner):
-    """GPU AR runner that restores streaming chunk metadata propagation."""
+    """Streaming metadata and strict, owned EasyMagpie worker feedback."""
+
+    def __init__(self, *args: Any, **kwargs: Any):
+        # These hooks are an adapter contract for the audited 0.24 runtime.
+        if vllm.__version__ != "0.24.0" or vllm_omni.__version__ != "0.24.0":
+            raise RuntimeError("EasyMagpie worker feedback requires vLLM and vLLM-Omni 0.24.0")
+        super().__init__(*args, **kwargs)
+
+    def execute_model(self, *args: Any, **kwargs: Any):
+        self._check_feedback_health()
+        return super().execute_model(*args, **kwargs)
+
+    def sample_tokens(self, *args: Any, **kwargs: Any):
+        self._check_feedback_health()
+        return super().sample_tokens(*args, **kwargs)
+
+    def _check_feedback_health(self):
+        failure = getattr(self, "_feedback_failure", None)
+        if failure is not None:
+            raise RuntimeError(
+                "EasyMagpie worker is unusable after feedback failure; recreate the engine"
+            ) from failure
+
+    def _update_intermediate_buffer(self, req_id: str, upd: dict) -> None:
+        if not getattr(self.model, "strict_worker_feedback", False):
+            return super()._update_intermediate_buffer(req_id, upd)
+        if not isinstance(upd, dict) or not upd or req_id not in self.requests:
+            return
+        declared = getattr(self.model, "gpu_resident_buffer_keys", set())
+        flat_keys = {key for key in declared if isinstance(key, str)}
+        nested_keys = {key for key in declared if isinstance(key, tuple) and len(key) == 2}
+        existing = self.model_intermediate_buffer.setdefault(req_id, {})
+        for key, value in upd.items():
+            if isinstance(value, dict):
+                dest = existing.setdefault(key, {})
+                for qualifier, item in value.items():
+                    self._store_value(dest, qualifier, item, {q for k, q in nested_keys if k == key})
+            else:
+                # The base helper clones declared tensors on their original device.
+                # Copies and the next preprocess read use the worker's current stream.
+                self._store_value(existing, key, value, flat_keys)
+        self.requests[req_id].additional_information_cpu = existing
+
+    def _bookkeeping_sync(self, scheduler_output, sampler_output, *args, **kwargs):
+        self._check_feedback_health()
+        ids = self.input_batch.req_ids
+        indices = {rid: i for i, rid in enumerate(ids)}
+        sources, destinations = [], []
+        for row, rid in enumerate(ids):
+            if not is_cfg_hidden_id(rid):
+                continue
+            info = getattr(self.requests[rid], "additional_information_cpu", None) or {}
+            public = info.get("_cfg_pair", {}).get("logical_id")
+            if public not in indices:
+                raise RuntimeError(f"CFG partner missing before bookkeeping: {rid}")
+            source = indices[public]
+            # Discard masks describe sampled request rows, not expanded token rows.
+            mask = self.discard_request_mask.np
+            if mask[row] != mask[source]:
+                raise RuntimeError(f"CFG discard masks disagree: {public}, {rid}")
+            if not mask[row]:
+                sources.append(source)
+                destinations.append(row)
+        if destinations:
+            tokens = sampler_output.sampled_token_ids
+            src = torch.tensor(sources, device=tokens.device, dtype=torch.long)
+            dst = torch.tensor(destinations, device=tokens.device, dtype=torch.long)
+            tokens.index_copy_(0, dst, tokens.index_select(0, src))
+        return super()._bookkeeping_sync(scheduler_output, sampler_output, *args, **kwargs)
+
+    def _process_additional_information_updates(
+        self,
+        hidden_states,
+        multimodal_outputs,
+        num_scheduled_tokens_np,
+        scheduler_output,
+        combined_hidden_states=None,
+        combined_multimodal_outputs=None,
+        req_ids_filter=None,
+        req_ids=None,
+        query_start_loc_cpu=None,
+    ) -> None:
+        if not getattr(self.model, "strict_worker_feedback", False):
+            return super()._process_additional_information_updates(
+                hidden_states,
+                multimodal_outputs,
+                num_scheduled_tokens_np,
+                scheduler_output,
+                combined_hidden_states,
+                combined_multimodal_outputs,
+                req_ids_filter,
+                req_ids,
+                query_start_loc_cpu,
+            )
+        self._check_feedback_health()
+        ids = list(self.input_batch.req_ids if req_ids is None else req_ids)
+        starts = self.query_start_loc.cpu if query_start_loc_cpu is None else query_start_loc_cpu
+        starts = starts() if callable(starts) else starts
+        request_id, phase = None, "select"
+        try:
+            for index, request_id in enumerate(ids):
+                # Private inputs use the guided model buffers; they never owned a
+                # postprocess update. Public feedback is independent of output routing.
+                if is_cfg_hidden_id(request_id):
+                    continue
+                if request_id not in self.requests:
+                    raise RuntimeError(f"Feedback request state is missing: {request_id}")
+                count = int(num_scheduled_tokens_np[index])
+                if count == 0:
+                    continue
+                phase = f"postprocess span={int(starts[index])}:{int(starts[index]) + count}"
+                if combined_hidden_states or combined_multimodal_outputs:
+                    raise RuntimeError("EasyMagpie feedback requires scheduled spans, not prefix-cache payloads")
+                start = int(starts[index])
+                span = hidden_states[start : start + count]
+                if span.shape[0] != count:
+                    raise RuntimeError("Incomplete scheduled feedback span")
+                info = self.model_intermediate_buffer.get(request_id, {})
+                update = self.model.postprocess(
+                    span,
+                    multimodal_outputs=multimodal_outputs,
+                    **{k: v for k, v in info.items() if k != "hidden_states"},
+                )
+                required = ["last_audio_codes"]
+                if self.model.has_phoneme:
+                    required.append("last_phoneme_token")
+                for key in required:
+                    value = update.get(key) if isinstance(update, dict) else None
+                    if (
+                        not isinstance(value, torch.Tensor)
+                        or value.ndim < 1
+                        or value.shape[0] != 1
+                        or not value.numel()
+                    ):
+                        raise RuntimeError(f"Missing or invalid required feedback: {key}")
+                phase = "store " + ", ".join(required)
+                self._update_intermediate_buffer(request_id, update)
+        except Exception as error:
+            self._feedback_failure = error
+            error.add_note(f"EasyMagpie feedback failed for request={request_id!r}, phase={phase}, batch={ids!r}")
+            raise
+
+    def _build_omni_model_runner_output_from_snapshot(self, **kwargs):
+        if getattr(self.model, "strict_worker_feedback", False) and not kwargs.get(
+            "postprocess_already_applied", False
+        ):
+            self._process_additional_information_updates(
+                kwargs["hidden_states"],
+                kwargs["multimodal_outputs"],
+                kwargs["num_scheduled_tokens_np"],
+                kwargs["scheduler_output"],
+                req_ids=kwargs["req_ids_output_copy"],
+                query_start_loc_cpu=kwargs["query_start_loc_cpu"],
+            )
+            # This marker belongs to this result invocation, never runner-global.
+            kwargs["postprocess_already_applied"] = True
+        return super()._build_omni_model_runner_output_from_snapshot(**kwargs)
 
     def _preprocess(
         self,

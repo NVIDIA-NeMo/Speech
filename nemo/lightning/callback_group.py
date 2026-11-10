@@ -19,7 +19,6 @@ from typing import Any, Callable, List, Optional
 
 from lightning.pytorch.callbacks import Callback as PTLCallback
 from nemo.lightning.base_callback import BaseCallback
-from nemo.lightning.one_logger_callback import OneLoggerNeMoCallback
 
 
 class CallbackGroup:
@@ -44,7 +43,8 @@ class CallbackGroup:
         return cls._instance
 
     def __init__(self) -> None:
-        self._callbacks: List[BaseCallback] = [OneLoggerNeMoCallback()]
+        # Leave telemetry detached until its callback integration is updated.
+        self._callbacks: List[BaseCallback] = []
         # Ensure application-end is emitted at most once per process
         self._app_end_emitted: bool = False
 

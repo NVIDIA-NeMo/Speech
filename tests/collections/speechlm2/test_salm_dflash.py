@@ -271,11 +271,12 @@ def test_expand_ids_with_audio_matches_unpad_behavior_for_all_padding_row():
     assert expanded.tolist() == [[0, 0], [11, 12]]
 
 
-def test_device_falls_back_before_draft_configuration():
-    module = salm_dflash.SALMDFlashModule(nn.Linear(1, 1), {"dflash": {"mask_token_id": 18}})
+@pytest.mark.parametrize("device", ["cpu", "meta"])
+def test_device_falls_back_before_draft_configuration(device):
+    module = salm_dflash.SALMDFlashModule(nn.Linear(1, 1, device=device), {"dflash": {"mask_token_id": 18}}).to(device)
 
     assert module.draft_model is None
-    assert module.device == torch.device("cpu")
+    assert module.device == next(module.target.parameters()).device
 
 
 class _BatchTarget(nn.Module):

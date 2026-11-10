@@ -490,3 +490,24 @@ def test_validate_model_config_rejects_non_streaming_default_mode():
 
     with pytest.raises(ValueError, match="text_input_mode='streaming'"):
         converter.validate_model_config(model)
+
+
+def test_bundle_perth_watermark_checkpoint_downloads_into_codec_dir(tmp_path, monkeypatch):
+    codec_dir = tmp_path / "codec_native"
+    codec_dir.mkdir()
+    (codec_dir / "config.json").write_text('{"architectures": ["EasyMagpieCodecForConditionalGeneration"]}\n')
+
+    def fake_download(url, destination):
+        Path(destination).write_bytes(url.encode())
+
+    monkeypatch.setattr(converter, "_download_file", fake_download)
+    monkeypatch.setattr(converter, "_packaged_perth_implicit_dir", lambda: None)
+
+    models_dir = converter.bundle_perth_watermark_checkpoint(str(codec_dir))
+
+    run_dir = Path(models_dir) / "implicit"
+    assert models_dir == str(codec_dir / "watermark" / "perth")
+    for name in converter._PERTH_WATERMARK_FILES:
+        assert (run_dir / name).read_bytes()
+    config = json.loads((codec_dir / "config.json").read_text())
+    assert config["watermark_checkpoint"] == "watermark/perth"

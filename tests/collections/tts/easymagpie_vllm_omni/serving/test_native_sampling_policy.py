@@ -104,6 +104,7 @@ def test_sanitized_cfg_graph_reads_updated_temperature_and_scale():
             result, _ = _generate_cfg_codes(
                 predictor, conditional, unconditional, noise, temperature, scale, trace=False
             )
+        graph.replay()
         assert result.item() == 1
         temperature.zero_()
         graph.replay()

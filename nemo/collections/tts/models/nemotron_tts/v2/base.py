@@ -420,7 +420,12 @@ class NemotronTTSBase(ModelPT):
         self._codec_model = codec_model
         self._codec_model.freeze()  # Lightning does requires_grad = False and self.eval()
         self._codec_converter = codec_converter
-        self._codec_helper = CodecHelper(self._codec_model, self._codec_converter, force_fp32=True)
+        self._codec_helper = CodecHelper(
+            self._codec_model,
+            self._codec_converter,
+            force_fp32=True,
+            decode_batch_size=cfg.get('codec_decode_batch_size', 0),
+        )
 
         # Audio embedding dimension - can be smaller than hidden_dim to reduce parameters
         self.audio_embedding_dim = cfg.get('audio_embedding_dim', cfg.hidden_dim)

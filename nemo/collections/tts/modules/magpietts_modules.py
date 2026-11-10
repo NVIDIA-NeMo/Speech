@@ -392,10 +392,13 @@ class CodecHelper:
     without having to pass the codec objects every time.
     """
 
-    def __init__(self, codec_model, codec_converter=None, force_fp32=False):
+    def __init__(self, codec_model, codec_converter=None, force_fp32=False, decode_batch_size=0):
+        if decode_batch_size < 0:
+            raise ValueError("decode_batch_size must be non-negative")
         self.codec_model = codec_model
         self.codec_converter = codec_converter
         self.force_fp32 = force_fp32
+        self.decode_batch_size = decode_batch_size
 
     def audio_to_codes(self, audio, audio_len, sample_rate=None):
         """Encode audio waveforms into codec codes."""
@@ -413,6 +416,7 @@ class CodecHelper:
         """Decode codec codes back into audio waveforms.
 
         ``codes`` must already be unstacked to the shape the codec expects.
+        A positive ``decode_batch_size`` limits decoder sub-batches; zero uses the full batch.
         """
         self.codec_model.eval()
         context = (
@@ -421,7 +425,30 @@ class CodecHelper:
         with torch.no_grad(), context:
             if self.codec_converter is not None:
                 codes = self.codec_converter.convert_new_to_original(audio_tokens=codes, audio_lens=codes_len)
-            audio, audio_len = self.codec_model.decode(tokens=codes, tokens_len=codes_len)
+            batch_size = codes.size(0)
+            if self.decode_batch_size <= 0 or self.decode_batch_size >= batch_size:
+                audio, audio_len = self.codec_model.decode(tokens=codes, tokens_len=codes_len)
+            else:
+                # Bound decoder activations and avoid decoding padding from a longer neighboring item.
+                chunks = []
+                audio_len = torch.zeros_like(codes_len)
+                for start in range(0, batch_size, self.decode_batch_size):
+                    end = min(start + self.decode_batch_size, batch_size)
+                    chunk_lens = codes_len[start:end]
+                    max_len = int(chunk_lens.max().item())
+                    if max_len == 0:
+                        continue
+                    chunk_audio, chunk_audio_len = self.codec_model.decode(
+                        tokens=codes[start:end, :, :max_len], tokens_len=chunk_lens
+                    )
+                    chunks.append((start, chunk_audio))
+                    audio_len[start:end] = chunk_audio_len
+                if chunks:
+                    audio = chunks[0][1].new_zeros(batch_size, max(chunk.size(1) for _, chunk in chunks))
+                    for start, chunk in chunks:
+                        audio[start : start + chunk.size(0), : chunk.size(1)] = chunk
+                else:
+                    audio = torch.zeros(batch_size, 0, device=codes.device, dtype=torch.float32)
             return audio, audio_len, codes
 
 

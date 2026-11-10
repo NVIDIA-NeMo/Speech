@@ -89,6 +89,23 @@ Saved evaluation manifests record the selected input separately from the
 normalized CER/WER reference. Use distinct dataset names for raw and normalized
 runs to keep their output directories separate.
 
+## Multi-GPU evaluation
+
+The shared inference entrypoint supports V1 and V2 checkpoints. Use `torchrun
+--standalone --nproc_per_node=8 examples/tts/magpietts_inference.py` with the usual
+`--model_type easy_magpie` arguments. Single-turn and multiturn generation shard
+samples across GPUs; `--batch_size` is per GPU. Multiturn requires batch size one.
+Rank zero merges outputs and runs evaluation. Single-turn outputs retain their
+original manifest order, selected input text, and timestamps. Empty shards are
+supported. Plain `python` keeps the single-process path.
+
+Use `--codec_decode_batch_size 1` to decode generated codes one sample at a time
+while preserving the TTS generation batch size. This reduces peak codec decoder
+activation memory for long outputs; each group is cropped to its longest valid
+sequence. `0` decodes the full batch, and omitting the option preserves the
+checkpoint's setting (default `0`). The shared codec helper supports both V1 and
+V2. For the single-node recipe, keep `NODES=1` with the standalone launcher.
+
 ## Streaming timestamps
 
 Recording is opt-in and observes one attention head during ordinary generation.

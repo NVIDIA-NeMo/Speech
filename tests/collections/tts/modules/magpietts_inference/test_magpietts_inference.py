@@ -39,6 +39,7 @@ from nemo.collections.tts.models.easy_magpietts_inference import (
 from nemo.collections.tts.models.nemotron_tts.v2.base import (
     EasyModelInferenceParameters as easymagpie_inference_parameters_v2,
 )
+from nemo.collections.tts.modules.magpietts_inference import utils as inference_utils
 from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio import (
     FILEWISE_METRICS_TO_SAVE,
     _get_record_texts,
@@ -1005,3 +1006,331 @@ def test_run_inference_and_evaluation_applies_evalset_override(tmp_path, monkeyp
     assert runner.dataset_metadata[0]["emphasis"]["load_normalized_text_percent"] == 0.0
     assert runner.dataset_metadata[1]["tags"]["load_normalized_text_percent"] == 1.0
     assert (cer, ssim) == (0.0, 1.0)
+
+
+def _singleturn_inference_fixture(tmp_path, monkeypatch, num_samples):
+    seen = []
+    records = []
+    selected_texts = []
+    for i in range(num_samples):
+        records.append(
+            {
+                "text": f"raw {i}",
+                "normalized_text": f"normalized {i}",
+                "audio_filepath": f"target_{i}.wav",
+                "context_audio_filepath": f"context_{i}.wav" if i % 2 == 0 else None,
+            }
+        )
+        selected_texts.append(f"normalized {i}" if i % 2 else f"raw {i}")
+        (tmp_path / f"target_{i}.wav").write_bytes(f"target {i}".encode())
+        (tmp_path / f"context_{i}.wav").write_bytes(f"context {i}".encode())
+
+    class Dataset(torch.utils.data.Dataset):
+        data_samples = [SimpleNamespace(text=text) for text in selected_texts]
+
+        def __len__(self):
+            return num_samples
+
+        def __getitem__(self, idx):
+            return idx
+
+        def collate_fn(self, batch):
+            return {"text": torch.tensor(batch).unsqueeze(1), "text_lens": torch.ones(len(batch), dtype=torch.long)}
+
+    def infer(batch, **kwargs):
+        indices = batch["text"][:, 0]
+        seen.extend(indices.tolist())
+        return SimpleNamespace(
+            predicted_audio=indices[:, None].float().expand(-1, 8) / 10,
+            predicted_audio_lens=torch.full((len(indices),), 8),
+            predicted_codes=indices[:, None, None].expand(-1, 1, 2),
+            predicted_codes_lens=torch.full((len(indices),), 2),
+            rtf_metrics={},
+            timestamps=[{} for _ in indices],
+        )
+
+    def save_timestamps(audio_path, trace, **kwargs):
+        path = Path(audio_path).with_suffix(".timestamps.json")
+        path.write_text(json.dumps({"predicted_audio_filepath": audio_path, "text": kwargs["expected_input_text"]}))
+        return str(path.resolve())
+
+    monkeypatch.setattr(f"{INFERENCE_MODULE}.save_token_timestamps", save_timestamps)
+    monkeypatch.setattr(EasyMagpieInferenceRunner, "_batch_to_cuda", staticmethod(lambda batch: batch))
+    model = SimpleNamespace(
+        tokenizer=None, sample_rate=8000, bos_id=99, infer_batch=infer, configure_timestamps=lambda **kwargs: None
+    )
+    return Dataset, model, records, selected_texts, seen
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("num_samples,world_size", [(5, 3), (2, 4)])
+@pytest.mark.parametrize("save_context_audio", [False, True])
+def test_singleturn_shards_and_merges_every_sample_once(
+    tmp_path, monkeypatch, num_samples, world_size, save_context_audio
+):
+    Dataset, model, records, selected_texts, seen = _singleturn_inference_fixture(tmp_path, monkeypatch, num_samples)
+    output_dir = tmp_path / "generated"
+    for rank in range(world_size):
+        runner = EasyMagpieInferenceRunner(model, EasyMagpieInferenceConfig(batch_size=2, save_timestamps=True))
+        runner.set_distributed_context(rank, world_size)
+        rank_dir = output_dir / f"rank_{rank:04d}"
+        runner.run_inference_on_dataset(
+            Dataset(),
+            str(rank_dir),
+            manifest_records=records,
+            audio_base_dir=str(tmp_path),
+            save_context_audio=save_context_audio,
+            save_predicted_codes=True,
+        )
+        saved = [json.loads(line) for line in Path(runner.evaluation_manifest_path).read_text().splitlines()]
+        expected_indices = list(range(rank, num_samples, world_size))
+        assert [row["source_sample_idx"] for row in saved] == expected_indices
+        assert [row["text"] for row in saved] == [selected_texts[i] for i in expected_indices]
+        assert len(list(rank_dir.glob("predicted_audio_*.wav"))) == len(expected_indices)
+        for local_idx, (source_idx, row) in enumerate(zip(expected_indices, saved)):
+            assert _get_record_texts(row) == (
+                selected_texts[source_idx],
+                f"normalized {source_idx}",
+                f"normalized {source_idx}",
+            )
+            assert row["original_text"] == f"raw {source_idx}"
+            assert torch.load(rank_dir / f"predicted_codes_{local_idx}.pt", weights_only=True).eq(source_idx).all()
+            timestamp = json.loads(Path(row["timestamps_filepath"]).read_text())
+            assert timestamp["text"] == selected_texts[source_idx]
+            assert timestamp["predicted_audio_filepath"] == row["predicted_audio_filepath"]
+
+    assert sorted(seen) == list(range(num_samples))
+    assert [record["text"] for record in records] == [f"raw {i}" for i in range(num_samples)]
+
+    merged_path = inference_utils._merge_rank_outputs(
+        str(output_dir),
+        world_size,
+        save_predicted_codes=True,
+        manifest_name=Path(runner.evaluation_manifest_path).name,
+        expected_samples=num_samples,
+    )
+    merged = [json.loads(line) for line in Path(merged_path).read_text().splitlines()]
+    assert [row["source_sample_idx"] for row in merged] == list(range(num_samples))
+    assert [row["text"] for row in merged] == selected_texts
+    for i, row in enumerate(merged):
+        assert torch.load(output_dir / f"predicted_codes_{i}.pt", weights_only=True).eq(i).all()
+        assert (output_dir / row["audio_filepath"]).read_bytes() == f"target {i}".encode()
+        if i % 2 == 0:
+            assert (output_dir / row["context_audio_filepath"]).read_bytes() == f"context {i}".encode()
+        else:
+            assert row["context_audio_filepath"] is None
+        assert row["predicted_audio_filepath"] == str((output_dir / f"predicted_audio_{i}.wav").resolve())
+        timestamp = json.loads(Path(row["timestamps_filepath"]).read_text())
+        assert timestamp["text"] == selected_texts[i]
+        assert timestamp["predicted_audio_filepath"] == str((output_dir / f"predicted_audio_{i}.wav").resolve())
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("rank", [0, 1])
+def test_distributed_singleturn_evaluates_only_on_rank_zero(tmp_path, monkeypatch, rank):
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text(json.dumps({"text": "Hello.", "audio_filepath": "target.wav"}) + "\n")
+    inference_config = EasyMagpieInferenceConfig(batch_size=1, save_timestamps=True)
+    runner = EasyMagpieInferenceRunner(
+        SimpleNamespace(tokenizer=None, configure_timestamps=lambda **kwargs: None), inference_config
+    )
+    inference_calls, merge_calls, evaluation_calls = [], [], []
+    monkeypatch.setattr(f"{EXAMPLE_MODULE}._get_torchrun_rank_info", lambda: (rank, 2, rank))
+    monkeypatch.setattr(runner, "create_dataset", lambda meta: [0])
+
+    def infer(**kwargs):
+        inference_calls.append(kwargs)
+        runner.evaluation_manifest_path = str(Path(kwargs["output_dir"]) / "evaluation_manifest.jsonl")
+        return [], [], []
+
+    def merge(*args, **kwargs):
+        merge_calls.append((args, kwargs))
+        return str(manifest)
+
+    def evaluate(**kwargs):
+        evaluation_calls.append(kwargs)
+        return {"cer_cumulative": 0.0, "ssim_pred_context_avg": 1.0}, [{"cer": 0.0}]
+
+    monkeypatch.setattr(runner, "run_inference_on_dataset", infer)
+    monkeypatch.setattr(f"{EXAMPLE_MODULE}._wait_for_rank_manifests", lambda *args, **kwargs: None)
+    monkeypatch.setattr(f"{EXAMPLE_MODULE}._merge_rank_outputs", merge)
+    monkeypatch.setattr(f"{EXAMPLE_MODULE}.evaluate_generated_audio_dir", evaluate)
+    for name in ("create_violin_plot", "append_metrics_to_csv", "write_csv_header_if_needed"):
+        monkeypatch.setattr(f"{EXAMPLE_MODULE}.{name}", lambda *args, **kwargs: None)
+
+    result = run_inference_and_evaluation(
+        runner,
+        "test",
+        inference_config,
+        EvaluationConfig(with_fcd=False, with_utmosv2=False),
+        {"ds": {"manifest_path": str(manifest), "audio_dir": str(tmp_path)}},
+        ["ds"],
+        str(tmp_path / "out"),
+        {},
+        "",
+    )
+
+    assert len(inference_calls) == 1
+    assert Path(inference_calls[0]["output_dir"]).name == f"rank_{rank:04d}"
+    assert len(merge_calls) == len(evaluation_calls) == (1 if rank == 0 else 0)
+    assert result == ((0.0, 1.0) if rank == 0 else (None, None))
+    if rank == 0:
+        assert runner.timestamp_manifest_path == runner.evaluation_manifest_path
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("multiturn", [False, True])
+@pytest.mark.parametrize("decode_batch_size", [None, 0, 1, -1])
+def test_codec_decode_batch_size_cli_and_runner_override(multiturn, decode_batch_size):
+    from examples.tts.magpietts_inference import create_argument_parser
+
+    mode = "multiturn_user_audio" if multiturn else "single_turn"
+    argv = [
+        "--model_type",
+        "easy_magpie",
+        "--easy_magpie_inference_mode",
+        mode,
+        "--batch_size",
+        "1",
+        "--codecmodel_path",
+        "codec.nemo",
+        "--datasets_json_path",
+        "datasets.json",
+        "--out_dir",
+        "out",
+    ]
+    if decode_batch_size is not None:
+        argv += ["--codec_decode_batch_size", str(decode_batch_size)]
+    args = create_argument_parser().parse_args(argv)
+    config = inference_utils._build_easy_magpie_config(args)
+    model = SimpleNamespace(tokenizer=None, _codec_helper=SimpleNamespace(decode_batch_size=7))
+    runner_cls = EasyMagpieMultiturnUserAudioInferenceRunner if multiturn else EasyMagpieInferenceRunner
+    assert config.codec_decode_batch_size == decode_batch_size
+    if decode_batch_size == -1:
+        with pytest.raises(ValueError, match="non-negative"):
+            runner_cls(model, config)
+    else:
+        runner_cls(model, config)
+        assert model._codec_helper.decode_batch_size == (7 if decode_batch_size is None else decode_batch_size)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "version,load_mode,device",
+    [("v1", "nemo", "cpu"), ("v2", "nemo", "cuda"), ("v1", "checkpoint", "cuda:5"), ("v2", "checkpoint", "cpu")],
+)
+def test_easy_magpie_loader_pins_weight_restoration_to_selected_device(
+    tmp_path, monkeypatch, version, load_mode, device
+):
+    expected_device = torch.device("cuda:3" if device == "cuda" else device)
+    mapped_devices, moved_devices, selected_versions = [], [], []
+    model_cfg = OmegaConf.create({"model_type": version})
+    monkeypatch.setattr(inference_utils.torch.cuda, "current_device", lambda: 3)
+
+    class FakeModel:
+        def __init__(self, cfg=None):
+            self.cfg = cfg
+
+        def to(self, target):
+            moved_devices.append(target)
+            return self
+
+        def eval(self):
+            return self
+
+        def float(self):
+            return self
+
+        def load_state_dict(self, state):
+            assert state == {}
+
+        @classmethod
+        def restore_from(cls, path, **kwargs):
+            mapped_devices.append(kwargs["map_location"])
+            return cls()
+
+    def read_config(cls, path, **kwargs):
+        assert kwargs["return_config"]
+        mapped_devices.append(kwargs["map_location"])
+        return model_cfg
+
+    def select_model(cfg):
+        selected_versions.append(cfg.model_type)
+        return FakeModel
+
+    def load_weights(path, **kwargs):
+        mapped_devices.append(kwargs["map_location"])
+        return {"state_dict": {}}
+
+    monkeypatch.setattr(EasyMagpieTTSInferenceModel, "restore_from", classmethod(read_config))
+    monkeypatch.setattr(inference_utils, "select_easy_magpie_model_class", select_model)
+    monkeypatch.setattr(inference_utils.torch, "load", load_weights)
+    if load_mode == "checkpoint":
+        hparams = tmp_path / "model.yaml"
+        OmegaConf.save(model_cfg, hparams)
+        config = ModelLoadConfig(hparams_file=str(hparams), checkpoint_file="model.ckpt")
+    else:
+        config = ModelLoadConfig(nemo_file="model.nemo")
+
+    model, _ = load_easy_magpie_model(config, device=device)
+
+    assert isinstance(model, FakeModel)
+    assert selected_versions == [version]
+    assert mapped_devices == [expected_device] * (2 if load_mode == "nemo" else 1)
+    assert moved_devices == [expected_device]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("source_indices", [[0, 0], [0]])
+def test_merge_rejects_duplicate_or_missing_samples_before_removing_outputs(tmp_path, source_indices):
+    sentinel = tmp_path / "predicted_audio_99.wav"
+    sentinel.write_bytes(b"previous successful output")
+    for rank in range(2):
+        rank_dir = tmp_path / f"rank_{rank:04d}"
+        rank_dir.mkdir()
+        records = [{"source_sample_idx": source_indices[rank]}] if rank < len(source_indices) else []
+        (rank_dir / "evaluation_manifest.jsonl").write_text("".join(json.dumps(row) + "\n" for row in records))
+
+    with pytest.raises(ValueError, match="every source sample"):
+        inference_utils._merge_rank_outputs(str(tmp_path), 2, save_predicted_codes=False, expected_samples=2)
+
+    assert sentinel.read_bytes() == b"previous successful output"
+
+
+@pytest.mark.unit
+def test_generic_merge_preserves_multiturn_records_and_accepts_empty_ranks(tmp_path):
+    template = "multiturn_user_audio_turn_manifest_rank{rank:04d}.jsonl"
+    for rank, turns in [(0, [0, 1]), (1, []), (2, [0])]:
+        rank_dir = tmp_path / f"rank_{rank:04d}"
+        rank_dir.mkdir()
+        records = []
+        for local_idx, turn in enumerate(turns):
+            for prefix in ("predicted_audio", "target_audio", "context_audio"):
+                (rank_dir / f"{prefix}_{local_idx}.wav").write_bytes(f"{prefix} {rank} {turn}".encode())
+            records.append(
+                {
+                    "source_sample_idx": rank,
+                    "turn_id": turn,
+                    "text": f"raw {rank} {turn}",
+                    "normalized_text": f"normalized {rank} {turn}",
+                    "audio_filepath": f"target_audio_{local_idx}.wav",
+                    "context_audio_filepath": f"context_audio_{local_idx}.wav",
+                }
+            )
+        (rank_dir / template.format(rank=rank)).write_text("".join(json.dumps(row) + "\n" for row in records))
+
+    inference_utils._wait_for_rank_manifests(str(tmp_path), 3, template, timeout_sec=1)
+    merged_path = inference_utils._merge_rank_outputs(str(tmp_path), 3, False, manifest_name=template)
+    rows = [json.loads(line) for line in Path(merged_path).read_text().splitlines()]
+
+    assert [(row["source_sample_idx"], row["turn_id"]) for row in rows] == [(0, 0), (0, 1), (2, 0)]
+    for index, row in enumerate(rows):
+        rank, turn = row["source_sample_idx"], row["turn_id"]
+        assert _get_record_texts(row) == (
+            f"raw {rank} {turn}",
+            f"normalized {rank} {turn}",
+            f"normalized {rank} {turn}",
+        )
+        for prefix, key in [("target_audio", "audio_filepath"), ("context_audio", "context_audio_filepath")]:
+            assert (tmp_path / row[key]).read_bytes() == f"{prefix} {rank} {turn}".encode()
+        assert (tmp_path / f"predicted_audio_{index}.wav").read_bytes() == f"predicted_audio {rank} {turn}".encode()

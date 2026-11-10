@@ -16,7 +16,7 @@
 import pytest
 import torch
 
-from nemo.collections.tts.modules.magpietts_modules import FeatureMasking
+from nemo.collections.tts.modules.magpietts_modules import CodecHelper, FeatureMasking
 
 
 def _set_seed():
@@ -65,3 +65,78 @@ class TestFeatureMasking:
         # Eval: inputs pass through unchanged.
         feature_masking.eval()
         torch.testing.assert_close(actual=feature_masking(inputs=inputs, input_len=input_len), expected=inputs)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('decode_batch_size', [0, 1, 2, 8])
+@pytest.mark.parametrize('convert', [False, True])
+def test_codec_decode_batches_preserve_waveforms_codes_and_order(decode_batch_size, convert):
+    class Codec:
+        def __init__(self):
+            self.calls = []
+
+        def eval(self):
+            return self
+
+        def decode(self, tokens, tokens_len):
+            assert torch.get_default_dtype() == torch.float32
+            self.calls.append(tuple(tokens.shape))
+            audio = tokens[:, 0].float().repeat_interleave(2, dim=1)
+            lengths = tokens_len * 2
+            mask = torch.arange(audio.size(1))[None, :] < lengths[:, None]
+            return audio * mask, lengths
+
+    class Converter:
+        def __init__(self):
+            self.calls = 0
+
+        def convert_new_to_original(self, audio_tokens, audio_lens):
+            self.calls += 1
+            return audio_tokens + 10
+
+    codes = torch.arange(35).reshape(5, 1, 7)
+    lengths = torch.tensor([3, 1, 0, 0, 7])
+    converter = Converter() if convert else None
+    codec = Codec()
+    helper = CodecHelper(codec, converter, force_fp32=True, decode_batch_size=decode_batch_size)
+    previous_dtype = torch.get_default_dtype()
+    try:
+        torch.set_default_dtype(torch.float16)
+        audio, audio_len, decoded_codes = helper.codes_to_audio(codes, lengths)
+        assert torch.get_default_dtype() == torch.float16
+    finally:
+        torch.set_default_dtype(previous_dtype)
+
+    expected_codes = codes + 10 if convert else codes
+    expected_audio, expected_lens = Codec().decode(expected_codes, lengths)
+    torch.testing.assert_close(audio, expected_audio)
+    torch.testing.assert_close(audio_len, expected_lens)
+    torch.testing.assert_close(decoded_codes, expected_codes)
+    assert audio.dtype == torch.float32
+    if converter is not None:
+        assert converter.calls == 1
+    if decode_batch_size == 1:
+        assert codec.calls == [(1, 1, 3), (1, 1, 1), (1, 1, 7)]
+    elif decode_batch_size == 2:
+        assert codec.calls == [(2, 1, 3), (1, 1, 7)]
+    else:
+        assert codec.calls == [(5, 1, 7)]
+
+
+@pytest.mark.unit
+def test_codec_decode_batches_skip_empty_chunks_and_reject_negative_limit():
+    class Codec:
+        def eval(self):
+            return self
+
+        def decode(self, **kwargs):
+            pytest.fail('Zero-length sub-batches must not reach the codec decoder')
+
+    helper = CodecHelper(Codec(), decode_batch_size=2)
+    audio, lengths, codes = helper.codes_to_audio(
+        torch.zeros(3, 1, 4, dtype=torch.long), torch.zeros(3, dtype=torch.long)
+    )
+    assert audio.shape == (3, 0) and audio.dtype == torch.float32
+    assert lengths.tolist() == [0, 0, 0] and codes.shape == (3, 1, 4)
+    with pytest.raises(ValueError, match='non-negative'):
+        CodecHelper(Codec(), decode_batch_size=-1)

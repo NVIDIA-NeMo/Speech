@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import abc
 import glob
+import hashlib
 import json
 import os
 import shutil
@@ -166,6 +167,7 @@ class EasyMagpieInferenceConfig(BaseInferenceConfig):
     dropout_text_input: bool = False
     precomputed_context_audio_embeddings_path: Optional[str] = None
     save_timestamps: bool = False
+    codec_decode_batch_size: Optional[int] = None
 
     def build_identifier(self) -> str:
         parts = [
@@ -201,6 +203,12 @@ class BaseInferenceRunner(abc.ABC):
         """
         self.model = model
         self.config = config
+        decode_batch_size = getattr(config, "codec_decode_batch_size", None)
+        if decode_batch_size is not None:
+            if decode_batch_size < 0:
+                raise ValueError("codec_decode_batch_size must be non-negative")
+            self.model._codec_helper.decode_batch_size = decode_batch_size
+            logging.info(f"Codec decode batch size: {decode_batch_size} (0 means full batch)")
 
         save_timestamps = bool(getattr(config, 'save_timestamps', False))
         configure = getattr(model, 'configure_timestamps', None)
@@ -920,6 +928,12 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
     Uses MagpieTTSDataset and model.infer_batch() which returns audio directly.
     """
 
+    supports_distributed_singleturn = True
+
+    def set_distributed_context(self, rank: int, world_size: int) -> None:
+        self.distributed_rank = int(rank)
+        self.distributed_world_size = int(world_size)
+
     def __init__(self, model, config: EasyMagpieInferenceConfig):
         super().__init__(model, config)
         self._precomputed_audio_embeddings = None
@@ -1030,8 +1044,12 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
         os.makedirs(output_dir, exist_ok=True)
         self._delete_old_generated_files(output_dir)
 
+        rank = getattr(self, "distributed_rank", 0)
+        world_size = getattr(self, "distributed_world_size", 1)
+        rank_indices = list(range(rank, len(dataset), world_size))
+        dataset_for_rank = _InferenceSubset(dataset, rank_indices) if world_size > 1 else dataset
         dataloader = torch.utils.data.DataLoader(
-            dataset,
+            dataset_for_rank,
             batch_size=self.config.batch_size,
             collate_fn=dataset.collate_fn,
             num_workers=0,
@@ -1043,9 +1061,20 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
         codec_file_paths = []
         item_idx = 0
         self.evaluation_manifest_records = [
-            dict(record, text=sample.text, original_text=record.get("original_text") or record["text"])
-            for record, sample in zip(manifest_records, dataset.data_samples)
+            dict(
+                manifest_records[i],
+                text=dataset.data_samples[i].text,
+                original_text=manifest_records[i].get("original_text") or manifest_records[i]["text"],
+                source_sample_idx=i,
+            )
+            for i in rank_indices
         ]
+        if world_size > 1:
+            for record in self.evaluation_manifest_records:
+                for key in ("audio_filepath", "context_audio_filepath"):
+                    if record.get(key):
+                        record[key] = os.path.abspath(os.path.join(audio_base_dir, record[key]))
+        logging.info(f"Single-turn rank {rank}/{world_size}: {len(rank_indices)} of {len(dataset)} samples")
         manifest_records = self.evaluation_manifest_records
         phoneme_sampling_method = (
             "argmax" if self.config.phoneme_sampling_method == "greedy" else self.config.phoneme_sampling_method
@@ -1125,13 +1154,18 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
                 item_idx += 1
 
         manifest_name = 'timestamps_manifest.jsonl' if self.config.save_timestamps else 'evaluation_manifest.jsonl'
+        run_id = os.environ.get('TORCHELASTIC_RUN_ID')
+        if world_size > 1 and run_id:
+            manifest_name = f"evaluation_manifest_{hashlib.sha256(run_id.encode()).hexdigest()[:16]}.jsonl"
         self.evaluation_manifest_path = os.path.join(output_dir, manifest_name)
         self.evaluation_audio_dir = audio_base_dir
         if self.config.save_timestamps:
             self.timestamp_manifest_path = self.evaluation_manifest_path
-        with open(self.evaluation_manifest_path, 'w', encoding='utf-8') as stream:
+        temporary_manifest = self.evaluation_manifest_path + '.tmp'
+        with open(temporary_manifest, 'w', encoding='utf-8') as stream:
             for record in manifest_records:
                 stream.write(json.dumps(record, ensure_ascii=False) + '\n')
+        os.replace(temporary_manifest, self.evaluation_manifest_path)
 
         return all_rtf_metrics, generated_audio_paths, codec_file_paths
 
@@ -2193,9 +2227,11 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
             output_dir, f"multiturn_user_audio_turn_manifest_rank{rank:04d}.jsonl"
         )
         self.evaluation_manifest_records = turn_manifest_records
-        with open(self.evaluation_manifest_path, "w", encoding="utf-8") as f:
+        temporary_manifest = self.evaluation_manifest_path + ".tmp"
+        with open(temporary_manifest, "w", encoding="utf-8") as f:
             for record in turn_manifest_records:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        os.replace(temporary_manifest, self.evaluation_manifest_path)
 
         logging.info(
             f"[MT_USER_AUDIO_SUMMARY] rank={rank}/{world_size} "

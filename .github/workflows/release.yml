@@ -85,7 +85,7 @@ jobs:
     with:
       release-ref: ${{ inputs.release-ref || github.sha }}
       python-package: nemo
-      python-version: "3.11"
+      python-version: "3.12"
       library-name: Neural Modules
       validate-only: ${{ github.event_name != 'workflow_dispatch' }}
       dry-run: ${{ inputs.dry-run || false }}

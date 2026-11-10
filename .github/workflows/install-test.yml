@@ -17,7 +17,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-latest]
-        python: ["3.11", "3.12"]
+        python: ["3.12"]
         installer: ["pip-install", "nemo-install"]
     steps:
       - name: Checkout repo
@@ -76,7 +76,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.12"]
+        python: ["3.12"]
         installer: ["pip-install", "nemo-install"]
     steps:
       - name: Checkout repo
@@ -134,7 +134,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.12"]
+        python: ["3.12"]
     steps:
       - name: Checkout repo
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -182,7 +182,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.12"]
+        python: ["3.12"]
         installer: ["pip-install", "nemo-install"]
     steps:
       - name: Checkout repo
@@ -240,7 +240,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.12"]
+        python: ["3.12"]
     steps:
       - name: Checkout repo
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6

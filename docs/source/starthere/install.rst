@@ -10,7 +10,7 @@ Prerequisites
 
 NeMo Speech works with the **Python, PyTorch, and CUDA versions of your choosing**:
 
-#. **Python** 3.11 or above
+#. **Python** 3.12 or above
 #. **PyTorch** 2.7 or above, for your chosen target (CPU, CUDA, etc.)
 #. **NVIDIA GPU + CUDA** (required for training; CPU-only inference is possible but slow)
 #. **uv** for the fastest source/PyPI workflow (``pip`` also works in a prepared environment)

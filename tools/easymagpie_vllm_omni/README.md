@@ -24,6 +24,16 @@ The expert-routing scale is independent of the CFG scale. This correction
 applies to the backbone used by both CFG-on and CFG-off deployments and does
 not require reconverting checkpoints.
 
+### Native audio-code sampling compatibility
+
+The local-transformer sampler cleans nonfinite logits and clips them to
+`[-100, 100]` before masking reserved tokens, matching native NeMo inference.
+CFG mixes conditional and unconditional logits before this step. Top-k keeps
+all tokens tied at the cutoff, and nonpositive temperatures use deterministic
+argmax. These operations stay on GPU inside the compiled codebook loop;
+CFG continues to use one batched transformer forward for both branches.
+The corrected loops have distinct compilation-cache identities.
+
 ### Classifier-free guidance (CFG)
 
 For checkpoints that need runtime guidance, use

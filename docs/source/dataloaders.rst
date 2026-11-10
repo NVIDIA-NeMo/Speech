@@ -370,6 +370,18 @@ Some other Lhotse related arguments we support:
     ``lhotse cut estimate-bucket-bins -b $num_buckets my-cuts.jsonl.gz``
 * ``use_bucketing`` is a boolean which indicates if we want to enable/disable dynamic bucketing. By defalt it's enabled.
 * ``text_field`` is the name of the key in the JSON (NeMo) manifest from which we should be reading text (default="text").
+* ``keep_high_quality_only`` (default ``False``) lazily keeps only audio cuts whose manifest
+  metadata contains the literal boolean ``high_quality: true``. Missing flags, strings, and integers
+  are rejected. Filtering runs on each source before weighted mixing, tokenization, and augmentation;
+  the original manifests and tar files are reused. Non-audio examples pass through.
+* ``skip_empty_text`` (default ``False``) lazily rejects audio cuts whose supervisions have
+  missing or blank text. For example, use ``text_field: tn_raw``, ``keep_high_quality_only: true``,
+  and ``skip_empty_text: true`` to train on HQ transcripts directly from source manifests.
+  These options propagate into nested ``input_cfg`` groups and may be overridden per source.
+  Each finite source/worker slice is filtered before repetition so an empty slice reaches
+  exhaustion instead of blocking an eligible source in the mixture.
+  ``num_workers: 0`` performs loading in each training process without worker subprocesses;
+  it does not change the metadata filters.
 * ``lang_field`` is the name of the key in the JSON (NeMo) manifest from which we should be reading language tag (default="lang"). This is useful when working e.g. with ``AggregateTokenizer``.
 * ``batch_size``
     Limits the number of examples in a mini-batch to this number, when combined with ``batch_duration``.

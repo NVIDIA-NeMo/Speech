@@ -194,10 +194,9 @@ class EasyMagpieTTSForConditionalGeneration(
         # ignoring the checkpoint's mlp_hidden_act. Restore the configured
         # activation (no-op when the backbone has no MoE layers).
         patch_shared_expert_activation(self.backbone)
-        # vLLM's FusedMoE defers routed_scaling_factor to the decoder layer in
-        # FP16, but NemotronH's decoder layer never compensates, so the MoE
-        # output is under-scaled by routed_scaling_factor. Restore it (no-op in
-        # fp32/bf16 and when there are no MoE layers).
+        # FusedMoE defers FP16 routed scaling only when shared experts exist.
+        # NemotronH's decoder does not compensate for that deferred scale.
+        # Restore that case once; routed-only layers are already scaled by vLLM.
         patch_moe_routed_scale(self.backbone)
         # The streaming-input path keeps extending the prompt, so vLLM's Mamba2
         # metadata builder would classify every single-token decode step as a

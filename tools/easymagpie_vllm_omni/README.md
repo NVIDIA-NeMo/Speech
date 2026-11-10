@@ -15,6 +15,15 @@ Model definition and pipeline registration live in
 [`vllm_plugin_easymagpie_omni/`](vllm_plugin_easymagpie_omni/).
 Deployment knobs are in [`deploy/easymagpie.yaml`](deploy/easymagpie.yaml).
 
+### Nemotron-H FP16 compatibility
+
+The pinned vLLM 0.24 runner applies the expert-routing scale directly when
+shared experts are absent, including in FP16. With shared experts, its FP16
+path defers that scale; EasyMagpie compensates only for that case, once.
+The expert-routing scale is independent of the CFG scale. This correction
+applies to the backbone used by both CFG-on and CFG-off deployments and does
+not require reconverting checkpoints.
+
 ### Classifier-free guidance (CFG)
 
 For checkpoints that need runtime guidance, use

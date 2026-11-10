@@ -288,3 +288,42 @@ def test_flash_attention_config_handles_a_batched_suffix_behind_a_warm_cache():
 
     assert AcousticCodesPredictor.cached_frames(cache) == hidden_states.size(1)
     torch.testing.assert_close(torch.cat([prefix, suffix], dim=1), whole)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="True-precision training requires CUDA")
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_true_precision_predictor_trains_with_fp32_residuals(dtype):
+    predictor = _make_predictor().to(device="cuda", dtype=dtype).train()
+    hidden_states = torch.randn(2, 8, D_MODEL, device="cuda", dtype=dtype, requires_grad=True)
+    targets = torch.randint(0, CODEBOOK_SIZE, (2, 8, NUM_CODES), device="cuda")
+    lengths = torch.tensor([8, 6], device="cuda")
+    loss = predictor.compute_loss(hidden_states, targets, lengths)
+    loss.backward()
+
+    assert loss.dtype == torch.float32 and torch.isfinite(loss)
+    assert hidden_states.grad is not None and torch.isfinite(hidden_states.grad).all()
+    for block in predictor.blocks:
+        assert block.codebook_projection.weight.grad is not None
+        assert block.codebook_projection.weight.grad.abs().sum() > 0
+    assert all(parameter.grad is None or torch.isfinite(parameter.grad).all() for parameter in predictor.parameters())
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="True-precision training requires CUDA")
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_true_precision_predictor_accumulates_long_sequence_loss_in_fp32(dtype):
+    predictor = _make_predictor().to(device="cuda", dtype=dtype).train()
+    with torch.no_grad():
+        for block in predictor.blocks:
+            block.layers = nn.ModuleList()
+            block.codebook_projection.weight.zero_()
+            block.codebook_projection.bias.zero_()
+    hidden_states = torch.randn(1, 4096, D_MODEL, device="cuda", dtype=dtype, requires_grad=True)
+    targets = torch.zeros(1, 4096, NUM_CODES, device="cuda", dtype=torch.long)
+    lengths = torch.tensor([4096], device="cuda")
+    loss = predictor.compute_loss(hidden_states, targets, lengths)
+    loss.backward()
+
+    expected = torch.tensor(CODEBOOK_SIZE + 1, device="cuda", dtype=torch.float32).log()
+    assert loss.dtype == torch.float32 and torch.isfinite(loss)
+    torch.testing.assert_close(loss, expected)
+    assert all(parameter.grad is None or torch.isfinite(parameter.grad).all() for parameter in predictor.parameters())

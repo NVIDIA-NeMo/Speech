@@ -109,7 +109,7 @@ class AcousticCodesPredictorBlock(torch.nn.Module):
         attention_mask = self._offset_causal_mask(hidden_states, cache)
         for layer in self.layers:
             hidden_states = layer(hidden_states, cache_params=cache, attention_mask=attention_mask)
-        return self.norm(hidden_states)
+        return self.norm(hidden_states).to(self.norm.weight.dtype)
 
     def compute_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """Project only the code channels assigned to this predictor block.
@@ -279,7 +279,7 @@ class AcousticCodesPredictor(torch.nn.Module):
             supervised = has_target & loss_mask.to(device=target_codes.device, dtype=torch.bool).unsqueeze(-1)
 
         compact_targets = torch.where(target_codes == self.audio_eos_id, self.codebook_size, target_codes)
-        loss_sum = hidden_states.new_zeros(())
+        loss_sum = hidden_states.new_zeros((), dtype=torch.float32)
         num_predictions = torch.zeros((), dtype=torch.long, device=target_codes.device)
         previous_codes = None
         previous_codebook_indices = None
@@ -304,7 +304,7 @@ class AcousticCodesPredictor(torch.nn.Module):
                 torch.full_like(block_targets, _IGNORE_INDEX),
             )
             loss_sum = loss_sum + torch.nn.functional.cross_entropy(
-                logits.reshape(-1, self.num_output_tokens),
+                logits.reshape(-1, self.num_output_tokens).float(),
                 step_targets.reshape(-1),
                 ignore_index=_IGNORE_INDEX,
                 reduction='sum',

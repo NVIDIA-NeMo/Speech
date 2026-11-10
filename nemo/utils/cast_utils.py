@@ -19,6 +19,18 @@ from typing import Any
 import torch
 
 
+@contextmanager
+def fp32_precision():
+    """Run in FP32, including constructors that use PyTorch's default dtype."""
+    default_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(torch.float32)
+    try:
+        with torch.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu', enabled=False):
+            yield
+    finally:
+        torch.set_default_dtype(default_dtype)
+
+
 def avoid_bfloat16_autocast_context():
     """
     If the current autocast context is bfloat16,

@@ -21,6 +21,7 @@ This is a hybrid Mamba2/Attention model that can be configured with different
 layer types (Mamba, Attention, MLP, MoE) via the hybrid_override_pattern config.
 """
 
+import inspect
 import math
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple, Union
@@ -64,12 +65,15 @@ except ImportError:
     causal_conv1d_update = None
     CAUSAL_CONV1D_AVAILABLE = False
 
+_FLASH_ATTN_FORWARD_KWARGS = {}
 try:
     from transformers.utils.import_utils import is_flash_attn_2_available, is_flash_attn_greater_or_equal_2_10
 
     if is_flash_attn_2_available():
         from transformers.modeling_flash_attention_utils import _flash_attention_forward
 
+        if 'attn_implementation' in inspect.signature(_flash_attention_forward).parameters:
+            _FLASH_ATTN_FORWARD_KWARGS['attn_implementation'] = 'flash_attention_2'
         FLASH_ATTN_AVAILABLE = True
     else:
         _flash_attention_forward = None
@@ -1003,6 +1007,8 @@ class NemotronHAttention(nn.Module):
         causal_mask = attention_mask
         if attention_mask is not None:
             causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
+            if causal_mask.dtype != torch.bool:
+                causal_mask = causal_mask.to(query_states.dtype)
 
         if query_states.device.type == "cuda" and attention_mask is not None:
             query_states = query_states.contiguous()
@@ -1133,6 +1139,7 @@ class NemotronHFlashAttention2(NemotronHAttention):
             sliding_window=getattr(self.config, "sliding_window", None),
             is_causal=self.is_causal,
             use_top_left_mask=self._flash_attn_uses_top_left_mask,
+            **_FLASH_ATTN_FORWARD_KWARGS,
         )
 
         alignment_loss = None
@@ -1643,7 +1650,7 @@ class NemotronHModel(nn.Module):
                 hidden_states, alignment_loss = hidden_states
                 alignment_losses.append(alignment_loss)
 
-        hidden_states = self.norm_f(hidden_states)
+        hidden_states = self.norm_f(hidden_states).to(self.norm_f.weight.dtype)
 
         if output_hidden_states:
             all_hidden_states = all_hidden_states + (hidden_states,)

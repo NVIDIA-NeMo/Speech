@@ -56,6 +56,7 @@ from nemo.collections.tts.parts.utils.helpers import (
 )
 from nemo.core.classes.common import safe_instantiate
 from nemo.utils import logging
+from nemo.utils.cast_utils import fp32_precision
 
 try:
     from nemo.collections.tts.modules.utmosv2 import UTMOSv2Calculator
@@ -201,10 +202,10 @@ class NemotronTTSModel(NemotronTTSBase):
             f'{mode}/attention_alignment_loss': (
                 output.attention_alignment_loss if output.attention_alignment_loss is not None else zero
             ),
-            f'{mode}/attention_alignment_valid_turn_fraction': metrics.get('valid_turns', zero) / turns,
-            f'{mode}/attention_alignment_causal_frame_fraction': metrics.get('causal_frames', zero)
+            f'{mode}/attention_alignment_valid_turn_fraction': metrics.get('valid_turns', zero).float() / turns,
+            f'{mode}/attention_alignment_causal_frame_fraction': metrics.get('causal_frames', zero).float()
             / metrics.get('teacher_frames', zero).clamp_min(1),
-            f'{mode}/aligner_one_frame_token_fraction': metrics.get('one_frame_tokens', zero)
+            f'{mode}/aligner_one_frame_token_fraction': metrics.get('one_frame_tokens', zero).float()
             / metrics.get('token_count', zero).clamp_min(1),
             f'{mode}/attention_alignment_loss_scale': metrics.get('loss_scale', 0.0),
             f'{mode}/attention_alignment_prior_strength': metrics.get('prior_strength', 0.0),
@@ -263,14 +264,14 @@ class NemotronTTSModel(NemotronTTSBase):
             codebook_logits = logits[:, :, si:ei]
             codebook_targets = audio_codes[:, codebook]
             raw_loss = self.cross_entropy_loss(
-                codebook_logits.permute(0, 2, 1),
+                codebook_logits.float().permute(0, 2, 1),
                 codebook_targets.long(),
             )  # (B, T')
             effective_mask = loss_mask[:, codebook, :]
             if agent_mask_target is not None:
                 effective_mask = effective_mask * agent_mask_target
             codebook_loss = raw_loss * effective_mask
-            codebook_loss = codebook_loss.sum() / effective_mask.sum().clamp_min(1.0)
+            codebook_loss = codebook_loss.sum() / effective_mask.sum().clamp_min(1)
             total_codebook_loss = codebook_loss if total_codebook_loss is None else total_codebook_loss + codebook_loss
 
         total_codebook_loss = total_codebook_loss / audio_codes.size(1)
@@ -333,7 +334,7 @@ class NemotronTTSModel(NemotronTTSBase):
             phoneme_targets = phoneme_tokens[:, codebook]
 
             raw_loss = self.cross_entropy_loss(
-                phoneme_logits.permute(0, 2, 1),
+                phoneme_logits.float().permute(0, 2, 1),
                 phoneme_targets.long(),
             )  # (B, T')
 
@@ -343,7 +344,7 @@ class NemotronTTSModel(NemotronTTSBase):
                 effective_mask = effective_mask * custom_mask
 
             phoneme_loss = raw_loss * effective_mask
-            phoneme_loss = phoneme_loss.sum() / effective_mask.sum().clamp_min(1.0)
+            phoneme_loss = phoneme_loss.sum() / effective_mask.sum().clamp_min(1)
 
             total_phoneme_loss = phoneme_loss if total_phoneme_loss is None else total_phoneme_loss + phoneme_loss
 
@@ -715,9 +716,10 @@ class NemotronTTSModel(NemotronTTSBase):
 
         # Apply codec conversion if configured
         if self._codec_converter is not None:
-            audio_codes = self._codec_converter.convert_original_to_new(
-                audio_tokens=audio_codes, audio_lens=audio_codes_lens
-            ).long()
+            with fp32_precision():
+                audio_codes = self._codec_converter.convert_original_to_new(
+                    audio_tokens=audio_codes, audio_lens=audio_codes_lens
+                ).long()
 
         # Add BOS and EOS tokens
         audio_codes, audio_codes_lens = add_special_tokens(
@@ -1507,10 +1509,11 @@ class NemotronTTSModel(NemotronTTSBase):
             )
 
             if self._codec_converter is not None:
-                user_audio_codes = self._codec_converter.convert_original_to_new(
-                    audio_tokens=user_audio_codes,
-                    audio_lens=user_audio_codes_lens,
-                ).long()
+                with fp32_precision():
+                    user_audio_codes = self._codec_converter.convert_original_to_new(
+                        audio_tokens=user_audio_codes,
+                        audio_lens=user_audio_codes_lens,
+                    ).long()
 
             user_audio_codes, user_audio_codes_lens = self.stack_codes(
                 user_audio_codes,

@@ -215,10 +215,12 @@ def _reference_flash_forward(
     sliding_window,
     is_causal,
     use_top_left_mask,
+    attn_implementation=None,
 ):
     """Exercise the Flash wrapper's layout through a deterministic SDPA kernel."""
     batch, length, _, _ = query.shape
     assert query_length == length and sliding_window is None
+    assert attn_implementation in (None, 'flash_attention_2')
     visible = torch.ones(batch, 1, length, key.size(1), device=query.device, dtype=torch.bool)
     if is_causal:
         positions = torch.arange(key.size(1) - length, key.size(1), device=query.device)

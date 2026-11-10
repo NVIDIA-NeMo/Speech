@@ -54,6 +54,7 @@ from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
 from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.utils import logging
+from nemo.utils.cast_utils import fp32_precision
 from nemo.utils.exceptions import NeMoBaseException
 
 
@@ -245,12 +246,13 @@ class NemotronTTSBase(ModelPT):
 
         # load codec
         codec_model_path = cfg.get('codecmodel_path')
-        codec_model_cfg = AudioCodecModel.restore_from(codec_model_path, return_config=True)
-        if "use_scl_loss" in codec_model_cfg:
-            codec_model_cfg.use_scl_loss = False
-        codec_model = AudioCodecModel.restore_from(
-            codec_model_path, strict=False, override_config_path=codec_model_cfg
-        )
+        with fp32_precision():
+            codec_model_cfg = AudioCodecModel.restore_from(codec_model_path, return_config=True)
+            if "use_scl_loss" in codec_model_cfg:
+                codec_model_cfg.use_scl_loss = False
+            codec_model = AudioCodecModel.restore_from(
+                codec_model_path, strict=False, override_config_path=codec_model_cfg
+            )
         self.sample_rate = codec_model.sample_rate
         self.output_sample_rate = codec_model.output_sample_rate
 
@@ -261,13 +263,15 @@ class NemotronTTSBase(ModelPT):
         # Set up codebook configuration
         vector_quantizer = cfg.get('vector_quantizer')
         if vector_quantizer is not None:
-            vector_quantizer = safe_instantiate(vector_quantizer)
+            with fp32_precision():
+                vector_quantizer = safe_instantiate(vector_quantizer)
             num_audio_codebooks = vector_quantizer.num_codebooks
             codebook_size = vector_quantizer.codebook_size
-            codec_converter = VectorQuantizerIndexConverter(
-                vector_quantizer_original=codec_model.vector_quantizer,
-                vector_quantizer_new=vector_quantizer,
-            )
+            with fp32_precision():
+                codec_converter = VectorQuantizerIndexConverter(
+                    vector_quantizer_original=codec_model.vector_quantizer,
+                    vector_quantizer_new=vector_quantizer,
+                )
             data_num_audio_codebooks = codec_model.vector_quantizer.num_codebooks
         else:
             num_audio_codebooks = codec_model.num_codebooks
@@ -416,7 +420,7 @@ class NemotronTTSBase(ModelPT):
         self._codec_model = codec_model
         self._codec_model.freeze()  # Lightning does requires_grad = False and self.eval()
         self._codec_converter = codec_converter
-        self._codec_helper = CodecHelper(self._codec_model, self._codec_converter)
+        self._codec_helper = CodecHelper(self._codec_model, self._codec_converter, force_fp32=True)
 
         # Audio embedding dimension - can be smaller than hidden_dim to reduce parameters
         self.audio_embedding_dim = cfg.get('audio_embedding_dim', cfg.hidden_dim)
@@ -613,6 +617,21 @@ class NemotronTTSBase(ModelPT):
             self.load_state_dict(checkpoint_state, strict=True)
             logging.info(f"Model restored from the checkpoint: {checkpoint_path} !")
 
+    def _apply(self, fn, recurse=True):
+        """Keep acoustic and evaluation modules in FP32 during precision conversion."""
+        protected = set(self._get_state_dict_keys_to_exclude()) | {'_codec_converter', 'text_aligner'}
+
+        def fp32(tensor):
+            converted = fn(tensor)
+            if converted.is_floating_point() and converted.dtype != torch.float32:
+                return tensor.to(device=converted.device, dtype=torch.float32)
+            return converted
+
+        if recurse:
+            for name, module in self.named_children():
+                module._apply(fp32 if name in protected else fn)
+        return super()._apply(fn, recurse=False)
+
     def _generate_codec_silence_buffer(self):
         """Generate and cache representative codec tokens for a silent waveform."""
         codec_device = next(self._codec_model.parameters()).device
@@ -629,9 +648,10 @@ class NemotronTTSBase(ModelPT):
             sil_tensor_unconverted = torch.tensor(most_common_raw, device=codec_device, dtype=torch.long)
 
             if self._codec_converter is not None:
-                sil_codes_conv = self._codec_converter.convert_original_to_new(
-                    audio_tokens=sil_codes_raw, audio_lens=sil_codes_lens
-                ).long()
+                with fp32_precision():
+                    sil_codes_conv = self._codec_converter.convert_original_to_new(
+                        audio_tokens=sil_codes_raw, audio_lens=sil_codes_lens
+                    ).long()
                 frames_conv = sil_codes_conv[0].transpose(0, 1)
                 combos_conv = [tuple(frame.tolist()) for frame in frames_conv]
                 most_common_conv, _ = Counter(combos_conv).most_common(1)[0]
@@ -984,7 +1004,7 @@ class NemotronTTSBase(ModelPT):
         batch_size, num_codebooks, num_frames = codes.shape
         codec_codes = codes.clamp(max=self.codebook_size - 1)
         input_len = torch.full((batch_size,), num_frames, dtype=torch.long, device=codes.device)
-        with torch.no_grad():
+        with torch.no_grad(), fp32_precision():
             latent = self._audio_code_quantizer.decode(indices=codec_codes.permute(1, 0, 2), input_len=input_len)
         latent = latent.to(self.audio_code_projection.weight.dtype)
         return latent.reshape(batch_size, num_codebooks, self.codec_latent_dim, num_frames).permute(0, 1, 3, 2)
@@ -998,7 +1018,7 @@ class NemotronTTSBase(ModelPT):
             quantizer = quantizer.fsqs[codebook_index]
         codec_codes = codes.long().clamp(max=self.codebook_size - 1).reshape(1, -1, 1)
         input_len = torch.ones(codec_codes.size(1), dtype=torch.long, device=codes.device)
-        with torch.no_grad():
+        with torch.no_grad(), fp32_precision():
             latent = quantizer.decode(indices=codec_codes, input_len=input_len)
         latent = latent.to(self.audio_code_projection.weight.dtype)
         return latent.reshape(tuple(codes.shape) + (self.codec_latent_dim,))
@@ -1425,9 +1445,10 @@ class NemotronTTSBase(ModelPT):
                 )
 
             if self._codec_converter is not None:
-                context_audio_codes = self._codec_converter.convert_original_to_new(
-                    audio_tokens=context_audio_codes, audio_lens=context_audio_codes_lens
-                ).long()
+                with fp32_precision():
+                    context_audio_codes = self._codec_converter.convert_original_to_new(
+                        audio_tokens=context_audio_codes, audio_lens=context_audio_codes_lens
+                    ).long()
 
             context_audio_codes, context_audio_codes_lens = add_special_tokens(
                 codes=context_audio_codes,
@@ -2607,9 +2628,10 @@ class NemotronTTSBase(ModelPT):
 
                 # Convert and add special tokens, then stack
                 if self._codec_converter is not None:
-                    gt_audio_codes = self._codec_converter.convert_original_to_new(
-                        audio_tokens=gt_audio_codes, audio_lens=gt_audio_codes_lens
-                    ).long()
+                    with fp32_precision():
+                        gt_audio_codes = self._codec_converter.convert_original_to_new(
+                            audio_tokens=gt_audio_codes, audio_lens=gt_audio_codes_lens
+                        ).long()
 
                 gt_audio_codes_processed, gt_audio_codes_lens_processed = add_special_tokens(
                     codes=gt_audio_codes,
@@ -2750,7 +2772,8 @@ class NemotronTTSBase(ModelPT):
             audio = audio.mean(axis=1)
         audio = torch.from_numpy(audio).unsqueeze(0)
         if sr != target_sample_rate:
-            audio = resample(waveform=audio, orig_freq=sr, new_freq=target_sample_rate)
+            with fp32_precision():
+                audio = resample(waveform=audio.float(), orig_freq=sr, new_freq=target_sample_rate)
         return audio
 
     @staticmethod

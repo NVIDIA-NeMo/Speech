@@ -29,6 +29,7 @@ from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
 from nemo.core.classes.common import safe_instantiate
 from nemo.core.classes.module import NeuralModule
 from nemo.utils import logging
+from nemo.utils.cast_utils import fp32_precision
 from nemo.utils.enum import PrettyStrEnum
 
 
@@ -391,14 +392,20 @@ class CodecHelper:
     without having to pass the codec objects every time.
     """
 
-    def __init__(self, codec_model, codec_converter=None):
+    def __init__(self, codec_model, codec_converter=None, force_fp32=False):
         self.codec_model = codec_model
         self.codec_converter = codec_converter
+        self.force_fp32 = force_fp32
 
     def audio_to_codes(self, audio, audio_len, sample_rate=None):
         """Encode audio waveforms into codec codes."""
         self.codec_model.eval()
-        with torch.no_grad(), torch.autocast(device_type=audio.device.type, dtype=torch.float32):
+        context = (
+            fp32_precision() if self.force_fp32 else torch.autocast(device_type=audio.device.type, dtype=torch.float32)
+        )
+        with torch.no_grad(), context:
+            if self.force_fp32:
+                audio = audio.float()
             codes, codes_len = self.codec_model.encode(audio=audio, audio_len=audio_len, sample_rate=sample_rate)
             return codes, codes_len
 
@@ -408,7 +415,10 @@ class CodecHelper:
         ``codes`` must already be unstacked to the shape the codec expects.
         """
         self.codec_model.eval()
-        with torch.no_grad(), torch.autocast(device_type=codes.device.type, dtype=torch.float32):
+        context = (
+            fp32_precision() if self.force_fp32 else torch.autocast(device_type=codes.device.type, dtype=torch.float32)
+        )
+        with torch.no_grad(), context:
             if self.codec_converter is not None:
                 codes = self.codec_converter.convert_new_to_original(audio_tokens=codes, audio_lens=codes_len)
             audio, audio_len = self.codec_model.decode(tokens=codes, tokens_len=codes_len)

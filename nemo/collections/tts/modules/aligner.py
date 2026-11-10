@@ -53,6 +53,7 @@ from nemo.collections.tts.modules.ffn_modules import ConvolutionLayer
 from nemo.collections.tts.modules.submodules import ConditionalInput, ConvNorm
 from nemo.collections.tts.parts.utils.helpers import binarize_attention_parallel, get_mask_from_lengths
 from nemo.utils import logging
+from nemo.utils.cast_utils import fp32_precision
 
 try:
     import triton
@@ -884,7 +885,7 @@ def load_pretrained_text_speech_aligner(
 
     source_path = str(checkpoint_path)
     state, _ = _read_checkpoint(source_path)
-    with torch.random.fork_rng(devices=[]), torch.device('cpu'):
+    with torch.random.fork_rng(devices=[]), torch.device('cpu'), fp32_precision():
         candidate = type(aligner)(**dimensions, **config)
     parameter = next(aligner.parameters(), None)
     if parameter is not None:
@@ -937,7 +938,8 @@ def init_training_alignment(model, cfg):
         configured = settings.pop(name, actual)
         if configured is not None and configured != actual:
             raise ValueError(f'aligned_text_aligner.{name}={configured} does not match model features ({actual})')
-    model.text_aligner = TinyGlowTTSAligner(**dimensions, **settings)
+    with fp32_precision():
+        model.text_aligner = TinyGlowTTSAligner(**dimensions, **settings)
     path = cfg.get('pretrained_model_text_speech_aligner')
     if path and not restoring:
         model.text_aligner, settings = load_pretrained_text_speech_aligner(

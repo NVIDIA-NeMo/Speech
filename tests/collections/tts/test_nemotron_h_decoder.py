@@ -41,6 +41,7 @@ except ImportError:
 import torch
 
 from nemo.collections.tts.modules.nemotron_h_decoder import (
+    FLASH_ATTN_AVAILABLE,
     RMSNORM_FN_AVAILABLE,
     HybridMambaAttentionDynamicCache,
     MambaRMSNormGated,
@@ -85,6 +86,54 @@ def test_mamba_rmsnorm_gated_triton_matches_pytorch_fallback(monkeypatch):
     pytorch_output = norm(hidden_states, gate)
 
     torch.testing.assert_close(triton_output, pytorch_output, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="True-precision training requires CUDA")
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("attention_impl", ["sdpa", "flash_attention_2"])
+def test_true_precision_backbone_preserves_fp32_residuals_and_trains_output_projection(dtype, attention_impl):
+    if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
+        pytest.skip('CUDA device does not support bfloat16')
+    if attention_impl == 'flash_attention_2' and not FLASH_ATTN_AVAILABLE:
+        pytest.skip('FlashAttention is not installed')
+    config = NemotronHConfig(
+        hidden_size=64,
+        num_hidden_layers=3,
+        vocab_size=64,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        mamba_num_heads=8,
+        mamba_head_dim=8,
+        ssm_state_size=16,
+        n_groups=2,
+        intermediate_size=128,
+        hybrid_override_pattern="M*-",
+        _attn_implementation=attention_impl,
+    )
+    model = NemotronHModel(config).to(device="cuda", dtype=dtype).train()
+    projection = torch.nn.Linear(config.hidden_size, 32).to(device="cuda", dtype=dtype)
+    residual_dtypes = []
+    handle = model.layers[-1].register_forward_hook(
+        lambda module, inputs, output: residual_dtypes.append(output.dtype)
+    )
+    try:
+        output = model(input_ids=torch.randint(0, config.vocab_size, (2, 32), device="cuda"))
+    except RuntimeError as error:
+        if attention_impl == 'flash_attention_2' and 'no kernel image is available' in str(error):
+            pytest.skip('Installed FlashAttention CUDA kernels do not support this GPU')
+        raise
+    handle.remove()
+    logits = projection(output.last_hidden_state)
+    loss = logits.float().square().mean()
+    loss.backward()
+
+    assert residual_dtypes == [torch.float32]
+    assert output.last_hidden_state.dtype == dtype
+    assert torch.isfinite(loss)
+    assert projection.weight.grad is not None and projection.weight.grad.abs().sum() > 0
+    assert model.layers[0].mixer.in_proj.weight.grad is not None
+    assert all(parameter.grad is None or torch.isfinite(parameter.grad).all() for parameter in model.parameters())
 
 
 class TestNemotronHConfig:

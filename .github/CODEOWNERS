@@ -1,6 +1,3 @@
-# Speech maintainers own the repository by default.
-* @nvidia-nemo/speech_maintainers
-
 # Keep CI and dependency ownership separate from approving-review eligibility.
 .github/ @ko3n1g @chtruong814 @kajalj22 @balasaajay
 docker/ @ko3n1g @chtruong814 @kajalj22 @balasaajay

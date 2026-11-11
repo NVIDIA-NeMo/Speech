@@ -99,6 +99,7 @@ class TestCTCWordSpotter:
 class TestContextBiasingUtils:
     @pytest.mark.unit
     @pytest.mark.with_downloads
+    @pytest.mark.gpu
     def test_merge_alignment_with_ws_hyps(self, conformer_ctc_bpe_model):
         asr_model = conformer_ctc_bpe_model
         blank_idx = asr_model.decoding.blank_id

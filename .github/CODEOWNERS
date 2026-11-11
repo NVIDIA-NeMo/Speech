@@ -1,6 +1,10 @@
-.github/ @nvidia-nemo/automation
-docker/ @nvidia-nemo/automation
-requirements/ @nvidia-nemo/automation
-pyproject.toml @nvidia-nemo/automation
-setup.py @nvidia-nemo/automation
-uv.lock @nvidia-nemo/automation
+# Speech maintainers own the repository by default.
+* @nvidia-nemo/speech_maintainers
+
+# Keep CI and dependency ownership separate from approving-review eligibility.
+.github/ @ko3n1g @chtruong814 @kajalj22 @balasaajay
+docker/ @ko3n1g @chtruong814 @kajalj22 @balasaajay
+requirements/ @ko3n1g @chtruong814 @kajalj22 @balasaajay
+pyproject.toml @ko3n1g @chtruong814 @kajalj22 @balasaajay
+setup.py @ko3n1g @chtruong814 @kajalj22 @balasaajay
+uv.lock @ko3n1g @chtruong814 @kajalj22 @balasaajay

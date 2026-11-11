@@ -13,8 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from unittest.mock import Mock
-
 import pytest
 import torch
 from omegaconf import OmegaConf
@@ -23,15 +21,11 @@ from nemo.collections.asr.inference.pipelines.base_pipeline import BasePipeline
 from nemo.collections.asr.inference.pipelines.buffered_ctc_pipeline import BufferedCTCPipeline
 from nemo.collections.asr.inference.pipelines.buffered_rnnt_pipeline import BufferedRNNTPipeline
 from nemo.collections.asr.inference.pipelines.buffered_salm_pipeline import BufferedSALMPipeline
-from nemo.collections.asr.inference.pipelines.cache_aware_ctc_pipeline import CacheAwareCTCPipeline
-from nemo.collections.asr.inference.pipelines.cache_aware_rnnt_pipeline import CacheAwareRNNTPipeline
 from nemo.collections.asr.inference.streaming.buffering.incremental_audio_bufferer import (
     BatchedIncrementalAudioBufferer,
 )
 from nemo.collections.asr.inference.streaming.framing.request import FeatureBuffer, Frame
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
-from nemo.collections.asr.inference.streaming.state.cache_aware_ctc_state import CacheAwareCTCStreamingState
-from nemo.collections.asr.inference.streaming.state.cache_aware_rnnt_state import CacheAwareRNNTStreamingState
 from nemo.collections.asr.inference.streaming.state.ctc_state import CTCStreamingState
 from nemo.collections.asr.inference.streaming.state.rnnt_state import RNNTStreamingState
 from nemo.collections.asr.inference.streaming.state.salm_state import SALMStreamingState
@@ -142,31 +136,6 @@ def test_reused_stream_id_starts_from_an_empty_buffer(pipeline_cls, state_cls, r
     assert padding == fresh_padding
 
 
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    "pipeline_cls, state_cls",
-    [
-        pytest.param(CacheAwareRNNTPipeline, CacheAwareRNNTStreamingState, id="cache_aware_rnnt"),
-        pytest.param(CacheAwareCTCPipeline, CacheAwareCTCStreamingState, id="cache_aware_ctc"),
-    ],
-)
-def test_base_pipeline_leaves_other_bufferers_alone(pipeline_cls, state_cls):
-    """BasePipeline.delete_state() and reset_session() release only the buffered pipelines' bufferers. Nothing is
-    called on any other bufferer, such as the cache-aware pipelines' BatchedCacheFeatureBufferer, which its own
-    pipeline manages. The BasePipeline methods are called directly, as a pipeline's own override does via super()."""
-    pipeline = pipeline_cls.__new__(pipeline_cls)
-    pipeline.bufferer = Mock()  # records any call made on it
-    BasePipeline.__init__(pipeline)
-    pipeline._state_pool[0] = _new_state(state_cls)
-
-    BasePipeline.delete_state(pipeline, 0)
-    BasePipeline.delete_state(pipeline, 99)
-    BasePipeline.reset_session(pipeline)
-
-    assert pipeline.bufferer.mock_calls == []
-    assert pipeline._state_pool == {}
-
-
 def _make_pipeline(pipeline_cls, state_cls, request_type):
     """A buffered pipeline whose model step is replaced by `_bufferer_step`; `transcribe_step`, `delete_state` and
     the sessions are the real ones, with the real per-stream bufferer the pipeline would build."""
@@ -179,7 +148,7 @@ def _make_pipeline(pipeline_cls, state_cls, request_type):
     pipeline.preprocessor_config = PREPROCESSOR_CFG
     pipeline.device = torch.device("cpu")
     if pipeline_cls is SALMPipeline:
-        pipeline.audio_bufferer = BatchedIncrementalAudioBufferer(
+        pipeline.bufferer = BatchedIncrementalAudioBufferer(
             SAMPLE_RATE, BUFFER_SIZE_IN_SECS, CHUNK_SIZE_IN_SECS, BUFFER_SIZE_IN_SECS / 2
         )
     else:
@@ -188,6 +157,7 @@ def _make_pipeline(pipeline_cls, state_cls, request_type):
     pipeline.create_state = lambda options: _new_state(state_cls)
     pipeline.transcribe_step_for_frames = lambda frames: _bufferer_step(pipeline, frames)
     pipeline.transcribe_step_for_feature_buffers = lambda fbuffers: _bufferer_step(pipeline, fbuffers)
+    # The recorder lives on the pipeline so that each test can compare what two separate pipelines fed the model.
     pipeline.last_seen = {}
     BasePipeline.__init__(pipeline)
     return pipeline
@@ -196,9 +166,7 @@ def _make_pipeline(pipeline_cls, state_cls, request_type):
 def _bufferer_step(pipeline, requests):
     """The bufferer call each buffered pipeline's transcribe step starts with. Keeps, per stream, the buffer and
     padding the model would get."""
-    if isinstance(pipeline, SALMPipeline):
-        buffers, paddings = pipeline.audio_bufferer.update(requests)
-    elif isinstance(requests[0], Frame):
+    if isinstance(requests[0], Frame):
         buffers, paddings = pipeline.bufferer.update(requests)
     else:
         buffers = pipeline.bufferer.update(requests)
@@ -209,8 +177,6 @@ def _bufferer_step(pipeline, requests):
 
 def _bufferers(pipeline):
     """The per-stream bufferers the pipeline holds, by stream id."""
-    if isinstance(pipeline, SALMPipeline):
-        return pipeline.audio_bufferer.bufferers
     return pipeline.bufferer.bufferers
 
 

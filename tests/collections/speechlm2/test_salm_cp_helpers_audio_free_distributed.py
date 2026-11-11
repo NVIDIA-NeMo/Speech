@@ -90,5 +90,6 @@ def _run_audio_free_chunk_test(rank: int, world_size: int, init_file: str):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.device_count() < 2, reason="Test requires 2 GPUs")
+@pytest.mark.gpu
 def test_packed_chunk_microbatches_keep_audio_free_fsdp_rank_collectives_and_backward_aligned(tmp_path):
     mp.spawn(_run_audio_free_chunk_test, args=(2, str(tmp_path / "audio_free_init")), nprocs=2, join=True)

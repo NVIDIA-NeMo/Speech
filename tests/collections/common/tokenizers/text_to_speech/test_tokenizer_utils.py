@@ -145,7 +145,7 @@ class TestTokenizerUtils:
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_any_locale_word_tokenize_with_numbers(self):
+    def test_any_locale_word_tokenize_with_numbers_fr(self):
         input_text = r"Trois fois× quatorze^ et dix ÷ divisé par [films] sur \slash."
         expected_output = self._create_expected_output(
             [

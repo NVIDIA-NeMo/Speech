@@ -4241,16 +4241,16 @@ cu13 = [
 
 [[package]]
 name = "hydra-core"
-version = "1.3.2"
+version = "1.3.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "antlr4-python3-runtime" },
     { name = "omegaconf" },
     { name = "packaging" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6d/8e/07e42bc434a847154083b315779b0a81d567154504624e181caf2c71cd98/hydra-core-1.3.2.tar.gz", hash = "sha256:8a878ed67216997c3e9d88a8e72e7b4767e81af37afb4ea3334b269a4390a824", size = 3263494, upload-time = "2023-02-23T18:33:43.03Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7c/1d/e1ad315ca93f1b090b0782942535fea8344e8b2d749c92117b2bf45f4407/hydra_core-1.3.8.tar.gz", hash = "sha256:18d5dfb841734a936507e75e7b8390b406ed22494f7fb8b4b7b7c122102de3d5", size = 3278858, upload-time = "2026-10-25T13:42:22.491Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c6/50/e0edd38dcd63fb26a8547f13d28f7a008bc4a3fd4eb4ff030673f22ad41a/hydra_core-1.3.2-py3-none-any.whl", hash = "sha256:fa0238a9e31df3373b35b0bfb672c34cc92718d21f81311d8996a16de1141d8b", size = 154547, upload-time = "2023-02-23T18:33:40.801Z" },
+    { url = "https://files.pythonhosted.org/packages/13/69/8e5cf7ad847538fc180fbd06e8442b8bede53ee4852458a16e24231395e9/hydra_core-1.3.8-py3-none-any.whl", hash = "sha256:d5f184c291691cba835c7f04bc4e36270ad88b1d7e394a3712f5af084c30b394", size = 168949, upload-time = "2026-10-25T13:42:20.959Z" },
 ]
 
 [[package]]
@@ -5120,7 +5120,7 @@ wheels = [
 
 [[package]]
 name = "lightning"
-version = "2.4.0"
+version = "2.6.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fsspec", extra = ["http"] },
@@ -5137,9 +5137,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/56/d0/78ea244ac044cd4df15aa8294a50ff3561fb177e7e5ba788aaa542046cae/lightning-2.4.0.tar.gz", hash = "sha256:9156604cc56e4b2b603f34fa7f0fe5107375c8e6d85e74544b319a15faa9ed0e", size = 620632, upload-time = "2024-08-07T09:46:44.399Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/39/b8/fbf1469d917c3ed3b22e00ab3a852fb9a5f85b9dc7f7060eedc3449098e7/lightning-2.6.6.tar.gz", hash = "sha256:1c6329e241f8a85f29fedead89c1ee138b36caa08de60c260c6a7eaee81c8295", size = 659902, upload-time = "2026-09-10T09:41:03.009Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a3/2c/85eaf42c983b0cd81bcda5876da2c8e2a9fd347908666ea9855724369171/lightning-2.4.0-py3-none-any.whl", hash = "sha256:560163af9711cf59055c448232c473150a299089efce0d2be3cc3288082d8768", size = 810971, upload-time = "2024-08-07T09:46:39.874Z" },
+    { url = "https://files.pythonhosted.org/packages/12/43/7da7fe42f254ce57777d1a86eece3f86d1b3329fc568d48e2bc16c8b7ebc/lightning-2.6.6-py3-none-any.whl", hash = "sha256:2bcbd6ee840071cd076c7dc9953d7ac1040df92f1c5fa76583aae644f037ab85", size = 849265, upload-time = "2026-09-10T09:41:00.882Z" },
 ]
 
 [[package]]
@@ -6840,6 +6840,7 @@ all = [
     { name = "pypinyin" },
     { name = "pypinyin-dict" },
     { name = "pystoi" },
+    { name = "pytorch-lightning" },
     { name = "sacrebleu" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.11' and extra == 'extra-12-nemo-toolkit-all') or (python_full_version < '3.11' and extra == 'extra-12-nemo-toolkit-compiled') or (python_full_version < '3.11' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (python_full_version < '3.11' and extra == 'extra-12-nemo-toolkit-cu12') or (python_full_version < '3.11' and extra == 'extra-12-nemo-toolkit-cu13') or (python_full_version < '3.11' and extra == 'extra-12-nemo-toolkit-speechlm2') or (python_full_version < '3.11' and extra == 'extra-12-nemo-toolkit-speechlm2-only') or (python_full_version < '3.11' and extra != 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-all' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu13' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2-only' and extra == 'extra-12-nemo-toolkit-vllm')" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and extra == 'extra-12-nemo-toolkit-all') or (python_full_version >= '3.11' and extra == 'extra-12-nemo-toolkit-compiled') or (python_full_version >= '3.11' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (python_full_version >= '3.11' and extra == 'extra-12-nemo-toolkit-cu12') or (python_full_version >= '3.11' and extra == 'extra-12-nemo-toolkit-cu13') or (python_full_version >= '3.11' and extra == 'extra-12-nemo-toolkit-speechlm2') or (python_full_version >= '3.11' and extra == 'extra-12-nemo-toolkit-speechlm2-only') or (python_full_version >= '3.11' and extra != 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-all' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu13' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2-only' and extra == 'extra-12-nemo-toolkit-vllm')" },
@@ -6866,6 +6867,7 @@ asr = [
     { name = "omegaconf" },
     { name = "packaging" },
     { name = "pandas" },
+    { name = "pytorch-lightning" },
     { name = "sacrebleu" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-12-nemo-toolkit-all' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu13' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2-only' and extra == 'extra-12-nemo-toolkit-vllm')" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-12-nemo-toolkit-all' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu13' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2-only' and extra == 'extra-12-nemo-toolkit-vllm')" },
@@ -6905,6 +6907,7 @@ audio = [
     { name = "pandas" },
     { name = "pesq", marker = "platform_machine != 'x86_64' or sys_platform != 'darwin' or (extra == 'extra-12-nemo-toolkit-all' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu13' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2-only' and extra == 'extra-12-nemo-toolkit-vllm')" },
     { name = "pystoi" },
+    { name = "pytorch-lightning" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-12-nemo-toolkit-all' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu13' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2-only' and extra == 'extra-12-nemo-toolkit-vllm')" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-12-nemo-toolkit-all' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu13' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2-only' and extra == 'extra-12-nemo-toolkit-vllm')" },
     { name = "sentencepiece" },
@@ -6924,6 +6927,7 @@ common = [
     { name = "nv-one-logger-training-telemetry" },
     { name = "omegaconf" },
     { name = "pandas" },
+    { name = "pytorch-lightning" },
     { name = "sentencepiece" },
     { name = "torchmetrics" },
     { name = "transformers" },
@@ -6964,6 +6968,7 @@ core = [
     { name = "nv-one-logger-pytorch-lightning-integration" },
     { name = "nv-one-logger-training-telemetry" },
     { name = "omegaconf" },
+    { name = "pytorch-lightning" },
     { name = "torchmetrics" },
     { name = "transformers" },
     { name = "wandb" },
@@ -6988,6 +6993,7 @@ lightning = [
     { name = "nv-one-logger-pytorch-lightning-integration" },
     { name = "nv-one-logger-training-telemetry" },
     { name = "omegaconf" },
+    { name = "pytorch-lightning" },
     { name = "torchmetrics" },
     { name = "transformers" },
     { name = "wandb" },
@@ -7019,6 +7025,7 @@ speechlm2 = [
     { name = "pyopenjtalk" },
     { name = "pypinyin" },
     { name = "pypinyin-dict" },
+    { name = "pytorch-lightning" },
     { name = "sacrebleu" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.11' and extra == 'extra-12-nemo-toolkit-all') or (python_full_version < '3.11' and extra == 'extra-12-nemo-toolkit-compiled') or (python_full_version < '3.11' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (python_full_version < '3.11' and extra == 'extra-12-nemo-toolkit-cu12') or (python_full_version < '3.11' and extra == 'extra-12-nemo-toolkit-cu13') or (python_full_version < '3.11' and extra == 'extra-12-nemo-toolkit-speechlm2') or (python_full_version < '3.11' and extra == 'extra-12-nemo-toolkit-speechlm2-only') or (python_full_version < '3.11' and extra != 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-all' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu13' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2-only' and extra == 'extra-12-nemo-toolkit-vllm')" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and extra == 'extra-12-nemo-toolkit-all') or (python_full_version >= '3.11' and extra == 'extra-12-nemo-toolkit-compiled') or (python_full_version >= '3.11' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (python_full_version >= '3.11' and extra == 'extra-12-nemo-toolkit-cu12') or (python_full_version >= '3.11' and extra == 'extra-12-nemo-toolkit-cu13') or (python_full_version >= '3.11' and extra == 'extra-12-nemo-toolkit-speechlm2') or (python_full_version >= '3.11' and extra == 'extra-12-nemo-toolkit-speechlm2-only') or (python_full_version >= '3.11' and extra != 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-all' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu13' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2-only' and extra == 'extra-12-nemo-toolkit-vllm')" },
@@ -7058,6 +7065,7 @@ tts = [
     { name = "pyopenjtalk" },
     { name = "pypinyin" },
     { name = "pypinyin-dict" },
+    { name = "pytorch-lightning" },
     { name = "sacrebleu" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-12-nemo-toolkit-all' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu13' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2-only' and extra == 'extra-12-nemo-toolkit-vllm')" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-12-nemo-toolkit-all' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu13' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2-only' and extra == 'extra-12-nemo-toolkit-vllm')" },
@@ -7110,6 +7118,7 @@ test = [
     { name = "pytest-mock" },
     { name = "pytest-runner" },
     { name = "pytest-shard" },
+    { name = "pytest-timeout" },
     { name = "starlette", version = "1.0.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux' or (extra == 'extra-12-nemo-toolkit-all' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu13' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2-only' and extra == 'extra-12-nemo-toolkit-vllm')" },
     { name = "starlette", version = "1.6.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux' or (extra == 'extra-12-nemo-toolkit-all' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu13' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2-only' and extra == 'extra-12-nemo-toolkit-vllm')" },
     { name = "wandb" },
@@ -7153,14 +7162,14 @@ requires-dist = [
     { name = "flashoptim", marker = "extra == 'speechlm2'" },
     { name = "flashoptim", marker = "extra == 'speechlm2-only'" },
     { name = "huggingface-hub", specifier = ">=0.24" },
-    { name = "hydra-core", marker = "extra == 'all'", specifier = ">1.3,<=1.3.2" },
-    { name = "hydra-core", marker = "extra == 'asr'", specifier = ">1.3,<=1.3.2" },
-    { name = "hydra-core", marker = "extra == 'audio'", specifier = ">1.3,<=1.3.2" },
-    { name = "hydra-core", marker = "extra == 'common'", specifier = ">1.3,<=1.3.2" },
-    { name = "hydra-core", marker = "extra == 'core'", specifier = ">1.3,<=1.3.2" },
-    { name = "hydra-core", marker = "extra == 'lightning'", specifier = ">1.3,<=1.3.2" },
-    { name = "hydra-core", marker = "extra == 'speechlm2'", specifier = ">1.3,<=1.3.2" },
-    { name = "hydra-core", marker = "extra == 'tts'", specifier = ">1.3,<=1.3.2" },
+    { name = "hydra-core", marker = "extra == 'all'", specifier = ">=1.3.8,<1.4" },
+    { name = "hydra-core", marker = "extra == 'asr'", specifier = ">=1.3.8,<1.4" },
+    { name = "hydra-core", marker = "extra == 'audio'", specifier = ">=1.3.8,<1.4" },
+    { name = "hydra-core", marker = "extra == 'common'", specifier = ">=1.3.8,<1.4" },
+    { name = "hydra-core", marker = "extra == 'core'", specifier = ">=1.3.8,<1.4" },
+    { name = "hydra-core", marker = "extra == 'lightning'", specifier = ">=1.3.8,<1.4" },
+    { name = "hydra-core", marker = "extra == 'speechlm2'", specifier = ">=1.3.8,<1.4" },
+    { name = "hydra-core", marker = "extra == 'tts'", specifier = ">=1.3.8,<1.4" },
     { name = "janome", marker = "extra == 'all'" },
     { name = "janome", marker = "extra == 'speechlm2'" },
     { name = "janome", marker = "extra == 'tts'" },
@@ -7188,14 +7197,14 @@ requires-dist = [
     { name = "librosa", marker = "extra == 'speechlm2'", specifier = ">=0.10.1" },
     { name = "librosa", marker = "extra == 'tts'" },
     { name = "librosa", marker = "extra == 'tts'", specifier = ">=0.10.1" },
-    { name = "lightning", marker = "extra == 'all'", specifier = ">2.2.1,<=2.4.0" },
-    { name = "lightning", marker = "extra == 'asr'", specifier = ">2.2.1,<=2.4.0" },
-    { name = "lightning", marker = "extra == 'audio'", specifier = ">2.2.1,<=2.4.0" },
-    { name = "lightning", marker = "extra == 'common'", specifier = ">2.2.1,<=2.4.0" },
-    { name = "lightning", marker = "extra == 'core'", specifier = ">2.2.1,<=2.4.0" },
-    { name = "lightning", marker = "extra == 'lightning'", specifier = ">2.2.1,<=2.4.0" },
-    { name = "lightning", marker = "extra == 'speechlm2'", specifier = ">2.2.1,<=2.4.0" },
-    { name = "lightning", marker = "extra == 'tts'", specifier = ">2.2.1,<=2.4.0" },
+    { name = "lightning", marker = "extra == 'all'", specifier = ">=2.6.6,<2.7" },
+    { name = "lightning", marker = "extra == 'asr'", specifier = ">=2.6.6,<2.7" },
+    { name = "lightning", marker = "extra == 'audio'", specifier = ">=2.6.6,<2.7" },
+    { name = "lightning", marker = "extra == 'common'", specifier = ">=2.6.6,<2.7" },
+    { name = "lightning", marker = "extra == 'core'", specifier = ">=2.6.6,<2.7" },
+    { name = "lightning", marker = "extra == 'lightning'", specifier = ">=2.6.6,<2.7" },
+    { name = "lightning", marker = "extra == 'speechlm2'", specifier = ">=2.6.6,<2.7" },
+    { name = "lightning", marker = "extra == 'tts'", specifier = ">=2.6.6,<2.7" },
     { name = "mamba-ssm", marker = "extra == 'compiled'", specifier = "==2.3.2.post1" },
     { name = "mamba-ssm", marker = "extra == 'compiled-a100'", specifier = "==2.3.2.post1" },
     { name = "matplotlib", marker = "extra == 'all'" },
@@ -7241,14 +7250,14 @@ requires-dist = [
     { name = "nv-one-logger-training-telemetry", marker = "extra == 'lightning'", specifier = ">=2.3.1" },
     { name = "nv-one-logger-training-telemetry", marker = "extra == 'speechlm2'", specifier = ">=2.3.1" },
     { name = "nv-one-logger-training-telemetry", marker = "extra == 'tts'", specifier = ">=2.3.1" },
-    { name = "omegaconf", marker = "extra == 'all'", specifier = "<=2.3" },
-    { name = "omegaconf", marker = "extra == 'asr'", specifier = "<=2.3" },
-    { name = "omegaconf", marker = "extra == 'audio'", specifier = "<=2.3" },
-    { name = "omegaconf", marker = "extra == 'common'", specifier = "<=2.3" },
-    { name = "omegaconf", marker = "extra == 'core'", specifier = "<=2.3" },
-    { name = "omegaconf", marker = "extra == 'lightning'", specifier = "<=2.3" },
-    { name = "omegaconf", marker = "extra == 'speechlm2'", specifier = "<=2.3" },
-    { name = "omegaconf", marker = "extra == 'tts'", specifier = "<=2.3" },
+    { name = "omegaconf", marker = "extra == 'all'", specifier = ">=2.3,<2.4" },
+    { name = "omegaconf", marker = "extra == 'asr'", specifier = ">=2.3,<2.4" },
+    { name = "omegaconf", marker = "extra == 'audio'", specifier = ">=2.3,<2.4" },
+    { name = "omegaconf", marker = "extra == 'common'", specifier = ">=2.3,<2.4" },
+    { name = "omegaconf", marker = "extra == 'core'", specifier = ">=2.3,<2.4" },
+    { name = "omegaconf", marker = "extra == 'lightning'", specifier = ">=2.3,<2.4" },
+    { name = "omegaconf", marker = "extra == 'speechlm2'", specifier = ">=2.3,<2.4" },
+    { name = "omegaconf", marker = "extra == 'tts'", specifier = ">=2.3,<2.4" },
     { name = "onnx", specifier = ">=1.7.0" },
     { name = "onnx-ir", marker = "extra == 'compiled'", specifier = "==0.2.1" },
     { name = "onnx-ir", marker = "extra == 'compiled-a100'", specifier = "==0.2.1" },
@@ -7283,6 +7292,14 @@ requires-dist = [
     { name = "pypinyin-dict", marker = "extra == 'tts'" },
     { name = "pystoi", marker = "extra == 'all'" },
     { name = "pystoi", marker = "extra == 'audio'" },
+    { name = "pytorch-lightning", marker = "extra == 'all'", specifier = ">=2.6.6,<2.7" },
+    { name = "pytorch-lightning", marker = "extra == 'asr'", specifier = ">=2.6.6,<2.7" },
+    { name = "pytorch-lightning", marker = "extra == 'audio'", specifier = ">=2.6.6,<2.7" },
+    { name = "pytorch-lightning", marker = "extra == 'common'", specifier = ">=2.6.6,<2.7" },
+    { name = "pytorch-lightning", marker = "extra == 'core'", specifier = ">=2.6.6,<2.7" },
+    { name = "pytorch-lightning", marker = "extra == 'lightning'", specifier = ">=2.6.6,<2.7" },
+    { name = "pytorch-lightning", marker = "extra == 'speechlm2'", specifier = ">=2.6.6,<2.7" },
+    { name = "pytorch-lightning", marker = "extra == 'tts'", specifier = ">=2.6.6,<2.7" },
     { name = "sacrebleu", marker = "extra == 'all'" },
     { name = "sacrebleu", marker = "extra == 'asr'" },
     { name = "sacrebleu", marker = "extra == 'asr-only'" },
@@ -7393,6 +7410,7 @@ test = [
     { name = "pytest-mock" },
     { name = "pytest-runner" },
     { name = "pytest-shard" },
+    { name = "pytest-timeout" },
     { name = "starlette" },
     { name = "wandb" },
     { name = "wrapt" },
@@ -11446,6 +11464,18 @@ wheels = [
 ]
 
 [[package]]
+name = "pytest-timeout"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ac/82/4c9ecabab13363e72d880f2fb504c5f750433b2b6f16e99f4ec21ada284c/pytest_timeout-2.4.0.tar.gz", hash = "sha256:7e68e90b01f9eff71332b25001f85c75495fc4e3a836701876183c4bcfd0540a", size = 17973, upload-time = "2025-05-05T19:44:34.99Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fa/b6/3127540ecdf1464a00e5a01ee60a1b09175f6913f0644ac748494d9c4b21/pytest_timeout-2.4.0-py3-none-any.whl", hash = "sha256:c42667e5cdadb151aeb5b26d114aff6bdf5a907f176a007a30b940d3d865b5c2", size = 14382, upload-time = "2025-05-05T19:44:33.502Z" },
+]
+
+[[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
 source = { registry = "https://pypi.org/simple" }
@@ -11525,7 +11555,7 @@ wheels = [
 
 [[package]]
 name = "pytorch-lightning"
-version = "2.6.1"
+version = "2.6.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fsspec", extra = ["http"] },
@@ -11541,9 +11571,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8b/ac/ebd5f6f58691cbd4f73836e43e1727f3814311b960c41f88e259606ca2b2/pytorch_lightning-2.6.1.tar.gz", hash = "sha256:ba08f8901cf226fcca473046ad9346f414e99117762dc869c76e650d5b3d7bdc", size = 665563, upload-time = "2026-01-30T14:59:11.636Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/97/e4/5025cb42311b4f8cc6d1b12cd81399ca433159f8e3831ab229c5a6c5177e/pytorch_lightning-2.6.6.tar.gz", hash = "sha256:52c52b20522dd3d3feb3bb3aae2dbe3f291e8e836d4111a74cfd72e9df018834", size = 662507, upload-time = "2026-09-10T09:41:16.684Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0e/93/c8c361bf0a2fe50f828f32def460e8b8a14b93955d3fd302b1a9b63b19e4/pytorch_lightning-2.6.1-py3-none-any.whl", hash = "sha256:1f8118567ec829e3055f16cf1aa320883a86a47c836951bfd9dcfa34ec7ffd59", size = 857273, upload-time = "2026-01-30T14:59:10.141Z" },
+    { url = "https://files.pythonhosted.org/packages/4f/cf/ba8e4cc1b982ff6dc6f9fdef0e4074605438b82640f6270888a10e7e42c3/pytorch_lightning-2.6.6-py3-none-any.whl", hash = "sha256:71f95c7b22f25c4f91cc659e1734bcdc6c69c8b66543f2ed2d78dbe29ce2f167", size = 853045, upload-time = "2026-09-10T09:41:14.923Z" },
 ]
 
 [[package]]

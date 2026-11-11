@@ -615,7 +615,7 @@ class TestASRAdapterMixin:
     @pytest.mark.parametrize('name1', ['decoder:adapter_0', 'joint:adapter_0'])
     @pytest.mark.parametrize('name2', ['decoder:adapter_1', 'joint:adapter_1'])
     @pytest.mark.unit
-    def test_asr_multi_adapter_forward(self, rnnt_model, name1, name2):
+    def test_asr_multi_adapter_forward_rnnt(self, rnnt_model, name1, name2):
         rnnt_model.eval()
         torch.random.manual_seed(0)
         input_signal = torch.randn(2, 512)
@@ -684,6 +684,7 @@ class TestASRAdapterMixin:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_constructor_pretrained(self):
         # Check to/from config_dict:
         cfg = ASRModel.from_pretrained('stt_en_citrinet_256', map_location='cpu', return_config=True)
@@ -709,6 +710,7 @@ class TestASRAdapterMixin:
     )
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_constructor_pretrained_rnnt(self):
         # Check to/from config_dict:
         cfg = ASRModel.from_pretrained('stt_en_fastconformer_transducer_large', map_location='cpu', return_config=True)

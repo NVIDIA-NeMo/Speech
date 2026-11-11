@@ -638,6 +638,23 @@ checkpoint to be restored. For these models, the user will have to override ``lo
 
 It's highly recommended to use ``restore_from`` to load NeMo models.
 
+Bundled artifact references, including legacy file names, resolve within the extracted model directory.
+For intentional local artifact overrides supplied by the application, use a runtime connector option:
+
+.. code-block:: Python
+
+    from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
+
+    connector = SaveRestoreConnector(allow_external_artifacts=True)
+    model = model_class.restore_from(
+        '/path/to/model.nemo',
+        override_config_path=trusted_config,
+        save_restore_connector=connector,
+    )
+
+Enable this option only when the local artifact paths are trusted. It is disabled by default and cannot be enabled by
+values stored in a model configuration. Locally constructed models can continue to register local files.
+
 Restore with Modified Config
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

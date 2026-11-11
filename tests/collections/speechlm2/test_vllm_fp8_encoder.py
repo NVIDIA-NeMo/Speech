@@ -383,6 +383,7 @@ class TestBuildFP8Encoder:
 
 
 @pytest.mark.skipif(not _HAS_PLUGIN or not torch.cuda.is_available(), reason="needs CUDA")
+@pytest.mark.gpu
 def test_device_move_keeps_fp8_dtypes():
     perception = _quantized_perception()
 
@@ -406,6 +407,7 @@ def _fp8_gemm_available() -> bool:
 
 
 @pytest.mark.skipif(not _fp8_gemm_available(), reason="needs an FP8-capable GPU and vLLM's CUTLASS kernels")
+@pytest.mark.gpu
 def test_fp8_linear_matches_dequantized_reference():
     torch.manual_seed(0)
     weight = torch.randn(64, 48, device="cuda")
@@ -430,6 +432,7 @@ def test_fp8_linear_matches_dequantized_reference():
 
 
 @pytest.mark.skipif(not _fp8_gemm_available(), reason="needs an FP8-capable GPU and vLLM's CUTLASS kernels")
+@pytest.mark.gpu
 def test_fp8_linear_accepts_a_strided_input():
     layer = _quantized_perception().encoder.asr_encoder.layers[0].attn.w_qkv
     layer.load_state_dict(_checkpoint(layer))
@@ -463,6 +466,7 @@ def _load_random_fp8(perception: nn.Module) -> None:
 
 
 @pytest.mark.skipif(not _fp8_gemm_available(), reason="needs an FP8-capable GPU and vLLM's CUTLASS kernels")
+@pytest.mark.gpu
 def test_sequence_packed_encoder_runs_quantized_qkv_projections():
     torch.manual_seed(0)
     perception = nn.Module()
@@ -482,6 +486,7 @@ def test_sequence_packed_encoder_runs_quantized_qkv_projections():
 
 
 @pytest.mark.skipif(not _fp8_gemm_available(), reason="needs an FP8-capable GPU and vLLM's CUTLASS kernels")
+@pytest.mark.gpu
 def test_independent_dual_encoder_with_a_quantized_asr_branch():
     from nemo.collections.asr.parts.packed_sequence import pack_encoder_output
     from nemo.collections.speechlm2.modules.perception import IndependentDualEncoder

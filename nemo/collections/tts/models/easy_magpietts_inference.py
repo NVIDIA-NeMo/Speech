@@ -315,6 +315,11 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         if self.text_conditioning_tokenizer_name is None:
             self.text_conditioning_tokenizer_name = list(cfg.text_tokenizers.keys())[0]
 
+        # Codec decoding has large temporary convolution activations. Decode generated
+        # waveforms in smaller sub-batches when requested, without changing generation
+        # or the returned codes/audio.
+        self.codec_decode_batch_size = max(int(cfg.get('codec_decode_batch_size', 0)), 0)
+
         self.cfg_unconditional_prob = cfg.get('cfg_unconditional_prob', 0.0)
 
         # Multi-mode training configuration
@@ -945,6 +950,45 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             codes_len = torch.where(codes_len < min_len, torch.ones_like(codes_len) * min_len, codes_len)
             codes = codes[:, :, : codes_len.max()]
         return codes, codes_len
+
+    def _codes_to_audio_in_sub_batches(
+        self, codes: torch.Tensor, codes_len: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Decode codes to audio in sub-batches of at most ``codec_decode_batch_size`` items.
+
+        This splits the batch dimension only, never the time axis: each codec call receives complete
+        utterances for a subset of items, so there are no chunk boundaries inside an utterance. The codec
+        masks every layer by length, so each item's audio does not depend on the other items in its
+        sub-batch and matches a single full-batch decode. Sub-batching only lowers the codec decoder's
+        peak activation memory. A ``codec_decode_batch_size`` of 0 decodes the full batch at once.
+
+        Args:
+            codes: Unstacked codes ready for the codec, shaped ``(B, C, T)``.
+            codes_len: Valid frame count per item, shaped ``(B,)``.
+
+        Returns:
+            Tuple of audio shaped ``(B, T_audio)``, zero-padded past each item's length, and audio
+            lengths shaped ``(B,)``.
+        """
+        batch_size = codes.size(0)
+        sub_batch_size = self.codec_decode_batch_size
+        if sub_batch_size <= 0 or sub_batch_size >= batch_size:
+            audio, audio_len, _ = self._codec_helper.codes_to_audio(codes, codes_len)
+            return audio, audio_len
+
+        sub_batch_audio = []
+        sub_batch_audio_len = []
+        for start in range(0, batch_size, sub_batch_size):
+            end = min(start + sub_batch_size, batch_size)
+            audio, audio_len, _ = self._codec_helper.codes_to_audio(codes[start:end], codes_len[start:end])
+            sub_batch_audio.append(audio)
+            sub_batch_audio_len.append(audio_len)
+
+        max_audio_len = max(audio.size(1) for audio in sub_batch_audio)
+        audio = torch.cat(
+            [torch.nn.functional.pad(audio, (0, max_audio_len - audio.size(1))) for audio in sub_batch_audio], dim=0
+        )
+        return audio, torch.cat(sub_batch_audio_len, dim=0)
 
     def embed_audio_tokens(self, audio_tokens):
         # audio_tokens: (B, C, T')
@@ -2393,10 +2437,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             predicted_codes, predicted_codes_lens = self._prepare_codes_for_decode(
                 predicted_codes, predicted_codes_lens
             )
-            audio, audio_len, decoded_codes = self._codec_helper.codes_to_audio(
-                predicted_codes,
-                predicted_codes_lens,
-            )
+            audio, audio_len = self._codes_to_audio_in_sub_batches(predicted_codes, predicted_codes_lens)
 
             return StreamingFinalizeOutput(
                 audio=audio,

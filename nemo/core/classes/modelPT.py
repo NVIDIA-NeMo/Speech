@@ -249,12 +249,18 @@ class ModelPT(LightningModule, Model):
 
             .. code-block::
 
-                If "src" is local existing path:
-                    then it will be returned in absolute path form.
-                elif "src" starts with "nemo_file:unique_artifact_name":
-                    .nemo will be untarred to a temporary folder location and an actual existing path will be returned
+                If "src" starts with "nemo:":
+                    resolve its relative suffix within the current extracted model directory;
+                    this takes precedence over a local filename with the same spelling.
+                elif restoring an archive without external-artifact permission:
+                    resolve the bundled relative path or its legacy bundled basename.
+                elif "src" is a local existing path:
+                    return its absolute path.
                 else:
-                    an error will be raised.
+                    try legacy bundled-basename resolution, then apply missing-source handling.
+
+        Archive references must resolve within the extracted model directory. During restoration,
+        local names also refer to bundled files unless the runtime ``SaveRestoreConnector`` allows external artifacts.
 
         WARNING: use .register_artifact calls in your models' constructors.
         The returned path is not guaranteed to exist after you have exited your model's constructor.
@@ -643,14 +649,14 @@ class ModelPT(LightningModule, Model):
         and a changed rule set changes the optimizer's parameter groups,
         so an optimizer state saved under other rules fails to load,
         or loads onto other parameters when the group counts and sizes still match;
-        keep the rules unchanged when resuming:
+        keep the rules unchanged when resuming::
 
-        model:
-            optim_param_group_rules:
-                no_weight_decay:
-                    module_types: [torch.nn.Embedding, torch.nn.LayerNorm]
-                    param_names: ["*.bias"]
-                    weight_decay: 0.0
+            model:
+                optim_param_group_rules:
+                    no_weight_decay:
+                        module_types: [torch.nn.Embedding, torch.nn.LayerNorm]
+                        param_names: ["*.bias"]
+                        weight_decay: 0.0
 
         Args:
             optim_config: A dictionary containing the following keys:
@@ -1717,6 +1723,16 @@ class ModelPT(LightningModule, Model):
             self._hparams_initial['cfg'] = OmegaConf.to_object(self._hparams_initial['cfg'])
 
         return super().hparams
+
+    def on_save_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
+        """Store a plain configuration snapshot without changing live hparams metadata."""
+        super().on_save_checkpoint(checkpoint)
+        key = self.CHECKPOINT_HYPER_PARAMS_KEY
+        hyper_parameters = checkpoint.get(key)
+        if isinstance(hyper_parameters, (dict, DictConfig)) and 'cfg' in hyper_parameters:
+            hyper_parameters = copy.deepcopy(hyper_parameters)
+            hyper_parameters['cfg'] = OmegaConf.create(OmegaConf.to_container(self.cfg, resolve=True))
+            checkpoint[key] = hyper_parameters
 
     @property
     def validation_step_outputs(self):

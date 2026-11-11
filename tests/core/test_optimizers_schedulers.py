@@ -141,6 +141,7 @@ class TestOptimizersSchedulers:
 
     # Apex optimizers require CUDA and this test is being run on CPU only tests
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_get_optimizer(self):
         model = TempModel()
         if torch.cuda.is_available():

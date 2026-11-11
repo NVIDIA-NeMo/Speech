@@ -12,8 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+set -e
 
-# Run training for DuplexSTTModel (speech-to-text model)
+# Run training for DuplexSTTModel (speech-to-text model); duplex_stt.yaml logs to duplex_stt_results.
 torchrun --nproc-per-node 1 --no-python \
   coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     examples/speechlm2/stt_duplex_train.py \
@@ -24,12 +25,14 @@ torchrun --nproc-per-node 1 --no-python \
       trainer.devices=1 \
       trainer.max_steps=10
 
-# Convert to HF format
+# Convert to HF format. The checkpoint name depends on how the model saves it (step=10 or step-10), so look it up;
+# the quotes keep Hydra from parsing "=" in the path.
+CKPT=$(ls -d duplex_stt_results/checkpoints/*last.ckpt | head -n 1)
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
   examples/speechlm2/to_hf.py \
     class_path=nemo.collections.speechlm2.models.DuplexSTTModel \
-    ckpt_path=s2s_stt_results/checkpoints/step\=10-last.ckpt \
-    ckpt_config=s2s_stt_results/exp_config.yaml \
+    ckpt_path="'${CKPT}'" \
+    ckpt_config=duplex_stt_results/exp_config.yaml \
     output_dir=test_speechlm2_stt_hf_model
 
 # Test inference on the converted HF model

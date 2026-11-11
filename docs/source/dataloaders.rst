@@ -350,7 +350,10 @@ The PyTorch Lightning ``trainer`` related arguments:
     because Lhotse makes the dataloader infinite, so we'd never go past epoch 0. This approach guarantees
     we will never hang the training because the dataloader in some node has less mini-batches than the others
     in some epochs. The value provided here will be the effective length of each "pseudo-epoch" after which we'll
-    trigger the validation loop.
+    trigger the validation loop. A pseudo-epoch boundary does not restart the data stream: the next pseudo-epoch
+    continues the same dataloader iterator, so no batches already prepared by the dataloading workers are dropped.
+    Only when an iterable dataset is actually exhausted (e.g. ``force_finite: true``) does the next epoch start
+    a new pass.
 * ``max_steps`` is the total number of steps we expect to be training for. It is required for the same reason as ``limit_train_batches``; since we'd never go past epoch 0, the training would have never finished.
 
 Some other Lhotse related arguments we support:
@@ -1246,9 +1249,26 @@ resume:
 * iterator positions advance to where they were at save time (no replay from
   position 0);
 * ``set_epoch`` is a no-op while restored state is pending, so the resumed run
-  continues the same epoch instead of starting a new one;
+  continues the same epoch instead of starting a new one. The restored state
+  stops being pending once the resumed iterator is created, so the next epoch
+  (natural end or ``limit_train_batches``) starts like it does in an
+  uninterrupted run;
 * ``num_workers`` and ``world_size`` must match between save and restore (a
   hard requirement of ``StatefulDataLoader``).
+
+Epoch boundaries after a resume match the uninterrupted run only if Lightning
+also resumes the epoch at the right batch. Lightning<2.5 runs one extra batch
+in the resumed epoch when the checkpoint was saved from ``on_train_batch_end``
+(for example ``every_n_train_steps``). ``NeMoModelCheckpoint``, which
+``exp_manager`` installs, corrects mid-epoch checkpoints when they are loaded.
+A checkpoint saved on the last batch of an epoch still gets one extra batch
+with Lightning<2.5.
+
+With ``indexed: true`` and ``shuffle: true``, a checkpoint saved after the
+shuffle buffer has read its whole source (always the case when the dataset is
+smaller than ``shuffle_buffer_size``) needs the Lhotse fix from
+`lhotse-speech/lhotse#1642 <https://github.com/lhotse-speech/lhotse/pull/1642>`_.
+With lhotse<=2.0.0a6 the epoch after the resumed one can come out empty.
 
 Non-indexed pipelines fall back to Lhotse's ``_fast_forward()`` replay (O(N)
 in batches consumed before the checkpoint) and require ``num_workers`` only to

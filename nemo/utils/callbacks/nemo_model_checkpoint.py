@@ -209,6 +209,13 @@ class NeMoModelCheckpoint(ModelCheckpoint):
 
         self.last_model_path = trainer.strategy.broadcast(self.last_model_path)
 
+    def on_load_checkpoint(self, trainer, pl_module, checkpoint: Dict[str, Any]) -> None:
+        """
+        Fix the train batch progress of checkpoints saved from ``on_train_batch_end`` (Lightning<2.5).
+        """
+        super().on_load_checkpoint(trainer, pl_module, checkpoint)
+        _complete_batch_saved_on_train_batch_end(trainer, checkpoint)
+
     def on_save_checkpoint(self, trainer, pl_module, checkpoint):
         """
         Save the checkpoint.
@@ -762,3 +769,41 @@ class NeMoModelCheckpoint(ModelCheckpoint):
             raise ValueError(f"{self.__class__}.dirpath is None.")
         dirpath = Path(self.dirpath).absolute()
         return dirpath in previous.parents
+
+
+def _complete_batch_saved_on_train_batch_end(
+    trainer: "lightning.pytorch.Trainer", checkpoint: Dict[str, Any]  # noqa: F821
+) -> None:
+    """Count the batch that was in flight when the checkpoint was saved as completed.
+
+    ``ModelCheckpoint(every_n_train_steps=...)`` saves from ``on_train_batch_end``, after the optimizer step but
+    before Lightning increments ``batch_progress.completed``. Lightning<2.5 resets ``ready`` to ``completed`` on
+    restart, so the resumed epoch runs one extra batch. With a stateful dataloader that batch is new data, so every
+    later epoch boundary lands one batch later than in the uninterrupted run (and the sampler's next epoch, or the
+    batches DataLoader workers drop at the boundary, differ). Lightning>=2.5 detects this checkpoint state itself
+    (``restarted_on_train_batch_end``); we apply the same correction to the checkpoint before the loops load it.
+
+    A checkpoint saved on the last batch of an epoch is left unchanged: Lightning<2.5 keeps a restarted epoch open
+    until validation has run, so it reads one extra batch there regardless of this correction.
+    """
+    epoch_loop = trainer.fit_loop.epoch_loop
+    if hasattr(epoch_loop, "restarted_on_train_batch_end"):
+        return
+    fit_loop_state = checkpoint.get("loops", {}).get("fit_loop", {})
+    batch_progress = fit_loop_state.get("epoch_loop.batch_progress")
+    if not batch_progress or batch_progress.get("is_last_batch", False):
+        return
+    total, current = batch_progress["total"], batch_progress["current"]
+    saved_on_train_batch_end = (
+        total["started"] == total["ready"]
+        and total["processed"] == total["started"]
+        and total["completed"] == total["processed"] - 1
+    )
+    if not saved_on_train_batch_end:
+        return
+    total["completed"] += 1
+    current["completed"] += 1
+    # The logger step counter is also incremented after on_train_batch_end; mirror Lightning>=2.5.
+    epoch_loop_state = fit_loop_state.get("epoch_loop.state_dict")
+    if epoch_loop_state is not None and current["ready"] % trainer.accumulate_grad_batches == 0:
+        epoch_loop_state["_batches_that_stepped"] = epoch_loop_state.get("_batches_that_stepped", 0) + 1

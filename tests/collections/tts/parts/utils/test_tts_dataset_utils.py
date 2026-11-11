@@ -1087,6 +1087,85 @@ class TestGetWordCount:
 
 
 class TestGetTokenizerForLanguage:
+    # Arabic tokenizers shipped in the MagpieTTS v2607 checkpoint, which has no
+    # language_to_tokenizer_mapping, so lookups rely on LANGUAGE_TOKENIZER_MAP.
+    ARABIC_V2607_TOKENIZERS = [
+        "english_phoneme",
+        "arabic_AE_chartokenizer",
+        "arabic_SA_chartokenizer",
+        "arabic_MSA_chartokenizer",
+    ]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "language, expected",
+        [
+            ("ar", "arabic_MSA_chartokenizer"),
+            ("ar-MSA", "arabic_MSA_chartokenizer"),
+            ("ar-SA", "arabic_SA_chartokenizer"),
+            ("ar-AE", "arabic_AE_chartokenizer"),
+        ],
+    )
+    def test_arabic_uses_arabic_chartokenizer(self, language, expected):
+        # Without Arabic entries the lookup silently fell back to `english_phoneme`,
+        # which drops every Arabic character.
+        assert get_tokenizer_for_language(language, self.ARABIC_V2607_TOKENIZERS) == expected
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_arabic_dialect_falls_back_to_msa(self):
+        available = ["english_phoneme", "arabic_MSA_chartokenizer"]
+
+        assert get_tokenizer_for_language("ar-SA", available) == "arabic_MSA_chartokenizer"
+        assert get_tokenizer_for_language("ar-AE", available) == "arabic_MSA_chartokenizer"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_arabic_keeps_default_fallback_without_arabic_tokenizer(self):
+        assert get_tokenizer_for_language("ar", ["english_phoneme", "german_phoneme"]) == "english_phoneme"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "language, expected",
+        [
+            ("hi", "hindi_phoneme"),
+            ("it", "italian_chartokenizer"),
+            ("vi", "vietnamese_chartokenizer"),
+            ("pt", "portuguese_Brazilian_phoneme"),
+            ("pt-BR", "portuguese_Brazilian_phoneme"),
+        ],
+    )
+    def test_v2607_tokenizer_names_resolve(self, language, expected):
+        # The v2607 checkpoint renamed or added these tokenizers; the lookup used to
+        # fall back to `english_phoneme` for all of them.
+        available = [
+            "english_phoneme",
+            "hindi_phoneme",
+            "italian_chartokenizer",
+            "vietnamese_chartokenizer",
+            "portuguese_Brazilian_phoneme",
+        ]
+
+        assert get_tokenizer_for_language(language, available) == expected
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "language, legacy_tokenizer",
+        [
+            ("hi", "hindi_chartokenizer"),
+            ("it", "italian_phoneme"),
+            ("vi", "vietnamese_phoneme"),
+        ],
+    )
+    def test_legacy_tokenizer_names_take_priority(self, language, legacy_tokenizer):
+        # Older checkpoints that ship the original tokenizer names keep resolving to them.
+        available = ["english_phoneme", "hindi_phoneme", "italian_chartokenizer", "vietnamese_chartokenizer"]
+
+        assert get_tokenizer_for_language(language, available + [legacy_tokenizer]) == legacy_tokenizer
+
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_custom_mapping_uses_first_available_candidate(self):

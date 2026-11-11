@@ -327,6 +327,8 @@ def parse_group(grp_cfg: DictConfig, propagate_attrs: dict) -> [CutSet, bool]:
     # Attach extra tags to every utterance dynamically, if provided.
     if (extra_tags := grp_cfg.get("tags")) is not None:
         cuts = cuts.map(partial(attach_tags, tags=extra_tags), apply_fn=None)
+    if (field_mapping := grp_cfg.get("supervision_field_mapping")) is not None:
+        cuts = cuts.map(SupervisionFieldMapping(field_mapping), apply_fn=None)
     return cuts, is_tarred
 
 
@@ -567,6 +569,51 @@ def attach_tags(cut, tags: dict):
     for key, val in tags.items():
         setattr(cut, key, val)
     return cut
+
+
+class SupervisionFieldMapping:
+    """Copy or remove supervision custom fields without modifying the source cuts.
+
+    Mapping keys are destinations; string values name source custom fields and
+    ``None`` removes a destination. All sources are read before any changes.
+    """
+
+    def __init__(self, mapping: Mapping[str, str | None]) -> None:
+        if not isinstance(mapping, (Mapping, DictConfig)):
+            raise ValueError("supervision_field_mapping must map custom-field names to source names or null.")
+        self.mapping = dict(mapping)
+        builtins = SupervisionSegment.__dataclass_fields__
+        for destination, source in self.mapping.items():
+            if (
+                not isinstance(destination, str)
+                or not destination
+                or destination in builtins
+                or (source is not None and (not isinstance(source, str) or not source or source in builtins))
+            ):
+                raise ValueError(
+                    "supervision_field_mapping supports nonempty custom-field names only; "
+                    "values must be source names or null."
+                )
+
+    def __call__(self, cut):
+        if not isinstance(cut, Cut):
+            raise TypeError("supervision_field_mapping requires audio cuts with supervisions.")
+        return cut.map_supervisions(self._map_supervision)
+
+    def _map_supervision(self, supervision):
+        original = supervision.custom or {}
+        custom = dict(original)
+        for destination, source in self.mapping.items():
+            if source is None:
+                custom.pop(destination, None)
+            elif source not in original:
+                raise ValueError(
+                    f"supervision_field_mapping: supervision {supervision.id!r} is missing source field {source!r} "
+                    f"for destination {destination!r}."
+                )
+            else:
+                custom[destination] = original[source]
+        return fastcopy(supervision, custom=custom)
 
 
 def count_input_cfg_levels(config: Union[DictConfig, dict]) -> int:

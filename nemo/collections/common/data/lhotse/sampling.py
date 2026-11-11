@@ -625,7 +625,6 @@ class SpeakerFilter:
 class ContextSpeakerSimilarityFilter:
     """
     Callable, returns ``True`` if a cut's context speaker similarity is greater than min_context_speaker_similarity and ``False`` otherwise.
-    A cut tagged ``skip_context_speaker_similarity_filter: true`` bypasses this filter only.
     Acts as a pass-through for objects of other type than Cut.
     """
 
@@ -633,8 +632,6 @@ class ContextSpeakerSimilarityFilter:
         self.min_context_speaker_similarity = ifnone(min_context_speaker_similarity, -1)
 
     def __call__(self, example) -> bool:
-        if isinstance(example, MonoCut) and getattr(example, "skip_context_speaker_similarity_filter", False):
-            return True
         if (
             isinstance(example, MonoCut)
             and len(example.supervisions) > 0

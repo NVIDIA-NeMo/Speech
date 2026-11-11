@@ -1813,9 +1813,9 @@ audio payload, configure:
 **Filtering.** ``max_cer``, ``min_context_speaker_similarity``, ``keep``.
 
 To exempt a source from context speaker similarity filtering, set
-``skip_context_speaker_similarity_filter: true`` in its input YAML ``tags``.
-This is useful for crosslingual reference speech: similarity metadata is
-preserved, and speaker exclusions, CER, and other filters still apply.
+``supervision_field_mapping: {context_speaker_similarity: null}`` in its input
+YAML entry. This removes the similarity field for that source; speaker
+exclusions, CER, and other filters still apply.
 
 For exact types and defaults, see the dataclass definition in the source
 file — it is the single source of truth.

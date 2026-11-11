@@ -65,6 +65,7 @@ from nemo.collections.common.data.lhotse.sampling import (
     MultimodalFixedBucketBatchSizeConstraint2D,
     MultimodalSamplingConstraint,
     SpeakerFilter,
+    SupervisionCustomFilter,
     TokenCountFilter,
     TokenPerSecondFilter,
     TokenPerTokenFilter,
@@ -174,6 +175,8 @@ class LhotseDataLoadingConfig:
     # 2.3 Filters on CER and/or cosine speaker similarity of the context audio serving for TTS use cases.
     max_cer: float | None = float("inf")
     min_context_speaker_similarity: float | None = -1
+    # Required values for present custom fields on the first supervision; missing fields pass through.
+    supervision_filters: dict[str, Any] | None = None
     excluded_speaker_ids: Any = None
     speaker_filter_fields: list[str] | None = None
     # Reject missing/non-string raw or non-null normalized supervision text.
@@ -956,6 +959,7 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     # Duration filtering, same as native NeMo dataloaders.
     # We can filter after the augmentations because they are applied only when calling load_audio().
     cuts = cuts.filter(DurationFilter(config.min_duration, config.max_duration))
+    cuts = cuts.filter(SupervisionCustomFilter(config.supervision_filters))
     cuts = cuts.filter(
         TokenCountFilter(
             config.min_tokens,

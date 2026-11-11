@@ -324,46 +324,10 @@ def parse_group(grp_cfg: DictConfig, propagate_attrs: dict) -> [CutSet, bool]:
             grp_cfg.input_cfg,
             propagate_attrs=propagate_attrs,
         )
-    # Filter each source before mixing, without changing its manifest or sibling sources.
-    if (required := grp_cfg.get("supervision_filters")) is not None:
-        predicate = SupervisionCustomFilter(required)
-        if predicate.required:
-            cuts = cuts.filter(predicate)
     # Attach extra tags to every utterance dynamically, if provided.
     if (extra_tags := grp_cfg.get("tags")) is not None:
         cuts = cuts.map(partial(attach_tags, tags=extra_tags), apply_fn=None)
     return cuts, is_tarred
-
-
-class SupervisionCustomFilter:
-    """Require exact custom-field values on every supervision; reject missing fields.
-
-    Configured with ``supervision_filters`` on an input_cfg source or group.
-    Non-audio examples and cuts without supervisions are rejected when enabled.
-    An empty mapping disables filtering. Values must be YAML scalars, with exact
-    type matching (in particular, bool values do not match integers or strings).
-    """
-
-    def __init__(self, required: Mapping):
-        if not isinstance(required, Mapping) or any(
-            not isinstance(key, str) or type(value) not in (bool, int, float, str, type(None))
-            for key, value in required.items()
-        ):
-            raise ValueError("supervision_filters must map string custom-field names to scalar values.")
-        self.required = dict(required)
-
-    def __call__(self, example) -> bool:
-        if not self.required:
-            return True
-        if not isinstance(example, Cut) or not example.supervisions:
-            return False
-        return all(
-            key in (supervision.custom or {})
-            and type(supervision.custom[key]) is type(expected)
-            and supervision.custom[key] == expected
-            for supervision in example.supervisions
-            for key, expected in self.required.items()
-        )
 
 
 def _resolve_index_pack(config) -> Path | None:

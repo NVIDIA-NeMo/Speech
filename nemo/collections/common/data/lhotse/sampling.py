@@ -17,7 +17,7 @@ import math
 from bisect import bisect_left
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 from lhotse.cut import Cut, MonoCut
@@ -528,6 +528,34 @@ class EmptyTextFilter:
             if normalized is not None and not isinstance(normalized, str):
                 return False
         return True
+
+
+class SupervisionCustomFilter:
+    """Check configured custom-field values on the first supervision, skipping missing fields.
+
+    Values must be scalars with exactly matching types: bool values do not match
+    integers or strings. Non-audio examples and cuts without supervisions pass
+    through. A null or empty ``supervision_filters`` mapping disables filtering.
+    """
+
+    def __init__(self, required: Mapping | None = None):
+        if required is None:
+            required = {}
+        if not isinstance(required, Mapping) or any(
+            not isinstance(key, str) or type(value) not in (bool, int, float, str, type(None))
+            for key, value in required.items()
+        ):
+            raise ValueError("supervision_filters must map string custom-field names to scalar values.")
+        self.required = dict(required)
+
+    def __call__(self, example) -> bool:
+        if not self.required or not isinstance(example, Cut) or not example.supervisions:
+            return True
+        custom = example.supervisions[0].custom or {}
+        return all(
+            key not in custom or (type(custom[key]) is type(expected) and custom[key] == expected)
+            for key, expected in self.required.items()
+        )
 
 
 class CERFilter:

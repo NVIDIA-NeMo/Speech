@@ -20,6 +20,7 @@ import pytest
 pytest.importorskip("vllm_omni")
 
 from easymagpie_vllm_omni.pipeline import (  # noqa: E402
+    EASYMAGPIE_CFG_ASYNC_EAGER_PIPELINE,
     EASYMAGPIE_CFG_PIPELINE,
     EASYMAGPIE_LM_PIPELINE,
     EASYMAGPIE_PIPELINE,
@@ -57,15 +58,61 @@ def test_cfg_pipeline_requires_explicit_selection_and_keeps_standard_pipeline() 
     assert EASYMAGPIE_PIPELINE.stages[0].scheduler_cls.endswith(".EasyMagpieARAsyncScheduler")
 
 
-def test_plugin_registers_only_standard_lm_and_cfg_pipelines(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the removed diagnostic topology out of the plugin registry."""
+def test_plugin_registers_explicit_cfg_profiles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Register the opt-in async profile alongside the unchanged defaults."""
     import vllm_plugin_easymagpie_omni
     from vllm_omni.config import pipeline_registry
 
     registered = []
     monkeypatch.setattr(pipeline_registry, "register_pipeline", registered.append)
     vllm_plugin_easymagpie_omni._register_pipeline()
-    assert [pipeline.model_type for pipeline in registered] == ["easymagpie", "easymagpie_lm", "easymagpie_cfg"]
+    assert [pipeline.model_type for pipeline in registered] == [
+        "easymagpie",
+        "easymagpie_lm",
+        "easymagpie_cfg",
+        "easymagpie_cfg_async_eager",
+    ]
+
+
+def test_async_eager_cfg_profile_resolves_restricted_execution() -> None:
+    from conftest import EASYMAGPIE_ROOT
+    from vllm_omni.config.stage_config import load_deploy_config, merge_pipeline_deploy
+
+    pipeline = EASYMAGPIE_CFG_ASYNC_EAGER_PIPELINE
+    assert pipeline.hf_architectures == ()
+    assert pipeline.validate() == []
+    assert pipeline.stages[1] == EASYMAGPIE_CFG_PIPELINE.stages[1]
+    assert EASYMAGPIE_CFG_PIPELINE.stages[0].scheduler_cls.endswith(".EasyMagpieCFGScheduler")
+    deploy = load_deploy_config(EASYMAGPIE_ROOT / "deploy/easymagpie_cfg_async_eager.yaml")
+    assert deploy.pipeline == pipeline.model_type
+    acoustic, codec = merge_pipeline_deploy(pipeline, deploy)
+    assert acoustic.scheduler_cls == "easymagpie_vllm_omni.cfg_async_scheduler.EasyMagpieCFGAsyncScheduler"
+    assert acoustic.yaml_engine_args["async_scheduling"] is True
+    assert codec.yaml_engine_args["async_scheduling"] is False
+    assert acoustic.yaml_engine_args["max_num_seqs"] == 64
+    assert codec.yaml_engine_args["max_num_seqs"] == 32
+    assert acoustic.yaml_engine_args["worker_cls"] == "easymagpie_vllm_omni.runner.EasyMagpieGPUARWorker"
+    for stage in (acoustic, codec):
+        args = stage.yaml_engine_args
+        assert args["enforce_eager"] is True
+        assert args["compilation_config"] == {"mode": 0, "cudagraph_mode": "NONE"}
+        assert args["distributed_executor_backend"] == "uni"
+        assert args["enable_prefix_caching"] is False
+        assert args["enable_chunked_prefill"] is False
+        assert stage.yaml_runtime["env"]["VLLM_USE_V2_MODEL_RUNNER"] == "0"
+    assert acoustic.yaml_engine_args["max_model_len"] == 4096
+    assert acoustic.yaml_engine_args["max_num_batched_tokens"] == 8192
+    assert codec.yaml_engine_args["max_model_len"] == codec.yaml_engine_args["max_num_batched_tokens"] == 2048
+    assert acoustic.yaml_extras["default_sampling_params"]["max_tokens"] == 2048
+
+
+def test_general_plugin_load_registers_async_profile() -> None:
+    from vllm.plugins import load_general_plugins
+    from vllm_omni.config.pipeline_registry import OMNI_PIPELINES
+
+    load_general_plugins()
+    assert OMNI_PIPELINES["easymagpie_cfg_async_eager"] == EASYMAGPIE_CFG_ASYNC_EAGER_PIPELINE
+    assert OMNI_PIPELINES["easymagpie_cfg"] == EASYMAGPIE_CFG_PIPELINE
 
 
 def test_cfg_synthesis_deployment_uses_compiled_synchronous_paired_execution() -> None:

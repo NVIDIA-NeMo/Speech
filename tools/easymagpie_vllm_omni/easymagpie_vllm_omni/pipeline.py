@@ -137,3 +137,16 @@ EASYMAGPIE_CFG_PIPELINE = replace(
         EASYMAGPIE_PIPELINE.stages[1],
     ),
 )
+
+# Restricted complete-text reference; never selected by architecture detection.
+EASYMAGPIE_CFG_ASYNC_EAGER_PIPELINE = replace(
+    EASYMAGPIE_CFG_PIPELINE,
+    model_type="easymagpie_cfg_async_eager",
+    stages=(
+        replace(
+            EASYMAGPIE_CFG_PIPELINE.stages[0],
+            scheduler_cls="easymagpie_vllm_omni.cfg_async_scheduler.EasyMagpieCFGAsyncScheduler",
+        ),
+        EASYMAGPIE_CFG_PIPELINE.stages[1],
+    ),
+)

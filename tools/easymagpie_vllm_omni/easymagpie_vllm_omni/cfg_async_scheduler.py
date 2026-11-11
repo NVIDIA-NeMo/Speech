@@ -24,8 +24,8 @@ from vllm_omni.core.sched.omni_ar_scheduler import OmniARScheduler
 class EasyMagpieCFGAsyncScheduler(EasyMagpieCFGScheduler, AsyncScheduler):
     """Atomic CFG admission with native async counters and fenced retirement.
 
-    Only an explicit scheduler_cls selection can construct this class. The shipped
-    CFG topology remains synchronous until the P3 integration gate is complete.
+    Selected by the opt-in easymagpie_cfg_async_eager topology. The ordinary CFG
+    topology retains synchronous scheduling.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:

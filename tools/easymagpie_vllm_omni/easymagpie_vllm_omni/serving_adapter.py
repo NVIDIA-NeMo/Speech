@@ -31,6 +31,8 @@ logger = logging.getLogger(__name__)
 MODEL_TYPE = "easymagpie"
 _TALKER_STAGE = "easymagpie"
 _TALKER_ARCH = "EasyMagpieTTSForConditionalGeneration"
+_CFG_SCHEDULER = "easymagpie_vllm_omni.cfg_scheduler.EasyMagpieCFGScheduler"
+_ASYNC_CFG_SCHEDULER = "easymagpie_vllm_omni.cfg_async_scheduler.EasyMagpieCFGAsyncScheduler"
 _SERVING_MODULE = "vllm_omni.entrypoints.openai.serving_speech"
 
 _DEFAULT_SPEAKER = "eng"
@@ -190,6 +192,7 @@ def _build_adapter_cls() -> type:
                 speaker_id = (request.voice or _DEFAULT_SPEAKER).strip()
                 prompt["prompt_token_ids"] = [0] * (self._prompt_len(speaker_id) + text_prefill_num)
                 prompt["additional_information"]["speaker_id"] = speaker_id
+                self._validate_async_history(request, len(prompt["prompt_token_ids"]))
                 return PreparedRequest(prompt=prompt, tts_params={}, model_type=MODEL_TYPE)
 
             arch = self._arch()
@@ -210,6 +213,8 @@ def _build_adapter_cls() -> type:
 
         def build_streaming_spec(self, request: OpenAICreateSpeechRequest) -> EasyMagpieStreamingSpec:
             """Build the speaker prefill and tokenizer metadata without complete text."""
+            if self._uses_async_cfg_scheduler():
+                raise ValueError("Async CFG requires complete-text input; incremental/resumable input is unsupported")
             acoustic_info = self._acoustic_info(request)
             if request.ref_audio is not None:
                 raise ValueError("Incremental EasyMagpie input requires a registered speaker, not ref_audio")
@@ -241,20 +246,29 @@ def _build_adapter_cls() -> type:
                 text_prefill_num=text_prefill_num,
             )
 
-        def _uses_cfg_scheduler(self) -> bool:
-            """Check whether Stage 0 uses the paired CFG synthesis scheduler.
-
-            Returns:
-                Whether the requested condition holds.
-            """
+        def _talker_args(self) -> Any:
             engine = getattr(self.ctx, "engine_client", None)
             for stage in getattr(engine, "stage_configs", None) or []:
                 args = getattr(stage, "engine_args", None)
                 if getattr(args, "model_stage", None) == _TALKER_STAGE:
-                    return getattr(args, "scheduler_cls", None) == (
-                        "easymagpie_vllm_omni.cfg_scheduler.EasyMagpieCFGScheduler"
-                    )
-            return False
+                    return args
+            return None
+
+        def _uses_cfg_scheduler(self) -> bool:
+            return getattr(self._talker_args(), "scheduler_cls", None) in (_CFG_SCHEDULER, _ASYNC_CFG_SCHEDULER)
+
+        def _uses_async_cfg_scheduler(self) -> bool:
+            return getattr(self._talker_args(), "scheduler_cls", None) == _ASYNC_CFG_SCHEDULER
+
+        def _validate_async_history(self, request: OpenAICreateSpeechRequest, prompt_len: int) -> None:
+            if not self._uses_async_cfg_scheduler():
+                return
+            bound = request.max_new_tokens
+            if bound is None:
+                defaults = self.ctx.engine_client.default_sampling_params_list
+                bound = defaults[0].max_tokens
+            if prompt_len + bound > self._talker_args().max_model_len:
+                raise ValueError("Async CFG full history exceeds max_model_len; lower max_new_tokens")
 
         def _acoustic_info(self, request: OpenAICreateSpeechRequest) -> dict[str, Any]:
             """Validate acoustic request settings and the converted CFG artifact contract.
@@ -274,7 +288,7 @@ def _build_adapter_cls() -> type:
                 raise ValueError("The V2 CFG pipeline requires a registered speaker with a precomputed embedding")
             if settings.use_cfg:
                 if not self._uses_cfg_scheduler():
-                    raise ValueError("CFG requires the easymagpie_cfg pipeline; select deploy/easymagpie_cfg.yaml")
+                    raise ValueError("CFG requires the easymagpie_cfg or easymagpie_cfg_async_eager pipeline")
                 config = self._model_config()
                 capability = config.get("cfg_capability")
                 if capability is None:

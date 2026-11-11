@@ -59,6 +59,58 @@ def adapter(tmp_path: Path) -> Any:
     return instance
 
 
+@pytest.fixture
+def async_adapter(adapter: Any) -> Any:
+    args = adapter.ctx.engine_client.stage_configs[0].engine_args
+    args.scheduler_cls = "easymagpie_vllm_omni.cfg_async_scheduler.EasyMagpieCFGAsyncScheduler"
+    args.max_model_len = 512
+    adapter.ctx.engine_client.default_sampling_params_list = [SamplingParams(max_tokens=128)]
+    return adapter
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_cfg", [True, False])
+async def test_async_http_cfg_profile_accepts_complete_text(async_adapter: Any, use_cfg: bool) -> None:
+    request = OpenAICreateSpeechRequest(input="hello", voice="demon", extra_params={"use_cfg": use_cfg})
+    assert async_adapter.validate(request) is None
+    prepared = await async_adapter.build(request, [], False)
+    assert prepared.prompt["additional_information"]["use_cfg"] is use_cfg
+    assert prepared.prompt["additional_information"]["speaker_id"] == "demon"
+
+
+@pytest.mark.parametrize("use_cfg", [True, False])
+def test_async_cfg_profile_rejects_incremental_before_generation(async_adapter: Any, use_cfg: bool) -> None:
+    request = OpenAICreateSpeechRequest(input="", voice="demon", extra_params={"use_cfg": use_cfg})
+    with pytest.raises(ValueError, match="complete.text"):
+        async_adapter.build_streaming_spec(request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested", [511, None])
+async def test_async_http_history_bound_rejected_before_generation(async_adapter: Any, requested: int | None) -> None:
+    if requested is None:
+        async_adapter.ctx.engine_client.default_sampling_params_list[0].max_tokens = 511
+    request = OpenAICreateSpeechRequest(input="hello", voice="demon", max_new_tokens=requested)
+    with pytest.raises(ValueError, match="full history exceeds max_model_len"):
+        await async_adapter.build(request, [], False)
+
+
+@pytest.mark.asyncio
+async def test_async_http_history_bound_includes_prompt(async_adapter: Any) -> None:
+    request = OpenAICreateSpeechRequest(input="hello", voice="demon", max_new_tokens=510)
+    prepared = await async_adapter.build(request, [], False)
+    assert len(prepared.prompt["prompt_token_ids"]) == 2
+
+
+def test_async_cfg_profile_checks_capability_and_reference(async_adapter: Any) -> None:
+    request = OpenAICreateSpeechRequest(input="hello", extra_params={"use_cfg": True})
+    async_adapter._model_config_cache.pop("cfg_capability")
+    assert "reconvert" in async_adapter.validate(request)
+    request.extra_params = {"use_cfg": False}
+    request.ref_audio = "data:audio/wav;base64,AAAA"
+    assert "registered speaker" in async_adapter.validate(request)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scale", [0, 1, 2.5])
 async def test_http_cfg_settings_reach_prompt(

@@ -218,6 +218,64 @@ def test_compact_eos_is_shared_and_non_audio_rows_use_mask() -> None:
     assert result.tolist() == [[7], [7]]
 
 
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_controlled_stochastic_cfg_draws_follow_logical_owners_after_reordering(
+    monkeypatch: pytest.MonkeyPatch, device: str
+) -> None:
+    """Match guided sampling and both histories' feedback using request-owned draws."""
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+    # Physical rows: private A, conditional-only, public B, public A, private B.
+    logits = torch.tensor(
+        [[[0, 1, 2, -20]], [[1, 1.5, 2, -20]], [[2, 1, 1.5, -20]], [[1, 2, 0, -20]], [[0, 1, 0, -20]]],
+        dtype=torch.float32,
+        device=device,
+    )
+    owners = ["a", "plain", "b", "a", "b"]
+    public = {"a": 3, "b": 2, "plain": 1}
+    private = {"a": 0, "b": 4, "plain": 1}
+    scales = {"a": 2.5, "b": 1.5, "plain": 1.0}
+    temperatures = {"a": 0.7, "b": 1.1, "plain": 0.4}
+    cutoffs = {"a": 2, "b": 3, "plain": 1}
+    draws = {"a": [0.91, 0.3, 0.7, 0.1], "b": [0.2, 0.96, 0.4, 0.1], "plain": [0.8, 0.6, 0.3, 0.1]}
+    expected = {}
+    for owner in public:
+        guided = scales[owner] * logits[public[owner]] + (1 - scales[owner]) * logits[private[owner]]
+        cutoff = guided.topk(cutoffs[owner], dim=-1).values[..., -1:]
+        guided = guided.masked_fill(guided < cutoff, -torch.inf)
+        uniform = torch.tensor(draws[owner], device=device)
+        gumbel = -(-uniform.log()).log()
+        expected[owner] = (guided / temperatures[owner] + gumbel).argmax().item()
+
+    for order in ([0, 1, 2, 3, 4], [2, 4, 3, 0, 1]):
+        logical_order = [owners[row] for row in order if row in public.values()]
+        calls = []
+
+        def controlled_draws(tensor, *args):
+            calls.append(tuple(logical_order))
+            return tensor.copy_(torch.tensor([draws[owner] for owner in logical_order], device=device)[:, None])
+
+        monkeypatch.setattr(torch.Tensor, "uniform_", controlled_draws)
+        predictor, _, embedder = _predictor([logits[order], logits[order]], device)
+        pairing = CFGPairingLayout(
+            ("a", "b"),
+            tuple((order.index(public[owner]),) for owner in ("a", "b")),
+            tuple((order.index(private[owner]),) for owner in ("a", "b")),
+        )
+        codes = predictor.generate_codes(
+            torch.zeros(5, 2, device=device),
+            positions=torch.zeros(5, dtype=torch.long, device=device),
+            pairing=pairing,
+            cfg_scale=torch.tensor([scales[owners[row]] for row in order], device=device),
+            temperature=torch.tensor([temperatures[owners[row]] for row in order], device=device),
+            top_k=torch.tensor([cutoffs[owners[row]] for row in order], device=device),
+        )
+        expected_codes = torch.tensor([[expected[owners[row]]] * 2 for row in order], device=device)
+        torch.testing.assert_close(codes, expected_codes, rtol=0, atol=0)
+        assert calls == [tuple(logical_order)] * 2
+        torch.testing.assert_close(embedder.inputs[0], expected_codes[:, :1], rtol=0, atol=0)
+
+
 def test_pure_prefill_advances_both_predictor_histories_with_mask() -> None:
     """Verify pure prefill advances both predictor histories with mask."""
     predictor, blocks, embedder = _predictor([torch.zeros(4, 1, 4)] * 2)

@@ -1122,6 +1122,31 @@ class TestGetTokenizerForLanguage:
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "language, expected",
+        [
+            ("ar-en", "arabic_MSA_chartokenizer+english_phoneme"),
+            ("ar-MSA-en", "arabic_MSA_chartokenizer+english_phoneme"),
+            ("ar-SA-en", "arabic_SA_chartokenizer+english_phoneme"),
+            ("ar-AE-en", "arabic_AE_chartokenizer+english_phoneme"),
+        ],
+    )
+    def test_arabic_english_code_switching_resolves_to_tokenizer_pair(self, language, expected):
+        assert get_tokenizer_for_language(language, self.ARABIC_V2607_TOKENIZERS) == expected
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_code_switching_pair_needs_both_tokenizers(self):
+        # Dialect pair falls back to the MSA pair when the dialect tokenizer is missing.
+        assert (
+            get_tokenizer_for_language("ar-SA-en", ["english_phoneme", "arabic_MSA_chartokenizer"])
+            == "arabic_MSA_chartokenizer+english_phoneme"
+        )
+        # Without english_phoneme no pair is available, so the regular default applies.
+        assert get_tokenizer_for_language("ar-en", ["arabic_MSA_chartokenizer"]) == "arabic_MSA_chartokenizer"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
     def test_arabic_keeps_default_fallback_without_arabic_tokenizer(self):
         assert get_tokenizer_for_language("ar", ["english_phoneme", "german_phoneme"]) == "english_phoneme"
 

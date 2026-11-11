@@ -49,6 +49,14 @@ Classifier-free guidance (CFG) [2]_ provides another dimension of control over t
 
 Magpie-TTS is designed for multilingual synthesis from the ground up. The model uses a flexible tokenization scheme that can handle multiple languages, with support for language-specific phoneme tokenizers as well as universal byte-level tokenization. This enables training on diverse multilingual datasets and synthesizing speech in languages beyond English. The 357M parameter multilingual checkpoint available on Hugging Face demonstrates these capabilities across a range of languages.
 
+Arabic text that contains English words can be synthesized with the opt-in language codes ``ar-en`` (``ar-MSA-en``), ``ar-SA-en`` and ``ar-AE-en``. These select a code-switching tokenizer pair such as ``arabic_MSA_chartokenizer+english_phoneme``: Latin-script words and phrases are tokenized with ``english_phoneme`` (with deterministic G2P), and everything else, including digits and Arabic punctuation, with the Arabic char tokenizer (ASCII punctuation right after an English word, such as a final ``.``, stays with the English word). Both tokenizers are already part of the multilingual checkpoint, so no fine-tuning is needed. The plain Arabic codes (``ar``, ``ar-SA``, ``ar-AE``) keep tokenizing the whole sentence with the Arabic char tokenizer. With ``examples/tts/magpietts_inference.py``, set the pair through the dataset's ``tokenizer_names``, for example ``"tokenizer_names": ["arabic_SA_chartokenizer+english_phoneme"]``.
+
+.. code-block:: python
+
+    audio, audio_len = model.do_tts(
+        "وش الفرق بين ال credit card وال debit card؟", language="ar-SA-en", apply_TN=False, speaker_index=0
+    )
+
 Long-form speech generation (beta) is supported by Magpie-TTS for English language only. This feature is currently in beta. The long input text should have punctuation, especially sentence boundaries. See the :doc:`Longform Inference Guide <magpietts-longform>` for detailed usage instructions.
 
 Training

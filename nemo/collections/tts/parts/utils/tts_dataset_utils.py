@@ -43,6 +43,7 @@ from nemo.collections.asr.parts.mixins.transcription import TranscribeConfig
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.common.parts.utils import mask_sequence_tensor
+from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import split_code_switch_tokenizer_name
 
 try:
     from nemo_text_processing.text_normalization.normalize import Normalizer
@@ -943,6 +944,12 @@ LANGUAGE_TOKENIZER_MAP: Dict[str, List[str]] = {
     "zh": ["mandarin_phoneme", "mandarin", "chinese"],
     "hi": ["hindi_chartokenizer", "hindi", "hindi_phoneme"],
     "ja": ["japanese_phoneme", "japanese"],
+    # Opt-in Arabic-English code-switching: Latin-script words are tokenized with english_phoneme, the rest with
+    # the Arabic char tokenizer (see AggregatedTTSTokenizer.encode_code_switched).
+    "ar-en": ["arabic_MSA_chartokenizer+english_phoneme"],
+    "ar-MSA-en": ["arabic_MSA_chartokenizer+english_phoneme"],
+    "ar-SA-en": ["arabic_SA_chartokenizer+english_phoneme", "arabic_MSA_chartokenizer+english_phoneme"],
+    "ar-AE-en": ["arabic_AE_chartokenizer+english_phoneme", "arabic_MSA_chartokenizer+english_phoneme"],
 }
 
 
@@ -956,6 +963,7 @@ def get_tokenizer_for_language(
 
     Searches language_tokenizer_map for candidate tokenizers and returns
     the first one available. Falls back to default if no match found.
+    A code-switching candidate ``"<primary>+<latin>"`` is available when both of its tokenizers are.
 
     Args:
         language: Language code (e.g., "en", "de", "zh").
@@ -974,7 +982,7 @@ def get_tokenizer_for_language(
         if isinstance(candidates, str):
             candidates = [candidates]
         for candidate in candidates:
-            if candidate in available_tokenizers:
+            if _is_tokenizer_available(candidate, available_tokenizers):
                 return candidate
 
     # Fallback to default if available, else first available
@@ -1376,3 +1384,11 @@ class WhisperTranscriber(Transcriber):
             transcriptions = self.processor.batch_decode(predicted_ids, skip_special_tokens=True)
             all_transcriptions.extend(transcriptions)
         return all_transcriptions
+
+
+def _is_tokenizer_available(tokenizer_name: str, available_tokenizers: List[str]) -> bool:
+    """Whether a tokenizer name, or every part of a code-switching ``"<primary>+<latin>"`` name, is available."""
+    if tokenizer_name in available_tokenizers:
+        return True
+    parts = split_code_switch_tokenizer_name(tokenizer_name)
+    return parts is not None and all(part in available_tokenizers for part in parts)

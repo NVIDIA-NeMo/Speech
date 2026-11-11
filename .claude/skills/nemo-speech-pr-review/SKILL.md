@@ -150,11 +150,41 @@ Each rule is a position the maintainers enforced repeatedly. General good practi
   example. Doc commands must run as written.
 - **Revert unrelated changes,** especially reformatting from a different `black` version.
 
+## Approval guardrails
+
+Approve without a maintainer only additive work: placed per the collection layout, opt-in, built on existing code,
+and tested and documented. Map every changed path, default, signature, and serialized name against the PR
+description.
+
+**Never approve.** Each of these is blocking:
+
+- Changes the description does not explain.
+- Broken released checkpoints, such as renamed keys, classes, or import paths, or changed tokenizer IDs. A back-compat
+  path tested against an old artifact is the only exception.
+- A change to the default computation of a shared module that is not opt-in.
+- Model-specific names or constants in shared code.
+- Swallowed failures or silent fallbacks.
+- Tests weakened to get CI passing.
+- Mechanical sweeps across the repository.
+- Internal paths, internal datasets, or names of unreleased models.
+
+**Leave approval to a maintainer.** Review fully, then name what triggered the guardrail and the decision the
+maintainer needs to make.
+
+- An existing model's defaults, numerics, or outputs change. Ask for before-and-after metrics on a released
+  checkpoint.
+- A public contract changes or is removed. Additions are fine.
+- The behavior of shared infrastructure changes: `nemo/core`, base models, mixins, data loading, or distributed sync.
+- The change sprawls across files or collections, or bundles independent changes.
+- The change reorganizes code: a new package, moved modules, or a duplicate implementation.
+- Dependencies, the build, or CI change.
+- Third-party code is added, which needs a license check.
+
 ## Severity guide
 
 | Severity | Examples |
 |---|---|
-| **Blocking** | Wrong results; silent data loss; broken released checkpoints, defaults, or public APIs; untested behavior changes; an optional dependency that breaks import; missing DCO sign-off. |
+| **Blocking** | Wrong results; silent data loss; broken released checkpoints, defaults, or public APIs; untested behavior changes; an optional dependency that breaks import; missing DCO sign-off; anything under "Never approve". |
 | **Should fix** | Any other principle violation. |
 | **Nitpick** | Wording and minor readability. Label as optional. |
 
@@ -165,5 +195,6 @@ Each rule is a position the maintainers enforced repeatedly. General good practi
   summary.
 - State what you verified and what you did not.
 - No findings is fine. Never invent issues to look thorough.
-- Recommend approval only when the review is complete; otherwise distinguish blocking findings, non-blocking
-  findings, and an incomplete review through the formal review contract.
+- Recommend approval only when the review is complete and no approval guardrail applies; otherwise distinguish
+  blocking findings, non-blocking findings, a needed maintainer decision, and an incomplete review through the formal
+  review contract.

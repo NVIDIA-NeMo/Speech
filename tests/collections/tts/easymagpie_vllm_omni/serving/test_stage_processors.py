@@ -311,3 +311,44 @@ def test_filter_drops_only_no_audio_sentinel_rows():
 def test_filter_rejects_malformed_stage0_codes():
     with pytest.raises(ValueError, match=r"\[frames, codebooks\]"):
         _filter_audio_codes(torch.zeros(2, dtype=torch.long))
+
+
+@pytest.mark.parametrize("live_finished", [False, True])
+def test_queued_codec_frames_use_captured_finish_flag(live_finished):
+    """A slow sender must not flush old frames using the request's later status."""
+    manager = _manager()
+    manager.connector.config["extra"]["codec_chunk_frames"] = 4
+    request = _Request()
+    request.resumable = False
+    request.finished = live_finished
+    outputs = []
+    for value in range(1, 8):
+        output = talker2code2wav_async_chunk(manager, _output(value), request, is_finished=value == 7)
+        if output is not None:
+            outputs.append(output)
+    actual = torch.cat([output.codes.audio for output in outputs])
+    expected = torch.tensor([[value, value + 100] for value in range(3, 8)])
+    torch.testing.assert_close(actual, expected)
+    assert [bool(output.meta.finished) for output in outputs] == [False, True]
+    assert request.external_req_id not in manager._emp_seen_frames
+
+
+def test_queued_nonterminal_empty_payload_ignores_later_request_finish():
+    manager = _manager()
+    request = _Request()
+    request.resumable = False
+    request.finished = True
+    assert talker2code2wav_async_chunk(manager, None, request, is_finished=False) is None
+
+
+def test_direct_codec_call_without_finish_flag_infers_live_request_status():
+    manager = _manager()
+    manager.config.hf_config.streaming_speech_delay = 0
+    request = _Request()
+    request.resumable = False
+    assert talker2code2wav_async_chunk(manager, _output(1), request) is None
+    request.finished = True
+    output = talker2code2wav_async_chunk(manager, None, request)
+    torch.testing.assert_close(output.codes.audio, torch.tensor([[1, 101]]))
+    assert bool(output.meta.finished)
+    assert request.external_req_id not in manager._emp_seen_frames

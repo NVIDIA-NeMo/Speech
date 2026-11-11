@@ -2267,12 +2267,13 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             # (token_loss_weight torch.where overwrites the original seq_mask zeroing)
             loss_scale = loss_scale * seq_mask.float()
             if compute_asr_for_batch:
+                # prepare_labels remaps user EOS to text EOS in the ASR labels.
                 asr_loss_scale = torch.where(
                     asr_labels.unsqueeze(-1) == self.text_pad_id, pad_weight,
                     torch.where(
                         asr_labels.unsqueeze(-1) == self.user_bos_id, bos_weight,
                         torch.where(
-                            asr_labels.unsqueeze(-1) == self.user_eos_id, eos_weight,
+                            asr_labels.unsqueeze(-1) == self.text_eos_id, eos_weight,
                             text_weight
                         )
                     )

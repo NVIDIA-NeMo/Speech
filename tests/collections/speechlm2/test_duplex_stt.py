@@ -172,6 +172,21 @@ def model_with_asr():
     """Model fixture with ASR head enabled."""
     return create_model(predict_user_text=True)
 
+
+def test_asr_loss_uses_eos_weight_after_label_remapping(model_with_asr, dataset, training_cutset_batch):
+    model = model_with_asr
+    assert model.user_eos_id != model.text_eos_id
+    model.cfg.token_loss_weight = {"eos": 10.0, "text": 1.0}
+    batch = move_data_to_device(dataset[training_cutset_batch], device=model.device)
+
+    with torch.no_grad():
+        inputs = model.prepare_inputs(batch)
+
+    eos_positions = (inputs["asr_labels"] == model.text_eos_id) & inputs["seq_mask"].squeeze(-1).bool()
+    assert eos_positions.any()
+    assert (inputs["asr_loss_scale"].squeeze(-1)[eos_positions] == 10.0).all()
+
+
 def test_s2s_speech_decoder_training_step_with_asr(model_with_asr, dataset, training_cutset_batch):
     # Model is initialized with ASR head enabled
     model_with_asr.on_train_epoch_start()

@@ -1,0 +1,73 @@
+# SPDX-FileCopyrightText: Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Adapted from examples/asr/conf/conformer/conformer_ctc_char.yaml.
+# Small character-level model for a pipeline smoke test, not an accuracy baseline.
+model:
+  sample_rate: 16000
+  labels: [" ", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
+           "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "'"]
+  log_prediction: false
+  ctc_reduction: mean_batch
+  train_ds:
+    manifest_filepath: ???
+    labels: ${model.labels}
+    sample_rate: ${model.sample_rate}
+    batch_size: 8
+    shuffle: true
+    num_workers: 0
+    pin_memory: true
+  validation_ds:
+    manifest_filepath: ???
+    labels: ${model.labels}
+    sample_rate: ${model.sample_rate}
+    batch_size: 8
+    shuffle: false
+    num_workers: 0
+  test_ds:
+    manifest_filepath: ???
+    labels: ${model.labels}
+    sample_rate: ${model.sample_rate}
+    batch_size: 8
+    shuffle: false
+    num_workers: 0
+  preprocessor:
+    _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
+    sample_rate: ${model.sample_rate}
+    normalize: per_feature
+    window_size: 0.025
+    window_stride: 0.01
+    window: hann
+    features: 80
+    n_fft: 512
+    dither: 0.00001
+  spec_augment:
+    _target_: nemo.collections.asr.modules.SpectrogramAugmentation
+    freq_masks: 2
+    time_masks: 2
+    freq_width: 27
+    time_width: 0.05
+  encoder:
+    _target_: nemo.collections.asr.modules.ConformerEncoder
+    feat_in: ${model.preprocessor.features}
+    feat_out: -1
+    n_layers: 4
+    d_model: 128
+    subsampling: striding
+    subsampling_factor: 4
+    subsampling_conv_channels: -1
+    ff_expansion_factor: 4
+    self_attention_model: rel_pos
+    n_heads: 4
+    att_context_size: [-1, -1]
+    conv_kernel_size: 31
+    dropout: 0.1
+  decoder:
+    _target_: nemo.collections.asr.modules.ConvASRDecoder
+    feat_in: null
+    num_classes: -1
+    vocabulary: ${model.labels}
+  optim:
+    name: adamw
+    lr: 0.001
+    betas: [0.9, 0.98]
+    weight_decay: 0.001

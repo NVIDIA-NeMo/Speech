@@ -348,14 +348,12 @@ class EasyMagpieGPUARModelRunner(GPUARModelRunner):
 class EasyMagpieGPUARWorker(GPUARWorker):
     """GPU AR worker that constructs :class:`EasyMagpieGPUARModelRunner`."""
 
-    runner_cls = EasyMagpieGPUARModelRunner
-
     def init_device(self):
         # GPUARWorker hardcodes its module-level GPUARModelRunner symbol rather
         # than exposing a runner-class hook. Swap it only while the base method
         # constructs this worker's runner; each worker lives in its own process.
         original_runner_cls = gpu_ar_worker.GPUARModelRunner
-        gpu_ar_worker.GPUARModelRunner = self.runner_cls
+        gpu_ar_worker.GPUARModelRunner = EasyMagpieGPUARModelRunner
         try:
             return super().init_device()
         finally:

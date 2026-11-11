@@ -144,6 +144,7 @@ runs:
           --env HYDRA_FULL_ERROR=1 \
           --env HF_HOME=/home/TestData/HF_HOME \
           --env RUN_ID=${{ github.run_id }} \
+          --env CI_EVENT_NAME=${{ github.event_name }} \
           --volume $(pwd)/${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo:/workspace \
           --volume ${{ inputs.test-data-path }}:/home/TestData ${{ inputs.image }} \
           bash -c "sleep $(( ${{ inputs.timeout }} * 60 + 60 ))"
@@ -187,7 +188,9 @@ runs:
       uses: nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08 # v3
       with:
         timeout_seconds: ${{ steps.create.outputs.timeout_in_seconds }}
-        max_attempts: 3
+        # Do not retry timeouts: a hung test would rerun in full and burn three job timeouts. pytest-timeout
+        # (see `[tool.pytest.ini_options]`) fails individual hung tests long before the job timeout.
+        max_attempts: 1
         shell: bash
         retry_on: timeout
         command: /bin/bash ${{ github.run_id }}/job.sh

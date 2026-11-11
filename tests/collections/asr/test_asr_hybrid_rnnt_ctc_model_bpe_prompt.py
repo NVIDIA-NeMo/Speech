@@ -280,6 +280,42 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
         assert torch.max(torch.abs(out_from_prompt - out_from_indices)) <= 1e-6
 
     @pytest.mark.unit
+    def test_language_prompt_names_match_deprecated_names(self, hybrid_asr_model_with_prompt):
+        """``language_prompt_*`` are the primary names; ``prompt`` / ``prompt_indices`` are deprecated aliases."""
+        hybrid_asr_model_with_prompt = hybrid_asr_model_with_prompt.eval()
+        hybrid_asr_model_with_prompt.preprocessor.featurizer.dither = 0.0
+        hybrid_asr_model_with_prompt.preprocessor.featurizer.pad_to = 0
+
+        input_signal = torch.randn(size=(2, 512))
+        length = torch.tensor([512, 400])
+        prompt_indices = torch.tensor([0, 3], dtype=torch.long)
+
+        with torch.no_grad():
+            from_new, _ = hybrid_asr_model_with_prompt.forward(
+                input_signal=input_signal, input_signal_length=length, language_prompt_indices=prompt_indices
+            )
+            from_deprecated, _ = hybrid_asr_model_with_prompt.forward(
+                input_signal=input_signal, input_signal_length=length, prompt_indices=prompt_indices
+            )
+            time_steps = from_new.shape[2]
+            prompt_one_hot = torch.zeros(2, time_steps, hybrid_asr_model_with_prompt.num_prompts)
+            prompt_one_hot.scatter_(2, prompt_indices.view(2, 1, 1).expand(-1, time_steps, -1), 1.0)
+            from_features, _ = hybrid_asr_model_with_prompt.forward(
+                input_signal=input_signal, input_signal_length=length, language_prompt_features=prompt_one_hot
+            )
+
+            with pytest.raises(ValueError, match="not both"):
+                hybrid_asr_model_with_prompt.forward(
+                    input_signal=input_signal,
+                    input_signal_length=length,
+                    language_prompt_indices=prompt_indices,
+                    prompt_indices=prompt_indices,
+                )
+
+        assert torch.equal(from_new, from_deprecated)
+        assert torch.max(torch.abs(from_new - from_features)) <= 1e-6
+
+    @pytest.mark.unit
     def test_predict_step_with_prompt(self, hybrid_asr_model_with_prompt):
         """Exercise the legacy ``.dim() == 3`` branch of predict_step (3D one-hot prompt in the batch)."""
         hybrid_asr_model_with_prompt = hybrid_asr_model_with_prompt.eval()
@@ -332,6 +368,7 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
         reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_save_restore_artifact(self, hybrid_asr_model_with_prompt):
         hybrid_asr_model_with_prompt.train()
 
@@ -350,6 +387,7 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
         reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_save_restore_artifact_spe(self, hybrid_asr_model_with_prompt, test_data_dir):
         hybrid_asr_model_with_prompt.train()
 
@@ -369,6 +407,7 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
             assert new_model.spe_vocab_path.endswith('_tokenizer.vocab')
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_save_restore_artifact_agg(self, hybrid_asr_model_with_prompt, test_data_dir):
         tokenizer_dir = os.path.join(test_data_dir, "asr", "tokenizers", "an4_spe_128")
         tok_en = {"dir": tokenizer_dir, "type": "wpe"}

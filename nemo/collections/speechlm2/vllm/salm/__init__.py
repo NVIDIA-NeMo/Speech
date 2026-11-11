@@ -22,9 +22,23 @@ Registers ``NeMoSpeechLMConfig`` and the single
 A single model class covers every supported backbone family (standard
 decoder-only LLMs like Qwen3, hybrid Mamba+MoE like NemotronH).
 Backbone-specific behavior is selected at instantiation time.
+
+Checkpoints with a ParallelExpertEncoder on a NemotronH backbone name their
+own architecture, ``Nemotron3_5TranscribeForConditionalGeneration``, and their
+MTP draft is ``Nemotron3_5TranscribeMTPModel``, as in vLLM's native
+implementation. The plugin serves both names with the same classes.
 """
 
 import logging
+
+from nemo.collections.speechlm2.vllm.salm.config import (
+    SPEECHLM_ARCHITECTURE,
+    SPEECHLM_MTP_ARCHITECTURE,
+    SPEECHLM_MTP_MODEL_TYPE,
+    TRANSCRIBE_ARCHITECTURE,
+    TRANSCRIBE_MTP_ARCHITECTURE,
+    TRANSCRIBE_MTP_MODEL_TYPE,
+)
 
 _PKG = "nemo.collections.speechlm2.vllm.salm"
 _LOGGER = logging.getLogger(__name__)
@@ -122,7 +136,12 @@ def _nemo_speechlm_mtp_hf_config_override(hf_config):
                     f"checkpoints trained with mtp.use_repeated_layer=true match that "
                     f"execution model."
                 )
-            hf_config.model_type = "nemo_speechlm_mtp"
+            architectures = list(getattr(hf_config, "architectures", None) or [])
+            if architectures == [TRANSCRIBE_ARCHITECTURE]:
+                mtp_model_type, mtp_architecture = TRANSCRIBE_MTP_MODEL_TYPE, TRANSCRIBE_MTP_ARCHITECTURE
+            else:
+                mtp_model_type, mtp_architecture = SPEECHLM_MTP_MODEL_TYPE, SPEECHLM_MTP_ARCHITECTURE
+            hf_config.model_type = mtp_model_type
             hf_config.update(
                 {
                     # vLLM instantiates one physical prediction step and reuses
@@ -130,7 +149,7 @@ def _nemo_speechlm_mtp_hf_config_override(hf_config):
                     # produces exactly that checkpoint layout.
                     "n_predict": 1,
                     "num_nextn_predict_layers": 1,
-                    "architectures": ["NeMoSpeechLMMTPModel"],
+                    "architectures": [mtp_architecture],
                 }
             )
             return hf_config
@@ -160,17 +179,19 @@ def _patch_vllm_for_nemo_speechlm_mtp() -> None:
 
     1. ``MTPModelTypes`` — the Literal type that guards the MTP detection
        branch in ``SpeculativeConfig.__post_init__`` is extended to include
-       ``"nemo_speechlm_mtp"``.
+       ``"nemo_speechlm_mtp"`` and ``"nemotron3_5_transcribe_mtp"``.
 
     2. ``SpeculativeConfig.hf_config_override`` — the static method that
        rewrites the draft-model HF config is wrapped to detect
        ``nemo_speechlm`` checkpoints that carry enabled MTP heads
        (``mtp.enabled`` and ``mtp.num_nextn_predict_layers > 0``) and redirect
        them to the
-       ``NeMoSpeechLMMTPModel`` architecture with the right ``n_predict``.
+       ``NeMoSpeechLMMTPModel`` architecture with the right ``n_predict``
+       (``Nemotron3_5TranscribeMTPModel`` for checkpoints named
+       ``Nemotron3_5TranscribeForConditionalGeneration``).
 
-    3. ``ModelRegistry`` — ``NeMoSpeechLMMTPModel`` is registered so that
-       vLLM can resolve and instantiate it as the draft model.
+    3. ``ModelRegistry`` — both MTP architectures are registered so that
+       vLLM can resolve and instantiate them as the draft model.
 
     4. Automodel DFlash2 architecture names are normalized to vLLM's canonical
        ``DFlash2DraftModel`` before ``EAGLEConfig`` wrapping, which activates
@@ -182,8 +203,9 @@ def _patch_vllm_for_nemo_speechlm_mtp() -> None:
 
     # Extend vLLM's recognized MTP model types.
     old_args = get_args(_spec_mod.MTPModelTypes)
-    if "nemo_speechlm_mtp" not in old_args:
-        _spec_mod.MTPModelTypes = Literal[old_args + ("nemo_speechlm_mtp",)]
+    new_args = tuple(t for t in (SPEECHLM_MTP_MODEL_TYPE, TRANSCRIBE_MTP_MODEL_TYPE) if t not in old_args)
+    if new_args:
+        _spec_mod.MTPModelTypes = Literal[old_args + new_args]
 
     # Route SpeechLM MTP checkpoints through SpeculativeConfig.hf_config_override.
     current_override = _spec_mod.SpeculativeConfig.hf_config_override
@@ -196,13 +218,11 @@ def _patch_vllm_for_nemo_speechlm_mtp() -> None:
             _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE = current_override
         _spec_mod.SpeculativeConfig.hf_config_override = staticmethod(_nemo_speechlm_mtp_hf_config_override)
 
-    # Register the SpeechLM MTP draft architecture with vLLM.
+    # Register the SpeechLM MTP draft architectures with vLLM.
     from vllm.model_executor.models.registry import ModelRegistry
 
-    ModelRegistry.register_model(
-        "NeMoSpeechLMMTPModel",
-        f"{_PKG}.mtp:NeMoSpeechLMMTP",
-    )
+    for architecture in (SPEECHLM_MTP_ARCHITECTURE, TRANSCRIBE_MTP_ARCHITECTURE):
+        ModelRegistry.register_model(architecture, f"{_PKG}.mtp:NeMoSpeechLMMTP")
 
 
 def register():
@@ -211,24 +231,25 @@ def register():
 
     from nemo.collections.speechlm2.vllm.salm.config import NeMoSpeechLMConfig
 
-    AutoConfig.register("nemo_speechlm", NeMoSpeechLMConfig)
+    # `exist_ok`: Transformers versions that support this model natively also register `nemo_speechlm`; the plugin's
+    # config class then takes precedence in this process only (registered classes are looked up first).
+    AutoConfig.register("nemo_speechlm", NeMoSpeechLMConfig, exist_ok=True)
 
     from vllm.transformers_utils.config import _CONFIG_REGISTRY
 
     _CONFIG_REGISTRY["nemo_speechlm"] = NeMoSpeechLMConfig
 
-    from vllm.model_executor.models.registry import ModelRegistry
-
-    ModelRegistry.register_model(
-        "NeMoSpeechLMForConditionalGeneration",
-        f"{_PKG}.model:NeMoSpeechLMForConditionalGeneration",
-    )
-
     from vllm.model_executor.models.config import MODELS_CONFIG_MAP
+    from vllm.model_executor.models.registry import ModelRegistry
 
     from nemo.collections.speechlm2.vllm.salm.config_hook import NeMoSpeechLMForConditionalGenerationConfig
 
-    MODELS_CONFIG_MAP["NeMoSpeechLMForConditionalGeneration"] = NeMoSpeechLMForConditionalGenerationConfig
+    # Where vLLM has native classes for these architectures, these replace them:
+    # the config class registered for nemo_speechlm above is the plugin's, so the
+    # model classes must be too.
+    for architecture in (SPEECHLM_ARCHITECTURE, TRANSCRIBE_ARCHITECTURE):
+        ModelRegistry.register_model(architecture, f"{_PKG}.model:NeMoSpeechLMForConditionalGeneration")
+        MODELS_CONFIG_MAP[architecture] = NeMoSpeechLMForConditionalGenerationConfig
 
     _patch_vllm_for_nemo_speechlm_mtp()
 

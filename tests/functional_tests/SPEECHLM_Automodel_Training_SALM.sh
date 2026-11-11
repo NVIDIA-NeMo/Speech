@@ -12,23 +12,28 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+set -e
 
-# Run training with SALMAutomodel
+# Run training with SALMAutomodel. The LLM is Qwen3 because Automodel's native Llama implementation has no generate().
 torchrun --nproc-per-node 1 --no-python \
   coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     examples/speechlm2/salm_train.py --config-name=salm_automodel \
-      model.pretrained_llm=/home/TestData/speechlm/pretrained_models/TinyLlama--TinyLlama_v1.1 \
+      model.pretrained_llm=/home/TestData/speechlm/pretrained_models/Qwen--Qwen3-1.7B \
+      model.prompt_format=qwen \
+      'model.audio_locator_tag="<|audioplaceholder|>"' \
       model.pretrained_asr=/home/TestData/speechlm/pretrained_models/canary-1b-flash.nemo \
       data.train_ds.input_cfg.0.cuts_path=/home/TestData/speechlm/lhotse/libri/librispeech_cuts_lower_train-clean-5.jsonl.gz \
       data.validation_ds.datasets.val_set_0.input_cfg.0.cuts_path=/home/TestData/speechlm/lhotse/libri/librispeech_cuts_lower_dev-clean-2.jsonl.gz \
       trainer.devices=1 \
+      trainer.strategy.ep_size=1 \
       trainer.max_steps=10
 
-# Convert to HF format
+# Convert to HF format. Look up the checkpoint name; the quotes keep Hydra from parsing "=" in the path.
+CKPT=$(ls -d salm_results/checkpoints/*last.ckpt | head -n 1)
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
   examples/speechlm2/to_hf.py \
   class_path=nemo.collections.speechlm2.models.SALMAutomodel \
-  ckpt_path=salm_results/checkpoints/step\=10-last.ckpt \
+  ckpt_path="'${CKPT}'" \
   ckpt_config=salm_results/exp_config.yaml \
   output_dir=test_salm_automodel_hf_model
 

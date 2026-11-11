@@ -62,11 +62,6 @@ def test_cut_passes_by_token_count_and_tpt_filter(cut):
     assert TokenPerTokenFilter(1, 10)(cut) == True
 
 
-def test_cut_passes_by_token_count_and_tpt_filter(cut):
-    assert TokenCountFilter(1, 10, measure_total_length=True)(cut) == True
-    assert TokenPerTokenFilter(1, 10)(cut) == True
-
-
 @pytest.fixture
 def src_tgt_example():
     return SourceTargetTextExample(

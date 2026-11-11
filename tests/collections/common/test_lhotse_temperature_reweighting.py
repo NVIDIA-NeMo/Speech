@@ -98,18 +98,21 @@ class TestTemperatureReweighting:
 
     def test_zero_weights_raises_error(self):
         """Zero weights raise ValueError."""
-        with pytest.raises(ValueError, match="must be positive"):
+        with pytest.raises(ValueError, match="must be nonnegative with at least one positive"):
             temperature_reweighting([0, 0, 0], temperature=1.0)
 
     def test_negative_weights_raises_error(self):
         """Negative weights raise ValueError."""
-        with pytest.raises(ValueError, match="must be positive"):
+        with pytest.raises(ValueError, match="must be nonnegative with at least one positive"):
             temperature_reweighting([100, -50, 200], temperature=1.0)
 
-    def test_mixed_zero_positive_raises_error(self):
-        """Mixed zero and positive weights raise ValueError."""
-        with pytest.raises(ValueError, match="must be positive"):
-            temperature_reweighting([100, 0, 200], temperature=1.0)
+    @pytest.mark.parametrize("temperature", [0.0, 0.5, 1.0, 2.0])
+    def test_zero_weight_slots_remain_addressable_and_disabled(self, temperature):
+        result = temperature_reweighting([100, 0, 200, 0], temperature=temperature)
+        assert len(result) == 4
+        assert result[1] == result[3] == 0.0
+        expected = temperature_reweighting([100, 200], temperature=temperature)
+        np.testing.assert_allclose([result[0], result[2]], expected)
 
 
 def make_mock_parser_fn(return_tarred=True):

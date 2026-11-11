@@ -23,7 +23,7 @@ from nemo.collections.asr.parts.packed_sequence import pack_encoder_output
 from nemo.collections.speechlm2.models.salm_automodel import _fully_shard_perception
 from nemo.collections.speechlm2.modules.perception import AudioPerceptionModule, IdentityConnector
 from nemo.collections.speechlm2.parts.cp_helpers import encode_audio_with_cp_distribution
-from tests.collections.asr.test_parallel_expert_encoder_two_branch import build_toy_packed_pe_encoder
+from tests.collections.asr.test_parallel_expert_encoder import build_toy_packed_pe_encoder
 
 
 class _FeaturePassthrough(torch.nn.Module):
@@ -217,6 +217,7 @@ def _run_fsdp2_canonical_pee_test(rank: int, world_size: int, init_file: str):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.device_count() < 2, reason="Test requires 2 GPUs")
+@pytest.mark.gpu
 def test_canonical_pee_packed_perception_fsdp2_empty_rank_all_empty_and_cp(tmp_path):
     mp.spawn(
         _run_fsdp2_canonical_pee_test,
@@ -227,5 +228,6 @@ def test_canonical_pee_packed_perception_fsdp2_empty_rank_all_empty_and_cp(tmp_p
 
 
 @pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.device_count() < 2, reason="Test requires 2 GPUs")
+@pytest.mark.gpu
 def test_packed_perception_fsdp2_custom_forward_empty_rank_and_cp_gather(tmp_path):
     mp.spawn(_run_fsdp2_packed_perception_test, args=(2, str(tmp_path / "fsdp2_init")), nprocs=2, join=True)

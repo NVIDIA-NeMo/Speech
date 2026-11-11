@@ -94,6 +94,8 @@ class StreamingConfig:
         use_local_transformer: Whether to use local transformer for inference.
         temperature: Sampling temperature.
         topk: Top-k sampling parameter.
+        phoneme_temperature: Sampling temperature for predicted phonemes.
+        phoneme_topk: Top-k sampling parameter for predicted phonemes.
         phoneme_input_type: 'gt' or 'pred' for phoneme tokens.
         phoneme_sampling_method: 'argmax' or 'sample' for phoneme token selection.
         dummy_context_embedding_unconditional: Unconditional embedding for CFG (if enabled).
@@ -110,6 +112,8 @@ class StreamingConfig:
     phoneme_input_type: str
     phoneme_sampling_method: str
     dummy_context_embedding_unconditional: Optional[torch.Tensor]
+    phoneme_temperature: Optional[float] = None
+    phoneme_topk: Optional[int] = None
 
 
 @dataclass
@@ -310,6 +314,11 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self.text_conditioning_tokenizer_name = cfg.get('text_conditioning_tokenizer_name', None)
         if self.text_conditioning_tokenizer_name is None:
             self.text_conditioning_tokenizer_name = list(cfg.text_tokenizers.keys())[0]
+
+        # Codec decoding has large temporary convolution activations. Decode generated
+        # waveforms in smaller sub-batches when requested, without changing generation
+        # or the returned codes/audio.
+        self.codec_decode_batch_size = max(int(cfg.get('codec_decode_batch_size', 0)), 0)
 
         self.cfg_unconditional_prob = cfg.get('cfg_unconditional_prob', 0.0)
 
@@ -942,6 +951,45 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             codes = codes[:, :, : codes_len.max()]
         return codes, codes_len
 
+    def _codes_to_audio_in_sub_batches(
+        self, codes: torch.Tensor, codes_len: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Decode codes to audio in sub-batches of at most ``codec_decode_batch_size`` items.
+
+        This splits the batch dimension only, never the time axis: each codec call receives complete
+        utterances for a subset of items, so there are no chunk boundaries inside an utterance. The codec
+        masks every layer by length, so each item's audio does not depend on the other items in its
+        sub-batch and matches a single full-batch decode. Sub-batching only lowers the codec decoder's
+        peak activation memory. A ``codec_decode_batch_size`` of 0 decodes the full batch at once.
+
+        Args:
+            codes: Unstacked codes ready for the codec, shaped ``(B, C, T)``.
+            codes_len: Valid frame count per item, shaped ``(B,)``.
+
+        Returns:
+            Tuple of audio shaped ``(B, T_audio)``, zero-padded past each item's length, and audio
+            lengths shaped ``(B,)``.
+        """
+        batch_size = codes.size(0)
+        sub_batch_size = self.codec_decode_batch_size
+        if sub_batch_size <= 0 or sub_batch_size >= batch_size:
+            audio, audio_len, _ = self._codec_helper.codes_to_audio(codes, codes_len)
+            return audio, audio_len
+
+        sub_batch_audio = []
+        sub_batch_audio_len = []
+        for start in range(0, batch_size, sub_batch_size):
+            end = min(start + sub_batch_size, batch_size)
+            audio, audio_len, _ = self._codec_helper.codes_to_audio(codes[start:end], codes_len[start:end])
+            sub_batch_audio.append(audio)
+            sub_batch_audio_len.append(audio_len)
+
+        max_audio_len = max(audio.size(1) for audio in sub_batch_audio)
+        audio = torch.cat(
+            [torch.nn.functional.pad(audio, (0, max_audio_len - audio.size(1))) for audio in sub_batch_audio], dim=0
+        )
+        return audio, torch.cat(sub_batch_audio_len, dim=0)
+
     def embed_audio_tokens(self, audio_tokens):
         # audio_tokens: (B, C, T')
         # Add and average the embeddings of the audio tokens across the codebooks
@@ -1154,12 +1202,14 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             # Replace NaN/inf then clamp to prevent extreme values causing NaN in softmax
             codebook_logits = torch.nan_to_num(codebook_logits, nan=0.0, posinf=100.0, neginf=-100.0)
             codebook_logits = codebook_logits.clamp(min=-100.0, max=100.0)
-            codebook_logits_topk = torch.topk(codebook_logits, topk, dim=-1)[0]  # (B, topk)
-            indices_to_remove = codebook_logits < codebook_logits_topk[:, -1].unsqueeze(
-                -1
-            )  # (B, num_tokens_per_codebook)
-            codebook_logits_rescored = codebook_logits.clone()
-            codebook_logits_rescored[indices_to_remove] = float('-inf')
+            if topk < self.phoneme_vocab_size:
+                codebook_logits_topk = torch.topk(codebook_logits, topk, dim=-1)[0]  # (B, topk)
+                indices_to_remove = codebook_logits < codebook_logits_topk[:, -1].unsqueeze(
+                    -1
+                )  # (B, num_tokens_per_codebook)
+                codebook_logits_rescored = codebook_logits.masked_fill(indices_to_remove, float('-inf'))
+            else:
+                codebook_logits_rescored = codebook_logits
 
             if temperature <= 0.0:
                 # Argmax sampling for deterministic output
@@ -1239,6 +1289,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         context_audio_codes_lens: Optional[torch.Tensor] = None,
         context_audio: Optional[torch.Tensor] = None,
         context_audio_lens: Optional[torch.Tensor] = None,
+        precomputed_context_audio_embedding: Optional[torch.Tensor] = None,
+        precomputed_context_audio_embedding_lens: Optional[torch.Tensor] = None,
         training_mode: Optional[TrainingMode] = None,
         dropout_conditional_input: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -1258,6 +1310,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 Used to compute context_audio_codes if not provided.
             context_audio_lens: Length of context audio (B,).
                 Required if context_audio is provided.
+            precomputed_context_audio_embedding: Speaker-encoded context audio embeddings (B, T', E).
+                When provided, context audio code embedding and speaker encoding are skipped.
+            precomputed_context_audio_embedding_lens: Valid precomputed audio embedding lengths (B,).
             training_mode: Optional TrainingMode object specifying the mode to use.
                 If None, uses the first mode from training_modes as default.
             dropout_conditional_input: If True, replace context with CFG unconditional token.
@@ -1278,50 +1333,66 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         device = context_text_tokens.device
 
         # Context Audio
-        if context_audio_codes is None:
-            if context_audio is None:
-                raise ValueError("Either context_audio_codes or context_audio must be provided")
-            context_audio_codes, context_audio_codes_lens = self._codec_helper.audio_to_codes(
-                context_audio, context_audio_lens
+        has_precomputed_audio = self._validate_precomputed_context_audio(
+            precomputed_context_audio_embedding, precomputed_context_audio_embedding_lens, batch_size
+        )
+        if has_precomputed_audio:
+            context_audio_embedded = precomputed_context_audio_embedding.to(
+                device=device, dtype=next(self.parameters()).dtype
+            )
+            context_audio_codes = torch.empty(
+                batch_size, self.data_num_audio_codebooks, 0, dtype=torch.long, device=device
+            )
+            context_audio_codes_lens = torch.zeros(batch_size, dtype=torch.long, device=device)
+            context_audio_embedding_lens = precomputed_context_audio_embedding_lens.to(device=device, dtype=torch.long)
+        else:
+            if context_audio_codes is None:
+                if context_audio is None:
+                    raise ValueError(
+                        "One of context audio codes, raw context audio, or a precomputed context audio embedding "
+                        "must be provided."
+                    )
+                context_audio_codes, context_audio_codes_lens = self._codec_helper.audio_to_codes(
+                    context_audio, context_audio_lens
+                )
+
+            if self._codec_converter is not None:
+                context_audio_codes = self._codec_converter.convert_original_to_new(
+                    audio_tokens=context_audio_codes, audio_lens=context_audio_codes_lens
+                ).long()
+
+            context_audio_codes, context_audio_codes_lens = add_special_tokens(
+                codes=context_audio_codes,
+                codes_len=context_audio_codes_lens,
+                bos_id=self.context_audio_bos_id,
+                eos_id=self.context_audio_eos_id,
             )
 
-        if self._codec_converter is not None:
-            context_audio_codes = self._codec_converter.convert_original_to_new(
-                audio_tokens=context_audio_codes, audio_lens=context_audio_codes_lens
-            ).long()
-
-        context_audio_codes, context_audio_codes_lens = add_special_tokens(
-            codes=context_audio_codes,
-            codes_len=context_audio_codes_lens,
-            bos_id=self.context_audio_bos_id,
-            eos_id=self.context_audio_eos_id,
-        )
-
-        context_audio_codes, context_audio_codes_lens = self.stack_codes(
-            context_audio_codes,
-            context_audio_codes_lens,
-            self.context_audio_bos_id,
-            self.context_audio_eos_id,
-            self.frame_stacking_factor,
-            self.num_audio_codebooks,
-        )
-        context_audio_embedded = self.embed_audio_tokens(context_audio_codes)  # (B, T', E)
-        batch_size = context_audio_embedded.size(0)
-        if self.use_speaker_encoder:
-            if (
-                self.training
-                and batch_size > 1
-                and self.train_shuffle_context_embedding_prob > 0
-                and random.random() < self.train_shuffle_context_embedding_prob
-            ):
-                # Feed shuffled raw context embeddings (without speaker encoder) so
-                # the decoder cannot rely on direct unencoded speaker identity cues.
-                shift = random.randint(1, batch_size - 1)
-                context_audio_embedded = context_audio_embedded.roll(shift, dims=0)
-            else:
-                context_audio_embedded = self.encode_context_audio_embeddings(
-                    context_audio_embedded=context_audio_embedded, context_audio_lens=context_audio_codes_lens
-                )
+            context_audio_codes, context_audio_codes_lens = self.stack_codes(
+                context_audio_codes,
+                context_audio_codes_lens,
+                self.context_audio_bos_id,
+                self.context_audio_eos_id,
+                self.frame_stacking_factor,
+                self.num_audio_codebooks,
+            )
+            context_audio_embedded = self.embed_audio_tokens(context_audio_codes)  # (B, T', E)
+            if self.use_speaker_encoder:
+                if (
+                    self.training
+                    and batch_size > 1
+                    and self.train_shuffle_context_embedding_prob > 0
+                    and random.random() < self.train_shuffle_context_embedding_prob
+                ):
+                    # Feed shuffled raw context embeddings (without speaker encoder) so
+                    # the decoder cannot rely on direct unencoded speaker identity cues.
+                    shift = random.randint(1, batch_size - 1)
+                    context_audio_embedded = context_audio_embedded.roll(shift, dims=0)
+                else:
+                    context_audio_embedded = self.encode_context_audio_embeddings(
+                        context_audio_embedded=context_audio_embedded, context_audio_lens=context_audio_codes_lens
+                    )
+            context_audio_embedding_lens = context_audio_codes_lens
 
         # Context Text
         context_text_lens = context_text_tokens_lens
@@ -1343,12 +1414,12 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         if task_embedding is not None:
             context_embedding, context_lens = self.join_embeddings_temporally(
                 embeddings=[task_embedding, context_audio_embedded, context_text_embedded],
-                lengths=[task_embedding_lens, context_audio_codes_lens, context_text_lens],
+                lengths=[task_embedding_lens, context_audio_embedding_lens, context_text_lens],
             )
         else:
             context_embedding, context_lens = self.join_embeddings_temporally(
                 embeddings=[context_audio_embedded, context_text_embedded],
-                lengths=[context_audio_codes_lens, context_text_lens],
+                lengths=[context_audio_embedding_lens, context_text_lens],
             )
 
         # Handle CFG unconditional dropout
@@ -1507,10 +1578,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
     def streaming_init(
         self,
-        context_audio_codes: torch.Tensor,
-        context_audio_codes_lens: torch.Tensor,
-        context_text_tokens: torch.Tensor,
-        context_text_tokens_lens: torch.Tensor,
+        context_audio_codes: Optional[torch.Tensor] = None,
+        context_audio_codes_lens: Optional[torch.Tensor] = None,
+        context_text_tokens: Optional[torch.Tensor] = None,
+        context_text_tokens_lens: Optional[torch.Tensor] = None,
         inference_mode: Optional[str] = None,
         use_cfg: bool = False,
         cfg_scale: float = 1.0,
@@ -1524,6 +1595,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         gt_audio_codes: Optional[torch.Tensor] = None,
         gt_audio_codes_lens: Optional[torch.Tensor] = None,
         use_inference_mode: bool = True,
+        precomputed_context_audio_embedding: Optional[torch.Tensor] = None,
+        precomputed_context_audio_embedding_lens: Optional[torch.Tensor] = None,
+        phoneme_temperature: Optional[float] = None,
+        phoneme_topk: Optional[int] = None,
     ) -> StreamingState:
         """
         Initialize streaming TTS inference state.
@@ -1558,6 +1633,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             use_local_transformer: Whether to use local transformer for AR sampling.
             temperature: Sampling temperature for audio codes.
             topk: Top-k sampling parameter.
+            phoneme_temperature: Sampling temperature for predicted phonemes. Defaults to ``temperature``.
+            phoneme_topk: Top-k sampling parameter for predicted phonemes. Defaults to ``topk``.
             phoneme_input_type: 'gt' or 'predicted' for phoneme tokens (use 'predicted' for streaming).
             phoneme_sampling_method: 'argmax' or 'sample' for phoneme token selection.
             gt_phoneme_tokens: Optional GT phoneme tokens (B, L) with BOS/EOS for teacher forcing.
@@ -1565,14 +1642,19 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             gt_audio_codes: Optional GT audio codes (B, C*S, T) already stacked with BOS/EOS,
                 input portion ([:, :, :-1]) for teacher forcing. Pre-processed by caller.
             gt_audio_codes_lens: Lengths of GT audio codes (B,) after stacking.
+            precomputed_context_audio_embedding: Optional speaker-encoded context audio embeddings (B, T', E).
+                Context text and task embeddings are still computed normally.
+            precomputed_context_audio_embedding_lens: Valid precomputed audio embedding lengths (B,).
 
         Returns:
             StreamingState: Initial state for streaming inference.
         """
         grad_ctx = torch.inference_mode if use_inference_mode else torch.no_grad
         with grad_ctx():
-            batch_size = context_audio_codes.size(0)
-            device = context_audio_codes.device
+            if context_text_tokens is None or context_text_tokens_lens is None:
+                raise ValueError("Context text tokens and lengths are required.")
+            batch_size = context_text_tokens.size(0)
+            device = context_text_tokens.device
 
             # Resolve inference mode
             mode_name = inference_mode if inference_mode is not None else self.default_inference_mode
@@ -1589,6 +1671,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     context_text_tokens_lens=context_text_tokens_lens,
                     context_audio_codes=context_audio_codes,
                     context_audio_codes_lens=context_audio_codes_lens,
+                    precomputed_context_audio_embedding=precomputed_context_audio_embedding,
+                    precomputed_context_audio_embedding_lens=precomputed_context_audio_embedding_lens,
                     training_mode=selected_training_mode,
                     dropout_conditional_input=False,
                 )
@@ -1667,6 +1751,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 use_local_transformer=use_local_transformer,
                 temperature=temperature,
                 topk=topk,
+                phoneme_temperature=temperature if phoneme_temperature is None else phoneme_temperature,
+                phoneme_topk=topk if phoneme_topk is None else phoneme_topk,
                 phoneme_input_type=phoneme_input_type,
                 phoneme_sampling_method=phoneme_sampling_method,
                 dummy_context_embedding_unconditional=dummy_context_embedding_unconditional,
@@ -2194,7 +2280,13 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             pred_phoneme_tokens = self.sample_codes_from_logits_phoneme(all_code_logits_t_phoneme, temperature=0.0)
         else:
             pred_phoneme_tokens = self.sample_codes_from_logits_phoneme(
-                all_code_logits_t_phoneme, temperature=state.config.temperature, topk=state.config.topk
+                all_code_logits_t_phoneme,
+                temperature=(
+                    state.config.temperature
+                    if state.config.phoneme_temperature is None
+                    else state.config.phoneme_temperature
+                ),
+                topk=state.config.topk if state.config.phoneme_topk is None else state.config.phoneme_topk,
             )
 
         # In prediction mode, low-confidence phoneme steps are replaced with UNK across
@@ -2345,10 +2437,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             predicted_codes, predicted_codes_lens = self._prepare_codes_for_decode(
                 predicted_codes, predicted_codes_lens
             )
-            audio, audio_len, decoded_codes = self._codec_helper.codes_to_audio(
-                predicted_codes,
-                predicted_codes_lens,
-            )
+            audio, audio_len = self._codes_to_audio_in_sub_batches(predicted_codes, predicted_codes_lens)
 
             return StreamingFinalizeOutput(
                 audio=audio,
@@ -2373,6 +2462,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         force_dropout_text: bool = False,
         use_teacher_forced: bool = False,
         use_inference_mode: bool = True,
+        phoneme_temperature: Optional[float] = None,
+        phoneme_topk: Optional[int] = None,
     ) -> InferBatchOutput:
         """
         Batch inference using streaming infrastructure.
@@ -2388,6 +2479,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 - context_text_tokens_lens: Lengths (B,)
                 - context_audio_codes: Context audio codes (B, C, T) OR
                 - context_audio / context_audio_lens: Raw context audio to encode
+                Context audio encoding can be bypassed with:
+                - precomputed_context_audio_embedding: Speaker-encoded audio embeddings (B, T_audio, E)
+                - precomputed_context_audio_embedding_lens: Valid audio embedding lengths (B,)
                 - phoneme_tokens (optional): GT phoneme tokens (B, L'')
                 - phoneme_tokens_lens (optional): Lengths (B,)
                 For teacher forcing (use_teacher_forced=True), also requires:
@@ -2396,6 +2490,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             max_decoder_steps: Maximum number of decoder steps.
             temperature: Sampling temperature for audio codes. Use 0.0 for argmax.
             topk: Top-k sampling parameter.
+            phoneme_temperature: Sampling temperature for predicted phonemes. Defaults to ``temperature``.
+            phoneme_topk: Top-k sampling parameter for predicted phonemes. Defaults to ``topk``.
             use_cfg: Whether to use classifier-free guidance.
             cfg_scale: CFG scale factor.
             use_local_transformer_for_inference: Whether to use local transformer.
@@ -2417,17 +2513,28 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             text_lens = batch['text_lens']
             context_text_tokens = batch['context_text_tokens']
             context_text_tokens_lens = batch['context_text_tokens_lens']
-
-            # Handle context audio - either use codes directly or encode from audio
-            if 'context_audio_codes' in batch:
-                context_audio_codes = batch['context_audio_codes']
-                context_audio_codes_lens = batch['context_audio_codes_lens']
-            else:
-                context_audio = batch['context_audio']
-                context_audio_lens = batch['context_audio_lens']
-                context_audio_codes, context_audio_codes_lens = self._codec_helper.audio_to_codes(
-                    context_audio, context_audio_lens
+            precomputed_context_audio_embedding = batch.get('precomputed_context_audio_embedding')
+            precomputed_context_audio_embedding_lens = batch.get('precomputed_context_audio_embedding_lens')
+            if (precomputed_context_audio_embedding is None) != (precomputed_context_audio_embedding_lens is None):
+                raise ValueError(
+                    "`precomputed_context_audio_embedding` and `precomputed_context_audio_embedding_lens` "
+                    "must be provided together."
                 )
+
+            if precomputed_context_audio_embedding is not None:
+                context_audio_codes = None
+                context_audio_codes_lens = None
+            else:
+                # Handle context audio - either use codes directly or encode from audio
+                if 'context_audio_codes' in batch:
+                    context_audio_codes = batch['context_audio_codes']
+                    context_audio_codes_lens = batch['context_audio_codes_lens']
+                else:
+                    context_audio = batch['context_audio']
+                    context_audio_lens = batch['context_audio_lens']
+                    context_audio_codes, context_audio_codes_lens = self._codec_helper.audio_to_codes(
+                        context_audio, context_audio_lens
+                    )
 
             # Optional GT phoneme tokens for teacher forcing
             gt_phoneme_tokens = batch.get('phoneme_tokens')
@@ -2490,6 +2597,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 use_local_transformer=use_local_transformer_for_inference,
                 temperature=temperature,
                 topk=topk,
+                phoneme_temperature=phoneme_temperature,
+                phoneme_topk=phoneme_topk,
                 phoneme_input_type=phoneme_input_type,
                 phoneme_sampling_method=phoneme_sampling_method,
                 gt_phoneme_tokens=gt_phoneme_tokens,
@@ -2497,6 +2606,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 gt_audio_codes=gt_audio_codes_for_init,
                 gt_audio_codes_lens=gt_audio_codes_lens_for_init,
                 use_inference_mode=use_inference_mode,
+                precomputed_context_audio_embedding=precomputed_context_audio_embedding,
+                precomputed_context_audio_embedding_lens=precomputed_context_audio_embedding_lens,
             )
 
             time_to_first_prediction = None
@@ -2634,10 +2745,13 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         topk: int = 80,
         max_steps: int = 330,
         gt_phoneme_text: Optional[str] = None,
+        precomputed_context_audio_embedding: Optional[torch.Tensor] = None,
+        precomputed_context_audio_embedding_lens: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Generate speech from transcript using EasyMagpie inference with optional context text/audio.
         Optionally accepts ground-truth phoneme text (IPA string) for decoder-only inference.
+        A precomputed context audio embedding may be supplied while context text is embedded normally.
         """
         if transcript is None or transcript.strip() == "":
             raise ValueError("`transcript` must be a non-empty string.")
@@ -2645,6 +2759,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         device = next(self.parameters()).device
         transcript = transcript.strip()
         context_text = (context_text or "[NO TEXT CONTEXT]").strip()
+        if precomputed_context_audio_embedding is None and precomputed_context_audio_embedding_lens is not None:
+            raise ValueError(
+                "`precomputed_context_audio_embedding_lens` requires `precomputed_context_audio_embedding`."
+            )
         if use_local_transformer is None:
             # EasyMagpie uses the local transformer only for AR; MASKGIT/NO_LT decode via
             # parallel sampling (_sample_audio_codes raises if asked to use a non-AR local transformer).
@@ -2671,43 +2789,65 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         ) + [self.eos_id]
         text = torch.tensor([text_tokens], dtype=torch.long, device=device)
         text_lens = torch.tensor([len(text_tokens)], dtype=torch.long, device=device)
-
         context_text_tokens = self.tokenizer.encode(context_text, tokenizer_name=self.text_conditioning_tokenizer_name)
         context_text_tensor = torch.tensor([context_text_tokens], dtype=torch.long, device=device)
         context_text_lens = torch.tensor([len(context_text_tokens)], dtype=torch.long, device=device)
-
-        if context_audio_file_path is not None and context_audio_file_path.strip() != "":
-            context_audio = self._load_audio_for_inference(context_audio_file_path, self.sample_rate)
-            context_audio = self._adjust_audio_to_duration_for_inference(
-                context_audio,
-                self.sample_rate,
-                context_audio_duration,
-                self.codec_model_samples_per_frame,
-            )
-            context_audio = context_audio.to(device)
-            context_audio_lens = torch.tensor([context_audio.size(1)], dtype=torch.long, device=device)
-            with torch.inference_mode():
-                context_audio_codes, context_audio_codes_lens = self._codec_helper.audio_to_codes(
-                    context_audio, context_audio_lens
-                )
-        else:
-            context_audio_codes = torch.zeros(
-                1,
-                self.data_num_audio_codebooks,
-                0,
-                dtype=torch.long,
-                device=device,
-            )
-            context_audio_codes_lens = torch.zeros(1, dtype=torch.long, device=device)
 
         batch = {
             'text': text,
             'text_lens': text_lens,
             'context_text_tokens': context_text_tensor,
             'context_text_tokens_lens': context_text_lens,
-            'context_audio_codes': context_audio_codes,
-            'context_audio_codes_lens': context_audio_codes_lens,
         }
+        if precomputed_context_audio_embedding is not None:
+            if context_audio_file_path is not None and context_audio_file_path.strip() != "":
+                raise ValueError(
+                    "`context_audio_file_path` cannot be combined with `precomputed_context_audio_embedding`."
+                )
+            if precomputed_context_audio_embedding.ndim == 2:
+                precomputed_context_audio_embedding = precomputed_context_audio_embedding.unsqueeze(0)
+            if precomputed_context_audio_embedding.ndim != 3 or precomputed_context_audio_embedding.size(0) != 1:
+                raise ValueError(
+                    "`precomputed_context_audio_embedding` must have shape (time, embedding_dim) "
+                    "or (1, time, embedding_dim) for `do_tts`."
+                )
+            if precomputed_context_audio_embedding_lens is None:
+                precomputed_context_audio_embedding_lens = torch.tensor(
+                    [precomputed_context_audio_embedding.size(1)], dtype=torch.long
+                )
+            batch['precomputed_context_audio_embedding'] = precomputed_context_audio_embedding.to(device)
+            batch['precomputed_context_audio_embedding_lens'] = precomputed_context_audio_embedding_lens.to(device)
+        else:
+            if context_audio_file_path is not None and context_audio_file_path.strip() != "":
+                context_audio = self._load_audio_for_inference(context_audio_file_path, self.sample_rate)
+                context_audio = self._adjust_audio_to_duration_for_inference(
+                    context_audio,
+                    self.sample_rate,
+                    context_audio_duration,
+                    self.codec_model_samples_per_frame,
+                )
+                context_audio = context_audio.to(device)
+                context_audio_lens = torch.tensor([context_audio.size(1)], dtype=torch.long, device=device)
+                with torch.inference_mode():
+                    context_audio_codes, context_audio_codes_lens = self._codec_helper.audio_to_codes(
+                        context_audio, context_audio_lens
+                    )
+            else:
+                context_audio_codes = torch.zeros(
+                    1,
+                    self.data_num_audio_codebooks,
+                    0,
+                    dtype=torch.long,
+                    device=device,
+                )
+                context_audio_codes_lens = torch.zeros(1, dtype=torch.long, device=device)
+
+            batch.update(
+                {
+                    'context_audio_codes': context_audio_codes,
+                    'context_audio_codes_lens': context_audio_codes_lens,
+                }
+            )
         phoneme_input_type = 'pred'
         if gt_phoneme_text is not None:
             if self.phoneme_tokenizer is None:
@@ -2747,3 +2887,41 @@ class EasyMagpieTTSInferenceModel(ModelPT):
     def list_available_models(cls) -> List[PretrainedModelInfo]:
         """Return metadata for pretrained models exposed by this class."""
         return []
+
+    def _validate_precomputed_context_audio(
+        self,
+        precomputed_context_audio_embedding: Optional[torch.Tensor],
+        precomputed_context_audio_embedding_lens: Optional[torch.Tensor],
+        batch_size: int,
+    ) -> bool:
+        """Validate paired precomputed audio tensors and return whether they were supplied.
+
+        Raises:
+            ValueError: If only one tensor is supplied, the tensor shapes do not match the expected
+                batch size or embedding dimension, or lengths are outside the padded sequence bounds.
+        """
+        has_precomputed_audio = precomputed_context_audio_embedding is not None
+        if has_precomputed_audio != (precomputed_context_audio_embedding_lens is not None):
+            raise ValueError(
+                "`precomputed_context_audio_embedding` and `precomputed_context_audio_embedding_lens` "
+                "must be provided together."
+            )
+        if not has_precomputed_audio:
+            return False
+        if precomputed_context_audio_embedding.ndim != 3:
+            raise ValueError("`precomputed_context_audio_embedding` must have shape (batch, time, embedding_dim).")
+        if precomputed_context_audio_embedding.shape[0] != batch_size:
+            raise ValueError("Precomputed context audio batch size must match context text batch size.")
+        if precomputed_context_audio_embedding.shape[2] != self.cfg.embedding_dim:
+            raise ValueError(
+                f"Precomputed context audio embedding dimension is "
+                f"{precomputed_context_audio_embedding.shape[2]}, but the model expects {self.cfg.embedding_dim}."
+            )
+        max_audio_len = precomputed_context_audio_embedding.shape[1]
+        if precomputed_context_audio_embedding_lens.shape != (batch_size,):
+            raise ValueError("`precomputed_context_audio_embedding_lens` must have shape (batch,).")
+        if torch.any(precomputed_context_audio_embedding_lens < 0) or torch.any(
+            precomputed_context_audio_embedding_lens > max_audio_len
+        ):
+            raise ValueError("Precomputed context audio lengths must be between 0 and the padded length.")
+        return True

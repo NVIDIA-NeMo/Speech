@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Tuple, Union
 import torch
 
 from nemo.core.classes.mixins import AccessMixin
+from nemo.utils.serialization import register_checkpoint_schema_types
 
 if TYPE_CHECKING:
     from nemo.core.classes.mixins.adapter_mixins import AdapterModuleMixin
@@ -263,3 +264,6 @@ class ResidualAddAdapterStrategyConfig:
     _target_: str = "{0}.{1}".format(
         ResidualAddAdapterStrategy.__module__, ResidualAddAdapterStrategy.__name__
     )  # mandatory field
+
+
+register_checkpoint_schema_types(ResidualAddAdapterStrategyConfig)

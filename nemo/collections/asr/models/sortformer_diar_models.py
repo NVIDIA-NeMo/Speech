@@ -640,6 +640,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         emb_seq: torch.Tensor,
         emb_seq_length: torch.Tensor,
         return_logits: bool = False,
+        mask_padding: bool = False,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]]:
         """
         The main forward pass for diarization for offline diarization inference.
@@ -650,6 +651,8 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             emb_seq_length (torch.Tensor): Tensor containing lengths of FastConformer encoder states.
                 Shape: (batch_size,)
             return_logits (bool): Whether to return aligned raw speaker logits with the probabilities.
+            mask_padding (bool): Zero padded hidden states before high-resolution upsampling, whose convolution
+                would otherwise read them into the last valid frames, so outputs do not depend on padding.
 
         Returns:
             Sorted speaker probabilities with shape ``(batch_size, diar_frame_count, num_speakers)``. When
@@ -663,6 +666,8 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             if self.transformer_encoder is not None
             else emb_seq
         )
+        if mask_padding and self.high_resolution:
+            trans_emb_seq = trans_emb_seq.masked_fill(~encoder_mask.unsqueeze(-1), 0.0)
         trans_emb_seq = self.sortformer_modules.upsample_hidden(trans_emb_seq)
         if self.high_resolution:
             output_mask = encoder_mask.repeat_interleave(self.upsample_factor, dim=1)
@@ -1285,6 +1290,8 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         return_logits: bool = False,
         total_logits: Optional[torch.Tensor] = None,
         total_activity_logits: Optional[torch.Tensor] = None,
+        return_native_resolution: bool = False,
+        update_state: bool = True,
     ) -> Union[
         Tuple[Any, torch.Tensor],
         Tuple[Any, torch.Tensor, torch.Tensor, Optional[torch.Tensor]],
@@ -1323,6 +1330,13 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             total_activity_logits (Optional[torch.Tensor]): Cumulative raw three-class activity logits. Used only
                 when ``return_logits=True`` and the activity head is enabled.
                 Shape: (batch_size, cumulative pred length, 3)
+            return_native_resolution (bool): Return speaker probabilities on the model's native frame grid instead
+                of applying ``output_subsampling_factor``. This is used to retain 10 ms diarization output from a
+                high-resolution model while the normal PEE fusion path continues to use downsampled predictions.
+            update_state (bool): Update the speaker cache / FIFO state with this chunk. A caller processing its
+                last chunk can pass False to skip the update: a high-resolution model's chunk predictions do not
+                depend on it, and the returned state is then unchanged. Ignored (the update runs) for models
+                without high resolution, whose chunk predictions come from the update.
 
         Returns:
             streaming_state (SortformerStreamingState):
@@ -1415,6 +1429,8 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             emb_seq=spkcache_fifo_chunk_fc_encoder_embs,
             emb_seq_length=spkcache_fifo_chunk_fc_encoder_lengths,
             return_logits=return_logits,
+            # Training keeps its established numerics; inference must not depend on how much padding a row has.
+            mask_padding=not self.training,
         )
         if return_logits:
             spkcache_fifo_chunk_preds, spkcache_fifo_chunk_logits, spkcache_fifo_chunk_activity_logits = outputs
@@ -1460,17 +1476,19 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         spkcache_fifo_chunk_preds = self.sortformer_modules.apply_mask_to_preds(
             spkcache_fifo_chunk_preds, spkcache_fifo_chunk_fc_encoder_lengths
         )
+        skip_update = not update_state and self.high_resolution
         if self.async_streaming:
             saved_spkcache_lengths = streaming_state.spkcache_lengths.clone()
             saved_fifo_lengths = streaming_state.fifo_lengths.clone()
-            streaming_state, chunk_preds = self.sortformer_modules.streaming_update_async(
-                streaming_state=streaming_state,
-                chunk=chunk_pre_encode_embs,
-                chunk_lengths=chunk_pre_encode_lengths,
-                preds=spkcache_fifo_chunk_preds,
-                lc=lc_enc,
-                rc=rc_enc,
-            )
+            if not skip_update:
+                streaming_state, chunk_preds = self.sortformer_modules.streaming_update_async(
+                    streaming_state=streaming_state,
+                    chunk=chunk_pre_encode_embs,
+                    chunk_lengths=chunk_pre_encode_lengths,
+                    preds=spkcache_fifo_chunk_preds,
+                    lc=lc_enc,
+                    rc=rc_enc,
+                )
             if self.high_resolution or return_logits:
                 max_chunk_len = chunk_pre_encode_embs.shape[1] - lc_enc - rc_enc
                 chunk_lengths = (chunk_pre_encode_lengths - lc_enc).clamp(min=0, max=max_chunk_len)
@@ -1504,13 +1522,14 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         else:
             saved_spkcache_len = streaming_state.spkcache.shape[1]
             saved_fifo_len = streaming_state.fifo.shape[1]
-            streaming_state, chunk_preds = self.sortformer_modules.streaming_update(
-                streaming_state=streaming_state,
-                chunk=chunk_pre_encode_embs,
-                preds=spkcache_fifo_chunk_preds,
-                lc=lc_enc,
-                rc=rc_enc,
-            )
+            if not skip_update:
+                streaming_state, chunk_preds = self.sortformer_modules.streaming_update(
+                    streaming_state=streaming_state,
+                    chunk=chunk_pre_encode_embs,
+                    preds=spkcache_fifo_chunk_preds,
+                    lc=lc_enc,
+                    rc=rc_enc,
+                )
             if self.high_resolution:
                 chunk_len = chunk_pre_encode_embs.shape[1] - lc_enc - rc_enc
                 start = (saved_spkcache_len + saved_fifo_len + lc_enc) * self.upsample_factor
@@ -1529,7 +1548,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
                     chunk_activity_logits = spkcache_fifo_chunk_activity_logits[:, start : start + chunk_len]
         native_output_factor = 1 if self.high_resolution else self.encoder.subsampling_factor
         downsample_factor = self.output_subsampling_factor // native_output_factor
-        if downsample_factor > 1:
+        if downsample_factor > 1 and not return_native_resolution:
             chunk_preds = self.sortformer_modules.downsample_preds(chunk_preds, downsample_factor)
         total_preds = torch.cat([total_preds, chunk_preds], dim=1)
 

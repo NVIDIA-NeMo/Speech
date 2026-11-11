@@ -18,8 +18,28 @@ import torch
 from nemo.collections.asr.modules.audio_preprocessing import AudioToMelSpectrogramPreprocessor, SpectrogramAugmentation
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 from nemo.collections.asr.parts.packed_sequence import unpack_encoder_output
-from nemo.collections.speechlm2.modules.perception import AudioPerceptionModule, IdentityConnector
-from tests.collections.asr.test_parallel_expert_encoder_two_branch import build_toy_packed_pe_encoder
+from nemo.collections.speechlm2.modules.perception import (
+    AudioPerceptionModule,
+    IdentityConnector,
+    _configure_short_recording_spec_augment,
+)
+from tests.collections.asr.test_parallel_expert_encoder import build_toy_packed_pe_encoder
+
+
+def test_speechlm_configures_short_recording_cap_from_frontend_frame_duration():
+    augment = SpectrogramAugmentation(time_masks=10, time_width=5)
+    preprocessor = AudioToMelSpectrogramPreprocessor(
+        sample_rate=16000,
+        window_stride=0.01,
+        dither=0,
+        pad_to=0,
+    )
+
+    _configure_short_recording_spec_augment(augment, preprocessor)
+
+    assert augment.spec_augment.short_recording_frame_duration == pytest.approx(0.01)
+    assert augment.spec_augment.short_recording_max_duration == 1.0
+    assert augment.spec_augment.short_recording_max_mask_fraction == 0.1
 
 
 class _FeaturePassthrough(torch.nn.Module):
@@ -91,7 +111,13 @@ def test_perception_sequence_packed_rejects_adapter_that_cannot_preserve_thd():
 
 @pytest.mark.parametrize(
     "device",
-    ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable"))],
+    [
+        "cpu",
+        pytest.param(
+            "cuda",
+            marks=[pytest.mark.gpu, pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")],
+        ),
+    ],
 )
 @pytest.mark.parametrize("encoder_kind", ["transformer", "pee"])
 def test_perception_packed_waveform_matches_padded_waveform_for_supported_encoders(encoder_kind, device):
@@ -156,6 +182,7 @@ def test_perception_legacy_forward_accepts_packed_waveform(encoder_kind):
 
 
 @pytest.mark.parametrize("encoder_kind", ["transformer", "pee"])
+@pytest.mark.gpu
 def test_perception_packed_waveform_all_empty_batch(encoder_kind, device):
     torch_device = "cuda" if device == "GPU" and torch.cuda.is_available() else "cpu"
     perception = _make_waveform_perception(encoder_kind).to(torch_device)

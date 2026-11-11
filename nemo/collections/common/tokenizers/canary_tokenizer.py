@@ -132,29 +132,41 @@ class CanaryTokenizer(AggregateTokenizer):
         Tokenize the input special prompt of Canary family of models.
 
         Required because otherwise self.text_to_ids() returns a different result than what Canary was trained with.
+        Raises ``ValueError`` for malformed special tokens or an incomplete decoder-context language header.
         """
         ans = []
-
+        decoder_ctx = ""
+        target_lang = None
         if text.startswith(CANARY2_BOCTX):
-            # Canary 2 prompt format. It starts with decoder context, which should be tokenized using
-            # a different tokenizer than spl_tokens. We don't really know what it is, so we'll use the
-            # following HACK solution: look up 5th token which is target_lang and tokenize this part
-            # using its tokenizer. We skip this when decoder context is empty.
             ans.append(self.special_tokens[CANARY2_BOCTX])
-            text = text[len(CANARY2_BOCTX) :]
-            ctx_end_idx = text.find(CANARY_BOS)
-            if decoder_ctx := text[:ctx_end_idx]:
-                target_lang = text.split("<|")[4].replace("|>", "")  # sorry
-                ans.extend(self.text_to_ids(decoder_ctx, target_lang))
-                text = text[ctx_end_idx:]
+            decoder_ctx, separator, prompt = text[len(CANARY2_BOCTX) :].partition(CANARY_BOS)
+            if not separator:
+                raise ValueError("Invalid Canary prompt: missing startoftranscript after startofcontext.")
+            text = separator + prompt
+            if decoder_ctx:
+                # The language fields belong to the header, not to arbitrary decoder context text.
+                header = re.match(r"<\|startoftranscript\|><\|[^<>]+\|><\|[^<>]+\|><\|([^<>]+)\|>", text)
+                if header is None:
+                    raise ValueError("Invalid Canary prompt: decoder context requires a complete language header.")
+                target_lang = header.group(1)
+                try:
+                    supported = _map_canary1_to_canary2_lang(target_lang, self.langs) in self.langs
+                except RuntimeError:
+                    supported = False
+                if not supported:
+                    raise ValueError(f"Invalid Canary prompt: unsupported target language {target_lang!r}.")
 
-        num_special_tokens = text.count(">")
-        for _ in range(num_special_tokens):
-            token = text[: text.find(">") + 1]
-            ans.append(self.special_tokens[token])
-            text = text[len(token) :]
-        assert len(text) == 0, text
-        return ans
+        prompt_ids = []
+        while text:
+            end = text.find(">") + 1
+            token = text[:end]
+            if not end or token not in self.special_tokens:
+                raise ValueError(f"Invalid Canary special prompt token: {token or text!r}.")
+            prompt_ids.append(self.special_tokens[token])
+            text = text[end:]
+        if decoder_ctx:
+            ans.extend(self.text_to_ids(decoder_ctx, target_lang))
+        return ans + prompt_ids
 
     def spl_token_to_id(self, token):
         if token_id := self.special_tokens.get(f"<|{token}|>", None):

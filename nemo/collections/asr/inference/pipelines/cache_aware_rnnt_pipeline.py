@@ -91,19 +91,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.init_text_processor(cfg, itn_model)
         self.init_nmt_model(nmt_model)
         self.init_decoding_computer()
-        self.init_compiled_encoder(cfg)
         super().__init__()
-
-    def init_compiled_encoder(self, cfg: DictConfig) -> None:
-        """
-        Compile the encoder layers unless the encoder is running its own CUDA-graph path.
-        Args:
-            cfg: (DictConfig) Configuration parameters.
-        """
-        if cfg.asr.get("use_cuda_graphs", False):
-            return
-        if self.asr_model.compile_encoder_layers():
-            logging.info("Compiled the encoder with torch.compile")
 
     def init_decoding_computer(self) -> None:
         """Initialize ``decoding_computer``."""

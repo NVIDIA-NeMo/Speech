@@ -6,6 +6,7 @@ Currently supported models are -
 
 * Character based RNNT model
 * Subword based RNNT model
+* Experimental [enrollment-conditioned target-speaker RNNT](README_target_speaker_asr.md)
 
 # Model execution overview
 

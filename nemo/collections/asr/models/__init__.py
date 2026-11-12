@@ -32,6 +32,7 @@ from nemo.collections.asr.models.label_models import EncDecSpeakerLabelModel  # 
 from nemo.collections.asr.models.multitalker_asr_models import EncDecMultiTalkerRNNTBPEModel  # noqa: F401
 from nemo.collections.asr.models.rnnt_bpe_models import EncDecRNNTBPEModel  # noqa: F401
 from nemo.collections.asr.models.rnnt_bpe_models_prompt import EncDecRNNTBPEModelWithPrompt  # noqa: F401
+from nemo.collections.asr.models.target_speaker_rnnt_models import EncDecTargetSpeakerRNNTBPEModel  # noqa: F401
 from nemo.collections.asr.models.rnnt_models import EncDecRNNTModel  # noqa: F401
 from nemo.collections.asr.models.sortformer_diar_models import SortformerEncLabelModel  # noqa: F401
 from nemo.collections.asr.models.ssl_models import (  # noqa: F401
@@ -58,6 +59,7 @@ __all__ = [
     'EncDecMultiTalkerRNNTBPEModel',
     'EncDecRNNTBPEModel',
     'EncDecRNNTBPEModelWithPrompt',
+    'EncDecTargetSpeakerRNNTBPEModel',
     'EncDecRNNTModel',
     'EncDecSpeakerLabelModel',
     'EncDecTransfModelBPE',

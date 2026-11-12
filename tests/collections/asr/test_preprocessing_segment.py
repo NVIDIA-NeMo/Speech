@@ -41,7 +41,9 @@ class TestSelectChannels:
 
         if channel_selector not in [None, 0, 'average']:
             # Expect a failure if looking for a different channel when input is 1D
-            with pytest.raises(ValueError):
+            with pytest.raises(
+                ValueError, match=r"^Input signal is one-dimensional, channel selector \(.+\) cannot be used\.$"
+            ):
                 # UUT
                 select_channels(signal_in, channel_selector)
         else:

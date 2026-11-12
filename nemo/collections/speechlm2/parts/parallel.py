@@ -294,11 +294,12 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
 
         from torch.distributed.checkpoint import FileSystemReader, load
         from torch.distributed.checkpoint.state_dict import (
-            StateDictOptions,
             get_model_state_dict,
             get_optimizer_state_dict,
             set_optimizer_state_dict,
         )
+
+        from nemo.collections.speechlm2.parts.fused_adam_checkpoint import get_fused_adam_restore_optimizer
 
         assert self.model is not None
         assert self.lightning_module is not None
@@ -306,18 +307,17 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         load(module_state, checkpoint_id=path)
         self.model.load_state_dict(module_state["state_dict"], strict=self.lightning_module.strict_loading)
 
-        state_dict_options = StateDictOptions(cpu_offload=True)
         metadata = FileSystemReader(path).read_metadata()
         for idx, optimizer in enumerate(self.optimizers):
             optimizer_key = f"optimizer_{idx}"
-            optimizer_state = {optimizer_key: get_optimizer_state_dict(self.model, optimizer)}
+            restore_optimizer = get_fused_adam_restore_optimizer(optimizer) or optimizer
+            optimizer_state = {optimizer_key: get_optimizer_state_dict(self.model, restore_optimizer)}
             planner, missing_parameters = _optimizer_load_planner(optimizer_state, metadata, optimizer_key)
             load(optimizer_state, checkpoint_id=path, planner=planner)
             set_optimizer_state_dict(
                 self.model,
-                optimizer,
+                restore_optimizer,
                 optim_state_dict=optimizer_state[optimizer_key],
-                options=state_dict_options,
             )
             if missing_parameters and self.global_rank == 0:
                 warnings.warn(

@@ -376,27 +376,29 @@ class _DepthwiseConv2d(torch.autograd.Function):
                 triton.cdiv(channels, meta["CHANNEL_BLOCK"]),
             )
 
-        _forward_kernel[grid](
-            features_cast,
-            weight_cast,
-            bias_cast,
-            output,
-            in_lengths,
-            out_lengths,
-            channels,
-            in_height,
-            in_width,
-            out_height,
-            out_width,
-            num_output_positions,
-            KERNEL_H=kernel_h,
-            KERNEL_W=kernel_w,
-            STRIDE_H=stride_h,
-            STRIDE_W=stride_w,
-            PAD_H=pad_h,
-            PAD_W=pad_w,
-            TAPS=kernel_h * kernel_w,
-        )
+        # Triton launches in the current CUDA context, not on the tensors' device: pin it for the launch
+        with torch.cuda.device(features.device):
+            _forward_kernel[grid](
+                features_cast,
+                weight_cast,
+                bias_cast,
+                output,
+                in_lengths,
+                out_lengths,
+                channels,
+                in_height,
+                in_width,
+                out_height,
+                out_width,
+                num_output_positions,
+                KERNEL_H=kernel_h,
+                KERNEL_W=kernel_w,
+                STRIDE_H=stride_h,
+                STRIDE_W=stride_w,
+                PAD_H=pad_h,
+                PAD_W=pad_w,
+                TAPS=kernel_h * kernel_w,
+            )
         # Cloned because callers own the lengths and edit them in place; backward needs the originals.
         ctx.save_for_backward(features_cast, weight_cast, in_lengths.clone(), out_lengths.clone())
         ctx.geometry = geometry

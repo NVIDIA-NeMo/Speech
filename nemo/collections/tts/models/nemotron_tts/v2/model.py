@@ -71,10 +71,10 @@ class ProcessBatchOutput:
 
     Attributes:
         loss: Total combined loss.
-        codebook_loss: Cross-entropy loss for parallel audio codebook prediction
+        codebook_loss: Auxiliary parallel audio codebook loss (None if disabled)
         phoneme_loss: Cross-entropy loss for phoneme prediction (None if no phoneme tokenizer)
         acoustic_codes_predictor_loss: Loss from the acoustic codes predictor.
-        logits: Predicted logits for audio codes (B, T', num_codebooks * num_tokens_per_codebook)
+        logits: Auxiliary audio logits (B, T', num_codebooks * num_tokens_per_codebook), or None if disabled
         phoneme_logits: Predicted logits for phoneme tokens (None if no phoneme tokenizer)
         phoneme_tokens_target: Target phoneme tokens for loss computation
         phoneme_tokens_lens_target: Lengths of target phoneme tokens
@@ -86,10 +86,10 @@ class ProcessBatchOutput:
     """
 
     loss: torch.Tensor
-    codebook_loss: torch.Tensor
+    codebook_loss: Optional[torch.Tensor]
     phoneme_loss: Optional[torch.Tensor]
     acoustic_codes_predictor_loss: torch.Tensor
-    logits: torch.Tensor
+    logits: Optional[torch.Tensor]
     phoneme_logits: Optional[torch.Tensor]
     phoneme_tokens_target: Optional[torch.Tensor]
     phoneme_tokens_lens_target: Optional[torch.Tensor]
@@ -119,8 +119,14 @@ class NemotronTTSModel(NemotronTTSBase):
         self.phoneme_corruption_unk_mode_prob = cfg.get('phoneme_corruption_unk_mode_prob', 0.5)
         self.phoneme_corruption_type = cfg.get('phoneme_corruption_type', 'repeat_skip_unk')
         self.phoneme_loss_weight = cfg.get('phoneme_loss_weight', 1.0)
+        self.compute_auxiliary_codebook_loss = cfg.get('compute_auxiliary_codebook_loss', True)
         self.parallel_codebook_loss_scale = cfg.get('parallel_codebook_loss_scale', 1.0)
         self.acoustic_codes_predictor_loss_scale = cfg.get('acoustic_codes_predictor_loss_scale', 1.0)
+
+        if not self.compute_auxiliary_codebook_loss:
+            # Preserve checkpoint keys while excluding the unused head from DDP gradient reduction.
+            self.audio_out_projection.requires_grad_(False)
+            self.final_proj.requires_grad_(False)
 
         self.label_smoothing = cfg.get('label_smoothing', 0.1)
         self.cross_entropy_loss = nn.CrossEntropyLoss(reduction='none', label_smoothing=self.label_smoothing)
@@ -1250,25 +1256,23 @@ class NemotronTTSModel(NemotronTTSBase):
         transformer_hidden_states = transformer_out.last_hidden_state  # (B, T_total, E)
 
         # 9. Extract prediction embeddings and compute losses
-        # Audio predictions start at audio_delay
-        pred_embeddings = self.slice_sequence_embeddings(
-            transformer_hidden_states,
-            context_lens=audio_delay,
-            target_lens=audio_codes_lens_target,
-        )
-
-        # Project to audio logits
-        pred_embeddings_audio = self.audio_out_projection(pred_embeddings)
-        logits = self.final_proj(pred_embeddings_audio)
-
-        # Compute codebook loss
-        codebook_loss, _ = self.compute_loss(
-            logits,
-            audio_codes_target,
-            audio_codes_lens_target,
-            agent_mask_target=agent_mask if self.cfg.get("mask_user_on_loss", False) else None,
-        )
-        loss = self.parallel_codebook_loss_scale * codebook_loss
+        logits = None
+        codebook_loss = None
+        if self.compute_auxiliary_codebook_loss:
+            # Audio predictions start at audio_delay.
+            pred_embeddings = self.slice_sequence_embeddings(
+                transformer_hidden_states,
+                context_lens=audio_delay,
+                target_lens=audio_codes_lens_target,
+            )
+            pred_embeddings_audio = self.audio_out_projection(pred_embeddings)
+            logits = self.final_proj(pred_embeddings_audio)
+            codebook_loss, _ = self.compute_loss(
+                logits,
+                audio_codes_target,
+                audio_codes_lens_target,
+                agent_mask_target=agent_mask if self.cfg.get("mask_user_on_loss", False) else None,
+            )
 
         predictor_targets, predictor_loss_mask = self._acoustic_codes_predictor_targets(
             num_positions=transformer_hidden_states.size(1),
@@ -1285,7 +1289,9 @@ class NemotronTTSModel(NemotronTTSBase):
             feature_masking=self.feature_masking if dropout_audio_conditioning else None,
             label_smoothing=self.label_smoothing,
         )
-        loss = loss + self.acoustic_codes_predictor_loss_scale * acoustic_codes_predictor_loss
+        loss = self.acoustic_codes_predictor_loss_scale * acoustic_codes_predictor_loss
+        if codebook_loss is not None:
+            loss = loss + self.parallel_codebook_loss_scale * codebook_loss
 
         # Compute phoneme loss if applicable
         phoneme_loss = None
@@ -1319,7 +1325,7 @@ class NemotronTTSModel(NemotronTTSBase):
                     pb_phoneme_logits, pb_phoneme_tokens_target, pb_phoneme_tokens_lens_target, custom_mask=custom_mask
                 )
             else:
-                phoneme_loss = torch.tensor(0.0, device=logits.device)
+                phoneme_loss = transformer_hidden_states.new_zeros(())
 
             loss = loss + self.phoneme_loss_weight * phoneme_loss
 
@@ -1564,7 +1570,8 @@ class NemotronTTSModel(NemotronTTSBase):
         )
         loss = batch_output.loss
         codebook_loss = batch_output.codebook_loss
-        self.log('train/codebook_loss', codebook_loss, prog_bar=True, sync_dist=True)
+        if codebook_loss is not None:
+            self.log('train/codebook_loss', codebook_loss, prog_bar=True, sync_dist=True)
         self.log('train/loss', loss, prog_bar=True, sync_dist=True)
 
         if self.phoneme_tokenizer is not None:
@@ -1673,7 +1680,7 @@ class NemotronTTSModel(NemotronTTSBase):
         context_audio_codes = batch_output.context_audio_codes
         context_audio_codes_lens = batch_output.context_audio_codes_lens
 
-        if batch_idx == 0 and self.global_rank == 0:
+        if logits is not None and batch_idx == 0 and self.global_rank == 0:
             # Prepare dictionary for aggregated wandb logging
             wandb_log_dict = {}
 
@@ -1691,9 +1698,10 @@ class NemotronTTSModel(NemotronTTSBase):
 
         val_output = {
             'val_loss': loss,
-            'val_codebook_loss': codebook_loss,
             'val_acoustic_codes_predictor_loss': batch_output.acoustic_codes_predictor_loss,
         }
+        if codebook_loss is not None:
+            val_output['val_codebook_loss'] = codebook_loss
 
         if self.phoneme_tokenizer is not None:
             phoneme_loss = batch_output.phoneme_loss
@@ -1926,10 +1934,11 @@ class NemotronTTSModel(NemotronTTSBase):
     def on_validation_epoch_end(self):
         collect = lambda key: torch.stack([x[key] for x in self.validation_step_outputs]).mean()
         val_loss = collect("val_loss")
-        val_codebook_loss = collect("val_codebook_loss")
 
         self.log("val_loss", val_loss, prog_bar=True, sync_dist=True)
-        self.log("val/codebook_loss", val_codebook_loss, prog_bar=True, sync_dist=True)
+        if self.compute_auxiliary_codebook_loss:
+            val_codebook_loss = collect("val_codebook_loss")
+            self.log("val/codebook_loss", val_codebook_loss, prog_bar=True, sync_dist=True)
 
         predictor_loss = collect("val_acoustic_codes_predictor_loss")
         self.log("val/acoustic_codes_predictor_loss", predictor_loss, sync_dist=True)

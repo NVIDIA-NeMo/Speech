@@ -38,24 +38,8 @@ from tests.collections.speechlm2._chunking_helpers import (
 requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="SALMAutomodel requires CUDA")
 
 
-@pytest.fixture(autouse=True, scope="module")
-def _default_device_cuda():
-    """Run this module's tests on CUDA by default, but scope the change so it does
-    not leak. ``torch.set_default_device`` is a global, process-wide mutation; setting
-    it at import time bleeds into other modules collected in the same pytest session
-    (e.g. device-agnostic ASR module tests),
-    causing spurious cuda/cpu device-mismatch failures. The previous default device
-    is always restored on teardown.
-    """
-    if not torch.cuda.is_available():
-        yield
-        return
-    prev = torch.get_default_device()
-    torch.set_default_device('cuda')
-    try:
-        yield
-    finally:
-        torch.set_default_device(prev)
+# Run on CUDA when available, without leaking the default device to other test modules (see conftest.py).
+pytestmark = pytest.mark.usefixtures("cuda_default_device")
 
 
 def resolve_pretrained_models():
@@ -77,8 +61,8 @@ AUDIO_LOCATOR_TAG = "<|audioplaceholder|>"
 PROMPT = "qwen"
 
 
-@pytest.fixture(scope="session")
-def model():
+@pytest.fixture(scope="module")
+def model(cuda_default_device):
     if not torch.cuda.is_available():
         pytest.skip("SALMAutomodel requires CUDA")
     cfg = {
@@ -143,18 +127,18 @@ def model():
     return model
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def dataset(model):
     return SALMDataset(model.tokenizer)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def prompt_formatter(model):
     return PromptFormatter.resolve(PROMPT)(model.tokenizer)
 
 
-@pytest.fixture(scope="session")
-def training_cutset_batch():
+@pytest.fixture(scope="module")
+def training_cutset_batch(cuda_default_device):
     cut = dummy_cut(0, recording=dummy_recording(0, with_data=True))
     cut.supervisions = [
         SupervisionSegment(
@@ -177,6 +161,7 @@ def training_cutset_batch():
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_dataset(dataset, prompt_formatter, training_cutset_batch):
     # This first step pre-tokenizes the examples, usually handled within `get_lhotse_dataloder_from_config`.
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
@@ -194,6 +179,7 @@ def test_salm_automodel_dataset(dataset, prompt_formatter, training_cutset_batch
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_training_step(model, dataset, prompt_formatter, training_cutset_batch):
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
     batch = dataset[training_cutset_batch]
@@ -208,6 +194,7 @@ def test_salm_automodel_training_step_uses_dataloader_iter_signature():
     assert list(inspect.signature(SALMAutomodel.training_step).parameters) == ["self", "dataloader_iter"]
 
 
+@pytest.mark.gpu
 def test_salm_automodel_forward_enters_configured_te_fp8_context():
     events = []
 
@@ -238,6 +225,7 @@ def test_salm_automodel_forward_enters_configured_te_fp8_context():
     assert events == ["enter", "forward", "exit"]
 
 
+@pytest.mark.gpu
 def test_salm_automodel_backward_does_not_enter_te_fp8_context(monkeypatch):
     events = []
 
@@ -264,6 +252,7 @@ def test_salm_automodel_backward_does_not_enter_te_fp8_context(monkeypatch):
     assert events == ["setup", "backward"]
 
 
+@pytest.mark.gpu
 def test_salm_automodel_pad_token_override_preserves_eot_labels(monkeypatch):
     seen = {}
 
@@ -302,6 +291,7 @@ def test_salm_automodel_pad_token_override_preserves_eot_labels(monkeypatch):
     assert packed["target_ids"].tolist() == [-100, -100, 42, 11, -100]
 
 
+@pytest.mark.gpu
 def test_salm_automodel_fused_linear_forward_keeps_hidden_states_without_logits():
     class FakeLLM(torch.nn.Module):
         def __init__(self):
@@ -331,6 +321,7 @@ def test_salm_automodel_fused_linear_forward_keeps_hidden_states_without_logits(
     assert outputs["logits"].shape == (1, 5, 0)
 
 
+@pytest.mark.gpu
 def test_salm_automodel_fused_linear_loss_consumes_hidden_states_and_lm_weight():
     calls = []
 
@@ -383,6 +374,7 @@ def test_salm_automodel_notifies_garbage_collection_after_optimizer_step(monkeyp
     assert calls == ["optimizer", "gc"]
 
 
+@pytest.mark.gpu
 def test_salm_automodel_record_training_stats_uses_thd_metadata():
     model = SALMAutomodel.__new__(SALMAutomodel)
     batch = {"input_ids": torch.zeros(3, 7, dtype=torch.long)}
@@ -400,6 +392,7 @@ def test_salm_automodel_record_training_stats_uses_thd_metadata():
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_validation_step(model, dataset, prompt_formatter, training_cutset_batch):
     model.on_validation_epoch_start()
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
@@ -409,6 +402,7 @@ def test_salm_automodel_validation_step(model, dataset, prompt_formatter, traini
     assert results is None
 
 
+@pytest.mark.gpu
 def test_salm_automodel_validation_epoch_end_uses_token_weighted_metrics():
     model = SALMAutomodel.__new__(SALMAutomodel)
     torch.nn.Module.__init__(model)
@@ -437,6 +431,7 @@ def test_salm_automodel_validation_epoch_end_uses_token_weighted_metrics():
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_generation(model):
     answer = model.generate(
         prompts=[
@@ -462,6 +457,7 @@ def test_salm_automodel_generation(model):
         (None, {}),
     ],
 )
+@pytest.mark.gpu
 def test_salm_automodel_generation_passes_enable_thinking(
     model, monkeypatch, enable_thinking, expected_formatter_kwargs
 ):
@@ -499,6 +495,7 @@ def test_salm_automodel_generation_passes_enable_thinking(
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_generation_audios_via_prompt(model, tmp_path):
     audio_path = tmp_path / "audio.wav"
     dummy_cut(0, with_data=True).save_audio(audio_path)
@@ -523,6 +520,7 @@ def test_salm_automodel_generation_audios_via_prompt(model, tmp_path):
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_generation_prompts_as_tensor(model):
     answer = model.generate(
         prompts=torch.tensor([[1, 2, 3, 4, 5, 6, 7, model.audio_locator_tag_id]]),

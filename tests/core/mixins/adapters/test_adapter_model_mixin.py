@@ -377,6 +377,7 @@ class TestAdapterModelMixin:
         assert new_num_params > original_num_params
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_single_encoder_module_adapter(self):
         # create a model config, but do not add global_cfg to it
         # we want to test just module level adapter
@@ -421,6 +422,7 @@ class TestAdapterModelMixin:
         assert modules_cfg[model.get_enabled_adapters()[0]] == 'encoder'  # encoder
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_single_decoder_module_adapter(self):
         # create a model config, but do not add global_cfg to it
         # we want to test just module level adapter
@@ -823,6 +825,7 @@ class TestAdapterModelMixin:
             model.save_adapters(filepath='temp.pt', name=None)
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_single_decoder_save_load_adapter_only_exact_name(self):
         # create a model config, but do not add global_cfg to it
         # we want to test just module level adapter
@@ -882,6 +885,7 @@ class TestAdapterModelMixin:
 
     @pytest.mark.unit
     @pytest.mark.parametrize('restore_name', [None, 'adapter_0'])
+    @pytest.mark.gpu
     def test_single_decoder_save_load_adapter_only_global_name(self, restore_name):
         # create a model config, but do not add global_cfg to it
         # we want to test just module level adapter
@@ -940,6 +944,7 @@ class TestAdapterModelMixin:
             assert (original_state_dict[ogkey] - restored_state_dict[newkey]).abs().mean() < 1e-6
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_multiple_decoder_save_load_adapter_only_exact_name(self):
         # create a model config, but do not add global_cfg to it
         # we want to test just module level adapter
@@ -1009,6 +1014,7 @@ class TestAdapterModelMixin:
             "adapter_1",
         ],
     )  # "encoder:adapter_1"
+    @pytest.mark.gpu
     def test_multiple_save_load_adapter_with_multiple_load(self, decoder, encoder):
         # create a model config, but do not add global_cfg to it
         # we want to test just module level adapter
@@ -1084,6 +1090,7 @@ class TestAdapterModelMixin:
             assert (original_state_dict[ogkey] - restored_state_dict[newkey]).abs().mean() < 1e-6
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_multiple_decoder_save_load_adapter_dual_name(self):
         # create a model config, but do not add global_cfg to it
         # we want to test just module level adapter
@@ -1142,6 +1149,7 @@ class TestAdapterModelMixin:
             assert (original_state_dict[ogkey] - restored_state_dict[newkey]).abs().mean() < 1e-6
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_single_decoder_save_load_adapter_only_partial_name(self):
         # create a model config, but do not add global_cfg to it
         # we want to test just module level adapter

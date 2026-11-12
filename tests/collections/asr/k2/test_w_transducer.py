@@ -28,7 +28,8 @@ except (ImportError, ModuleNotFoundError):
 DEVICES = ['cpu']
 
 if torch.cuda.is_available() and k2.with_cuda:
-    DEVICES.append('cuda')
+    # The `gpu` marker puts the CUDA cases in the GPU CI jobs (see tests/functional_tests/_gpu_unit_test_selection.sh).
+    DEVICES.append(pytest.param('cuda', marks=pytest.mark.gpu))
 
 
 class TestGraphWTransducerLoss:

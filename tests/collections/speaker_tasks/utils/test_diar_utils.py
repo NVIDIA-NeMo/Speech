@@ -141,7 +141,7 @@ class TestDiarizationSequneceUtilFunctions:
     @pytest.mark.parametrize("Y", [[3, 3, 3, 4, 4, 5], [100, 100, 100, 104, 104, 1005]])
     @pytest.mark.parametrize("target", [[0, 0, 0, 1, 1, 2]])
     @pytest.mark.parametrize("offset", [1, 10])
-    def test_minimal_index_ex2(self, Y, target, offset):
+    def test_minimal_index_ex1(self, Y, target, offset):
         Y = torch.tensor(Y)
         target = torch.tensor(target)
         min_Y = get_minimal_indices(Y)
@@ -305,7 +305,7 @@ class TestDiarizationSequneceUtilFunctions:
     @pytest.mark.parametrize("ntbr", [3])
     @pytest.mark.parametrize("pcl", [torch.tensor([0] * 80 + [1] * 35 + [2] * 32)])
     @pytest.mark.parametrize("mspb", [0, 25])
-    def test_merge_scheduler_3clus(self, ntbr, pcl, mspb):
+    def test_merge_scheduler_3clus_long(self, ntbr, pcl, mspb):
         class_target_vol = get_merge_quantity(
             num_to_be_removed=ntbr,
             pre_clus_labels=pcl,
@@ -377,7 +377,7 @@ class TestClassExport:
         isinstance(online_clus, torch.jit._script.RecursiveScriptClass)
 
     @pytest.mark.unit
-    def test_online_speaker_clustering_instance_export(self):
+    def test_offline_speaker_clustering_instance_export(self):
         offline_speaker_clustering = SpeakerClustering(maj_vote_spk_count=False, min_samples_for_nmesc=0, cuda=True)
         offline_speaker_clustering = torch.jit.script(offline_speaker_clustering)
         isinstance(offline_speaker_clustering, torch.jit._script.RecursiveScriptClass)
@@ -766,6 +766,7 @@ class TestSpeakerClustering:
     @pytest.mark.parametrize("n_spks", [1, 2, 3, 4, 5, 6, 7])
     @pytest.mark.parametrize("total_sec, SSV, perturb_sigma, seed", [(30, 10, 0.1, 0)])
     @pytest.mark.parametrize("jit_script", [False, True])
+    @pytest.mark.gpu
     def test_offline_speaker_clustering(self, n_spks, total_sec, SSV, perturb_sigma, seed, jit_script, cuda=True):
         spk_dur = total_sec / n_spks
         em, ts, mc, mw, spk_ts, gt = generate_toy_data(
@@ -846,6 +847,7 @@ class TestSpeakerClustering:
     @pytest.mark.unit
     @pytest.mark.parametrize("max_num_speakers", [2, 3])
     @pytest.mark.parametrize("jit_script", [False, True])
+    @pytest.mark.gpu
     def test_offline_speaker_clustering_enhanced_count_respects_max_num_speakers_gpu(
         self, max_num_speakers, jit_script, cuda=True
     ):
@@ -892,6 +894,7 @@ class TestSpeakerClustering:
     @pytest.mark.parametrize("spk_dur", [0.25, 0.5, 0.75, 1, 2, 4])
     @pytest.mark.parametrize("n_spks, SSV, enhanced_count_thres, min_samples_for_nmesc", [(1, 5, 40, 6)])
     @pytest.mark.parametrize("seed", [0])
+    @pytest.mark.gpu
     def test_offline_speaker_clustering_very_short_gpu(
         self,
         n_spks,
@@ -977,6 +980,7 @@ class TestSpeakerClustering:
     @pytest.mark.parametrize("spk_dur, chunk_cluster_count, embeddings_per_chunk", [(120, 4, 50), (240, 4, 100)])
     @pytest.mark.parametrize("seed", [0])
     @pytest.mark.parametrize("jit_script", [False, True])
+    @pytest.mark.gpu
     def test_longform_speaker_clustering_gpu(
         self,
         n_spks,
@@ -1026,6 +1030,7 @@ class TestSpeakerClustering:
     @pytest.mark.parametrize("total_sec, buffer_size, sigma", [(30, 30, 0.1)])
     @pytest.mark.parametrize("seed", [0])
     @pytest.mark.parametrize("jit_script", [False, True])
+    @pytest.mark.gpu
     def test_online_speaker_clustering(self, n_spks, total_sec, buffer_size, sigma, seed, jit_script, cuda=True):
         step_per_frame = 2
         spk_dur = total_sec / n_spks

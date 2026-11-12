@@ -177,6 +177,8 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         text_context_remapping_prob: Probability of remapping the original text context to a remapped text context.
         load_normalized_text_percent: Probability in `[0.0, 1.0]` of loading the normalized transcript when
             available. Defaults to `1.0`.
+        challenging_texts_path: UTF-8 file with one replacement prompt per line for online policy training.
+        challenging_text_replacement_prob: Probability of replacing one English TTS prompt per training batch.
     """
 
     def __init__(
@@ -208,6 +210,8 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         phoneme_text_eop_marker: str = "<eop>",
         add_language_to_context_text: bool = False,
         load_normalized_text_percent: float = 1.0,
+        challenging_texts_path: str = None,
+        challenging_text_replacement_prob: float = 0.0,
     ):
         super().__init__()
         self.sample_rate = sample_rate
@@ -243,6 +247,38 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         self.add_language_to_context_text = add_language_to_context_text
         _validate_probability("load_normalized_text_percent", load_normalized_text_percent)
         self.load_normalized_text_percent = load_normalized_text_percent
+        _validate_probability("challenging_text_replacement_prob", challenging_text_replacement_prob)
+        self.challenging_text_replacement_prob = challenging_text_replacement_prob
+        self.challenging_texts = []
+        if challenging_text_replacement_prob > 0.0:
+            if not challenging_texts_path:
+                raise ValueError("challenging_texts_path is required when challenging text replacement is enabled.")
+            with open(challenging_texts_path, encoding="utf-8") as input_file:
+                self.challenging_texts = [line.strip() for line in input_file if line.strip()]
+            if not self.challenging_texts:
+                raise ValueError(f"No challenging texts found in {challenging_texts_path}.")
+            logging.info(
+                f"Loaded {len(self.challenging_texts)} challenging texts from {challenging_texts_path}; "
+                f"batch replacement probability={challenging_text_replacement_prob:.4f}"
+            )
+
+    @staticmethod
+    def _get_language(cut):
+        if cut.has_custom("lang"):
+            return cut.lang
+        return cut.supervisions[0].language or "en"
+
+    def _tokenize_text(self, text, tokenizer_name):
+        return tokenize_text_with_phoneme_spans(
+            text_tokenizer=self.text_tokenizer,
+            text_str=text,
+            tokenizer_name=tokenizer_name,
+            enable_phoneme_text_input=self.enable_phoneme_text_input,
+            phoneme_tokenizer=self.phoneme_tokenizer,
+            text_phoneme_token_offset=self.text_phoneme_token_offset,
+            bop_marker=self.phoneme_text_bop_marker,
+            eop_marker=self.phoneme_text_eop_marker,
+        )
 
     def get_num_audio_samples_to_slice(self, duration, sample_rate):
         num_codec_frames = int(duration * sample_rate / self.codec_model_samples_per_frame)
@@ -305,22 +341,34 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         )  # raw text here is the string of normalized text or text stored in the supervision segment. Used to distinguish from text tokens.
         phoneme_token_list = []
         phoneme_token_len_list = []
+        cer_reference_text_list = []
+
+        replacement_index = None
+        if (
+            self.dataset_type == 'train'
+            and self.challenging_text_replacement_prob > 0.0
+            and random.random() < self.challenging_text_replacement_prob
+        ):
+            candidates = [
+                index
+                for index, cut in enumerate(cuts)
+                if str(getattr(cut, "task", "tts")).lower() == "tts" and self._get_language(cut) == "en"
+            ]
+            if candidates:
+                replacement_index = random.choice(candidates)
 
         def _sample_context_duration_with_available_limit(available_duration_sec: float) -> float:
             effective_duration_max = min(self.context_duration_max, available_duration_sec)
             effective_duration_max = max(self.context_duration_min, effective_duration_max)
             return random.uniform(self.context_duration_min, effective_duration_max)
 
-        for cut in cuts:
+        for cut_index, cut in enumerate(cuts):
             speaker = cut.supervisions[0].speaker
             if not check_speaker_format(speaker):
                 raise ValueError(f"Invalid format in cut.supervisions[0].speaker: {speaker}")
             dataset_name = speaker.strip().split()[2].split(":")[-1]
             dataset_name_list.append(dataset_name)
-            if cut.has_custom("lang"):
-                language = cut.lang
-            else:
-                language = cut.supervisions[0].language if cut.supervisions[0].has_custom("language") else "en"
+            language = self._get_language(cut)
             language_list.append(language)
 
             # target audio or target codes
@@ -488,15 +536,35 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
 
             # tokenize transcript
             supervision = cut.supervisions[0]
+            normalized_text = supervision.normalized_text if supervision.has_custom("normalized_text") else None
             text_str = _select_text_for_tts_input(
                 text=supervision.text,
-                normalized_text=supervision.normalized_text if supervision.has_custom("normalized_text") else None,
+                normalized_text=normalized_text,
                 load_normalized_text_percent=self.load_normalized_text_percent,
             )
+            cer_reference_text = _select_text_for_tts_input(supervision.text, normalized_text or None, 1.0)
+            text_replaced = False
+            tokenizer_name = None
+            if cut_index == replacement_index:
+                tokenizer_name = (
+                    random.choice(cut.tokenizer_names) if cut.has_custom("tokenizer_names") else "english_phoneme"
+                )
+                for replacement_text in random.sample(self.challenging_texts, min(32, len(self.challenging_texts))):
+                    if len(self._tokenize_text(replacement_text, tokenizer_name)) + 1 > spec_len - 1:
+                        continue
+                    logging.info(
+                        f"[challenging_text_replacement] original={text_str[:160]!r} "
+                        f"replacement={replacement_text[:160]!r}"
+                    )
+                    text_str = cer_reference_text = replacement_text
+                    text_replaced = True
+                    break
             raw_text_list.append(text_str)
+            cer_reference_text_list.append(cer_reference_text)
             text_for_tokens = text_str
             if (
                 self.dataset_type == 'train'
+                and not text_replaced
                 and self.enable_phoneme_text_input
                 and self.partial_phoneme_text_prob > 0.0
                 and language not in self.ignore_phoneme_languages
@@ -521,21 +589,11 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                     bop_marker=self.phoneme_text_bop_marker,
                     eop_marker=self.phoneme_text_eop_marker,
                 )
-            if cut.has_custom("tokenizer_names"):
-                # Pick a random tokenizer from the list of tokenizers
-                tokenizer_name = random.choice(cut.tokenizer_names)
-            else:
-                tokenizer_name = "english_phoneme"  # Default to english phoneme tokenizer
-            tokens = tokenize_text_with_phoneme_spans(
-                text_tokenizer=self.text_tokenizer,
-                text_str=text_for_tokens,
-                tokenizer_name=tokenizer_name,
-                enable_phoneme_text_input=self.enable_phoneme_text_input,
-                phoneme_tokenizer=self.phoneme_tokenizer,
-                text_phoneme_token_offset=self.text_phoneme_token_offset,
-                bop_marker=self.phoneme_text_bop_marker,
-                eop_marker=self.phoneme_text_eop_marker,
-            )
+            if tokenizer_name is None:
+                tokenizer_name = (
+                    random.choice(cut.tokenizer_names) if cut.has_custom("tokenizer_names") else "english_phoneme"
+                )
+            tokens = self._tokenize_text(text_for_tokens, tokenizer_name)
             tokens = tokens + [self.eos_id]  # Not adding BOS id
             tokens = torch.tensor(tokens, dtype=torch.int32)
             text_len = tokens.shape[0]
@@ -544,7 +602,9 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
 
             if self.phoneme_tokenizer is not None:
                 # Use IPA text for IPABPETokenizer (required), otherwise use regular text_str
-                if isinstance(self.phoneme_tokenizer, IPABPETokenizer):
+                if text_replaced:
+                    phoneme_text = ""
+                elif isinstance(self.phoneme_tokenizer, IPABPETokenizer):
                     if not cut.supervisions[0].has_custom("ipa"):
                         if (self.dataset_type == 'train') and (language not in self.ignore_phoneme_languages):
                             raise ValueError(
@@ -585,6 +645,7 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         batch_dict = {
             "dataset_names": dataset_name_list,
             "raw_texts": raw_text_list,
+            "cer_reference_texts": cer_reference_text_list,
             "languages": language_list,
             "text": collate_vectors(token_list, padding_value=self.pad_id),  # (B, max_len)
             "text_lens": torch.IntTensor(token_len_list),

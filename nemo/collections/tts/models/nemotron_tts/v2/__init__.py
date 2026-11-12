@@ -3,5 +3,6 @@
 
 from nemo.collections.tts.models.nemotron_tts.v2.base import NemotronTTSBase
 from nemo.collections.tts.models.nemotron_tts.v2.model import NemotronTTSModel
+from nemo.collections.tts.models.nemotron_tts.v2.post_training import NemotronTTSModelOnlinePO
 
-__all__ = ["NemotronTTSBase", "NemotronTTSModel"]
+__all__ = ["NemotronTTSBase", "NemotronTTSModel", "NemotronTTSModelOnlinePO"]

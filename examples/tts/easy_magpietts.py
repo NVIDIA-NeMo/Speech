@@ -22,6 +22,7 @@ from nemo.collections.tts.models import (
     EasyMagpieTTSModel,
     EasyMagpieTTSModelOnlinePO,
     NemotronTTSModel,
+    NemotronTTSModelOnlinePO,
 )
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
@@ -66,7 +67,8 @@ def main(cfg):
         model_cfg = cfg.model
         with open_dict(model_cfg):
             model_cfg.reference_model_ckpt_path = cfg.init_from_ptl_ckpt
-        model = EasyMagpieTTSModelOnlinePO(cfg=model_cfg, trainer=trainer)
+        model_cls = _select_model_class(model_cfg, mode=mode)
+        model = model_cls(cfg=model_cfg, trainer=trainer)
     elif mode == 'test':
         model_cls = _select_model_class(cfg.model)
         model = model_cls(cfg=cfg.model, trainer=trainer)
@@ -93,13 +95,13 @@ def main(cfg):
         trainer.test(model)
 
 
-def _select_model_class(model_cfg) -> type:
-    """Select the v1 or v2 model implementation from the model configuration."""
+def _select_model_class(model_cfg, mode: str = 'train') -> type:
+    """Select the v1 or v2 supervised or online policy model."""
     model_type = model_cfg.get('model_type', 'v1')
     if model_type == 'v1':
-        return EasyMagpieTTSModel
+        return EasyMagpieTTSModelOnlinePO if mode == 'onlinepo_train' else EasyMagpieTTSModel
     if model_type == 'v2':
-        return NemotronTTSModel
+        return NemotronTTSModelOnlinePO if mode == 'onlinepo_train' else NemotronTTSModel
     raise ValueError(f"Unsupported model_type: {model_type!r}")
 
 

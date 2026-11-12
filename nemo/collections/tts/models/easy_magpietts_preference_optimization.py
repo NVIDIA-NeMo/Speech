@@ -47,7 +47,7 @@ except (ImportError, ModuleNotFoundError):
     PYNINI_AVAILABLE = False
 
 
-class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
+class OnlinePreferenceOptimizationMixin:
     """
     EasyMagpie-TTS online preference optimization model (GRPO / DR-GRPO).
 
@@ -75,7 +75,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
 
         self.reference_free = self.cfg.get('reference_free', False)
         if not self.reference_free:
-            self._reference_model = EasyMagpieTTSModel(cfg=ref_model_cfg)
+            self._reference_model = self._create_reference_model(ref_model_cfg)
             logging.info("Loading EasyMagpie reference model from checkpoint")
             self._reference_model.load_state_dict(
                 torch.load(cfg.reference_model_ckpt_path, map_location="cpu")['state_dict']
@@ -137,6 +137,14 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
 
         if self.trainer is not None and str(self.trainer.precision) in ("32", "32-true"):
             self.decoder.float()
+
+    def _create_reference_model(self, cfg):
+        """Construct the architecture used by the frozen reference policy."""
+        return EasyMagpieTTSModel(cfg=cfg)
+
+    def _prepare_rollout_batch(self, output, batch, phoneme_input_type):
+        """Attach model-specific sampled actions to the teacher-forced batch."""
+        return
 
     def _get_trainable_module_groups(self) -> Dict[str, List[torch.nn.Parameter]]:
         """Return a dict mapping module-group name → list of trainable parameters."""
@@ -660,6 +668,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             use_teacher_forced=False,
             use_inference_mode=False,
         )
+        self._prepare_rollout_batch(output, batch_repeated, phoneme_input_type)
         logging.info("Inference ended")
         audio_generation_time_sec = time.perf_counter() - generation_start_time
 
@@ -706,7 +715,8 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
 
         for idx in range(predicted_audio.size(0)):
             pred_transcript = pred_transcripts[idx]
-            gt_transcript = process_text_for_cer(batch_repeated['raw_texts'][idx])
+            references = batch_repeated.get('cer_reference_texts', batch_repeated['raw_texts'])
+            gt_transcript = process_text_for_cer(references[idx])
             cer_gt = min(max(word_error_rate([pred_transcript], [gt_transcript], use_cer=True), 0.0), 1.0)
             wer_gt = min(max(word_error_rate([pred_transcript], [gt_transcript], use_cer=False), 0.0), 1.0)
 
@@ -949,9 +959,10 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         predicted_codes = generated_codes_and_metrics['predicted_codes']
         predicted_codes_lens = generated_codes_and_metrics['predicted_codes_lens']
         predicted_codes = predicted_codes[:, :, : predicted_codes_lens.max()]
-        predicted_codes = self._codec_converter.convert_new_to_original(
-            audio_tokens=predicted_codes, audio_lens=predicted_codes_lens
-        )
+        if self._codec_converter is not None:
+            predicted_codes = self._codec_converter.convert_new_to_original(
+                audio_tokens=predicted_codes, audio_lens=predicted_codes_lens
+            )
         batch_repeated['audio_codes'] = predicted_codes
         batch_repeated['audio_codes_lens'] = predicted_codes_lens
         if 'audio' in batch_repeated:
@@ -1261,3 +1272,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         for tkey in ('audio_generation_time_sec', 'audio_save_time_sec', 'rewarding_time_sec'):
             self.log(f'train_{tkey}', float(timings.get(tkey, 0.0)), prog_bar=False, sync_dist=True)
         self.log('train_teacher_forced_time_sec', teacher_forced_time_sec, prog_bar=False, sync_dist=True)
+
+
+class EasyMagpieTTSModelOnlinePO(OnlinePreferenceOptimizationMixin, EasyMagpieTTSModel):
+    """EasyMagpie-TTS online preference optimization with shared rollout rewards."""

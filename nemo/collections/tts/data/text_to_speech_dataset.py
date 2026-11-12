@@ -696,6 +696,12 @@ class MagpieTTSDataset(TextToSpeechDataset):
         else:
             example['raw_text'] = data.text
 
+        example['cer_reference_text'] = _select_text_for_tts_input(
+            text=example['raw_text'],
+            normalized_text=data.manifest_entry.get('normalized_text') or None,
+            load_normalized_text_percent=1.0,
+        )
+
         example['language'] = language
 
         if "reward" in data.manifest_entry:
@@ -728,6 +734,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
         context_has_text_context_list = []
         reward_list = []
         raw_text_list = []
+        cer_reference_text_list = []
         language_list = []
         speaker_indices_list = []
         phoneme_tokens_list = []
@@ -735,6 +742,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
         for example in batch:
             dataset_name_list.append(example["dataset_name"])
             raw_text_list.append(example["raw_text"])
+            cer_reference_text_list.append(example.get('cer_reference_text', example['raw_text']))
             language_list.append(example["language"])
 
             token_list.append(example["tokens"])
@@ -787,6 +795,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
         batch_dict = {
             "dataset_names": dataset_name_list,
             "raw_texts": raw_text_list,
+            "cer_reference_texts": cer_reference_text_list,
             "languages": language_list,
             "audio_filepaths": audio_filepath_list,
             "text": batch_tokens,

@@ -17,7 +17,8 @@ import pytest
 from examples.tts.easy_magpietts import _select_model_class
 from omegaconf import OmegaConf
 
-from nemo.collections.tts.models import EasyMagpieTTSModel, NemotronTTSModel
+from nemo.collections.tts.models import EasyMagpieTTSModel, EasyMagpieTTSModelOnlinePO, NemotronTTSModel
+from nemo.collections.tts.models.nemotron_tts.v2.post_training import NemotronTTSModelOnlinePO
 
 pytestmark = pytest.mark.unit
 
@@ -36,3 +37,18 @@ def test_select_v1_model():
 def test_reject_unknown_model_type():
     with pytest.raises(ValueError, match="Unsupported model_type"):
         _select_model_class(OmegaConf.create({"model_type": "v3"}))
+
+
+def test_select_v2_post_training_model():
+    assert (
+        _select_model_class(OmegaConf.create({"model_type": "v2"}), mode="onlinepo_train") is NemotronTTSModelOnlinePO
+    )
+
+
+def test_select_v1_post_training_model():
+    assert _select_model_class(OmegaConf.create({}), mode="onlinepo_train") is EasyMagpieTTSModelOnlinePO
+
+
+@pytest.mark.parametrize("mode", ["train", "test"])
+def test_non_post_training_modes_keep_supervised_model(mode):
+    assert _select_model_class(OmegaConf.create({"model_type": "v2"}), mode=mode) is NemotronTTSModel

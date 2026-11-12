@@ -236,6 +236,95 @@ def test_cached_streaming_matches_whole_sequence_prediction():
     torch.testing.assert_close(streamed, whole)
 
 
+@pytest.mark.parametrize("schedule", [(2, 6), (1, 1, 6)])
+def test_teacher_forced_policy_logits_match_streaming_with_context_and_eos(schedule):
+    predictor = _make_predictor(prediction_schedule=schedule)
+    hidden_states = torch.randn(2, 6, D_MODEL)
+    lengths = torch.tensor([6, 4])
+    prefix_length = 2
+    with torch.no_grad():
+        predictor.blocks[0].codebook_projection.bias[CODEBOOK_SIZE] = 20.0
+
+    captured = [[] for _ in predictor.blocks]
+    hooks = [
+        block.codebook_projection.register_forward_hook(
+            lambda module, inputs, output, index=index: captured[index].append(output.detach().clone())
+        )
+        for index, block in enumerate(predictor.blocks)
+    ]
+    cache = _cache(predictor, batch_size=2)
+    predictor.advance(hidden_states[:, :prefix_length], cache=cache)
+    codes = [torch.full((2, prefix_length, NUM_CODES), MASK_TOKEN_ID, dtype=torch.long)]
+    for frame in range(prefix_length, hidden_states.size(1)):
+        codes.append(
+            predictor.predict_codes(
+                hidden_states[:, frame : frame + 1],
+                cache=cache,
+                temperature=0.0,
+                predict=frame < lengths,
+            )
+        )
+    for hook in hooks:
+        hook.remove()
+    targets = torch.cat(codes, dim=1)
+    assert targets[0, prefix_length, 0] == AUDIO_EOS_ID
+
+    loss, logits = predictor.compute_loss(hidden_states, targets, lengths, return_logits=True)
+    streamed_logits = torch.cat(
+        [
+            torch.cat(block_logits, dim=1).reshape(2, -1, block.num_codes, CODEBOOK_SIZE + 1)
+            for block, block_logits in zip(predictor.blocks, captured)
+        ],
+        dim=2,
+    )
+
+    assert torch.isfinite(loss)
+    assert logits.shape == (2, 6, NUM_CODES, CODEBOOK_SIZE + 1)
+    torch.testing.assert_close(logits[:, prefix_length:], streamed_logits, atol=2e-6, rtol=2e-5)
+
+
+def test_returning_policy_logits_preserves_supervised_loss_and_eos_mapping():
+    predictor = _make_predictor()
+    hidden_states = torch.randn(2, 4, D_MODEL, requires_grad=True)
+    targets = torch.randint(0, CODEBOOK_SIZE, (2, 4, NUM_CODES))
+    targets[0, 1, 0] = AUDIO_EOS_ID
+    targets[1, 2:] = MASK_TOKEN_ID
+    lengths = torch.tensor([4, 2])
+    supervised = torch.tensor([[True, True, False, True], [True, False, False, False]])
+
+    expected_loss = predictor.compute_loss(hidden_states, targets, lengths, loss_mask=supervised)
+    loss, logits = predictor.compute_loss(hidden_states, targets, lengths, loss_mask=supervised, return_logits=True)
+    compact_targets = torch.where(targets == AUDIO_EOS_ID, CODEBOOK_SIZE, targets)
+    compact_targets = compact_targets.masked_fill(~supervised.unsqueeze(-1), -100)
+    actual = nn.functional.cross_entropy(
+        logits.reshape(-1, CODEBOOK_SIZE + 1).float(), compact_targets.reshape(-1), ignore_index=-100
+    )
+
+    torch.testing.assert_close(loss, expected_loss)
+    torch.testing.assert_close(loss, actual)
+    loss.backward()
+    assert hidden_states.grad is not None and hidden_states.grad.abs().sum() > 0
+    assert all(block.codebook_projection.weight.grad.abs().sum() > 0 for block in predictor.blocks)
+
+
+def test_policy_rollouts_sample_in_fp32_with_bf16_predictor(monkeypatch):
+    predictor = _make_predictor().to(dtype=torch.bfloat16)
+    predictor.sampling_in_fp32 = True
+    sampled_probabilities = []
+    multinomial = torch.multinomial
+
+    def record_probabilities(probabilities, *args, **kwargs):
+        sampled_probabilities.append(probabilities.detach().clone())
+        return multinomial(probabilities, *args, **kwargs)
+
+    monkeypatch.setattr(torch, 'multinomial', record_probabilities)
+    predictor.predict_codes(torch.randn(2, 2, D_MODEL, dtype=torch.bfloat16), temperature=0.7, topk=80)
+
+    assert sampled_probabilities
+    assert all(probabilities.dtype == torch.float32 for probabilities in sampled_probabilities)
+    assert all(torch.isfinite(probabilities).all() for probabilities in sampled_probabilities)
+
+
 def test_skipped_prediction_populates_the_same_cache_as_advance():
     torch.manual_seed(2)
     hidden_states = torch.randn(1, 3, D_MODEL)

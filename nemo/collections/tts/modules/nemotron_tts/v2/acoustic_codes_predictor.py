@@ -14,7 +14,7 @@
 
 import math
 from dataclasses import replace
-from typing import List, Optional
+from typing import List, Optional, Tuple, Union
 
 import torch
 
@@ -199,6 +199,7 @@ class AcousticCodesPredictor(torch.nn.Module):
         self.codebook_size = codebook_size
         self.num_output_tokens = codebook_size + 1
         self.prediction_schedule = prediction_schedule
+        self.sampling_in_fp32 = False
 
         blocks = []
         first_code = 0
@@ -248,7 +249,8 @@ class AcousticCodesPredictor(torch.nn.Module):
         loss_mask: Optional[torch.Tensor] = None,
         feature_masking=None,
         label_smoothing=0.0,
-    ) -> torch.Tensor:
+        return_logits: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """Compute loss over codec tokens and AUDIO_EOS on the backbone timeline.
 
         Args:
@@ -257,9 +259,11 @@ class AcousticCodesPredictor(torch.nn.Module):
             lengths: Number of valid target frames in each sequence.
             loss_mask: Optional boolean mask selecting supervised frames.
             feature_masking: Optional masking module applied to previous-code embeddings.
+            return_logits: Also return compact policy logits on the backbone timeline.
 
         Returns:
-            Mean cross-entropy loss over supervised codebook tokens.
+            Mean cross-entropy loss, optionally paired with logits shaped
+            ``(batch, frames, num_audio_codebooks, codebook_size + 1)``.
         """
         assert target_codes.size(-1) == sum(self.prediction_schedule), (
             f"target has {target_codes.size(-1)} codes, but acoustic_codes_predictor_schedule "
@@ -283,6 +287,7 @@ class AcousticCodesPredictor(torch.nn.Module):
         num_predictions = torch.zeros((), dtype=torch.long, device=target_codes.device)
         previous_codes = None
         previous_codebook_indices = None
+        policy_logits = [] if return_logits else None
 
         for block in self.blocks:
             if previous_codes is not None:
@@ -292,6 +297,8 @@ class AcousticCodesPredictor(torch.nn.Module):
                 hidden_states = hidden_states + embedded_codes
             hidden_states = block(hidden_states)
             logits = block.compute_logits(hidden_states)
+            if return_logits:
+                policy_logits.append(logits)
 
             first_code = block.codebook_indices[0]
             last_code = block.codebook_indices[-1] + 1
@@ -318,7 +325,10 @@ class AcousticCodesPredictor(torch.nn.Module):
             )
             previous_codebook_indices = block.codebook_indices
 
-        return loss_sum / num_predictions.clamp(min=1)
+        loss = loss_sum / num_predictions.clamp(min=1)
+        if return_logits:
+            return loss, torch.cat(policy_logits, dim=2)
+        return loss
 
     @torch.no_grad()
     def advance(
@@ -425,6 +435,8 @@ class AcousticCodesPredictor(torch.nn.Module):
 
     def _sample_codes(self, logits: torch.Tensor, temperature: float, topk: int) -> torch.Tensor:
         """Sample from the top-k logits, or use argmax when temperature is zero."""
+        if self.sampling_in_fp32:
+            logits = logits.float()
         cutoff = logits.topk(min(topk, self.num_output_tokens), dim=-1).values[..., -1:]
         logits = logits.masked_fill(logits < cutoff, float('-inf'))
         if temperature <= 0.0:

@@ -62,6 +62,7 @@ class _FakeIPATokenizer:
 class _FakeTextTokenizer:
     tokens = list(range(100))
     pad = 0
+    tokenizer_pad_ids = {BPE_TOKENIZER_NAME: 0}
 
     def __init__(self):
         self.encoded_texts = []
@@ -302,6 +303,43 @@ class TestMagpieTTSDataset:
         )
 
         assert dataset.data_samples[0].text == expected_text
+
+    @pytest.mark.parametrize('normalized_text', [None, 'one thousand'])
+    def test_map_getitem_and_collate_keep_normalized_cer_reference(self, tmp_path, normalized_text):
+        codes_path = tmp_path / 'codes.pt'
+        torch.save(torch.from_numpy(_cached_codes(num_frames=4)), codes_path)
+        entry = {
+            'audio_filepath': 'unused.wav',
+            'target_audio_codes_path': str(codes_path),
+            'context_audio_codes_path': str(codes_path),
+            'duration': 0.08,
+            'text': '1000',
+        }
+        if normalized_text is not None:
+            entry['normalized_text'] = normalized_text
+        manifest_path = tmp_path / 'manifest.jsonl'
+        manifest_path.write_text(json.dumps(entry) + '\n', encoding='utf-8')
+        dataset = MagpieTTSDataset(
+            dataset_meta={'test': {'manifest_path': str(manifest_path), 'audio_dir': str(tmp_path)}},
+            sample_rate=SAMPLE_RATE,
+            codec_model_samples_per_frame=CODEC_MODEL_SAMPLES_PER_FRAME,
+            eos_id=101,
+            num_audio_codebooks=NUM_AUDIO_CODEBOOKS,
+            load_normalized_text_percent=0.0,
+            load_16khz_audio=False,
+            context_duration_min=0.08,
+            context_duration_max=0.08,
+        )
+        dataset.text_tokenizer = _FakeTextTokenizer()
+
+        example = dataset[0]
+        legacy_example = {key: value for key, value in example.items() if key != 'cer_reference_text'}
+        batch = dataset.collate_fn([example, legacy_example])
+
+        assert example['raw_text'] == '1000' and example['tokens'].tolist() == [14, 101]
+        assert example['cer_reference_text'] == (normalized_text or '1000')
+        assert batch['raw_texts'] == ['1000', '1000']
+        assert batch['cer_reference_texts'] == [normalized_text or '1000', '1000']
 
     @pytest.mark.parametrize("load_normalized_text_percent", [-0.1, 1.1])
     def test_load_normalized_text_percent_validation(self, load_normalized_text_percent):
@@ -628,3 +666,186 @@ class TestMagpieTTSLhotseDatasets:
         )
         assert context_audio_codes is None
         torch.testing.assert_close(context_audio, torch.from_numpy(expected))
+
+
+class TestMagpieTTSLhotseChallengingText:
+    @staticmethod
+    def _dataset(**overrides):
+        kwargs = _dataset_kwargs()
+        kwargs.update(context_duration_min=0.06, context_duration_max=0.06)
+        kwargs.update(overrides)
+        dataset = MagpieTTSLhotseDataset(**kwargs)
+        dataset.text_tokenizer = _FakeTextTokenizer()
+        dataset.bos_id = len(dataset.text_tokenizer.tokens)
+        dataset.eos_id = dataset.bos_id + 1
+        dataset.pad_id = dataset.text_tokenizer.pad
+        dataset.text_phoneme_token_offset = dataset.eos_id + 2
+        return dataset
+
+    def test_disabled_replacement_preserves_behavior_and_worker_rng(self, tmp_path):
+        path = tmp_path / 'challenging.txt'
+        path.write_text('repeat one two three\n', encoding='utf-8')
+        baseline = self._dataset()
+        augmented = self._dataset(challenging_texts_path=str(path), challenging_text_replacement_prob=0.0)
+        cuts = _single_turn_cutset(text='invoice $10', normalized_text='invoice ten dollars')
+        random.seed(19)
+        expected = baseline[cuts]
+        expected_rng = random.getstate()
+        random.seed(19)
+        actual = augmented[cuts]
+
+        assert random.getstate() == expected_rng
+        assert actual.keys() == expected.keys()
+        for key, value in actual.items():
+            if isinstance(value, torch.Tensor):
+                torch.testing.assert_close(value, expected[key])
+            else:
+                assert value == expected[key]
+
+    def test_replacement_changes_input_and_reward_reference_preserving_context(self, tmp_path):
+        replacement = 'Read A-1000, then repeat A-1000.'
+        path = tmp_path / 'challenging.txt'
+        path.write_text(replacement + '\n', encoding='utf-8')
+        cuts = _single_turn_cutset(text='invoice $10', normalized_text='invoice ten dollars')
+        baseline = self._dataset()[cuts]
+        dataset = self._dataset(challenging_texts_path=str(path), challenging_text_replacement_prob=1.0)
+
+        batch = dataset[cuts]
+
+        assert batch['raw_texts'] == [replacement]
+        assert batch['cer_reference_texts'] == [replacement]
+        assert batch['text'][0].tolist() == [10 + len(replacement), dataset.eos_id]
+        assert replacement in dataset.text_tokenizer.encoded_texts
+        assert 'invoice ten dollars' not in dataset.text_tokenizer.encoded_texts
+        for key in ('audio_codes', 'audio_codes_lens', 'context_audio_codes', 'context_audio_codes_lens'):
+            torch.testing.assert_close(batch[key], baseline[key])
+        torch.testing.assert_close(batch['context_text_tokens'], baseline['context_text_tokens'])
+        assert batch['dataset_names'] == baseline['dataset_names'] == ['Unit']
+        assert batch['languages'] == baseline['languages'] == ['en']
+        supervision = next(iter(cuts)).supervisions[0]
+        assert supervision.text == 'invoice $10' and supervision.normalized_text == 'invoice ten dollars'
+        assert supervision.context_text == 'speaker prompt'
+
+    def test_replacement_uses_seeded_worker_rng(self, tmp_path):
+        path = tmp_path / 'challenging.txt'
+        prompts = ['repeat ten', 'read twenty twice', 'say thirty three three']
+        path.write_text('\n'.join(prompts) + '\n', encoding='utf-8')
+        dataset = self._dataset(challenging_texts_path=str(path), challenging_text_replacement_prob=1.0)
+        cuts = _single_turn_cutset()
+        random.seed(42)
+        expected = [dataset[cuts]['raw_texts'][0] for _ in range(8)]
+        random.seed(42)
+        actual = [dataset[cuts]['raw_texts'][0] for _ in range(8)]
+
+        assert actual == expected
+        assert set(actual).issubset(prompts) and len(set(actual)) > 1
+
+    def test_replacement_discards_original_phoneme_supervision(self, tmp_path, monkeypatch):
+        replacement = 'read 1234 twice'
+        path = tmp_path / 'challenging.txt'
+        path.write_text(replacement + '\n', encoding='utf-8')
+        cuts = _single_turn_cutset(text='old text', normalized_text='old text')
+        supervision = next(iter(cuts)).supervisions[0]
+        supervision.custom.update(ipa='oʊld tɛkst', ipa_alignment=[[0, 8, 'old text', 'oʊld tɛkst']])
+        dataset = self._dataset(
+            challenging_texts_path=str(path),
+            challenging_text_replacement_prob=1.0,
+            enable_phoneme_text_input=True,
+            partial_phoneme_text_prob=1.0,
+        )
+        dataset.phoneme_tokenizer = _FakeIPATokenizer()
+        monkeypatch.setattr(
+            'nemo.collections.tts.data.text_to_speech_dataset_lhotse.partially_phonemize_text',
+            lambda **kwargs: pytest.fail('Replaced prompts must not reuse the original IPA alignment'),
+        )
+
+        batch = dataset[cuts]
+
+        assert batch['raw_texts'] == [replacement]
+        assert batch['text'][0].tolist() == [10 + len(replacement), dataset.eos_id]
+        assert batch['phoneme_tokens'][0].tolist() == [1, 2]
+        assert batch['phoneme_tokens_lens'].tolist() == [2]
+        assert supervision.ipa == 'oʊld tɛkst'
+
+    def test_validation_does_not_replace_prompts(self, tmp_path):
+        path = tmp_path / 'challenging.txt'
+        path.write_text('replacement text\n', encoding='utf-8')
+        dataset = self._dataset(
+            challenging_texts_path=str(path), challenging_text_replacement_prob=1.0, dataset_type='test'
+        )
+
+        batch = dataset[_single_turn_cutset(text='raw input', normalized_text='normalized input')]
+
+        assert batch['raw_texts'] == ['normalized input']
+        assert 'replacement text' not in dataset.text_tokenizer.encoded_texts
+
+    def test_batch_replaces_only_one_english_tts_prompt(self, tmp_path):
+        replacement = 'read one two again'
+        path = tmp_path / 'challenging.txt'
+        path.write_text(replacement + '\n', encoding='utf-8')
+        cuts = []
+        for index, (language, task) in enumerate([('en', 'tts'), ('en', 'tts'), ('es', 'tts'), ('en', 'dialog')]):
+            cut = next(iter(_single_turn_cutset(text=f'original {index}', normalized_text=f'original {index}')))
+            cut.id = f'prompt-{index}'
+            cut.lang = language
+            cut.task = task
+            cuts.append(cut)
+        dataset = self._dataset(challenging_texts_path=str(path), challenging_text_replacement_prob=1.0)
+
+        batch = dataset[CutSet.from_cuts(cuts)]
+
+        assert batch['raw_texts'].count(replacement) == 1
+        assert replacement in batch['raw_texts'][:2]
+        assert batch['raw_texts'][2:] == ['original 2', 'original 3']
+
+    def test_replacement_respects_supervision_language_without_cut_language(self, tmp_path):
+        path = tmp_path / 'challenging.txt'
+        path.write_text('English replacement\n', encoding='utf-8')
+        normalized = 'Ruf eins zwei drei vier an'
+        cuts = _single_turn_cutset(text='Ruf 1234 an', normalized_text=normalized)
+        cut = next(iter(cuts))
+        del cut.custom['lang']
+        cut.supervisions[0].language = 'de'
+        dataset = self._dataset(challenging_texts_path=str(path), challenging_text_replacement_prob=1.0)
+
+        batch = dataset[cuts]
+
+        assert batch['languages'] == ['de']
+        assert batch['raw_texts'] == batch['cer_reference_texts'] == [normalized]
+        assert 'English replacement' not in dataset.text_tokenizer.encoded_texts
+
+    def test_replacement_skips_candidates_exceeding_codec_frame_budget(self, tmp_path):
+        fitting = 'say ten'
+        too_long = 'one two three four five six seven eight nine ten'
+        path = tmp_path / 'challenging.txt'
+        path.write_text(too_long + '\n' + fitting + '\n', encoding='utf-8')
+        dataset = self._dataset(challenging_texts_path=str(path), challenging_text_replacement_prob=1.0)
+
+        class WordTokenizer(_FakeTextTokenizer):
+            def encode(self, text, tokenizer_name):
+                self.encoded_texts.append(text)
+                return list(range(10, 10 + len(text.split())))
+
+        dataset.text_tokenizer = WordTokenizer()
+        cuts = _single_turn_cutset(text='old text', normalized_text='old text')
+        cut = next(iter(cuts))
+        cut.duration = 4 * CODEC_MODEL_SAMPLES_PER_FRAME / SAMPLE_RATE
+        cut.supervisions[0].duration = cut.duration
+        batch = dataset[cuts]
+
+        assert batch['raw_texts'] == [fitting]
+        assert batch['text'][0].tolist() == [10, 11, dataset.eos_id]
+
+    @pytest.mark.parametrize('normalized_text', [None, '', 'Call one two three four.'])
+    def test_cer_reference_uses_normalization_independently_of_raw_input(self, normalized_text):
+        raw = 'Call 1234.'
+        cuts = _single_turn_cutset(text=raw, normalized_text=normalized_text)
+        if normalized_text is None:
+            del next(iter(cuts)).supervisions[0].custom['normalized_text']
+        dataset = self._dataset(load_normalized_text_percent=0.0)
+
+        batch = dataset[cuts]
+
+        assert batch['raw_texts'] == [raw]
+        assert batch['text'][0].tolist() == [10 + len(raw), dataset.eos_id]
+        assert batch['cer_reference_texts'] == [normalized_text or raw]

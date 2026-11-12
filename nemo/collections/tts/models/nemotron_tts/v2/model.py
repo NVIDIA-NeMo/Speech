@@ -80,6 +80,7 @@ class ProcessBatchOutput:
         codebook_loss: Cross-entropy loss for parallel audio codebook prediction
         phoneme_loss: Cross-entropy loss for phoneme prediction (None if no phoneme tokenizer)
         acoustic_codes_predictor_loss: Loss from the acoustic codes predictor.
+        acoustic_codes_predictor_logits: Optional teacher-forced policy logits in compact codec vocabulary.
         logits: Predicted logits for audio codes (B, T', num_codebooks * num_tokens_per_codebook)
         phoneme_logits: Predicted logits for phoneme tokens (None if no phoneme tokenizer)
         phoneme_tokens_target: Target phoneme tokens for loss computation
@@ -95,7 +96,7 @@ class ProcessBatchOutput:
     codebook_loss: torch.Tensor
     phoneme_loss: Optional[torch.Tensor]
     acoustic_codes_predictor_loss: torch.Tensor
-    logits: torch.Tensor
+    logits: Optional[torch.Tensor]
     phoneme_logits: Optional[torch.Tensor]
     phoneme_tokens_target: Optional[torch.Tensor]
     phoneme_tokens_lens_target: Optional[torch.Tensor]
@@ -107,6 +108,7 @@ class ProcessBatchOutput:
     aligner_loss: Optional[torch.Tensor] = None
     attention_alignment_loss: Optional[torch.Tensor] = None
     attention_alignment_metrics: Optional[dict] = None
+    acoustic_codes_predictor_logits: Optional[torch.Tensor] = None
 
 
 class NemotronTTSModel(NemotronTTSBase):
@@ -677,6 +679,7 @@ class NemotronTTSModel(NemotronTTSBase):
         speech_eos_mask: Optional[torch.Tensor] = None,
         agent_mask: Optional[torch.Tensor] = None,
         dropout_audio_conditioning: bool = False,
+        audio_codes_are_stacked: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """Prepare the delayed autoregressive audio channel and its targets.
 
@@ -701,6 +704,8 @@ class NemotronTTSModel(NemotronTTSBase):
                 user-speech tokens.
             dropout_audio_conditioning: Whether dropout should be applied to input audio embeddings.
                 Should only be done during training when text is not masked for CFG.
+            audio_codes_are_stacked: Whether codes already contain the sampled, stacked policy actions,
+                including their terminal frame. Only a BOS input is added in this case.
 
         Returns:
             A tuple containing:
@@ -714,31 +719,33 @@ class NemotronTTSModel(NemotronTTSBase):
         batch_size = audio_codes.size(0)
         device = audio_codes.device
 
-        # Apply codec conversion if configured
-        if self._codec_converter is not None:
-            with fp32_precision():
-                audio_codes = self._codec_converter.convert_original_to_new(
-                    audio_tokens=audio_codes, audio_lens=audio_codes_lens
-                ).long()
+        if audio_codes_are_stacked:
+            bos = torch.full_like(audio_codes[:, :, :1], self.audio_bos_id)
+            audio_codes = torch.cat([bos, audio_codes], dim=2)
+            audio_codes_lens = audio_codes_lens + 1
+        else:
+            # Apply codec conversion if configured.
+            if self._codec_converter is not None:
+                with fp32_precision():
+                    audio_codes = self._codec_converter.convert_original_to_new(
+                        audio_tokens=audio_codes, audio_lens=audio_codes_lens
+                    ).long()
 
-        # Add BOS and EOS tokens
-        audio_codes, audio_codes_lens = add_special_tokens(
-            codes=audio_codes,
-            codes_len=audio_codes_lens,
-            bos_id=self.audio_bos_id,
-            eos_id=self.audio_eos_id,
-            num_eos_tokens=1 if speech_eos_mask is None else 0,
-        )
-
-        # Stack audio codes across codebooks
-        audio_codes, audio_codes_lens = self.stack_codes(
-            audio_codes,
-            audio_codes_lens,
-            self.audio_bos_id,
-            self.audio_eos_id,
-            self.frame_stacking_factor,
-            self.num_audio_codebooks,
-        )
+            audio_codes, audio_codes_lens = add_special_tokens(
+                codes=audio_codes,
+                codes_len=audio_codes_lens,
+                bos_id=self.audio_bos_id,
+                eos_id=self.audio_eos_id,
+                num_eos_tokens=1 if speech_eos_mask is None else 0,
+            )
+            audio_codes, audio_codes_lens = self.stack_codes(
+                audio_codes,
+                audio_codes_lens,
+                self.audio_bos_id,
+                self.audio_eos_id,
+                self.frame_stacking_factor,
+                self.num_audio_codebooks,
+            )
 
         if speech_eos_mask is not None:
             audio_codes_before_speech_eos = audio_codes.clone()
@@ -985,6 +992,8 @@ class NemotronTTSModel(NemotronTTSBase):
         task: Optional[List[str]] = None,
         agent_mask: Optional[torch.Tensor] = None,
         user_audio_embedded: Optional[torch.Tensor] = None,
+        return_policy_logits: bool = False,
+        audio_codes_are_stacked: bool = False,
     ) -> ProcessBatchOutput:
         """
         Simplified batch processing using channel-based embedding architecture.
@@ -1022,6 +1031,9 @@ class NemotronTTSModel(NemotronTTSBase):
             agent_mask: Optional frame-level mask identifying agent speech.
             user_audio_embedded: Optional timeline-aligned user-audio conditioning
                 embeddings with shape ``(B, T, E)``.
+            return_policy_logits: Return teacher-forced acoustic predictor logits for online policy training.
+                Policy scoring disables training corruption and acoustic alignment supervision.
+            audio_codes_are_stacked: Input audio codes are exact stacked rollout actions, including EOS.
 
         Returns:
             ProcessBatchOutput: Contains loss values and model predictions
@@ -1042,11 +1054,13 @@ class NemotronTTSModel(NemotronTTSBase):
         current_streaming_phonemes_delay = selected_training_mode.streaming_phonemes_delay
 
         # Determine dropout flags
-        dropout_text_input = (random.random() < self.dropout_text_input_prob) if mode == 'train' else False
+        dropout_text_input = (
+            random.random() < self.dropout_text_input_prob if mode == 'train' and not return_policy_logits else False
+        )
 
         # Determine CFG unconditional dropout
         dropout_conditional_input = False
-        if mode == 'train' and self.cfg_unconditional_prob > 0.0:
+        if mode == 'train' and not return_policy_logits and self.cfg_unconditional_prob > 0.0:
             if torch.rand(1).item() < self.cfg_unconditional_prob:
                 dropout_conditional_input = True
 
@@ -1106,15 +1120,20 @@ class NemotronTTSModel(NemotronTTSBase):
             # Corrupt phonemes only when text input is not dropped.
             apply_phoneme_corruption = (
                 mode == 'train'
+                and not return_policy_logits
                 and (not dropout_text_input)
                 and (not dropout_conditional_input)
                 and self.phoneme_corruption_type == 'repeat_skip_unk'
             )
-            dropout_complete_phoneme_channel = mode == 'train' and (
-                dropout_conditional_input
-                or (
-                    self.phoneme_corruption_type == 'complete_channel'
-                    and torch.rand(1).item() < self.phoneme_corruption_batch_prob
+            dropout_complete_phoneme_channel = (
+                mode == 'train'
+                and not return_policy_logits
+                and (
+                    dropout_conditional_input
+                    or (
+                        self.phoneme_corruption_type == 'complete_channel'
+                        and torch.rand(1).item() < self.phoneme_corruption_batch_prob
+                    )
                 )
             )
             (
@@ -1133,7 +1152,9 @@ class NemotronTTSModel(NemotronTTSBase):
             )
 
         # 5. Prepare audio channel embeddings
-        dropout_audio_conditioning = (self.feature_masking is not None) and (not dropout_conditional_input)
+        dropout_audio_conditioning = (
+            self.feature_masking is not None and not dropout_conditional_input and not return_policy_logits
+        )
         (
             audio_channel_embedding,
             audio_channel_lens,
@@ -1147,6 +1168,7 @@ class NemotronTTSModel(NemotronTTSBase):
             speech_eos_mask=speech_eos_mask,
             agent_mask=agent_mask,
             dropout_audio_conditioning=dropout_audio_conditioning,
+            audio_codes_are_stacked=audio_codes_are_stacked,
         )
 
         # 6. Sum the channel embeddings element-wise
@@ -1292,7 +1314,7 @@ class NemotronTTSModel(NemotronTTSBase):
         # Only training/teacher-forced validation constructs the acoustic flow.
         # The same raw input BPE occurrences supply the aligner and attention keys.
         alignment = None
-        if self.use_attention_alignment:
+        if self.use_attention_alignment and not return_policy_logits:
             alignment = prepare_attention_alignment_training(
                 self,
                 audio_codes,
@@ -1323,17 +1345,18 @@ class NemotronTTSModel(NemotronTTSBase):
             target_lens=audio_codes_lens_target,
         )
 
-        # Project to audio logits
-        pred_embeddings_audio = self.audio_out_projection(pred_embeddings)
-        logits = self.final_proj(pred_embeddings_audio)
-
-        # Compute codebook loss
-        codebook_loss, _ = self.compute_loss(
-            logits,
-            audio_codes_target,
-            audio_codes_lens_target,
-            agent_mask_target=agent_mask if self.cfg.get("mask_user_on_loss", False) else None,
-        )
+        logits = None
+        if return_policy_logits:
+            codebook_loss = transformer_hidden_states.new_zeros((), dtype=torch.float32)
+        else:
+            pred_embeddings_audio = self.audio_out_projection(pred_embeddings)
+            logits = self.final_proj(pred_embeddings_audio)
+            codebook_loss, _ = self.compute_loss(
+                logits,
+                audio_codes_target,
+                audio_codes_lens_target,
+                agent_mask_target=agent_mask if self.cfg.get("mask_user_on_loss", False) else None,
+            )
         loss = self.parallel_codebook_loss_scale * codebook_loss
 
         predictor_targets, predictor_loss_mask = self._acoustic_codes_predictor_targets(
@@ -1343,14 +1366,23 @@ class NemotronTTSModel(NemotronTTSBase):
             audio_delay=audio_delay,
             loss_mask=agent_mask if self.cfg.get("mask_user_on_loss", False) else None,
         )
-        acoustic_codes_predictor_loss = self.acoustic_codes_predictor.compute_loss(
+        predictor_output = self.acoustic_codes_predictor.compute_loss(
             hidden_states=transformer_hidden_states,
             target_codes=predictor_targets,
             lengths=combined_channel_lens,
             loss_mask=predictor_loss_mask,
             feature_masking=self.feature_masking if dropout_audio_conditioning else None,
             label_smoothing=self.label_smoothing,
+            **({'return_logits': True} if return_policy_logits else {}),
         )
+        acoustic_codes_predictor_logits = None
+        if return_policy_logits:
+            acoustic_codes_predictor_loss, policy_logits = predictor_output
+            acoustic_codes_predictor_logits = self.slice_sequence_embeddings(
+                policy_logits.flatten(2), audio_delay, audio_codes_lens_target
+            ).reshape(policy_logits.size(0), -1, *policy_logits.shape[2:])
+        else:
+            acoustic_codes_predictor_loss = predictor_output
         loss = loss + self.acoustic_codes_predictor_loss_scale * acoustic_codes_predictor_loss
 
         # Compute phoneme loss if applicable
@@ -1385,7 +1417,7 @@ class NemotronTTSModel(NemotronTTSBase):
                     pb_phoneme_logits, pb_phoneme_tokens_target, pb_phoneme_tokens_lens_target, custom_mask=custom_mask
                 )
             else:
-                phoneme_loss = torch.tensor(0.0, device=logits.device)
+                phoneme_loss = torch.tensor(0.0, device=transformer_hidden_states.device)
 
             loss = loss + self.phoneme_loss_weight * phoneme_loss
 
@@ -1419,6 +1451,7 @@ class NemotronTTSModel(NemotronTTSBase):
             aligner_loss=alignment.teacher.loss if alignment is not None else None,
             attention_alignment_loss=attention_alignment_loss,
             attention_alignment_metrics=alignment.metrics if alignment is not None else None,
+            acoustic_codes_predictor_logits=acoustic_codes_predictor_logits,
         )
 
     def training_step(self, batch, batch_idx):
@@ -1936,7 +1969,8 @@ class NemotronTTSModel(NemotronTTSBase):
                     for idx in range(len(predicted_audio_paths)):
                         if pred_transcripts[idx] is None:
                             continue
-                        gt_transcript = process_text_for_cer(batch['raw_texts'][idx])
+                        references = batch.get('cer_reference_texts', batch['raw_texts'])
+                        gt_transcript = process_text_for_cer(references[idx])
                         cer = min(word_error_rate([pred_transcripts[idx]], [gt_transcript], use_cer=True), 1.0)
                         wer = min(word_error_rate([pred_transcripts[idx]], [gt_transcript], use_cer=False), 1.0)
                         batch_cer.append(cer)
@@ -2098,11 +2132,16 @@ class NemotronTTSModel(NemotronTTSBase):
 
         return dataset
 
-    def get_lhotse_dataloader(self, dataset_cfg, mode='train') -> torch.utils.data.DataLoader:
+    def get_lhotse_dataloader(
+        self, dataset_cfg, mode='train', use_multiturn_dataset: Optional[bool] = None
+    ) -> torch.utils.data.DataLoader:
+        """Build a prompt loader, optionally overriding its turn format while preserving model token IDs."""
         # TODO @xueyang: better to distinguish cfg. self.cfg is the model cfg, while cfg here is train_ds cfg. Also
         #   cfg is a classifier-free guidance.
         load_normalized_text_percent = dataset_cfg.get("load_normalized_text_percent", 1.0)
-        if self.cfg.get("use_multiturn_dataset", False):
+        if use_multiturn_dataset is None:
+            use_multiturn_dataset = self.cfg.get("use_multiturn_dataset", False)
+        if use_multiturn_dataset:
             dataset = MagpieTTSLhotseMultiturnDataset(
                 sample_rate=self.sample_rate,
                 volume_norm=dataset_cfg.volume_norm,
@@ -2149,6 +2188,10 @@ class NemotronTTSModel(NemotronTTSBase):
                 prior_scaling_factor=0.0,
                 load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
                 dataset_type=mode,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
+                challenging_texts_path=dataset_cfg.dataset.get('challenging_texts_path'),
+                challenging_text_replacement_prob=(
+                    dataset_cfg.dataset.get('challenging_text_replacement_prob', 0.0) if mode == 'train' else 0.0
+                ),
                 load_16khz_audio=False,
                 load_normalized_text_percent=load_normalized_text_percent,
                 pad_context_text_to_max_duration=self.pad_context_text_to_max_duration,

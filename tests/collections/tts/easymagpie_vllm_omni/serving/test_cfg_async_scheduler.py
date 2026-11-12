@@ -357,7 +357,7 @@ def test_full_history_bounds_and_oversize_reservations(monkeypatch):
     'feature',
     ['sync', 'graphs', 'chunked', 'prefix', 'tp', 'pp', 'speculation', 'kv_transfer', 'ec_transfer', 'v2_runner'],
 )
-def test_initial_async_config_rejects_unvalidated_and_excluded_features(monkeypatch, feature):
+def test_async_config_rejects_invalid_policies_and_excluded_features(monkeypatch, feature):
     import copy
 
     scheduler = async_scheduler(monkeypatch)

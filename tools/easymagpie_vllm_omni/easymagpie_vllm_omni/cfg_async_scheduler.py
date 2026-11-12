@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Opt-in host accounting for eager, complete-text CFG on vLLM/Omni 0.24.
+"""Opt-in host accounting for complete-text CFG on vLLM/Omni 0.24.
 
 This scheduler alone does not enable or validate asynchronous model execution.
 Native engine futures remain the execution queue. Step records below only associate
@@ -15,6 +15,7 @@ from typing import Any
 
 import vllm
 import vllm_omni
+from easymagpie_vllm_omni.cfg_graph import uses_cfg_decode_graphs
 from easymagpie_vllm_omni.cfg_pairing import CFGPairingError, filter_cfg_outputs
 from easymagpie_vllm_omni.cfg_scheduler import EasyMagpieCFGScheduler, _CFGHistoryScheduler, validate_cfg_config
 from vllm.v1.core.sched.async_scheduler import AsyncScheduler
@@ -24,7 +25,7 @@ from vllm_omni.core.sched.omni_ar_scheduler import OmniARScheduler
 class EasyMagpieCFGAsyncScheduler(EasyMagpieCFGScheduler, AsyncScheduler):
     """Atomic CFG admission with native async counters and fenced retirement.
 
-    Selected by the opt-in easymagpie_cfg_async_eager topology. The ordinary CFG
+    Selected by the explicit easymagpie_cfg_async topologies. The ordinary CFG
     topology retains synchronous scheduling.
     """
 
@@ -118,10 +119,12 @@ class EasyMagpieCFGAsyncScheduler(EasyMagpieCFGScheduler, AsyncScheduler):
             raise
 
     def _validate_config(self, config) -> None:
-        if not config.scheduler_config.async_scheduling or not config.model_config.enforce_eager:
-            raise ValueError('Async CFG requires async_scheduling and eager execution; graphs require P5')
+        if not config.scheduler_config.async_scheduling:
+            raise ValueError('Async CFG requires async_scheduling')
+        if not config.model_config.enforce_eager and not uses_cfg_decode_graphs(config):
+            raise ValueError('Async CFG graphs require the explicit async scheduler and a supported graph policy')
         if config.use_v2_model_runner:
-            raise ValueError('Async CFG initially requires the audited V1 model runner')
+            raise ValueError('Async CFG requires the audited V1 model runner')
         # Apply all permanent CFG exclusions without mutating the live config.
         control = copy.copy(config)
         control.scheduler_config = copy.copy(config.scheduler_config)

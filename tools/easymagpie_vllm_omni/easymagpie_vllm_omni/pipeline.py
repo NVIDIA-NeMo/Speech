@@ -150,3 +150,10 @@ EASYMAGPIE_CFG_ASYNC_EAGER_PIPELINE = replace(
         EASYMAGPIE_CFG_PIPELINE.stages[1],
     ),
 )
+
+
+# Explicit complete-text graph profiles share the inline async execution contract.
+EASYMAGPIE_CFG_ASYNC_PIPELINE = replace(
+    EASYMAGPIE_CFG_ASYNC_EAGER_PIPELINE,
+    model_type="easymagpie_cfg_async",
+)

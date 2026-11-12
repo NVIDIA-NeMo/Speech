@@ -205,7 +205,7 @@ def test_final_streaming_update_sends_terminal_codec_payload_for_waiting_session
     assert terminal_request.is_finished()
     assert terminal_request.resumable is False
     assert terminal_payloads[0]["multimodal_output"] is None
-    assert terminal_payloads[0]["is_segment_finished"] is False
+    assert terminal_payloads[0]["is_segment_finished"] is True
     assert session.status == RequestStatus.WAITING_FOR_STREAMING_REQ
     assert session.resumable is True
 

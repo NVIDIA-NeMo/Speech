@@ -425,7 +425,9 @@ class EasyMagpieCFGScheduler(_CFGHistoryScheduler):
                     terminal = copy.copy(session)
                     terminal.resumable = False
                     terminal.status = RequestStatus.FINISHED_STOPPED
-                    self.chunk_transfer_adapter.save_async(None, terminal, False)
+                    # The native sender passes this boundary flag to the
+                    # processor as its flush signal, including for a final sentinel.
+                    self.chunk_transfer_adapter.save_async(None, terminal, True)
                 self.finish_requests(ids, RequestStatus.FINISHED_ABORTED)
             else:
                 for rid in ids:

@@ -103,10 +103,12 @@ class EasyMagpieARAsyncScheduler(OmniARAsyncScheduler):
             terminal_request = copy.copy(session)
             terminal_request.resumable = False
             terminal_request.status = RequestStatus.FINISHED_STOPPED
+            # The native sender forwards this boundary flag as the processor's
+            # flush signal. A final sentinel must flush the last partial chunk too.
             self.chunk_transfer_adapter.save_async(
                 multimodal_output=None,
                 request=terminal_request,
-                is_segment_finished=False,
+                is_segment_finished=True,
             )
 
         super().add_request(request)

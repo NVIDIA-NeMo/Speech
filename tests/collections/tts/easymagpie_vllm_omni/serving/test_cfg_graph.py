@@ -530,3 +530,176 @@ def test_fixed_sampling_graph_replay_keeps_cfg_scale_and_shared_feedback() -> No
         assert result[2:].eq(8).all()
         outputs.add(tuple(result[1].tolist()))
     assert len(outputs) > 1
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("class_form", [False, True])
+def test_async_graph_policy_selects_buffers_and_preserves_sync_guard(compiled, class_form):
+    from easymagpie_vllm_omni.cfg_async_scheduler import EasyMagpieCFGAsyncScheduler
+    from easymagpie_vllm_omni.cfg_graph import uses_cfg_decode_graphs
+    from easymagpie_vllm_omni.cfg_scheduler import validate_cfg_config
+    from test_cfg_scheduler import _config
+    from vllm.config import CompilationConfig, CompilationMode, CUDAGraphMode
+
+    config = _config()
+    config.use_v2_model_runner = False
+    config.model_config.enforce_eager = False
+    config.model_config.hf_config.cfg_capability = {"version": 1}
+    config.scheduler_config.async_scheduling = True
+    scheduler_cls = EasyMagpieCFGAsyncScheduler
+    config.scheduler_config.scheduler_cls = (
+        scheduler_cls if class_form else f"{scheduler_cls.__module__}.{scheduler_cls.__qualname__}"
+    )
+    config.compilation_config = CompilationConfig(
+        mode=CompilationMode.VLLM_COMPILE if compiled else CompilationMode.NONE,
+        cudagraph_mode=CUDAGraphMode.FULL_AND_PIECEWISE if compiled else CUDAGraphMode.FULL_DECODE_ONLY,
+    )
+    scheduler = object.__new__(scheduler_cls)
+    scheduler._validate_config(config)
+    assert uses_cfg_decode_graphs(config)
+    assert config.scheduler_config.async_scheduling is True
+    with pytest.raises(ValueError, match="synchronous"):
+        validate_cfg_config(config)
+
+    config.scheduler_config.async_scheduling = False
+    assert not uses_cfg_decode_graphs(config)
+    with pytest.raises(ValueError):
+        scheduler._validate_config(config)
+
+    config.scheduler_config.async_scheduling = True
+    config.compilation_config.cudagraph_mode = (
+        CUDAGraphMode.FULL_DECODE_ONLY if compiled else CUDAGraphMode.FULL_AND_PIECEWISE
+    )
+    assert not uses_cfg_decode_graphs(config)
+    with pytest.raises(ValueError):
+        scheduler._validate_config(config)
+
+
+@pytest.mark.parametrize("selection", ["unrelated", "subclass", "sync"])
+def test_async_graph_activation_rejects_unregistered_schedulers(selection):
+    from easymagpie_vllm_omni.cfg_async_scheduler import EasyMagpieCFGAsyncScheduler
+    from easymagpie_vllm_omni.cfg_graph import uses_cfg_decode_graphs
+    from easymagpie_vllm_omni.cfg_scheduler import EasyMagpieCFGScheduler
+    from test_cfg_scheduler import _config
+    from vllm.config import CompilationConfig, CompilationMode, CUDAGraphMode
+
+    class Unregistered(EasyMagpieCFGAsyncScheduler):
+        pass
+
+    config = _config()
+    config.model_config.enforce_eager = False
+    config.model_config.hf_config.cfg_capability = {"version": 1}
+    config.scheduler_config.async_scheduling = True
+    config.scheduler_config.scheduler_cls = {
+        "unrelated": "easymagpie_vllm_omni.scheduler.EasyMagpieARAsyncScheduler",
+        "subclass": Unregistered,
+        "sync": EasyMagpieCFGScheduler,
+    }[selection]
+    config.compilation_config = CompilationConfig(
+        mode=CompilationMode.NONE, cudagraph_mode=CUDAGraphMode.FULL_DECODE_ONLY
+    )
+    assert not uses_cfg_decode_graphs(config)
+    with pytest.raises(ValueError):
+        object.__new__(EasyMagpieCFGAsyncScheduler)._validate_config(config)
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("feature", ["chunked", "prefix", "tp", "pp", "speculation", "kv", "ec", "v2", "capability"])
+def test_async_graph_policies_preserve_permanent_exclusions(compiled, feature):
+    from easymagpie_vllm_omni.cfg_async_scheduler import EasyMagpieCFGAsyncScheduler
+    from test_cfg_scheduler import _config
+    from vllm.config import CompilationConfig, CompilationMode, CUDAGraphMode
+
+    config = _config()
+    config.model_config.enforce_eager = False
+    config.model_config.hf_config.cfg_capability = {"version": 1}
+    config.scheduler_config.async_scheduling = True
+    config.scheduler_config.scheduler_cls = EasyMagpieCFGAsyncScheduler
+    config.compilation_config = CompilationConfig(
+        mode=CompilationMode.VLLM_COMPILE if compiled else CompilationMode.NONE,
+        cudagraph_mode=CUDAGraphMode.FULL_AND_PIECEWISE if compiled else CUDAGraphMode.FULL_DECODE_ONLY,
+    )
+    scheduler = object.__new__(EasyMagpieCFGAsyncScheduler)
+    scheduler._validate_config(config)
+    if feature == "chunked":
+        config.scheduler_config.enable_chunked_prefill = True
+    elif feature == "prefix":
+        config.cache_config.enable_prefix_caching = True
+    elif feature == "tp":
+        config.parallel_config.tensor_parallel_size = 2
+    elif feature == "pp":
+        config.parallel_config.pipeline_parallel_size = 2
+    elif feature == "speculation":
+        config.speculative_config = object()
+    elif feature == "kv":
+        config.kv_transfer_config = object()
+    elif feature == "ec":
+        config.ec_transfer_config = object()
+    elif feature == "v2":
+        config.use_v2_model_runner = True
+    else:
+        config.model_config.hf_config.cfg_capability = None
+    with pytest.raises(ValueError):
+        scheduler._validate_config(config)
+    assert config.scheduler_config.async_scheduling is True
+
+
+@pytest.mark.parametrize("mixed", [False, True])
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_one_token_prefill_clears_stale_decode_gates_before_uniform_forward(monkeypatch, mixed, device):
+    """A decode-shaped prefill advances caches without inheriting audio or EOS gates."""
+    from test_cfg_synthesis import _input_model
+    from torch import nn
+
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+    model = _input_model()
+    model._combined_embeddings = torch.zeros(4, 2, device=device)
+    model.has_phoneme = False
+    model.cfg_guidance_layout = None
+    model.cfg_graph_buffers = CFGGraphBuffers(4, device=device)
+    model.cfg_graph_buffers.update(None, 2 if mixed else 1, 4)
+    model._dec_audio_codes = torch.full((4, 1), 7, dtype=torch.long, device=device)
+    model._dec_audio_valid = torch.ones(4, dtype=torch.long, device=device)
+    model._dec_text_tokens = torch.zeros(4, dtype=torch.long, device=device)
+    model._dec_text_mask = torch.ones(4, dtype=torch.long, device=device)
+    model._out_codes = torch.zeros(4, 1, dtype=torch.long, device=device)
+    model._token_stop = torch.ones(4, dtype=torch.bool, device=device)
+    model._sample_stop = torch.ones(4, dtype=torch.bool, device=device)
+    model._acoustic_temperature = torch.zeros(4, device=device)
+    model._acoustic_top_k = torch.full((4,), 4, dtype=torch.long, device=device)
+    model._cfg_scale = torch.ones(4, device=device)
+    model.text_embedding = nn.Embedding(4, 2, device=device)
+    model.audio_eos_id = 7
+    model._get_query_dispatch = lambda: (None, 0, None)
+    logits = torch.zeros(4, 1, 4, device=device)
+    logits[:, 0, 3] = 90  # Valid decode samples EOS; the new prefill must not.
+    model.code_predictor, _, _ = _predictor([logits], device)
+    model.code_predictor.embed_audio_frame = lambda codes: codes.float().expand(-1, 2)
+
+    class Backbone(nn.Module):
+        def forward(self, **kwargs):
+            self.inputs = kwargs["inputs_embeds"].clone()
+            return kwargs["inputs_embeds"]
+
+    model.backbone = Backbone()
+    # Isolate the semantic gate from speaker embedding construction. This is one
+    # prefill query token, not a max_tokens=1 output limit on a long prompt.
+    embedding = torch.tensor([[3.0, 4.0]], device=device)
+    monkeypatch.setattr(model, "_preprocess_prefill", lambda ids, embeds, *a: (ids, embedding, {}))
+    ids = torch.zeros(4, dtype=torch.long, device=device)
+    with torch.inference_mode():
+        _, prepared, _ = model.preprocess(ids[:1], None, _omni_is_prefill=True)
+        assert model._dec_audio_valid[0].item() == 0
+        assert model._dec_text_mask[0].item() == 0
+        embeddings = torch.zeros(4, 2, device=device)
+        embeddings[:1].copy_(prepared)
+        model.forward(ids, positions=torch.tensor([0, 5, 0, 0], device=device), inputs_embeds=embeddings)
+    torch.testing.assert_close(model.backbone.inputs[0], embedding[0])
+    assert model._out_codes[0].item() == 8  # Predictor's non-audio mask, not sampled EOS.
+    assert not model._sample_stop[0].item()
+    assert model._out_codes[2:].eq(8).all()
+    assert not model._sample_stop[2:].any()
+    if mixed:
+        assert model._out_codes[1].item() == 7
+        assert model._sample_stop[1].item()

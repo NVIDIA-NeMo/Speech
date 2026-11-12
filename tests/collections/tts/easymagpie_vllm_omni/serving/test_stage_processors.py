@@ -14,7 +14,8 @@
 # limitations under the License.
 from __future__ import annotations
 
-from collections import defaultdict
+import threading
+from collections import defaultdict, deque
 from types import SimpleNamespace
 
 import pytest
@@ -311,3 +312,139 @@ def test_filter_drops_only_no_audio_sentinel_rows():
 def test_filter_rejects_malformed_stage0_codes():
     with pytest.raises(ValueError, match=r"\[frames, codebooks\]"):
         _filter_audio_codes(torch.zeros(2, dtype=torch.long))
+
+
+@pytest.mark.parametrize("live_finished", [False, True])
+def test_queued_codec_frames_use_captured_finish_flag(live_finished):
+    """A slow sender must not flush old frames using the request's later status."""
+    manager = _manager()
+    manager.connector.config["extra"]["codec_chunk_frames"] = 4
+    request = _Request()
+    request.resumable = False
+    request.finished = live_finished
+    outputs = []
+    for value in range(1, 8):
+        output = talker2code2wav_async_chunk(manager, _output(value), request, is_finished=value == 7)
+        if output is not None:
+            outputs.append(output)
+    actual = torch.cat([output.codes.audio for output in outputs])
+    expected = torch.tensor([[value, value + 100] for value in range(3, 8)])
+    torch.testing.assert_close(actual, expected)
+    assert [bool(output.meta.finished) for output in outputs] == [False, True]
+    assert request.external_req_id not in manager._emp_seen_frames
+
+
+def test_queued_nonterminal_empty_payload_ignores_later_request_finish():
+    manager = _manager()
+    request = _Request()
+    request.resumable = False
+    request.finished = True
+    assert talker2code2wav_async_chunk(manager, None, request, is_finished=False) is None
+
+
+def test_direct_codec_call_without_finish_flag_infers_live_request_status():
+    manager = _manager()
+    manager.config.hf_config.streaming_speech_delay = 0
+    request = _Request()
+    request.resumable = False
+    assert talker2code2wav_async_chunk(manager, _output(1), request) is None
+    request.finished = True
+    output = talker2code2wav_async_chunk(manager, None, request)
+    torch.testing.assert_close(output.codes.audio, torch.tensor([[1, 101]]))
+    assert bool(output.meta.finished)
+    assert request.external_req_id not in manager._emp_seen_frames
+
+
+@pytest.mark.parametrize("scheduler_kind", ["cfg", "ar"])
+@pytest.mark.parametrize("frames", [0, 2, 4, 6])
+@pytest.mark.parametrize("delayed_sender", [False, True])
+def test_parked_stream_final_sentinel_flushes_codec_tail(monkeypatch, scheduler_kind, frames, delayed_sender):
+    """Exercise scheduler admission, native send tasks, and codec tail extraction together."""
+    from easymagpie_vllm_omni.cfg_pairing import CFGPairingTransferFilter
+
+    scheduler, session, final = _parked_stream(scheduler_kind, monkeypatch)
+    sender, payloads = _native_sender()
+    scheduler.chunk_transfer_adapter = CFGPairingTransferFilter(sender) if scheduler_kind == "cfg" else sender
+    for value in range(1, frames + 1):
+        sender.save_async(_output(value), session, is_segment_finished=value == frames)
+    if not delayed_sender:
+        while sender._pending_save_reqs:
+            sender._send_single_request(sender._pending_save_reqs.popleft())
+
+    scheduler.add_request(final)
+    while sender._pending_save_reqs:
+        sender._send_single_request(sender._pending_save_reqs.popleft())
+
+    audio = [p.codes.audio for p in payloads if p.codes is not None and p.codes.audio is not None]
+    actual = torch.cat([a.reshape(-1, 2) for a in audio]) if audio else torch.empty((0, 2), dtype=torch.long)
+    expected = torch.tensor([[value, value + 100] for value in range(1, frames + 1)], dtype=torch.long).reshape(-1, 2)
+    torch.testing.assert_close(actual, expected)
+    assert sum(bool(p.meta.finished) for p in payloads) == 1
+    assert bool(payloads[-1].meta.finished)
+    for name in (
+        "_emp_seen_frames",
+        "_emp_request_speech_delay",
+        "_emp_emitted_frames",
+        "_emp_emitted_chunks",
+        "_emp_frame_buffer_base",
+        "_emp_frame_buffer",
+    ):
+        assert session.external_req_id not in getattr(sender, name, {})
+    assert session.external_req_id not in sender.code_prompt_token_ids
+
+
+def _parked_stream(scheduler_kind, monkeypatch):
+    from easymagpie_vllm_omni.scheduler import EasyMagpieARAsyncScheduler
+    from test_cfg_concurrency import _batch_output, _mixed_scheduler
+    from test_cfg_streaming import _chunk
+    from vllm.v1.request import RequestStatus
+    from vllm_omni.core.sched.omni_ar_scheduler import OmniARAsyncScheduler
+
+    initial = _chunk(initial=True)
+    final = _chunk()
+    final.resumable = False
+    if scheduler_kind == "cfg":
+        scheduler = _mixed_scheduler()
+        scheduler.add_request(initial)
+        for _ in range(2):
+            step = scheduler.schedule()
+            scheduler.update_from_output(step, _batch_output(step))
+        session = scheduler.requests[initial.request_id]
+    else:
+        scheduler = object.__new__(EasyMagpieARAsyncScheduler)
+        scheduler.vllm_config = SimpleNamespace(model_config=SimpleNamespace(stage_id=0))
+        session = initial
+        session.status = RequestStatus.WAITING_FOR_STREAMING_REQ
+        scheduler.requests = {session.request_id: session}
+        # Isolate the local parked-sentinel bridge from upstream input admission.
+        monkeypatch.setattr(OmniARAsyncScheduler, "add_request", lambda self, request: None)
+    assert session.status == RequestStatus.WAITING_FOR_STREAMING_REQ
+    return scheduler, session, final
+
+
+def _native_sender():
+    from vllm_omni.distributed.omni_connectors.transfer_adapter.chunk_transfer_adapter import OmniChunkTransferAdapter
+
+    payloads = []
+
+    def put(**kwargs):
+        payloads.append(kwargs["data"])
+        return True, 0, None
+
+    sender = object.__new__(OmniChunkTransferAdapter)
+    sender.config = SimpleNamespace(hf_config=SimpleNamespace(streaming_speech_delay=0))
+    sender.connector = SimpleNamespace(stage_id=0, config={"extra": {"codec_chunk_frames": 4}}, put=put)
+    sender.custom_process_next_stage_input_func = talker2code2wav_async_chunk
+    sender.code_prompt_token_ids = defaultdict(list)
+    sender.put_req_chunk = defaultdict(int)
+    sender.requests_num_chunks_sent = defaultdict(int)
+    sender.request_payload = {}
+    sender.request_ids_mapping = {}
+    sender._pending_streaming_prefills = {}
+    sender._pending_save_reqs = deque()
+    sender._save_cond = threading.Condition()
+    # This fixture exercises the real save queue, sender, and sender cleanup;
+    # it has no receiver or background thread to shut down.
+    sender.cleanup_receiver = lambda request_id: None
+    sender.finish_requests = lambda *args: []
+    return sender, payloads

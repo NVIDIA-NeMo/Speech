@@ -45,7 +45,16 @@ def uses_cfg_decode_graphs(config: VllmConfig) -> bool:
     if isinstance(scheduler, type):
         scheduler = f"{scheduler.__module__}.{scheduler.__qualname__}"
     return (
-        scheduler == "easymagpie_vllm_omni.cfg_scheduler.EasyMagpieCFGScheduler"
+        (
+            (
+                scheduler == "easymagpie_vllm_omni.cfg_scheduler.EasyMagpieCFGScheduler"
+                and not getattr(config.scheduler_config, "async_scheduling", False)
+            )
+            or (
+                scheduler == "easymagpie_vllm_omni.cfg_async_scheduler.EasyMagpieCFGAsyncScheduler"
+                and config.scheduler_config.async_scheduling
+            )
+        )
         and not config.model_config.enforce_eager
         and supports_cfg_graphs(config.compilation_config)
     )

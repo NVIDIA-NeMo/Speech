@@ -71,6 +71,7 @@ def test_plugin_registers_explicit_cfg_profiles(monkeypatch: pytest.MonkeyPatch)
         "easymagpie_lm",
         "easymagpie_cfg",
         "easymagpie_cfg_async_eager",
+        "easymagpie_cfg_async",
     ]
 
 
@@ -196,3 +197,67 @@ def test_cfg_profile_matches_standard_precision() -> None:
     assert {k: v for k, v in cfg["stages"][1].items() if k.endswith("dtype")} == {
         k: v for k, v in standard["stages"][1].items() if k.endswith("dtype")
     }
+
+
+@pytest.mark.parametrize("policy", ["eager", "decode", "compiled"])
+def test_async_cfg_policy_profiles_parse_and_dispatch(policy):
+    from conftest import EASYMAGPIE_ROOT
+    from easymagpie_vllm_omni.cfg_async_scheduler import EasyMagpieCFGAsyncScheduler
+    from easymagpie_vllm_omni.cfg_graph import uses_cfg_decode_graphs
+    from easymagpie_vllm_omni.pipeline import EASYMAGPIE_CFG_ASYNC_PIPELINE
+    from test_cfg_scheduler import _config
+    from vllm.config import CompilationConfig, CompilationMode, CUDAGraphMode
+    from vllm.v1.cudagraph_dispatcher import CudagraphDispatcher
+    from vllm_omni.config.stage_config import load_deploy_config, merge_pipeline_deploy
+
+    pipeline = EASYMAGPIE_CFG_ASYNC_EAGER_PIPELINE if policy == "eager" else EASYMAGPIE_CFG_ASYNC_PIPELINE
+    assert pipeline.hf_architectures == ()
+    assert pipeline.validate() == []
+    # Decode-only remains a policy fixture, without a standalone deployment file.
+    deploy_policy = "compiled" if policy == "decode" else policy
+    deploy = load_deploy_config(EASYMAGPIE_ROOT / f"deploy/easymagpie_cfg_async_{deploy_policy}.yaml")
+    assert deploy.pipeline == pipeline.model_type
+    acoustic, codec = merge_pipeline_deploy(pipeline, deploy)
+    args = acoustic.yaml_engine_args
+    assert acoustic.scheduler_cls.endswith(".EasyMagpieCFGAsyncScheduler")
+    assert args["async_scheduling"] is True
+    assert codec.yaml_engine_args["async_scheduling"] is False
+    assert codec.yaml_engine_args["enforce_eager"] is True
+    assert codec.yaml_engine_args["compilation_config"] == {"mode": 0, "cudagraph_mode": "NONE"}
+    assert args["max_num_seqs"] == 64
+    assert codec.yaml_engine_args["max_num_seqs"] == 32
+    assert args["max_model_len"] == 4096
+    assert args["max_num_batched_tokens"] == 8192
+    assert args["worker_cls"] == "easymagpie_vllm_omni.runner.EasyMagpieGPUARWorker"
+    assert acoustic.yaml_runtime["env"]["VLLM_USE_V2_MODEL_RUNNER"] == "0"
+    assert codec.yaml_runtime["env"]["VLLM_USE_V2_MODEL_RUNNER"] == "0"
+
+    config = _config()
+    config.scheduler_config.scheduler_cls = acoustic.scheduler_cls
+    config.scheduler_config.async_scheduling = args["async_scheduling"]
+    config.scheduler_config.max_num_seqs = args["max_num_seqs"]
+    config.model_config.enforce_eager = args["enforce_eager"]
+    config.model_config.hf_config.cfg_capability = {"version": 1}
+    compilation_args = args["compilation_config"]
+    if policy == "decode":
+        compilation_args = {**compilation_args, "mode": 0, "cudagraph_mode": "FULL_DECODE_ONLY"}
+    compilation = CompilationConfig(**compilation_args)
+    config.compilation_config = compilation
+    object.__new__(EasyMagpieCFGAsyncScheduler)._validate_config(config)
+    assert uses_cfg_decode_graphs(config) == (policy != "eager")
+    if policy == "eager":
+        assert compilation.mode == CompilationMode.NONE
+        assert compilation.cudagraph_mode == CUDAGraphMode.NONE
+        return
+    compilation.set_splitting_ops_for_v1(all2all_backend="allgather_reducescatter")
+    dispatcher = CudagraphDispatcher(config)
+    dispatcher.initialize_cudagraph_keys(compilation.cudagraph_mode)
+    for tokens in (1, 2, 3, 32, 63, 64):
+        mode, batch = dispatcher.dispatch(tokens, uniform_decode=True)
+        assert mode == CUDAGraphMode.FULL
+        assert batch.num_tokens >= tokens
+    mode, _ = dispatcher.dispatch(10, uniform_decode=False)
+    assert mode == (CUDAGraphMode.PIECEWISE if policy == "compiled" else CUDAGraphMode.NONE)
+    mode, _ = dispatcher.dispatch(compilation.max_cudagraph_capture_size + 1, uniform_decode=False)
+    assert mode == CUDAGraphMode.NONE
+    assert compilation.mode == (CompilationMode.VLLM_COMPILE if policy == "compiled" else CompilationMode.NONE)

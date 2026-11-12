@@ -288,7 +288,9 @@ def _build_adapter_cls() -> type:
                 raise ValueError("The V2 CFG pipeline requires a registered speaker with a precomputed embedding")
             if settings.use_cfg:
                 if not self._uses_cfg_scheduler():
-                    raise ValueError("CFG requires the easymagpie_cfg or easymagpie_cfg_async_eager pipeline")
+                    raise ValueError(
+                        "CFG requires the easymagpie_cfg, easymagpie_cfg_async or easymagpie_cfg_async_eager pipeline"
+                    )
                 config = self._model_config()
                 capability = config.get("cfg_capability")
                 if capability is None:

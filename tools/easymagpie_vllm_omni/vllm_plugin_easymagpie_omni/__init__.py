@@ -84,6 +84,7 @@ def _register_pipeline() -> None:
     """Register the EasyMagpieTTS and standalone EasyMagpie LM pipelines."""
     from easymagpie_vllm_omni.pipeline import (
         EASYMAGPIE_CFG_ASYNC_EAGER_PIPELINE,
+        EASYMAGPIE_CFG_ASYNC_PIPELINE,
         EASYMAGPIE_CFG_PIPELINE,
         EASYMAGPIE_LM_PIPELINE,
         EASYMAGPIE_PIPELINE,
@@ -94,3 +95,4 @@ def _register_pipeline() -> None:
     register_pipeline(EASYMAGPIE_LM_PIPELINE)
     register_pipeline(EASYMAGPIE_CFG_PIPELINE)
     register_pipeline(EASYMAGPIE_CFG_ASYNC_EAGER_PIPELINE)
+    register_pipeline(EASYMAGPIE_CFG_ASYNC_PIPELINE)

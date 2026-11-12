@@ -35,14 +35,18 @@
 # This file contains code artifacts adapted from https://github.com/ryanleary/patter
 import math
 import random
+from collections.abc import Mapping
+from typing import Optional
 
 import librosa
 import numpy as np
 import torch
 import torch.nn as nn
 
+from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, _new_packed_encoder_activations
 from nemo.collections.asr.parts.preprocessing.perturb import AudioAugmentor
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
+from nemo.collections.common.parts.utils import build_module
 from nemo.utils import logging
 
 CONSTANT = 1e-5
@@ -70,9 +74,13 @@ def normalize_batch(x, seq_len, normalize_type):
             )
         time_steps = torch.arange(max_time, device=x.device).unsqueeze(0).expand(batch_size, max_time)
         valid_mask = time_steps < seq_len.unsqueeze(1)
-        x_mean_numerator = torch.where(valid_mask.unsqueeze(1), x, 0.0).sum(axis=2)
         x_mean_denominator = valid_mask.sum(axis=1)
-        x_mean = x_mean_numerator / x_mean_denominator.unsqueeze(1)
+        # Reference-centering keeps constant inputs exact across reduction backends
+        # and matches the packed normalization path.
+        reference = x[:, :, 0] if max_time else x.new_zeros((batch_size, x.shape[1]))
+        reference = reference.masked_fill((x_mean_denominator == 0).unsqueeze(1), 0.0)
+        centered = torch.where(valid_mask.unsqueeze(1), x - reference.unsqueeze(2), 0.0)
+        x_mean = reference + centered.sum(axis=2) / x_mean_denominator.clamp_min(1).unsqueeze(1)
 
         # Subtract 1 in the denominator to correct for the bias.
         x_std = torch.sqrt(
@@ -104,6 +112,28 @@ def normalize_batch(x, seq_len, normalize_type):
         )
     else:
         return x, x_mean, x_std
+
+
+def normalize_packed_batch(packed: PackedEncoderActivations, normalize_type) -> PackedEncoderActivations:
+    """Normalize token-flat features independently within each sequence."""
+    if not normalize_type or packed.total_tokens == 0:
+        return packed
+    sequence_ids = torch.repeat_interleave(torch.arange(packed.batch_size, device=packed.data.device), packed.lengths)
+    data, padding_value = _normalize_packed_features_and_padding(
+        packed.data,
+        packed.lengths,
+        sequence_ids,
+        normalize_type,
+        padding_value=packed.padding_value,
+    )
+    return _new_packed_encoder_activations(
+        data,
+        packed.lengths,
+        packed.cu_seqlens,
+        packed.max_seqlen,
+        padding_value,
+        padded_length=packed.padded_length,
+    )
 
 
 def clean_spectrogram_batch(spectrogram: torch.Tensor, spectrogram_len: torch.Tensor, fill_value=0.0) -> torch.Tensor:
@@ -269,6 +299,10 @@ class FilterbankFeatures(nn.Module):
         nb_augmentation_prob=0.0,
         nb_max_freq=4000,
         mel_norm="slaney",
+        mel_scale: str = "slaney",
+        periodic_window: bool = False,
+        snip_edges: bool = False,
+        log_base: Optional[float] = None,
         stft_exact_pad=False,  # Deprecated arguments; kept for config compatibility
         stft_conv=False,  # Deprecated arguments; kept for config compatibility
     ):
@@ -279,6 +313,8 @@ class FilterbankFeatures(nn.Module):
                 "for FilterbankFeatures and AudioToMelSpectrogramPreprocessor. Please set exact_pad to True "
                 "as needed."
             )
+        if exact_pad and snip_edges:
+            raise ValueError(f"{self} received both exact_pad and snip_edges; they are different framings.")
         if exact_pad and n_window_stride % 2 == 1:
             raise NotImplementedError(
                 f"{self} received exact_pad == True, but hop_size was odd. If audio_length % hop_size == 0. Then the "
@@ -304,6 +340,7 @@ class FilterbankFeatures(nn.Module):
         self.n_fft = n_fft or 2 ** math.ceil(math.log2(self.win_length))
         self.stft_pad_amount = (self.n_fft - self.hop_length) // 2 if exact_pad else None
         self.exact_pad = exact_pad
+        self.snip_edges = snip_edges
         self.sample_rate = sample_rate
 
         if exact_pad:
@@ -316,7 +353,7 @@ class FilterbankFeatures(nn.Module):
             'none': None,
         }
         window_fn = torch_windows.get(window, None)
-        window_tensor = window_fn(self.win_length, periodic=False) if window_fn else None
+        window_tensor = window_fn(self.win_length, periodic=periodic_window) if window_fn else None
         self.register_buffer("window", window_tensor)
 
         self.normalize = normalize
@@ -328,9 +365,17 @@ class FilterbankFeatures(nn.Module):
         self.pad_to = pad_to
         highfreq = highfreq or sample_rate / 2
 
+        if mel_scale not in ("slaney", "htk"):
+            raise ValueError(f"{self} received mel_scale={mel_scale!r}; it must be 'slaney' or 'htk'.")
         filterbanks = torch.tensor(
             librosa.filters.mel(
-                sr=sample_rate, n_fft=self.n_fft, n_mels=nfilt, fmin=lowfreq, fmax=highfreq, norm=mel_norm
+                sr=sample_rate,
+                n_fft=self.n_fft,
+                n_mels=nfilt,
+                fmin=lowfreq,
+                fmax=highfreq,
+                htk=mel_scale == "htk",
+                norm=mel_norm,
             ),
             dtype=torch.float,
         ).unsqueeze(0)
@@ -352,16 +397,43 @@ class FilterbankFeatures(nn.Module):
                 f"'clamp'."
             )
 
+        if log_base is not None and (log_base <= 0 or log_base == 1):
+            raise ValueError(f"{self} received log_base={log_base!r}; it must be a positive number other than 1.")
+        self.log_base = log_base
+        self.norm = None
+        if callable(normalize) or (isinstance(normalize, Mapping) and "_target_" in normalize):
+            self.norm = build_module(normalize, num_features=nfilt * frame_splicing)
+            if not use_grads and any(parameter.requires_grad for parameter in self.norm.parameters()):
+                raise ValueError(
+                    f"{self} received normalize={normalize!r}, a block with trainable parameters, "
+                    "but computes its features without gradients (use_grads=False), so they could never train; "
+                    "configure the block without trainable parameters (MaskedBatchNorm1d: affine=False), "
+                    "or set use_grads=True."
+                )
+        elif isinstance(normalize, Mapping):
+            if "fixed_mean" not in normalize or "fixed_std" not in normalize:
+                raise ValueError(
+                    f"{self} received normalize={normalize!r}; "
+                    "a mapping needs fixed_mean and fixed_std, or _target_ for a normalization block."
+                )
+        elif normalize not in (None, False, "", "NA", "None", "per_feature", "all_features"):
+            raise ValueError(
+                f"{self} received normalize={normalize!r}; it must be 'per_feature', 'all_features', "
+                "a mapping with fixed_mean and fixed_std, a normalization block, or None, 'NA' or 'None' for no "
+                "normalization."
+            )
+
         self.use_grads = use_grads
         if not use_grads:
             self.forward = torch.no_grad()(self.forward)
+            self.forward_packed = torch.no_grad()(self.forward_packed)
         self._rng = random.Random() if rng is None else rng
         self.nb_augmentation_prob = nb_augmentation_prob
         if self.nb_augmentation_prob > 0.0:
             if nb_max_freq >= sample_rate / 2:
                 self.nb_augmentation_prob = 0.0
             else:
-                self._nb_max_fft_bin = int((nb_max_freq / sample_rate) * n_fft)
+                self._nb_max_fft_bin = int((nb_max_freq / sample_rate) * self.n_fft)
 
         # log_zero_guard_value is the the small we want to use, we support
         # an actual number, or "tiny", or "eps"
@@ -376,13 +448,15 @@ class FilterbankFeatures(nn.Module):
         logging.debug(f"using grads: {use_grads}")
         logging.debug(f"nb_augmentation_prob: {nb_augmentation_prob}")
 
-    def stft(self, x):
+    def stft(self, x, *, center=None):
+        if center is None:
+            center = not (self.exact_pad or self.snip_edges)
         return torch.stft(
             x,
             n_fft=self.n_fft,
             hop_length=self.hop_length,
             win_length=self.win_length,
-            center=False if self.exact_pad else True,
+            center=center,
             window=self.window.to(dtype=torch.float, device=x.device),
             return_complex=True,
             pad_mode="constant",
@@ -404,14 +478,153 @@ class FilterbankFeatures(nn.Module):
             return self.log_zero_guard_value
 
     def get_seq_len(self, seq_len):
+        if self.snip_edges:
+            # Frames that lie entirely inside the signal, all of them valid;
+            # the padded framings below report one frame fewer than their STFT produces.
+            seq_len = torch.floor_divide(seq_len - self.win_length, self.hop_length) + 1
+            return torch.clamp(seq_len, min=0).to(dtype=torch.long)
         # Assuming that center is True is stft_pad_amount = 0
         pad_amount = self.stft_pad_amount * 2 if self.stft_pad_amount is not None else self.n_fft // 2 * 2
         seq_len = torch.floor_divide((seq_len + pad_amount - self.n_fft), self.hop_length)
         return seq_len.to(dtype=torch.long)
 
+    def _signal_padding(self) -> tuple[int, int]:
+        """Zeros before and after the signal that give ``torch.stft(center=False)`` the configured framing."""
+        if self.snip_edges:
+            # torch centers a window shorter than n_fft inside the frame;
+            # this offset puts the first frame's window on the first samples of the signal.
+            left = (self.n_fft - self.win_length) // 2
+            return left, self.n_fft - self.win_length - left
+        if self.stft_pad_amount is not None:
+            return self.stft_pad_amount, self.stft_pad_amount
+        return self.n_fft // 2, self.n_fft // 2
+
     @property
     def filter_banks(self):
         return self.fb
+
+    def forward_packed(self, x, seq_len, cu_seqlens, linear_spec=False) -> PackedEncoderActivations:
+        """Compute features from concatenated waveforms with one vectorized STFT.
+
+        Each utterance is placed in a hop-aligned block with the same zero guard
+        that the dense STFT applies at its boundaries. Only valid frames are
+        gathered from the resulting single STFT, so both input and output remain
+        sequence-packed and no ``B x T`` waveform or feature tensor is created.
+
+        ``pad_to`` is intentionally ignored: it is a dense-layout optimization and
+        packed output contains exactly ``sum(output_lengths)`` frames.
+        """
+        seq_len, cu_seqlens, host_seq_len = _validate_packed_waveforms(x, seq_len, cu_seqlens)
+        feature_lengths = torch.where(seq_len == 0, 0, self.get_seq_len(seq_len))
+        host_feature_lengths = torch.where(host_seq_len == 0, 0, self.get_seq_len(host_seq_len))
+        padded_length = _dense_feature_width(
+            host_feature_lengths, self.pad_to, self.max_length, extra_frame=not self.snip_edges
+        )
+        max_seqlen = int(host_feature_lengths.max()) if host_feature_lengths.numel() else 0
+        total_frames = int(host_feature_lengths.sum())
+        if bool((host_feature_lengths < 0).any()):
+            raise ValueError(
+                "Packed waveform lengths are too short for this STFT configuration; "
+                f"computed feature lengths {host_feature_lengths.tolist()}."
+            )
+        if seq_len.numel() == 0 or total_frames == 0:
+            feature_dim = self.n_fft // 2 + 1 if linear_spec else self.nfilt * self.frame_splicing
+            return _empty_packed_features(
+                x,
+                feature_lengths,
+                feature_dim,
+                padding_value=self.pad_value,
+                padded_length=padded_length,
+                max_seqlen=max_seqlen,
+            )
+
+        pad_left, pad_right = self._signal_padding()
+        block_lengths = _round_up(seq_len + pad_left + pad_right, self.hop_length)
+        block_offsets = torch.cat([seq_len.new_zeros(1), block_lengths.cumsum(0)])
+        guarded_size = int(_round_up(host_seq_len + pad_left + pad_right, self.hop_length).sum())
+        guarded = x.new_zeros(guarded_size)
+
+        guarded_positions = torch.arange(x.numel(), device=x.device)
+        sample_sequence_ids = torch.bucketize(guarded_positions, cu_seqlens[1:], right=True)
+        guarded_positions -= cu_seqlens[sample_sequence_ids]
+        guarded_positions += block_offsets[sample_sequence_ids] + pad_left
+
+        if self.stft_pad_amount is None:
+            samples = _dither_and_preemphasize_packed(
+                x, seq_len, cu_seqlens, self.preemph, self.dither if self.training else 0.0
+            )
+            guarded[guarded_positions] = samples
+        else:
+            guarded[guarded_positions] = x
+            guarded = _dither_and_preemphasize_exact_pad_blocks(
+                guarded,
+                seq_len,
+                block_lengths,
+                block_offsets,
+                self.preemph,
+                self.dither if self.training else 0.0,
+            )
+        del guarded_positions, sample_sequence_ids
+
+        with torch.amp.autocast(x.device.type, enabled=False):
+            spectra = self.stft(guarded.unsqueeze(0), center=False)[0]
+
+        frame_cu_seqlens = torch.cat([feature_lengths.new_zeros(1), feature_lengths.cumsum(0)])
+        frame_indices = torch.arange(total_frames, device=x.device)
+        frame_sequence_ids = torch.bucketize(frame_indices, frame_cu_seqlens[1:], right=True)
+        local_frames = frame_indices - frame_cu_seqlens[frame_sequence_ids]
+        global_frames = torch.div(block_offsets[frame_sequence_ids], self.hop_length, rounding_mode="floor")
+        global_frames = global_frames + local_frames
+        spectra = spectra.index_select(-1, global_frames).transpose(0, 1)
+
+        guard_value = 0 if not self.use_grads else CONSTANT
+        spectra = torch.sqrt(torch.view_as_real(spectra).pow(2).sum(-1) + guard_value)
+        if self.training and self.nb_augmentation_prob > 0.0:
+            narrowband = torch.tensor(
+                self._rng.choices(
+                    (True, False),
+                    weights=(self.nb_augmentation_prob, 1.0 - self.nb_augmentation_prob),
+                    k=feature_lengths.numel(),
+                ),
+                device=x.device,
+            )
+            keep = ~(narrowband[frame_sequence_ids].unsqueeze(1) & _high_frequency_mask(spectra, self._nb_max_fft_bin))
+            spectra = spectra * keep
+        if self.mag_power != 1.0:
+            spectra = spectra.pow(self.mag_power)
+        if linear_spec:
+            return _make_packed_features(
+                spectra,
+                feature_lengths,
+                padding_value=self.pad_value,
+                padded_length=padded_length,
+                max_seqlen=max_seqlen,
+            )
+
+        with torch.amp.autocast(x.device.type, enabled=False):
+            features = torch.matmul(self.fb.to(spectra.dtype), spectra.transpose(0, 1).unsqueeze(0))[0].transpose(0, 1)
+        if self.log:
+            if self.log_zero_guard_type == "add":
+                features = torch.log(features + self.log_zero_guard_value_fn(features))
+            elif self.log_zero_guard_type == "clamp":
+                features = torch.log(torch.clamp(features, min=self.log_zero_guard_value_fn(features)))
+            else:
+                raise ValueError("log_zero_guard_type was not understood")
+            if self.log_base is not None:
+                features = features * (1.0 / math.log(self.log_base))
+        if self.frame_splicing > 1:
+            features = features.repeat(1, self.frame_splicing)
+        if self.norm is not None:
+            features = self.norm.forward_packed(features)
+        elif self.normalize:
+            features = _normalize_packed_features(features, feature_lengths, frame_sequence_ids, self.normalize)
+        return _make_packed_features(
+            features,
+            feature_lengths,
+            padding_value=self.pad_value,
+            padded_length=padded_length,
+            max_seqlen=max_seqlen,
+        )
 
     def forward(self, x, seq_len, linear_spec=False):
         seq_len_time = seq_len
@@ -433,6 +646,13 @@ class FilterbankFeatures(nn.Module):
             timemask = torch.arange(x.shape[1], device=x.device).unsqueeze(0) < seq_len_time.unsqueeze(1)
             x = torch.cat((x[:, 0].unsqueeze(1), x[:, 1:] - self.preemph * x[:, :-1]), dim=1)
             x = x.masked_fill(~timemask, 0.0)
+
+        if self.snip_edges:
+            x = torch.nn.functional.pad(x, self._signal_padding(), "constant")
+            if x.shape[1] < self.n_fft:
+                # No signal in the batch holds one window, so every length is 0;
+                # torch.stft still needs n_fft samples, and the frame it produces is masked below.
+                x = torch.nn.functional.pad(x, (0, self.n_fft - x.shape[1]), "constant")
 
         # disable autocast to get full range of stft values
         with torch.amp.autocast(x.device.type, enabled=False):
@@ -470,13 +690,17 @@ class FilterbankFeatures(nn.Module):
                 x = torch.log(torch.clamp(x, min=self.log_zero_guard_value_fn(x)))
             else:
                 raise ValueError("log_zero_guard_type was not understood")
+            if self.log_base is not None:
+                x = x * (1.0 / math.log(self.log_base))
 
         # frame splicing if required
         if self.frame_splicing > 1:
             x = splice_frames(x, self.frame_splicing)
 
         # normalize if required
-        if self.normalize:
+        if self.norm is not None:
+            x = self.norm(x, seq_len)
+        elif self.normalize:
             x, _, _ = normalize_batch(x, seq_len, normalize_type=self.normalize)
 
         # mask to zero any values beyond seq_len in batch, pad to multiple of `pad_to` (for efficiency)
@@ -493,3 +717,170 @@ class FilterbankFeatures(nn.Module):
             if pad_amt != 0:
                 x = nn.functional.pad(x, (0, pad_to - pad_amt), value=self.pad_value)
         return x, seq_len
+
+
+def _validate_packed_waveforms(x, seq_len, cu_seqlens):
+    if x.ndim != 1:
+        raise ValueError(f"packed waveform data must be 1D, got shape {tuple(x.shape)}.")
+    if seq_len.ndim != 1:
+        raise ValueError(f"length must be 1D, got shape {tuple(seq_len.shape)}.")
+    if seq_len.dtype == torch.bool or seq_len.is_floating_point() or seq_len.is_complex():
+        raise TypeError(f"length must have an integer dtype, got {seq_len.dtype}.")
+    if cu_seqlens.ndim != 1 or cu_seqlens.numel() != seq_len.numel() + 1:
+        raise ValueError(f"cu_seqlens must have shape ({seq_len.numel() + 1},), got {tuple(cu_seqlens.shape)}.")
+    if cu_seqlens.dtype == torch.bool or cu_seqlens.is_floating_point() or cu_seqlens.is_complex():
+        raise TypeError(f"cu_seqlens must have an integer dtype, got {cu_seqlens.dtype}.")
+    if x.device != seq_len.device or x.device != cu_seqlens.device:
+        raise ValueError("packed waveform data, length, and cu_seqlens must be on the same device.")
+    seq_len = seq_len.to(torch.int64)
+    cu_seqlens = cu_seqlens.to(torch.int64)
+    host_metadata = torch.cat((seq_len, cu_seqlens)).detach().cpu()
+    host_seq_len = host_metadata[: seq_len.numel()]
+    host_cu_seqlens = host_metadata[seq_len.numel() :]
+    if host_cu_seqlens.numel() and int(host_cu_seqlens[0]) != 0:
+        raise ValueError("cu_seqlens must start at zero.")
+    if not torch.equal(host_cu_seqlens[1:] - host_cu_seqlens[:-1], host_seq_len):
+        raise ValueError("Differences in cu_seqlens must equal length.")
+    if bool((host_seq_len < 0).any()):
+        raise ValueError("length must be non-negative.")
+    if int(host_cu_seqlens[-1]) != x.shape[0]:
+        raise ValueError(
+            f"packed waveform data has {x.shape[0]} samples, but cu_seqlens ends at {host_cu_seqlens[-1]}."
+        )
+    return seq_len, cu_seqlens, host_seq_len
+
+
+def _round_up(values, multiple):
+    return torch.div(values + multiple - 1, multiple, rounding_mode="floor") * multiple
+
+
+def _dense_feature_width(lengths, pad_to, max_length, extra_frame: bool = True):
+    # The padded framings produce one frame beyond the reported length; see FilterbankFeatures.get_seq_len.
+    width = int(lengths.max().item()) + int(extra_frame) if lengths.numel() else 0
+    if pad_to == "max":
+        return int(max_length)
+    if pad_to > 0 and width % pad_to:
+        width += pad_to - width % pad_to
+    return width
+
+
+def _dither_and_preemphasize_packed(x, lengths, cu_seqlens, preemph, dither):
+    samples = x + dither * torch.randn_like(x) if dither > 0 else x
+    if preemph is None or samples.numel() == 0:
+        return samples
+    emphasized = torch.cat([samples[:1], samples[1:] - preemph * samples[:-1]])
+    starts = cu_seqlens[:-1][lengths > 0]
+    return emphasized.scatter(0, starts, samples.index_select(0, starts))
+
+
+def _dither_and_preemphasize_exact_pad_blocks(guarded, lengths, block_lengths, block_offsets, preemph, dither):
+    if dither > 0:
+        guarded = guarded + dither * torch.randn_like(guarded)
+    if preemph is not None and guarded.numel() > 0:
+        emphasized = torch.cat([guarded[:1], guarded[1:] - preemph * guarded[:-1]])
+        starts = block_offsets[:-1]
+        guarded = emphasized.scatter(0, starts, guarded.index_select(0, starts))
+        block_ids = torch.repeat_interleave(torch.arange(lengths.numel(), device=guarded.device), block_lengths)
+        local_samples = torch.arange(guarded.numel(), device=guarded.device) - block_offsets[block_ids]
+        guarded = guarded.masked_fill(local_samples >= lengths[block_ids], 0.0)
+    return guarded
+
+
+def _high_frequency_mask(spectra, first_masked_bin):
+    bins = torch.arange(spectra.shape[1], device=spectra.device)
+    return bins.unsqueeze(0) >= first_masked_bin
+
+
+def _normalize_packed_features(features, lengths, sequence_ids, normalize_type):
+    normalized, _ = _normalize_packed_features_and_padding(features, lengths, sequence_ids, normalize_type)
+    return normalized
+
+
+def _normalize_packed_features_and_padding(features, lengths, sequence_ids, normalize_type, *, padding_value=None):
+    if normalize_type == "per_feature":
+        input_dtype = features.dtype
+        statistics_features = _packed_normalization_statistics_features(features)
+        denominator = lengths.clamp_min(1).unsqueeze(1)
+        reference = _packed_segment_reference(statistics_features, lengths)
+        mean = reference + _packed_segment_sum(statistics_features - reference[sequence_ids], lengths) / denominator
+        centered = statistics_features - mean[sequence_ids]
+        variance = _packed_segment_sum(centered.square(), lengths) / (denominator - 1)
+        std = torch.sqrt(variance).masked_fill(variance.isnan(), 0.0) + CONSTANT
+        normalized = (centered / std[sequence_ids]).to(input_dtype)
+        normalized_padding = features.new_zeros((lengths.numel(), features.shape[1]))
+        return normalized, normalized_padding
+    if normalize_type == "all_features":
+        input_dtype = features.dtype
+        statistics_features = _packed_normalization_statistics_features(features)
+        denominator = lengths * features.shape[1]
+        mean = _packed_segment_sum(statistics_features.sum(1), lengths) / denominator.clamp_min(1)
+        centered = statistics_features - mean[sequence_ids].unsqueeze(1)
+        variance = _packed_segment_sum(centered.square().sum(1), lengths) / (denominator.clamp_min(1) - 1)
+        std = torch.sqrt(variance).masked_fill(variance.isnan(), 0.0) + CONSTANT
+        normalized = (centered / std[sequence_ids].unsqueeze(1)).to(input_dtype)
+        padding = _expand_packed_padding(padding_value, statistics_features, lengths)
+        normalized_padding = (
+            None if padding is None else ((padding - mean.unsqueeze(1)) / std.unsqueeze(1)).to(input_dtype)
+        )
+        return normalized, normalized_padding
+    if "fixed_mean" in normalize_type and "fixed_std" in normalize_type:
+        mean = torch.as_tensor(normalize_type["fixed_mean"], device=features.device, dtype=features.dtype)
+        std = torch.as_tensor(normalize_type["fixed_std"], device=features.device, dtype=features.dtype)
+        if mean.numel() == features.shape[1]:
+            normalized = (features - mean) / std
+            padding = _expand_packed_padding(padding_value, features, lengths)
+            normalized_padding = None if padding is None else (padding - mean) / std
+            return normalized, normalized_padding
+        mean = mean.view(lengths.numel(), features.shape[1])
+        std = std.view(lengths.numel(), features.shape[1])
+        normalized = (features - mean[sequence_ids]) / std[sequence_ids]
+        padding = _expand_packed_padding(padding_value, features, lengths)
+        normalized_padding = None if padding is None else (padding - mean) / std
+        return normalized, normalized_padding
+    return features, padding_value
+
+
+def _packed_segment_sum(values, lengths):
+    # Public packed entry points validate lengths; avoid repeating their synchronizing checks here.
+    return torch.segment_reduce(values, "sum", lengths=lengths, unsafe=True)
+
+
+def _packed_segment_reference(values, lengths):
+    """Return one value per segment, with zeros for empty segments."""
+    starts = torch.cat([lengths.new_zeros(1), lengths.cumsum(0)[:-1]]).long()
+    references = values.index_select(0, starts.clamp_max(values.shape[0] - 1))
+    return references.masked_fill((lengths == 0).unsqueeze(1), 0.0)
+
+
+def _packed_normalization_statistics_features(features):
+    """Accumulate packed normalization statistics safely for low-precision inputs."""
+    if features.dtype in (torch.float16, torch.bfloat16):
+        return features.float()
+    return features
+
+
+def _expand_packed_padding(padding_value, features, lengths):
+    if padding_value is None:
+        return None
+    if isinstance(padding_value, torch.Tensor):
+        return padding_value.to(features)
+    return features.new_full((lengths.numel(), features.shape[1]), padding_value)
+
+
+def _make_packed_features(features, lengths, *, padding_value=0.0, padded_length=None, max_seqlen=None):
+    cu_seqlens = torch.cat([lengths.new_zeros(1, dtype=torch.int32), lengths.cumsum(0, dtype=torch.int32)])
+    if max_seqlen is None:
+        max_seqlen = int(lengths.max().item()) if lengths.numel() else 0
+    return _new_packed_encoder_activations(
+        features, lengths.to(torch.int64), cu_seqlens, max_seqlen, padding_value, padded_length
+    )
+
+
+def _empty_packed_features(x, lengths, feature_dim, *, padding_value=0.0, padded_length=None, max_seqlen=None):
+    return _make_packed_features(
+        x.new_empty((0, feature_dim)),
+        lengths,
+        padding_value=padding_value,
+        padded_length=padded_length,
+        max_seqlen=max_seqlen,
+    )

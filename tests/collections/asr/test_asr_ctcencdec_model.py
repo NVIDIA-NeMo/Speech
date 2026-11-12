@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -28,6 +29,70 @@ from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecoding, CTCD
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.common.parts.preprocessing.parsers import make_parser
 from nemo.utils.config_utils import assert_dataclass_signature_match, update_model_config
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("upsampling_factor", [None, 1, 2])
+@pytest.mark.parametrize("timestamps", [False, True])
+def test_transcribe_timestamp_offsets_use_decoder_frame_rate(upsampling_factor, timestamps):
+    lengths = torch.tensor([12])
+    hypotheses = [
+        Hypothesis(
+            score=0.0,
+            y_sequence=torch.tensor([0]),
+            text="hello",
+            timestamp={key: [dict(start_offset=10, end_offset=11)] for key in ("word", "char", "segment")},
+        )
+    ]
+
+    def decode(logits, decoder_lengths, return_hypotheses):
+        assert decoder_lengths is lengths
+        assert return_hypotheses is timestamps
+        return hypotheses if timestamps else ["hello"]
+
+    model = SimpleNamespace(
+        decoder=SimpleNamespace(**({} if upsampling_factor is None else dict(upsampling_factor=upsampling_factor))),
+        encoder=SimpleNamespace(subsampling_factor=8),
+        cfg={'preprocessor': {'window_stride': 0.01}},
+        decoding=SimpleNamespace(ctc_decoder_predictions_tensor=decode),
+    )
+    output = EncDecCTCModel._transcribe_output_processing(
+        model,
+        dict(logits=torch.zeros(1, 16, 4), logits_len=lengths),
+        SimpleNamespace(return_hypotheses=timestamps, timestamps=timestamps),
+    )
+    if not timestamps:
+        assert output == ["hello"]
+        return
+    assert output[0].y_sequence.shape[0] == 12
+    for key in ("word", "char", "segment"):
+        interval = output[0].timestamp[key][0]
+        assert (interval['start_offset'], interval['end_offset']) == (10, 11)
+        assert (interval['start'], interval['end']) == pytest.approx(
+            (0.8 / (upsampling_factor or 1), 0.88 / (upsampling_factor or 1))
+        )
+
+
+class _LengthAwareDecoder(torch.nn.Module):
+    """Test double that proves EncDecCTCModel forwards encoded lengths."""
+
+    requires_encoded_lengths = True
+
+    def __init__(self, num_classes_with_blank: int, upsampling_factor: int = 1):
+        super().__init__()
+        self.num_classes_with_blank = num_classes_with_blank
+        self.received_lengths = None
+        self.upsampling_factor = upsampling_factor
+
+    def output_lengths(self, encoded_lengths):
+        return encoded_lengths * self.upsampling_factor
+
+    def forward(self, encoder_output, encoded_lengths):
+        self.received_lengths = encoded_lengths.detach().clone()
+        logits = encoder_output.new_zeros(
+            encoder_output.shape[0], encoder_output.shape[-1] * self.upsampling_factor, self.num_classes_with_blank
+        )
+        return torch.log_softmax(logits, dim=-1)
 
 
 @pytest.fixture()
@@ -108,6 +173,19 @@ class TestEncDecCTCModel:
         assert isinstance(instance2, EncDecCTCModel)
 
     @pytest.mark.unit
+    def test_frozen_encoder_stays_in_eval_when_parent_trains(self, asr_model):
+        asr_model.freeze_encoder()
+        asr_model.train()
+
+        assert asr_model.training
+        assert not asr_model.encoder.training
+        assert all(not parameter.requires_grad for parameter in asr_model.encoder.parameters())
+
+        asr_model.unfreeze_encoder()
+        assert asr_model.encoder.training
+        assert all(parameter.requires_grad for parameter in asr_model.encoder.parameters())
+
+    @pytest.mark.unit
     def test_forward(self, asr_model):
         asr_model = asr_model.eval()
 
@@ -136,6 +214,25 @@ class TestEncDecCTCModel:
         assert diff <= 1e-6
         diff = torch.max(torch.abs(logprobs_instance - logprobs_batch))
         assert diff <= 1e-6
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("upsampling_factor", [1, 2])
+    def test_forward_passes_lengths_to_length_aware_decoder(self, asr_model, upsampling_factor):
+        asr_model = asr_model.eval()
+        asr_model.preprocessor.featurizer.dither = 0.0
+        asr_model.preprocessor.featurizer.pad_to = 0
+        recording_decoder = _LengthAwareDecoder(asr_model.decoder.num_classes_with_blank, upsampling_factor)
+        asr_model.decoder = recording_decoder
+
+        input_signal = torch.randn(size=(2, 512))
+        input_lengths = torch.tensor([512, 321])
+        with torch.no_grad():
+            _, encoded_lengths, _ = asr_model(
+                input_signal=input_signal,
+                input_signal_length=input_lengths,
+            )
+
+        assert torch.equal(recording_decoder.received_lengths * upsampling_factor, encoded_lengths)
 
     @pytest.mark.unit
     def test_predict_step(self, asr_model):

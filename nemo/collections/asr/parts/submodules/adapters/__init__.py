@@ -31,5 +31,15 @@ from nemo.collections.asr.parts.submodules.adapters.transformer_multi_head_atten
     TransformerMultiHeadAttentionAdapter,
     TransformerMultiHeadAttentionAdapterConfig,
 )
+from nemo.utils.serialization import register_checkpoint_schema_types
 
 # fmt: on
+
+
+register_checkpoint_schema_types(
+    MultiHeadAttentionAdapterConfig,
+    PositionalEncodingAdapterConfig,
+    RelPositionalEncodingAdapterConfig,
+    RelPositionMultiHeadAttentionAdapterConfig,
+    TransformerMultiHeadAttentionAdapterConfig,
+)

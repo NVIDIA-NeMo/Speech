@@ -15,6 +15,7 @@
 
 import glob
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -35,7 +36,7 @@ from hydra.utils import get_original_cwd
 from lightning.pytorch.callbacks import Callback, ModelCheckpoint
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.callbacks.timer import Interval, Timer
-from lightning.pytorch.loggers import MLFlowLogger, NeptuneLogger, TensorBoardLogger, WandbLogger
+from lightning.pytorch.loggers import MLFlowLogger, TensorBoardLogger, WandbLogger
 from lightning.pytorch.loops import _TrainingEpochLoop
 from lightning.pytorch.strategies.ddp import DDPStrategy
 from lightning.pytorch.trainer.connectors.checkpoint_connector import _CheckpointConnector
@@ -244,6 +245,7 @@ class ExpManagerConfig:
     resume_past_end: Optional[bool] = False
     resume_ignore_no_checkpoint: Optional[bool] = False
     resume_from_checkpoint: Optional[str] = None
+    resume_select_latest_last_checkpoint: Optional[bool] = False
     # Logging parameters
     create_tensorboard_logger: Optional[bool] = True
     summary_writer_kwargs: Optional[Dict[Any, Any]] = None
@@ -281,6 +283,8 @@ class ExpManagerConfig:
     ema: Optional[EMAParams] = field(default_factory=lambda: EMAParams())
     # Wall clock time limit
     max_time_per_run: Optional[str] = None
+    # Count from the SLURM allocation start instead of the training loop start.
+    max_time_per_run_from_slurm: Optional[bool] = True
     # time to sleep non 0 ranks during initialization
     seconds_to_sleep: float = 5
     # Straggler detection
@@ -524,6 +528,9 @@ def exp_manager(trainer: 'lightning.pytorch.Trainer', cfg: Optional[Union[DictCo
             - resume_from_checkpoint (str): Can be used to specify a path to a specific checkpoint
                 file to load from. This will override any checkpoint found when resume_if_exists
                 is True. Defaults to None.
+            - resume_select_latest_last_checkpoint (bool): When multiple ``*last.ckpt`` checkpoints
+                exist, select the unique checkpoint with the greatest integer ``step=...`` in its
+                basename. Defaults to False, preserving the fail-closed ambiguity check.
             - create_tensorboard_logger (bool): Whether to create a tensorboard logger and attach it
                 to the pytorch lightning trainer. Defaults to True.
             - summary_writer_kwargs (dict): A dictionary of kwargs that can be passed to lightning's
@@ -616,6 +623,7 @@ def exp_manager(trainer: 'lightning.pytorch.Trainer', cfg: Optional[Union[DictCo
         cfg.resume_ignore_no_checkpoint,
         cfg.checkpoint_callback_params.dirpath,
         cfg.resume_from_checkpoint,
+        cfg.resume_select_latest_last_checkpoint,
     )
 
     checkpoint_name = name
@@ -739,13 +747,17 @@ def exp_manager(trainer: 'lightning.pytorch.Trainer', cfg: Optional[Union[DictCo
                     'Found a PTL Timer callback, replacing with a StatelessTimer callback. '
                     'This will happen if you set trainer.max_time as well as exp_manager.max_time_per_run.'
                 )
-                trainer.callbacks[idx] = StatelessTimer(cfg.max_time_per_run)
+                trainer.callbacks[idx] = StatelessTimer(
+                    cfg.max_time_per_run, max_time_from_slurm=cfg.max_time_per_run_from_slurm
+                )
                 found_ptl_timer = True
                 break
 
         if not found_ptl_timer:
             trainer.max_time = cfg.max_time_per_run
-            trainer.callbacks.append(StatelessTimer(cfg.max_time_per_run))
+            trainer.callbacks.append(
+                StatelessTimer(cfg.max_time_per_run, max_time_from_slurm=cfg.max_time_per_run_from_slurm)
+            )
 
     if cfg.create_straggler_detection_callback:
         if HAVE_STRAGGLER_DET:
@@ -829,6 +841,11 @@ def error_checks(trainer: 'lightning.pytorch.Trainer', cfg: Optional[Union[DictC
         - Prints error messages when 1) run on multi-node and not Slurm, and
             2) run on multi-gpu without DDP
     """
+    if cfg.create_neptune_logger:
+        raise ValueError(
+            'create_neptune_logger is unsupported by the required Lightning version. '
+            'Use another exp_manager logger or pass a supported logger to the Trainer.'
+        )
     if HydraConfig.initialized() and get_original_cwd() != os.getcwd():
         raise ValueError(
             "Hydra changed the working directory. This interferes with ExpManger's functionality."
@@ -878,6 +895,7 @@ def check_resume(
     resume_ignore_no_checkpoint: bool = False,
     dirpath: str = None,
     resume_from_checkpoint: str = None,
+    resume_select_latest_last_checkpoint: bool = False,
 ):
     """Checks that resume=True was used correctly with the arguments pass to exp_manager. Sets
     trainer._checkpoint_connector._ckpt_path as necessary.
@@ -1019,8 +1037,33 @@ def check_resume(
                 if any([s for s in ['mp_rank', 'tp_rank', 'fsdp_shard'] if s in str(last_checkpoints[0])]):
                     checkpoint = last_checkpoints[0]
                     checkpoint = uninject_model_parallel_rank(checkpoint)
+                elif resume_select_latest_last_checkpoint:
+                    checkpoints_by_step = {}
+                    for candidate in last_checkpoints:
+                        matches = re.findall(r'(?:^|[-_])step=(\d+)(?:[-_.]|$)', Path(str(candidate)).name)
+                        if len(matches) != 1:
+                            raise ValueError(
+                                "Cannot select the latest *last.ckpt because every candidate must have "
+                                f"exactly one step=<integer> in its basename: {last_checkpoints}"
+                            )
+                        step = int(matches[0])
+                        if step in checkpoints_by_step:
+                            raise ValueError(
+                                f"Cannot select a unique latest *last.ckpt: step={step} appears in both "
+                                f"{checkpoints_by_step[step]} and {candidate}."
+                            )
+                        checkpoints_by_step[step] = candidate
+                    checkpoint = checkpoints_by_step[max(checkpoints_by_step)]
+                    logging.warning(
+                        "Multiple *last.ckpt checkpoints found; selected the unique greatest step: %s",
+                        checkpoint,
+                    )
                 else:
-                    raise ValueError(f"Multiple checkpoints {last_checkpoints} that matches *last.ckpt.")
+                    raise ValueError(
+                        f"Multiple checkpoints {last_checkpoints} match *last.ckpt. "
+                        "Set resume_select_latest_last_checkpoint=True to select the unique checkpoint "
+                        "with the greatest step=<integer> in its basename."
+                    )
             else:
                 checkpoint = last_checkpoints[0]
 
@@ -1279,19 +1322,7 @@ def configure_loggers(
         logging.info("ClearMLLogger has been set up")
 
     if create_neptune_logger:
-        if neptune_kwargs is None:
-            neptune_kwargs = {}
-        if "name" not in neptune_kwargs and "project" not in neptune_kwargs:
-            raise ValueError("name and project are required for neptune_logger")
-        if "api_key" not in neptune_kwargs and not os.getenv("NEPTUNE_API_TOKEN", None):
-            raise ValueError(
-                "either api_key should be set in neptune_kwargs or NEPTUNE_API_TOKEN should "
-                "be set in environment variable for neptune_logger"
-            )
-        neptune_logger = NeptuneLogger(**neptune_kwargs)
-
-        logger_list.append(neptune_logger)
-        logging.info("NeptuneLogger has been set up")
+        raise ValueError('create_neptune_logger is unsupported by the required Lightning version.')
 
     trainer._logger_connector.configure_logger(logger_list)
 
@@ -1302,13 +1333,13 @@ class NeMoCheckpointConnector(_CheckpointConnector):
     distributed training settings to pre-load checkpoint.
     """
 
-    def resume_start(self, checkpoint_path=None) -> None:
+    def resume_start(self, checkpoint_path=None, weights_only: Optional[bool] = None) -> None:
         """resume_start"""
         checkpoint_path = self.trainer.ckpt_path
         if checkpoint_path is not None:
             logging.info(f'Resuming from checkpoint {checkpoint_path}, rank {torch.distributed.get_rank()}')
         start_time = time.perf_counter()
-        super().resume_start(checkpoint_path)
+        super().resume_start(checkpoint_path, weights_only=weights_only)
         if checkpoint_path is not None:
             logging.info(
                 'Time elapsed loading checkpoint/optimizer states: '
@@ -1430,15 +1461,18 @@ class StatelessTimer(Timer):
         duration: timedelta = None,
         interval: str = Interval.step,
         verbose: bool = True,
+        max_time_from_slurm: bool = False,
     ) -> None:
-        """stateless timer
+        """Create a timer whose elapsed state is reset for every training run.
 
         Args:
-            duration (timedelta, optional): _description_. Defaults to None.
-            interval (str, optional): _description_. Defaults to Interval.step.
-            verbose (bool, optional): _description_. Defaults to True.
+            duration: Maximum elapsed time for this run.
+            interval: Check the time limit after each step or epoch.
+            verbose: Log when the time limit is reached.
+            max_time_from_slurm: Include time elapsed since ``SLURM_JOB_START_TIME``.
         """
         super().__init__(duration, interval, verbose)
+        self._slurm_job_start_time = self._read_slurm_job_start_time() if max_time_from_slurm else None
 
     # Override PTL Timer's state dict to not store elapsed time information so that we can
     # restore and continue training.
@@ -1449,6 +1483,16 @@ class StatelessTimer(Timer):
     def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
         """load_state_dict"""
         return
+
+    def on_fit_start(self, trainer: lightning.pytorch.Trainer, *args: Any, **kwargs: Any) -> None:
+        """Refresh the SLURM offset before the initial deadline check."""
+        self._update_slurm_time_offset()
+        super().on_fit_start(trainer, *args, **kwargs)
+
+    def on_train_start(self, trainer: lightning.pytorch.Trainer, pl_module: lightning.pytorch.LightningModule) -> None:
+        """Refresh the SLURM offset when the monotonic training clock starts."""
+        self._update_slurm_time_offset()
+        super().on_train_start(trainer, pl_module)
 
     def _check_time_remaining(self, trainer: lightning.pytorch.Trainer) -> None:
         """_check_time_remaining"""
@@ -1490,6 +1534,33 @@ class StatelessTimer(Timer):
             from lightning.pytorch.utilities.exceptions import _TunerExitException
 
             raise _TunerExitException()
+
+    def _update_slurm_time_offset(self) -> None:
+        """Set the elapsed-time offset to the time used by the current SLURM job."""
+        if self._slurm_job_start_time is not None:
+            self._offset = max(0.0, time.time() - self._slurm_job_start_time)
+
+    @staticmethod
+    def _read_slurm_job_start_time() -> Optional[float]:
+        """Read SLURM's start time, falling back to training-loop timing outside SLURM."""
+        value = os.getenv("SLURM_JOB_START_TIME")
+        if value is None:
+            logging.warning(
+                "max_time_per_run_from_slurm=True, but SLURM_JOB_START_TIME is not set; "
+                "falling back to measuring max_time_per_run from the training loop start."
+            )
+            return None
+        try:
+            start_time = int(value)
+        except ValueError:
+            raise ValueError(
+                "SLURM-based max_time_per_run requires SLURM_JOB_START_TIME to be a positive UNIX timestamp"
+            ) from None
+        if start_time <= 0:
+            raise ValueError(
+                "SLURM-based max_time_per_run requires SLURM_JOB_START_TIME to be a positive UNIX timestamp"
+            )
+        return float(start_time)
 
 
 def _describe_batch_progress(trainer: lightning.pytorch.Trainer) -> Dict[str, Any]:

@@ -144,7 +144,7 @@ bibtex_bibfiles = [
 
 intersphinx_mapping = {
     'pytorch': ('https://docs.pytorch.org/docs/stable', None),
-    'pytorch-lightning': ('https://lightning.ai/docs/pytorch/latest/', None),
+    'pytorch-lightning': ('https://lightning.ai/docs/pytorch/stable/', None),
 }
 
 # Set default flags for all classes.
@@ -200,6 +200,9 @@ linkcheck_ignore = [
     ".*github\\.com.*",
     ".*githubusercontent\\.com.*",
 ]
+# Lightning documentation pages are rendered by JavaScript. Their static HTML does not contain the API anchors
+# referenced by the intersphinx inventory, so linkcheck must validate only the page URL.
+linkcheck_anchors_ignore_for_url = [r"https://lightning\.ai/docs/pytorch/.*"]
 linkcheck_retries = 10
 linkcheck_rate_limit_timeout = 600
 

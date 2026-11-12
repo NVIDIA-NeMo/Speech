@@ -26,6 +26,7 @@ if numba_utils.is_numba_cuda_fp16_supported():
     DTYPES.append(np.float16)
 
 
+@pytest.mark.gpu
 class TestRNNTCUDAReductions:
     @pytest.mark.skipif(not cuda.is_available(), reason="CUDA Reductions can only be run when CUDA is available")
     @pytest.mark.unit

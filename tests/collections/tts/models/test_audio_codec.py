@@ -99,6 +99,94 @@ def acoustic_codec_model():
     return acoustic_codec_model
 
 
+@pytest.fixture(params=[True, False, None], ids=['frozen', 'trainable', 'default'])
+def freeze_test_model(request):
+    # Small modules exercise dropout and mutable BatchNorm buffers without audio data or pretrained weights.
+    cfg = DictConfig(
+        {
+            'sample_rate': 8000,
+            'samples_per_frame': 1,
+            'loss_resolutions': [[16, 4, 16]],
+            'mel_loss_dims': [4],
+            'commit_loss_scale': 0.0,
+            'audio_encoder': {
+                '_target_': 'torch.nn.Sequential',
+                '_args_': [
+                    {'_target_': 'torch.nn.Linear', 'in_features': 4, 'out_features': 4},
+                    {'_target_': 'torch.nn.BatchNorm1d', 'num_features': 4},
+                    {'_target_': 'torch.nn.Dropout', 'p': 0.5},
+                ],
+            },
+            'audio_decoder': {'_target_': 'torch.nn.Linear', 'in_features': 4, 'out_features': 4},
+            'generator_loss': {'_target_': 'nemo.collections.tts.losses.audio_codec_loss.GeneratorSquaredLoss'},
+            'discriminator_loss': {
+                '_target_': 'nemo.collections.tts.losses.audio_codec_loss.DiscriminatorSquaredLoss'
+            },
+            'optim': {'_target_': 'torch.optim.Adam', 'lr': 0.01},
+        }
+    )
+    if request.param is not None:
+        cfg.freeze_encoder = request.param
+    torch.manual_seed(42)
+    return AudioCodecModel(cfg=cfg), request.param is True
+
+
+@pytest.mark.unit
+def test_freeze_encoder_modes(freeze_test_model):
+    model, frozen = freeze_test_model
+    # Freezing must take effect at construction, before optimizer setup.
+    assert all(p.requires_grad == (not frozen) for p in model.audio_encoder.parameters())
+    assert all(m.training == (not frozen) for m in model.audio_encoder.modules())
+    inputs = torch.randn(8, 4)
+    buffers_before = {name: buf.clone() for name, buf in model.audio_encoder.named_buffers()}
+
+    for mode in (True, False, True, False, True):
+        assert model.train(mode) is model
+        assert model.training == mode
+        assert model.audio_decoder.training == mode
+        assert all(m.training == (mode and not frozen) for m in model.audio_encoder.modules())
+        first = model.audio_encoder(inputs)
+        second = model.audio_encoder(inputs)
+        if frozen or not mode:
+            torch.testing.assert_close(first, second, rtol=0, atol=0)
+
+    for name, buf in model.audio_encoder.named_buffers():
+        if frozen:
+            torch.testing.assert_close(buf, buffers_before[name], rtol=0, atol=0)
+    if not frozen:
+        assert model.audio_encoder[1].num_batches_tracked.item() == 6
+
+
+@pytest.mark.unit
+def test_freeze_encoder_optimizer_step(freeze_test_model):
+    model, frozen = freeze_test_model
+    optimizer = model.configure_optimizers()
+    optimizer_params = {id(p) for group in optimizer.param_groups for p in group['params']}
+    assert all((id(p) in optimizer_params) == (not frozen) for p in model.audio_encoder.parameters())
+    assert all(id(p) in optimizer_params for p in model.audio_decoder.parameters())
+
+    model.eval().train()
+    encoder_before = {name: value.clone() for name, value in model.audio_encoder.state_dict().items()}
+    decoder_before = {name: value.clone() for name, value in model.audio_decoder.named_parameters()}
+    inputs, target = torch.randn(8, 4), torch.randn(8, 4)
+    optimizer.zero_grad()
+    prediction = model.audio_decoder(model.audio_encoder(inputs))
+    (prediction - target).square().mean().backward()
+    assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.audio_decoder.parameters())
+    if frozen:
+        assert all(p.grad is None for p in model.audio_encoder.parameters())
+    else:
+        assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.audio_encoder.parameters())
+    optimizer.step()
+
+    if frozen:
+        for name, value in model.audio_encoder.state_dict().items():
+            torch.testing.assert_close(value, encoder_before[name], rtol=0, atol=0)
+    else:
+        assert any(not torch.equal(p, encoder_before[name]) for name, p in model.audio_encoder.named_parameters())
+    assert any(not torch.equal(p, decoder_before[name]) for name, p in model.audio_decoder.named_parameters())
+
+
 class TestAudioCodecModel:
     @pytest.mark.unit
     def test_speaker_encoder_checkpoint_uses_hf_cache(self, monkeypatch):
@@ -202,3 +290,55 @@ class TestAudioCodecModel:
             dropout_start_i = i * codec_model.vector_quantizer.codebook_dim
             dropped_codes = encoded[:, dropout_start_i:, :]
             torch.testing.assert_close(actual=dropped_codes, expected=torch.zeros_like(dropped_codes))
+
+    @pytest.mark.unit
+    def test_process_batch_gates_mmd_gradients_with_codebook_dropout(self, codec_model, monkeypatch):
+        batch_size = 2
+        num_frames = 2
+        audio = torch.zeros(batch_size, 960)
+        audio_len = torch.full((batch_size,), 960, dtype=torch.long)
+        encoded_len = torch.full((batch_size,), num_frames, dtype=torch.long)
+        encoder_output = torch.zeros(batch_size, 40, num_frames)
+        full_codes = torch.ones_like(encoder_output, requires_grad=True)
+        keep_mask = torch.ones_like(full_codes)
+        keep_mask[:, full_codes.shape[1] // 2 :] = 0
+        dropped_codes = full_codes * keep_mask
+
+        # Stub each codec stage so full MMD values can be distinguished from dropped decoder inputs.
+        monkeypatch.setattr(codec_model, 'encode_audio', Mock(return_value=(encoder_output, encoded_len)))
+        monkeypatch.setattr(
+            codec_model.vector_quantizer,
+            'forward',
+            Mock(return_value=(full_codes, torch.zeros(codec_model.num_codebooks, batch_size, num_frames))),
+        )
+        dropout_codebooks = Mock(return_value=dropped_codes)
+        monkeypatch.setattr(codec_model, '_dropout_random_codebooks', dropout_codebooks)
+        decoder_forward = Mock(return_value=(torch.zeros_like(audio), audio_len))
+        monkeypatch.setattr(codec_model.audio_decoder, 'forward', decoder_forward)
+
+        codec_model.codebook_dropout_rate = 1.0
+        codec_model.train()
+        batch = {'audio': audio, 'audio_lens': audio_len}
+
+        _, _, _, _, mmd_inputs, _, _ = codec_model._process_batch(batch)
+
+        # MMD observes the complete representation, but its gradients follow the codebook dropout mask.
+        torch.testing.assert_close(mmd_inputs, full_codes)
+        torch.testing.assert_close(decoder_forward.call_args.kwargs['inputs'], dropped_codes)
+        dropout_codebooks.assert_called_once()
+        mmd_inputs.sum().backward()
+        torch.testing.assert_close(full_codes.grad, keep_mask)
+
+        decoder_forward.reset_mock()
+        dropout_codebooks.reset_mock()
+        full_codes.grad = None
+        codec_model.eval()
+
+        _, _, _, _, mmd_inputs, _, _ = codec_model._process_batch(batch)
+
+        # Without training-time dropout, MMD retains the ordinary identity gradient.
+        torch.testing.assert_close(mmd_inputs, full_codes)
+        torch.testing.assert_close(decoder_forward.call_args.kwargs['inputs'], full_codes)
+        dropout_codebooks.assert_not_called()
+        mmd_inputs.sum().backward()
+        torch.testing.assert_close(full_codes.grad, torch.ones_like(full_codes))

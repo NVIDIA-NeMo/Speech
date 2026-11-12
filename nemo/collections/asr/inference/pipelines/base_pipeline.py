@@ -46,6 +46,7 @@ from nemo.collections.asr.inference.utils.pipeline_utils import (
 )
 from nemo.collections.asr.inference.utils.progressbar import ProgressBar
 from nemo.collections.asr.inference.utils.text_segment import TextSegment
+from nemo.collections.asr.parts.utils.prompt_language_utils import resolve_prompt_index
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 
 if TYPE_CHECKING:
@@ -521,41 +522,21 @@ class BasePipeline(PipelineInterface):
 
         return {}
 
-    def _resolve_prompt_index(self, language_code: str) -> int:
+    def _resolve_prompt_index(self, language_code: str | None) -> int:
         """
-        Resolve language_code to a strict prompt index; raise if invalid.
+        Resolve language_code to a prompt index, with the rules shared by the prompt-conditioned models.
         Args:
-            language_code: (str) Language code to resolve (e.g., "en-US", "es-ES").
+            language_code: (str | None) Language code to resolve (e.g., "en", "es-ES"), or None for
+                the language-agnostic "auto" prompt.
         Returns:
             (int) Prompt index corresponding to the language code.
         Raises:
             RuntimeError: If prompt configuration is missing.
-            ValueError: If language_code is not found in prompt dictionary.
+            ValueError: If the language is not supported by the model, or is ambiguous.
         """
         if not hasattr(self, '_prompt_config') or not self._prompt_config:
             raise RuntimeError("Prompt configuration is missing for a prompt-enabled model.")
-        prompt_dict = self._prompt_config['prompt_dict']
-        lang_index = prompt_dict.get(language_code, None)
-        if lang_index is None:
-            raise ValueError(
-                f"Language code '{language_code}' not found in prompt dictionary. "
-                f"Available languages: {list(prompt_dict.keys())}"
-            )
-        return lang_index
-
-    def _resolve_default_language_code(self) -> str:
-        """
-        Pick the language used when a request does not specify one.
-
-        Prefers the model's automatic language-detection prompt when available, so that a
-        multilingual model does not silently transcribe every language as English.
-        Returns:
-            (str) "auto" when the model's prompt dictionary supports it, otherwise "en-US".
-        """
-        if not getattr(self, '_prompt_config', None):
-            return "en-US"
-        prompt_dict = self._prompt_config['prompt_dict']
-        return "auto" if "auto" in prompt_dict else "en-US"
+        return resolve_prompt_index(language_code or None, self._prompt_config['prompt_dict'])
 
     def _create_one_hot_prompts(self, indices: Tensor) -> Tensor:
         """
@@ -568,6 +549,22 @@ class BasePipeline(PipelineInterface):
         num_prompts = self._prompt_config['num_prompts']
         return torch.nn.functional.one_hot(indices, num_classes=num_prompts).to(self._prompt_config['compute_dtype'])
 
+    def _build_prompt_indices(self, states: list) -> Tensor:
+        """
+        Collect the per-stream prompt indices for a batch of states.
+        Args:
+            states: (list) List of streaming states.
+        Returns:
+            (Tensor) Prompt indices of shape [B].
+        Raises:
+            ValueError: If any prompt index is out of range.
+        """
+        indices = torch.tensor([getattr(s, 'prompt_idx', 0) for s in states], device=self.device, dtype=torch.long)
+        num_prompts = self._prompt_config['num_prompts']
+        if torch.any((indices < 0) | (indices >= num_prompts)):
+            raise ValueError("Found out-of-range prompt index in batch.")
+        return indices
+
     def _build_prompt_vectors(self, states: list) -> Tensor:
         """
         Build prompt vectors for a batch of states using one-hot encoding.
@@ -578,11 +575,7 @@ class BasePipeline(PipelineInterface):
         Raises:
             ValueError: If any prompt index is out of range.
         """
-        indices = torch.tensor([getattr(s, 'prompt_idx', 0) for s in states], device=self.device, dtype=torch.long)
-        num_prompts = self._prompt_config['num_prompts']
-        if torch.any((indices < 0) | (indices >= num_prompts)):
-            raise ValueError("Found out-of-range prompt index in batch.")
-        return self._create_one_hot_prompts(indices)
+        return self._create_one_hot_prompts(self._build_prompt_indices(states))
 
     def run(
         self,

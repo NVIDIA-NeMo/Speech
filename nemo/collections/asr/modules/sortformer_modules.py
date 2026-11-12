@@ -142,11 +142,14 @@ class SortformerModules(NeuralModule, Exportable):
         use_learnable_sil_emb: bool = False,
         upsample_factor: int = 1,
         async_desync_updates: bool = False,
-    ):
+        use_activity_head: bool = False,
+    ) -> None:
         super().__init__()
         self._validate_integer_parameter('num_spks', num_spks, 1)
         if not isinstance(upsample_factor, int) or isinstance(upsample_factor, bool) or upsample_factor < 1:
             raise ValueError(f"upsample_factor must be a positive integer, got {upsample_factor}")
+        if not isinstance(use_activity_head, bool):
+            raise TypeError(f"use_activity_head must be a boolean, got {type(use_activity_head).__name__}")
         # General params
         self.subsampling_factor = subsampling_factor
         self.fc_d_model = fc_d_model
@@ -158,6 +161,14 @@ class SortformerModules(NeuralModule, Exportable):
         self.hidden_to_spks.requires_grad_(False)
         self.first_hidden_to_hidden = nn.Linear(self.hidden_size, self.hidden_size)
         self.single_hidden_to_spks = nn.Linear(self.hidden_size, self.n_spk)
+        self.activity_head = (
+            nn.Sequential(
+                nn.LayerNorm(self.hidden_size),
+                nn.Linear(self.hidden_size, 3),
+            )
+            if use_activity_head
+            else None
+        )
         self.dropout = nn.Dropout(dropout_rate)
         self.encoder_proj = nn.Linear(self.fc_d_model, self.tf_d_model)
         self.subpixel_upsample = None
@@ -308,6 +319,23 @@ class SortformerModules(NeuralModule, Exportable):
             yield chunk_idx, chunk_feat_seq_t, feat_lengths, left_offset, right_offset
             chunk_idx += 1
 
+    def forward_speaker_logits(self, hidden_out):
+        """
+        The final layer that outputs raw speaker logits.
+
+        Args:
+            hidden_out (torch.Tensor): Tensor containing hidden states from the encoder
+                Shape: (batch_size, n_frames, hidden_dim)
+
+        Returns:
+            logits (torch.Tensor): Tensor containing raw speaker logits
+                Shape: (batch_size, n_frames, n_spk)
+        """
+        hidden_out = self.dropout(F.relu(hidden_out))
+        hidden_out = self.first_hidden_to_hidden(hidden_out)
+        hidden_out = self.dropout(F.relu(hidden_out))
+        return self.single_hidden_to_spks(hidden_out)
+
     def forward_speaker_sigmoids(self, hidden_out):
         """
         The final layer that outputs speaker probabilities using the Sigmoid activation function.
@@ -321,12 +349,25 @@ class SortformerModules(NeuralModule, Exportable):
                 the Sigmoid activation function
                 Shape: (batch_size, n_frames, n_spk)
         """
-        hidden_out = self.dropout(F.relu(hidden_out))
-        hidden_out = self.first_hidden_to_hidden(hidden_out)
-        hidden_out = self.dropout(F.relu(hidden_out))
-        spk_preds = self.single_hidden_to_spks(hidden_out)
-        preds = torch.sigmoid(spk_preds)
-        return preds
+        return torch.sigmoid(self.forward_speaker_logits(hidden_out))
+
+    def forward_activity_logits(self, hidden_out: torch.Tensor) -> Optional[torch.Tensor]:
+        """Project hidden states to frame-level speaker-activity logits.
+
+        The three output classes represent silence (no active speakers), single-speaker
+        activity, and overlapping activity (two or more active speakers), respectively.
+        The returned values are raw, unnormalized logits intended for cross-entropy loss.
+
+        Args:
+            hidden_out: Post-transformer hidden states with shape ``(B, T, H)``.
+
+        Returns:
+            Raw activity logits with shape ``(B, T, 3)`` when the auxiliary activity
+            head is enabled, or ``None`` when it is disabled.
+        """
+        if self.activity_head is None:
+            return None
+        return self.activity_head(hidden_out)
 
     def upsample_hidden(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """
@@ -531,7 +572,7 @@ class SortformerModules(NeuralModule, Exportable):
         preds_mask = torch.arange(n_frames, device=spkcache_fifo_chunk_preds.device).view(1, -1, 1)
         preds_mask = preds_mask.expand(batch_size, -1, n_spk) < spkcache_fifo_chunk_fc_encoder_lengths.view(-1, 1, 1)
         preds_mask = preds_mask.expand(-1, n_frames, n_spk)
-        spkcache_fifo_chunk_preds = torch.where(preds_mask, spkcache_fifo_chunk_preds, torch.tensor(0.0))
+        spkcache_fifo_chunk_preds = torch.where(preds_mask, spkcache_fifo_chunk_preds, 0.0)
         return spkcache_fifo_chunk_preds
 
     def _gather_async_predictions(
@@ -1035,8 +1076,10 @@ class SortformerModules(NeuralModule, Exportable):
         """
         batch_size, _, n_spk = scores.shape
         _, topk_indices = torch.topk(scores, n_boost_per_spk, dim=1, largest=True, sorted=False)
-        batch_indices = torch.arange(batch_size).unsqueeze(1).unsqueeze(2)  # Shape: (batch_size, 1, 1)
-        speaker_indices = torch.arange(n_spk).unsqueeze(0).unsqueeze(0)  # Shape: (1, 1, n_spk)
+        batch_indices = (
+            torch.arange(batch_size, device=scores.device).unsqueeze(1).unsqueeze(2)
+        )  # Shape: (batch_size, 1, 1)
+        speaker_indices = torch.arange(n_spk, device=scores.device).unsqueeze(0).unsqueeze(0)  # Shape: (1, 1, n_spk)
         # Boost scores corresponding to topk_indices; but scores for disabled frames will remain '-inf'
         scores[batch_indices, topk_indices, speaker_indices] -= scale_factor * math.log(offset)
         return scores
@@ -1064,15 +1107,20 @@ class SortformerModules(NeuralModule, Exportable):
         """
         is_sil = preds.sum(dim=2) < self.sil_threshold
         sil_count = is_sil.sum(dim=1)
-        has_new_sil = sil_count > 0
-        if not has_new_sil.any():
+        any_new_sil = (sil_count > 0).any()
+        # Skip the update when no row has new silence. During CUDA graph capture the host cannot read
+        # any_new_sil, so the update is computed and selected on the device instead.
+        capturing = torch.cuda.is_available() and torch.cuda.is_current_stream_capturing()
+        if not capturing and not any_new_sil:
             return mean_sil_emb, n_sil_frames
         sil_emb_sum = torch.sum(emb_seq * is_sil.unsqueeze(-1), dim=1)
         upd_n_sil_frames = n_sil_frames + sil_count
         old_sil_emb_sum = mean_sil_emb * n_sil_frames.unsqueeze(1)
         total_sil_sum = old_sil_emb_sum + sil_emb_sum
         upd_mean_sil_emb = total_sil_sum / torch.clamp(upd_n_sil_frames.unsqueeze(1), min=1)
-        return upd_mean_sil_emb, upd_n_sil_frames
+        return torch.where(any_new_sil, upd_mean_sil_emb, mean_sil_emb), torch.where(
+            any_new_sil, upd_n_sil_frames, n_sil_frames
+        )
 
     def _get_log_pred_scores(self, preds):
         """
@@ -1116,14 +1164,14 @@ class SortformerModules(NeuralModule, Exportable):
         scores_flatten = scores.permute(0, 2, 1).reshape(batch_size, -1)
         topk_values, topk_indices = torch.topk(scores_flatten, self.spkcache_len, dim=1, sorted=False)
         valid_topk_mask = topk_values != float('-inf')
-        topk_indices = torch.where(valid_topk_mask, topk_indices, torch.tensor(self.max_index))
+        topk_indices = torch.where(valid_topk_mask, topk_indices, self.max_index)
         # Sort topk_indices to preserve the original order of the frames.
         # Get correct indices corresponding to the original frames
         topk_indices_sorted, _ = torch.sort(topk_indices, dim=1)  # Shape: (batch_size, spkcache_len)
         is_disabled = topk_indices_sorted == self.max_index
         topk_indices_sorted = torch.remainder(topk_indices_sorted, n_frames)
         is_disabled += topk_indices_sorted >= n_frames_no_sil
-        topk_indices_sorted[is_disabled] = 0  # Set a placeholder index to make gather work
+        topk_indices_sorted = topk_indices_sorted.masked_fill(is_disabled, 0)  # placeholder index for gather
         return topk_indices_sorted, is_disabled
 
     def _gather_spkcache_and_preds(self, emb_seq, preds, topk_indices, is_disabled, mean_sil_emb):
@@ -1164,7 +1212,7 @@ class SortformerModules(NeuralModule, Exportable):
         # Finally, replace the placeholder `preds` with zeros.
         indices_expanded_spk = topk_indices.unsqueeze(-1).expand(-1, -1, n_spk)
         preds_gathered = torch.gather(preds, 1, indices_expanded_spk)  # (batch_size, spkcache_len, n_spk)
-        preds_gathered = torch.where(is_disabled.unsqueeze(-1), torch.tensor(0.0), preds_gathered)
+        preds_gathered = torch.where(is_disabled.unsqueeze(-1), 0.0, preds_gathered)
         return emb_seq_gathered, preds_gathered
 
     def _get_max_perm_index(self, scores):
@@ -1207,13 +1255,13 @@ class SortformerModules(NeuralModule, Exportable):
         """
         # Replace scores for non-speech with '-inf'.
         is_speech = preds > 0.5
-        scores = torch.where(is_speech, scores, torch.tensor(float('-inf')))
+        scores = torch.where(is_speech, scores, float('-inf'))
 
         # Replace non-positive scores (usually overlapped speech) with '-inf'
         # This will be applied only if a speaker has at least min_pos_scores_per_spk positive-scored frames
         is_pos = scores > 0  # positive score usually means that only current speaker is speaking
         is_nonpos_replace = (~is_pos) * is_speech * (is_pos.sum(dim=1).unsqueeze(1) >= min_pos_scores_per_spk)
-        scores = torch.where(is_nonpos_replace, torch.tensor(float('-inf')), scores)
+        scores = torch.where(is_nonpos_replace, float('-inf'), scores)
         return scores
 
     def _permute_speakers(self, scores, max_perm_index):

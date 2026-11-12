@@ -190,6 +190,11 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         # Setup normalized joint norm for model
         self._optim_normalize_joint_norm = self.cfg.get('normalize_joint_norm', False)
 
+    def on_train_start(self) -> None:
+        """Warm loss kernels before the first training batch."""
+        super().on_train_start()
+        self.loss.warmup(self.device)
+
     def extract_rnnt_loss_cfg(self, cfg: Optional[DictConfig]):
         """
         Helper method to extract the rnnt loss name, and potentially its kwargs

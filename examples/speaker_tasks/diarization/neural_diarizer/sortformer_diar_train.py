@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import lightning.pytorch as pl
+from checkpoint_averaging import average_checkpoints_after_training
 from lightning.pytorch import seed_everything
 from omegaconf import OmegaConf
 
@@ -31,28 +32,38 @@ python ./sortformer_diar_train.py --config-path='../conf/neural_diarizer' \
     --config-name='sortformer_diarizer_hybrid_loss_4spk-v1.yaml' \
     trainer.precision='bf16' \
     trainer.devices=1 \
+    seed=42 \
     model.train_ds.manifest_filepath="<train_manifest_path>" \
     model.validation_ds.manifest_filepath="<dev_manifest_path>" \
     exp_manager.name='sample_train' \
     exp_manager.exp_dir='./sortformer_diar_train'
 """
 
-seed_everything(42)
-
 
 @hydra_runner(config_path="../conf/neural_diarizer", config_name="sortformer_diarizer_hybrid_loss_4spk-v1.yaml")
 def main(cfg):
     """Main function for training the sortformer diarizer model."""
     logging.info(f'Hydra config: {OmegaConf.to_yaml(cfg)}')
+    seed = int(cfg.get("seed", 42))
+
+    # Seed before model construction so parameter initialization is reproducible.
+    seed_everything(seed, workers=True)
+    logging.info(f"Seeding: seed={seed}")
+
     trainer = pl.Trainer(**cfg.trainer)
     exp_manager(trainer, cfg.get("exp_manager", None))
     sortformer_model = SortformerEncLabelModel(cfg=cfg.model, trainer=trainer)
     sortformer_model.maybe_init_from_pretrained_checkpoint(cfg)
+
     trainer.fit(sortformer_model)
 
     if hasattr(cfg.model, 'test_ds') and cfg.model.test_ds.manifest_filepath is not None:
         if sortformer_model.prepare_test(trainer):
             trainer.test(sortformer_model)
+
+    avg_model_path = average_checkpoints_after_training(trainer=trainer, model=sortformer_model)
+    if avg_model_path:
+        logging.info(f"Finished post-training checkpoint averaging: {avg_model_path}")
 
 
 if __name__ == '__main__':

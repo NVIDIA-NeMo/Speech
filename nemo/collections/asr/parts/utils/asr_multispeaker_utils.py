@@ -18,7 +18,7 @@ import math
 import random
 from collections import defaultdict
 from copy import deepcopy
-from typing import Optional, Tuple, Union
+from typing import Dict, Optional, Tuple, Union
 
 import numpy as np
 import torch.utils.data
@@ -409,7 +409,8 @@ def get_mask_from_segments(
         segments: A list of Lhotse Supervision segments iterator.
         cut (MonoCut, MixedCut): Lhotse MonoCut or MixedCut instance.
         speaker_to_idx_map (dict): A dictionary mapping speaker names to indices.
-        num_speakers (int): max number of speakers for all cuts ("mask" dim0), 4 by default
+        num_speakers (int): Optional maximum number of speakers for all cuts ("mask" dim0).
+            A cut with more speakers is rejected rather than truncated.
         feat_per_sec (int): number of frames per second, 100 by default, 0.01s frame rate
 
     Returns:
@@ -542,6 +543,8 @@ def speaker_to_target(
     soft_thres: float = 0.5,
     return_text: bool = False,
     no_rttm_to_ones: bool = True,
+    preferred_speaker_to_idx_map: Optional[Dict[str, int]] = None,
+    return_speaker_mapping_status: bool = False,
 ):
     '''
     Get rttm samples corresponding to one cut, generate speaker mask numpy.ndarray with shape (num_speaker, hidden_length)
@@ -558,9 +561,15 @@ def speaker_to_target(
         return_text (bool): set to True to return the text of the speakers (if it is available), False by default.
         no_rttm_to_ones (bool): when a cut has no RTTM/supervisions, synthesize a single full-duration
             single-speaker supervision (all-ones target) instead of skipping the cut, True by default.
+        preferred_speaker_to_idx_map (Optional[Dict[str, int]]): Explicit RTTM speaker-label to target-column
+            mapping. It is used only when its label set exactly matches the speakers present in the selected RTTM
+            window. Otherwise, the legacy first-arrival mapping is retained.
+        return_speaker_mapping_status (bool): If True, also return whether the preferred speaker mapping was used.
 
     Returns:
-        mask (Tensor): speaker mask with shape (num_speaker, hidden_lenght)
+        mask (Tensor): speaker mask with shape (num_speaker, hidden_lenght). When
+            ``return_speaker_mapping_status`` is True, the last return value is a bool indicating whether the
+            preferred mapping was used. This is appended after speaker texts when ``return_text`` is also True.
     '''
     # get cut-related segments from rttms
     if isinstance(a_cut, MixedCut):
@@ -623,20 +632,30 @@ def speaker_to_target(
     seen_add = seen.add
     speaker_ats = [s.speaker for s in segments_total if not (s.speaker in seen or seen_add(s.speaker))]
 
-    speaker_to_idx_map = {spk: idx for idx, spk in enumerate(speaker_ats)}
-
     if num_speakers is None:
         num_speakers_dim = len(speaker_ats)
     else:
         if len(speaker_ats) > num_speakers:
-            logging.warning(
-                "Number of speakers in the target %s is greater than "
-                "the maximum number of speakers %s. Truncating extra speakers. "
-                "Set the `num_speakers` to higher value to avoid this warning.",
-                len(speaker_ats),
-                num_speakers,
+            raise ValueError(
+                f"Speaker target contains {len(speaker_ats)} speakers, but num_speakers={num_speakers}. "
+                "Increase num_speakers instead of dropping speaker supervision."
             )
-        num_speakers_dim = max(len(speaker_ats), num_speakers)
+        num_speakers_dim = num_speakers
+
+    speaker_to_idx_map = {spk: idx for idx, spk in enumerate(speaker_ats)}
+    used_preferred_speaker_mapping = False
+    if preferred_speaker_to_idx_map and set(preferred_speaker_to_idx_map) == set(speaker_ats):
+        preferred_indices = list(preferred_speaker_to_idx_map.values())
+        if len(set(preferred_indices)) != len(preferred_indices) or any(
+            not isinstance(idx, int) or idx < 0 or idx >= num_speakers_dim for idx in preferred_indices
+        ):
+            raise ValueError(
+                "preferred_speaker_to_idx_map values must be unique integer indices in "
+                f"[0, {num_speakers_dim}), got {preferred_speaker_to_idx_map}."
+            )
+        speaker_to_idx_map = preferred_speaker_to_idx_map
+        used_preferred_speaker_mapping = True
+
     # initialize mask matrices (num_speaker, encoder_hidden_len)
     feat_per_sec = int(a_cut.sampling_rate / num_sample_per_mel_frame)  # 100 by default
     num_samples = get_hidden_length_from_sample_length(
@@ -655,9 +674,12 @@ def speaker_to_target(
         for seg in segments_total:
             speaker2text[seg.speaker].append(seg.text)
         texts = [' '.join(speaker2text[speaker]) for speaker in speaker_ats]
+        if return_speaker_mapping_status:
+            return mask, texts, used_preferred_speaker_mapping
         return mask, texts
-    else:
-        return mask
+    if return_speaker_mapping_status:
+        return mask, used_preferred_speaker_mapping
+    return mask
 
 
 def read_seglst(seglst_filepath: str, session_id: Optional[str] = None):

@@ -53,6 +53,7 @@ class DatasetMeta:
     sample_weight: float = 1.0
     language: Optional[str] = None
     tokenizer_names: List[str] = None
+    ignore_manifest_language: bool = False
 
 
 @dataclass
@@ -204,7 +205,7 @@ class TextToSpeechDataset(Dataset):
                 speaker = None
                 speaker_index = 0
 
-            if "language" in entry:
+            if "language" in entry and not dataset.ignore_manifest_language:
                 language = entry.get("language")
             elif dataset.language:
                 language = dataset.language
@@ -547,7 +548,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
             # Pad audio to be multiple of downsample factor
             audio = torch.nn.functional.pad(
                 audio,
-                (0, self.codec_model_samples_per_frame - (audio.shape[0] % self.codec_model_samples_per_frame)),
+                (0, -audio.shape[0] % self.codec_model_samples_per_frame),
                 value=0,
             )
             audio_len = audio.shape[0]

@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -36,9 +37,16 @@ class _DummyCudartResult(enum.IntEnum):
     cudaSuccess = 0
 
 
-def test_run_nvrtc_uses_mutable_log_buffer(monkeypatch):
-    # Keep test behavior local by injecting fake cuda-python bindings.
+def test_run_nvrtc_uses_mutable_output_buffers(monkeypatch):
+    import nemo.core.utils as core_utils
+    import nemo.core.utils.optional_libs as optional_libs
+
+    module_name = "nemo.core.utils.cuda_python_utils"
+    original_cuda_python_utils = sys.modules.get(module_name)
+    missing = object()
+    original_package_attr = getattr(core_utils, "cuda_python_utils", missing)
     get_program_log_calls = {"called": False}
+    get_ptx_calls = {"called": False}
 
     def fake_nvrtc_create_program(*_args):
         return _DummyNvrtcResult.NVRTC_SUCCESS, "prog"
@@ -61,6 +69,10 @@ def test_run_nvrtc_uses_mutable_log_buffer(monkeypatch):
         return _DummyNvrtcResult.NVRTC_SUCCESS, 4
 
     def fake_nvrtc_get_ptx(*_args):
+        _, buf = _args
+        get_ptx_calls["called"] = True
+        assert isinstance(buf, (bytearray, memoryview))
+        buf[:] = b"ptx\0"
         return (_DummyNvrtcResult.NVRTC_SUCCESS,)
 
     def fake_cuda_module_load_data(*_args):
@@ -95,20 +107,30 @@ def test_run_nvrtc_uses_mutable_log_buffer(monkeypatch):
     fake_cuda = ModuleType("cuda")
     fake_cuda.bindings = fake_bindings
 
-    monkeypatch.setitem(sys.modules, "cuda", fake_cuda)
-    monkeypatch.setitem(sys.modules, "cuda.bindings", fake_bindings)
-    monkeypatch.setitem(sys.modules, "cuda.bindings.driver", fake_driver)
-    monkeypatch.setitem(sys.modules, "cuda.bindings.runtime", fake_runtime)
-    monkeypatch.setitem(sys.modules, "cuda.bindings.nvrtc", fake_nvrtc)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setitem(sys.modules, "cuda", fake_cuda)
+            patch.setitem(sys.modules, "cuda.bindings", fake_bindings)
+            patch.setitem(sys.modules, "cuda.bindings.driver", fake_driver)
+            patch.setitem(sys.modules, "cuda.bindings.runtime", fake_runtime)
+            patch.setitem(sys.modules, "cuda.bindings.nvrtc", fake_nvrtc)
+            patch.setattr(optional_libs, "CUDA_PYTHON_AVAILABLE", True)
+            patch.setattr(optional_libs, "cuda_python_required", lambda func: func)
+            patch.delitem(sys.modules, module_name, raising=False)
 
-    import nemo.core.utils.cuda_python_utils as cuda_python_utils
-    import nemo.core.utils.optional_libs as optional_libs
+            cuda_python_utils = importlib.import_module(module_name)
+            kernel = cuda_python_utils.run_nvrtc("kernel", b"kernel_name", b"kernel")
+    finally:
+        if original_cuda_python_utils is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = original_cuda_python_utils
+        if original_package_attr is missing:
+            if hasattr(core_utils, "cuda_python_utils"):
+                delattr(core_utils, "cuda_python_utils")
+        else:
+            core_utils.cuda_python_utils = original_package_attr
 
-    monkeypatch.setattr(optional_libs, "CUDA_PYTHON_AVAILABLE", True, raising=False)
-    monkeypatch.setattr(optional_libs, "cuda_python_required", lambda func: func, raising=False)
-
-    cuda_python_utils = importlib.reload(cuda_python_utils)
-
-    kernel = cuda_python_utils.run_nvrtc("kernel", b"kernel_name", b"kernel")
     assert kernel == "kernel"
     assert get_program_log_calls["called"] is True
+    assert get_ptx_calls["called"] is True

@@ -91,3 +91,132 @@
 { "filename": "audio/api.rst", "lineno": 1, "status": "broken", "code": 0, "uri": "https://docs.pytorch.org/docs/stable/tensor_attributes.html#torch.dtype", "info": "Anchor 'torch.dtype' not found" }
 { "filename": "starthere/install.rst", "lineno": 27, "status": "broken", "code": 0, "uri": "https://docs.pytorch.org/docs/stable/notes/serialization.html#torch-load-with-weights-only-true", "info": "Anchor 'torch-load-with-weights-only-true' not found" }
 { "filename": "audio/api.rst", "lineno": 9, "status": "broken", "code": 0, "uri": "https://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=8462081", "info": "418 Client Error: Unknown Code for url: https://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=8462081" }
+
+{
+  "filename": "core/api.rst",
+  "lineno": 5,
+  "status": "broken",
+  "code": 0,
+  "uri": "https://lightning.ai/docs/pytorch/stable/optional-api/api/lightning.pytorch.core.LightningModule#lightning.pytorch.core.LightningModule",
+  "info": "Anchor 'lightning.pytorch.core.LightningModule' not found"
+}
+{
+  "filename": "tts/api.rst",
+  "lineno": 1,
+  "status": "broken",
+  "code": 0,
+  "uri": "https://lightning.ai/docs/pytorch/stable/optional-api/api/lightning.pytorch.callbacks.ModelCheckpoint#lightning.pytorch.callbacks.ModelCheckpoint",
+  "info": "Anchor 'lightning.pytorch.callbacks.ModelCheckpoint' not found"
+}
+{
+  "filename": "asr/api.rst",
+  "lineno": 7,
+  "status": "broken",
+  "code": 0,
+  "uri": "https://lightning.ai/docs/pytorch/stable/optional-api/api/lightning.pytorch.callbacks.BasePredictionWriter#lightning.pytorch.callbacks.BasePredictionWriter",
+  "info": "Anchor 'lightning.pytorch.callbacks.BasePredictionWriter' not found"
+}
+{
+  "filename": "asr/api.rst",
+  "lineno": 4,
+  "status": "broken",
+  "code": 0,
+  "uri": "https://lightning.ai/docs/pytorch/stable/optional-api/api/lightning.pytorch.core.LightningModule#lightning.pytorch.core.LightningModule.predict_step",
+  "info": "Anchor 'lightning.pytorch.core.LightningModule.predict_step' not found"
+}
+{
+  "filename": "asr/api.rst",
+  "lineno": 1,
+  "status": "broken",
+  "code": 0,
+  "uri": "https://lightning.ai/docs/pytorch/stable/optional-api/api/lightning.pytorch.core.LightningModule#lightning.pytorch.core.LightningModule.forward",
+  "info": "Anchor 'lightning.pytorch.core.LightningModule.forward' not found"
+}
+{
+  "filename": "asr/api.rst",
+  "lineno": 1,
+  "status": "broken",
+  "code": 0,
+  "uri": "https://lightning.ai/docs/pytorch/stable/optional-api/api/lightning.pytorch.trainer.trainer.Trainer#lightning.pytorch.trainer.trainer.Trainer",
+  "info": "Anchor 'lightning.pytorch.trainer.trainer.Trainer' not found"
+}
+{
+  "filename": "asr/api.rst",
+  "lineno": 1,
+  "status": "broken",
+  "code": 0,
+  "uri": "https://lightning.ai/docs/pytorch/stable/optional-api/api/lightning.pytorch.trainer.trainer.Trainer#lightning.pytorch.trainer.trainer.Trainer.predict",
+  "info": "Anchor 'lightning.pytorch.trainer.trainer.Trainer.predict' not found"
+}
+{
+  "filename": "core/core.rst",
+  "lineno": 170,
+  "status": "broken",
+  "code": 0,
+  "uri": "https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#methods",
+  "info": "Anchor 'methods' not found"
+}
+{
+  "filename": "core/api.rst",
+  "lineno": 1,
+  "status": "broken",
+  "code": 0,
+  "uri": "https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-test-end",
+  "info": "Anchor 'on-test-end' not found"
+}
+{
+  "filename": "core/core.rst",
+  "lineno": 170,
+  "status": "broken",
+  "code": 0,
+  "uri": "https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#hooks",
+  "info": "Anchor 'hooks' not found"
+}
+{
+  "filename": "core/api.rst",
+  "lineno": 1,
+  "status": "broken",
+  "code": 0,
+  "uri": "https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-train-batch-end",
+  "info": "Anchor 'on-train-batch-end' not found"
+}
+{
+  "filename": "core/api.rst",
+  "lineno": 1,
+  "status": "broken",
+  "code": 0,
+  "uri": "https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-train-batch-start",
+  "info": "Anchor 'on-train-batch-start' not found"
+}
+{
+  "filename": "core/api.rst",
+  "lineno": 1,
+  "status": "broken",
+  "code": 0,
+  "uri": "https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-train-end",
+  "info": "Anchor 'on-train-end' not found"
+}
+{
+  "filename": "core/api.rst",
+  "lineno": 1,
+  "status": "broken",
+  "code": 0,
+  "uri": "https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-train-start",
+  "info": "Anchor 'on-train-start' not found"
+}
+{
+  "filename": "core/core.rst",
+  "lineno": 203,
+  "status": "broken",
+  "code": 0,
+  "uri": "https://pytorch-lightning.readthedocs.io/en/stable/common/trainer.html#trainer-flags",
+  "info": "Anchor 'trainer-flags' not found"
+}
+{
+  "filename": "core/core.rst",
+  "lineno": 52,
+  "status": "broken",
+  "code": 0,
+  "uri": "https://www.pytorchlightning.ai/",
+  "info": "HTTPSConnectionPool(host='www.pytorchlightning.ai', port=443): Max retries exceeded with url: / (Caused by SSLError(SSLError(1, '[SSL: SSLV3_ALERT_HANDSHAKE_FAILURE] sslv3 alert handshake failure (_ssl.c:1000)')))"
+}

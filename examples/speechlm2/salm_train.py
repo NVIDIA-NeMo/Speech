@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+from datetime import timedelta
 
 import torch
 from lightning.pytorch import Trainer, seed_everything
@@ -28,20 +29,58 @@ if torch.cuda.is_available():
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 
 
-def _create_salm_dataset(tokenizer, data_cfg: DictConfig | dict) -> SALMDataset:
+def _process_group_timeout(cfg):
+    """Resolve the NCCL collective timeout from Hydra, then the cluster environment.
+
+    The strategy applies ``timeout_minutes`` only to the sub-groups it creates. The
+    default process group is initialized below, before the Trainer exists, so
+    without this it keeps the c10d 10-minute default and a slow cold start aborts
+    the run on a watchdog timeout no config value can raise.
+    """
+    timeout_minutes = OmegaConf.select(cfg, "trainer.strategy.timeout_minutes", default=None)
+    if timeout_minutes is not None:
+        return timedelta(minutes=float(timeout_minutes))
+
+    timeout_seconds = os.environ.get("TORCH_NCCL_TIMEOUT_S") or os.environ.get("TORCH_NCCL_TIMEOUT_SEC")
+    if timeout_seconds is not None:
+        return timedelta(seconds=float(timeout_seconds))
+
+    return None
+
+
+def _create_salm_dataset(
+    tokenizer,
+    data_cfg: DictConfig | dict,
+    *,
+    pack_audio: bool = False,
+    pack_sequences: bool = False,
+) -> SALMDataset:
     """Build SALMDataset without forwarding unset options to legacy NeMo packages."""
     multispeaker_cfg = data_cfg.get("multispeaker_cfg", None)
+    batch_tokens = data_cfg.get("train_ds", {}).get("batch_tokens", None)
     # TODO(Dongji): Remove after all release images ship SALMDataset with multispeaker_cfg support.
-    if multispeaker_cfg is None:
+    if multispeaker_cfg is None and not pack_audio and not pack_sequences and batch_tokens is None:
         return SALMDataset(tokenizer=tokenizer)
-    return SALMDataset(tokenizer=tokenizer, multispeaker_cfg=multispeaker_cfg)
+    kwargs = {"tokenizer": tokenizer}
+    if multispeaker_cfg is not None:
+        kwargs["multispeaker_cfg"] = multispeaker_cfg
+    if pack_audio:
+        kwargs["pack_audio"] = True
+    if pack_sequences:
+        kwargs["pack_sequences"] = True
+    if batch_tokens is not None:
+        kwargs["batch_tokens"] = batch_tokens
+    return SALMDataset(**kwargs)
 
 
 @hydra_runner(config_path="conf", config_name="salm")
 def train(cfg):
     OmegaConf.resolve(cfg)
     if torch.cuda.is_available():
-        torch.distributed.init_process_group(backend="nccl")
+        init_kwargs = {}
+        if timeout := _process_group_timeout(cfg):
+            init_kwargs["timeout"] = timeout
+        torch.distributed.init_process_group(backend="nccl", **init_kwargs)
     seed_everything(cfg.data.train_ds.seed)
     torch.set_float32_matmul_precision("medium")
     trainer = Trainer(**resolve_trainer_cfg(cfg.trainer))
@@ -62,7 +101,14 @@ def train(cfg):
     with trainer.init_module():
         model = model_cls(OmegaConf.to_container(cfg.model, resolve=True))
 
-    dataset = _create_salm_dataset(model.tokenizer, cfg.data)
+    dataset = _create_salm_dataset(
+        model.tokenizer,
+        cfg.data,
+        pack_audio=bool(
+            cfg.model.get("use_nemo_automodel", False) and cfg.model.get("packed_encoder_sequences", False)
+        ),
+        pack_sequences=bool(cfg.model.get("use_nemo_automodel", False) and cfg.model.get("packed_sequences", False)),
+    )
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
 
     if cfg.get("run_validate_only", False):

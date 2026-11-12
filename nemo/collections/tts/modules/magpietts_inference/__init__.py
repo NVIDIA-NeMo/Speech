@@ -51,6 +51,7 @@ from nemo.collections.tts.modules.magpietts_inference.evaluation import (
     EvaluationConfig,
     compute_mean_with_confidence_interval,
     evaluate_generated_audio_dir,
+    resolve_evaluation_config_for_dataset,
 )
 from nemo.collections.tts.modules.magpietts_inference.inference import (
     BaseInferenceConfig,
@@ -91,6 +92,7 @@ __all__ = [
     # Evaluation
     "EvaluationConfig",
     "evaluate_generated_audio_dir",
+    "resolve_evaluation_config_for_dataset",
     "compute_mean_with_confidence_interval",
     "DEFAULT_VIOLIN_METRICS",
     # Visualization

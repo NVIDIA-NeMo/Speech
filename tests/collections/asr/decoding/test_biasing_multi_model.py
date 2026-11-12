@@ -28,7 +28,8 @@ from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
 DEVICES = [torch.device("cpu")]
 if torch.cuda.is_available():
-    DEVICES.append(torch.device("cuda"))
+    # The `gpu` marker puts the CUDA cases in the GPU CI jobs (see tests/functional_tests/_gpu_unit_test_selection.sh).
+    DEVICES.append(pytest.param(torch.device("cuda"), marks=pytest.mark.gpu))
 if hasattr(torch, "mps") and torch.mps.is_available():
     DEVICES.append(torch.device("mps"))
 
@@ -143,6 +144,67 @@ class TestGPUBiasingMultiModel:
         assert multi_model.model2states_offset[model_id2].item() == 0
         assert multi_model.model2arcs_offset[model_id2].item() == 0
 
+        # Every offset must stay a valid, non-negative arena index, including the reserved slots that
+        # have never held a model. Before the ordering fix in remove_model, removing the model that
+        # started at offset 0 underflowed every zero-valued slot to -num_states / -num_arcs.
+        assert torch.all(multi_model.model2states_offset >= 0)
+        assert torch.all(multi_model.model2arcs_offset >= 0)
+
+        # Inactive slots carry a canonical, empty descriptor.
+        inactive = ~multi_model.model2active
+        assert torch.all(multi_model.model2states_offset[inactive] == 0)
+        assert torch.all(multi_model.model2arcs_offset[inactive] == 0)
+        assert torch.all(multi_model.model2num_states[inactive] == 0)
+        assert torch.all(multi_model.model2num_arcs_extended[inactive] == 0)
+
+    @pytest.mark.unit
+    @pytest.mark.with_downloads
+    @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.parametrize("remove_index", [0, 1, 2])
+    def test_offsets_stay_non_negative_for_any_removal_position(
+        self, stt_en_conformer_transducer_small, device: torch.device, remove_index: int
+    ):
+        """Removing a model from any position leaves every offset a valid arena index.
+
+        Removing the model at the front of the arena is the interesting case: its start offset is 0,
+        which every unused reserved slot also holds, so a shift that does not exclude inactive slots
+        drives all of them negative.
+        """
+        tokenizer = stt_en_conformer_transducer_small.tokenizer
+        vocab_size = tokenizer.vocab_size
+
+        multi_model = GPUBiasingMultiModel(vocab_size=vocab_size).to(device)
+        phrase_lists = [["alpha", "beta"], ["gamma"], ["delta", "epsilon", "zeta"]]
+        model_ids = [
+            multi_model.add_model(create_boosting_model(phrases, tokenizer, device), alpha=1.0)
+            for phrases in phrase_lists
+        ]
+
+        # A surviving model's scores must be unchanged by an unrelated removal.
+        survivor = model_ids[(remove_index + 1) % len(model_ids)]
+        states = multi_model.get_init_states(batch_size=2, bos=True)
+        survivor_ids = torch.full((2,), survivor, dtype=torch.long, device=device)
+        scores_before, _ = multi_model.advance(states=states, model_ids=survivor_ids)
+        scores_before = scores_before.clone()
+
+        multi_model.remove_model(model_ids[remove_index])
+
+        assert torch.all(multi_model.model2states_offset >= 0)
+        assert torch.all(multi_model.model2arcs_offset >= 0)
+
+        inactive = ~multi_model.model2active
+        assert torch.all(multi_model.model2states_offset[inactive] == 0)
+        assert torch.all(multi_model.model2arcs_offset[inactive] == 0)
+
+        active = multi_model.model2active
+        assert torch.all(
+            multi_model.model2states_offset[active] + multi_model.model2num_states[active]
+            <= multi_model.num_states_total
+        )
+
+        scores_after, _ = multi_model.advance(states=states, model_ids=survivor_ids)
+        assert torch.equal(scores_before, scores_after)
+
     @pytest.mark.unit
     @pytest.mark.with_downloads
     @pytest.mark.parametrize("device", DEVICES)
@@ -238,6 +300,30 @@ class TestGPUBiasingMultiModel:
             scores_mm, scores_ref, atol=1e-5
         ), f"Scores mismatch: max diff = {(scores_mm - scores_ref).abs().max()}"
         assert torch.equal(next_states_mm, next_states_ref), "Next states mismatch"
+
+    @pytest.mark.unit
+    @pytest.mark.with_downloads
+    @pytest.mark.skipif(not TRITON_AVAILABLE, reason="Triton is not available")
+    @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="Requires at least 2 CUDA devices")
+    @pytest.mark.gpu
+    def test_triton_on_non_current_device(self, stt_en_conformer_transducer_small, batch_size=2):
+        """Triton advance works when the model is not on the current CUDA device"""
+        device = torch.device("cuda:1")
+        tokenizer = stt_en_conformer_transducer_small.tokenizer
+        multi_model = GPUBiasingMultiModel(vocab_size=tokenizer.vocab_size, use_triton=True).to(device)
+        reference = GPUBiasingMultiModelReference(vocab_size=tokenizer.vocab_size).to(device)
+        phrases = ["hello world", "test"]
+        model_id = multi_model.add_model(create_boosting_model(phrases, tokenizer, device), alpha=1.0)
+        assert model_id == reference.add_model(create_boosting_model(phrases, tokenizer, device), alpha=1.0)
+        states = multi_model.get_init_states(batch_size=batch_size, bos=True)
+        model_ids = torch.full([batch_size], fill_value=model_id, dtype=torch.long, device=device)
+        scores_ref, states_ref = reference.advance(states, model_ids)
+        # make the context of device 0 current, as any operation on device 0 does
+        torch.cuda.synchronize(0)
+        scores, next_states = multi_model.advance(states, model_ids)
+        assert torch.cuda.current_device() == 0
+        assert torch.equal(next_states, states_ref)
+        assert torch.allclose(scores, scores_ref, atol=1e-5)
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)

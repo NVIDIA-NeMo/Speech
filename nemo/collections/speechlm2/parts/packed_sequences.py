@@ -27,8 +27,10 @@ testable on CPU.
 
 from __future__ import annotations
 
+import math
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 import torch
 from torch import Tensor
@@ -45,6 +47,119 @@ def pack_audio_into_text_embeds(
     placeholder_id: int,
     cp_size: int = 1,
     tp_size: int = 1,
+    token_alignment: int = 1,
+    ignore_index: int = -100,
+) -> dict[str, Tensor]:
+    """Left-unpad dense text embeddings, splice audio frames, and pack THD.
+
+    This compatibility wrapper accepts the historical dense ``[B, S, H]``
+    embedding input. The SALMAutomodel packed path uses
+    :func:`prepare_packed_llm_inputs` with ``embed_tokens`` instead, so it can
+    remove left padding before the embedding lookup.
+    """
+    ids_unpad, embs_unpad, tgts_unpad = _unpad_inputs(input_ids, embeds, target_ids, padding_id)
+    assert tgts_unpad is not None
+    return _pack_audio_into_unpadded_text_embeds(
+        input_ids=ids_unpad,
+        embeds=embs_unpad,
+        target_ids=tgts_unpad,
+        replacements=replacements,
+        padding_id=padding_id,
+        placeholder_id=placeholder_id,
+        cp_size=cp_size,
+        tp_size=tp_size,
+        token_alignment=token_alignment,
+        ignore_index=ignore_index,
+    )
+
+
+def _split_and_embed_text_ids(
+    input_ids: Tensor,
+    target_ids: Tensor,
+    padding_id: int,
+    placeholder_id: int,
+    embed_tokens: Callable[[Tensor], Tensor],
+    text_cu_seqlens: Tensor | None = None,
+) -> tuple[list[Tensor], list[Tensor], list[Tensor]]:
+    """Embed only real text positions from padded or already-packed rows.
+
+    Dense rows are left-unpadded before the embedding lookup. Flat rows are
+    already padding-free and are split using ``text_cu_seqlens``. Audio
+    placeholders are mapped to token 0 exactly as in the historical dense
+    SALMAutomodel path; their embeddings are overwritten by audio frames later.
+    """
+    if target_ids.shape != input_ids.shape:
+        raise ValueError(
+            "input_ids and target_ids must have the same shape, "
+            f"got {tuple(input_ids.shape)} and {tuple(target_ids.shape)}"
+        )
+    if input_ids.ndim == 2:
+        if text_cu_seqlens is not None:
+            raise ValueError("text_cu_seqlens must be omitted for padded [B, S] input_ids")
+        if input_ids.shape[0] == 0 or input_ids.shape[1] == 0:
+            raise ValueError(f"Cannot pack empty input_ids with shape {tuple(input_ids.shape)}")
+        non_padding = input_ids != padding_id
+        has_non_padding = non_padding.any(dim=1)
+        starts = non_padding.to(torch.int64).argmax(dim=1)
+        # Match _unpad_inputs for an all-padding row: retain its final slot.
+        starts = torch.where(has_non_padding, starts, torch.full_like(starts, input_ids.shape[1] - 1))
+        columns = torch.arange(input_ids.shape[1], device=input_ids.device).unsqueeze(0)
+        keep = columns >= starts.unsqueeze(1)
+        row_lengths = keep.sum(dim=1).tolist()
+        flat_ids = input_ids[keep]
+        flat_targets = target_ids[keep]
+    elif input_ids.ndim == 1:
+        row_lengths = _validate_packed_text_offsets(input_ids, text_cu_seqlens)
+        flat_ids = input_ids
+        flat_targets = target_ids
+    else:
+        raise ValueError(f"input_ids must have shape [B, S] or [T], got {tuple(input_ids.shape)}")
+
+    flat_ids_to_embed = torch.where(flat_ids == placeholder_id, 0, flat_ids)
+    flat_embeds = embed_tokens(flat_ids_to_embed)
+    if flat_embeds.ndim != 2 or flat_embeds.shape[0] != flat_ids.shape[0]:
+        raise ValueError(
+            "embed_tokens must map flat token IDs [T] to embeddings [T, H], "
+            f"got input shape {tuple(flat_ids.shape)} and output shape {tuple(flat_embeds.shape)}"
+        )
+    embs_unpad = list(torch.split(flat_embeds, row_lengths, dim=0))
+    ids_unpad = list(torch.split(flat_ids, row_lengths, dim=0))
+    tgts_unpad = list(torch.split(flat_targets, row_lengths, dim=0))
+    return ids_unpad, embs_unpad, tgts_unpad
+
+
+def _validate_packed_text_offsets(input_ids: Tensor, text_cu_seqlens: Tensor | None) -> list[int]:
+    """Validate flat text row offsets and return per-row lengths."""
+    if text_cu_seqlens is None:
+        raise ValueError("Flat input_ids [T] require text_cu_seqlens [B + 1]")
+    if text_cu_seqlens.ndim != 1 or text_cu_seqlens.numel() < 2:
+        raise ValueError(
+            "text_cu_seqlens must be a 1-D tensor with at least two entries, "
+            f"got shape {tuple(text_cu_seqlens.shape)}"
+        )
+    offsets = text_cu_seqlens.to(dtype=torch.long)
+    if int(offsets[0].item()) != 0 or int(offsets[-1].item()) != input_ids.numel():
+        raise ValueError(
+            "text_cu_seqlens must start at 0 and end at the flat input length, "
+            f"got endpoints ({int(offsets[0].item())}, {int(offsets[-1].item())}) "
+            f"for {input_ids.numel()} tokens"
+        )
+    lengths = offsets.diff()
+    if bool((lengths <= 0).any()):
+        raise ValueError(f"Every packed text row must be non-empty, got lengths {lengths.tolist()}")
+    return lengths.tolist()
+
+
+def _pack_audio_into_unpadded_text_embeds(
+    input_ids: list[Tensor],
+    embeds: list[Tensor],
+    target_ids: list[Tensor],
+    replacements: list[Tensor],
+    padding_id: int,
+    placeholder_id: int,
+    cp_size: int = 1,
+    tp_size: int = 1,
+    token_alignment: int = 1,
     ignore_index: int = -100,
 ) -> dict[str, Tensor]:
     """Splice audio frames into per-utterance text embeddings and pack into THD.
@@ -55,15 +170,15 @@ def pack_audio_into_text_embeds(
     can be called without any further shift.
 
     Args:
-        input_ids:       ``[B, S]`` int64; left-padded.
-        embeds:          ``[B, S, H]`` text-token embeddings (placeholder slots
-                         are pre-zeroed by the caller; they get overwritten).
-        target_ids:      ``[B, S]`` int64; ``-100`` outside assistant spans.
+        input_ids:       list of tight ``[S_i]`` int64 token-ID tensors.
+        embeds:          list of tight ``[S_i, H]`` text-embedding tensors
+                         (placeholder slots are overwritten).
+        target_ids:      list of tight ``[S_i]`` labels; ``-100`` outside
+                         assistant spans.
         replacements:    list of ``[L_i, H]`` audio-frame embeddings, one per
                          placeholder occurrence in row-major order.
-        padding_id:      pad-token id in ``input_ids`` (used to strip left-pad
-                         and to mark padding positions as ``ignore_index`` in
-                         labels).
+        padding_id:      pad-token id, retained for any internal pad-token
+                         positions after left unpadding.
         placeholder_id:  the ``<|audio|>`` token id.
         cp_size:         per-utterance flat lengths are rounded up to a
                          multiple of ``2 * cp_size`` (TE-CP requirement).
@@ -71,6 +186,9 @@ def pack_audio_into_text_embeds(
                          ``T_total % tp_size == 0`` (sequence-parallel). When
                          CP is active, the bump also preserves the
                          ``2 * cp_size`` per-utterance alignment.
+        token_alignment: the token count seen by each CP rank is rounded up to
+                         this multiple. Transformer Engine FP8 requires 8; the
+                         default 1 preserves existing behavior.
         ignore_index:    label fill for audio-frame slots, padding slots, and
                          the last position of every utterance.
 
@@ -87,13 +205,17 @@ def pack_audio_into_text_embeds(
     - ``max_seqlen``       int32 scalar, ``max(seq_lens_padded)``
     - ``qkv_format``       ``"thd"``
     """
-    B = input_ids.shape[0]
-    H = embeds.shape[-1]
-    device = embeds.device
-    dtype = embeds.dtype
-
-    # Strip left-padding so per-utt sequences are tight before splicing.
-    ids_unpad, embs_unpad, tgts_unpad = _unpad_inputs(input_ids, embeds, target_ids, padding_id)
+    B = len(input_ids)
+    if B == 0:
+        raise ValueError("Cannot pack an empty SALM minibatch")
+    if not (len(embeds) == len(target_ids) == B):
+        raise ValueError("input_ids, embeds, and target_ids must contain the same number of rows")
+    H = embeds[0].shape[-1]
+    device = embeds[0].device
+    dtype = embeds[0].dtype
+    ids_unpad = input_ids
+    embs_unpad = embeds
+    tgts_unpad = target_ids
 
     seq_embs: list[Tensor] = []
     seq_labs: list[Tensor] = []
@@ -143,28 +265,34 @@ def pack_audio_into_text_embeds(
             f"Used {rep_idx} of {len(replacements)} audio replacements — "
             f"placeholder occurrences in input_ids do not match replacements length."
         )
+    if not isinstance(token_alignment, int) or token_alignment < 1:
+        raise ValueError(f"token_alignment must be a positive integer, got {token_alignment!r}")
 
     # Round each utterance's length up to a multiple of 2*cp_size (TE-CP
     # interleaves 2 chunks per rank); skip rounding when cp_size == 1. Then
-    # bump the last so the total is divisible by tp_size for sequence
-    # parallelism, preserving the CP alignment when CP is active.
+    # bump the last so the total satisfies both TP and backend alignment while
+    # preserving the per-utterance CP alignment when CP is active.
     if cp_size > 1:
         cp_mult = 2 * cp_size
         padded_lens = [((L + cp_mult - 1) // cp_mult) * cp_mult for L in real_lens]
     else:
         padded_lens = list(real_lens)
-    if tp_size > 1:
+    # Context parallelism shards the packed token dimension before the LLM, so
+    # the global total must contain ``token_alignment`` tokens per CP rank.
+    # Retain the existing TP divisibility contract at the same time.
+    total_alignment = math.lcm(tp_size, token_alignment * cp_size)
+    if total_alignment > 1:
         total_len = sum(padded_lens)
         if cp_size > 1:
             cp_mult = 2 * cp_size
-            tp_bump = 0
-            while (total_len + tp_bump) % tp_size != 0:
-                tp_bump += cp_mult
-            padded_lens[-1] += tp_bump
+            alignment_bump = 0
+            while (total_len + alignment_bump) % total_alignment != 0:
+                alignment_bump += cp_mult
+            padded_lens[-1] += alignment_bump
         else:
-            rem = total_len % tp_size
+            rem = total_len % total_alignment
             if rem != 0:
-                padded_lens[-1] += tp_size - rem
+                padded_lens[-1] += total_alignment - rem
 
     # Materialize the flat THD batch.
     flat_emb_segs: list[Tensor] = []
@@ -271,19 +399,25 @@ def _shard_packed_for_cp(
 
 def prepare_packed_llm_inputs(
     input_ids: Tensor,
-    text_embs: Tensor,
+    text_embs: Tensor | None,
     audio_embs: list[Tensor],
     target_ids: Tensor,
     padding_id: int,
     placeholder_id: int,
-    device_mesh: Optional[Any] = None,
+    device_mesh: Any | None = None,
     mtp_num_depths: int = 0,
+    embed_tokens: Callable[[Tensor], Tensor] | None = None,
+    text_cu_seqlens: Tensor | None = None,
+    token_alignment: int = 1,
 ) -> dict[str, Any]:
     """Pack a SALM minibatch and (optionally) shard it across CP ranks.
 
     Args:
-        input_ids: Token IDs of shape [batch, sequence].
-        text_embs: Text embeddings of shape [batch, sequence, hidden].
+        input_ids: Token IDs of shape [batch, sequence] in padded mode or
+            [total_text_tokens] in native packed mode.
+        text_embs: Legacy dense text embeddings of shape
+            [batch, sequence, hidden]. Pass ``None`` together with
+            ``embed_tokens`` to compact token IDs before embedding.
         audio_embs: Audio replacement tensors, each of shape [audio_frames, hidden].
         target_ids: Unshifted labels of shape [batch, sequence].
         padding_id: Token ID used for left padding.
@@ -292,6 +426,13 @@ def prepare_packed_llm_inputs(
         mtp_num_depths: Number of future-token MTP input/target tensors to
             prepare. These are emitted only when CP is active because
             rank-local rolling is otherwise incorrect.
+        embed_tokens: Callable mapping flat IDs ``[T]`` to embeddings
+            ``[T, H]``. Exactly one of ``text_embs`` and ``embed_tokens``
+            must be provided.
+        text_cu_seqlens: Cumulative text row offsets [batch + 1], required
+            when ``input_ids`` is flat and omitted for padded inputs.
+        token_alignment: Required multiple for the packed-token count seen by
+            each CP rank; default 1 preserves the existing behavior.
 
     Returns:
         Mapping containing rank-local THD model inputs. ``input_embeds`` has
@@ -311,18 +452,43 @@ def prepare_packed_llm_inputs(
         if "tp" in names and device_mesh["tp"].size() > 1:
             tp_size = device_mesh["tp"].size()
 
-    packed = pack_audio_into_text_embeds(
-        input_ids=input_ids,
-        embeds=text_embs,
-        target_ids=target_ids,
-        replacements=audio_embs,
-        padding_id=padding_id,
-        placeholder_id=placeholder_id,
-        cp_size=cp_size,
-        tp_size=tp_size,
-    )
+    if (text_embs is None) == (embed_tokens is None):
+        raise ValueError("Exactly one of text_embs and embed_tokens must be provided")
+    if embed_tokens is not None:
+        ids_unpad, embs_unpad, tgts_unpad = _split_and_embed_text_ids(
+            input_ids=input_ids,
+            target_ids=target_ids,
+            padding_id=padding_id,
+            placeholder_id=placeholder_id,
+            embed_tokens=embed_tokens,
+            text_cu_seqlens=text_cu_seqlens,
+        )
+        packed = _pack_audio_into_unpadded_text_embeds(
+            input_ids=ids_unpad,
+            embeds=embs_unpad,
+            target_ids=tgts_unpad,
+            replacements=audio_embs,
+            padding_id=padding_id,
+            placeholder_id=placeholder_id,
+            cp_size=cp_size,
+            tp_size=tp_size,
+            token_alignment=token_alignment,
+        )
+    else:
+        packed = pack_audio_into_text_embeds(
+            input_ids=input_ids,
+            embeds=text_embs,
+            target_ids=target_ids,
+            replacements=audio_embs,
+            padding_id=padding_id,
+            placeholder_id=placeholder_id,
+            cp_size=cp_size,
+            tp_size=tp_size,
+            token_alignment=token_alignment,
+        )
     num_tokens = packed["seq_lens"].sum()
-    num_examples = torch.tensor(input_ids.shape[0], dtype=torch.long, device=input_ids.device)
+    batch_size = input_ids.shape[0] if text_cu_seqlens is None else text_cu_seqlens.numel() - 1
+    num_examples = torch.tensor(batch_size, dtype=torch.long, device=input_ids.device)
 
     mtp_inputs = None
     if cp_mesh is not None and mtp_num_depths > 0:

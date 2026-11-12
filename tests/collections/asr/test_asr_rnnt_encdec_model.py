@@ -14,6 +14,7 @@
 # limitations under the License.
 import copy
 from typing import Any, Dict, List, Optional, Tuple
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -253,6 +254,15 @@ def asr_model():
 
 
 class TestEncDecRNNTModel:
+
+    @pytest.mark.unit
+    def test_loss_startup_warmup(self, asr_model, monkeypatch):
+        warmup = Mock()
+        monkeypatch.setattr(asr_model.loss, 'warmup', warmup)
+        asr_model.on_train_start()
+        assert hasattr(asr_model, '_freeze_cfg')
+        warmup.assert_called_once_with(asr_model.device)
+
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE,
         reason='RNNTLoss has not been compiled with appropriate numba version.',
@@ -470,6 +480,7 @@ class TestEncDecRNNTModel:
             'preserve_frame_confidence',
             'tdt_include_duration_confidence',
             'confidence_method_cfg',
+            'length_norm_power',  # cache-aware streaming only
         ]
 
         result = assert_dataclass_signature_match(
@@ -530,99 +541,6 @@ class TestEncDecRNNTModel:
 
             with torch.no_grad():
                 _ = greedy(encoder_output=enc_out, encoded_lengths=enc_len)
-
-    @pytest.mark.skipif(
-        not NUMBA_RNNT_LOSS_AVAILABLE,
-        reason='RNNTLoss has not been compiled with appropriate numba version.',
-    )
-    @pytest.mark.unit
-    @pytest.mark.parametrize(
-        "greedy_class",
-        [greedy_decode.GreedyMultiblankRNNTInfer, greedy_decode.GreedyBatchedMultiblankRNNTInfer],
-    )
-    def test_multiblank_rnnt_greedy_decoding(self, greedy_class):
-        token_list = [" ", "a", "b", "c"]
-        vocab_size = len(token_list)
-        big_blank_durations = [2, 4]
-
-        encoder_output_size = 4
-        decoder_output_size = 4
-        joint_output_shape = 4
-
-        prednet_cfg = {'pred_hidden': decoder_output_size, 'pred_rnn_layers': 1}
-        jointnet_cfg = {
-            'encoder_hidden': encoder_output_size,
-            'pred_hidden': decoder_output_size,
-            'joint_hidden': joint_output_shape,
-            'activation': 'relu',
-        }
-
-        decoder = RNNTDecoder(prednet_cfg, vocab_size)
-        for joint_type in [RNNTJoint, HATJoint]:
-            joint_net = joint_type(
-                jointnet_cfg, vocab_size, vocabulary=token_list, num_extra_outputs=len(big_blank_durations)
-            )
-
-            greedy = greedy_class(
-                decoder,
-                joint_net,
-                blank_index=len(token_list),
-                big_blank_durations=big_blank_durations,
-                max_symbols_per_step=5,
-            )
-
-            # (B, D, T)
-            enc_out = torch.randn(1, encoder_output_size, 30)
-            enc_len = torch.tensor([30], dtype=torch.int32)
-
-            with torch.no_grad():
-                _ = greedy(encoder_output=enc_out, encoded_lengths=enc_len)
-
-    @pytest.mark.skipif(
-        not NUMBA_RNNT_LOSS_AVAILABLE,
-        reason='RNNTLoss has not been compiled with appropriate numba version.',
-    )
-    @pytest.mark.unit
-    @pytest.mark.parametrize(
-        "greedy_class",
-        [greedy_decode.GreedyMultiblankRNNTInfer, greedy_decode.GreedyBatchedMultiblankRNNTInfer],
-    )
-    def test_multiblank_rnnt_greedy_decoding(self, greedy_class):
-        token_list = [" ", "a", "b", "c"]
-        vocab_size = len(token_list)
-        big_blank_durations = [2, 4]
-
-        encoder_output_size = 4
-        decoder_output_size = 4
-        joint_output_shape = 4
-
-        prednet_cfg = {'pred_hidden': decoder_output_size, 'pred_rnn_layers': 1}
-        jointnet_cfg = {
-            'encoder_hidden': encoder_output_size,
-            'pred_hidden': decoder_output_size,
-            'joint_hidden': joint_output_shape,
-            'activation': 'relu',
-        }
-
-        decoder = RNNTDecoder(prednet_cfg, vocab_size)
-        joint_net = RNNTJoint(
-            jointnet_cfg, vocab_size, vocabulary=token_list, num_extra_outputs=len(big_blank_durations)
-        )
-
-        greedy = greedy_class(
-            decoder,
-            joint_net,
-            blank_index=len(token_list),
-            big_blank_durations=big_blank_durations,
-            max_symbols_per_step=5,
-        )
-
-        # (B, D, T)
-        enc_out = torch.randn(1, encoder_output_size, 30)
-        enc_len = torch.tensor([30], dtype=torch.int32)
-
-        with torch.no_grad():
-            _ = greedy(encoder_output=enc_out, encoded_lengths=enc_len)
 
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE,

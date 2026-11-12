@@ -27,7 +27,8 @@ from nemo.core.utils.optional_libs import KENLM_AVAILABLE, TRITON_AVAILABLE
 DEVICES = [torch.device("cpu")]
 
 if torch.cuda.is_available():
-    DEVICES.append('cuda')
+    # The `gpu` marker puts the CUDA cases in the GPU CI jobs (see tests/functional_tests/_gpu_unit_test_selection.sh).
+    DEVICES.append(pytest.param('cuda', marks=pytest.mark.gpu))
 
 
 @pytest.fixture(scope="module")
@@ -76,6 +77,7 @@ class TestNGramGPULanguageModel:
     @pytest.mark.unit
     @pytest.mark.skipif(not TRITON_AVAILABLE, reason="Triton is not available")
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")
+    @pytest.mark.gpu
     def test_triton_vs_pytorch_random_states(self, n_gpu_lm: NGramGPULanguageModel, batch_size=2, num_iterations=100):
         """Randomly initializes the states and compares the scores from Triton and PyTorch implementations."""
         torch.manual_seed(777)
@@ -92,6 +94,24 @@ class TestNGramGPULanguageModel:
                 )
             assert (states1 == states2).all()
             assert torch.allclose(scores1, scores2)
+
+    @pytest.mark.with_downloads
+    @pytest.mark.unit
+    @pytest.mark.skipif(not TRITON_AVAILABLE, reason="Triton is not available")
+    @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="Requires at least 2 CUDA devices")
+    @pytest.mark.gpu
+    def test_triton_on_non_current_device(self, n_gpu_lm: NGramGPULanguageModel, batch_size=2):
+        """Triton advance works when the model is not on the current CUDA device"""
+        device = torch.device("cuda:1")
+        n_gpu_lm = n_gpu_lm.to(device)
+        states = n_gpu_lm.get_init_states(batch_size=batch_size, bos=True)
+        scores_ref, states_ref = n_gpu_lm._advance_pytorch(states=states)
+        # make the context of device 0 current, as any operation on device 0 does
+        torch.cuda.synchronize(0)
+        scores, next_states = n_gpu_lm._advance_triton(states=states)
+        assert torch.cuda.current_device() == 0
+        assert (next_states == states_ref).all()
+        assert torch.allclose(scores, scores_ref)
 
     @pytest.mark.unit
     @pytest.mark.skipif(not KENLM_AVAILABLE, reason="KenLM is not available")

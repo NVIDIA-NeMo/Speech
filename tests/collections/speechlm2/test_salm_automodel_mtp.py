@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from omegaconf import DictConfig
 
 import nemo.collections.speechlm2.models.salm_automodel as salm_module
 import nemo.collections.speechlm2.parts.mtp as mtp_module
@@ -27,6 +28,8 @@ def _bare_model():
     '''Create a SALMAutomodel instance without loading any weights.'''
     model = SALMAutomodel.__new__(SALMAutomodel)
     torch.nn.Module.__init__(model)
+    model.cfg = DictConfig({"debug_log_training_batches": 0})
+    model._fused_linear_cross_entropy = None
     return model
 
 
@@ -77,8 +80,9 @@ def test_mtp_num_depths_is_zero_without_head():
     assert model._mtp_num_depths == 0
 
 
-def test_disabled_mtp_overrides_native_checkpoint_head(monkeypatch):
-    """Native checkpoint MTP weights are not instantiated when MTP is disabled."""
+@pytest.mark.parametrize(("retain_native_mtp", "native_depth"), [(False, 1), (True, 0), (True, 2)])
+def test_disabled_mtp_retains_checkpoint_topology_only_when_requested(monkeypatch, retain_native_mtp, native_depth):
+    """Retention must not request creation or replacement of checkpoint MTP heads."""
     from omegaconf import DictConfig
 
     captured_kwargs = {}
@@ -90,8 +94,8 @@ def test_disabled_mtp_overrides_native_checkpoint_head(monkeypatch):
     class _LLM(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.config = type("Config", (), {"hidden_size": 8, "num_nextn_predict_layers": 1})()
-            self.mtp = None
+            self.config = type("Config", (), {"hidden_size": 8, "num_nextn_predict_layers": native_depth})()
+            self.mtp = torch.nn.Linear(4, 4) if retain_native_mtp and native_depth else None
 
     def _load_llm(*_args, **kwargs):
         captured_kwargs.update(kwargs)
@@ -103,7 +107,8 @@ def test_disabled_mtp_overrides_native_checkpoint_head(monkeypatch):
             "pretrained_llm": "native-mtp-checkpoint",
             "pretrained_asr": "unused-in-test",
             "pretrained_weights": True,
-            "mtp": {"enabled": False},
+            "retain_native_mtp": retain_native_mtp,
+            "mtp": {"enabled": False, "replace_existing_head": True},
         }
     )
     model._trainer = None
@@ -120,10 +125,16 @@ def test_disabled_mtp_overrides_native_checkpoint_head(monkeypatch):
 
     SALMAutomodel.configure_model(model)
 
-    assert captured_kwargs["num_nextn_predict_layers"] == 0
     assert "mtp_config_overrides" not in captured_kwargs
-    assert model.llm.config.num_nextn_predict_layers == 0
-    assert not model._mtp_enabled
+    assert "replace_mtp_config" not in captured_kwargs
+    if retain_native_mtp:
+        assert "num_nextn_predict_layers" not in captured_kwargs
+        assert model.llm.config.num_nextn_predict_layers == native_depth
+        assert model._mtp_enabled == (native_depth > 0)
+    else:
+        assert captured_kwargs["num_nextn_predict_layers"] == 0
+        assert model.llm.config.num_nextn_predict_layers == 0
+        assert not model._mtp_enabled
 
 
 @pytest.mark.parametrize(
@@ -233,7 +244,8 @@ def test_invalid_mtp_training_mode_fails_before_loading(monkeypatch):
         SALMAutomodel.configure_model(model)
 
 
-def test_repeated_layer_settings_reach_native_mtp_constructor(monkeypatch):
+@pytest.mark.parametrize("retain_native_mtp", [False, True])
+def test_repeated_layer_settings_reach_native_mtp_constructor(monkeypatch, retain_native_mtp):
     """Reload preserves logical MTP depth when the checkpoint stores one physical repeated layer."""
     from omegaconf import DictConfig
 
@@ -264,8 +276,9 @@ def test_repeated_layer_settings_reach_native_mtp_constructor(monkeypatch):
             "pretrained_weights": True,
             "freeze_params": [],
             "prevent_freeze_params": [],
+            "retain_native_mtp": retain_native_mtp,
             "mtp": {
-                "enabled": True,
+                "enabled": not retain_native_mtp,
                 "training_mode": "joint",
                 "num_nextn_predict_layers": 3,
                 "use_repeated_layer": True,
@@ -287,12 +300,16 @@ def test_repeated_layer_settings_reach_native_mtp_constructor(monkeypatch):
 
     SALMAutomodel.configure_model(model)
 
-    assert captured_kwargs["mtp_config_overrides"] == {
-        "num_nextn_predict_layers": 1,
-        "mtp_hybrid_override_pattern": "*",
-        "mtp_layers_block_type": None,
-    }
-    assert captured_kwargs["replace_mtp_config"] is False
+    if retain_native_mtp:
+        assert "mtp_config_overrides" not in captured_kwargs
+        assert "replace_mtp_config" not in captured_kwargs
+    else:
+        assert captured_kwargs["mtp_config_overrides"] == {
+            "num_nextn_predict_layers": 1,
+            "mtp_hybrid_override_pattern": "*",
+            "mtp_layers_block_type": None,
+        }
+        assert captured_kwargs["replace_mtp_config"] is False
     assert captured_kwargs["num_nextn_predict_layers"] == 3
     assert captured_kwargs["mtp_use_repeated_layer"] is True
     assert model.llm.config.num_nextn_predict_layers == 1
@@ -655,7 +672,7 @@ def test_training_step_forwards_packed_cu_seqlens_to_mtp_loss(monkeypatch):
     model._get_moe_dp_group = lambda: None
     model.log = lambda *_args, **_kwargs: None
     model.log_dict = lambda *_args, **_kwargs: None
-    model.maybe_log_moe_metrics = lambda _batch_idx: None
+    model.maybe_log_moe_metrics = lambda: None
 
     cu_seqlens = torch.tensor([0, 3, 5], dtype=torch.int32)
     inputs = {
@@ -695,6 +712,82 @@ def test_training_step_forwards_packed_cu_seqlens_to_mtp_loss(monkeypatch):
 
     assert captured_kwargs["mtp_per_depth_targets"] is mtp_per_depth_targets
     assert captured_kwargs["cu_seqlens"] is None
+
+
+def test_training_step_shares_one_materialized_lm_weight_with_main_and_mtp_losses(monkeypatch):
+    class _Perception(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.preprocessor = torch.nn.Identity()
+            self.encoder = torch.nn.Identity()
+
+    class _LLM(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.lm_head = torch.nn.Linear(4, 8, bias=False)
+
+        def get_output_embeddings(self):
+            return self.lm_head
+
+    class _FusedLoss:
+        def __init__(self):
+            self.materialize_calls = []
+            self.loss_weights = []
+            self.shared_weight = torch.randn(8, 4, requires_grad=True)
+
+        def materialize_lm_weight(self, weight, *, grad_reduce_group):
+            self.materialize_calls.append((weight, grad_reduce_group))
+            return self.shared_weight
+
+        def __call__(self, hidden_states, labels, weight, *, grad_reduce_group):
+            self.loss_weights.append(weight)
+            return hidden_states.sum() * 0 + 1.0
+
+    model = _bare_model()
+    model.perception = _Perception()
+    model.llm = _LLM()
+    model.lss_loss = None
+    fused_loss = _FusedLoss()
+    model._fused_linear_cross_entropy = fused_loss
+    model._mtp_loss_fn = fused_loss
+    model._mtp_loss_scaling_factor = 0.1
+    model._trainer = None
+    model.tokenizer = type("Tokenizer", (), {"pad": -1, "unk_id": None})()
+    model._get_moe_dp_group = lambda: None
+    model.log = lambda *_args, **_kwargs: None
+    model.log_dict = lambda *_args, **_kwargs: None
+    model.maybe_log_moe_metrics = lambda: None
+
+    inputs = {
+        "input_embeds": torch.zeros(5, 4),
+        "attention_mask": None,
+        "target_ids": torch.tensor([0, 1, 2, 3, 4]),
+        "llm_kwargs": {},
+        "num_tokens": 5,
+        "num_examples": 1,
+    }
+    model.prepare_inputs = lambda _batch: inputs
+    model.forward = lambda *_args, **_kwargs: {
+        "logits": torch.empty(1, 5, 0),
+        "hidden_states": torch.zeros(1, 5, 4, requires_grad=True),
+        "mtp_per_depth_h": [torch.zeros(1, 5, 4, requires_grad=True)],
+    }
+    captured_kwargs = {}
+
+    def _calculate_mtp_loss(*_args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return SimpleNamespace(
+            loss=torch.tensor(0.25, requires_grad=True),
+            per_depth_losses=[torch.tensor(2.5, requires_grad=True)],
+        )
+
+    monkeypatch.setattr(salm_module, "calculate_mtp_loss_with_per_depth", _calculate_mtp_loss)
+
+    model._training_step_batch({"input_ids": torch.tensor([[1, 2, 3, 4, 5]])}, batch_idx=0)
+
+    assert fused_loss.materialize_calls == [(model.llm.lm_head.weight, None)]
+    assert fused_loss.loss_weights == [fused_loss.shared_weight]
+    assert captured_kwargs["lm_weight"] is fused_loss.shared_weight
 
 
 def test_mtp_validation_forward_uses_and_restores_native_gate():

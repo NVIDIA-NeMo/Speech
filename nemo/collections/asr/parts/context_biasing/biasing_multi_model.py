@@ -562,22 +562,27 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         self.model2num_states[model_id] = 0
         self.model2num_arcs[model_id] = 0
         self.model2num_arcs_extended[model_id] = 0
-        # shift model offsets
-        self.model2states_offset[model_id] = 0
-        self.model2arcs_offset[model_id] = 0
-        # shift states and arcs offsets
+        # Shift the offsets of the models that lived after the removed one.
+        # Only ACTIVE models take part in the shift. An unused slot holds offset 0, and 0 is also a
+        # legitimate arena address, so a shift applied to every slot underflows every unused slot to a
+        # negative offset whenever the removed model started at 0. `model2active[model_id]` is already
+        # False here, so the removed model is excluded from the mask and its own offsets are cleared last.
         torch.where(
-            self.model2states_offset < start_state,
-            self.model2states_offset,
+            self.model2active & (self.model2states_offset >= start_state),
             self.model2states_offset - num_states,
+            self.model2states_offset,
             out=self.model2states_offset,
         )
         torch.where(
-            self.model2arcs_offset < start_arc,
-            self.model2arcs_offset,
+            self.model2active & (self.model2arcs_offset >= start_arc),
             self.model2arcs_offset - num_arcs,
+            self.model2arcs_offset,
             out=self.model2arcs_offset,
         )
+
+        # clear the removed model's own offsets last
+        self.model2states_offset[model_id] = 0
+        self.model2arcs_offset[model_id] = 0
 
     def get_init_states(self, batch_size: int, bos=True) -> torch.Tensor:
         """
@@ -648,23 +653,25 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         scores = torch.zeros([batch_size, self.vocab_size], device=device, dtype=self.all_arcs_weights.dtype)
         next_states = torch.full([batch_size, self.vocab_size], fill_value=-1, dtype=torch.long, device=device)
 
-        ngram_multi_advance_triton_kernel[batch_size,](
-            vocab_size=self.vocab_size,
-            states_ptr=states,
-            new_states_out_ptr=next_states,
-            scores_out_ptr=scores,
-            start_state=self.START_STATE,
-            model_ids_ptr=model_ids,
-            states_offsets_ptr=self.model2states_offset,
-            arcs_offsets_ptr=self.model2arcs_offset,
-            to_states_ptr=self.all_to_states,
-            ilabels_ptr=self.all_ilabels,
-            arcs_weights_ptr=self.all_arcs_weights,
-            start_end_arcs_ptr=self.all_start_end_arcs,
-            backoff_to_states_ptr=self.all_backoff_to_states,
-            backoff_weights_ptr=self.all_backoff_weights,
-            BLOCK_SIZE=triton.next_power_of_2(self.vocab_size),
-        )
+        # Triton launches in the current CUDA context, not on the tensors' device: pin it for the launch
+        with torch.cuda.device(device):
+            ngram_multi_advance_triton_kernel[batch_size,](
+                vocab_size=self.vocab_size,
+                states_ptr=states,
+                new_states_out_ptr=next_states,
+                scores_out_ptr=scores,
+                start_state=self.START_STATE,
+                model_ids_ptr=model_ids,
+                states_offsets_ptr=self.model2states_offset,
+                arcs_offsets_ptr=self.model2arcs_offset,
+                to_states_ptr=self.all_to_states,
+                ilabels_ptr=self.all_ilabels,
+                arcs_weights_ptr=self.all_arcs_weights,
+                start_end_arcs_ptr=self.all_start_end_arcs,
+                backoff_to_states_ptr=self.all_backoff_to_states,
+                backoff_weights_ptr=self.all_backoff_weights,
+                BLOCK_SIZE=triton.next_power_of_2(self.vocab_size),
+            )
 
         return scores, next_states
 

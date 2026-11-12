@@ -52,6 +52,7 @@ from nemo.collections.asr.inference.utils.pipeline_utils import (
     get_confidence_utils,
 )
 from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import ModifiedALSDBatchedRNNTComputer
+from nemo.collections.asr.parts.utils.prompt_language_utils import resolve_prompt_language
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.utils import logging
 
@@ -133,7 +134,10 @@ class CacheAwareRNNTPipeline(BasePipeline):
         # Language prompt for multilingual models, taken from the top-level `lang` field.
         self.strip_lang_tags = cfg.asr.get("strip_lang_tags", True)
         if self.prompt_enabled:
-            self.default_language_code = cfg.get("lang", None) or self._resolve_default_language_code()
+            # Validated up front, so an unsupported `lang` fails before streaming starts; None selects "auto".
+            self.default_language_code = resolve_prompt_language(
+                cfg.get("lang", None), self._prompt_config['prompt_dict']
+            )
             logging.info(f"Multilingual ASR model: conditioning on language '{self.default_language_code}'.")
         else:
             self.default_language_code = None
@@ -198,8 +202,10 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.residue_tokens_at_end = cfg.endpointing.residue_tokens_at_end
         self.word_boundary_tolerance = cfg.streaming.word_boundary_tolerance
         self.return_tail_result = cfg.return_tail_result
+        self.length_norm_power = self.asr_model.asr_model_cfg.decoding.beam.length_norm_power
 
         self.request_type = RequestType.from_str(cfg.streaming.request_type)
+        self.flush_size_in_secs = cfg.streaming.get("flush_size_in_secs", 0.0)  # 0.0 disables
 
     def init_greedy_rnnt_decoder(self) -> None:
         """Initialize the RNNT decoder."""
@@ -261,10 +267,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         # Create per-stream prompt index for prompt-enabled models
         if self.prompt_enabled:
-            lang_code = getattr(new_options, "language_code", None)
-            if not isinstance(lang_code, str) or len(lang_code) == 0:
-                raise ValueError("Prompt-enabled model requires a valid language_code in request options.")
-            prompt_idx = self._resolve_prompt_index(lang_code)
+            prompt_idx = self._resolve_prompt_index(getattr(new_options, "language_code", None))
             state.set_prompt_index(prompt_idx)
 
         return state
@@ -391,8 +394,9 @@ class CacheAwareRNNTPipeline(BasePipeline):
     def _apply_beam_update_(self, state: CacheAwareRNNTBeamStreamingState, eou_detected: bool) -> None:
         """After endpointing: refresh beam publish tokens and fold cumulative prefix on EOU."""
         if eou_detected and state.hyp_decoding_state is not None:
-            beam_idx = state.select_best_beam_idx_(score_norm=True)
+            beam_idx = state.select_best_beam_idx_(score_norm=True, length_norm_power=self.length_norm_power)
             self.beam_decoder_computer.select_beam_in_state_item_(state.hyp_decoding_state, beam_idx)
+            state.reset_beam_score_()
         state.update_(eou_detected)
 
         if self._lang_tag_filtering_enabled() and state.tokens:
@@ -628,6 +632,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             buffer_size_in_secs=self.buffer_size_in_secs,
             device=self.device,
             pad_last_frame=True,
+            flush_size_in_secs=self.flush_size_in_secs,
         )
         return request_generator
 

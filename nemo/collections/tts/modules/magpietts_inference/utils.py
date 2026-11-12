@@ -410,6 +410,9 @@ def load_easy_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tup
         ValueError: If configuration is invalid.
     """
     config.validate()
+    load_device = torch.device(device)
+    if load_device.type == "cuda" and load_device.index is None:
+        load_device = torch.device("cuda", torch.cuda.current_device())
 
     if config.hparams_file is not None and config.checkpoint_file is not None:
         model_cfg = OmegaConf.load(config.hparams_file)
@@ -436,18 +439,20 @@ def load_easy_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tup
         model = model_cls(cfg=model_cfg)
 
         logging.info(f"Loading weights from checkpoint: {config.checkpoint_file}")
-        ckpt = torch.load(config.checkpoint_file, weights_only=False)
+        ckpt = torch.load(config.checkpoint_file, map_location=load_device, weights_only=False)
         state_dict = ckpt['state_dict']
         model.load_state_dict(state_dict)
 
         checkpoint_name = os.path.basename(config.checkpoint_file).replace(".ckpt", "")
     else:
         if config.nemo_file.startswith("nvidia/"):
-            model = EasyMagpieTTSInferenceModel.from_pretrained(config.nemo_file)
+            model = EasyMagpieTTSInferenceModel.from_pretrained(config.nemo_file, map_location=load_device)
             checkpoint_name = config.nemo_file.split("/")[-1]
         else:
             logging.info(f"Loading model from NeMo archive: {config.nemo_file}")
-            model_cfg = EasyMagpieTTSInferenceModel.restore_from(config.nemo_file, return_config=True)
+            model_cfg = EasyMagpieTTSInferenceModel.restore_from(
+                config.nemo_file, return_config=True, map_location=load_device
+            )
 
             with open_dict(model_cfg):
                 model_cfg.codecmodel_path = config.codecmodel_path
@@ -463,10 +468,10 @@ def load_easy_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tup
                 model_cls = select_easy_magpie_model_class(model_cfg)
                 model_cfg.target = f'{model_cls.__module__}.{model_cls.__name__}'
 
-            model = model_cls.restore_from(config.nemo_file, override_config_path=model_cfg)
+            model = model_cls.restore_from(config.nemo_file, override_config_path=model_cfg, map_location=load_device)
             checkpoint_name = os.path.basename(config.nemo_file).replace(".nemo", "")
 
-    model.to(device)
+    model.to(load_device)
     model.eval().float()
     logging.info("EasyMagpieTTS model loaded and ready for inference.")
 
@@ -1030,7 +1035,9 @@ def _configure_cuda_for_rank() -> Tuple[int, int, int]:
     return rank, world_size, local_rank
 
 
-def _wait_for_multiturn_rank_manifests(repeat_audio_dir: str, world_size: int, timeout_sec: int = 7200) -> None:
+def _wait_for_rank_manifests(
+    repeat_audio_dir: str, world_size: int, manifest_name: str, timeout_sec: int = 7200
+) -> None:
     deadline = time.time() + timeout_sec
     while time.time() < deadline:
         missing = []
@@ -1038,14 +1045,14 @@ def _wait_for_multiturn_rank_manifests(repeat_audio_dir: str, world_size: int, t
             path = os.path.join(
                 repeat_audio_dir,
                 f"rank_{rank:04d}",
-                f"multiturn_user_audio_turn_manifest_rank{rank:04d}.jsonl",
+                manifest_name.format(rank=rank),
             )
             if not os.path.exists(path):
                 missing.append(path)
         if not missing:
             return
         time.sleep(5)
-    raise RuntimeError(f"Timed out waiting for multiturn rank manifests: {missing}")
+    raise RuntimeError(f"Timed out waiting for rank manifests: {missing}")
 
 
 def _copy_or_link(src: str, dst: str, required: bool = False) -> None:
@@ -1065,73 +1072,76 @@ def _copy_or_link(src: str, dst: str, required: bool = False) -> None:
     shutil.copyfile(src, dst)
 
 
-def _merge_multiturn_rank_outputs(repeat_audio_dir: str, world_size: int, save_predicted_codes: bool) -> str:
-    """Merge rank-local multiturn outputs into one EasyMagpie-compatible dir.
+def _merge_rank_outputs(
+    repeat_audio_dir: str,
+    world_size: int,
+    save_predicted_codes: bool,
+    manifest_name: str = "evaluation_manifest.jsonl",
+    expected_samples: Optional[int] = None,
+) -> str:
+    """Merge complete rank-local artifacts, restoring single-turn manifest order."""
+    records = []
+    for rank in range(world_size):
+        rank_dir = Path(repeat_audio_dir) / f"rank_{rank:04d}"
+        with (rank_dir / manifest_name.format(rank=rank)).open(encoding="utf-8") as stream:
+            for local_idx, line in enumerate(line for line in stream if line.strip()):
+                records.append((rank, local_idx, rank_dir, json.loads(line)))
+    singleturn = expected_samples is not None
+    if singleturn:
+        indices = [record["source_sample_idx"] for _, _, _, record in records]
+        if sorted(indices) != list(range(expected_samples)):
+            raise ValueError("Single-turn rank outputs must cover every source sample exactly once")
+        records.sort(key=lambda item: item[3]["source_sample_idx"])
 
-    Each rank writes local files named predicted_audio_0.wav, target_audio_0.wav,
-    context_audio_0.wav, predicted_codes_0.pt, ... inside rank_XXXX/. This
-    function remaps them to contiguous global indices in repeat_audio_dir/ and
-    writes a merged turn-level manifest.
-    """
-    # clean previous merged files
     for pattern in [
         "predicted_audio_*.wav",
         "target_audio_*.wav",
         "context_audio_*.wav",
         "predicted_codes_*.pt",
+        "predicted_audio_*.timestamps.json",
     ]:
         for path in Path(repeat_audio_dir).glob(pattern):
-            if path.is_symlink() or path.exists():
-                path.unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
 
     merged_records = []
-    global_idx = 0
-
-    for rank in range(world_size):
-        rank_dir = os.path.join(repeat_audio_dir, f"rank_{rank:04d}")
-        rank_manifest = os.path.join(rank_dir, f"multiturn_user_audio_turn_manifest_rank{rank:04d}.jsonl")
-        if not os.path.exists(rank_manifest):
-            raise FileNotFoundError(f"Missing rank manifest: {rank_manifest}")
-
-        with open(rank_manifest, "r", encoding="utf-8") as f:
-            rank_records = [json.loads(line) for line in f if line.strip()]
-
-        for local_idx, record in enumerate(rank_records):
-            pred_src = os.path.join(rank_dir, f"predicted_audio_{local_idx}.wav")
-            pred_dst = os.path.join(repeat_audio_dir, f"predicted_audio_{global_idx}.wav")
-            _copy_or_link(pred_src, pred_dst, required=True)
-
-            if save_predicted_codes:
-                code_src = os.path.join(rank_dir, f"predicted_codes_{local_idx}.pt")
-                code_dst = os.path.join(repeat_audio_dir, f"predicted_codes_{global_idx}.pt")
-                _copy_or_link(code_src, code_dst, required=False)
-
-            target_src = os.path.join(rank_dir, record.get("audio_filepath", f"target_audio_{local_idx}.wav"))
-            target_dst = os.path.join(repeat_audio_dir, f"target_audio_{global_idx}.wav")
-            _copy_or_link(target_src, target_dst, required=True)
-
-            context_src = os.path.join(
-                rank_dir,
-                record.get("context_audio_filepath", f"context_audio_{local_idx}.wav"),
+    for global_idx, (rank, local_idx, rank_dir, record) in enumerate(records):
+        pred_dst = Path(repeat_audio_dir) / f"predicted_audio_{global_idx}.wav"
+        _copy_or_link(str(rank_dir / f"predicted_audio_{local_idx}.wav"), str(pred_dst), required=True)
+        if save_predicted_codes:
+            _copy_or_link(
+                str(rank_dir / f"predicted_codes_{local_idx}.pt"),
+                str(Path(repeat_audio_dir) / f"predicted_codes_{global_idx}.pt"),
+                required=singleturn,
             )
-            context_dst = os.path.join(repeat_audio_dir, f"context_audio_{global_idx}.wav")
-            _copy_or_link(context_src, context_dst, required=True)
+        merged = dict(record, predicted_audio_filepath=str(pred_dst.resolve()), rank=rank, rank_local_idx=local_idx)
+        for key, prefix in [("audio_filepath", "target_audio"), ("context_audio_filepath", "context_audio")]:
+            source = record.get(key)
+            if singleturn and not source:
+                continue
+            source = rank_dir / (source or f"{prefix}_{local_idx}.wav")
+            destination = Path(repeat_audio_dir) / f"{prefix}_{global_idx}.wav"
+            _copy_or_link(str(source), str(destination), required=not singleturn)
+            if destination.exists():
+                merged[key] = destination.name
+        if record.get("timestamps_filepath"):
+            source = rank_dir / record["timestamps_filepath"]
+            destination = Path(repeat_audio_dir) / f"predicted_audio_{global_idx}.timestamps.json"
+            timestamps = json.loads(source.read_text(encoding="utf-8"))
+            timestamps["predicted_audio_filepath"] = str(pred_dst.resolve())
+            destination.write_text(json.dumps(timestamps, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            merged["timestamps_filepath"] = str(destination.resolve())
+        merged_records.append(merged)
 
-            merged = dict(record)
-            merged["audio_filepath"] = f"target_audio_{global_idx}.wav"
-            merged["context_audio_filepath"] = f"context_audio_{global_idx}.wav"
-            merged["rank"] = rank
-            merged["rank_local_idx"] = local_idx
-            merged_records.append(merged)
-            global_idx += 1
-
-    merged_manifest = os.path.join(repeat_audio_dir, "multiturn_user_audio_turn_manifest.jsonl")
-    with open(merged_manifest, "w", encoding="utf-8") as f:
+    merged_manifest = Path(repeat_audio_dir) / (
+        "evaluation_manifest.jsonl" if singleturn else "multiturn_user_audio_turn_manifest.jsonl"
+    )
+    temporary_manifest = merged_manifest.with_suffix(".tmp")
+    with temporary_manifest.open("w", encoding="utf-8") as stream:
         for record in merged_records:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-    logging.info(f"Merged {len(merged_records)} multiturn turn records into {merged_manifest}")
-    return merged_manifest
+            stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+    temporary_manifest.replace(merged_manifest)
+    logging.info(f"Merged {len(merged_records)} records from {world_size} ranks into {merged_manifest}")
+    return str(merged_manifest)
 
 
 def _get_shared_inference_param_names() -> set:
@@ -1408,6 +1418,18 @@ def _add_easy_magpie_args(parser: argparse.ArgumentParser) -> None:
     )
     group.add_argument('--dropout_text_input', action='store_true', help='Force dropout on text input')
     group.add_argument(
+        '--codec_decode_batch_size',
+        type=int,
+        default=None,
+        help='Maximum codec decode batch size; 0 decodes the full batch (default: checkpoint setting)',
+    )
+    group.add_argument(
+        '--save_timestamps',
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help='Save causal attention timestamps beside generated audio (Nemotron-TTS V2 only)',
+    )
+    group.add_argument(
         '--phoneme_tokenizer_path',
         type=str,
         default=None,
@@ -1471,6 +1493,8 @@ def _build_easy_magpie_config(args, model_type: str = 'v1') -> EasyMagpieInferen
         phoneme_sampling_method=args.phoneme_sampling_method,
         dropout_text_input=args.dropout_text_input,
         precomputed_context_audio_embeddings_path=args.precomputed_context_audio_embeddings_path,
+        save_timestamps=getattr(args, 'save_timestamps', False),
+        codec_decode_batch_size=getattr(args, 'codec_decode_batch_size', None),
         default_tokenizer_name=args.tokenizer_name,
     )
     if cfg_cls is EasyMagpieMultiturnUserAudioInferenceConfig:

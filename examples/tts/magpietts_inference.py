@@ -84,11 +84,11 @@ from nemo.collections.tts.modules.magpietts_inference.utils import (
     _build_magpie_config,
     _configure_cuda_for_rank,
     _get_torchrun_rank_info,
-    _merge_multiturn_rank_outputs,
+    _merge_rank_outputs,
     _runner_eval_manifest_and_audio_dir,
     _save_grouped_multiturn_filewise_metrics,
     _select_runner_cls,
-    _wait_for_multiturn_rank_manifests,
+    _wait_for_rank_manifests,
     append_metrics_to_csv,
     create_formatted_metrics_mean_ci,
     filter_datasets,
@@ -153,6 +153,7 @@ def run_inference_and_evaluation(
     rank, world_size, _ = _get_torchrun_rank_info()
     is_distributed = world_size > 1
     is_multiturn_user_audio = getattr(runner, "produces_turn_level_evaluation", False)
+    supports_distributed = is_multiturn_user_audio or getattr(runner, "supports_distributed_singleturn", False)
 
     if hasattr(runner, "set_distributed_context"):
         runner.set_distributed_context(rank=rank, world_size=world_size)
@@ -195,6 +196,8 @@ def run_inference_and_evaluation(
             "language": language,
             "tokenizer_names": tokenizer_names,
         }
+        if "load_normalized_text_percent" in meta:
+            dataset_meta_for_dl["load_normalized_text_percent"] = meta["load_normalized_text_percent"]
         if "precomputed_context_audio_embedding_key" in meta:
             dataset_meta_for_dl["precomputed_context_audio_embedding_key"] = meta[
                 "precomputed_context_audio_embedding_key"
@@ -230,16 +233,11 @@ def run_inference_and_evaluation(
                     f"Dataset length mismatch: {len(test_dataset)} vs {len(manifest_records)} manifest records"
                 )
 
-            if is_distributed and not is_multiturn_user_audio:
-                raise RuntimeError(
-                    "torchrun multi-GPU sharding is currently implemented for "
-                    "--easy_magpie_inference_mode multiturn_user_audio only. "
-                    "Use the existing single-process path for single_turn/magpie, or add a "
-                    "rank-safe merge path for those runners."
-                )
+            if is_distributed and not supports_distributed:
+                raise RuntimeError("This runner does not support distributed inference")
 
             inference_output_dir = repeat_audio_dir
-            if is_distributed and is_multiturn_user_audio:
+            if is_distributed:
                 inference_output_dir = os.path.join(repeat_audio_dir, f"rank_{rank:04d}")
 
             rtf_metrics_list, _, codec_file_paths = runner.run_inference_on_dataset(
@@ -267,30 +265,35 @@ def run_inference_and_evaluation(
             with open(os.path.join(eval_dir, rtf_metrics_filename), "w") as f:
                 json.dump(mean_rtf, f, indent=4)
 
+            if is_distributed:
+                if rank != 0:
+                    continue
+                manifest_name = (
+                    "multiturn_user_audio_turn_manifest_rank{rank:04d}.jsonl"
+                    if is_multiturn_user_audio
+                    else Path(runner.evaluation_manifest_path).name
+                )
+                _wait_for_rank_manifests(repeat_audio_dir, world_size, manifest_name)
+                runner.evaluation_manifest_path = _merge_rank_outputs(
+                    repeat_audio_dir=repeat_audio_dir,
+                    world_size=world_size,
+                    save_predicted_codes=eval_config.with_fcd,
+                    manifest_name=manifest_name,
+                    expected_samples=None if is_multiturn_user_audio else len(manifest_records),
+                )
+                runner.evaluation_audio_dir = repeat_audio_dir
+                if getattr(inference_config, "save_timestamps", False):
+                    runner.timestamp_manifest_path = runner.evaluation_manifest_path
+
             if skip_evaluation:
                 logging.info("Skipping evaluation as requested.")
                 continue
 
-            # Run evaluation
-            if is_distributed and is_multiturn_user_audio:
-                if rank != 0:
-                    # Non-zero ranks only generate. Rank 0 waits and evaluates merged outputs.
-                    continue
-
-                _wait_for_multiturn_rank_manifests(repeat_audio_dir, world_size)
-                merged_manifest_path = _merge_multiturn_rank_outputs(
-                    repeat_audio_dir=repeat_audio_dir,
-                    world_size=world_size,
-                    save_predicted_codes=eval_config.with_fcd,
-                )
-                eval_manifest_path = merged_manifest_path
-                eval_audio_dir = repeat_audio_dir
-            else:
-                eval_manifest_path, eval_audio_dir = _runner_eval_manifest_and_audio_dir(
-                    runner,
-                    default_manifest=meta['manifest_path'],
-                    default_audio_dir=meta['audio_dir'],
-                )
+            eval_manifest_path, eval_audio_dir = _runner_eval_manifest_and_audio_dir(
+                runner,
+                default_manifest=meta['manifest_path'],
+                default_audio_dir=meta['audio_dir'],
+            )
 
             metrics, filewise_metrics = evaluate_generated_audio_dir(
                 manifest_path=eval_manifest_path,
@@ -329,7 +332,7 @@ def run_inference_and_evaluation(
             create_violin_plot(filewise_metrics, violin_plot_metrics, violin_path)
 
             # Delete temporary predicted codes files
-            if is_distributed and is_multiturn_user_audio:
+            if is_distributed:
                 for codec_file_path in Path(repeat_audio_dir).glob("predicted_codes_*.pt"):
                     if os.path.exists(codec_file_path):
                         os.remove(codec_file_path)
@@ -398,9 +401,9 @@ def main(argv=None):
     """Entry point for TTS inference and evaluation."""
     parser = create_argument_parser()
     args = parser.parse_args(argv)
-    if args.model_type == 'easy_magpie' and args.easy_magpie_inference_mode == 'multiturn_user_audio':
+    if args.model_type == 'easy_magpie':
         _configure_cuda_for_rank()
-        if args.batch_size > 1:
+        if args.easy_magpie_inference_mode == 'multiturn_user_audio' and args.batch_size > 1:
             parser.error("--easy_magpie_inference_mode multiturn_user_audio requires --batch_size 1.")
 
     if args.deterministic:

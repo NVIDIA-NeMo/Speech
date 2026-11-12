@@ -560,22 +560,29 @@ class SupervisionCustomFilter:
 
 class CERFilter:
     """
-    Callable, returns ``True`` if a cut's CER is less than max_cer and ``False`` otherwise.
-    Acts as a pass-through for objects of other type than Cut.
+    Keep cuts whose mean supervision CER is at most ``max_cer``.
+
+    Each supervision contributes one available score: ``cer`` takes precedence
+    over ``asr_cer``, with ``None`` treated as missing. The mean is unweighted;
+    supervisions without either score are omitted. Cuts with no scored
+    supervisions and objects of other types pass through unchanged.
     """
 
     def __init__(self, max_cer: float | None) -> None:
         self.max_cer = ifnone(max_cer, float("inf"))
 
     def __call__(self, example) -> bool:
-        if (
-            isinstance(example, MonoCut)
-            and len(example.supervisions) > 0
-            and example.supervisions[0].has_custom("cer")
-        ):
-            return example.supervisions[0].cer <= self.max_cer
-        else:
+        if not isinstance(example, Cut):
             return True
+        scores = []
+        for supervision in example.supervisions:
+            for field in ("cer", "asr_cer"):
+                if supervision.has_custom(field):
+                    value = getattr(supervision, field)
+                    if value is not None:
+                        scores.append(value)
+                        break
+        return not scores or sum(scores) / len(scores) <= self.max_cer
 
 
 class SpeakerFilter:

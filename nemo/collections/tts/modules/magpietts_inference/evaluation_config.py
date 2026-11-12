@@ -38,6 +38,7 @@ EVALSET_ENTRY_KEYS = frozenset(
         "asr_model",
         "strip_text_annotations_for_metrics",
         "precomputed_context_audio_embedding_key",
+        "load_normalized_text_percent",
     }
 )
 
@@ -96,6 +97,7 @@ def validate_evalset_entry(info: dict, dataset_name: Optional[str] = None) -> No
 
     Recognized optional keys and their required types:
 
+    - ``load_normalized_text_percent``: probability in ``[0, 1]`` of using normalized text as model input.
     - ``language``: non-empty string without surrounding whitespace (remove the key to use the CLI-level language).
     - ``asr_model``: ``{"name": <model name or .nemo path>, "type": <one of ASR_MODEL_TYPES>}``.
     - ``strip_text_annotations_for_metrics``: JSON boolean.
@@ -113,6 +115,10 @@ def validate_evalset_entry(info: dict, dataset_name: Optional[str] = None) -> No
         ValueError: If a recognized key has a malformed value.
     """
     prefix = f"Dataset {dataset_name}: " if dataset_name is not None else "Evalset entry: "
+    if "load_normalized_text_percent" in info:
+        value = info["load_normalized_text_percent"]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0.0 <= value <= 1.0:
+            raise ValueError(f"{prefix}'load_normalized_text_percent' must be a number in [0, 1], got {value!r}.")
     if "precomputed_context_audio_embedding_key" in info:
         value = info["precomputed_context_audio_embedding_key"]
         if not isinstance(value, str) or not value or value != value.strip():

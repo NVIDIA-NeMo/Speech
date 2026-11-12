@@ -31,6 +31,7 @@ from examples.tts.magpietts_inference import run_inference_and_evaluation
 from omegaconf import OmegaConf
 
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
+from nemo.collections.tts.data.text_to_speech_dataset import TextToSpeechDataset
 from nemo.collections.tts.models import EasyMagpieTTSInferenceModel, NemotronTTSBase
 from nemo.collections.tts.models.easy_magpietts_inference import (
     EasyModelInferenceParameters as easymagpie_inference_parameters_v1,
@@ -38,6 +39,7 @@ from nemo.collections.tts.models.easy_magpietts_inference import (
 from nemo.collections.tts.models.nemotron_tts.v2.base import (
     EasyModelInferenceParameters as easymagpie_inference_parameters_v2,
 )
+from nemo.collections.tts.modules.magpietts_inference import utils as inference_utils
 from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio import (
     FILEWISE_METRICS_TO_SAVE,
     _get_record_texts,
@@ -52,6 +54,13 @@ from nemo.collections.tts.modules.magpietts_inference.evaluation import (
     EvaluationConfig,
     evaluate_generated_audio_dir,
     resolve_evaluation_config_for_dataset,
+)
+from nemo.collections.tts.modules.magpietts_inference.inference import (
+    EasyMagpieInferenceConfig,
+    EasyMagpieInferenceRunner,
+    EasyMagpieMultiturnUserAudioDataset,
+    EasyMagpieMultiturnUserAudioInferenceConfig,
+    EasyMagpieMultiturnUserAudioInferenceRunner,
 )
 from nemo.collections.tts.modules.magpietts_inference.utils import (
     EXPERIMENT_METRICS_CSV_HEADER,
@@ -68,6 +77,8 @@ from nemo.utils import logging as nemo_logging
 
 EVALUATE_MODULE = "nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio"
 EXAMPLE_MODULE = "examples.tts.magpietts_inference"
+INFERENCE_MODULE = "nemo.collections.tts.modules.magpietts_inference.inference"
+DATASET_UTILS_MODULE = "nemo.collections.tts.parts.utils.tts_dataset_utils"
 
 
 # Evaluation manifests of emphasis benchmarks mark emphasized *spoken* words with square brackets.
@@ -413,6 +424,10 @@ def test_evaluate_generated_audio_dir_forwards_the_whole_config(monkeypatch):
         ({"asr_model": {"name": "some/asr"}}, "'asr_model' must be an object"),
         ({"asr_model": {"name": "some/asr", "type": "hf"}}, "'asr_model' must be an object"),
         ({"asr_model": {"name": " ", "type": "nemo"}}, "'asr_model' must be an object"),
+        *[
+            ({"load_normalized_text_percent": value}, "load_normalized_text_percent")
+            for value in (-0.1, 1.1, "1.0", True, None, float("nan"), float("inf"))
+        ],
     ],
 )
 def test_malformed_evalset_overrides_are_rejected(tmp_path, entry_overrides, match):
@@ -440,6 +455,238 @@ def test_load_evalset_config_rejects_unrecognized_keys(tmp_path):
         config_path = _write_evalset_config(tmp_path, bad_entry)
         with pytest.raises(ValueError, match=rf"Dataset ds: unrecognized evalset keys \['{key}'\]; recognized keys"):
             load_evalset_config(str(config_path), dataset_base_path=tmp_path)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("probability", [0.0, 0.5, 1.0])
+def test_evalset_preserves_normalized_text_probability(tmp_path, probability):
+    config_path = _write_evalset_config(tmp_path, {"load_normalized_text_percent": probability})
+    entry = load_evalset_config(str(config_path), dataset_base_path=tmp_path)["ds"]
+
+    assert entry["load_normalized_text_percent"] == probability
+    assert resolve_evaluation_config_for_dataset(EvaluationConfig(), entry) == EvaluationConfig()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "probability,expected",
+    [
+        (0.0, ["July 15th", "$10", "call 12"]),
+        (1.0, ["july fifteenth", "ten dollars", "call 12"]),
+        (0.5, ["july fifteenth", "$10", "call 12"]),
+    ],
+)
+def test_singleturn_dataset_selects_input_without_changing_references(tmp_path, monkeypatch, probability, expected):
+    draws = iter([0.2, 0.8])
+    monkeypatch.setattr(f"{DATASET_UTILS_MODULE}.random.random", lambda: next(draws))
+    records = [
+        {"text": "July 15th", "normalized_text": "july fifteenth"},
+        {"text": "$10", "normalized_text": "ten dollars"},
+        {"text": "call 12"},
+    ]
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text(
+        "".join(json.dumps(dict(record, audio_filepath="target.wav", duration=1.0)) + "\n" for record in records)
+    )
+    dataset = TextToSpeechDataset(
+        dataset_meta={"ds": {"manifest_path": str(manifest), "audio_dir": str(tmp_path)}},
+        sample_rate=8000,
+        text_tokenizer=None,
+        load_normalized_text_percent=probability,
+    )
+
+    assert [sample.text for sample in dataset.data_samples] == expected
+    assert [sample.manifest_entry["text"] for sample in dataset.data_samples] == [record["text"] for record in records]
+    assert dataset.data_samples[0].manifest_entry["normalized_text"] == "july fifteenth"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("multiturn", [False, True])
+@pytest.mark.parametrize("probability", [None, 0.5])
+def test_inference_runner_forwards_normalized_text_probability(tmp_path, monkeypatch, multiturn, probability):
+    captured = {}
+
+    def create_dataset(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace()
+
+    dataset_class = "EasyMagpieMultiturnUserAudioDataset" if multiturn else "MagpieTTSDataset"
+    monkeypatch.setattr(f"{INFERENCE_MODULE}.{dataset_class}", create_dataset)
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text(json.dumps({"text": "July 15th"}) + "\n")
+    model = SimpleNamespace(
+        cfg=OmegaConf.create({}),
+        sample_rate=8000,
+        codec_model_samples_per_frame=1,
+        eos_id=99,
+        num_audio_codebooks=1,
+        tokenizer=None,
+        text_conditioning_tokenizer_name="bpe",
+        enable_phoneme_text_input=False,
+        text_phoneme_token_offset=0,
+        phoneme_text_bop_marker="",
+        phoneme_text_eop_marker="",
+        add_language_to_context_text=False,
+    )
+    runner = (
+        EasyMagpieMultiturnUserAudioInferenceRunner(model, EasyMagpieMultiturnUserAudioInferenceConfig(batch_size=1))
+        if multiturn
+        else EasyMagpieInferenceRunner(model, EasyMagpieInferenceConfig())
+    )
+    meta = {"manifest_path": str(manifest), "audio_dir": str(tmp_path)}
+    if probability is not None:
+        meta["load_normalized_text_percent"] = probability
+
+    runner.create_dataset({"ds": meta})
+
+    expected = probability if probability is not None else 1.0
+    assert captured["load_normalized_text_percent"] == expected
+    assert meta.get("load_normalized_text_percent") == probability
+    if not multiturn:
+        assert "load_normalized_text_percent" not in captured["dataset_meta"]["ds"]
+
+
+def _multiturn_text_dataset(tmp_path, monkeypatch, record, **kwargs):
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text(json.dumps(record) + "\n")
+    encoded_texts = []
+
+    def encode(text, **kwargs):
+        encoded_texts.append(text)
+        return [len(text)]
+
+    model = SimpleNamespace(
+        cfg=OmegaConf.create({"text_tokenizers": {"bpe": {}}}),
+        sample_rate=8000,
+        codec_model_samples_per_frame=1,
+        eos_id=99,
+        tokenizer=SimpleNamespace(encode=encode),
+        device=torch.device("cpu"),
+    )
+    monkeypatch.setattr(EasyMagpieMultiturnUserAudioDataset, "_load_audio_1d", lambda *args: torch.ones(8))
+    dataset = EasyMagpieMultiturnUserAudioDataset(str(manifest), str(tmp_path), model, **kwargs)
+    return dataset, model, encoded_texts
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "probability,normalized,expected",
+    [
+        (0.0, ["july fifteenth", "ten dollars"], ["July 15th", "$10", "call 12"]),
+        (1.0, ["july fifteenth", "ten dollars"], ["july fifteenth", "ten dollars", "call 12"]),
+        (1.0, ["july fifteenth", None, ""], ["july fifteenth", "$10", "call 12"]),
+        (1.0, "july fifteenth", ["july fifteenth", "$10", "call 12"]),
+        (1.0, None, ["July 15th", "$10", "call 12"]),
+        (0.5, ["july fifteenth", "ten dollars"], ["july fifteenth", "$10", "call 12"]),
+    ],
+)
+def test_multiturn_dataset_selects_each_turn_and_falls_back(tmp_path, monkeypatch, probability, normalized, expected):
+    draws = iter([0.2, 0.8])
+    monkeypatch.setattr(f"{DATASET_UTILS_MODULE}.random.random", lambda: next(draws))
+    record = {"text": ["July 15th", "$10", "call 12"], "normalized_text": normalized}
+    dataset, _, encoded_texts = _multiturn_text_dataset(
+        tmp_path, monkeypatch, record, load_normalized_text_percent=probability
+    )
+
+    batch = dataset.collate_fn([dataset[0]])
+
+    assert encoded_texts == expected
+    assert batch["turn_ids"] == [0, 1, 2]
+    assert dataset.records[0] == record
+
+
+@pytest.mark.unit
+def test_multiturn_dataset_prefers_normalized_input_when_probability_is_omitted(tmp_path, monkeypatch):
+    dataset, _, encoded_texts = _multiturn_text_dataset(
+        tmp_path, monkeypatch, {"text": "July 15th", "normalized_text": "july fifteenth"}
+    )
+
+    dataset.collate_fn([dataset[0]])
+
+    assert encoded_texts == ["july fifteenth"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("probability", [0.0, 1.0])
+def test_multiturn_saved_manifest_separates_model_input_from_metric_reference(tmp_path, monkeypatch, probability):
+    raw_text = ["July 15th", "$10"]
+    normalized_text = ["july fifteenth", "ten dollars"]
+    record = {"text": raw_text, "normalized_text": normalized_text}
+    dataset, model, _ = _multiturn_text_dataset(
+        tmp_path, monkeypatch, record, load_normalized_text_percent=probability
+    )
+    runner = EasyMagpieMultiturnUserAudioInferenceRunner(
+        model, EasyMagpieMultiturnUserAudioInferenceConfig(batch_size=1, save_debug_multiturn_audio=False)
+    )
+    monkeypatch.setattr(
+        runner,
+        "_run_multiturn_generation",
+        lambda batch: (
+            SimpleNamespace(audio=torch.zeros(1, 16), audio_len=torch.tensor([16])),
+            [(0, 0, 8), (1, 8, 16)],
+            [],
+            0,
+            None,
+        ),
+    )
+
+    runner.run_inference_on_dataset(
+        dataset,
+        str(tmp_path / "generated"),
+        manifest_records=[record],
+        audio_base_dir=str(tmp_path),
+        save_predicted_codes=False,
+    )
+
+    expected = normalized_text if probability == 1.0 else raw_text
+    saved = [json.loads(line) for line in Path(runner.evaluation_manifest_path).read_text().splitlines()]
+    assert [item["text"] for item in saved] == expected
+    assert [item["original_text"] for item in saved] == raw_text
+    assert [item["normalized_text"] for item in saved] == normalized_text
+    assert [_get_record_texts(item)[2] for item in saved] == normalized_text
+    assert dataset.records[0] == record
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("selected_text", ["July 15th", "july fifteenth"])
+def test_singleturn_saved_manifest_separates_model_input_from_metric_reference(tmp_path, selected_text):
+    class SelectedTextDataset(torch.utils.data.Dataset):
+        data_samples = [SimpleNamespace(text=selected_text)]
+
+        def __len__(self):
+            return 1
+
+        def __getitem__(self, index):
+            return {}
+
+        def collate_fn(self, batch):
+            return {}
+
+    source_record = {"text": "July 15th", "normalized_text": "july fifteenth"}
+    output = SimpleNamespace(
+        predicted_audio=torch.zeros(1, 8),
+        predicted_audio_lens=torch.tensor([8]),
+        predicted_codes=None,
+        predicted_codes_lens=None,
+        rtf_metrics={},
+    )
+    model = SimpleNamespace(tokenizer=None, sample_rate=8000, infer_batch=lambda *args, **kwargs: output)
+    runner = EasyMagpieInferenceRunner(model, EasyMagpieInferenceConfig(batch_size=1))
+
+    runner.run_inference_on_dataset(
+        SelectedTextDataset(),
+        str(tmp_path / "generated"),
+        manifest_records=[source_record],
+        audio_base_dir=str(tmp_path),
+        save_context_audio=False,
+        save_predicted_codes=False,
+    )
+
+    saved = json.loads(Path(runner.evaluation_manifest_path).read_text())
+    assert _get_record_texts(saved) == (selected_text, "july fifteenth", "july fifteenth")
+    assert saved["original_text"] == "July 15th"
+    assert runner.evaluation_audio_dir == str(tmp_path)
+    assert source_record == {"text": "July 15th", "normalized_text": "july fifteenth"}
 
 
 @pytest.mark.unit
@@ -683,7 +930,11 @@ def test_nemotron_tts_v2_infer_batch_accepts_compatibility_kwargs():
 
 
 class _FakeRunner:
+    def __init__(self):
+        self.dataset_metadata = []
+
     def create_dataset(self, dataset_meta):
+        self.dataset_metadata.append(dataset_meta)
         return [0]
 
     def run_inference_on_dataset(self, **kwargs):
@@ -722,17 +973,20 @@ def test_run_inference_and_evaluation_applies_evalset_override(tmp_path, monkeyp
             "audio_dir": str(tmp_path),
             "language": "de",
             "asr_model": {"name": "some/asr", "type": "whisper"},
+            "load_normalized_text_percent": 0.0,
         },
         # Brackets are non-verbal tags: stripping is enabled by this entry alone.
         "tags": {
             "manifest_path": str(manifest),
             "audio_dir": str(tmp_path),
             "strip_text_annotations_for_metrics": True,
+            "load_normalized_text_percent": 1.0,
         },
     }
 
+    runner = _FakeRunner()
     cer, ssim = run_inference_and_evaluation(
-        runner=_FakeRunner(),
+        runner=runner,
         checkpoint_name="ckpt",
         inference_config=_FakeInferenceConfig(),
         eval_config=eval_config,
@@ -749,4 +1003,334 @@ def test_run_inference_and_evaluation_applies_evalset_override(tmp_path, monkeyp
     assert emphasis.strip_text_annotations_for_metrics is False  # entry without the key inherits eval_config's False
     assert tags.strip_text_annotations_for_metrics is True
     assert tags.language == "en" and tags.with_utmosv2 is False  # CLI-level settings without an override are inherited
+    assert runner.dataset_metadata[0]["emphasis"]["load_normalized_text_percent"] == 0.0
+    assert runner.dataset_metadata[1]["tags"]["load_normalized_text_percent"] == 1.0
     assert (cer, ssim) == (0.0, 1.0)
+
+
+def _singleturn_inference_fixture(tmp_path, monkeypatch, num_samples):
+    seen = []
+    records = []
+    selected_texts = []
+    for i in range(num_samples):
+        records.append(
+            {
+                "text": f"raw {i}",
+                "normalized_text": f"normalized {i}",
+                "audio_filepath": f"target_{i}.wav",
+                "context_audio_filepath": f"context_{i}.wav" if i % 2 == 0 else None,
+            }
+        )
+        selected_texts.append(f"normalized {i}" if i % 2 else f"raw {i}")
+        (tmp_path / f"target_{i}.wav").write_bytes(f"target {i}".encode())
+        (tmp_path / f"context_{i}.wav").write_bytes(f"context {i}".encode())
+
+    class Dataset(torch.utils.data.Dataset):
+        data_samples = [SimpleNamespace(text=text) for text in selected_texts]
+
+        def __len__(self):
+            return num_samples
+
+        def __getitem__(self, idx):
+            return idx
+
+        def collate_fn(self, batch):
+            return {"text": torch.tensor(batch).unsqueeze(1), "text_lens": torch.ones(len(batch), dtype=torch.long)}
+
+    def infer(batch, **kwargs):
+        indices = batch["text"][:, 0]
+        seen.extend(indices.tolist())
+        return SimpleNamespace(
+            predicted_audio=indices[:, None].float().expand(-1, 8) / 10,
+            predicted_audio_lens=torch.full((len(indices),), 8),
+            predicted_codes=indices[:, None, None].expand(-1, 1, 2),
+            predicted_codes_lens=torch.full((len(indices),), 2),
+            rtf_metrics={},
+            timestamps=[{} for _ in indices],
+        )
+
+    def save_timestamps(audio_path, trace, **kwargs):
+        path = Path(audio_path).with_suffix(".timestamps.json")
+        path.write_text(json.dumps({"predicted_audio_filepath": audio_path, "text": kwargs["expected_input_text"]}))
+        return str(path.resolve())
+
+    monkeypatch.setattr(f"{INFERENCE_MODULE}.save_token_timestamps", save_timestamps)
+    monkeypatch.setattr(EasyMagpieInferenceRunner, "_batch_to_cuda", staticmethod(lambda batch: batch))
+    model = SimpleNamespace(
+        tokenizer=None, sample_rate=8000, bos_id=99, infer_batch=infer, configure_timestamps=lambda **kwargs: None
+    )
+    return Dataset, model, records, selected_texts, seen
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("num_samples,world_size", [(5, 3), (2, 4)])
+@pytest.mark.parametrize("save_context_audio", [False, True])
+def test_singleturn_shards_and_merges_every_sample_once(
+    tmp_path, monkeypatch, num_samples, world_size, save_context_audio
+):
+    Dataset, model, records, selected_texts, seen = _singleturn_inference_fixture(tmp_path, monkeypatch, num_samples)
+    output_dir = tmp_path / "generated"
+    for rank in range(world_size):
+        runner = EasyMagpieInferenceRunner(model, EasyMagpieInferenceConfig(batch_size=2, save_timestamps=True))
+        runner.set_distributed_context(rank, world_size)
+        rank_dir = output_dir / f"rank_{rank:04d}"
+        runner.run_inference_on_dataset(
+            Dataset(),
+            str(rank_dir),
+            manifest_records=records,
+            audio_base_dir=str(tmp_path),
+            save_context_audio=save_context_audio,
+            save_predicted_codes=True,
+        )
+        saved = [json.loads(line) for line in Path(runner.evaluation_manifest_path).read_text().splitlines()]
+        expected_indices = list(range(rank, num_samples, world_size))
+        assert [row["source_sample_idx"] for row in saved] == expected_indices
+        assert [row["text"] for row in saved] == [selected_texts[i] for i in expected_indices]
+        assert len(list(rank_dir.glob("predicted_audio_*.wav"))) == len(expected_indices)
+        for local_idx, (source_idx, row) in enumerate(zip(expected_indices, saved)):
+            assert _get_record_texts(row) == (
+                selected_texts[source_idx],
+                f"normalized {source_idx}",
+                f"normalized {source_idx}",
+            )
+            assert row["original_text"] == f"raw {source_idx}"
+            assert torch.load(rank_dir / f"predicted_codes_{local_idx}.pt", weights_only=True).eq(source_idx).all()
+            timestamp = json.loads(Path(row["timestamps_filepath"]).read_text())
+            assert timestamp["text"] == selected_texts[source_idx]
+            assert timestamp["predicted_audio_filepath"] == row["predicted_audio_filepath"]
+
+    assert sorted(seen) == list(range(num_samples))
+    assert [record["text"] for record in records] == [f"raw {i}" for i in range(num_samples)]
+
+    merged_path = inference_utils._merge_rank_outputs(
+        str(output_dir),
+        world_size,
+        save_predicted_codes=True,
+        manifest_name=Path(runner.evaluation_manifest_path).name,
+        expected_samples=num_samples,
+    )
+    merged = [json.loads(line) for line in Path(merged_path).read_text().splitlines()]
+    assert [row["source_sample_idx"] for row in merged] == list(range(num_samples))
+    assert [row["text"] for row in merged] == selected_texts
+    for i, row in enumerate(merged):
+        assert torch.load(output_dir / f"predicted_codes_{i}.pt", weights_only=True).eq(i).all()
+        assert (output_dir / row["audio_filepath"]).read_bytes() == f"target {i}".encode()
+        if i % 2 == 0:
+            assert (output_dir / row["context_audio_filepath"]).read_bytes() == f"context {i}".encode()
+        else:
+            assert row["context_audio_filepath"] is None
+        assert row["predicted_audio_filepath"] == str((output_dir / f"predicted_audio_{i}.wav").resolve())
+        timestamp = json.loads(Path(row["timestamps_filepath"]).read_text())
+        assert timestamp["text"] == selected_texts[i]
+        assert timestamp["predicted_audio_filepath"] == str((output_dir / f"predicted_audio_{i}.wav").resolve())
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("rank", [0, 1])
+def test_distributed_singleturn_evaluates_only_on_rank_zero(tmp_path, monkeypatch, rank):
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text(json.dumps({"text": "Hello.", "audio_filepath": "target.wav"}) + "\n")
+    inference_config = EasyMagpieInferenceConfig(batch_size=1, save_timestamps=True)
+    runner = EasyMagpieInferenceRunner(
+        SimpleNamespace(tokenizer=None, configure_timestamps=lambda **kwargs: None), inference_config
+    )
+    inference_calls, merge_calls, evaluation_calls = [], [], []
+    monkeypatch.setattr(f"{EXAMPLE_MODULE}._get_torchrun_rank_info", lambda: (rank, 2, rank))
+    monkeypatch.setattr(runner, "create_dataset", lambda meta: [0])
+
+    def infer(**kwargs):
+        inference_calls.append(kwargs)
+        runner.evaluation_manifest_path = str(Path(kwargs["output_dir"]) / "evaluation_manifest.jsonl")
+        return [], [], []
+
+    def merge(*args, **kwargs):
+        merge_calls.append((args, kwargs))
+        return str(manifest)
+
+    def evaluate(**kwargs):
+        evaluation_calls.append(kwargs)
+        return {"cer_cumulative": 0.0, "ssim_pred_context_avg": 1.0}, [{"cer": 0.0}]
+
+    monkeypatch.setattr(runner, "run_inference_on_dataset", infer)
+    monkeypatch.setattr(f"{EXAMPLE_MODULE}._wait_for_rank_manifests", lambda *args, **kwargs: None)
+    monkeypatch.setattr(f"{EXAMPLE_MODULE}._merge_rank_outputs", merge)
+    monkeypatch.setattr(f"{EXAMPLE_MODULE}.evaluate_generated_audio_dir", evaluate)
+    for name in ("create_violin_plot", "append_metrics_to_csv", "write_csv_header_if_needed"):
+        monkeypatch.setattr(f"{EXAMPLE_MODULE}.{name}", lambda *args, **kwargs: None)
+
+    result = run_inference_and_evaluation(
+        runner,
+        "test",
+        inference_config,
+        EvaluationConfig(with_fcd=False, with_utmosv2=False),
+        {"ds": {"manifest_path": str(manifest), "audio_dir": str(tmp_path)}},
+        ["ds"],
+        str(tmp_path / "out"),
+        {},
+        "",
+    )
+
+    assert len(inference_calls) == 1
+    assert Path(inference_calls[0]["output_dir"]).name == f"rank_{rank:04d}"
+    assert len(merge_calls) == len(evaluation_calls) == (1 if rank == 0 else 0)
+    assert result == ((0.0, 1.0) if rank == 0 else (None, None))
+    if rank == 0:
+        assert runner.timestamp_manifest_path == runner.evaluation_manifest_path
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("multiturn", [False, True])
+@pytest.mark.parametrize("decode_batch_size", [None, 0, 1, -1])
+def test_codec_decode_batch_size_cli_and_runner_override(multiturn, decode_batch_size):
+    from examples.tts.magpietts_inference import create_argument_parser
+
+    mode = "multiturn_user_audio" if multiturn else "single_turn"
+    argv = [
+        "--model_type",
+        "easy_magpie",
+        "--easy_magpie_inference_mode",
+        mode,
+        "--batch_size",
+        "1",
+        "--codecmodel_path",
+        "codec.nemo",
+        "--datasets_json_path",
+        "datasets.json",
+        "--out_dir",
+        "out",
+    ]
+    if decode_batch_size is not None:
+        argv += ["--codec_decode_batch_size", str(decode_batch_size)]
+    args = create_argument_parser().parse_args(argv)
+    config = inference_utils._build_easy_magpie_config(args)
+    model = SimpleNamespace(tokenizer=None, _codec_helper=SimpleNamespace(decode_batch_size=7))
+    runner_cls = EasyMagpieMultiturnUserAudioInferenceRunner if multiturn else EasyMagpieInferenceRunner
+    assert config.codec_decode_batch_size == decode_batch_size
+    if decode_batch_size == -1:
+        with pytest.raises(ValueError, match="non-negative"):
+            runner_cls(model, config)
+    else:
+        runner_cls(model, config)
+        assert model._codec_helper.decode_batch_size == (7 if decode_batch_size is None else decode_batch_size)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "version,load_mode,device",
+    [("v1", "nemo", "cpu"), ("v2", "nemo", "cuda"), ("v1", "checkpoint", "cuda:5"), ("v2", "checkpoint", "cpu")],
+)
+def test_easy_magpie_loader_pins_weight_restoration_to_selected_device(
+    tmp_path, monkeypatch, version, load_mode, device
+):
+    expected_device = torch.device("cuda:3" if device == "cuda" else device)
+    mapped_devices, moved_devices, selected_versions = [], [], []
+    model_cfg = OmegaConf.create({"model_type": version})
+    monkeypatch.setattr(inference_utils.torch.cuda, "current_device", lambda: 3)
+
+    class FakeModel:
+        def __init__(self, cfg=None):
+            self.cfg = cfg
+
+        def to(self, target):
+            moved_devices.append(target)
+            return self
+
+        def eval(self):
+            return self
+
+        def float(self):
+            return self
+
+        def load_state_dict(self, state):
+            assert state == {}
+
+        @classmethod
+        def restore_from(cls, path, **kwargs):
+            mapped_devices.append(kwargs["map_location"])
+            return cls()
+
+    def read_config(cls, path, **kwargs):
+        assert kwargs["return_config"]
+        mapped_devices.append(kwargs["map_location"])
+        return model_cfg
+
+    def select_model(cfg):
+        selected_versions.append(cfg.model_type)
+        return FakeModel
+
+    def load_weights(path, **kwargs):
+        mapped_devices.append(kwargs["map_location"])
+        return {"state_dict": {}}
+
+    monkeypatch.setattr(EasyMagpieTTSInferenceModel, "restore_from", classmethod(read_config))
+    monkeypatch.setattr(inference_utils, "select_easy_magpie_model_class", select_model)
+    monkeypatch.setattr(inference_utils.torch, "load", load_weights)
+    if load_mode == "checkpoint":
+        hparams = tmp_path / "model.yaml"
+        OmegaConf.save(model_cfg, hparams)
+        config = ModelLoadConfig(hparams_file=str(hparams), checkpoint_file="model.ckpt")
+    else:
+        config = ModelLoadConfig(nemo_file="model.nemo")
+
+    model, _ = load_easy_magpie_model(config, device=device)
+
+    assert isinstance(model, FakeModel)
+    assert selected_versions == [version]
+    assert mapped_devices == [expected_device] * (2 if load_mode == "nemo" else 1)
+    assert moved_devices == [expected_device]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("source_indices", [[0, 0], [0]])
+def test_merge_rejects_duplicate_or_missing_samples_before_removing_outputs(tmp_path, source_indices):
+    sentinel = tmp_path / "predicted_audio_99.wav"
+    sentinel.write_bytes(b"previous successful output")
+    for rank in range(2):
+        rank_dir = tmp_path / f"rank_{rank:04d}"
+        rank_dir.mkdir()
+        records = [{"source_sample_idx": source_indices[rank]}] if rank < len(source_indices) else []
+        (rank_dir / "evaluation_manifest.jsonl").write_text("".join(json.dumps(row) + "\n" for row in records))
+
+    with pytest.raises(ValueError, match="every source sample"):
+        inference_utils._merge_rank_outputs(str(tmp_path), 2, save_predicted_codes=False, expected_samples=2)
+
+    assert sentinel.read_bytes() == b"previous successful output"
+
+
+@pytest.mark.unit
+def test_generic_merge_preserves_multiturn_records_and_accepts_empty_ranks(tmp_path):
+    template = "multiturn_user_audio_turn_manifest_rank{rank:04d}.jsonl"
+    for rank, turns in [(0, [0, 1]), (1, []), (2, [0])]:
+        rank_dir = tmp_path / f"rank_{rank:04d}"
+        rank_dir.mkdir()
+        records = []
+        for local_idx, turn in enumerate(turns):
+            for prefix in ("predicted_audio", "target_audio", "context_audio"):
+                (rank_dir / f"{prefix}_{local_idx}.wav").write_bytes(f"{prefix} {rank} {turn}".encode())
+            records.append(
+                {
+                    "source_sample_idx": rank,
+                    "turn_id": turn,
+                    "text": f"raw {rank} {turn}",
+                    "normalized_text": f"normalized {rank} {turn}",
+                    "audio_filepath": f"target_audio_{local_idx}.wav",
+                    "context_audio_filepath": f"context_audio_{local_idx}.wav",
+                }
+            )
+        (rank_dir / template.format(rank=rank)).write_text("".join(json.dumps(row) + "\n" for row in records))
+
+    inference_utils._wait_for_rank_manifests(str(tmp_path), 3, template, timeout_sec=1)
+    merged_path = inference_utils._merge_rank_outputs(str(tmp_path), 3, False, manifest_name=template)
+    rows = [json.loads(line) for line in Path(merged_path).read_text().splitlines()]
+
+    assert [(row["source_sample_idx"], row["turn_id"]) for row in rows] == [(0, 0), (0, 1), (2, 0)]
+    for index, row in enumerate(rows):
+        rank, turn = row["source_sample_idx"], row["turn_id"]
+        assert _get_record_texts(row) == (
+            f"raw {rank} {turn}",
+            f"normalized {rank} {turn}",
+            f"normalized {rank} {turn}",
+        )
+        for prefix, key in [("target_audio", "audio_filepath"), ("context_audio", "context_audio_filepath")]:
+            assert (tmp_path / row[key]).read_bytes() == f"{prefix} {rank} {turn}".encode()
+        assert (tmp_path / f"predicted_audio_{index}.wav").read_bytes() == f"predicted_audio {rank} {turn}".encode()

@@ -40,6 +40,8 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     stack_tensors,
     tokenize_text_with_phoneme_spans,
 )
+from nemo.core.utils.numba_utils import __NUMBA_MINIMUM_VERSION__ as NUMBA_MINIMUM_VERSION
+from nemo.core.utils.numba_utils import NUMBA_INSTALLATION_MESSAGE, numba_cpu_is_supported
 
 
 class _FakeTextTokenizer:
@@ -1115,3 +1117,90 @@ class TestGetTokenizerForLanguage:
         )
 
         assert result == "english_phoneme"
+
+
+_requires_rnnt_numba = pytest.mark.skipif(
+    not numba_cpu_is_supported(NUMBA_MINIMUM_VERSION),
+    reason=f"RNNTLoss has not been compiled with appropriate numba version. {NUMBA_INSTALLATION_MESSAGE}",
+)
+
+
+class TestNemoTranscriberWithPrompt:
+    """The ``nemo_with_prompt`` evaluator transcriber accepts every ASR model whose transcription takes a language."""
+
+    @staticmethod
+    def _make_transcriber(monkeypatch, model):
+        monkeypatch.setattr(tts_dataset_utils.ASRModel, "restore_from", lambda restore_path: model)
+        return tts_dataset_utils.NemoTranscriberWithPrompt(device="cpu", model_name="tiny.nemo")
+
+    @staticmethod
+    def _write_wav(tmp_path):
+        import soundfile as sf
+
+        audio_path = tmp_path / "audio.wav"
+        sf.write(audio_path, np.random.default_rng(0).uniform(-0.1, 0.1, 8000).astype(np.float32), 16000)
+        return audio_path
+
+    @pytest.mark.unit
+    @_requires_rnnt_numba
+    @pytest.mark.parametrize(("language", "expected_target_lang"), [("de", "de-DE"), (None, None)])
+    def test_rnnt_prompt_model_transcribes_with_language(
+        self, test_data_dir, monkeypatch, tmp_path, language, expected_target_lang
+    ):
+        from nemo.collections.asr.models.rnnt_bpe_models_prompt import (
+            EncDecRNNTBPEModelWithPrompt,
+            RNNTPromptTranscribeConfig,
+        )
+        from tests.collections.asr.test_asr_rnnt_prompt_language import build_config
+
+        model = EncDecRNNTBPEModelWithPrompt(cfg=build_config(test_data_dir, prompt_enabled=True))
+        transcriber = self._make_transcriber(monkeypatch, model)
+
+        seen_configs = []
+        original_transcribe_forward = model._transcribe_forward
+
+        def spy_transcribe_forward(batch, trcfg):
+            seen_configs.append(trcfg)
+            return original_transcribe_forward(batch, trcfg)
+
+        monkeypatch.setattr(model, "_transcribe_forward", spy_transcribe_forward)
+
+        transcripts = transcriber.transcribe([str(self._write_wav(tmp_path))], batch_size=1, language=language)
+
+        assert len(transcripts) == 1 and isinstance(transcripts[0], str)
+        assert seen_configs and isinstance(seen_configs[0], RNNTPromptTranscribeConfig)
+        assert seen_configs[0].target_lang == expected_target_lang
+        assert seen_configs[0].use_lhotse is False
+
+    @pytest.mark.unit
+    def test_hybrid_prompt_model_gets_its_own_config_and_tags_are_stripped(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from nemo.collections.asr.models import EncDecHybridRNNTCTCBPEModelWithPrompt
+        from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models_prompt import HybridRNNTCTCPromptTranscribeConfig
+
+        seen_configs = []
+        model = SimpleNamespace(
+            get_transcribe_config=EncDecHybridRNNTCTCBPEModelWithPrompt.get_transcribe_config,
+            transcribe=lambda audio, override_config: seen_configs.append(override_config)
+            or [SimpleNamespace(text="Hello. <ja-JP>")],
+        )
+        model.to = lambda device: model
+        model.eval = lambda: model
+        transcriber = self._make_transcriber(monkeypatch, model)
+
+        # The language tag that prompt-conditioned models append is not part of the transcript.
+        assert transcriber.transcribe(["a.wav"], batch_size=2, language="ja") == ["Hello."]
+        assert isinstance(seen_configs[0], HybridRNNTCTCPromptTranscribeConfig)
+        assert seen_configs[0].target_lang == "ja-JP"
+        assert seen_configs[0].batch_size == 2
+
+    @pytest.mark.unit
+    @_requires_rnnt_numba
+    def test_model_without_prompt_support_raises(self, test_data_dir, monkeypatch):
+        from nemo.collections.asr.models import EncDecRNNTBPEModel
+        from tests.collections.asr.test_asr_rnnt_prompt_language import build_config
+
+        model = EncDecRNNTBPEModel(cfg=build_config(test_data_dir, prompt_enabled=False))
+        with pytest.raises(ValueError, match="does not support prompting"):
+            self._make_transcriber(monkeypatch, model)

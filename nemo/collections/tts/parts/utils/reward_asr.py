@@ -17,7 +17,6 @@
 import abc
 import json
 import os
-import re
 import selectors
 import subprocess
 import sys
@@ -35,6 +34,7 @@ from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models_prompt import (
 from nemo.collections.asr.models.rnnt_bpe_models_prompt import EncDecRNNTBPEModelWithPrompt, RNNTPromptTranscribeConfig
 from nemo.collections.asr.parts.mixins.transcription import TranscribeConfig
 from nemo.collections.tts.parts.utils.helpers import transcribe_with_whisper_from_filepaths
+from nemo.collections.tts.parts.utils.tts_dataset_utils import ASR_LANGUAGE_TAG_PATTERN
 from nemo.utils import logging
 
 DEFAULT_NEMOTRON_LANGUAGE_MAP = {
@@ -53,7 +53,7 @@ DEFAULT_NEMOTRON_LANGUAGE_MAP = {
 }
 # Languages routed by the legacy ``reward_asr_model`` options; override with ``reward_asr_languages``.
 DEFAULT_REWARD_ASR_LANGUAGES = tuple(DEFAULT_NEMOTRON_LANGUAGE_MAP)
-NEMOTRON_LANGUAGE_TAG_PATTERN = re.compile(r"\s*<[a-z]{2,3}(?:-[A-Za-z]{2,4})?>\s*")
+NEMOTRON_LANGUAGE_TAG_PATTERN = ASR_LANGUAGE_TAG_PATTERN
 
 
 class RewardASRBackend(abc.ABC):

@@ -30,7 +30,7 @@ from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.utils import asr_module_utils
 from nemo.collections.asr.parts.utils.eou_utils import (
     get_hypotheses_lengths,
-    get_utterance_end_token_ids,
+    get_restart_token_ids,
     reset_hypothesis_decoder_state_,
 )
 from nemo.collections.asr.parts.utils.prompt_language_utils import resolve_prompt_index
@@ -803,14 +803,17 @@ class ASRModuleMixin(ASRAdapterModelMixin):
         cache_last_channel_len: Optional[Tensor] = None,
     ):
         """
-        For streams whose hypothesis emitted ``<EOU>``/``<EOB>`` after its first ``prev_lengths[i]`` tokens,
-        reset the decoder state (keeping tokens and timestamps) and zero the encoder cache, so that the next
-        streaming step starts a new utterance. No-op for models without these tokens.
+        For streams whose hypothesis emitted a token from ``decoding.restart_after_tokens`` (e.g. ``<EOU>``) after its
+        first ``prev_lengths[i]`` tokens, reset the decoder state (keeping tokens and timestamps) and zero the encoder
+        cache, so that the next streaming step starts a new utterance. No-op if ``restart_after_tokens`` is not set.
+        Frames after the restart token within the same chunk are still decoded with the previous state.
 
         Returns:
             The updated (cache_last_channel, cache_last_time, cache_last_channel_len).
         """
-        token_ids = get_utterance_end_token_ids(getattr(self, 'tokenizer', None))
+        token_ids = get_restart_token_ids(self)
+        if not token_ids:
+            return cache_last_channel, cache_last_time, cache_last_channel_len
         flags = [
             hyp is not None and any(int(t) in token_ids for t in hyp.y_sequence[prev_len:])
             for hyp, prev_len in zip(hypotheses, prev_lengths)

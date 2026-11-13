@@ -297,6 +297,23 @@ python speech_to_text_eou_eval.py \
 
 The script will show the WER metrics along with EOU metrics like latency, early cutoff rate, miss detection rate, etc.
 
+### 4.1 Inference on audio with multiple utterances
+
+The model is trained on single-utterance samples, so by default it stops emitting tokens after the first `<EOU>`. To transcribe audio with several utterances, set `decoding.restart_after_tokens`. After each of these tokens, the encoder and decoder then restart from a fresh state:
+```python
+from omegaconf import open_dict
+
+decoding_cfg = model.cfg.decoding
+with open_dict(decoding_cfg):
+    decoding_cfg.restart_after_tokens = ["<EOU>", "<EOB>"]
+model.change_decoding_strategy(decoding_cfg)
+model.transcribe(["long_audio.wav"])
+```
+For streaming, use `rnnt_decoding.restart_after_tokens='["<EOU>","<EOB>"]'` with `speech_to_text_cache_aware_streaming_infer.py`, or `++asr.decoding.restart_after_tokens='["<EOU>","<EOB>"]'` with `asr_streaming_infer.py`. Limitations:
+- Only greedy decoding is supported (no beam search). `partial_hypothesis` is not supported in `transcribe()`.
+- `transcribe()` re-encodes the rest of the audio after each restart, so its cost grows with the number of utterances times the audio length. Use streaming inference for long recordings.
+- In streaming, the restart happens at the next chunk boundary.
+
 
 ## 5. Model deployment with voice agent
 

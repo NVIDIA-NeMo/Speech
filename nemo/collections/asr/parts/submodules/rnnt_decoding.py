@@ -1899,6 +1899,10 @@ class RNNTDecodingConfig:
     # type of timestamps to calculate
     rnnt_timestamp_type: str = "all"  # can be char, word or all for both
 
+    # Tokens (e.g. ['<EOU>', '<EOB>'] for end-of-utterance models) after which `transcribe()` and cache-aware
+    # streaming restart the encoder and decoder from a fresh state. Greedy decoding only.
+    restart_after_tokens: Optional[List[str]] = None
+
     # greedy decoding config
     greedy: rnnt_greedy_decoding.GreedyBatchedRNNTInferConfig = field(
         default_factory=rnnt_greedy_decoding.GreedyBatchedRNNTInferConfig

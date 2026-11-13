@@ -22,10 +22,6 @@ import torch
 from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import LabelLoopingStateItem
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 
-# End-of-utterance and end-of-backchannel tokens of ASR-EOU models. These models are trained on single-utterance
-# samples, so decoding must restart from a fresh state after emitting one of them.
-UTTERANCE_END_TOKENS = ('<EOU>', '<EOB>')
-
 
 @dataclass
 class EOUResult:
@@ -305,17 +301,27 @@ def aggregate_eou_metrics(eou_metrics: List[EOUResult], target_percentiles: List
     return metrics
 
 
-def get_utterance_end_token_ids(tokenizer) -> List[int]:
-    """Ids of the ``<EOU>``/``<EOB>`` tokens present in the tokenizer vocabulary."""
+def get_restart_token_ids(model) -> List[int]:
+    """
+    Ids of the tokens configured in ``decoding.restart_after_tokens`` (e.g. ``['<EOU>', '<EOB>']``),
+    after which Transducer decoding restarts from a fresh state. Empty if not configured.
+    """
+    tokens = model.decoding.cfg.get('restart_after_tokens', None)
+    if not tokens:
+        return []
+    if model.decoding.cfg.strategy not in ('greedy', 'greedy_batch'):
+        raise NotImplementedError(
+            f"`restart_after_tokens` is only supported with greedy decoding, got strategy={model.decoding.cfg.strategy}"
+        )
+    tokenizer = getattr(model, 'tokenizer', None)
+    if tokenizer is None:
+        raise ValueError("`restart_after_tokens` requires a model with a subword tokenizer.")
     token_ids = []
-    for token in UTTERANCE_END_TOKENS:
-        try:
-            token_id = tokenizer.token_to_id(token)
-        except Exception:  # no tokenizer, or no single-token lookup (e.g. aggregate tokenizer)
-            continue
-        # unknown tokens are mapped to <unk> by most tokenizers, so verify the round trip
-        if token_id is not None and token_id >= 0 and tokenizer.ids_to_tokens([token_id]) == [token]:
-            token_ids.append(int(token_id))
+    for token in tokens:
+        token_id = tokenizer.token_to_id(token)
+        if tokenizer.ids_to_tokens([token_id]) != [token]:
+            raise ValueError(f"`restart_after_tokens`: {token} is not a single token in the model vocabulary.")
+        token_ids.append(int(token_id))
     return token_ids
 
 
@@ -343,29 +349,12 @@ def reset_hypothesis_decoder_state_(hypothesis: Hypothesis, decoding_computer=No
     hypothesis.last_token = None
 
 
-def truncate_hypothesis_after_first_utterance_end_(
-    hypothesis: Hypothesis, token_ids: Sequence[int], num_frames: int
-) -> Optional[int]:
-    """
-    Truncate a raw hypothesis (in place) right after its first utterance-end token,
-    if that token was emitted before the last frame. Returns that token's frame index, or None if not truncated.
-    """
-    tokens = _to_list(hypothesis.y_sequence)
-    pos = next((i for i, token in enumerate(tokens) if token in token_ids), None)
-    if pos is None or int(hypothesis.timestamp[pos]) >= num_frames - 1:
-        return None
-    frame = int(hypothesis.timestamp[pos])
-    hypothesis.y_sequence = hypothesis.y_sequence[: pos + 1]
-    hypothesis.timestamp = hypothesis.timestamp[: pos + 1]
-    if hypothesis.token_duration is not None and len(hypothesis.token_duration) > pos + 1:
-        hypothesis.token_duration = hypothesis.token_duration[: pos + 1]
-    if hypothesis.non_blank_step_confidence_precomputed is not None:
-        hypothesis.non_blank_step_confidence_precomputed = hypothesis.non_blank_step_confidence_precomputed[: pos + 1]
-    if hypothesis.alignments is not None:
-        hypothesis.alignments = hypothesis.alignments[: frame + 1]
-    if hypothesis.frame_confidence is not None:
-        hypothesis.frame_confidence = hypothesis.frame_confidence[: frame + 1]
-    return frame
+def find_restart_frame(hypothesis: Hypothesis, token_ids: Sequence[int], num_frames: int) -> Optional[int]:
+    """Frame of the first token from ``token_ids`` emitted before the last frame, or None."""
+    for token, frame in zip(_to_list(hypothesis.y_sequence), _to_list(hypothesis.timestamp)):
+        if token in token_ids and frame < num_frames - 1:
+            return int(frame)
+    return None
 
 
 def append_hypothesis_segment_(hypothesis: Hypothesis, segment: Hypothesis, frame_offset: int) -> None:
@@ -377,9 +366,11 @@ def append_hypothesis_segment_(hypothesis: Hypothesis, segment: Hypothesis, fram
     token_duration = hypothesis.token_duration
     if isinstance(token_duration, torch.Tensor) and isinstance(segment.token_duration, torch.Tensor):
         token_duration = torch.cat((token_duration, segment.token_duration), dim=0)
+    elif isinstance(token_duration, list) and isinstance(segment.token_duration, list):
+        token_duration = token_duration + segment.token_duration
     hypothesis.merge_(segment)  # merge_ does not handle token_duration
     hypothesis.token_duration = token_duration
 
 
-def _to_list(tokens) -> list:
-    return tokens.tolist() if isinstance(tokens, torch.Tensor) else list(tokens)
+def _to_list(values) -> list:
+    return values.tolist() if isinstance(values, torch.Tensor) else list(values)

@@ -221,6 +221,8 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
         prompt_vectors: Tensor | None = None,
     ) -> tuple[list[Hypothesis], CacheAwareContext]:
         """Cache-aware MALSD encode/decode step for one chunk."""
+        if self.asr_model.decoding.cfg.get('restart_after_tokens', None):
+            raise NotImplementedError("`decoding.restart_after_tokens` is not supported with MALSD beam search.")
         if processed_signal.device != self.device:
             processed_signal = processed_signal.to(self.device)
 

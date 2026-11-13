@@ -622,7 +622,9 @@ class AdapterModuleMixin(ABC):
             supported_adapter_types = self.get_accepted_adapter_types()
 
         if len(supported_adapter_types) > 0:
-            test = model_utils.import_class_by_path(adapter_cfg['_target_'])
+            from nemo.core.classes.common import _get_allowed_target_class
+
+            test = _get_allowed_target_class(adapter_cfg['_target_'])
             for _type in supported_adapter_types:
                 # TODO: (@adithyare) should revisit if subclass is the best check...
                 if issubclass(test, _type):

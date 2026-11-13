@@ -157,7 +157,7 @@ class EasyMagpieTTSForConditionalGeneration(
 
     # Keep small per-step tensors GPU-resident across steps (no D2H/H2D).
     strict_worker_feedback = True
-    gpu_resident_buffer_keys: set[str] = {"last_audio_codes", "last_phoneme_token"}
+    gpu_resident_buffer_keys: set[str] = {"last_audio_codes", "last_phoneme_token", "phoneme_ended"}
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
         super().__init__()
@@ -1587,33 +1587,39 @@ class EasyMagpieTTSForConditionalGeneration(
             if appended:
                 info_update["text_tokens"] = text_tokens
         if decode_offset < len(text_tokens):
-            self._dec_text_tokens[start] = int(text_tokens[decode_offset])
-            self._dec_text_mask[start] = 1
+            self._dec_text_tokens[start : start + 1].fill_(int(text_tokens[decode_offset]))
+            self._dec_text_mask[start : start + 1].fill_(1)
         else:
-            self._dec_text_mask[start] = 0
+            self._dec_text_mask[start : start + 1].fill_(0)
 
         # ── Phoneme channel ── opens at decode step == ``phonemes_delay`` (seeded
         # with phoneme BOS), then feeds back the previous step's prediction, and
         # closes one step after the model emits the phoneme EOS (sticky flag).
         if self.has_phoneme:
-            phoneme_ended = bool(info_dict.get("phoneme_ended", False))
-            feed_eos = False
-            if phoneme_ended or decode_offset < self.phonemes_delay:
-                self._dec_phoneme_valid[start] = 0
+            phoneme_ended = info_dict.get("phoneme_ended", False)
+            if isinstance(phoneme_ended, torch.Tensor):
+                phoneme_ended = phoneme_ended.to(device=device, dtype=torch.bool)
+            else:
+                # Initial state and multiturn prefill resets are host booleans.
+                # A device fill avoids uploading a host scalar every decode step.
+                phoneme_ended = torch.empty((), device=device, dtype=torch.bool).fill_(bool(phoneme_ended))
+            if decode_offset < self.phonemes_delay:
+                self._dec_phoneme_valid[start : start + 1].zero_()
             elif decode_offset == self.phonemes_delay:
                 self._dec_phoneme_tokens[start].fill_(self.phoneme_bos_id)
-                self._dec_phoneme_valid[start] = 1
+                self._dec_phoneme_valid[start].copy_(~phoneme_ended)
             else:
                 last_phon = info_dict.get("last_phoneme_token")
                 if isinstance(last_phon, torch.Tensor) and last_phon.numel() > 0:
                     p = last_phon.to(device=device, dtype=torch.long).reshape(-1)[: self.arch.phoneme_stacking_factor]
                     self._dec_phoneme_tokens[start, : p.shape[0]].copy_(p)
-                    self._dec_phoneme_valid[start] = 1
-                    feed_eos = bool((p == self.phoneme_eos_id).any())
+                    # Consume EOS once, then mask subsequent inputs using the
+                    # previous state. Never modify an earlier request update.
+                    self._dec_phoneme_valid[start].copy_(~phoneme_ended)
+                    phoneme_ended = phoneme_ended | (p == self.phoneme_eos_id).any()
                 else:
-                    self._dec_phoneme_valid[start] = 0
-            if phoneme_ended or feed_eos:
-                info_update["phoneme_ended"] = True
+                    self._dec_phoneme_valid[start : start + 1].zero_()
+            info_update["phoneme_ended"] = phoneme_ended
 
         # ── Audio channel ── opens at decode step == ``speech_delay`` (seeded with
         # audio BOS), then feeds back the previous frame's codes. For the leading
@@ -1622,7 +1628,7 @@ class EasyMagpieTTSForConditionalGeneration(
         # stability but its codes for those frames are discarded by the caller and
         # never fed back here.
         if decode_offset < self.speech_delay:
-            self._dec_audio_valid[start] = 0
+            self._dec_audio_valid[start : start + 1].fill_(0)
         elif decode_offset == self.speech_delay:
             if info_dict.get("user_audio_prefilled") and self.arch.use_user_speaking_end_token:
                 # Native multiturn inference places USER_SPEAKING_END in the
@@ -1630,17 +1636,17 @@ class EasyMagpieTTSForConditionalGeneration(
                 self._dec_audio_codes[start].fill_(self.arch.audio_user_speaking_end_id)
             else:
                 self._dec_audio_codes[start].fill_(self.arch.audio_bos_id)
-            self._dec_audio_valid[start] = 1
+            self._dec_audio_valid[start : start + 1].fill_(1)
         else:
             last_codes = info_dict.get("last_audio_codes")
             if isinstance(last_codes, torch.Tensor) and last_codes.numel() > 0:
                 c = last_codes.to(device=device, dtype=torch.long).reshape(-1)[: self.num_codebooks]
                 self._dec_audio_codes[start, : c.shape[0]].copy_(c)
-                self._dec_audio_valid[start] = 1
+                self._dec_audio_valid[start : start + 1].fill_(1)
             else:
                 # Fallback (should not happen once audio has started): seed BOS.
                 self._dec_audio_codes[start].fill_(self.arch.audio_bos_id)
-                self._dec_audio_valid[start] = 1
+                self._dec_audio_valid[start : start + 1].fill_(1)
 
         inputs_embeds_out = torch.zeros((1, self.embedding_dim), device=device, dtype=self._combined_embeddings.dtype)
         return input_ids, inputs_embeds_out, info_update

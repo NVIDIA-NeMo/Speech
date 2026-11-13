@@ -127,7 +127,7 @@ class SquareRootConstantPolicy(_LRScheduler):
         else:
             self.constant_steps = 0
 
-        self.constant_lr = 1 / (constant_steps**0.5)
+        self.constant_lr = 1 / (self.constant_steps**0.5) if self.constant_steps > 0 else 1.0
         self.min_lr = min_lr
         super().__init__(optimizer, last_epoch)
 
@@ -304,6 +304,7 @@ class WarmupAnnealHoldPolicy(_LRScheduler):
             constant_steps is not None and constant_ratio is not None
         ), "Either use constant_steps or constant_ratio"
         assert warmup_ratio is None or max_steps is not None, "If there is a ratio, there should be a total steps"
+        assert constant_ratio is None or max_steps is not None, "If there is a ratio, there should be a total steps"
 
         # It is necessary to assign all attributes *before* __init__,
         # as class is wrapped by an inner class.
@@ -506,13 +507,13 @@ class CosineAnnealing(WarmupAnnealHoldPolicy):
         # Cosine Schedule for Megatron LM, slightly different warmup schedule + constant LR at the end.
         new_lrs = [
             _linear_warmup_with_cosine_annealing(
-                max_lr=self.base_lrs[0],
+                max_lr=initial_lr,
                 warmup_steps=self.warmup_steps,
                 step=step,
                 decay_steps=self.decay_steps,
                 min_lr=self.min_lr,
             )
-            for _ in self.base_lrs
+            for initial_lr in self.base_lrs
         ]
         return new_lrs
 
@@ -646,9 +647,8 @@ class WarmupAnnealing(WarmupPolicy):
         super().__init__(optimizer=optimizer, max_steps=max_steps, last_epoch=last_epoch, min_lr=min_lr, **kwargs)
 
     def _get_lr(self, step):
-        delta_lr = self.base_lrs[0] - self.min_lr
         mult = (step - self.warmup_steps) / (self.max_steps - self.warmup_steps)
-        out_lr = [self.min_lr + (1 - mult) * delta_lr for _ in self.base_lrs]
+        out_lr = [self.min_lr + (1 - mult) * (initial_lr - self.min_lr) for initial_lr in self.base_lrs]
         return out_lr
 
 

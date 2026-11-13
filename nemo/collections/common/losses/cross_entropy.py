@@ -31,10 +31,12 @@ class CrossEntropyLoss(nn.CrossEntropyLoss, Serialization, Typing):
     @property
     def input_types(self):
         """Returns definitions of module input ports."""
+        mask_type = NeuralType(['B'] + ['ANY'] * (self._logits_dim - 2), MaskType(), optional=True)
         return {
             "logits": NeuralType(['B'] + ['ANY'] * (self._logits_dim - 1), LogitsType()),
             "labels": NeuralType(['B'] + ['ANY'] * (self._logits_dim - 2), LabelsType()),
-            "loss_mask": NeuralType(['B'] + ['ANY'] * (self._logits_dim - 2), MaskType(), optional=True),
+            "loss_mask": mask_type,
+            "output_mask": mask_type,
         }
 
     @property
@@ -56,13 +58,17 @@ class CrossEntropyLoss(nn.CrossEntropyLoss, Serialization, Typing):
         self._logits_dim = logits_ndim
 
     @typecheck()
-    def forward(self, logits, labels, loss_mask=None):
+    def forward(self, logits, labels, loss_mask=None, output_mask=None):
         """
         Args:
             logits (float): output of the classifier
             labels (long): ground truth labels
             loss_mask (bool/float/int): tensor to specify the masking
+            output_mask (bool/float/int): alias for loss_mask
         """
+        if loss_mask is None and output_mask is not None:
+            loss_mask = output_mask
+
         logits_flatten = torch.flatten(logits, start_dim=0, end_dim=-2)
         labels_flatten = torch.flatten(labels, start_dim=0, end_dim=-1)
 
@@ -74,7 +80,9 @@ class CrossEntropyLoss(nn.CrossEntropyLoss, Serialization, Typing):
             labels_flatten = labels_flatten[loss_mask_flatten]
 
         if len(labels_flatten) == 0:
-            return super().forward(logits, torch.argmax(logits, dim=-1))
+            if self.reduction == 'none':
+                return logits.new_empty(0)
+            return 0.0 * logits.sum()
 
         loss = super().forward(logits_flatten, labels_flatten)
         return loss
@@ -88,10 +96,12 @@ class NLLLoss(nn.NLLLoss, Serialization, Typing):
     @property
     def input_types(self):
         """Returns definitions of module input ports."""
+        mask_type = NeuralType(['B'] + ['ANY'] * (self._log_probs_dim - 2), MaskType(), optional=True)
         return {
-            "log_probs": NeuralType(("B", "T", "D"), LogprobsType()),
-            "labels": NeuralType(("B", "T"), LabelsType()),
-            "output_mask": NeuralType(("B", "T"), MaskType(), optional=True),
+            "log_probs": NeuralType(['B'] + ['ANY'] * (self._log_probs_dim - 1), LogprobsType()),
+            "labels": NeuralType(['B'] + ['ANY'] * (self._log_probs_dim - 2), LabelsType()),
+            "loss_mask": mask_type,
+            "output_mask": mask_type,
         }
 
     @property
@@ -113,13 +123,17 @@ class NLLLoss(nn.NLLLoss, Serialization, Typing):
         self._log_probs_dim = log_probs_ndim
 
     @typecheck()
-    def forward(self, log_probs, labels, loss_mask=None):
+    def forward(self, log_probs, labels, loss_mask=None, output_mask=None):
         """
         Args:
             log_probs (float): output log probability tensor
             labels (long): ground truth labels
             loss_mask (bool/float/int): tensor to specify the masking
+            output_mask (bool/float/int): alias for loss_mask
         """
+        if loss_mask is None and output_mask is not None:
+            loss_mask = output_mask
+
         log_probs_flatten = torch.flatten(log_probs, start_dim=0, end_dim=-2)
         labels_flatten = torch.flatten(labels, start_dim=0, end_dim=-1)
 
@@ -131,7 +145,9 @@ class NLLLoss(nn.NLLLoss, Serialization, Typing):
             labels_flatten = labels_flatten[loss_mask_flatten]
 
         if len(labels_flatten) == 0:
-            return super().forward(log_probs, torch.argmax(log_probs, dim=-1))
+            if self.reduction == 'none':
+                return log_probs.new_empty(0)
+            return 0.0 * log_probs.sum()
 
         loss = super().forward(log_probs_flatten, labels_flatten)
         return loss

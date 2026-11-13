@@ -21,10 +21,13 @@ dataset-level ``.idxpack``.
 The input YAML may contain nested groups and transform wrappers. This initial
 integration packs the formats consumed by the indexed runtime: native NeMo
 manifests/tars, Nemotron text JSONL/tars, and ShareGPT/multimodal-conversation
-JSONL manifests. Native NeMo conversion reads indexed manifest rows and tar
-headers once to embed an exact row-to-member ordinal map; it never reads audio
-payloads. Other collections are copied directly from existing ``.idx`` files,
-normally from ``--indexes-root``. Native tar sidecars keep their headerless
+JSONL manifests. Lhotse Shar (``lhotse_shar``) entries are packed by Lhotse's
+``write_shar_index_pack``: one pack holds every Shar source (directory or
+per-field mapping) of the input_cfg, which then must not mix other types.
+Native NeMo conversion reads indexed manifest rows and tar headers once to
+embed an exact row-to-member ordinal map; it never reads audio payloads. Other
+collections are copied directly from existing ``.idx`` files, normally from
+``--indexes-root``. Native tar sidecars keep their headerless
 uint64 layout. The converter determines compatibility from the data itself: a
 sidecar is current exactly when its sentinel equals the physical local or
 remote source size. Stale sidecars fail before packing; rebuild them with
@@ -90,6 +93,7 @@ from nemo.collections.common.data.lhotse.indexed_adapters import (
     validate_wds_v2_tar_index,
     wds_v2_index_path,
 )
+from nemo.collections.common.data.lhotse.nemo_adapters import expand_sharded_filepaths
 from nemo.collections.common.data.lhotse.nemo_tar_routing import (
     NEMO_TAR_ORDINAL_MAP_KIND,
     NEMO_TAR_ORDINAL_MAP_ROLE,
@@ -1547,8 +1551,13 @@ def discover_pack_collections(
     *,
     data_blend_dir: str | Path | None = None,
     native_tar_ordinal_maps: Optional[list[NativeTarOrdinalMapSpec]] = None,
+    shar_sources: Optional[list] = None,
 ) -> list[IndexPackCollectionSpec]:
-    """Discover ordered, runtime-addressable collections in one input_cfg."""
+    """Discover ordered, runtime-addressable collections in one input_cfg.
+
+    ``lhotse_shar`` entries are not collections of this pack layout: their sources are appended to ``shar_sources``
+    and packed with Lhotse's :func:`lhotse.shar.index_pack.write_shar_index_pack`.
+    """
     if collections is None:
         collections = []
     if isinstance(entry, (list, ListConfig)):
@@ -1558,6 +1567,7 @@ def discover_pack_collections(
                 collections,
                 data_blend_dir=data_blend_dir,
                 native_tar_ordinal_maps=native_tar_ordinal_maps,
+                shar_sources=shar_sources,
             )
         return collections
     if not isinstance(entry, (dict, DictConfig)):
@@ -1574,6 +1584,7 @@ def discover_pack_collections(
                 collections,
                 data_blend_dir=data_blend_dir,
                 native_tar_ordinal_maps=native_tar_ordinal_maps,
+                shar_sources=shar_sources,
             )
         return collections
 
@@ -1585,6 +1596,7 @@ def discover_pack_collections(
                 collections,
                 data_blend_dir=data_blend_dir,
                 native_tar_ordinal_maps=native_tar_ordinal_maps,
+                shar_sources=shar_sources,
             )
         return collections
 
@@ -1596,10 +1608,21 @@ def discover_pack_collections(
                 collections,
                 data_blend_dir=data_blend_dir,
                 native_tar_ordinal_maps=native_tar_ordinal_maps,
+                shar_sources=shar_sources,
             )
             return collections
         if entry.get("manifest_filepath") is None:
             return collections
+
+    if typ == "lhotse_shar":
+        if shar_sources is None:
+            raise ValueError(
+                "lhotse_shar entries are packed by write_shar_index_pack and cannot be rebound, relocated or "
+                "otherwise inspected as collections of an existing pack. Rebuild the pack from the new paths with "
+                "convert_indexes_to_idxpack.py."
+            )
+        shar_sources.extend(_shar_sources(entry.get("shar_path")))
+        return collections
 
     supported = {
         "nemo",
@@ -2050,12 +2073,25 @@ def main(
     with _log_progress("Discovering collections"):
         config = _load_input_cfg(input_cfg, data_blend_dir)
         native_tar_ordinal_maps = []
+        shar_sources = []
         collections = discover_pack_collections(
             config,
             data_blend_dir=data_blend_dir,
             native_tar_ordinal_maps=native_tar_ordinal_maps,
+            shar_sources=shar_sources,
         )
         route_specs = discover_sharegpt_route_specs(config, data_blend_dir=data_blend_dir)
+
+    if shar_sources:
+        _write_shar_index_pack(
+            shar_sources,
+            other_collections=collections,
+            output=output,
+            indexes_root=indexes_root,
+            overwrite=overwrite,
+            dry_run=dry_run,
+        )
+        return
 
     collections = _configure_native_tar_path_only_collections(collections, enabled=native_tar_paths_only)
     num_paths = sum(len(collection.paths) for collection in collections)
@@ -2166,6 +2202,40 @@ def main(
             f"native_tar_routes_reused={len(reused_arrays)} "
             f"native_tar_routes_built={len(maps_to_build)}"
         )
+
+
+def _shar_sources(shar_path) -> list:
+    """Shar sources of one ``lhotse_shar`` entry, spelled as the dataloader passes them to ``CutSet.from_shar``."""
+    if isinstance(shar_path, (str, Path)):
+        return [str(shar_path)]
+    if isinstance(shar_path, (Mapping, DictConfig)):
+        return [{field: expand_sharded_filepaths(paths) for field, paths in shar_path.items()}]
+    if isinstance(shar_path, (Sequence, ListConfig)):
+        # list[str] or list[(str, weight)]; every directory is one source of the pack.
+        return [str(item if isinstance(item, (str, Path)) else item[0]) for item in shar_path]
+    raise TypeError(f"Unexpected value for lhotse_shar shar_path: {shar_path!r}")
+
+
+def _write_shar_index_pack(shar_sources, *, other_collections, output, indexes_root, overwrite, dry_run) -> None:
+    if other_collections:
+        raise NotImplementedError(
+            "lhotse_shar entries are packed on their own: move them to a separate input_cfg and pack it separately."
+        )
+    try:
+        from lhotse.shar.index_pack import write_shar_index_pack
+    except ImportError as e:
+        raise RuntimeError(
+            "Packing lhotse_shar requires a Lhotse version with Shar index-pack support (lhotse.shar.index_pack)."
+        ) from e
+    click.echo(f"Discovered {len(shar_sources)} Lhotse Shar sources.")
+    if dry_run:
+        for source in shar_sources:
+            click.echo(f"  {source}")
+        return
+    output_path = Path(output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    write_shar_index_pack(output_path, shar_sources, indexes_root=indexes_root, overwrite=overwrite)
+    click.echo(f"Wrote {output_path}")
 
 
 if __name__ == "__main__":

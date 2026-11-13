@@ -44,8 +44,11 @@ class CTCTimestampCheckpoint(torch.nn.Module):
             if name == 'tokenizer.model_proto':
                 if dtype != torch.uint8 or tensor.numel() == 0:
                     raise ValueError('CTC tokenizer must be a nonempty uint8 tensor')
-            elif not dtype.is_floating_point:
+            elif tensor.is_floating_point() and not dtype.is_floating_point:
                 raise ValueError(f'CTC decoder tensor must be floating point: {name}')
+            elif not tensor.is_floating_point() and dtype != tensor.dtype:
+                # Integer buffers (e.g. ``upsample_factor``) are exact metadata, never cast.
+                raise ValueError(f'CTC decoder tensor {name} must be stored as {tensor.dtype}, got {dtype}')
             # Keep parameters registered; loading uses strict canonical coverage.
             module_path, _, leaf = name.rpartition('.')
             module = self.get_submodule(module_path)
@@ -84,12 +87,29 @@ def read_ctc_timestamp_config(weight_file: str | Path) -> dict | None:
         tokenizer = checkpoint.get_slice(tokenizer_key)
         if tokenizer.get_dtype() != 'U8' or len(tokenizer.get_shape()) != 1 or not tokenizer.get_shape()[0]:
             raise ValueError('CTC tokenizer must be a nonempty one-dimensional uint8 tensor')
-        dtype_names = {'F32': 'float32', 'BF16': 'bfloat16', 'F16': 'float16', 'U8': 'uint8'}
+        tensor_dtypes = {}
+        for key in keys:
+            dtype = checkpoint.get_slice(key).get_dtype()
+            if dtype not in _SAFETENSORS_DTYPE_NAMES:
+                raise ValueError(f'Unsupported dtype {dtype} for bundled CTC timestamp tensor {key}')
+            tensor_dtypes[key.removeprefix(CTC_TIMESTAMP_BUNDLE_PREFIX)] = _SAFETENSORS_DTYPE_NAMES[dtype]
         return {
             'metadata': ctc_metadata,
             'tokenizer_num_bytes': tokenizer.get_shape()[0],
-            'tensor_dtypes': {
-                key.removeprefix(CTC_TIMESTAMP_BUNDLE_PREFIX): dtype_names[checkpoint.get_slice(key).get_dtype()]
-                for key in keys
-            },
+            'tensor_dtypes': tensor_dtypes,
         }
+
+
+# Floating-point decoder weights, integer decoder buffers, and the uint8 tokenizer bytes.
+_SAFETENSORS_DTYPE_NAMES = {
+    'F64': 'float64',
+    'F32': 'float32',
+    'BF16': 'bfloat16',
+    'F16': 'float16',
+    'I64': 'int64',
+    'I32': 'int32',
+    'I16': 'int16',
+    'I8': 'int8',
+    'U8': 'uint8',
+    'BOOL': 'bool',
+}

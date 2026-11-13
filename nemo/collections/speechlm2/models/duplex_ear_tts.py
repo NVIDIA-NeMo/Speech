@@ -118,9 +118,15 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         # compute samples per frame
         self.source_samples_per_frame = int(self.source_sample_rate * cfg.data.frame_length)
 
-        # get codec silence tokens
-        codec_silence_tokens = self.get_codec_silence_frame()
-        self.register_buffer("codec_silence_tokens", codec_silence_tokens)
+        # Codec silence tokens are stored in checkpoints. When a checkpoint does not provide them, they are
+        # computed on first use (see ``get_codec_silence_tokens``) rather than here: encoding long silence at
+        # construction time runs the codec on CPU, which is slow and fails with oneDNN on arm64.
+        self.register_buffer(
+            "codec_silence_tokens",
+            torch.full((self.audio_codec.config.num_quantizers,), -1, dtype=torch.long, device=self.device),
+        )
+        self._codec_silence_tokens_checked = False
+        self.register_load_state_dict_post_hook(_reset_codec_silence_tokens_check)
 
         # cached for quicker audio decoding
         self.register_buffer(
@@ -131,6 +137,18 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         self._use_fsdp = False
         self._use_tp = False
         self.audio_prompt_latents = nn.ParameterDict()
+
+    def get_codec_silence_tokens(self) -> torch.Tensor:
+        """
+        Returns the codec silence tokens ``[num_quantizers]``, computing them with
+        ``get_codec_silence_frame`` on the model's device if they were not loaded from a checkpoint.
+        """
+        if not self._codec_silence_tokens_checked:
+            if (self.codec_silence_tokens < 0).any():
+                with torch.no_grad():
+                    self.codec_silence_tokens.copy_(self.get_codec_silence_frame())
+            self._codec_silence_tokens_checked = True
+        return self.codec_silence_tokens
 
     def get_codec_silence_frame_last_one(self):
         audio = torch.zeros(1, 10 * self.target_sample_rate).float().to(self.device)
@@ -675,7 +693,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
         # decode audio
         tf_audio_codes_pred = replace_control_speech_codes(
-            tf_audio_codes_pred, self._control_codes, self.codec_silence_tokens
+            tf_audio_codes_pred, self._control_codes, self.get_codec_silence_tokens()
         )
         with ensures_target_precision(self.audio_codec_run_dtype), torch.no_grad():
             audio_pred, audio_len = self.audio_codec.decode(tf_audio_codes_pred, inputs["output_lens"])
@@ -1199,7 +1217,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
         # force silence as next token
         if self.cfg.get('inference_force_speech_silence_on_eos', True):
-            silence_codes = self.codec_silence_tokens.view(1, 1, -1).expand(prev_audio_tokens.shape)
+            silence_codes = self.get_codec_silence_tokens().view(1, 1, -1).expand(prev_audio_tokens.shape)
             prev_audio_tokens = torch.where(
                 current_subword_id.unsqueeze(-1) == self.text_eos_id,
                 silence_codes,  # silence
@@ -1242,7 +1260,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 gen_audio_codes_history = gen_audio_codes_history[:, -number_prev_tokens:]
 
             gen_audio_codes_history = replace_control_speech_codes(
-                gen_audio_codes_history, self._control_codes, self.codec_silence_tokens
+                gen_audio_codes_history, self._control_codes, self.get_codec_silence_tokens()
             )
             gen_audio_codes_lens = torch.tensor(
                 [gen_audio_codes_history.size(1)] * gen_audio_codes_history.size(0), device=self.device
@@ -1402,7 +1420,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             ).to(self.device)
             # decode audio. Note that it is not necessary because the prompt is removed, so no special token should be on the output, but lets do it for safety
             gen_audio_codes = replace_control_speech_codes(
-                gen_audio_codes, self._control_codes, self.codec_silence_tokens
+                gen_audio_codes, self._control_codes, self.get_codec_silence_tokens()
             )
             with ensures_target_precision(self.audio_codec_run_dtype), torch.no_grad():
                 audio_pred, audio_pred_len = self.audio_codec.decode(gen_audio_codes, gen_audio_codes_lens)
@@ -1666,6 +1684,11 @@ def replace_control_speech_codes(
         )
     else:
         return torch.where(torch.isin(speech_codes, control_codes), speech_codes[:, :1], speech_codes)
+
+
+def _reset_codec_silence_tokens_check(module, incompatible_keys):
+    """Re-validate ``codec_silence_tokens`` on next use, since a checkpoint may have overwritten them."""
+    module._codec_silence_tokens_checked = False
 
 
 def setup_audio_codec(model):

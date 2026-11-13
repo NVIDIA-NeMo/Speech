@@ -121,8 +121,6 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         # Load Duplex TTS model
         self.tts_model = DuplexEARTTS(OmegaConf.to_container(self.cfg.speech_generation, resolve=True))
 
-        # reset silence tokens to avoid inference issues
-        self.tts_model.codec_silence_tokens = self.tts_model.get_codec_silence_frame()
         self.target_fps = self.tts_model.target_fps
         # compute source fps
         self.source_fps = self.source_sample_rate / (

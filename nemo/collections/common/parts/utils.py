@@ -45,7 +45,9 @@ class SquaredReLU(nn.Module):
     """ReLU squared, ``relu(x) ** 2`` (So et al., Primer, 2021)."""
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.square(torch.relu(x))
+        # a product, not ``torch.square``: autocast runs ``square`` in float32 and saves a float32 copy of the input
+        x = torch.relu(x)
+        return x * x
 
 
 activation_registry = {

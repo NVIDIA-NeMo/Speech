@@ -172,7 +172,6 @@ class TestCTCDecoding:
     @pytest.mark.unit
     @pytest.mark.parametrize('alignments', [False, True])
     @pytest.mark.parametrize('timestamps', [False, True])
-    @pytest.mark.pleasefixme
     def test_subword_decoding_greedy_forward_hypotheses(self, tmp_tokenizer, alignments, timestamps):
         cfg = CTCBPEDecodingConfig(strategy='greedy', preserve_alignments=alignments, compute_timestamps=timestamps)
         decoding = CTCBPEDecoding(decoding_cfg=cfg, tokenizer=tmp_tokenizer)

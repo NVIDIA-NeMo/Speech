@@ -24,6 +24,11 @@ on:
       - "pull-request/[0-9]+"
   workflow_dispatch:
     inputs:
+      send_notification:
+        description: Send a Slack notification for failed runs on main
+        required: false
+        default: true
+        type: boolean
       test_to_run:
         required: false
         default: all
@@ -296,6 +301,37 @@ jobs:
       cpu-test-data-path: ${{ vars.CPU_TEST_DATA_PATH }}
       run_nightly: ${{ needs.configure.outputs.run_nightly }}
       container-image: ${{ needs.cicd-test-container-build.outputs.image }}
+
+  notify-failure:
+    name: Notify CI failure
+    runs-on: ubuntu-latest
+    permissions: {}
+    needs:
+      - ephemeral-runner-routing
+      - pre-flight
+      - configure
+      - code-linting
+      - cicd-wait-in-queue
+      - cicd-test-container-build
+      - cicd-import-tests
+      - L0_Setup_Test_Data_And_Models
+      - cicd-main-unit-tests
+      - cicd-main-speech
+      - Nemo_CICD_Test
+    # Read the event directly so setup failures cannot suppress notifications.
+    # PR mirrors, release pushes and feature-branch dispatches must not alert.
+    if: >-
+      ${{ always() && !cancelled() && failure() &&
+          github.repository == 'NVIDIA-NeMo/Speech' &&
+          github.ref_name == github.event.repository.default_branch &&
+          (github.event_name == 'schedule' ||
+           (github.event_name == 'workflow_dispatch' && inputs.send_notification)) }}
+    steps:
+      - name: Notify CI failure
+        uses: NVIDIA-NeMo/FW-CI-templates/.github/actions/notify-ci-failure@631c404d00a9e60afc591cd071d35d2e18f82fc6 # merged PR #593
+        with:
+          needs-json: ${{ toJSON(needs) }}
+          webhook: ${{ secrets.SLACK_WEBHOOK }}
 
   Nemo_CICD_Test:
     needs:

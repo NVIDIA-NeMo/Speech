@@ -304,6 +304,33 @@ def test_e2e_validation_step(model, dataset, training_cutset_batch):
 
 
 @pytest.mark.gpu
+def test_safetensors_load_revalidates_codec_silence_tokens(model, tmp_path, monkeypatch):
+    from safetensors.torch import save_file
+
+    tts = model.tts_model
+    expected = tts.get_codec_silence_tokens().clone()
+    calls = []
+    monkeypatch.setattr(tts, "get_codec_silence_frame", lambda: calls.append(1) or expected)
+    sentinel = torch.full_like(expected, -1).cpu()
+
+    # A checkpoint saved before first use holds the -1 placeholder; it is recomputed on next use.
+    save_file({"tts_model.codec_silence_tokens": sentinel}, tmp_path / "model.safetensors")
+    model.init_from_safetensors_ckpt(str(tmp_path))
+    assert calls == []
+    assert torch.equal(tts.get_codec_silence_tokens(), expected)
+    assert torch.equal(tts.get_codec_silence_tokens(), expected)
+    assert len(calls) == 1
+
+    # Prefixed route with valid stored tokens: they are used as-is.
+    stored = (expected.cpu() + 1) % tts.audio_codec.config.codebook_size
+    save_file({"codec_silence_tokens": stored}, tmp_path / "model.safetensors")
+    model.init_from_safetensors_ckpt(str(tmp_path), prefix="tts_model.")
+    assert torch.equal(tts.get_codec_silence_tokens(), stored.to(expected.device))
+    assert len(calls) == 1
+    tts.codec_silence_tokens.copy_(expected)
+
+
+@pytest.mark.gpu
 def test_e2s_offline_generation(model):
     model.eval()
     # 16000 samples == 1 second == 12.5 frames ~= 14 frames after encoder padding

@@ -285,6 +285,7 @@ if os.path.exists("/home/TestData/nvidia--NVIDIA-Nemotron-Nano-9B-v2/"):
     test_eartts_config["model"]["pretrained_lm_name"] = "/home/TestData/nvidia--NVIDIA-Nemotron-Nano-9B-v2/"
 
 
+@pytest.mark.gpu
 @pytest.mark.unit
 def test_codec_silence_tokens_are_computed_lazily(monkeypatch):
     # Running the codec on CPU at construction time fails with oneDNN on arm64 (long depthwise conv).
@@ -315,6 +316,11 @@ def test_codec_silence_tokens_are_computed_lazily(monkeypatch):
     model.load_state_dict({**model.state_dict(), "codec_silence_tokens": stored})
     assert torch.equal(model.get_codec_silence_tokens(), stored.to(model.device))
     assert len(encode_calls) == 1
+
+    # A checkpoint saved before first use holds the -1 placeholder; it is recomputed after loading.
+    model.load_state_dict({**model.state_dict(), "codec_silence_tokens": torch.full_like(stored, -1)})
+    assert torch.equal(model.get_codec_silence_tokens(), expected)
+    assert len(encode_calls) == 2
 
 
 @pytest.fixture(scope="module")

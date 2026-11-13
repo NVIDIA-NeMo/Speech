@@ -211,6 +211,9 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         Safe for large models and distributed training (if called before DDP/FSDP wrap).
         """
 
+        # This loader bypasses load_state_dict hooks; re-validate the TTS codec silence tokens on next use.
+        self.tts_model._codec_silence_tokens_checked = False
+
         loaded_keys = []
         missing_keys = []
 

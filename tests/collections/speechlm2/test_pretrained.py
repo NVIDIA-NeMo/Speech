@@ -265,6 +265,29 @@ def test_load_pretrained_automodel_llm_builds_missing_mtp_before_loading_weights
     automodel.from_pretrained.assert_not_called()
 
 
+def test_load_pretrained_automodel_llm_points_to_trust_remote_code_for_read_only_mtp_config():
+    class ReadOnlyMTPConfig(SimpleNamespace):
+        @property
+        def mtp_hybrid_override_pattern(self):
+            return None
+
+    config = ReadOnlyMTPConfig(num_nextn_predict_layers=0, name_or_path="base-checkpoint")
+    automodel, config_patch, module_patch, compat_patch = _mock_automodel_loader(config)
+
+    with (
+        config_patch,
+        module_patch,
+        compat_patch,
+        patch.object(pretrained, "_resolve_automodel_checkpoint_path", return_value="base-checkpoint"),
+        pytest.raises(AttributeError, match="model.trust_remote_code=true"),
+    ):
+        pretrained.load_pretrained_automodel_llm(
+            "base-checkpoint",
+            mtp_config_overrides={"num_nextn_predict_layers": 1, "mtp_hybrid_override_pattern": "*"},
+        )
+    automodel.from_config.assert_not_called()
+
+
 def test_load_pretrained_automodel_llm_preserves_native_mtp_config_by_default():
     config = SimpleNamespace(
         num_nextn_predict_layers=1,

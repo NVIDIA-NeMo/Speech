@@ -49,15 +49,3 @@ We also offer other helpful arguments.
      - Apply EMA every N steps instead of every step.
    * - `exp_manager.ema.cpu_offload=True`
      - Offload EMA weights to CPU. May introduce significant slow-downs.
-
-EMA checkpoint resume
-~~~~~~~~~~~~~~~~~~~~~
-
-The companion ``-EMA.ckpt`` file is loaded with PyTorch's restricted
-``weights_only=True`` deserializer with a fixed allowlist for NeMo's
-OmegaConf containers and metadata, including source-defined CTC, RNNT, and
-multitask decoding schemas. Tensor, path metadata, and standard optimizer state
-remain supported. Companion state is restored only when resuming training;
-validation, testing, and prediction do not require the companion file. Checkpoints
-containing other custom pickled Python objects are rejected rather than retried
-with unrestricted pickle loading.

@@ -429,9 +429,74 @@ def test_resolve_speculation_records_the_effective_settings(
 ):
     ev = load("vllm_task_eval")
     monkeypatch.setattr(ev, "speechlm_is_hybrid", lambda model: hybrid)
+    monkeypatch.setattr(ev, "speechlm_mtp_layers", lambda model: 1)
     args = Namespace(model="ckpt", spec_k=spec_k, score_labels=score_labels)
     ev.resolve_speculation(args)
     assert (args.spec_k, args.replayssm) == (expected_spec_k, expected_replayssm)
+
+
+def _write_salm_export(path, **extra):
+    """A minimal SALM HF export config (embedded Qwen2 backbone, so nothing is downloaded)."""
+    path.mkdir(parents=True, exist_ok=True)
+    cfg = {
+        "model_type": "nemo_speechlm",
+        "architectures": ["NeMoSpeechLMForConditionalGeneration"],
+        "pretrained_llm": "Qwen/Qwen3-1.7B",
+        "pretrained_asr": "nvidia/canary-1b-v2",
+        "audio_locator_tag": "<|audio|>",
+        "prompt_format": "qwen3",
+        "pretrained_weights": True,
+        "llm_config": {"model_type": "qwen2", "architectures": ["Qwen2ForCausalLM"], "vocab_size": 100},
+        **extra,
+    }
+    (path / "config.json").write_text(json.dumps(cfg))
+    return str(path)
+
+
+_MTP_ON = {"enabled": True, "num_nextn_predict_layers": 1, "hybrid_override_pattern": "*"}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "extra,expected",
+    [
+        ({"mtp": {"enabled": False, "num_nextn_predict_layers": 1}}, 0),  # salm_automodel.yaml default export
+        ({}, 0),  # no mtp block, no compute_mtp
+        ({"compute_mtp": False}, 0),
+        ({"mtp": _MTP_ON}, 1),
+    ],
+)
+def test_speechlm_mtp_layers_reads_the_export_config(tmp_path, extra, expected):
+    ev = load("vllm_task_eval")
+    assert ev.speechlm_mtp_layers(_write_salm_export(tmp_path / "ckpt", **extra)) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "spec_k,mtp,expected_spec_k",
+    [
+        (None, None, 0),  # default on a checkpoint without MTP heads: no speculation
+        (None, _MTP_ON, 2),  # default on a checkpoint with MTP heads: speculation
+        (0, _MTP_ON, 0),
+        (3, _MTP_ON, 3),
+        (0, None, 0),
+    ],
+)
+def test_resolve_speculation_enables_mtp_only_when_the_checkpoint_has_it(tmp_path, spec_k, mtp, expected_spec_k):
+    ev = load("vllm_task_eval")
+    model = _write_salm_export(tmp_path / "ckpt", mtp=mtp or {"enabled": False})
+    args = Namespace(model=model, spec_k=spec_k, score_labels=None)
+    ev.resolve_speculation(args)
+    assert args.spec_k == expected_spec_k
+    assert args.replayssm is False  # Qwen2 backbone is not hybrid
+
+
+@pytest.mark.unit
+def test_resolve_speculation_refuses_explicit_mtp_without_mtp_heads(tmp_path):
+    ev = load("vllm_task_eval")
+    model = _write_salm_export(tmp_path / "ckpt", mtp={"enabled": False})
+    with pytest.raises(SystemExit, match="has no MTP heads"):
+        ev.resolve_speculation(Namespace(model=model, spec_k=2, score_labels=None))
 
 
 @pytest.mark.unit

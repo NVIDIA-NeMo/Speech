@@ -232,7 +232,7 @@ It wraps `examples/speechlm2/to_hf.py` and `merge_lora_checkpoint.py`. If you do
 
 ```bash
 python vllm_task_eval.py --model <merged> --task asr --manifest dev.json librispeech.json \
-  --out eval/dev.jsonl eval/libri.jsonl --spec-k 2 --max-num-seqs 64 --normalizer <n>
+  --out eval/dev.jsonl eval/libri.jsonl --max-num-seqs 64 --normalizer <n>
 ```
 
 **Prove every decode-time optimization is exact before trusting the harness.** Decode a few hundred utterances with

@@ -445,7 +445,7 @@ with 60 to 150 in vLLM).
 ```bash
 python vllm_task_eval.py --model /path/to/merged --task asr \
   --manifest manifests/dev.json manifests/test.json --out eval/dev.jsonl eval/test.jsonl \
-  --spec-k 2 --max-num-seqs 64 --gpu-memory-utilization 0.85
+  --max-num-seqs 64 --gpu-memory-utilization 0.85
 ```
 
 `--task` takes `asr`, `bleu`, `cls`, `squad`, `mer`, `pcc`, `eer`, or `multilabel`. Loading the engine once and
@@ -474,6 +474,11 @@ speculative_config = {"method": "mtp", "model": "<same checkpoint>", "num_specul
 ```
 
 Keep the `mtp` config block unchanged; vLLM requires `use_repeated_layer: true` for more than one prediction layer.
+
+`vllm_task_eval.py` reads the checkpoint's `mtp` block (`enabled`, `num_nextn_predict_layers`) and turns this on by
+itself, with `--spec-k 2` draft tokens unless `--spec-k` says otherwise. A checkpoint without MTP heads, such as a
+`SALMAutomodel` export trained with the default `mtp.enabled: false`, is decoded without speculation; passing
+`--spec-k` above 0 for it is an error, and `--spec-k 0` turns speculation off for any checkpoint.
 
 **Speculative decoding is not automatically exact.** Under greedy sampling, vLLM's rejection sampler always emits the
 target model's argmax, so drafts should affect only speed. Output can change only if the target model's own state is

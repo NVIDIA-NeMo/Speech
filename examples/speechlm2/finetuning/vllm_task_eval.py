@@ -25,11 +25,13 @@ intent classification with a label list, translation with a target language):
 * scoring is delegated to task_metrics.py (WER, BLEU/chrF, accuracy, SQuAD F1).
 
 Runs in the vLLM environment. Thinking is disabled in the chat template. For checkpoints with multi-token-prediction
-heads, speculative decoding is on by default; on hybrid (state-space) backbones it runs through vLLM's ReplaySSM, with
-prefix caching off.
+(MTP) heads, speculative decoding is on by default (``--spec-k`` draft tokens, 2 unless given); checkpoints without them
+are decoded without speculation, and an explicit ``--spec-k`` above 0 is refused for them. On hybrid (state-space)
+backbones speculation runs through vLLM's ReplaySSM, with prefix caching off.
 """
 import argparse
 import fcntl
+import functools
 import json
 import os
 import re
@@ -44,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import task_metrics  # noqa: E402
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+DEFAULT_SPEC_K = 2
 
 
 def parse_args():
@@ -82,7 +85,13 @@ def parse_args():
         default=float(os.environ.get("VLLM_GPU_UTIL", 0.85)),
         help="default 0.85, or $VLLM_GPU_UTIL (0.33 lets an eval share one large GPU with a small training run)",
     )
-    p.add_argument("--spec-k", type=int, default=2)
+    p.add_argument(
+        "--spec-k",
+        type=int,
+        default=None,
+        help=f"MTP speculative draft tokens; 0 disables speculation. Default: {DEFAULT_SPEC_K} if the checkpoint has "
+        "MTP heads, else 0. A value above 0 for a checkpoint without MTP heads is an error.",
+    )
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--normalizer", default="simple")
     p.add_argument("--bleu-tokenize", default="13a")
@@ -366,9 +375,17 @@ def start_engine(**llm_kwargs):
 
 def speechlm_is_hybrid(model: str) -> bool:
     """Whether the checkpoint's LLM backbone is hybrid (Mamba), decided as the SpeechLM vLLM plugin decides it."""
-    from nemo.collections.speechlm2.vllm.salm.config import NeMoSpeechLMConfig
+    return bool(_speechlm_config(model).is_hybrid)
 
-    return bool(NeMoSpeechLMConfig.from_pretrained(model).is_hybrid)
+
+def speechlm_mtp_layers(model: str) -> int:
+    """Number of MTP prediction layers the checkpoint serves as a speculative draft (0 without MTP heads).
+
+    Read from the export's ``mtp`` block (or legacy ``compute_mtp`` + backbone ``num_nextn_predict_layers``), as the
+    SpeechLM vLLM plugin reads it.
+    """
+    mtp = _speechlm_config(model).mtp
+    return int(mtp["num_nextn_predict_layers"]) if mtp else 0
 
 
 def resolve_speculation(args):
@@ -377,11 +394,29 @@ def resolve_speculation(args):
         # Exact label scores need exact prompt_logprobs. With prefix caching (and the hybrid-cache mode that
         # speculative decoding requires), requests sharing a cached prompt+audio prefix get wrong prompt_logprobs on
         # hybrid backbones, so label scoring runs on a plain engine. Generation is unaffected, just slower.
-        if args.spec_k > 0:
+        if args.spec_k:
             print("[eval] --score-labels: disabling speculative decoding and prefix caching for exact scores")
         args.spec_k = 0
+    if args.spec_k is None:
+        args.spec_k = DEFAULT_SPEC_K if speechlm_mtp_layers(args.model) > 0 else 0
+        if args.spec_k == 0:
+            print("[eval] checkpoint has no MTP heads: decoding without speculative decoding")
+    elif args.spec_k > 0 and speechlm_mtp_layers(args.model) == 0:
+        raise SystemExit(
+            f"--spec-k {args.spec_k} requests MTP speculative decoding, but {args.model} has no MTP heads "
+            f"(its config has no enabled `mtp` block with num_nextn_predict_layers > 0). Pass --spec-k 0, or omit "
+            f"--spec-k to use speculation only when the checkpoint supports it."
+        )
     # vLLM 0.32 removed mamba_cache_mode "all"; speculative decoding through Mamba layers uses ReplaySSM instead.
     args.replayssm = args.spec_k > 0 and speechlm_is_hybrid(args.model)
+
+
+@functools.lru_cache(maxsize=None)
+def _speechlm_config(model: str):
+    """The checkpoint's config, parsed by the SpeechLM vLLM plugin's config class (no vLLM import needed)."""
+    from nemo.collections.speechlm2.vllm.salm.config import NeMoSpeechLMConfig
+
+    return NeMoSpeechLMConfig.from_pretrained(model)
 
 
 if __name__ == "__main__":

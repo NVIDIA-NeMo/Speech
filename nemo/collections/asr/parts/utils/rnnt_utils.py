@@ -171,7 +171,9 @@ class Hypothesis:
         elif isinstance(self.timestamp, torch.Tensor):
             self.timestamp = torch.cat((self.timestamp, other.timestamp), dim=0)
         else:
-            self.timestamp.extend(other.timestamp)
+            # Materialize scalar values instead of retaining views of the full timestamp batch.
+            timestamps = other.timestamp.tolist() if isinstance(other.timestamp, torch.Tensor) else other.timestamp
+            self.timestamp.extend(timestamps)
         self.length += other.length
         self.last_token = other.last_token
         if self.alignments is None:

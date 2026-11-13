@@ -650,7 +650,17 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         if torch.distributed.is_initialized():
             self.trainer.strategy.model.require_backward_grad_sync = True
 
-    def get_teacher_force_inference_audio(self, batch, guidance_enabled=True):
+    @property
+    def inference_guidance_enabled(self) -> bool:
+        """Whether inference uses classifier-free guidance by default (``inference_guidance_enabled`` in the config)."""
+        enabled = self.cfg.get("inference_guidance_enabled", True)
+        assert isinstance(enabled, bool), f"inference_guidance_enabled: expected a bool, got {enabled!r}"
+        return enabled
+
+    def get_teacher_force_inference_audio(self, batch, guidance_enabled: bool | None = None):
+        """Decode the batch with teacher forcing; ``guidance_enabled=None`` takes ``inference_guidance_enabled``."""
+        if guidance_enabled is None:
+            guidance_enabled = self.inference_guidance_enabled
         inputs = self.prepare_inputs(batch)
 
         tts_output = self.tts_model(
@@ -1162,7 +1172,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         current_subword_mask,
         prev_audio_tokens,
         past_key_values,
-        guidance_enabled=True,
+        guidance_enabled: bool | None = None,
         generation_config=None,
         ignore_eos_flag_stop=True,
     ):
@@ -1175,7 +1185,8 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             current_subword_mask (torch.Tensor): Current mask, shape (B, 1).
             prev_audio_tokens (torch.Tensor): Previously generated audio tokens, shape (B, 1, C).
             past_key_values: Key-value cache for transformer decoder state.
-            guidance_enabled (bool, optional): Enables classifier-free guidance.
+            guidance_enabled (bool, optional): Enables classifier-free guidance; ``None`` takes
+                ``inference_guidance_enabled`` from the model config. Must match the warm-up's value.
             generation_config (dict, optional): Generation hyperparameters.
             ignore_eos_flag_stop (bool): If True, ignore EOS flag for stopping.
 
@@ -1184,6 +1195,8 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 - Predicted audio codec token(s), shape (B, 1, C)
                 - Updated past_key_values for the next step.
         """
+        if guidance_enabled is None:
+            guidance_enabled = self.inference_guidance_enabled
 
         if self.cfg.tts_config.context_hidden_size is not None:
             # get context_hidden_state it is always one step behind current_subword_id
@@ -1255,7 +1268,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         next_subword_ids: torch.Tensor,
         init_inputs: dict,
         task: str = "",
-        guidance_enabled: bool = True,
+        guidance_enabled: bool | None = None,
         generation_config: dict = None,
         incremental_audio_decoding: bool = False,
     ) -> dict[str, torch.Tensor]:
@@ -1290,6 +1303,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
             guidance_enabled (bool, optional):
                 Whether classifier-free guidance (CFG) is enabled.
+                ``None`` (default) takes ``inference_guidance_enabled`` from the model config.
                 If enabled and ``generation_config`` is ``None``, guidance parameters
                 are taken from ``_get_generation_config()``.
 
@@ -1317,6 +1331,8 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         """
         B = next_subword_ids.size(0)
 
+        if guidance_enabled is None:
+            guidance_enabled = self.inference_guidance_enabled
         if generation_config is None:
             generation_config = self._get_generation_config(guidance_enabled)
             logging.info(f"Doing inference using the following config: {generation_config} !")

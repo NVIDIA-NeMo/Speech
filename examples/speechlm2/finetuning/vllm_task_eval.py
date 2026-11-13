@@ -25,9 +25,8 @@ intent classification with a label list, translation with a target language):
 * scoring is delegated to task_metrics.py (WER, BLEU/chrF, accuracy, SQuAD F1).
 
 Runs in the vLLM environment. Thinking is disabled in the chat template. For checkpoints with multi-token-prediction
-(MTP) heads, speculative decoding is on by default (``--spec-k`` draft tokens, 2 unless given); checkpoints without them
-are decoded without speculation, and an explicit ``--spec-k`` above 0 is refused for them. On hybrid (state-space)
-backbones speculation runs through vLLM's ReplaySSM, with prefix caching off.
+heads, speculative decoding is on by default; on hybrid (state-space) backbones it runs through vLLM's ReplaySSM, with
+prefix caching off.
 """
 import argparse
 import fcntl
@@ -89,8 +88,7 @@ def parse_args():
         "--spec-k",
         type=int,
         default=None,
-        help=f"MTP speculative draft tokens; 0 disables speculation. Default: {DEFAULT_SPEC_K} if the checkpoint has "
-        "MTP heads, else 0. A value above 0 for a checkpoint without MTP heads is an error.",
+        help=f"MTP draft tokens; default {DEFAULT_SPEC_K} if the checkpoint has MTP heads, else 0 (no speculation)",
     )
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--normalizer", default="simple")
@@ -379,11 +377,7 @@ def speechlm_is_hybrid(model: str) -> bool:
 
 
 def speechlm_mtp_layers(model: str) -> int:
-    """Number of MTP prediction layers the checkpoint serves as a speculative draft (0 without MTP heads).
-
-    Read from the export's ``mtp`` block (or legacy ``compute_mtp`` + backbone ``num_nextn_predict_layers``), as the
-    SpeechLM vLLM plugin reads it.
-    """
+    """Number of MTP layers in the checkpoint (0 without MTP heads), as the SpeechLM vLLM plugin reads it."""
     mtp = _speechlm_config(model).mtp
     return int(mtp["num_nextn_predict_layers"]) if mtp else 0
 
@@ -403,9 +397,8 @@ def resolve_speculation(args):
             print("[eval] checkpoint has no MTP heads: decoding without speculative decoding")
     elif args.spec_k > 0 and speechlm_mtp_layers(args.model) == 0:
         raise SystemExit(
-            f"--spec-k {args.spec_k} requests MTP speculative decoding, but {args.model} has no MTP heads "
-            f"(its config has no enabled `mtp` block with num_nextn_predict_layers > 0). Pass --spec-k 0, or omit "
-            f"--spec-k to use speculation only when the checkpoint supports it."
+            f"--spec-k {args.spec_k} requests MTP speculative decoding, but {args.model} has no MTP heads; "
+            "pass --spec-k 0 or omit it."
         )
     # vLLM 0.32 removed mamba_cache_mode "all"; speculative decoding through Mamba layers uses ReplaySSM instead.
     args.replayssm = args.spec_k > 0 and speechlm_is_hybrid(args.model)
@@ -413,7 +406,6 @@ def resolve_speculation(args):
 
 @functools.lru_cache(maxsize=None)
 def _speechlm_config(model: str):
-    """The checkpoint's config, parsed by the SpeechLM vLLM plugin's config class (no vLLM import needed)."""
     from nemo.collections.speechlm2.vllm.salm.config import NeMoSpeechLMConfig
 
     return NeMoSpeechLMConfig.from_pretrained(model)

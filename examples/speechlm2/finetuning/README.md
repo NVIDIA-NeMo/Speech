@@ -27,7 +27,7 @@ stuttering detection.
 | train | `run_training.py` | coverage preflight (`check_checkpoint_coverage.py`), 20-step smoke test, full run with a validation watchdog, checkpoint pruning, GPU lock |
 | export | `export_checkpoint.py` | convert to HF format, check the LoRA adapters are non-zero, merge LoRA (`merge_lora_checkpoint.py`) → a directory vLLM can serve |
 | | `average_checkpoints.py` | uniform weight average of merged checkpoints |
-| evaluate | `vllm_task_eval.py` | vLLM decoding with per-row prompts, MTP speculative decoding when the checkpoint has MTP heads (`--spec-k`), label log-odds, output-length cap |
+| evaluate | `vllm_task_eval.py` | vLLM decoding with per-row prompts, speculative decoding where the checkpoint supports it, label log-odds, output-length cap |
 | | `task_metrics.py` | WER, MER, BLEU/chrF, SQuAD-v2 F1, label accuracy, Pearson r, EER, multi-label F1; re-scores saved hypotheses offline |
 | | `prompt_search.py` | automatic prompt search on a dev set (an LLM proposes prompts from the model's errors) |
 | | `vllm_label_scores.py`, `label_probe.py` | exact per-label log-probabilities and a linear probe on them |

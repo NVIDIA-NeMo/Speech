@@ -1310,9 +1310,9 @@ class NemoTranscriberWithPrompt(Transcriber):
 
     def __init__(self, device, model_name):
         if model_name.endswith('.nemo'):
-            model = ASRModel.restore_from(restore_path=model_name)
+            model = ASRModel.restore_from(restore_path=model_name, map_location=torch.device(device))
         else:
-            model = ASRModel.from_pretrained(model_name=model_name)
+            model = ASRModel.from_pretrained(model_name=model_name, map_location=torch.device(device))
 
         if not hasattr(model.get_transcribe_config(), 'target_lang'):
             raise ValueError(
@@ -1334,11 +1334,13 @@ class NemoTranscriberWithPrompt(Transcriber):
         }
 
     def transcribe(self, audio_paths: List[Path], batch_size: int, language: Optional[str]) -> List[str]:
+        target_lang = language or None
+        # Prefer the default locale (e.g. "en" -> "en-US") when the model has it; otherwise the model resolves
+        # the language itself and raises if it is unsupported or ambiguous.
+        if self.language_prompt_map.get(language) in self.model.cfg.model_defaults.get('prompt_dictionary', {}):
+            target_lang = self.language_prompt_map[language]
         override_config = replace(
-            self.model.get_transcribe_config(),
-            batch_size=batch_size,
-            use_lhotse=False,
-            target_lang=self.language_prompt_map[language] if language else None,
+            self.model.get_transcribe_config(), batch_size=batch_size, use_lhotse=False, target_lang=target_lang
         )
 
         transcribe_results = self.model.transcribe(audio_paths, override_config=override_config)

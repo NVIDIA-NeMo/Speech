@@ -1,0 +1,206 @@
+
+name: "SSL-NEST-Transformer"
+
+model:
+  sample_rate: 16000
+  num_classes: 8192
+  num_books: 1
+  code_dim: 16
+  squeeze_single: false
+  mask_position: pre_conv  # position to apply masking, before or after conv subsampling, choices in ['pre_conv', 'post_conv']
+  
+  train_ds:
+    manifest_filepath: ??? # path to training manifest, can be a string or list of strings
+    noise_manifest: null  # the manifest for noise data, can be a string or list of strings
+    sample_rate: ${model.sample_rate}
+    batch_size: 8 # you may increase batch_size if your memory allows
+    shuffle: true
+    num_workers: 8
+    pin_memory: true
+    use_start_end_token: false
+    trim_silence: false
+    max_duration: 60.0
+    min_duration: 1.0
+    drop_last: true
+    is_concat: false
+    concat_sampling_technique: temperature
+    concat_sampling_temperature: 1.0 
+    # tarred datasets
+    is_tarred: false
+    tarred_audio_filepaths: null
+    shuffle_n: 2048
+    # bucketing params
+    bucketing_strategy: "synced_randomized"
+    bucketing_batch_size: null
+    # batch augmentation
+    batch_augmentor:
+      _target_: nemo.collections.asr.modules.ssl_modules.MultiSpeakerNoiseAugmentation
+      prob: 0.5  # prob of activating the augmentation
+      noise_ratio: 0.5  # prob of applying noise aug, otherwise apply speech augmentation
+      min_r_speech: -5.0  # min energy ratio when applying speech augmentation
+      max_r_speech: 5.0  # max energy ratio when applying speech augmentation
+      min_r_noise: -5.0  # min energy ratio when applying noise augmentation
+      max_r_noise: 20.0  # max energy ratio when applying noise augmentation
+      min_mix_rate: 0.5  # min ratio of the input audio that would be augmented
+      max_mix_rate: 0.5  # max ratio of the input audio that would be augmented
+      min_num_segments: 1  # min num of segments that consititute the noise audio
+      max_num_segments: 1  # max num of segments that consititute the noise audio
+      min_num_speakers: 1  # min num of extra speakers to add
+      max_num_speakers: 1  # max num of extra speakers to add
+
+  validation_ds:
+    manifest_filepath: ???
+    noise_manifest: null
+    sample_rate: ${model.sample_rate}
+    batch_size: 8 # you may increase batch_size if your memory allows
+    shuffle: false
+    num_workers: 8
+    pin_memory: true
+    use_start_end_token: false
+    max_duration: 60.0
+    min_duration: 1.0
+    # batch augmentation
+    batch_augmentor:
+      _target_: nemo.collections.asr.modules.ssl_modules.MultiSpeakerNoiseAugmentation
+      prob: 0.5
+      noise_ratio: 0.5
+      min_r_speech: -5.0
+      max_r_speech: 5.0
+      min_r_noise: -5.0
+      max_r_noise: 20.0
+      min_mix_rate: 0.5
+      max_mix_rate: 0.5
+      min_num_segments: 1  # min num of segments that consititute the noise audio
+      max_num_segments: 1  # max num of segments that consititute the noise audio
+      min_num_speakers: 1  # min num of extra speakers to add
+      max_num_speakers: 1  # max num of extra speakers to add
+
+  preprocessor:
+    _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
+    sample_rate: ${model.sample_rate}
+    normalize: "per_feature"
+    window_size: 0.025
+    window_stride: 0.01
+    window: "hann"
+    features: 80
+    n_fft: 512
+    log: true
+    frame_splicing: 1
+    dither: 0.00001
+    pad_to: 16
+    pad_value: 0.0
+
+  # spec_augment is not actually used, just to avoid init error
+  spec_augment:
+    _target_: nemo.collections.asr.modules.SpectrogramAugmentation
+    freq_masks: 0 # set to zero to disable it
+    time_masks: 0 # set to zero to disable it
+    freq_width: 27
+    time_width: 0.05
+
+  masking:
+    _target_: nemo.collections.asr.modules.RandomBlockMasking
+    block_size: 40  # for pre_conv masking, 10ms per frame, 400ms per block with block_size=40
+    mask_prob: 0.01  # for allow_overlap=True, this means the mask prob for each frame; otherwise it means the overall masked proportion
+    feat_in: ${model.preprocessor.features}
+    freeze: true
+    allow_overlap: true
+
+  quantizer:
+    _target_: nemo.collections.asr.modules.RandomProjectionVectorQuantizer
+    feat_in: ${model.preprocessor.features}
+    code_dim: ${model.code_dim}
+    num_books: ${model.num_books}
+    num_classes: ${model.num_classes}
+    dist_fn: "l2"  # choices=["l2", "cosine"]
+    freeze: true
+    squeeze_single: ${model.squeeze_single}
+    combine_time_steps: ${model.encoder.subsampling_factor}  # conformer sub-sampling ratio
+  
+  encoder:
+    _target_: nemo.collections.asr.modules.transformer_encoder.TransformerEncoder
+    feat_in: ${model.preprocessor.features}
+    d_model: 1280
+    n_heads: 16
+    n_layers: 32
+    drop_rate: 0.1
+    qkv_bias: false
+    qk_norm: true
+    ff_expansion: 4
+    pre_block_norm: true
+    subsampling_factor: 8
+
+  decoder:
+    _target_: nemo.collections.asr.modules.MultiSoftmaxDecoder
+    feat_in: ${model.encoder.d_model}
+    num_classes: ${model.num_classes}
+    num_decoders: ${model.num_books}
+    squeeze_single: ${model.squeeze_single}
+    use_bias: true
+
+  loss:
+    _target_: nemo.collections.asr.losses.MultiMLMLoss
+    combine_time_steps: ${model.encoder.subsampling_factor}  # conformer sub-sampling ratio for 'pre_conv', 1 for 'post_conv'
+    mask_threshold: 0.8
+    num_decoders: ${model.num_books}
+    squeeze_single: ${model.squeeze_single}
+
+  optim:
+    name: adamw
+    lr: 5.0
+    # optimizer arguments
+    betas: [0.9, 0.98]
+    weight_decay: 1e-3
+
+    # scheduler setup
+    sched:
+      name: NoamAnnealing
+      d_model: ${model.encoder.d_model}
+      # scheduler config override
+      warmup_steps: 25000
+      warmup_ratio: null
+      min_lr: 1e-6
+
+trainer:
+  devices: -1 # number of GPUs, -1 would use all available GPUs
+  num_nodes: 1
+  max_epochs: -1
+  max_steps: 500000 # computed at runtime if not set
+  val_check_interval: 2500 # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
+  accelerator: auto
+  strategy: ddp
+  accumulate_grad_batches: 1
+  gradient_clip_val: 0.0
+  precision: 32 # 16, 32, or bf16
+  log_every_n_steps: 10  # Interval of logging.
+  enable_progress_bar: True
+  num_sanity_val_steps: 0 # number of steps to perform validation steps for sanity check the validation process before starting the training, setting to 0 disables it
+  check_val_every_n_epoch: 1 # number of evaluations on validation every n epochs
+  sync_batchnorm: true
+  enable_checkpointing: False  # Provided by exp_manager
+  logger: false  # Provided by exp_manager
+  benchmark: false # needs to be false for models with variable-length speech input as it slows down training
+
+exp_manager:
+  exp_dir: null
+  name: ${name}
+  create_tensorboard_logger: true
+  create_checkpoint_callback: true
+  checkpoint_callback_params:
+    # in case of multiple validation sets, first one is used
+    monitor: "val_loss"
+    mode: "min"
+    save_top_k: 1
+    always_save_nemo: True # saves the checkpoints as nemo files instead of PTL checkpoints
+    filename: '${name}--{${exp_manager.checkpoint_callback_params.monitor}:.3f}-{step}'
+
+
+  # you need to set these two to True to continue the training
+  resume_if_exists: true
+  resume_ignore_no_checkpoint: true
+
+  # You may use this section to create a W&B logger
+  create_wandb_logger: false
+  wandb_logger_kwargs:
+    name: null
+    project: null

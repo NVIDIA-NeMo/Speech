@@ -165,6 +165,22 @@ def test_low_amplitude_speech_and_background():
     assert all(not (a < 3 * sr and b > 2 * sr or a < 7 * sr and b > 6 * sr) for a, b in result.removed)
 
 
+def test_default_noise_margin_handles_fluctuating_quiet_background():
+    sr = 16000
+    audio = waveform(sr)
+    # Short background fluctuations split pauses with a 6 dB noise margin.
+    background = np.where(np.arange(len(audio)) % (sr // 5) < sr // 20, 4e-6, 1e-6).astype(np.float32)
+    audio += background
+    assert silence_trim_config(True).noise_margin_db == 18.0
+    result = trim_long_silences(audio, sr)
+    conservative = trim_long_silences(audio, sr, SilenceTrimConfig(noise_margin_db=6.0))
+    assert conservative.removed == []
+    assert len(result.removed) == 3
+    for start, end in [(2 * sr, 3 * sr), (6 * sr, 7 * sr)]:
+        mapped = round(result.map_time(start / sr, sr) * sr)
+        np.testing.assert_array_equal(result.audio[mapped : mapped + end - start], audio[start:end])
+
+
 def test_quiet_speech_restarts_near_end():
     sr = 16000
     # Quiet speech can restart during an apparently trailing pause. Its energy

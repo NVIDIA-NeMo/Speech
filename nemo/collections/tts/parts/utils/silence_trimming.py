@@ -16,6 +16,8 @@ class SilenceTrimConfig:
     The silence threshold is the minimum of the estimated background plus a margin,
     the speech reference minus a margin, and an absolute ceiling. Ambiguous, nearly
     stationary recordings and recordings without detected activity pass unchanged.
+    noise_margin_db defaults to 18 dB above the estimated background; the speech
+    margin and absolute ceiling still cap the silence threshold.
     Linear fades at deletions are limited to retained quiet samples; fade_duration
     is in seconds and zero disables fading without changing the deletion timeline.
     """
@@ -25,7 +27,7 @@ class SilenceTrimConfig:
     frame_length: float = 0.02
     hop_length: float = 0.01
     noise_percentile: float = 20.0
-    noise_margin_db: float = 6.0
+    noise_margin_db: float = 18.0
     speech_margin_db: float = 30.0
     max_threshold_db: float = -50.0
     min_dynamic_range_db: float = 15.0

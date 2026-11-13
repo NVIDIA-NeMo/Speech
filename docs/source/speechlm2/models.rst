@@ -496,6 +496,7 @@ For information about scaling and training these models at scale, see the :doc:`
 Backbone configuration loading
 ------------------------------
 
-The vLLM SpeechLM configuration loader uses ``trust_remote_code=False`` when
-reading a backbone config. Use a built-in Transformers configuration, an embedded
-``llm_config``, or a reviewed custom class registered by the application.
+The vLLM SpeechLM configuration loader defaults to ``trust_remote_code=False``
+when reading a backbone config. Set ``NEMO_TRUST_REMOTE_CODE=true`` in the launching
+environment to allow a vetted custom config. The opt-in is read from the process
+environment, not from the model configuration.

@@ -200,11 +200,11 @@ Additional documentation on advanced features can be found in the repository:
 Pretrained tokenizer and backend configuration
 ----------------------------------------------
 
-Magpie-TTS and EasyMagpie-TTS load Hugging Face tokenizers and backend configs
-with ``trust_remote_code=False``. Use built-in Transformers implementations or
-register reviewed custom classes in your application before loading a model.
-A ``trust_remote_code`` value saved in a model config does not enable custom code
-for these components.
+Magpie-TTS and EasyMagpie-TTS default to ``trust_remote_code=False`` for Hugging
+Face tokenizers and backend loading. To allow vetted custom implementations, set
+``NEMO_TRUST_REMOTE_CODE=true`` in the launching environment. This runtime opt-in
+also applies in dataloader workers. A ``trust_remote_code`` value saved in a model
+config cannot enable it.
 
 References
 ##########

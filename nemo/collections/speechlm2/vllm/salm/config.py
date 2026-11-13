@@ -29,6 +29,9 @@ from typing import Any
 
 from transformers import AutoConfig, PretrainedConfig
 
+from nemo.constants import NEMO_ENV_TRUST_REMOTE_CODE
+from nemo.utils.env_var_parsing import get_envbool
+
 # Architectures a checkpoint's config.json names, and the architectures and
 # model types of its MTP draft. A ParallelExpertEncoder on a NemotronH backbone
 # has its own, the names vLLM's native implementation uses.
@@ -326,7 +329,9 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         self.encoder_chunk_size_seconds = encoder_chunk_size_seconds
 
         if llm_config is None:
-            self.text_config = AutoConfig.from_pretrained(pretrained_llm, trust_remote_code=False)
+            self.text_config = AutoConfig.from_pretrained(
+                pretrained_llm, trust_remote_code=get_envbool(NEMO_ENV_TRUST_REMOTE_CODE, False)
+            )
         else:
             if not isinstance(llm_config, dict):
                 raise ValueError(f"NeMo SpeechLM llm_config must be a dict, got {type(llm_config).__name__}.")

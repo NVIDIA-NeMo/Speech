@@ -94,12 +94,13 @@ def load_pretrained_automodel_llm(
 
     from nemo_automodel import NeMoAutoModelForCausalLM
 
-    from nemo.collections.speechlm2.parts.automodel_compat import remove_automodel_backend_for_hf_fallback
+    from nemo.collections.speechlm2.parts.automodel_compat import remove_automodel_kwargs_for_hf_fallback
 
-    remove_automodel_backend_for_hf_fallback(
+    remove_automodel_kwargs_for_hf_fallback(
         model_path_or_name,
         kwargs,
         trust_remote_code=trust_remote_code,
+        mtp_config_overrides=mtp_config_overrides,
     )
 
     use_repeated_mtp = bool(kwargs.get("mtp_use_repeated_layer", False))

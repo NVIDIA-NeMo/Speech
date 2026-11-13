@@ -221,7 +221,7 @@ def _mock_automodel_loader(config):
             "sys.modules",
             {"nemo_automodel": SimpleNamespace(NeMoAutoModelForCausalLM=automodel)},
         ),
-        patch("nemo.collections.speechlm2.parts.automodel_compat.remove_automodel_backend_for_hf_fallback"),
+        patch("nemo.collections.speechlm2.parts.automodel_compat.remove_automodel_kwargs_for_hf_fallback"),
     )
 
 
@@ -617,6 +617,36 @@ def test_load_pretrained_automodel_llm_forwards_hf_resolution_kwargs():
         cache_dir="/cache",
     )
     base_load.assert_called_once_with(result, "/cache/exact-snapshot/subdir", {"cache_dir": "/cache"})
+
+
+@pytest.mark.parametrize("pretrained_weights", [False, True])
+def test_load_pretrained_automodel_llm_hf_fallback_accepts_disabled_mtp(pretrained_weights):
+    pytest.importorskip("nemo_automodel")
+
+    # SALMAutomodel passes num_nextn_predict_layers=0 whenever MTP is disabled.
+    llm = pretrained.load_pretrained_automodel_llm(
+        "hf-internal-testing/tiny-random-GPT2LMHeadModel",
+        pretrained_weights=pretrained_weights,
+        num_nextn_predict_layers=0,
+    )
+
+    assert type(llm).__name__ == "GPT2LMHeadModel"
+
+
+@pytest.mark.parametrize(
+    "mtp_kwargs",
+    [
+        {"num_nextn_predict_layers": 1},
+        {"mtp_config_overrides": {"num_nextn_predict_layers": 1}},
+    ],
+)
+def test_load_pretrained_automodel_llm_hf_fallback_rejects_mtp(mtp_kwargs):
+    pytest.importorskip("nemo_automodel")
+
+    with pytest.raises(ValueError, match="does not support Multi-Token Prediction"):
+        pretrained.load_pretrained_automodel_llm(
+            "hf-internal-testing/tiny-random-GPT2LMHeadModel", pretrained_weights=False, **mtp_kwargs
+        )
 
 
 @pytest.mark.parametrize(

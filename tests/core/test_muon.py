@@ -14,6 +14,9 @@
 # limitations under the License.
 
 import copy
+import math
+from typing import Tuple
+from unittest import mock
 
 import pytest
 import torch
@@ -105,7 +108,7 @@ class TestMuon:
         # the iteration runs on the wide orientation, so a transposed input gives exactly the transposed result
         assert torch.equal(zeropower_via_newtonschulz5(grad.T), orthogonal.T)
         with pytest.raises(ValueError, match="matrix"):
-            zeropower_via_newtonschulz5(torch.zeros(3, 4, 5))
+            zeropower_via_newtonschulz5(torch.zeros(5))
 
     @pytest.mark.unit
     def test_muon_step_matches_definition(self):
@@ -279,3 +282,470 @@ class TestMuon:
         assert 'momentum_buffer' not in state
         # a wide embedding falls back by shape alone
         assert not Muon.selects_muon(torch.empty(8192, 16), use_muon=None, adam_dim_threshold=8192)
+
+
+def _layered_parameters(seed: int = 0) -> torch.nn.ParameterDict:
+    """Parameters in repeated shapes of both orientations, as the layers of one model have them."""
+    generator = torch.Generator().manual_seed(seed)
+
+    def param(*shape):
+        return torch.nn.Parameter(torch.randn(*shape, generator=generator))
+
+    parameters = torch.nn.ParameterDict()
+    for layer in range(3):
+        parameters[f'tall_{layer}'] = param(40, 16)  # Muon, fan_in scale sqrt(2.5)
+        parameters[f'wide_{layer}'] = param(16, 40)  # Muon, iterated on the transposed orientation
+        parameters[f'square_{layer}'] = param(24, 24)  # Muon
+        parameters[f'bias_{layer}'] = param(40)  # AdamW
+        parameters[f'conv_{layer}'] = param(8, 4, 3)  # AdamW by shape, Muon when forced
+    parameters['embedding'] = param(8200, 16)  # AdamW, wide
+    return parameters
+
+
+def _layered_optimizer(parameters: torch.nn.ParameterDict, **options) -> Muon:
+    """Two parameter groups: the default options, and the forced filters without weight decay."""
+    convs = [param for name, param in parameters.items() if name.startswith('conv_')]
+    others = [param for name, param in parameters.items() if not name.startswith('conv_')]
+    return Muon(
+        [{'params': others}, {'params': convs, 'use_muon': True, 'weight_decay': 0.0}],
+        lr=LR,
+        weight_decay=WEIGHT_DECAY,
+        **options,
+    )
+
+
+def _run_layered(optimizer: Muon, parameters: torch.nn.ParameterDict, steps: int) -> None:
+    """Steps with the same gradients per step; two parameters have no gradient in the second step."""
+    for step in range(steps):
+        _set_gradients(parameters, 500 + step)
+        if step == 1:
+            parameters['bias_1'].grad = None
+            parameters['tall_1'].grad = None
+        optimizer.step()
+
+
+# The batched Newton-Schulz iteration computes the same bfloat16 arithmetic as the per-matrix one,
+# but a batched matrix product may round differently on some devices and shapes
+# (on CPU the two agree bitwise; on a GB300 four of 351 matrices of a 750-million-parameter model differed,
+# by up to 2.4 percent of the update after five iterations amplified the rounding),
+# so the Muon parameters are compared to within five percent of the update's scale
+# (the learning rate times the largest shape factor), and everything else bitwise.
+MUON_FOREACH_ATOL = 0.05 * LR * 2.5**0.5
+
+
+def _assert_same_result(loop: Muon, foreach: Muon, loop_params, foreach_params) -> None:
+    for name in loop_params:
+        a, b = loop_params[name], foreach_params[name]
+        loop_state, foreach_state = loop.state[a], foreach.state[b]
+        assert set(loop_state) == set(foreach_state), name
+        if 'momentum_buffer' in loop_state:
+            assert torch.equal(loop_state['momentum_buffer'], foreach_state['momentum_buffer']), name
+            torch.testing.assert_close(b, a, atol=MUON_FOREACH_ATOL, rtol=0.0, msg=name)
+        else:
+            assert torch.equal(a, b), name
+            assert loop_state['step'] == foreach_state['step'], name
+            assert torch.equal(loop_state['exp_avg'], foreach_state['exp_avg']), name
+            assert torch.equal(loop_state['exp_avg_sq'], foreach_state['exp_avg_sq']), name
+
+
+class TestMuonForeach:
+    @pytest.mark.unit
+    def test_option_default_and_parsing(self):
+        parameters = _parameters()
+        assert Muon(parameters.parameters(), lr=LR).param_groups[0]['foreach'] is True
+        assert Muon(parameters.parameters(), lr=LR, foreach=False).param_groups[0]['foreach'] is False
+        parsed = optim.parse_optimizer_args('muon', {'name': 'auto', 'foreach': False})
+        assert parsed['foreach'] is False
+        assert config.optimizers.MuonParams().foreach is True
+
+    @pytest.mark.unit
+    def test_foreach_matches_the_loop_on_mixed_shape_groups(self):
+        loop_params = _layered_parameters()
+        foreach_params = _layered_parameters()
+        loop = _layered_optimizer(loop_params, foreach=False)
+        foreach = _layered_optimizer(foreach_params, foreach=True)
+        _run_layered(loop, loop_params, steps=3)
+        _run_layered(foreach, foreach_params, steps=3)
+        _assert_same_result(loop, foreach, loop_params, foreach_params)
+        # the parameters without a gradient in the second step kept their step count behind the others
+        assert loop.state[loop_params['bias_1']]['step'] == 2
+        assert loop.state[loop_params['bias_0']]['step'] == 3
+        assert 'momentum_buffer' in foreach.state[foreach_params['conv_0']]
+        # the updates moved the parameters
+        for name, param in foreach_params.items():
+            assert not torch.equal(param, _layered_parameters()[name]), name
+
+    @pytest.mark.unit
+    def test_foreach_without_nesterov_and_without_decay(self):
+        loop_params = _layered_parameters()
+        foreach_params = _layered_parameters()
+        loop = Muon(loop_params.parameters(), lr=LR, nesterov=False, foreach=False)
+        foreach = Muon(foreach_params.parameters(), lr=LR, nesterov=False, foreach=True)
+        _run_layered(loop, loop_params, steps=2)
+        _run_layered(foreach, foreach_params, steps=2)
+        _assert_same_result(loop, foreach, loop_params, foreach_params)
+
+    @pytest.mark.unit
+    def test_state_dict_moves_between_the_forms(self):
+        for first, second in ((False, True), (True, False)):
+            parameters = _layered_parameters()
+            optimizer = _layered_optimizer(parameters, foreach=first)
+            _run_layered(optimizer, parameters, steps=2)
+            continued_params = copy.deepcopy(parameters)
+            continued = _layered_optimizer(continued_params, foreach=second)
+            continued.load_state_dict(copy.deepcopy(optimizer.state_dict()))
+            _set_gradients(parameters, 600)
+            _set_gradients(continued_params, 600)
+            optimizer.step()
+            continued.step()
+            if first:
+                _assert_same_result(continued, optimizer, continued_params, parameters)
+            else:
+                _assert_same_result(optimizer, continued, parameters, continued_params)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('capturable', [False, True])
+    def test_state_dict_saved_without_the_options_loads(self, capturable):
+        # a state saved by the Muon before these options has neither `foreach` nor `capturable` in its groups
+        parameters = _layered_parameters()
+        optimizer = _layered_optimizer(parameters, foreach=False)
+        _run_layered(optimizer, parameters, steps=2)
+        saved = copy.deepcopy(optimizer.state_dict())
+        for group in saved['param_groups']:
+            del group['foreach']
+            del group['capturable']
+        restored_params = copy.deepcopy(parameters)
+        restored = _layered_optimizer(restored_params, capturable=capturable)
+        restored.load_state_dict(saved)
+        assert all(group['foreach'] is True and group['capturable'] is capturable for group in restored.param_groups)
+        assert isinstance(restored.state[restored_params['bias_0']]['step'], torch.Tensor) is capturable
+        _set_gradients(parameters, 650)
+        _set_gradients(restored_params, 650)
+        optimizer.step()
+        restored.step()
+        if capturable:
+            _assert_close_result(optimizer, restored, parameters, restored_params)
+        else:
+            _assert_same_result(optimizer, restored, parameters, restored_params)
+
+    @pytest.mark.unit
+    def test_reduced_precision_parameters_differ_at_the_coefficient_rounding(self):
+        # the CPU torch._foreach scalar operations round each scalar coefficient to the parameter dtype,
+        # so with bfloat16 parameters the two forms agree to two bfloat16 ulps of a tensor's largest value,
+        # bitwise on CUDA and not on CPU
+        def two_ulps(tensor):
+            return 2.0 ** (math.floor(math.log2(tensor.abs().max().item())) - 6)
+
+        loop_params = _layered_parameters().bfloat16()
+        foreach_params = _layered_parameters().bfloat16()
+        loop = _layered_optimizer(loop_params, foreach=False)
+        foreach = _layered_optimizer(foreach_params, foreach=True)
+        for step in range(3):
+            generator = torch.Generator().manual_seed(800 + step)
+            for a, b in zip(loop_params.values(), foreach_params.values()):
+                a.grad = torch.randn(a.shape, generator=generator).bfloat16()
+                b.grad = a.grad.clone()
+            loop.step()
+            foreach.step()
+        for name in loop_params:
+            expected = loop_params[name]
+            torch.testing.assert_close(foreach_params[name], expected, rtol=0.0, atol=two_ulps(expected), msg=name)
+            for key, value in loop.state[expected].items():
+                if isinstance(value, torch.Tensor):
+                    torch.testing.assert_close(
+                        foreach.state[foreach_params[name]][key], value, rtol=0.0, atol=two_ulps(value), msg=name
+                    )
+
+    @pytest.mark.unit
+    def test_foreach_uses_the_multi_tensor_operations(self):
+        parameters = _layered_parameters()
+        _set_gradients(parameters, 700)
+        with mock.patch.object(torch, '_foreach_mul_', wraps=torch._foreach_mul_) as spy:
+            _layered_optimizer(parameters, foreach=False).step()
+            spy.assert_not_called()
+            _layered_optimizer(parameters, foreach=True).step()
+            assert spy.call_count > 0
+
+    @pytest.mark.unit
+    def test_newton_schulz_on_a_batch(self):
+        generator = torch.Generator().manual_seed(2)
+        matrices = torch.randn(4, 16, 40, generator=generator)
+        batched = zeropower_via_newtonschulz5(matrices)
+        assert batched.shape == matrices.shape
+        assert batched.dtype == matrices.dtype
+        for index in range(4):
+            single = zeropower_via_newtonschulz5(matrices[index])
+            torch.testing.assert_close(batched[index], single, atol=2**-5, rtol=0.0)
+            singular_values = torch.linalg.svdvals(batched[index].double())
+            assert 0.5 < singular_values.min() and singular_values.max() < 1.5
+        # the batch of tall matrices is iterated on the transposed orientation
+        assert torch.equal(zeropower_via_newtonschulz5(matrices.mT), batched.mT)
+        with pytest.raises(ValueError, match="matrix"):
+            zeropower_via_newtonschulz5(torch.zeros(2, 3, 4, 5))
+
+
+def _run_with_learning_rates(optimizer: Muon, parameters: torch.nn.ParameterDict, learning_rates) -> None:
+    """Steps at the given learning rates (a tensor learning rate is filled in place); two parameters skip step 1."""
+    for step, learning_rate in enumerate(learning_rates):
+        for group in optimizer.param_groups:
+            if isinstance(group['lr'], torch.Tensor):
+                group['lr'].fill_(learning_rate)
+            else:
+                group['lr'] = learning_rate
+        _set_gradients(parameters, 900 + step)
+        if step == 1:
+            parameters['bias_1'].grad = None
+            parameters['tall_1'].grad = None
+        optimizer.step()
+
+
+# A tensor learning rate and the device step count fold the step size into the AdamW denominator
+# and scale the orthogonal factor as a separate product, so the updates differ at float32 rounding.
+CAPTURABLE_TOLERANCE = dict(rtol=1e-5, atol=1e-6)
+
+
+def _assert_close_result(reference: Muon, other: Muon, reference_params, other_params) -> None:
+    for name in reference_params:
+        a, b = reference_params[name], other_params[name]
+        torch.testing.assert_close(b, a, **CAPTURABLE_TOLERANCE, msg=name)
+        reference_state, other_state = reference.state[a], other.state[b]
+        assert set(reference_state) == set(other_state), name
+        for key, value in reference_state.items():
+            if key == 'step':
+                assert float(value) == float(other_state[key]), name
+            else:
+                torch.testing.assert_close(other_state[key], value, **CAPTURABLE_TOLERANCE, msg=name)
+
+
+def _optimizer_with_tensor_learning_rate(device: str, foreach: bool = True) -> Tuple[torch.nn.ParameterDict, Muon]:
+    """A capturable layered optimizer with a tensor learning rate on `device`; the gradients are allocated."""
+    parameters = _layered_parameters().to(device)
+    for param in parameters.values():
+        param.grad = torch.zeros_like(param)
+    optimizer = _layered_optimizer(parameters, foreach=foreach, capturable=True)
+    for group in optimizer.param_groups:
+        group['lr'] = torch.tensor(LR, device=device)
+    return parameters, optimizer
+
+
+def _feed(parameters: torch.nn.ParameterDict, optimizer: Muon, seed: int, learning_rate: float) -> None:
+    """Writes new gradients and the learning rate in place, as a captured or compiled step expects."""
+    generator = torch.Generator().manual_seed(seed)
+    for param in parameters.values():
+        param.grad.copy_(torch.randn(param.shape, generator=generator))
+    for group in optimizer.param_groups:
+        group['lr'].fill_(learning_rate)
+
+
+class TestMuonCapturable:
+    @pytest.mark.unit
+    def test_option_default_and_parsing(self):
+        parameters = _parameters()
+        assert Muon(parameters.parameters(), lr=LR).param_groups[0]['capturable'] is False
+        assert optim.parse_optimizer_args('muon', {'name': 'auto', 'capturable': True})['capturable'] is True
+        assert config.optimizers.MuonParams().capturable is False
+        learning_rate = torch.tensor(LR)
+        assert Muon(parameters.parameters(), lr=learning_rate).param_groups[0]['lr'] is learning_rate
+        with pytest.raises(ValueError, match="Invalid learning rate"):
+            Muon(parameters.parameters(), lr=torch.tensor(-LR))
+        with pytest.raises(ValueError, match="one element"):
+            Muon(parameters.parameters(), lr=torch.tensor([0.1, 0.2]))
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('foreach', [False, True])
+    def test_one_element_learning_rate_tensor_of_any_shape(self, foreach):
+        # a `(1,)` tensor, as a scheduler or a configuration may hand it over, is read as a scalar
+        plain_params = _layered_parameters()
+        tensor_params = _layered_parameters()
+        plain = _layered_optimizer(plain_params, foreach=foreach)
+        with_tensor = _layered_optimizer(tensor_params, foreach=foreach, capturable=True)
+        for group in with_tensor.param_groups:
+            group['lr'] = torch.tensor([LR])
+        _run_with_learning_rates(plain, plain_params, [LR, LR / 2])
+        _run_with_learning_rates(with_tensor, tensor_params, [LR, LR / 2])
+        _assert_close_result(plain, with_tensor, plain_params, tensor_params)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('foreach', [False, True])
+    def test_capturable_step_reads_nothing_on_the_host(self, foreach):
+        # a host read (`.item()`, a Python bool of a tensor) inside the step would be a `_local_scalar_dense` call
+        from torch.utils._python_dispatch import TorchDispatchMode
+
+        class CountHostReads(TorchDispatchMode):
+            def __init__(self):
+                super().__init__()
+                self.host_reads = 0
+
+            def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+                if func is torch.ops.aten._local_scalar_dense.default:
+                    self.host_reads += 1
+                return func(*args, **(kwargs or {}))
+
+        parameters = _layered_parameters()
+        optimizer = _layered_optimizer(parameters, foreach=foreach, capturable=True)
+        for group in optimizer.param_groups:
+            group['lr'] = torch.tensor(LR)
+        _set_gradients(parameters, 700)
+        optimizer.step()  # the state initialization
+        _set_gradients(parameters, 701)
+        parameters['bias_1'].grad = None
+        with CountHostReads() as counter:
+            optimizer.step()
+        assert counter.host_reads == 0
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('foreach', [False, True])
+    def test_capturable_matches_the_plain_step(self, foreach):
+        plain_params = _layered_parameters()
+        capturable_params = _layered_parameters()
+        plain = _layered_optimizer(plain_params, foreach=foreach)
+        capturable = _layered_optimizer(capturable_params, foreach=foreach, capturable=True)
+        learning_rates = [LR, LR / 2, LR / 4]
+        _run_with_learning_rates(plain, plain_params, learning_rates)
+        _run_with_learning_rates(capturable, capturable_params, learning_rates)
+        _assert_close_result(plain, capturable, plain_params, capturable_params)
+        # the Muon update does not depend on the option, the step count lives on the device
+        for name in ('tall_0', 'wide_2', 'square_1', 'conv_0'):
+            assert torch.equal(plain_params[name], capturable_params[name]), name
+        step = capturable.state[capturable_params['bias_0']]['step']
+        assert isinstance(step, torch.Tensor) and step.device == capturable_params['bias_0'].device
+        assert float(step) == 3.0 and float(capturable.state[capturable_params['bias_1']]['step']) == 2.0
+        assert plain.state[plain_params['bias_1']]['step'] == 2
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('foreach', [False, True])
+    def test_tensor_learning_rate_is_read_in_place(self, foreach):
+        plain_params = _layered_parameters()
+        tensor_params = _layered_parameters()
+        plain = _layered_optimizer(plain_params, foreach=foreach)
+        learning_rate = torch.tensor(LR)
+        with_tensor = _layered_optimizer(tensor_params, foreach=foreach, capturable=True)
+        for group in with_tensor.param_groups:
+            group['lr'] = learning_rate
+        learning_rates = [LR, LR / 2, LR / 4]
+        _run_with_learning_rates(plain, plain_params, learning_rates)
+        _run_with_learning_rates(with_tensor, tensor_params, learning_rates)
+        _assert_close_result(plain, with_tensor, plain_params, tensor_params)
+        # the same tensor object stays in the groups and holds the last value
+        assert all(group['lr'] is learning_rate for group in with_tensor.param_groups)
+        assert learning_rate.item() == pytest.approx(LR / 4)
+        # a tensor learning rate works without `capturable` as well (the step count stays a Python integer)
+        more_params = _layered_parameters()
+        more = _layered_optimizer(more_params, foreach=foreach)
+        for group in more.param_groups:
+            group['lr'] = torch.tensor(LR)
+        _run_with_learning_rates(more, more_params, learning_rates)
+        _assert_close_result(plain, more, plain_params, more_params)
+        assert more.state[more_params['bias_0']]['step'] == 3
+
+    @pytest.mark.unit
+    def test_state_dict_moves_between_capturable_settings(self):
+        for first, second in ((False, True), (True, False)):
+            parameters = _layered_parameters()
+            optimizer = _layered_optimizer(parameters, capturable=first)
+            _run_with_learning_rates(optimizer, parameters, [LR, LR])
+            continued_params = copy.deepcopy(parameters)
+            continued = _layered_optimizer(continued_params, capturable=second)
+            continued.load_state_dict(copy.deepcopy(optimizer.state_dict()))
+            step = continued.state[continued_params['bias_0']]['step']
+            assert isinstance(step, torch.Tensor) is second
+            assert float(step) == 2.0
+            _run_with_learning_rates(optimizer, parameters, [LR / 2])
+            _run_with_learning_rates(continued, continued_params, [LR / 2])
+            _assert_close_result(optimizer, continued, parameters, continued_params)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('foreach', [False, True])
+    def test_compiled_step_traces_as_one_graph(self, foreach):
+        # the capture checks are skipped while Dynamo traces (`torch.cuda.is_current_stream_capturing` has no trace)
+        graphs = []
+
+        def record(graph_module, example_inputs):
+            graphs.append(graph_module)
+            return graph_module.forward
+
+        eager_params, eager = _optimizer_with_tensor_learning_rate('cpu', foreach=foreach)
+        compiled_params, compiled = _optimizer_with_tensor_learning_rate('cpu', foreach=foreach)
+        schedule = [(1000, LR), (1001, LR), (1002, LR / 2), (1003, LR / 4)]
+        # one eager step creates the state, as the warm-up before a capture does; the compiled step runs the rest
+        _feed(compiled_params, compiled, *schedule[0])
+        compiled.step()
+        torch._dynamo.reset()
+        step = torch.compile(compiled.step, fullgraph=True, backend=record)
+        for seed, learning_rate in schedule[1:]:
+            _feed(compiled_params, compiled, seed, learning_rate)
+            step()
+        for seed, learning_rate in schedule:
+            _feed(eager_params, eager, seed, learning_rate)
+            eager.step()
+        assert len(graphs) == 1
+        _assert_close_result(eager, compiled, eager_params, compiled_params)
+        assert float(compiled.state[compiled_params['bias_0']]['step']) == len(schedule)
+
+    @pytest.mark.unit
+    def test_compiled_multi_tensor_step_needs_device_step_counts(self):
+        # Dynamo runs the capturable form: Python step counts from eager steps without `capturable` are rejected
+        parameters = _layered_parameters()
+        optimizer = _layered_optimizer(parameters)
+        _run_with_learning_rates(optimizer, parameters, [LR])
+        assert optimizer.state[parameters['bias_0']]['step'] == 1
+        torch._dynamo.reset()
+        step = torch.compile(optimizer.step, fullgraph=True, backend='eager')
+        _set_gradients(parameters, 901)
+        with pytest.raises(RuntimeError, match="capturable=True"):
+            step()
+
+    @pytest.mark.unit
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph capture needs a GPU")
+    def test_captured_step_replays_with_new_gradients_and_learning_rate(self):
+        eager_params, eager = _optimizer_with_tensor_learning_rate('cuda')
+        captured_params, captured = _optimizer_with_tensor_learning_rate('cuda')
+        schedule = [(1000, LR), (1001, LR), (1002, LR / 2), (1003, LR / 4), (1004, LR / 8), (1005, LR / 16)]
+        # warm-up on a side stream, then the capture, then replays with new gradients and learning rates
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            for seed, learning_rate in schedule[:3]:
+                _feed(captured_params, captured, seed, learning_rate)
+                captured.step()
+        torch.cuda.current_stream().wait_stream(stream)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            captured.step()
+        for seed, learning_rate in schedule[3:]:
+            _feed(captured_params, captured, seed, learning_rate)
+            graph.replay()
+        for seed, learning_rate in schedule:
+            _feed(eager_params, eager, seed, learning_rate)
+            eager.step()
+        torch.cuda.synchronize()
+        _assert_close_result(eager, captured, eager_params, captured_params)
+        assert float(captured.state[captured_params['bias_0']]['step']) == len(schedule)
+
+    @pytest.mark.unit
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph capture needs a GPU")
+    @pytest.mark.parametrize('foreach', [False, True])
+    def test_capture_needs_capturable_and_a_device_learning_rate(self, foreach):
+        parameters = _layered_parameters().to('cuda')
+        for param in parameters.values():
+            param.grad = torch.zeros_like(param)
+
+        def capture(optimizer):
+            stream = torch.cuda.Stream()
+            stream.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(stream):
+                optimizer.step()
+            torch.cuda.current_stream().wait_stream(stream)
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):
+                optimizer.step()
+
+        with pytest.raises(RuntimeError, match="capturable=True"):
+            capture(_layered_optimizer(parameters, foreach=foreach))
+        with pytest.raises(RuntimeError, match="tensor on the parameters' device"):
+            capture(_layered_optimizer(parameters, foreach=foreach, capturable=True))
+        on_the_host = _layered_optimizer(parameters, foreach=foreach, capturable=True)
+        for group in on_the_host.param_groups:
+            group['lr'] = torch.tensor(LR)
+        with pytest.raises(RuntimeError, match="tensor on the parameters' device"):
+            capture(on_the_host)

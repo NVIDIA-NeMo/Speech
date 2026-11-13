@@ -16,8 +16,24 @@ from nemo.collections.speechlm2.parts.ctc_timestamp_utils import CTC_TIMESTAMP_A
 from nemo.collections.speechlm2.parts.weight_loading import checkpoint_load_state, load_nemo_rl_checkpoint
 
 
-@pytest.fixture
-def bundle(tmp_path):
+# The released timestamp head adds a Transformer bridge, a residual scale buffer, and an integer
+# ``upsample_factor`` buffer (stored as I64) on top of the plain projection.
+_DECODER_CONFIGS = {
+    'plain': {'feat_in': 8, 'use_transformer': False},
+    'upsampled_transformer': {
+        'feat_in': 32,
+        'use_transformer': True,
+        'n_heads': 2,
+        'n_layers': 2,
+        'residual': True,
+        'upsampling_factor': 4,
+        'upsampling_mode': 'repeat_phase',
+    },
+}
+
+
+@pytest.fixture(params=sorted(_DECODER_CONFIGS))
+def bundle(request, tmp_path):
     corpus = tmp_path / 'corpus.txt'
     corpus.write_text('hello world\nhello speech\nworld speech\n')
     spm.SentencePieceTrainer.train(
@@ -30,9 +46,8 @@ def bundle(tmp_path):
     proto = (tmp_path / 'tokenizer.model').read_bytes()
     processor = spm.SentencePieceProcessor(model_proto=proto)
     config = {
-        'feat_in': 8,
+        **_DECODER_CONFIGS[request.param],
         'num_classes': processor.vocab_size(),
-        'use_transformer': False,
         'vocabulary': [processor.id_to_piece(i) for i in range(processor.vocab_size())],
     }
     decoder = TransformerCTCDecoder(**config)
@@ -104,6 +119,48 @@ def test_bundle_requires_recognized_metadata(bundle, tmp_path):
     path = tmp_path / 'unknown.safetensors'
     save_file(state, path)
     with pytest.raises(ValueError, match='metadata'):
+        read_ctc_timestamp_config(path)
+
+
+def test_integer_buffer_keeps_its_dtype(tmp_path):
+    proto = torch.tensor([1, 2, 3], dtype=torch.uint8)
+    config = {
+        **_DECODER_CONFIGS['upsampled_transformer'],
+        'num_classes': 3,
+        'vocabulary': ['a', 'b', 'c'],
+    }
+    decoder = TransformerCTCDecoder(**config)
+    state = {'ctc_timestamp.decoder.' + name: value for name, value in decoder.state_dict().items()}
+    state['ctc_timestamp.tokenizer.model_proto'] = proto
+    metadata = {
+        'ctc_timestamp_format': CTC_TIMESTAMP_ARTIFACT_FORMAT,
+        'ctc_timestamp_decoder_config': json.dumps(config),
+        'ctc_timestamp_tokenizer_config': json.dumps({'legacy': False}),
+    }
+    path = tmp_path / 'model.safetensors'
+    save_file(state, path, metadata=metadata)
+    ctc_config = read_ctc_timestamp_config(path)
+    assert ctc_config['tensor_dtypes']['decoder.upsample_factor'] == 'int64'
+    module = CTCTimestampCheckpoint(ctc_config)
+    assert module.decoder.upsample_factor.dtype == torch.int64
+
+    # Integer storage for a floating-point tensor (or vice versa) is never silently cast.
+    for name, dtype in (('decoder.upsample_factor', 'float32'), ('decoder.residual_scale', 'int64')):
+        bad = json.loads(json.dumps(ctc_config))
+        bad['tensor_dtypes'][name] = dtype
+        with pytest.raises(ValueError, match=name):
+            CTCTimestampCheckpoint(bad)
+
+
+def test_unsupported_safetensors_dtype_raises_value_error(bundle, tmp_path):
+    _, state, metadata = bundle
+    state = dict(state)
+    state['ctc_timestamp.decoder.decoder_layers.0.bias'] = state['ctc_timestamp.decoder.decoder_layers.0.bias'].to(
+        torch.float8_e4m3fn
+    )
+    path = tmp_path / 'fp8.safetensors'
+    save_file(state, path, metadata=metadata)
+    with pytest.raises(ValueError, match='F8_E4M3'):
         read_ctc_timestamp_config(path)
 
 

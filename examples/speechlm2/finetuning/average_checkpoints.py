@@ -51,6 +51,7 @@ def parse_args():
 
 def main():
     args = parse_args()
+    from safetensors import safe_open
     from safetensors.torch import load_file, save_file
 
     if len(args.src) < 2:
@@ -89,7 +90,10 @@ def main():
     out = {}
     for k, v in acc.items():
         out[k] = (v / n).to(dtypes[k]) if v.is_floating_point() else v
-    save_file(out, str(staging / "model.safetensors"), metadata={"format": "pt"})
+    # Header metadata describes bundled artifacts (e.g. a frozen CTC timestamp head); keep it.
+    with safe_open(str(Path(args.src[0]) / "model.safetensors"), framework="pt") as f:
+        metadata = f.metadata() or {}
+    save_file(out, str(staging / "model.safetensors"), metadata={**metadata, "format": "pt"})
 
     first = Path(args.src[0])
     for name in ("config.json", "tokenizer.json", "tokenizer_config.json", "generation_config.json"):

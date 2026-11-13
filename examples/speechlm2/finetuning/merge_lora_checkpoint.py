@@ -108,7 +108,8 @@ def main():
         f"[merge] merged {merged} adapter pairs; dropped {len(lora_a) + len(lora_b)} adapter "
         f"tensors and {dropped_extra} adapter _extra_state entries"
     )
-    save_file(base, str(dst / "model.safetensors"), metadata={"format": "pt"})
+    # Header metadata describes bundled artifacts (e.g. a frozen CTC timestamp head); keep it.
+    save_file(base, str(dst / "model.safetensors"), metadata={**_header_metadata(src), "format": "pt"})
 
     # The merged model has no adapters; leaving the block in would make a loader
     # that honours it apply the delta a second time.
@@ -120,6 +121,13 @@ def main():
     if (src / "llm_backbone").is_dir():
         shutil.copytree(src / "llm_backbone", dst / "llm_backbone", dirs_exist_ok=True)
     print(f"[merge] wrote {dst}")
+
+
+def _header_metadata(checkpoint: Path) -> dict:
+    from safetensors import safe_open
+
+    with safe_open(str(checkpoint / "model.safetensors"), framework="pt") as f:
+        return f.metadata() or {}
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 import inspect
+import math
 import os
 import pathlib
 import uuid
@@ -2145,3 +2146,45 @@ class ModelPT(LightningModule, Model):
             return copy.deepcopy(optim_config)
         else:
             return OmegaConf.create(optim_config)
+
+    def _set_limit_batches_for_iterable_dataset(
+        self, dataloader: Optional[torch.utils.data.DataLoader], batch_size: Optional[int], stage: str = "train"
+    ) -> None:
+        """
+        Convert a float ``trainer.limit_{stage}_batches`` into a number of batches for a sized ``IterableDataset``.
+
+        The ``len()`` of a dataloader over a NeMo tarred ``IterableDataset`` is the number of samples rather than the
+        number of batches, which breaks the progress bar and epoch length. When ``limit_{stage}_batches`` is a float
+        (including the default 1.0), it is replaced by ``int(limit * ceil(len(dataset) / world_size / batch_size))``.
+        An int limit is assumed to be set deliberately and is kept.
+
+        Datasets without a length, such as Lhotse's ``IterableDatasetWrapper``, are left alone:
+        Lightning then treats the epoch length as unknown.
+
+        Args:
+            dataloader: The dataloader that was just set up; ``None`` or a map-style dataset is a no-op.
+            batch_size: The number of samples per batch, as configured for this dataloader.
+            stage: ``"train"`` or ``"val"``, selecting ``trainer.limit_train_batches`` or ``limit_val_batches``.
+        """
+        dataset = getattr(dataloader, 'dataset', None)
+        if not isinstance(dataset, torch.utils.data.IterableDataset):
+            return
+        if self._trainer is None:
+            logging.warning(
+                "Model Trainer was not set before constructing the dataset, incorrect number of "
+                f"{stage} batches will be used. Please set the trainer and rebuild the dataset."
+            )
+            return
+        attr = f"limit_{stage}_batches"
+        limit = getattr(self._trainer, attr)
+        if not isinstance(limit, float):
+            return
+        try:
+            num_samples = len(dataset)
+        except TypeError:
+            logging.info(
+                f"The {stage} dataset ({type(dataset).__name__}) has no length; "
+                f"keeping trainer.{attr}={limit} and letting Lightning treat the epoch length as unknown."
+            )
+            return
+        setattr(self._trainer, attr, int(limit * math.ceil((num_samples / self.world_size) / batch_size)))

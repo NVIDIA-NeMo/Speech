@@ -36,6 +36,7 @@ model:
   # fresh head before Automodel parallelizes and loads the backbone weights. Add
   # "^llm\\.mtp\\..+$" to
   # prevent_freeze_params when the broad LLM freeze pattern above is active.
+  # MTP on a NemotronH backbone (e.g. the default above) needs ++model.trust_remote_code=true.
   mtp:
     enabled: false
     training_mode: joint  # joint preserves the recipe freeze policy; head_only trains only llm.mtp

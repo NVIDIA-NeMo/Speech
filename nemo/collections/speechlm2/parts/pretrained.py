@@ -141,7 +141,13 @@ def load_pretrained_automodel_llm(
             )
         if initialize_fresh_mtp:
             for name, value in mtp_config_overrides.items():
-                setattr(config, name, value)
+                try:
+                    setattr(config, name, value)
+                except AttributeError as e:
+                    raise AttributeError(
+                        f"Cannot set MTP config field '{name}' on {type(config).__name__}; "
+                        "set model.trust_remote_code=true to enable MTP on this backbone."
+                    ) from e
         model = NeMoAutoModelForCausalLM.from_config(
             config,
             torch_dtype=dtype,

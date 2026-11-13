@@ -68,6 +68,7 @@ ALLOWED_TARGET_PREFIXES = [
     "torch.nn.",
     "torch.distributed.fsdp.",
     "torch.optim.",
+    "flashoptim.",
     "transformer_engine.pytorch.optimizers.fused_adam.FusedAdam",
     "torch.utils.data.",
     "torchmetrics.",
@@ -194,7 +195,7 @@ def _is_target_allowed(target: str) -> bool:
         except TypeError:
             return False
 
-        if target.startswith("torch.optim."):
+        if target.startswith(("torch.optim.", "flashoptim.")):
             try:
                 return issubclass(obj, torch.optim.Optimizer)
             except TypeError:

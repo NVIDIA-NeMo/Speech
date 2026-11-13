@@ -210,11 +210,3 @@ Lhotse Dataloading
 NeMo supports `Lhotse <https://github.com/lhotse-speech/lhotse>`_ for advanced dataloading with dynamic batch sizes, dynamic bucketing, OOMptimizer, and multi-dataset configuration.
 
 See :doc:`Lhotse Dataloading </dataloaders>` for full documentation.
-
-Object-store cache paths
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-Cached object URIs must name a bucket and an object, for example
-``ais://speech/train/audio.wav``. Query strings, fragments, empty path components,
-backslashes, and ``.`` or ``..`` components are not supported. Existing symlinks
-must keep the destination within the configured cache directory.

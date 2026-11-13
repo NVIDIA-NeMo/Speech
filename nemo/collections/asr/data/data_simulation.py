@@ -289,7 +289,7 @@ class MultiSpeakerSimulator(object):
             and self._params.data_simulator.speaker_enforcement.enforce_num_speakers == True
         ):
             logging.warning(
-                "Turn probability is less than {self._turn_prob_min} while enforce_num_speakers=True, which may result in excessive session lengths. Forcing turn_prob to 0.5."
+                f"Turn probability is less than {self._turn_prob_min} while enforce_num_speakers=True, which may result in excessive session lengths. Forcing turn_prob to 0.5."
             )
             self._params.data_simulator.session_params.turn_prob = self._turn_prob_min
         if self._params.data_simulator.session_params.max_audio_read_sec < 2.5:

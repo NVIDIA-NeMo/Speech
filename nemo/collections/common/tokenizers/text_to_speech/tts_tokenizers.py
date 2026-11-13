@@ -34,7 +34,7 @@ from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import (
     get_ipa_punctuation_list,
     validate_locale,
 )
-
+from nemo.collections.common.tokenizers.text_to_speech.pronunciation_tokens import PronunciationTokenAdapter
 from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import (
     any_locale_text_preprocessing,
     chinese_text_preprocessing,
@@ -1443,6 +1443,10 @@ class IPABPETokenizer(TokenizerSpec):
             raise ValueError(f"Tokenizer file not found: {tokenizer_file}")
 
         self._tokenizer = Tokenizer.from_file(tokenizer_file)
+        pronunciation_file = os.path.join(os.path.dirname(tokenizer_file), "pronunciation_tokens.json")
+        self.has_pronunciation_tokens = os.path.isfile(pronunciation_file)
+        if self.has_pronunciation_tokens:
+            self._tokenizer = PronunciationTokenAdapter(self._tokenizer, tokenizer_file, pronunciation_file)
         self.tokens = self._tokenizer.get_vocab()
         phoneme_vocab_size = len(self.tokens)
         self.bos_token_id = phoneme_vocab_size

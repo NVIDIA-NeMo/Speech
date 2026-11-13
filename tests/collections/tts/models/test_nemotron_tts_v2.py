@@ -9,7 +9,10 @@ import torch
 from torch import nn
 
 from nemo.collections.tts.models.nemotron_tts.v2.model import NemotronTTSModel
+from tests.collections.common.tokenizers.text_to_speech.test_pronunciation_tokens import _write_sidecar
+from tests.collections.common.tokenizers.text_to_speech.test_pronunciation_tokens import shared_bpe as shared_bpe
 from tests.collections.tts.models.test_easy_magpietts import (
+    BPE_TOKENIZER_NAME,
     _codec_restore_uses_random_initialized_audio_codec,
     _seed_everything,
     _toy_batch,
@@ -115,7 +118,68 @@ def test_disabling_auxiliary_loss_preserves_checkpoint_keys():
     enabled.load_state_dict(disabled.state_dict(), strict=True)
 
 
-def _make_model(compute_auxiliary_codebook_loss):
+@pytest.mark.parametrize(
+    'output,input_flag,sidecar',
+    [(True, None, True), (True, None, False), (True, True, True), (True, False, True), (False, False, False)],
+)
+def test_unified_tokenizer_sizes_and_legacy_default(shared_bpe, output, input_flag, sidecar):
+    data = _write_sidecar(shared_bpe) if sidecar else None
+    overrides = {
+        'text_tokenizers': {BPE_TOKENIZER_NAME: {'pretrained_model': str(shared_bpe)}},
+        'enable_phoneme_text_input': True,
+    }
+    if output:
+        overrides['phoneme_tokenizer'] = {
+            '_target_': 'nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPABPETokenizer',
+            'tokenizer_path': str(shared_bpe),
+        }
+    if input_flag is not None:
+        overrides['use_phoneme_tokenizer_for_text_input'] = input_flag
+    model = _make_model(False, overrides)
+    base = len(model.tokenizer.tokens)
+    assert model.use_phoneme_tokenizer_for_text_input is (input_flag is not False)
+    if output:
+        classes = len(data['tokens']) + 4 if sidecar else base + 3
+        assert model.phoneme_embeddings[0].num_embeddings == classes
+        assert model.phoneme_final_proj.out_features == classes
+    else:
+        assert model.phoneme_tokenizer is None
+    if input_flag is False:
+        assert model.text_phoneme_token_offset == 0 and model.text_phoneme_vocab_size == 0
+        assert model.text_embedding.num_embeddings == base + 3
+    else:
+        assert model.text_phoneme_token_offset == base + 3
+        assert model.text_embedding.num_embeddings == base + 3 + classes
+
+
+def test_unified_compact_output_forward_backward(shared_bpe):
+    _write_sidecar(shared_bpe)
+    model = _make_model(
+        False,
+        {
+            'text_tokenizers': {BPE_TOKENIZER_NAME: {'pretrained_model': str(shared_bpe)}},
+            'phoneme_tokenizer': {
+                '_target_': 'nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPABPETokenizer',
+                'tokenizer_path': str(shared_bpe),
+            },
+            'enable_phoneme_text_input': True,
+            'use_phoneme_tokenizer_for_text_input': False,
+            'phoneme_loss_mask_padding': True,
+        },
+    )
+    p = model.phoneme_tokenizer
+    batch = _toy_batch(model)
+    batch['phoneme_tokens'] = torch.tensor(
+        [[p.bos] + p.encode('ab') + [p.eos, p.pad], [p.bos] + p.encode('é') + [p.eos]]
+    )
+    batch['phoneme_tokens_lens'] = torch.tensor([4, 4])
+    output = model.process_batch(**batch, mode='val')
+    assert p.pad > 0 and torch.isfinite(output.phoneme_loss)
+    output.loss.backward()
+    assert model.phoneme_final_proj.weight.grad.count_nonzero() > 0
+
+
+def _make_model(compute_auxiliary_codebook_loss, extra_overrides=None):
     _seed_everything()
     overrides = {
         'use_codec_latent_audio_embedding': True,
@@ -125,6 +189,7 @@ def _make_model(compute_auxiliary_codebook_loss):
     }
     if compute_auxiliary_codebook_loss is not None:
         overrides['compute_auxiliary_codebook_loss'] = compute_auxiliary_codebook_loss
+    overrides.update(extra_overrides or {})
     with _codec_restore_uses_random_initialized_audio_codec():
         model = NemotronTTSModel(tiny_easy_magpie_cfg(overrides))
     model.eval()

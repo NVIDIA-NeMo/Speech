@@ -452,6 +452,27 @@ class TestChunkTextForInference:
 
 
 class TestPhonemeTextInput:
+    @pytest.mark.parametrize('text', ['say hello now', 'say həlˈoʊ now', 'seɪ həlˈoʊ naʊ'])
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_unified_input_uses_text_tokenizer_once_without_output_tokenizer(self, text):
+        calls = []
+
+        class TextTokenizer(_FakeTextTokenizer):
+            def encode(self, text, tokenizer_name):
+                calls.append(text)
+                return super().encode(text, tokenizer_name)
+
+        tokens = tokenize_text_with_phoneme_spans(
+            text_tokenizer=TextTokenizer(),
+            text_str=text,
+            tokenizer_name='shared',
+            enable_phoneme_text_input=True,
+            text_phoneme_token_offset=0,
+        )
+        assert tokens == [ord(char) for char in text]
+        assert calls == [text]
+
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_disabled_mixed_tokenization_uses_text_tokenizer_only(self):

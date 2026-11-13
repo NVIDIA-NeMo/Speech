@@ -371,6 +371,7 @@ class NemotronTTSBase(ModelPT):
             self.phoneme_confidence_unk_threshold = cfg.get('phoneme_confidence_unk_threshold', 0.0)
 
         self.enable_phoneme_text_input = cfg.get('enable_phoneme_text_input', False)
+        self.use_phoneme_tokenizer_for_text_input = cfg.get('use_phoneme_tokenizer_for_text_input', True)
         self.partial_phoneme_text_prob = cfg.get('partial_phoneme_text_prob', 0.0)
         self.partial_phoneme_portion_min = cfg.get('partial_phoneme_portion_min', 0.25)
         self.partial_phoneme_portion_max = cfg.get('partial_phoneme_portion_max', 0.75)
@@ -393,10 +394,13 @@ class NemotronTTSBase(ModelPT):
         self.text_phoneme_token_offset = None
         self.text_phoneme_vocab_size = 0
         if self.enable_phoneme_text_input:
-            if self.phoneme_tokenizer is None:
-                raise ValueError("`phoneme_tokenizer` is required when `enable_phoneme_text_input=True`.")
-            self.text_phoneme_token_offset = next_special_token_id
-            self.text_phoneme_vocab_size = self.phoneme_tokenizer.vocab_size
+            if self.use_phoneme_tokenizer_for_text_input:
+                if self.phoneme_tokenizer is None:
+                    raise ValueError("`phoneme_tokenizer` is required when `enable_phoneme_text_input=True`.")
+                self.text_phoneme_token_offset = next_special_token_id
+                self.text_phoneme_vocab_size = self.phoneme_tokenizer.vocab_size
+            else:
+                self.text_phoneme_token_offset = 0
 
         self.text_vocab_size = next_special_token_id + self.text_phoneme_vocab_size
 

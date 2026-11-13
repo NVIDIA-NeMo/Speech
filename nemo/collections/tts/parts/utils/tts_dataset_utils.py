@@ -310,10 +310,11 @@ def tokenize_text_with_phoneme_spans(
         enable_phoneme_text_input: Whether to parse and separately encode marked
             phoneme spans. If disabled, the complete input is encoded as text.
         phoneme_tokenizer: Tokenizer used to encode IPA span contents. Required
-            when ``enable_phoneme_text_input`` is enabled.
+            in the legacy offset-vocabulary mode.
         text_phoneme_token_offset: Offset added to every phoneme token ID so it
             occupies the text-channel vocabulary. Required when phoneme text
-            input is enabled.
+            input is enabled. Zero encodes the entire input unchanged with the
+            input tokenizer, without a separate phoneme tokenizer.
         bop_marker: Marker that opens an inline phoneme span.
         eop_marker: Marker that closes an inline phoneme span.
 
@@ -324,7 +325,7 @@ def tokenize_text_with_phoneme_spans(
         ValueError: If phoneme text input is enabled without its tokenizer or
             token offset, or if span markers are unmatched.
     """
-    if not enable_phoneme_text_input:
+    if not enable_phoneme_text_input or text_phoneme_token_offset == 0:
         return text_tokenizer.encode(text=text_str, tokenizer_name=tokenizer_name)
 
     if phoneme_tokenizer is None:

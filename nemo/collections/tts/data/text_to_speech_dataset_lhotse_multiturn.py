@@ -957,8 +957,8 @@ def build_token_channel(
                     ipa_alignment=supervision.ipa_alignment,
                     partial_phoneme_portion=sampled_portion,
                     full_ipa_text=_get_supervision_ipa_text(supervision),
-                    bop_marker=phoneme_text_bop_marker,
-                    eop_marker=phoneme_text_eop_marker,
+                    bop_marker="" if text_phoneme_token_offset == 0 else phoneme_text_bop_marker,
+                    eop_marker="" if text_phoneme_token_offset == 0 else phoneme_text_eop_marker,
                 )
             raw_ids = tokenize_text_with_phoneme_spans(
                 text_tokenizer=tokenizer,

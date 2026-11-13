@@ -328,6 +328,91 @@ def _multiturn_dataset_kwargs():
 
 
 class TestMagpieTTSLhotseDatasets:
+    @pytest.mark.parametrize('portion,expected', [(0.5, 'ab world'), (1.0, 'ab c')])
+    def test_single_turn_unified_input_worker_and_augmentation(self, monkeypatch, portion, expected):
+        from nemo.collections.tts.parts.utils.tts_dataset_utils import partially_phonemize_text
+
+        calls = []
+
+        def augment(**kwargs):
+            calls.append(kwargs)
+            return partially_phonemize_text(**kwargs)
+
+        monkeypatch.setattr(
+            'nemo.collections.tts.data.text_to_speech_dataset_lhotse.partially_phonemize_text', augment
+        )
+        tokenizer = _FakeTextTokenizer()
+        monkeypatch.setattr(
+            'nemo.collections.tts.data.text_to_speech_dataset_lhotse.setup_tokenizers', lambda **kwargs: tokenizer
+        )
+        monkeypatch.setattr('nemo.collections.tts.parts.utils.tts_dataset_utils.random.sample', lambda seq, k: [0])
+        kwargs = _dataset_kwargs()
+        kwargs.update(
+            use_text_conditioning_tokenizer=False,
+            enable_phoneme_text_input=True,
+            text_phoneme_token_offset=0,
+            partial_phoneme_text_prob=1.0,
+            partial_phoneme_portion_min=portion,
+            partial_phoneme_portion_max=portion,
+        )
+        dataset = MagpieTTSLhotseDataset(**kwargs)
+        cuts = _single_turn_cutset('hello world', 'hello world')
+        supervision = next(iter(cuts)).supervisions[0]
+        supervision.ipa = 'ab c'
+        supervision.ipa_alignment = [[0, 5, 'hello', 'ab'], [6, 11, 'world', 'c']]
+        batch = dataset[cuts]
+        assert expected in tokenizer.encoded_texts
+        assert len(calls) == 1 and calls[0]['bop_marker'] == calls[0]['eop_marker'] == ''
+        assert all('<bop>' not in text and '<eop>' not in text for text in tokenizer.encoded_texts)
+        assert dataset.text_phoneme_token_offset == 0
+        assert dataset.phoneme_tokenizer is None
+        assert batch['text'][0, :2].tolist() == [10 + len(expected), dataset.eos_id]
+
+    @pytest.mark.parametrize('portion,expected', [(0.5, 'ab world'), (1.0, 'ab c')])
+    def test_multiturn_unified_input_augmentation(self, monkeypatch, portion, expected):
+        from nemo.collections.tts.parts.utils.tts_dataset_utils import partially_phonemize_text
+
+        calls = []
+
+        def augment(**kwargs):
+            calls.append(kwargs)
+            return partially_phonemize_text(**kwargs)
+
+        monkeypatch.setattr(
+            'nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn.partially_phonemize_text', augment
+        )
+        monkeypatch.setattr('nemo.collections.tts.parts.utils.tts_dataset_utils.random.sample', lambda seq, k: [0])
+        kwargs = _dataset_kwargs()
+        kwargs.update(
+            codec_model_input_sample_rate=CODEC_MODEL_INPUT_SAMPLE_RATE,
+            frame_stacking_factor=FRAME_STACKING_FACTOR,
+            source_sample_rate=SAMPLE_RATE,
+            input_roles=['user'],
+            output_roles=['assistant'],
+            add_text_bos=False,
+            use_text_conditioning_tokenizer=False,
+            enable_phoneme_text_input=True,
+            text_phoneme_token_offset=0,
+            partial_phoneme_text_prob=1.0,
+            partial_phoneme_portion_min=portion,
+            partial_phoneme_portion_max=portion,
+        )
+        dataset = MagpieTTSLhotseMultiturnDataset(**kwargs)
+        tokenizer = _FakeTextTokenizer()
+        dataset.text_tokenizer = tokenizer
+        dataset.bos_id, dataset.eos_id, dataset.cfg_unk_token_id, dataset.interruption_token_id = 100, 101, 102, 103
+        dataset.pad_id = 0
+        cuts = _multiturn_cutset()
+        supervision = next(iter(cuts)).supervisions[1]
+        supervision.text = 'hello world'
+        supervision.ipa = 'ab c'
+        supervision.ipa_alignment = [[0, 5, 'hello', 'ab'], [6, 11, 'world', 'c']]
+        batch = dataset[cuts]
+        assert expected in tokenizer.encoded_texts
+        assert len(calls) == 1 and calls[0]['bop_marker'] == calls[0]['eop_marker'] == ''
+        assert all('<bop>' not in text and '<eop>' not in text for text in tokenizer.encoded_texts)
+        assert batch['text'][0, 15:17].tolist() == [10 + len(expected), 101]
+
     def test_single_turn_dataset_uses_bpe_and_cached_codes(self):
         _seed_everything()
         dataset = MagpieTTSLhotseDataset(**_dataset_kwargs())

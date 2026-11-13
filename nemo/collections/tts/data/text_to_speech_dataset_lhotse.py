@@ -267,7 +267,11 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                 all_tokenizers_config=self.tokenizer_config,
                 mode=self.dataset_type,
             )
-            if self.enable_phoneme_text_input and self.phoneme_tokenizer is None:
+            if (
+                self.enable_phoneme_text_input
+                and self.text_phoneme_token_offset != 0
+                and self.phoneme_tokenizer is None
+            ):
                 if self.phoneme_tokenizer_config is None:
                     raise ValueError("`phoneme_tokenizer_config` is required when `enable_phoneme_text_input=True`.")
                 self.phoneme_tokenizer = safe_instantiate(self.phoneme_tokenizer_config)
@@ -520,8 +524,8 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                     ipa_alignment=cut.supervisions[0].ipa_alignment,
                     partial_phoneme_portion=sampled_portion,
                     full_ipa_text=(cut.supervisions[0].ipa if cut.supervisions[0].has_custom("ipa") else None),
-                    bop_marker=self.phoneme_text_bop_marker,
-                    eop_marker=self.phoneme_text_eop_marker,
+                    bop_marker="" if self.text_phoneme_token_offset == 0 else self.phoneme_text_bop_marker,
+                    eop_marker="" if self.text_phoneme_token_offset == 0 else self.phoneme_text_eop_marker,
                 )
             if cut.has_custom("tokenizer_names"):
                 # Pick a random tokenizer from the list of tokenizers

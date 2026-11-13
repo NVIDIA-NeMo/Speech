@@ -22,7 +22,7 @@ import subprocess
 import tempfile
 from functools import lru_cache
 from typing import Any, Callable, Dict, Iterable, Tuple
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse, urlsplit
 
 try:
     from nemo import __version__ as NEMO_VERSION
@@ -116,11 +116,21 @@ def bucket_and_object_from_uri(uri: str) -> Tuple[str, str]:
     """
     if not is_datastore_path(uri):
         raise ValueError(f'Provided URI is not a valid store path: {uri}')
-    uri_parts = pathlib.PurePath(uri).parts
-    bucket = uri_parts[1]
-    object_path = pathlib.PurePath(*uri_parts[2:])
-
-    return str(bucket), str(object_path)
+    if any(char in uri for char in "\r\n\t"):
+        raise ValueError(f'Unsupported store path: {uri}')
+    parsed = urlsplit(uri)
+    bucket = parsed.netloc
+    object_path = parsed.path[1:]
+    # Reject components that readers may interpret differently from the cache mapper.
+    if (
+        '?' in uri
+        or '#' in uri
+        or not object_path
+        or any(part in ('', '.', '..') for part in unquote(f'{bucket}/{object_path}').split('/'))
+        or '\\' in unquote(uri)
+    ):
+        raise ValueError(f'Unsupported store path: {uri}')
+    return bucket, object_path
 
 
 def ais_endpoint_to_dir(endpoint: str) -> str:
@@ -173,9 +183,15 @@ def datastore_path_to_local_path(store_path: str) -> str:
         if not endpoint:
             raise RuntimeError(f'AIS endpoint not set, cannot resolve {store_path}')
 
-        local_ais_cache = os.path.join(ais_cache_base(), ais_endpoint_to_dir(endpoint))
+        cache_base = pathlib.Path(ais_cache_base())
+        local_ais_cache = os.path.join(cache_base, ais_endpoint_to_dir(endpoint))
         store_bucket, store_object = bucket_and_object_from_uri(store_path)
         local_path = os.path.join(local_ais_cache, store_bucket, store_object)
+        resolved_cache = pathlib.Path(local_ais_cache).resolve()
+        cache_root = cache_base.parent.resolve()
+        resolved_path = pathlib.Path(local_path).resolve()
+        if not resolved_cache.is_relative_to(cache_root) or not resolved_path.is_relative_to(resolved_cache):
+            raise ValueError(f'Store path must remain inside the cache: {store_path}')
     else:
         raise ValueError(f'Unexpected store path format: {store_path}')
 

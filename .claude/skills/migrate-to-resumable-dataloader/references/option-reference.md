@@ -19,7 +19,7 @@ you when producing a report.
 | `seed` | fixed integer, invariant across chunks | Lightning reseeds Python/NumPy/Torch at chunk start. Rotating this across resumable chunks breaks model-level bit-exactness even when sampler state restores correctly. | failure-modes §11 |
 | `shard_seed` | fixed integer, not `"randomized"` | Controls sampler/multiplexer RNG. Randomized shard seeds can diverge across resume and are invalid for multi-shard iterable partitioning. | conflict-matrix |
 | `num_workers` | invariant between save and restore | `StatefulDataLoader` and iterable partition state depend on worker topology. | failure-modes §14, §21 |
-| `concurrent_bucketing` | `false` for resumable training | Background bucketing producers can advance source iterators outside the checkpointed main-thread state. | failure-modes §17 |
+| `concurrent_bucketing` | unset (auto resolves to `false` with `use_stateful_dataloader: true`) or `false`; explicit `true` raises | Background bucketing producers can advance source iterators outside the checkpointed main-thread state. | failure-modes §17 |
 | `force_iterable_dataset` | unset or compatible with `force_map_dataset: false` | Do not enable mutually exclusive dataset modes. The training target is iterable partitioning through `force_map_dataset: false`. | conflict-matrix |
 | `force_finite` | unset/false for training | Training usually needs infinite or epoch-controlled iteration; finite mode is normally for validation. | validation section |
 | `extra_fields` on indexed NeMo entries | unset | Indexed NeMo adapters cannot preserve arbitrary runtime field rewrites. Preprocess manifests instead. | failure-modes §2 |

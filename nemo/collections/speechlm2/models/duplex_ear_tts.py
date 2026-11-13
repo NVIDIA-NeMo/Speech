@@ -118,9 +118,8 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         # compute samples per frame
         self.source_samples_per_frame = int(self.source_sample_rate * cfg.data.frame_length)
 
-        # Codec silence tokens are stored in checkpoints. When a checkpoint does not provide them, they are
-        # computed on first use (see ``get_codec_silence_tokens``) rather than here: encoding long silence at
-        # construction time runs the codec on CPU, which is slow and fails with oneDNN on arm64.
+        # Placeholder (-1) until loaded from a checkpoint or computed on first use by get_codec_silence_tokens(),
+        # which avoids running the codec on CPU at construction time.
         self.register_buffer(
             "codec_silence_tokens",
             torch.full((self.audio_codec.config.num_quantizers,), -1, dtype=torch.long, device=self.device),
@@ -139,10 +138,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         self.audio_prompt_latents = nn.ParameterDict()
 
     def get_codec_silence_tokens(self) -> torch.Tensor:
-        """
-        Returns the codec silence tokens ``[num_quantizers]``, computing them with
-        ``get_codec_silence_frame`` on the model's device if they were not loaded from a checkpoint.
-        """
+        """Returns the codec silence tokens, computing them on first use if no checkpoint provided them."""
         if not self._codec_silence_tokens_checked:
             if (self.codec_silence_tokens < 0).any():
                 with torch.no_grad():
@@ -1687,7 +1683,6 @@ def replace_control_speech_codes(
 
 
 def _reset_codec_silence_tokens_check(module, incompatible_keys):
-    """Re-validate ``codec_silence_tokens`` on next use, since a checkpoint may have overwritten them."""
     module._codec_silence_tokens_checked = False
 
 

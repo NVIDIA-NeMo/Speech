@@ -287,8 +287,7 @@ if os.path.exists("/home/TestData/nvidia--NVIDIA-Nemotron-Nano-9B-v2/"):
 
 @pytest.mark.unit
 def test_codec_silence_tokens_are_computed_lazily(monkeypatch):
-    # Encoding long silence with the codec at construction time runs a long CPU depthwise conv, which fails
-    # with oneDNN on arm64. The silence tokens must be computed on first use (or taken from a checkpoint).
+    # Running the codec on CPU at construction time fails with oneDNN on arm64 (long depthwise conv).
     encode_calls = []
     original_encode = RVQVAEModel.encode
 

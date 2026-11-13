@@ -53,7 +53,6 @@ DEFAULT_NEMOTRON_LANGUAGE_MAP = {
 }
 # Languages routed by the legacy ``reward_asr_model`` options; override with ``reward_asr_languages``.
 DEFAULT_REWARD_ASR_LANGUAGES = tuple(DEFAULT_NEMOTRON_LANGUAGE_MAP)
-NEMOTRON_LANGUAGE_TAG_PATTERN = ASR_LANGUAGE_TAG_PATTERN
 
 
 class RewardASRBackend(abc.ABC):
@@ -172,7 +171,7 @@ class NemoRewardASRBackend(RewardASRBackend):
             results = self.model.transcribe([path for _, path in items], batch_size=len(items), override_config=config)
             for (index, _), result in zip(items, results):
                 text = result.text if hasattr(result, "text") else str(result)
-                transcripts[index] = NEMOTRON_LANGUAGE_TAG_PATTERN.sub(" ", text).strip()
+                transcripts[index] = ASR_LANGUAGE_TAG_PATTERN.sub(" ", text).strip()
         return transcripts
 
 

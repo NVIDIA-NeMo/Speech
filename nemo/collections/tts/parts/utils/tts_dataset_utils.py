@@ -51,7 +51,7 @@ except (ImportError, ModuleNotFoundError):
     Normalizer = None
     PYNINI_AVAILABLE = False
 
-# Language tag (e.g. "<en-US>", "<ar>") that prompt-conditioned multilingual ASR models append to their transcripts.
+# Language tag (e.g. "<en-US>") appended to transcripts by prompt-conditioned multilingual ASR models.
 ASR_LANGUAGE_TAG_PATTERN = re.compile(r"\s*<[a-z]{2,3}(?:-[A-Za-z]{2,4})?>\s*")
 
 
@@ -1306,11 +1306,7 @@ class NemoTranscriber(Transcriber):
 
 
 class NemoTranscriberWithPrompt(Transcriber):
-    """Transcriber for NeMo ASR models that accept language as an optional prompt.
-
-    Any model whose transcription config has a ``target_lang`` field is supported, e.g.
-    ``EncDecHybridRNNTCTCBPEModelWithPrompt`` and ``EncDecRNNTBPEModelWithPrompt``.
-    """
+    """Transcriber for NeMo ASR models that accept language as an optional prompt (``target_lang``)"""
 
     def __init__(self, device, model_name):
         if model_name.endswith('.nemo'):
@@ -1320,8 +1316,7 @@ class NemoTranscriberWithPrompt(Transcriber):
 
         if not hasattr(model.get_transcribe_config(), 'target_lang'):
             raise ValueError(
-                f"Model {model_name} does not support prompting: the transcription config of "
-                f"{type(model).__name__} has no `target_lang` field."
+                f"Model {model_name} ({type(model).__name__}) does not support prompting: no `target_lang`."
             )
         self.model = model.to(device).eval()
 
@@ -1339,7 +1334,6 @@ class NemoTranscriberWithPrompt(Transcriber):
         }
 
     def transcribe(self, audio_paths: List[Path], batch_size: int, language: Optional[str]) -> List[str]:
-        # The model's own transcription config type is required by its transcribe() (it differs per model class).
         override_config = replace(
             self.model.get_transcribe_config(),
             batch_size=batch_size,
@@ -1348,7 +1342,6 @@ class NemoTranscriberWithPrompt(Transcriber):
         )
 
         transcribe_results = self.model.transcribe(audio_paths, override_config=override_config)
-        # Drop language tags so that they do not count as words in WER/CER.
         transcriptions = [ASR_LANGUAGE_TAG_PATTERN.sub(" ", result.text).strip() for result in transcribe_results]
         return transcriptions
 

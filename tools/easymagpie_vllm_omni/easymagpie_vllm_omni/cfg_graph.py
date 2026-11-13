@@ -84,6 +84,16 @@ class CFGGraphBuffers:
         self.owners = torch.arange(capacity, device=device)
         self.partners = torch.arange(capacity, device=device)
         self.active = torch.zeros(capacity, dtype=torch.bool, device=device)
+        # Keep host storage alive until both uploads from its slot have completed.
+        # Two slots allow preparation to overlap the preceding model invocation.
+        cuda = self.owners.is_cuda
+        self._host_slots = [
+            torch.empty((2, capacity), dtype=torch.long, device="cpu", pin_memory=cuda) for _ in range(2)
+        ]
+        self._host_views = [slot.numpy() for slot in self._host_slots]
+        self._identity = torch.arange(capacity, device="cpu").numpy()
+        self._copy_events = [torch.cuda.Event() for _ in self._host_slots] if cuda else None
+        self._next_slot = 0
 
     def update(
         self,
@@ -96,6 +106,9 @@ class CFGGraphBuffers:
         Rebuild the entire padded prefix, including identity entries, so slot
         reuse and transitions to conditional-only traffic cannot retain a pair.
         Layout alignment and request identities are validated by the runner.
+        Uploads and the consuming forward must use the same ordered CUDA stream.
+        A pending staging slot waits only for its own copies before host reuse;
+        an available slot introduces no host synchronization.
 
         Args:
             layout: Current unpadded mapping of public and private token rows.
@@ -107,8 +120,6 @@ class CFGGraphBuffers:
         """
         if not 0 <= num_tokens <= padded_tokens <= self.owners.numel():
             raise ValueError("CFG graph token count exceeds buffer capacity")
-        owners = list(range(padded_tokens))
-        partners = list(range(padded_tokens))
         if layout is not None:
             for conditional, unconditional in zip(layout.conditional_rows, layout.unconditional_rows):
                 if len(conditional) != len(unconditional):
@@ -116,9 +127,28 @@ class CFGGraphBuffers:
                 for public, private in zip(conditional, unconditional):
                     if not (0 <= public < num_tokens and 0 <= private < num_tokens):
                         raise ValueError("CFG graph row is outside the active batch")
+        if padded_tokens == 0:
+            return
+        # Pinned uploads return before CUDA has finished reading the host maps.
+        # Reusing that memory too early can corrupt an earlier forward's pairing.
+        # Alternate slots to overlap work; wait only when reusing a still-busy slot.
+        slot = self._next_slot
+        event = self._copy_events[slot] if self._copy_events is not None else None
+        if event is not None and not event.query():
+            event.synchronize()
+        host = self._host_slots[slot]
+        owners, partners = self._host_views[slot]
+        owners[:padded_tokens] = self._identity[:padded_tokens]
+        partners[:padded_tokens] = self._identity[:padded_tokens]
+        if layout is not None:
+            for conditional, unconditional in zip(layout.conditional_rows, layout.unconditional_rows):
+                for public, private in zip(conditional, unconditional):
                     owners[private] = public
                     partners[public] = private
-        self.owners[:padded_tokens].copy_(torch.tensor(owners, dtype=torch.long, device="cpu"))
-        self.partners[:padded_tokens].copy_(torch.tensor(partners, dtype=torch.long, device="cpu"))
+        self.owners[:padded_tokens].copy_(host[0, :padded_tokens], non_blocking=True)
+        self.partners[:padded_tokens].copy_(host[1, :padded_tokens], non_blocking=True)
+        if event is not None:
+            event.record(torch.cuda.current_stream(self.owners.device))
+        self._next_slot = (slot + 1) % len(self._host_slots)
         self.active[:padded_tokens].zero_()
         self.active[:num_tokens].fill_(True)

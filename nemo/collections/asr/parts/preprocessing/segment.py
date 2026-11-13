@@ -570,10 +570,13 @@ class AudioSegment(object):
         """Normalize the signal to a target RMS value in decibels.
         For multi-channel audio, the RMS value is determined by the reference channel (if not None),
         otherwise it will be the maximum RMS across all channels.
+        A silent (or empty) reference has no finite RMS to scale, so the samples are left unchanged.
         """
         rms_db = self.rms_db
         if self.num_channels > 1:
             rms_db = max(rms_db) if ref_channel is None else rms_db[ref_channel]
+        if not np.isfinite(rms_db):
+            return
         gain = target_db - rms_db
         self.gain_db(gain)
 

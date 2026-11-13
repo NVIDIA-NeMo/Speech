@@ -857,31 +857,25 @@ class ModelPT(LightningModule, Model):
             self._optimizer_param_groups = None
             return
 
-        known_groups = []
         param_groups = []
         if "optim_param_groups" in self.cfg:
             param_groups_cfg = self.cfg.optim_param_groups
+            grouped_params = set()
             for group, group_cfg in param_groups_cfg.items():
                 module = getattr(self, group, None)
                 if module is None:
                     raise ValueError(f"{group} not found in model.")
                 elif hasattr(module, "parameters"):
-                    known_groups.append(group)
                     new_group = {"params": list(module.parameters())}
+                    grouped_params.update(id(p) for p in new_group["params"])
                     for k, v in group_cfg.items():
                         new_group[k] = v
                     param_groups.append(new_group)
                 else:
                     raise ValueError(f"{group} does not have parameters.")
 
-            other_params = []
-            for n, p in self.named_parameters():
-                is_unknown = True
-                for group in known_groups:
-                    if n.startswith(group):
-                        is_unknown = False
-                if is_unknown:
-                    other_params.append(p)
+            # Match by identity, not by name prefix: `encoder` must not claim the parameters of `encoder_decoder_proj`
+            other_params = [p for p in self.parameters() if id(p) not in grouped_params]
 
             if len(other_params):
                 param_groups = [{"params": other_params}] + param_groups

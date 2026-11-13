@@ -884,6 +884,9 @@ def read_parquet_manifest(config: DictConfig) -> tuple[CutSet, bool]:
     - sampling_rate: default sampling rate if not present (default: 16000)
     - shuffle: whether to shuffle shards (default: False)
     - shard_seed: seed for shuffling (default: "trng")
+    - fault_tolerant_audio_loading: loader-wide option; when True (default), rows whose audio bytes cannot be
+      decoded are skipped with a warning; when False, they raise an error naming the file and row.
+      Malformed rows (missing columns, null or non-bytes audio, non-string text, invalid duration) always raise.
     """
     # 1. Get the path(s)
     paths = config.manifest_filepath
@@ -914,6 +917,7 @@ def read_parquet_manifest(config: DictConfig) -> tuple[CutSet, bool]:
             lang_field=lang_field,
             sampling_rate=sampling_rate,
             indexed=indexed,
+            fault_tolerant_audio_loading=config.get("fault_tolerant_audio_loading", True),
         )
         iterators.append(adapter)
 

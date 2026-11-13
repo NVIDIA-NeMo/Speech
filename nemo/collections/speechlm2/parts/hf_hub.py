@@ -22,6 +22,7 @@ from transformers.utils import cached_file
 
 from nemo.collections.speechlm2.vllm.salm.config import checkpoint_architecture
 from nemo.utils import logging
+from nemo.utils.config_utils import resolve_model_config, validate_model_config_resolvers
 
 SAFETENSORS_SINGLE_FILE = "model.safetensors"
 LLM_BACKBONE_DIR = "llm_backbone"
@@ -95,7 +96,9 @@ class HFHubMixin(
         resolved_config_file = cached_file(model_id, CONFIG_NAME, **_cached_file_kwargs)
         if resolved_config_file is None:
             raise RuntimeError(f"Missing {CONFIG_NAME} file for {model_id=}")
-        model_kwargs['cfg'] = OmegaConf.to_container(OmegaConf.load(resolved_config_file))
+        config = OmegaConf.load(resolved_config_file)
+        validate_model_config_resolvers(config)
+        model_kwargs['cfg'] = OmegaConf.to_container(config, resolve=False)
         model_kwargs['cfg']['trust_remote_code'] = trust_remote_code
         if isinstance(model_kwargs['cfg'].get('model'), dict):
             model_kwargs['cfg']['model']['trust_remote_code'] = trust_remote_code
@@ -115,15 +118,19 @@ class HFHubMixin(
         if ctc_config is not None:
             model_kwargs['cfg']['ctc_timestamp_artifact'] = ctc_config
 
+        # Apply runtime settings before resolving aliases in the effective config.
+        config = OmegaConf.create(model_kwargs['cfg'])
+        if device_mesh is not None:
+            config['init_configure_model'] = False
+        elif config.get("use_nemo_automodel", False):
+            config['init_configure_model'] = True
+        if torch_dtype is not None:
+            config['torch_dtype'] = (
+                torch_dtype if isinstance(torch_dtype, str) else str(torch_dtype).replace("torch.", "")
+            )
+        model_kwargs['cfg'] = OmegaConf.to_container(resolve_model_config(config))
+
         if device_mesh is None:
-            # Non-distributed: for Automodel checkpoints we must build the modules
-            # before ``PyTorchModelHubMixin`` applies checkpoint weights.
-            if model_kwargs['cfg'].get("use_nemo_automodel", False):
-                model_kwargs['cfg']['init_configure_model'] = True
-            if torch_dtype is not None:
-                model_kwargs['cfg']['torch_dtype'] = (
-                    torch_dtype if isinstance(torch_dtype, str) else str(torch_dtype).replace("torch.", "")
-                )
             if weights_path is None:
                 model = super()._from_pretrained(
                     model_id=model_id,
@@ -156,7 +163,6 @@ class HFHubMixin(
             cls=cls,
             model_id=model_id,
             model_kwargs=model_kwargs,
-            torch_dtype=torch_dtype,
             distributed_setup=distributed_setup,
             cached_file_kwargs=_cached_file_kwargs,
             strict=strict,
@@ -235,7 +241,6 @@ def _distributed_from_pretrained(
     cls,
     model_id,
     model_kwargs,
-    torch_dtype,
     distributed_setup,
     cached_file_kwargs,
     strict=False,
@@ -248,12 +253,6 @@ def _distributed_from_pretrained(
     ``__init__`` frame, causing ``KeyError: 'self'``.  By moving the constructor
     call here (a plain module-level function), the problematic frame is avoided.
     """
-    model_kwargs['cfg']['init_configure_model'] = False
-    if torch_dtype is not None:
-        model_kwargs['cfg']['torch_dtype'] = (
-            torch_dtype if isinstance(torch_dtype, str) else str(torch_dtype).replace("torch.", "")
-        )
-
     # 1. Create instance (tokenizer only; llm=None, perception=None)
     instance = cls(**model_kwargs)
 

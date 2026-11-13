@@ -230,3 +230,110 @@ def test_inject_local_artifact_paths_no_artifacts_keeps_old_config(tmp_path):
         "pretrained_llm": "remote-llm",
         "pretrained_weights": True,
     }
+
+
+@pytest.mark.unit
+def test_hub_config_rejects_external_resolvers_before_model_init(tmp_path, monkeypatch):
+    config = tmp_path / 'config.json'
+    config.write_text('model:\n  metadata: ${oc.env:MODEL_TEST_VALUE,unset}\n')
+    monkeypatch.setattr(hf_hub, 'cached_file', lambda *args, **kwargs: str(config))
+    with pytest.raises(ValueError, match='resolver'):
+        _DummyHubModel._from_pretrained(
+            model_id=str(tmp_path),
+            revision=None,
+            cache_dir=None,
+            force_download=False,
+            local_files_only=True,
+            token=None,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('mode', ['ordinary', 'local', 'distributed'])
+@pytest.mark.parametrize('child_weights', [None, False, True])
+def test_hub_aliases_observe_runtime_configuration(tmp_path, monkeypatch, mode, child_weights):
+    from omegaconf import OmegaConf
+
+    _write_local_export_artifacts(tmp_path)
+    weights = tmp_path / hf_hub.SAFETENSORS_SINGLE_FILE
+    save_file({'weight': torch.ones(1)}, weights)
+    source = {
+        'use_nemo_automodel': True,
+        'pretrained_weights': True,
+        'pretrained_llm_weights': '${pretrained_weights}' if child_weights is None else child_weights,
+        'pretrained_asr_weights': '${pretrained_weights}' if child_weights is None else child_weights,
+        'pretrained_llm': 'remote-llm',
+        'tokenizer_path': 'remote-tokenizer',
+        'tokenizer_alias': '${tokenizer_path}',
+        'backbone_alias': '${pretrained_llm}',
+        'torch_dtype': 'float32',
+        'dtype_alias': '${torch_dtype}',
+        'init_configure_model': True,
+        'init_alias': '${init_configure_model}',
+        'trust_remote_code': True,
+        'trust_alias': '${trust_remote_code}',
+        'model': {'trust_remote_code': True, 'trust_alias': '${.trust_remote_code}'},
+        'width': 4,
+        'double_width': '${multiply:${width},2}',
+    }
+    OmegaConf.save(OmegaConf.create(source), tmp_path / hf_hub.CONFIG_NAME)
+
+    def cached_file(_model_id, filename, **kwargs):
+        path = tmp_path / filename
+        return str(path) if path.exists() else None
+
+    def from_pretrained(cls, **kwargs):
+        return cls(cfg=kwargs['cfg'])
+
+    monkeypatch.setattr(hf_hub, 'cached_file', cached_file)
+    monkeypatch.setattr(PyTorchModelHubMixin, '_from_pretrained', classmethod(from_pretrained))
+    monkeypatch.setattr(_DummyHubModel, '_load_as_safetensor', classmethod(lambda cls, model, *args: model))
+    monkeypatch.setattr(_DummyHubModel, 'configure_model', lambda self, **kwargs: None, raising=False)
+    monkeypatch.setattr(hf_hub, '_load_state_dict_with_dtensors', lambda *args, **kwargs: None)
+    kwargs = {}
+    if mode == 'local':
+        kwargs['weights_path'] = weights
+    elif mode == 'distributed':
+        kwargs['distributed_setup'] = SimpleNamespace(mesh_context=SimpleNamespace(device_mesh=object()))
+    model = _DummyHubModel._from_pretrained(
+        model_id=str(tmp_path),
+        revision=None,
+        cache_dir=None,
+        force_download=False,
+        local_files_only=True,
+        token=None,
+        torch_dtype=torch.bfloat16,
+        **kwargs,
+    )
+    expected = False if child_weights is None else child_weights
+    assert model.cfg['pretrained_weights'] is False
+    assert model.cfg['pretrained_llm_weights'] is expected
+    assert model.cfg['pretrained_asr_weights'] is expected
+    assert model.cfg['trust_alias'] is False
+    assert model.cfg['model']['trust_alias'] is False
+    assert model.cfg['init_alias'] is (mode != 'distributed')
+    assert model.cfg['dtype_alias'] == 'bfloat16'
+    assert model.cfg['tokenizer_alias'] == str(tmp_path)
+    assert model.cfg['backbone_alias'] == str(tmp_path / 'llm_backbone')
+    assert model.cfg['double_width'] == 8
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('field', ['trust_remote_code', 'pretrained_weights', 'init_configure_model', 'torch_dtype'])
+def test_hub_rejects_external_resolvers_in_overwritten_fields(tmp_path, monkeypatch, field):
+    from omegaconf import OmegaConf
+
+    source = {'use_nemo_automodel': True, field: '${oc.env:MODEL_TEST_VALUE,unset}'}
+    config = tmp_path / hf_hub.CONFIG_NAME
+    OmegaConf.save(OmegaConf.create(source), config)
+    monkeypatch.setattr(hf_hub, 'cached_file', lambda *args, **kwargs: str(config))
+    with pytest.raises(ValueError, match='resolver'):
+        _DummyHubModel._from_pretrained(
+            model_id=str(tmp_path),
+            revision=None,
+            cache_dir=None,
+            force_download=False,
+            local_files_only=True,
+            token=None,
+            torch_dtype=torch.bfloat16,
+        )

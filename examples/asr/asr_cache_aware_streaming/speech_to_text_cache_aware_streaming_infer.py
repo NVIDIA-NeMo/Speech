@@ -20,6 +20,10 @@ You may find examples of streaming models under 'NeMo/example/asr/conf/conformer
 It works both on a manifest of audio files or a single audio file. It can perform streaming for a single stream (audio) or perform the evalution in multi-stream model (batch_size>1).
 The manifest file must conform to standard ASR definition - containing `audio_filepath` and `text` as the ground truth.
 
+With amp=false (the default), compute_dtype selects the dtype of the model, encoder input and floating-point
+streaming caches. Use compute_dtype=float16 or compute_dtype=bfloat16 on supported hardware. At reduced
+precision, changing which utterances share a batch can change individual transcripts.
+
 # Usage
 
 ## To evaluate a model in cache-aware streaming mode on a single audio file:
@@ -167,7 +171,6 @@ class TranscriptionConfig:
     allow_mps: bool = False  # allow to select MPS device (Apple Silicon M-series GPU)
     amp: bool = False
     amp_dtype: str = "float16"  # can be set to "float16" or "bfloat16" when using amp
-    # NB: default compute_dtype is float32 since currently cache-aware models do not work with different dtype
     compute_dtype: Optional[str] = (
         "float32"  # "float32" (default), "bfloat16" or "float16"; if None: bfloat16 if available else float32
     )
@@ -260,7 +263,7 @@ def perform_streaming(
         final_offline_tran = None
 
     cache_last_channel, cache_last_time, cache_last_channel_len = asr_model.encoder.get_initial_cache_state(
-        batch_size=batch_size
+        batch_size=batch_size, dtype=compute_dtype
     )
 
     previous_hypotheses = None
@@ -339,14 +342,6 @@ def main(cfg: TranscriptionConfig):
         compute_dtype = torch.float32
     else:
         compute_dtype = get_inference_dtype(compute_dtype=cfg.compute_dtype, device=device)
-
-    if compute_dtype != torch.float32:
-        # NB: cache-aware models do not currently work with compute_dtype != float32
-        # since in some layers output is force-casted to float32
-        # TODO(vbataev): implement support in future; set `compute_dtype` in config to None by default
-        raise NotImplementedError(
-            f"Compute dtype {compute_dtype} is not yet supported for cache-aware models, use float32 instead"
-        )
 
     if sum((cfg.audio_file is not None, cfg.dataset_manifest is not None, cfg.audio_dir is not None)) != 1:
         raise ValueError("Exactly one of the `audio_file`, `dataset_manifest` or `audio_dir` should be non-empty!")

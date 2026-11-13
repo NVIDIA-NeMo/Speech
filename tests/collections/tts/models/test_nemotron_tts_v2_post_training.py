@@ -30,6 +30,7 @@ from tests.collections.tts.modules.nemotron_tts.v2.test_acoustic_codes_predictor
     MASK_TOKEN_ID,
     NUM_CODES,
     NUM_SPECIAL_TOKENS,
+    _backbone_config,
     _make_predictor,
 )
 
@@ -276,6 +277,70 @@ def test_grpo_updates_sampled_policy_and_round_trips_weights(monkeypatch):
     restored.load_state_dict(state)
     for name, value in state.items():
         torch.testing.assert_close(restored.state_dict()[name], value)
+
+
+def test_bf16_policy_trains_with_fp32_residuals_and_frozen_reference():
+    model = _TinyPolicy()
+    config = _backbone_config()
+    config.residual_in_fp32 = True
+    model.acoustic_codes_predictor = _make_predictor(backbone_config=config)
+    reference = _TinyPolicy()
+    reference.acoustic_codes_predictor = _make_predictor(backbone_config=config)
+    reference.load_state_dict(model.state_dict())
+    reference.inputs = model.inputs.clone()
+    reference.requires_grad_(False)
+    model._reference_model = reference
+    model.reference_free = False
+    model._cfg.grpo_beta = 0.1
+    model.to(dtype=torch.bfloat16)
+    model.inputs = model.inputs.bfloat16()
+    model.acoustic_codes_predictor.sampling_in_fp32 = True
+
+    assert model.decoder.weight.dtype == model.phoneme_final_proj.weight.dtype == torch.bfloat16
+    assert all(block.config.residual_in_fp32 for block in model.acoustic_codes_predictor.blocks)
+    assert all(parameter.dtype == torch.float32 for parameter in reference.parameters())
+    assert model.text_aligner.weight.dtype == model._eval_asr_model.weight.dtype == torch.float32
+    with torch.no_grad():
+        codes = model.acoustic_codes_predictor.predict_codes(
+            model.decoder(model.inputs), temperature=0.7, topk=80
+        ).transpose(1, 2)
+    lengths = torch.tensor([4, 2])
+    batch = {
+        'text': torch.ones(2, 2, dtype=torch.long),
+        'text_lens': torch.tensor([2, 2]),
+        'context_text_tokens': torch.ones(2, 1, dtype=torch.long),
+        'context_text_tokens_lens': torch.ones(2, dtype=torch.long),
+        'context_audio_codes': torch.zeros(2, NUM_CODES, 1, dtype=torch.long),
+        'context_audio_codes_lens': torch.ones(2, dtype=torch.long),
+        '_po_audio_codes_stacked': codes,
+        '_po_audio_codes_lens': lengths,
+    }
+    output = model._run_easy_process_batch(model, batch, codes, lengths, mode='val')
+    with torch.no_grad():
+        reference_output = model._run_easy_process_batch(reference, batch, codes, lengths, mode='val')
+    probabilities = output.local_transformer_logits.reshape(2, 4, NUM_CODES, -1).softmax(-1)
+    assert probabilities.dtype == torch.float32 and torch.isfinite(probabilities).all()
+    torch.testing.assert_close(probabilities.sum(-1), torch.ones(2, 4, NUM_CODES))
+    losses = model._compute_po_losses_from_outputs(
+        output, reference_output, torch.tensor([1.0, -0.5]), torch.ones(2), rollout_phoneme_input_type='pred'
+    )
+
+    for name in ('loss', 'po_loss', 'kl_loss', 'entropy'):
+        assert losses[name].dtype == torch.float32 and torch.isfinite(losses[name])
+    losses['loss'].backward()
+    assert model.decoder.weight.grad.dtype == torch.bfloat16
+    assert model.decoder.weight.grad.abs().sum() > 0
+    assert model.phoneme_final_proj.weight.grad.abs().sum() > 0
+    assert all(
+        block.codebook_projection.weight.grad.abs().sum() > 0 for block in model.acoustic_codes_predictor.blocks
+    )
+    assert all(parameter.grad is None or torch.isfinite(parameter.grad).all() for parameter in model.parameters())
+    assert all(parameter.grad is None for parameter in reference.parameters())
+    model.setup_optimizer_param_groups()
+    before = model.decoder.weight.detach().clone()
+    torch.optim.SGD(model._optimizer_param_groups, lr=0.05).step()
+    assert not torch.equal(model.decoder.weight, before)
+    assert all(parameter.dtype == torch.float32 for parameter in reference.parameters())
 
 
 def test_rollout_keeps_terminal_actions_and_generated_phoneme_trajectory(monkeypatch):

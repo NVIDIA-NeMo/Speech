@@ -849,3 +849,27 @@ class TestMagpieTTSLhotseChallengingText:
         assert batch['raw_texts'] == [raw]
         assert batch['text'][0].tolist() == [10 + len(raw), dataset.eos_id]
         assert batch['cer_reference_texts'] == [normalized_text or raw]
+
+    @pytest.mark.parametrize('global_percent,cut_percent', [(1.0, 0.0), (0.0, 1.0)])
+    def test_cut_normalization_override_keeps_normalized_cer_reference(self, global_percent, cut_percent):
+        raw = 'Call 1234.'
+        normalized = 'Call one two three four.'
+        cuts = _single_turn_cutset(text=raw, normalized_text=normalized)
+        next(iter(cuts)).load_normalized_text_percent = cut_percent
+        dataset = self._dataset(load_normalized_text_percent=global_percent)
+
+        batch = dataset[cuts]
+
+        expected_input = normalized if cut_percent else raw
+        assert batch['raw_texts'] == [expected_input]
+        assert batch['text'][0].tolist() == [10 + len(expected_input), dataset.eos_id]
+        assert batch['cer_reference_texts'] == [normalized]
+
+    @pytest.mark.parametrize('cut_percent', [-0.1, 1.1])
+    def test_invalid_cut_normalization_override_is_rejected(self, cut_percent):
+        cuts = _single_turn_cutset()
+        next(iter(cuts)).load_normalized_text_percent = cut_percent
+        dataset = self._dataset(load_normalized_text_percent=1.0)
+
+        with pytest.raises(ValueError, match='load_normalized_text_percent'):
+            dataset[cuts]

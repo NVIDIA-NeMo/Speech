@@ -362,7 +362,8 @@ def test_cfg_uses_doubled_hidden_states_and_returns_one_stream():
     assert codes.shape == (3, 1, NUM_CODES)
 
 
-def test_flash_attention_config_handles_a_batched_suffix_behind_a_warm_cache():
+def test_flash_attention_config_handles_a_batched_suffix_behind_a_warm_cache(monkeypatch):
+    monkeypatch.setattr("nemo.collections.tts.modules.nemotron_h_decoder.FLASH_ATTN_AVAILABLE", False)
     torch.manual_seed(3)
     hidden_states = torch.randn(1, 6, D_MODEL)
     backbone_config = _backbone_config()

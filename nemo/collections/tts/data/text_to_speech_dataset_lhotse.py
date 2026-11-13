@@ -537,10 +537,18 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
             # tokenize transcript
             supervision = cut.supervisions[0]
             normalized_text = supervision.normalized_text if supervision.has_custom("normalized_text") else None
+            load_normalized_text_percent = (cut.custom or {}).get(
+                "load_normalized_text_percent", self.load_normalized_text_percent
+            )
+            if isinstance(load_normalized_text_percent, bool) or not isinstance(
+                load_normalized_text_percent, (int, float)
+            ):
+                raise ValueError(f"{cut.id}: load_normalized_text_percent must be a number in [0.0, 1.0]")
+            _validate_probability(f"{cut.id}: load_normalized_text_percent", load_normalized_text_percent)
             text_str = _select_text_for_tts_input(
                 text=supervision.text,
                 normalized_text=normalized_text,
-                load_normalized_text_percent=self.load_normalized_text_percent,
+                load_normalized_text_percent=load_normalized_text_percent,
             )
             cer_reference_text = _select_text_for_tts_input(supervision.text, normalized_text or None, 1.0)
             text_replaced = False

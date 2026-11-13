@@ -33,7 +33,7 @@ model:
   use_utmos: true
   utmos_reward_weight: 0.1
 trainer:
-  precision: bf16-mixed
+  precision: bf16-true
   gradient_clip_val: 0.0  # Manual optimization uses model.max_grad_norm.
 ```
 
@@ -44,7 +44,10 @@ codec codes when their codec differs from the policy. Keep
 its weights are retained and frozen during policy optimization. The parallel audio
 head and reward networks are also excluded from the policy optimizer. Rollout
 sampling and policy log probabilities use FP32 with matching temperature and top-k.
-Exported inference archives use the ordinary V2 model class.
+With `bf16-true`, trainable policy parameters use BF16 while codec, resampling,
+aligner, and reward models remain in FP32. Exported inference archives use the
+ordinary V2 model class. Small learning rates can quantize BF16 parameter updates;
+`bf16-mixed` retains FP32 policy parameters when needed.
 The GRPO prompt loader uses single-turn samples while retaining the checkpoint's
 `model.use_multiturn_dataset` setting and vocabulary.
 
@@ -57,7 +60,8 @@ similarity; stored IPA is skipped, so `model.gt_phoneme_input_prob` must be `0`.
 
 CER/WER rewards and V2 validation prefer each sample's `normalized_text`, falling
 back to its raw transcript. This reference is independent of
-`load_normalized_text_percent`, which controls TTS input selection. A hard-prompt
+`load_normalized_text_percent`, which controls TTS input selection. Per-cut values
+from input-config tags override the dataset default. A hard-prompt
 replacement supplies its own reference. Ground-truth audio is used for speaker
 similarity, rather than transcribed again to obtain the CER reference.
 

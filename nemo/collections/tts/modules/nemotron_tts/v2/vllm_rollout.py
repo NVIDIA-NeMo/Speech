@@ -152,6 +152,7 @@ class VLLMRolloutClient:
         config_file.write_text(json.dumps(server_config))
         server = Path(self.converter.__file__).with_name('grpo_server.py')
         environment = dict(os.environ)
+        environment['TMPDIR'] = '/tmp'
         current_device = torch.cuda.current_device()
         visible = environment.get('CUDA_VISIBLE_DEVICES', '').split(',')
         selected = visible[current_device] if visible[0] and current_device < len(visible) else str(current_device)

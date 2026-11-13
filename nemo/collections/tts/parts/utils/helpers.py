@@ -43,10 +43,17 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+import base64
+import json
+import math
 import string
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from urllib.request import Request, urlopen
 
 import librosa
 import numpy as np
@@ -835,6 +842,113 @@ def process_text_for_cer(input_text):
     text = text.replace("h t t p", "http")
     text = text.replace("w w w", "www")
     return text
+
+
+@lru_cache(maxsize=None)
+def get_cached_text_normalizer(language: Optional[str]):
+    """Reuse a NeMo text normalizer per language, or retain transcripts when unavailable."""
+    if not language:
+        logging.warning('Skipping ASR text normalization because language metadata is missing.')
+        return None
+    try:
+        from nemo_text_processing.text_normalization.normalize import Normalizer
+
+        logging.info(f'Creating normalizer for language: {language}')
+        return Normalizer(input_case='cased', lang=language)
+    except Exception as exc:
+        logging.warning(f'Text normalizer unavailable for language {language}; retaining ASR text. Error: {exc}')
+        return None
+
+
+def transcribe_with_vllm_from_filepaths(
+    audio_filepaths: Sequence[str], config: Dict[str, Any], languages: Optional[Sequence[str]] = None
+) -> List[str]:
+    """Transcribe WAV files through a SpeechLM-enabled vLLM endpoint, retaining input order."""
+    if not audio_filepaths:
+        return []
+    if isinstance(languages, str) or languages is None:
+        languages = [languages] * len(audio_filepaths)
+    if len(languages) != len(audio_filepaths):
+        raise ValueError('vLLM ASR requires one language per audio file.')
+    base_url = str(config.get('base_url', '')).rstrip('/')
+    if not base_url:
+        raise ValueError('vllm_asr.base_url must point to the ASR server /v1 endpoint.')
+    concurrency = int(config.get('max_concurrency', 4))
+    timeout = float(config.get('timeout_seconds', 600))
+    max_tokens = int(config.get('max_tokens', 1024))
+    if concurrency < 1 or max_tokens < 1 or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError('vLLM ASR concurrency, max_tokens, and timeout_seconds must be positive.')
+    prompt = (
+        'Transcribe the audio verbatim in the original spoken language. Preserve repeated words, fillers, '
+        'and false starts. Write numbers as the words actually spoken, including separately spoken digits; '
+        'do not convert them to numerals. Do not translate, summarize, correct, or normalize the speech. '
+        'Return only the transcript.'
+    )
+
+    def transcribe(filepath):
+        audio = base64.b64encode(Path(filepath).read_bytes()).decode('ascii')
+        payload = {
+            'model': config.get('model', 'nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B'),
+            'messages': [
+                {
+                    'role': 'user',
+                    'content': [
+                        {'type': 'text', 'text': prompt},
+                        {'type': 'audio_url', 'audio_url': {'url': f'data:audio/wav;base64,{audio}'}},
+                    ],
+                }
+            ],
+            'temperature': 0.0,
+            'top_p': 1.0,
+            'seed': 0,
+            'max_tokens': max_tokens,
+            'chat_template_kwargs': {'enable_thinking': False},
+            'skip_special_tokens': True,
+            'spaces_between_special_tokens': False,
+        }
+        request = Request(
+            f'{base_url}/chat/completions',
+            data=json.dumps(payload).encode('utf-8'),
+            headers={'Content-Type': 'application/json'},
+        )
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                result = json.load(response)
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f'vLLM ASR request failed for {filepath}: {exc}') from exc
+        choices = result.get('choices') if isinstance(result, dict) else None
+        if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
+            raise RuntimeError(f'vLLM ASR returned an invalid completion for {filepath}.')
+        choice = choices[0]
+        if choice.get('finish_reason') != 'stop':
+            raise RuntimeError(f'vLLM ASR did not finish normally for {filepath}: {choice.get("finish_reason")}.')
+        message = choice.get('message')
+        if not isinstance(message, dict) or 'content' not in message or message.get('refusal'):
+            raise RuntimeError(f'vLLM ASR returned no transcript for {filepath}.')
+        text = message['content']
+        other_output = any(
+            message.get(key) for key in ('reasoning', 'reasoning_content', 'tool_calls', 'function_call')
+        )
+        if (text is None and other_output) or (text is not None and not isinstance(text, str)):
+            raise RuntimeError(f'vLLM ASR returned no transcript for {filepath}.')
+        return '' if text is None else text.strip()
+
+    with ThreadPoolExecutor(max_workers=min(concurrency, len(audio_filepaths))) as executor:
+        transcripts = list(executor.map(transcribe, audio_filepaths))
+    if config.get('normalize_transcripts', True):
+        for index, (text, language) in enumerate(zip(transcripts, languages)):
+            if any(char.isdecimal() for char in text):
+                language = language.lower().replace('_', '-').split('-')[0] if language else None
+                normalizer = get_cached_text_normalizer(language)
+                if normalizer is not None:
+                    normalized = normalizer.normalize(text)
+                    remaining_digits = sum(char.isdecimal() for char in normalized)
+                    if remaining_digits:
+                        retry = normalizer.normalize(normalized.lower())
+                        if sum(char.isdecimal() for char in retry) < remaining_digits:
+                            normalized = retry
+                    transcripts[index] = normalized
+    return transcripts
 
 
 def transcribe_with_whisper(

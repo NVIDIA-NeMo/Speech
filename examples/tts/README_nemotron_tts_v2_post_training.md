@@ -105,3 +105,34 @@ Each vLLM request finishes at its own audio EOS. Native batched generation can
 continue an item's phoneme stream after its audio finishes while other items are
 still running. Those unused phoneme tails can make the auxiliary phoneme policy
 loss differ between backends.
+
+## Shared ASR service
+
+Reward transcription and V2 validation can use the same SpeechLM-enabled vLLM
+server for every language:
+
+```yaml
+model:
+  reward_asr_model: vllm
+  val_asr_backend: vllm
+  vllm_asr:
+    base_url: http://127.0.0.1:8000/v1
+    model: nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B
+    max_concurrency: 16
+    timeout_seconds: 900
+    max_tokens: 1024
+    normalize_transcripts: true
+```
+
+This selection skips local Whisper and Parakeet weights. Requests contain only
+generated audio and a fixed verbatim-transcription instruction that preserves
+repetitions and numbers as spoken words. References remain in the CER/WER scorer.
+Concurrent requests retain their input order; HTTP failures, malformed replies,
+and token-limit truncation fail the step instead of supplying a substitute
+transcript. Serve ASR in its own environment with the NeMo SpeechLM plugin and the
+model's required vLLM version; the TTS rollout environment remains separate.
+
+Numeric ASR output is verbalized with the existing cached NeMo text normalizer
+for each sample language before CER/WER processing. Ordinary words and empty
+transcripts are retained. Languages without a supported normalizer retain the
+ASR transcript and emit one warning. Normalization does not use the reference text.

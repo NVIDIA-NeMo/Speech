@@ -51,6 +51,7 @@ from nemo.collections.tts.parts.utils.helpers import (
     get_mask_from_lengths,
     get_speaker_embeddings_from_filepaths,
     process_text_for_cer,
+    transcribe_with_vllm_from_filepaths,
     transcribe_with_whisper,
     transcribe_with_whisper_from_filepaths,
 )
@@ -145,6 +146,11 @@ class NemotronTTSModel(NemotronTTSBase):
         # Validation inference with metrics (optional)
         self.run_val_inference = cfg.get('run_val_inference', False)
         self.use_multilingual_asr = cfg.get('use_multilingual_asr', False)
+        self.val_asr_backend = cfg.get(
+            'val_asr_backend', 'vllm' if cfg.get('reward_asr_model') == 'vllm' else 'native'
+        )
+        if self.val_asr_backend not in ('native', 'vllm'):
+            raise ValueError(f'Unsupported val_asr_backend: {self.val_asr_backend}')
         self.val_max_decoder_steps = cfg.get('val_max_decoder_steps', 330)
         self.val_temperature = cfg.get('val_temperature', 0.5)
         self.val_topk = cfg.get('val_topk', 10)
@@ -153,7 +159,11 @@ class NemotronTTSModel(NemotronTTSBase):
 
         if self.run_val_inference:
             logging.info("Loading eval models for validation inference (ASR and speaker verification)...")
-            if self.use_multilingual_asr:
+            if self.val_asr_backend == 'vllm':
+                self._eval_asr_model = None
+                self.whisper_processor = None
+                self.whisper_model = None
+            elif self.use_multilingual_asr:
                 self.whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
                 self.whisper_model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-large-v3")
                 self.whisper_model.eval()
@@ -1891,7 +1901,12 @@ class NemotronTTSModel(NemotronTTSBase):
             if predicted_audio_paths and context_audio_paths:
                 with torch.no_grad():
                     # ASR transcription for CER/WER
-                    if self.use_multilingual_asr:
+                    if self.val_asr_backend == 'vllm':
+                        transcripts = transcribe_with_vllm_from_filepaths(
+                            predicted_audio_paths, self.cfg.get('vllm_asr') or {}, languages=batch.get('languages')
+                        )
+                        pred_transcripts = [process_text_for_cer(transcript) for transcript in transcripts]
+                    elif self.use_multilingual_asr:
                         self.whisper_model.to(self.device)
                         languages = batch.get('languages', None)
                         if languages is None:

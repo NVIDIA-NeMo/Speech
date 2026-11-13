@@ -30,21 +30,15 @@ from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.asr.parts.mixins.transcription import TranscribeConfig
 from nemo.collections.tts.models.easy_magpietts import EasyMagpieTTSModel
 from nemo.collections.tts.parts.utils.helpers import (
+    get_cached_text_normalizer,
     get_mask_from_lengths,
     get_speaker_embeddings_from_filepaths,
     print_grad_weight_summary,
     process_text_for_cer,
+    transcribe_with_vllm_from_filepaths,
     transcribe_with_whisper_from_filepaths,
 )
 from nemo.utils import logging
-
-try:
-    from nemo_text_processing.text_normalization.normalize import Normalizer
-
-    PYNINI_AVAILABLE = True
-except (ImportError, ModuleNotFoundError):
-    Normalizer = None
-    PYNINI_AVAILABLE = False
 
 
 class OnlinePreferenceOptimizationMixin:
@@ -85,7 +79,12 @@ class OnlinePreferenceOptimizationMixin:
             logging.info("Reference model loaded and frozen")
 
         reward_asr_model = cfg.get('reward_asr_model', 'nemo')
-        if reward_asr_model == 'nemo':
+        if reward_asr_model == 'vllm':
+            self._eval_asr_model = None
+            self.whisper_processor = None
+            self.whisper_model = None
+            self.val_asr_backend = 'vllm'
+        elif reward_asr_model == 'nemo':
             self._eval_asr_model = nemo_asr.models.EncDecRNNTBPEModel.from_pretrained(
                 model_name=cfg.get('reward_asr_model_name', "nvidia/parakeet-ctc-0.6b")
             )
@@ -124,8 +123,6 @@ class OnlinePreferenceOptimizationMixin:
         self.batch_size_for_chunked_tf = self.cfg.get('batch_size_for_chunked_tf', 4)
 
         self._normalize_whisper_transcript = self.cfg.get('normalize_whisper_transcript', True)
-        if reward_asr_model == 'whisper' and self._normalize_whisper_transcript:
-            self._normalizer_cache = {}
 
         # Entropy bonus coefficient – encourages exploration and prevents mode collapse.
         # Set to 0.0 to disable. Typical range: 0.001–0.01.
@@ -268,21 +265,8 @@ class OnlinePreferenceOptimizationMixin:
         return state_dict
 
     def _get_cached_normalizer(self, lang_key: Optional[str]):
-        """Return a cached ``Normalizer`` for the given language, creating one on first access.
-
-        Returns ``None`` if pynini is not installed or normalizer creation fails.
-        """
-        if not PYNINI_AVAILABLE:
-            return None
-        lang_key = lang_key if lang_key else "en"
-        if lang_key not in self._normalizer_cache:
-            logging.info(f"Creating normalizer for language: {lang_key}")
-            try:
-                self._normalizer_cache[lang_key] = Normalizer(input_case="cased", lang=lang_key)
-            except Exception as e:
-                logging.warning(f"Failed to create normalizer for language: {lang_key}. Error: {e}")
-                self._normalizer_cache[lang_key] = None
-        return self._normalizer_cache[lang_key]
+        """Return the shared normalizer while preserving Whisper's default language."""
+        return get_cached_text_normalizer(lang_key or 'en')
 
     def _get_per_token_logps(
         self, logits: torch.Tensor, labels: torch.Tensor, loss_mask: torch.Tensor
@@ -539,11 +523,16 @@ class OnlinePreferenceOptimizationMixin:
     def _compute_pred_transcripts(
         self, predicted_audio_paths: List[str], batch_repeated: Dict, reward_asr_model: str
     ) -> List[str]:
-        """Transcribe predicted audio files using either the NeMo ASR model or Whisper.
+        """Transcribe predicted audio files using the configured ASR backend.
 
         Returns a list of processed transcript strings (one per audio file), ready for CER/WER
         computation.
         """
+        if reward_asr_model == 'vllm':
+            transcripts = transcribe_with_vllm_from_filepaths(
+                predicted_audio_paths, self.cfg.get('vllm_asr') or {}, languages=batch_repeated.get('languages')
+            )
+            return [process_text_for_cer(transcript) for transcript in transcripts]
         if reward_asr_model == 'nemo':
             pred_transcripts = self._eval_asr_model.transcribe(
                 predicted_audio_paths,

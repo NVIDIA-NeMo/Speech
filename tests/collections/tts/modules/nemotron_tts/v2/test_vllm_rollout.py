@@ -218,7 +218,7 @@ def test_request_detects_dead_serving_leader_before_opening_a_connection(tmp_pat
         client._request('/refit', {})
 
 
-def test_worker_disables_expandable_segments_without_changing_the_trainer(tmp_path, monkeypatch):
+def test_worker_runtime_environment_preserves_the_trainer_configuration(tmp_path, monkeypatch):
     client = _client(tmp_path)
     client.timeout = 5
     client.converter = SimpleNamespace(__file__=str(tmp_path / 'convert_to_vllm.py'))
@@ -236,9 +236,12 @@ def test_worker_disables_expandable_segments_without_changing_the_trainer(tmp_pa
     monkeypatch.setattr(torch.cuda, 'current_device', lambda: 0)
     for name in ('PYTORCH_ALLOC_CONF', 'PYTORCH_CUDA_ALLOC_CONF'):
         monkeypatch.setenv(name, 'expandable_segments:True')
+    trainer_tmp = str(tmp_path / ('long-training-extraction-path-' * 8))
+    monkeypatch.setenv('TMPDIR', trainer_tmp)
 
     client._start(SimpleNamespace(), tmp_path)
 
+    assert captured['TMPDIR'] == '/tmp' and os.environ['TMPDIR'] == trainer_tmp
     for name in ('PYTORCH_ALLOC_CONF', 'PYTORCH_CUDA_ALLOC_CONF'):
         assert captured[name] == 'expandable_segments:False'
         assert os.environ[name] == 'expandable_segments:True'

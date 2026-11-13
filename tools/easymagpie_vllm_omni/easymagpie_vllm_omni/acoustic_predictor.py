@@ -18,6 +18,26 @@ _DEFAULT_TOP_K = 80
 _MIN_SAMPLING_TEMPERATURE = 1e-4
 
 
+def sample_grpo_logits(
+    logits: torch.Tensor, *, temperature: float, top_k: int, sampling_method: str = "sample"
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sample the native FP32 top-k distribution and return action log probabilities."""
+    logits = torch.nan_to_num(logits.float(), nan=0.0, posinf=100.0, neginf=-100.0).clamp(-100.0, 100.0)
+    if sampling_method == "argmax" or temperature <= 0.0:
+        return logits.argmax(dim=-1), torch.zeros_like(logits[..., 0])
+    if sampling_method != "sample":
+        raise ValueError(f"Unsupported phoneme sampling method: {sampling_method}")
+    if top_k < 1:
+        raise ValueError("GRPO top_k must be positive")
+    cutoff = logits.topk(min(top_k, logits.size(-1)), dim=-1).values[..., -1:]
+    scores = (logits / temperature).masked_fill(logits < cutoff, float("-inf"))
+    noise = torch.empty_like(scores).uniform_(1e-20, 1.0 - 1e-20)
+    noise.log_().neg_().log_().neg_()
+    sampled = (scores + noise).argmax(dim=-1)
+    logps = scores.gather(-1, sampled.unsqueeze(-1)).squeeze(-1) - torch.logsumexp(scores, dim=-1)
+    return sampled, logps
+
+
 class CodecLatentAudioEmbedder(nn.Module):
     """Embed stacked FSQ indices exactly like NemotronTTS v2."""
 
@@ -166,6 +186,7 @@ class EasyMagpieAcousticCodesPredictor(nn.Module):
         self.temperature = 0.7
         self.top_k = _DEFAULT_TOP_K
         self._sample_top_k = min(self.top_k, self.num_output_tokens)
+        self.grpo_rollout = bool(getattr(vllm_config.model_config.hf_config, "grpo_rollout", False))
 
         predictor_config = vllm_config.model_config.hf_config
         self.blocks = nn.ModuleList(
@@ -189,6 +210,8 @@ class EasyMagpieAcousticCodesPredictor(nn.Module):
             self._sample_top_k,
             dtype=torch.float32,
         )
+        if self.grpo_rollout:
+            self.last_sampled_logprobs = torch.zeros(max_num_tokens, self.num_codebooks, dtype=torch.float32)
 
     def embed_audio_frame(self, codes: torch.Tensor) -> torch.Tensor:
         return self.audio_embedder.embed_audio_frame(codes)
@@ -196,6 +219,7 @@ class EasyMagpieAcousticCodesPredictor(nn.Module):
     @torch.no_grad()
     def advance(self, hidden_states: torch.Tensor, *, positions: torch.Tensor) -> None:
         """Populate every predictor cache using MASK conditioning between blocks."""
+        hidden_states = hidden_states.clone()
         num_tokens = hidden_states.shape[0]
         previous_codes = None
         previous_indices = None
@@ -220,15 +244,17 @@ class EasyMagpieAcousticCodesPredictor(nn.Module):
         predict: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Advance every cache row and sample only rows in ``predict``."""
+        hidden_states = hidden_states.clone()
         num_tokens = hidden_states.shape[0]
         if predict is None:
             predict = torch.ones(num_tokens, dtype=torch.bool, device=hidden_states.device)
         if predict.shape != (num_tokens,):
             raise ValueError(f"expected predict mask {(num_tokens,)}, got {tuple(predict.shape)}")
 
-        noise = self._gumbel_buf[:num_tokens]
-        noise.uniform_(1e-20, 1.0 - 1e-20)
-        noise.log_().neg_().log_().neg_()
+        if not self.grpo_rollout:
+            noise = self._gumbel_buf[:num_tokens]
+            noise.uniform_(1e-20, 1.0 - 1e-20)
+            noise.log_().neg_().log_().neg_()
         temperature = max(float(self.temperature), _MIN_SAMPLING_TEMPERATURE)
 
         codes = torch.full(
@@ -245,12 +271,18 @@ class EasyMagpieAcousticCodesPredictor(nn.Module):
                 hidden_states = hidden_states + self.audio_embedder.embed_codebooks(previous_codes, previous_indices)
             hidden_states = block(hidden_states, positions)
             logits = block.compute_logits(hidden_states)
-            logits = torch.nan_to_num(logits, nan=0.0, posinf=100.0, neginf=-100.0).clamp(-100.0, 100.0)
-            values, indices = torch.topk(logits, self._sample_top_k, dim=-1)
-            picked = (values / temperature + noise[:, code_offset : code_offset + block.num_codes]).argmax(
-                dim=-1, keepdim=True
-            )
-            sampled = indices.gather(-1, picked).squeeze(-1)
+            if self.grpo_rollout:
+                sampled, logps = sample_grpo_logits(logits, temperature=self.temperature, top_k=self.top_k)
+                self.last_sampled_logprobs[:, code_offset : code_offset + block.num_codes][:num_tokens].copy_(
+                    logps.masked_fill(~predict.unsqueeze(-1), 0.0)
+                )
+            else:
+                logits = torch.nan_to_num(logits, nan=0.0, posinf=100.0, neginf=-100.0).clamp(-100.0, 100.0)
+                values, indices = torch.topk(logits, self._sample_top_k, dim=-1)
+                picked = (values / temperature + noise[:, code_offset : code_offset + block.num_codes]).argmax(
+                    dim=-1, keepdim=True
+                )
+                sampled = indices.gather(-1, picked).squeeze(-1)
             sampled = torch.where(sampled == self.arch.codebook_size, self.arch.audio_eos_id, sampled)
             previous_codes = torch.where(
                 predict.unsqueeze(-1),

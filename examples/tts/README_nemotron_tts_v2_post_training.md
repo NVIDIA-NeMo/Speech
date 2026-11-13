@@ -68,3 +68,40 @@ similarity, rather than transcribed again to obtain the CER reference.
 When `reference_free=false`, supply `init_from_ptl_ckpt` with a matching V2 Lightning
 checkpoint for the frozen reference policy. Reward ASR, speaker verification, and
 UTMOS dependencies follow the existing EasyMagpie online post-training setup.
+
+## vLLM rollouts
+
+The optional rollout backend uses the repository's EasyMagpie vLLM-Omni LM. Prepare
+a separate Python 3.12 serving environment using
+`tools/easymagpie_vllm_omni/requirements.txt` and install that plugin into it. The
+trainer's `PYTHONPATH` must include the repository root and
+`tools/easymagpie_vllm_omni`; the vLLM recipe sets both. The
+trainer starts one local service per GPU, supplies current conditioning embeddings,
+and refits actor weights after policy updates. Codec decoding, rewards, and policy
+optimization run in the NeMo training process. Ordinary validation and timestamp
+APIs continue through native V2 inference.
+
+```yaml
+model:
+  rollout_backend: vllm
+  vllm_rollout:
+    python_executable: /path/to/vllm_env/bin/python
+    work_dir: /path/to/experiment/vllm_rollout
+    gpu_memory_utilization: 0.15
+    max_num_seqs: 16
+    enforce_eager: false
+    sleep: true
+```
+
+For A/B measurements, retain 16 generations per prompt, one prompt per GPU,
+`bf16-true`, temperature `0.7`, top-k `80`, sampled phonemes, CFG disabled, normalized
+CER references, and reward weights `0.7/0.2/0.1` for CER/speaker similarity/UTMOS.
+Keep the same 40% TN batch mixture, teacher-forcing chunk size `1`, and codec decode
+batch size `2`. Measure full training-step time, including weight export and file
+I/O, wake/refit/sleep, generation, rewards, and optimization. Report initial
+conversion and server startup separately.
+
+Each vLLM request finishes at its own audio EOS. Native batched generation can
+continue an item's phoneme stream after its audio finishes while other items are
+still running. Those unused phoneme tails can make the auxiliary phoneme policy
+loss differ between backends.

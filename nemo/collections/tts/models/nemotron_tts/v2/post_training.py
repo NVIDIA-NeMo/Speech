@@ -58,6 +58,7 @@ class NemotronTTSModelOnlinePO(OnlinePreferenceOptimizationMixin, NemotronTTSMod
         self.aux_phoneme_po_loss_weight = cfg.get('aux_phoneme_po_loss_weight', 0.2)
         self._capture_policy_rollout = False
         self._policy_rollout = None
+        self._vllm_rollout_client = None
         for name in ('final_proj', 'audio_out_projection', 'text_aligner'):
             module = getattr(self, name, None)
             if module is not None:
@@ -69,6 +70,32 @@ class NemotronTTSModelOnlinePO(OnlinePreferenceOptimizationMixin, NemotronTTSMod
     def get_lhotse_dataloader(self, dataset_cfg, mode='train'):
         """Use single-turn prompts without changing the checkpoint vocabulary."""
         return super().get_lhotse_dataloader(dataset_cfg, mode=mode, use_multiturn_dataset=False)
+
+    def infer_batch(self, *args, **kwargs):
+        if self._capture_policy_rollout and self.cfg.get('rollout_backend', 'native') == 'vllm':
+            if kwargs.get('use_cfg', False) or kwargs.get('phoneme_input_type') == 'gt':
+                raise ValueError('vLLM GRPO rollouts require CFG disabled and predicted phonemes.')
+            if kwargs.get('use_teacher_forced', False) or kwargs.get('force_dropout_text', False):
+                raise ValueError('vLLM GRPO rollouts require generated audio and complete text conditioning.')
+            if self._vllm_rollout_client is None:
+                from nemo.collections.tts.modules.nemotron_tts.v2.vllm_rollout import VLLMRolloutClient
+
+                self._vllm_rollout_client = VLLMRolloutClient(self)
+            return self._vllm_rollout_client.generate(
+                self,
+                args[0] if args else kwargs['batch'],
+                max_audio_steps=kwargs.get('max_decoder_steps', self.max_decoder_steps),
+                temperature=kwargs.get('temperature', 0.7),
+                top_k=kwargs.get('topk', 80),
+                phoneme_sampling_method=kwargs.get('phoneme_sampling_method', 'argmax'),
+            )
+        return super().infer_batch(*args, **kwargs)
+
+    def teardown(self, stage):
+        client = getattr(self, '_vllm_rollout_client', None)
+        if client is not None:
+            client.close()
+        return super().teardown(stage)
 
     def _get_state_dict_keys_to_exclude(self):
         return super()._get_state_dict_keys_to_exclude() + ['_reference_model']

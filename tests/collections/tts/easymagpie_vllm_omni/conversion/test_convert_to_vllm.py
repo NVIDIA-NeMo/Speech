@@ -34,7 +34,7 @@ class _FakeEmbeddingModel(torch.nn.Module):
         self.interruption_token_id = 13
         self.cfg = types.SimpleNamespace(embedding_dim=2)
 
-    def embed_text_tokens(self, ids, text_lens, disable_cas_embedding):
+    def embed_text_tokens(self, ids, text_lens, disable_cas_embedding=False):
         del text_lens, disable_cas_embedding
         return ids.unsqueeze(-1).expand(-1, -1, self.cfg.embedding_dim).float()
 
@@ -69,6 +69,58 @@ def test_precompute_text_embeddings_uses_explicit_cas_only_vocabulary_size():
     torch.testing.assert_close(table[-1], torch.tensor([19.0, 19.0]))
 
 
+def test_precompute_text_embeddings_accepts_v2_embedding_signature():
+    class _V2EmbeddingModel(_FakeEmbeddingModel):
+        def embed_text_tokens(self, ids, text_lens):
+            return super().embed_text_tokens(ids, text_lens)
+
+    table = converter.precompute_text_embeddings(_V2EmbeddingModel(), batch_size=8)
+
+    assert table.shape == (14, 2)
+    torch.testing.assert_close(table[-1], torch.tensor([13.0, 13.0]))
+
+
+def test_convert_exports_live_policy_without_restoring_checkpoint(monkeypatch, tmp_path):
+    model = _FakeEmbeddingModel().eval()
+    model.cfg.hidden_dim = 2
+    args = converter.parse_args(
+        [
+            "--nemo_file",
+            "unused.nemo",
+            "--codec_model_path",
+            "unused-codec.nemo",
+            "--outdir",
+            str(tmp_path),
+            "--grpo-rollout",
+        ]
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "nemo.collections.tts.modules.magpietts_inference.utils",
+        types.SimpleNamespace(load_easy_magpie_model=lambda *args, **kwargs: pytest.fail("Policy is already loaded")),
+    )
+    monkeypatch.setattr(converter, "resolve_codec_layout", lambda model: (2, [4, 4, 2], 1))
+    monkeypatch.setattr(
+        converter,
+        "build_config",
+        lambda model, vocab_size, dtype, **kwargs: {
+            "text_vocab_size": vocab_size,
+            "grpo_rollout": kwargs["grpo_rollout"],
+        },
+    )
+    monkeypatch.setattr(converter, "convert_codec_artifacts", lambda *args, **kwargs: None)
+    monkeypatch.setattr(converter, "save_text_tokenizer", lambda *args: None)
+    monkeypatch.setattr(converter, "save_phoneme_text_tokenizer", lambda *args: None)
+
+    converter.convert(args, model=model)
+
+    assert model.training is False
+    config = json.loads((tmp_path / "config.json").read_text())
+    assert config["text_vocab_size"] == 14 and config["grpo_rollout"] is True
+    weights = converter.load_file(tmp_path / "model.safetensors")
+    torch.testing.assert_close(weights["text_embedding.weight"][-1], torch.tensor([13.0, 13.0]))
+
+
 def test_audio_encoder_bundling_is_explicit_opt_in(monkeypatch):
     required = [
         "convert_to_vllm.py",
@@ -82,7 +134,11 @@ def test_audio_encoder_bundling_is_explicit_opt_in(monkeypatch):
 
     monkeypatch.setattr(sys, "argv", required)
     assert converter.parse_args().bundle_audio_encoders is False
+    assert converter.parse_args().grpo_rollout is False
     assert converter.parse_args().max_audio_seconds == 30.0
+
+    monkeypatch.setattr(sys, "argv", [*required, "--grpo-rollout"])
+    assert converter.parse_args().grpo_rollout is True
 
     monkeypatch.setattr(sys, "argv", [*required, "--bundle-audio-encoders", "--max-audio-seconds", "12.5"])
     args = converter.parse_args()
@@ -203,6 +259,9 @@ def test_build_config_exports_multiturn_text_metadata(monkeypatch):
     assert "max_audio_seconds" not in config
     assert "codec_input_sample_rate" not in config
     assert "reference_speaker_encoder_n_layers" not in config
+    assert "grpo_rollout" not in config
+    grpo_config = converter.build_config(model, vocab_size=104, torch_dtype="float32", grpo_rollout=True)
+    assert grpo_config["grpo_rollout"] is True
 
     with pytest.raises(ValueError, match="use_speaker_encoder=True"):
         converter.build_config(model, vocab_size=104, torch_dtype="float32", bundle_audio_encoders=True)

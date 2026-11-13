@@ -3,12 +3,17 @@
 """Focused tests for the NemotronTTS v2 architecture adapter."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("vllm")
 
-from easymagpie_vllm_omni.acoustic_predictor import CodecLatentAudioEmbedder  # noqa: E402
+from easymagpie_vllm_omni.acoustic_predictor import (  # noqa: E402
+    CodecLatentAudioEmbedder,
+    EasyMagpieAcousticCodesPredictor,
+)
 from easymagpie_vllm_omni.config import EasyMagpieOmniArch  # noqa: E402
 
 
@@ -65,3 +70,40 @@ def test_codec_latent_audio_embedder_matches_fsq_projection_and_special_rows():
         + embedder.audio_special_embeddings.weight[1]
     )
     torch.testing.assert_close(embedder.embed_audio_frame(special_codes), expected_special)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("entrypoint", ["advance", "generate_codes"])
+@pytest.mark.parametrize("grpo_rollout", [False, True])
+def test_acoustic_predictor_preserves_backbone_features(entrypoint, grpo_rollout):
+    class MutatingBlock(torch.nn.Module):
+        codebook_indices = (0,)
+        num_codes = 1
+
+        def forward(self, hidden_states, positions):
+            hidden_states.add_(7.0)
+            self.observed = hidden_states.clone()
+            return hidden_states
+
+        def compute_logits(self, hidden_states):
+            logits = hidden_states.new_zeros(hidden_states.size(0), 1, 3)
+            logits[..., 0] = 10.0
+            return logits
+
+    predictor = EasyMagpieAcousticCodesPredictor.__new__(EasyMagpieAcousticCodesPredictor)
+    torch.nn.Module.__init__(predictor)
+    predictor.arch = SimpleNamespace(mask_token_id=4, codebook_size=2, audio_eos_id=3)
+    predictor.num_codebooks = 1
+    predictor.temperature = 1.0
+    predictor.top_k = predictor._sample_top_k = 1
+    predictor.grpo_rollout = grpo_rollout
+    predictor.blocks = torch.nn.ModuleList([MutatingBlock()])
+    predictor._gumbel_buf = torch.zeros(2, 1, 1)
+    predictor.last_sampled_logprobs = torch.zeros(2, 1)
+    backbone_features = torch.arange(8, dtype=torch.float32).reshape(2, 4)
+    expected = backbone_features.clone()
+
+    getattr(predictor, entrypoint)(backbone_features, positions=torch.arange(2))
+
+    torch.testing.assert_close(predictor.blocks[0].observed, expected + 7.0)
+    torch.testing.assert_close(backbone_features, expected)

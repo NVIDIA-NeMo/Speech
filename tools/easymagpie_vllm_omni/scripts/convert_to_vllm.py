@@ -133,7 +133,7 @@ _NEMOTRON_CONFIG_FIELDS = (
 )
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Convert an EasyMagpieTTS checkpoint to a vLLM-Omni model directory.")
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--nemo_file", help="Path to an EasyMagpieTTS .nemo checkpoint.")
@@ -181,6 +181,11 @@ def parse_args():
         "conditioning and can make a capable checkpoint usable for zero-shot TTS; disabled by default.",
     )
     parser.add_argument(
+        "--grpo-rollout",
+        action="store_true",
+        help="Enable the GRPO rollout interface for native conditioning and sampled action collection.",
+    )
+    parser.add_argument(
         "--max-audio-seconds",
         type=float,
         default=EasyMagpieOmniArch.max_audio_seconds,
@@ -201,7 +206,7 @@ def parse_args():
         help="Batch size for pre-computing per-subword text embeddings.",
     )
     parser.add_argument("--device", default="cuda")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 @torch.no_grad()
@@ -239,7 +244,7 @@ def precompute_text_embeddings(model, batch_size: int) -> torch.Tensor:
         end = min(start + batch_size, vocab_size)
         ids = torch.arange(start, end, dtype=torch.long, device=device).unsqueeze(0)  # (1, n)
         lens = torch.tensor([end - start], dtype=torch.long, device=device)
-        embeds = model.embed_text_tokens(ids, text_lens=lens, disable_cas_embedding=False)  # (1, n, E)
+        embeds = model.embed_text_tokens(ids, text_lens=lens)  # (1, n, E)
         table[start:end] = embeds.squeeze(0).to(torch.float32)
     return table.cpu()
 
@@ -374,6 +379,7 @@ def build_config(
     torch_dtype: str,
     *,
     bundle_audio_encoders: bool = False,
+    grpo_rollout: bool = False,
     max_audio_seconds: float = EasyMagpieOmniArch.max_audio_seconds,
     codec_num_levels_per_group: list[int] | None = None,
 ) -> dict:
@@ -393,6 +399,8 @@ def build_config(
     nemotron_cfg = NemotronHConfig(**nemotron_dict)
 
     config: dict = {"architectures": ["EasyMagpieTTSForConditionalGeneration"], "model_type": "nemotron_h"}
+    if grpo_rollout:
+        config["grpo_rollout"] = True
     for field in _NEMOTRON_CONFIG_FIELDS:
         if hasattr(nemotron_cfg, field):
             config[field] = getattr(nemotron_cfg, field)
@@ -698,24 +706,28 @@ def save_phoneme_text_tokenizer(model, outdir: str) -> None:
     logging.info("Saved pronunciation-control IPA tokenizer to %s", output_path)
 
 
-def convert(args) -> None:
-    from nemo.collections.tts.modules.magpietts_inference.utils import ModelLoadConfig, load_easy_magpie_model
-
+def convert(args, model=None) -> None:
+    """Export a checkpoint or an already loaded policy without constructing another copy."""
     os.makedirs(args.outdir, exist_ok=True)
     dtype = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}[args.dtype]
 
-    model, ckpt_name = load_easy_magpie_model(
-        ModelLoadConfig(
-            nemo_file=args.nemo_file,
-            hparams_file=args.hparams_file,
-            checkpoint_file=args.checkpoint_file,
-            hparams_from_wandb=args.hparams_file_from_wandb,
-            codecmodel_path=args.codec_model_path,
-            phoneme_tokenizer_path=args.phoneme_tokenizer_path,
-            disable_cas_for_context_text=args.disable_cas_for_context_text,
-        ),
-        device=args.device,
-    )
+    if model is None:
+        from nemo.collections.tts.modules.magpietts_inference.utils import ModelLoadConfig, load_easy_magpie_model
+
+        model, ckpt_name = load_easy_magpie_model(
+            ModelLoadConfig(
+                nemo_file=args.nemo_file,
+                hparams_file=args.hparams_file,
+                checkpoint_file=args.checkpoint_file,
+                hparams_from_wandb=args.hparams_file_from_wandb,
+                codecmodel_path=args.codec_model_path,
+                phoneme_tokenizer_path=args.phoneme_tokenizer_path,
+                disable_cas_for_context_text=args.disable_cas_for_context_text,
+            ),
+            device=args.device,
+        )
+    else:
+        ckpt_name = "in-memory policy"
     logging.info(f"Loaded EasyMagpieTTS checkpoint: {ckpt_name}")
 
     hidden_dim = int(model.cfg.hidden_dim)
@@ -731,6 +743,7 @@ def convert(args) -> None:
         vocab_size,
         args.dtype,
         bundle_audio_encoders=args.bundle_audio_encoders,
+        grpo_rollout=args.grpo_rollout,
         max_audio_seconds=args.max_audio_seconds,
         codec_num_levels_per_group=num_levels_per_group,
     )

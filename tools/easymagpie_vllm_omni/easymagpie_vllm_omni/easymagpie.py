@@ -34,7 +34,7 @@ from collections.abc import Callable, Iterable
 from typing import Any, Optional
 
 import torch
-from easymagpie_vllm_omni.acoustic_predictor import create_acoustic_predictor
+from easymagpie_vllm_omni.acoustic_predictor import create_acoustic_predictor, sample_grpo_logits
 from easymagpie_vllm_omni.backbone_patches import (
     patch_mamba_streaming_decode,
     patch_moe_routed_scale,
@@ -305,6 +305,22 @@ class EasyMagpieTTSForConditionalGeneration(
         # slice of ``token_stop`` based on ``logit_idx`` that can be used in
         # ``compute_logits``
         self._sample_stop = torch.zeros(max_num_tokens, dtype=torch.bool)
+
+        self.grpo_rollout = bool(getattr(hf_config, "grpo_rollout", False))
+        if getattr(self, "grpo_rollout", False):
+            if not getattr(self.code_predictor, "requires_all_tokens", False):
+                raise ValueError("GRPO rollout requires the V2 acoustic predictor")
+            if self.has_phoneme and self.phoneme_confidence_unk_threshold > 0.0:
+                raise ValueError("GRPO rollout requires phoneme_confidence_unk_threshold=0")
+            phone_channels = arch.phoneme_stacking_factor if self.has_phoneme else 0
+            self._grpo_text_embeddings = torch.zeros(max_num_tokens, self.embedding_dim, dtype=dtype)
+            self._grpo_text_override = torch.zeros(max_num_tokens, dtype=torch.bool)
+            self._grpo_audio_valid = torch.zeros(max_num_tokens, dtype=torch.bool)
+            self._grpo_phoneme_codes = torch.zeros(max_num_tokens, phone_channels, dtype=torch.long)
+            self._grpo_phoneme_valid = torch.zeros(max_num_tokens, dtype=torch.bool)
+            self._grpo_prefill_phoneme_valid = torch.zeros(max_num_tokens, dtype=torch.bool)
+            self._grpo_phoneme_logps = torch.zeros(max_num_tokens, phone_channels, dtype=torch.float32)
+            self._grpo_phoneme_sample = torch.zeros(max_num_tokens, dtype=torch.bool)
 
         # ── Assembled prefill context embeddings (the only context cache) ──
         # ``preprocess`` runs on the host, once per request, serially on the
@@ -600,6 +616,11 @@ class EasyMagpieTTSForConditionalGeneration(
         # Reset per-token stop flags for this step (so prefill / warm-up rows stay
         # "continue"); decode positions get set below by :meth:`_flag_audio_eos`.
         self._token_stop[:num_tokens].zero_()
+        if getattr(self, "grpo_rollout", False):
+            self._grpo_audio_valid[:num_tokens].zero_()
+            self._grpo_phoneme_valid[:num_tokens].zero_()
+            self._grpo_phoneme_logps[:num_tokens].zero_()
+            self.code_predictor.last_sampled_logprobs[:num_tokens].zero_()
         logits_index = kwargs.get("logits_index")
 
         decode_idx, num_req, prefill_last_idx = self._get_query_dispatch()
@@ -638,6 +659,8 @@ class EasyMagpieTTSForConditionalGeneration(
                 else:
                     valid = decode_idx[:num_req]
                     predict[valid] = self._dec_audio_valid[valid].bool()
+                if getattr(self, "grpo_rollout", False):
+                    self._grpo_audio_valid[:num_tokens].copy_(predict)
                 codes = self.code_predictor.generate_codes(hidden_states, positions=positions, predict=predict)
             if decode_idx is None:
                 assert codes is not None
@@ -672,7 +695,7 @@ class EasyMagpieTTSForConditionalGeneration(
         # The final prefetched text position predicts the phoneme consumed by the
         # first decode step. It does not need an acoustic-code prediction.
         if self.has_phoneme and prefill_last_idx is not None and prefill_last_idx.numel() > 0:
-            self._predict_phonemes(hidden_states, prefill_last_idx)
+            self._predict_phonemes(hidden_states, prefill_last_idx, prefill=True)
 
         # Re-index _token_stop into _sample_stop.
         # this only happens for mixed/prefill, since for capture logits_index is None,
@@ -704,6 +727,10 @@ class EasyMagpieTTSForConditionalGeneration(
 
         # Text: current subword token (gated by validity).
         text_emb = self.text_embedding(self._dec_text_tokens[idx])
+        if getattr(self, "grpo_rollout", False):
+            text_emb = torch.where(
+                self._grpo_text_override[idx].unsqueeze(-1), self._grpo_text_embeddings[idx], text_emb
+            )
         text_emb = text_emb * self._dec_text_mask[idx].unsqueeze(-1).to(text_emb.dtype)
         combined[idx] += text_emb
 
@@ -714,8 +741,8 @@ class EasyMagpieTTSForConditionalGeneration(
             combined[idx] += phon_emb
 
     @torch.no_grad()
-    def _predict_phonemes(self, hidden_states: torch.Tensor, idx) -> None:
-        """Argmax the phoneme head (with confidence→UNK replacement) and stash it.
+    def _predict_phonemes(self, hidden_states: torch.Tensor, idx, *, prefill: bool = False) -> None:
+        """Predict the phoneme head and retain optional rollout actions.
 
         When any stacked channel falls below
         ``phoneme_confidence_unk_threshold``,
@@ -733,6 +760,19 @@ class EasyMagpieTTSForConditionalGeneration(
         s = self.arch.phoneme_stacking_factor
         logits = logits.view(-1, s, self.arch.phoneme_vocab_size)
         preds = logits.argmax(dim=-1).long()  # (n, S)
+        if getattr(self, "grpo_rollout", False):
+            sampled, logps = sample_grpo_logits(
+                logits, temperature=self.code_predictor.temperature, top_k=self.code_predictor.top_k
+            )
+            sample_mask = self._grpo_phoneme_sample[idx].unsqueeze(-1)
+            greedy = (
+                torch.nan_to_num(logits.float(), nan=0.0, posinf=100.0, neginf=-100.0).clamp(-100.0, 100.0).argmax(-1)
+            )
+            preds = torch.where(sample_mask, sampled, greedy)
+            valid = self._grpo_prefill_phoneme_valid[idx] if prefill else self._dec_phoneme_valid[idx].bool()
+            self._grpo_phoneme_codes[idx] = preds
+            self._grpo_phoneme_valid[idx] = valid
+            self._grpo_phoneme_logps[idx] = logps.masked_fill(~(sample_mask & valid.unsqueeze(-1)), 0.0)
 
         if self.phoneme_confidence_unk_threshold > 0.0:
             max_probs = torch.softmax(logits.float(), dim=-1).amax(dim=-1)  # (n, S)
@@ -792,6 +832,21 @@ class EasyMagpieTTSForConditionalGeneration(
         hidden = model_outputs
         num_tokens = int(hidden.shape[0])
         audio_codes = self._out_codes[:num_tokens].clone()
+        if getattr(self, "grpo_rollout", False):
+            # [audio IDs, phoneme IDs, audio/phoneme validity, audio/phoneme log probabilities].
+            # FP32 exactly represents all native codec and phoneme IDs.
+            packed = torch.cat(
+                (
+                    audio_codes.float(),
+                    self._grpo_phoneme_codes[:num_tokens].float(),
+                    self._grpo_audio_valid[:num_tokens, None].float(),
+                    self._grpo_phoneme_valid[:num_tokens, None].float(),
+                    self.code_predictor.last_sampled_logprobs[:num_tokens],
+                    self._grpo_phoneme_logps[:num_tokens],
+                ),
+                dim=-1,
+            )
+            return OmniOutput(text_hidden_states=hidden, multimodal_outputs={"model_outputs": packed})
         if self._single_stage_audio:
             # Drainable client key (see ``self._single_stage_audio`` in __init__):
             # ``model_outputs`` is remapped to the ``audio`` modality and drained
@@ -856,6 +911,14 @@ class EasyMagpieTTSForConditionalGeneration(
             self._dec_audio_valid[start:stop].zero_()
             if self.has_phoneme:
                 self._dec_phoneme_valid[start:stop].zero_()
+            if getattr(self, "grpo_rollout", False):
+                self._grpo_text_override[start:stop].zero_()
+                self._grpo_prefill_phoneme_valid[start:stop].zero_()
+                if info_dict.get("phoneme_sampling_method", "sample") not in ("sample", "argmax"):
+                    raise ValueError("phoneme_sampling_method must be 'sample' or 'argmax'")
+                self._grpo_phoneme_sample[start:stop].fill_(
+                    info_dict.get("phoneme_sampling_method", "sample") == "sample"
+                )
             return self._preprocess_prefill(input_ids, input_embeds, span_len, device, info_dict)
 
         return self._preprocess_decode(input_ids, start, device, info_dict)
@@ -904,10 +967,47 @@ class EasyMagpieTTSForConditionalGeneration(
             not reference_prefilled or continuing_reference_prefill
         )
         reference_rows = 0
+        grpo_request = getattr(self, "grpo_rollout", False) and bool(info_dict.get("grpo_rollout", False))
 
         # Select the Stage-0 prefill path for this request. Streaming turns in
         # one generate() call share the request's retained reference state.
-        if uses_raw_reference:
+        if grpo_request:
+            context = torch.as_tensor(
+                info_dict["grpo_context_embeddings"], device=device, dtype=self._combined_embeddings.dtype
+            )
+            target = torch.as_tensor(
+                info_dict["grpo_text_embeddings"], device=device, dtype=self._combined_embeddings.dtype
+            )
+            ids = info_dict["grpo_text_token_ids"]
+            text_tokens = ids.tolist() if isinstance(ids, torch.Tensor) else list(ids)
+            if context.ndim != 2 or context.shape[-1] != self.embedding_dim or context.shape[0] == 0:
+                raise ValueError("grpo_context_embeddings must have shape [context_length, embedding_dim]")
+            if target.ndim != 2 or target.shape != (len(text_tokens), self.embedding_dim) or not text_tokens:
+                raise ValueError("grpo_text_embeddings must match the non-empty grpo_text_token_ids sequence")
+            text_tokens = [int(token) for token in text_tokens]
+            info_dict = {
+                **info_dict,
+                "grpo_text_embeddings": target,
+                "text_prefill_num": self.arch.text_prefill_num,
+                "prefill_text_tokens": text_tokens[: self.arch.text_prefill_num],
+            }
+            prefix = self._build_text_prefill_embeds(device, context.dtype, info_dict)
+            assembled = context if prefix is None else torch.cat((context, prefix), dim=0)
+            if prompt_len != assembled.shape[0]:
+                raise ValueError("GRPO prompt_token_ids must cover the context and causal text prefill rows")
+            take = assembled[offset : offset + span_len]
+            if take.shape[0] != span_len:
+                raise ValueError("GRPO prefill chunk exceeds the supplied conditioning rows")
+            conditioning_len = context.shape[0]
+            phoneme_row = conditioning_len + self.phonemes_delay - offset
+            if self.has_phoneme and 0 <= phoneme_row < span_len:
+                buffer_start = self._batch_slot_offset(input_ids, 0)
+                self._grpo_prefill_phoneme_valid[buffer_start + phoneme_row] = True
+            decode_offset = self.arch.text_prefill_num
+            has_user_audio = False
+            uses_raw_reference = False
+            text_tokens_changed = True
+        elif uses_raw_reference:
             # Process the initial raw-reference prompt, including subsequent
             # scheduler chunks that still belong to that prompt.
             take, conditioning_len, has_user_audio, reference_rows = self._build_reference_audio_prefill_chunk(
@@ -985,6 +1085,12 @@ class EasyMagpieTTSForConditionalGeneration(
                 decode_offset = int(info_dict.get("text_prefill_num", 0) or 0)
 
         info_update: dict[str, Any] = {"decode_offset": decode_offset}
+        if grpo_request:
+            info_update.update(
+                grpo_context_embeddings=context,
+                grpo_text_embeddings=target,
+                grpo_text_token_ids=text_tokens,
+            )
         if uses_raw_reference and conditioning_len > 0:
             info_update.update(
                 speaker_reference_prefilled=True,
@@ -1274,8 +1380,13 @@ class EasyMagpieTTSForConditionalGeneration(
         )
         rows = torch.zeros((text_prefill_num, self.embedding_dim), device=device, dtype=dtype)
         if prefix_ids:
-            ids = torch.tensor(prefix_ids, device=device, dtype=torch.long)
-            rows[: len(prefix_ids)] = self.text_embedding(ids).to(dtype)
+            if getattr(self, "grpo_rollout", False) and info_dict.get("grpo_text_embeddings") is not None:
+                rows[: len(prefix_ids)] = info_dict["grpo_text_embeddings"][: len(prefix_ids)].to(
+                    device=device, dtype=dtype
+                )
+            else:
+                ids = torch.tensor(prefix_ids, device=device, dtype=torch.long)
+                rows[: len(prefix_ids)] = self.text_embedding(ids).to(dtype)
 
         # At position phonemes_delay the phoneme input is known: it is BOS. The
         # phoneme projected from this row is fed back at the first decode step.
@@ -1339,9 +1450,13 @@ class EasyMagpieTTSForConditionalGeneration(
         """
         temperature = info_dict.get("temperature")
         if temperature is not None:
+            if getattr(self, "grpo_rollout", False) and float(temperature) <= 0.0:
+                raise ValueError("GRPO rollout temperature must be positive")
             self.code_predictor.temperature = float(temperature)
         top_k = info_dict.get("top_k", info_dict.get("topk"))
         if top_k is not None:
+            if getattr(self, "grpo_rollout", False) and int(top_k) < 1:
+                raise ValueError("GRPO rollout top_k must be positive")
             self.code_predictor.top_k = int(top_k)
 
     def _get_text_tokenizer(self):
@@ -1454,6 +1569,15 @@ class EasyMagpieTTSForConditionalGeneration(
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
         decode_offset = int(info_dict.get("decode_offset", 0) or 0)
         info_update: dict[str, Any] = {"decode_offset": decode_offset + 1}
+        if getattr(self, "grpo_rollout", False):
+            self._grpo_text_override[start] = False
+            self._grpo_phoneme_sample[start] = info_dict.get("phoneme_sampling_method", "sample") == "sample"
+            target_embeddings = info_dict.get("grpo_text_embeddings")
+            if target_embeddings is not None and decode_offset < len(target_embeddings):
+                self._grpo_text_embeddings[start].copy_(
+                    target_embeddings[decode_offset].to(device=device, dtype=self._combined_embeddings.dtype)
+                )
+                self._grpo_text_override[start] = True
 
         # ── Text channel ── (delay 0: one subword per step from step 0). The text
         # stream leads the phoneme/audio streams by their respective delays. The

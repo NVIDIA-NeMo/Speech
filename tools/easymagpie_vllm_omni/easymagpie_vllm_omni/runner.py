@@ -22,9 +22,12 @@ preserving model-generated state such as ``decode_offset`` and ``text_tokens``.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Any
 
 import torch
+from vllm.device_allocator.cumem import CuMemAllocator
+from vllm.model_executor.model_loader.utils import process_weights_after_loading
 from vllm_omni.engine.serialization import deserialize_additional_information
 from vllm_omni.worker import gpu_ar_worker
 from vllm_omni.worker.gpu_ar_model_runner import GPUARModelRunner
@@ -93,3 +96,62 @@ class EasyMagpieGPUARWorker(GPUARWorker):
             return super().init_device()
         finally:
             gpu_ar_worker.GPUARModelRunner = original_runner_cls
+
+    def reload_grpo_weights(self, path: str, version: int) -> dict[str, int]:
+        """Load one policy snapshot after all requests finish and acknowledge its version.
+
+        ``path`` contains a plain tensor mapping produced by ``select_weights``.
+        The worker clears model-local prefill state before the next rollout.
+        """
+        if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+            raise ValueError("GRPO policy version must be a non-negative integer")
+        runner = self.model_runner
+        if not bool(getattr(getattr(runner.model, "hf_config", None), "grpo_rollout", False)):
+            raise RuntimeError("GRPO weight reload requires an artifact converted with --grpo-rollout")
+        if getattr(runner, "requests", None) is None:
+            raise RuntimeError("Cannot verify that the GRPO model runner is idle")
+        if runner.requests:
+            raise RuntimeError("Finish all rollout requests before loading GRPO weights")
+        current = getattr(self, "_grpo_weight_version", -1)
+        if version < current:
+            raise ValueError(f"Cannot reload stale GRPO version {version}; current version is {current}")
+        if version == current:
+            return {"version": current, "loaded_weights": self._grpo_loaded_weights}
+
+        weights = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
+        if (
+            not isinstance(weights, dict)
+            or not weights
+            or not all(isinstance(name, str) and isinstance(value, torch.Tensor) for name, value in weights.items())
+        ):
+            raise ValueError("GRPO snapshot must contain a non-empty mapping of names to tensors")
+        with self._grpo_weight_pool():
+            loaded = runner.model.load_weights(weights.items())
+            if not loaded:
+                raise RuntimeError("The GRPO snapshot did not load any model weights")
+            process_weights_after_loading(runner.model, runner.model_config, self.device)
+            if self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+        prefill_cache = getattr(runner.model, "_prefill_cache", None)
+        if prefill_cache is not None:
+            prefill_cache.clear()
+        self._grpo_weight_version = version
+        self._grpo_loaded_weights = len(loaded)
+        return {"version": version, "loaded_weights": len(loaded)}
+
+    @contextmanager
+    def _grpo_weight_pool(self):
+        if not self.model_config.enable_sleep_mode:
+            yield
+            return
+        allocator = CuMemAllocator.get_instance()
+        # Replacing the existing tag's MemPool destroys it while another pool
+        # is active, which aborts PyTorch's caching allocator during refits.
+        pool = allocator.allocator_and_pools["weights"][0]
+        previous_tag = allocator.current_tag
+        allocator.current_tag = "weights"
+        try:
+            with torch.cuda.memory.use_mem_pool(pool, device=self.device):
+                yield
+        finally:
+            allocator.current_tag = previous_tag

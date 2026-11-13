@@ -41,6 +41,7 @@ from nemo.collections.asr.parts.mixins import (
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecoding, RNNTDecodingConfig
 from nemo.collections.asr.parts.utils.asr_batching import get_semi_sorted_batch_sampler
+from nemo.collections.asr.parts.utils.eou_utils import get_restart_token_ids
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.timestamp_utils import process_timestamp_outputs
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
@@ -949,24 +950,40 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
     """ Transcription related methods """
 
     def _transcribe_forward(self, batch: Any, trcfg: TranscribeConfig):
-        encoded, encoded_len = self.forward(input_signal=batch[0], input_signal_length=batch[1])
-        output = dict(encoded=encoded, encoded_len=encoded_len)
-        return output
+        return self._transcribe_encode(batch[0], batch[1], trcfg)
+
+    def _transcribe_encode(self, signal: torch.Tensor, signal_len: torch.Tensor, trcfg: TranscribeConfig) -> dict:
+        """Encode audio for ``transcribe()``; with ``decoding.restart_after_tokens``, only extract features."""
+        if get_restart_token_ids(self):
+            if trcfg.partial_hypothesis is not None:
+                raise NotImplementedError("`partial_hypothesis` is not supported with `restart_after_tokens`.")
+            processed_signal, processed_signal_length = self.preprocessor(input_signal=signal, length=signal_len)
+            return dict(processed_signal=processed_signal, processed_signal_length=processed_signal_length)
+        encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len)
+        return dict(encoded=encoded, encoded_len=encoded_len)
 
     def _transcribe_output_processing(
         self, outputs, trcfg: TranscribeConfig
     ) -> Union[List['Hypothesis'], List[List['Hypothesis']]]:
-        encoded = outputs.pop('encoded')
-        encoded_len = outputs.pop('encoded_len')
-
-        hyp = self.decoding.rnnt_decoder_predictions_tensor(
-            encoded,
-            encoded_len,
-            return_hypotheses=trcfg.return_hypotheses,
-            partial_hypotheses=trcfg.partial_hypothesis,
-        )
-        # cleanup memory
-        del encoded, encoded_len
+        if 'processed_signal' in outputs:
+            with torch.inference_mode():
+                hyp = self.cache_aware_transcribe_with_restart(
+                    outputs.pop('processed_signal'),
+                    outputs.pop('processed_signal_length'),
+                    get_restart_token_ids(self),
+                )
+            hyp = self.decoding.postprocess_hypotheses(hyp, return_hypotheses=trcfg.return_hypotheses)
+        else:
+            encoded = outputs.pop('encoded')
+            encoded_len = outputs.pop('encoded_len')
+            hyp = self.decoding.rnnt_decoder_predictions_tensor(
+                encoded,
+                encoded_len,
+                return_hypotheses=trcfg.return_hypotheses,
+                partial_hypotheses=trcfg.partial_hypothesis,
+            )
+            # cleanup memory
+            del encoded, encoded_len
 
         if trcfg.timestamps:
             hyp = process_timestamp_outputs(

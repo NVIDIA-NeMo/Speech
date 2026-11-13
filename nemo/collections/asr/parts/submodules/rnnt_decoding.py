@@ -757,6 +757,12 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             # extract the hypotheses
             hypotheses_list = hypotheses_list[0]  # type: List[Hypothesis]
 
+        return self.postprocess_hypotheses(hypotheses_list, return_hypotheses=return_hypotheses)
+
+    def postprocess_hypotheses(
+        self, hypotheses_list: List[Union[Hypothesis, NBestHypotheses]], return_hypotheses: bool = False
+    ) -> Union[List[Hypothesis], List[List[Hypothesis]]]:
+        """Decode text and compute timestamps/confidence for raw hypotheses (see ``rnnt_decoder_predictions_tensor``)."""
         prediction_list = hypotheses_list
 
         if isinstance(prediction_list[0], NBestHypotheses):
@@ -1892,6 +1898,10 @@ class RNNTDecodingConfig:
 
     # type of timestamps to calculate
     rnnt_timestamp_type: str = "all"  # can be char, word or all for both
+
+    # Tokens (e.g. ['<EOU>', '<EOB>'] for end-of-utterance models) after which `transcribe()` and cache-aware
+    # streaming restart the encoder and decoder from a fresh state. Greedy decoding only.
+    restart_after_tokens: Optional[List[str]] = None
 
     # greedy decoding config
     greedy: rnnt_greedy_decoding.GreedyBatchedRNNTInferConfig = field(

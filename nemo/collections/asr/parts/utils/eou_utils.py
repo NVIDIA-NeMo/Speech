@@ -14,9 +14,13 @@
 # limitations under the License.
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
+import torch
+
+from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import LabelLoopingStateItem
+from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 
 
 @dataclass
@@ -295,3 +299,71 @@ def aggregate_eou_metrics(eou_metrics: List[EOUResult], target_percentiles: List
     metrics['miss_rate'] = sum(eou_missing) / num_eou_utterances if num_eou_utterances > 0 else 0.0
 
     return metrics
+
+
+def get_restart_token_ids(model) -> List[int]:
+    """
+    Ids of the tokens configured in ``decoding.restart_after_tokens`` (e.g. ``['<EOU>', '<EOB>']``),
+    after which Transducer decoding restarts from a fresh state. Empty if not configured.
+    """
+    tokens = model.decoding.cfg.get('restart_after_tokens', None)
+    if not tokens:
+        return []
+    if model.decoding.cfg.strategy not in ('greedy', 'greedy_batch'):
+        raise NotImplementedError(
+            f"`restart_after_tokens` is only supported with greedy decoding, got strategy={model.decoding.cfg.strategy}"
+        )
+    tokenizer = getattr(model, 'tokenizer', None)
+    if tokenizer is None:
+        raise ValueError("`restart_after_tokens` requires a model with a subword tokenizer.")
+    token_ids = []
+    for token in tokens:
+        token_id = tokenizer.token_to_id(token)
+        if tokenizer.ids_to_tokens([token_id]) != [token]:
+            raise ValueError(f"`restart_after_tokens`: {token} is not a single token in the model vocabulary.")
+        token_ids.append(int(token_id))
+    return token_ids
+
+
+def reset_hypothesis_decoder_state_(hypothesis: Hypothesis, decoding_computer=None) -> None:
+    """Reset the decoder state of a partial hypothesis to start-of-sequence, keeping its tokens and time offset."""
+    state = hypothesis.dec_state
+    if isinstance(state, LabelLoopingStateItem) and decoding_computer is not None:
+        batched_state = decoding_computer.merge_to_batched_state([state])
+        decoded_lengths = batched_state.decoded_lengths.clone()  # offsets the timestamps of the next step
+        batched_state = decoding_computer.reset_state_by_mask(
+            batched_state, torch.ones_like(decoded_lengths, dtype=torch.bool)
+        )
+        batched_state.decoded_lengths = decoded_lengths
+        hypothesis.dec_state = decoding_computer.split_batched_state(batched_state)[0]
+        hypothesis.dec_state.time_jump = state.time_jump
+    else:
+        hypothesis.dec_state = None
+    hypothesis.last_token = None
+
+
+def find_restart_frame(hypothesis: Hypothesis, token_ids: Sequence[int], num_frames: int) -> Optional[int]:
+    """Frame of the first token from ``token_ids`` emitted before the last frame, or None."""
+    for token, frame in zip(_to_list(hypothesis.y_sequence), _to_list(hypothesis.timestamp)):
+        if token in token_ids and frame < num_frames - 1:
+            return int(frame)
+    return None
+
+
+def append_hypothesis_segment_(hypothesis: Hypothesis, segment: Hypothesis, frame_offset: int) -> None:
+    """Append (in place) a raw hypothesis decoded from the audio starting at encoder frame ``frame_offset``."""
+    if isinstance(segment.timestamp, torch.Tensor):
+        segment.timestamp = segment.timestamp + frame_offset
+    else:
+        segment.timestamp = [t + frame_offset for t in segment.timestamp]
+    token_duration = hypothesis.token_duration
+    if isinstance(token_duration, torch.Tensor) and isinstance(segment.token_duration, torch.Tensor):
+        token_duration = torch.cat((token_duration, segment.token_duration), dim=0)
+    elif isinstance(token_duration, list) and isinstance(segment.token_duration, list):
+        token_duration = token_duration + segment.token_duration
+    hypothesis.merge_(segment)  # merge_ does not handle token_duration
+    hypothesis.token_duration = token_duration
+
+
+def _to_list(values) -> list:
+    return values.tolist() if isinstance(values, torch.Tensor) else list(values)

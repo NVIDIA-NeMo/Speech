@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
 import json
 import os
 import tarfile
@@ -28,6 +29,12 @@ import nemo.collections.asr.models as asr_models
 from nemo.collections.asr.parts.mixins.asr_adapter_mixins import ASRAdapterModelMixin
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.utils import asr_module_utils
+from nemo.collections.asr.parts.utils.eou_utils import (
+    append_hypothesis_segment_,
+    find_restart_frame,
+    get_restart_token_ids,
+    reset_hypothesis_decoder_state_,
+)
 from nemo.collections.asr.parts.utils.prompt_language_utils import resolve_prompt_index
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.tokenizer_utils import (
@@ -754,12 +761,31 @@ class ASRModuleMixin(ASRAdapterModelMixin):
                     all_hyp_or_transcribed_texts.append(decoded_out[0])
             best_hyp = None
         else:
-            best_hyp = self.decoding.rnnt_decoder_predictions_tensor(
-                encoder_output=encoded,
-                encoded_lengths=encoded_len,
-                return_hypotheses=True,
-                partial_hypotheses=previous_hypotheses,
-            )
+            restart_token_ids = get_restart_token_ids(self)
+            if restart_token_ids:
+                if bypass_pre_encode:
+                    raise NotImplementedError("`restart_after_tokens` is not supported with `bypass_pre_encode`.")
+                hyps, (cache_last_channel_next, cache_last_time_next, cache_last_channel_next_len) = (
+                    self.decode_chunk_with_restart(
+                        encoded=encoded,
+                        encoded_len=encoded_len,
+                        processed_signal=processed_signal,
+                        processed_signal_length=processed_signal_length,
+                        hypotheses=previous_hypotheses,
+                        caches=(cache_last_channel_next, cache_last_time_next, cache_last_channel_next_len),
+                        encode_fresh=functools.partial(self._encode_fresh, keep_all_outputs=keep_all_outputs),
+                        restart_token_ids=restart_token_ids,
+                        drop_extra_pre_encoded=drop_extra_pre_encoded or 0,
+                    )
+                )
+                best_hyp = self.decoding.postprocess_hypotheses(hyps, return_hypotheses=True)
+            else:
+                best_hyp = self.decoding.rnnt_decoder_predictions_tensor(
+                    encoder_output=encoded,
+                    encoded_lengths=encoded_len,
+                    return_hypotheses=True,
+                    partial_hypotheses=previous_hypotheses,
+                )
             greedy_predictions = [hyp.y_sequence for hyp in best_hyp]
 
             all_hyp_or_transcribed_texts = best_hyp
@@ -777,6 +803,173 @@ class ASRModuleMixin(ASRAdapterModelMixin):
             result.append(encoded_len)
 
         return tuple(result)
+
+    def decode_chunk_with_restart(
+        self,
+        encoded: Tensor,
+        encoded_len: Tensor,
+        processed_signal: Tensor,
+        processed_signal_length: Tensor,
+        hypotheses: Optional[List[Optional[Hypothesis]]],
+        caches: tuple,
+        encode_fresh,
+        restart_token_ids: List[int],
+        drop_extra_pre_encoded: int = 0,
+    ) -> tuple:
+        """
+        Greedy-decode one cache-aware streaming chunk, restarting from a fresh state after each token from
+        ``decoding.restart_after_tokens`` (e.g. ``<EOU>``). End-of-utterance models are trained on single utterances
+        and stop emitting tokens after ``<EOU>`` otherwise.
+
+        For a stream that emits a restart token at chunk frame ``t``, the frames up to ``t`` are re-decoded from the
+        previous decoder state, then the decoder state is reset and the rest of the chunk is re-encoded with a fresh
+        encoder cache (repeated as needed). A restart token on the last frame resets the state for the next chunk.
+
+        Args:
+            encoded: encoder output of the chunk [B, D, T].
+            encoded_len: number of valid encoder frames per stream [B].
+            processed_signal: chunk features [B, F, T_feat] (including the pre-encode cache).
+            processed_signal_length: number of valid features per stream [B].
+            hypotheses: raw hypotheses carried from the previous chunk (updated in place), or None.
+            caches: (cache_last_channel, cache_last_time, cache_last_channel_len) after encoding the chunk.
+            encode_fresh: function ``(features [1, F, T], lengths [1], stream_idx) -> (encoded, encoded_len, caches)``
+                encoding the features of one stream from the initial encoder cache.
+            restart_token_ids: ids of the restart tokens.
+            drop_extra_pre_encoded: number of encoder frames dropped from the beginning of the chunk.
+
+        Returns:
+            Tuple of (raw hypotheses, updated caches).
+        """
+        decoding_computer = getattr(self.decoding.decoding, 'decoding_computer', None)
+        if decoding_computer is None:
+            raise NotImplementedError("`restart_after_tokens` in streaming requires `greedy_batch` decoding.")
+        hypotheses = list(hypotheses) if hypotheses is not None else [None] * encoded.shape[0]
+        continuations = self._decode_continuation(encoded, encoded_len, hypotheses)
+        caches = list(caches)
+        for b in range(encoded.shape[0]):
+            enc, num_frames, cont = encoded[b : b + 1], int(encoded_len[b]), continuations[b]
+            signal, signal_len = processed_signal[b : b + 1], int(processed_signal_length[b])
+            while True:
+                prev = hypotheses[b]
+                start_frame = int(prev.dec_state.decoded_length) if prev is not None and prev.dec_state else 0
+                restart_frame = find_restart_frame(cont, restart_token_ids, start_frame + num_frames)
+                if restart_frame is not None:  # re-decode only up to the restart frame
+                    restart_frame -= start_frame
+                    cont = self._decode_continuation(enc[:, :, : restart_frame + 1], [restart_frame + 1], [prev])[0]
+                if prev is None:
+                    hypotheses[b] = cont
+                else:
+                    append_hypothesis_segment_(prev, cont, frame_offset=0)
+                if restart_frame is None:
+                    if any(int(token) in restart_token_ids for token in cont.y_sequence):  # on the last frame
+                        reset_hypothesis_decoder_state_(hypotheses[b], decoding_computer)
+                        caches = _replace_cache_row(caches, b)
+                    break
+                reset_hypothesis_decoder_state_(hypotheses[b], decoding_computer)
+                # causal subsampling: (pre-drop) output frame k ends at feature k * subsampling_factor
+                tail_start = (restart_frame + 1 + drop_extra_pre_encoded) * self.encoder.subsampling_factor
+                signal, signal_len = signal[:, :, tail_start:signal_len], signal_len - tail_start
+                drop_extra_pre_encoded = 0  # the rest of the chunk is encoded as the beginning of a new stream
+                enc, enc_len, new_cache = encode_fresh(signal, torch.tensor([signal_len], device=enc.device), b)
+                caches = _replace_cache_row(caches, b, new_cache)
+                num_frames = int(enc_len[0])
+                cont = self._decode_continuation(enc, enc_len, [hypotheses[b]])[0]
+        return hypotheses, tuple(caches)
+
+    def _decode_continuation(
+        self, encoded: Tensor, encoded_len, hypotheses: List[Optional[Hypothesis]]
+    ) -> List[Hypothesis]:
+        """Raw greedy decoding of new frames, continuing from the decoder states of ``hypotheses`` (not modified)."""
+        encoded_len = torch.as_tensor(encoded_len, device=encoded.device)
+        states = [
+            (
+                None
+                if hyp is None
+                else Hypothesis(
+                    score=0.0,
+                    y_sequence=torch.empty(0, dtype=torch.long),
+                    timestamp=torch.empty(0, dtype=torch.long),
+                    dec_state=hyp.dec_state,
+                    last_token=hyp.last_token,
+                    biasing_cfg=hyp.biasing_cfg,
+                )
+            )
+            for hyp in hypotheses
+        ]
+        return self.decoding.decoding(encoder_output=encoded, encoded_lengths=encoded_len, partial_hypotheses=states)[
+            0
+        ]
+
+    def _encode_fresh(self, signal: Tensor, signal_length: Tensor, stream_idx: int, keep_all_outputs: bool):
+        """Cache-aware encoding of one stream's features starting from the initial encoder cache."""
+        cache = self.encoder.get_initial_cache_state(batch_size=1, dtype=signal.dtype, device=signal.device)
+        encoded, encoded_len, *new_cache = self.encoder.cache_aware_stream_step(
+            processed_signal=signal,
+            processed_signal_length=signal_length,
+            cache_last_channel=cache[0],
+            cache_last_time=cache[1],
+            cache_last_channel_len=cache[2],
+            keep_all_outputs=keep_all_outputs,
+            drop_extra_pre_encoded=0,
+        )
+        return self._apply_prompt_to_encoded(encoded), encoded_len, new_cache
+
+    def cache_aware_transcribe_with_restart(
+        self, processed_signal: Tensor, processed_signal_length: Tensor, restart_token_ids: List[int]
+    ) -> List[Hypothesis]:
+        """
+        Offline decoding with restarts after ``decoding.restart_after_tokens``, run as cache-aware streaming over
+        the features of each utterance, so that the cost stays linear in the audio length.
+
+        Returns:
+            Raw (not post-processed) hypotheses.
+        """
+        if not isinstance(self.encoder, StreamingEncoder):
+            raise NotImplementedError("`restart_after_tokens` requires a cache-aware streaming encoder.")
+        if self.encoder.streaming_cfg is None:
+            self.encoder.setup_streaming_params()
+        cfg = self.encoder.streaming_cfg
+
+        def size(value, step):
+            return (value[0] if step == 0 else value[1]) if isinstance(value, list) else value
+
+        hypotheses = []
+        for b in range(processed_signal.shape[0]):
+            signal = processed_signal[b : b + 1, :, : int(processed_signal_length[b])]
+            caches = self.encoder.get_initial_cache_state(batch_size=1, dtype=signal.dtype, device=signal.device)
+            hyps, position, step = None, 0, 0
+            while position < signal.shape[-1]:
+                chunk_end = position + size(cfg.chunk_size, step)
+                pre_encode_size = size(cfg.pre_encode_cache_size, step)
+                chunk = signal[:, :, max(0, position - pre_encode_size) : chunk_end]
+                if position < pre_encode_size:  # zero pre-encode cache at the beginning, as in streaming
+                    chunk = torch.nn.functional.pad(chunk, (pre_encode_size - position, 0))
+                chunk_len = torch.tensor([chunk.shape[-1]], device=chunk.device)
+                is_last = chunk_end >= signal.shape[-1]
+                encoded, encoded_len, *caches = self.encoder.cache_aware_stream_step(
+                    processed_signal=chunk,
+                    processed_signal_length=chunk_len,
+                    cache_last_channel=caches[0],
+                    cache_last_time=caches[1],
+                    cache_last_channel_len=caches[2],
+                    keep_all_outputs=is_last,
+                    drop_extra_pre_encoded=0 if step == 0 else cfg.drop_extra_pre_encoded,
+                )
+                hyps, caches = self.decode_chunk_with_restart(
+                    encoded=self._apply_prompt_to_encoded(encoded),
+                    encoded_len=encoded_len,
+                    processed_signal=chunk,
+                    processed_signal_length=chunk_len,
+                    hypotheses=hyps,
+                    caches=caches,
+                    encode_fresh=functools.partial(self._encode_fresh, keep_all_outputs=is_last),
+                    restart_token_ids=restart_token_ids,
+                    drop_extra_pre_encoded=0 if step == 0 else cfg.drop_extra_pre_encoded,
+                )
+                position += size(cfg.shift_size, step)
+                step += 1
+            hypotheses.extend(hyps)
+        return hypotheses
 
     @torch.no_grad()
     def transcribe_simulate_cache_aware_streaming(
@@ -1047,3 +1240,14 @@ class PromptStreamingMixin:
         out_dtype = encoded.dtype
         encoded = self.prompt_kernel(torch.cat([encoded, prompt], dim=-1)).to(out_dtype)
         return encoded.transpose(1, 2)  # (B, T, D) -> (B, D, T)
+
+
+def _replace_cache_row(caches: list, idx: int, row: Optional[list] = None) -> list:
+    """Replace the encoder cache of stream ``idx`` with ``row`` (1-stream caches), or with the initial (zero) cache."""
+    if row is None:
+        row = [torch.zeros_like(caches[0][:, :1]), torch.zeros_like(caches[1][:, :1]), torch.zeros_like(caches[2][:1])]
+    return [
+        torch.cat((caches[0][:, :idx], row[0].to(caches[0].dtype), caches[0][:, idx + 1 :]), dim=1),
+        torch.cat((caches[1][:, :idx], row[1].to(caches[1].dtype), caches[1][:, idx + 1 :]), dim=1),
+        torch.cat((caches[2][:idx], row[2].to(caches[2].dtype), caches[2][idx + 1 :]), dim=0),
+    ]

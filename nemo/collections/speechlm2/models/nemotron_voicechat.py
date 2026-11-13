@@ -132,6 +132,33 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         self._use_fsdp = False
         self._use_tp = False
 
+    def merge_cfg(self, cfg: DictConfig) -> None:
+        """
+        Merge configuration overrides into this model and into the config copies of its sub-models.
+
+        ``self.cfg`` is the ``model`` section of ``self.full_cfg``, but ``stt_model.cfg``, ``tts_model.cfg`` and
+        ``tts_model.data_cfg`` are resolved copies made at construction, so an override of ``model.stt.model.*``,
+        ``model.speech_generation.model.*`` or ``model.speech_generation.data.*`` (for example the inference
+        options) reaches them only through here.
+        Keys that were read at construction, such as the pretrained paths, do not change the built modules.
+
+        Args:
+            cfg (DictConfig): Overrides in the layout of the full config (``model``, ``data``, ``trainer``, ...).
+        """
+        assert isinstance(cfg, DictConfig), f"merge_cfg takes a DictConfig, got {type(cfg)}"
+        self.full_cfg.merge_with(cfg)
+        model_cfg = cfg.get("model")
+        if model_cfg is None:
+            return
+        stt_cfg = model_cfg.get("stt")
+        if stt_cfg is not None and stt_cfg.get("model") is not None:
+            self.stt_model.cfg.merge_with(stt_cfg.model)
+        tts_cfg = model_cfg.get("speech_generation")
+        if tts_cfg is not None and tts_cfg.get("model") is not None:
+            self.tts_model.cfg.merge_with(tts_cfg.model)
+        if tts_cfg is not None and tts_cfg.get("data") is not None:
+            self.tts_model.data_cfg.merge_with(tts_cfg.data)
+
     def init_from_model_from_ckpt(self, checkpoint_path):
         if checkpoint_path is not None:
             checkpoint_state = torch.load(checkpoint_path, map_location='cpu')['state_dict']

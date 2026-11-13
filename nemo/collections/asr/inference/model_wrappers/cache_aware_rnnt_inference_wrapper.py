@@ -28,7 +28,7 @@ from nemo.collections.asr.models import EncDecHybridRNNTCTCModel, EncDecRNNTMode
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import ModifiedALSDBatchedRNNTComputer
 from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import export_batched_beam_hyps_to_cpu_lists
-from nemo.collections.asr.parts.utils.eou_utils import get_hypotheses_lengths
+from nemo.collections.asr.parts.utils.eou_utils import get_restart_token_ids
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 
 
@@ -190,22 +190,40 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
             prompt_vectors=prompt_vectors,
         )
 
-        prev_lengths = get_hypotheses_lengths(previous_hypotheses, batch_size=encoded.shape[0])
-        best_hyp = self.asr_model.decoding.rnnt_decoder_predictions_tensor(
-            encoded, encoded_len, return_hypotheses=True, partial_hypotheses=previous_hypotheses
+        restart_token_ids = get_restart_token_ids(self.asr_model)
+        if not restart_token_ids:
+            best_hyp = self.asr_model.decoding.rnnt_decoder_predictions_tensor(
+                encoded, encoded_len, return_hypotheses=True, partial_hypotheses=previous_hypotheses
+            )
+            return best_hyp, new_context
+
+        if new_context.cache_last_channel is None:
+            raise NotImplementedError("`decoding.restart_after_tokens` requires cache-aware streaming with cache.")
+
+        def encode_fresh(signal: Tensor, signal_length: Tensor, stream_idx: int):
+            enc, enc_len, context = self.encoder_step(
+                processed_signal=signal,
+                processed_signal_length=signal_length,
+                context=CacheAwareContext(*self.get_initial_cache_state(batch_size=1)),
+                drop_extra_pre_encoded=0,
+                keep_all_outputs=keep_all_outputs,
+                prompt_vectors=None if prompt_vectors is None else prompt_vectors[stream_idx : stream_idx + 1],
+            )
+            return enc, enc_len, (context.cache_last_channel, context.cache_last_time, context.cache_last_channel_len)
+
+        hyps, caches = self.asr_model.decode_chunk_with_restart(
+            encoded=encoded,
+            encoded_len=encoded_len,
+            processed_signal=processed_signal,
+            processed_signal_length=processed_signal_length,
+            hypotheses=previous_hypotheses,
+            caches=(new_context.cache_last_channel, new_context.cache_last_time, new_context.cache_last_channel_len),
+            encode_fresh=encode_fresh,
+            restart_token_ids=restart_token_ids,
+            drop_extra_pre_encoded=drop_extra_pre_encoded or 0,
         )
-        (
-            new_context.cache_last_channel,
-            new_context.cache_last_time,
-            new_context.cache_last_channel_len,
-        ) = self.asr_model.reset_streams_after_utterance_end(
-            hypotheses=best_hyp,
-            prev_lengths=prev_lengths,
-            cache_last_channel=new_context.cache_last_channel,
-            cache_last_time=new_context.cache_last_time,
-            cache_last_channel_len=new_context.cache_last_channel_len,
-        )
-        return best_hyp, new_context
+        best_hyp = self.asr_model.decoding.postprocess_hypotheses(hyps, return_hypotheses=True)
+        return best_hyp, CacheAwareContext(*caches)
 
     def malsd_stream_step(
         self,

@@ -21,6 +21,8 @@ decoding restarts after it. The tests use a tiny randomly-initialized model whos
 with a simulation of this behavior: it emits ``<word> <EOU>`` for the next utterance and nothing after that.
 """
 
+import dataclasses
+
 import pytest
 import torch
 from omegaconf import DictConfig, open_dict
@@ -118,41 +120,44 @@ def eou_model(eou_tokenizer_dir):
 
 class _SingleUtteranceDecodingSim:
     """
-    Simulates the decoding of an end-of-utterance model trained on single-utterance samples.
+    Simulates the greedy decoding of an end-of-utterance model trained on single-utterance samples.
 
-    A hypothesis that has not ended yet emits ``<word> <EOU>`` at the next utterance frame (absolute encoder frame);
-    after ``<EOU>``, it emits nothing (unless its decoder state is reset).
-    Offline, absolute frame indices are read from channel 0 of the encoder output (see ``_patch_forward``);
-    in streaming, they are counted across calls.
+    Decoder states are real label-looping state items: ``decoded_length`` gives the absolute frame offset, and the last
+    label is ``<EOU>`` once the utterance has ended. A hypothesis that has not ended emits ``<word> <EOU>`` on the next
+    utterance frame (absolute encoder frame); after ``<EOU>``, it emits nothing unless its decoder state is reset.
+    Utterance frames are looked up by batch index, so only the first stream may restart within a chunk
+    (single-stream re-decoding uses batch index 0).
     """
 
-    def __init__(self, utterance_frames: list[list[int]], eou_id: int, streaming: bool):
+    def __init__(self, decoding_computer, utterance_frames: list[list[int]], eou_id: int):
+        self.decoding_computer = decoding_computer
         self.utterance_frames = utterance_frames
         self.eou_id = eou_id
-        self.streaming = streaming
-        self.consumed_frames = [0] * len(utterance_frames)
 
     def __call__(self, encoder_output, encoded_lengths, partial_hypotheses=None):
         hypotheses = []
         for b, num_frames in enumerate(encoded_lengths.tolist()):
-            if self.streaming:
-                frames = list(range(self.consumed_frames[b], self.consumed_frames[b] + num_frames))
-                self.consumed_frames[b] += num_frames
-            else:
-                frames = encoder_output[b, 0, :num_frames].round().long().tolist()
             prev = partial_hypotheses[b] if partial_hypotheses is not None else None
-            ended = prev is not None and prev.dec_state == "ended"
-            tokens, timestamps, dec_state = [], [], "ended" if ended else None
-            for u in [] if ended else self.utterance_frames[b]:
-                if u in frames:
-                    t = u if self.streaming else frames.index(u)
-                    tokens, timestamps, dec_state = [WORD_ID, self.eou_id], [t, t], "ended"
-                    break
+            state = prev.dec_state if prev is not None and prev.dec_state is not None else None
+            if state is None:
+                state = self.decoding_computer._get_decoding_state_item_after_sos(device=encoder_output.device)
+            start = int(state.decoded_length)
+            tokens, timestamps, label = [], [], int(state.label)
+            if label != self.eou_id:
+                for u in self.utterance_frames[b]:
+                    if start <= u < start + num_frames:
+                        tokens, timestamps, label = [WORD_ID, self.eou_id], [u, u], self.eou_id
+                        break
+            new_state = dataclasses.replace(
+                state,
+                label=torch.tensor(label),
+                decoded_length=torch.tensor(start + num_frames),
+            )
             hyp = Hypothesis(
                 score=-float(len(tokens)),
                 y_sequence=torch.tensor(tokens, dtype=torch.long),
                 timestamp=torch.tensor(timestamps, dtype=torch.long),
-                dec_state=dec_state,
+                dec_state=new_state,
                 length=num_frames,
             )
             if prev is not None:
@@ -162,25 +167,12 @@ class _SingleUtteranceDecodingSim:
         return (hypotheses,)
 
 
-def _patch_forward(model, audio: torch.Tensor) -> int:
-    """
-    Write absolute encoder frame indices to channel 0 of the encoder output (the encoded audio is always a suffix
-    of ``audio``). Returns the number of encoder frames of ``audio``.
-    """
-    forward = model.forward
-    with torch.no_grad():
-        _, encoded_len = forward(input_signal=audio[None], input_signal_length=torch.tensor([audio.shape[0]]))
-    total_frames = int(encoded_len[0])
-
-    def patched(**kwargs):
-        encoded, encoded_len = forward(**kwargs)
-        encoded = encoded.clone()
-        offset = total_frames - int(encoded_len[0])
-        encoded[:, 0, :] = torch.arange(offset, offset + encoded.shape[-1], dtype=encoded.dtype)
-        return encoded, encoded_len
-
-    model.forward = patched
-    return total_frames
+def _simulate(model, utterance_frames: list[list[int]]) -> int:
+    eou_id = get_restart_token_ids(model)[0]
+    model.decoding.decoding = _SingleUtteranceDecodingSim(
+        model.decoding.decoding.decoding_computer, utterance_frames, eou_id=eou_id
+    )
+    return eou_id
 
 
 @pytest.mark.unit
@@ -203,43 +195,84 @@ def test_get_restart_token_ids(eou_model):
 @pytest.mark.unit
 def test_transcribe_continues_after_eou(eou_model):
     """transcribe() decodes every utterance of a multi-utterance audio, not only the first one."""
-    eou_id = get_restart_token_ids(eou_model)[0]
+    utterance_frames = [3, 20, 21, 40, 60]  # 20 and 21 fall into the same streaming chunk
+    eou_id = _simulate(eou_model, [utterance_frames])
     audio = torch.randn(16000 * 3) * 0.1
-    total_frames = _patch_forward(eou_model, audio)
-    utterance_frames = [3, 20, 40, total_frames - 4]
-    eou_model.decoding.decoding = _SingleUtteranceDecodingSim([utterance_frames], eou_id=eou_id, streaming=False)
 
     hyp = eou_model.transcribe([audio.numpy()], batch_size=1, return_hypotheses=True)[0]
 
     assert hyp.y_sequence.tolist() == [WORD_ID, eou_id] * len(utterance_frames)
     assert hyp.timestamp.tolist() == [t for u in utterance_frames for t in (u, u)]
     assert hyp.text.count("<EOU>") == len(utterance_frames)
-    # segments are disjoint: lengths add up to the audio length, scores of discarded tails are not counted
-    assert hyp.length == total_frames
+    # segments are disjoint: decoded frames are counted once, and scores of re-decoded chunks are not duplicated
     assert hyp.score == -2.0 * len(utterance_frames)
+    assert hyp.length == hyp.dec_state.decoded_length.item()
+
+
+@pytest.mark.unit
+def test_transcribe_encodes_audio_once(eou_model):
+    """Offline restarts stream over the features, so the encoded features grow linearly with the audio."""
+    _simulate(eou_model, [list(range(2, 1000, 4))])  # an utterance in every other chunk
+    encoded_features = []
+    stream_step = eou_model.encoder.cache_aware_stream_step
+
+    def counting_stream_step(**kwargs):
+        encoded_features.append(int(kwargs['processed_signal_length'][0]))
+        return stream_step(**kwargs)
+
+    eou_model.encoder.cache_aware_stream_step = counting_stream_step
+    for seconds in (2, 4):
+        encoded_features.clear()
+        eou_model.transcribe([(torch.randn(16000 * seconds) * 0.1).numpy()], batch_size=1)
+        num_features = seconds * 100
+        # chunk features + pre-encode cache per chunk, with at most one re-encoded chunk tail per restart
+        assert sum(encoded_features) < 3 * num_features
 
 
 @pytest.mark.unit
 def test_transcribe_without_restart_tokens_is_unchanged(eou_model):
     """Without ``restart_after_tokens``, the regular single-pass decoding is used."""
-    eou_id = get_restart_token_ids(eou_model)[0]
+    eou_id = _simulate(eou_model, [[3, 20]])
     with open_dict(eou_model.decoding.cfg):
         eou_model.decoding.cfg.restart_after_tokens = None
-    audio = torch.randn(16000 * 3) * 0.1
-    _patch_forward(eou_model, audio)
-    eou_model.decoding.decoding = _SingleUtteranceDecodingSim([[3, 20]], eou_id=eou_id, streaming=False)
-    hyp = eou_model.transcribe([audio.numpy()], batch_size=1, return_hypotheses=True)[0]
+    hyp = eou_model.transcribe([(torch.randn(16000 * 3) * 0.1).numpy()], batch_size=1, return_hypotheses=True)[0]
     assert hyp.y_sequence.tolist() == [WORD_ID, eou_id]
+
+
+@pytest.mark.unit
+def test_stream_step_restarts_within_chunk(eou_model):
+    """Several utterances ending inside a single (final) chunk are all decoded, with absolute timestamps."""
+    utterance_frames = [1, 3, 7]
+    eou_id = _simulate(eou_model, [utterance_frames])
+    eou_model.encoder.setup_streaming_params()
+    features = torch.randn(1, 64, 10 * SUBSAMPLING_FACTOR)
+    num_frames = 10 + 1  # causal subsampling: floor(num_features / subsampling_factor) + 1
+    cache = eou_model.encoder.get_initial_cache_state(batch_size=1)
+    with torch.inference_mode():
+        *_, cache_len, hyps = eou_model.conformer_stream_step(
+            processed_signal=features,
+            processed_signal_length=torch.tensor([features.shape[-1]]),
+            cache_last_channel=cache[0],
+            cache_last_time=cache[1],
+            cache_last_channel_len=cache[2],
+            keep_all_outputs=True,
+            drop_extra_pre_encoded=0,
+        )
+    assert hyps[0].y_sequence.tolist() == [WORD_ID, eou_id] * 3
+    assert hyps[0].timestamp.tolist() == [t for u in utterance_frames for t in (u, u)]
+    assert hyps[0].dec_state.decoded_length.item() == num_frames
+    assert cache_len[0].item() == num_frames - (
+        utterance_frames[-1] + 1
+    )  # encoder context restarted after the last <EOU>
 
 
 @pytest.mark.unit
 def test_cache_aware_streaming_continues_after_eou(eou_model):
     """conformer_stream_step restarts decoding and resets the encoder cache only for the streams that emit <EOU>."""
-    eou_id = get_restart_token_ids(eou_model)[0]
+    utterance_frames = [[3, 20, 40], []]  # the second stream never emits <EOU>
+    eou_id = _simulate(eou_model, utterance_frames)
     eou_model.encoder.setup_streaming_params()
     cfg = eou_model.encoder.streaming_cfg
-    utterance_frames = [[3, 20, 40], [70]]  # the second stream emits <EOU> only at the end
-    eou_model.decoding.decoding = _SingleUtteranceDecodingSim(utterance_frames, eou_id=eou_id, streaming=True)
 
     num_feature_frames = 80 * SUBSAMPLING_FACTOR
     features = torch.randn(2, 64, num_feature_frames)
@@ -247,15 +280,12 @@ def test_cache_aware_streaming_continues_after_eou(eou_model):
         batch_size=2
     )
     hyps = None
-    chunk_size, shift_size, pre_encode_cache_size = cfg.chunk_size[1], cfg.shift_size[1], cfg.pre_encode_cache_size[1]
     start, step = 0, 0
-    eou_steps = set()
     with torch.inference_mode():
         while start < num_feature_frames:
             first = step == 0
-            size = cfg.chunk_size[0] if first else chunk_size
-            cache_start = max(0, start - pre_encode_cache_size) if not first else start
-            chunk = features[:, :, cache_start : start + size]
+            size = cfg.chunk_size[0] if first else cfg.chunk_size[1]
+            chunk = features[:, :, (start if first else max(0, start - cfg.pre_encode_cache_size[1])) : start + size]
             num_eou_before = [
                 0 if hyps is None else hyp.y_sequence.tolist().count(eou_id) for hyp in hyps or [None] * 2
             ]
@@ -272,18 +302,15 @@ def test_cache_aware_streaming_continues_after_eou(eou_model):
                 )
             )
             if hyps[0].y_sequence.tolist().count(eou_id) > num_eou_before[0]:
-                eou_steps.add(step)
-                assert cache_last_channel_len[0].item() == 0
-                assert cache_last_channel[:, 0].abs().sum().item() == 0
-                assert cache_last_time[:, 0].abs().sum().item() == 0
-                assert cache_last_channel_len[1].item() > 0
-            start += cfg.chunk_size[0] if first else shift_size
+                # the encoder context of the first stream restarted within this chunk, the other stream is unaffected
+                assert cache_last_channel_len[0].item() < cache_last_channel_len[1].item()
+            start += size if first else cfg.shift_size[1]
             step += 1
 
-    assert len(eou_steps) == 3
     assert hyps[0].y_sequence.tolist() == [WORD_ID, eou_id] * 3
     assert hyps[0].timestamp.tolist() == [t for u in utterance_frames[0] for t in (u, u)]
-    assert hyps[1].y_sequence.tolist() == [WORD_ID, eou_id]
+    assert hyps[1].y_sequence.tolist() == []
+    assert cache_last_channel_len[1].item() == cfg.last_channel_cache_size
 
 
 @pytest.mark.unit

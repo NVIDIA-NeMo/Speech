@@ -41,11 +41,7 @@ from nemo.collections.asr.parts.mixins import (
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecoding, RNNTDecodingConfig
 from nemo.collections.asr.parts.utils.asr_batching import get_semi_sorted_batch_sampler
-from nemo.collections.asr.parts.utils.eou_utils import (
-    append_hypothesis_segment_,
-    find_restart_frame,
-    get_restart_token_ids,
-)
+from nemo.collections.asr.parts.utils.eou_utils import get_restart_token_ids
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.timestamp_utils import process_timestamp_outputs
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
@@ -957,49 +953,37 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         return self._transcribe_encode(batch[0], batch[1], trcfg)
 
     def _transcribe_encode(self, signal: torch.Tensor, signal_len: torch.Tensor, trcfg: TranscribeConfig) -> dict:
-        """Encode audio for ``transcribe()``, keeping the features if ``decoding.restart_after_tokens`` is set."""
+        """Encode audio for ``transcribe()``; with ``decoding.restart_after_tokens``, only extract features."""
         if get_restart_token_ids(self):
             if trcfg.partial_hypothesis is not None:
                 raise NotImplementedError("`partial_hypothesis` is not supported with `restart_after_tokens`.")
             processed_signal, processed_signal_length = self.preprocessor(input_signal=signal, length=signal_len)
-            encoded, encoded_len = self.forward(
-                processed_signal=processed_signal, processed_signal_length=processed_signal_length
-            )
-            return dict(
-                encoded=encoded,
-                encoded_len=encoded_len,
-                processed_signal=processed_signal,
-                processed_signal_length=processed_signal_length,
-            )
+            return dict(processed_signal=processed_signal, processed_signal_length=processed_signal_length)
         encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len)
         return dict(encoded=encoded, encoded_len=encoded_len)
 
     def _transcribe_output_processing(
         self, outputs, trcfg: TranscribeConfig
     ) -> Union[List['Hypothesis'], List[List['Hypothesis']]]:
-        encoded = outputs.pop('encoded')
-        encoded_len = outputs.pop('encoded_len')
-        processed_signal = outputs.pop('processed_signal', None)
-        processed_signal_length = outputs.pop('processed_signal_length', None)
-
-        if processed_signal is not None:
-            hyp = self._decode_with_utterance_end_restart(
-                encoded,
-                encoded_len,
-                processed_signal,
-                processed_signal_length,
-                return_hypotheses=trcfg.return_hypotheses,
-            )
-            del processed_signal, processed_signal_length
+        if 'processed_signal' in outputs:
+            with torch.inference_mode():
+                hyp = self.cache_aware_transcribe_with_restart(
+                    outputs.pop('processed_signal'),
+                    outputs.pop('processed_signal_length'),
+                    get_restart_token_ids(self),
+                )
+            hyp = self.decoding.postprocess_hypotheses(hyp, return_hypotheses=trcfg.return_hypotheses)
         else:
+            encoded = outputs.pop('encoded')
+            encoded_len = outputs.pop('encoded_len')
             hyp = self.decoding.rnnt_decoder_predictions_tensor(
                 encoded,
                 encoded_len,
                 return_hypotheses=trcfg.return_hypotheses,
                 partial_hypotheses=trcfg.partial_hypothesis,
             )
-        # cleanup memory
-        del encoded, encoded_len
+            # cleanup memory
+            del encoded, encoded_len
 
         if trcfg.timestamps:
             hyp = process_timestamp_outputs(
@@ -1007,54 +991,6 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             )
 
         return hyp
-
-    def _decode_with_utterance_end_restart(
-        self,
-        encoded: torch.Tensor,
-        encoded_len: torch.Tensor,
-        processed_signal: torch.Tensor,
-        processed_signal_length: torch.Tensor,
-        return_hypotheses: bool = False,
-    ) -> List['Hypothesis']:
-        """
-        Greedy decoding that splits the audio after each token from ``decoding.restart_after_tokens`` (e.g. ``<EOU>``)
-        emitted before the end, and re-encodes and decodes the rest of the audio from scratch. End-of-utterance
-        models are trained on single utterances and stop emitting tokens after ``<EOU>`` otherwise.
-        """
-        token_ids = get_restart_token_ids(self)
-        with torch.inference_mode():
-            hypotheses = self.decoding.decoding(encoder_output=encoded, encoded_lengths=encoded_len)[0]
-            for idx in range(len(hypotheses)):
-                segment_encoded, num_frames = encoded[idx : idx + 1], int(encoded_len[idx])
-                segment, merged, frame_offset = hypotheses[idx], None, 0
-                while True:
-                    restart_frame = find_restart_frame(segment, token_ids, num_frames)
-                    if restart_frame is not None:  # re-decode up to the restart frame to keep score/metadata exact
-                        segment = self._decode_raw(segment_encoded[:, :, : restart_frame + 1], restart_frame + 1)
-                    if merged is None:
-                        merged = segment
-                    else:
-                        append_hypothesis_segment_(merged, segment, frame_offset=frame_offset)
-                    if restart_frame is None:
-                        break
-                    frame_offset += restart_frame + 1
-                    start = frame_offset * self.encoder.subsampling_factor
-                    length = processed_signal_length[idx : idx + 1] - start
-                    if length.item() <= 0:
-                        break
-                    segment_encoded, segment_encoded_len = self.forward(
-                        processed_signal=processed_signal[idx : idx + 1, :, start : start + length.item()],
-                        processed_signal_length=length,
-                    )
-                    num_frames = int(segment_encoded_len[0])
-                    segment = self._decode_raw(segment_encoded, num_frames)
-                hypotheses[idx] = merged
-        return self.decoding.postprocess_hypotheses(hypotheses, return_hypotheses=return_hypotheses)
-
-    def _decode_raw(self, encoded: torch.Tensor, num_frames: int) -> 'Hypothesis':
-        """Raw (not post-processed) decoding of a single utterance."""
-        encoded_len = torch.tensor([num_frames], device=encoded.device)
-        return self.decoding.decoding(encoder_output=encoded, encoded_lengths=encoded_len)[0][0]
 
     def _setup_transcribe_dataloader(self, config: Dict) -> 'torch.utils.data.DataLoader':
         """

@@ -325,13 +325,6 @@ def get_restart_token_ids(model) -> List[int]:
     return token_ids
 
 
-def get_hypotheses_lengths(hypotheses: Optional[Sequence[Optional[Hypothesis]]], batch_size: int) -> List[int]:
-    """Number of tokens in each (possibly missing) partial hypothesis."""
-    if hypotheses is None:
-        return [0] * batch_size
-    return [0 if hyp is None or hyp.y_sequence is None else len(hyp.y_sequence) for hyp in hypotheses]
-
-
 def reset_hypothesis_decoder_state_(hypothesis: Hypothesis, decoding_computer=None) -> None:
     """Reset the decoder state of a partial hypothesis to start-of-sequence, keeping its tokens and time offset."""
     state = hypothesis.dec_state

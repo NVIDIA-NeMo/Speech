@@ -26,9 +26,11 @@ from tqdm import tqdm
 
 from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.models.ctc_models import EncDecCTCModel
+from nemo.collections.asr.modules import RNNTDecoder, RNNTJoint
 from nemo.collections.asr.parts.submodules.ctc_beam_decoding import BeamBatchedCTCInfer
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.submodules.rnnt_beam_decoding import BeamBatchedRNNTInfer
+from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecoding, RNNTDecodingConfig
 from nemo.collections.asr.parts.submodules.tdt_beam_decoding import BeamBatchedTDTInfer
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.core.utils import numba_utils
@@ -46,6 +48,20 @@ DEVICES = [torch.device("cpu")]
 if torch.cuda.is_available():
     # The `gpu` marker puts the CUDA cases in the GPU CI jobs (see tests/functional_tests/_gpu_unit_test_selection.sh).
     DEVICES.append(pytest.param(torch.device('cuda'), marks=pytest.mark.gpu))
+
+# malsd_batch implementations: the PyTorch one on each device (None), and each CUDA graphs mode
+DEVICES_AND_CUDA_GRAPHS_MODES = [pytest.param(torch.device("cpu"), None, id="cpu")]
+if torch.cuda.is_available():
+    DEVICES_AND_CUDA_GRAPHS_MODES += [
+        pytest.param(torch.device("cuda"), mode, marks=pytest.mark.gpu, id=f"cuda-{mode or 'torch'}")
+        for mode in [None, "no_graphs", "no_while_loops", "full_graph"]
+    ]
+
+# random transducer for decoding unit tests: labels (without blank), encoder output, max symbols per frame
+TINY_VOCAB_SIZE = 4
+TINY_ENCODED_LENGTHS = [12, 7, 9, 3]
+TINY_MAX_SYMBOLS = 3
+TINY_DURATIONS = {"rnnt": None, "tdt": [0, 1, 2]}
 
 NUMBA_RNNT_LOSS_AVAILABLE = numba_utils.numba_cpu_is_supported(
     __NUMBA_MINIMUM_VERSION__
@@ -253,6 +269,73 @@ def decode_text_from_nbest_hypotheses(hyps, model):
         ]
     else:
         return [model.decoding.decode_hypothesis(nbest_hyp.n_best_hypotheses) for nbest_hyp in hyps]
+
+
+class LabelScoresFusionModel(torch.nn.Module):
+    """Fusion model with a single state that gives label `k` the score `scores[k]` after any history."""
+
+    def __init__(self, scores: torch.Tensor):
+        super().__init__()
+        self.register_buffer("scores", scores)
+
+    def get_init_states(self, batch_size: int, bos: bool = True) -> torch.Tensor:
+        return torch.zeros([batch_size], dtype=torch.long, device=self.scores.device)
+
+    def advance(self, states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        scores = self.scores.repeat(states.shape[0], 1)
+        return scores, torch.zeros_like(scores, dtype=torch.long)
+
+
+def get_tiny_transducer(durations: list[int] | None = None) -> tuple[RNNTDecoder, RNNTJoint]:
+    """Random prediction and joint networks over TINY_VOCAB_SIZE labels; a TDT joint when `durations` are given."""
+    torch.manual_seed(0)
+    decoder = RNNTDecoder(prednet={'pred_hidden': 8, 'pred_rnn_layers': 1}, vocab_size=TINY_VOCAB_SIZE)
+    joint = RNNTJoint(
+        {'encoder_hidden': 8, 'pred_hidden': 8, 'joint_hidden': 8, 'activation': 'relu'},
+        TINY_VOCAB_SIZE,
+        num_extra_outputs=len(durations) if durations else 0,
+    )
+    decoder.freeze()
+    joint.freeze()
+    return decoder, joint
+
+
+def decode_tiny_transducer(
+    durations: list[int] | None, device: torch.device, cuda_graphs_mode: str | None, **beam_kwargs
+) -> list[rnnt_utils.Hypothesis]:
+    """Best malsd_batch hypotheses (scores not normalized) of the tiny transducer on fixed random encoder output."""
+    if cuda_graphs_mode == "full_graph":
+        skip_cuda_python_test_if_cuda_graphs_conditional_nodes_not_supported()
+    decoder, joint = (module.to(device) for module in get_tiny_transducer(durations))
+    generator = torch.Generator().manual_seed(1)
+    encoder_output = torch.randn(len(TINY_ENCODED_LENGTHS), 8, max(TINY_ENCODED_LENGTHS), generator=generator)
+    beam_kwargs = dict(
+        blank_index=TINY_VOCAB_SIZE,
+        beam_size=4,
+        search_type="malsd_batch",
+        max_symbols_per_step=TINY_MAX_SYMBOLS,
+        score_norm=False,
+        allow_cuda_graphs=cuda_graphs_mode is not None,
+        **beam_kwargs,
+    )
+    if durations:
+        decoding = BeamBatchedTDTInfer(decoder, joint, durations=durations, **beam_kwargs)
+    else:
+        decoding = BeamBatchedRNNTInfer(decoder, joint, **beam_kwargs)
+    if cuda_graphs_mode is not None:
+        decoding.decoding_computer.force_cuda_graphs_mode(mode=cuda_graphs_mode)
+    with torch.no_grad():
+        return decoding(
+            encoder_output=encoder_output.to(device),
+            encoded_lengths=torch.tensor(TINY_ENCODED_LENGTHS, device=device),
+        )[0]
+
+
+def assert_same_hypotheses(actual: list[rnnt_utils.Hypothesis], expected: list[rnnt_utils.Hypothesis]):
+    assert [torch.as_tensor(hyp.y_sequence).tolist() for hyp in actual] == [
+        torch.as_tensor(hyp.y_sequence).tolist() for hyp in expected
+    ]
+    assert [hyp.score for hyp in actual] == pytest.approx([hyp.score for hyp in expected], abs=1e-4)
 
 
 class TestRNNTDecoding:
@@ -743,6 +826,110 @@ class TestTransducerCudaGraphBeamDecoding:
 
             with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=True):
                 model.transcribe(test_audio_filenames, batch_size=batch_size, num_workers=None)
+
+
+class TestTransducerBeamBeta:
+    """`beam_beta` in malsd_batch: a fixed score for every non-blank label, in each implementation."""
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("model_type", ["rnnt", "tdt"])
+    @pytest.mark.parametrize("device,cuda_graphs_mode", DEVICES_AND_CUDA_GRAPHS_MODES)
+    def test_beam_beta_scores_every_label(self, model_type, device, cuda_graphs_mode):
+        """Without fusion models, `beam_beta` searches as a late-pruned fusion model scoring every label `beam_beta`."""
+        durations = TINY_DURATIONS[model_type]
+        beam_beta = 0.7
+
+        with_beam_beta = decode_tiny_transducer(durations, device, cuda_graphs_mode, beam_beta=beam_beta)
+        constant_label_score = decode_tiny_transducer(
+            durations,
+            device,
+            cuda_graphs_mode,
+            fusion_models=[LabelScoresFusionModel(torch.full([TINY_VOCAB_SIZE], beam_beta))],
+            fusion_models_alpha=[1.0],
+            pruning_mode="late",
+            blank_lm_score_mode="no_score",
+        )
+        without_beam_beta = decode_tiny_transducer(durations, device, cuda_graphs_mode)
+
+        assert_same_hypotheses(with_beam_beta, constant_label_score)
+        assert [hyp.score for hyp in with_beam_beta] != pytest.approx([hyp.score for hyp in without_beam_beta])
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("model_type", ["rnnt", "tdt"])
+    @pytest.mark.parametrize("device,cuda_graphs_mode", DEVICES_AND_CUDA_GRAPHS_MODES)
+    @pytest.mark.parametrize("pruning_mode", ["early", "late"])
+    @pytest.mark.parametrize("blank_lm_score_mode", ["no_score", "lm_weighted_full"])
+    def test_beam_beta_with_fusion_models(
+        self, model_type, device, cuda_graphs_mode, pruning_mode, blank_lm_score_mode
+    ):
+        """With a fusion model of weight alpha, `beam_beta` is the same as raising its label scores by beam_beta / alpha."""
+        durations = TINY_DURATIONS[model_type]
+        alpha, beam_beta = 0.5, 0.7
+        lm_scores = torch.log_softmax(torch.randn(TINY_VOCAB_SIZE, generator=torch.Generator().manual_seed(2)), -1)
+        fusion = dict(fusion_models_alpha=[alpha], pruning_mode=pruning_mode, blank_lm_score_mode=blank_lm_score_mode)
+
+        with_beam_beta = decode_tiny_transducer(
+            durations,
+            device,
+            cuda_graphs_mode,
+            fusion_models=[LabelScoresFusionModel(lm_scores)],
+            beam_beta=beam_beta,
+            **fusion,
+        )
+        raised_lm_scores = decode_tiny_transducer(
+            durations,
+            device,
+            cuda_graphs_mode,
+            fusion_models=[LabelScoresFusionModel(lm_scores + beam_beta / alpha)],
+            **fusion,
+        )
+
+        assert_same_hypotheses(with_beam_beta, raised_lm_scores)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("model_type", ["rnnt", "tdt"])
+    @pytest.mark.parametrize("device,cuda_graphs_mode", DEVICES_AND_CUDA_GRAPHS_MODES)
+    def test_large_beam_beta_sets_hypothesis_length(self, model_type, device, cuda_graphs_mode):
+        """A large negative `beam_beta` leaves only blanks; a large positive one emits a label wherever one is allowed."""
+        durations = [0, 1] if model_type == "tdt" else None
+
+        no_labels = decode_tiny_transducer(durations, device, cuda_graphs_mode, beam_beta=-1e3)
+        all_labels = decode_tiny_transducer(durations, device, cuda_graphs_mode, beam_beta=1e3)
+
+        assert [len(hyp.y_sequence) for hyp in no_labels] == [0] * len(TINY_ENCODED_LENGTHS)
+        for hyp, frames in zip(all_labels, TINY_ENCODED_LENGTHS):
+            if model_type == "rnnt":
+                # max_symbols labels on every frame, each followed by the forced blank
+                assert len(hyp.y_sequence) == frames * TINY_MAX_SYMBOLS
+            else:
+                # a label on every frame (none skips one), and at most max_symbols per frame
+                assert frames <= len(hyp.y_sequence) <= frames * TINY_MAX_SYMBOLS
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("model_type", ["rnnt", "tdt"])
+    def test_beam_beta_from_decoding_config(self, model_type):
+        durations = TINY_DURATIONS[model_type]
+        decoder, joint = get_tiny_transducer(durations)
+        vocabulary = list("abcd")[:TINY_VOCAB_SIZE]
+        cfg = RNNTDecodingConfig(strategy="malsd_batch", model_type=model_type, durations=durations or [])
+        cfg.beam.beam_beta = 0.7
+
+        decoding = RNNTDecoding(decoding_cfg=cfg, decoder=decoder, joint=joint, vocabulary=vocabulary)
+        assert decoding.decoding.decoding_computer.beam_beta == 0.7
+
+        # greedy decoding does not use the beam settings
+        cfg.strategy = "greedy_batch"
+        RNNTDecoding(decoding_cfg=cfg, decoder=decoder, joint=joint, vocabulary=vocabulary)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("strategy", ["beam", "maes", "maes_batch"])
+    def test_beam_beta_unsupported_strategy(self, strategy):
+        decoder, joint = get_tiny_transducer()
+        cfg = RNNTDecodingConfig(strategy=strategy)
+        cfg.beam.beam_beta = 0.7
+
+        with pytest.raises(NotImplementedError, match="beam_beta"):
+            RNNTDecoding(decoding_cfg=cfg, decoder=decoder, joint=joint, vocabulary=list("abcd")[:TINY_VOCAB_SIZE])
 
 
 class TestCTCDecoding:

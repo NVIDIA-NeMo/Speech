@@ -261,6 +261,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
         fusion_models_alpha: Optional[List[float]] = None,
         blank_lm_score_mode: Optional[str | BlankLMScoreMode] = None,
         pruning_mode: Optional[str | PruningMode] = None,
+        beam_beta: float = 0.0,
         allow_cuda_graphs: bool = False,
         enable_per_stream_biasing: bool = False,
         preserve_step_confidence: bool = False,
@@ -280,6 +281,8 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
             fusion_models_alpha: list of weights for the fusion models scores
             blank_lm_score_mode: mode for scoring blank symbol with fusion models
             pruning_mode: mode for pruning hypotheses with fusion models
+            beam_beta: score added for every non-blank label, so the hypothesis score is
+                acoustic_score + fusion_scores + beam_beta * seq_length; positive values counter deletions
             allow_cuda_graphs: whether to allow CUDA graphs
             enable_per_stream_biasing: whether to enable per-stream biasing via multi-boosting tree
             preserve_step_confidence: if step confidence should be preserved in beam hypotheses
@@ -310,6 +313,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
             )
         self._SOS = self._blank_index
         self.durations = durations
+        self.beam_beta = beam_beta
         self.allow_cuda_graphs = allow_cuda_graphs
 
         if self.preserve_alignments:
@@ -601,7 +605,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
                 )
             else:
                 log_probs_top_k, labels_top_k = torch.topk(
-                    log_probs, self.beam_size, dim=-1, largest=True, sorted=True
+                    self._add_beam_beta(log_probs), self.beam_size, dim=-1, largest=True, sorted=True
                 )
                 log_probs_top_k, labels_top_k, durations_top_k = self._attach_argmax_duration_to_token_topk(
                     log_probs_top_k, labels_top_k, duration_log_probs
@@ -795,6 +799,14 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
 
         return batched_hyps, decoding_state
 
+    def _add_beam_beta(self, log_probs: torch.Tensor) -> torch.Tensor:
+        """Returns `log_probs` with `beam_beta` added to every non-blank label; used when there are no fusion models."""
+        if not self.beam_beta:
+            return log_probs
+        scores = log_probs + self.beam_beta
+        scores[..., self._blank_index] = log_probs[..., self._blank_index]
+        return scores
+
     def _attach_argmax_duration_to_token_topk(
         self,
         log_probs_top_k: torch.Tensor,
@@ -816,6 +828,8 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """RNNT-style token top-k after fusion; duration is attached separately."""
         fusion_scores_sum = sum(fusion_scores_list)
+        if self.beam_beta:
+            fusion_scores_sum = fusion_scores_sum + self.beam_beta
 
         match self.pruning_mode, self.blank_lm_score_mode:
             case PruningMode.LATE, BlankLMScoreMode.NO_SCORE:
@@ -1293,7 +1307,9 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
                 multi_biasing_ids=self.state.multi_biasing_ids,
             )
         else:
-            log_probs_top_k, labels_top_k = torch.topk(log_probs, self.beam_size, dim=-1, largest=True, sorted=True)
+            log_probs_top_k, labels_top_k = torch.topk(
+                self._add_beam_beta(log_probs), self.beam_size, dim=-1, largest=True, sorted=True
+            )
             log_probs_top_k, labels_top_k, durations_top_k = self._attach_argmax_duration_to_token_topk(
                 log_probs_top_k, labels_top_k, duration_log_probs
             )

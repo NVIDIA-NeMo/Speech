@@ -386,6 +386,15 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             fusion_models = None
             fusion_models_alpha = None
 
+        beam_beta = 0.0
+        if strategy not in {TransducerDecodingStrategyType.GREEDY, TransducerDecodingStrategyType.GREEDY_BATCH}:
+            beam_beta = self.cfg.beam.get('beam_beta', 0.0) or 0.0
+            if beam_beta and strategy is not TransducerDecodingStrategyType.MALSD_BATCH:
+                raise NotImplementedError(
+                    f"Model {model_type} with strategy `{strategy}` does not support `beam_beta`. "
+                    f"Recommended beam decoding strategy with `beam_beta` is `malsd_batch`."
+                )
+
         match strategy, model_type:
             # greedy strategy
             case TransducerDecodingStrategyType.GREEDY, TransducerModelType.RNNT:
@@ -641,6 +650,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                     fusion_models_alpha=fusion_models_alpha,
                     blank_lm_score_mode=self.cfg.beam.get('blank_lm_score_mode', BlankLMScoreMode.LM_WEIGHTED_FULL),
                     pruning_mode=self.cfg.beam.get('pruning_mode', PruningMode.LATE),
+                    beam_beta=beam_beta,
                     score_norm=self.cfg.beam.get('score_norm', True),
                     allow_cuda_graphs=self.cfg.beam.get('allow_cuda_graphs', True),
                     return_best_hypothesis=self.cfg.beam.get('return_best_hypothesis', True),
@@ -662,6 +672,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                     fusion_models_alpha=fusion_models_alpha,
                     blank_lm_score_mode=self.cfg.beam.get('blank_lm_score_mode', BlankLMScoreMode.LM_WEIGHTED_FULL),
                     pruning_mode=self.cfg.beam.get('pruning_mode', PruningMode.LATE),
+                    beam_beta=beam_beta,
                     score_norm=self.cfg.beam.get('score_norm', True),
                     allow_cuda_graphs=self.cfg.beam.get('allow_cuda_graphs', True),
                     return_best_hypothesis=self.cfg.beam.get('return_best_hypothesis', True),

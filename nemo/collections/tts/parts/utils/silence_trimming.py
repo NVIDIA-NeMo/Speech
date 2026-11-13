@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Conservative CPU silence compression, without a VAD model or volume changes."""
+"""Conservative CPU silence compression with short fades at cut boundaries."""
 
 from dataclasses import dataclass, fields
 from typing import Mapping
@@ -16,6 +16,8 @@ class SilenceTrimConfig:
     The silence threshold is the minimum of the estimated background plus a margin,
     the speech reference minus a margin, and an absolute ceiling. Ambiguous, nearly
     stationary recordings and recordings without detected activity pass unchanged.
+    Linear fades at deletions are limited to retained quiet samples; fade_duration
+    is in seconds and zero disables fading without changing the deletion timeline.
     """
 
     max_internal_silence: float = 1.5
@@ -29,6 +31,7 @@ class SilenceTrimConfig:
     min_dynamic_range_db: float = 15.0
     speech_pad: float = 0.15
     min_removal: float = 0.1
+    fade_duration: float = 0.005
 
     def __post_init__(self):
         if any(
@@ -39,8 +42,17 @@ class SilenceTrimConfig:
             raise ValueError("noise_percentile must be in [0, 95)")
         if not 0 < self.hop_length <= self.frame_length:
             raise ValueError("Require 0 < hop_length <= frame_length")
-        if min(self.noise_margin_db, self.speech_margin_db, self.min_dynamic_range_db, self.min_removal) < 0:
-            raise ValueError("Energy margins and min_removal must be nonnegative")
+        if (
+            min(
+                self.noise_margin_db,
+                self.speech_margin_db,
+                self.min_dynamic_range_db,
+                self.min_removal,
+                self.fade_duration,
+            )
+            < 0
+        ):
+            raise ValueError("Energy margins, min_removal, and fade_duration must be nonnegative")
         if self.speech_pad < self.frame_length:
             raise ValueError("speech_pad must be at least frame_length")
         if self.max_edge_silence < self.speech_pad or self.max_internal_silence < 2 * self.speech_pad:
@@ -50,7 +62,7 @@ class SilenceTrimConfig:
 @dataclass
 class SilenceTrimResult:
     audio: np.ndarray
-    # Half-open sample ranges in the ORIGINAL waveform. No fades or speech samples are synthesized.
+    # Half-open sample ranges deleted from the ORIGINAL waveform; fades do not alter the timeline.
     removed: list[tuple[int, int]]
     silence: list[tuple[int, int]]
     threshold_db: float | None
@@ -78,7 +90,8 @@ def trim_long_silences(audio: np.ndarray, sample_rate: int, config: SilenceTrimC
 
     Only mono floating-point waveforms are accepted. Empty, nonfinite, all-quiet,
     or low-contrast signals pass unchanged: trimming must never empty a transcript's
-    recording. The original samples and dtype are preserved exactly.
+    recording. Speech samples and dtype are preserved exactly. Only retained quiet
+    samples next to deletions are faded; no overlap or extra deletion is introduced.
     """
     config = config or SilenceTrimConfig()
     if audio.ndim != 1 or not np.issubdtype(audio.dtype, np.floating) or sample_rate <= 0:
@@ -111,6 +124,8 @@ def trim_long_silences(audio: np.ndarray, sample_rate: int, config: SilenceTrimC
     edge = round(config.max_edge_silence * sample_rate)
     minimum = max(1, round(config.min_removal * sample_rate))
     removed = []
+    fades = []
+    fade_samples = round(config.fade_duration * sample_rate)
     for start, end in silence:
         if start == 0:
             a, b = 0, end - edge
@@ -120,6 +135,7 @@ def trim_long_silences(audio: np.ndarray, sample_rate: int, config: SilenceTrimC
             a, b = start + internal // 2, end - (internal - internal // 2)
         if b - a >= minimum:
             removed.append((a, b))
+            fades.append((min(fade_samples, a - start), min(fade_samples, end - b)))
     if not removed:
         return SilenceTrimResult(audio, [], silence, float(threshold), "within_limits")
     kept = []
@@ -128,4 +144,13 @@ def trim_long_silences(audio: np.ndarray, sample_rate: int, config: SilenceTrimC
         kept.append(audio[previous:start])
         previous = end
     kept.append(audio[previous:])
-    return SilenceTrimResult(np.concatenate(kept), removed, silence, float(threshold), "trimmed")
+    trimmed = np.concatenate(kept)
+    deleted = 0
+    for (start, end), (fade_out, fade_in) in zip(removed, fades):
+        boundary = start - deleted
+        if fade_out:
+            trimmed[boundary - fade_out : boundary] *= np.linspace(0, 1, fade_out, dtype=audio.dtype)[::-1]
+        if fade_in:
+            trimmed[boundary : boundary + fade_in] *= np.linspace(0, 1, fade_in, dtype=audio.dtype)
+        deleted += end - start
+    return SilenceTrimResult(trimmed, removed, silence, float(threshold), "trimmed")

@@ -74,6 +74,71 @@ def test_preserves_speech_and_caps_pauses(sr):
     assert result.audio.dtype == audio.dtype
 
 
+@pytest.mark.parametrize('sr', [8000, 16000, 22050, 24000, 44100, 48000])
+@pytest.mark.parametrize('dtype', [np.float32, np.float64])
+def test_fades_at_deletions_preserve_timeline_and_other_samples(sr, dtype):
+    # Nonzero background makes discontinuities at the hard cuts observable.
+    audio = waveform(sr).astype(dtype) + dtype(1e-5)
+    original = audio.copy()
+    result = trim_long_silences(audio, sr)
+    assert len(result.removed) == 3
+    expected = np.concatenate(np.split(audio, np.array(result.removed).ravel())[::2])
+    fade_samples = round(0.005 * sr)
+    unchanged = np.ones(len(expected), dtype=bool)
+    deleted = 0
+    for start, end in result.removed:
+        boundary = start - deleted
+        if start > 0:
+            expected[boundary - fade_samples : boundary] *= np.linspace(1, 0, fade_samples, dtype=dtype)
+            unchanged[boundary - fade_samples : boundary] = False
+            assert result.audio[boundary - 1] == 0
+        if end < len(audio):
+            expected[boundary : boundary + fade_samples] *= np.linspace(0, 1, fade_samples, dtype=dtype)
+            unchanged[boundary : boundary + fade_samples] = False
+            assert result.audio[boundary] == 0
+        assert result.map_time(start / sr, sr) == pytest.approx(boundary / sr)
+        assert result.map_time(end / sr, sr) == pytest.approx(boundary / sr)
+        deleted += end - start
+    np.testing.assert_allclose(
+        result.audio, expected, rtol=2 * np.finfo(dtype).eps, atol=2 * np.finfo(dtype).eps * 1e-5
+    )
+    np.testing.assert_array_equal(result.audio[unchanged], expected[unchanged])
+    np.testing.assert_array_equal(audio, original)
+    assert result.audio.dtype == dtype
+    assert len(result.audio) == len(audio) - deleted
+
+
+def test_fades_stay_inside_quiet_regions():
+    sr = 16000
+    audio = waveform(sr) + np.float32(1e-5)
+    result = trim_long_silences(audio, sr, SilenceTrimConfig(fade_duration=10.0))
+    for start, end in [(2 * sr, 3 * sr), (6 * sr, 7 * sr)]:
+        mapped = round(result.map_time(start / sr, sr) * sr)
+        np.testing.assert_array_equal(result.audio[mapped : mapped + end - start], audio[start:end])
+
+
+def test_single_sample_fades():
+    sr = 8000
+    audio = waveform(sr) + np.float32(1e-5)
+    result = trim_long_silences(audio, sr, SilenceTrimConfig(fade_duration=1 / sr))
+    deleted = 0
+    for start, end in result.removed:
+        boundary = start - deleted
+        if start > 0:
+            assert result.audio[boundary - 1] == 0
+        if end < len(audio):
+            assert result.audio[boundary] == 0
+        deleted += end - start
+
+
+def test_zero_fade_duration_preserves_hard_cuts():
+    sr = 16000
+    audio = waveform(sr) + np.float32(1e-5)
+    result = trim_long_silences(audio, sr, SilenceTrimConfig(fade_duration=0))
+    expected = np.concatenate(np.split(audio, np.array(result.removed).ravel())[::2])
+    np.testing.assert_array_equal(result.audio, expected)
+
+
 @pytest.mark.parametrize('kind', ['empty', 'zero', 'constant', 'nan', 'noise', 'short_pause'])
 def test_uncertain_or_short_signals_unchanged(kind):
     sr = 16000
@@ -130,6 +195,7 @@ def test_disabled(value):
         {'hop_length': 0},
         {'noise_percentile': 100},
         {'noise_margin_db': -1},
+        {'fade_duration': -0.001},
         {'max_threshold_db': float('nan')},
         {'max_internal_silence': True},
     ],

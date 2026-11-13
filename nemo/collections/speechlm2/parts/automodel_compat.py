@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 _HF_CONFIG_KWARGS = ("cache_dir", "revision", "token", "local_files_only", "subfolder")
 
 
-_MTP_KWARGS = ("num_nextn_predict_layers", "mtp_loss_scaling_factor", "mtp_use_repeated_layer")
+_AUX_MTP_KWARGS = ("mtp_loss_scaling_factor", "mtp_use_repeated_layer")
 
 
 def remove_automodel_backend_for_hf_fallback(
@@ -43,8 +43,10 @@ def remove_automodel_backend_for_hf_fallback(
         ``True`` when any kwarg was removed; otherwise ``False``.
     """
     mtp_disabled = kwargs.get("num_nextn_predict_layers", 1) == 0
-    mtp_requested = mtp_config_overrides is not None or (
-        not mtp_disabled and any(key in kwargs for key in _MTP_KWARGS)
+    mtp_requested = (
+        mtp_config_overrides is not None
+        or any(key in kwargs for key in _AUX_MTP_KWARGS)
+        or ("num_nextn_predict_layers" in kwargs and not mtp_disabled)
     )
     if "backend" not in kwargs and not mtp_disabled and not mtp_requested:
         return False

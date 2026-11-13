@@ -637,15 +637,17 @@ def test_load_pretrained_automodel_llm_hf_fallback_accepts_disabled_mtp(pretrain
     "mtp_kwargs",
     [
         {"num_nextn_predict_layers": 1},
+        {"num_nextn_predict_layers": 0, "mtp_loss_scaling_factor": 0.1},
         {"mtp_config_overrides": {"num_nextn_predict_layers": 1}},
     ],
 )
-def test_load_pretrained_automodel_llm_hf_fallback_rejects_mtp(mtp_kwargs):
+@pytest.mark.parametrize("pretrained_weights", [False, True])
+def test_load_pretrained_automodel_llm_hf_fallback_rejects_mtp(mtp_kwargs, pretrained_weights):
     pytest.importorskip("nemo_automodel")
 
     with pytest.raises(ValueError, match="does not support Multi-Token Prediction"):
         pretrained.load_pretrained_automodel_llm(
-            "hf-internal-testing/tiny-random-GPT2LMHeadModel", pretrained_weights=False, **mtp_kwargs
+            "hf-internal-testing/tiny-random-GPT2LMHeadModel", pretrained_weights=pretrained_weights, **mtp_kwargs
         )
 
 

@@ -29,6 +29,7 @@ from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
     IPABPETokenizer,
     resolve_versioned_tokenizer_defaults,
 )
+from nemo.collections.tts.data.silence_trimming import trim_tts_silence
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     _sample_probability_range,
     _select_text_for_tts_input,
@@ -250,6 +251,7 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         return num_audio_samples
 
     def __getitem__(self, cuts: CutSet) -> Dict[str, Union[torch.Tensor, List]]:
+        cuts = trim_tts_silence(cuts, self.load_cached_codes_if_available)
         # layze initialize tokenizers. The first time any specific worker
         # process calls this function, on its copy of the dataset, the
         # tokenizers are created for that worker. All subsequent calls

@@ -28,6 +28,7 @@ from omegaconf import DictConfig
 
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import IPABPETokenizer
 from nemo.collections.speechlm2.parts.precision import fp32_precision
+from nemo.collections.tts.data.silence_trimming import trim_tts_silence
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import setup_tokenizers
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     _sample_probability_range,
@@ -795,6 +796,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         return batch_dict
 
     def __getitem__(self, cuts: CutSet) -> Dict[str, Union[torch.Tensor, List]]:
+        cuts = trim_tts_silence(cuts, self.load_cached_codes_if_available)
         self._initialize_tokenizers()
         cuts, batch_tokenizer_names = self._prepare_cuts(cuts)
 

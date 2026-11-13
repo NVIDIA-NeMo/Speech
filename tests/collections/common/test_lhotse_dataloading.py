@@ -2161,6 +2161,59 @@ def test_dataloader_with_noise_nemo_tar(cutset_path: Path, nemo_tarred_manifest_
     assert -5.0 < cut.tracks[1].snr < 5.0
 
 
+@pytest.mark.unit
+def test_dataloader_with_noise_cut_ids_are_deterministic_across_resume(tmp_path: Path):
+    from lhotse.indexing import create_jsonl_index
+    from lhotse.testing.dummies import DummyManifest
+
+    cuts = DummyManifest(CutSet, begin_id=0, end_id=10, with_data=True)
+    for c in cuts:
+        c.features = None
+        c.custom = None
+        c.supervisions[0].custom = None
+    cuts_path = tmp_path / "cuts.jsonl"
+    cuts.save_audios(tmp_path / "audio").to_file(cuts_path)
+    create_jsonl_index(cuts_path)
+    config = OmegaConf.create(
+        {
+            "input_cfg": [{"type": "lhotse", "cuts_path": str(cuts_path)}],
+            "noise_path": str(cuts_path),
+            "noise_mix_prob": 1.0,
+            "noise_snr": [-5.0, 5.0],
+            "batch_size": 2,
+            "seed": 0,
+            "shard_seed": 0,
+            "force_finite": True,
+            "force_iterable_dataset": True,
+            "use_stateful_dataloader": True,
+            "indexed": True,
+        }
+    )
+
+    def make_dl():
+        return get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity())
+
+    def batch_ids(batch):
+        assert all(isinstance(c, MixedCut) for c in batch)
+        return [c.id for c in batch]
+
+    # Two fresh iterations yield identical mixed cut IDs.
+    ref = [batch_ids(b) for b in make_dl()]
+    assert len(ref) == 5
+    assert [batch_ids(b) for b in make_dl()] == ref
+
+    # Save state mid-epoch, then restore it into a fresh dataloader and finish the epoch:
+    # the mixed cut IDs must match the uninterrupted run.
+    dl = make_dl()
+    it = iter(dl)
+    first = [batch_ids(next(it)) for _ in range(2)]
+    state = dl.state_dict()
+    dl = make_dl()
+    dl.load_state_dict(state)
+    rest = [batch_ids(b) for b in dl]
+    assert first + rest == ref
+
+
 def test_dataloader_with_synth_rir(cutset_path: Path):
     from lhotse.augmentation import ReverbWithImpulseResponse
 

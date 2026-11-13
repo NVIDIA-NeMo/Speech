@@ -1801,7 +1801,8 @@ audio payload, configure:
 **On-the-fly augmentation.**
 
 * Speed/RIR — ``perturb_speed``, ``rir_enabled``, ``rir_path``, ``rir_prob``.
-* Noise — ``noise_path``, ``noise_snr``, ``noise_mix_prob``.
+* Noise — ``noise_path``, ``noise_snr``, ``noise_mix_prob``. A noisy cut keeps
+  its source cut's ID, so IDs stay the same after a resume.
 * Lowpass — ``lowpass_enabled``, ``lowpass_frequencies_interval``,
   ``lowpass_prob``.
 * Compression — ``compression_enabled``, ``compression_prob``,

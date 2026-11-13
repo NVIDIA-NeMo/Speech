@@ -917,12 +917,16 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
         noise = guess_parse_cutset(config.noise_path)
         # make sure the noise is resampled to the same sample rate as the audio cuts
         noise = noise.resample(config.sample_rate)
+        # preserve_id="left": a noisy cut keeps its source cut's ID. Otherwise Lhotse draws the ID from a
+        # process-global UUID stream that isn't part of the dataloader state, so IDs (and any per-cut seed
+        # derived from them) would differ between an uninterrupted run and a resumed one.
         cuts = cuts.mix(
             cuts=noise,
             snr=tuple(config.noise_snr),
             mix_prob=config.noise_mix_prob,
             seed=config.shard_seed,
             random_mix_offset=True,
+            preserve_id="left",
         )
 
     # 2.b. On-the-fly speed perturbation.

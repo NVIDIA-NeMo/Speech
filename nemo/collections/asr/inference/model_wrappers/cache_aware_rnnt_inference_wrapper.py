@@ -28,6 +28,7 @@ from nemo.collections.asr.models import EncDecHybridRNNTCTCModel, EncDecRNNTMode
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import ModifiedALSDBatchedRNNTComputer
 from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import export_batched_beam_hyps_to_cpu_lists
+from nemo.collections.asr.parts.utils.eou_utils import get_hypotheses_lengths
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 
 
@@ -189,8 +190,21 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
             prompt_vectors=prompt_vectors,
         )
 
+        prev_lengths = get_hypotheses_lengths(previous_hypotheses, batch_size=encoded.shape[0])
         best_hyp = self.asr_model.decoding.rnnt_decoder_predictions_tensor(
             encoded, encoded_len, return_hypotheses=True, partial_hypotheses=previous_hypotheses
+        )
+        # start a new utterance (decoder state and encoder cache) after <EOU>/<EOB> for ASR-EOU models
+        (
+            new_context.cache_last_channel,
+            new_context.cache_last_time,
+            new_context.cache_last_channel_len,
+        ) = self.asr_model.reset_streams_after_utterance_end(
+            hypotheses=best_hyp,
+            prev_lengths=prev_lengths,
+            cache_last_channel=new_context.cache_last_channel,
+            cache_last_time=new_context.cache_last_time,
+            cache_last_channel_len=new_context.cache_last_channel_len,
         )
         return best_hyp, new_context
 

@@ -1233,6 +1233,12 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 A stored block fixes the attention class, so a change of `self_attention_model` needs a new block here;
                 the new block replaces the stored one, and with `update_config` it must be a Hydra section,
                 since a class or partial has no config form.
+
+        The rebuilt layers take over the previous weights where the two state dicts allow it; any keys
+        `load_state_dict(..., strict=False)` could not match are logged as a warning. Some differences are
+        expected when the attention type changes (for example `linear_pos.weight` and `pos_bias_u/v` between
+        `abs_pos` and relative models), but `linear_{q,k,v,out}.bias` must never be missing — that would mean
+        the rebuild did not keep the checkpoint's `use_bias` setting.
         """
 
         if att_context_size:
@@ -1308,6 +1314,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         self.att_context_size = att_context_size
         self.set_max_audio_length(self.pos_emb_max_len)
 
+        missing_keys = set()
+        dropped_keys = set()
         for _, m in self.named_modules():
             if type(m) == ConformerLayer:
                 new_attn = build_self_attention(
@@ -1320,16 +1328,33 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                     use_bias=getattr(self._cfg, 'use_bias', True),
                     use_pytorch_sdpa=self.use_pytorch_sdpa,
                     use_pytorch_sdpa_backends=self.use_pytorch_sdpa_backends,
+                    global_tokens=self.global_tokens,
+                    global_tokens_spacing=self.global_tokens_spacing,
+                    global_attn_separate=self.global_attn_separate,
                     pos_enc=new_pos_enc,
                 )
                 if device is not None:
                     new_attn = new_attn.to(device=device)
-                new_attn.load_state_dict(m.self_attn.state_dict(), strict=False)
+                incompatible = new_attn.load_state_dict(m.self_attn.state_dict(), strict=False)
+                missing_keys.update(incompatible.missing_keys)
+                dropped_keys.update(incompatible.unexpected_keys)
                 del m.self_attn
                 m.self_attn = new_attn
                 m.self_attention_model = self_attention_model
         # later context-only changes rebuild from the block that is active now
         self._self_attn_block = self_attn
+
+        if missing_keys or dropped_keys:
+            logging.warning(
+                "change_attention_model rebuilt the self-attention layers and load_state_dict(strict=False) "
+                "reported state-dict differences: missing keys %s keep their initialisation instead of the "
+                "previous weights, unexpected keys %s were dropped. Some differences are expected when the "
+                "attention type changes (for example linear_pos.weight and pos_bias_u/v between 'abs_pos' and "
+                "relative models), but bias keys like linear_{q,k,v,out}.bias must never be missing - that "
+                "would mean the new layers do not match the checkpoint's use_bias setting.",
+                sorted(missing_keys),
+                sorted(dropped_keys),
+            )
 
         if update_config:
             with open_dict(self._cfg):

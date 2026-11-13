@@ -19,9 +19,7 @@ import torch
 
 
 class ExternalFeatureLoader(object):
-    """Feature loader that load external features store in certain format.
-    Currently support pickle, npy and npz format.
-    """
+    """Load numeric NumPy arrays and PyTorch tensors without object deserialization."""
 
     def __init__(
         self,
@@ -38,11 +36,14 @@ class ExternalFeatureLoader(object):
         """
 
         if file_path.endswith(".pt") or file_path.endswith(".pth"):
-            samples = torch.load(file_path, map_location="cpu").float().numpy()
+            samples = torch.load(file_path, map_location="cpu", weights_only=True).float().numpy()
             return samples
         else:
-            # load pickle/npy/npz file
-            samples = np.load(file_path, allow_pickle=True)
+            # A feature file stores one numeric array, not a pickled object or an archive.
+            samples = np.load(file_path, allow_pickle=False)
+            if isinstance(samples, np.lib.npyio.NpzFile):
+                samples.close()
+                raise ValueError("Expected a single NumPy array; save the features as a .npy file.")
             return self._convert_samples_to_float32(samples)
             # TODO load other type of files such as kaldi io ark
 

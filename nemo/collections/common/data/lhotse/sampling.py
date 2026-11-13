@@ -551,6 +551,29 @@ class DurationFilter:
             return True  # does not apply to text etc.
 
 
+class HighQualityFilter:
+    """Keep audio cuts with a literal boolean ``high_quality=True`` custom field.
+
+    Missing values, strings, integers, and false flags are rejected. Non-audio
+    examples pass through so that text sources can share the same loader.
+    Apply before augmentation: noise cuts do not carry speech quality labels.
+    """
+
+    def __call__(self, example) -> bool:
+        return not isinstance(example, Cut) or (example.custom or {}).get("high_quality") is True
+
+
+class NonEmptyTextFilter:
+    """Reject audio cuts with no supervision or missing/blank selected targets."""
+
+    def __call__(self, example) -> bool:
+        if not isinstance(example, Cut):
+            return True
+        return bool(example.supervisions) and all(
+            isinstance(s.text, str) and bool(s.text.strip()) for s in example.supervisions
+        )
+
+
 class ValidationStatusFilter:
     """
     Callable, returns ``True`` if a cut's validation status is equal to keep and ``False`` otherwise.

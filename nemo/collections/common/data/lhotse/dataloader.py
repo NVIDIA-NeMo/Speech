@@ -187,6 +187,12 @@ class LhotseDataLoadingConfig:
     # 2.4 Filters on validation status. If the validation status is not "pass", the cut will be filtered out.
     keep: str = "pass"
 
+    # Strict boolean metadata selection, applied before tokenization and augmentation.
+    # Missing flags are rejected when enabled. Source manifests are never rewritten.
+    keep_high_quality_only: bool = False
+    # Drop missing/blank supervision targets (e.g. when text_field="tn_raw").
+    skip_empty_text: bool = False
+
     # 3. Supported existing NeMo options.
     shuffle: bool = False
     sample_rate: int = 16000

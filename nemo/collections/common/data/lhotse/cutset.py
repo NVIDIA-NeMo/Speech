@@ -42,6 +42,7 @@ from nemo.collections.common.data.lhotse.nemo_adapters import (
     LazyParquetIterator,
     expand_sharded_filepaths,
 )
+from nemo.collections.common.data.lhotse.sampling import HighQualityFilter, NonEmptyTextFilter
 from nemo.collections.common.data.lhotse.text_adapters import (
     AudioTurn,
     LhotseTextAdapter,
@@ -152,6 +153,8 @@ def read_cutset_from_config(config: Union[DictConfig, dict]) -> Tuple[CutSet, bo
             cuts, is_tarred = read_nemo_manifest(config)
         else:
             cuts, is_tarred = read_lhotse_manifest(config)
+
+        cuts = _filter_cut_metadata(cuts, config)
 
     return cuts, is_tarred
 
@@ -282,6 +285,8 @@ def read_dataset_config(config) -> tuple[CutSet, bool]:
         "shuffle": config.get("shuffle", False),
         "shard_seed": config.get("shard_seed", "trng"),
         "text_field": config.get("text_field", "text"),
+        "keep_high_quality_only": config.get("keep_high_quality_only", False),
+        "skip_empty_text": config.get("skip_empty_text", False),
         "lang_field": config.get("lang_field", "lang"),
         "metadata_only": config.get("metadata_only", False),
         "force_finite": config.get("force_finite", False),
@@ -319,6 +324,8 @@ def parse_group(grp_cfg: DictConfig, propagate_attrs: dict) -> [CutSet, bool]:
     if grp_cfg.type != "group":
         parser_fn = get_parser_fn(grp_cfg.type)
         cuts, is_tarred = parser_fn(grp_cfg)
+        # Filter each source before weighted mixing and before any prompt/noise transforms.
+        cuts = _filter_cut_metadata(cuts, grp_cfg)
     else:
         cuts, is_tarred = parse_and_combine_datasets(
             grp_cfg.input_cfg,
@@ -788,6 +795,7 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                 indexed=indexed,
                 indexes_root=indexes_root,
             )
+            cuts = _filter_cut_metadata(cuts, config)
             if not metadata_only and not force_finite:
                 cuts = cuts.repeat(preserve_id=True)
         elif isinstance(config.shar_path, Sequence):
@@ -823,7 +831,7 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                         indexed=indexed,
                         indexes_root=indexes_root,
                     )
-                cutsets.append(cs)
+                cutsets.append(_filter_cut_metadata(cs, config))
                 weights.append(weight)
 
             cuts = mux(
@@ -849,6 +857,7 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                 indexed=indexed,
                 indexes_root=indexes_root,
             )
+            cuts = _filter_cut_metadata(cuts, config)
             if not metadata_only and not force_finite:
                 cuts = cuts.repeat(preserve_id=True)
         else:
@@ -1815,6 +1824,9 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                     **common_kwargs,
                 )
             )
+            # Filter a finite worker slice before repeating it. Filtering an
+            # infinite rejected-only slice never yields or reaches exhaustion.
+            cuts = _filter_cut_metadata(cuts, config)
             if not force_finite:
                 cuts = cuts.repeat(preserve_id=True)
         else:
@@ -1880,10 +1892,10 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
             #   to the one desired in spite of the limit.
             if config.get("max_open_streams") is not None:
                 for subiter in nemo_iter.to_shards():
-                    cutsets.append(CutSet(subiter))
+                    cutsets.append(_filter_cut_metadata(CutSet(subiter), config))
                     weights.append(weight)
             else:
-                cutsets.append(CutSet(nemo_iter))
+                cutsets.append(_filter_cut_metadata(CutSet(nemo_iter), config))
                 weights.append(weight)
         cuts = mux(
             *cutsets,
@@ -2109,3 +2121,12 @@ def read_nemo_tarred_to_duplex(config) -> tuple[CutSet, bool]:
     cuts = cuts.map(convert_fn)
 
     return cuts, is_tarred
+
+
+def _filter_cut_metadata(cuts: CutSet, config: DictConfig) -> CutSet:
+    """Select source metadata lazily without materializing a new manifest."""
+    if config.get("keep_high_quality_only", False):
+        cuts = cuts.filter(HighQualityFilter())
+    if config.get("skip_empty_text", False):
+        cuts = cuts.filter(NonEmptyTextFilter())
+    return cuts

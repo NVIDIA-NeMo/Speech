@@ -445,7 +445,7 @@ with 60 to 150 in vLLM).
 ```bash
 python vllm_task_eval.py --model /path/to/merged --task asr \
   --manifest manifests/dev.json manifests/test.json --out eval/dev.jsonl eval/test.jsonl \
-  --spec-k 2 --max-num-seqs 64 --gpu-memory-utilization 0.85
+  --max-num-seqs 64 --gpu-memory-utilization 0.85
 ```
 
 `--task` takes `asr`, `bleu`, `cls`, `squad`, `mer`, `pcc`, `eer`, or `multilabel`. Loading the engine once and

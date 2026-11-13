@@ -476,11 +476,14 @@ def merge_overlap_segment(segments: torch.Tensor) -> torch.Tensor:
         return segments
 
     segments = segments[segments[:, 0].sort()[1]]
-    merge_boundary = segments[:-1, 1] >= segments[1:, 0]
+    # A segment can reach past the ones that start after it, so compare each start
+    # with the furthest end seen so far rather than with the previous segment's end.
+    running_end = torch.cummax(segments[:, 1], dim=0)[0]
+    merge_boundary = running_end[:-1] >= segments[1:, 0]
     head_padded = torch.nn.functional.pad(merge_boundary, [1, 0], mode='constant', value=0.0)
     head = segments[~head_padded, 0]
     tail_padded = torch.nn.functional.pad(merge_boundary, [0, 1], mode='constant', value=0.0)
-    tail = segments[~tail_padded, 1]
+    tail = running_end[~tail_padded]
     merged = torch.stack((head, tail), dim=1)
     return merged
 

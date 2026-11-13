@@ -145,10 +145,8 @@ def load_pretrained_automodel_llm(
                     setattr(config, name, value)
                 except AttributeError as e:
                     raise AttributeError(
-                        f"Cannot set MTP config field '{name}' on {type(config).__name__} loaded from "
-                        f"'{model_path_or_name}' (trust_remote_code={trust_remote_code}). Some backbones (e.g. "
-                        "NemotronH) only expose a writable MTP config through the checkpoint's remote code; "
-                        "set model.trust_remote_code=true to enable MTP on such a backbone."
+                        f"Cannot set MTP config field '{name}' on {type(config).__name__}; "
+                        "set model.trust_remote_code=true to enable MTP on this backbone."
                     ) from e
         model = NeMoAutoModelForCausalLM.from_config(
             config,

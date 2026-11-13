@@ -133,6 +133,23 @@ def test_triton_subsampling_matches_pytorch(fp32_reference, factor, causal, ragg
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="Requires at least 2 CUDA devices")
+@pytest.mark.gpu
+def test_triton_subsampling_on_non_current_device(fp32_reference):
+    """The fused path works when the module is not on the current CUDA device"""
+    module = _build(device="cuda:1")
+    x, lengths = _inputs(device="cuda:1")
+    reference, reference_lengths, _ = _run(module, x, lengths, use_triton=False)
+    # make the context of device 0 current, as any operation on device 0 does
+    torch.cuda.synchronize(0)
+    fused, fused_lengths, _ = _run(module, x, lengths, use_triton=True)
+    assert torch.cuda.current_device() == 0
+    assert torch.equal(fused_lengths, reference_lengths)
+    torch.testing.assert_close(fused, reference, rtol=0, atol=FP32_PARITY_ATOL)
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
 @pytest.mark.parametrize(
     "factor, use_triton, eligible",
     [

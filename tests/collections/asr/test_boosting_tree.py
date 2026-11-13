@@ -608,6 +608,7 @@ class TestPerPhraseBoostingParams:
             assert total(scaled_tree, tokens) == pytest.approx(2.0 * total(baseline_tree, tokens))  # scales by alpha
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_per_phrase_params_none_matches_baseline(self, conformer_ctc_bpe_model):
         """key_phrase_items_list with all-default params builds the same graph as key_phrases_list."""
         phrases = ["abc", "abd", "c"]

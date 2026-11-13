@@ -97,6 +97,7 @@ class TestASRConfidenceBenchmark:
     @pytest.mark.integration
     @pytest.mark.with_downloads
     @pytest.mark.parametrize('model_name', ("ctc", "rnnt"))
+    @pytest.mark.gpu
     def test_deprecated_config_args(self, model_name, fast_conformer_ctc_model, fast_conformer_transducer_model):
         assert ConfidenceConfig().method_cfg.alpha == 0.33, "default `alpha` is supposed to be 0.33"
         model = fast_conformer_ctc_model if model_name == "ctc" else fast_conformer_transducer_model

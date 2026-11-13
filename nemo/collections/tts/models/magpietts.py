@@ -18,7 +18,6 @@ import os
 import random
 import re
 import time
-
 from dataclasses import dataclass, field, fields
 from functools import partial
 from pathlib import Path
@@ -33,6 +32,7 @@ from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 from omegaconf import DictConfig, ListConfig, OmegaConf, open_dict
 from torch import nn
+
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import (
     MagpieTTSLhotseDataset,
@@ -62,6 +62,7 @@ from nemo.collections.tts.modules.magpietts_modules import (
     remove_special_tokens,
     worker_init_fn,
 )
+from nemo.collections.tts.one_logger import TTSThroughputPolicy
 from nemo.collections.tts.parts.utils.helpers import (
     binarize_attention_parallel,
     get_mask_from_lengths,
@@ -75,6 +76,7 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
 )
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
+from nemo.lightning.speech_throughput import register_throughput_policy
 from nemo.utils import logging
 from nemo.utils.exceptions import NeMoBaseException
 
@@ -307,6 +309,7 @@ class ModelInferenceParameters:
         return cls(**filtered_data)
 
 
+@register_throughput_policy(TTSThroughputPolicy)
 class MagpieTTSModel(ModelPT):
     """
     Magpie-TTS Model Base Class used for training a TTS model that can generate audio codes from transcript and a context

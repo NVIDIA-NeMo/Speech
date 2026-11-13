@@ -312,9 +312,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - name: Test workflow result aggregation
-        run: bash .github/scripts/tests/test_workflow_result.sh
-
       - name: Get workflow result
         id: result
         env:

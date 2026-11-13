@@ -4597,7 +4597,6 @@ all = [
     { name = "nemo-text-processing", marker = "('aarch' not in platform_machine and 'arm' not in platform_machine and sys_platform != 'darwin') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
     { name = "nltk" },
     { name = "nv-one-logger-core" },
-    { name = "nv-one-logger-pytorch-lightning-integration" },
     { name = "nv-one-logger-training-telemetry" },
     { name = "omegaconf" },
     { name = "packaging" },
@@ -4629,7 +4628,6 @@ asr = [
     { name = "librosa" },
     { name = "lightning" },
     { name = "nv-one-logger-core" },
-    { name = "nv-one-logger-pytorch-lightning-integration" },
     { name = "nv-one-logger-training-telemetry" },
     { name = "omegaconf" },
     { name = "packaging" },
@@ -4666,7 +4664,6 @@ audio = [
     { name = "lightning" },
     { name = "matplotlib" },
     { name = "nv-one-logger-core" },
-    { name = "nv-one-logger-pytorch-lightning-integration" },
     { name = "nv-one-logger-training-telemetry" },
     { name = "omegaconf" },
     { name = "pandas" },
@@ -4687,7 +4684,6 @@ common = [
     { name = "hydra-core" },
     { name = "lightning" },
     { name = "nv-one-logger-core" },
-    { name = "nv-one-logger-pytorch-lightning-integration" },
     { name = "nv-one-logger-training-telemetry" },
     { name = "omegaconf" },
     { name = "pandas" },
@@ -4729,7 +4725,6 @@ core = [
     { name = "hydra-core" },
     { name = "lightning" },
     { name = "nv-one-logger-core" },
-    { name = "nv-one-logger-pytorch-lightning-integration" },
     { name = "nv-one-logger-training-telemetry" },
     { name = "omegaconf" },
     { name = "pytorch-lightning" },
@@ -4754,7 +4749,6 @@ lightning = [
     { name = "hydra-core" },
     { name = "lightning" },
     { name = "nv-one-logger-core" },
-    { name = "nv-one-logger-pytorch-lightning-integration" },
     { name = "nv-one-logger-training-telemetry" },
     { name = "omegaconf" },
     { name = "pytorch-lightning" },
@@ -4780,7 +4774,6 @@ speechlm2 = [
     { name = "nemo-text-processing", marker = "('aarch' not in platform_machine and 'arm' not in platform_machine and sys_platform != 'darwin') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
     { name = "nltk" },
     { name = "nv-one-logger-core" },
-    { name = "nv-one-logger-pytorch-lightning-integration" },
     { name = "nv-one-logger-training-telemetry" },
     { name = "omegaconf" },
     { name = "packaging" },
@@ -4820,7 +4813,6 @@ tts = [
     { name = "nemo-text-processing", marker = "'aarch' not in platform_machine and 'arm' not in platform_machine and sys_platform != 'darwin'" },
     { name = "nltk" },
     { name = "nv-one-logger-core" },
-    { name = "nv-one-logger-pytorch-lightning-integration" },
     { name = "nv-one-logger-training-telemetry" },
     { name = "omegaconf" },
     { name = "packaging" },
@@ -4992,14 +4984,6 @@ requires-dist = [
     { name = "nv-one-logger-core", marker = "extra == 'lightning'", specifier = ">=2.3.1" },
     { name = "nv-one-logger-core", marker = "extra == 'speechlm2'", specifier = ">=2.3.1" },
     { name = "nv-one-logger-core", marker = "extra == 'tts'", specifier = ">=2.3.1" },
-    { name = "nv-one-logger-pytorch-lightning-integration", marker = "extra == 'all'", specifier = ">=2.3.1" },
-    { name = "nv-one-logger-pytorch-lightning-integration", marker = "extra == 'asr'", specifier = ">=2.3.1" },
-    { name = "nv-one-logger-pytorch-lightning-integration", marker = "extra == 'audio'", specifier = ">=2.3.1" },
-    { name = "nv-one-logger-pytorch-lightning-integration", marker = "extra == 'common'", specifier = ">=2.3.1" },
-    { name = "nv-one-logger-pytorch-lightning-integration", marker = "extra == 'core'", specifier = ">=2.3.1" },
-    { name = "nv-one-logger-pytorch-lightning-integration", marker = "extra == 'lightning'", specifier = ">=2.3.1" },
-    { name = "nv-one-logger-pytorch-lightning-integration", marker = "extra == 'speechlm2'", specifier = ">=2.3.1" },
-    { name = "nv-one-logger-pytorch-lightning-integration", marker = "extra == 'tts'", specifier = ">=2.3.1" },
     { name = "nv-one-logger-training-telemetry", marker = "extra == 'all'", specifier = ">=2.3.1" },
     { name = "nv-one-logger-training-telemetry", marker = "extra == 'asr'", specifier = ">=2.3.1" },
     { name = "nv-one-logger-training-telemetry", marker = "extra == 'audio'", specifier = ">=2.3.1" },
@@ -5633,23 +5617,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/3b/37/963095797035f371e0db6ea761f5aaccb624fc786af217115b423baeb0e2/nv_one_logger_core-2.3.1.tar.gz", hash = "sha256:cbb2f87604c78b96a302f32d87199902129d76153a73a20f8455a250b3246c1d", size = 52640, upload-time = "2025-10-29T21:11:55.812Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ee/c4/ea91554c4fcbff66057f667690101d7a4b965605741350ac661b03fa6c46/nv_one_logger_core-2.3.1-py3-none-any.whl", hash = "sha256:0c8b77bcdac4daa1ea913bf8d4afd2a057bd5526e3654ac39f67caba157341a6", size = 63066, upload-time = "2025-10-29T21:11:52.753Z" },
-]
-
-[[package]]
-name = "nv-one-logger-pytorch-lightning-integration"
-version = "2.3.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "lightning" },
-    { name = "nv-one-logger-core" },
-    { name = "nv-one-logger-training-telemetry" },
-    { name = "setuptools", version = "80.10.2", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'linux' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-all' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-cu13' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2' and extra == 'extra-12-nemo-toolkit-vllm') or (extra == 'extra-12-nemo-toolkit-speechlm2-only' and extra == 'extra-12-nemo-toolkit-vllm')" },
-    { name = "setuptools", version = "81.0.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux' or extra == 'extra-12-nemo-toolkit-all' or extra == 'extra-12-nemo-toolkit-compiled' or extra == 'extra-12-nemo-toolkit-compiled-a100' or extra == 'extra-12-nemo-toolkit-cu12' or extra == 'extra-12-nemo-toolkit-cu13' or extra == 'extra-12-nemo-toolkit-speechlm2' or extra == 'extra-12-nemo-toolkit-speechlm2-only' or extra != 'extra-12-nemo-toolkit-vllm'" },
-    { name = "strenum" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/0c/d0/3475b7ab17d367362f650fb0419e8669f41e63c1018f4a8ac2fbecfd2e85/nv_one_logger_pytorch_lightning_integration-2.3.1.tar.gz", hash = "sha256:b32d99b6a8f02a16538bcade939b0a7edd7249e936aacefe336b5519447340c3", size = 10979, upload-time = "2025-10-29T21:22:10.464Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/f0/56/01a55efb365b6864646b4ac941a1d9de66f024e880764510ba5a7a63f62c/nv_one_logger_pytorch_lightning_integration-2.3.1-py3-none-any.whl", hash = "sha256:f92904055fb0082516480cc1e3dd0bb6cedb2b033985ebfd4814b9cbf7da2cb2", size = 9822, upload-time = "2025-10-29T21:22:09.37Z" },
 ]
 
 [[package]]

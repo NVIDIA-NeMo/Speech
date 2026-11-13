@@ -221,7 +221,7 @@ def _mock_automodel_loader(config):
             "sys.modules",
             {"nemo_automodel": SimpleNamespace(NeMoAutoModelForCausalLM=automodel)},
         ),
-        patch("nemo.collections.speechlm2.parts.automodel_compat.remove_automodel_kwargs_for_hf_fallback"),
+        patch("nemo.collections.speechlm2.parts.automodel_compat.remove_automodel_backend_for_hf_fallback"),
     )
 
 

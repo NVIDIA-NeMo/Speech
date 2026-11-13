@@ -61,7 +61,7 @@ def test_hf_fallback_drops_automodel_backend(monkeypatch):
     with pytest.raises(TypeError, match="unexpected keyword argument 'backend'"):
         Qwen3ForCausalLM(object(), **kwargs)
 
-    assert _COMPAT_MODULE.remove_automodel_kwargs_for_hf_fallback("Qwen/Qwen3-1.7B", kwargs) is True
+    assert _COMPAT_MODULE.remove_automodel_backend_for_hf_fallback("Qwen/Qwen3-1.7B", kwargs) is True
     assert "backend" not in kwargs
     Qwen3ForCausalLM(object(), **kwargs)
 
@@ -73,7 +73,7 @@ def test_native_automodel_preserves_backend(monkeypatch):
     kwargs = {"backend": backend}
 
     assert (
-        _COMPAT_MODULE.remove_automodel_kwargs_for_hf_fallback("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", kwargs)
+        _COMPAT_MODULE.remove_automodel_backend_for_hf_fallback("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", kwargs)
         is False
     )
     assert kwargs["backend"] is backend
@@ -86,7 +86,7 @@ def test_native_automodel_with_bnb_quantization_drops_backend(monkeypatch):
     quantization_config = object()
     kwargs = {"backend": backend, "quantization_config": quantization_config}
 
-    assert _COMPAT_MODULE.remove_automodel_kwargs_for_hf_fallback("native-model", kwargs) is True
+    assert _COMPAT_MODULE.remove_automodel_backend_for_hf_fallback("native-model", kwargs) is True
     assert "backend" not in kwargs
     assert kwargs["quantization_config"] is quantization_config
 
@@ -96,7 +96,7 @@ def test_hf_fallback_drops_disabled_mtp_depth(monkeypatch):
 
     kwargs = {"num_nextn_predict_layers": 0}
 
-    assert _COMPAT_MODULE.remove_automodel_kwargs_for_hf_fallback("hf-model", kwargs) is True
+    assert _COMPAT_MODULE.remove_automodel_backend_for_hf_fallback("hf-model", kwargs) is True
     assert kwargs == {}
 
 
@@ -112,7 +112,7 @@ def test_hf_fallback_rejects_mtp(monkeypatch, kwargs, mtp_config_overrides):
     _install_fake_model_selection(monkeypatch, is_hf_model=True)
 
     with pytest.raises(ValueError, match="does not support Multi-Token Prediction"):
-        _COMPAT_MODULE.remove_automodel_kwargs_for_hf_fallback(
+        _COMPAT_MODULE.remove_automodel_backend_for_hf_fallback(
             "hf-model", kwargs, mtp_config_overrides=mtp_config_overrides
         )
 
@@ -123,7 +123,7 @@ def test_native_automodel_preserves_mtp_depth(monkeypatch, depth):
 
     kwargs = {"num_nextn_predict_layers": depth}
 
-    assert _COMPAT_MODULE.remove_automodel_kwargs_for_hf_fallback("native-model", kwargs) is False
+    assert _COMPAT_MODULE.remove_automodel_backend_for_hf_fallback("native-model", kwargs) is False
     assert kwargs == {"num_nextn_predict_layers": depth}
 
 
@@ -140,7 +140,7 @@ def test_model_selection_failure_preserves_backend(monkeypatch, caplog):
     kwargs = {"backend": backend}
 
     with caplog.at_level(logging.WARNING):
-        assert _COMPAT_MODULE.remove_automodel_kwargs_for_hf_fallback("unavailable-model", kwargs) is False
+        assert _COMPAT_MODULE.remove_automodel_backend_for_hf_fallback("unavailable-model", kwargs) is False
 
     assert kwargs["backend"] is backend
     assert "Could not determine Automodel implementation" in caplog.text

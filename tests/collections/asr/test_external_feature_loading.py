@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 import json
+import pickle
 
 import numpy as np
 import pytest
@@ -18,7 +19,7 @@ def test_feature_dataset_rejects_object_array(tmp_path):
     manifest.write_text(json.dumps({'feature_file': str(features), 'duration': 1.0, 'label': '0'}) + '\n')
     dataset = FeatureToLabelDataset(manifest_filepath=str(manifest), labels=['0'])
     with pytest.raises(ValueError, match='Object arrays cannot be loaded'):
-        dataset[0]
+        _ = dataset[0]
 
 
 @pytest.mark.unit
@@ -49,3 +50,27 @@ def test_feature_loader_rejects_numpy_archive(tmp_path):
     np.savez(features, features=np.ones((3, 4)))
     with pytest.raises(ValueError, match='single NumPy array'):
         ExternalFeatureLoader().process(str(features))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('suffix', ['.pt', '.pth'])
+def test_feature_dataset_rejects_torch_object(tmp_path, suffix, monkeypatch):
+    features = tmp_path / f'features{suffix}'
+    torch.save(_TensorReducibleFeature(), features)
+    manifest = tmp_path / 'manifest.json'
+    manifest.write_text(json.dumps({'feature_file': str(features), 'duration': 1.0, 'label': '0'}) + '\n')
+    dataset = FeatureToLabelDataset(manifest_filepath=str(manifest), labels=['0'])
+    original_load = torch.load
+
+    def checked_load(*args, **kwargs):
+        assert kwargs.get('weights_only') is True
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(torch, 'load', checked_load)
+    with pytest.raises(pickle.UnpicklingError):
+        _ = dataset[0]
+
+
+class _TensorReducibleFeature:
+    def __reduce__(self):
+        return torch.tensor, ([[1.0] * 4] * 3,)

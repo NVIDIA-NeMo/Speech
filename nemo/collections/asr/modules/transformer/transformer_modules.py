@@ -270,7 +270,7 @@ class MultiHeadAttention(nn.Module):
         key = self.transpose_for_scores(key) / self.attn_scale
         value = self.transpose_for_scores(value)
         if self.rotary_pos_enc is not None:
-            # the rotation commutes with the scalar scaling above; the table grows with the key length
+            # the rotation commutes with the scalar scaling above; the table covers max_len and grows beyond it
             self.rotary_pos_enc.extend_pe(key.size(2), key.device, key.dtype)
             query, key = self.rotary_pos_enc(query, key)
 

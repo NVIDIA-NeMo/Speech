@@ -58,6 +58,28 @@ def _composed_decoder(**overrides):
     return TransformerDecoderNM(**options).eval()
 
 
+class TestRotaryDecoderBuffers:
+    @pytest.mark.unit
+    def test_buffers_have_one_shape_whatever_the_target_lengths(self):
+        """Two ranks of a distributed training see different target lengths; their buffers must still match.
+
+        DDP broadcasts the buffers of every module before the forward, and a buffer whose size depends on the
+        batch a rank has seen hangs the broadcast; the rotary tables are built for the module's maximum length.
+        """
+        torch.manual_seed(0)
+        ranks = [_composed_decoder(), _composed_decoder()]
+        encoder_states, encoder_mask = torch.randn(1, 6, 16), torch.ones(1, 6)
+        for decoder, length in zip(ranks, (5, 29)):
+            input_ids = torch.randint(0, 8, (1, length))
+            with torch.no_grad():
+                decoder.decoder(decoder.embedding(input_ids), torch.ones_like(input_ids), encoder_states, encoder_mask)
+        shapes = [[(name, tuple(buffer.shape)) for name, buffer in decoder.named_buffers()] for decoder in ranks]
+        assert shapes[0] == shapes[1]
+        rotary = [name for name, _ in shapes[0] if name.endswith(('.cos', '.sin'))]
+        assert len(rotary) == 2 * 2, rotary  # cos and sin of the two self-attention blocks
+        assert dict(shapes[0])[rotary[0]] == (5000, 8)  # the module's default max_len, the per-head rotary width
+
+
 class TestTransformerDecoderBlockComposition:
     @pytest.mark.unit
     def test_blocks_from_partials(self):

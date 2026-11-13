@@ -327,7 +327,7 @@ class TransformerDecoderNM(DecoderModule, Exportable):
     def _prepare_for_export(self, **kwargs):
         self._decoder.diagonal = None
         self.return_mems = True
-        # rotary tables grow with the key length in eager mode but are constants in the exported graph,
+        # rotary tables are constants in the exported graph and grow beyond their max_len in eager mode only,
         # so they cover every position the decoder supports before the example is traced
         sample = next(self.parameters())
         for module in self._decoder.modules():

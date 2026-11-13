@@ -67,16 +67,59 @@ class TestRotaryPositionalEncoding:
             RotaryPositionalEncoding(d_k=16, rotary_fraction=0.1875)
 
     @pytest.mark.unit
-    def test_extend_pe_grows_buffers(self):
+    def test_tables_cover_max_len_from_construction(self):
         pe = RotaryPositionalEncoding(d_k=16, max_len=128)
-        pe.extend_pe(64, device=torch.device('cpu'), dtype=torch.float32)
-        assert pe.cos.shape == (64, 16)
-        pe.extend_pe(128, device=torch.device('cpu'), dtype=torch.float32)
-        assert pe.cos.shape == (128, 16)
-        # No-op when buffer is already large enough.
+        assert pe.cos.shape == (128, 16) and pe.sin.shape == (128, 16)
+        assert pe.cos.dtype == torch.float32 and pe.sin.dtype == torch.float32
+        assert dict(pe.named_buffers()).keys() == {'inv_freq', 'cos', 'sin'}
+        # the same tables as a rebuild for these positions
+        positions = torch.arange(0, 128, dtype=torch.float32)
+        assert torch.equal(pe.cos, torch.cat([torch.outer(positions, pe.inv_freq)] * 2, dim=-1).cos())
+        q = torch.randn(1, 2, 128, 16)
+        q_rot, _ = pe(q, q)
+        assert q_rot.shape == q.shape
+
+    @pytest.mark.unit
+    def test_extend_pe_grows_buffers_beyond_max_len_only(self):
+        pe = RotaryPositionalEncoding(d_k=16, max_len=128)
+        # No-op up to max_len: the tables keep their size and their storage.
         prev = pe.cos.data_ptr()
         pe.extend_pe(64, device=torch.device('cpu'), dtype=torch.float32)
-        assert pe.cos.data_ptr() == prev
+        pe.extend_pe(128, device=torch.device('cpu'), dtype=torch.float32)
+        assert pe.cos.shape == (128, 16) and pe.cos.data_ptr() == prev
+        pe.extend_pe(200, device=torch.device('cpu'), dtype=torch.float32)
+        assert pe.cos.shape == (200, 16) and pe.sin.shape == (200, 16)
+
+    @pytest.mark.unit
+    def test_buffer_shapes_do_not_follow_the_inputs(self):
+        # two modules of one configuration that see different lengths hold tables of the same shape,
+        # the condition for the buffer broadcast of a distributed training
+        short, long = RotaryPositionalEncoding(d_k=16, max_len=64), RotaryPositionalEncoding(d_k=16, max_len=64)
+        short.extend_pe(7, device=torch.device('cpu'), dtype=torch.bfloat16)
+        long.extend_pe(31, device=torch.device('cpu'), dtype=torch.bfloat16)
+        short(torch.randn(2, 2, 7, 16), torch.randn(2, 2, 7, 16))
+        long(torch.randn(2, 2, 31, 16), torch.randn(2, 2, 31, 16))
+        assert [tuple(b.shape) for _, b in short.named_buffers()] == [tuple(b.shape) for _, b in long.named_buffers()]
+        assert [b.dtype for _, b in short.named_buffers()] == [b.dtype for _, b in long.named_buffers()]
+
+    @pytest.mark.run_only_on('GPU')
+    @pytest.mark.unit
+    def test_tables_follow_the_device_of_the_first_call(self):
+        # a module built under a CUDA default device keeps its parameters there but builds the tables on the CPU;
+        # the first extend_pe call moves them without changing their size, as a .to() of the module does
+        with torch.device('cuda'):
+            pe = RotaryPositionalEncoding(d_k=16, max_len=64)
+        assert pe.cos.device.type == 'cpu'
+        pe.extend_pe(8, device=torch.device('cuda'), dtype=torch.float32)
+        assert pe.cos.device.type == 'cuda' and pe.cos.shape == (64, 16)
+        q = torch.randn(1, 2, 8, 16, device='cuda')
+        q_rot, _ = pe(q, q)
+        assert q_rot.device.type == 'cuda'
+        moved = RotaryPositionalEncoding(d_k=16, max_len=64).to('cuda')
+        torch.testing.assert_close(moved.cos, pe.cos)
+        prev = moved.cos.data_ptr()
+        moved.extend_pe(32, device=q.device, dtype=torch.float32)
+        assert moved.cos.data_ptr() == prev
 
     @pytest.mark.unit
     def test_forward_first_token_is_identity(self):

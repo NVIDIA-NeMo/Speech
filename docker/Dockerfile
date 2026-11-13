@@ -69,21 +69,13 @@ apt-get clean
 EOF
 # NOTE: removed libsndfile1. Soundfile ships with its own version of libsndfile1
 
-# Use only the cuDNN wheel that PyTorch is built against. The base image also ships an apt cuDNN of a different
-# version. cuDNN dlopens optional sublibraries (e.g. libcudnn_engines_tensor_ir.so.9) that the wheel does not ship,
-# so the loader falls back to the system copy and mixes versions in one process, which fails with
-# CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH (observed on arm64). Compiled dependencies are pointed at the wheel too.
+# Keep only the cuDNN wheel PyTorch uses: the base image's apt cuDNN has a different version and gets mixed in
+# when cuDNN dlopens sublibraries the wheel lacks (CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH).
 RUN <<"EOF" bash -euxo pipefail
 cudnn_packages="$(dpkg-query -W -f='${db:Status-Status} ${Package}\n' 'libcudnn*' 2>/dev/null | awk '$1 == "installed" {print $2}')"
-if [[ -n "${cudnn_packages}" ]]; then
-    apt-get purge -y ${cudnn_packages}
-    apt-get clean
-fi
+[[ -z "${cudnn_packages}" ]] || apt-get purge -y ${cudnn_packages}
 ldconfig
-if ldconfig -p | grep -E 'libcudnn(_[a-z_]+)?\.so'; then
-    echo "A system cuDNN is still visible to the dynamic loader; it would conflict with the cuDNN wheel."
-    exit 1
-fi
+! ldconfig -p | grep libcudnn
 EOF
 
 RUN <<"EOF" bash -ex
@@ -204,9 +196,7 @@ fi
 export CPATH="${AUTOMODEL_CCCL_INCLUDES}${CPATH:+:${CPATH}}"
 export CPLUS_INCLUDE_PATH="${AUTOMODEL_CCCL_INCLUDES}${CPLUS_INCLUDE_PATH:+:${CPLUS_INCLUDE_PATH}}"
 export NVTE_FRAMEWORK=pytorch
-# The system cuDNN is removed in base-image; build against the cuDNN wheel used at runtime.
 export CUDNN_PATH="${VIRTUAL_ENV}/lib/python${UV_PYTHON}/site-packages/nvidia/cudnn"
-export CUDNN_HOME="${CUDNN_PATH}"
 export MAX_JOBS="${FLASH_ATTN_MAX_JOBS}"
 export NVCC_THREADS="${FLASH_ATTN_NVCC_THREADS}"
 SCRIPT

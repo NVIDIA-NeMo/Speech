@@ -1400,6 +1400,28 @@ def write_bundle(path, config, state=None):
         archive.addfile(weight_info, io.BytesIO(weight_bytes))
 
 
+def legacy_three_expert_bundle_config():
+    """Synthetic config in the obsolete pre-release three-expert PE bundle schema."""
+    return OmegaConf.create(
+        {
+            "target": "nemo.collections.asr.modules.parallel_expert_encoder.ParallelExpertEncoderPT",
+            "speech_expert_cfg": {"_target_": "nemo.collections.asr.modules.MoETransformerEncoder", "d_model": 32},
+            "speaker_expert_cfg": {"_target_": "nemo.collections.asr.modules.TransformerEncoder", "d_model": 16},
+            "sound_expert_cfg": {"_target_": "nemo.collections.asr.modules.TransformerEncoder", "d_model": 32},
+            "sortformer_modules_cfg": {
+                "_target_": "nemo.collections.asr.modules.sortformer_modules.SortformerModules",
+                "num_spks": 4,
+            },
+            "sound_ctc_head_cfg": {"_target_": "nemo.collections.asr.modules.ConvASRDecoder", "feat_in": 32},
+            "asr_normalize_type": "per_feature",
+            "freeze_speech": False,
+            "freeze_speaker": True,
+            "freeze_sound": True,
+            "nemo_version": "2.8.0rc0",
+        }
+    )
+
+
 @pytest.mark.unit
 def test_pe_encoder_builds_and_wires_both_real_encoders():
     enc = build_toy_pe_encoder()
@@ -2625,17 +2647,8 @@ def test_current_pee_loader_rejects_obsolete_three_expert_inline_schema():
         ParallelExpertEncoderPT as CurrentParallelExpertEncoderPT,
     )
 
-    config = OmegaConf.create(
-        {
-            "target": "nemo.collections.asr.modules.parallel_expert_encoder.ParallelExpertEncoderPT",
-            "speech_expert_cfg": {"_target_": "example.Speech"},
-            "speaker_expert_cfg": {"_target_": "example.Speaker"},
-            "sound_expert_cfg": {"_target_": "example.Sound"},
-            "sortformer_modules_cfg": {"_target_": "example.Sortformer"},
-        }
-    )
-    with pytest.raises(ValueError, match="missing required config sections"):
-        CurrentParallelExpertEncoderPT.from_inline_config(config)
+    with pytest.raises(ValueError, match="obsolete three-expert"):
+        CurrentParallelExpertEncoderPT.from_inline_config(legacy_three_expert_bundle_config())
 
 
 @pytest.mark.unit
@@ -2675,20 +2688,25 @@ def test_exported_inline_config_round_trips_consolidated_weights():
 
 
 @pytest.mark.unit
-def test_legacy_three_expert_bundle_is_rejected(tmp_path):
+def test_legacy_three_expert_bundle_is_rejected_with_actionable_error(tmp_path):
     archive = tmp_path / "legacy.nemo"
-    legacy = OmegaConf.create(
-        {
-            "target": "nemo.collections.asr.modules.parallel_expert_encoder.ParallelExpertEncoderPT",
-            "speech_expert_cfg": {"_target_": "legacy.Speech"},
-            "speaker_expert_cfg": {"_target_": "legacy.Speaker"},
-            "sound_expert_cfg": {"_target_": "legacy.Sound"},
-            "sortformer_modules_cfg": {"_target_": "legacy.Sortformer"},
-        }
+    write_bundle(archive, legacy_three_expert_bundle_config(), {"encoder.speech_expert.weight": torch.zeros(1)})
+    with pytest.raises(ValueError, match="obsolete three-expert") as error:
+        ParallelExpertEncoderPT.load_from_nemo(str(archive), map_location="cpu", strict=True)
+    message = str(error.value)
+    assert "sound_expert_cfg" in message
+    assert "2.8.0rc0" in message
+    assert "save_to_nemo" in message
+    assert "pe_encoder_config" in message
+
+
+@pytest.mark.unit
+def test_bundle_without_any_known_schema_reports_missing_sections():
+    config = OmegaConf.create(
+        {"target": "nemo.collections.asr.modules.parallel_expert_encoder.ParallelExpertEncoderPT"}
     )
-    write_bundle(archive, legacy)
     with pytest.raises(ValueError, match="missing required config sections"):
-        ParallelExpertEncoderPT.load_from_nemo(str(archive), strict=True)
+        ParallelExpertEncoderPT.from_inline_config(config)
 
 
 @pytest.mark.unit

@@ -460,6 +460,11 @@ Model Parameters
   base learning rate.
 - **pe_encoder_path**: Path to a standalone ParallelExpertEncoder ``.nemo`` bundle (or a pretrained model
   id) to mount as the perception encoder. Optional **pe_encoder_overrides** adjust the bundle's config.
+  The bundle's ``model_config.yaml`` must use the current schema with ``asr_encoder_cfg`` and
+  ``diarization_model_cfg`` sections, as written by ``ParallelExpertEncoderPT.save_to_nemo``. Bundles in the
+  obsolete three-expert schema (``speech_expert_cfg`` / ``speaker_expert_cfg`` / ``sound_expert_cfg``) cannot be
+  converted and are rejected; to use the encoder of a released SALM checkpoint, use ``pe_encoder_config`` with
+  ``init_from_checkpoint`` instead. No standalone bundles are currently published.
 - **pe_encoder_config**: Inline ParallelExpertEncoder config, as embedded in consolidated checkpoints.
   It constructs only the encoder architecture: the weights must come from the checkpoint loaded
   afterwards (e.g. via ``init_from_checkpoint``), otherwise the encoder keeps its random initialization.

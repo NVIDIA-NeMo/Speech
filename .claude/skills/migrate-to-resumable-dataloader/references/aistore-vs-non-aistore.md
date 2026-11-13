@@ -34,6 +34,9 @@ Index building:
 
 - The index builder reads remote tar files through AIStore byte-range capable
   paths and writes `.idx` sidecars to the configured index mirror.
+- Gzip JSONL needs `indexed_gzip`, a seekable source backend, and both `.idx`
+  and `.gzidx` in the mirror. Stage both when using loose indexes. Supported
+  gzip packs embed seek data but require local source files.
 - A successful index build proves byte-range access worked for the indexed
   source paths. It does not prove the batch endpoint will later serve every
   object successfully.

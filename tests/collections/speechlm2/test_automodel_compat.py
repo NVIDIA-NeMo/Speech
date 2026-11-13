@@ -91,6 +91,52 @@ def test_native_automodel_with_bnb_quantization_drops_backend(monkeypatch):
     assert kwargs["quantization_config"] is quantization_config
 
 
+def test_hf_fallback_drops_disabled_mtp_depth(monkeypatch):
+    _install_fake_model_selection(monkeypatch, is_hf_model=True)
+
+    kwargs = {"num_nextn_predict_layers": 0}
+
+    assert _COMPAT_MODULE.remove_automodel_backend_for_hf_fallback("hf-model", kwargs) is True
+    assert kwargs == {}
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "mtp_config_overrides"),
+    [
+        ({"num_nextn_predict_layers": 2}, None),
+        ({"mtp_loss_scaling_factor": 0.1}, None),
+        ({"num_nextn_predict_layers": 0, "mtp_loss_scaling_factor": 0.1}, None),
+        ({"num_nextn_predict_layers": 0, "mtp_use_repeated_layer": True}, None),
+        ({}, {"num_nextn_predict_layers": 1}),
+    ],
+)
+def test_hf_fallback_rejects_mtp(monkeypatch, kwargs, mtp_config_overrides):
+    _install_fake_model_selection(monkeypatch, is_hf_model=True)
+
+    with pytest.raises(ValueError, match="does not support Multi-Token Prediction"):
+        _COMPAT_MODULE.remove_automodel_backend_for_hf_fallback(
+            "hf-model", kwargs, mtp_config_overrides=mtp_config_overrides
+        )
+
+
+@pytest.mark.parametrize(
+    "mtp_kwargs",
+    [
+        {"num_nextn_predict_layers": 0},
+        {"num_nextn_predict_layers": 1},
+        {"num_nextn_predict_layers": 0, "mtp_loss_scaling_factor": 0.1},
+        {"num_nextn_predict_layers": 0, "mtp_use_repeated_layer": True},
+    ],
+)
+def test_native_automodel_preserves_mtp_kwargs(monkeypatch, mtp_kwargs):
+    _install_fake_model_selection(monkeypatch, is_hf_model=False)
+
+    kwargs = dict(mtp_kwargs)
+
+    assert _COMPAT_MODULE.remove_automodel_backend_for_hf_fallback("native-model", kwargs) is False
+    assert kwargs == mtp_kwargs
+
+
 def test_model_selection_failure_preserves_backend(monkeypatch, caplog):
     _install_fake_model_selection(monkeypatch, is_hf_model=True)
 

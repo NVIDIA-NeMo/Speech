@@ -21,23 +21,34 @@ logger = logging.getLogger(__name__)
 _HF_CONFIG_KWARGS = ("cache_dir", "revision", "token", "local_files_only", "subfolder")
 
 
+_AUX_MTP_KWARGS = ("mtp_loss_scaling_factor", "mtp_use_repeated_layer")
+
+
 def remove_automodel_backend_for_hf_fallback(
     model_path_or_name: str,
     kwargs: dict,
     *,
     trust_remote_code: bool = False,
+    mtp_config_overrides: dict | None = None,
 ) -> bool:
-    """Remove Automodel-only backend configuration before its Hugging Face fallback.
+    """Remove Automodel-only kwargs before its Hugging Face fallback.
 
-    Automodel consumes ``backend`` for native model implementations but
-    forwards it to Hugging Face model constructors on the fallback path. Those
-    constructors do not accept this Automodel-specific keyword. Resolve the same
-    native-vs-HF choice up front and remove only the incompatible fallback kwarg.
+    Automodel consumes ``backend`` and the MTP kwargs for native model
+    implementations but forwards them to Hugging Face model constructors on the
+    fallback path, which reject them. Resolve the same native-vs-HF choice up
+    front, remove ``backend`` and a disabled MTP depth
+    (``num_nextn_predict_layers=0``), and raise if MTP is requested.
 
     Returns:
-        ``True`` when ``backend`` was removed; otherwise ``False``.
+        ``True`` when any kwarg was removed; otherwise ``False``.
     """
-    if "backend" not in kwargs:
+    mtp_disabled = kwargs.get("num_nextn_predict_layers", 1) == 0
+    mtp_requested = (
+        mtp_config_overrides is not None
+        or any(key in kwargs for key in _AUX_MTP_KWARGS)
+        or ("num_nextn_predict_layers" in kwargs and not mtp_disabled)
+    )
+    if "backend" not in kwargs and not mtp_disabled and not mtp_requested:
         return False
 
     try:
@@ -58,13 +69,26 @@ def remove_automodel_backend_for_hf_fallback(
             force_hf=bool(kwargs.get("force_hf", False)),
         )
     except Exception as error:
-        logger.warning("Could not determine Automodel implementation; leaving backend unchanged: %s", error)
+        logger.warning("Could not determine Automodel implementation; leaving kwargs unchanged: %s", error)
         return False
 
     if not uses_hf_model:
         return False
 
-    # Automodel still forwards backend to HF constructors on this fallback path.
-    kwargs.pop("backend")
-    logger.warning("Ignoring Automodel backend configuration for Hugging Face fallback model %s", model_path_or_name)
-    return True
+    if mtp_requested:
+        raise ValueError(
+            f"Model {model_path_or_name} uses the Hugging Face fallback implementation in NeMo Automodel, which "
+            "does not support Multi-Token Prediction (MTP). Disable MTP or use an LLM with a native Automodel "
+            "implementation."
+        )
+    if mtp_disabled:
+        # HF fallback models never build an MTP head, so a zero depth is a no-op.
+        kwargs.pop("num_nextn_predict_layers")
+    if "backend" in kwargs:
+        # Automodel still forwards backend to HF constructors on this fallback path.
+        kwargs.pop("backend")
+        logger.warning(
+            "Ignoring Automodel backend configuration for Hugging Face fallback model %s", model_path_or_name
+        )
+        return True
+    return mtp_disabled

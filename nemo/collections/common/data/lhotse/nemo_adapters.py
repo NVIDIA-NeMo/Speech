@@ -196,6 +196,9 @@ class LazyNeMoIterator(IteratorNode):
 
             from lhotse.indexing import index_file_path
 
+            from nemo.collections.common.data.lhotse.indexed_adapters import require_prebuilt_indexes
+
+            require_prebuilt_indexes(paths, indexes_root)
             seed = resolve_seed(shard_seed) if shard_seed not in (None, "trng", "randomized") else 0
             indexed_sources = [
                 LazyIndexedManifestIterator(
@@ -685,7 +688,10 @@ class LazyNeMoTarredIterator(IteratorNode):
         """Build per-shard IndexedJsonlReaders + audio-tar index for indexed/random access."""
         from lhotse.indexing import IndexedJsonlReader, index_file_path
 
-        from nemo.collections.common.data.lhotse.indexed_adapters import IndexedTarMemberReader
+        from nemo.collections.common.data.lhotse.indexed_adapters import (
+            IndexedTarMemberReader,
+            require_prebuilt_indexes,
+        )
 
         if self.extra_fields:
             raise ValueError(
@@ -712,13 +718,19 @@ class LazyNeMoTarredIterator(IteratorNode):
         else:
             shard_id_to_manifest_path = self._shard_key_to_manifest_path
 
+        # Check every index up front so that the error lists all missing files at once.
+        required = list(dict.fromkeys(shard_id_to_manifest_path[sid] for sid in self._sorted_shard_ids))
+        if not self.use_ais_get_batch:
+            required += [self.shard_id_to_tar_path[sid] for sid in self._sorted_shard_ids]
+        require_prebuilt_indexes(required, self.indexes_root)
+
         cum = 0
         cum_lens = [0]
         for sid in self._sorted_shard_ids:
             jsonl_path = shard_id_to_manifest_path[sid]
             tar_path = self.shard_id_to_tar_path[sid]
             self._cuts_readers[sid] = IndexedJsonlReader(
-                jsonl_path, index_path=index_file_path(jsonl_path, self.indexes_root)
+                jsonl_path, index_path=index_file_path(jsonl_path, self.indexes_root), auto_create_index=False
             )
             if not self.use_ais_get_batch:
                 self._tar_readers[sid] = IndexedTarMemberReader(

@@ -14,11 +14,14 @@
 # limitations under the License.
 """Lhotse CutSet utilities and Parquet manifest support for NeMo."""
 
+import inspect
 import io
 import logging
 import random
 import re
 import warnings
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from functools import partial
 from itertools import repeat
@@ -36,6 +39,10 @@ from lhotse.serialization import load_yaml
 from lhotse.utils import fastcopy
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
+from nemo.collections.common.data.lhotse.indexed_adapters import (  # noqa: F401 (MissingIndexError re-export)
+    MissingIndexError,
+    require_prebuilt_indexes,
+)
 from nemo.collections.common.data.lhotse.nemo_adapters import (
     LazyNeMoIterator,
     LazyNeMoTarredIterator,
@@ -141,6 +148,18 @@ def read_cutset_from_config(config: Union[DictConfig, dict]) -> Tuple[CutSet, bo
     if not isinstance(config, DictConfig):
         config = DictConfig(config)
 
+    # The resumable dataloader restores indexed sources in O(1) and exactly (also under bucketing),
+    # so ``use_stateful_dataloader: true`` with ``indexed`` unset reads every source through its index.
+    # As with any indexed read, the indexes must be pre-built; a source type that can't be indexed is an error.
+    # An explicit ``indexed: false`` (top-level or per input_cfg entry) opts out.
+    if config.get("use_stateful_dataloader", False) and config.get("indexed") is None:
+        config.indexed = True
+        with _indexed_implied_by_stateful():
+            return _read_cutset_from_config(config)
+    return _read_cutset_from_config(config)
+
+
+def _read_cutset_from_config(config: DictConfig) -> Tuple[CutSet, bool]:
     if config.get("input_cfg") is not None:
         cuts, is_tarred = read_dataset_config(config)
     else:
@@ -152,6 +171,7 @@ def read_cutset_from_config(config: Union[DictConfig, dict]) -> Tuple[CutSet, bo
             cuts, is_tarred = read_nemo_manifest(config)
         else:
             cuts, is_tarred = read_lhotse_manifest(config)
+        _check_source_is_indexed(cuts, config)
 
     return cuts, is_tarred
 
@@ -319,6 +339,7 @@ def parse_group(grp_cfg: DictConfig, propagate_attrs: dict) -> [CutSet, bool]:
     if grp_cfg.type != "group":
         parser_fn = get_parser_fn(grp_cfg.type)
         cuts, is_tarred = parser_fn(grp_cfg)
+        _check_source_is_indexed(cuts, grp_cfg)
     else:
         cuts, is_tarred = parse_and_combine_datasets(
             grp_cfg.input_cfg,
@@ -705,7 +726,8 @@ def parse_and_combine_datasets(
                     )
                 item[k] = v
                 next_propagate_attrs[k] = v
-            elif k not in item:
+            elif k not in item or (k == "indexed" and item[k] is None):
+                # ``indexed: null`` on an entry means "unset": inherit, like an absent key.
                 item[k] = v
             else:
                 next_propagate_attrs[k] = item[k]
@@ -780,6 +802,8 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
         if config.get("cuts_path") is not None:
             warnings.warn("Note: lhotse.cuts_path will be ignored because lhotse.shar_path was provided.")
         if isinstance(config.shar_path, (str, Path)):
+            if indexed:
+                _require_prebuilt_shar_indexes(_resolve_shar_inputs(config.shar_path, metadata_only), indexes_root)
             cuts = CutSet.from_shar(
                 **_resolve_shar_inputs(config.shar_path, metadata_only),
                 shuffle_shards=True,
@@ -787,6 +811,7 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                 slice_length=config.get("slice_length", None),
                 indexed=indexed,
                 indexes_root=indexes_root,
+                **_shar_no_auto_index_kwargs(),
             )
             if not metadata_only and not force_finite:
                 cuts = cuts.repeat(preserve_id=True)
@@ -798,6 +823,8 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
             for item in config.shar_path:
                 if isinstance(item, (str, Path)):
                     path = item
+                    if indexed:
+                        _require_prebuilt_shar_indexes(_resolve_shar_inputs(path, metadata_only), indexes_root)
                     cs = CutSet.from_shar(
                         **_resolve_shar_inputs(path, metadata_only),
                         shuffle_shards=True,
@@ -805,6 +832,7 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                         slice_length=config.get("slice_length", None),
                         indexed=indexed,
                         indexes_root=indexes_root,
+                        **_shar_no_auto_index_kwargs(),
                     )
                     weight = len(cs)
                 else:
@@ -815,6 +843,8 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                         f"We got: '{item}'"
                     )
                     path, weight = item
+                    if indexed:
+                        _require_prebuilt_shar_indexes(_resolve_shar_inputs(path, metadata_only), indexes_root)
                     cs = CutSet.from_shar(
                         **_resolve_shar_inputs(path, metadata_only),
                         shuffle_shards=True,
@@ -822,6 +852,7 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                         slice_length=config.get("slice_length", None),
                         indexed=indexed,
                         indexes_root=indexes_root,
+                        **_shar_no_auto_index_kwargs(),
                     )
                 cutsets.append(cs)
                 weights.append(weight)
@@ -841,6 +872,8 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
             )
             if metadata_only:
                 fields = {"cuts": fields["cuts"]}
+            if indexed:
+                _require_prebuilt_shar_indexes({"fields": fields}, indexes_root)
             cuts = CutSet.from_shar(
                 fields=fields,
                 shuffle_shards=True,
@@ -848,6 +881,7 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                 slice_length=config.get("slice_length", None),
                 indexed=indexed,
                 indexes_root=indexes_root,
+                **_shar_no_auto_index_kwargs(),
             )
             if not metadata_only and not force_finite:
                 cuts = cuts.repeat(preserve_id=True)
@@ -864,6 +898,8 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
 
         indexes_root = config.get("indexes_root", None)
         from_file_kwargs = {"indexed": config.get("indexed", None)}
+        if from_file_kwargs["indexed"]:
+            require_prebuilt_indexes([path], indexes_root)
         if indexes_root is not None:
             from_file_kwargs["index_path"] = index_file_path(path, indexes_root)
         cuts = CutSet.from_file(path, **from_file_kwargs).map(partial(resolve_relative_paths, manifest_path=path))
@@ -2109,3 +2145,68 @@ def read_nemo_tarred_to_duplex(config) -> tuple[CutSet, bool]:
     cuts = cuts.map(convert_fn)
 
     return cuts, is_tarred
+
+
+# Set while reading a CutSet whose ``indexed`` was resolved to ``True`` by ``use_stateful_dataloader``.
+_INDEXED_IMPLIED_BY_STATEFUL: ContextVar[bool] = ContextVar("_INDEXED_IMPLIED_BY_STATEFUL", default=False)
+
+
+@contextmanager
+def _indexed_implied_by_stateful():
+    token = _INDEXED_IMPLIED_BY_STATEFUL.set(True)
+    try:
+        yield
+    finally:
+        _INDEXED_IMPLIED_BY_STATEFUL.reset(token)
+
+
+def _shar_no_auto_index_kwargs() -> dict:
+    """``{"auto_create_index": False}`` when the installed Lhotse's ``CutSet.from_shar`` accepts it, else ``{}``.
+
+    With that switch Lhotse itself refuses to build a missing Shar index, which also covers remote
+    (``s3://``, ``ais://``) Shar directories that ``_require_prebuilt_shar_indexes`` can't list. Detected by
+    signature rather than version so that older Lhotse releases (e.g. 2.0.0a6) keep working.
+    """
+    if "auto_create_index" in inspect.signature(CutSet.from_shar).parameters:
+        return {"auto_create_index": False}
+    return {}
+
+
+def _require_prebuilt_shar_indexes(shar_inputs: dict, indexes_root) -> None:
+    """Check the ``.idx`` files of the Shar shards that ``CutSet.from_shar(indexed=True)`` will open.
+
+    Lhotse's indexed Shar reader builds missing indexes when it opens them; NeMo requires them pre-built.
+    The shard files are enumerated the same way ``scripts/dataloading/build_indexes.py`` does (every
+    uncompressed ``.jsonl`` / ``.tar`` in a local Shar directory). Remote directories can't be listed here;
+    for those, ``_shar_no_auto_index_kwargs`` makes Lhotse raise instead, when the installed version supports it.
+    """
+    if (fields := shar_inputs.get("fields")) is not None:
+        files = [str(p) for paths in fields.values() for p in paths]
+    else:
+        in_dir = str(shar_inputs["in_dir"])
+        if "://" in in_dir or not Path(in_dir).is_dir():
+            return
+        files = [str(p) for p in sorted(Path(in_dir).iterdir()) if p.suffix in (".jsonl", ".tar")]
+    files = [f for f in files if f.endswith((".jsonl", ".tar"))]
+    require_prebuilt_indexes(files, indexes_root)
+
+
+def _check_source_is_indexed(cuts: CutSet, config: DictConfig) -> None:
+    """With ``indexed`` implied by ``use_stateful_dataloader``, reject a source that was read without an index."""
+    if not _INDEXED_IMPLIED_BY_STATEFUL.get() or not config.get("indexed", False) or cuts.is_indexed:
+        return
+    desc = config.get("type") or "manifest"
+    location = next(
+        (
+            config.get(k)
+            for k in ("manifest_filepath", "cuts_path", "shar_path", "paths", "source_paths", "data_dir")
+            if config.get(k) is not None
+        ),
+        None,
+    )
+    raise ValueError(
+        f"use_stateful_dataloader=True with 'indexed' unset reads every data source through its index, but the "
+        f"'{desc}' source ({location}) can't be read through an index; this data type only supports streaming. "
+        f"Set 'indexed: false' explicitly (top-level, or on this input_cfg entry) to stream it; resume then "
+        f"replays the data up to the checkpoint."
+    )

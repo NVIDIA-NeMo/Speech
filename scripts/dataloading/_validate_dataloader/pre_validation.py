@@ -151,7 +151,7 @@ def _check_stateful_on(cfg: DictConfig):
 
 
 def _check_indexed_implies_root(cfg: DictConfig):
-    indexed = cfg.get("indexed", False)
+    indexed = _effective_indexed(cfg)
     indexes_root = cfg.get("indexes_root", None)
     if not indexed:
         return SKIP, "train_ds.indexed != True; check not applicable", {}
@@ -238,7 +238,7 @@ def _check_constant_time_leaves(cfg: DictConfig):
     one that admits indexed mode, AND the indexed flag must propagate
     (top-level ``indexed: true`` OR per-leaf override)."""
     stateful = cfg.get("use_stateful_dataloader", False) is True
-    top_indexed = cfg.get("indexed", False) is True
+    top_indexed = _effective_indexed(cfg) is True
     non_indexable: list[dict] = []
     streaming: list[dict] = []
     for leaf in _iter_leaf_nodes(cfg):
@@ -246,7 +246,8 @@ def _check_constant_time_leaves(cfg: DictConfig):
         if typ in _STREAMING_ONLY_TYPES:
             non_indexable.append({"type": typ, "corpus": leaf.get("corpus")})
             continue
-        leaf_indexed = leaf.get("indexed", top_indexed) is True
+        leaf_value = leaf.get("indexed")
+        leaf_indexed = (top_indexed if leaf_value is None else leaf_value) is True
         if not leaf_indexed:
             streaming.append({"type": typ, "corpus": leaf.get("corpus")})
     severity_status = FAIL if stateful else WARN
@@ -306,7 +307,7 @@ def _check_mux_seed_not_randomized(cfg: DictConfig):
 
 
 def _check_slice_length_vs_indexed(cfg: DictConfig):
-    if not cfg.get("indexed", False):
+    if not _effective_indexed(cfg):
         return SKIP, "train_ds.indexed != True; check not applicable", {}
     offenders: list[dict] = []
     for leaf in _iter_leaf_nodes(cfg):
@@ -325,7 +326,7 @@ def _check_slice_length_vs_indexed(cfg: DictConfig):
 
 
 def _check_cut_map_fns_vs_indexed(cfg: DictConfig):
-    if not cfg.get("indexed", False):
+    if not _effective_indexed(cfg):
         return SKIP, "train_ds.indexed != True; check not applicable", {}
     offenders: list[dict] = []
     for leaf in _iter_leaf_nodes(cfg):
@@ -388,7 +389,7 @@ def _check_multi_config_flags(cfg: DictConfig):
         return SKIP, "multi_config != True; check not applicable", {}
     # Static structural check: at least one sub-config must carry the
     # indexed/indexes_root flags (or the top-level must have them so they propagate).
-    top_indexed = cfg.get("indexed")
+    top_indexed = _effective_indexed(cfg)
     top_root = cfg.get("indexes_root")
     if top_indexed is not None and top_root is not None:
         return PASS, "top-level indexed+indexes_root will propagate via overwriting_opts", {}
@@ -398,7 +399,8 @@ def _check_multi_config_flags(cfg: DictConfig):
     missing = [
         i
         for i, sc in enumerate(sub_cfgs)
-        if isinstance(sc, (dict, DictConfig)) and (sc.get("indexed") is None or sc.get("indexes_root") is None)
+        if isinstance(sc, (dict, DictConfig))
+        and ((sc.get("indexed") is None and top_indexed is None) or sc.get("indexes_root") is None)
     ]
     if missing:
         return (
@@ -520,6 +522,14 @@ _TRANSFORM_TYPES = frozenset(
         "group",
     }
 )
+
+
+def _effective_indexed(cfg: DictConfig) -> Optional[bool]:
+    """Top-level ``indexed`` as the dataloader resolves it: unset means ``True`` with the stateful dataloader."""
+    indexed = cfg.get("indexed")
+    if indexed is None and cfg.get("use_stateful_dataloader", False) is True:
+        return True
+    return indexed
 
 
 def _iter_leaf_nodes(cfg: DictConfig) -> Iterable[DictConfig]:

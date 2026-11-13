@@ -92,6 +92,49 @@ def wds_sample_key(member_name: str) -> str:
     return prefix if str(parent) == "." else str(parent / prefix)
 
 
+BUILD_INDEXES_COMMAND = "python scripts/dataloading/build_indexes.py <input_cfg>"
+
+
+class MissingIndexError(FileNotFoundError):
+    """An indexed data source has no pre-built ``.idx`` sidecar.
+
+    NeMo never builds indexes while setting up a dataloader: building them reads every data file and writes
+    sidecars next to the data, from every rank at once. Indexes are built ahead of time with
+    ``scripts/dataloading/build_indexes.py``.
+    """
+
+
+def require_prebuilt_indexes(data_paths, indexes_root: str | Path | None = None, idx_paths=None) -> None:
+    """Raise :class:`MissingIndexError` naming every data file in ``data_paths`` whose ``.idx`` doesn't exist.
+
+    The index location follows :func:`lhotse.indexing.index_file_path` (``<data>.idx``, or mirrored under
+    ``indexes_root``), unless ``idx_paths`` gives it explicitly for each data path.
+    """
+    from lhotse.indexing import index_exists, index_file_path
+
+    data_paths = [str(p) for p in data_paths]
+    if idx_paths is None:
+        idx_paths = [index_file_path(p, indexes_root) for p in data_paths]
+    missing = [(d, str(i)) for d, i in zip(data_paths, idx_paths) if not index_exists(d, i)]
+    if not missing:
+        return
+    shown = "\n".join(f"  {d} (expected index: {i})" for d, i in missing[:10])
+    more = f"\n  ... and {len(missing) - 10} more" if len(missing) > 10 else ""
+    raise MissingIndexError(
+        f"Indexed data loading requires pre-built index files, but {len(missing)} are missing:\n{shown}{more}\n"
+        f"NeMo doesn't build indexes when it sets up a dataloader. Build them with '{BUILD_INDEXES_COMMAND}' "
+        "(pass the same indexes_root you train with, if any), or set 'indexed: false' to stream this data."
+    )
+
+
+def open_indexed_jsonl(path: str | Path, indexes_root: str | Path | None = None):
+    """Open a :class:`lhotse.indexing.IndexedJsonlReader` over a pre-built index (see :class:`MissingIndexError`)."""
+    from lhotse.indexing import IndexedJsonlReader, index_file_path
+
+    require_prebuilt_indexes([path], indexes_root)
+    return IndexedJsonlReader(path, index_path=index_file_path(path, indexes_root), auto_create_index=False)
+
+
 def wds_v2_index_path(data_path: str | Path, indexes_root: str | Path | None = None) -> Path:
     """Return the local mirrored ``.wds-v2.idx`` path for ``data_path``."""
     from lhotse.indexing import index_file_path
@@ -471,6 +514,7 @@ class IndexedTarSampleReader:
 
     def __init__(self, tar_path: str | Path, idx_path: str | Path | None = None):
         self.data_path = str(tar_path)
+        require_prebuilt_indexes([self.data_path], idx_paths=[str(idx_path) if idx_path else self.data_path + ".idx"])
         self.offsets, self._len = _load_index(self.data_path, str(idx_path) if idx_path else None)
         self._data_size = int(self.offsets[-1])
         self._validate_index()
@@ -677,13 +721,18 @@ class IndexedTarMemberReader:
         self,
         tar_path: str | Path,
         idx_path: str | Path | None = None,
-        auto_create_index: bool = True,
+        auto_create_index: bool = False,
         sentinel_size_override: int | None = None,
     ):
         self.data_path = str(tar_path)
+        self._fh = None
         resolved_idx = str(idx_path) if idx_path else self.data_path + ".idx"
-        if auto_create_index and not os.path.exists(resolved_idx):
-            create_tar_index(self.data_path, resolved_idx)
+        if auto_create_index:
+            # Opt-in for offline tools only; dataloaders require pre-built indexes.
+            if not os.path.exists(resolved_idx):
+                create_tar_index(self.data_path, resolved_idx)
+        else:
+            require_prebuilt_indexes([self.data_path], idx_paths=[resolved_idx])
         self.offsets, self._len = _load_index(
             self.data_path,
             resolved_idx,

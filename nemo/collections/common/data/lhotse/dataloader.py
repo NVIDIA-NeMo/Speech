@@ -17,7 +17,7 @@ import random
 import warnings
 from copy import deepcopy
 from dataclasses import dataclass
-from functools import partial
+from functools import lru_cache, partial
 from typing import Any, List, Optional, Sequence, Tuple, Union
 
 import lhotse
@@ -389,8 +389,6 @@ def _build_dataloader(
     the 2026-05-14 post-mortem).
     """
     if use_stateful_dataloader:
-        from torchdata.stateful_dataloader import StatefulDataLoader
-
         if dp_world_size is not None and dp_world_size > 1:
             return _PerRankStatefulDataLoader(
                 dp_rank=dp_rank if dp_rank is not None else 0,
@@ -398,7 +396,7 @@ def _build_dataloader(
                 dp_group=dp_group,
                 **kwargs,
             )
-        return StatefulDataLoader(**kwargs)
+        return _lhotse_stateful_dataloader_cls()(**kwargs)
     return torch.utils.data.DataLoader(**kwargs)
 
 
@@ -443,12 +441,10 @@ class _PerRankStatefulDataLoader:
         dp_group: Optional[Any] = None,
         **kwargs,
     ) -> None:
-        from torchdata.stateful_dataloader import StatefulDataLoader
-
         self._dp_rank = int(dp_rank)
         self._dp_world_size = int(dp_world_size)
         self._dp_group = dp_group
-        self._inner = StatefulDataLoader(**kwargs)
+        self._inner = _lhotse_stateful_dataloader_cls()(**kwargs)
 
     def state_dict(self) -> dict:
         local_state = self._inner.state_dict()
@@ -1465,3 +1461,38 @@ def _cut_text_into_windows(cut, num_tokens: int, tokenizer) -> list:
         )
         ans.append(new_cut)
     return ans
+
+
+def _lhotse_stateful_dataloader_cls() -> type:
+    """Return the ``StatefulDataLoader`` subclass used for Lhotse samplers (torchdata is imported lazily)."""
+    from torchdata.stateful_dataloader import StatefulDataLoader
+
+    return _make_lhotse_stateful_dataloader_cls(StatefulDataLoader)
+
+
+@lru_cache(maxsize=None)
+def _make_lhotse_stateful_dataloader_cls(base: type) -> type:
+    class LhotseStatefulDataLoader(base):
+        """``StatefulDataLoader`` that leaves a restored Lhotse sampler in a normal iterating state.
+
+        When torchdata restores a map-style loader, it loads the saved state into the index
+        sampler, calls ``iter()`` on it, and then loads the same state again into the sampler
+        iterator. A Lhotse ``CutSampler`` is its own iterator, so the second load re-arms the
+        deferred restore (``_needs_fast_forward``) of a sampler that is already positioned at the
+        checkpoint. In lhotse<=2.0.0a6 that flag is only consumed by the next ``iter()``. Until
+        then ``set_epoch()`` is ignored, so at the next epoch boundary the sampler rewinds to the
+        checkpoint instead of starting the new epoch, and the resumed run diverges from the
+        uninterrupted one.
+
+        Once the restored iterator exists, the restore has been applied, so we clear the pending
+        restore state with the public ``CutSampler.allow_iter_to_reset_state()``.
+        """
+
+        def __iter__(self):
+            restoring = self.next_iter_state is not None
+            iterator = super().__iter__()
+            if restoring and isinstance(self.sampler, CutSampler):
+                self.sampler.allow_iter_to_reset_state()
+            return iterator
+
+    return LhotseStatefulDataLoader

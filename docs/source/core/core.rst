@@ -842,8 +842,8 @@ To enable Nsys profiling, add the following options to the model config:
 .. code-block:: yaml
 
     nsys_profile: False
-        start_step: 10  # Global batch to start profiling
-        end_step: 10 # Global batch to end profiling
+        start_step: 10  # trainer.global_step (optimizer steps) to start profiling at
+        end_step: 10 # trainer.global_step (optimizer steps) to end profiling after
         ranks: [0] # Global rank IDs to profile
         gen_shape: False # Generate model and kernel details including input shapes
 
@@ -863,8 +863,8 @@ To enable CUDA memory profiling, add the following options to the model config:
 
     memory_profile:
         enabled: True
-        start_step: 10  # Global batch to start profiling
-        end_step: 10 # Global batch to end profiling
+        start_step: 10  # trainer.global_step (optimizer steps) to start profiling at
+        end_step: 10 # trainer.global_step (optimizer steps) to end profiling after
         rank: 0 # Global rank ID to profile
         output_path: None # Path to store the profile output file
 

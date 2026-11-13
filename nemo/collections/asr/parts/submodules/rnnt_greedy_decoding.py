@@ -28,7 +28,7 @@
 # limitations under the License.
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple, Union
+from typing import List, NamedTuple, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -2761,6 +2761,19 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
         return hypothesis
 
 
+class BatchedTDTOutput(NamedTuple):
+    """Padded tensors of a complete greedy TDT decode; only the first ``lengths[b]`` entries of row ``b`` are valid.
+
+    Timestamps and durations are in encoder frames, not seconds.
+    Padding is -1 for tokens and timestamps and zero for durations.
+    """
+
+    tokens: torch.Tensor
+    lengths: torch.Tensor
+    timestamps: torch.Tensor
+    durations: torch.Tensor
+
+
 class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
     """A batch level greedy TDT decoder.
 
@@ -2863,6 +2876,7 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
         self.include_duration = include_duration
         self.include_duration_confidence = include_duration_confidence
         self.exclude_blank_from_confidence = exclude_blank_from_confidence
+        self._tensor_stream = None  # the CUDA stream of decode_tensors, one per instance
 
         # Depending on availability of `blank_as_pad` support
         # switch between more efficient batch decoding technique
@@ -2937,6 +2951,69 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
         self.joint.train(joint_training_state)
 
         return (packed_result,)
+
+    def validate_tensor_inputs(self, encoder_output: torch.Tensor, encoded_lengths: torch.Tensor) -> None:
+        """Check the shapes, dtypes and lengths that :meth:`decode_tensors` accepts, before any transfer."""
+        if encoder_output.ndim != 3 or encoder_output.shape[0] < 1 or encoder_output.shape[2] < 1:
+            raise ValueError("Expected nonempty encoder output [batch, channels, time].")
+        if encoder_output.shape[1] != self.joint.enc.in_features:
+            raise ValueError("Encoder channels do not match the joint projection.")
+        if encoded_lengths.ndim != 1 or encoded_lengths.shape[0] != encoder_output.shape[0]:
+            raise ValueError("Expected one encoded length per batch item.")
+        if not encoder_output.is_floating_point() or encoded_lengths.dtype not in (torch.int32, torch.int64):
+            raise ValueError("Expected floating-point encoder output and integer lengths.")
+        if bool(((encoded_lengths < 0) | (encoded_lengths > encoder_output.shape[2])).any()):
+            raise ValueError("Encoded lengths must be between zero and the padded time dimension.")
+
+    @torch.inference_mode()
+    def decode_tensors(self, encoder_output: torch.Tensor, encoded_lengths: torch.Tensor) -> BatchedTDTOutput:
+        """Decode a complete batch into padded tensors, without ``Hypothesis`` objects.
+
+        This is the tensor interface for deployment: ``encoder_output`` is (batch, channels, time) on the CPU
+        or on the networks' device, ``encoded_lengths`` holds one frame count per utterance,
+        and the result is a :class:`BatchedTDTOutput` on the networks' device.
+        Dtype conversion and transfer happen once, before the loop.
+        Every call starts fresh utterances; zero-length utterances give empty transcripts,
+        and the output has at least one column, also for an all-empty batch.
+        Requires the label-looping decoder (a ``blank_as_pad`` prediction network) with ``include_duration``.
+        On CUDA, all calls of one instance must run on the same stream.
+        """
+        if self.decoding_computer is None or not self.include_duration:
+            raise ValueError("decode_tensors needs blank_as_pad=True and include_duration=True.")
+        self.validate_tensor_inputs(encoder_output, encoded_lengths)
+        parameter = next(self.joint.parameters())
+        device, dtype = parameter.device, parameter.dtype
+        if device.type == "cuda":
+            stream = torch.cuda.current_stream(device)
+            if self._tensor_stream is not None and stream != self._tensor_stream:
+                raise ValueError("Use a separate GreedyBatchedTDTInfer instance for each CUDA stream.")
+            self._tensor_stream = stream
+        encoder_output = encoder_output.to(device=device, dtype=dtype).transpose(1, 2)
+        encoded_lengths = encoded_lengths.to(device=device, dtype=torch.long)
+        multi_biasing_ids = None
+        if self.decoding_computer.per_stream_biasing_enabled:
+            multi_biasing_ids = torch.full([encoded_lengths.shape[0]], -1, dtype=torch.long, device=device)
+        decoder_training_state, joint_training_state = self.decoder.training, self.joint.training
+        self.decoder.eval()
+        self.joint.eval()
+        try:
+            with torch.autocast(device_type=device.type, enabled=False):
+                batched_hyps, _ = self.decoding_computer(
+                    x=encoder_output, out_len=encoded_lengths, multi_biasing_ids=multi_biasing_ids
+                )
+        finally:
+            self.decoder.train(decoder_training_state)
+            self.joint.train(joint_training_state)
+        batch = encoder_output.shape[0]
+        lengths = batched_hyps.current_lengths[:batch].clone()
+        width = max(1, int(lengths.max()))
+        mask = torch.arange(width, device=device)[None, :] < lengths[:, None]
+        return BatchedTDTOutput(
+            batched_hyps.transcript[:batch, :width].masked_fill(~mask, -1),
+            lengths,
+            batched_hyps.timestamps[:batch, :width].masked_fill(~mask, -1),
+            batched_hyps.token_durations[:batch, :width].masked_fill(~mask, 0),
+        )
 
     def _greedy_decode_masked(
         self,

@@ -6,6 +6,7 @@ import pytest
 from omegaconf import OmegaConf
 
 from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
+from nemo.utils.config_utils import resolve_model_config
 from tests.core.test_save_restore import MockModel
 
 
@@ -18,6 +19,8 @@ from tests.core.test_save_restore import MockModel
         '${${resolver}:MODEL_TEST_VALUE,unset}',
         '${oc.select:missing,${oc.env:MODEL_TEST_VALUE,unset}}',
         r'\${oc.env:MODEL_TEST_VALUE,unset}',
+        '\\' * 3 + '${oc.env:MODEL_TEST_VALUE,unset}',
+        '\\' * 7 + '${oc.env:MODEL_TEST_VALUE,unset}',
         '${sum:${prefix},${suffix}}',
     ],
 )
@@ -83,3 +86,23 @@ def model_archive(tmp_path):
     with tarfile.open(archive) as source:
         source.extractall(extracted, filter='data')
     return archive, extracted
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('escapes', [1, 3, 7])
+def test_model_config_helper_rejects_escaped_expressions(escapes):
+    config = OmegaConf.create({'metadata': '\\' * escapes + '${oc.env:MODEL_TEST_VALUE,unset}'})
+    with pytest.raises(ValueError, match='resolver'):
+        resolve_model_config(config)
+
+
+@pytest.mark.unit
+def test_model_config_helper_preserves_arithmetic_and_literal_paths():
+    config = OmegaConf.create(
+        {'width': 4, 'double': '${multiply:${width},2}', 'total': '${sum:4,2}', 'path': r'C:\models\checkpoint'}
+    )
+    result = resolve_model_config(config)
+    assert result.width == 4
+    assert result.double == 8
+    assert result.total == 6
+    assert result.path == config.path

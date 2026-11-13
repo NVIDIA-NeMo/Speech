@@ -25,14 +25,18 @@ from omegaconf.grammar_parser import parse
 from nemo.utils import logging
 
 
+def validate_model_config_resolvers(config: DictConfig) -> None:
+    """Check artifact resolver names without evaluating configuration references."""
+    _validate_model_config_interpolations(OmegaConf.to_container(config, resolve=False), resolved=False)
+
+
 def resolve_model_config(config: DictConfig) -> DictConfig:
     """Resolve artifact configuration using internal references and arithmetic only.
 
     Caller-authored training/override configs can use the application's resolver
     registry. Downloaded model configs must not read process-specific resources.
     """
-    unresolved = OmegaConf.to_container(config, resolve=False)
-    _validate_model_config_interpolations(unresolved, resolved=False)
+    validate_model_config_resolvers(config)
     resolved = OmegaConf.to_container(config, resolve=True)
     # A resolved string can itself form a new interpolation when copied into a
     # DictConfig. Reject it before model constructors perform further copies.
@@ -294,11 +298,11 @@ def _validate_model_config_interpolations(config, *, resolved):
         elif isinstance(value, list):
             pending.extend(value)
         elif isinstance(value, str) and '${' in value:
+            if resolved:
+                raise ValueError('Model configuration must not produce additional interpolations or resolvers.')
             nodes = [parse(value)]
             while nodes:
                 node = nodes.pop()
-                if resolved and isinstance(node, OmegaConfGrammarParser.InterpolationContext):
-                    raise ValueError('Model configuration must not produce additional interpolations or resolvers.')
                 if isinstance(node, OmegaConfGrammarParser.InterpolationResolverContext):
                     name = node.resolverName()
                     if name.interpolation() or name.getText() not in ('multiply', 'sum'):

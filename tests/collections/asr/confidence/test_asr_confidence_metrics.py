@@ -37,7 +37,7 @@ from nemo.collections.asr.parts.utils.confidence_metrics import (
 # set convenient name2metric mapping
 name2metric = {
     f.__name__: (f, ans)
-    for f, ans in zip((auc_roc, auc_pr, auc_nt, auc_yc, ece, nce), (0.833, 0.917, 0.833, 0.421, 0.232, 0.403))
+    for f, ans in zip((auc_roc, auc_pr, auc_nt, auc_yc, ece, nce), (0.833, 0.917, 0.833, 0.421, 0.274, 0.403))
 }
 # ece does not have a default value
 name2metric_all_correct = {
@@ -95,6 +95,34 @@ class TestConfidenceMetrics:
         assert np.allclose(
             np.array(yc_curve), np.array([0.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.167, 0.667, 0.667, 0.333, 0.0]), atol=TOL
         )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('score', [0.296, 0.704, 0.754, 0.0, 1.0])
+    def test_metric_ece_single_bin(self, score):
+        # all scores share one bin, so ECE is the gap between the accuracy and the score
+        y_true = [1, 1, 1, 0]
+        result, (_, ece_curve) = ece(y_true, [score] * 4, return_curve=True)
+
+        assert round(result, TOL_DEGREE) == round(abs(0.75 - score), TOL_DEGREE)
+        assert np.count_nonzero(ece_curve) <= 1
+
+    @pytest.mark.unit
+    def test_metric_ece_counts_every_score_once(self):
+        n_bins = 10
+        y_score = np.array([0.0, 0.12, 0.17, 0.29, 0.31, 0.5, 0.55, 0.68, 0.74, 1.0])
+        y_true = np.array([0, 0, 1, 0, 1, 1, 0, 1, 1, 1])
+        result, (thresholds, ece_curve) = ece(y_true, y_score, n_bins=n_bins, return_curve=True)
+
+        bins = np.clip(np.ceil(y_score * n_bins).astype(int) - 1, 0, n_bins - 1)
+        expected_curve = np.zeros(n_bins)
+        for m in range(n_bins):
+            in_bin = bins == m
+            if in_bin.any():
+                expected_curve[m] = in_bin.sum() * abs(y_true[in_bin].mean() - y_score[in_bin].mean())
+
+        assert np.allclose(np.array(thresholds), np.arange(n_bins) / n_bins + 0.5 / n_bins, atol=TOL)
+        assert np.allclose(np.array(ece_curve), expected_curve, atol=TOL)
+        assert math.isclose(result, expected_curve.sum() / len(y_score), abs_tol=TOL)
 
 
 class TestSaveConfidencePlot:

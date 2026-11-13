@@ -122,23 +122,9 @@ def test_bundle_requires_recognized_metadata(bundle, tmp_path):
         read_ctc_timestamp_config(path)
 
 
-def test_integer_buffer_keeps_its_dtype(tmp_path):
-    proto = torch.tensor([1, 2, 3], dtype=torch.uint8)
-    config = {
-        **_DECODER_CONFIGS['upsampled_transformer'],
-        'num_classes': 3,
-        'vocabulary': ['a', 'b', 'c'],
-    }
-    decoder = TransformerCTCDecoder(**config)
-    state = {'ctc_timestamp.decoder.' + name: value for name, value in decoder.state_dict().items()}
-    state['ctc_timestamp.tokenizer.model_proto'] = proto
-    metadata = {
-        'ctc_timestamp_format': CTC_TIMESTAMP_ARTIFACT_FORMAT,
-        'ctc_timestamp_decoder_config': json.dumps(config),
-        'ctc_timestamp_tokenizer_config': json.dumps({'legacy': False}),
-    }
-    path = tmp_path / 'model.safetensors'
-    save_file(state, path, metadata=metadata)
+@pytest.mark.parametrize('bundle', ['upsampled_transformer'], indirect=True)
+def test_integer_buffer_keeps_its_dtype(bundle):
+    path, _, _ = bundle
     ctc_config = read_ctc_timestamp_config(path)
     assert ctc_config['tensor_dtypes']['decoder.upsample_factor'] == 'int64'
     module = CTCTimestampCheckpoint(ctc_config)

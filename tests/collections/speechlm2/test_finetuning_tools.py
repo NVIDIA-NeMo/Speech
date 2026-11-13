@@ -196,7 +196,7 @@ def test_checkpoint_shapes_read_only_header(tmp_path):
 @pytest.mark.parametrize("model_shape,expected_status", [((2, 3), 0), ((3, 2), 1)])
 def test_checkpoint_coverage_compares_shapes(tmp_path, monkeypatch, capsys, model_shape, expected_status):
     # Import the real package before its models module is replaced by the fake below.
-    import nemo.collections.speechlm2.parts.ctc_timestamp_checkpoint  # noqa: F401
+    from nemo.collections.speechlm2.parts.ctc_timestamp_checkpoint import read_ctc_timestamp_config  # noqa: F401
 
     coverage = load("check_checkpoint_coverage")
     save_file(

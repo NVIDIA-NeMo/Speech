@@ -51,6 +51,7 @@ def parse_args():
 
 def main():
     args = parse_args()
+    from safetensors import safe_open
     from safetensors.torch import load_file, save_file
 
     src, dst = Path(args.src), Path(args.dst)
@@ -109,7 +110,9 @@ def main():
         f"tensors and {dropped_extra} adapter _extra_state entries"
     )
     # Header metadata describes bundled artifacts (e.g. a frozen CTC timestamp head); keep it.
-    save_file(base, str(dst / "model.safetensors"), metadata={**_header_metadata(src), "format": "pt"})
+    with safe_open(str(src / "model.safetensors"), framework="pt") as f:
+        metadata = f.metadata() or {}
+    save_file(base, str(dst / "model.safetensors"), metadata={**metadata, "format": "pt"})
 
     # The merged model has no adapters; leaving the block in would make a loader
     # that honours it apply the delta a second time.
@@ -121,13 +124,6 @@ def main():
     if (src / "llm_backbone").is_dir():
         shutil.copytree(src / "llm_backbone", dst / "llm_backbone", dirs_exist_ok=True)
     print(f"[merge] wrote {dst}")
-
-
-def _header_metadata(checkpoint: Path) -> dict:
-    from safetensors import safe_open
-
-    with safe_open(str(checkpoint / "model.safetensors"), framework="pt") as f:
-        return f.metadata() or {}
 
 
 if __name__ == "__main__":

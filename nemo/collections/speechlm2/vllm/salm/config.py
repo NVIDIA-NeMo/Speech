@@ -326,7 +326,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         self.encoder_chunk_size_seconds = encoder_chunk_size_seconds
 
         if llm_config is None:
-            self.text_config = AutoConfig.from_pretrained(pretrained_llm, trust_remote_code=True)
+            self.text_config = AutoConfig.from_pretrained(pretrained_llm, trust_remote_code=False)
         else:
             if not isinstance(llm_config, dict):
                 raise ValueError(f"NeMo SpeechLM llm_config must be a dict, got {type(llm_config).__name__}.")

@@ -197,6 +197,15 @@ Additional documentation on advanced features can be found in the repository:
 
 - `Frame Stacking Guide <https://github.com/NVIDIA-NeMo/Speech/blob/main/examples/tts/README_frame_stacking.md>`__: Detailed explanation of the two-stage decoding architecture
 
+Pretrained tokenizer and backend configuration
+----------------------------------------------
+
+Magpie-TTS and EasyMagpie-TTS load Hugging Face tokenizers and backend configs
+with ``trust_remote_code=False``. Use built-in Transformers implementations or
+register reviewed custom classes in your application before loading a model.
+A ``trust_remote_code`` value saved in a model config does not enable custom code
+for these components.
+
 References
 ##########
 

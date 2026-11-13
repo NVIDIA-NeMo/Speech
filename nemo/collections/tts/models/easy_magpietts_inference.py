@@ -496,7 +496,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             # Existing HuggingFace path
             self.transformer_backend_config = AutoConfig.from_pretrained(
                 cfg.transformer_hf_backend,
-                trust_remote_code=True,
+                trust_remote_code=False,
             )
 
             # This is set True during inference to save time on loading the model.

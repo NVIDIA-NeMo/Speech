@@ -66,7 +66,7 @@ def setup_tokenizers(all_tokenizers_config, mode='train', cfg_nemo_version=None)
     for tokenizer_name in all_tokenizers_config:
         tokenizer_config = all_tokenizers_config[tokenizer_name]
         if tokenizer_config._target_ == 'AutoTokenizer':
-            tokenizer = AutoTokenizer.from_pretrained(tokenizer_config.pretrained_model, trust_remote_code=True)
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer_config.pretrained_model, trust_remote_code=False)
         elif tokenizer_config._target_ == 'T5Tokenizer':
             tokenizer = T5Tokenizer.from_pretrained(tokenizer_config.pretrained_model)
         else:

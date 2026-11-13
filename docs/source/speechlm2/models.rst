@@ -492,3 +492,10 @@ Model Configuration
 All models in this collection use a configuration-based approach, where a YAML configuration file specifies the model architecture, components, and training parameters. See the :doc:`configurations documentation <configs>` for details on these configuration files.
 
 For information about scaling and training these models at scale, see the :doc:`training and scaling documentation <training_and_scaling>`.
+
+Backbone configuration loading
+------------------------------
+
+The vLLM SpeechLM configuration loader uses ``trust_remote_code=False`` when
+reading a backbone config. Use a built-in Transformers configuration, an embedded
+``llm_config``, or a reviewed custom class registered by the application.

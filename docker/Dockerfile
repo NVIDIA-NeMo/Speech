@@ -72,7 +72,7 @@ EOF
 # Keep only the cuDNN wheel PyTorch uses: the base image's apt cuDNN has a different version and gets mixed in
 # when cuDNN dlopens sublibraries the wheel lacks (CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH).
 RUN <<"EOF" bash -euxo pipefail
-cudnn_packages="$(dpkg-query -W -f='${db:Status-Status} ${Package}\n' 'libcudnn*' 2>/dev/null | awk '$1 == "installed" {print $2}')"
+cudnn_packages="$(dpkg-query -W -f='${db:Status-Status} ${Package}\n' | awk '$1 == "installed" && $2 ~ /^libcudnn/ {print $2}')"
 [[ -z "${cudnn_packages}" ]] || apt-get purge -y ${cudnn_packages}
 ldconfig
 ! ldconfig -p | grep libcudnn

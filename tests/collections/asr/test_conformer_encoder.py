@@ -484,6 +484,7 @@ class TestDefaultDeviceConstruction:
     """Parameters must follow the ambient default device, e.g. when a serving engine builds the model on GPU."""
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires a CUDA default device")
     @pytest.mark.parametrize("untie_biases", [False, True])
     def test_conformer_encoder_parameters_follow_default_device(self, untie_biases):

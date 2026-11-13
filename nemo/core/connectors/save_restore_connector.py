@@ -34,6 +34,7 @@ from omegaconf.omegaconf import open_dict
 from nemo.core import classes as nemo_classes  # to avoid circular import do not import ModelPT directly
 from nemo.utils import logging, model_utils
 from nemo.utils.app_state import AppState
+from nemo.utils.config_utils import resolve_model_config
 from nemo.utils.file_utils import robust_copy
 from nemo.utils.get_rank import is_global_rank_zero
 from nemo.utils.model_utils import inject_model_parallel_rank
@@ -180,6 +181,8 @@ class SaveRestoreConnector:
                     config_yaml = override_config_path
                 if not isinstance(config_yaml, (OmegaConf, DictConfig)):
                     conf = OmegaConf.load(config_yaml)
+                    if override_config_path is None:
+                        conf = resolve_model_config(conf)
                 else:
                     conf = config_yaml
                     if override_config_path is not None:

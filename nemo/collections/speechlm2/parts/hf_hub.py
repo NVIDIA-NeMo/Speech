@@ -22,6 +22,7 @@ from transformers.utils import cached_file
 
 from nemo.collections.speechlm2.vllm.salm.config import checkpoint_architecture
 from nemo.utils import logging
+from nemo.utils.config_utils import resolve_model_config
 
 SAFETENSORS_SINGLE_FILE = "model.safetensors"
 LLM_BACKBONE_DIR = "llm_backbone"
@@ -95,7 +96,7 @@ class HFHubMixin(
         resolved_config_file = cached_file(model_id, CONFIG_NAME, **_cached_file_kwargs)
         if resolved_config_file is None:
             raise RuntimeError(f"Missing {CONFIG_NAME} file for {model_id=}")
-        model_kwargs['cfg'] = OmegaConf.to_container(OmegaConf.load(resolved_config_file))
+        model_kwargs['cfg'] = OmegaConf.to_container(resolve_model_config(OmegaConf.load(resolved_config_file)))
         model_kwargs['cfg']['trust_remote_code'] = trust_remote_code
         if isinstance(model_kwargs['cfg'].get('model'), dict):
             model_kwargs['cfg']['model']['trust_remote_code'] = trust_remote_code

@@ -638,6 +638,14 @@ checkpoint to be restored. For these models, the user will have to override ``lo
 
 It's highly recommended to use ``restore_from`` to load NeMo models.
 
+Model-provided configurations are resolved before construction. They support
+internal configuration references and the ``multiply`` and ``sum`` resolvers;
+other resolvers, including ``oc.env``, are rejected. Resolution must not produce
+new interpolation expressions. This also applies to ``return_config=True`` and
+the SpeechLM Hugging Face loader. Keep environment-dependent settings in trusted
+application configuration, supplied through ``override_config_path`` for
+``.nemo`` restoration, rather than storing them in model artifacts.
+
 Bundled artifact references, including legacy file names, resolve within the extracted model directory.
 For intentional local artifact overrides supplied by the application, use a runtime connector option:
 

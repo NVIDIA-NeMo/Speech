@@ -230,3 +230,19 @@ def test_inject_local_artifact_paths_no_artifacts_keeps_old_config(tmp_path):
         "pretrained_llm": "remote-llm",
         "pretrained_weights": True,
     }
+
+
+@pytest.mark.unit
+def test_hub_config_rejects_external_resolvers_before_model_init(tmp_path, monkeypatch):
+    config = tmp_path / 'config.json'
+    config.write_text('model:\n  metadata: ${oc.env:MODEL_TEST_VALUE,unset}\n')
+    monkeypatch.setattr(hf_hub, 'cached_file', lambda *args, **kwargs: str(config))
+    with pytest.raises(ValueError, match='resolver'):
+        _DummyHubModel._from_pretrained(
+            model_id=str(tmp_path),
+            revision=None,
+            cache_dir=None,
+            force_download=False,
+            local_files_only=True,
+            token=None,
+        )

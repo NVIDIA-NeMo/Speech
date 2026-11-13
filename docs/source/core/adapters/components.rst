@@ -86,6 +86,11 @@ We discuss a simple residual additional connection strategy below - that accepts
 -----
 
 
+
+Adapter ``_target_`` values follow the same approved-target policy as other model
+components. The target is validated before its class is imported, then checked
+against the adapter types supported by the receiving module.
+
 References
 ----------
 

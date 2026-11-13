@@ -17,6 +17,7 @@ import pytest
 import torch
 
 from nemo.core import NeuralModule
+from nemo.core.classes.common import UnsafeTargetError
 from nemo.core.classes.mixins import adapter_mixin_strategies, adapter_mixins
 from nemo.core.classes.mixins.adapter_mixins import AdapterModuleMixin
 
@@ -240,3 +241,14 @@ class TestAdapterMixin:
         out = model(x)
         # result of adapter is zero tensor, output multiplied by adapter result should be zero
         assert (out > 0.0).any() == torch.tensor(False)
+
+
+@pytest.mark.unit
+def test_adapter_type_check_rejects_unapproved_module(tmp_path, monkeypatch):
+    module_name = 'unregistered_adapter'
+    (tmp_path / f'{module_name}.py').write_text("raise RuntimeError('unexpected import')\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    model = DefaultModuleAdapter()
+    model.set_accepted_adapter_types([torch.nn.Module])
+    with pytest.raises(UnsafeTargetError):
+        model.add_adapter('adapter', {'_target_': f'{module_name}.Adapter'})

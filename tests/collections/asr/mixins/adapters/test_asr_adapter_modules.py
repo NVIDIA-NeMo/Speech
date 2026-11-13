@@ -180,6 +180,17 @@ class TestASRAdapterModules:
             assert out.shape == x.shape
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("proj_dim, expected_shape", [(None, (2, 4)), (4, (2, 2)), (-1, (2, 1))])
+    def test_relmha_adapter_parameters_follow_default_device(self, proj_dim, expected_shape):
+        with torch.device("meta"):
+            adapter = adapter_modules.RelPositionMultiHeadAttentionAdapter(
+                n_head=2, n_feat=8, dropout_rate=0.0, proj_dim=proj_dim
+            )
+        assert all(p.device.type == "meta" for p in adapter.parameters())
+        assert adapter.pos_bias_u.shape == expected_shape
+        assert adapter.pos_bias_v.shape == expected_shape
+
+    @pytest.mark.unit
     def test_relmha_adapter_with_torch_sdpa(self):
         torch.random.manual_seed(0)
         x = torch.randn(2, 32, 50)

@@ -50,7 +50,7 @@ import string
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
-from functools import lru_cache
+from functools import lru_cache, wraps
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 from urllib.request import Request, urlopen
@@ -86,6 +86,41 @@ class OperationMode(Enum):
     training = 0
     validation = 1
     infer = 2
+
+
+def compile_inference_model(model: torch.nn.Module, mode: Optional[str], *, dynamic: Optional[bool] = None):
+    """Compile an eval scorer in place, retaining its parameters and an eager fallback."""
+    if mode is None or getattr(model, '_reward_compile_configured', False):
+        return
+    parameter = next(model.parameters(), None)
+    if parameter is None or parameter.device.type != 'cuda':
+        return
+    if model.training:
+        raise ValueError('Reward compilation requires an eval model.')
+    eager_forward = model.forward
+    try:
+        compiled_forward = torch.compile(eager_forward, backend='inductor', mode=mode, dynamic=dynamic)
+    except Exception as exc:
+        model._reward_compile_configured = True
+        logging.warning(f'Reward compilation failed for {type(model).__name__}; using eager inference. Error: {exc}')
+        return
+
+    @wraps(eager_forward)
+    def forward(*args, **kwargs):
+        if next(model.parameters()).device.type != 'cuda':
+            return eager_forward(*args, **kwargs)
+        try:
+            return compiled_forward(*args, **kwargs)
+        except Exception as exc:
+            model.forward = eager_forward
+            logging.warning(
+                f'Reward compilation failed for {type(model).__name__}; using eager inference. Error: {exc}'
+            )
+            return eager_forward(*args, **kwargs)
+
+    model.forward = forward
+    model._reward_compile_configured = True
+    logging.info(f'Compiling reward scorer {type(model).__name__} with mode={mode}, dynamic={dynamic}.')
 
 
 def get_batch_size(train_dataloader):

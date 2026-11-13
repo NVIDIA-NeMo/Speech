@@ -136,3 +136,36 @@ Numeric ASR output is verbalized with the existing cached NeMo text normalizer
 for each sample language before CER/WER processing. Ordinary words and empty
 transcripts are retained. Languages without a supported normalizer retain the
 ASR transcript and emit one warning. Normalization does not use the reference text.
+
+## Reward model compilation
+
+The frozen UTMOS and speaker scorers can use PyTorch's Inductor compiler:
+
+```yaml
+model:
+  utmos_compile_mode: reduce-overhead
+  speaker_reward_compile_mode: default
+```
+
+Both options default to `null`. UTMOS compiles its SSL encoder and spectrogram
+branch, using CUDA graphs for eligible GPU regions. Its audio loading, random
+crops, CPU feature extraction, and existing precision are unchanged. The speaker
+encoder and decoder use dynamic shapes with Inductor's
+default mode, allowing different audio lengths without padding to new buckets.
+The speaker preprocessor runs outside compilation.
+
+Compilation occurs on first use and can add startup time and GPU memory usage.
+CPU scorers retain eager execution. A compiler failure restores the original
+forward method and logs the fallback; parameters and checkpoint keys are retained.
+UTMOS preprocessing can dominate GPU inference. `utmos_cpu_threads` bounds the
+CPU threads used by numerical libraries during scoring and defaults to 1. It
+applies to GRPO rewards and V2 validation. Increasing it does not create loader
+processes or change the random crop, silence-trimming, and mixup algorithms.
+
+Positive `utmos_num_workers` values also support spawn workers: imported modules
+are removed from the dataset configuration before serialization. These workers
+restart on every scoring call, so their startup can outweigh preprocessing gains
+for short GRPO batches.
+
+Reward-stage wall times are logged separately as `train_reward_asr_time_sec`,
+`train_reward_speaker_time_sec`, and `train_reward_utmos_time_sec`.

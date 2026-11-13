@@ -1974,6 +1974,7 @@ class NemotronTTSModel(NemotronTTSBase):
                                 batch_size=utmos_batch_size,
                                 num_workers=utmos_num_workers,
                                 val_list=val_list,
+                                num_threads=int(self.cfg.get('utmos_cpu_threads', 1)),
                             )
                             utmos_scores = [float(item['predicted_mos']) for item in batch_results]
                         except Exception as e:

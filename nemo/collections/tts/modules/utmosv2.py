@@ -14,6 +14,7 @@
 # limitations under the License.
 import os
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 try:
     import utmosv2
@@ -86,6 +87,7 @@ class UTMOSv2Calculator:
         batch_size: int = 16,
         num_workers: int = None,
         val_list: list[str] | None = None,
+        num_threads: int = 1,
     ) -> list[dict[str, str | float]]:
         """
         Computes UTMOSv2 scores for `*.wav` files in the given directory.
@@ -98,16 +100,26 @@ class UTMOSv2Calculator:
             val_list: If provided, only score these basenames (e.g. ``["000000.wav", "000001.wav"]``)
                 via the library's ``val_list`` parameter instead of globbing the whole directory.
                 If None, all ``*.wav`` files in ``input_dir`` are scored.
+            num_threads: Maximum CPU threads used by numerical libraries during scoring.
         Returns:
             A list of dictionaries, each containing the file path and the UTMOSv2 score.
         """
         if num_workers is None:
             num_workers = batch_size
+        if num_threads < 1:
+            raise ValueError('num_threads must be positive.')
+
+        if num_workers > 0:
+            # Imported modules in UTMOS's config cannot be pickled by spawn workers.
+            cfg = self.model._cfg
+            self.model._cfg_value = SimpleNamespace(
+                **{key: value for key, value in vars(cfg).items() if not isinstance(value, ModuleType)}
+            )
 
         with torch.inference_mode():
             # UTMOSV2 tends to launch many of OpenMP threads which overloads the machine's CPUs
             # while actually slowing down the prediction. Limit the number of threads here.
-            with threadpool_limits(limits=1):
+            with threadpool_limits(limits=num_threads):
                 results = self.model.predict(
                     input_dir=input_dir,
                     device=self.device,

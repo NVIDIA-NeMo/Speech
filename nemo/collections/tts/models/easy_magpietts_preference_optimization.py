@@ -30,6 +30,7 @@ from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.asr.parts.mixins.transcription import TranscribeConfig
 from nemo.collections.tts.models.easy_magpietts import EasyMagpieTTSModel
 from nemo.collections.tts.parts.utils.helpers import (
+    compile_inference_model,
     get_cached_text_normalizer,
     get_mask_from_lengths,
     get_speaker_embeddings_from_filepaths,
@@ -57,6 +58,15 @@ class OnlinePreferenceOptimizationMixin:
         """Initialize the online PO model, including the frozen reference model, reward ASR/speaker
         verification models, optional UTMOSv2 scorer, and all PO hyper-parameters from ``cfg``.
         """
+        for key in ('utmos_compile_mode', 'speaker_reward_compile_mode'):
+            mode = cfg.get(key)
+            if mode is not None and mode not in (
+                'default',
+                'reduce-overhead',
+                'max-autotune',
+                'max-autotune-no-cudagraphs',
+            ):
+                raise ValueError(f'Unsupported {key}: {mode}')
         super().__init__(cfg, trainer)
 
         self.run_val_inference = True  # Always run validation inference in PO.
@@ -572,6 +582,13 @@ class OnlinePreferenceOptimizationMixin:
         """Extract speaker embeddings for both predicted and reference audio and align their batch
         dimensions so that cosine similarity can be computed element-wise.
         """
+        compile_mode = self.cfg.get('speaker_reward_compile_mode')
+        if compile_mode is not None:
+            for module in (
+                self._eval_speaker_verification_model.encoder,
+                self._eval_speaker_verification_model.decoder,
+            ):
+                compile_inference_model(module, compile_mode, dynamic=True)
         reference_audio_paths = self._get_reference_audio_paths(batch)
         pred_speaker_embeddings = get_speaker_embeddings_from_filepaths(
             predicted_audio_paths, self._eval_speaker_verification_model, self.device
@@ -602,10 +619,19 @@ class OnlinePreferenceOptimizationMixin:
         utmos_num_workers = max(int(self.cfg.get('utmos_num_workers', 0)), 0)
         target_device = self.device if self.utmos_device == 'cuda' else self.utmos_device
         self._utmos_calculator.to(target_device)
+        compile_mode = self.cfg.get('utmos_compile_mode')
+        if compile_mode is not None:
+            scorer = getattr(self._utmos_calculator.model, '_model', self._utmos_calculator.model)
+            for module in (scorer.ssl.encoder.model, scorer.spec_long):
+                compile_inference_model(module, compile_mode)
         audio_dir = self._get_audio_dir()
         val_list = [os.path.basename(p) for p in predicted_audio_paths]
         batch_results = self._utmos_calculator.process_directory(
-            audio_dir, batch_size=utmos_batch_size, num_workers=utmos_num_workers, val_list=val_list
+            audio_dir,
+            batch_size=utmos_batch_size,
+            num_workers=utmos_num_workers,
+            val_list=val_list,
+            num_threads=int(self.cfg.get('utmos_cpu_threads', 1)),
         )
         return [float(item['predicted_mos']) for item in batch_results]
 
@@ -679,6 +705,8 @@ class OnlinePreferenceOptimizationMixin:
 
         rewarding_start_time = time.perf_counter()
         pred_transcripts = self._compute_pred_transcripts(predicted_audio_paths, batch_repeated, reward_asr_model)
+        reward_asr_time_sec = time.perf_counter() - rewarding_start_time
+        speaker_start_time = time.perf_counter()
         try:
             pred_speaker_embeddings, gt_speaker_embeddings = self._compute_speaker_embeddings_parallel(
                 predicted_audio_paths, batch, num_generations_per_item
@@ -687,7 +715,10 @@ class OnlinePreferenceOptimizationMixin:
             logging.warning(f"Speaker-embedding reward failed. Falling back to zero SSIM reward. Error: {e}")
             pred_speaker_embeddings = None
             gt_speaker_embeddings = None
+        reward_speaker_time_sec = time.perf_counter() - speaker_start_time
+        utmos_start_time = time.perf_counter()
         utmos_scores = self._compute_utmos_scores_batched(predicted_audio_paths)
+        reward_utmos_time_sec = time.perf_counter() - utmos_start_time
 
         batch_metrics = []
         cer_reward_weight = self.cfg.get('cer_reward_weight', 0.5)
@@ -847,6 +878,9 @@ class OnlinePreferenceOptimizationMixin:
                 'audio_generation_time_sec': float(audio_generation_time_sec),
                 'audio_save_time_sec': float(audio_save_time_sec),
                 'rewarding_time_sec': float(rewarding_time_sec),
+                'reward_asr_time_sec': float(reward_asr_time_sec),
+                'reward_speaker_time_sec': float(reward_speaker_time_sec),
+                'reward_utmos_time_sec': float(reward_utmos_time_sec),
             },
         }
 
@@ -1258,7 +1292,14 @@ class OnlinePreferenceOptimizationMixin:
 
         # Timing metrics.
         timings = generated_codes_and_metrics.get('timings', {})
-        for tkey in ('audio_generation_time_sec', 'audio_save_time_sec', 'rewarding_time_sec'):
+        for tkey in (
+            'audio_generation_time_sec',
+            'audio_save_time_sec',
+            'rewarding_time_sec',
+            'reward_asr_time_sec',
+            'reward_speaker_time_sec',
+            'reward_utmos_time_sec',
+        ):
             self.log(f'train_{tkey}', float(timings.get(tkey, 0.0)), prog_bar=False, sync_dist=True)
         self.log('train_teacher_forced_time_sec', teacher_forced_time_sec, prog_bar=False, sync_dist=True)
 

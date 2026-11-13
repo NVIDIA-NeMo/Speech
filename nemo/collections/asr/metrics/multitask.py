@@ -234,8 +234,8 @@ class MultiTaskMetric(Serialization):
     Usage Example:
         ```python
         # In model initialization
-        if hasattr(cfg, 'multitask_metrics'):
-            self.multitask_metrics = MultiTaskMetric(self, cfg.multitask_metrics)
+        if hasattr(cfg, 'multitask_metrics_cfg'):
+            self.multitask_metrics = MultiTaskMetric(self, cfg.multitask_metrics_cfg)
 
         # During training/validation
         if hasattr(self, 'multitask_metrics'):

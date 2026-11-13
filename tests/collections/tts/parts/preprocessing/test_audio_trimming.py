@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 from nemo.collections.tts.parts.preprocessing.audio_trimming import (
+    EnergyAudioTrimmer,
     get_start_and_end_of_speech_frames,
     pad_sample_indices,
 )
@@ -67,3 +68,20 @@ class TestAudioTrimming:
         )
         assert start_sample == 0
         assert end_sample == 1150
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    @pytest.mark.parametrize("volume_norm", [True, False])
+    def test_energy_trimmer_keeps_original_volume(self, volume_norm):
+        sample_rate = 16000
+        audio = np.zeros(3 * sample_rate, dtype=np.float32)
+        t = np.arange(sample_rate) / sample_rate
+        audio[sample_rate : 2 * sample_rate] = 0.1 * np.sin(2 * np.pi * 440 * t)
+
+        trimmer = EnergyAudioTrimmer(volume_norm=volume_norm, speech_frame_threshold=3, pad_seconds=0.1)
+        trimmed, start_sample, end_sample = trimmer.trim_audio(audio, sample_rate, audio_id="test")
+
+        assert 0 < start_sample < sample_rate
+        assert 2 * sample_rate < end_sample < len(audio)
+        # volume_norm only changes the signal used for speech detection, not the returned audio.
+        np.testing.assert_array_equal(trimmed, audio[start_sample:end_sample])

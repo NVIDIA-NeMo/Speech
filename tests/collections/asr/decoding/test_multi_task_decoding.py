@@ -29,6 +29,10 @@ from nemo.collections.asr.modules.transformer.transformer_generators import (
     GreedySequenceGenerator,
 )
 from nemo.collections.asr.parts.context_biasing import GPUBoostingTreeModel
+from nemo.collections.asr.parts.submodules.aed_ctc_beam_decoding import (
+    AEDCTCBeamInferConfig,
+    TransformerAEDCTCBeamInfer,
+)
 from nemo.collections.asr.parts.submodules.multitask_beam_decoding import AEDBeamInferConfig, TransformerAEDBeamInfer
 from nemo.collections.asr.parts.submodules.multitask_decoding import MultiTaskDecoding, MultiTaskDecodingConfig
 from nemo.collections.asr.parts.submodules.multitask_greedy_decoding import TransformerAEDGreedyInfer
@@ -576,3 +580,66 @@ def test_multitask_decoding_beam_len_pen_default_is_zero(decoder_nm, nnet, token
     cfg = MultiTaskDecodingConfig(strategy="beam", beam=AEDBeamInferConfig(beam_size=2))
     decoding = MultiTaskDecoding(cfg, decoder_nm, classifier, tokenizer)
     assert decoding.decoding.beam_search.len_pen == 0.0
+
+
+class TestAEDCTCBeamStrategy:
+    """The `aed_ctc_beam` strategy of `MultiTaskDecoding` and the CTC input of `decode_predictions_tensor`."""
+
+    @staticmethod
+    def _modules():
+        torch.manual_seed(0)
+        decoder = TransformerDecoderNM(
+            vocab_size=11, hidden_size=16, num_layers=2, inner_size=24, num_attention_heads=2, pre_ln=True
+        ).eval()
+        classifier = TokenClassifier(hidden_size=16, num_classes=11, log_softmax=True).eval()
+        tokenizer = Mock()
+        tokenizer.bos, tokenizer.eos, tokenizer.pad, tokenizer.vocab_size = 9, 10, 10, 11
+        tokenizer.ids_to_text = lambda ids: " ".join(str(i) for i in ids)
+        return decoder, classifier, tokenizer
+
+    @pytest.mark.unit
+    def test_strategy_from_dataclass_and_dict_config(self):
+        decoder, classifier, tokenizer = self._modules()
+        cfg = MultiTaskDecodingConfig(
+            strategy="aed_ctc_beam",
+            aed_ctc_beam=AEDCTCBeamInferConfig(beam_size=3, aed_weight=1.4, ctc_soft_collapse_threshold=0.8),
+        )
+        decoding = MultiTaskDecoding(cfg, decoder, classifier, tokenizer)
+        assert isinstance(decoding.decoding, TransformerAEDCTCBeamInfer)
+        assert decoding.decoding.beam_search.beam_size == 3 and decoding.decoding.beam_search.aed_weight == 1.4
+        assert decoding.decoding.ctc_soft_collapse_threshold == 0.8 and decoding.decoding.decoding_type == 'subword'
+        cfg = OmegaConf.create({"strategy": "aed_ctc_beam", "aed_ctc_beam": {"beam_size": 2, "recombination": "sum"}})
+        decoding = MultiTaskDecoding(cfg, decoder, classifier, tokenizer)
+        assert decoding.decoding.beam_search.recombination == "sum"
+
+    @pytest.mark.unit
+    def test_decode_predictions_tensor_passes_ctc_log_probs(self):
+        decoder, classifier, tokenizer = self._modules()
+        torch.manual_seed(7)
+        cfg = MultiTaskDecodingConfig(strategy="aed_ctc_beam", aed_ctc_beam=AEDCTCBeamInferConfig(beam_size=2))
+        decoding = MultiTaskDecoding(cfg, decoder, classifier, tokenizer)
+        encoder_states = torch.randn(2, 4, 16)
+        encoder_mask = torch.ones(2, 4)
+        ctc_log_probs = torch.log_softmax(torch.randn(2, 4, 12), dim=-1)
+        hypotheses = decoding.decode_predictions_tensor(
+            encoder_hidden_states=encoder_states,
+            encoder_input_mask=encoder_mask,
+            decoder_input_ids=torch.full((2, 1), 9),
+            ctc_log_probs=ctc_log_probs,
+        )
+        assert len(hypotheses) == 2 and all(isinstance(h.text, str) for h in hypotheses)
+        with pytest.raises(ValueError, match="CTC log-probabilities"):
+            decoding.decode_predictions_tensor(
+                encoder_hidden_states=encoder_states,
+                encoder_input_mask=encoder_mask,
+                decoder_input_ids=torch.full((2, 1), 9),
+            )
+        # the other strategies ignore the CTC input
+        plain = MultiTaskDecoding(MultiTaskDecodingConfig(strategy="greedy"), decoder, classifier, tokenizer)
+        plain_hypotheses = plain.decode_predictions_tensor(
+            encoder_hidden_states=encoder_states,
+            encoder_input_mask=encoder_mask,
+            decoder_input_ids=torch.full((2, 1), 9),
+            ctc_log_probs=ctc_log_probs,
+        )
+        assert len(plain_hypotheses) == 2

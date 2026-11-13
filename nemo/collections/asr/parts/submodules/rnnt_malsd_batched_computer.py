@@ -265,6 +265,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         fusion_models_alpha: Optional[List[float]] = None,
         blank_lm_score_mode: Optional[str | BlankLMScoreMode] = None,
         pruning_mode: Optional[str | PruningMode] = None,
+        beam_beta: float = 0.0,
         allow_cuda_graphs: bool = True,
         enable_per_stream_biasing: bool = False,
         preserve_step_confidence: bool = False,
@@ -283,6 +284,8 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             fusion_models_alpha: list of weights for the fusion models scores
             blank_lm_score_mode: mode for scoring blank symbol with fusion models
             pruning_mode: mode for pruning hypotheses with fusion models
+            beam_beta: score added for every non-blank label, so the hypothesis score is
+                acoustic_score + fusion_scores + beam_beta * seq_length; positive values counter deletions
             allow_cuda_graphs: whether to allow CUDA graphs
             enable_per_stream_biasing: whether to enable per-stream biasing via multi-boosting tree
             preserve_step_confidence: if step confidence should be preserved in beam hypotheses
@@ -307,6 +310,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 "Run `compute_confidence()` for token- and word-level scores."
             )
         self._SOS = self._blank_index
+        self.beam_beta = beam_beta
         self.allow_cuda_graphs = allow_cuda_graphs
 
         if self.preserve_alignments:
@@ -591,7 +595,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 )
             else:
                 log_probs_top_k, labels_top_k = torch.topk(
-                    log_probs, self.beam_size, dim=-1, largest=True, sorted=True
+                    self._add_beam_beta(log_probs), self.beam_size, dim=-1, largest=True, sorted=True
                 )
 
             # step 2: Make hyps candidates. Add new scores to hyps, force blank if necessary, recombine hyps, prune
@@ -764,6 +768,14 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
 
         return batched_hyps, decoding_state
 
+    def _add_beam_beta(self, log_probs: torch.Tensor) -> torch.Tensor:
+        """Returns `log_probs` with `beam_beta` added to every non-blank label; used when there are no fusion models."""
+        if not self.beam_beta:
+            return log_probs
+        scores = log_probs + self.beam_beta
+        scores[..., self._blank_index] = log_probs[..., self._blank_index]
+        return scores
+
     def topk_fusion_model(
         self,
         fusion_scores_list,
@@ -790,6 +802,8 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
 
         fusion_scores_alpha_sum = self._fusion_scores_alpha_sum(log_probs.shape[0], multi_biasing_ids)
         fusion_scores_sum = sum(fusion_scores_list)
+        if self.beam_beta:
+            fusion_scores_sum = fusion_scores_sum + self.beam_beta
 
         match self.pruning_mode, self.blank_lm_score_mode:
             case PruningMode.LATE, BlankLMScoreMode.NO_SCORE:
@@ -1222,7 +1236,9 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 multi_biasing_ids=self.state.multi_biasing_ids,
             )
         else:
-            log_probs_top_k, labels_top_k = torch.topk(log_probs, self.beam_size, dim=-1, largest=True, sorted=True)
+            log_probs_top_k, labels_top_k = torch.topk(
+                self._add_beam_beta(log_probs), self.beam_size, dim=-1, largest=True, sorted=True
+            )
 
         # step 2: Make hyps candidates. Add new scores to hyps, force blank if necessary, recombine hyps, prune
         # step 2.1: hyps candidates

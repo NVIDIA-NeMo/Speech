@@ -196,12 +196,13 @@ During RNN-T / TDT beam search, each hypothesis is scored using the following fo
 
 .. code-block::
 
-    final_score = acoustic_score + ngram_lm_alpha * lm_score
+    final_score = acoustic_score + ngram_lm_alpha * lm_score + beam_beta * seq_length
 
 where:
     - ``acoustic_score`` is the score predicted by the ASR.
     - ``lm_score`` is the score predicted by the NGPU-LM LM.
     - ``ngram_lm_alpha`` is the weight given to the language model.
+    - ``beam_beta`` is a reward for every emitted token (``malsd_batch`` only, ``0`` by default).
 
 Final hypotheses is chosen based on the normalized score ``final_score / seq_length``.
 
@@ -239,6 +240,14 @@ In shallow fusion, LM and ASR scores can be combined at different stages:
 
 For Transducer models, late pruning with the blank-aware scoring method generally yields better performance than the standard approach.
 
+*Length Reward*
+
+Every emitted token pays the LM's cost, while blank does not, so at higher LM weights the search can still prefer
+hypotheses that skip words, showing up as deletions or empty transcripts on some utterances. ``beam_beta`` adds a
+fixed score for every emitted token during the search, which offsets this cost, in the same way as ``beam_beta`` in
+CTC beam search (for example, ``rnnt_decoding.beam.beam_beta=1.0``). Tune it together with ``ngram_lm_alpha`` on a
+development set: larger LM weights need a larger ``beam_beta``, and too large a value causes insertions.
+
 *Beam Search Strategies:*
 
 In NeMo fully batched implementation of following strategies are supported:
@@ -258,6 +267,8 @@ The following is the list of the adjustable arguments of batched CTC decoding al
 | pruning_mode          | str       | malsd_batch, maes_batch | late             | Mode for hypotheses pruning. Can be ``early`` or ``late``.                                                                     |
 +-----------------------+-----------+-------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
 | blank_lm_score_mode   | str       | malsd_batch, maes_batch | lm_weighted_full | Mode for blank symbol scoring. Can be ``no_score`` or ``lm_weighted_full``                                                     |
++-----------------------+-----------+-------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
+| beam_beta             | float     | malsd_batch             | 0.0              | Score added for every emitted token (length reward). Positive values counter deletions at high LM weights.                     |
 +-----------------------+-----------+-------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
 | max_symbols_per_step  | int       | malsd_batch             | 10               | Max symbols to emit on each step to avoid infinite looping.                                                                    |
 +-----------------------+-----------+-------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+

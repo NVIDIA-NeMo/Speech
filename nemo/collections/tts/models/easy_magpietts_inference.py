@@ -47,10 +47,12 @@ from nemo.collections.tts.modules.magpietts_modules import (
 )
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
 from nemo.collections.tts.parts.utils.tts_dataset_utils import tokenize_text_with_phoneme_spans
+from nemo.constants import NEMO_ENV_TRUST_REMOTE_CODE
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
 from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.utils import logging
+from nemo.utils.env_var_parsing import get_envbool
 from nemo.utils.exceptions import NeMoBaseException
 
 
@@ -493,10 +495,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         logging.info(f"Using decoder type: {self.decoder_type}")
 
         if self.decoder_type == 'huggingface':
-            # Existing HuggingFace path
+            trust_remote_code = get_envbool(NEMO_ENV_TRUST_REMOTE_CODE, False)
             self.transformer_backend_config = AutoConfig.from_pretrained(
                 cfg.transformer_hf_backend,
-                trust_remote_code=True,
+                trust_remote_code=trust_remote_code,
             )
 
             # This is set True during inference to save time on loading the model.
@@ -504,13 +506,17 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             if use_meta:
                 logging.info("Using meta device for decoder init (weights will be loaded from checkpoint)")
                 with torch.device('meta'):
-                    hf_transformer = AutoModelForCausalLM.from_config(self.transformer_backend_config)
+                    hf_transformer = AutoModelForCausalLM.from_config(
+                        self.transformer_backend_config, trust_remote_code=trust_remote_code
+                    )
                 hf_transformer = hf_transformer.to_empty(device='cpu')
                 for module in hf_transformer.modules():
                     if 'RotaryEmbedding' in type(module).__name__ and hasattr(module, 'config'):
                         type(module).__init__(module, module.config, device='cpu')
             else:
-                hf_transformer = AutoModelForCausalLM.from_config(self.transformer_backend_config)
+                hf_transformer = AutoModelForCausalLM.from_config(
+                    self.transformer_backend_config, trust_remote_code=trust_remote_code
+                )
             if self.disable_lm_text_head:
                 hf_transformer.lm_head = None
             self.decoder = hf_transformer.model

@@ -197,6 +197,15 @@ Additional documentation on advanced features can be found in the repository:
 
 - `Frame Stacking Guide <https://github.com/NVIDIA-NeMo/Speech/blob/main/examples/tts/README_frame_stacking.md>`__: Detailed explanation of the two-stage decoding architecture
 
+Pretrained tokenizer and backend configuration
+----------------------------------------------
+
+Magpie-TTS and EasyMagpie-TTS default to ``trust_remote_code=False`` for Hugging
+Face tokenizers and backend loading. To allow vetted custom implementations, set
+``NEMO_TRUST_REMOTE_CODE=true`` in the launching environment. This runtime opt-in
+also applies in dataloader workers. A ``trust_remote_code`` value saved in a model
+config cannot enable it.
+
 References
 ##########
 

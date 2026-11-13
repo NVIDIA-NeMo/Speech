@@ -193,7 +193,7 @@ SCRIPT
 mkdir -p /opt/automodel-src
 EOF
 
-COPY external/patches/flash_attn_4_sm120_disable_tma_o.patch /tmp/patches/
+COPY external/patches/flash_attn_4_varlen_gqa_dkv_accum_offset.patch /tmp/patches/
 RUN <<"EOF" bash -euxo pipefail
 source /usr/local/bin/automodel-build-env
 uv pip install --upgrade \
@@ -256,29 +256,14 @@ if [[ "${GPU_TARGET}" == "h100plus" ]]; then
         "apache-tvm-ffi==0.1.11" \
         "torch-c-dlpack-ext==0.1.5"
 
-    mkdir -p /opt/automodel-src/flash-attn-4 /tmp/flash-attn-4
-    python -m pip download \
-        --no-binary=flash-attn-4 \
-        --no-deps \
-        --dest /tmp/flash-attn-4 \
-        "flash-attn-4==4.0.0b15"
-    tar -xf /tmp/flash-attn-4/flash_attn_4-*.tar.gz -C /opt/automodel-src/flash-attn-4 --strip-components=1
-    patch -d /opt/automodel-src/flash-attn-4 -p1 < /tmp/patches/flash_attn_4_sm120_disable_tma_o.patch
-
-    MAX_JOBS="${FLASH_ATTN_MAX_JOBS}" \
-    NVCC_THREADS="${FLASH_ATTN_NVCC_THREADS}" \
+    # 4.0.0b39 supports CUTLASS DSL 4.6 (4.0.0b15 called the removed cute.make_fragment)
+    # and already disables TMA O stores on SM120. Its SM80/SM120 backward still needs a
+    # fix for GQA dK/dV with packed (varlen) sequences.
     uv pip install \
-        --no-build-isolation \
         --no-deps \
-        /opt/automodel-src/flash-attn-4
-fi
-EOF
-
-COPY external/patches/flash_attn_4_cutlass46_compat.patch /tmp/patches/
-RUN <<"EOF" bash -euxo pipefail
-if [[ "${GPU_TARGET}" == "h100plus" ]]; then
+        "flash-attn-4==4.0.0b39"
     patch -d "${VIRTUAL_ENV}/lib/python${UV_PYTHON}/site-packages/flash_attn/cute" -p1 \
-        < /tmp/patches/flash_attn_4_cutlass46_compat.patch
+        < /tmp/patches/flash_attn_4_varlen_gqa_dkv_accum_offset.patch
 fi
 EOF
 

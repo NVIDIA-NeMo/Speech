@@ -1,0 +1,16 @@
+FlashAttention 4.0.0b39 SM80/SM120 backward: GQA + varlen writes the fp32 dK/dV
+accumulators at an unrounded per-sequence offset, while the dK/dV postprocess reads
+them at the tile-aligned padded offset (SeqlenInfo.padded_offset_k). When a packed
+sequence boundary is not a multiple of the tile size, dK/dV of every following
+sequence are wrong. Use the same padded offset as the postprocess.
+Upstream issue: https://github.com/Dao-AILab/flash-attention/issues/2997
+
+--- a/flash_bwd.py
++++ b/flash_bwd.py
+@@ -1180,5 +1180,5 @@
+                 mdK_cur, mdV_cur = [t[batch_idx, head_idx_kv, None] for t in (mdK, mdV)]
+             else:
+-                padded_offset_k = seqlen.offset_k + batch_idx * self.n_block_size
++                padded_offset_k = seqlen.padded_offset_k
+                 mdK_cur = cute.domain_offset((padded_offset_k * self.head_dim_padded,), mdK[head_idx_kv, None])
+                 mdV_cur = cute.domain_offset((padded_offset_k * self.head_dim_v_padded,), mdV[head_idx_kv, None])

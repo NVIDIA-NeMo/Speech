@@ -62,7 +62,7 @@ from omegaconf import OmegaConf
 
 # Reuse the discovery + IndexJob machinery from build_indexes.py.
 sys.path.insert(0, str(Path(__file__).parent))
-from build_indexes import IndexJob, discover  # type: ignore[import-not-found]
+from build_indexes import NEMO_TAR_ROUTE, IndexJob, discover  # type: ignore[import-not-found]
 
 
 def _copy_idx(src: str, dst: str) -> None:
@@ -143,6 +143,10 @@ def main(
     seen: set[tuple[str, str]] = set()
     unique: list[IndexJob] = []
     for j in jobs:
+        if j.kind == NEMO_TAR_ROUTE:
+            # Route sidecars are not ``.idx`` mirrors of a data file; build them locally with
+            # build_indexes.py --indexes-root after prefetching.
+            continue
         key = (j.path, j.kind)
         if key not in seen:
             seen.add(key)

@@ -67,11 +67,20 @@ from scripts.dataloading._sharegpt_route_cli import ensure_sharegpt_route
 from nemo.collections.common.data.lhotse.indexed_adapters import create_tar_index as create_nemo_tar_index
 from nemo.collections.common.data.lhotse.indexed_adapters import (
     create_wds_v2_tar_index,
+    validate_tar_member_index_layout,
     validate_wds_v2_tar_index,
     wds_v2_index_path,
     wds_v2_metadata_path,
 )
-from nemo.collections.common.data.lhotse.nemo_adapters import expand_sharded_filepaths
+from nemo.collections.common.data.lhotse.nemo_adapters import (
+    expand_sharded_filepaths,
+    pair_nemo_tarred_manifests_with_tars,
+)
+from nemo.collections.common.data.lhotse.nemo_tar_routing import (
+    nemo_tar_route_is_needed,
+    nemo_tar_route_sidecar_paths,
+    write_nemo_tar_route_sidecars,
+)
 from nemo.collections.common.data.lhotse.wds_catalog import discover_webdataset_shards
 
 # --------------------------------------------------------------------------- #
@@ -88,8 +97,14 @@ WDS_TAR = "wds_tar"
 WDS_TAR_V2 = "wds_tar_v2"
 JSONL = "jsonl"
 SHAREGPT_ROUTE = "sharegpt_route"
-INDEX_KINDS = (JSONL, NEMO_TAR, WDS_TAR, WDS_TAR_V2, SHAREGPT_ROUTE)
+# NEMO_TAR_ROUTE — row-to-member route sidecars for a nemo/nemo_tarred manifest whose rows can't be
+#             looked up positionally in its tar (repeated ``-subN`` rows, filtered manifests, or one
+#             manifest paired with several tars). Built after the JSONL and tar indexes it reads.
+NEMO_TAR_ROUTE = "nemo_tar_route"
+INDEX_KINDS = (JSONL, NEMO_TAR, WDS_TAR, WDS_TAR_V2, SHAREGPT_ROUTE, NEMO_TAR_ROUTE)
 _PROGRESS_INTERVAL = 60.0
+# Route sidecars read other sidecars, so they are built after the parallel index builds finish.
+_ROUTE_KINDS = (SHAREGPT_ROUTE, NEMO_TAR_ROUTE)
 
 
 @dataclass(frozen=True)
@@ -115,6 +130,8 @@ class IndexJob:
             return Path(self.indexes_root) / route_path
         if self.kind == WDS_TAR_V2:
             return wds_v2_index_path(self.path, self.indexes_root)
+        if self.kind == NEMO_TAR_ROUTE:
+            return nemo_tar_route_sidecar_paths(self.path, self.indexes_root)[0]
         return index_file_path(self.path, self.indexes_root)
 
 
@@ -250,10 +267,33 @@ def _discover_keys(
             jobs.append(IndexJob(p, JSONL, indexes_root))
         for p in _expand_tars(entry.get("tarred_audio_filepaths")):
             jobs.append(IndexJob(p, NEMO_TAR, indexes_root))
+        _discover_nemo_tar_routes(mfp, entry.get("tarred_audio_filepaths"), jobs, indexes_root)
     if (paths := entry.get("paths")) is not None:
         _discover_paths(paths, jobs, indexes_root)
     if (sub := _resolve_input_cfg(entry.get("input_cfg"), data_blend_dir)) is not None:
         discover(sub, jobs, indexes_root, data_blend_dir=data_blend_dir)
+
+
+def _discover_nemo_tar_routes(raw_manifests, raw_tars, jobs: list[IndexJob], indexes_root: Optional[str]) -> None:
+    """Add one route job per manifest that a nemo/nemo_tarred entry pairs with tars (built only if needed)."""
+    if raw_manifests is None or raw_tars is None:
+        return
+    tars = _expand_tars(raw_tars)
+    if not tars:
+        return
+    try:
+        pairs = pair_nemo_tarred_manifests_with_tars(_expand_jsonl(raw_manifests), tars)
+    except (AssertionError, ValueError) as error:
+        # The dataloader would reject this entry too; still build its plain .idx files.
+        logging.warning("  [SKIP route] cannot pair manifests with tars: %s", error)
+        return
+    for manifest_path, tar_paths in pairs:
+        try:
+            nemo_tar_route_sidecar_paths(manifest_path, indexes_root)
+        except ValueError as error:
+            logging.warning("  [SKIP route] %s", error)
+            continue
+        jobs.append(IndexJob(manifest_path, NEMO_TAR_ROUTE, indexes_root, tar_paths=tar_paths))
 
 
 def _discover_paths(paths, jobs: list[IndexJob], indexes_root: Optional[str]) -> None:
@@ -345,6 +385,8 @@ def discover(
             jobs.append(IndexJob(p, JSONL, indexes_root))
         for p in _expand_tars(raw_tars):
             jobs.append(IndexJob(p, NEMO_TAR, indexes_root))
+        if typ in ("nemo", "nemo_tarred"):
+            _discover_nemo_tar_routes(raw_manifests, raw_tars, jobs, indexes_root)
         if collection_mode:
             route_path = entry.get("tar_routing_filepath")
             legacy_route_path = entry.get("tar_routing_index")
@@ -473,6 +515,12 @@ def _build_one(job: IndexJob, *, force: bool = False) -> tuple[IndexJob, str]:
         create_nemo_tar_index(job.path, idx)
     elif job.kind == WDS_TAR_V2:
         create_wds_v2_tar_index(job.path, idx_path=idx)
+    elif job.kind == NEMO_TAR_ROUTE:
+        if not _nemo_tar_route_is_needed(job):
+            for path in nemo_tar_route_sidecar_paths(job.path, job.indexes_root):
+                path.unlink(missing_ok=True)
+            return job, "not needed"
+        write_nemo_tar_route_sidecars(job.path, job.tar_paths, indexes_root=job.indexes_root)
     elif job.kind == SHAREGPT_ROUTE:
         ensure_sharegpt_route(
             idx,
@@ -538,11 +586,66 @@ def _is_indexed(job: IndexJob) -> bool:
             )
         elif job.kind == WDS_TAR_V2:
             validate_wds_v2_tar_index(job.path, idx_path=job.idx_path())
+        elif job.kind == NEMO_TAR_ROUTE:
+            _validate_nemo_tar_route(job)
         else:
             _validate_legacy_sidecar(job)
+            if job.kind == NEMO_TAR:
+                _validate_nemo_tar_layout(job)
         return True
     except (OSError, ValueError):
         return False
+
+
+def _nemo_tar_route_is_needed(job: IndexJob) -> bool:
+    from lhotse.indexing import index_file_path, read_index
+
+    num_rows = len(read_index(index_file_path(job.path, job.indexes_root))) - 1
+    member_counts = tuple(len(read_index(index_file_path(p, job.indexes_root))) - 1 for p in job.tar_paths)
+    return nemo_tar_route_is_needed(num_rows, member_counts)
+
+
+def _validate_nemo_tar_route(job: IndexJob) -> None:
+    """Raise unless the route sidecars match what the manifest/tar indexes need and are newer than them."""
+    from lhotse.indexing import index_file_path
+
+    ordinal_path, shard_path = nemo_tar_route_sidecar_paths(job.path, job.indexes_root)
+    if not _nemo_tar_route_is_needed(job):
+        if ordinal_path.exists() or shard_path.exists():
+            raise ValueError(f"Unneeded native NeMo tar route sidecar: {ordinal_path}")
+        return
+    sidecars = [ordinal_path] if len(job.tar_paths) == 1 else [ordinal_path, shard_path]
+    manifest_idx = Path(index_file_path(job.path, job.indexes_root))
+    num_rows = (manifest_idx.stat().st_size // 8) - 1
+    inputs = [manifest_idx, *(Path(index_file_path(p, job.indexes_root)) for p in job.tar_paths)]
+    newest_input = max(path.stat().st_mtime_ns for path in inputs)
+    for sidecar in sidecars:
+        stat = sidecar.stat()
+        if stat.st_size != 4 * num_rows:
+            raise ValueError(f"Native NeMo tar route sidecar has the wrong length: {sidecar}")
+        if stat.st_mtime_ns < newest_input:
+            raise ValueError(f"Native NeMo tar route sidecar is older than its indexes: {sidecar}")
+
+
+def _select_todo(jobs: list[IndexJob]) -> list[IndexJob]:
+    """Jobs whose sidecars are missing or stale, plus native-tar routes whose input indexes will be rebuilt."""
+    todo = [job for job in jobs if not _is_indexed(job)]
+    rebuilt = {(job.path, job.indexes_root) for job in todo if job.kind in (JSONL, NEMO_TAR)}
+    todo_ids = {id(job) for job in todo}
+    for job in jobs:
+        if job.kind == NEMO_TAR_ROUTE and id(job) not in todo_ids:
+            if any((path, job.indexes_root) in rebuilt for path in (job.path, *job.tar_paths)):
+                todo.append(job)
+    return todo
+
+
+def _validate_nemo_tar_layout(job: IndexJob) -> None:
+    """Reject NeMo tar sidecars in the Shar paired layout (e.g. written by ``lhotse index tar``)."""
+    try:
+        validate_tar_member_index_layout(job.path, job.idx_path())
+    except ValueError as error:
+        logging.warning("  [WRONG LAYOUT, will rebuild] %s", error)
+        raise
 
 
 # --------------------------------------------------------------------------- #
@@ -631,9 +734,9 @@ def main(
         selected = frozenset(kinds)
         unique = [job for job in unique if job.kind in selected]
 
-    all_todo = unique if force else [job for job in unique if not _is_indexed(job)]
-    route_todo = [job for job in all_todo if job.kind == SHAREGPT_ROUTE]
-    todo = [job for job in all_todo if job.kind != SHAREGPT_ROUTE]
+    all_todo = unique if force else _select_todo(unique)
+    route_todo = [job for job in all_todo if job.kind in _ROUTE_KINDS]
+    todo = [job for job in all_todo if job.kind not in _ROUTE_KINDS]
     skipped = len(unique) - len(all_todo)
 
     logging.info("Discovered %d files (%d already indexed, %d to build).", len(unique), skipped, len(all_todo))

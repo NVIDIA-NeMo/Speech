@@ -1011,7 +1011,7 @@ error before audio loading.
 Building ``.idx`` sidecars
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Two equivalent ways:
+Two ways, which differ for tar files:
 
 1. Lhotse's CLI per file::
 
@@ -1019,20 +1019,50 @@ Two equivalent ways:
        lhotse index tar  path/to/shard.tar
        lhotse index shar path/to/shar_dir/
 
+   ``lhotse index tar`` writes the Lhotse Shar/WebDataset paired layout (one
+   entry per JSON + payload member pair). Use it only for ``lhotse_shar`` tars.
+   Do **not** use it for ``nemo``/``nemo_tarred`` audio tars (or other tars
+   with one member per sample): there it lists only half of the samples.
+   Indexed ``nemo_tarred`` loading rejects such an index at startup when the
+   manifest has more rows than the tar index has entries (and no route
+   sidecar, see below, maps the rows).
+
 2. NeMo's batch helper that takes a config and indexes everything it
-   references in one shot::
+   references in one shot. **Use this for** ``nemo_tarred`` **tars**::
 
        python scripts/dataloading/build_indexes.py path/to/input_cfg.yaml
 
    The script walks ``input_cfg`` (including nested ``group`` entries and
    per-entry YAML references), dispatches the right tar layout for each
    adapter (NeMo one-member-per-sample vs. WebDataset/Shar pair format), and
-   skips files that already have an up-to-date ``.idx``. Use ``--force`` to
-   rebuild, ``--workers N`` for parallelism, ``--dry-run`` to preview.
+   skips files that already have an up-to-date ``.idx``. An existing NeMo tar
+   ``.idx`` in the paired layout (e.g. written by ``lhotse index tar``) is not
+   up to date and is rebuilt. Use ``--force`` to rebuild everything,
+   ``--workers N`` for parallelism, ``--dry-run`` to preview.
 
    Pass ``--indexes-root /path/to/mirror`` to write the sidecars to a
    separate directory tree that mirrors the data files' layout instead of
    placing them next to the data — see :ref:`lhotse-indexes-root` below.
+
+   For ``nemo``/``nemo_tarred`` entries the script also writes **route
+   sidecars** when manifest row ``i`` can't be read positionally from tar
+   member ``i``:
+
+   * a manifest whose rows don't map 1:1 to its tar members, e.g. several
+     ``-subN`` rows that share one audio member, or a filtered manifest; and
+   * one (non-sharded) manifest paired with several tars, where each row's
+     ``shard_id`` selects its tar.
+
+   Route sidecars (``<manifest>.nemo-tar-ordinal.idx`` and, for one manifest
+   with several tars, ``<manifest>.nemo-tar-shard.idx``) hold one uint32 per
+   manifest row: the row's tar member ordinal and tar position. They are the
+   same arrays that ``convert_indexes_to_idxpack.py`` embeds in a version-3
+   ``.idxpack``, so lookup stays O(1) and resume stays exact. Members are
+   matched by name, so the selected member is validated strictly when its
+   audio loads. Route sidecars must be local: for remote manifests, pass a
+   local ``--indexes-root``. Rerunning the script rebuilds them when the
+   manifest or tar indexes they were built from are newer. Indexed loading fails at startup with
+   an actionable error when a required route sidecar is missing.
 
 Packing sidecars into dataset-level ``.idxpack`` files
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -194,7 +194,6 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
         best_hyp = self.asr_model.decoding.rnnt_decoder_predictions_tensor(
             encoded, encoded_len, return_hypotheses=True, partial_hypotheses=previous_hypotheses
         )
-        # start a new utterance (decoder state and encoder cache) after <EOU>/<EOB> for ASR-EOU models
         (
             new_context.cache_last_channel,
             new_context.cache_last_time,

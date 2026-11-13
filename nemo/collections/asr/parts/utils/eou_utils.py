@@ -22,8 +22,8 @@ import torch
 from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import LabelLoopingStateItem
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 
-# Special tokens that close an utterance in ASR-EOU models (end-of-utterance and end-of-backchannel).
-# These models are trained on single-utterance samples, so decoding must restart after emitting one of them.
+# End-of-utterance and end-of-backchannel tokens of ASR-EOU models. These models are trained on single-utterance
+# samples, so decoding must restart from a fresh state after emitting one of them.
 UTTERANCE_END_TOKENS = ('<EOU>', '<EOB>')
 
 
@@ -306,117 +306,55 @@ def aggregate_eou_metrics(eou_metrics: List[EOUResult], target_percentiles: List
 
 
 def get_utterance_end_token_ids(tokenizer) -> List[int]:
-    """
-    Get the ids of utterance-end special tokens (``<EOU>``, ``<EOB>``) present in the tokenizer vocabulary.
-
-    Args:
-        tokenizer: NeMo tokenizer (or None).
-    Returns:
-        List of token ids; empty if the tokenizer has no utterance-end tokens.
-    """
-    if tokenizer is None:
-        return []
+    """Ids of the ``<EOU>``/``<EOB>`` tokens present in the tokenizer vocabulary."""
     token_ids = []
     for token in UTTERANCE_END_TOKENS:
         try:
             token_id = tokenizer.token_to_id(token)
-            # unknown tokens are mapped to <unk> by most tokenizers, so verify the round trip
-            if token_id is not None and token_id >= 0 and tokenizer.ids_to_tokens([token_id]) == [token]:
-                token_ids.append(int(token_id))
-        except Exception:  # tokenizers without single-token lookup (e.g. aggregate) have no utterance-end tokens
+        except Exception:  # no tokenizer, or no single-token lookup (e.g. aggregate tokenizer)
             continue
+        # unknown tokens are mapped to <unk> by most tokenizers, so verify the round trip
+        if token_id is not None and token_id >= 0 and tokenizer.ids_to_tokens([token_id]) == [token]:
+            token_ids.append(int(token_id))
     return token_ids
 
 
 def get_hypotheses_lengths(hypotheses: Optional[Sequence[Optional[Hypothesis]]], batch_size: int) -> List[int]:
-    """
-    Number of tokens in each (possibly missing) partial hypothesis carried between streaming steps.
-
-    Args:
-        hypotheses: partial hypotheses (or None before the first streaming step).
-        batch_size: number of streams.
-    Returns:
-        List of token counts.
-    """
+    """Number of tokens in each (possibly missing) partial hypothesis."""
     if hypotheses is None:
         return [0] * batch_size
     return [0 if hyp is None or hyp.y_sequence is None else len(hyp.y_sequence) for hyp in hypotheses]
 
 
-def find_utterance_end_emissions(
-    hypotheses: Sequence[Optional[Hypothesis]], prev_lengths: Sequence[int], token_ids: Sequence[int]
-) -> List[bool]:
-    """
-    Check which hypotheses emitted an utterance-end token after their first ``prev_lengths[i]`` tokens.
-
-    Args:
-        hypotheses: hypotheses after the current (streaming) decoding step.
-        prev_lengths: number of tokens in each hypothesis before the current step.
-        token_ids: utterance-end token ids.
-    Returns:
-        List of flags, True for the hypotheses that emitted an utterance-end token in the current step.
-    """
-    flags = []
-    for hyp, prev_length in zip(hypotheses, prev_lengths):
-        if hyp is None or hyp.y_sequence is None or len(token_ids) == 0:
-            flags.append(False)
-            continue
-        new_tokens = _to_list(hyp.y_sequence)[prev_length:]
-        flags.append(any(token in token_ids for token in new_tokens))
-    return flags
-
-
-def reset_hypothesis_decoder_state_(hypothesis: Hypothesis, decoding_computer=None) -> Hypothesis:
-    """
-    Reset (in place) the decoder (prediction network) state of a partial hypothesis to the start-of-sequence state,
-    keeping the decoded tokens and the time offset, so that the next streaming step starts a new utterance.
-
-    Args:
-        hypothesis: partial hypothesis carried between streaming steps.
-        decoding_computer: label-looping decoding computer used to produce ``hypothesis.dec_state`` (if any).
-    Returns:
-        The same hypothesis.
-    """
+def reset_hypothesis_decoder_state_(hypothesis: Hypothesis, decoding_computer=None) -> None:
+    """Reset the decoder state of a partial hypothesis to start-of-sequence, keeping its tokens and time offset."""
     state = hypothesis.dec_state
     if isinstance(state, LabelLoopingStateItem) and decoding_computer is not None:
-        # label-looping state: reset predictor state and last label, but keep the number of decoded frames,
-        # which offsets the timestamps of the next streaming step
         batched_state = decoding_computer.merge_to_batched_state([state])
-        decoded_lengths = batched_state.decoded_lengths.clone()
+        decoded_lengths = batched_state.decoded_lengths.clone()  # offsets the timestamps of the next step
         batched_state = decoding_computer.reset_state_by_mask(
             batched_state, torch.ones_like(decoded_lengths, dtype=torch.bool)
         )
         batched_state.decoded_lengths = decoded_lengths
-        new_state = decoding_computer.split_batched_state(batched_state)[0]
-        new_state.time_jump = state.time_jump
-        hypothesis.dec_state = new_state
+        hypothesis.dec_state = decoding_computer.split_batched_state(batched_state)[0]
+        hypothesis.dec_state.time_jump = state.time_jump
     else:
         hypothesis.dec_state = None
     hypothesis.last_token = None
-    return hypothesis
 
 
 def truncate_hypothesis_after_first_utterance_end_(
     hypothesis: Hypothesis, token_ids: Sequence[int], num_frames: int
 ) -> Optional[int]:
     """
-    If the hypothesis emitted an utterance-end token before its last frame, truncate it (in place)
-    right after the first such token.
-
-    Args:
-        hypothesis: raw (not post-processed) hypothesis with per-token frame indices in ``timestamp``.
-        token_ids: utterance-end token ids.
-        num_frames: number of encoder frames decoded for this hypothesis.
-    Returns:
-        Index of the frame where the utterance-end token was emitted if the hypothesis was truncated, else None.
+    Truncate a raw hypothesis (in place) right after its first utterance-end token,
+    if that token was emitted before the last frame. Returns that token's frame index, or None if not truncated.
     """
     tokens = _to_list(hypothesis.y_sequence)
     pos = next((i for i, token in enumerate(tokens) if token in token_ids), None)
-    if pos is None:
+    if pos is None or int(hypothesis.timestamp[pos]) >= num_frames - 1:
         return None
     frame = int(hypothesis.timestamp[pos])
-    if frame >= num_frames - 1:
-        return None
     hypothesis.y_sequence = hypothesis.y_sequence[: pos + 1]
     hypothesis.timestamp = hypothesis.timestamp[: pos + 1]
     if hypothesis.token_duration is not None and len(hypothesis.token_duration) > pos + 1:
@@ -430,28 +368,17 @@ def truncate_hypothesis_after_first_utterance_end_(
     return frame
 
 
-def append_hypothesis_segment_(hypothesis: Hypothesis, segment: Hypothesis, frame_offset: int) -> Hypothesis:
-    """
-    Append (in place) a raw hypothesis decoded from a later segment of the same audio.
-
-    Args:
-        hypothesis: raw hypothesis of the preceding audio.
-        segment: raw hypothesis of the segment starting at encoder frame ``frame_offset``.
-        frame_offset: encoder frame index where ``segment`` starts.
-    Returns:
-        The merged hypothesis.
-    """
+def append_hypothesis_segment_(hypothesis: Hypothesis, segment: Hypothesis, frame_offset: int) -> None:
+    """Append (in place) a raw hypothesis decoded from the audio starting at encoder frame ``frame_offset``."""
     if isinstance(segment.timestamp, torch.Tensor):
         segment.timestamp = segment.timestamp + frame_offset
-    elif segment.timestamp is not None:
-        segment.timestamp = [t + frame_offset for t in segment.timestamp]
-    if isinstance(hypothesis.token_duration, torch.Tensor) and isinstance(segment.token_duration, torch.Tensor):
-        token_duration = torch.cat((hypothesis.token_duration, segment.token_duration), dim=0)
     else:
-        token_duration = hypothesis.token_duration
-    hypothesis.merge_(segment)
+        segment.timestamp = [t + frame_offset for t in segment.timestamp]
+    token_duration = hypothesis.token_duration
+    if isinstance(token_duration, torch.Tensor) and isinstance(segment.token_duration, torch.Tensor):
+        token_duration = torch.cat((token_duration, segment.token_duration), dim=0)
+    hypothesis.merge_(segment)  # merge_ does not handle token_duration
     hypothesis.token_duration = token_duration
-    return hypothesis
 
 
 def _to_list(tokens) -> list:

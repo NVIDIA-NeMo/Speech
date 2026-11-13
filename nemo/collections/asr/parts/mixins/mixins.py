@@ -29,7 +29,6 @@ from nemo.collections.asr.parts.mixins.asr_adapter_mixins import ASRAdapterModel
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.utils import asr_module_utils
 from nemo.collections.asr.parts.utils.eou_utils import (
-    find_utterance_end_emissions,
     get_hypotheses_lengths,
     get_utterance_end_token_ids,
     reset_hypothesis_decoder_state_,
@@ -804,27 +803,18 @@ class ASRModuleMixin(ASRAdapterModelMixin):
         cache_last_channel_len: Optional[Tensor] = None,
     ):
         """
-        Start a new utterance for the streams whose Transducer hypothesis emitted an utterance-end token
-        (``<EOU>`` or ``<EOB>``) in the current cache-aware streaming step.
-
-        ASR-EOU models are trained on single-utterance samples: after emitting an utterance-end token, neither
-        the decoder state nor the encoder left context are ever seen in training, and the model stops emitting
-        tokens. For such streams, this resets the decoder state of the hypothesis (keeping the decoded tokens and
-        timestamps) and the encoder cache. It is a no-op for models without utterance-end tokens.
-
-        Args:
-            hypotheses: hypotheses after the current streaming step (modified in place).
-            prev_lengths: number of tokens in each hypothesis before the current streaming step.
-            cache_last_channel: encoder cache for the last channel layers, shape [layers, B, T, D].
-            cache_last_time: encoder cache for the last time layers, shape [layers, B, D, T].
-            cache_last_channel_len: lengths of ``cache_last_channel``, shape [B].
+        For streams whose hypothesis emitted ``<EOU>``/``<EOB>`` after its first ``prev_lengths[i]`` tokens,
+        reset the decoder state (keeping tokens and timestamps) and zero the encoder cache, so that the next
+        streaming step starts a new utterance. No-op for models without these tokens.
 
         Returns:
-            Tuple of (cache_last_channel, cache_last_time, cache_last_channel_len) with the caches of
-            the reset streams zeroed (same as the initial cache state).
+            The updated (cache_last_channel, cache_last_time, cache_last_channel_len).
         """
         token_ids = get_utterance_end_token_ids(getattr(self, 'tokenizer', None))
-        flags = find_utterance_end_emissions(hypotheses, prev_lengths, token_ids)
+        flags = [
+            hyp is not None and any(int(t) in token_ids for t in hyp.y_sequence[prev_len:])
+            for hyp, prev_len in zip(hypotheses, prev_lengths)
+        ]
         if not any(flags):
             return cache_last_channel, cache_last_time, cache_last_channel_len
 

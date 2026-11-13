@@ -957,11 +957,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         return self._transcribe_encode(batch[0], batch[1], trcfg)
 
     def _transcribe_encode(self, signal: torch.Tensor, signal_len: torch.Tensor, trcfg: TranscribeConfig) -> dict:
-        """
-        Encode the audio for ``transcribe()``. For models with utterance-end tokens (``<EOU>``, ``<EOB>``),
-        the features are kept as well to restart decoding after each utterance-end token
-        (see ``_decode_with_utterance_end_restart``).
-        """
+        """Encode audio for ``transcribe()``, keeping the features for models with ``<EOU>``/``<EOB>`` tokens."""
         if trcfg.partial_hypothesis is None and get_utterance_end_token_ids(getattr(self, 'tokenizer', None)):
             processed_signal, processed_signal_length = self.preprocessor(input_signal=signal, length=signal_len)
             encoded, encoded_len = self.forward(
@@ -1019,13 +1015,8 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         return_hypotheses: bool = False,
     ) -> Union[List['Hypothesis'], List[List['Hypothesis']]]:
         """
-        Decode the batch, restarting the encoder and decoder after each utterance-end token
-        (``<EOU>``, ``<EOB>``) that is emitted before the end of the audio.
-
-        ASR-EOU models are trained on single-utterance samples: after emitting an utterance-end token, neither
-        the decoder state nor the encoder left context are ever seen in training, and the model stops emitting
-        tokens for the rest of the audio. The remaining audio is therefore re-encoded and decoded from scratch,
-        and the resulting hypotheses are concatenated (with timestamps shifted accordingly).
+        Decode the batch, re-encoding and decoding the remaining audio from scratch after each ``<EOU>``/``<EOB>``
+        emitted before the end: ASR-EOU models are trained on single utterances and stop emitting after them.
         """
         token_ids = get_utterance_end_token_ids(self.tokenizer)
         with torch.inference_mode():

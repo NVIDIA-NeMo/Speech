@@ -762,17 +762,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
     def postprocess_hypotheses(
         self, hypotheses_list: List[Union[Hypothesis, NBestHypotheses]], return_hypotheses: bool = False
     ) -> Union[List[Hypothesis], List[List[Hypothesis]]]:
-        """
-        Post-process raw hypotheses produced by the decoding algorithm: decode the text,
-        and compute timestamps and confidence if requested.
-
-        Args:
-            hypotheses_list: raw hypotheses (or N-best hypotheses) returned by the decoding algorithm.
-            return_hypotheses: bool. If set to True it will return list of Hypothesis or NBestHypotheses
-
-        Returns:
-            Same as ``rnnt_decoder_predictions_tensor``.
-        """
+        """Decode text and compute timestamps/confidence for raw hypotheses (see ``rnnt_decoder_predictions_tensor``)."""
         prediction_list = hypotheses_list
 
         if isinstance(prediction_list[0], NBestHypotheses):

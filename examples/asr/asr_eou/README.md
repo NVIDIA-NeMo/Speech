@@ -297,8 +297,6 @@ python speech_to_text_eou_eval.py \
 
 The script will show the WER metrics along with EOU metrics like latency, early cutoff rate, miss detection rate, etc.
 
-Since the model is trained on single-utterance samples, it stops emitting tokens after `<EOU>`/`<EOB>` unless decoding restarts from a fresh state. For models whose vocabulary contains these tokens, `transcribe()`, `conformer_stream_step()` (e.g., `speech_to_text_cache_aware_streaming_infer.py`) and the cache-aware RNN-T streaming pipeline with greedy decoding (`asr_streaming_infer.py`) do this automatically: after each `<EOU>`/`<EOB>`, they reset the decoder state and the encoder context, so every utterance in long, multi-utterance audio gets transcribed.
-
 
 ## 5. Model deployment with voice agent
 

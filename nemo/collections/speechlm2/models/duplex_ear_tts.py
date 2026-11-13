@@ -41,6 +41,7 @@ from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.collections.speechlm2.modules.ear_tts_model import RVQEARTTSModel
 from nemo.collections.speechlm2.modules.ear_tts_vae_codec import RVQVAEModel
+from nemo.collections.speechlm2.one_logger import SpeechToSpeechThroughputPolicy
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.metrics.asr_bleu import ASRBLEU
 from nemo.collections.speechlm2.parts.metrics.asr_cer_wer import Intelligibility
@@ -57,9 +58,13 @@ from nemo.collections.speechlm2.parts.pretrained import (
     load_pretrained_hf,
     set_model_dict_for_partial_init,
 )
+from nemo.lightning.callback_group import with_model_init_callbacks
+from nemo.lightning.speech_throughput import register_throughput_policy
 from nemo.utils import logging
 
 
+@register_throughput_policy(SpeechToSpeechThroughputPolicy)
+@with_model_init_callbacks
 class DuplexEARTTS(LightningModule, HFHubMixin):
     def __init__(self, cfg: dict) -> None:
         assert isinstance(cfg, dict), (

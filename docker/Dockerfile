@@ -69,6 +69,15 @@ apt-get clean
 EOF
 # NOTE: removed libsndfile1. Soundfile ships with its own version of libsndfile1
 
+# Keep only the cuDNN wheel PyTorch uses: the base image's apt cuDNN has a different version and gets mixed in
+# when cuDNN dlopens sublibraries the wheel lacks (CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH).
+RUN <<"EOF" bash -euxo pipefail
+cudnn_packages="$(dpkg-query -W -f='${db:Status-Status} ${Package}\n' | awk '$1 == "installed" && $2 ~ /^libcudnn/ {print $2}')"
+[[ -z "${cudnn_packages}" ]] || apt-get purge -y ${cudnn_packages}
+ldconfig
+! ldconfig -p | grep libcudnn
+EOF
+
 RUN <<"EOF" bash -ex
 curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
 uv --version
@@ -187,6 +196,7 @@ fi
 export CPATH="${AUTOMODEL_CCCL_INCLUDES}${CPATH:+:${CPATH}}"
 export CPLUS_INCLUDE_PATH="${AUTOMODEL_CCCL_INCLUDES}${CPLUS_INCLUDE_PATH:+:${CPLUS_INCLUDE_PATH}}"
 export NVTE_FRAMEWORK=pytorch
+export CUDNN_PATH="${VIRTUAL_ENV}/lib/python${UV_PYTHON}/site-packages/nvidia/cudnn"
 export MAX_JOBS="${FLASH_ATTN_MAX_JOBS}"
 export NVCC_THREADS="${FLASH_ATTN_NVCC_THREADS}"
 SCRIPT

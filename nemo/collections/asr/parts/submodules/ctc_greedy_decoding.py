@@ -295,7 +295,8 @@ class GreedyCTCInfer(Typing, ConfidenceMethodMixin):
                 prediction_cpu_tensor = torch.empty(
                     decoder_output.shape, dtype=decoder_output.dtype, device=torch.device("cpu"), pin_memory=True
                 )
-                prediction_cpu_tensor.copy_(decoder_output, non_blocking=True)
+                # Not non_blocking: otherwise nothing waits for this copy when decoder_lengths is on the CPU or None.
+                prediction_cpu_tensor.copy_(decoder_output)
             else:
                 prediction_cpu_tensor = decoder_output
 

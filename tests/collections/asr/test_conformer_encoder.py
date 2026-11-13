@@ -478,3 +478,40 @@ class TestConformerBlockComposition:
         # a standalone convolution module with an odd kernel keeps symmetric padding
         conv = ConformerConvolution(d_model=16, kernel_size=5)
         assert (conv.depthwise_conv._left_padding, conv.depthwise_conv._right_padding) == (2, 2)
+
+
+class TestConformerConvolutionPointwise:
+    """The pointwise convolutions run as linear() on a contiguous time-major input."""
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("norm_type", ["batch_norm", "layer_norm"])
+    def test_pointwise_inputs_are_contiguous(self, norm_type, monkeypatch):
+        linear = torch.nn.functional.linear
+        inputs = []
+
+        def recording_linear(x, weight, bias=None):
+            inputs.append(x)
+            return linear(x, weight, bias)
+
+        monkeypatch.setattr(torch.nn.functional, "linear", recording_linear)
+        conv = ConformerConvolution(d_model=16, kernel_size=5, norm_type=norm_type).eval()
+        x = torch.randn(2, 7, 16)
+        with torch.no_grad():
+            out = conv(x)
+        assert out.shape == x.shape
+        assert len(inputs) == 2 and all(i.is_contiguous() for i in inputs)
+
+    @pytest.mark.run_only_on('GPU')
+    @pytest.mark.unit
+    def test_fp16_autocast_pointwise_on_channel_first_input(self):
+        # With frozen weights and an input that requires grad (e.g. fine-tuning a frozen encoder with trainable
+        # norms), a channel-first input used to reach a strided-batched fp16 cuBLAS GEMM with a broadcast weight,
+        # which accessed illegal memory on sm_120 for some lengths.
+        torch.manual_seed(0)
+        pointwise = torch.nn.Conv1d(176, 176, kernel_size=1).cuda().requires_grad_(False)
+        for num_frames in range(1, 600):
+            x = torch.randn(16, 176, num_frames, device="cuda", dtype=torch.float16).transpose(1, 2).requires_grad_()
+            with torch.autocast("cuda", dtype=torch.float16):
+                out = ConformerConvolution._apply_pointwise(x, pointwise)
+            torch.cuda.synchronize()
+            assert out.shape == x.shape

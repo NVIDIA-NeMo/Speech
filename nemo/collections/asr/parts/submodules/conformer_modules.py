@@ -423,7 +423,10 @@ class ConformerConvolution(nn.Module):
         # kernel_size=1 convs are pointwise, i.e. linear, but nn.Conv1d dispatches to much slower
         # cuBLAS kernels. squeeze(-1) on the (O, I, 1) weight is a free view, so
         # the module stays an nn.Conv1d and checkpoints are unchanged.
-        return nn.functional.linear(x, conv.weight.squeeze(-1), conv.bias)
+        # A transposed (channel-first) input makes linear() fall back to a strided-batched GEMM with a
+        # broadcast weight, whose fp16 cuBLAS kernels can access illegal memory (seen on sm_120). A contiguous
+        # input is folded into a single 2D GEMM instead.
+        return nn.functional.linear(x.contiguous(), conv.weight.squeeze(-1), conv.bias)
 
     def forward(self, x, pad_mask=None, cache=None):
         x = self._apply_pointwise(x, self.pointwise_conv1)

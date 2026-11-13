@@ -47,6 +47,7 @@ from nemo.collections.speechlm2.models.salm import _resolve_audios_in_prompt, re
 from nemo.collections.speechlm2.modules.perception import AudioTranscriptionPerceptionModule
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.lora import maybe_install_lora
+from nemo.collections.speechlm2.parts.model_loading import resolve_target_class
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
 from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, move_embedding
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
@@ -677,15 +678,36 @@ class SALMWithAsrDecoder(LightningModule, HFHubMixin):
         }
 
 
+_LEGACY_PERCEPTION_TARGET = "nemo.collections.speechlm2.modules.perception.AudioPerceptionModule"
+
+
 def setup_speech_encoder_with_asr(model: torch.nn.Module, pretrained_weights: bool = True):
     """
-    Sets up an ``AudioPerceptionModule``, initializing its ``encoder`` and ``preprocessor``
-    with a pretrained NeMo ``ASRModel``.
+    Sets up an ``AudioTranscriptionPerceptionModule`` (or the subclass named by ``perception.target``),
+    initializing its ``encoder`` and ``preprocessor`` with a pretrained NeMo ``ASRModel``.
     The result is assigned to ``model.perception`` attribute and is trainable.
     """
+    target = model.cfg.perception.get("target")
+    transcription_target = (
+        f"{AudioTranscriptionPerceptionModule.__module__}.{AudioTranscriptionPerceptionModule.__name__}"
+    )
+    if target == _LEGACY_PERCEPTION_TARGET:
+        # the value the shipped salm_asr_decoder.yaml carried while the key was not read
+        logging.warning(
+            f"perception.target={target!r} names the plain perception module; SALMWithAsrDecoder builds "
+            f"AudioTranscriptionPerceptionModule. Set perception.target to {transcription_target}."
+        )
+        target = transcription_target
+    perception_cls = (
+        AudioTranscriptionPerceptionModule
+        if target is None
+        else resolve_target_class(target, AudioTranscriptionPerceptionModule, "perception.target")
+    )
     with open_dict(model.cfg):
         model.cfg.output_dim = model.llm.config.hidden_size
-    model.perception = AudioTranscriptionPerceptionModule(model.cfg.perception, model.cfg.pretrained_asr).train()
+        if target is not None:
+            model.cfg.perception.target = target
+    model.perception = perception_cls(model.cfg.perception, model.cfg.pretrained_asr).train()
 
     from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
 

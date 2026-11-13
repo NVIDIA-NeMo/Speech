@@ -139,12 +139,8 @@ class EasyMagpieGPUARModelRunner(GPUARModelRunner):
                 destinations.append(row)
         if destinations:
             tokens = sampler_output.sampled_token_ids
-            staging = getattr(self, "_cfg_bookkeeping_indices", None)
-            if staging is None:
-                # These are sampled request rows, independent of graph token rows.
-                capacity = getattr(self.input_batch, "max_num_reqs", len(ids))
-                staging = self._cfg_bookkeeping_indices = _CFGBookkeepingIndices(capacity, tokens.device)
-            src, dst = staging.stage(sources, destinations)
+            src = torch.tensor(sources, device=tokens.device, dtype=torch.long)
+            dst = torch.tensor(destinations, device=tokens.device, dtype=torch.long)
             tokens.index_copy_(0, dst, tokens.index_select(0, src))
         return super()._bookkeeping_sync(scheduler_output, sampler_output, *args, **kwargs)
 
@@ -362,42 +358,3 @@ class EasyMagpieGPUARWorker(GPUARWorker):
             return super().init_device()
         finally:
             gpu_ar_worker.GPUARModelRunner = original_runner_cls
-
-
-class _CFGBookkeepingIndices:
-    """Bounded staging for sampled request-row indices, outside model graph capture.
-
-    Upload and index consumers must use the same ordered worker CUDA stream.
-    The device scratch may then be overwritten by the next upload only after
-    earlier consumers finish. Host storage needs a separate copy-completion fence
-    because a nonblocking upload may still read it after returning to Python.
-    Two pinned slots permit overlap; only pending slot reuse waits on the host.
-    """
-
-    def __init__(self, capacity: int, device: torch.device) -> None:
-        self._device = torch.empty(2 * capacity, dtype=torch.long, device=device)
-        cuda = self._device.is_cuda
-        self._host_slots = [
-            torch.empty(2 * capacity, dtype=torch.long, device="cpu", pin_memory=cuda) for _ in range(2)
-        ]
-        self._host_views = [slot.numpy() for slot in self._host_slots]
-        self._copy_events = [torch.cuda.Event() for _ in self._host_slots] if cuda else None
-        self._next_slot = 0
-
-    def stage(self, sources: list[int], destinations: list[int]) -> tuple[torch.Tensor, torch.Tensor]:
-        """Upload both index lists together and return their device views."""
-        count = len(sources)
-        if count != len(destinations) or 2 * count > self._device.numel():
-            raise ValueError("CFG bookkeeping indices exceed request capacity or disagree in length")
-        slot = self._next_slot
-        event = self._copy_events[slot] if self._copy_events is not None else None
-        if event is not None and not event.query():
-            event.synchronize()
-        host = self._host_views[slot]
-        host[:count] = sources
-        host[count : 2 * count] = destinations
-        self._device[: 2 * count].copy_(self._host_slots[slot][: 2 * count], non_blocking=True)
-        if event is not None:
-            event.record(torch.cuda.current_stream(self._device.device))
-        self._next_slot = (slot + 1) % len(self._host_slots)
-        return self._device[:count], self._device[count : 2 * count]

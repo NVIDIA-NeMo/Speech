@@ -25,7 +25,7 @@ import random
 import re
 import traceback
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
@@ -37,8 +37,7 @@ from scipy import ndimage
 from torch.special import gammaln
 from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
-from nemo.collections.asr.models import ASRModel, EncDecHybridRNNTCTCBPEModelWithPrompt
-from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models_prompt import HybridRNNTCTCPromptTranscribeConfig
+from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.parts.mixins.transcription import TranscribeConfig
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.collections.audio.parts.utils.transforms import resample
@@ -51,6 +50,9 @@ try:
 except (ImportError, ModuleNotFoundError):
     Normalizer = None
     PYNINI_AVAILABLE = False
+
+# Language tag (e.g. "<en-US>") appended to transcripts by prompt-conditioned multilingual ASR models.
+ASR_LANGUAGE_TAG_PATTERN = re.compile(r"\s*<[a-z]{2,3}(?:-[A-Za-z]{2,4})?>\s*")
 
 
 def get_abs_rel_paths(input_path: Path, base_path: Path) -> Tuple[Path, Path]:
@@ -1304,17 +1306,19 @@ class NemoTranscriber(Transcriber):
 
 
 class NemoTranscriberWithPrompt(Transcriber):
-    """Transcriber for NeMo ASR models that accept language as an optional prompt"""
+    """Transcriber for NeMo ASR models that accept language as an optional prompt (``target_lang``)"""
 
     def __init__(self, device, model_name):
         if model_name.endswith('.nemo'):
-            model = ASRModel.restore_from(restore_path=model_name)
+            model = ASRModel.restore_from(restore_path=model_name, map_location=torch.device(device))
         else:
-            model = ASRModel.from_pretrained(model_name=model_name)
+            model = ASRModel.from_pretrained(model_name=model_name, map_location=torch.device(device))
 
+        if not hasattr(model.get_transcribe_config(), 'target_lang'):
+            raise ValueError(
+                f"Model {model_name} ({type(model).__name__}) does not support prompting: no `target_lang`."
+            )
         self.model = model.to(device).eval()
-        if not isinstance(self.model, EncDecHybridRNNTCTCBPEModelWithPrompt):
-            raise ValueError(f"Model {model_name} does not support prompting")
 
         self.language_prompt_map = {
             "en": "en-US",
@@ -1330,16 +1334,17 @@ class NemoTranscriberWithPrompt(Transcriber):
         }
 
     def transcribe(self, audio_paths: List[Path], batch_size: int, language: Optional[str]) -> List[str]:
-        if language:
-            prompt_lang = self.language_prompt_map[language]
-            override_config = HybridRNNTCTCPromptTranscribeConfig(
-                batch_size=batch_size, use_lhotse=False, target_lang=prompt_lang
-            )
-        else:
-            override_config = HybridRNNTCTCPromptTranscribeConfig(batch_size=batch_size, use_lhotse=False)
+        target_lang = language or None
+        # Prefer the default locale (e.g. "en" -> "en-US") when the model has it; otherwise the model resolves
+        # the language itself and raises if it is unsupported or ambiguous.
+        if self.language_prompt_map.get(language) in self.model.cfg.model_defaults.get('prompt_dictionary', {}):
+            target_lang = self.language_prompt_map[language]
+        override_config = replace(
+            self.model.get_transcribe_config(), batch_size=batch_size, use_lhotse=False, target_lang=target_lang
+        )
 
         transcribe_results = self.model.transcribe(audio_paths, override_config=override_config)
-        transcriptions = [result.text for result in transcribe_results]
+        transcriptions = [ASR_LANGUAGE_TAG_PATTERN.sub(" ", result.text).strip() for result in transcribe_results]
         return transcriptions
 
 

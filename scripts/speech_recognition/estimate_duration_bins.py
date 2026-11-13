@@ -25,7 +25,8 @@ from nemo.collections.common.data.lhotse.cutset import read_cutset_from_config
 from nemo.collections.common.data.lhotse.dataloader import LhotseDataLoadingConfig
 
 
-def parse_args():
+def parse_args(args: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments for duration bin estimation."""
     parser = argparse.ArgumentParser(
         description="Estimate duration bins for Lhotse dynamic bucketing using a sample of the input dataset. "
         "The dataset is read either from one or more manifest files and supports data weighting.",
@@ -65,9 +66,9 @@ def parse_args():
         help="If specified, we'll filter out utterances longer than this.",
     )
     parser.add_argument(
-        "-q", "--quiet", type=bool, default=False, help="When specified, only print the estimated duration bins."
+        "-q", "--quiet", action="store_true", help="When specified, only print the estimated duration bins."
     )
-    return parser.parse_args()
+    return parser.parse_args(args)
 
 
 def main():

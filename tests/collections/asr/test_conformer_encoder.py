@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import copy
 import functools
 
 import numpy as np
@@ -19,7 +20,14 @@ import pytest
 import torch
 from omegaconf import DictConfig, OmegaConf
 
+from nemo.collections.asr.modules import transformer_encoder_utils
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
+from nemo.collections.asr.parts.packed_sequence import (
+    PackedEncoderActivations,
+    pack_encoder_output,
+    packed_slot_layout,
+    unpack_encoder_output,
+)
 from nemo.collections.asr.parts.submodules.conformer_modules import (
     ConformerConvolution,
     ConformerFeedForward,
@@ -478,3 +486,393 @@ class TestConformerBlockComposition:
         # a standalone convolution module with an odd kernel keeps symmetric padding
         conv = ConformerConvolution(d_model=16, kernel_size=5)
         assert (conv.depthwise_conv._left_padding, conv.depthwise_conv._right_padding) == (2, 2)
+
+
+def _packed_encoder(**overrides):
+    """A small Conformer with the strided subsampling block, an even conv kernel and no dropout."""
+    options = dict(
+        feat_in=8,
+        n_layers=2,
+        d_model=16,
+        n_heads=2,
+        subsampling_factor=6,
+        xscaling=False,
+        dropout=0.0,
+        dropout_pre_encoder=0.0,
+        dropout_emb=0.0,
+        dropout_att=0.0,
+        pre_encode=functools.partial(
+            ConvSubsampling,
+            subsampling="striding",
+            subsampling_factor=6,
+            conv_channels=[2, 3, 3],
+            conv_strides=[1, 3, 2],
+            freq_pools=[2, 1, 1],
+            out_bias=False,
+        ),
+        feed_forward=functools.partial(ConformerFeedForward, activation="squared_relu", use_bias=False),
+        conv=functools.partial(ConformerConvolution, kernel_size=4, norm_eps=1e-3),
+        norm=functools.partial(torch.nn.LayerNorm, eps=1e-6),
+    )
+    options.update(overrides)
+    return ConformerEncoder(**options)
+
+
+def _packed_test_features(lengths, feat_in=8, dtype=torch.float64, device="cpu"):
+    torch.manual_seed(0)
+    return torch.randn(len(lengths), feat_in, int(max(lengths)), dtype=dtype, device=device)
+
+
+def _valid_frames(padded_bdt, lengths):
+    """Rows of a padded (B, D, T) encoder output inside the lengths, in packing order."""
+    padded = padded_bdt.transpose(1, 2)
+    mask = torch.arange(padded.shape[1], device=padded.device)[None, :] < lengths[:, None]
+    return padded[mask]
+
+
+class TestPackedConformerConvolution:
+    @pytest.mark.unit
+    @pytest.mark.parametrize("kernel_size", [4, 31])
+    def test_matches_padded_in_eval(self, kernel_size):
+        torch.manual_seed(1)
+        module = ConformerConvolution(d_model=6, kernel_size=kernel_size).double().eval()
+        lengths = torch.tensor([9, 2, 40])
+        padded_in = torch.randn(3, 40, 6, dtype=torch.float64, requires_grad=True)
+        pad_mask = torch.arange(40)[None, :] >= lengths[:, None]
+        padded_out = module(padded_in, pad_mask=pad_mask)
+        packed_in = padded_in.detach().clone().requires_grad_()
+        packed = pack_encoder_output(packed_in, lengths)
+        packed_out = module.forward_packed(packed.data, packed_slot_layout(packed, gap=kernel_size - 1))
+        valid = torch.arange(40)[None, :] < lengths[:, None]
+        torch.testing.assert_close(packed_out, padded_out[valid])
+        padded_out[valid].square().sum().backward()
+        packed_out.square().sum().backward()
+        torch.testing.assert_close(packed_in.grad[valid], padded_in.grad[valid])
+
+
+class TestPackedConformerEncoder:
+    """forward_sequence_packed against forward at the valid frames, for the three attention types."""
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("self_attention_model", ["rel_pos", "abs_pos", "rope"])
+    def test_matches_padded_in_eval(self, self_attention_model):
+        torch.manual_seed(3)
+        encoder = _packed_encoder(self_attention_model=self_attention_model).double().eval()
+        lengths = torch.tensor([50, 7, 31, 1])
+        features = _packed_test_features(lengths)
+        padded_out, padded_lengths = encoder(audio_signal=features, length=lengths)
+        packed = encoder.forward_sequence_packed(features, lengths)
+        assert isinstance(packed, PackedEncoderActivations)
+        assert packed.lengths.tolist() == padded_lengths.tolist()
+        torch.testing.assert_close(packed.data, _valid_frames(padded_out, padded_lengths))
+        torch.testing.assert_close(
+            unpack_encoder_output(packed, total_length=padded_out.shape[-1]).transpose(1, 2),
+            padded_out * (torch.arange(padded_out.shape[-1])[None, None, :] < padded_lengths[:, None, None]),
+        )
+
+    @pytest.mark.unit
+    def test_parameter_gradients_match_padded(self):
+        torch.manual_seed(4)
+        padded_encoder = _packed_encoder().double().eval()
+        packed_encoder = copy.deepcopy(padded_encoder)
+        lengths = torch.tensor([50, 7, 31])
+        features = _packed_test_features(lengths)
+        padded_out, padded_lengths = padded_encoder(audio_signal=features, length=lengths)
+        _valid_frames(padded_out, padded_lengths).square().mean().backward()
+        packed_encoder.forward_sequence_packed(features, lengths).data.square().mean().backward()
+        padded_grads = dict(padded_encoder.named_parameters())
+        for name, parameter in packed_encoder.named_parameters():
+            torch.testing.assert_close(parameter.grad, padded_grads[name].grad, msg=name)
+
+    @pytest.mark.unit
+    def test_accepts_packed_features_and_pre_encoded_states(self):
+        torch.manual_seed(5)
+        encoder = _packed_encoder().double().eval()
+        lengths = torch.tensor([20, 13])
+        features = _packed_test_features(lengths)
+        from_padded = encoder.forward_sequence_packed(features, lengths)
+        from_packed = encoder.forward_sequence_packed(pack_encoder_output(features.transpose(1, 2), lengths))
+        torch.testing.assert_close(from_packed.data, from_padded.data)
+        states = torch.randn(2, 5, 16, dtype=torch.float64)
+        state_lengths = torch.tensor([5, 2])
+        padded_out, _ = encoder(audio_signal=states, length=state_lengths, bypass_pre_encode=True)
+        packed_out = encoder.forward_sequence_packed(states, state_lengths, bypass_pre_encode=True)
+        torch.testing.assert_close(packed_out.data, _valid_frames(padded_out, state_lengths))
+        with pytest.raises(ValueError, match="length must match"):
+            encoder.forward_sequence_packed(pack_encoder_output(features.transpose(1, 2), lengths), lengths - 1)
+
+    @pytest.mark.unit
+    def test_output_padding_is_zero_whatever_the_input_padding(self):
+        """Normalized packed features carry a (B, feat_in) padding tensor; the encoder output pads with zeros."""
+        torch.manual_seed(5)
+        lengths = torch.tensor([4, 2])
+        for encoder, width in ((_packed_encoder(pre_encode=None, subsampling_factor=1), 8), (_packed_encoder(), 8)):
+            encoder = encoder.double().eval()
+            features = pack_encoder_output(torch.randn(2, 4, width, dtype=torch.float64), lengths)
+            features = PackedEncoderActivations(
+                features.data,
+                features.lengths,
+                features.cu_seqlens,
+                features.max_seqlen,
+                padding_value=torch.full((2, width), 7.0, dtype=torch.float64),
+            )
+            out = encoder.forward_sequence_packed(features)
+            assert out.padding_value == 0.0
+            unpacked = unpack_encoder_output(out)
+            assert unpacked.shape == (2, int(out.lengths.max()), 16)
+            assert torch.equal(unpacked[1, out.lengths[1] :], torch.zeros_like(unpacked[1, out.lengths[1] :]))
+        states = torch.randn(2, 5, 16, dtype=torch.float64)
+        packed_states = pack_encoder_output(states, torch.tensor([5, 2]))
+        packed_states = PackedEncoderActivations(
+            packed_states.data,
+            packed_states.lengths,
+            packed_states.cu_seqlens,
+            packed_states.max_seqlen,
+            padding_value=torch.full((2, 16), 7.0, dtype=torch.float64),
+        )
+        out = encoder.forward_sequence_packed(packed_states, bypass_pre_encode=True)
+        assert out.padding_value == 0.0 and torch.equal(unpack_encoder_output(out)[1, 2:], torch.zeros(3, 16).double())
+
+    @pytest.mark.unit
+    def test_activation_checkpoint_wrappers_run_packed(self):
+        """SpeechLM's activation checkpointing wraps the frontend and the layers; the packed path keeps both.
+
+        The wrapped layer's packed forward runs once in the forward and once more in the backward (the recompute),
+        and outputs, lengths and gradients equal the unwrapped encoder's.
+        """
+        from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
+
+        torch.manual_seed(5)
+        lengths = torch.tensor([20, 13])
+        features = _packed_test_features(lengths).requires_grad_()
+        plain = _packed_encoder().double().eval()
+        wrapped = copy.deepcopy(plain)
+        wrapped.pre_encode = checkpoint_wrapper(wrapped.pre_encode)
+        for index in range(len(wrapped.layers)):
+            wrapped.layers[index] = checkpoint_wrapper(wrapped.layers[index])
+        calls = []
+        layer = wrapped.layers[0]._checkpoint_wrapped_module
+        layer_forward_packed = layer.forward_packed
+
+        def counting_forward_packed(*args, **kwargs):
+            calls.append(1)
+            return layer_forward_packed(*args, **kwargs)
+
+        layer.forward_packed = counting_forward_packed
+
+        reference = plain.forward_sequence_packed(features, lengths)
+        wrapped_features = features.detach().clone().requires_grad_()
+        out = wrapped.forward_sequence_packed(wrapped_features, lengths)
+        torch.testing.assert_close(out.data, reference.data)
+        assert out.lengths.tolist() == reference.lengths.tolist()
+        reference.data.square().sum().backward()
+        out.data.square().sum().backward()
+        torch.testing.assert_close(wrapped_features.grad, features.grad)
+        for (name, parameter), (_, wrapped_parameter) in zip(plain.named_parameters(), wrapped.named_parameters()):
+            torch.testing.assert_close(wrapped_parameter.grad, parameter.grad, msg=name)
+        assert len(calls) == 2
+
+    @pytest.mark.unit
+    def test_batch_norm_training_semantics(self):
+        """Training-mode BatchNorm differs by the padded frames; it agrees without padding and with LayerNorm."""
+        torch.manual_seed(6)
+        encoder = _packed_encoder().double().train()
+        uneven = torch.tensor([50, 7, 31])
+        features = _packed_test_features(uneven)
+        padded_out, padded_lengths = encoder(audio_signal=features, length=uneven)
+        packed = encoder.forward_sequence_packed(features, uneven)
+        difference = (packed.data - _valid_frames(padded_out, padded_lengths)).abs().max()
+        assert difference > 1e-6
+
+        even = torch.tensor([50, 50, 50])
+        padded_out, padded_lengths = encoder(audio_signal=features, length=even)
+        packed = encoder.forward_sequence_packed(features, even)
+        torch.testing.assert_close(packed.data, _valid_frames(padded_out, padded_lengths))
+
+        layer_norm_encoder = (
+            _packed_encoder(conv=functools.partial(ConformerConvolution, kernel_size=4, norm_type="layer_norm"))
+            .double()
+            .train()
+        )
+        padded_out, padded_lengths = layer_norm_encoder(audio_signal=features, length=uneven)
+        packed = layer_norm_encoder.forward_sequence_packed(features, uneven)
+        torch.testing.assert_close(packed.data, _valid_frames(padded_out, padded_lengths))
+
+    @pytest.mark.unit
+    def test_empty_batch_runs_through_the_encoder(self):
+        """A rank whose share of a batch is empty gets an empty output and a zero gradient for every parameter.
+
+        The empty paths of the frontend and the attention alone did not carry the batch through the layers:
+        the depthwise convolution cannot run over the empty slot layout and now skips it.
+        The running statistics of the batch normalization stay untouched in training mode
+        (the batch counter advances as in every training step).
+        """
+        default_encoder = ConformerEncoder(
+            feat_in=8, n_layers=1, d_model=16, n_heads=2, subsampling_factor=4, subsampling_conv_channels=4
+        )
+        for encoder in (_packed_encoder().double().train(), default_encoder.double().eval()):
+            features = torch.empty(0, 8, 0, dtype=torch.float64, requires_grad=True)
+            out = encoder.forward_sequence_packed(features, torch.empty(0, dtype=torch.long))
+            assert out.data.shape == (0, 16)
+            assert out.lengths.tolist() == [] and out.cu_seqlens.tolist() == [0] and out.max_seqlen == 0
+            out.data.sum().backward()
+            assert features.grad is not None and features.grad.shape == features.shape
+            for name, parameter in encoder.named_parameters():
+                assert parameter.grad is not None and not parameter.grad.any(), name
+            for name, buffer in encoder.named_buffers():
+                if name.endswith("running_mean"):
+                    assert not buffer.any(), name
+                elif name.endswith("running_var"):
+                    assert torch.equal(buffer, torch.ones_like(buffer)), name
+
+    @pytest.mark.unit
+    def test_interctc_capture_is_rejected(self):
+        """The InterCTC consumer expects padded (B, D, T) tensors, so the packed forward refuses the capture."""
+        encoder = _packed_encoder().double().eval()
+        lengths = torch.tensor([20, 13])
+        features = _packed_test_features(lengths)
+        guid = getattr(encoder, "model_guid", None)
+        encoder.update_access_cfg({"interctc": {"capture_layers": [0]}, "detach": True}, guid=guid)
+        encoder.set_access_enabled(access_enabled=True, guid=guid)
+        try:
+            with pytest.raises(NotImplementedError, match="InterCTC"):
+                encoder.forward_sequence_packed(features, lengths)
+            # the padded forward still captures
+            encoder(audio_signal=features, length=lengths)
+            registry = {}
+            for module_registry in encoder.get_module_registry(encoder).values():
+                registry.update(module_registry)
+            assert registry["interctc/layer_output_0"][0].shape[1] == 16  # (B, D, T)
+        finally:
+            encoder.reset_registry()
+            encoder.set_access_enabled(access_enabled=False, guid=guid)
+            encoder.interctc_capture_at_layers = None
+
+    @pytest.mark.unit
+    def test_rejects_unsupported_configurations(self):
+        features = _packed_test_features(torch.tensor([20]))
+        with pytest.raises(NotImplementedError, match="full attention context"):
+            _packed_encoder(att_context_size=[4, 4]).double().forward_sequence_packed(features, torch.tensor([20]))
+        with pytest.raises(NotImplementedError, match="rel_pos_local_attn"):
+            local = _packed_encoder(self_attention_model="rel_pos_local_attn", att_context_size=[4, 4]).double()
+            local.forward_sequence_packed(features, torch.tensor([20]))
+
+    @pytest.mark.unit
+    def test_state_dict_unchanged(self):
+        """The packed forward adds no parameter or buffer: the keys of a small encoder as recorded on `main`."""
+        encoder = ConformerEncoder(
+            feat_in=8, n_layers=1, d_model=16, n_heads=2, subsampling_conv_channels=4, subsampling_factor=4
+        )
+        recorded = {
+            "pre_encode": ["conv.0.bias", "conv.0.weight", "conv.2.bias", "conv.2.weight", "out.bias", "out.weight"],
+            "layers.0.feed_forward1": ["linear1.bias", "linear1.weight", "linear2.bias", "linear2.weight"],
+            "layers.0.feed_forward2": ["linear1.bias", "linear1.weight", "linear2.bias", "linear2.weight"],
+            "layers.0.self_attn": [
+                "linear_k.bias",
+                "linear_k.weight",
+                "linear_out.bias",
+                "linear_out.weight",
+                "linear_pos.weight",
+                "linear_q.bias",
+                "linear_q.weight",
+                "linear_v.bias",
+                "linear_v.weight",
+                "pos_bias_u",
+                "pos_bias_v",
+            ],
+            "layers.0.conv": [
+                "batch_norm.bias",
+                "batch_norm.num_batches_tracked",
+                "batch_norm.running_mean",
+                "batch_norm.running_var",
+                "batch_norm.weight",
+                "depthwise_conv.bias",
+                "depthwise_conv.weight",
+                "pointwise_conv1.bias",
+                "pointwise_conv1.weight",
+                "pointwise_conv2.bias",
+                "pointwise_conv2.weight",
+            ],
+        }
+        norms = ["norm_conv", "norm_feed_forward1", "norm_feed_forward2", "norm_out", "norm_self_att"]
+        keys = [f"{prefix}.{name}" for prefix, names in recorded.items() for name in names]
+        keys += [f"layers.0.{norm}.{parameter}" for norm in norms for parameter in ("bias", "weight")]
+        assert sorted(encoder.state_dict()) == sorted(keys)
+        assert "layers.0.self_attn.linear_pos.weight" in _packed_encoder().state_dict()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+class TestPackedConformerEncoderCuda:
+    @pytest.mark.unit
+    @pytest.mark.parametrize("self_attention_model", ["rel_pos", "abs_pos", "rope"])
+    def test_matches_padded_outputs_and_gradients(self, self_attention_model):
+        torch.manual_seed(8)
+        padded_encoder = _packed_encoder(self_attention_model=self_attention_model, d_model=32, n_heads=2)
+        padded_encoder = padded_encoder.cuda().eval()
+        packed_encoder = copy.deepcopy(padded_encoder)
+        lengths = torch.tensor([300, 7, 150, 1, 260], device="cuda")
+        features = _packed_test_features(lengths, dtype=torch.float32, device="cuda")
+        padded_out, padded_lengths = padded_encoder(audio_signal=features, length=lengths)
+        packed = packed_encoder.forward_sequence_packed(features, lengths)
+        padded_valid = _valid_frames(padded_out, padded_lengths)
+        torch.testing.assert_close(packed.data, padded_valid, atol=1e-4, rtol=1e-4)
+        padded_valid.square().mean().backward()
+        packed.data.square().mean().backward()
+        padded_grads = dict(padded_encoder.named_parameters())
+        for name, parameter in packed_encoder.named_parameters():
+            torch.testing.assert_close(parameter.grad, padded_grads[name].grad, atol=1e-4, rtol=1e-3, msg=name)
+
+    @staticmethod
+    def _half_precision_flash_attention_available():
+        return transformer_encoder_utils._get_flash_attention_varlen_for_device(torch.device("cuda")) is not None
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("self_attention_model", ["rel_pos", "abs_pos", "rope"])
+    def test_bf16_autocast_matches_padded_outputs_and_gradients(self, self_attention_model):
+        """rel_pos runs FlexAttention with the position bias; abs_pos and rope run variable-length FlashAttention."""
+        if self_attention_model != "rel_pos" and not self._half_precision_flash_attention_available():
+            pytest.skip("requires a variable-length FlashAttention provider")
+        torch.manual_seed(9)
+        padded_encoder = _packed_encoder(self_attention_model=self_attention_model, d_model=32, n_heads=2)
+        padded_encoder = padded_encoder.cuda().eval()
+        packed_encoder = copy.deepcopy(padded_encoder)
+        lengths = torch.tensor([300, 7, 150], device="cuda")
+        features = _packed_test_features(lengths, dtype=torch.float32, device="cuda")
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            padded_out, padded_lengths = padded_encoder(audio_signal=features, length=lengths)
+            packed = packed_encoder.forward_sequence_packed(features, lengths)
+        padded_valid = _valid_frames(padded_out, padded_lengths).float()
+        torch.testing.assert_close(packed.data.float(), padded_valid, atol=5e-2, rtol=5e-2)
+        padded_valid.square().mean().backward()
+        packed.data.float().square().mean().backward()
+        padded_grads = dict(padded_encoder.named_parameters())
+        for name, parameter in packed_encoder.named_parameters():
+            # bf16 rounds differently in the padded and the packed kernels, so the gradients are compared in norm
+            reference = padded_grads[name].grad
+            assert (parameter.grad - reference).norm() <= 0.1 * reference.norm() + 1e-5, name
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("self_attention_model", ["abs_pos", "rope"])
+    def test_attention_dropout_runs_through_flash_attention_in_bf16(self, self_attention_model):
+        if not self._half_precision_flash_attention_available():
+            pytest.skip("requires a variable-length FlashAttention provider")
+        torch.manual_seed(10)
+        encoder = _packed_encoder(self_attention_model=self_attention_model, dropout_att=0.1, d_model=32, n_heads=2)
+        encoder = encoder.cuda().train()
+        lengths = torch.tensor([300, 7, 150], device="cuda")
+        features = _packed_test_features(lengths, dtype=torch.float32, device="cuda")
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            packed = encoder.forward_sequence_packed(features, lengths)
+        assert packed.data.shape == (int(packed.lengths.sum()), 32) and torch.isfinite(packed.data).all()
+        packed.data.float().square().mean().backward()
+        assert encoder.layers[0].self_attn.linear_q.weight.grad is not None
+
+    @pytest.mark.unit
+    def test_attention_dropout_without_flash_attention_is_rejected(self):
+        """FlexAttention has no dropout: rel_pos attention, and abs_pos attention in float32, refuse dropout_att."""
+        lengths = torch.tensor([30, 7], device="cuda")
+        features = _packed_test_features(lengths, dtype=torch.float32, device="cuda")
+        for self_attention_model in ("rel_pos", "abs_pos"):
+            encoder = _packed_encoder(self_attention_model=self_attention_model, dropout_att=0.1).cuda().train()
+            with pytest.raises(NotImplementedError, match="dropout_att"):
+                encoder.forward_sequence_packed(features, lengths)

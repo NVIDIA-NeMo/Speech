@@ -1282,6 +1282,24 @@ class RotaryPositionalEncoding(torch.nn.Module):
         positions = torch.arange(0, length, dtype=torch.float32, device=device)
         self.create_pe(positions=positions, dtype=dtype)
 
+    def rotate(self, x: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
+        """Rotate at explicit absolute positions.
+
+        The tables must already cover the positions (``extend_pe``).
+        Indexing with a device tensor keeps the call free of host synchronization,
+        so incremental decoding over a key-value cache can run inside a captured CUDA graph.
+
+        Args:
+            x: (batch, head, time, d_k)
+            positions: absolute positions (time,), int64
+
+        Returns:
+            the rotated tensor, same shape as ``x``
+        """
+        cos = self.cos.index_select(0, positions).view(1, 1, -1, self.d_k_rot)
+        sin = self.sin.index_select(0, positions).view(1, 1, -1, self.d_k_rot)
+        return self._apply_rotary(x, cos.to(x.dtype), sin.to(x.dtype))
+
     def forward(self, q, k):
         """Rotate Q and K.
 

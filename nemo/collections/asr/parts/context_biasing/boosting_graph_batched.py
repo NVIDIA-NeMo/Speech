@@ -15,6 +15,7 @@
 
 import os
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import InitVar, dataclass, field
 from pathlib import Path
 from typing import NamedTuple, Optional
@@ -92,6 +93,14 @@ class BoostingTreeModelConfig:
     # values 0.1 ... 2.0 can work better with small biasing lists with beam search
     var_bpe_scoring_temp: float = 10.0
     var_bpe_penalize_subsplits: bool = True  # penalize sub-splits; `True` is recommended value
+
+    def __post_init__(self):
+        # when initialized from a plain dict (e.g., per-stream biasing request from a manifest),
+        # phrase items arrive as dicts; convert them to PhraseItem (unknown fields raise TypeError)
+        if self.key_phrase_items_list:
+            self.key_phrase_items_list = [
+                PhraseItem(**item) if isinstance(item, Mapping) else item for item in self.key_phrase_items_list
+            ]
 
     @staticmethod
     def is_empty(cfg: "BoostingTreeModelConfig") -> bool:

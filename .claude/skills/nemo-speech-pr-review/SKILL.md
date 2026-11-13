@@ -136,7 +136,8 @@ maintainer needs to make.
 ## Severity
 
 - **Blocking:** wrong results, data loss, broken checkpoints or public APIs, an untested behavior change outside the
-  trivial exception under Tests, an optional dependency that breaks import, a missing DCO sign-off, or anything under "Never approve".
+  trivial exception under Tests, an optional dependency that breaks import, a missing DCO sign-off, or anything under
+  "Never approve".
 - **Should fix:** any other principle violation.
 - **Nitpick:** wording or readability. Label it optional.
 

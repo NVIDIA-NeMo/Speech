@@ -16,7 +16,11 @@ import json
 
 from omegaconf import OmegaConf
 
-from nemo.collections.asr.parts.utils.transcribe_utils import write_transcription
+from nemo.collections.asr.parts.utils.transcribe_utils import (
+    read_and_maybe_sort_manifest,
+    restore_transcription_order,
+    write_transcription,
+)
 
 
 def test_write_transcription_preserves_unicode_for_audio_dir(tmp_path):
@@ -71,3 +75,47 @@ def test_write_transcription_preserves_unicode_for_manifest(tmp_path):
     record = json.loads(raw)
     assert record["pred_text"] == "Grüße François"
     assert record["text"] == "référence"
+
+
+def _write_manifest_with_blank_line(tmp_path):
+    rows = [
+        {"audio_filepath": "a.wav", "duration": 1.0, "text": "a"},
+        {"audio_filepath": "b.wav", "duration": 3.0, "text": "b"},
+        {"audio_filepath": "c.wav", "duration": 2.0, "text": "c"},
+    ]
+    lines = [json.dumps(rows[0]), "", json.dumps(rows[1]), json.dumps(rows[2])]
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return manifest
+
+
+def test_restore_transcription_order_skips_blank_lines(tmp_path):
+    manifest = _write_manifest_with_blank_line(tmp_path)
+    # The model transcribes the entries sorted by duration, longest first.
+    items = read_and_maybe_sort_manifest(str(manifest), try_sort=True)
+    assert [item["audio_filepath"] for item in items] == ["b.wav", "c.wav", "a.wav"]
+
+    transcriptions = ["pred " + item["text"] for item in items]
+    assert restore_transcription_order(str(manifest), transcriptions) == ["pred a", "pred b", "pred c"]
+
+
+def test_write_transcription_skips_blank_lines_in_manifest(tmp_path):
+    manifest = _write_manifest_with_blank_line(tmp_path)
+    output = tmp_path / "transcriptions.json"
+    cfg = OmegaConf.create(
+        {
+            "append_pred": False,
+            "output_filename": str(output),
+            "audio_dir": None,
+            "dataset_manifest": str(manifest),
+        }
+    )
+
+    write_transcription(transcriptions=["pred a", "pred b", "pred c"], cfg=cfg, model_name="test-model")
+
+    records = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+    assert [(record["audio_filepath"], record["pred_text"]) for record in records] == [
+        ("a.wav", "pred a"),
+        ("b.wav", "pred b"),
+        ("c.wav", "pred c"),
+    ]

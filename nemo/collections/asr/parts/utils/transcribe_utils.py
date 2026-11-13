@@ -413,7 +413,8 @@ def read_and_maybe_sort_manifest(path: str, try_sort: bool = False) -> List[dict
 
 def restore_transcription_order(manifest_path: str, transcriptions: List) -> Union[List, Tuple]:
     with open(manifest_path, encoding='utf-8') as f:
-        items = [(idx, json.loads(l)) for idx, l in enumerate(f) if l.strip() != ""]
+        # Number only the non-blank lines: the transcriptions follow the manifest reader, which skips blank lines.
+        items = [(idx, json.loads(line)) for idx, line in enumerate(line for line in f if line.strip())]
     if not all("duration" in item[1] and item[1]["duration"] is not None for item in items):
         return transcriptions
     new2old = [item[0] for item in sorted(items, reverse=True, key=lambda it: it[1]["duration"])]
@@ -540,10 +541,9 @@ def write_transcription(
                 f.write(json.dumps(item, ensure_ascii=False) + "\n")
         else:
             with open(cfg.dataset_manifest, 'r', encoding='utf-8') as fr:
-                for idx, line in enumerate(fr):
-                    line = line.strip()
-                    if not line:
-                        continue
+                # Number only the non-blank lines, as the manifest reader that produced the transcriptions does.
+                lines = (line.strip() for line in fr)
+                for idx, line in enumerate(line for line in lines if line):
                     item = json.loads(line)
                     if not return_hypotheses:  # transcription is str
                         item[pred_text_attr_name] = best_hyps[idx]

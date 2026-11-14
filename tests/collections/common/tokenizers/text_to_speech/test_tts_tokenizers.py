@@ -16,6 +16,7 @@
 import pytest
 
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
+    AggregatedTTSTokenizer,
     ArabicCharsTokenizer,
     EnglishCharsTokenizer,
     FrenchCharsTokenizer,
@@ -577,3 +578,137 @@ class TestTTSTokenizers:
         tokenizer = tokenizer_type(pad_with_space=True)
 
         assert tokenizer.encode("") == [tokenizer._token2id[tokenizer.tokens[tokenizer.space]]] * 2
+
+
+class TestAggregatedTTSTokenizerCodeSwitching:
+    PHONEME_DICT_EN = {"HELLO": ["həˈɫoʊ"], "WORLD": ["ˈwɝɫd"], "CAFE": ["kəˈfeɪ"]}
+    PAIR = "arabic+english"
+
+    @staticmethod
+    def _space(tokenizer):
+        return tokenizer._token2id[tokenizer.tokens[tokenizer.space]]
+
+    def _make(self, phoneme_probability=None):
+        arabic = ArabicCharsTokenizer(pad_with_space=True)
+        english = IPATokenizer(
+            g2p=IpaG2p(phoneme_dict=self.PHONEME_DICT_EN, phoneme_probability=phoneme_probability), locale=None
+        )
+        return AggregatedTTSTokenizer([arabic, english], ["arabic", "english"]), arabic, english
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_latin_spans_use_latin_tokenizer(self):
+        agg, arabic, english = self._make()
+        ar_offset, en_offset = agg.tokenizer_offsets["arabic"], agg.tokenizer_offsets["english"]
+        ar_space = ar_offset + self._space(arabic)
+
+        def ar(text):
+            return [ar_offset + t for t in arabic.encode(text)[1:-1]]  # drop per-call padding
+
+        expected = (
+            [ar_space]
+            + ar("مرحبا")
+            + [ar_space]
+            + [en_offset + t for t in english.encode("hello world")]
+            + [ar_space]
+            + ar("يا صديقي")
+            + [ar_space]
+        )
+
+        assert agg.encode("مرحبا hello world يا صديقي", self.PAIR) == expected
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_punctuation_and_digits_stay_with_primary(self):
+        agg, _, _ = self._make()
+
+        tokens = agg.encode("hello، 5 cafe.", self.PAIR)
+        owners = [agg._owning_tokenizer(t, ["arabic", "english"]) for t in tokens]
+
+        english_tokens = [t for t, owner in zip(tokens, owners) if owner == "english"]
+        arabic_text = agg.decode([t for t, owner in zip(tokens, owners) if owner == "arabic"], "arabic")
+
+        # The words (and the "." glued to "cafe") reach the Latin tokenizer; "،" and the digit stay with the primary.
+        assert english_tokens == agg.encode("hello", "english") + agg.encode("cafe.", "english")
+        assert arabic_text.replace(" ", "") in ("،", "،5")
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_sentence_final_ascii_punctuation_follows_latin_word(self):
+        # An Arabic "." right after English phonemes made the model miss end-of-speech and repeat itself;
+        # the period glued to the English word must be encoded by the Latin tokenizer.
+        agg, arabic, english = self._make()
+        ar_space = agg.tokenizer_offsets["arabic"] + self._space(arabic)
+        en_offset = agg.tokenizer_offsets["english"]
+
+        tokens = agg.encode("مرحبا hello world.", self.PAIR)
+
+        assert tokens[-1] == ar_space  # primary pad_with_space
+        assert tokens[-2] == en_offset + english._token2id["."]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_non_ascii_punctuation_after_latin_word_stays_with_primary(self):
+        agg, arabic, _ = self._make()
+        ar_question = agg.tokenizer_offsets["arabic"] + arabic._token2id["؟"]
+
+        tokens = agg.encode("مرحبا hello؟", self.PAIR)
+
+        assert tokens[-2] == ar_question
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_no_space_inserted_without_whitespace(self):
+        agg, arabic, _ = self._make()
+        ar_space = agg.tokenizer_offsets["arabic"] + self._space(arabic)
+
+        tokens = agg.encode("hello،world", self.PAIR)
+
+        # Only the leading and trailing pad_with_space tokens; no word boundary was in the text.
+        assert tokens.count(ar_space) == 2
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_regular_tokenizer_names_unchanged(self):
+        agg, arabic, english = self._make()
+        text = "مرحبا hello"
+
+        assert agg.encode(text, "arabic") == [agg.tokenizer_offsets["arabic"] + t for t in arabic.encode(text)]
+        assert agg.encode("hello", "english") == [
+            agg.tokenizer_offsets["english"] + t for t in english.encode("hello")
+        ]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_latin_g2p_is_forced_to_phonemes_and_restored(self):
+        agg, _, english = self._make(phoneme_probability=0.5)
+        english.g2p.phoneme_probability = 1.0
+        phonemes_only = agg.encode("hello world", "english")
+        english.g2p.phoneme_probability = 0.5
+        en_offset = agg.tokenizer_offsets["english"]
+
+        # With phoneme_probability=0.5 a plain encode would randomly mix graphemes in; the pair never does.
+        runs = [[t for t in agg.encode("مرحبا hello world", self.PAIR) if t >= en_offset] for _ in range(20)]
+
+        assert all(run == phonemes_only for run in runs)
+        assert english.g2p.phoneme_probability == 0.5
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_decode_round_trip(self):
+        agg, _, _ = self._make()
+
+        decoded = agg.decode(agg.encode("مرحبا hello", self.PAIR), self.PAIR)
+
+        assert "مرحبا" in decoded
+        assert "h|ə|ˈ|ɫ|o|ʊ" in decoded  # IPATokenizer.decode joins phonemes with its "|" separator
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_unknown_or_malformed_pair_raises(self):
+        agg, _, _ = self._make()
+
+        with pytest.raises(KeyError, match="german"):
+            agg.encode("hello", "arabic+german")
+        with pytest.raises(ValueError, match="<primary>"):
+            agg.encode("hello", "arabic+english+german")

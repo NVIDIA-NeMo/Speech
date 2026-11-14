@@ -25,13 +25,14 @@ import threading
 from types import MethodType
 
 import torch
+from easymagpie_vllm_omni.cfg_scheduler import CFGPairSchedulerMixin
 from vllm.v1.request import Request, RequestStatus, StreamingUpdate
 from vllm_omni.core.sched.omni_ar_scheduler import OmniARAsyncScheduler
 from vllm_omni.core.sched.omni_generation_scheduler import OmniGenerationScheduler
 from vllm_omni.distributed.omni_connectors.transfer_adapter.chunk_transfer_adapter import OmniChunkTransferAdapter
 
 
-class EasyMagpieARAsyncScheduler(OmniARAsyncScheduler):
+class EasyMagpieARAsyncScheduler(CFGPairSchedulerMixin, OmniARAsyncScheduler):
     """Forward each chunk's token limit and additional information.
 
     This class also works around a bug in vLLM-Omni's async segment-stop

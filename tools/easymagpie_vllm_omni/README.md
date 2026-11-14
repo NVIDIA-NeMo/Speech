@@ -15,6 +15,93 @@ Model definition and pipeline registration live in
 [`vllm_plugin_easymagpie_omni/`](vllm_plugin_easymagpie_omni/).
 Deployment knobs are in [`deploy/easymagpie.yaml`](deploy/easymagpie.yaml).
 
+### Nemotron-H FP16 compatibility
+
+The pinned vLLM 0.24 runner applies the expert-routing scale directly when
+shared experts are absent, including in FP16. With shared experts, its FP16
+path defers that scale; EasyMagpie compensates only for that case, once.
+The expert-routing scale is independent of the CFG scale. This correction
+applies to the backbone used by both CFG-on and CFG-off deployments and does
+not require reconverting checkpoints.
+
+### Native audio-code sampling compatibility
+
+The local-transformer sampler cleans nonfinite logits and clips them to
+`[-100, 100]` before masking reserved tokens, matching native NeMo inference.
+CFG mixes conditional and unconditional logits before this step. Top-k keeps
+all tokens tied at the cutoff, and nonpositive temperatures use deterministic
+argmax. These operations stay on GPU inside the compiled codebook loop;
+CFG continues to use one batched transformer forward for both branches.
+The corrected loops have distinct compilation-cache identities.
+
+### Classifier-free guidance (CFG)
+
+For checkpoints that need runtime guidance, use
+[`deploy/easymagpie_cfg.yaml`](deploy/easymagpie_cfg.yaml). The default scale is
+**2.5**, with the native NeMo convention
+`logits = scale * conditional + (1 - scale) * unconditional`.
+CFG is opt-in; the existing deployment keeps its original sampling path.
+This is inference guidance and does not train or distill a checkpoint.
+
+```bash
+export VLLM_PLUGINS=easymagpie_omni
+export CFG_SCALE=2.5
+vllm serve /path/to/converted_model \
+  --deploy-config deploy/easymagpie_cfg.yaml \
+  --trust-remote-code --omni --host 127.0.0.1 --port 8091
+```
+
+Whole-text HTTP requests select a known `voice`. Override the scale per request
+with `extra_params={"cfg_scale": 2.5, "temperature": 0.7, "top_k": 80}`.
+Scale 1 is a useful identity control but still evaluates both branches in a CFG
+deployment; use the original deployment to measure the CFG-off baseline.
+Current CFG supports single-turn whole-text synthesis with precomputed speaker
+embeddings. Raw reference/user audio and incremental text sessions are rejected.
+
+Both branches share one model and run in the same backbone batch with independent
+native KV/Mamba state. The local transformer also batches both branches for each
+codebook, combines finite logits before masking/top-k, and samples once. That
+sample is fed back to both branches. Phonemes are predicted from the conditional
+branch. The unconditional branch replaces context conditioning with `CFG_UNK`
+and removes text/phoneme inputs, matching native NeMo CFG.
+
+The CFG deployment has 16 physical sequence slots, allowing eight concurrent
+speech requests. Chunked prefill and prefix caching are disabled; the scheduler
+checks token and KV budgets to keep pairs together. Reduce `max_num_seqs` or
+`max_model_len` if the GPU cannot reserve enough native cache pages. Increase
+`easymagpie_cfg_max_prefill_tokens` and the matching batch-token budget together
+for longer conditioning prefixes.
+
+For activation verification, set `EASYMAGPIE_CFG_TRACE_PATH` to a writable JSONL
+path before starting the service. Each request records the first actual acoustic
+frame's branch-logit difference and the change caused by guidance. Disable tracing
+for performance measurements: diagnostics include GPU synchronization.
+
+CFG supports both the v1 local-transformer predictor and the v2
+`acoustic_codes_predictor`. For v2, every physical row advances its own global
+predictor KV caches, including prefill rows. Non-audio rows use MASK feedback;
+the conditional and unconditional rows share the guided sample. Both branches
+run together with one weight copy. The backbone and acoustic predictor retain
+their own CUDA graphs while request pairing stays outside graph replay.
+Trace and production samplers have separate compiled identities so changing
+diagnostics cannot reuse an incompatible AOT cache entry.
+
+[`scripts/benchmark_cfg.py`](scripts/benchmark_cfg.py) launches the two deployments
+sequentially on the same GPU, saves exact input text and greedy comparison WAVs
+(off, CFG scale 1, and CFG scale 2.5), then measures warm steady-state throughput
+at concurrency 1 and 4 with temperature 0.7. Inputs are ordinary JSONL records
+containing unique `id` and `text` fields, so additional datasets need no model changes.
+
+```bash
+python scripts/benchmark_cfg.py \
+  --model /path/to/converted_model --voice eng \
+  --inputs comparison.jsonl --output /path/to/results \
+  --sample-temperature 0.7
+```
+
+`--sample-temperature` applies equally to CFG-off and CFG-on comparison audio.
+Its default is 0 for controlled comparisons; use 0.7 to match normal sampling.
+
 ### Convert a checkpoint
 
 This step converts the EasyMagpie LM, precomputes the text-embedding lookup,
@@ -212,6 +299,13 @@ python scripts/benchmark_model.py --model ./converted_model -n 128 -c 1 32 \
 python scripts/benchmark_server.py --text-file vctk_subset.txt -n 128 -c 1 32 \
     --speaker-id eng
 
+# Matched CFG comparison: launch each deployment separately on the same GPU.
+# Repeat this command at least three times for each deployment, with a new
+# output path per repeat. Omit --cfg-scale for the CFG-off deployment.
+python scripts/benchmark_server.py --text-file comparison.tsv -n 128 -c 1 4 \
+    --speaker-id eng --temperature 0.7 --top-k 80 --cfg-scale 2.5 \
+    --seed 42 --json-output /path/to/results/cfg_on_repeat_1.json
+
 # Benchmark zero-shot synthesis with one request-time reference.
 python scripts/benchmark_server.py --text-file vctk_subset.txt -n 128 -c 1 32 \
     --reference-audio /path/to/reference.wav
@@ -225,3 +319,12 @@ python scripts/benchmark_server.py --text-file vctk_subset.txt -n 128 -c 1 32 \
 python scripts/benchmark_incremental_server.py --model ./converted_model \
     --text-file vctk_subset.txt --tokens-per-chunk 5 -n 128 -c 1 32
 ```
+
+The HTTP benchmark excludes its warm-up requests from measured throughput.
+Use the same text corpus, request count, concurrency, voice, sampling settings
+and GPU for both deployments; report the median and range across repeats.
+`rtf` in this tool means generated audio seconds per wall-clock second (higher
+is faster). `--seed` controls client task order, not the server's sampling RNG.
+`--json-output` preserves all request timings and errors alongside summaries.
+To keep every benchmark WAV, give each input a unique utterance ID and use a
+different `--output-dir` for each concurrency and repeat.

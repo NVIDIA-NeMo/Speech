@@ -66,6 +66,17 @@ def merge_streaming_additional_information(
 class EasyMagpieGPUARModelRunner(GPUARModelRunner):
     """GPU AR runner that restores streaming chunk metadata propagation."""
 
+    def load_model(self, *args, **kwargs):
+        super().load_model(*args, **kwargs)
+        if getattr(self.model, '_cfg_enabled', False):
+            from vllm.compilation.cuda_graph import CUDAGraphWrapper
+
+            # Pair membership and request scales are assembled by Python on
+            # every step. A top-level replay would skip this dispatch entirely.
+            # The backbone and CFG code loop keep their own compiled graphs.
+            if isinstance(self.model, CUDAGraphWrapper):
+                self.model = self.model.runnable
+
     def _update_streaming_request(self, req_id, new_req_data):
         payload = getattr(new_req_data, "additional_information", None)
         incoming = deserialize_additional_information(payload)

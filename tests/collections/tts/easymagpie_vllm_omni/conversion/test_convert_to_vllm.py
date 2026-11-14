@@ -140,7 +140,8 @@ def test_extract_speaker_embedding_without_reference_transformer(monkeypatch):
     torch.testing.assert_close(result, torch.arange(6, dtype=torch.float32).view(2, 3))
 
 
-def test_build_config_exports_multiturn_text_metadata(monkeypatch):
+@pytest.mark.parametrize('cfg_unk_token_id', [None, 0, 57])
+def test_build_config_exports_multiturn_text_metadata(monkeypatch, cfg_unk_token_id):
     class _FakeNemotronHConfig:
         def __init__(self, **kwargs):
             self.__dict__.update(kwargs)
@@ -187,9 +188,12 @@ def test_build_config_exports_multiturn_text_metadata(monkeypatch):
         mask_token_id=36,
     )
 
+    if cfg_unk_token_id is not None:
+        model.cfg_unk_token_id = cfg_unk_token_id
     config = converter.build_config(model, vocab_size=104, torch_dtype="float32")
 
     assert config["text_eos_id"] == 101
+    assert config['cfg_unk_id'] == (102 if cfg_unk_token_id is None else cfg_unk_token_id)
     assert config["text_interruption_id"] == 103
     assert config["use_multiturn_dataset"] is True
     assert config["enable_phoneme_text_input"] is False

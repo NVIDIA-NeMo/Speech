@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import random
 from collections import Counter
 from io import BytesIO
 from itertools import islice
@@ -32,6 +33,7 @@ from lhotse.testing.random import deterministic_rng
 from omegaconf import OmegaConf
 
 from nemo.collections.common.data.lhotse import cutset as cutset_module
+from nemo.collections.common.data.lhotse import dataloader as dataloader_module
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.collections.common.data.lhotse.text_adapters import SourceTargetTextExample, TextExample
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer, create_spt_model
@@ -2205,6 +2207,59 @@ def test_dataloader_with_synth_rir(cutset_path: Path):
         assert tfnm["name"] == "ReverbWithImpulseResponse"
     else:  # lhotse>=1.24.0
         assert isinstance(tfnm, ReverbWithImpulseResponse)
+
+
+def _get_rir_random_stream(cutset_path: Path, seed: int, shard_seed: int | str, global_rank: int) -> list[float]:
+    from lhotse.dataset import ReverbWithImpulseResponse
+
+    config = OmegaConf.create(
+        {
+            "cuts_path": str(cutset_path),
+            "rir_enabled": True,
+            "rir_prob": 0.5,
+            "batch_size": 2,
+            "seed": seed,
+            "shard_seed": shard_seed,
+        }
+    )
+    dataloader = get_lhotse_dataloader_from_config(
+        config=config,
+        global_rank=global_rank,
+        world_size=2,
+        dataset=Identity(),
+    )
+    transform = next(
+        transform for transform in dataloader.sampler._transforms if isinstance(transform, ReverbWithImpulseResponse)
+    )
+    return [transform.random.random() for _ in range(6)]
+
+
+def _random_stream(seed: int) -> list[float]:
+    rng = random.Random(seed)
+    return [rng.random() for _ in range(6)]
+
+
+def test_rir_augmentation_resolves_shard_seed(cutset_path: Path, monkeypatch):
+    resolved_shard_seeds = iter([101, 202])
+
+    def resolve_seed(seed):
+        return next(resolved_shard_seeds) if seed == "trng" else seed
+
+    monkeypatch.setattr(dataloader_module, "resolve_seed", resolve_seed)
+
+    rank_0_stream = _get_rir_random_stream(cutset_path, seed=0, shard_seed="trng", global_rank=0)
+    rank_1_stream = _get_rir_random_stream(cutset_path, seed=0, shard_seed="trng", global_rank=1)
+
+    assert rank_0_stream == _random_stream(101)
+    assert rank_1_stream == _random_stream(202)
+    assert rank_0_stream != rank_1_stream
+
+
+def test_rir_augmentation_fixed_shard_seed_ignores_global_seed(cutset_path: Path):
+    rank_0_stream = _get_rir_random_stream(cutset_path, seed=0, shard_seed=17, global_rank=0)
+    rank_1_stream = _get_rir_random_stream(cutset_path, seed=1, shard_seed=17, global_rank=1)
+
+    assert rank_0_stream == rank_1_stream
 
 
 def test_dataloader_bucket_batch_size(nemo_tarred_manifest_path_multi: tuple[str, str]):

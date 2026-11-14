@@ -16,14 +16,19 @@
 import pathlib
 import random
 import re
+import unicodedata
 from collections import defaultdict
+from functools import partial
 from typing import Callable, Dict, List, Optional, Set, Tuple, Union
 
 from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import validate_locale
 from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import (
     INDIC_CHARS_ALL,
     KOREAN_CHARS,
+    LATIN_CHARS_ALL,
+    LATIN_CHARS_EXTENDED,
     WORD_CHARS_ALL,
+    WORD_CHARS_EXTENDED,
     any_locale_word_tokenize,
     english_word_tokenize,
     normalize_unicode_text,
@@ -32,9 +37,16 @@ from nemo.collections.tts.g2p.models.base import BaseG2p
 from nemo.collections.tts.g2p.utils import GRAPHEME_CASE_MIXED, GRAPHEME_CASE_UPPER, set_grapheme_case
 from nemo.utils import logging
 
-# Compiled regex pattern for Indic scripts (used in dictionary parsing)
+# Compiled regex patterns for Latin, Indic, and Korean scripts (used in dictionary parsing)
+_LATIN_PATTERNS = {
+    1: re.compile(f'^[{LATIN_CHARS_ALL}]'),
+    2: re.compile(f'^[{LATIN_CHARS_EXTENDED}]'),
+}
 _INDIC_PATTERN = re.compile(f'^[{INDIC_CHARS_ALL}]')
 _KOREAN_PATTERN = re.compile(f'^[{KOREAN_CHARS}]')
+
+_MAX_SKIPPED_SHOWN = 5
+_MAX_SKIPPED_WORD_LEN = 30
 
 
 class IpaG2p(BaseG2p):
@@ -60,6 +72,7 @@ class IpaG2p(BaseG2p):
         grapheme_case: Optional[str] = GRAPHEME_CASE_UPPER,
         grapheme_prefix: Optional[str] = "",
         mapping_file: Optional[str] = None,
+        latin_charset_version: int = 1,
     ) -> None:
         """
         Generic IPA G2P module. This module converts words from graphemes to International Phonetic Alphabet
@@ -102,14 +115,25 @@ class IpaG2p(BaseG2p):
             grapheme_prefix (Optional[str]): Prepend a special symbol to any graphemes in order to distinguish graphemes
                 from phonemes because there may be overlaps between the two set. It is suggested to choose a prefix that
                 is not used or preserved somewhere else. "#" could be a good candidate. Default to "".
+            latin_charset_version (int): Latin word and dictionary-entry character set. Version 1 preserves the
+                historical Latin-1 range and existing tokenizer vocabularies. Version 2 additionally supports Latin
+                Extended-A/B and Latin Extended Additional. Defaults to 1 for checkpoint compatibility.
             TODO @borisfom: add docstring for newly added `mapping_file` argument.
         """
+        if type(latin_charset_version) is not int or latin_charset_version not in _LATIN_PATTERNS:
+            raise ValueError(f"Unsupported latin_charset_version={latin_charset_version!r}. Use 1 (legacy) or 2.")
+
         self.use_stresses = use_stresses
         self.grapheme_case = grapheme_case
         self.grapheme_prefix = grapheme_prefix
         self.phoneme_probability = phoneme_probability
         self.locale = locale
+        self.latin_charset_version = latin_charset_version
         self._rng = random.Random()
+
+        word_chars = WORD_CHARS_ALL if latin_charset_version == 1 else WORD_CHARS_EXTENDED
+        self.CHAR_REGEX = re.compile(fr"[{word_chars}\d]")
+        self.PUNCT_REGEX = re.compile(fr"[^{word_chars}\d]")
 
         if locale is not None:
             validate_locale(locale)
@@ -123,7 +147,7 @@ class IpaG2p(BaseG2p):
         else:
             self.use_chars = use_chars
 
-        phoneme_dict_obj = self._parse_phoneme_dict(phoneme_dict)
+        phoneme_dict_obj = self._parse_phoneme_dict(phoneme_dict, latin_charset_version=latin_charset_version)
 
         # verify if phoneme dict obj is empty
         if phoneme_dict_obj:
@@ -143,9 +167,9 @@ class IpaG2p(BaseG2p):
         # a word representation (a list tokens) and a flag indicating whether to process the word or
         # leave it unchanged.
         if locale == "en-US":
-            word_tokenize_func = english_word_tokenize
+            word_tokenize_func = partial(english_word_tokenize, latin_charset_version=latin_charset_version)
         else:
-            word_tokenize_func = any_locale_word_tokenize
+            word_tokenize_func = partial(any_locale_word_tokenize, latin_charset_version=latin_charset_version)
 
         super().__init__(
             phoneme_dict=_phoneme_dict,
@@ -172,7 +196,8 @@ class IpaG2p(BaseG2p):
             pathlib.Path,
             Dict[str, List[List[str]]],
             List[Union[str, pathlib.Path, Dict[str, List[List[str]]]]],
-        ]
+        ],
+        latin_charset_version: int = 1,
     ) -> Dict[str, List[List[str]]]:
         """
         Parse one or more IPA dictionaries and return a merged dict object.
@@ -189,10 +214,13 @@ class IpaG2p(BaseG2p):
         Returns:
             A merged dict object (Dict[str, List[List[str]]]).
         """
+        if type(latin_charset_version) is not int or latin_charset_version not in _LATIN_PATTERNS:
+            raise ValueError(f"Unsupported latin_charset_version={latin_charset_version!r}. Use 1 (legacy) or 2.")
+
         if isinstance(phoneme_dict, list):
             merged = defaultdict(list)
             for source in phoneme_dict:
-                parsed = IpaG2p._parse_phoneme_dict(source)
+                parsed = IpaG2p._parse_phoneme_dict(source, latin_charset_version=latin_charset_version)
                 for word, prons in parsed.items():
                     merged[word].extend(prons)
             return merged
@@ -202,24 +230,18 @@ class IpaG2p(BaseG2p):
             # represents the pronunciation variant of that word.
             phoneme_dict_obj = defaultdict(list)
             _alt_re = re.compile(r"\([0-9]+\)")
+            skipped_entries = []
             with open(phoneme_dict, "r", encoding="utf-8") as fdict:
-                for line in fdict:
-                    # skip the empty lines
-                    if len(line) == 0:
+                for line_number, line in enumerate(fdict, start=1):
+                    # Skip blank lines and the ";;;" header used by CMUdict-format files.
+                    if not line.strip() or line.startswith(";;;"):
                         continue
 
-                    # Note that latin character pattern should be consistent with
-                    # nemo.collections.tts.g2p.data.data_utils.LATIN_CHARS_ALL. It is advised to extend its character
-                    # coverage if adding the support of new languages.
-                    # TODO @xueyang: unify hardcoded range of characters with LATIN_CHARS_ALL to avoid duplicates.
+                    # Dictionary admission and word tokenization use the same versioned Latin range.
                     line = normalize_unicode_text(line)
 
                     if (
-                        'A' <= line[0] <= 'Z'
-                        or 'a' <= line[0] <= 'z'
-                        or 'À' <= line[0] <= 'Ö'
-                        or 'Ø' <= line[0] <= 'ö'
-                        or 'ø' <= line[0] <= 'ÿ'
+                        _LATIN_PATTERNS[latin_charset_version].match(line[0])
                         or _INDIC_PATTERN.match(line[0])
                         or _KOREAN_PATTERN.match(line[0])
                         or line[0] == "'"
@@ -228,6 +250,22 @@ class IpaG2p(BaseG2p):
                         word = re.sub(_alt_re, "", parts[0])
                         prons = re.sub(r"\s+", "", parts[1])
                         phoneme_dict_obj[word].append(list(prons))
+                    elif unicodedata.category(line[0]).startswith('L'):
+                        skipped_entries.append((line_number, line.strip().split(maxsplit=1)[0]))
+
+            if skipped_entries:
+                preview = ", ".join(
+                    f"line {number}: '{word[:_MAX_SKIPPED_WORD_LEN]}'"
+                    for number, word in skipped_entries[:_MAX_SKIPPED_SHOWN]
+                )
+                if len(skipped_entries) > _MAX_SKIPPED_SHOWN:
+                    preview += f", ... ({len(skipped_entries) - _MAX_SKIPPED_SHOWN} more)"
+                logging.warning(
+                    f"Skipped {len(skipped_entries)} entries of the phoneme dictionary '{phoneme_dict}' because they "
+                    f"start with a letter outside latin_charset_version={latin_charset_version} or the supported "
+                    f"Indic and Korean ranges. Those words will be handled as out-of-vocabulary. "
+                    f"Skipped entries: {preview}."
+                )
         else:
             # Load phoneme_dict as dictionary object
             logging.info("Loading phoneme_dict as a Dict object, and validating its entry format.")
@@ -261,7 +299,7 @@ class IpaG2p(BaseG2p):
         """
         Replace model's phoneme dictionary with a custom one
         """
-        self.phoneme_dict = self._parse_phoneme_dict(phoneme_dict)
+        self.phoneme_dict = self._parse_phoneme_dict(phoneme_dict, latin_charset_version=self.latin_charset_version)
 
     @staticmethod
     def _parse_file_by_lines(p: Union[str, pathlib.Path]) -> List[str]:

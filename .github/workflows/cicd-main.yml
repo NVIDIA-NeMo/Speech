@@ -318,10 +318,43 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.run_id }}
         run: |
-          # Get workflow run details and check job conclusions
-          LATEST_ATTEMPT=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion != null) | .conclusion] | last')
-          NUM_FAILED=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion == "failure") | .name] | length')
-          NUM_CANCELLED=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion == "cancelled") | .name] | length')
+          # Fetch one complete snapshot with small pages. A failed later page must
+          # discard the partial snapshot, so retry the entire retrieval at most twice.
+          for ATTEMPT in 1 2 3; do
+            if COUNTS=$(gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/jobs?per_page=20&filter=latest" \
+              --jq '.jobs | [length,
+                ([.[] | select(.conclusion == "failure")] | length),
+                ([.[] | select(.conclusion == "cancelled")] | length)] | @tsv'); then
+              break
+            fi
+            if [[ "$ATTEMPT" -eq 3 ]]; then
+              echo "::error::Unable to retrieve workflow jobs after 3 attempts."
+              exit 1
+            fi
+            echo "::warning::Job retrieval failed; retrying ($ATTEMPT/3)."
+            sleep "$((ATTEMPT * 2))"
+          done
+
+          # gh applies the query to each page. Validate and sum only after every
+          # page was retrieved successfully; empty or invalid data must fail closed.
+          NUM_JOBS=0
+          NUM_FAILED=0
+          NUM_CANCELLED=0
+          while IFS= read -r PAGE_COUNTS; do
+            if ! [[ "$PAGE_COUNTS" =~ ^[0-9]+$'\t'[0-9]+$'\t'[0-9]+$ ]]; then
+              echo "::error::Invalid workflow job counts."
+              exit 1
+            fi
+            IFS=$'\t' read -r PAGE_JOBS PAGE_FAILED PAGE_CANCELLED <<< "$PAGE_COUNTS"
+            NUM_JOBS=$((NUM_JOBS + PAGE_JOBS))
+            NUM_FAILED=$((NUM_FAILED + PAGE_FAILED))
+            NUM_CANCELLED=$((NUM_CANCELLED + PAGE_CANCELLED))
+          done <<< "$COUNTS"
+          if [[ "$NUM_JOBS" -eq 0 ]]; then
+            echo "::error::No workflow jobs were returned."
+            exit 1
+          fi
 
           if [[ $NUM_FAILED -eq 0 && $NUM_CANCELLED -eq 0 ]]; then
             RESULT="success"
@@ -359,7 +392,7 @@ jobs:
         env:
           RESULT: ${{ steps.result.outputs.code }}
         run: |
-          if [ $RESULT == "success" ]; then
+          if [[ "${RESULT:-}" == "success" ]]; then
             exit 0
           else
             exit 1

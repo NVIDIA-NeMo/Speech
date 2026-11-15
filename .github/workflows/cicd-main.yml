@@ -200,6 +200,11 @@ jobs:
         with:
           path: ${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo
 
+      - name: Check uv and Python as root and non-root
+        run: |
+          bash ${{ github.run_id }}/${{ steps.uuid.outputs.id }}/NeMo/docker/check_runtime_users.sh \
+            ${{ needs.cicd-test-container-build.outputs.image }}
+
       - name: Run some checks
         run: |
           docker run \

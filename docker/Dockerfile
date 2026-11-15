@@ -58,9 +58,11 @@ ENV UV_NO_PROGRESS=1
 # Keep uv and its managed CPython outside /root (mode 0700) so the image also
 # works when built or run as a non-root user: /opt/venv/bin/python symlinks
 # into UV_PYTHON_INSTALL_DIR, and uv itself lives on the default PATH.
+# /root/.local/bin stays last on PATH so root's `uv tool install` executables
+# still resolve. docker/check_runtime_users.sh guards this in CI.
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python
 ENV VIRTUAL_ENV=/opt/venv
-ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}:/root/.local/bin"
 
 RUN <<"EOF" bash -ex
 apt-get update

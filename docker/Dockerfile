@@ -55,8 +55,12 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 ENV UV_LINK_MODE=copy
 ENV UV_NO_CACHE=1
 ENV UV_NO_PROGRESS=1
+# Keep uv and its managed CPython outside /root (mode 0700) so the image also
+# works when built or run as a non-root user: /opt/venv/bin/python symlinks
+# into UV_PYTHON_INSTALL_DIR, and uv itself lives on the default PATH.
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python
 ENV VIRTUAL_ENV=/opt/venv
-ENV PATH="/root/.local/bin:${VIRTUAL_ENV}/bin:${PATH}"
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
 RUN <<"EOF" bash -ex
 apt-get update
@@ -77,7 +81,7 @@ RUN rm -rf /usr/local/cuda*/NsightSystems-cli-*/target-linux-*/plugins/efa_metri
     /opt/nvidia/nsight-systems*/*/target-linux-*/plugins/efa_metrics
 
 RUN <<"EOF" bash -ex
-curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
+curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | env UV_UNMANAGED_INSTALL=/usr/local/bin sh
 uv --version
 EOF
 

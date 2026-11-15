@@ -24,13 +24,36 @@ set -euo pipefail
 
 IMAGE="${1:?usage: $0 <image>}"
 
+# Strict options are set inside the script: the base image's BASH_ENV (/etc/bash.bashrc)
+# reads an unset PS1 before the command string runs, which `bash -u` would reject.
+# shellcheck disable=SC2016  # expanded inside the container, not here
+CHECKS='
+set -uo pipefail
+failed=0
+expect_path() {
+    local actual
+    actual="$(command -v "$1" || true)"
+    if [ "${actual}" != "$2" ]; then
+        echo "FAIL: $1 resolves to \"${actual}\", expected $2"
+        failed=1
+    fi
+}
+expect_path uv /usr/local/bin/uv
+expect_path python /opt/venv/bin/python
+uv --version || failed=1
+uvx --version || failed=1
+python -c "import sys, dill; assert sys.version_info[:2] == (3, 13), sys.version; assert sys.prefix == \"/opt/venv\", sys.prefix; print(sys.executable, sys.version.split()[0])" || failed=1
+exit "${failed}"
+'
+
+status=0
 for user in 0:0 1000:1000; do
     echo "--- ${IMAGE} as ${user}"
-    docker run --rm --user "${user}" --entrypoint /bin/bash "${IMAGE}" -euo pipefail -c '
-        test "$(command -v uv)" = /usr/local/bin/uv
-        test "$(command -v python)" = /opt/venv/bin/python
-        uv --version
-        uvx --version
-        python -c "import sys, dill; assert sys.version_info[:2] == (3, 13), sys.version; assert sys.prefix == \"/opt/venv\", sys.prefix; print(sys.executable, sys.version.split()[0])"
-    '
+    if docker run --rm --user "${user}" --entrypoint /bin/bash "${IMAGE}" -c "${CHECKS}"; then
+        echo "PASS: ${user}"
+    else
+        echo "FAIL: ${user}"
+        status=1
+    fi
 done
+exit "${status}"

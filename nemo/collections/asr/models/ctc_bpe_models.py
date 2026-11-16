@@ -92,6 +92,7 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
             use_cer=self._cfg.get('use_cer', False),
             dist_sync_on_step=True,
             log_prediction=self._cfg.get("log_prediction", False),
+            normalize_wer=self._cfg.get('normalize_wer', False),
         )
 
     def _setup_dataloader_from_config(self, config: Optional[Dict]):
@@ -306,6 +307,7 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
             use_cer=self._cfg.get('use_cer', False),
             log_prediction=self._cfg.get("log_prediction", False),
             dist_sync_on_step=True,
+            normalize_wer=self._cfg.get('normalize_wer', False),
         )
 
         # Update config
@@ -346,6 +348,7 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
             use_cer=self.wer.use_cer,
             log_prediction=self.wer.log_prediction,
             dist_sync_on_step=True,
+            normalize_wer=self.wer.normalize_wer,
         )
 
         self.decoder.temperature = decoding_cfg.get('temperature', 1.0)

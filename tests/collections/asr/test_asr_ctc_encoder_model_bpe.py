@@ -22,7 +22,7 @@ import pytest
 import torch
 from lhotse import CutSet, MonoCut
 from lhotse.testing.dummies import DummyManifest
-from omegaconf import DictConfig
+from omegaconf import DictConfig, open_dict
 
 from nemo.collections.asr.data import audio_to_text
 from nemo.collections.asr.data.audio_to_text_lhotse import LhotseSpeechToTextBpeDataset
@@ -286,6 +286,29 @@ class TestEncDecCTCModel:
 
             finally:
                 os.rename(old_tokenizer_dir + '.bkp', old_tokenizer_dir)
+
+    @pytest.mark.unit
+    def test_normalize_wer(self, test_data_dir, asr_model):
+        assert asr_model.wer.normalize_wer is False
+
+        cfg = copy.deepcopy(asr_model.cfg)
+        with open_dict(cfg):
+            cfg.normalize_wer = True
+        model = EncDecCTCModelBPE(cfg=cfg)
+        assert model.wer.normalize_wer is True
+
+        # flag is preserved when WER is re-created
+        model.change_decoding_strategy(decoding_cfg=CTCBPEDecodingConfig(strategy='greedy'))
+        assert model.wer.normalize_wer is True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            new_tokenizer_dir = os.path.join(tmpdir, 'tokenizer')
+            os.makedirs(new_tokenizer_dir, exist_ok=True)
+            shutil.copy2(
+                os.path.join(test_data_dir, "asr", "tokenizers", "an4_wpe_128", 'vocab.txt'), new_tokenizer_dir
+            )
+            model.change_vocabulary(new_tokenizer_dir=new_tokenizer_dir, new_tokenizer_type='wpe')
+        assert model.wer.normalize_wer is True
 
     @pytest.mark.unit
     def test_decoding_change(self, asr_model):

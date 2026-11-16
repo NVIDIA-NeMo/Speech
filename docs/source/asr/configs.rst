@@ -204,11 +204,11 @@ WER is the default metric for all ASR models and measures transcription accuracy
     normalize_wer: false            # Normalize references and predictions before computing WER/CER (default: false)
 
 Models trained with punctuation and capitalization produce WER that is dominated by casing and punctuation errors.
-For RNN-T and hybrid RNN-T/CTC models (``EncDecRNNTModel``, ``EncDecRNNTBPEModel``,
-``EncDecRNNTBPEModelWithPrompt``, ``EncDecHybridRNNTCTCModel``, ``EncDecHybridRNNTCTCBPEModel``,
-``EncDecHybridRNNTCTCBPEModelWithPrompt``), set ``normalize_wer: true`` to lowercase the text, remove punctuation
-and collapse whitespace in both references and predictions before scoring (see
-``nemo.collections.asr.parts.utils.eval_utils.clean_label``). For hybrid models the flag also applies to the
+For CTC, RNN-T and hybrid RNN-T/CTC models (``EncDecCTCModel``, ``EncDecCTCModelBPE``, ``EncDecRNNTModel``,
+``EncDecRNNTBPEModel``, ``EncDecRNNTBPEModelWithPrompt``, ``EncDecHybridRNNTCTCModel``,
+``EncDecHybridRNNTCTCBPEModel``, ``EncDecHybridRNNTCTCBPEModelWithPrompt``), set ``normalize_wer: true`` to
+lowercase the text, remove punctuation and collapse whitespace in both references and predictions before scoring
+(see ``nemo.collections.asr.parts.utils.eval_utils.clean_label``). For hybrid models the flag also applies to the
 auxiliary CTC WER. Logged sample predictions and returned hypotheses keep the original text.
 
 BLEU Score

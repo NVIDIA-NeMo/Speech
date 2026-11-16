@@ -29,6 +29,7 @@ from nemo.collections.asr.parts.submodules.subsampling import (
 )
 
 
+@pytest.mark.gpu
 class TestASRSubsamplingConvChunking:
     @pytest.mark.with_downloads()
     @pytest.mark.unit

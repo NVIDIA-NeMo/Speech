@@ -200,6 +200,11 @@ jobs:
         with:
           path: ${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo
 
+      - name: Check uv and Python as root and non-root
+        run: |
+          bash ${{ github.run_id }}/${{ steps.uuid.outputs.id }}/NeMo/docker/check_runtime_users.sh \
+            ${{ needs.cicd-test-container-build.outputs.image }}
+
       - name: Run some checks
         run: |
           docker run \
@@ -265,10 +270,14 @@ jobs:
     with:
       test_to_run: ${{ needs.configure.outputs.test_to_run }}
       runner: ${{ startsWith(needs.pre-flight.outputs.runner_prefix, 'ephe-v2-') && format('{0}-a{1}', needs.pre-flight.outputs.runner_prefix, github.run_attempt) || needs.pre-flight.outputs.runner_prefix }}
+      # CPU-only unit-test jobs can move to a CPU runner pool by setting the CPU_RUNNER_PREFIX (and, if its test-data
+      # mount differs, CPU_TEST_DATA_PATH) repository variables; by default they share the GPU runners.
+      cpu-runner: ${{ vars.CPU_RUNNER_PREFIX || (startsWith(needs.pre-flight.outputs.runner_prefix, 'ephe-v2-') && format('{0}-a{1}', needs.pre-flight.outputs.runner_prefix, github.run_attempt) || needs.pre-flight.outputs.runner_prefix) }}
+      cpu-test-data-path: ${{ vars.CPU_TEST_DATA_PATH }}
       container-image: ${{ needs.cicd-test-container-build.outputs.image }}
 
   cicd-main-speech:
-    needs: [pre-flight, configure, cicd-test-container-build, cicd-main-unit-tests]
+    needs: [pre-flight, configure, cicd-test-container-build]
     uses: ./.github/workflows/cicd-main-speech.yml
     if: |
       (
@@ -288,7 +297,10 @@ jobs:
     with:
       test_to_run: ${{ needs.configure.outputs.test_to_run }}
       runner: ${{ startsWith(needs.pre-flight.outputs.runner_prefix, 'ephe-v2-') && format('{0}-a{1}', needs.pre-flight.outputs.runner_prefix, github.run_attempt) || needs.pre-flight.outputs.runner_prefix }}
+      cpu-runner: ${{ vars.CPU_RUNNER_PREFIX || (startsWith(needs.pre-flight.outputs.runner_prefix, 'ephe-v2-') && format('{0}-a{1}', needs.pre-flight.outputs.runner_prefix, github.run_attempt) || needs.pre-flight.outputs.runner_prefix) }}
+      cpu-test-data-path: ${{ vars.CPU_TEST_DATA_PATH }}
       run_nightly: ${{ needs.configure.outputs.run_nightly }}
+      container-image: ${{ needs.cicd-test-container-build.outputs.image }}
 
   Nemo_CICD_Test:
     needs:
@@ -311,10 +323,43 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.run_id }}
         run: |
-          # Get workflow run details and check job conclusions
-          LATEST_ATTEMPT=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion != null) | .conclusion] | last')
-          NUM_FAILED=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion == "failure") | .name] | length')
-          NUM_CANCELLED=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion == "cancelled") | .name] | length')
+          # Fetch one complete snapshot with small pages. A failed later page must
+          # discard the partial snapshot, so retry the entire retrieval at most twice.
+          for ATTEMPT in 1 2 3; do
+            if COUNTS=$(gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/jobs?per_page=20&filter=latest" \
+              --jq '.jobs | [length,
+                ([.[] | select(.conclusion == "failure")] | length),
+                ([.[] | select(.conclusion == "cancelled")] | length)] | @tsv'); then
+              break
+            fi
+            if [[ "$ATTEMPT" -eq 3 ]]; then
+              echo "::error::Unable to retrieve workflow jobs after 3 attempts."
+              exit 1
+            fi
+            echo "::warning::Job retrieval failed; retrying ($ATTEMPT/3)."
+            sleep "$((ATTEMPT * 2))"
+          done
+
+          # gh applies the query to each page. Validate and sum only after every
+          # page was retrieved successfully; empty or invalid data must fail closed.
+          NUM_JOBS=0
+          NUM_FAILED=0
+          NUM_CANCELLED=0
+          while IFS= read -r PAGE_COUNTS; do
+            if ! [[ "$PAGE_COUNTS" =~ ^[0-9]+$'\t'[0-9]+$'\t'[0-9]+$ ]]; then
+              echo "::error::Invalid workflow job counts."
+              exit 1
+            fi
+            IFS=$'\t' read -r PAGE_JOBS PAGE_FAILED PAGE_CANCELLED <<< "$PAGE_COUNTS"
+            NUM_JOBS=$((NUM_JOBS + PAGE_JOBS))
+            NUM_FAILED=$((NUM_FAILED + PAGE_FAILED))
+            NUM_CANCELLED=$((NUM_CANCELLED + PAGE_CANCELLED))
+          done <<< "$COUNTS"
+          if [[ "$NUM_JOBS" -eq 0 ]]; then
+            echo "::error::No workflow jobs were returned."
+            exit 1
+          fi
 
           if [[ $NUM_FAILED -eq 0 && $NUM_CANCELLED -eq 0 ]]; then
             RESULT="success"
@@ -352,7 +397,7 @@ jobs:
         env:
           RESULT: ${{ steps.result.outputs.code }}
         run: |
-          if [ $RESULT == "success" ]; then
+          if [[ "${RESULT:-}" == "success" ]]; then
             exit 0
           else
             exit 1

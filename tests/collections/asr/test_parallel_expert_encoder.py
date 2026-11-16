@@ -2634,7 +2634,7 @@ def test_current_pee_loader_rejects_obsolete_three_expert_inline_schema():
             "sortformer_modules_cfg": {"_target_": "example.Sortformer"},
         }
     )
-    with pytest.raises(ValueError, match="missing required config sections"):
+    with pytest.raises(ValueError, match="obsolete three-expert"):
         CurrentParallelExpertEncoderPT.from_inline_config(config)
 
 
@@ -2684,10 +2684,12 @@ def test_legacy_three_expert_bundle_is_rejected(tmp_path):
             "speaker_expert_cfg": {"_target_": "legacy.Speaker"},
             "sound_expert_cfg": {"_target_": "legacy.Sound"},
             "sortformer_modules_cfg": {"_target_": "legacy.Sortformer"},
+            "sound_ctc_head_cfg": {"_target_": "legacy.CTCHead"},
+            "nemo_version": "2.8.0rc0",
         }
     )
     write_bundle(archive, legacy)
-    with pytest.raises(ValueError, match="missing required config sections"):
+    with pytest.raises(ValueError, match=r"obsolete three-expert.*2\.8\.0rc0.*save_to_nemo.*pe_encoder_config"):
         ParallelExpertEncoderPT.load_from_nemo(str(archive), strict=True)
 
 

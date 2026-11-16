@@ -37,6 +37,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.losses.rnnt_pytorch import MultiblankRNNTLossPytorch, RNNTLossPytorch, TDTLossPytorch
+from nemo.collections.asr.parts.turbo_transducer.rnnt_loss import TurboRnntLoss
 from nemo.core.classes import Loss, typecheck
 from nemo.core.neural_types import LabelsType, LengthsType, LogprobsType, LossType, NeuralType
 from nemo.core.utils import numba_utils
@@ -101,6 +102,14 @@ RNNT_LOSS_RESOLVER = {
         is_available=NUMBA_RNNT_AVAILABLE,
         installation_msg=NUMBA_INSTALLATION_MESSAGE,
         force_float32=False,  # This is only temporarily false, will be dynamically updated during resolution
+    ),
+    "turbo_rnnt": RNNTLossConfig(
+        loss_name="turbo_rnnt",
+        lib_name="torch",
+        min_version='0.0',
+        is_available=True,  # always allow instantiation of the loss
+        installation_msg="Turbo Transducer RNN-T loss",
+        force_float32=False,  # do not cast logits to float32
     ),
     "pytorch": RNNTLossConfig(
         loss_name="pytorch",
@@ -266,6 +275,10 @@ def resolve_rnnt_loss(loss_name: str, blank_idx: int, loss_kwargs: dict = None) 
         clamp = loss_kwargs.pop('clamp', -1.0)
         loss_func = RNNTLossNumba(blank=blank_idx, reduction='none', fastemit_lambda=fastemit_lambda, clamp=clamp)
         _warn_unused_additional_kwargs(loss_name, loss_kwargs)
+
+    elif loss_name == "turbo_rnnt":
+        loss_kwargs = _clean_kwargs(loss_name, loss_kwargs, TurboRnntLoss.__init__, ignore_params={"blank"})
+        loss_func = TurboRnntLoss(blank=blank_idx, **loss_kwargs)
 
     elif loss_name == 'pytorch':
         loss_func = RNNTLossPytorch(blank=blank_idx, reduction='none')

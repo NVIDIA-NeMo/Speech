@@ -235,20 +235,46 @@ def test_adapter_is_idempotent_and_fails_closed_on_vllm_api_change():
         _patch_speechlm_training_prompt_contract(SimpleNamespace())
 
 
-def test_install_prompt_contract_patches_vllm_renderers_chat_utils(monkeypatch):
+@pytest.fixture(params=[False, True], ids=["clean-cache", "0.33-parser-cached"])
+def preloaded_public_parser(request, monkeypatch):
+    """Optionally leave a vLLM 0.33 parser in ``sys.modules``, as plugin registration does.
+
+    Python returns a cached child module even when the parent is mocked away, so the
+    legacy-layout tests must block modern discovery themselves rather than rely on
+    the parent mock. Yields the cached public module (or ``None``) so a test can
+    assert it was left untouched.
+    """
+    if not request.param:
+        yield None
+        return
+    public, _ = _fake_vllm_chat_utils("parse_chat_message_content_parts")
+    original = public.parse_chat_message_content_parts
+    monkeypatch.setitem(sys.modules, "vllm.renderers.chat_utils", SimpleNamespace(chat_message=public))
+    yield public
+    assert public.parse_chat_message_content_parts is original
+
+
+def _simulate_legacy_layout(monkeypatch):
+    """Hide vLLM 0.33's parser package so discovery falls through to the legacy names."""
+    monkeypatch.setitem(sys.modules, "vllm.renderers.chat_utils", None)
+
+
+def test_install_prompt_contract_patches_vllm_renderers_chat_utils(monkeypatch, preloaded_public_parser):
     """vLLM 0.32 moved the chat parser to ``vllm.renderers.chat_utils``."""
     chat_utils, _ = _fake_vllm_chat_utils()
     monkeypatch.setitem(sys.modules, "vllm.renderers", SimpleNamespace(chat_utils=chat_utils))
+    _simulate_legacy_layout(monkeypatch)
 
     install_prompt_contract()
 
     assert chat_utils._parse_chat_message_content_parts._nemo_speechlm_exact_training_prompt
 
 
-def test_install_prompt_contract_falls_back_to_vllm_entrypoints_chat_utils(monkeypatch):
+def test_install_prompt_contract_falls_back_to_vllm_entrypoints_chat_utils(monkeypatch, preloaded_public_parser):
     chat_utils, _ = _fake_vllm_chat_utils()
     monkeypatch.setitem(sys.modules, "vllm.renderers", None)
     monkeypatch.setitem(sys.modules, "vllm.entrypoints", SimpleNamespace(chat_utils=chat_utils))
+    _simulate_legacy_layout(monkeypatch)
 
     install_prompt_contract()
 

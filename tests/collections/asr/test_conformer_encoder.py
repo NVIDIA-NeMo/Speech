@@ -500,3 +500,30 @@ class TestConformerConvolutionPointwise:
             out = conv(x)
         assert out.shape == x.shape
         assert len(inputs) == 2 and all(i.is_contiguous() for i in inputs)
+
+
+class TestDefaultDeviceConstruction:
+    """Parameters must follow the ambient default device, e.g. when a serving engine builds the model on GPU."""
+
+    @pytest.mark.unit
+    @pytest.mark.gpu
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires a CUDA default device")
+    @pytest.mark.parametrize("untie_biases", [False, True])
+    def test_conformer_encoder_parameters_follow_default_device(self, untie_biases):
+        with torch.device("cuda"):
+            encoder = ConformerEncoder(
+                feat_in=8, n_layers=2, d_model=8, n_heads=2, self_attention_model="rel_pos", untie_biases=untie_biases
+            )
+        misplaced = [name for name, p in encoder.named_parameters() if p.device.type != "cuda"]
+        assert misplaced == []
+        x = torch.randn(1, 8, 32, device="cuda")
+        encoder(audio_signal=x, length=torch.tensor([32], device="cuda"))
+
+    @pytest.mark.unit
+    def test_rel_position_attention_parameters_follow_default_device(self):
+        with torch.device("meta"):
+            attn = RelPositionMultiHeadAttention(
+                n_head=2, n_feat=8, dropout_rate=0.0, pos_bias_u=None, pos_bias_v=None
+            )
+        assert attn.pos_bias_u.device.type == "meta"
+        assert attn.pos_bias_v.device.type == "meta"

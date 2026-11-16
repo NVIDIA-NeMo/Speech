@@ -74,9 +74,18 @@ def rnnt_logprobs_torch(
     tgt_length_max = logits.shape[2] - 1
     log_probs = F.log_softmax(logits, dim=-1)
     blank_scores = log_probs[..., blank_id]
-    # Truncate targets to match the U dimension of logits (handles padded targets when tgt_length=0)
-    targets = targets[:, :tgt_length_max]
-    targets = torch.cat((targets, torch.zeros([batch_size, 1], dtype=targets.dtype, device=device)), dim=-1)
+    # Targets can be wider or narrower than the U dimension of logits (as for the Triton implementation),
+    # but all the targets required by the lengths must be present
+    num_targets = targets.shape[1]
+    if num_targets < tgt_length_max:
+        num_targets_required = tgt_length_max if tgt_lengths is None else tgt_lengths.max()
+        if num_targets_required > num_targets:
+            raise ValueError(
+                f"Not enough targets: targets of shape {list(targets.shape)} are narrower than "
+                f"the maximum target length {int(num_targets_required)}"
+            )
+    # Truncate or pad targets to match the U+1 dimension of logits (the label for padding is arbitrary, masked later)
+    targets = F.pad(targets[:, :tgt_length_max], (0, tgt_length_max + 1 - min(num_targets, tgt_length_max)), value=0)
     target_scores = torch.gather(
         log_probs, dim=-1, index=targets.unsqueeze(1).expand(log_probs.shape[:-1]).unsqueeze(-1)
     ).squeeze(-1)

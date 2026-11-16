@@ -36,7 +36,7 @@ def _rnnt_logprobs_fwd_kernel(
     num_targets: int,  # size of the last dimension of (contiguous) targets
     target_scores_out_ptr,
     blank_scores_out_ptr,
-    log_sum_exp_scores_out_ptr,
+    shifted_log_sum_exp_out_ptr,  # log-sum-exp of logits shifted by the maximum
     BLOCK_SIZE: tl.constexpr,
     USE_FP64: tl.constexpr,
 ):
@@ -69,21 +69,22 @@ def _rnnt_logprobs_fwd_kernel(
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < num_labels
     logits = tl.load(logits_ptr + col_offsets, mask=mask, other=-float("inf")).to(compute_dtype)
-    # stable log softmax calculation
+    # stable log softmax calculation; NB: all values are computed relative to the maximum logit,
+    # adding the maximum to log-sum-exp loses precision for logits with large magnitude
     logits_max = tl.max(logits, axis=0)
     logits_minus_max = logits - logits_max
-    log_sum_exp = tl.log(tl.sum(tl.exp(logits_minus_max), axis=0)) + logits_max
+    shifted_log_sum_exp = tl.log(tl.sum(tl.exp(logits_minus_max), axis=0))
     blank_logit = tl.load(logits_ptr + blank_id).to(compute_dtype)
 
-    tl.store(blank_scores_out_ptr + flat_index_grid, blank_logit - log_sum_exp)
-    tl.store(log_sum_exp_scores_out_ptr + flat_index_grid, log_sum_exp)
+    tl.store(blank_scores_out_ptr + flat_index_grid, (blank_logit - logits_max) - shifted_log_sum_exp)
+    tl.store(shifted_log_sum_exp_out_ptr + flat_index_grid, shifted_log_sum_exp)
 
     # calculate log prob for target if needed
     if target_i < target_len:
         target_id = tl.load(targets_ptr + batch_i * num_targets + target_i, mask=target_i < num_targets, other=-1)
         target_id_valid = (target_id >= 0) & (target_id < num_labels)
         target_logit = tl.load(logits_ptr + target_id, mask=target_id_valid, other=float("nan")).to(compute_dtype)
-        tl.store(target_scores_out_ptr + flat_index_grid, target_logit - log_sum_exp)
+        tl.store(target_scores_out_ptr + flat_index_grid, (target_logit - logits_max) - shifted_log_sum_exp)
 
 
 @triton.jit(do_not_specialize=["max_source_len", "max_target_len_plus_1", "num_targets", "blank_id"])
@@ -91,7 +92,7 @@ def _rnnt_logprobs_bwd_kernel(
     logits_ptr,
     grad_logits_out_ptr,
     targets_ptr,
-    log_sum_exp_scores_ptr,
+    shifted_log_sum_exp_ptr,  # log-sum-exp of logits shifted by the maximum (from forward)
     src_lengths_ptr,
     tgt_lengths_ptr,
     max_source_len: int,
@@ -140,9 +141,9 @@ def _rnnt_logprobs_bwd_kernel(
 
     logits_ptr += flat_index_grid * num_labels
     logits = tl.load(logits_ptr + col_offsets, mask=mask, other=-float("inf")).to(compute_dtype)
-    # stable log softmax calculation
-    log_sum_exp = tl.load(log_sum_exp_scores_ptr + flat_index_grid)
-    log_softmax = logits - log_sum_exp
+    # stable log softmax calculation (relative to the maximum logit, see forward kernel)
+    shifted_log_sum_exp = tl.load(shifted_log_sum_exp_ptr + flat_index_grid)
+    log_softmax = (logits - tl.max(logits, axis=0)) - shifted_log_sum_exp
     # softmax for gradient
     softmax = tl.exp(log_softmax)
 
@@ -196,12 +197,12 @@ class RnntLogProbs(torch.autograd.Function):
         src_lengths = src_lengths.contiguous()
         tgt_lengths = tgt_lengths.contiguous()
 
-        target_scores, blank_scores, log_sum_exp_scores = _rnnt_logprobs_fwd(
+        target_scores, blank_scores, shifted_log_sum_exp = _rnnt_logprobs_fwd(
             logits=logits, targets=targets, blank_id=blank_id, src_lengths=src_lengths, tgt_lengths=tgt_lengths
         )
 
         # saving for backward
-        ctx.save_for_backward(logits, targets, src_lengths, tgt_lengths, log_sum_exp_scores)
+        ctx.save_for_backward(logits, targets, src_lengths, tgt_lengths, shifted_log_sum_exp)
         ctx.blank_id = blank_id
         return target_scores, blank_scores
 
@@ -218,14 +219,14 @@ class RnntLogProbs(torch.autograd.Function):
         Returns:
             gradient for logits, None for all other arguments for `forward`
         """
-        (logits, targets, src_lengths, tgt_lengths, log_sum_exp_scores) = ctx.saved_tensors
+        (logits, targets, src_lengths, tgt_lengths, shifted_log_sum_exp) = ctx.saved_tensors
         grad_logits = _rnnt_logprobs_bwd(
             logits=logits,
             targets=targets,
             blank_id=ctx.blank_id,
             src_lengths=src_lengths,
             tgt_lengths=tgt_lengths,
-            log_sum_exp_scores=log_sum_exp_scores,
+            shifted_log_sum_exp=shifted_log_sum_exp,
             grad_target_scores=grad_target_scores,
             grad_blank_scores=grad_blank_scores,
         )
@@ -279,7 +280,7 @@ class RnntLogProbsWithConsistency(torch.autograd.Function):
         tgt_lengths = tgt_lengths.contiguous()
         consistency_mask = consistency_mask.contiguous()
 
-        target_scores, blank_scores, log_sum_exp_scores = _rnnt_logprobs_fwd(
+        target_scores, blank_scores, shifted_log_sum_exp = _rnnt_logprobs_fwd(
             logits=logits, targets=targets, blank_id=blank_id, src_lengths=src_lengths, tgt_lengths=tgt_lengths
         )
 
@@ -304,7 +305,7 @@ class RnntLogProbsWithConsistency(torch.autograd.Function):
             )
 
         # saving for backward
-        ctx.save_for_backward(logits, targets, src_lengths, tgt_lengths, log_sum_exp_scores, consistency_mask)
+        ctx.save_for_backward(logits, targets, src_lengths, tgt_lengths, shifted_log_sum_exp, consistency_mask)
         ctx.blank_id = blank_id
         ctx.consistency_symmetrical = consistency_symmetrical
         return target_scores, blank_scores, consistency_kl
@@ -326,7 +327,7 @@ class RnntLogProbsWithConsistency(torch.autograd.Function):
         Returns:
             gradient for logits, None for all other arguments for `forward`
         """
-        (logits, targets, src_lengths, tgt_lengths, log_sum_exp_scores, consistency_mask) = ctx.saved_tensors
+        (logits, targets, src_lengths, tgt_lengths, shifted_log_sum_exp, consistency_mask) = ctx.saved_tensors
         batch_size, max_source_len, max_target_len_plus_1, num_labels = logits.shape
         half_batch_size = batch_size // 2
 
@@ -337,7 +338,7 @@ class RnntLogProbsWithConsistency(torch.autograd.Function):
             blank_id=ctx.blank_id,
             src_lengths=src_lengths,
             tgt_lengths=tgt_lengths,
-            log_sum_exp_scores=log_sum_exp_scores,
+            shifted_log_sum_exp=shifted_log_sum_exp,
             grad_target_scores=grad_target_scores,
             grad_blank_scores=grad_blank_scores,
         )
@@ -440,12 +441,15 @@ def _rnnt_logprobs_fwd(
     src_lengths: torch.Tensor,
     tgt_lengths: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Launch the forward kernel; returns target log-probs, blank log-probs, and log-sum-exp for backward."""
+    """
+    Launch the forward kernel; returns target log-probs, blank log-probs,
+    and log-sum-exp of logits shifted by the maximum (for backward).
+    """
     batch_size, max_source_len, max_target_len_plus_1, num_labels = logits.shape
     float_dtype = torch.float64 if logits.dtype == torch.float64 else torch.float32
     target_scores = torch.zeros(logits.shape[:-1], dtype=float_dtype, device=logits.device)
     blank_scores = torch.zeros_like(target_scores)
-    log_sum_exp_scores = torch.empty_like(target_scores)
+    shifted_log_sum_exp = torch.empty_like(target_scores)
     with cuda_device_guard(logits):
         _rnnt_logprobs_fwd_kernel[(batch_size, max_source_len, max_target_len_plus_1)](
             logits_ptr=logits,
@@ -459,11 +463,11 @@ def _rnnt_logprobs_fwd(
             num_targets=targets.shape[1],
             target_scores_out_ptr=target_scores,
             blank_scores_out_ptr=blank_scores,
-            log_sum_exp_scores_out_ptr=log_sum_exp_scores,
+            shifted_log_sum_exp_out_ptr=shifted_log_sum_exp,
             BLOCK_SIZE=triton.next_power_of_2(num_labels),
             USE_FP64=float_dtype == torch.float64,
         )
-    return target_scores, blank_scores, log_sum_exp_scores
+    return target_scores, blank_scores, shifted_log_sum_exp
 
 
 def _rnnt_logprobs_bwd(
@@ -472,7 +476,7 @@ def _rnnt_logprobs_bwd(
     blank_id: int,
     src_lengths: torch.Tensor,
     tgt_lengths: torch.Tensor,
-    log_sum_exp_scores: torch.Tensor,
+    shifted_log_sum_exp: torch.Tensor,
     grad_target_scores: torch.Tensor,
     grad_blank_scores: torch.Tensor,
 ) -> torch.Tensor:
@@ -485,7 +489,7 @@ def _rnnt_logprobs_bwd(
             logits_ptr=logits,
             grad_logits_out_ptr=grad_logits,
             targets_ptr=targets,
-            log_sum_exp_scores_ptr=log_sum_exp_scores,
+            shifted_log_sum_exp_ptr=shifted_log_sum_exp,
             src_lengths_ptr=src_lengths,
             tgt_lengths_ptr=tgt_lengths,
             max_source_len=max_source_len,

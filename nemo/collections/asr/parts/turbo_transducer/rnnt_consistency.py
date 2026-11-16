@@ -283,6 +283,9 @@ class ConsistencyRNNTLoss(nn.Module):
             scalar consistency loss
         """
         _, src_length_max, tgt_length_max_plus_1 = consistency_kl.shape
+        # reduce in float32 (or float64): the sum over the lattice can overflow or lose precision in float16/bfloat16
+        # (PyTorch backend computes the per-position loss in the dtype of the logits)
+        consistency_kl = consistency_kl.to(torch.float64 if consistency_kl.dtype == torch.float64 else torch.float32)
         # number of valid (non-masked) positions per utterance; equals `mask_blank.sum(dim=(1, 2))`
         num_positions = src_lengths.clamp(max=src_length_max) * (tgt_lengths + 1).clamp(max=tgt_length_max_plus_1)
         if self.reduction is ConsistencyRNNTReductionType.MEAN_VOLUME:

@@ -34,9 +34,11 @@ def cuda_device_guard(tensor: torch.Tensor) -> ContextManager:
 def log_add_exp(log_probs_1, log_probs_2):
     """
     Numerically stable log(exp(log_probs_1) + exp(log_probs_2)).
-    If both arguments are `-inf` (zero probability), the result is `-inf`.
+    If both arguments are `-inf` (zero probability), the result is `-inf`. NaN arguments are propagated.
     """
     max_score = tl.maximum(log_probs_1, log_probs_2)
     log_sum = max_score + tl.log(tl.exp(log_probs_1 - max_score) + tl.exp(log_probs_2 - max_score))
-    # NB: `-inf - (-inf)` is NaN
-    return tl.where(max_score == -float("inf"), max_score, log_sum)
+    # NB: `-inf - (-inf)` is NaN, the case of two `-inf` arguments is handled separately.
+    # Both arguments are checked explicitly (not the maximum): `tl.maximum` ignores NaN, but NaN must be propagated
+    both_neg_inf = (log_probs_1 == -float("inf")) & (log_probs_2 == -float("inf"))
+    return tl.where(both_neg_inf, -float("inf"), log_sum)

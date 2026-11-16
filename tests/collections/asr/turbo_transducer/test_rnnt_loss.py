@@ -278,6 +278,26 @@ class TestTurboRnntLoss:
         assert loss[0] == expected_loss[0] and loss[1] == 0.0
         assert np.array_equal(grad[0], expected_grad[0]) and (grad[1] == 0.0).all()
 
+    def test_impossible_alignment_from_logprobs(self):
+        """Target transition with `-inf` log-probability: infinite loss, finite utterance in the batch is not affected."""
+        log_half = float(np.log(0.5))
+        target_logprobs = torch.tensor([[[float("-inf"), 0.0]], [[log_half, 0.0]]], device="cuda", requires_grad=True)
+        blank_logprobs = torch.full([2, 1, 2], fill_value=log_half, device="cuda", requires_grad=True)
+        src_lengths, tgt_lengths = torch.tensor([1, 1], device="cuda"), torch.tensor([1, 1], device="cuda")
+
+        loss = TurboRnntLoss(blank=0).forward_from_logprobs(target_logprobs, blank_logprobs, src_lengths, tgt_lengths)
+        assert loss[0].item() == float("inf")
+        assert loss[1].item() == pytest.approx(-2 * log_half, rel=1e-6)
+
+        loss_fn = TurboRnntLoss(blank=0, mask_non_finite=True)
+        loss = loss_fn.forward_from_logprobs(target_logprobs, blank_logprobs, src_lengths, tgt_lengths)
+        loss.sum().backward()
+        assert loss[0].item() == 0.0
+        assert loss[1].item() == pytest.approx(-2 * log_half, rel=1e-6)
+        assert (target_logprobs.grad[0] == 0.0).all() and (blank_logprobs.grad[0] == 0.0).all()
+        assert target_logprobs.grad[1].tolist() == [[-1.0, 0.0]]
+        assert blank_logprobs.grad[1].tolist() == [[0.0, -1.0]]
+
     def test_unreachable_lattice_node(self):
         """Both arcs to a lattice node have zero probability: the loss is finite if a valid alignment exists."""
         torch.manual_seed(12)

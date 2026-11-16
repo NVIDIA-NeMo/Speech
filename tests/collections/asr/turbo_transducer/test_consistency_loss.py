@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
+
 import pytest
 import torch
 
@@ -123,6 +125,22 @@ def test_consistency_forward_from_kl_matches_masked_reduction(device: torch.devi
 
     actual = module.forward_from_kl(consistency_kl=consistency_kl, src_lengths=src_lengths, tgt_lengths=tgt_lengths)
     assert torch.allclose(actual, expected, atol=1e-6)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("reduction", ["mean_volume", "mean"])
+def test_consistency_loss_low_precision_reduction(reduction: str):
+    """Per-position losses in float16 must be reduced in higher precision (the sum exceeds the float16 range)."""
+    num_frames = 2048
+    teacher_logits = torch.zeros([1, num_frames, 1, 2], dtype=torch.float16, requires_grad=True)
+    student_logits = torch.tensor([0.0, -100.0], dtype=torch.float16).repeat(1, num_frames, 1, 1).requires_grad_(True)
+    loss_fn = ConsistencyRNNTLoss(backend=TurboTransducerBackend.TORCH, symmetrical=False, reduction=reduction)
+    loss = loss_fn(teacher_logits, student_logits)
+    loss.backward()
+    assert loss.dtype == torch.float32
+    assert loss.item() == pytest.approx(50.0 - math.log(2.0), abs=0.05)
+    assert torch.isfinite(student_logits.grad).all()
+    assert teacher_logits.grad is None
 
 
 @pytest.mark.unit

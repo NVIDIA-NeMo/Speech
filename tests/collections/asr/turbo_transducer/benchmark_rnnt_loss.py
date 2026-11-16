@@ -169,9 +169,9 @@ def benchmark_rnnt_loss(
     torch.cuda.empty_cache()
 
     # Measure memory for forward pass only (single iteration)
+    # NB: clear the gradient from the previous iteration before resetting the peak memory statistics
+    logits.grad = None
     torch.cuda.reset_peak_memory_stats()
-    if logits.grad is not None:
-        logits.grad = None
     loss = loss_module(
         log_probs=logits,
         targets=targets,

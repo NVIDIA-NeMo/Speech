@@ -155,9 +155,9 @@ def benchmark_consistency_loss(
     torch.cuda.empty_cache()
 
     # Measure memory for forward pass only (single iteration)
+    # NB: clear the gradient from the previous iteration before resetting the peak memory statistics
+    student_logits.grad = None
     torch.cuda.reset_peak_memory_stats()
-    if student_logits.grad is not None:
-        student_logits.grad = None
     loss = module(teacher_logits=teacher_logits, student_logits=student_logits)
     torch.cuda.synchronize()
     forward_memory = torch.cuda.max_memory_allocated() - baseline_memory

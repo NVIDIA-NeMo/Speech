@@ -51,8 +51,7 @@ def _rnnt_fwd_kernel(
     """
     batch_i = tl.program_id(axis=0).to(tl.int64)
     compute_dtype = tl.float64 if USE_FP64 else tl.float32
-    NEG_INF = -1e38  # score for masked positions; NB: finite value, see INF_LOSS_THRESHOLD
-    INF_LOSS_THRESHOLD = 1e37
+    NEG_INF = -float("inf")  # score for unreachable states
 
     src_len = tl.load(src_lengths_ptr + batch_i).to(tl.int64)
     tgt_len = tl.load(tgt_lengths_ptr + batch_i).to(tl.int64)
@@ -113,9 +112,8 @@ def _rnnt_fwd_kernel(
     final_idx = batch_offset + (src_len - 1) * max_tgt_len_plus_1 + tgt_len
     final_alpha = tl.load(alpha_out_ptr + final_idx).to(compute_dtype)
     final_blank_lp = tl.load(blank_logprobs_ptr + final_idx).to(compute_dtype)
+    # NB: loss is infinite if there is no alignment with non-zero probability (the final state is unreachable)
     loss = -(final_alpha + final_blank_lp)
-    # no alignment with non-zero probability (the final state is reachable only with NEG_INF score): loss is infinite
-    loss = tl.where(loss > INF_LOSS_THRESHOLD, float("inf"), loss)
     tl.store(loss_batch_out_ptr + batch_i, loss)
 
 
@@ -148,8 +146,7 @@ def _rnnt_bwd_kernel(
     """
     batch_i = tl.program_id(axis=0).to(tl.int64)
     compute_dtype = tl.float64 if USE_FP64 else tl.float32
-    NEG_INF = -1e38  # score for masked positions; NB: finite value, see INF_LOSS_THRESHOLD
-    INF_LOSS_THRESHOLD = 1e37
+    NEG_INF = -float("inf")  # score for unreachable states
 
     src_len = tl.load(src_lengths_ptr + batch_i).to(tl.int64)
     tgt_len = tl.load(tgt_lengths_ptr + batch_i).to(tl.int64)
@@ -170,7 +167,7 @@ def _rnnt_bwd_kernel(
     # log_like = alpha[src_len-1, tgt_len] + blank_logprobs[src_len-1, tgt_len]
     final_alpha = tl.load(alpha_ptr + final_idx).to(compute_dtype)
     log_like = final_alpha + final_blank_lp
-    if log_like < -INF_LOSS_THRESHOLD:
+    if log_like == NEG_INF:
         # no alignment with non-zero probability (loss is infinite)
         return
 

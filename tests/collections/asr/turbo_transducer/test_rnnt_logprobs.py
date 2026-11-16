@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
+
 import pytest
 import torch
 import torch.nn.functional as F
 
 from nemo.collections.asr.parts.turbo_transducer.rnnt_consistency import kl_loss_torch, rnnt_logprobs_with_consistency
-from nemo.collections.asr.parts.turbo_transducer.rnnt_logprobs import get_rnnt_mask, rnnt_logprobs_torch
+from nemo.collections.asr.parts.turbo_transducer.rnnt_logprobs import get_rnnt_mask, rnnt_logprobs, rnnt_logprobs_torch
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 from tests.collections.asr.decoding.utils import avoid_sync_operations
 
@@ -34,8 +36,9 @@ SHAPES = [
 ]
 FLOAT_DTYPES = [torch.float32, torch.bfloat16]
 
-pytestmark = [
-    pytest.mark.unit,
+pytestmark = pytest.mark.unit
+
+TRITON_MARKS = [
     pytest.mark.gpu,
     pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable"),
     pytest.mark.skipif(not TRITON_AVAILABLE, reason="Triton is unavailable"),
@@ -69,6 +72,8 @@ def _random_batch(
 
 
 class TestRnntLogProbs:
+    pytestmark = TRITON_MARKS
+
     @pytest.mark.parametrize("float_dtype", FLOAT_DTYPES)
     @pytest.mark.parametrize("batch_size,num_frames,num_text_units,vocab_size", SHAPES)
     def test_matches_torch_implementation(
@@ -79,7 +84,7 @@ class TestRnntLogProbs:
             batch_size, num_frames, num_text_units, vocab_size, float_dtype
         )
         # Triton implementation computes in float32, compare with float32 reference
-        reference_logits = logits.float().requires_grad_(True)
+        reference_logits = logits.detach().float().clone().requires_grad_(True)
         reference_target_scores, reference_blank_scores = rnnt_logprobs_torch(
             logits=reference_logits,
             targets=targets,
@@ -105,6 +110,39 @@ class TestRnntLogProbs:
         # positions outside lengths have exactly zero gradient
         _, mask = get_rnnt_mask(batch_size, num_frames, num_text_units + 1, logits.device, src_lengths, tgt_lengths)
         assert (logits.grad[~mask] == 0.0).all()
+
+    @pytest.mark.parametrize("offset", [1e6, -1e6])
+    def test_large_logits_offset(self, offset: float):
+        """Log-probabilities are computed relative to the maximum logit: no precision loss for large logits."""
+        torch.manual_seed(778)
+        batch_size, num_frames, num_text_units, vocab_size = SHAPES[0]
+        _, targets, src_lengths, tgt_lengths = _random_batch(*SHAPES[0])
+        # logits are multiples of 0.25: exactly representable in float32 with the offset
+        logits = torch.randint(-20, 21, [batch_size, num_frames, num_text_units + 1, vocab_size + 1], device="cuda")
+        logits = (logits * 0.25 + offset).requires_grad_(True)
+        reference_logits = logits.detach().clone().requires_grad_(True)
+        reference_target_scores, reference_blank_scores = rnnt_logprobs_torch(
+            reference_logits, targets, vocab_size, src_lengths, tgt_lengths
+        )
+        target_scores, blank_scores = rnnt_logprobs_triton(logits, targets, vocab_size, src_lengths, tgt_lengths)
+        assert torch.allclose(blank_scores, reference_blank_scores, atol=1e-5)
+        assert torch.allclose(target_scores, reference_target_scores, atol=1e-5)
+
+        target_scales = torch.rand_like(target_scores)
+        blank_scales = torch.rand_like(blank_scores)
+        (target_scales * reference_target_scores + blank_scales * reference_blank_scores).sum().backward()
+        (target_scales * target_scores + blank_scales * blank_scores).sum().backward()
+        assert torch.allclose(logits.grad, reference_logits.grad, atol=1e-5)
+
+    def test_constant_large_logits(self):
+        """Uniform distribution for constant logits of any magnitude."""
+        vocab_size_with_blank = SHAPES[0][-1] + 1
+        logits = torch.full([1, 1, 2, vocab_size_with_blank], fill_value=1e8, device="cuda")
+        targets = torch.tensor([[1]], device="cuda")
+        target_scores, blank_scores = rnnt_logprobs_triton(logits, targets, blank_id=vocab_size_with_blank - 1)
+        expected_score = -math.log(vocab_size_with_blank)
+        assert torch.allclose(blank_scores, torch.full_like(blank_scores, expected_score), atol=1e-6)
+        assert target_scores[0, 0].tolist() == pytest.approx([expected_score, 0.0], abs=1e-6)
 
     def test_without_lengths(self):
         torch.manual_seed(1)
@@ -163,11 +201,88 @@ class TestRnntLogProbs:
             rnnt_logprobs_triton(logits=logits.transpose(1, 2), targets=targets, blank_id=0)
 
 
+class TestRnntLogProbsTorch:
+    """Pure PyTorch implementation (fallback for CPU and for the systems without Triton)"""
+
+    def test_targets_narrower_than_lattice(self):
+        """Targets can be narrower than the U dimension of logits (as for the Triton implementation)."""
+        vocab_size_with_blank = 3
+        logits = torch.zeros([1, 2, 4, vocab_size_with_blank], requires_grad=True)
+        targets = torch.tensor([[1]])
+        src_lengths, tgt_lengths = torch.tensor([2]), torch.tensor([1])
+        target_scores, blank_scores = rnnt_logprobs(
+            logits, targets, vocab_size_with_blank - 1, src_lengths, tgt_lengths
+        )
+        expected_score = -math.log(vocab_size_with_blank)
+        expected_target_scores = torch.zeros([1, 2, 4])
+        expected_target_scores[:, :, 0] = expected_score
+        expected_blank_scores = torch.zeros([1, 2, 4])
+        expected_blank_scores[:, :, :2] = expected_score
+        assert torch.allclose(target_scores, expected_target_scores)
+        assert torch.allclose(blank_scores, expected_blank_scores)
+
+        # same result and gradient with explicitly padded targets
+        padded_logits = logits.detach().clone().requires_grad_(True)
+        padded_targets = torch.tensor([[1, 0, 0]])
+        padded_target_scores, padded_blank_scores = rnnt_logprobs(
+            padded_logits, padded_targets, vocab_size_with_blank - 1, src_lengths, tgt_lengths
+        )
+        assert torch.equal(target_scores, padded_target_scores) and torch.equal(blank_scores, padded_blank_scores)
+        (target_scores.sum() + 2 * blank_scores.sum()).backward()
+        (padded_target_scores.sum() + 2 * padded_blank_scores.sum()).backward()
+        assert torch.equal(logits.grad, padded_logits.grad)
+
+    @pytest.mark.parametrize("num_targets", [0, 2, 3, 5])
+    def test_targets_width(self, num_targets: int):
+        """Targets narrower/wider than the lattice produce the same result as targets of the matching width."""
+        torch.manual_seed(779)
+        batch_size, num_frames, num_text_units, vocab_size = 2, 4, 3, 4
+        logits = torch.randn([batch_size, num_frames, num_text_units + 1, vocab_size + 1])
+        targets = torch.randint(0, vocab_size, [batch_size, num_text_units])
+        src_lengths = torch.tensor([4, 3])
+        tgt_lengths = torch.tensor([min(2, num_targets), 0])
+        expected = rnnt_logprobs_torch(logits, targets, vocab_size, src_lengths, tgt_lengths)
+        if num_targets <= num_text_units:
+            resized_targets = targets[:, :num_targets]
+        else:
+            resized_targets = torch.cat([targets, targets[:, : num_targets - num_text_units]], dim=1)
+        actual = rnnt_logprobs_torch(logits, resized_targets, vocab_size, src_lengths, tgt_lengths)
+        assert torch.equal(expected[0], actual[0]) and torch.equal(expected[1], actual[1])
+
+    @pytest.mark.parametrize("use_lengths", [True, False])
+    def test_missing_targets_raise(self, use_lengths: bool):
+        """Targets required by the lengths are absent: error instead of using arbitrary labels."""
+        logits = torch.zeros([1, 2, 4, 3])
+        targets = torch.tensor([[1]])
+        # without lengths: all `U` targets are required
+        tgt_lengths = torch.tensor([2]) if use_lengths else None
+        with pytest.raises(ValueError, match="targets"):
+            rnnt_logprobs_torch(logits, targets, blank_id=2, tgt_lengths=tgt_lengths)
+
+    def test_consistency_targets_narrower_than_lattice(self):
+        """PyTorch fallback of the fused function with targets narrower than the lattice."""
+        torch.manual_seed(780)
+        vocab_size = 4
+        logits = torch.randn([4, 3, 4, vocab_size + 1])
+        targets = torch.randint(0, vocab_size, [2, 3]).repeat(2, 1)
+        src_lengths, tgt_lengths = torch.tensor([3, 2]).repeat(2), torch.tensor([2, 1]).repeat(2)
+        expected = rnnt_logprobs_with_consistency(
+            logits, targets, vocab_size, src_lengths, tgt_lengths, compute_consistency=True
+        )
+        actual = rnnt_logprobs_with_consistency(
+            logits, targets[:, :2], vocab_size, src_lengths, tgt_lengths, compute_consistency=True
+        )
+        for expected_tensor, actual_tensor in zip(expected, actual):
+            assert torch.equal(expected_tensor, actual_tensor)
+
+
 class TestRnntLogProbsWithConsistency:
     """
     Tests for the fused extraction of the RNN-T log-probs and the consistency loss from the Joint output.
     Both are computed from the same logits tensor and share a single gradient buffer.
     """
+
+    pytestmark = TRITON_MARKS
 
     @pytest.mark.parametrize("symmetrical", [True, False])
     @pytest.mark.parametrize("float_dtype", FLOAT_DTYPES)
@@ -189,7 +304,7 @@ class TestRnntLogProbsWithConsistency:
         )
 
         # Triton implementation computes in float32, compare with float32 reference
-        reference_logits = logits.float().requires_grad_(True)
+        reference_logits = logits.detach().float().clone().requires_grad_(True)
         target_logprobs, blank_logprobs = rnnt_logprobs_torch(
             logits=reference_logits,
             targets=targets,

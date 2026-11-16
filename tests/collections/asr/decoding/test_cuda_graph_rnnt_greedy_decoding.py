@@ -27,6 +27,7 @@ from omegaconf import DictConfig, open_dict
 
 from nemo.core.config.pytorch_lightning import TrainerConfig
 from nemo.core.utils.cuda_python_utils import skip_cuda_python_test_if_cuda_graphs_conditional_nodes_not_supported
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
 
 # These tests move the model to CUDA before calling transcribe(), so avoid forking DataLoader workers afterwards.
@@ -465,6 +466,8 @@ def _full_graph_decode_fn(decoder_kind: str, test_data_dir: str) -> Callable[[],
     lengths = torch.tensor([16, 5, 11, 8], device="cuda")
 
     if decoder_kind == "ctc_greedy_ngram_lm":
+        if not TRITON_AVAILABLE:
+            pytest.skip("Triton is required for CUDA-graph N-gram LM decoding")
         lm_vocab_size = 1024
         lm_path = Path(test_data_dir) / "asr/kenlm_ngram_lm/parakeet-tdt_ctc-110m-libri-1024.kenlm.tmp.arpa"
         ctc_greedy = GreedyBatchedCTCInfer(

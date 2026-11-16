@@ -35,6 +35,15 @@ class TurboRnntLoss(nn.Module):
     small tensors. The gradient for the logits is computed in the precision of the logits without
     upcasting, which saves memory for bfloat16/float16 inputs. All computations are performed in float32
     (float64 for float64 inputs).
+
+    The loss uses lengths to skip padding: the Joint output and targets can be padded beyond the maximum lengths.
+    Lengths and targets are not validated to avoid host-device synchronization; instead, the per-utterance loss is
+
+    - NaN, if the lengths exceed the size of the Joint output or targets, or a target is outside the vocabulary;
+    - infinite, if there is no alignment with non-zero probability (e.g., empty source or `-inf` logits);
+      the gradient is zero for such utterance.
+
+    Use `mask_non_finite` to exclude such utterances from training, `warn_non_finite` to report them.
     """
 
     def __init__(

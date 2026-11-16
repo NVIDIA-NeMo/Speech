@@ -17,12 +17,16 @@ import pytest
 import torch
 
 from nemo.collections.asr.losses.rnnt import RNNTLoss
+from nemo.collections.asr.losses.rnnt_pytorch import RNNTLossPytorch
 from nemo.collections.asr.parts.numba.rnnt_loss.rnnt_numpy import RNNTLoss as RNNTLoss_Numpy
 from nemo.collections.asr.parts.turbo_transducer.rnnt_loss import TurboRnntLoss
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
 # NB: tests use a small set of vocabulary sizes to reuse compiled Triton kernels (tests should be fast without cache)
 VOCAB_SIZE = 5
+LARGE_VOCAB_SIZE = 1025  # for memory tests (shared with other Turbo Transducer tests)
+
+requires_two_gpus = pytest.mark.skipif(torch.cuda.device_count() < 2, reason="Test requires 2 CUDA devices")
 
 
 def compute_loss_and_grad(loss_fn, acts, labels, src_lengths=None, tgt_lengths=None, device="cuda"):
@@ -206,6 +210,105 @@ class TestTurboRnntLoss:
         assert np.allclose(loss[0], clean_loss[0], rtol=1e-6) and loss[1] == 0.0
         assert np.isfinite(grad).all() and (grad[1] == 0.0).all()
 
+    @pytest.mark.parametrize(
+        "src_lengths,tgt_lengths",
+        [
+            ([4, 9, 4], [2, 2, 2]),  # source length exceeds T
+            ([4, 4, 4], [2, 5, 2]),  # target length exceeds U
+            ([4, 4, 4], [2, -1, 2]),  # negative target length
+        ],
+    )
+    def test_invalid_lengths_nan_loss(self, src_lengths, tgt_lengths):
+        """Lengths outside the Joint output: NaN loss and zero gradient, other utterances are not affected."""
+        torch.manual_seed(8)
+        acts = torch.randn(3, 4, 3, VOCAB_SIZE, device="cuda")
+        labels = torch.randint(1, VOCAB_SIZE, (3, 2), device="cuda")
+        loss_fn = TurboRnntLoss(blank=0)
+        expected_loss, expected_grad = compute_loss_and_grad(loss_fn, acts, labels, [4, 4, 4], [2, 2, 2])
+        loss, grad = compute_loss_and_grad(loss_fn, acts, labels, src_lengths, tgt_lengths)
+        assert np.isnan(loss[1])
+        assert (grad[1] == 0.0).all()
+        assert np.array_equal(loss[[0, 2]], expected_loss[[0, 2]])
+        assert np.array_equal(grad[[0, 2]], expected_grad[[0, 2]])
+
+    def test_targets_shorter_than_lengths_nan_loss(self):
+        """Targets tensor is narrower than the target length: NaN loss, other utterances are not affected."""
+        torch.manual_seed(9)
+        acts = torch.randn(3, 4, 4, VOCAB_SIZE, device="cuda")
+        labels = torch.randint(1, VOCAB_SIZE, (3, 3), device="cuda")
+        src_lengths, tgt_lengths = [4, 4, 4], [2, 3, 1]
+        loss_fn = TurboRnntLoss(blank=0)
+        expected_loss, expected_grad = compute_loss_and_grad(loss_fn, acts, labels, src_lengths, tgt_lengths)
+        loss, grad = compute_loss_and_grad(loss_fn, acts, labels[:, :2].clone(), src_lengths, tgt_lengths)
+        assert np.isnan(loss[1])
+        assert np.array_equal(loss[[0, 2]], expected_loss[[0, 2]])
+        assert np.array_equal(grad[[0, 2]], expected_grad[[0, 2]])
+
+    @pytest.mark.parametrize("invalid_label", [-1, VOCAB_SIZE])
+    def test_out_of_vocabulary_target_nan_loss(self, invalid_label: int):
+        """Target label outside the vocabulary: NaN loss, other utterances are not affected."""
+        torch.manual_seed(10)
+        acts = torch.randn(2, 4, 3, VOCAB_SIZE, device="cuda")
+        labels = torch.randint(1, VOCAB_SIZE, (2, 2), device="cuda")
+        loss_fn = TurboRnntLoss(blank=0)
+        expected_loss, expected_grad = compute_loss_and_grad(loss_fn, acts, labels)
+        labels[1, 0] = invalid_label
+        loss, grad = compute_loss_and_grad(loss_fn, acts, labels)
+        assert np.isnan(loss[1])
+        assert loss[0] == expected_loss[0]
+        assert np.array_equal(grad[0], expected_grad[0])
+
+        loss, grad = compute_loss_and_grad(TurboRnntLoss(blank=0, mask_non_finite=True), acts, labels)
+        assert loss[0] == expected_loss[0] and loss[1] == 0.0
+        assert np.array_equal(grad[0], expected_grad[0]) and (grad[1] == 0.0).all()
+
+    def test_impossible_alignment_infinite_loss(self):
+        """Target label with zero probability: infinite loss (can be masked), zero gradient for the utterance."""
+        torch.manual_seed(11)
+        acts = torch.randn(2, 4, 3, VOCAB_SIZE, device="cuda")
+        labels = torch.randint(1, VOCAB_SIZE, (2, 2), device="cuda")
+        expected_loss, expected_grad = compute_loss_and_grad(TurboRnntLoss(blank=0), acts, labels)
+        acts[1, :, :, labels[1, 0]] = float("-inf")
+
+        loss, grad = compute_loss_and_grad(TurboRnntLoss(blank=0), acts, labels)
+        assert loss[0] == expected_loss[0] and loss[1] == np.inf
+        assert np.array_equal(grad[0], expected_grad[0]) and (grad[1] == 0.0).all()
+
+        loss, grad = compute_loss_and_grad(TurboRnntLoss(blank=0, mask_non_finite=True), acts, labels)
+        assert loss[0] == expected_loss[0] and loss[1] == 0.0
+        assert np.array_equal(grad[0], expected_grad[0]) and (grad[1] == 0.0).all()
+
+    def test_unreachable_lattice_node(self):
+        """Both arcs to a lattice node have zero probability: the loss is finite if a valid alignment exists."""
+        torch.manual_seed(12)
+        acts = torch.randn(1, 4, 3, VOCAB_SIZE, device="cuda")
+        labels = torch.randint(1, VOCAB_SIZE, (1, 2), device="cuda")
+        # node (t=1, u=1) is unreachable
+        acts[0, 0, 1, 0] = float("-inf")  # blank arc (t=0, u=1) -> (t=1, u=1)
+        acts[0, 1, 0, labels[0, 0]] = float("-inf")  # emit arc (t=1, u=0) -> (t=1, u=1)
+        lengths = torch.tensor([4], device="cuda"), torch.tensor([2], device="cuda")
+
+        loss, grad = compute_loss_and_grad(TurboRnntLoss(blank=0), acts, labels)
+        expected_loss = RNNTLossPytorch(blank=0, reduction=None)(acts, labels, *lengths).cpu().numpy()
+        assert np.isfinite(expected_loss).all()
+        assert np.allclose(loss, expected_loss, rtol=1e-6)
+        assert np.isfinite(grad).all()
+
+    @requires_two_gpus
+    def test_non_current_device(self):
+        """Inputs are on a CUDA device that is not the current device."""
+        torch.manual_seed(13)
+        # NB: inputs are created on CPU; copying tensors between CUDA devices can hide the issue
+        acts = torch.randn(2, 6, 4, VOCAB_SIZE)
+        labels = torch.randint(1, VOCAB_SIZE, (2, 3))
+        src_lengths, tgt_lengths = [6, 4], [3, 2]
+        other_device = torch.device("cuda", (torch.cuda.current_device() + 1) % torch.cuda.device_count())
+        loss_fn = TurboRnntLoss(blank=0)
+        expected_loss, expected_grad = compute_loss_and_grad(loss_fn, acts, labels, src_lengths, tgt_lengths)
+        loss, grad = compute_loss_and_grad(loss_fn, acts, labels, src_lengths, tgt_lengths, device=other_device)
+        assert np.array_equal(loss, expected_loss)
+        assert np.array_equal(grad, expected_grad)
+
     def test_no_cuda_sync_operations(self):
         from tests.collections.asr.decoding.utils import avoid_sync_operations
 
@@ -242,6 +345,75 @@ class TestTurboRnntLoss:
         reference_loss, reference_grad = compute_loss_and_grad(reference_fn, acts, labels, src_lengths, tgt_lengths)
         assert np.array_equal(loss, reference_loss)
         assert np.array_equal(grad, reference_grad)
+
+    def test_rnnt_loss_wrapper_padded_joint_output(self):
+        """Joint output padded beyond the maximum lengths is not copied by `RNNTLoss` (lengths are respected)."""
+        torch.manual_seed(14)
+        batch_size, src_length_max, tgt_length_max, pad = 4, 64, 32, 3
+        acts = torch.randn(batch_size, src_length_max + pad, tgt_length_max + 1 + pad, LARGE_VOCAB_SIZE, device="cuda")
+        acts.requires_grad_(True)
+        labels = torch.randint(0, LARGE_VOCAB_SIZE - 1, (batch_size, tgt_length_max + pad), device="cuda")
+        src_lengths = torch.tensor([src_length_max, 40, 64, 1], device="cuda")
+        tgt_lengths = torch.tensor([20, tgt_length_max, 0, 7], device="cuda")
+        wrapper = RNNTLoss(num_classes=LARGE_VOCAB_SIZE - 1, reduction=None, loss_name="turbo_rnnt")
+
+        def compute_loss(acts):
+            return wrapper(log_probs=acts, targets=labels, input_lengths=src_lengths, target_lengths=tgt_lengths)
+
+        loss = compute_loss(acts)
+        loss.sum().backward()
+        grad, acts.grad = acts.grad, None
+        trimmed_acts = acts.detach()[:, :src_length_max, : tgt_length_max + 1].clone().requires_grad_(True)
+        trimmed_loss = compute_loss(trimmed_acts)
+        trimmed_loss.sum().backward()
+        assert torch.equal(loss, trimmed_loss)
+        assert torch.equal(grad[:, :src_length_max, : tgt_length_max + 1], trimmed_acts.grad)
+        assert (grad[:, src_length_max:] == 0.0).all() and (grad[:, :, tgt_length_max + 1 :] == 0.0).all()
+
+        # no extra full-size tensors except for the gradient
+        del loss, grad, trimmed_acts, trimmed_loss
+        logits_size_bytes = acts.numel() * acts.element_size()
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+        memory_before = torch.cuda.memory_allocated()
+        compute_loss(acts).sum().backward()
+        torch.cuda.synchronize()
+        peak_memory = torch.cuda.max_memory_allocated() - memory_before
+        assert peak_memory < 1.1 * logits_size_bytes
+
+    @pytest.mark.parametrize(
+        "src_lengths,tgt_lengths",
+        [
+            ([5, 6, 4], [3, 1, 0]),  # source length exceeds T
+            ([5, 2, 4], [3, 4, 0]),  # target length exceeds U (both for Joint output and targets)
+        ],
+    )
+    def test_rnnt_loss_wrapper_invalid_lengths(self, src_lengths, tgt_lengths):
+        torch.manual_seed(15)
+        acts = torch.randn(3, 5, 4, VOCAB_SIZE, device="cuda")
+        labels = torch.randint(0, VOCAB_SIZE - 1, (3, 3), device="cuda")
+        wrapper = RNNTLoss(num_classes=VOCAB_SIZE - 1, reduction=None, loss_name="turbo_rnnt")
+        with pytest.raises(ValueError, match="exceed"):
+            wrapper(
+                log_probs=acts,
+                targets=labels,
+                input_lengths=torch.tensor(src_lengths, device="cuda"),
+                target_lengths=torch.tensor(tgt_lengths, device="cuda"),
+            )
+
+    def test_rnnt_loss_wrapper_joint_output_shorter_than_targets(self):
+        """Joint output with insufficient number of target positions (U+1 < max target length + 1)."""
+        torch.manual_seed(16)
+        acts = torch.randn(3, 5, 3, VOCAB_SIZE, device="cuda")
+        labels = torch.randint(0, VOCAB_SIZE - 1, (3, 3), device="cuda")
+        wrapper = RNNTLoss(num_classes=VOCAB_SIZE - 1, reduction=None, loss_name="turbo_rnnt")
+        with pytest.raises(ValueError, match="exceed"):
+            wrapper(
+                log_probs=acts,
+                targets=labels,
+                input_lengths=torch.tensor([5, 2, 4], device="cuda"),
+                target_lengths=torch.tensor([3, 1, 0], device="cuda"),
+            )
 
 
 @pytest.mark.unit

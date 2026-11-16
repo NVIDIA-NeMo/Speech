@@ -758,6 +758,10 @@ This makes the loss significantly faster than ``warprnnt_numba`` and reduces mem
 Since the loss does not materialize additional full-size tensors, fused Joint and loss computation (``fuse_loss_wer``) is not
 required to save memory and can be disabled for faster training. Gradient clamping (``clamp``) is not supported.
 
+The loss is infinite for an utterance without a valid alignment (e.g., ``-inf`` logits for a target label), and NaN for invalid
+targets (labels outside the vocabulary). Set ``mask_non_finite: true`` in ``turbo_rnnt_kwargs`` to exclude such utterances
+from the loss (zero loss and gradient), and ``warn_non_finite: true`` to log them.
+
 Numba Transducer Warmup
 ^^^^^^^^^^^^^^^^^^^^^^^
 

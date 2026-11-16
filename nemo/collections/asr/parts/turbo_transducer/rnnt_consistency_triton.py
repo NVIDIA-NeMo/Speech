@@ -16,6 +16,8 @@ import torch
 import triton
 import triton.language as tl
 
+from nemo.collections.asr.parts.turbo_transducer.utils_triton import cuda_device_guard
+
 
 # Shape-dependent integer arguments are not specialized to avoid recompilation for each new batch shape
 @triton.jit(do_not_specialize=["max_source_len", "max_target_len_plus_1"])
@@ -215,18 +217,19 @@ class FusedKLDivTriton(torch.autograd.Function):
             dtype=torch.float64 if use_fp64 else torch.float32,
             device=teacher_logits.device,
         )
-        _kl_div_fwd_kernel[(teacher_logits.shape[0], teacher_logits.shape[1], teacher_logits.shape[2])](
-            teacher_logits_ptr=teacher_logits,
-            student_logits_ptr=student_logits,
-            mask_ptr=mask,
-            max_source_len=teacher_logits.shape[1],
-            max_target_len_plus_1=teacher_logits.shape[2],
-            num_labels=teacher_logits.shape[3],
-            kl_loss_out_ptr=kl_loss,
-            BLOCK_SIZE=triton.next_power_of_2(teacher_logits.shape[-1]),
-            USE_FP64=use_fp64,
-            SYMMETRIC=symmetric,
-        )
+        with cuda_device_guard(teacher_logits):
+            _kl_div_fwd_kernel[(teacher_logits.shape[0], teacher_logits.shape[1], teacher_logits.shape[2])](
+                teacher_logits_ptr=teacher_logits,
+                student_logits_ptr=student_logits,
+                mask_ptr=mask,
+                max_source_len=teacher_logits.shape[1],
+                max_target_len_plus_1=teacher_logits.shape[2],
+                num_labels=teacher_logits.shape[3],
+                kl_loss_out_ptr=kl_loss,
+                BLOCK_SIZE=triton.next_power_of_2(teacher_logits.shape[-1]),
+                USE_FP64=use_fp64,
+                SYMMETRIC=symmetric,
+            )
         ctx.save_for_backward(teacher_logits, student_logits, mask)
 
         ctx.use_fp64 = use_fp64
@@ -255,21 +258,22 @@ class FusedKLDivTriton(torch.autograd.Function):
         teacher_grad_logits = torch.empty_like(teacher_logits) if symmetric else student_grad_logits  # dummy
         grad_kl_loss = grad_kl_loss.contiguous()
 
-        _kl_div_bwd_kernel[(teacher_logits.shape[0], teacher_logits.shape[1], teacher_logits.shape[2])](
-            teacher_logits_ptr=teacher_logits,
-            student_logits_ptr=student_logits,
-            grad_kl_loss_ptr=grad_kl_loss,
-            mask_ptr=mask,
-            max_source_len=teacher_logits.shape[1],
-            max_target_len_plus_1=teacher_logits.shape[2],
-            num_labels=teacher_logits.shape[3],
-            teacher_grad_out_ptr=teacher_grad_logits,
-            student_grad_out_ptr=student_grad_logits,
-            BLOCK_SIZE=triton.next_power_of_2(teacher_logits.shape[-1]),
-            USE_FP64=use_fp64,
-            SYMMETRIC=symmetric,
-            ACCUMULATE=False,
-        )
+        with cuda_device_guard(teacher_logits):
+            _kl_div_bwd_kernel[(teacher_logits.shape[0], teacher_logits.shape[1], teacher_logits.shape[2])](
+                teacher_logits_ptr=teacher_logits,
+                student_logits_ptr=student_logits,
+                grad_kl_loss_ptr=grad_kl_loss,
+                mask_ptr=mask,
+                max_source_len=teacher_logits.shape[1],
+                max_target_len_plus_1=teacher_logits.shape[2],
+                num_labels=teacher_logits.shape[3],
+                teacher_grad_out_ptr=teacher_grad_logits,
+                student_grad_out_ptr=student_grad_logits,
+                BLOCK_SIZE=triton.next_power_of_2(teacher_logits.shape[-1]),
+                USE_FP64=use_fp64,
+                SYMMETRIC=symmetric,
+                ACCUMULATE=False,
+            )
 
         if symmetric:
             return teacher_grad_logits, student_grad_logits, None, None

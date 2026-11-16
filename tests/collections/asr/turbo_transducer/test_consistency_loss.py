@@ -223,6 +223,28 @@ class TestConsistencyLossTriton:
         )
         assert (kl_loss_triton(teacher_logits, student_logits, mask, symmetrical) >= 0).all()
 
+    @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="Test requires 2 CUDA devices")
+    @pytest.mark.parametrize("symmetrical", [True, False])
+    def test_non_current_device(self, symmetrical: bool):
+        """Inputs are on a CUDA device that is not the current device."""
+        torch.manual_seed(5)
+        # NB: inputs are created on CPU; copying tensors between CUDA devices can hide the issue
+        teacher_logits, student_logits, src_lengths, tgt_lengths = _random_inputs(*SHAPES[0], device="cpu")
+        other_device = torch.device("cuda", (torch.cuda.current_device() + 1) % torch.cuda.device_count())
+        loss_fn = ConsistencyRNNTLoss(symmetrical=symmetrical, backend=TurboTransducerBackend.TRITON)
+        results = []
+        for device in [torch.device("cuda"), other_device]:
+            teacher = teacher_logits.to(device).requires_grad_(True)
+            student = student_logits.to(device).requires_grad_(True)
+            loss = loss_fn(teacher, student, src_lengths.to(device), tgt_lengths.to(device))
+            loss.backward()
+            results.append((loss.cpu(), student.grad.cpu(), teacher.grad.cpu() if symmetrical else None))
+        (loss, student_grad, teacher_grad), (other_loss, other_student_grad, other_teacher_grad) = results
+        assert torch.equal(loss, other_loss)
+        assert torch.equal(student_grad, other_student_grad)
+        if symmetrical:
+            assert torch.equal(teacher_grad, other_teacher_grad)
+
     def test_no_cuda_sync_operations(self):
         from tests.collections.asr.decoding.utils import avoid_sync_operations
 

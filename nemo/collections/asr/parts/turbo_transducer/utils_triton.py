@@ -12,12 +12,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import ContextManager
+
+import torch
 import triton
 import triton.language as tl
 
 
+def cuda_device_guard(tensor: torch.Tensor) -> ContextManager:
+    """
+    Context manager that makes the CUDA device of the tensor current.
+
+    Triton compiles and launches kernels for the current CUDA device (`torch.cuda.current_device()`),
+    which can differ from the device of the tensors (e.g., for a model moved to `cuda:1` manually).
+    All kernel launches should be wrapped with this guard.
+    """
+    return torch.cuda.device(tensor.device)
+
+
 @triton.jit
 def log_add_exp(log_probs_1, log_probs_2):
-    """Numerically stable log(exp(log_probs_1) + exp(log_probs_2))."""
+    """
+    Numerically stable log(exp(log_probs_1) + exp(log_probs_2)).
+    If both arguments are `-inf` (zero probability), the result is `-inf`.
+    """
     max_score = tl.maximum(log_probs_1, log_probs_2)
-    return max_score + tl.log(tl.exp(log_probs_1 - max_score) + tl.exp(log_probs_2 - max_score))
+    log_sum = max_score + tl.log(tl.exp(log_probs_1 - max_score) + tl.exp(log_probs_2 - max_score))
+    # NB: `-inf - (-inf)` is NaN
+    return tl.where(max_score == -float("inf"), max_score, log_sum)

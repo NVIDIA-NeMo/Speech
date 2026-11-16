@@ -18,11 +18,12 @@ import triton.language as tl
 
 from nemo.collections.asr.parts.turbo_transducer.rnnt_consistency_triton import _kl_div_bwd_kernel, _kl_div_fwd_kernel
 from nemo.collections.asr.parts.turbo_transducer.types import TransducerLossInputs
+from nemo.collections.asr.parts.turbo_transducer.utils_triton import cuda_device_guard
 
 
 # Shape-dependent integer arguments are not specialized to avoid recompilation for each new batch shape
 # (Triton specializes integers equal to 1 and divisible by 16 by default).
-@triton.jit(do_not_specialize=["max_source_len", "max_target_len_plus_1", "targets_stride", "blank_id"])
+@triton.jit(do_not_specialize=["max_source_len", "max_target_len_plus_1", "num_targets", "blank_id"])
 def _rnnt_logprobs_fwd_kernel(
     logits_ptr,
     targets_ptr,
@@ -32,7 +33,7 @@ def _rnnt_logprobs_fwd_kernel(
     max_target_len_plus_1: int,
     num_labels: int,  # vocab size (with blank)
     blank_id: int,
-    targets_stride: int,  # stride of the batch dimension in targets
+    num_targets: int,  # size of the last dimension of (contiguous) targets
     target_scores_out_ptr,
     blank_scores_out_ptr,
     log_sum_exp_scores_out_ptr,
@@ -42,6 +43,10 @@ def _rnnt_logprobs_fwd_kernel(
     """
     Forward kernel for RNN-T log probs. Stores result in `target_scores_out_ptr` and `blank_scores_out_ptr`.
     Calculations are performed in float32 or float64 based on USE_FP64.
+
+    The kernel does not access memory outside the tensors for invalid inputs: target lengths are limited
+    by the size of the lattice; the target score is NaN if the target is outside the targets tensor
+    or outside the vocabulary.
     """
     batch_i = tl.program_id(axis=0).to(tl.int64)
     source_i = tl.program_id(axis=1).to(tl.int64)
@@ -49,7 +54,7 @@ def _rnnt_logprobs_fwd_kernel(
 
     # load lengths for source/target
     source_len = tl.load(src_lengths_ptr + batch_i)
-    target_len = tl.load(tgt_lengths_ptr + batch_i)
+    target_len = tl.minimum(tl.load(tgt_lengths_ptr + batch_i), max_target_len_plus_1 - 1)
 
     if source_i >= source_len or target_i > target_len:
         # no calculations required
@@ -75,12 +80,13 @@ def _rnnt_logprobs_fwd_kernel(
 
     # calculate log prob for target if needed
     if target_i < target_len:
-        target_id = tl.load(targets_ptr + batch_i * targets_stride + target_i)
-        target_logit = tl.load(logits_ptr + target_id).to(compute_dtype)
+        target_id = tl.load(targets_ptr + batch_i * num_targets + target_i, mask=target_i < num_targets, other=-1)
+        target_id_valid = (target_id >= 0) & (target_id < num_labels)
+        target_logit = tl.load(logits_ptr + target_id, mask=target_id_valid, other=float("nan")).to(compute_dtype)
         tl.store(target_scores_out_ptr + flat_index_grid, target_logit - log_sum_exp)
 
 
-@triton.jit(do_not_specialize=["max_source_len", "max_target_len_plus_1", "targets_stride", "blank_id"])
+@triton.jit(do_not_specialize=["max_source_len", "max_target_len_plus_1", "num_targets", "blank_id"])
 def _rnnt_logprobs_bwd_kernel(
     logits_ptr,
     grad_logits_out_ptr,
@@ -92,7 +98,7 @@ def _rnnt_logprobs_bwd_kernel(
     max_target_len_plus_1: int,
     num_labels: int,
     blank_id: int,
-    targets_stride: int,  # stride of the batch dimension in targets
+    num_targets: int,  # size of the last dimension of (contiguous) targets
     grad_target_scores_ptr,
     grad_blank_scores_ptr,
     BLOCK_SIZE: tl.constexpr,
@@ -115,9 +121,9 @@ def _rnnt_logprobs_bwd_kernel(
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < num_labels
 
-    # load lengths for source/target
+    # load lengths for source/target; target length is limited by the size of the lattice (see forward kernel)
     source_len = tl.load(src_lengths_ptr + batch_i)
-    target_len = tl.load(tgt_lengths_ptr + batch_i)
+    target_len = tl.minimum(tl.load(tgt_lengths_ptr + batch_i), max_target_len_plus_1 - 1)
     if source_i >= source_len or target_i > target_len:
         # no calculations required, gradient is zero
         tl.store(grad_logits_out_ptr + col_offsets, tl.zeros([BLOCK_SIZE], dtype=tl.float32), mask=mask)
@@ -140,7 +146,9 @@ def _rnnt_logprobs_bwd_kernel(
     # softmax for gradient
     softmax = tl.exp(log_softmax)
 
-    target_id = tl.load(targets_ptr + batch_i * targets_stride + target_i, mask=target_i_valid, other=-1)
+    target_id = tl.load(
+        targets_ptr + batch_i * num_targets + target_i, mask=target_i_valid & (target_i < num_targets), other=-1
+    )
 
     grad_not_in_targets = (-softmax) * (blank_grad + target_grad)
     grad = tl.where(col_offsets == blank_id, blank_grad + grad_not_in_targets, grad_not_in_targets)
@@ -281,18 +289,19 @@ class RnntLogProbsWithConsistency(torch.autograd.Function):
             dtype=torch.float64 if use_fp64 else torch.float32,
             device=logits.device,
         )
-        _kl_div_fwd_kernel[(half_batch_size, max_source_len, max_target_len_plus_1)](
-            teacher_logits_ptr=logits[:half_batch_size],
-            student_logits_ptr=logits[half_batch_size:],
-            mask_ptr=consistency_mask,
-            max_source_len=max_source_len,
-            max_target_len_plus_1=max_target_len_plus_1,
-            num_labels=num_labels,
-            kl_loss_out_ptr=consistency_kl,
-            BLOCK_SIZE=triton.next_power_of_2(num_labels),
-            USE_FP64=use_fp64,
-            SYMMETRIC=consistency_symmetrical,
-        )
+        with cuda_device_guard(logits):
+            _kl_div_fwd_kernel[(half_batch_size, max_source_len, max_target_len_plus_1)](
+                teacher_logits_ptr=logits[:half_batch_size],
+                student_logits_ptr=logits[half_batch_size:],
+                mask_ptr=consistency_mask,
+                max_source_len=max_source_len,
+                max_target_len_plus_1=max_target_len_plus_1,
+                num_labels=num_labels,
+                kl_loss_out_ptr=consistency_kl,
+                BLOCK_SIZE=triton.next_power_of_2(num_labels),
+                USE_FP64=use_fp64,
+                SYMMETRIC=consistency_symmetrical,
+            )
 
         # saving for backward
         ctx.save_for_backward(logits, targets, src_lengths, tgt_lengths, log_sum_exp_scores, consistency_mask)
@@ -332,21 +341,22 @@ class RnntLogProbsWithConsistency(torch.autograd.Function):
             grad_target_scores=grad_target_scores,
             grad_blank_scores=grad_blank_scores,
         )
-        _kl_div_bwd_kernel[(half_batch_size, max_source_len, max_target_len_plus_1)](
-            teacher_logits_ptr=logits[:half_batch_size],
-            student_logits_ptr=logits[half_batch_size:],
-            grad_kl_loss_ptr=grad_consistency_kl.contiguous(),
-            mask_ptr=consistency_mask,
-            max_source_len=max_source_len,
-            max_target_len_plus_1=max_target_len_plus_1,
-            num_labels=num_labels,
-            teacher_grad_out_ptr=grad_logits[:half_batch_size],
-            student_grad_out_ptr=grad_logits[half_batch_size:],
-            BLOCK_SIZE=triton.next_power_of_2(num_labels),
-            USE_FP64=logits.dtype == torch.float64,
-            SYMMETRIC=ctx.consistency_symmetrical,
-            ACCUMULATE=True,
-        )
+        with cuda_device_guard(logits):
+            _kl_div_bwd_kernel[(half_batch_size, max_source_len, max_target_len_plus_1)](
+                teacher_logits_ptr=logits[:half_batch_size],
+                student_logits_ptr=logits[half_batch_size:],
+                grad_kl_loss_ptr=grad_consistency_kl.contiguous(),
+                mask_ptr=consistency_mask,
+                max_source_len=max_source_len,
+                max_target_len_plus_1=max_target_len_plus_1,
+                num_labels=num_labels,
+                teacher_grad_out_ptr=grad_logits[:half_batch_size],
+                student_grad_out_ptr=grad_logits[half_batch_size:],
+                BLOCK_SIZE=triton.next_power_of_2(num_labels),
+                USE_FP64=logits.dtype == torch.float64,
+                SYMMETRIC=ctx.consistency_symmetrical,
+                ACCUMULATE=True,
+            )
         return grad_logits, None, None, None, None, None, None
 
 
@@ -371,6 +381,7 @@ def rnnt_logprobs_triton(
     Returns:
         Tuple of tensors with log probabilities for targets and blank labels, both of size [B, T, U+1].
         For the non-existent targets (U+1 or beyond tgt_lengths) output is zero.
+        For invalid targets (outside the vocabulary or the targets tensor) output is NaN.
     """
     return RnntLogProbs.apply(logits, targets, blank_id, src_lengths, tgt_lengths)
 
@@ -435,22 +446,23 @@ def _rnnt_logprobs_fwd(
     target_scores = torch.zeros(logits.shape[:-1], dtype=float_dtype, device=logits.device)
     blank_scores = torch.zeros_like(target_scores)
     log_sum_exp_scores = torch.empty_like(target_scores)
-    _rnnt_logprobs_fwd_kernel[(batch_size, max_source_len, max_target_len_plus_1)](
-        logits_ptr=logits,
-        targets_ptr=targets,
-        src_lengths_ptr=src_lengths,
-        tgt_lengths_ptr=tgt_lengths,
-        max_source_len=max_source_len,
-        max_target_len_plus_1=max_target_len_plus_1,
-        num_labels=num_labels,
-        blank_id=blank_id,
-        targets_stride=targets.stride(0),
-        target_scores_out_ptr=target_scores,
-        blank_scores_out_ptr=blank_scores,
-        log_sum_exp_scores_out_ptr=log_sum_exp_scores,
-        BLOCK_SIZE=triton.next_power_of_2(num_labels),
-        USE_FP64=float_dtype == torch.float64,
-    )
+    with cuda_device_guard(logits):
+        _rnnt_logprobs_fwd_kernel[(batch_size, max_source_len, max_target_len_plus_1)](
+            logits_ptr=logits,
+            targets_ptr=targets,
+            src_lengths_ptr=src_lengths,
+            tgt_lengths_ptr=tgt_lengths,
+            max_source_len=max_source_len,
+            max_target_len_plus_1=max_target_len_plus_1,
+            num_labels=num_labels,
+            blank_id=blank_id,
+            num_targets=targets.shape[1],
+            target_scores_out_ptr=target_scores,
+            blank_scores_out_ptr=blank_scores,
+            log_sum_exp_scores_out_ptr=log_sum_exp_scores,
+            BLOCK_SIZE=triton.next_power_of_2(num_labels),
+            USE_FP64=float_dtype == torch.float64,
+        )
     return target_scores, blank_scores, log_sum_exp_scores
 
 
@@ -468,22 +480,23 @@ def _rnnt_logprobs_bwd(
     batch_size, max_source_len, max_target_len_plus_1, num_labels = logits.shape
     # the kernel writes all the values (including zeros), no need to initialize the gradient
     grad_logits = torch.empty_like(logits)
-    _rnnt_logprobs_bwd_kernel[(batch_size, max_source_len, max_target_len_plus_1)](
-        logits_ptr=logits,
-        grad_logits_out_ptr=grad_logits,
-        targets_ptr=targets,
-        log_sum_exp_scores_ptr=log_sum_exp_scores,
-        src_lengths_ptr=src_lengths,
-        tgt_lengths_ptr=tgt_lengths,
-        max_source_len=max_source_len,
-        max_target_len_plus_1=max_target_len_plus_1,
-        num_labels=num_labels,
-        blank_id=blank_id,
-        targets_stride=targets.stride(0),
-        # upstream gradients can be non-contiguous (e.g., expanded after `sum()`)
-        grad_target_scores_ptr=grad_target_scores.contiguous(),
-        grad_blank_scores_ptr=grad_blank_scores.contiguous(),
-        BLOCK_SIZE=triton.next_power_of_2(num_labels),
-        USE_FP64=logits.dtype == torch.float64,
-    )
+    with cuda_device_guard(logits):
+        _rnnt_logprobs_bwd_kernel[(batch_size, max_source_len, max_target_len_plus_1)](
+            logits_ptr=logits,
+            grad_logits_out_ptr=grad_logits,
+            targets_ptr=targets,
+            log_sum_exp_scores_ptr=log_sum_exp_scores,
+            src_lengths_ptr=src_lengths,
+            tgt_lengths_ptr=tgt_lengths,
+            max_source_len=max_source_len,
+            max_target_len_plus_1=max_target_len_plus_1,
+            num_labels=num_labels,
+            blank_id=blank_id,
+            num_targets=targets.shape[1],
+            # upstream gradients can be non-contiguous (e.g., expanded after `sum()`)
+            grad_target_scores_ptr=grad_target_scores.contiguous(),
+            grad_blank_scores_ptr=grad_blank_scores.contiguous(),
+            BLOCK_SIZE=triton.next_power_of_2(num_labels),
+            USE_FP64=logits.dtype == torch.float64,
+        )
     return grad_logits

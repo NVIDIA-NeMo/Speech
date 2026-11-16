@@ -18,7 +18,7 @@ import triton
 import triton.language as tl
 
 from nemo.collections.asr.parts.turbo_transducer.rnnt_logprobs_triton import rnnt_logprobs_triton
-from nemo.collections.asr.parts.turbo_transducer.utils_triton import log_add_exp
+from nemo.collections.asr.parts.turbo_transducer.utils_triton import cuda_device_guard, log_add_exp
 
 _MIN_DIAGONAL_BLOCK_SIZE = 32
 
@@ -45,13 +45,22 @@ def _rnnt_fwd_kernel(
     Calculations are performed in float32 or float64 based on USE_FP64.
     PARALLELIZE_OVER_SRC: if True, offsets enumerate src positions; if False, tgt positions.
     Only alpha values for valid positions are written (and later read), alpha does not require initialization.
+
+    The loss is NaN for the lengths that exceed the size of the lattice (no out-of-bounds memory access),
+    and infinite if there is no alignment with non-zero probability.
     """
     batch_i = tl.program_id(axis=0).to(tl.int64)
     compute_dtype = tl.float64 if USE_FP64 else tl.float32
-    NEG_INF = -1e38
+    NEG_INF = -1e38  # score for masked positions; NB: finite value, see INF_LOSS_THRESHOLD
+    INF_LOSS_THRESHOLD = 1e37
 
     src_len = tl.load(src_lengths_ptr + batch_i).to(tl.int64)
     tgt_len = tl.load(tgt_lengths_ptr + batch_i).to(tl.int64)
+
+    if src_len > max_src_len or tgt_len < 0 or tgt_len >= max_tgt_len_plus_1:
+        # invalid lengths: the lattice is outside the tensors
+        tl.store(loss_batch_out_ptr + batch_i, float("nan"))
+        return
 
     if src_len <= 0:
         # no valid alignments for empty source: loss is infinite
@@ -105,6 +114,8 @@ def _rnnt_fwd_kernel(
     final_alpha = tl.load(alpha_out_ptr + final_idx).to(compute_dtype)
     final_blank_lp = tl.load(blank_logprobs_ptr + final_idx).to(compute_dtype)
     loss = -(final_alpha + final_blank_lp)
+    # no alignment with non-zero probability (the final state is reachable only with NEG_INF score): loss is infinite
+    loss = tl.where(loss > INF_LOSS_THRESHOLD, float("inf"), loss)
     tl.store(loss_batch_out_ptr + batch_i, loss)
 
 
@@ -132,16 +143,22 @@ def _rnnt_bwd_kernel(
     On each diagonal, one successor is at the same offset (aligned — direct register access)
     and the other is at offset+1 (shifted — accessed via tl.gather).
     PARALLELIZE_OVER_SRC: if True, offsets enumerate src positions; if False, tgt positions.
+
+    The gradient is zero for utterances with invalid lengths or infinite loss (see the forward kernel).
     """
     batch_i = tl.program_id(axis=0).to(tl.int64)
     compute_dtype = tl.float64 if USE_FP64 else tl.float32
-    NEG_INF = -1e38
+    NEG_INF = -1e38  # score for masked positions; NB: finite value, see INF_LOSS_THRESHOLD
+    INF_LOSS_THRESHOLD = 1e37
 
     src_len = tl.load(src_lengths_ptr + batch_i).to(tl.int64)
     tgt_len = tl.load(tgt_lengths_ptr + batch_i).to(tl.int64)
     grad_rnnt_loss = tl.load(grad_rnnt_loss_ptr + batch_i).to(compute_dtype)
     if grad_rnnt_loss == 0.0 or src_len <= 0:
         # gradients are zero-initialized
+        return
+    if src_len > max_src_len or tgt_len < 0 or tgt_len >= max_tgt_len_plus_1:
+        # invalid lengths: the lattice is outside the tensors (loss is NaN)
         return
 
     batch_offset = batch_i * max_src_len * max_tgt_len_plus_1
@@ -153,6 +170,9 @@ def _rnnt_bwd_kernel(
     # log_like = alpha[src_len-1, tgt_len] + blank_logprobs[src_len-1, tgt_len]
     final_alpha = tl.load(alpha_ptr + final_idx).to(compute_dtype)
     log_like = final_alpha + final_blank_lp
+    if log_like < -INF_LOSS_THRESHOLD:
+        # no alignment with non-zero probability (loss is infinite)
+        return
 
     # Gradient at final state: blank_grad[src_len-1, tgt_len] = -1.0
     tl.store(blank_logprobs_grad_out_ptr + final_idx, -grad_rnnt_loss)
@@ -250,7 +270,9 @@ class TritonRnntLossFunction(torch.autograd.Function):
             fastemit_lambda: Float scaling factor for FastEmit regularization.
 
         Returns:
-            loss of size [B]
+            loss of size [B]. The loss is NaN for utterances with lengths exceeding the size of the lattice,
+            and infinite for utterances without alignments with non-zero probability (including empty source);
+            the gradient is zero for such utterances.
         """
         if target_logprobs.shape != blank_logprobs.shape or target_logprobs.dim() != 3:
             raise ValueError(
@@ -274,19 +296,20 @@ class TritonRnntLossFunction(torch.autograd.Function):
 
         parallelize_over_src = src_max_length <= tgt_max_length_plus_1
         BLOCK_SIZE = _get_diagonal_block_size(src_max_length, tgt_max_length_plus_1)
-        _rnnt_fwd_kernel[(batch_size,)](
-            target_logprobs_ptr=target_logprobs,
-            blank_logprobs_ptr=blank_logprobs,
-            src_lengths_ptr=src_lengths,
-            tgt_lengths_ptr=tgt_lengths,
-            alpha_out_ptr=alpha,
-            loss_batch_out_ptr=loss_batch,
-            max_src_len=src_max_length,
-            max_tgt_len_plus_1=tgt_max_length_plus_1,
-            BLOCK_SIZE=BLOCK_SIZE,
-            PARALLELIZE_OVER_SRC=parallelize_over_src,
-            USE_FP64=use_fp64,
-        )
+        with cuda_device_guard(target_logprobs):
+            _rnnt_fwd_kernel[(batch_size,)](
+                target_logprobs_ptr=target_logprobs,
+                blank_logprobs_ptr=blank_logprobs,
+                src_lengths_ptr=src_lengths,
+                tgt_lengths_ptr=tgt_lengths,
+                alpha_out_ptr=alpha,
+                loss_batch_out_ptr=loss_batch,
+                max_src_len=src_max_length,
+                max_tgt_len_plus_1=tgt_max_length_plus_1,
+                BLOCK_SIZE=BLOCK_SIZE,
+                PARALLELIZE_OVER_SRC=parallelize_over_src,
+                USE_FP64=use_fp64,
+            )
 
         # FastEmit regularization: loss = (1 + fastemit_lambda) * base_loss
         if fastemit_lambda != 0.0:
@@ -322,21 +345,22 @@ class TritonRnntLossFunction(torch.autograd.Function):
 
         parallelize_over_src = src_max_length <= tgt_max_length_plus_1
         BLOCK_SIZE = _get_diagonal_block_size(src_max_length, tgt_max_length_plus_1)
-        _rnnt_bwd_kernel[(batch_size,)](
-            target_logprobs_ptr=target_logprobs,
-            blank_logprobs_ptr=blank_logprobs,
-            alpha_ptr=alpha,
-            src_lengths_ptr=src_lengths,
-            tgt_lengths_ptr=tgt_lengths,
-            grad_rnnt_loss_ptr=grad_rnnt_loss,
-            target_logprobs_grad_out_ptr=target_logprobs_grad,
-            blank_logprobs_grad_out_ptr=blank_logprobs_grad,
-            max_src_len=src_max_length,
-            max_tgt_len_plus_1=tgt_max_length_plus_1,
-            BLOCK_SIZE=BLOCK_SIZE,
-            PARALLELIZE_OVER_SRC=parallelize_over_src,
-            USE_FP64=use_fp64,
-        )
+        with cuda_device_guard(target_logprobs):
+            _rnnt_bwd_kernel[(batch_size,)](
+                target_logprobs_ptr=target_logprobs,
+                blank_logprobs_ptr=blank_logprobs,
+                alpha_ptr=alpha,
+                src_lengths_ptr=src_lengths,
+                tgt_lengths_ptr=tgt_lengths,
+                grad_rnnt_loss_ptr=grad_rnnt_loss,
+                target_logprobs_grad_out_ptr=target_logprobs_grad,
+                blank_logprobs_grad_out_ptr=blank_logprobs_grad,
+                max_src_len=src_max_length,
+                max_tgt_len_plus_1=tgt_max_length_plus_1,
+                BLOCK_SIZE=BLOCK_SIZE,
+                PARALLELIZE_OVER_SRC=parallelize_over_src,
+                USE_FP64=use_fp64,
+            )
 
         # FastEmit: scale emit (target) gradients by (1 + fastemit_lambda), blank unchanged
         if fastemit_lambda != 0.0:

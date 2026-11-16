@@ -85,6 +85,9 @@ class RNNTLossConfig:
     installation_msg: str = ""
     min_version: Optional[str] = None
     force_float32: bool = True  # default True for now for all losses except graph-based
+    # True if the loss uses lengths to skip padding in the Joint output, i.e., the Joint output can be padded
+    # beyond the maximum lengths (no need to trim it, avoiding a copy of the full-size tensor)
+    supports_padding: bool = False
 
 
 # Resolved list of available RNNT losses
@@ -113,6 +116,7 @@ RNNT_LOSS_RESOLVER = {
         is_available=True,
         installation_msg=TRITON_INSTALLATION_MESSAGE,
         force_float32=False,  # do not cast logits to float32, the loss computes in float32 internally
+        supports_padding=True,
     ),
     "pytorch": RNNTLossConfig(
         loss_name="pytorch",
@@ -433,6 +437,7 @@ class RNNTLoss(Loss):
         self.reduction = reduction
         self._loss = resolve_rnnt_loss(loss_name, blank_idx=self._blank, loss_kwargs=loss_kwargs)
         self._force_float32 = RNNT_LOSS_RESOLVER[loss_name].force_float32
+        self._supports_padding = RNNT_LOSS_RESOLVER[loss_name].supports_padding
         self._fp16_compat_checked = False
 
     def warmup(self, device: Union[str, torch.device]) -> bool:
@@ -475,8 +480,21 @@ class RNNTLoss(Loss):
         input_lengths = input_lengths.long()
         target_lengths = target_lengths.long()
 
-        max_logit_len = input_lengths.max()
-        max_targets_len = target_lengths.max()
+        max_logit_len = int(input_lengths.max())
+        max_targets_len = int(target_lengths.max())
+
+        # Lengths must be consistent with the Joint output and targets,
+        # otherwise the loss can silently read memory outside the tensors
+        if (
+            max_logit_len > log_probs.shape[1]
+            or max_targets_len + 1 > log_probs.shape[2]
+            or max_targets_len > targets.shape[1]
+        ):
+            raise ValueError(
+                f"Lengths exceed the size of the Joint output or targets: max input length {max_logit_len}, "
+                f"max target length {max_targets_len}, Joint output shape {list(log_probs.shape)} "
+                f"(expected [B, T, U+1, V]), targets shape {list(targets.shape)}"
+            )
 
         # Force cast joint to float32
         if not self._force_float32 and numba_utils.is_numba_cuda_fp16_supported():
@@ -502,7 +520,8 @@ class RNNTLoss(Loss):
         # max sequence length computed does not match the actual max sequence length
         # of the log_probs tensor, therefore we increment the input_lengths by the difference.
         # This difference is generally small.
-        if log_probs.shape[1] != max_logit_len:
+        # If the loss supports padding, the Joint output is used as is (without a copy of the full-size tensor).
+        if log_probs.shape[1] != max_logit_len and not self._supports_padding:
             log_probs = log_probs.narrow(dim=1, start=0, length=max_logit_len).contiguous()
 
         # Reduce transcript length to correct alignment if additional padding was applied.

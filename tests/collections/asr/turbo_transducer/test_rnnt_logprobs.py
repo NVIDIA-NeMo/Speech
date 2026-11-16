@@ -288,6 +288,31 @@ class TestRnntLogProbsWithConsistency:
         assert torch.equal(output.target_logprobs, target_logprobs)
         assert torch.equal(output.blank_logprobs, blank_logprobs)
 
+    @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="Test requires 2 CUDA devices")
+    def test_non_current_device(self):
+        """Inputs are on a CUDA device that is not the current device."""
+        torch.manual_seed(7)
+        vocab_size = SHAPES[0][-1]
+        # NB: inputs are moved through CPU; copying tensors between CUDA devices directly can hide the issue
+        batch = [tensor.cpu() for tensor in _random_batch(*SHAPES[0], double_batch=True)]
+        other_device = torch.device("cuda", (torch.cuda.current_device() + 1) % torch.cuda.device_count())
+        results = []
+        for device in [torch.device("cuda"), other_device]:
+            logits, targets, src_lengths, tgt_lengths = [tensor.to(device) for tensor in batch]
+            logits.requires_grad_(True)
+            output = rnnt_logprobs_with_consistency(
+                logits=logits,
+                targets=targets,
+                blank_id=vocab_size,
+                src_lengths=src_lengths,
+                tgt_lengths=tgt_lengths,
+                compute_consistency=True,
+            )
+            (output.target_logprobs.sum() + output.blank_logprobs.sum() + output.consistency_kl.sum()).backward()
+            results.append([tensor.detach().cpu() for tensor in (*output, logits.grad)])
+        for reference, actual in zip(*results):
+            assert torch.equal(reference, actual)
+
     def test_odd_batch_size_raises(self):
         logits, targets, _, _ = _random_batch(3, 4, 2, 4)
         with pytest.raises(ValueError, match="double batch"):

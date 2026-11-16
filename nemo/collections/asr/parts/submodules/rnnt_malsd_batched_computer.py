@@ -85,6 +85,7 @@ class MALSDState:
     hyp_scores: torch.Tensor  # scores for hypotheses
 
     active_mask: torch.Tensor  # mask for active hypotheses (the decoding is finished for the utterance if it is False)
+    non_empty_mask: torch.Tensor  # mask for utterances with encoder_output_length > 0
     blank_mask: torch.Tensor  # if the element is blank
     active_mask_any: torch.Tensor  # 0-dim bool tensor, condition for outer loop ('any element is still active')
 
@@ -184,6 +185,7 @@ class MALSDState:
         self.last_timesteps = torch.zeros_like(self.batch_indices)
 
         self.active_mask = torch.zeros_like(self.batch_indices, dtype=torch.bool)
+        self.non_empty_mask = torch.zeros_like(self.active_mask, dtype=torch.bool)
         self.blank_mask = torch.zeros_like(self.active_mask, dtype=torch.bool)
         self.active_mask_any = torch.tensor(True, device=self.device, dtype=torch.bool)
 
@@ -511,9 +513,8 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         safe_time_indices = torch.zeros_like(time_indices)  # time indices, guaranteed to be < out_len
         # In mixed batches some rows may have `encoder_output_length == 0`.
         last_timesteps = torch.clamp_min(encoder_output_length - 1, 0)[:, None].expand_as(batch_beam_indices)
-        active_mask = (encoder_output_length > 0)[:, None].expand_as(batch_beam_indices) & (
-            time_indices <= last_timesteps
-        )
+        non_empty_mask = (encoder_output_length > 0)[:, None].expand_as(batch_beam_indices)
+        active_mask = non_empty_mask & (time_indices <= last_timesteps)
 
         # setup fusion models and/or biasing multi-model
         if self.per_stream_biasing_enabled:
@@ -729,7 +730,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             # step 6: update time indices + active mask
             time_indices = torch.gather(time_indices, dim=-1, index=hyps_indices) + (next_labels == self._blank_index)
             torch.minimum(time_indices, last_timesteps, out=safe_time_indices)
-            active_mask = time_indices <= last_timesteps
+            active_mask = non_empty_mask & (time_indices <= last_timesteps)
 
         # NB: last labels can not exist (nothing decoded on this step).
         # return the last labels from the previous state in this case
@@ -1193,6 +1194,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         # masks for utterances in batch
         # same as: active_mask = self.encoder_output_length > 0
         torch.greater(self.state.encoder_output_length, 0, out=self.state.active_mask)
+        self.state.non_empty_mask.copy_(self.state.active_mask)
 
         # same as: self.active_mask_any = active_mask.any()
         torch.any(self.state.active_mask, out=self.state.active_mask_any)
@@ -1414,6 +1416,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         self.state.time_indices.copy_(self.state.batched_hyps.next_timestamp)
         torch.minimum(self.state.time_indices, self.state.last_timesteps, out=self.state.safe_time_indices)
         torch.less_equal(self.state.time_indices, self.state.last_timesteps, out=self.state.active_mask)
+        torch.logical_and(self.state.active_mask, self.state.non_empty_mask, out=self.state.active_mask)
         torch.any(self.state.active_mask, out=self.state.active_mask_any)
 
     def _init_decoding_state(self, prev_batched_state: Optional[BatchedBeamState], current_batch_size: int):

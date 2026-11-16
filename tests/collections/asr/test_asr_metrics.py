@@ -416,6 +416,31 @@ class TestWordErrorRate:
         assert [hyp.text for hyp in wer.get_hypotheses()] == predictions
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("apostrophe", ["’", "‘", "ʻ"])
+    def test_wer_normalize_typographic_apostrophe(self, apostrophe):
+        prediction = f"It{apostrophe}s"
+        res, scores, words, wer = self.get_wer_with_raw_texts(
+            [prediction], ["it's"], wer_text_normalize=True, log_prediction=False
+        )
+        assert (res, scores, words) == (0.0, 0, 1)
+        # hypotheses are not modified by normalization
+        assert [hyp.text for hyp in wer.get_hypotheses()] == [prediction]
+
+        res, scores, words, _ = self.get_wer_with_raw_texts(
+            [prediction], ["it's"], use_cer=True, wer_text_normalize=True, log_prediction=False
+        )
+        assert (res, scores, words) == (0.0, 0, len("it's"))
+
+    @pytest.mark.unit
+    def test_wer_normalize_quotes_and_contractions(self):
+        # surrounding typographic quotes are removed
+        res, _, _, _ = self.get_wer_with_raw_texts(["‘fine’"], ["fine"], wer_text_normalize=True, log_prediction=False)
+        assert res == 0.0
+        # contraction and plain word remain different
+        res, _, _, _ = self.get_wer_with_raw_texts(["it's"], ["its"], wer_text_normalize=True, log_prediction=False)
+        assert res == 1.0
+
+    @pytest.mark.unit
     def test_wer_normalize_default_off(self):
         res, _, _, wer = self.get_wer_with_raw_texts(["hello world"], ["Hello, world!"], log_prediction=False)
         assert wer.wer_text_normalize is False

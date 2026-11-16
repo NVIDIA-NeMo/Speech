@@ -208,8 +208,10 @@ For CTC, RNN-T and hybrid RNN-T/CTC models (``EncDecCTCModel``, ``EncDecCTCModel
 ``EncDecRNNTBPEModel``, ``EncDecRNNTBPEModelWithPrompt``, ``EncDecHybridRNNTCTCModel``,
 ``EncDecHybridRNNTCTCBPEModel``, ``EncDecHybridRNNTCTCBPEModelWithPrompt``), set ``wer_text_normalize: true`` to
 lowercase the text, remove punctuation and collapse whitespace in both references and predictions before scoring
-(see ``nemo.collections.asr.parts.utils.eval_utils.clean_label``). For hybrid models the flag also applies to the
-auxiliary CTC WER. Logged sample predictions and returned hypotheses keep the original text.
+(see ``nemo.collections.asr.parts.utils.eval_utils.clean_label``). Typographic apostrophes inside words are treated
+as ASCII apostrophes (``It’s`` matches ``it's``), while contractions stay distinct from other words (``it's`` does not
+match ``its``). For hybrid models the flag also applies to the auxiliary CTC WER. Logged sample predictions and
+returned hypotheses keep the original text.
 
 BLEU Score
 ~~~~~~~~~~

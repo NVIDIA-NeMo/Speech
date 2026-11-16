@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import re
 from copy import deepcopy
 from typing import List, Optional, Tuple, Union
 
@@ -371,4 +372,10 @@ def _normalize_text(text: str) -> str:
     # imported here to avoid circular import (eval_utils imports from this module)
     from nemo.collections.asr.parts.utils.eval_utils import clean_label
 
+    # canonicalize intraword typographic apostrophes (e.g., "It’s" -> "It's"): clean_label removes them,
+    # but keeps ASCII apostrophes; surrounding typographic quotes (e.g., "‘fine’") are still removed by clean_label
+    text = _TYPOGRAPHIC_INTRAWORD_APOSTROPHE_RE.sub("'", text)
     return clean_label(text, num_to_words=False, langid=None)
+
+
+_TYPOGRAPHIC_INTRAWORD_APOSTROPHE_RE = re.compile(r"(?<=\w)[‘’ʻ](?=\w)")

@@ -88,6 +88,14 @@ _ASR_ENCODER_TYPES = {
     "fastconformer": ConformerEncoder,
     "transformer": TransformerEncoder,
 }
+# Sections of the obsolete three-expert bundle schema, which cannot be mapped onto the current one.
+_LEGACY_THREE_EXPERT_BUNDLE_KEYS = (
+    "speech_expert_cfg",
+    "speaker_expert_cfg",
+    "sound_expert_cfg",
+    "sortformer_modules_cfg",
+    "sound_ctc_head_cfg",
+)
 _SPEAKER_FEATURE_CONFIG_VERSION = 1
 _SPEAKER_FEATURE_MODE_CONTINUOUS = "continuous"
 _SPEAKER_FEATURE_MODE_THRESHOLD = "thresholded"
@@ -434,6 +442,14 @@ class ParallelExpertEncoderPT(ModelPT):
         """
         missing = [key for key in ("asr_encoder_cfg", "diarization_model_cfg") if cfg.get(key, None) in (None, {}, "")]
         if missing:
+            legacy = [key for key in _LEGACY_THREE_EXPERT_BUNDLE_KEYS if key in cfg]
+            if legacy:
+                raise ValueError(
+                    f"ParallelExpertEncoder bundle uses the obsolete three-expert schema {legacy} "
+                    f"(NeMo {cfg.get('nemo_version', 'unknown')}), which is unsupported and cannot be converted. "
+                    "Use a bundle saved in the current schema (ParallelExpertEncoderPT.save_to_nemo), or a SALM "
+                    "checkpoint with an embedded encoder (model.pe_encoder_config + model.init_from_checkpoint)."
+                )
             raise ValueError(f"ParallelExpertEncoder bundle is missing required config sections {missing}.")
         _normalize_asr_encoder_type(cfg.get("asr_encoder_type", "fastconformer"))
 

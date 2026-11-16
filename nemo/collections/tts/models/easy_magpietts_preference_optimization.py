@@ -342,8 +342,10 @@ class OnlinePreferenceOptimizationMixin:
         """Return (and create if needed) the directory used to store intermediate waveforms during PO."""
         if self.logger is not None and hasattr(self.logger, "log_dir") and self.logger.log_dir is not None:
             log_dir = self.logger.log_dir
-        elif self.trainer is not None and self.trainer.log_dir is not None:
-            log_dir = self.trainer.log_dir
+        elif self.logger is not None and getattr(self.logger, "save_dir", None) is not None:
+            log_dir = self.logger.save_dir
+        elif self.trainer is not None:
+            log_dir = self.trainer.default_root_dir
         else:
             log_dir = "."
         audio_dir = os.path.join(log_dir, 'online_po_audios')

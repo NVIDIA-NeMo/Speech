@@ -214,6 +214,26 @@ def test_speaker_reward_compiles_only_encoder_and_decoder_with_dynamic_shapes(mo
     torch.testing.assert_close(reference, prediction_embeddings)
 
 
+@pytest.mark.parametrize('logger_directory', ['logger', 'save_only', None])
+def test_reward_audio_directory_avoids_collective_trainer_log_dir(tmp_path, logger_directory):
+    class Trainer:
+        default_root_dir = str(tmp_path / 'trainer')
+
+        @property
+        def log_dir(self):
+            raise AssertionError('Trainer.log_dir can broadcast and must not be read during rank-local rewards.')
+
+    logger_root = str(tmp_path / logger_directory) if logger_directory else None
+    logger_key = 'save_dir' if logger_directory == 'save_only' else 'log_dir'
+    policy = SimpleNamespace(logger=SimpleNamespace(**{logger_key: logger_root}), trainer=Trainer())
+
+    actual = preference.OnlinePreferenceOptimizationMixin._get_audio_dir(policy)
+
+    expected = tmp_path / (logger_directory or 'trainer') / 'online_po_audios'
+    assert actual == str(expected)
+    assert expected.is_dir()
+
+
 @pytest.mark.parametrize('wrapped,num_threads', [(False, 1), (True, 1), (True, 4)])
 def test_utmos_reward_compiles_torch_submodules_after_device_move_and_preserves_partial_batch(
     monkeypatch, wrapped, num_threads

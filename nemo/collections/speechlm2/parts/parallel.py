@@ -278,7 +278,7 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
     """
 
     @override
-    def load_checkpoint(self, checkpoint_path):
+    def load_checkpoint(self, checkpoint_path, weights_only: Optional[bool] = None):
         """Load DCP optimizer state while preserving lazy-state semantics.
 
         Model tensors remain strict. Optimizer loading alone permits a complete
@@ -290,15 +290,16 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
 
         path = Path(self.broadcast(checkpoint_path))
         if not _is_sharded_checkpoint(path):
-            return super().load_checkpoint(path)
+            return super().load_checkpoint(path, weights_only=weights_only)
 
         from torch.distributed.checkpoint import FileSystemReader, load
         from torch.distributed.checkpoint.state_dict import (
-            StateDictOptions,
             get_model_state_dict,
             get_optimizer_state_dict,
             set_optimizer_state_dict,
         )
+
+        from nemo.collections.speechlm2.parts.fused_adam_checkpoint import get_fused_adam_restore_optimizer
 
         assert self.model is not None
         assert self.lightning_module is not None
@@ -306,18 +307,17 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         load(module_state, checkpoint_id=path)
         self.model.load_state_dict(module_state["state_dict"], strict=self.lightning_module.strict_loading)
 
-        state_dict_options = StateDictOptions(cpu_offload=True)
         metadata = FileSystemReader(path).read_metadata()
         for idx, optimizer in enumerate(self.optimizers):
             optimizer_key = f"optimizer_{idx}"
-            optimizer_state = {optimizer_key: get_optimizer_state_dict(self.model, optimizer)}
+            restore_optimizer = get_fused_adam_restore_optimizer(optimizer) or optimizer
+            optimizer_state = {optimizer_key: get_optimizer_state_dict(self.model, restore_optimizer)}
             planner, missing_parameters = _optimizer_load_planner(optimizer_state, metadata, optimizer_key)
             load(optimizer_state, checkpoint_id=path, planner=planner)
             set_optimizer_state_dict(
                 self.model,
-                optimizer,
+                restore_optimizer,
                 optim_state_dict=optimizer_state[optimizer_key],
-                options=state_dict_options,
             )
             if missing_parameters and self.global_rank == 0:
                 warnings.warn(
@@ -331,7 +331,7 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         # of resume. Keep this metadata-only payload alive for consumers whose
         # restored state can outlive that connector reference; model and
         # optimizer tensors were loaded separately through DCP above.
-        checkpoint = torch.load(path / _METADATA_FILENAME)
+        checkpoint = torch.load(path / _METADATA_FILENAME, weights_only=weights_only)
         self._checkpoint_keepalive = checkpoint
         return checkpoint
 

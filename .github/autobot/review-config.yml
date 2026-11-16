@@ -1,0 +1,6 @@
+# Allow eligible teams to request approving reviews.
+approval:
+  enabled: true
+  eligible_teams:
+    - automation
+    - speech_maintainers

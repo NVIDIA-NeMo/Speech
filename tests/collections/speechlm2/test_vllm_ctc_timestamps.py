@@ -63,6 +63,7 @@ def _capture_nemo_logs(caplog):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
+@pytest.mark.gpu
 def test_host_buffers_ignore_a_cuda_default_device(aligner, device):
     with torch.device("cuda"):
         inputs = _inputs(1, 4)
@@ -464,6 +465,7 @@ def test_a_submitted_call_is_prepared_on_its_own_thread_and_collected_once(align
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+@pytest.mark.gpu
 def test_a_submitted_call_runs_on_the_stream_it_was_submitted_from(aligner, monkeypatch):
     # The engine submits from its own stream. On a stream of their own, the head's kernels would share SMs with the
     # engine's, which corrupts Model Runner V2's sampled tokens.
@@ -1037,6 +1039,7 @@ def test_output_times_are_rounded_to_milliseconds(aligner):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")
+@pytest.mark.gpu
 def test_collate_assembles_padded_rows_on_the_gpu(aligner):
     _capture(1, 5, ["hash-a"])
     _capture(1, 3, ["hash-b"])

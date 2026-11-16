@@ -385,21 +385,21 @@ class TestEncDecRNNTModel:
         reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.unit
-    def test_normalize_wer(self, asr_model):
-        assert asr_model.wer.normalize_wer is False
+    def test_wer_text_normalize(self, asr_model):
+        assert asr_model.wer.wer_text_normalize is False
 
         cfg = copy.deepcopy(asr_model.cfg)
         with open_dict(cfg):
-            cfg.normalize_wer = True
+            cfg.wer_text_normalize = True
         model = EncDecRNNTModel(cfg=cfg)
-        assert model.wer.normalize_wer is True
+        assert model.wer.wer_text_normalize is True
 
         # flag is preserved when WER is re-created
         model.change_decoding_strategy(decoding_cfg=DictConfig({'strategy': 'greedy', 'greedy': {'max_symbols': 10}}))
-        assert model.wer.normalize_wer is True
+        assert model.wer.wer_text_normalize is True
 
         model.change_vocabulary(new_vocabulary=copy.deepcopy(model.joint.vocabulary) + ['!'])
-        assert model.wer.normalize_wer is True
+        assert model.wer.wer_text_normalize is True
 
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE,

@@ -107,7 +107,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
             use_cer=self._cfg.get('use_cer', False),
             dist_sync_on_step=True,
             log_prediction=self._cfg.get("log_prediction", False),
-            normalize_wer=self._cfg.get('normalize_wer', False),
+            wer_text_normalize=self._cfg.get('wer_text_normalize', False),
         )
 
         # Setup optional Optimization flags
@@ -263,7 +263,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
                 use_cer=self._cfg.get('use_cer', False),
                 dist_sync_on_step=True,
                 log_prediction=self._cfg.get("log_prediction", False),
-                normalize_wer=self._cfg.get('normalize_wer', False),
+                wer_text_normalize=self._cfg.get('wer_text_normalize', False),
             )
 
             # Update config
@@ -309,7 +309,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
             use_cer=self.wer.use_cer,
             log_prediction=self.wer.log_prediction,
             dist_sync_on_step=True,
-            normalize_wer=self.wer.normalize_wer,
+            wer_text_normalize=self.wer.wer_text_normalize,
         )
 
         self.decoder.temperature = decoding_cfg.get('temperature', 1.0)

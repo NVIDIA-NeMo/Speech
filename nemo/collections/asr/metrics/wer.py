@@ -217,7 +217,7 @@ class WER(Metric):
         batch_dim_index: Index corresponding to batch dimension. (For RNNT.)
         dist_dync_on_step: Whether to perform reduction on forward pass of metric.
         return_hypotheses: Whether to return the hypotheses.
-        normalize_wer: Whether to normalize both references and hypotheses before computing the error rate
+        wer_text_normalize: Whether to normalize both references and hypotheses before computing the error rate
             (lowercase, remove punctuation, collapse whitespace; see
             :func:`nemo.collections.asr.parts.utils.eval_utils.clean_label`).
             Useful for models trained with punctuation and capitalization.
@@ -240,7 +240,7 @@ class WER(Metric):
         dist_sync_on_step=False,
         sync_on_compute=True,
         return_hypotheses=False,
-        normalize_wer=False,
+        wer_text_normalize=False,
         **kwargs,
     ):
         super().__init__(dist_sync_on_step=dist_sync_on_step, sync_on_compute=sync_on_compute)
@@ -251,7 +251,7 @@ class WER(Metric):
         self.fold_consecutive = fold_consecutive
         self.batch_dim_index = batch_dim_index
         self.return_hypotheses = return_hypotheses
-        self.normalize_wer = normalize_wer
+        self.wer_text_normalize = wer_text_normalize
 
         self.decode = None
         if isinstance(self.decoding, AbstractRNNTDecoding):
@@ -331,7 +331,7 @@ class WER(Metric):
             if isinstance(h, list):
                 h = h[0]
             h_text = h.text
-            if self.normalize_wer:
+            if self.wer_text_normalize:
                 h_text = _normalize_text(h_text)
                 r = _normalize_text(r)
             if self.use_cer:

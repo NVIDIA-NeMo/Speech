@@ -398,16 +398,16 @@ class TestWordErrorRate:
         return res.item(), scores.item(), words.item(), wer
 
     @pytest.mark.unit
-    @pytest.mark.parametrize("normalize_wer", [False, True])
-    def test_wer_normalize(self, normalize_wer):
+    @pytest.mark.parametrize("wer_text_normalize", [False, True])
+    def test_wer_normalize(self, wer_text_normalize):
         predictions = ["hello world", "Good morning, Mr. Smith!", "it's “fine”"]
         references = ["Hello, World!", "good morning mr smith", "It's fine."]
         res, scores, words, wer = self.get_wer_with_raw_texts(
-            predictions, references, normalize_wer=normalize_wer, log_prediction=False
+            predictions, references, wer_text_normalize=wer_text_normalize, log_prediction=False
         )
-        assert wer.normalize_wer == normalize_wer
+        assert wer.wer_text_normalize == wer_text_normalize
         assert words == 2 + 4 + 2
-        if normalize_wer:
+        if wer_text_normalize:
             assert res == 0.0
         else:
             # all words in references differ from hypotheses by case and/or punctuation
@@ -418,16 +418,20 @@ class TestWordErrorRate:
     @pytest.mark.unit
     def test_wer_normalize_default_off(self):
         res, _, _, wer = self.get_wer_with_raw_texts(["hello world"], ["Hello, world!"], log_prediction=False)
-        assert wer.normalize_wer is False
+        assert wer.wer_text_normalize is False
         assert res == 1.0
 
     @pytest.mark.unit
-    @pytest.mark.parametrize("normalize_wer", [False, True])
-    def test_cer_normalize(self, normalize_wer):
+    @pytest.mark.parametrize("wer_text_normalize", [False, True])
+    def test_cer_normalize(self, wer_text_normalize):
         res, scores, words, _ = self.get_wer_with_raw_texts(
-            ["Hello,  World"], ["hello world!"], use_cer=True, normalize_wer=normalize_wer, log_prediction=False
+            ["Hello,  World"],
+            ["hello world!"],
+            use_cer=True,
+            wer_text_normalize=wer_text_normalize,
+            log_prediction=False,
         )
-        if normalize_wer:
+        if wer_text_normalize:
             assert res == 0.0
             assert words == len("hello world")
         else:

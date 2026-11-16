@@ -261,7 +261,7 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
             use_cer=self._cfg.get('use_cer', False),
             log_prediction=self._cfg.get('log_prediction', True),
             dist_sync_on_step=True,
-            normalize_wer=self._cfg.get('normalize_wer', False),
+            wer_text_normalize=self._cfg.get('wer_text_normalize', False),
         )
 
         # Setup fused Joint step if flag is set
@@ -365,7 +365,7 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
             use_cer=self.wer.use_cer,
             log_prediction=self.wer.log_prediction,
             dist_sync_on_step=True,
-            normalize_wer=self.wer.normalize_wer,
+            wer_text_normalize=self.wer.wer_text_normalize,
         )
 
         # Setup fused Joint step
@@ -420,7 +420,7 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
             use_cer=self.wer.use_cer,
             log_prediction=self.wer.log_prediction,
             dist_sync_on_step=True,
-            normalize_wer=self.wer.normalize_wer,
+            wer_text_normalize=self.wer.wer_text_normalize,
         )
 
         # Setup fused Joint step

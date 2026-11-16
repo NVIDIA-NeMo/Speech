@@ -471,22 +471,22 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
         reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.unit
-    def test_normalize_wer(self, test_data_dir, hybrid_asr_model_with_prompt):
-        assert hybrid_asr_model_with_prompt.wer.normalize_wer is False
-        assert hybrid_asr_model_with_prompt.ctc_wer.normalize_wer is False
+    def test_wer_text_normalize(self, test_data_dir, hybrid_asr_model_with_prompt):
+        assert hybrid_asr_model_with_prompt.wer.wer_text_normalize is False
+        assert hybrid_asr_model_with_prompt.ctc_wer.wer_text_normalize is False
 
         cfg = copy.deepcopy(hybrid_asr_model_with_prompt.cfg)
         with open_dict(cfg):
-            cfg.normalize_wer = True
+            cfg.wer_text_normalize = True
         model = EncDecHybridRNNTCTCBPEModelWithPrompt(cfg=cfg)
-        assert model.wer.normalize_wer is True
-        assert model.ctc_wer.normalize_wer is True
+        assert model.wer.wer_text_normalize is True
+        assert model.ctc_wer.wer_text_normalize is True
 
         # flag is preserved when WER is re-created
         model.change_decoding_strategy(decoding_cfg=DictConfig({'strategy': 'greedy', 'greedy': {'max_symbols': 10}}))
-        assert model.wer.normalize_wer is True
+        assert model.wer.wer_text_normalize is True
         model.change_decoding_strategy(decoding_cfg=DictConfig({'strategy': 'greedy'}), decoder_type='ctc')
-        assert model.ctc_wer.normalize_wer is True
+        assert model.ctc_wer.wer_text_normalize is True
 
         with tempfile.TemporaryDirectory() as tmpdir:
             new_tokenizer_dir = os.path.join(tmpdir, 'tokenizer')
@@ -495,8 +495,8 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
                 os.path.join(test_data_dir, "asr", "tokenizers", "an4_wpe_128", 'vocab.txt'), new_tokenizer_dir
             )
             model.change_vocabulary(new_tokenizer_dir=new_tokenizer_dir, new_tokenizer_type='wpe')
-        assert model.wer.normalize_wer is True
-        assert model.ctc_wer.normalize_wer is True
+        assert model.wer.wer_text_normalize is True
+        assert model.ctc_wer.wer_text_normalize is True
 
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE,

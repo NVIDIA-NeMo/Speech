@@ -277,21 +277,21 @@ class TestEncDecCTCModel:
         assert asr_model.decoding.compute_timestamps is True
 
     @pytest.mark.unit
-    def test_normalize_wer(self, asr_model):
-        assert asr_model.wer.normalize_wer is False
+    def test_wer_text_normalize(self, asr_model):
+        assert asr_model.wer.wer_text_normalize is False
 
         cfg = copy.deepcopy(asr_model.cfg)
         with open_dict(cfg):
-            cfg.normalize_wer = True
+            cfg.wer_text_normalize = True
         model = EncDecCTCModel(cfg=cfg)
-        assert model.wer.normalize_wer is True
+        assert model.wer.wer_text_normalize is True
 
         # flag is preserved when WER is re-created
         model.change_decoding_strategy(decoding_cfg=CTCDecodingConfig(strategy='greedy'))
-        assert model.wer.normalize_wer is True
+        assert model.wer.wer_text_normalize is True
 
         model.change_vocabulary(new_vocabulary=copy.deepcopy(model.decoder.vocabulary) + ['!'])
-        assert model.wer.normalize_wer is True
+        assert model.wer.wer_text_normalize is True
 
     @pytest.mark.unit
     def test_change_conv_asr_se_context_window(self, asr_model):

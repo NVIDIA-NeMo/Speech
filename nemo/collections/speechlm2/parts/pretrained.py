@@ -100,6 +100,7 @@ def load_pretrained_automodel_llm(
         model_path_or_name,
         kwargs,
         trust_remote_code=trust_remote_code,
+        mtp_config_overrides=mtp_config_overrides,
     )
 
     use_repeated_mtp = bool(kwargs.get("mtp_use_repeated_layer", False))

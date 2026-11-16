@@ -1390,6 +1390,9 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                 ctx_toks[b, : len(ctx_text_ids)] = torch.tensor(ctx_text_ids, dtype=torch.long, device=device)
 
             params = self.config.model_inference_parameters
+            streaming_init_kwargs = {}
+            if model.cfg.get("model_type") != "v2":
+                streaming_init_kwargs["use_local_transformer"] = self.config.use_local_transformer
             state = model.streaming_init(
                 context_audio_codes=codes,
                 context_audio_codes_lens=codes_lens,
@@ -1397,12 +1400,12 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                 context_text_tokens_lens=ctx_toks_lens,
                 use_cfg=self.config.use_cfg,
                 cfg_scale=params.cfg_scale,
-                use_local_transformer=self.config.use_local_transformer,
                 temperature=params.temperature,
                 topk=params.topk,
                 phoneme_input_type="pred",
                 phoneme_sampling_method=self.config.phoneme_sampling_method,
                 use_inference_mode=True,
+                **streaming_init_kwargs,
             )
 
             turn_frame_ranges = []

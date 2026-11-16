@@ -607,6 +607,49 @@ def test_multiturn_dataset_prefers_normalized_input_when_probability_is_omitted(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("model_type", ["v1", "v2", None], ids=["v1", "v2", "legacy"])
+@pytest.mark.parametrize("use_local_transformer", [False, True])
+def test_multiturn_streaming_init_matches_model_api(model_type, use_local_transformer):
+    class StreamingInitialized(Exception):
+        pass
+
+    model_class = NemotronTTSBase if model_type == "v2" else EasyMagpieTTSInferenceModel
+
+    def streaming_init(**kwargs):
+        # Validate the runner's arguments against the real model API without initializing GPU state.
+        inspect.signature(model_class.streaming_init).bind(None, **kwargs)
+        if model_type == "v2":
+            assert "use_local_transformer" not in kwargs
+        else:
+            assert kwargs["use_local_transformer"] is use_local_transformer
+        raise StreamingInitialized
+
+    codes = torch.zeros(1, 1, 1, dtype=torch.long)
+    code_lens = torch.ones(1, dtype=torch.long)
+    model = SimpleNamespace(
+        cfg=OmegaConf.create({"model_type": model_type} if model_type is not None else {}),
+        device=torch.device("cpu"),
+        tokenizer=SimpleNamespace(encode=lambda *args, **kwargs: [1]),
+        text_conditioning_tokenizer_name="bpe",
+        _codec_sil_codes_buffer=codes,
+        _codec_helper=SimpleNamespace(audio_to_codes=lambda *args: (codes, code_lens)),
+        streaming_init=streaming_init,
+    )
+    runner = EasyMagpieMultiturnUserAudioInferenceRunner(
+        model,
+        EasyMagpieMultiturnUserAudioInferenceConfig(batch_size=1, use_local_transformer=use_local_transformer),
+    )
+    batch = {
+        "context_audio": torch.zeros(1, 8),
+        "context_audio_lengths": torch.tensor([8]),
+        "languages": ["en"],
+    }
+
+    with pytest.raises(StreamingInitialized):
+        runner._run_multiturn_generation(batch)
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("probability", [0.0, 1.0])
 def test_multiturn_saved_manifest_separates_model_input_from_metric_reference(tmp_path, monkeypatch, probability):
     raw_text = ["July 15th", "$10"]

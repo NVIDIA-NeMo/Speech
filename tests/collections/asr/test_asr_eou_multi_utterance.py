@@ -343,3 +343,25 @@ def test_append_hypothesis_segment():
     assert hyp.token_duration == [0, 1, 2]
     assert hyp.score == -3.0
     assert hyp.length == 7
+
+
+@pytest.mark.unit
+def test_stream_step_without_restart_tokens_uses_regular_decoding(eou_model):
+    """Without ``restart_after_tokens``, streaming keeps the regular batched decoding path."""
+    with open_dict(eou_model.decoding.cfg):
+        eou_model.decoding.cfg.restart_after_tokens = None
+    eou_model.decode_chunk_with_restart = None  # must not be called
+    eou_model.encoder.setup_streaming_params()
+    features = torch.randn(1, 64, 10 * SUBSAMPLING_FACTOR)
+    cache = eou_model.encoder.get_initial_cache_state(batch_size=1)
+    with torch.inference_mode():
+        *_, hyps = eou_model.conformer_stream_step(
+            processed_signal=features,
+            processed_signal_length=torch.tensor([features.shape[-1]]),
+            cache_last_channel=cache[0],
+            cache_last_time=cache[1],
+            cache_last_channel_len=cache[2],
+            keep_all_outputs=True,
+            drop_extra_pre_encoded=0,
+        )
+    assert len(hyps) == 1

@@ -23,6 +23,7 @@ def reset_callbacks(monkeypatch):
     monkeypatch.setattr(CallbackGroup, '_instance', None)
 
 
+@pytest.mark.gpu
 def test_checkpoint_windows_include_completed_batches(tmp_path, monkeypatch):
     callback, provider = _enabled_callback()
     group = CallbackGroup()

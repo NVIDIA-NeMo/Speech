@@ -20,8 +20,12 @@ import triton.language as tl
 from nemo.collections.asr.parts.turbo_transducer.rnnt_logprobs_triton import rnnt_logprobs_triton
 from nemo.collections.asr.parts.turbo_transducer.utils_triton import log_add_exp
 
+_MIN_DIAGONAL_BLOCK_SIZE = 32
 
-@triton.jit
+
+# Shape-dependent integer arguments are not specialized to avoid recompilation for each new batch shape
+# (Triton specializes integers equal to 1 and divisible by 16 by default).
+@triton.jit(do_not_specialize=["max_src_len", "max_tgt_len_plus_1"])
 def _rnnt_fwd_kernel(
     target_logprobs_ptr,
     blank_logprobs_ptr,
@@ -40,6 +44,7 @@ def _rnnt_fwd_kernel(
 
     Calculations are performed in float32 or float64 based on USE_FP64.
     PARALLELIZE_OVER_SRC: if True, offsets enumerate src positions; if False, tgt positions.
+    Only alpha values for valid positions are written (and later read), alpha does not require initialization.
     """
     batch_i = tl.program_id(axis=0).to(tl.int64)
     compute_dtype = tl.float64 if USE_FP64 else tl.float32
@@ -47,6 +52,11 @@ def _rnnt_fwd_kernel(
 
     src_len = tl.load(src_lengths_ptr + batch_i).to(tl.int64)
     tgt_len = tl.load(tgt_lengths_ptr + batch_i).to(tl.int64)
+
+    if src_len <= 0:
+        # no valid alignments for empty source: loss is infinite
+        tl.store(loss_batch_out_ptr + batch_i, float("inf"))
+        return
 
     # Base offset for this batch element in [B, T, U+1] tensors
     batch_offset = batch_i * max_src_len * max_tgt_len_plus_1
@@ -98,7 +108,7 @@ def _rnnt_fwd_kernel(
     tl.store(loss_batch_out_ptr + batch_i, loss)
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["max_src_len", "max_tgt_len_plus_1"])
 def _rnnt_bwd_kernel(
     target_logprobs_ptr,
     blank_logprobs_ptr,
@@ -130,7 +140,8 @@ def _rnnt_bwd_kernel(
     src_len = tl.load(src_lengths_ptr + batch_i).to(tl.int64)
     tgt_len = tl.load(tgt_lengths_ptr + batch_i).to(tl.int64)
     grad_rnnt_loss = tl.load(grad_rnnt_loss_ptr + batch_i).to(compute_dtype)
-    if grad_rnnt_loss == 0.0:
+    if grad_rnnt_loss == 0.0 or src_len <= 0:
+        # gradients are zero-initialized
         return
 
     batch_offset = batch_i * max_src_len * max_tgt_len_plus_1
@@ -241,22 +252,28 @@ class TritonRnntLossFunction(torch.autograd.Function):
         Returns:
             loss of size [B]
         """
-        assert target_logprobs.is_contiguous()
-        assert blank_logprobs.is_contiguous()
+        if target_logprobs.shape != blank_logprobs.shape or target_logprobs.dim() != 3:
+            raise ValueError(
+                "Expected target and blank log-probs of the same shape [B, T, U+1], "
+                f"got {list(target_logprobs.shape)} and {list(blank_logprobs.shape)}"
+            )
+        # log-probs are small (no vocabulary dimension), making them contiguous is cheap
+        target_logprobs = target_logprobs.contiguous()
+        blank_logprobs = blank_logprobs.contiguous()
+        src_lengths = src_lengths.contiguous()
+        tgt_lengths = tgt_lengths.contiguous()
         use_fp64 = target_logprobs.dtype == torch.float64
         float_dtype = torch.float64 if use_fp64 else torch.float32
         batch_size, src_max_length, tgt_max_length_plus_1 = target_logprobs.shape
 
-        alpha = torch.full(
-            [batch_size, src_max_length, tgt_max_length_plus_1],
-            fill_value=-1e38,
-            dtype=float_dtype,
-            device=target_logprobs.device,
+        # the kernel reads only alpha values that are written before, no need to initialize
+        alpha = torch.empty(
+            [batch_size, src_max_length, tgt_max_length_plus_1], dtype=float_dtype, device=target_logprobs.device
         )
         loss_batch = torch.empty([batch_size], dtype=float_dtype, device=target_logprobs.device)
 
         parallelize_over_src = src_max_length <= tgt_max_length_plus_1
-        BLOCK_SIZE = triton.next_power_of_2(min(src_max_length, tgt_max_length_plus_1))
+        BLOCK_SIZE = _get_diagonal_block_size(src_max_length, tgt_max_length_plus_1)
         _rnnt_fwd_kernel[(batch_size,)](
             target_logprobs_ptr=target_logprobs,
             blank_logprobs_ptr=blank_logprobs,
@@ -304,7 +321,7 @@ class TritonRnntLossFunction(torch.autograd.Function):
         )
 
         parallelize_over_src = src_max_length <= tgt_max_length_plus_1
-        BLOCK_SIZE = triton.next_power_of_2(min(src_max_length, tgt_max_length_plus_1))
+        BLOCK_SIZE = _get_diagonal_block_size(src_max_length, tgt_max_length_plus_1)
         _rnnt_bwd_kernel[(batch_size,)](
             target_logprobs_ptr=target_logprobs,
             blank_logprobs_ptr=blank_logprobs,
@@ -389,3 +406,11 @@ def rnnt_loss_triton(
         fastemit_lambda=fastemit_lambda,
     )
     return loss_batch
+
+
+def _get_diagonal_block_size(src_max_length: int, tgt_max_length_plus_1: int) -> int:
+    """
+    Block size to process a diagonal of the RNN-T lattice.
+    The minimum block size is limited to avoid recompiling the kernels for each small shape.
+    """
+    return max(_MIN_DIAGONAL_BLOCK_SIZE, triton.next_power_of_2(min(src_max_length, tgt_max_length_plus_1)))

@@ -739,6 +739,25 @@ The loss config is based on a resolver pattern and can be used as follows:
     warprnnt_numba_kwargs:
       fastemit_lambda: 0.0
 
+Turbo-RNNT Loss
+^^^^^^^^^^^^^^^
+
+``turbo_rnnt`` is a memory-efficient RNN-T loss implemented in Triton (requires a CUDA GPU and Triton).
+It first reduces the Joint output to the log-probabilities of the target and blank labels with a fused log-softmax kernel,
+then computes the loss from these small tensors. Computations are performed in ``float32``, but the gradient for the Joint output
+is stored in the dtype of the Joint output, so ``bfloat16`` training does not require upcasting the Joint output to ``float32``.
+This makes the loss significantly faster than ``warprnnt_numba`` and reduces memory usage for ``bfloat16`` training.
+
+.. code-block:: yaml
+
+  loss:
+    loss_name: "turbo_rnnt"
+    turbo_rnnt_kwargs:
+      fastemit_lambda: 0.0
+
+Since the loss does not materialize additional full-size tensors, fused Joint and loss computation (``fuse_loss_wer``) is not
+required to save memory and can be disabled for faster training. Gradient clamping (``clamp``) is not supported.
+
 Numba Transducer Warmup
 ^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -750,7 +769,7 @@ Custom training loops can call ``RNNTLoss.warmup(device)`` before allocating bat
 FastEmit Regularization
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-FastEmit Regularization is supported for the default Numba based WarpRNNT loss. Recently proposed regularization approach - `FastEmit: Low-latency Streaming ASR with Sequence-level Emission Regularization <https://arxiv.org/abs/2010.11148>`_ allows us near-direct control over the latency of transducer models.
+FastEmit Regularization is supported for the default Numba based WarpRNNT loss and for the ``turbo_rnnt`` loss. Recently proposed regularization approach - `FastEmit: Low-latency Streaming ASR with Sequence-level Emission Regularization <https://arxiv.org/abs/2010.11148>`_ allows us near-direct control over the latency of transducer models.
 
 Refer to the above paper for results and recommendations of ``fastemit_lambda``.
 

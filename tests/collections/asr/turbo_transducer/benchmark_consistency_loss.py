@@ -27,6 +27,7 @@ from dataclasses import dataclass
 
 import torch
 
+from nemo.collections.asr.parts.turbo_transducer.backend import TurboTransducerBackend
 from nemo.collections.asr.parts.turbo_transducer.rnnt_consistency import ConsistencyRNNTLoss
 
 
@@ -91,7 +92,7 @@ def benchmark_consistency_loss(
     # Create the loss module
     module = ConsistencyRNNTLoss(
         symmetrical=symmetrical,
-        use_triton=use_triton,
+        backend=TurboTransducerBackend.TRITON if use_triton else TurboTransducerBackend.TORCH,
         reduction='mean_volume',
     )
 
@@ -224,15 +225,15 @@ def print_results(results: BenchmarkResults):
     print(f"\n{'=' * 60}")
     print(f"Benchmark Results: {impl} Implementation")
     print(f"{'=' * 60}")
-    print(f"Configuration:")
+    print("Configuration:")
     print(f"  - Implementation: {impl}")
     print(f"  - Dtype: {results.dtype}")
     print(f"  - Symmetrical: {sym}")
-    print(f"\nMemory Usage (above input tensors):")
+    print("\nMemory Usage (above input tensors):")
     print(f"  - Input Memory: {results.input_memory_gb:.3f} GB")
     print(f"  - Forward Peak: {results.forward_memory_gb:.3f} GB")
     print(f"  - Backward Peak: {results.backward_peak_memory_gb:.3f} GB")
-    print(f"\nTiming (averaged):")
+    print("\nTiming (averaged):")
     print(f"  - Forward: {results.forward_time_ms:.3f} ms")
     print(f"  - Backward: {results.backward_time_ms:.3f} ms")
     print(f"  - Total: {results.total_time_ms:.3f} ms")

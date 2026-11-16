@@ -27,6 +27,16 @@ if TRITON_AVAILABLE:
 
 
 class TurboRnntLoss(nn.Module):
+    """
+    Memory-efficient RNN-T loss (Turbo-RNNT).
+
+    The Joint output (raw logits) is first reduced to log-probabilities of the target and blank labels
+    (`[B, T, U+1]`, no vocabulary dimension) by a fused log-softmax kernel; the loss itself is computed from these
+    small tensors. The gradient for the logits is computed in the precision of the logits without
+    upcasting, which saves memory for bfloat16/float16 inputs. All computations are performed in float32
+    (float64 for float64 inputs).
+    """
+
     def __init__(
         self,
         blank: int,
@@ -34,7 +44,7 @@ class TurboRnntLoss(nn.Module):
         clamp: float = -1.0,
         mask_non_finite: bool = False,
         warn_non_finite: bool = False,
-        backend: str | TurboTransducerBackend | None = TurboTransducerBackend.TRITON,
+        backend: str | TurboTransducerBackend = TurboTransducerBackend.TRITON,
     ):
         """
         Init method
@@ -42,33 +52,25 @@ class TurboRnntLoss(nn.Module):
         Args:
             blank: blank label index
             fastemit_lambda: Float scaling factor for FastEmit regularization. Default 0.0 (disabled).
-            mask_non_finite: replace non-finite per-sample losses with 0.0
+            clamp: gradient clamping value; only non-positive values (no clamping) are supported.
+            mask_non_finite: replace non-finite per-sample losses with 0.0 (the gradient for these samples is zero)
             warn_non_finite: log the loss tensor when non-finite values are detected
+            backend: implementation backend; only `triton` is currently supported.
         """
         super().__init__()
+        if clamp > 0:
+            raise NotImplementedError("Turbo-RNNT loss does not support gradient clamping")
         self.blank = blank
         self.fastemit_lambda = fastemit_lambda
-        self.clamp = float(clamp) if clamp > 0 else 0.0
-        if self.clamp > 0:
-            raise NotImplementedError("Triton loss does not yet support clamping")
-        self.reduction = None
+        self.reduction = None  # NB: `RNNTLoss` wrapper reads/overrides this attribute and applies reduction itself
         self.mask_non_finite = mask_non_finite
         self.warn_non_finite = warn_non_finite
-        self.backend = TurboTransducerBackend(backend) if backend is not None else TurboTransducerBackend.TRITON
+        self.backend = TurboTransducerBackend(backend)
         if self.backend is not TurboTransducerBackend.TRITON:
-            raise NotImplementedError("Only Triton backend is now supported")
+            raise NotImplementedError(f"Backend {self.backend} is not supported, only `triton` backend is available")
         if not TRITON_AVAILABLE:
-            logging.warning("Triton is disabled, it will result error if using the loss")
-
-    def _postprocess_loss(self, loss_batch: torch.Tensor) -> torch.Tensor:
-        if self.warn_non_finite or self.mask_non_finite:
-            loss_finite_mask = torch.isfinite(loss_batch)
-            if self.warn_non_finite and not loss_finite_mask.all():
-                logging.warning(f"Loss contains NaN/inf values: {loss_batch}")
-            if self.mask_non_finite:
-                loss_batch = torch.where(loss_finite_mask, loss_batch, torch.zeros_like(loss_batch))
-
-        return loss_batch
+            # allow instantiation (e.g., to restore a model for inference), but the loss can't be computed
+            logging.warning("Triton is not available, Turbo-RNNT loss can't be computed. Install Triton to use it.")
 
     @triton_required
     def forward(
@@ -93,7 +95,7 @@ class TurboRnntLoss(nn.Module):
         # argument names are consistent with NeMo, see RNNTLoss.forward:
         # self._loss(acts=log_probs, labels=targets, act_lens=input_lengths, label_lens=target_lengths)
         if acts.device.type != "cuda":
-            raise NotImplementedError("Triton loss supports only CUDA inputs")
+            raise NotImplementedError("Turbo-RNNT loss supports only CUDA inputs")
         loss_batch = rnnt_loss_triton(
             blank_id=self.blank,
             logits=acts,
@@ -112,9 +114,20 @@ class TurboRnntLoss(nn.Module):
         act_lens: torch.Tensor,
         label_lens: torch.Tensor,
     ) -> torch.Tensor:
-        """Compute RNN-T loss from target and blank log-probabilities."""
+        """
+        Compute RNN-T loss from target and blank log-probabilities.
+
+        Args:
+            target_logprobs: log-probabilities for target labels of size [B, T, U+1]
+            blank_logprobs: log-probabilities for the blank label of size [B, T, U+1]
+            act_lens: lengths of activations (source lengths) of size [B]
+            label_lens: lengths of label sequences of size [B]
+
+        Returns:
+            batch of RNN-T scores (loss) of size [B]
+        """
         if target_logprobs.device.type != "cuda" or blank_logprobs.device.type != "cuda":
-            raise NotImplementedError("Triton loss supports only CUDA inputs")
+            raise NotImplementedError("Turbo-RNNT loss supports only CUDA inputs")
 
         loss_batch = rnnt_loss_from_logprobs_triton(
             target_logprobs=target_logprobs,
@@ -124,3 +137,13 @@ class TurboRnntLoss(nn.Module):
             fastemit_lambda=self.fastemit_lambda,
         )
         return self._postprocess_loss(loss_batch)
+
+    def _postprocess_loss(self, loss_batch: torch.Tensor) -> torch.Tensor:
+        if self.warn_non_finite or self.mask_non_finite:
+            loss_finite_mask = torch.isfinite(loss_batch)
+            if self.warn_non_finite and not loss_finite_mask.all():
+                logging.warning(f"Loss contains NaN/inf values: {loss_batch}")
+            if self.mask_non_finite:
+                loss_batch = torch.where(loss_finite_mask, loss_batch, torch.zeros_like(loss_batch))
+
+        return loss_batch

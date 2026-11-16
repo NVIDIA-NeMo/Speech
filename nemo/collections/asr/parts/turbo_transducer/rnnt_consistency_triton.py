@@ -17,7 +17,8 @@ import triton
 import triton.language as tl
 
 
-@triton.jit
+# Shape-dependent integer arguments are not specialized to avoid recompilation for each new batch shape
+@triton.jit(do_not_specialize=["max_source_len", "max_target_len_plus_1"])
 def _kl_div_fwd_kernel(
     teacher_logits_ptr,
     student_logits_ptr,
@@ -86,7 +87,7 @@ def _kl_div_fwd_kernel(
     tl.store(kl_loss_out_ptr + idx_no_vocab, kl_loss_value)
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["max_source_len", "max_target_len_plus_1"])
 def _kl_div_bwd_kernel(
     teacher_logits_ptr,
     student_logits_ptr,
@@ -106,25 +107,35 @@ def _kl_div_bwd_kernel(
     Backward kernel for KL divergence loss.
 
     When ACCUMULATE is True, gradients are added to the values already stored in the output tensors
-    (used when the output buffer is shared with another loss); otherwise the values are overwritten.
+    (used when the output buffer is shared with another loss); otherwise the values are overwritten,
+    including zeros for masked positions (the output buffers do not require initialization).
+    The teacher gradient is written only when SYMMETRIC is True.
     """
     batch_i = tl.program_id(axis=0).to(tl.int64)
     source_i = tl.program_id(axis=1).to(tl.int64)
     target_i = tl.program_id(axis=2).to(tl.int64)
 
     idx_no_vocab = (batch_i * max_source_len + source_i) * max_target_len_plus_1 + target_i
+    # calculate offset in [B, T, U+1, V] tensor
+    idx_vocab_start = idx_no_vocab * num_labels
+    teacher_grad_out_ptr += idx_vocab_start
+    student_grad_out_ptr += idx_vocab_start
+    col_offsets = tl.arange(0, BLOCK_SIZE)
+    mask = col_offsets < num_labels
+
     mask_value = tl.load(mask_ptr + idx_no_vocab)
     if not mask_value:
+        if not ACCUMULATE:
+            zeros = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
+            tl.store(student_grad_out_ptr + col_offsets, zeros, mask=mask)
+            if SYMMETRIC:
+                tl.store(teacher_grad_out_ptr + col_offsets, zeros, mask=mask)
         return
 
     compute_dtype = tl.float64 if USE_FP64 else tl.float32
 
-    # calculate offset in [B, T, U+1, V] tensor
-    idx_vocab_start = idx_no_vocab * num_labels
     teacher_logits_ptr += idx_vocab_start
     student_logits_ptr += idx_vocab_start
-    col_offsets = tl.arange(0, BLOCK_SIZE)
-    mask = col_offsets < num_labels
     teacher_logits = tl.load(teacher_logits_ptr + col_offsets, mask=mask, other=-float("inf")).to(compute_dtype)
     student_logits = tl.load(student_logits_ptr + col_offsets, mask=mask, other=-float("inf")).to(compute_dtype)
 
@@ -147,7 +158,6 @@ def _kl_div_bwd_kernel(
     if SYMMETRIC:
         # symmetric: student_grad = 0.5 * upstream * (Q - P), teacher_grad = -student_grad
         student_grad = 0.5 * upstream_grad * prob_diff
-        teacher_grad_out_ptr += idx_vocab_start
         teacher_grad = -student_grad
         if ACCUMULATE:
             teacher_grad += tl.load(teacher_grad_out_ptr + col_offsets, mask=mask, other=0.0).to(compute_dtype)
@@ -156,7 +166,6 @@ def _kl_div_bwd_kernel(
         # non-symmetric: student_grad = upstream * (Q - P), no teacher gradient
         student_grad = upstream_grad * prob_diff
 
-    student_grad_out_ptr += idx_vocab_start
     if ACCUMULATE:
         student_grad += tl.load(student_grad_out_ptr + col_offsets, mask=mask, other=0.0).to(compute_dtype)
     tl.store(student_grad_out_ptr + col_offsets, student_grad, mask=mask)
@@ -189,12 +198,23 @@ class FusedKLDivTriton(torch.autograd.Function):
         Returns:
             loss of size [B, T, U+1]
         """
-        assert teacher_logits.is_contiguous()
-        assert student_logits.is_contiguous()
-        assert teacher_logits.shape == student_logits.shape
+        if teacher_logits.shape != student_logits.shape:
+            raise ValueError(
+                f"Teacher and student logits must have the same shape, got {list(teacher_logits.shape)} "
+                f"and {list(student_logits.shape)}"
+            )
+        # logits are huge, so we do not make them contiguous implicitly
+        if not teacher_logits.is_contiguous() or not student_logits.is_contiguous():
+            raise ValueError("Teacher and student logits must be contiguous")
+        mask = mask.contiguous()
         use_fp64 = teacher_logits.dtype == torch.float64
 
-        kl_loss = teacher_logits.new_zeros(teacher_logits.shape[:-1])
+        # loss is computed in float32 (or float64), keep the precision independent of the logits dtype
+        kl_loss = torch.zeros(
+            teacher_logits.shape[:-1],
+            dtype=torch.float64 if use_fp64 else torch.float32,
+            device=teacher_logits.device,
+        )
         _kl_div_fwd_kernel[(teacher_logits.shape[0], teacher_logits.shape[1], teacher_logits.shape[2])](
             teacher_logits_ptr=teacher_logits,
             student_logits_ptr=student_logits,
@@ -230,8 +250,9 @@ class FusedKLDivTriton(torch.autograd.Function):
         use_fp64 = ctx.use_fp64
         symmetric = ctx.symmetric
 
-        student_grad_logits = torch.zeros_like(student_logits)
-        teacher_grad_logits = torch.zeros_like(teacher_logits) if symmetric else student_grad_logits  # dummy
+        # the kernel writes all the values (including zeros), no need to initialize the gradients
+        student_grad_logits = torch.empty_like(student_logits)
+        teacher_grad_logits = torch.empty_like(teacher_logits) if symmetric else student_grad_logits  # dummy
         grad_kl_loss = grad_kl_loss.contiguous()
 
         _kl_div_bwd_kernel[(teacher_logits.shape[0], teacher_logits.shape[1], teacher_logits.shape[2])](

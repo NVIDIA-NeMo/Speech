@@ -43,6 +43,7 @@ from nemo.core.neural_types import LabelsType, LengthsType, LogprobsType, LossTy
 from nemo.core.utils import numba_utils
 from nemo.core.utils.k2_utils import K2_INSTALLATION_MESSAGE
 from nemo.core.utils.numba_utils import NUMBA_INSTALLATION_MESSAGE
+from nemo.core.utils.optional_libs import TRITON_INSTALLATION_MESSAGE
 from nemo.utils import logging, logging_mode, model_utils
 
 try:
@@ -105,11 +106,13 @@ RNNT_LOSS_RESOLVER = {
     ),
     "turbo_rnnt": RNNTLossConfig(
         loss_name="turbo_rnnt",
-        lib_name="torch",
-        min_version='0.0',
-        is_available=True,  # always allow instantiation of the loss
-        installation_msg="Turbo Transducer RNN-T loss",
-        force_float32=False,  # do not cast logits to float32
+        lib_name="triton",
+        min_version=None,
+        # always allow instantiation (e.g., restoring a model for inference without Triton);
+        # the loss raises an error in forward if Triton is not available
+        is_available=True,
+        installation_msg=TRITON_INSTALLATION_MESSAGE,
+        force_float32=False,  # do not cast logits to float32, the loss computes in float32 internally
     ),
     "pytorch": RNNTLossConfig(
         loss_name="pytorch",

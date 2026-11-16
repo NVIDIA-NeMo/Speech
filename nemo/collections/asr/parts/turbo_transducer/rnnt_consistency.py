@@ -161,20 +161,47 @@ def rnnt_logprobs_with_consistency(
 
 
 class ConsistencyRNNTLoss(nn.Module):
+    """
+    Consistency loss between two RNN-T Joint outputs (teacher and student) for the same utterances,
+    see https://arxiv.org/abs/2604.19079.
+
+    The loss is the KL divergence between the output distributions computed for each valid position
+    of the RNN-T lattice (`t < src_length`, `u <= tgt_length`). The teacher distribution is detached
+    in the KL term, i.e., when `symmetrical=False` only the student receives gradients;
+    when `symmetrical=True`, the loss is `0.5 * (KL(teacher || student) + KL(student || teacher))`,
+    and each of the outputs receives gradients from the term where the other output is detached.
+    """
+
     def __init__(
         self,
         symmetrical: bool = True,
-        reduction: str | ConsistencyRNNTReductionType = 'mean_volume',
+        reduction: str | ConsistencyRNNTReductionType = ConsistencyRNNTReductionType.MEAN_VOLUME,
         backend: str | TurboTransducerBackend | None = None,
     ):
+        """
+        Args:
+            symmetrical: if True, use symmetric KL divergence (both teacher and student receive gradients)
+            reduction: `mean` averages the per-utterance mean losses (over valid positions);
+                `mean_volume` divides the total loss by the total number of valid positions in the batch
+                (consistent with `RNNTLoss` reductions)
+            backend: `triton`, `torch`, or None for automatic selection (Triton for CUDA inputs if available)
+        """
         super().__init__()
         self.reduction = ConsistencyRNNTReductionType(reduction)
         self.symmetrical = symmetrical
         self._backend = TurboTransducerBackend(backend) if backend is not None else None  # None means "auto"
+        if self._backend is not None and self._backend not in {
+            TurboTransducerBackend.TRITON,
+            TurboTransducerBackend.TORCH,
+        }:
+            raise NotImplementedError(f"Backend {self._backend} is not supported for consistency loss")
+        if self._backend is TurboTransducerBackend.TRITON and not TRITON_AVAILABLE:
+            raise ImportError("Triton backend is requested for consistency loss, but Triton is not available")
 
     def get_runtime_backend(self, input_: torch.Tensor) -> TurboTransducerBackend:
+        """Get the backend for the input: the forced backend, or automatically selected one."""
         if self._backend is not None:
-            # backend if forced
+            # backend is forced
             return self._backend
         if input_.device.type != "cuda":
             return TurboTransducerBackend.TORCH
@@ -186,17 +213,30 @@ class ConsistencyRNNTLoss(nn.Module):
         student_logits: torch.Tensor,
         src_lengths: torch.Tensor | None = None,
         tgt_lengths: torch.Tensor | None = None,
-    ):
+    ) -> torch.Tensor:
+        """
+        Compute the consistency loss from the teacher and student Joint outputs.
+
+        Args:
+            teacher_logits: teacher Joint output (raw logits), [B, T, U+1, V]
+            student_logits: student Joint output (raw logits), [B, T, U+1, V]
+            src_lengths: optional source lengths, [B]
+            tgt_lengths: optional target lengths, [B]
+
+        Returns:
+            scalar consistency loss
+        """
         device = teacher_logits.device
         batch_size, src_length_max, tgt_length_max_plus_1, _ = teacher_logits.shape
-        tgt_length_max = tgt_length_max_plus_1 - 1
 
         if src_lengths is None:
             src_lengths = torch.full([batch_size], fill_value=src_length_max, dtype=torch.long, device=device)
         if tgt_lengths is None:
-            tgt_lengths = torch.full([batch_size], fill_value=tgt_length_max, dtype=torch.long, device=device)
+            tgt_lengths = torch.full(
+                [batch_size], fill_value=tgt_length_max_plus_1 - 1, dtype=torch.long, device=device
+            )
 
-        _, mask_blank = get_rnnt_mask(
+        _, mask = get_rnnt_mask(
             batch_size=batch_size,
             src_length_max=src_length_max,
             tgt_length_max_plus_1=tgt_length_max_plus_1,
@@ -204,25 +244,24 @@ class ConsistencyRNNTLoss(nn.Module):
             src_lengths=src_lengths,
             tgt_lengths=tgt_lengths,
         )
-        mask = mask_blank
 
         runtime_backend = self.get_runtime_backend(teacher_logits)
         if runtime_backend is TurboTransducerBackend.TRITON:
+            if device.type != "cuda":
+                raise ValueError(f"Triton backend for consistency loss requires CUDA inputs, got {device}")
             kl_loss = kl_loss_triton(
                 teacher_logits=teacher_logits,
                 student_logits=student_logits,
                 mask=mask,
                 symmetrical=self.symmetrical,
             )
-        elif runtime_backend is TurboTransducerBackend.TORCH:
+        else:
             kl_loss = kl_loss_torch(
                 teacher_logprobs=F.log_softmax(teacher_logits, dim=-1),
                 student_logprobs=F.log_softmax(student_logits, dim=-1),
                 mask=mask,
                 symmetrical=self.symmetrical,
             )
-        else:
-            raise NotImplementedError(f"Unsupported backend {runtime_backend}")
 
         return self.forward_from_kl(consistency_kl=kl_loss, src_lengths=src_lengths, tgt_lengths=tgt_lengths)
 
@@ -246,10 +285,7 @@ class ConsistencyRNNTLoss(nn.Module):
         _, src_length_max, tgt_length_max_plus_1 = consistency_kl.shape
         # number of valid (non-masked) positions per utterance; equals `mask_blank.sum(dim=(1, 2))`
         num_positions = src_lengths.clamp(max=src_length_max) * (tgt_lengths + 1).clamp(max=tgt_length_max_plus_1)
-        match self.reduction:
-            case ConsistencyRNNTReductionType.MEAN:
-                return consistency_kl.sum() / num_positions.sum().clamp(min=1)
-            case ConsistencyRNNTReductionType.MEAN_VOLUME:
-                return (consistency_kl.sum(dim=(1, 2)) / num_positions.clamp(min=1)).mean()
-            case _:
-                raise NotImplementedError(f"Unsupported reduction {self.reduction}")
+        if self.reduction is ConsistencyRNNTReductionType.MEAN_VOLUME:
+            return consistency_kl.sum() / num_positions.sum().clamp(min=1)
+        # ConsistencyRNNTReductionType.MEAN
+        return (consistency_kl.sum(dim=(1, 2)) / num_positions.clamp(min=1)).mean()

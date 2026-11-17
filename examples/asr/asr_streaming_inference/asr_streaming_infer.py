@@ -93,15 +93,18 @@ def main(cfg):
     # Build the pipeline
     pipeline = PipelineBuilder.build_pipeline(cfg)
 
-    # Read the audio once, outside the timed region, so RTFx measures the pipeline and not disk I/O.
-    # Every file then stays in host memory for the whole run: set preload_audio=false for a manifest
-    # that does not fit, and the pipeline reads from disk as before, with the RTFx below including that.
+    # With preload_audio=true every file stays in host memory for the whole run, so RTFx excludes disk I/O.
     data_dur, durations = calculate_duration(audio_filepaths)
     audio_samples = None
-    if cfg.get("preload_audio", True):
+    if cfg.get("preload_audio", False):
         needed_gib = data_dur * cfg.streaming.sample_rate * 4 / 1024**3  # mono float32 samples
         logging.info(f"Preloading {len(audio_filepaths)} audio files into host memory, about {needed_gib:.1f} GiB")
         audio_samples = [read_audio(path, target_sr=cfg.streaming.sample_rate, mono=True) for path in audio_filepaths]
+    else:
+        logging.warning(
+            "RTFx measurement enabled, but preload_audio=false. RTFx includes disk I/O; "
+            "set preload_audio=true to exclude it."
+        )
 
     # Warmup and run the pipeline
     timer = SimpleTimer()

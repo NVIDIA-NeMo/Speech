@@ -15,9 +15,13 @@
 """Autoregressive intra-frame codebook predictor for EasyMagpieTTS."""
 from __future__ import annotations
 
+import os
+
 import torch
+from easymagpie_vllm_omni.cfg import CFGOptions, guided_logits
 from easymagpie_vllm_omni.config import EasyMagpieOmniArch
 from torch import nn
+from vllm.compilation.backends import set_model_tag
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import VllmConfig
 
@@ -148,7 +152,7 @@ class EasyMagpieLocalTransformer(nn.Module):
 # would never match, raising "No dynamic dimensions found...". Both ``dec_hidden``
 # and ``gumbel_noise`` are ``[num_tokens, ...]`` -> dim 0 (num_tokens) is dynamic.
 @support_torch_compile(dynamic_arg_dims={"dec_hidden": 0, "gumbel_noise": 0})
-class EasyMagpieCodeLoop(nn.Module):
+class EasyMagpieSanitizedCodeLoop(nn.Module):
     """Compiled per-frame codebook loop.
 
     Gumbel noise is supplied at runtime for fresh samples. Temperature is
@@ -179,9 +183,9 @@ class EasyMagpieCodeLoop(nn.Module):
 
         Args:
             dec_hidden: ``[num_tokens, embedding_dim]`` backbone hidden state.
-            gumbel_noise: ``[num_tokens, num_codebooks, top_k]`` pre-drawn
-                Gumbel noise (``-log(-log(u))``), one slice per codebook.
-            temperature: ``[1]`` sampling temperature (already clamped > 0).
+            gumbel_noise: ``[num_tokens, num_codebooks, vocabulary_size]``
+                pre-drawn Gumbel noise, indexed by vocabulary ID.
+            temperature: ``[1]`` temperature; nonpositive values use argmax.
 
         Returns:
             ``[num_tokens, num_codebooks]`` int64 sampled codes.
@@ -199,15 +203,46 @@ class EasyMagpieCodeLoop(nn.Module):
             hidden = cp.local_transformer(buf)
             row = cp.local_transformer_audio_out_projection(hidden[:, k, :])
             logits = cp.local_transformer_out_projections[k](row)
-            logits = logits.masked_fill(forbidden, float("-inf")) / temperature
-            vals, idxs = torch.topk(logits, self.top_k, dim=-1)
-            picked = (vals + gumbel_noise[:, k, :]).argmax(dim=-1, keepdim=True)
-            code_k = idxs.gather(-1, picked).squeeze(-1)
+            code_k = _sample_codebook_logits(logits, gumbel_noise[:, k, :], temperature, forbidden, self.top_k)
             codes.append(code_k)
             if k + 1 < n:
                 emb = cp.audio_in_projection(cp.audio_embeddings[k](code_k))
                 buf[:, k + 1, :] = cp.local_transformer_in_projection(emb)
         return torch.stack(codes, dim=1)
+
+
+@support_torch_compile(dynamic_arg_dims={"conditional": 0, "unconditional": 0, "gumbel_noise": 0, "scales": 0})
+class EasyMagpieSanitizedCFGCodeLoop(nn.Module):
+    """Batched CFG sampling without diagnostic reductions in the compiled graph."""
+
+    def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
+        super().__init__()
+        self._predictor_ref: tuple = ()
+
+    def bind_predictor(self, predictor: 'EasyMagpieLocalTransformerPredictor') -> None:
+        self._predictor_ref = (predictor,)
+
+    def forward(self, conditional, unconditional, gumbel_noise, temperature, scales):
+        return _generate_cfg_codes(
+            self._predictor_ref[0], conditional, unconditional, gumbel_noise, temperature, scales, trace=False
+        )
+
+
+@support_torch_compile(dynamic_arg_dims={"conditional": 0, "unconditional": 0, "gumbel_noise": 0, "scales": 0})
+class EasyMagpieSanitizedCFGTraceCodeLoop(nn.Module):
+    """Diagnostic sampling with a separate AOT identity from the production loop."""
+
+    def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
+        super().__init__()
+        self._predictor_ref: tuple = ()
+
+    def bind_predictor(self, predictor: 'EasyMagpieLocalTransformerPredictor') -> None:
+        self._predictor_ref = (predictor,)
+
+    def forward(self, conditional, unconditional, gumbel_noise, temperature, scales):
+        return _generate_cfg_codes(
+            self._predictor_ref[0], conditional, unconditional, gumbel_noise, temperature, scales, trace=True
+        )
 
 
 class EasyMagpieLocalTransformerPredictor(nn.Module):
@@ -274,7 +309,7 @@ class EasyMagpieLocalTransformerPredictor(nn.Module):
 
         # Compiled single-graph autoregressive loop (owns no params; reaches the
         # projection heads / embeddings / mask on ``self`` via a bound reference).
-        self._code_loop = EasyMagpieCodeLoop(vllm_config=vllm_config, prefix=f"{prefix}.code_loop")
+        self._code_loop = EasyMagpieSanitizedCodeLoop(vllm_config=vllm_config, prefix=f"{prefix}.code_loop")
         self._code_loop.bind_predictor(self)
 
         # ── Persistent address-stable scratch buffers ──────────────────
@@ -285,8 +320,34 @@ class EasyMagpieLocalTransformerPredictor(nn.Module):
         self._dec_hidden_buf = torch.zeros(max_num_tokens, self.embedding_dim, dtype=dtype)
         # Gumbel noise drawn eagerly each frame and injected into the graph; fp32
         # so the small ``-log(-log(u))`` values don't underflow in fp16.
-        self._gumbel_buf = torch.zeros(max_num_tokens, self.num_codebooks, self._sample_top_k, dtype=torch.float32)
+        # Native top-k retains all ties at the cutoff. Noise is indexed over the
+        # vocabulary so those ties remain eligible, including after clipping.
+        self._gumbel_buf = torch.zeros(
+            max_num_tokens, self.num_codebooks, self.num_tokens_per_codebook, dtype=torch.float32
+        )
         self._temperature_buf = torch.zeros(1, dtype=torch.float32)
+        self._cfg_unconditional_buf = torch.zeros(max_num_tokens, self.embedding_dim, dtype=dtype)
+        self._cfg_scales_buf = torch.zeros(max_num_tokens, 1, dtype=torch.float32)
+        # AOT keys include forward's qualified name, not mutable instance flags.
+        # Independently compiled classes prevent trace/non-trace cache collisions.
+        trace = bool(os.environ.get('EASYMAGPIE_CFG_TRACE_PATH'))
+        cfg_loop = EasyMagpieSanitizedCFGTraceCodeLoop if trace else EasyMagpieSanitizedCFGCodeLoop
+        with set_model_tag('local_transformer_cfg_trace' if trace else 'local_transformer_cfg'):
+            self._cfg_code_loop = cfg_loop(vllm_config=vllm_config, prefix=f"{prefix}.cfg_code_loop")
+        self._cfg_code_loop.bind_predictor(self)
+        self._cfg_loop_forward = (self._cfg_code_loop,)
+        mode = getattr(vllm_config.compilation_config, 'cudagraph_mode', None)
+        if (
+            CFGOptions.from_hf_config(vllm_config.model_config.hf_config).enabled
+            and mode is not None
+            and mode.has_full_cudagraphs()
+        ):
+            from vllm.compilation.cuda_graph import CUDAGraphWrapper
+            from vllm.config import CUDAGraphMode
+
+            self._cfg_loop_forward = (
+                CUDAGraphWrapper(self._cfg_code_loop, vllm_config, runtime_mode=CUDAGraphMode.FULL),
+            )
 
     @torch.no_grad()
     def init_forbidden_mask(self) -> None:
@@ -351,5 +412,97 @@ class EasyMagpieLocalTransformerPredictor(nn.Module):
         noise.uniform_(1e-20, 1.0 - 1e-20)
         noise.log_().neg_().log_().neg_()
 
-        self._temperature_buf.fill_(max(float(self.temperature), _MIN_SAMPLING_TEMPERATURE))
+        self._temperature_buf.fill_(float(self.temperature))
         return self._code_loop(in_buf, noise, self._temperature_buf)
+
+    @torch.no_grad()
+    def generate_codes_cfg(
+        self,
+        conditional: torch.Tensor,
+        unconditional: torch.Tensor,
+        scales: torch.Tensor,
+        *,
+        padded_batch: int | None = None,
+    ):
+        """Run paired CFG without duplicating weights or sampling two audio streams."""
+        batch = conditional.shape[0]
+        padded_batch = batch if padded_batch is None else padded_batch
+        if padded_batch < batch:
+            raise ValueError('CFG graph batch cannot be smaller than the real logical batch')
+        conditional_buf = self._dec_hidden_buf[:padded_batch]
+        unconditional_buf = self._cfg_unconditional_buf[:padded_batch]
+        conditional_buf[:batch].copy_(conditional)
+        unconditional_buf[:batch].copy_(unconditional)
+        scale_buf = self._cfg_scales_buf[:padded_batch]
+        scale_buf[:batch].copy_(scales.reshape(batch, 1))
+        if padded_batch > batch:
+            conditional_buf[batch:].zero_()
+            unconditional_buf[batch:].zero_()
+            scale_buf[batch:] = 1.0
+        noise = self._gumbel_buf[:padded_batch]
+        noise.uniform_(1e-20, 1.0 - 1e-20)
+        noise.log_().neg_().log_().neg_()
+        self._temperature_buf.fill_(float(self.temperature))
+        codes, diagnostics = self._cfg_loop_forward[0](
+            conditional_buf, unconditional_buf, noise, self._temperature_buf, scale_buf
+        )
+        return codes[:batch], diagnostics[:batch]
+
+
+def _generate_cfg_codes(cp, conditional, unconditional, gumbel_noise, temperature, scales, *, trace):
+    batch = conditional.shape[0]
+    n = cp.num_codebooks
+    buf = conditional.new_zeros(2 * batch, n, cp.lt_hidden)
+    buf[:, 0, :] = cp.local_transformer_in_projection(torch.cat((conditional, unconditional), dim=0))
+    codes = []
+    diagnostics = conditional.new_zeros(batch, 3, dtype=torch.float32)
+    for k in range(n):
+        # The expensive transformer and projection run ONCE over both branches.
+        hidden = cp.local_transformer(buf)
+        row = cp.local_transformer_audio_out_projection(hidden[:, k, :])
+        logits = cp.local_transformer_out_projections[k](row)
+        cond, uncond = logits[:batch], logits[batch:]
+        guided = guided_logits(cond, uncond, scales)
+        if trace and k == 0:
+            diagnostics = torch.stack(
+                (
+                    (cond.float() - uncond.float()).abs().amax(-1),
+                    (guided - cond.float()).abs().amax(-1),
+                    (guided.argmax(-1) != cond.argmax(-1)).float(),
+                ),
+                dim=-1,
+            )
+        # The shared sampler sanitizes the mixed logits before special-token
+        # masking, matching native NeMo without creating masked-token NaNs.
+        code = _sample_codebook_logits(guided, gumbel_noise[:, k, :], temperature, cp.forbidden_mask, cp._sample_top_k)
+        codes.append(code)
+        if k + 1 < n:
+            embedding = cp.local_transformer_in_projection(cp.audio_in_projection(cp.audio_embeddings[k](code)))
+            # Both branches consume the SAME guided sample, never independently
+            # sampled audio histories (the native NeMo CFG contract).
+            buf[:batch, k + 1, :] = embedding
+            buf[batch:, k + 1, :] = embedding
+    return torch.stack(codes, dim=1), diagnostics
+
+
+def _sample_codebook_logits(logits, gumbel_noise, temperature, forbidden_mask, top_k):
+    """Native NeMo sampling policy, with graph-safe Gumbel sampling.
+
+    Sanitize before masking, then retain every token tied at the top-k cutoff.
+    All operations stay on device and compile into the existing codebook loop;
+    CFG still runs both branches in one transformer forward per codebook.
+    """
+    logits = torch.nan_to_num(logits.float(), nan=0.0, posinf=100.0, neginf=-100.0).clamp(-100.0, 100.0)
+    logits = logits.masked_fill(forbidden_mask, float('-inf'))
+    cutoff = torch.topk(logits, top_k, dim=-1).values[:, -1:]
+    logits = logits.masked_fill(logits < cutoff, float('-inf'))
+    sampled = logits / temperature.clamp_min(_MIN_SAMPLING_TEMPERATURE) + gumbel_noise
+    scores = torch.where(temperature <= 0, logits, sampled)
+    return scores.argmax(dim=-1)
+
+
+# Preserve imports while giving the corrected graphs distinct vLLM AOT keys.
+# Qualified forward names are part of vLLM's compilation-cache identity.
+EasyMagpieCodeLoop = EasyMagpieSanitizedCodeLoop
+EasyMagpieCFGCodeLoop = EasyMagpieSanitizedCFGCodeLoop
+EasyMagpieCFGTraceCodeLoop = EasyMagpieSanitizedCFGTraceCodeLoop

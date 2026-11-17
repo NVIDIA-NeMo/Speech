@@ -407,6 +407,7 @@ def build_config(
     # ── EasyMagpie scalars (read by EasyMagpieOmniArch.from_hf_config) ──
     config["text_vocab_size"] = vocab_size
     config["text_eos_id"] = int(model.eos_id)
+    config["cfg_unk_id"] = int(getattr(model, "cfg_unk_token_id", model.eos_id + 1))
     config["use_multiturn_dataset"] = bool(cfg.get("use_multiturn_dataset", False))
     config["condition_on_user_speech"] = bool(cfg.get("condition_on_user_speech", False))
     config["use_user_speaking_token"] = bool(cfg.get("use_user_speaking_token", False))

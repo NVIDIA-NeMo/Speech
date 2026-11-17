@@ -85,11 +85,19 @@ def patch_shared_expert_activation(backbone) -> int:
 
 
 def patch_moe_routed_scale(backbone) -> int:
-    """Apply the routed scaling factor omitted from Nemotron-H FP16 outputs."""
+    """Restore FP16 routed scaling deferred by vLLM when shared experts exist.
+
+    The pinned runner already scales the routed output when shared experts are
+    absent, including in FP16. Applying this hook there would scale it twice.
+    """
     patched = 0
     for layer in backbone.layers:
         mixer = getattr(layer, "mixer", None)
         if mixer is None or mixer.__class__.__name__ != "NemotronHMoE":
+            continue
+        if getattr(mixer, "shared_experts", None) is None:
+            continue
+        if getattr(mixer, "_easymagpie_routed_scale_patched", False):
             continue
         scale = float(getattr(mixer, "routed_scaling_factor", 1.0))
         if scale == 1.0:
@@ -102,6 +110,7 @@ def patch_moe_routed_scale(backbone) -> int:
             return out
 
         mixer.register_forward_hook(_scale_output)
+        mixer._easymagpie_routed_scale_patched = True
         patched += 1
     logger.info("FP16 MoE routed-scale fix installed on %d layers", patched)
     return patched

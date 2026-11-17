@@ -3,9 +3,11 @@
 """Architecture-specific acoustic-code predictors for EasyMagpie serving."""
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable, Sequence
 
 import torch
+from easymagpie_vllm_omni.cfg import CFGOptions, guided_logits
 from easymagpie_vllm_omni.config import NUM_SPECIAL_AUDIO_TOKENS, EasyMagpieOmniArch
 from easymagpie_vllm_omni.local_transformer import EasyMagpieLocalTransformerPredictor
 from torch import nn
@@ -190,6 +192,8 @@ class EasyMagpieAcousticCodesPredictor(nn.Module):
             dtype=torch.float32,
         )
 
+        self._init_cfg_buffers(vllm_config)
+
     def embed_audio_frame(self, codes: torch.Tensor) -> torch.Tensor:
         return self.audio_embedder.embed_audio_frame(codes)
 
@@ -261,6 +265,110 @@ class EasyMagpieAcousticCodesPredictor(nn.Module):
             previous_indices = block.codebook_indices
             code_offset += block.num_codes
         return codes
+
+    def _init_cfg_buffers(self, vllm_config: VllmConfig) -> None:
+        """Stage graph inputs once; keep both global cache branches in one batch."""
+        max_tokens = vllm_config.scheduler_config.max_num_batched_tokens
+        dtype = vllm_config.model_config.dtype
+        self._cfg_hidden = torch.zeros(max_tokens, self.arch.embedding_dim, dtype=dtype)
+        self._cfg_positions = torch.zeros(max_tokens, dtype=torch.long)
+        self._cfg_conditional_rows = torch.zeros(max_tokens, dtype=torch.long)
+        self._cfg_unconditional_rows = torch.zeros(max_tokens, dtype=torch.long)
+        self._cfg_scales = torch.ones(max_tokens, 1, dtype=torch.float32)
+        self._cfg_predict = torch.zeros(max_tokens, dtype=torch.bool)
+        self._cfg_temperature = torch.ones(1, dtype=torch.float32)
+        self._cfg_trace = bool(os.environ.get('EASYMAGPIE_CFG_TRACE_PATH'))
+        self._cfg_forward = (self._generate_cfg,)
+        self._cfg_advance = (self.advance,)
+        mode = getattr(vllm_config.compilation_config, 'cudagraph_mode', None)
+        if (
+            CFGOptions.from_hf_config(vllm_config.model_config.hf_config).enabled
+            and mode
+            and mode.has_full_cudagraphs()
+        ):
+            from vllm.compilation.cuda_graph import CUDAGraphWrapper
+            from vllm.config import CUDAGraphMode
+
+            # Full physical rows preserve attention metadata and native KV slots.
+            # Capture the complete predictor, avoiding Python launches per block.
+            self._cfg_forward = (CUDAGraphWrapper(self._generate_cfg, vllm_config, runtime_mode=CUDAGraphMode.FULL),)
+            self._cfg_advance = (CUDAGraphWrapper(self.advance, vllm_config, runtime_mode=CUDAGraphMode.FULL),)
+
+    @torch.no_grad()
+    def advance_cfg(self, hidden_states, *, positions):
+        """Populate predictor caches with address-stable pure-prefill inputs."""
+        count = hidden_states.shape[0]
+        hidden = self._cfg_hidden[:count]
+        hidden.copy_(hidden_states)
+        position_buf = self._cfg_positions[:count]
+        position_buf.copy_(positions)
+        self._cfg_advance[0](hidden, positions=position_buf)
+
+    @torch.no_grad()
+    def generate_codes_cfg(self, hidden_states, *, positions, conditional_rows, unconditional_rows, scales, predict):
+        """Advance all cache rows and use one guided sample for each C/U pair.
+
+        Row maps address physical scheduler rows, including prefill and padding.
+        Both rows of a pair point to the same conditional row's random draw.
+        """
+        count = hidden_states.shape[0]
+        hidden = self._cfg_hidden[:count]
+        hidden.copy_(hidden_states)
+        position_buf = self._cfg_positions[:count]
+        position_buf.copy_(positions)
+        conditional = self._cfg_conditional_rows[:count]
+        conditional.copy_(conditional_rows)
+        unconditional = self._cfg_unconditional_rows[:count]
+        unconditional.copy_(unconditional_rows)
+        scale_buf = self._cfg_scales[:count]
+        scale_buf.copy_(scales)
+        predict_buf = self._cfg_predict[:count]
+        predict_buf.copy_(predict)
+        noise = self._gumbel_buf[:count]
+        noise.uniform_(1e-20, 1.0 - 1e-20)
+        noise.log_().neg_().log_().neg_()
+        self._cfg_temperature.fill_(max(float(self.temperature), _MIN_SAMPLING_TEMPERATURE))
+        return self._cfg_forward[0](
+            hidden, position_buf, conditional, unconditional, scale_buf, predict_buf, noise, self._cfg_temperature
+        )
+
+    def _generate_cfg(self, hidden, positions, conditional, unconditional, scales, predict, noise, temperature):
+        count = hidden.shape[0]
+        codes = torch.full(
+            (count, self.num_codebooks), self.arch.mask_token_id, dtype=torch.long, device=hidden.device
+        )
+        diagnostics = hidden.new_zeros(count, 3, dtype=torch.float32)
+        previous_codes = previous_indices = None
+        offset = 0
+        for block in self.blocks:
+            if previous_codes is not None:
+                hidden = hidden + self.audio_embedder.embed_codebooks(previous_codes, previous_indices)
+            # A single batched invocation advances every conditional, unconditional
+            # and prefill KV row. Never run a decode-only slice through these blocks.
+            hidden = block(hidden, positions)
+            logits = torch.nan_to_num(block.compute_logits(hidden), nan=0.0, posinf=100.0, neginf=-100.0)
+            logits = logits.clamp(-100.0, 100.0)
+            cond, uncond = logits[conditional], logits[unconditional]
+            guided = guided_logits(cond, uncond, scales.unsqueeze(-1))
+            if self._cfg_trace and offset == 0:
+                diagnostics = torch.stack(
+                    (
+                        (cond.float() - uncond.float()).abs().flatten(1).amax(-1),
+                        (guided - cond.float()).abs().flatten(1).amax(-1),
+                        (guided[:, 0].argmax(-1) != cond[:, 0].argmax(-1)).float(),
+                    ),
+                    dim=-1,
+                )
+            values, indices = torch.topk(guided, self._sample_top_k, dim=-1)
+            shared_noise = noise[conditional, offset : offset + block.num_codes]
+            picked = (values / temperature + shared_noise).argmax(-1, keepdim=True)
+            sampled = indices.gather(-1, picked).squeeze(-1)
+            sampled = torch.where(sampled == self.arch.codebook_size, self.arch.audio_eos_id, sampled)
+            previous_codes = torch.where(predict.unsqueeze(-1), sampled, self.arch.mask_token_id)
+            codes[:, offset : offset + block.num_codes] = previous_codes
+            previous_indices = block.codebook_indices
+            offset += block.num_codes
+        return codes, diagnostics
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         """Load NeMo predictor weights, packing q/k/v through vLLM loaders."""

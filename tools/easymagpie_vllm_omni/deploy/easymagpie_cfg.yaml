@@ -1,0 +1,57 @@
+# Whole-text, known-speaker CFG. Two physical sequences per logical request.
+# Keep token and KV budgets large enough to admit both branches together.
+pipeline: easymagpie
+async_chunk: true
+trust_remote_code: true
+dtype: float16
+connectors:
+  connector_of_shared_memory:
+    name: SharedMemoryConnector
+    extra:
+      shm_threshold_bytes: 65536
+      connector_get_sleep_s: 0.01
+      connector_get_max_wait_first_chunk: 3000
+      connector_get_max_wait: 300
+      codec_chunk_frames: 8
+      codec_startup_chunk_frames: [6, 6]
+stages:
+  - stage_id: 0
+    max_num_seqs: 16
+    gpu_memory_utilization: 0.5
+    enforce_eager: false
+    async_scheduling: true
+    enable_prefix_caching: false
+    enable_chunked_prefill: false
+    max_num_batched_tokens: 4096
+    max_model_len: 2048
+    devices: "0"
+    hf_overrides:
+      easymagpie_cfg: true
+      easymagpie_cfg_scale: 2.5
+      easymagpie_cfg_max_prefill_tokens: 256
+    output_connectors:
+      to_stage_1: connector_of_shared_memory
+    mamba_ssm_cache_dtype: float32
+    skip_tokenizer_init: false
+    engine_extras:
+      worker_cls: easymagpie_vllm_omni.runner.EasyMagpieGPUARWorker
+    default_sampling_params:
+      temperature: 0.0
+      detokenize: false
+      max_tokens: 2048
+  - stage_id: 1
+    max_num_seqs: 32
+    gpu_memory_utilization: 0.35
+    dtype: float32
+    enforce_eager: true
+    async_scheduling: false
+    enable_prefix_caching: false
+    enable_chunked_prefill: false
+    max_num_batched_tokens: 512
+    max_model_len: 512
+    devices: "0"
+    input_connectors:
+      from_stage_0: connector_of_shared_memory
+    default_sampling_params:
+      temperature: 0.0
+      max_tokens: 65536

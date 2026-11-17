@@ -65,6 +65,7 @@ class EasyMagpieOmniArch:
     # checkpoints append an interruption token after CFG_UNK, so converters pin
     # the actual ID explicitly instead of deriving it from the final table size.
     text_eos_id: int | None = None
+    cfg_unk_id: int | None = None
     use_multiturn_dataset: bool = False
     condition_on_user_speech: bool = False
     use_user_speaking_token: bool = False
@@ -443,6 +444,7 @@ class EasyMagpieOmniArch:
             "phoneme_stacking_factor",
             "phoneme_vocab_size",
             "text_eos_id",
+            "cfg_unk_id",
             "use_multiturn_dataset",
             "condition_on_user_speech",
             "use_user_speaking_token",

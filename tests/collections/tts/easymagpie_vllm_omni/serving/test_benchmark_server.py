@@ -130,6 +130,70 @@ def test_request_uses_reference_audio_without_voice(monkeypatch):
     assert result.error is None
 
 
+def test_request_forwards_explicit_audio_sampling_and_cfg_settings(monkeypatch):
+    sent = {}
+
+    def post(url, **kwargs):
+        sent.update(kwargs)
+        return _StreamingResponse()
+
+    monkeypatch.setattr(benchmark.requests, 'post', post)
+    options = {'temperature': 0.7, 'top_k': 80, 'cfg_scale': 2.5}
+    task = benchmark._make_tasks([('one', 'hello')], 1, 'url', 'eng', 128, 22050, 10, None, extra_params=options)[0]
+    options['temperature'] = 0.1
+    result = benchmark._do_request(task)
+    assert result.error is None
+    assert sent['json']['extra_params'] == {'temperature': 0.7, 'top_k': 80, 'cfg_scale': 2.5}
+
+
+def test_main_saves_machine_readable_timings_and_uses_seeded_order(monkeypatch, tmp_path):
+    import json
+
+    text = tmp_path / 'inputs.tsv'
+    text.write_text('a\tfirst\nb\tsecond\n')
+    output = tmp_path / 'results.json'
+    observed = []
+
+    def run(tasks, concurrency, output_dir):
+        observed.append(tasks)
+        return [benchmark.RequestResult(uttid=t['uttid'], num_samples=22050, elapsed_s=0.2) for t in tasks], 0.4
+
+    monkeypatch.setattr(benchmark, '_run_level', run)
+    arguments = [
+        'benchmark_server.py',
+        '--text-file',
+        str(text),
+        '-n',
+        '2',
+        '-c',
+        '1',
+        '--seed',
+        '42',
+        '--temperature',
+        '0.7',
+        '--top-k',
+        '80',
+        '--cfg-scale',
+        '2.5',
+        '--json-output',
+        str(output),
+    ]
+    monkeypatch.setattr(sys, 'argv', arguments)
+    benchmark.main()
+    report = json.loads(output.read_text())
+    assert report['summaries'][0]['ok'] == 2
+    assert report['summaries'][0]['failed'] == 0
+    assert report['summaries'][0]['rtf'] == pytest.approx(5.0)
+    assert report['settings']['temperature'] == 0.7
+    assert len(report['details'][0]['requests']) == 2
+    assert all(
+        t['extra_params'] == {'temperature': 0.7, 'top_k': 80, 'cfg_scale': 2.5} for level in observed for t in level
+    )
+    order = [t['uttid'] for t in observed[-1]]
+    benchmark.main()
+    assert [t['uttid'] for t in observed[-1]] == order
+
+
 def test_reference_audio_randomization_changes_only_two_samples(tmp_path):
     samples = benchmark.np.arange(-1000, 1000, dtype="<i2")
     reference = tmp_path / "reference.wav"

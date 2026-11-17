@@ -97,6 +97,8 @@ class HFHubMixin(
             raise RuntimeError(f"Missing {CONFIG_NAME} file for {model_id=}")
         model_kwargs['cfg'] = OmegaConf.to_container(OmegaConf.load(resolved_config_file))
         model_kwargs['cfg']['trust_remote_code'] = trust_remote_code
+        if isinstance(model_kwargs['cfg'].get('model'), dict):
+            model_kwargs['cfg']['model']['trust_remote_code'] = trust_remote_code
         _inject_local_artifact_paths(model_kwargs['cfg'], model_id, _cached_file_kwargs)
         # The setting below tells the model's __init__ not to load the original pretrained weights
         # for individual children modules.
@@ -211,6 +213,9 @@ class HFHubMixin(
             # Remote-code trust is a runtime choice and must never be persisted
             # in a checkpoint that can be loaded by another user.
             config.pop("trust_remote_code", None)
+            if isinstance(config.get("model"), dict):
+                config["model"] = dict(config["model"])
+                config["model"].pop("trust_remote_code", None)
             config.setdefault("model_type", "nemo_speechlm")
             if "architectures" not in config:
                 llm_config = getattr(getattr(self, "llm", None), "config", None)

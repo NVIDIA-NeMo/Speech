@@ -259,8 +259,8 @@ class RelPositionMultiHeadAttention(MultiHeadAttention):
         # these two learnable biases are used in matrix c and matrix d
         # as described in https://arxiv.org/abs/1901.02860 Section 3.3
         if pos_bias_u is None or pos_bias_v is None:
-            self.pos_bias_u = nn.Parameter(torch.FloatTensor(self.h, self.d_k))
-            self.pos_bias_v = nn.Parameter(torch.FloatTensor(self.h, self.d_k))
+            self.pos_bias_u = nn.Parameter(torch.empty(self.h, self.d_k))
+            self.pos_bias_v = nn.Parameter(torch.empty(self.h, self.d_k))
             # nn.init.normal_(self.pos_bias_u, 0.0, 0.02)
             # nn.init.normal_(self.pos_bias_v, 0.0, 0.02)
             nn.init.zeros_(self.pos_bias_u)

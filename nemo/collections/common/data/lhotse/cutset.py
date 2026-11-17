@@ -576,7 +576,8 @@ class SupervisionFieldMapping:
 
     Mapping keys are destinations; string values name source custom fields and
     ``None`` removes a destination. All sources are read before any changes.
-    Missing source fields leave the destination unchanged; other mappings still apply.
+    Missing, null, and blank string sources leave the destination unchanged;
+    other mappings still apply.
     """
 
     def __init__(self, mapping: Mapping[str, str | None]) -> None:
@@ -608,7 +609,10 @@ class SupervisionFieldMapping:
             if source is None:
                 custom.pop(destination, None)
             elif source in original:
-                custom[destination] = original[source]
+                value = original[source]
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    continue
+                custom[destination] = value
         return fastcopy(supervision, custom=custom)
 
 

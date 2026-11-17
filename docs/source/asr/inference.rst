@@ -206,6 +206,78 @@ Long Audio Inference
 
 For audio longer than what fits in memory (especially with Conformer's quadratic attention):
 
+**Planned offline chunking through the Python API:**
+
+.. code-block:: python
+
+    from nemo.collections.asr.parts.mixins.transcription import ChunkingConfig
+
+    outputs = model.transcribe(
+        ["recording.wav"],
+        batch_size=4,
+        chunking=ChunkingConfig(chunk_size=30.0, context_size=2.0),
+    )
+    print(outputs[0].text)
+
+``chunk_size`` is the duration owned by one chunk. ``context_size`` is extra audio read on
+each side. Both values are in seconds and round up to complete encoder frames. The default
+values are 30 seconds and 2 seconds. Peak encoder input length is at most the owned duration
+plus context on both sides. Choose the batch size and durations for the available device
+memory. Chunking does not guarantee that any batch size fits.
+
+The transcription script accepts the same configuration:
+
+.. code-block:: bash
+
+    python examples/asr/transcribe_speech.py \
+        pretrained_name=nvidia/parakeet-tdt-0.6b-v2 \
+        audio_dir=/path/to/audio \
+        '+chunking={chunk_size:30.0,context_size:2.0}'
+
+File paths, lists of file paths, NeMo JSON/JSONL manifests, and mono NumPy/PyTorch waveforms
+use the same chunk plan. Waveforms must already have the model's sample rate. File slices
+are read through Lhotse and resampled as needed. Manifest offsets are relative to each source
+utterance; returned times start at zero for that utterance. Duplicate file entries produce
+separate results in input order. Audio is loaded one batch at a time.
+Prompt-conditioned RNNT models retain each manifest entry's language. An explicit
+``target_lang`` continues to apply to every utterance in that run.
+
+The transcription mixin controls planning, loading, batching, and result assembly. Models
+select output in their native representation:
+
+* **CTC:** discard context frames, assemble the retained frames, then perform one CTC
+  collapse. Repeated labels and blank frames remain correct across chunk joins.
+* **RNNT/TDT:** discard encoder context before greedy decoding. Each chunk decodes
+  independently. Assemble token times, alignments, and confidence inputs from these disjoint
+  regions. Compute word timestamps and word confidence after assembly.
+* **AED/Canary:** decode the read interval and use the model's external CTC timestamp
+  aligner. Retain words whose midpoints fall inside the owned interval. Repeated words keep
+  their own aligned times. Actual read-start times place words on the utterance timeline.
+  This path requires a checkpoint with an external timestamp aligner and supports ASR,
+  not speech translation. Its assembled hypothesis uses a neutral score of zero because
+  selected words do not have an AED sequence score. Token confidence and cross-attention
+  scores are not available for this path.
+
+CTC and RNNT/TDT currently support ``greedy`` and ``greedy_batch`` decoding. CTC n-gram LM
+decoding, external DataLoaders, augmentations, and partial hypotheses are not supported in
+this mode and raise an error. Existing inference paths remain available when ``chunking``
+is unset. The existing Canary ``enable_chunking`` mode is separate; setting ``chunking``
+selects the shared chunk plan instead.
+TDT token and word confidence currently require ``confidence_cfg.exclude_blank=True``.
+
+For configuration-based calls, set ``config.chunking = ChunkingConfig(...)`` and pass
+``override_config=config``. The same config works with ``transcribe_generator``. That
+generator yields complete utterance results as they become available, rather than exposing
+unmerged chunk hypotheses. The generator must be closed if iteration stops early, so that
+the model's inference state is restored.
+
+CTC normally retains only frame labels on the CPU until an utterance is complete. Returning
+full hypotheses, alignments, or confidence can require retaining the owned log probabilities
+on the CPU. This memory use grows with the utterance duration and vocabulary size.
+RNNT/TDT decoder history resets for each chunk, and AED word selection depends on alignment
+quality. Results can differ from whole-recording inference. Validate recognition quality
+and memory use on representative audio before selecting production chunk sizes.
+
 **Buffered / chunked inference:**
 
 Divide audio into overlapping chunks and merge outputs. Scripts are in

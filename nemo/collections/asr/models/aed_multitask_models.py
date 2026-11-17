@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import os
 import warnings
 from collections.abc import Mapping, Sequence
@@ -42,6 +43,7 @@ from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.multitask_decoding import MultiTaskDecoding, MultiTaskDecodingConfig
 from nemo.collections.asr.parts.submodules.token_classifier import TokenClassifier
 from nemo.collections.asr.parts.utils.chunking_utils import merge_all_hypotheses, merge_parallel_chunks
+from nemo.collections.asr.parts.utils.longform_inference import ChunkingConfig, select_chunk_words
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.timestamp_utils import (
     get_forced_aligned_timestamps_with_external_model,
@@ -501,6 +503,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         verbose: bool = True,
         timestamps: Optional[bool] = None,
         override_config: Optional[MultiTaskTranscriptionConfig] = None,
+        chunking: Optional[ChunkingConfig] = None,
         **prompt,
     ) -> Union[List[str], List[Hypothesis]]:
         """
@@ -529,6 +532,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             verbose: (bool) whether to display tqdm progress bar
             override_config: (Optional[MultiTaskTranscriptionConfig]) A config to override the
                 default config.
+            chunking: Optional offline chunk plan. Requires an external CTC timestamp aligner and ASR output.
             **prompt: Optional input to construct the prompts for the model. Accepted formats are:
                 1) legacy Canary-1B API source_lang=<lang>, target_lang=<lang>, etc.
                 2) explicit single-turn role=<role>, slots={<slot>: <value>, ...}
@@ -566,6 +570,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
                 verbose=verbose,
                 prompt=prompt,
                 timestamps=timestamps,
+                chunking=chunking,
             )
         else:
             if not isinstance(override_config, MultiTaskTranscriptionConfig):
@@ -574,7 +579,14 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
                     f"but got {type(override_config)}"
                 )
             trcfg = override_config
-            trcfg.timestamps = timestamps
+            if trcfg.chunking is None:
+                trcfg.timestamps = timestamps
+
+        if trcfg.chunking is not None:
+            # Keep the released Canary chunker separate from planned offline chunking.
+            trcfg = copy.deepcopy(trcfg)
+            trcfg.enable_chunking = False
+            return super().transcribe(audio=audio, override_config=trcfg)
 
         if trcfg.enable_chunking:
             # Check if only one audio is provided with string
@@ -913,6 +925,76 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
 
     """ Transcription methods """
 
+    def _transcribe_chunk_validate(self, trcfg):
+        if self.timestamps_asr_model is None:
+            raise ValueError('Planned AED chunking requires a model with an external CTC timestamp aligner.')
+        if self.decoding.cfg.get('return_xattn_scores', False):
+            raise ValueError('Planned AED chunking does not return cross-attention scores.')
+
+    def _transcribe_chunk_batch(self, audio, lengths, cuts, trcfg):
+        if all(cut is not None for cut in cuts):
+            from lhotse.dataset.collation import collate_vectors
+
+            from nemo.collections.common.data import apply_prompt_format_fn
+
+            prompts = [apply_prompt_format_fn(cut, self.prompt)['context_ids'] for cut in cuts]
+            prompts = collate_vectors([torch.as_tensor(p) for p in prompts], padding_value=self.tokenizer.pad_id)
+            prompts = prompts.to(audio.device)
+            return audio, lengths, None, None, prompts, cuts
+        return audio, lengths, None, None
+
+    def _transcribe_chunk_outputs(self, outputs, chunks, frame_samples, trcfg):
+        batch = outputs['batch']
+        cuts = batch[5] if len(batch) == 6 else [None] * len(chunks)
+        # The normal AED path owns prompt construction and decoding. Alignment is internal,
+        # even when the caller does not request public timestamps.
+        align_config = copy.deepcopy(trcfg)
+        align_config.timestamps = True
+        align_config.enable_chunking = False
+        hypotheses = self._transcribe_output_processing(outputs, align_config)
+        sample_rate = int(self.cfg.sample_rate)
+        parts = []
+        default_slots = {}
+        for turn in self.prompt.get_default_dialog_slots() + (trcfg.prompt or []):
+            if turn['role'] == 'user':
+                default_slots.update(turn['slots'])
+        for hyp, chunk, cut in zip(hypotheses, chunks, cuts):
+            slots = dict(default_slots)
+            if cut is not None:
+                slots.update(cut.custom or {})
+            source_lang = slots.get('source_lang')
+            target_lang = slots.get('target_lang', source_lang)
+            task = slots.get('task', slots.get('taskname', 'asr'))
+            if source_lang != target_lang or task not in ('asr', 'transcribe', '<|transcribe|>'):
+                raise ValueError('Time-selected AED chunks support transcription, not speech translation.')
+            words = hyp.timestamp.get('word', [])
+            if hyp.text.strip() and not words:
+                raise RuntimeError('The AED aligner returned no word times for nonempty text.')
+            parts.append((select_chunk_words(words, chunk, sample_rate), target_lang))
+        return parts
+
+    def _transcribe_chunk_finalize(self, parts, chunks, frame_samples, trcfg):
+        from nemo.collections.asr.parts.utils.timestamp_utils import get_segment_offsets
+
+        words = [word for selected, _ in parts for word in selected]
+        text = ' '.join(word['word'] for word in words)
+        if isinstance(self.tokenizer, tokenizers.AggregateTokenizer):
+            language = parts[0][1]
+            if language is None:
+                raise ValueError('Set target_lang for planned chunking with an AggregateTokenizer.')
+            ids = self.tokenizer.text_to_ids(text, lang_id=language)
+        else:
+            ids = self.tokenizer.text_to_ids(text)
+        hyp = Hypothesis(score=0.0, y_sequence=torch.tensor(ids, dtype=torch.long), text=text)
+        # Independently generated AED scores do not define a score for selected words.
+        # Keep the neutral score and expose no stale chunk decoder state or confidence.
+        if trcfg.timestamps:
+            stride = frame_samples / self.cfg.sample_rate
+            for word in words:
+                word.update(start_offset=round(word['start'] / stride), end_offset=round(word['end'] / stride))
+            hyp.timestamp = {'word': words, 'segment': get_segment_offsets(words, {'.', '!', '?'})}
+        return hyp
+
     def _transcribe_on_begin(self, audio, trcfg: MultiTaskTranscriptionConfig):
         """
         Transcription setup method.
@@ -935,7 +1017,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
                     trcfg._internal.primary_language = self.tokenizer.langs[0]
                     logging.debug(f"Transcribing with default setting of {trcfg._internal.primary_language}.")
 
-        if trcfg.timestamps and self.timestamps_asr_model is not None:
+        if (trcfg.timestamps or trcfg.chunking is not None) and self.timestamps_asr_model is not None:
             self.timestamps_asr_model.to(trcfg._internal.device)
 
     def _transcribe_input_manifest_processing(
@@ -954,7 +1036,12 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             A config dict that is used to setup the dataloader for transcription.
         """
         manifest_filepath = trcfg._internal.manifest_filepath
-        audio_files = self._may_be_make_dict_and_fix_paths(audio_files, manifest_filepath, trcfg)
+        if trcfg.chunking is not None:
+            audio_files = (
+                self._may_be_make_dict_and_fix_paths([entry], manifest_filepath, trcfg)[0] for entry in audio_files
+            )
+        else:
+            audio_files = self._may_be_make_dict_and_fix_paths(audio_files, manifest_filepath, trcfg)
 
         ds_config = super()._transcribe_input_manifest_processing(audio_files, temp_dir, trcfg)
         if trcfg.enable_chunking and self.timestamps_asr_model is not None:

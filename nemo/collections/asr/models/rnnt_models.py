@@ -41,9 +41,11 @@ from nemo.collections.asr.parts.mixins import (
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecoding, RNNTDecodingConfig
 from nemo.collections.asr.parts.utils.asr_batching import get_semi_sorted_batch_sampler
+from nemo.collections.asr.parts.utils.longform_inference import ChunkingConfig, merge_rnnt_chunks, select_chunk_frames
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.timestamp_utils import process_timestamp_outputs
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
+from nemo.collections.common.data.utils import move_data_to_device
 from nemo.collections.common.parts.preprocessing.parsers import make_parser
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.classes.mixins import AccessMixin
@@ -257,6 +259,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         verbose: bool = True,
         timestamps: Optional[bool] = None,
         override_config: Optional[TranscribeConfig] = None,
+        chunking: Optional[ChunkingConfig] = None,
     ) -> TranscriptionReturnType:
         """
         Uses greedy decoding to transcribe audio files. Use this method for debugging and prototyping.
@@ -288,6 +291,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             override_config: (Optional[TranscribeConfig]) override transcription config pre-defined by the user.
                 **Note**: All other arguments in the function will be ignored if override_config is passed.
                 You should call this argument as `model.transcribe(audio, override_config=TranscribeConfig(...))`.
+            chunking: Optional offline chunk plan. Inference discards encoder context before greedy decoding.
 
         Returns:
             Returns a tuple of 2 items -
@@ -296,7 +300,8 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         """
 
         timestamps = timestamps or (override_config.timestamps if override_config is not None else None)
-        if timestamps is not None:
+        planned_chunking = chunking is not None or getattr(override_config, 'chunking', None) is not None
+        if timestamps is not None and not planned_chunking:
             need_change_decoding = False
             if timestamps or (override_config is not None and override_config.timestamps):
                 logging.info(
@@ -333,6 +338,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             override_config=override_config,
             # Additional arguments
             partial_hypothesis=partial_hypothesis,
+            chunking=chunking,
         )
 
     def change_vocabulary(self, new_vocabulary: List[str], decoding_cfg: Optional[DictConfig] = None):
@@ -947,6 +953,87 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         return {**test_loss_log, 'log': tensorboard_logs}
 
     """ Transcription related methods """
+
+    def _transcribe_chunk_validate(self, trcfg):
+        if self.decoding.cfg.strategy not in ('greedy', 'greedy_batch'):
+            raise ValueError('Planned RNNT/TDT chunking currently supports greedy and greedy_batch decoding.')
+        if (
+            self.decoding._is_tdt
+            and (self.decoding.preserve_token_confidence or self.decoding.preserve_word_confidence)
+            and not self.decoding.exclude_blank_from_confidence
+        ):
+            raise ValueError('Planned TDT confidence currently requires exclude_blank=True.')
+
+    def _transcribe_chunk_decoding(self, trcfg):
+        if trcfg._internal.chunk_decoding is None:
+            decoding = self.decoding
+            timestamps = trcfg.timestamps if trcfg.timestamps is not None else decoding.compute_timestamps
+            if decoding._is_tdt and timestamps and not decoding.tdt_include_token_duration:
+                # Collect durations in a call-local decoder; retain the released model config.
+                cfg = copy.deepcopy(decoding.cfg)
+                with open_dict(cfg):
+                    cfg.tdt_include_token_duration = True
+                kwargs = (
+                    {'tokenizer': decoding.tokenizer}
+                    if hasattr(decoding, 'tokenizer')
+                    else {'vocabulary': list(decoding.labels_map.values())}
+                )
+                decoding = type(decoding)(cfg, self.decoder, self.joint, **kwargs)
+            trcfg._internal.chunk_decoding = decoding
+        return trcfg._internal.chunk_decoding
+
+    def _transcribe_chunk_outputs(self, outputs, chunks, frame_samples, trcfg):
+        encoded, lengths = outputs['encoded'], outputs['encoded_len']
+        owned = [
+            select_chunk_frames(encoded[i, :, : int(length)].T, chunk, frame_samples)
+            for i, (length, chunk) in enumerate(zip(lengths, chunks))
+        ]
+        owned_lengths = torch.tensor([len(x) for x in owned], device=lengths.device, dtype=lengths.dtype)
+        owned = torch.nn.utils.rnn.pad_sequence(owned, batch_first=True).transpose(1, 2)
+        # Use raw greedy hypotheses. Compute words and their confidence only after assembly.
+        decoding = self._transcribe_chunk_decoding(trcfg)
+        hypotheses = decoding.decoding(encoder_output=owned, encoded_lengths=owned_lengths)[0]
+        for i, hyp in enumerate(hypotheses):
+            if not isinstance(hyp, Hypothesis):
+                raise RuntimeError('Chunk decoding must return one greedy hypothesis per chunk.')
+            if decoding._is_tdt:
+                num_frames = int(owned_lengths[i])
+                # A predicted duration may cross the owned boundary. Retain only its
+                # intersection with the frames supplied to this independent decoder.
+                if hyp.token_duration is not None and len(hyp.token_duration) == len(hyp.y_sequence):
+                    remaining = num_frames - torch.as_tensor(hyp.timestamp, dtype=torch.long)
+                    hyp.token_duration = torch.minimum(torch.as_tensor(hyp.token_duration), remaining)
+                for name in ('alignments', 'frame_confidence'):
+                    value = getattr(hyp, name)
+                    if value is not None:
+                        setattr(hyp, name, value[:num_frames])
+            if (
+                decoding._is_tdt
+                and decoding.preserve_frame_confidence
+                and hyp.non_blank_step_confidence_precomputed is None
+            ):
+                hyp.non_blank_step_confidence_precomputed = hyp.non_blank_frame_confidence
+            hyp.clean_decoding_state_()
+        return move_data_to_device(hypotheses, torch.device('cpu'))
+
+    def _transcribe_chunk_finalize(self, parts, chunks, frame_samples, trcfg):
+        decoding = self._transcribe_chunk_decoding(trcfg)
+        hyp = merge_rnnt_chunks(parts, chunks, frame_samples)
+        hyp = decoding.decode_hypothesis([hyp])[0]
+        if decoding.preserve_token_confidence or decoding.preserve_word_confidence:
+            hyp = decoding.compute_confidence([hyp])[0]
+        timestamps = trcfg.timestamps if trcfg.timestamps is not None else decoding.compute_timestamps
+        if timestamps:
+            hyp.timestamp = torch.tensor(hyp.timestamp, dtype=torch.long)
+            hyp = decoding.compute_rnnt_timestamps(hyp, decoding.cfg.get('rnnt_timestamp_type', 'all'))
+            hyp = process_timestamp_outputs(hyp, self.encoder.subsampling_factor, self.cfg.preprocessor.window_stride)[
+                0
+            ]
+        elif not trcfg.return_hypotheses:
+            hyp.timestamp = []
+        if not trcfg.return_hypotheses and not timestamps:
+            hyp = Hypothesis(hyp.score, hyp.y_sequence, hyp.text)
+        return hyp
 
     def _transcribe_forward(self, batch: Any, trcfg: TranscribeConfig):
         encoded, encoded_len = self.forward(input_signal=batch[0], input_signal_length=batch[1])

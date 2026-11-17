@@ -32,6 +32,7 @@ from nemo.collections.asr.parts.mixins import ASRTranscriptionMixin, PromptStrea
 from nemo.collections.asr.parts.mixins.transcription import TranscriptionReturnType
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTBPEDecoding
+from nemo.collections.asr.parts.utils.longform_inference import ChunkingConfig
 from nemo.collections.asr.parts.utils.prompt_language_utils import (
     AUTO_PROMPT_LANGUAGE,
     resolve_deprecated_prompt_arguments,
@@ -646,9 +647,18 @@ class EncDecRNNTBPEModelWithPrompt(PromptStreamingMixin, EncDecRNNTBPEModel, ASR
         verbose: bool = True,
         timestamps: Optional[bool] = None,
         override_config: Optional[RNNTPromptTranscribeConfig] = None,
+        chunking: Optional[ChunkingConfig] = None,
         **prompt,
     ) -> TranscriptionReturnType:
-        if timestamps is not None:
+        """Transcribe with per-utterance language conditioning.
+
+        Arguments follow ``EncDecRNNTModel.transcribe``. ``chunking`` enables the
+        shared offline chunk plan. ``target_lang`` in ``prompt`` overrides manifest
+        languages. With ``override_config``, set its ``chunking`` and ``target_lang``
+        fields instead. Returns one transcription hypothesis per input utterance.
+        """
+        planned_chunking = chunking is not None or getattr(override_config, 'chunking', None) is not None
+        if timestamps is not None and not planned_chunking:
             decoding_cfg = self.cfg.decoding
             if timestamps or (override_config is not None and override_config.timestamps):
                 return_hypotheses = True
@@ -674,6 +684,7 @@ class EncDecRNNTBPEModelWithPrompt(PromptStreamingMixin, EncDecRNNTBPEModel, ASR
                 timestamps=timestamps,
                 target_lang=prompt.get('target_lang', defaults.target_lang),
                 lang_field=prompt.get('lang_field', defaults.lang_field),
+                chunking=chunking,
             )
         else:
             if not isinstance(override_config, RNNTPromptTranscribeConfig):

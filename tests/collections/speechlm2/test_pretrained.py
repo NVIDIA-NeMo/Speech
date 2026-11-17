@@ -279,7 +279,7 @@ def test_load_pretrained_automodel_llm_points_to_trust_remote_code_for_read_only
         module_patch,
         compat_patch,
         patch.object(pretrained, "_resolve_automodel_checkpoint_path", return_value="base-checkpoint"),
-        pytest.raises(AttributeError, match="model.trust_remote_code=true"),
+        pytest.raises(AttributeError, match=r"\+\+model\.trust_remote_code=true"),
     ):
         pretrained.load_pretrained_automodel_llm(
             "base-checkpoint",

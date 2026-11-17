@@ -724,7 +724,7 @@ class LazyNeMoTarredIterator(IteratorNode):
                 tar_idx_path = index_file_path(tar_path, self.indexes_root)
                 self._tar_readers[sid] = IndexedTarMemberReader(tar_path, idx_path=tar_idx_path)
                 _check_indexed_tar_covers_manifest(
-                    jsonl_path, len(self._cuts_readers[sid]), tar_path, tar_idx_path, len(self._tar_readers[sid])
+                    jsonl_path, self._cuts_readers[sid], tar_path, tar_idx_path, len(self._tar_readers[sid])
                 )
             cum += len(self._cuts_readers[sid])
             cum_lens.append(cum)
@@ -1642,22 +1642,28 @@ def _extract_unique_shard_keys(
 
 
 def _check_indexed_tar_covers_manifest(
-    manifest_path: str, num_rows: int, tar_path: str, tar_idx_path: str | Path, num_members: int
+    manifest_path: str, manifest_rows: Sequence, tar_path: str, tar_idx_path: str | Path, num_members: int
 ) -> None:
-    """Fail fast when manifest row ``i`` cannot be mapped to tar index entry ``i``.
+    """Fail fast when an active manifest row ``i`` cannot be mapped to tar index entry ``i``.
 
     Indexed (loose ``.idx``) ``nemo_tarred`` loading resolves manifest row ``i`` to tar index
-    entry ``i`` (and validates the member name when the audio is loaded). A tar index with
-    fewer entries than the manifest has rows would only fail mid-epoch with a bare
-    ``IndexError``. Both counts come from the already loaded ``.idx`` sidecars, so this check
-    reads no data.
+    entry ``i`` (and validates the member name when the audio is loaded). Rows explicitly
+    skipped with ``_skipme`` never touch the tar, but an active row beyond the tar index
+    would only fail mid-epoch with a bare ``IndexError``. When the row count from the
+    manifest ``.idx`` fits the tar index, this reads no manifest data. Otherwise it reads the
+    overflow rows (those at physical positions past the tar index) and raises at the first
+    active one. Rows are never renumbered, so an active row at an out-of-range physical
+    position fails even when earlier rows are skipped.
     """
+    num_rows = len(manifest_rows)
     if num_rows <= num_members:
+        return
+    if all(manifest_entry_is_explicitly_skipped(manifest_rows[i]) for i in range(num_members, num_rows)):
         return
     raise ValueError(
         f"Indexed nemo_tarred shard mismatch: manifest {manifest_path!r} has {num_rows} rows, but the tar index "
-        f"{str(tar_idx_path)!r} for {tar_path!r} lists only {num_members} members. Indexed loading maps "
-        "manifest row i to tar index entry i, so this shard would fail mid-epoch. The most common cause is a "
+        f"{str(tar_idx_path)!r} for {tar_path!r} lists only {num_members} members, and a row past the last member is not skipped with _skipme. "
+        "Indexed loading maps manifest row i to tar index entry i, so this shard would fail mid-epoch. The most common cause is a "
         "tar index written by 'lhotse index tar', which uses the Lhotse Shar paired-member layout (one entry per "
         "two members) instead of NeMo's one-entry-per-member layout. Rebuild the tar indexes with "
         "'python scripts/dataloading/build_indexes.py --force <input_cfg.yaml>'. If the manifest legitimately "

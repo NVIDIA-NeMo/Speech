@@ -1023,8 +1023,9 @@ Two ways, which differ for tar files:
    entry per JSON + payload member pair). Use it only for ``lhotse_shar`` tars.
    Do **not** use it for ``nemo``/``nemo_tarred`` audio tars (or other tars
    with one member per sample): there it lists only half of the samples.
-   Indexed ``nemo_tarred`` loading rejects such an index at startup when the
-   manifest has more rows than the tar index has entries.
+   Indexed ``nemo_tarred`` loading rejects such an index at startup when an
+   active manifest row lies past the tar index's last entry (rows marked with
+   ``_skipme`` never touch the tar and are allowed there).
 
 2. NeMo's batch helper that takes a config and indexes everything it
    references in one shot. **Use this for** ``nemo_tarred`` **tars**::

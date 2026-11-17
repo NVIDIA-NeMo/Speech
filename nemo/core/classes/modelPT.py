@@ -2229,9 +2229,9 @@ def _training_step_from_dataloader_iter(self: ModelPT, dataloader_iter: Iterator
 
 
 def _has_stateful_dataloader(dataloaders: Any) -> bool:
-    """Whether any of ``dataloaders`` saves its state in Lightning checkpoints (has ``state_dict``/``load_state_dict``).
+    """Whether any of ``dataloaders`` has ``state_dict``/``load_state_dict``.
 
-    This is the criterion Lightning uses to checkpoint a dataloader's state; it covers torchdata's
+    That is the criterion Lightning uses to save a dataloader's state in checkpoints; it covers torchdata's
     ``StatefulDataLoader`` and NeMo's ``_PerRankStatefulDataLoader``.
     """
     if dataloaders is None:

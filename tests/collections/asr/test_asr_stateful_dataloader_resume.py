@@ -33,19 +33,24 @@ SPLIT = 3
 TOTAL = 6  # == NUM_CUTS // BATCH_SIZE: both phases stay within the first epoch
 
 
-class _RecordingCTCModel(EncDecCTCModel):
-    """Records the transcripts of every training batch, in order."""
+def _record_training_batches(model: EncDecCTCModel) -> EncDecCTCModel:
+    """Wrap the model's ``training_step`` so it records the transcripts of every training batch, in order.
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.seen_batches = []
+    Wrapping the instance attribute (rather than overriding the method in a subclass) mirrors how ``ModelPT``
+    itself wraps ``training_step``, so the stateful-dataloader adapter picks up the recording step.
+    """
+    model.seen_batches = []
+    batch_training_step = model.training_step
 
-    def training_step(self, batch, batch_idx):
+    def training_step(batch, batch_idx):
         _, _, tokens, token_lens = batch
-        self.seen_batches.append(
+        model.seen_batches.append(
             ["".join(LABELS[t] for t in toks[:n].tolist()) for toks, n in zip(tokens, token_lens.tolist())]
         )
-        return super().training_step(batch, batch_idx)
+        return batch_training_step(batch, batch_idx)
+
+    model.training_step = training_step
+    return model
 
 
 @pytest.fixture(scope="module")
@@ -103,7 +108,7 @@ def _fit(cuts_path: str, ckpt_dir: Path, stateful: bool, ckpt_path: str = None, 
         num_sanity_val_steps=0,
         callbacks=[ModelCheckpoint(dirpath=ckpt_dir, every_n_train_steps=SPLIT, save_top_k=-1)],
     )
-    model = _RecordingCTCModel(cfg=_model_config(cuts_path, stateful), trainer=trainer)
+    model = _record_training_batches(EncDecCTCModel(cfg=_model_config(cuts_path, stateful), trainer=trainer))
     trainer.fit(model, ckpt_path=ckpt_path)
     return model
 

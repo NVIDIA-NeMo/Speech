@@ -1484,6 +1484,11 @@ restored with the dataloader state: by ``StatefulDataLoader`` itself for map-sty
 ``state_dict()`` / ``load_state_dict()``, or the state is not saved. Each epoch continues the sequence, so a cut gets
 new random draws when it is read again.
 
+Randomness inside components a dataset calls must come from the same generator. For example, with checkpointed
+randomness enabled the TTS datasets pass ``self.rng`` to their tokenizers' G2P modules (``set_g2p_rng`` in
+``nemo.collections.tts.parts.utils.tts_dataset_utils``), so ``phoneme_probability`` decisions are restored on resume
+as well. Otherwise a G2P module draws from its own unseeded generator, as before.
+
 Audio augmentation with an ``AudioAugmentor`` (``nemo.collections.asr.parts.preprocessing.perturb``) uses the global
 ``random`` module by default. A dataset assigns its generator with ``augmentor.rng = self.rng`` before calling
 ``augmentor.perturb(...)``. That generator is then used by every perturbation in the pipeline, including nested

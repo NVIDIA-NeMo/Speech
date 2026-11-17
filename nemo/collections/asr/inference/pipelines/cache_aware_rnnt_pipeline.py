@@ -290,8 +290,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
                 (feature_buffers.shape[0],), feature_buffers.shape[2], device=self.device, dtype=torch.long
             )
             if right_paddings is not None:
-                if not isinstance(right_paddings, Tensor):
-                    right_paddings = torch.tensor(right_paddings, device=self.device)
+                right_paddings = torch.as_tensor(right_paddings, device=feature_buffer_lens.device)
                 feature_buffer_lens = feature_buffer_lens - right_paddings
             return feature_buffers.to(self.device), feature_buffer_lens
 
@@ -302,8 +301,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         ]
         feature_buffer_lens = torch.tensor([f_buffer.shape[2] for f_buffer in feature_buffers], device=self.device)
         if right_paddings is not None:
-            if not isinstance(right_paddings, Tensor):
-                right_paddings = torch.tensor(right_paddings, device=feature_buffer_lens.device)
+            right_paddings = torch.as_tensor(right_paddings, device=feature_buffer_lens.device)
             feature_buffer_lens = feature_buffer_lens - right_paddings
         feature_buffers = torch.cat(feature_buffers).to(self.device)
         return feature_buffers, feature_buffer_lens

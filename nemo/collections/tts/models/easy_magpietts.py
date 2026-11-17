@@ -31,7 +31,6 @@ from torch.utils.data.distributed import DistributedSampler
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.asr.parts.mixins.transcription import TranscribeConfig
-from nemo.collections.common.data.fallback import FallbackDataset
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import MagpieTTSLhotseDataset, setup_tokenizers
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import MagpieTTSLhotseMultiturnDataset
@@ -2042,7 +2041,6 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 challenging_text_end_step=dataset_cfg.dataset.get("challenging_text_end_step", 0),
                 context_audio_shuffle_batch_prob=dataset_cfg.dataset.get("context_audio_shuffle_batch_prob", 0.0),
             )
-            dataset = FallbackDataset(dataset)
         else:
             dataset = MagpieTTSLhotseDataset(
                 sample_rate=self.sample_rate,

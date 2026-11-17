@@ -1184,10 +1184,11 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
         config: Dictionary containing parser options:
             - add_extra_end_silence (bool): Whether to add extra silence at the end.
             - extra_end_silence_range (List[float]): Range of extra silence duration.
-            - extra_end_silence_seed (int): Seed for the extra silence duration (default: 0). The duration is
-              drawn from an RNG seeded with ``(extra_end_silence_seed, cut.id)``, so it is a pure function of the
-              cut and is reproduced exactly after resuming a ``StatefulDataLoader`` checkpoint. A given cut
-              therefore gets the same extra silence in every epoch.
+            - extra_end_silence_seed (int, optional): When set, the extra silence duration is drawn from an RNG
+              seeded with ``(extra_end_silence_seed, cut.id)``, so it is a pure function of the cut and is
+              reproduced exactly after resuming a ``StatefulDataLoader`` checkpoint (a given cut then gets the
+              same extra silence in every epoch). Set it for exact resume. When omitted (default), the duration
+              is drawn from the global ``random`` module as before, which is not restored on resume.
             - max_cer (float): Maximum allowed character error rate.
             - min_context_speaker_similarity (float): Minimum similarity score.
             - target_speaker (str, optional): Target speaker filter.
@@ -1200,7 +1201,7 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
 
     add_extra_end_sil = config.get("add_extra_end_silence", False)
     extra_end_silence_range = config.get("extra_end_silence_range", [0.5, 6.0])
-    extra_end_silence_seed = config.get("extra_end_silence_seed", 0)
+    extra_end_silence_seed = config.get("extra_end_silence_seed")
     sample_rate = config.get("sample_rate", 22050)
 
     max_cer = config.get("max_cer", 0.03)
@@ -1257,7 +1258,10 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
 
         # Optionally add extra silence
         if add_extra_end_sil:
-            sil_duration = random.Random(f"{extra_end_silence_seed}:{cut.id}").uniform(*extra_end_silence_range)
+            silence_rng = (
+                random if extra_end_silence_seed is None else random.Random(f"{extra_end_silence_seed}:{cut.id}")
+            )
+            sil_duration = silence_rng.uniform(*extra_end_silence_range)
             cut_target = cut_target.pad(duration=total_duration + sil_duration, direction="right")
             cut_source = cut_source.pad(duration=total_duration + sil_duration, direction="right")
             cut_source = cut_source.to_mono().move_to_memory(audio_format='wav')

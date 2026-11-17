@@ -68,7 +68,10 @@ from nemo.collections.common.data.lhotse.sampling import (
     TokenPerTokenFilter,
     ValidationStatusFilter,
 )
-from nemo.collections.common.data.lhotse.stateful_rng import StatefulIterableDatasetWrapper
+from nemo.collections.common.data.lhotse.stateful_rng import (
+    StatefulIterableDatasetWrapper,
+    configure_dataset_checkpointed_rng,
+)
 from nemo.collections.common.data.prompt_fn import apply_prompt_format_fn
 from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.common.tokenizers.aggregate_tokenizer import TokenizerWrapper
@@ -623,6 +626,7 @@ def get_lhotse_dataloader_from_single_config(
     logging.info("We will be using a Lhotse DataLoader.")
     config = make_structured_with_schema_warnings(config)
     dataset = configure_dataset_audio_loading(dataset, config.fault_tolerant_audio_loading)
+    dataset = configure_dataset_checkpointed_rng(dataset, config.use_stateful_dataloader)
 
     # First, resolve the random seed in case a string value was provided.
     config.seed = resolve_seed(config.seed)
@@ -731,6 +735,7 @@ def get_lhotse_dataloader_from_multi_config(
 
     shared_opts = gather_shared_opts()
     dataset = configure_dataset_audio_loading(dataset, shared_opts.fault_tolerant_audio_loading)
+    dataset = configure_dataset_checkpointed_rng(dataset, shared_opts.use_stateful_dataloader)
     fix_random_seed(shared_opts.seed)
 
     configs = {

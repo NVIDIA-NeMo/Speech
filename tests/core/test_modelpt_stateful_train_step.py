@@ -174,7 +174,7 @@ def test_follows_external_stateful_train_dataloaders(tmp_path, source):
             return dict(train_dataloaders=CombinedLoader([_stateful()], mode="max_size_cycle"))
         return dict(datamodule=_DataModule())
 
-    full, resumed = _fit_and_resume(tmp_path, lambda: _TinyModel(), fit_kwargs=fit_kwargs)
+    full, resumed = _fit_and_resume(tmp_path, _TinyModel, fit_kwargs=fit_kwargs)
     assert resumed == full[SPLIT:]
 
 

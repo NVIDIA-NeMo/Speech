@@ -23,6 +23,7 @@ import re
 import tarfile
 from collections.abc import Mapping, Sequence
 from contextlib import closing
+from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
 from typing import Generator, Iterable, List, Literal, Union
@@ -1493,13 +1494,15 @@ class LazyParquetIterator(IteratorNode):
                 offsets = [0]
                 for i in range(parquet_file.num_row_groups):
                     offsets.append(offsets[-1] + parquet_file.metadata.row_group(i).num_rows)
-                self._row_group_offsets = offsets
-                self._num_row_groups = parquet_file.num_row_groups
-                self._total_rows = offsets[-1]
+                num_row_groups = parquet_file.num_row_groups
                 column_names = parquet_file.schema_arrow.names
         except Exception as e:
             raise RuntimeError(f"Failed to open Parquet file: {self.path}") from e
+        # Cache metadata only after the schema is validated, so every later query re-checks an invalid file.
         self._check_required_columns(column_names)
+        self._row_group_offsets = offsets
+        self._num_row_groups = num_row_groups
+        self._total_rows = offsets[-1]
 
     def _load_row_group(self, rg_idx: int) -> list[dict]:
         if self._cached_row_group_idx == rg_idx and self._cached_row_group is not None:
@@ -1564,7 +1567,13 @@ class LazyParquetIterator(IteratorNode):
             )
         if self.duration_field in row:
             duration = row[self.duration_field]
-            if isinstance(duration, bool) or not isinstance(duration, numbers.Real) or not duration >= 0:
+            # Arrow decimal columns arrive as ``decimal.Decimal``, which is numeric but not ``numbers.Real``.
+            if (
+                isinstance(duration, bool)
+                or not isinstance(duration, (numbers.Real, Decimal))
+                or (isinstance(duration, Decimal) and duration.is_nan())
+                or not duration >= 0
+            ):
                 raise ParquetRowError(
                     self._row_error_message(
                         row_idx,

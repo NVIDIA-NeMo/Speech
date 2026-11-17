@@ -424,6 +424,57 @@ def test_parquet_fallback_ids_are_global_and_match_across_modes(tmp_path, monkey
     assert [c.id for c in _parquet_iterator(str(path), indexed=True)] == expected
 
 
+@pytest.mark.unit
+@pytest.mark.skipif(not HAVE_PARQUET, reason="PyArrow required for this test")
+@pytest.mark.parametrize("indexed", [False, True])
+def test_parquet_fallback_ids_reach_collation(tmp_path, monkeypatch, indexed):
+    # Same as above, but through the real dataloader: sampling plus audio collation of two-item batches.
+    from lhotse.dataset.collation import collate_audio
+
+    from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
+
+    class CollatingDataset:
+        def __getitem__(self, cuts):
+            audio, lengths = collate_audio(cuts)
+            return audio, lengths, [c.id for c in cuts]
+
+    buf = io.BytesIO()
+    sf.write(buf, np.zeros(160, dtype=np.float32), 16000, format="WAV")
+    path = tmp_path / "noid.parquet"
+    pq.write_table(pa.table({"audio": [buf.getvalue()] * 5, "text": [str(i) for i in range(5)]}), path)
+
+    original_iter_batches = pq.ParquetFile.iter_batches
+
+    def iter_small_batches(self, *args, **kwargs):
+        return original_iter_batches(self, *args, **{**kwargs, "batch_size": 2})
+
+    monkeypatch.setattr(pq.ParquetFile, "iter_batches", iter_small_batches)
+
+    loader = get_lhotse_dataloader_from_config(
+        OmegaConf.create(
+            {
+                "input_cfg": [{"type": "parquet", "manifest_filepath": str(path)}],
+                "indexed": indexed,
+                "force_finite": True,
+                "batch_size": 2,
+                "sample_rate": 16000,
+                "num_workers": 0,
+                "use_bucketing": False,
+                "shuffle": False,
+                "seed": 0,
+                "shard_seed": 0,
+            }
+        ),
+        global_rank=0,
+        world_size=1,
+        dataset=CollatingDataset(),
+    )
+    batches = list(loader)
+    assert [cut_id for _, _, ids in batches for cut_id in ids] == [f"noid_{i}" for i in range(5)]
+    assert [n for _, lengths, _ in batches for n in lengths.tolist()] == [160] * 5
+    assert [tuple(audio.shape) for audio, _, _ in batches] == [(2, 160), (2, 160), (1, 160)]
+
+
 def _parquet_iterator(path, **kwargs):
     from nemo.collections.common.data.lhotse.nemo_adapters import LazyParquetIterator
 

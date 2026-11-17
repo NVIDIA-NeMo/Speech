@@ -24,7 +24,10 @@ from lhotse.testing.dummies import DummyManifest
 from omegaconf import OmegaConf
 
 import nemo.collections.common.data.lhotse.dataloader as lhotse_dataloader
-from nemo.collections.common.data.lhotse.dataloader import LhotseDataLoadingConfig, get_lhotse_dataloader_from_config
+
+# Import the module only once (the tests monkeypatch attributes on it), and alias the public names used here.
+LhotseDataLoadingConfig = lhotse_dataloader.LhotseDataLoadingConfig
+get_lhotse_dataloader_from_config = lhotse_dataloader.get_lhotse_dataloader_from_config
 
 
 class _CutIds(torch.utils.data.Dataset):
@@ -101,6 +104,8 @@ def test_concurrent_bucketing_schema_default_is_auto():
 def test_concurrent_bucketing_resolution(
     cutset_path, sampler_concurrent_flags, stateful, concurrent_bucketing, expected
 ):
+    if stateful:
+        pytest.importorskip("torchdata.stateful_dataloader")
     overrides = {"use_stateful_dataloader": stateful}
     if concurrent_bucketing is not None:
         overrides["concurrent_bucketing"] = concurrent_bucketing
@@ -116,6 +121,7 @@ def test_concurrent_bucketing_explicitly_enabled_with_stateful_dataloader_raises
 
 @pytest.mark.unit
 def test_concurrent_bucketing_ignored_without_bucketing(cutset_path):
+    pytest.importorskip("torchdata.stateful_dataloader")
     # The flag only affects the bucketing sampler, so an explicit true is harmless without bucketing.
     dl = _build(cutset_path, use_stateful_dataloader=True, concurrent_bucketing=True, use_bucketing=False)
     assert len(list(dl)) > 0
@@ -135,6 +141,8 @@ def _multi_config(cutset_path, top_level, sub_config):
 def test_concurrent_bucketing_multi_config_follows_shared_stateful_flag(
     cutset_path, sampler_concurrent_flags, stateful, expected
 ):
+    if stateful:
+        pytest.importorskip("torchdata.stateful_dataloader")
     # use_stateful_dataloader is a shared top-level option that overwrites sub-configs.
     config = _multi_config(cutset_path, {"use_stateful_dataloader": stateful}, {})
     get_lhotse_dataloader_from_config(config, global_rank=0, world_size=1, dataset=_CutIds())
@@ -159,6 +167,7 @@ def test_stateful_bucketing_batch_order_is_deterministic(cutset_path, monkeypatc
     Before the fix, most repetitions differed (but a single comparison can match by chance), so we also
     assert the mechanism: the sampler is built with ``concurrent=False``.
     """
+    pytest.importorskip("torchdata.stateful_dataloader")
     original_read = lhotse_dataloader.read_cutset_from_config
     jitter = random.Random(1234)  # only drives sleep durations, never the data order
 

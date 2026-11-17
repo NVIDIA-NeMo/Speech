@@ -39,6 +39,7 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     has_phoneme_text_spans,
     normalize_volume,
     partially_phonemize_text,
+    set_g2p_rng,
     stack_tensors,
     tokenize_text_with_phoneme_spans,
 )
@@ -98,8 +99,8 @@ class MagpieTTSLhotseMultiturnDataset(StatefulRandomMixin, torch.utils.data.Data
     within each dataloader worker process upon first access.
 
     All random choices (context slicing, challenging text replacement, context shuffling, partial
-    phonemization, phoneme turn dropout, tokenizer choice, ...) use the dataset's generator ``self.rng`` (see
-    :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`). With
+    phonemization, phoneme turn dropout, tokenizer choice, G2P ``phoneme_probability``, ...) use the dataset's
+    generator ``self.rng`` (see :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`). With
     ``use_stateful_dataloader=True`` it is a checkpointed generator, so a run resumed from a ``StatefulDataLoader``
     checkpoint produces the same batches as an uninterrupted run; otherwise it is the global ``random`` module.
 
@@ -986,6 +987,10 @@ class MagpieTTSLhotseMultiturnDataset(StatefulRandomMixin, torch.utils.data.Data
 
     def __getitem__(self, cuts: CutSet) -> Dict[str, Union[torch.Tensor, List]]:
         self._initialize_tokenizers()
+        # With checkpointed randomness, G2P draws (e.g. phoneme_probability) come from the dataset generator.
+        if self.checkpointed_rng_enabled:
+            set_g2p_rng(self.text_tokenizer, self.rng)
+            set_g2p_rng(self.phoneme_tokenizer, self.rng)
         cuts, batch_tokenizer_names = self._prepare_cuts(cuts)
 
         audio_data = self._collate_audio_channels(cuts)

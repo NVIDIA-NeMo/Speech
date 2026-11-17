@@ -480,6 +480,28 @@ class TestConformerBlockComposition:
         assert (conv.depthwise_conv._left_padding, conv.depthwise_conv._right_padding) == (2, 2)
 
 
+class TestConformerConvolutionPointwise:
+    """The pointwise convolutions run as linear() on a contiguous time-major input."""
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("norm_type", ["batch_norm", "layer_norm"])
+    def test_pointwise_inputs_are_contiguous(self, norm_type, monkeypatch):
+        linear = torch.nn.functional.linear
+        inputs = []
+
+        def recording_linear(x, weight, bias=None):
+            inputs.append(x)
+            return linear(x, weight, bias)
+
+        monkeypatch.setattr(torch.nn.functional, "linear", recording_linear)
+        conv = ConformerConvolution(d_model=16, kernel_size=5, norm_type=norm_type).eval()
+        x = torch.randn(2, 7, 16)
+        with torch.no_grad():
+            out = conv(x)
+        assert out.shape == x.shape
+        assert len(inputs) == 2 and all(i.is_contiguous() for i in inputs)
+
+
 class TestDefaultDeviceConstruction:
     """Parameters must follow the ambient default device, e.g. when a serving engine builds the model on GPU."""
 

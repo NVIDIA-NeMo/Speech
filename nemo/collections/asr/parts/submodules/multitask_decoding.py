@@ -34,6 +34,7 @@ from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis, NBestHypothe
 from nemo.collections.common.tokenizers.aggregate_tokenizer import AggregateTokenizer
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.utils import logging
+from nemo.utils.serialization import register_checkpoint_schema_types
 
 
 class AbstractMultiTaskDecoding(ConfidenceMixin):
@@ -673,3 +674,6 @@ class MultiTaskDecodingConfig:
 
     # if set to true, return attention scores; ignore them to save memory otherwise
     return_xattn_scores: bool = False
+
+
+register_checkpoint_schema_types(MultiTaskDecodingConfig)

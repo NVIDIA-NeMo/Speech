@@ -73,6 +73,12 @@ def main():
         cfg = OmegaConf.to_container(OmegaConf.load(args.config).model, resolve=True)
     else:
         cfg = json.loads((ckpt / "config.json").read_text())
+        # As in from_pretrained: a bundled CTC timestamp head is declared by the weights header.
+        from nemo.collections.speechlm2.parts.ctc_timestamp_checkpoint import read_ctc_timestamp_config
+
+        ctc_config = read_ctc_timestamp_config(weights)
+        if ctc_config is not None:
+            cfg["ctc_timestamp_artifact"] = ctc_config
     # Build the architecture only: no pretrained child weights, no checkpoint restore.
     cfg["pretrained_weights"] = False
     cfg["init_from_checkpoint"] = None

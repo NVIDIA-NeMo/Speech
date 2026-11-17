@@ -141,6 +141,7 @@ Check out our latest ``/nemo-speech-finetune-asr`` `agent skill <https://github.
    core/core
    core/neural_modules
    core/exp_manager
+   core/one_logger
    core/neural_types
    core/adapters/intro
    core/api

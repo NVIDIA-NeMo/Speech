@@ -33,9 +33,10 @@ class AudioCodecLhotseDataset(StatefulRandomMixin, torch.utils.data.Dataset):
     * Random truncation of each cut's `target_audio` to a fixed duration
     * Sanity checks on the audio
 
-    The random segment start is drawn from the dataset's checkpointed generator
-    (see :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`),
-    so a resumed run reads the same segments as an uninterrupted one.
+    The random segment start is drawn from the dataset's generator ``self.rng``
+    (see :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`).
+    With ``use_stateful_dataloader=True`` it is checkpointed, so a resumed run reads the same segments
+    as an uninterrupted one; otherwise it is the global ``random`` module.
 
     The operations below are handled directly by Lhotse according to the configuration
     applied in `AudioCodecModel._get_lhotse_dataloader()`:

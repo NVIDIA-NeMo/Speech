@@ -139,9 +139,10 @@ class MagpieTTSLhotseDataset(StatefulRandomMixin, torch.utils.data.Dataset):
     within each dataloader worker process upon first access.
 
     All random choices (context slicing, text context remapping, partial phonemization, tokenizer
-    choice, ...) use the dataset's checkpointed generator ``self.rng`` (see
-    :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`), so a run resumed from a
-    ``StatefulDataLoader`` checkpoint produces the same batches as an uninterrupted run.
+    choice, ...) use the dataset's generator ``self.rng`` (see
+    :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`). With
+    ``use_stateful_dataloader=True`` it is a checkpointed generator, so a run resumed from a ``StatefulDataLoader``
+    checkpoint produces the same batches as an uninterrupted run; otherwise it is the global ``random`` module.
 
     Args:
         sample_rate (int): Target sample rate for loading audio. Audio will be

@@ -1476,10 +1476,13 @@ transform them differently. Datasets inherit
             offsets = [self.rng.uniform(0, cut.duration) for cut in cuts]
             ...
 
-The generator is seeded per dataloading process from the dataloader seed and the data-parallel rank, and its
-state is saved and restored with the dataloader state: by ``StatefulDataLoader`` itself for map-style datasets, and
-by NeMo's ``StatefulIterableDatasetWrapper`` for iterable-style datasets. Each epoch continues the sequence, so a
-cut gets new random draws when it is read again.
+This is opt-in: the dataloader builder enables it when ``use_stateful_dataloader=True``. Otherwise ``self.rng`` is
+the global ``random`` module and the dataset draws exactly the same numbers as before. When enabled, the generator
+is seeded per dataloading process from the dataloader seed and the data-parallel rank, and its state is saved and
+restored with the dataloader state: by ``StatefulDataLoader`` itself for map-style datasets, and by NeMo's
+``StatefulIterableDatasetWrapper`` for iterable-style datasets. A wrapper placed around the dataset must forward
+``state_dict()`` / ``load_state_dict()``, or the state is not saved. Each epoch continues the sequence, so a cut gets
+new random draws when it is read again.
 
 Audio augmentation with an ``AudioAugmentor`` (``nemo.collections.asr.parts.preprocessing.perturb``) uses the global
 ``random`` module by default. A dataset assigns its generator with ``augmentor.rng = self.rng`` before calling
@@ -1487,8 +1490,11 @@ Audio augmentation with an ``AudioAugmentor`` (``nemo.collections.asr.parts.prep
 ones, so augmentation is restored on resume as well. ``LhotseSpeechToTextBpeEOUDataset`` does this.
 
 Random transforms applied to the ``CutSet`` itself (``.map(...)`` in a data type parser) can't keep a checkpointed
-generator. They seed a generator from the cut ID instead, e.g. ``random.Random(f"{seed}:{cut.id}")``, so the result
-is a pure function of the cut. A cut then gets the same draw in every epoch.
+generator. They can seed a generator from the cut ID instead, e.g. ``random.Random(f"{seed}:{cut.id}")``, so the
+result is a pure function of the cut, and a cut then gets the same draw in every epoch. The
+``lhotse_magpietts_data_as_continuation`` parser does this for ``add_extra_end_silence`` when
+``extra_end_silence_seed`` is set; set it for exact resume. Without it, the silence is drawn from the global
+``random`` module as before and is not restored on resume.
 
 CP/TP-safe batches with ``BroadcastingDataLoader``
 ---------------------------------------------------

@@ -14,6 +14,8 @@
 # limitations under the License.
 
 import io
+from decimal import Decimal
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -175,7 +177,7 @@ def test_parquet_corrupt_audio_getitem_raises(parquet_with_corrupt_row):
     assert it[0].id == "good"
     # Random access cannot skip a row, so it raises a descriptive error even in fault-tolerant mode.
     with pytest.raises(RuntimeError, match=r"row 1 \(id='corrupt'\) of Parquet file .*failed to decode audio"):
-        it[1]
+        it.__getitem__(1)
 
 
 @pytest.mark.unit
@@ -204,6 +206,9 @@ def test_parquet_corrupt_audio_skipped_when_fault_tolerant(parquet_with_corrupt_
             ({"text": pa.array([None], type=pa.string())}, r"text column 'text' holds NoneType, expected str"),
             ({"duration": [-1.0]}, r"duration column 'duration' holds -1.0, expected a non-negative number"),
             ({"duration": [float("nan")]}, r"duration column 'duration' holds nan"),
+            ({"duration": pa.array([Decimal("-0.10")], type=pa.decimal128(8, 2))}, r"holds Decimal\('-0.10'\)"),
+            ({"duration": ["0.1"]}, r"duration column 'duration' holds '0.1'"),
+            ({"duration": [True]}, r"duration column 'duration' holds True"),
         ]
         if HAVE_PARQUET
         else []
@@ -220,6 +225,117 @@ def test_parquet_malformed_row_always_raises(tmp_path, indexed, fault_tolerant, 
     it = _parquet_iterator(str(path), indexed=indexed, fault_tolerant_audio_loading=fault_tolerant)
     with pytest.raises(ParquetRowError, match=r"row 0 .*" + match):
         list(it)
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not HAVE_PARQUET, reason="PyArrow required for this test")
+@pytest.mark.parametrize("indexed", [False, True])
+@pytest.mark.parametrize("fault_tolerant", [False, True])
+@pytest.mark.parametrize(
+    "duration",
+    (
+        [
+            pa.array([Decimal("0.10")], type=pa.decimal128(8, 2)),
+            pa.array([0], type=pa.int64()),
+            pa.array([0.1], type=pa.float64()),
+            pa.array([0.0], type=pa.float32()),
+            None,
+        ]
+        if HAVE_PARQUET
+        else []
+    ),
+    ids=["decimal", "int_zero", "float", "float32_zero", "omitted"],
+)
+def test_parquet_valid_duration_values_are_accepted(tmp_path, indexed, fault_tolerant, duration):
+    # The cut duration always comes from the decoded audio; the duration column is only validated metadata.
+    path = tmp_path / "valid_duration.parquet"
+    buf = io.BytesIO()
+    sf.write(buf, np.zeros(1600, dtype=np.float32), 16000, format='WAV')
+    table = {"audio": [buf.getvalue()], "text": ["x"]}
+    if duration is not None:
+        table["duration"] = duration
+    pq.write_table(pa.table(table), path)
+    it = _parquet_iterator(str(path), indexed=indexed, fault_tolerant_audio_loading=fault_tolerant)
+    cuts = list(it) if not indexed else [it[0]]
+    assert len(cuts) == 1
+    cut = cuts[0]
+    assert cut.duration == pytest.approx(0.1)
+    assert cut.supervisions[0].duration == pytest.approx(0.1)
+    assert cut.load_audio().shape == (1, 1600)
+    if duration is not None:
+        assert cut.custom["duration"] == duration[0].as_py()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not HAVE_PARQUET, reason="PyArrow required for this test")
+@pytest.mark.parametrize("indexed", [False, True])
+@pytest.mark.parametrize("policy", [False, True, None])
+@pytest.mark.parametrize("malformed", [False, True])
+def test_parquet_loader_audio_policy(tmp_path, indexed, policy, malformed, monkeypatch):
+    # Covers the real dataloader path: config defaults, sampling, and two-item audio collation.
+    from lhotse.dataset.collation import collate_audio
+
+    from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config, nemo_adapters
+
+    class AudioDataset:
+        def __getitem__(self, cuts):
+            audio, lengths = collate_audio(cuts)
+            return {
+                "audio": audio,
+                "lengths": lengths,
+                "ids": [c.id for c in cuts],
+                "texts": [c.supervisions[0].text for c in cuts],
+            }
+
+    buf = io.BytesIO()
+    sf.write(buf, np.zeros(1600, dtype=np.float32), 16000, format="WAV")
+    middle_audio = None if malformed else b"not audio"
+    path = tmp_path / "loader_policy.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "id": ["good0", "corrupt", "good1"],
+                "audio": pa.array([buf.getvalue(), middle_audio, buf.getvalue()], type=pa.binary()),
+                "text": ["first", "bad", "second"],
+                "duration": [0.1, 0.1, 0.1],
+            }
+        ),
+        path,
+    )
+    warnings = []
+    monkeypatch.setattr(nemo_adapters.logging, "warning", lambda msg, *a, **kw: warnings.append(msg))
+    config = {
+        "input_cfg": [{"type": "parquet", "manifest_filepath": str(path)}],
+        "indexed": indexed,
+        "batch_size": 2,
+        "num_workers": 0,
+        "force_finite": True,
+        "shuffle": False,
+        "use_bucketing": False,
+        "sample_rate": 16000,
+        "seed": 0,
+        "shard_seed": 0,
+        "cuda_expandable_segments": False,
+    }
+    if policy is not None:
+        config["fault_tolerant_audio_loading"] = policy
+    loader = get_lhotse_dataloader_from_config(
+        OmegaConf.create(config), global_rank=0, world_size=1, dataset=AudioDataset()
+    )
+    if malformed or policy is False:
+        error = nemo_adapters.ParquetRowError if malformed else nemo_adapters.ParquetAudioDecodeError
+        reason = "audio column 'audio' holds NoneType" if malformed else "failed to decode audio bytes"
+        with pytest.raises(error, match=r"row 1 \(id='corrupt'\).*loader_policy\.parquet.*" + reason):
+            list(loader)
+    else:
+        batches = list(loader)
+        assert len(batches) == 1
+        batch = batches[0]
+        assert batch["ids"] == ["good0", "good1"]
+        assert batch["texts"] == ["first", "second"]
+        assert tuple(batch["audio"].shape) == (2, 1600)
+        assert batch["lengths"].tolist() == [1600, 1600]
+        assert any("Skipped 1 of 3 rows" in w for w in warnings), warnings
 
 
 @pytest.mark.unit

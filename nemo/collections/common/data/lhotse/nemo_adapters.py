@@ -23,6 +23,7 @@ import re
 import tarfile
 from collections.abc import Mapping, Sequence
 from contextlib import closing
+from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
 from typing import Generator, Iterable, List, Literal, Union
@@ -1564,7 +1565,13 @@ class LazyParquetIterator(IteratorNode):
             )
         if self.duration_field in row:
             duration = row[self.duration_field]
-            if isinstance(duration, bool) or not isinstance(duration, numbers.Real) or not duration >= 0:
+            # Arrow decimal columns arrive as ``decimal.Decimal``, which is numeric but not ``numbers.Real``.
+            if (
+                isinstance(duration, bool)
+                or not isinstance(duration, (numbers.Real, Decimal))
+                or (isinstance(duration, Decimal) and duration.is_nan())
+                or not duration >= 0
+            ):
                 raise ParquetRowError(
                     self._row_error_message(
                         row_idx,

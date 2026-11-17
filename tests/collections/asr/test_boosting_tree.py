@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import os.path
 
 import pytest
@@ -20,7 +21,9 @@ import torch
 from lightning.pytorch import Trainer
 from torch.nn.utils.rnn import pad_sequence
 
+from nemo.collections.asr.inference.utils.manifest_io import prepare_audio_data
 from nemo.collections.asr.models import ASRModel, EncDecCTCModelBPE
+from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
 from nemo.collections.asr.parts.context_biasing.boosting_graph_batched import (
     BoostingTreeModelConfig,
     GPUBoostingTreeModel,
@@ -33,7 +36,8 @@ from nemo.collections.common.tokenizers.tokenizer_spec import TokenWithLength, V
 DEVICES = [torch.device("cpu")]
 
 if torch.cuda.is_available():
-    DEVICES.append(torch.device("cuda"))
+    # The `gpu` marker puts the CUDA cases in the GPU CI jobs (see tests/functional_tests/_gpu_unit_test_selection.sh).
+    DEVICES.append(pytest.param(torch.device("cuda"), marks=pytest.mark.gpu))
 
 
 def _case_variant_var_bpe_representation():
@@ -337,6 +341,7 @@ class TestGPUBoostingTreeModel:
 
     @pytest.mark.unit
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+    @pytest.mark.gpu
     def test_triton_vs_pytorch_consistency(self, test_context_graph):
         """Compare Triton vs PyTorch implementations"""
         device = torch.device("cuda")
@@ -379,6 +384,7 @@ class TestGPUBoostingTreeModel:
 
     @pytest.mark.unit
     # I need to test that the boosting tree model is built correctly from the config using model_path, key_phrases_file, key_phrases_list
+    @pytest.mark.gpu
     def test_boosting_tree_model_from_config(self, conformer_ctc_bpe_model, tmp_path):
         """Test that the boosting tree model is built correctly from the config using model_path, key_phrases_file, key_phrases_list"""
 
@@ -605,6 +611,7 @@ class TestPerPhraseBoostingParams:
             assert total(scaled_tree, tokens) == pytest.approx(2.0 * total(baseline_tree, tokens))  # scales by alpha
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_per_phrase_params_none_matches_baseline(self, conformer_ctc_bpe_model):
         """key_phrase_items_list with all-default params builds the same graph as key_phrases_list."""
         phrases = ["abc", "abd", "c"]
@@ -619,3 +626,32 @@ class TestPerPhraseBoostingParams:
         assert torch.allclose(baseline_tree.arcs_weights, items_tree.arcs_weights)
         assert torch.allclose(baseline_tree.backoff_weights, items_tree.backoff_weights)
         assert torch.allclose(baseline_tree.final_weights, items_tree.final_weights)
+
+    @pytest.mark.unit
+    def test_per_stream_manifest_key_phrase_items_list(self, tmp_path):
+        """Per-stream biasing requests parsed from a manifest convert key_phrase_items_list dicts into PhraseItem,
+        so per-phrase alpha is applied as in the global config path."""
+        manifest_path = tmp_path / "manifest.json"
+        biasing_request = {"boosting_model_cfg": {"key_phrase_items_list": [{"phrase": "ab", "alpha": 2.0}]}}
+        manifest_path.write_text(json.dumps({"audio_filepath": "a.wav", "biasing_request": biasing_request}) + "\n")
+        defaults = BiasingRequestItemConfig(
+            boosting_model_cfg=BoostingTreeModelConfig(bpe_mode="case_insensitive", use_triton=False)
+        )
+
+        _, _, options, _ = prepare_audio_data(
+            str(manifest_path), per_stream_biasing_defaults=defaults, sort_by_duration=False
+        )
+
+        assert options[0].biasing_cfg.boosting_model_cfg.key_phrase_items_list == [PhraseItem("ab", alpha=2.0)]
+        scaled_tree = options[0].biasing_cfg.get_model(tokenizer=_RecordingVarBPETokenizer())
+        baseline_tree = GPUBoostingTreeModel.from_config(
+            BoostingTreeModelConfig(key_phrases_list=["ab"], bpe_mode="case_insensitive", use_triton=False),
+            tokenizer=_RecordingVarBPETokenizer(),
+        )
+        assert torch.allclose(scaled_tree.arcs_weights, 2.0 * baseline_tree.arcs_weights)
+
+    @pytest.mark.unit
+    def test_key_phrase_items_list_rejects_unknown_fields(self):
+        """Unknown per-phrase fields are rejected instead of being silently ignored."""
+        with pytest.raises(TypeError):
+            BoostingTreeModelConfig(key_phrase_items_list=[{"phrase": "ab", "weight": 2.0}])

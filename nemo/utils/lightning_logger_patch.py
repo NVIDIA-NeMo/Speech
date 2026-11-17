@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import logging as _logging
+from functools import wraps
 from logging.handlers import MemoryHandler
 
 import lightning.pytorch as pl
@@ -57,3 +58,56 @@ def add_filehandlers_to_pl_logger(all_log_file, err_log_file):
         HANDLERS["memory_err"].setTarget(HANDLERS["file_err"])
         HANDLERS["memory_err"].close()
         del HANDLERS["memory_err"]
+
+
+def preserve_trainer_callback_defaults():
+    """Keep pre-2.6 callback selection for Trainers in a NeMo process.
+
+    NeMo entry points also construct Lightning Trainers directly, so configure
+    defaults at the existing Lightning integration boundary. Explicit callbacks,
+    disable flags and barebones mode retain Lightning's validation and behavior.
+    """
+    from importlib import import_module
+
+    for namespace in ('lightning.pytorch', 'pytorch_lightning'):
+        try:
+            connector = import_module(f'{namespace}.trainer.connectors.callback_connector')
+            callbacks = import_module(f'{namespace}.callbacks')
+        except ModuleNotFoundError as error:
+            if error.name != namespace.split('.')[0]:
+                raise
+            continue
+        _preserve_callback_selection(connector._CallbackConnector, callbacks)
+
+
+def _preserve_callback_selection(connector, callbacks):
+    """Install an idempotent adapter around one Lightning callback connector."""
+    if getattr(connector, '_nemo_callback_defaults_preserved', False):
+        return
+
+    configure_progress = connector._configure_progress_bar
+    configure_summary = connector._configure_model_summary_callback
+
+    @wraps(configure_progress)
+    def progress_bar(self, enable_progress_bar=True):
+        """Supply the previous default while retaining upstream flag validation."""
+        if enable_progress_bar and not any(isinstance(cb, callbacks.ProgressBar) for cb in self.trainer.callbacks):
+            self.trainer.callbacks.append(callbacks.TQDMProgressBar())
+        return configure_progress(self, enable_progress_bar)
+
+    @wraps(configure_summary)
+    def model_summary(self, enable_model_summary):
+        """Match the old summary selection, including explicit Rich progress bars."""
+        if enable_model_summary and not any(isinstance(cb, callbacks.ModelSummary) for cb in self.trainer.callbacks):
+            summary_type = (
+                callbacks.RichModelSummary
+                if isinstance(self.trainer.progress_bar_callback, callbacks.RichProgressBar)
+                else callbacks.ModelSummary
+            )
+            self.trainer.callbacks.append(summary_type())
+            return None
+        return configure_summary(self, enable_model_summary)
+
+    connector._configure_progress_bar = progress_bar
+    connector._configure_model_summary_callback = model_summary
+    connector._nemo_callback_defaults_preserved = True

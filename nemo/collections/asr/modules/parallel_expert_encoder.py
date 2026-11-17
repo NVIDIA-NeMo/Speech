@@ -38,6 +38,7 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 
 import torch
 import torch.distributed as dist
+import yaml
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf
 from torch import nn
@@ -88,6 +89,15 @@ _ASR_ENCODER_TYPES = {
     "fastconformer": ConformerEncoder,
     "transformer": TransformerEncoder,
 }
+_MAX_PROBE_CONFIG_BYTES = 1024 * 1024
+# Sections of the obsolete three-expert bundle schema, which cannot be mapped onto the current one.
+_LEGACY_THREE_EXPERT_BUNDLE_KEYS = (
+    "speech_expert_cfg",
+    "speaker_expert_cfg",
+    "sound_expert_cfg",
+    "sortformer_modules_cfg",
+    "sound_ctc_head_cfg",
+)
 _SPEAKER_FEATURE_CONFIG_VERSION = 1
 _SPEAKER_FEATURE_MODE_CONTINUOUS = "continuous"
 _SPEAKER_FEATURE_MODE_THRESHOLD = "thresholded"
@@ -434,6 +444,14 @@ class ParallelExpertEncoderPT(ModelPT):
         """
         missing = [key for key in ("asr_encoder_cfg", "diarization_model_cfg") if cfg.get(key, None) in (None, {}, "")]
         if missing:
+            legacy = [key for key in _LEGACY_THREE_EXPERT_BUNDLE_KEYS if key in cfg]
+            if legacy:
+                raise ValueError(
+                    f"ParallelExpertEncoder bundle uses the obsolete three-expert schema {legacy} "
+                    f"(NeMo {cfg.get('nemo_version', 'unknown')}), which is unsupported and cannot be converted. "
+                    "Use a bundle saved in the current schema (ParallelExpertEncoderPT.save_to_nemo), or a SALM "
+                    "checkpoint with an embedded encoder (model.pe_encoder_config + model.init_from_checkpoint)."
+                )
             raise ValueError(f"ParallelExpertEncoder bundle is missing required config sections {missing}.")
         _normalize_asr_encoder_type(cfg.get("asr_encoder_type", "fastconformer"))
 
@@ -441,7 +459,8 @@ class ParallelExpertEncoderPT(ModelPT):
     def is_pe_nemo(cls, nemo_path: str) -> bool:
         """
         Return whether a local archive declares a ParallelExpertEncoderPT target.
-        Only the ``target`` field of ``model_config.yaml`` is inspected; unreadable archives return ``False``.
+        Only a literal ``target`` field of ``model_config.yaml`` is inspected.
+        Unreadable archives, malformed configs, links, and configs over 1 MiB return ``False``.
 
         Args:
             nemo_path (str): Path to a candidate local ``.nemo`` file.
@@ -456,16 +475,30 @@ class ParallelExpertEncoderPT(ModelPT):
                 for member in archive.getmembers():
                     if os.path.basename(member.name) != "model_config.yaml":
                         continue
+                    if not member.isreg() or not 0 < member.size <= _MAX_PROBE_CONFIG_BYTES:
+                        return False
                     stream = archive.extractfile(member)
                     if stream is None:
                         return False
-                    cfg = OmegaConf.create(stream.read().decode("utf-8"))
-                    if not str(cfg.get("target", "")).endswith("ParallelExpertEncoderPT"):
+                    with stream:
+                        cfg = yaml.safe_load(stream.read(_MAX_PROBE_CONFIG_BYTES + 1).decode("utf-8"))
+                    if not isinstance(cfg, dict):
                         return False
-                    # Keep the released public probe target-based. Runtime loading
-                    # uses the schema resolver and remains strict.
-                    return True
-        except (tarfile.TarError, OSError) as error:
+                    target = cfg.get("target", "")
+                    return (
+                        isinstance(target, str) and "${" not in target and target.endswith("ParallelExpertEncoderPT")
+                    )
+        except (
+            tarfile.TarError,
+            OSError,
+            UnicodeError,
+            ValueError,
+            RecursionError,
+            yaml.YAMLError,
+            KeyError,
+            IndexError,
+            AttributeError,
+        ) as error:
             logging.warning("[ParallelExpertEncoder] Could not inspect %s: %s", nemo_path, error)
             return False
         return False

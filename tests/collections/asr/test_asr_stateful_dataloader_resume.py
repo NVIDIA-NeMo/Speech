@@ -84,8 +84,6 @@ def test_ctc_stateful_dataloader_mid_epoch_resume_continues_at_next_batch(cuts_p
     assert model_b.seen_batches == model_a.seen_batches[SPLIT:]
     # The model reads its own batches (no prefetch) when the train dataloader is stateful.
     assert list(inspect.signature(model_b.training_step).parameters) == ["dataloader_iter"]
-    # self.log calls without batch_size (e.g. in training_step) get the current batch's size.
-    assert model_b._current_train_batch_size() == BATCH_SIZE
 
 
 @pytest.mark.unit

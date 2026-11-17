@@ -837,13 +837,18 @@ Profiling
 NeMo offers users two options for profiling: Nsys and CUDA memory profiling. These two options allow users
 to debug performance issues as well as memory issues such as memory leaks.
 
+``start_step`` and ``end_step`` count training batches from the start of training, across epochs and resumes
+(with gradient accumulation, each micro-batch is one training batch). The profiler records batches
+``start_step`` to ``end_step``, both included. If training resumes after ``start_step``, profiling starts at the
+first batch inside the window, if any.
+
 To enable Nsys profiling, add the following options to the model config:
 
 .. code-block:: yaml
 
     nsys_profile: False
-        start_step: 10  # trainer.global_step (optimizer steps) to start profiling at
-        end_step: 10 # trainer.global_step (optimizer steps) to end profiling after
+        start_step: 10  # Training batch to start profiling at (counted from the start of training, across epochs)
+        end_step: 10 # Training batch to end profiling after (inclusive)
         ranks: [0] # Global rank IDs to profile
         gen_shape: False # Generate model and kernel details including input shapes
 
@@ -863,8 +868,8 @@ To enable CUDA memory profiling, add the following options to the model config:
 
     memory_profile:
         enabled: True
-        start_step: 10  # trainer.global_step (optimizer steps) to start profiling at
-        end_step: 10 # trainer.global_step (optimizer steps) to end profiling after
+        start_step: 10  # Training batch to start profiling at (counted from the start of training, across epochs)
+        end_step: 10 # Training batch to end profiling after (inclusive)
         rank: 0 # Global rank ID to profile
         output_path: None # Path to store the profile output file
 

@@ -356,6 +356,32 @@ def test_parquet_missing_column_raises_even_when_fault_tolerant(parquet_with_cor
 
 @pytest.mark.unit
 @pytest.mark.skipif(not HAVE_PARQUET, reason="PyArrow required for this test")
+@pytest.mark.parametrize("field", ["audio", "text"])
+def test_parquet_missing_column_raises_on_every_metadata_query(parquet_with_corrupt_row, field):
+    # A failed schema check must not leave cached metadata behind that lets later queries bypass it.
+    it = _parquet_iterator(parquet_with_corrupt_row, **{f"{field}_field": f"{field}_col"}, indexed=False)
+    for _ in range(2):
+        with pytest.raises(ParquetRowError, match=f"has no {field} column '{field}_col'"):
+            len(it)
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not HAVE_PARQUET, reason="PyArrow required for this test")
+def test_parquet_len_counts_physical_rows(tmp_path):
+    buf = io.BytesIO()
+    sf.write(buf, np.zeros(160, dtype=np.float32), 16000, format='WAV')
+    path = tmp_path / "rg.parquet"
+    pq.write_table(pa.table({"audio": [buf.getvalue()] * 5, "text": ["x"] * 5}), path, row_group_size=2)
+    it = _parquet_iterator(str(path), indexed=False)
+    assert len(it) == 5
+    assert len(it) == 5
+    empty = tmp_path / "empty.parquet"
+    pq.write_table(pa.table({"audio": pa.array([], type=pa.binary()), "text": pa.array([], type=pa.string())}), empty)
+    assert len(_parquet_iterator(str(empty), indexed=False)) == 0
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not HAVE_PARQUET, reason="PyArrow required for this test")
 @pytest.mark.parametrize("indexed", [False, True])
 def test_read_parquet_manifest_respects_fault_tolerant_audio_loading(parquet_with_corrupt_row, indexed):
     def make_config(fault_tolerant):

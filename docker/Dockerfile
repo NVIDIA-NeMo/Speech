@@ -76,6 +76,15 @@ apt-get clean
 EOF
 # NOTE: removed libsndfile1. Soundfile ships with its own version of libsndfile1
 
+# Keep only the cuDNN wheel PyTorch uses: the base image's apt cuDNN has a different version and gets mixed in
+# when cuDNN dlopens sublibraries the wheel lacks (CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH).
+RUN <<"EOF" bash -euxo pipefail
+cudnn_packages="$(dpkg-query -W -f='${db:Status-Status} ${Package}\n' | awk '$1 == "installed" && $2 ~ /^libcudnn/ {print $2}')"
+[[ -z "${cudnn_packages}" ]] || apt-get purge -y ${cudnn_packages}
+ldconfig
+! ldconfig -p | grep libcudnn
+EOF
+
 # Remove the entire EFA metrics plugin from inherited Nsight Systems installations.
 # The plugin bundles a vulnerable Go toolchain; keep the rest of the CLI intact.
 RUN rm -rf /usr/local/cuda*/NsightSystems-cli-*/target-linux-*/plugins/efa_metrics \
@@ -192,13 +201,16 @@ case "${GPU_TARGET}" in
 esac
 
 CUDA_FLAVOR="$(nemo-cuda-flavor)"
-AUTOMODEL_CCCL_INCLUDES="/usr/local/cuda/include/cccl"
+# Build against the cuDNN wheel PyTorch uses (the apt cuDNN is purged). TransformerEngine's CMake reads CUDNN_PATH,
+# but its PyTorch extension only finds cudnn.h through the compiler include path.
+export CUDNN_PATH="${VIRTUAL_ENV}/lib/python${PYTHON_MAJOR_MINOR}/site-packages/nvidia/cudnn"
+AUTOMODEL_EXTRA_INCLUDES="/usr/local/cuda/include/cccl:${CUDNN_PATH}/include"
 PYTHON_CCCL_INCLUDE="${VIRTUAL_ENV}/lib/python${PYTHON_MAJOR_MINOR}/site-packages/nvidia/${CUDA_FLAVOR}/include/cccl"
 if [[ -d "${PYTHON_CCCL_INCLUDE}" ]]; then
-    AUTOMODEL_CCCL_INCLUDES="${AUTOMODEL_CCCL_INCLUDES}:${PYTHON_CCCL_INCLUDE}"
+    AUTOMODEL_EXTRA_INCLUDES="${AUTOMODEL_EXTRA_INCLUDES}:${PYTHON_CCCL_INCLUDE}"
 fi
-export CPATH="${AUTOMODEL_CCCL_INCLUDES}${CPATH:+:${CPATH}}"
-export CPLUS_INCLUDE_PATH="${AUTOMODEL_CCCL_INCLUDES}${CPLUS_INCLUDE_PATH:+:${CPLUS_INCLUDE_PATH}}"
+export CPATH="${AUTOMODEL_EXTRA_INCLUDES}${CPATH:+:${CPATH}}"
+export CPLUS_INCLUDE_PATH="${AUTOMODEL_EXTRA_INCLUDES}${CPLUS_INCLUDE_PATH:+:${CPLUS_INCLUDE_PATH}}"
 export NVTE_FRAMEWORK=pytorch
 export MAX_JOBS="${FLASH_ATTN_MAX_JOBS}"
 export NVCC_THREADS="${FLASH_ATTN_NVCC_THREADS}"

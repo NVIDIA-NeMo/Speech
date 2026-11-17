@@ -97,6 +97,7 @@ def get_batch_encoder_outputs_from_records(records, model, device):
 @pytest.mark.parametrize("chunk_size", [1, 3])
 @pytest.mark.parametrize("batch_size", [4])
 @pytest.mark.parametrize("max_symbols", [10])
+@pytest.mark.gpu
 def test_label_looping_streaming_batched_state(
     tmp_path_factory,
     an4_val_manifest_corrected,
@@ -169,6 +170,7 @@ def test_label_looping_streaming_batched_state(
 @pytest.mark.parametrize("chunk_size", [1, 3])
 @pytest.mark.parametrize("batch_size", [4])
 @pytest.mark.parametrize("max_symbols", [10])
+@pytest.mark.gpu
 def test_label_looping_streaming_partial_hypotheses(
     tmp_path_factory,
     an4_val_manifest_corrected,
@@ -235,6 +237,7 @@ def test_label_looping_streaming_partial_hypotheses(
 @pytest.mark.parametrize("chunk_size", [1, 3])
 @pytest.mark.parametrize("batch_size", [4])
 @pytest.mark.parametrize("max_symbols", [10])
+@pytest.mark.gpu
 def test_label_looping_continuous_streaming_batched_state(
     tmp_path_factory,
     an4_val_manifest_corrected,
@@ -358,6 +361,7 @@ def test_label_looping_continuous_streaming_batched_state(
 @pytest.mark.parametrize("chunk_size", [1, 3])
 @pytest.mark.parametrize("batch_size", [4])
 @pytest.mark.parametrize("max_symbols", [10])
+@pytest.mark.gpu
 def test_label_looping_continuous_streaming_partial_hypotheses(
     tmp_path_factory,
     an4_val_manifest_corrected,

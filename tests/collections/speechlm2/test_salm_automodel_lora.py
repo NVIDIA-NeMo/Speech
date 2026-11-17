@@ -35,8 +35,8 @@ from nemo.collections.speechlm2.parts.automodel_lora import (
     maybe_install_lora,
 )
 
-if torch.cuda.is_available():
-    torch.set_default_device('cuda')
+# Run on CUDA when available, without leaking the default device to other test modules (see conftest.py).
+pytestmark = pytest.mark.usefixtures("cuda_default_device")
 
 
 def resolve_pretrained_models():
@@ -127,6 +127,7 @@ BASE_CFG = {
 
 
 class TestMakePeftConfig:
+    @pytest.mark.gpu
     def test_basic(self):
         cfg = DictConfig({"dim": 32, "alpha": 64, "target_modules": ["q_proj"]})
         pc = make_peft_config(cfg)
@@ -237,7 +238,7 @@ requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="Automo
 
 
 @pytest.fixture(scope="module")
-def salm_with_lora():
+def salm_with_lora(cuda_default_device):
     if not torch.cuda.is_available():
         pytest.skip("Automodel requires CUDA")
     model = SALMAutomodel(BASE_CFG)
@@ -247,7 +248,7 @@ def salm_with_lora():
 
 
 @pytest.fixture(scope="module")
-def salm_without_lora():
+def salm_without_lora(cuda_default_device):
     if not torch.cuda.is_available():
         pytest.skip("Automodel requires CUDA")
     cfg = {k: v for k, v in BASE_CFG.items() if k != "lora"}
@@ -268,7 +269,7 @@ def prompt_formatter(salm_with_lora):
 
 
 @pytest.fixture(scope="module")
-def training_cutset_batch():
+def training_cutset_batch(cuda_default_device):
     cut = dummy_cut(0, recording=dummy_recording(0, with_data=True))
     cut.supervisions = [
         SupervisionSegment(
@@ -291,6 +292,7 @@ def training_cutset_batch():
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_lora_params_exist(salm_with_lora):
     """After configure_model with lora config, LLM should have lora_A/lora_B parameters."""
     lora_params = {n for n, _ in salm_with_lora.named_parameters() if ".lora_" in n}
@@ -303,6 +305,7 @@ def test_lora_params_exist(salm_with_lora):
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_no_lora_params_without_config(salm_without_lora):
     """Without lora config, no LoRA parameters should exist."""
     lora_params = [n for n, _ in salm_without_lora.named_parameters() if ".lora_" in n]
@@ -310,12 +313,14 @@ def test_no_lora_params_without_config(salm_without_lora):
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_lora_prevent_freeze_pattern_set(salm_with_lora):
     """The prevent_freeze_params list should include the LoRA pattern."""
     assert LORA_PARAM_PATTERN in salm_with_lora.cfg.prevent_freeze_params
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_lora_params_are_trainable(salm_with_lora):
     """LoRA parameters should have requires_grad=True."""
     for name, param in salm_with_lora.named_parameters():
@@ -324,6 +329,7 @@ def test_lora_params_are_trainable(salm_with_lora):
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_base_llm_params_not_patched_elsewhere(salm_with_lora):
     """Only targeted modules (q_proj, v_proj) should have LoRA, not others like k_proj."""
     lora_params = {n for n, _ in salm_with_lora.named_parameters() if ".lora_" in n}
@@ -332,6 +338,7 @@ def test_base_llm_params_not_patched_elsewhere(salm_with_lora):
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_lora_training_step(salm_with_lora, dataset, prompt_formatter, training_cutset_batch):
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
     batch = dataset[training_cutset_batch]
@@ -343,6 +350,7 @@ def test_lora_training_step(salm_with_lora, dataset, prompt_formatter, training_
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_lora_generation(salm_with_lora):
     answer = salm_with_lora.generate(
         prompts=[
@@ -357,6 +365,7 @@ def test_lora_generation(salm_with_lora):
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_lora_match_all_linear():
     """Test match_all_linear=True applies LoRA to all linear layers in the LLM."""
     cfg = {**BASE_CFG}

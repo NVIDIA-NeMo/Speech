@@ -84,6 +84,11 @@ def pytest_addoption(parser):
         action="store_true",
         help="pass this argument to activate tests which have been marked as nightly for nightly quality assurance.",
     )
+    parser.addoption(
+        "--check-gpu-markers",
+        action="store_true",
+        help="fail the session if a test without the `gpu` marker allocates CUDA memory (GPU mode only).",
+    )
 
 
 @pytest.fixture
@@ -95,10 +100,42 @@ def device(request):
         return "GPU"
 
 
-@pytest.fixture(autouse=True)
-def run_only_on_device_fixture(request, device):
-    if request.node.get_closest_marker('run_only_on'):
-        if request.node.get_closest_marker('run_only_on').args[0] != device:
+def pytest_itemcollected(item):
+    # Runs before `-m` filtering, so `-m gpu` also selects `run_only_on('GPU')` tests.
+    _add_gpu_marker_to_gpu_only_tests([item])
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    if not item.config.getoption("--check-gpu-markers") or item.config.getoption("--cpu"):
+        yield
+        return
+    import torch
+
+    on_cpu_by_default = torch.get_default_device().type == "cpu"
+    before = _num_cuda_allocations(torch)
+    yield
+    if on_cpu_by_default and item.get_closest_marker("gpu") is None and _num_cuda_allocations(torch) > before:
+        item.config.stash.setdefault(_UNMARKED_CUDA_TESTS, []).append(item.nodeid)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    unmarked = session.config.stash.get(_UNMARKED_CUDA_TESTS, [])
+    if unmarked:
+        print(
+            "\nThese tests allocated CUDA memory but lack `@pytest.mark.gpu`, so the GPU unit-test jobs skip them:\n  "
+            + "\n  ".join(unmarked)
+        )
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+def pytest_runtest_setup(item):
+    # Skip in a hook rather than an autouse fixture: hooks run before any fixture is set up, so a skipped test
+    # does not first instantiate expensive session-scoped fixtures such as pretrained models.
+    marker = item.get_closest_marker('run_only_on')
+    if marker is not None:
+        device = "CPU" if item.config.getoption("--cpu") else "GPU"
+        if marker.args[0] != device:
             pytest.skip('skipped on this device: {}'.format(device))
 
 
@@ -240,6 +277,10 @@ def pytest_configure(config):
     )
     config.addinivalue_line(
         "markers",
+        "gpu: the test exercises CUDA code; GPU unit-test CI jobs run only tests with this marker",
+    )
+    config.addinivalue_line(
+        "markers",
         "nightly: runs the nightly test for QA.",
     )
     # Test dir and archive filepath.
@@ -311,3 +352,21 @@ def pytest_configure(config):
 
         print("Setting numba compat :", config.option.relax_numba_compat)
         numba_utils.set_numba_compat_strictness(strict=config.option.relax_numba_compat)
+
+
+_UNMARKED_CUDA_TESTS = pytest.StashKey[list]()
+
+
+def _add_gpu_marker_to_gpu_only_tests(items):
+    """Tests restricted to GPU need a GPU job, so `run_only_on('GPU')` implies the `gpu` marker."""
+    for item in items:
+        marker = item.get_closest_marker('run_only_on')
+        if marker is not None and marker.args[0] == "GPU" and item.get_closest_marker("gpu") is None:
+            item.add_marker(pytest.mark.gpu)
+
+
+def _num_cuda_allocations(torch) -> int:
+    """Cumulative number of CUDA allocations in this process (0 before CUDA is initialized)."""
+    if not torch.cuda.is_available() or not torch.cuda.is_initialized():
+        return 0
+    return torch.cuda.memory_stats().get("allocation.all.allocated", 0)

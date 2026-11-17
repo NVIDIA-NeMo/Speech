@@ -1080,6 +1080,7 @@ class TestAudioLosses:
             MAELoss(ndim=5)
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_maxine_combined_loss(self, test_data_dir):
         INPUT_LOCATION = os.path.join(test_data_dir, 'audio', 'maxine', 'input.bin')
         ATOL = 1e-2

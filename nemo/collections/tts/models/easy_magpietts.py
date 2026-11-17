@@ -16,7 +16,7 @@ import json
 import os
 import random
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import soundfile as sf
@@ -43,6 +43,7 @@ from nemo.collections.tts.modules.magpietts_modules import (
     remove_special_tokens,
     worker_init_fn,
 )
+from nemo.collections.tts.one_logger import EasyMagpieThroughputPolicy
 from nemo.collections.tts.parts.utils.helpers import (
     get_mask_from_lengths,
     get_speaker_embeddings_from_filepaths,
@@ -51,6 +52,7 @@ from nemo.collections.tts.parts.utils.helpers import (
     transcribe_with_whisper_from_filepaths,
 )
 from nemo.core.classes.common import safe_instantiate
+from nemo.lightning.speech_throughput import register_throughput_policy
 from nemo.utils import logging
 
 try:
@@ -103,6 +105,7 @@ class ProcessBatchOutput:
     selected_training_mode: Optional[str]
 
 
+@register_throughput_policy(EasyMagpieThroughputPolicy)
 class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
     """
     Magpie-TTS Model Decoder Only Model with training support.
@@ -1584,6 +1587,56 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
         return loss
 
+    def _transcribe_validation_audio(self, predicted_audio_paths: List[str], batch: Dict) -> List[Optional[str]]:
+        """Transcribe generated validation audio for CER/WER.
+
+        Returns one ``process_text_for_cer``-normalized transcript per path, or ``None`` for items whose
+        transcription failed.
+        """
+        if self.use_multilingual_asr:
+            self.whisper_model.to(self.device)
+            languages = batch.get('languages', None)
+            if languages is None:
+                languages = ['en'] * len(predicted_audio_paths)
+            try:
+                transcripts = transcribe_with_whisper_from_filepaths(
+                    audio_filepaths=predicted_audio_paths,
+                    language=languages,
+                    whisper_processor=self.whisper_processor,
+                    whisper_model=self.whisper_model,
+                    device=self.device,
+                    normalizer=None,
+                )
+                pred_transcripts = [process_text_for_cer(transcript) for transcript in transcripts]
+            except Exception as e:
+                logging.warning(f"Val batched ASR transcription failed, falling back to per-file mode: {e}")
+                pred_transcripts = []
+                for item_idx, audio_path in enumerate(predicted_audio_paths):
+                    lang = languages[item_idx] if item_idx < len(languages) else 'en'
+                    try:
+                        transcript = transcribe_with_whisper(
+                            audio_path,
+                            lang,
+                            self.whisper_processor,
+                            self.whisper_model,
+                            self.device,
+                            normalizer=None,
+                        )
+                        pred_transcripts.append(process_text_for_cer(transcript))
+                    except Exception as inner_e:
+                        logging.warning(f"Val ASR transcription failed for {audio_path}: {inner_e}")
+                        pred_transcripts.append(None)
+        else:
+            pred_transcripts = self._eval_asr_model.transcribe(
+                predicted_audio_paths,
+                batch_size=len(predicted_audio_paths),
+                override_config=TranscribeConfig(
+                    use_lhotse=False, batch_size=len(predicted_audio_paths), num_workers=0
+                ),
+            )
+            pred_transcripts = [process_text_for_cer(t.text) for t in pred_transcripts]
+        return pred_transcripts
+
     def validation_step(self, batch, batch_idx):
         # Extract inputs from batch and pass explicitly to process_batch
         print(
@@ -1738,50 +1791,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             if predicted_audio_paths and context_audio_paths:
                 with torch.no_grad():
                     # ASR transcription for CER/WER
-                    if self.use_multilingual_asr:
-                        self.whisper_model.to(self.device)
-                        languages = batch.get('languages', None)
-                        if languages is None:
-                            languages = ['en'] * len(predicted_audio_paths)
-                        try:
-                            transcripts = transcribe_with_whisper_from_filepaths(
-                                audio_filepaths=predicted_audio_paths,
-                                language=languages,
-                                whisper_processor=self.whisper_processor,
-                                whisper_model=self.whisper_model,
-                                device=self.device,
-                                normalizer=None,
-                            )
-                            pred_transcripts = [process_text_for_cer(transcript) for transcript in transcripts]
-                        except Exception as e:
-                            logging.warning(
-                                f"Val batched ASR transcription failed, falling back to per-file mode: {e}"
-                            )
-                            pred_transcripts = []
-                            for item_idx, audio_path in enumerate(predicted_audio_paths):
-                                lang = languages[item_idx] if item_idx < len(languages) else 'en'
-                                try:
-                                    transcript = transcribe_with_whisper(
-                                        audio_path,
-                                        lang,
-                                        self.whisper_processor,
-                                        self.whisper_model,
-                                        self.device,
-                                        normalizer=None,
-                                    )
-                                    pred_transcripts.append(process_text_for_cer(transcript))
-                                except Exception as inner_e:
-                                    logging.warning(f"Val ASR transcription failed for {audio_path}: {inner_e}")
-                                    pred_transcripts.append(None)
-                    else:
-                        pred_transcripts = self._eval_asr_model.transcribe(
-                            predicted_audio_paths,
-                            batch_size=len(predicted_audio_paths),
-                            override_config=TranscribeConfig(
-                                use_lhotse=False, batch_size=len(predicted_audio_paths), num_workers=0
-                            ),
-                        )
-                        pred_transcripts = [process_text_for_cer(t.text) for t in pred_transcripts]
+                    pred_transcripts = self._transcribe_validation_audio(predicted_audio_paths, batch)
 
                     # Speaker embeddings for SSIM
                     try:
@@ -2026,7 +2036,10 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 phoneme_turn_dropout_turn_prob=self.cfg.get("phoneme_turn_dropout_turn_prob", 0.0),
                 phoneme_turn_max_words_to_drop=self.cfg.get("phoneme_turn_max_words_to_drop", 2),
                 challenging_texts_path=dataset_cfg.dataset.get("challenging_texts_path"),
-                challenging_text_replacement_prob=dataset_cfg.dataset.get("challenging_text_replacement_prob", 0.0),
+                challenging_text_start_prob=dataset_cfg.dataset.get("challenging_text_start_prob", 0.0),
+                challenging_text_end_prob=dataset_cfg.dataset.get("challenging_text_end_prob", 0.0),
+                challenging_text_start_step=dataset_cfg.dataset.get("challenging_text_start_step", 0),
+                challenging_text_end_step=dataset_cfg.dataset.get("challenging_text_end_step", 0),
                 context_audio_shuffle_batch_prob=dataset_cfg.dataset.get("context_audio_shuffle_batch_prob", 0.0),
             )
             dataset = FallbackDataset(dataset)

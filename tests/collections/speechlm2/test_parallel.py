@@ -52,7 +52,8 @@ class TestAutomodelParallelStrategy:
         assert strategy.activation_checkpointing_llm is False
         assert strategy.activation_checkpointing_perception is False
 
-    def test_sharded_checkpoint_metadata_is_retained_after_return(self, monkeypatch, tmp_path):
+    @pytest.mark.parametrize('weights_only', [None, False, True])
+    def test_sharded_checkpoint_metadata_is_retained_after_return(self, monkeypatch, tmp_path, weights_only):
         class CheckpointMetadata:
             pass
 
@@ -77,9 +78,15 @@ class TestAutomodelParallelStrategy:
         monkeypatch.setattr(dcp, "FileSystemReader", Reader)
         monkeypatch.setattr(dcp, "load", lambda state, checkpoint_id: None)
         monkeypatch.setattr(dcp_state_dict, "get_model_state_dict", lambda model: {})
-        monkeypatch.setattr("torch.load", lambda path: CheckpointMetadata())
 
-        checkpoint = strategy.load_checkpoint(tmp_path)
+        def load_metadata(path, *, weights_only=None):
+            assert weights_only is policy
+            return CheckpointMetadata()
+
+        policy = weights_only
+        monkeypatch.setattr("torch.load", load_metadata)
+
+        checkpoint = strategy.load_checkpoint(tmp_path, weights_only=weights_only)
         checkpoint_ref = weakref.ref(checkpoint)
         del checkpoint
         gc.collect()

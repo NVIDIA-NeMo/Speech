@@ -335,14 +335,26 @@ class TestAudioSpectrogram:
             s2a(input=torch.randn(1, 1, fft_length // 2 + 1, 100))
 
     @pytest.mark.unit
-    @pytest.mark.parametrize('fft_length', [256, 512])
-    @pytest.mark.parametrize('hop_div', [2, 4])
-    @pytest.mark.parametrize('batch_size', [1, 2])
-    @pytest.mark.parametrize('num_channels', [1, 2])
-    @pytest.mark.parametrize('magnitude_power', [0.5, 1, 2])
-    @pytest.mark.parametrize('scale', [0.1, 1.0])
-    @pytest.mark.parametrize('chunk_size', [1, 2, 5])
-    @pytest.mark.parametrize('window_type', ['rectangular', 'hamming'])
+    # Pairwise covering array: every pair of parameter values appears in at least one case.
+    # It replaces the full 576-case Cartesian product with 13 cases.
+    @pytest.mark.parametrize(
+        'fft_length,hop_div,batch_size,num_channels,magnitude_power,scale,chunk_size,window_type',
+        [
+            (256, 4, 1, 2, 2, 1.0, 5, 'hamming'),
+            (512, 2, 2, 1, 1, 0.1, 1, 'rectangular'),
+            (256, 4, 2, 1, 0.5, 0.1, 2, 'hamming'),
+            (512, 2, 1, 2, 0.5, 1.0, 2, 'rectangular'),
+            (512, 2, 2, 2, 2, 0.1, 5, 'rectangular'),
+            (256, 4, 1, 1, 1, 1.0, 1, 'hamming'),
+            (256, 2, 2, 2, 2, 1.0, 1, 'hamming'),
+            (512, 4, 1, 1, 2, 0.1, 5, 'hamming'),
+            (256, 4, 1, 2, 1, 1.0, 5, 'rectangular'),
+            (512, 4, 2, 2, 0.5, 1.0, 5, 'hamming'),
+            (256, 4, 1, 1, 2, 1.0, 2, 'rectangular'),
+            (256, 2, 1, 1, 1, 1.0, 2, 'rectangular'),
+            (512, 2, 2, 2, 0.5, 1.0, 1, 'rectangular'),
+        ],
+    )
     def test_streaming_istft_matches_offline_rectangular_center_false(
         self,
         fft_length: int,

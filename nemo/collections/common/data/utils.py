@@ -42,3 +42,18 @@ def move_data_to_device(inputs: Any, device: Union[str, torch.device], non_block
         )
     else:
         return inputs
+
+
+def is_dataloader(obj: Any) -> bool:
+    """Return True if ``obj`` is a prebuilt dataloader that can be iterated over directly.
+
+    Besides ``torch.utils.data.DataLoader``, this recognises the stateful Lhotse loader wrapper
+    returned by ``get_lhotse_dataloader_from_config(..., use_stateful_dataloader=True)``, which
+    delegates to an inner ``StatefulDataLoader`` instead of subclassing it.
+    """
+    if isinstance(obj, torch.utils.data.DataLoader):
+        return True
+    # Imported locally so that this module does not require Lhotse.
+    from nemo.collections.common.data.lhotse.dataloader import _PerRankStatefulDataLoader
+
+    return isinstance(obj, _PerRankStatefulDataLoader)

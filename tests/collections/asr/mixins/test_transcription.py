@@ -241,6 +241,46 @@ class TestTranscriptionMixin:
         assert outputs[2] == 3.0
 
     @pytest.mark.unit
+    def test_transcribe_stateful_lhotse_dataloader(self, dummy_model, tmp_path, monkeypatch):
+        """A world-size-1 ``use_stateful_dataloader`` Lhotse loader is a prebuilt loader for ``transcribe()``."""
+        pytest.importorskip("torchdata.stateful_dataloader")
+        from lhotse import CutSet
+        from lhotse.testing.dummies import dummy_cut
+
+        from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
+
+        class CutDurations(Dataset):
+            def __getitem__(self, cuts):
+                return torch.tensor([[cut.duration] for cut in cuts])
+
+        cuts_path = tmp_path / "cuts.jsonl"
+        CutSet.from_cuts([dummy_cut(0, duration=1.0), dummy_cut(1, duration=2.0)]).to_file(cuts_path)
+        config = {
+            "cuts_path": str(cuts_path),
+            "batch_size": 2,
+            "num_workers": 0,
+            "shuffle": False,
+            "shard_seed": 0,
+            "force_map_dataset": True,
+            "force_finite": True,
+            "use_stateful_dataloader": True,
+        }
+        dataloader = get_lhotse_dataloader_from_config(config, global_rank=0, world_size=1, dataset=CutDurations())
+        assert not isinstance(dataloader, DataLoader)
+
+        def fail_input_processing(*args, **kwargs):
+            raise AssertionError("a prebuilt dataloader must bypass input processing")
+
+        monkeypatch.setattr(dummy_model, "_transcribe_input_processing", fail_input_processing)
+        dummy_model = dummy_model.eval()
+        dummy_model.encoder.weight.data.fill_(1.0)
+        dummy_model.encoder.bias.data.fill_(0.0)
+
+        outputs = dummy_model.transcribe(dataloader, batch_size=2)
+
+        assert outputs == [1.0, 2.0]
+
+    @pytest.mark.unit
     def test_transcribe_check_flags(self, dummy_model):
         dummy_model = dummy_model.eval()
 

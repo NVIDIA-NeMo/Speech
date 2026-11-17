@@ -29,7 +29,7 @@ from tqdm import tqdm
 from nemo.collections.asr.one_logger import DiarizationThroughputPolicy
 from nemo.collections.asr.parts.utils.speaker_utils import audio_rttm_map, get_uniqname_from_filepath
 from nemo.collections.asr.parts.utils.vad_utils import PostProcessingParams, load_postprocessing_from_yaml
-from nemo.collections.common.data.utils import move_data_to_device
+from nemo.collections.common.data.utils import is_dataloader, move_data_to_device
 from nemo.lightning.speech_throughput import register_throughput_policy
 from nemo.utils import logging
 
@@ -325,7 +325,7 @@ class SpkDiarizationMixin(ABC):
                 diarize_cfg._internal.temp_dir = tmpdir
 
                 # Create a DataLoader if not already present
-                if not isinstance(audio, DataLoader):
+                if not is_dataloader(audio):
                     dataloader = self._diarize_input_processing(audio, diarize_cfg)
                 else:
                     dataloader = audio

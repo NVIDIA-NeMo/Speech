@@ -153,6 +153,7 @@ def test_pee_packed_rejects_mismatched_branch_metadata(monkeypatch):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="PEE packed gradient parity requires CUDA")
+@pytest.mark.gpu
 def test_pee_packed_matches_dense_input_and_parameter_gradients():
     torch.manual_seed(0)
     dense_encoder = build_toy_packed_pe_encoder(freeze_asr=False, freeze_diar=True).cuda().eval()

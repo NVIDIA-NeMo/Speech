@@ -45,7 +45,10 @@ pytest tests/collections/tts -m unit -v                  # TTS unit tests
 pytest -k "test_name" tests/                             # Single test by name
 ```
 
-Markers: `unit`, `integration`, `system`, `pleasefixme` (broken — skip), `skipduringci`.
+Markers: `unit`, `integration`, `system`, `gpu`, `pleasefixme` (broken — skip), `skipduringci`.
+
+Mark tests that exercise CUDA with `@pytest.mark.gpu`: on pull requests the GPU CI jobs run only those tests, and every
+test runs in the CPU jobs. See "GPU tests" in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## CI & PRs
 

@@ -39,7 +39,8 @@ EPS_L_INPUT = 1e-4
 DEVICES = ['cpu']
 
 if K2_AVAILABLE and torch.cuda.is_available() and k2.with_cuda:
-    DEVICES.append('cuda')
+    # The `gpu` marker puts the CUDA cases in the GPU CI jobs (see tests/functional_tests/_gpu_unit_test_selection.sh).
+    DEVICES.append(pytest.param('cuda', marks=pytest.mark.gpu))
 
 
 @pytest.mark.skipif(not K2_AVAILABLE, reason="k2 is not installed, skipping Graph-RNNT tests.")
@@ -279,6 +280,7 @@ class TestGraphRnnt:
 
 @pytest.mark.skipif(not TRITON_AVAILABLE, reason="Triton is not installed, skipping RNNT Log Probs tests")
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+@pytest.mark.gpu
 class TestRnntLogProbs:
     @pytest.mark.parametrize(
         "batch_size,num_frames,num_text_units,vocab_size",

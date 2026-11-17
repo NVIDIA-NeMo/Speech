@@ -249,6 +249,7 @@ def test_training_mode_and_inference_parameters():
     )
 
 
+@pytest.mark.gpu
 def test_easy_magpietts_model_construction(model):
     expected_device = "cuda" if torch.cuda.is_available() else "cpu"
     assert next(model.parameters()).device.type == expected_device
@@ -268,6 +269,7 @@ def test_easy_magpietts_model_construction(model):
     assert hasattr(model, "cas_encoder")
 
 
+@pytest.mark.gpu
 def test_state_dict_excludes_codec(model):
     state = model.state_dict()
     assert state
@@ -276,6 +278,7 @@ def test_state_dict_excludes_codec(model):
     assert any(key.startswith("final_proj.") for key in state)
 
 
+@pytest.mark.gpu
 def test_audio_and_text_embedding_shapes(model):
     audio_tokens = _toy_codes(model, batch_size=2, num_frames=3)
     audio_tokens[0, :, -1] = model.audio_eos_id
@@ -291,6 +294,7 @@ def test_audio_and_text_embedding_shapes(model):
     assert torch.isfinite(text_embedded).all()
 
 
+@pytest.mark.gpu
 def test_stack_codes_round_trip_expected_shape(model):
     codes = _toy_codes(model, batch_size=2, num_frames=4)
     codes_lens = torch.tensor([4, 4], dtype=torch.long)
@@ -312,6 +316,7 @@ def test_stack_codes_round_trip_expected_shape(model):
     torch.testing.assert_close(unstacked, codes)
 
 
+@pytest.mark.gpu
 def test_compute_loss_with_and_without_agent_mask(model):
     _seed_everything()
     batch_size, num_frames = 2, 5
@@ -351,6 +356,7 @@ def test_compute_loss_with_and_without_agent_mask(model):
     assert loss_mask.dtype == torch.bool
 
 
+@pytest.mark.gpu
 def test_prepare_audio_channel_embeddings_shapes(model):
     audio_codes = _toy_codes(model, batch_size=2, num_frames=3)
     audio_codes[1, :, 2] = 0
@@ -381,6 +387,7 @@ def test_prepare_audio_channel_embeddings_shapes(model):
     assert loss_agent_mask.dtype == torch.bool
 
 
+@pytest.mark.gpu
 def test_forward_with_inputs_embeds(model):
     _seed_everything()
     inputs_embeds = torch.randn(2, 6, model.cfg.embedding_dim)
@@ -394,6 +401,7 @@ def test_forward_with_inputs_embeds(model):
     assert output.past_key_values is not None
 
 
+@pytest.mark.gpu
 def test_logits_to_audio_codes_schema(model):
     logits = torch.zeros(2, 4, model.num_audio_codebooks * model.num_all_tokens_per_codebook)
     expected_tokens = []
@@ -413,6 +421,7 @@ def test_logits_to_audio_codes_schema(model):
     assert audio_codes[1, :, 2:].eq(0).all()
 
 
+@pytest.mark.gpu
 def test_process_batch_smoke(model, toy_batch):
     _seed_everything()
     output = model.process_batch(
@@ -440,6 +449,7 @@ def test_process_batch_smoke(model, toy_batch):
     assert output.context_audio_codes.shape[1] == model.num_audio_codebooks
 
 
+@pytest.mark.gpu
 def test_process_batch_with_multiturn_dataset_enabled():
     _seed_everything()
     model = _make_easy_magpie_model(tiny_easy_magpie_cfg({"use_multiturn_dataset": True}))
@@ -468,6 +478,7 @@ def test_process_batch_with_multiturn_dataset_enabled():
     assert output.local_transformer_loss is None
 
 
+@pytest.mark.gpu
 def test_process_batch_with_autoregressive_local_transformer():
     _seed_everything()
     model = _make_easy_magpie_model(
@@ -504,6 +515,7 @@ def test_process_batch_with_autoregressive_local_transformer():
     assert output.local_transformer_logits.shape == output.logits.shape
 
 
+@pytest.mark.gpu
 def test_process_batch_with_feature_masking():
     """``feature_masking`` runs through ``FeatureMasking.forward`` for the audio channel embeddings and for the
     local transformer inputs: random masking in training mode, pass-through in eval mode."""
@@ -573,6 +585,7 @@ def test_process_batch_with_feature_masking():
                 assert torch.equal(outputs, inputs)
 
 
+@pytest.mark.gpu
 def test_training_step_smoke(model, toy_batch):
     _seed_everything()
     model.train()
@@ -588,6 +601,7 @@ def test_training_step_smoke(model, toy_batch):
     assert loss.item() > 0
 
 
+@pytest.mark.gpu
 def test_validation_step_smoke(model, toy_batch, tmp_path):
     _seed_everything()
     model.eval()

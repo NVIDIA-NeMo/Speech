@@ -314,8 +314,9 @@ class CacheAwareRNNTPipeline(BasePipeline):
         context,
         previous_hypotheses: list[Hypothesis | None],
         drop_extra_pre_encoded: int,
-        keep_all_outputs: bool | Tensor,
+        keep_all_outputs: bool,
         prompt_vectors: Tensor | None,
+        keep_all_outputs_mask: Tensor | None = None,
     ) -> tuple[list[Hypothesis], object]:
         """
         Run one cache-aware encode/decode step for the current chunk.
@@ -332,6 +333,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
                 drop_left_context=self.drop_left_context,
                 valid_out_len=self.valid_out_len,
                 prompt_vectors=prompt_vectors,
+                keep_all_outputs_mask=keep_all_outputs_mask,
             )
         return self.asr_model.malsd_stream_step(
             malsd_computer=self.beam_decoder_computer,
@@ -344,6 +346,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             drop_left_context=self.drop_left_context,
             valid_out_len=self.valid_out_len,
             prompt_vectors=prompt_vectors,
+            keep_all_outputs_mask=keep_all_outputs_mask,
         )
 
     def _prepare_per_stream_biasing(
@@ -444,7 +447,8 @@ class CacheAwareRNNTPipeline(BasePipeline):
         features: list[Tensor] | Tensor,
         right_paddings: list[int] | Tensor,
         ready_state_ids: set,
-        keep_all_outputs: bool | Tensor = False,
+        keep_all_outputs: bool = False,
+        keep_all_outputs_mask: Tensor | None = None,
     ) -> None:
         """
         Cache Aware Transcribe Step
@@ -463,8 +467,9 @@ class CacheAwareRNNTPipeline(BasePipeline):
             features: (list[Tensor] | Tensor) Feature buffers, per stream or batched (B, F, T).
             right_paddings: (list[int] | Tensor | None) Right paddings, per stream or batched.
             ready_state_ids: (set) Set of ready state IDs.
-            keep_all_outputs: (bool | Tensor) Whether to keep all outputs; a bool vector of shape [B]
-                keeps them per stream, so one call can serve last and non-last chunks together.
+            keep_all_outputs: (bool) Whether to keep all outputs or not.
+            keep_all_outputs_mask: (Tensor | None) Bool vector of shape [B] that keeps all outputs per stream, so one
+                call can serve last and non-last chunks together; keep_all_outputs is ignored when it is given.
         """
 
         feature_buffers, feature_buffer_lens = self.preprocess(features, right_paddings)
@@ -497,6 +502,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             drop_extra_pre_encoded=drop_extra_pre_encoded,
             keep_all_outputs=keep_all_outputs,
             prompt_vectors=prompt_vectors,
+            keep_all_outputs_mask=keep_all_outputs_mask,
         )
 
         # update the cache and reset the cache slots for the streams that has ended
@@ -532,23 +538,21 @@ class CacheAwareRNNTPipeline(BasePipeline):
                 if eos:
                     state.reset_beam_decoding_state_()
 
-    def _keep_mask(self, is_last: list[bool]) -> bool | Tensor:
+    def _keep_args(self, is_last: list[bool]) -> dict:
         """
-        The keep_all_outputs argument for a batch of streams.
+        The keep_all_outputs arguments of cache_aware_transcribe_step for a batch of streams.
 
-        A batch that is all last or all non-last keeps the cheaper scalar form, which lets the encoder
-        trim the right context itself; only a mixed batch needs the per-stream vector, which is what
+        A batch that is all last or all non-last uses the scalar keep_all_outputs, which lets the encoder
+        trim the right context itself; only a mixed batch needs the per-stream mask, which is what
         lets one call serve it instead of two.
         Args:
             is_last: (list[bool]) whether each stream of the batch is on its last chunk
         Returns:
-            (bool | Tensor) scalar when the batch is uniform, otherwise a bool vector of shape [B]
+            (dict) keep_all_outputs, and keep_all_outputs_mask when the batch mixes last and non-last streams
         """
-        if all(is_last):
-            return True
-        if not any(is_last):
-            return False
-        return torch.tensor(is_last, device=self.device, dtype=torch.bool)
+        if all(is_last) or not any(is_last):
+            return {"keep_all_outputs": all(is_last)}
+        return {"keep_all_outputs_mask": torch.tensor(is_last, device=self.device, dtype=torch.bool)}
 
     def transcribe_step_for_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> None:
         """
@@ -566,7 +570,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         if len(fbuffers) > 0:
             self.cache_aware_transcribe_step(
-                fbuffers, features, right_paddings, ready_state_ids, keep_all_outputs=self._keep_mask(is_last)
+                fbuffers, features, right_paddings, ready_state_ids, **self._keep_args(is_last)
             )
 
         if len(ready_state_ids) > 0:
@@ -591,7 +595,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         if len(all_fbuffers) > 0:
             is_last = [frame.is_last for frame in frames]
             self.cache_aware_transcribe_step(
-                frames, all_fbuffers, right_paddings, ready_state_ids, keep_all_outputs=self._keep_mask(is_last)
+                frames, all_fbuffers, right_paddings, ready_state_ids, **self._keep_args(is_last)
             )
 
         # post-process the ready states

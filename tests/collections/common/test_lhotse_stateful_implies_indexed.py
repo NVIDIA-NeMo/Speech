@@ -258,6 +258,86 @@ def test_stateful_unset_indexed_streaming_only_type_raises(tmp_path):
 
 
 @pytest.mark.unit
+def test_stateful_unset_indexed_resolution_does_not_mutate_callers_config(tmp_path, lhotse_path):
+    from nemo.collections.common.data.lhotse.cutset import read_cutset_from_config
+
+    txt = tmp_path / "text.txt"
+    txt.write_text("hello\nworld\n")
+    cfg = OmegaConf.create(
+        {"use_stateful_dataloader": True, "input_cfg": [{"type": "txt", "paths": str(txt), "language": "en"}]}
+    )
+    for _ in range(2):  # a failed read must not turn the implied value into an explicit one
+        with pytest.raises(ValueError, match="only supports streaming"):
+            read_cutset_from_config(cfg)
+        assert cfg.get("indexed") is None
+
+    create_jsonl_index(lhotse_path)
+    cfg = OmegaConf.create({"use_stateful_dataloader": True, "input_cfg": [_lhotse(lhotse_path)]})
+    for _ in range(2):
+        cuts, _ = read_cutset_from_config(cfg)
+        assert cuts.is_indexed
+        assert cfg.get("indexed") is None
+
+
+def _conversation_cuts_path(tmp_path, name, begin):
+    from lhotse.testing.dummies import dummy_cut, dummy_supervision
+
+    path = tmp_path / f"{name}.jsonl"
+    CutSet(
+        [dummy_cut(i, supervisions=[dummy_supervision(i, text=f"text {i}")]) for i in range(begin, begin + 2)]
+    ).to_file(path)
+    return path
+
+
+def _as_conversation(*sources):
+    return {
+        "type": "lhotse_as_conversation",
+        "audio_locator_tag": "[audio]",
+        "token_equivalent_duration": 0.08,
+        "input_cfg": list(sources),
+    }
+
+
+@pytest.mark.unit
+def test_stateful_converter_respects_nested_opt_out(tmp_path):
+    # The converter reads its nested input_cfg recursively; a nested 'indexed: false' must stream instead of
+    # making the enclosing converter fail as if it were a streaming-only source.
+    path = _conversation_cuts_path(tmp_path, "a", 0)
+    cuts = _sampler_cuts(_cfg([_as_conversation(_lhotse(path, indexed=False))]))
+    assert not cuts.is_indexed
+    assert sorted(c.id for c in cuts) == ["dummy-mono-cut-0000", "dummy-mono-cut-0001"]
+
+    # Without an opt-out, the nested source is indexed (and needs its index).
+    with pytest.raises(MissingIndexError):
+        _sampler_cuts(_cfg([_as_conversation(_lhotse(path))]))
+    create_jsonl_index(path)
+    assert _sampler_cuts(_cfg([_as_conversation(_lhotse(path))])).is_indexed
+
+
+@pytest.mark.unit
+def test_stateful_converter_nested_mixed_blend(tmp_path):
+    indexed_path = _conversation_cuts_path(tmp_path, "a", 0)
+    streamed_path = _conversation_cuts_path(tmp_path, "b", 10)
+    create_jsonl_index(indexed_path)
+    conv = _as_conversation(
+        {"weight": 0.5, **_lhotse(indexed_path)}, {"weight": 0.5, **_lhotse(streamed_path, indexed=False)}
+    )
+    # Allowed without bucketing ...
+    assert not _sampler_cuts(_cfg([conv])).is_indexed
+    # ... and rejected by the blend check when bucketing can't checkpoint it.
+    bucketing = dict(
+        use_bucketing=True,
+        num_buckets=2,
+        bucket_duration_bins=[1.5],
+        batch_duration=3.0,
+        bucket_buffer_size=20,
+        concurrent_bucketing=False,
+    )
+    with pytest.raises(ValueError, match="can't checkpoint this data blend"):
+        _sampler_cuts(_cfg([conv], **bucketing))
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("where", ["top", "entry"])
 def test_stateful_explicit_indexed_false_streams(lhotse_path, nemo_path, where):
     sources = [_nemo(nemo_path), _lhotse(lhotse_path)]

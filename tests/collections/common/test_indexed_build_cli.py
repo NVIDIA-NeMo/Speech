@@ -71,6 +71,37 @@ def test_build_indexes_accepts_repeatable_kind_filter(tmp_path):
     assert result.exit_code == 0, result.output
 
 
+@pytest.mark.parametrize("use_indexes_root", [False, True])
+def test_build_indexes_covers_nemo_sft_jsonl(tmp_path, use_indexes_root):
+    # Indexed readers require pre-built indexes, so the builder must discover every indexable type.
+    from lhotse.indexing import index_file_path
+
+    from nemo.collections.common.data.lhotse.indexed_adapters import MissingIndexError
+    from nemo.collections.common.data.lhotse.text_adapters import NeMoSFTJsonlAdapter
+
+    data = tmp_path / "sft.jsonl"
+    data.write_text("".join(json.dumps({"id": f"sft-{i}", "conversations": []}) + "\n" for i in range(2)))
+    config_path = tmp_path / "input.yaml"
+    config_path.write_text(yaml.safe_dump([{"type": "nemo_sft_jsonl", "paths": str(data)}]))
+    indexes_root = str(tmp_path / "idx") if use_indexes_root else None
+    idx_path = Path(index_file_path(str(data), indexes_root))
+
+    with pytest.raises(MissingIndexError):
+        NeMoSFTJsonlAdapter(paths=str(data), indexed=True, indexes_root=indexes_root)
+    assert not idx_path.exists()
+
+    args = ["--executor", "thread", str(config_path)]
+    if use_indexes_root:
+        args = ["--indexes-root", indexes_root] + args
+    result = CliRunner().invoke(build_indexes.main, args)
+    assert result.exit_code == 0, result.output
+    assert idx_path.exists()
+    assert not use_indexes_root or not Path(f"{data}.idx").exists()
+    adapter = NeMoSFTJsonlAdapter(paths=str(data), indexed=True, indexes_root=indexes_root)
+    assert len(adapter) == 2
+    assert len(list(NeMoSFTJsonlAdapter(paths=str(data), indexed=False))) == 2
+
+
 def _write_nested_data_blend(tmp_path: Path) -> tuple[Path, Path, Path]:
     blend_dir = tmp_path / "blend"
     blend_dir.mkdir()

@@ -378,8 +378,9 @@ Some other Lhotse related arguments we support:
 
 * ``indexed`` (default unset) opts the dataloader into Lhotse's indexed-manifest
   path, giving every adapter O(1) random access and graph-token-based exact restore.
-  Requires pre-built ``.idx`` sidecars next to every JSONL/tar file (or under
-  ``indexes_root``); the dataloader never builds them. When unset, it's
+  Requires ``.idx`` sidecars next to every JSONL/tar file (or under
+  ``indexes_root``), built before training; NeMo checks for them at startup
+  instead of building them (see the remote-Shar caveat below). When unset, it's
   ``true`` with ``use_stateful_dataloader: true`` and auto-detected per source
   otherwise. See :ref:`indexed-resumable-dataloading` below.
 
@@ -981,17 +982,28 @@ if one exists, while other source types stream. If a blend ends up only partly
 indexed this way, the dataloader logs a warning; set ``indexed`` explicitly to
 silence it.
 
-Indexes must be built before training. The dataloader never builds a missing
-index, whether ``indexed: true`` is set explicitly or implied by
-``use_stateful_dataloader``: building one reads the whole data file and writes
-the sidecar next to the data, from every rank at once. Instead, it checks for
-every required index file before it opens a source, and raises a
-``MissingIndexError`` at startup that lists the missing files. This covers
-JSONL ``.idx`` files (mirrored under ``indexes_root`` when set), the ``.idx``
-files of every Shar field, NeMo tarred audio ``.idx`` files, and index packs.
-Build the indexes with ``python scripts/dataloading/build_indexes.py
+Pre-build indexes before training, whether ``indexed: true`` is set explicitly
+or implied by ``use_stateful_dataloader``: building an index at startup reads
+the whole data file and writes the sidecar next to the data, from every rank at
+once. Build them with ``python scripts/dataloading/build_indexes.py
 <input_cfg>`` (pass ``--indexes-root`` if you train with ``indexes_root``), or
 set ``indexed: false`` to stream the data instead.
+
+NeMo checks the index files of every source it can enumerate before opening it:
+JSONL ``.idx`` files (mirrored under ``indexes_root`` when set), NeMo tarred
+audio ``.idx`` files, and the ``.idx`` files of every field of a local Shar
+directory or of an explicit Shar ``fields`` list. A missing one raises NeMo's
+``MissingIndexError`` at startup, listing the missing files. Other startup
+errors come from elsewhere: a declared ``index_pack`` that doesn't exist raises
+a ``FileNotFoundError`` naming the pack, and Lhotse's readers raise their own
+errors for indexes they find invalid.
+
+NeMo can't list a remote Shar directory (``s3://``, ``ais://``) before
+opening it. Strictly preventing index creation for remote Shar directories
+requires a Lhotse version whose ``CutSet.from_shar`` exposes
+``auto_create_index``; NeMo passes ``auto_create_index=False`` when it's
+available. With older Lhotse versions, a missing index in a remote Shar
+directory is still built by Lhotse's reader at startup.
 
 Per-adapter support
 ^^^^^^^^^^^^^^^^^^^

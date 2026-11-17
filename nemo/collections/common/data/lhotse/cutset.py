@@ -150,6 +150,9 @@ def read_cutset_from_config(config: Union[DictConfig, dict]) -> Tuple[CutSet, bo
     # As with any indexed read, the indexes must be pre-built; a source type that can't be indexed is an error.
     # An explicit ``indexed: false`` (top-level or per input_cfg entry) opts out.
     if config.get("use_stateful_dataloader", False) and config.get("indexed") is None:
+        # Resolve on a copy: the caller's config keeps its unset value, so a later read of the same config
+        # is still treated as implied (and nested propagation doesn't leak into it).
+        config = deepcopy(config)
         config.indexed = True
         with _indexed_implied_by_stateful():
             return _read_cutset_from_config(config)
@@ -336,7 +339,10 @@ def parse_group(grp_cfg: DictConfig, propagate_attrs: dict) -> [CutSet, bool]:
     if grp_cfg.type != "group":
         parser_fn = get_parser_fn(grp_cfg.type)
         cuts, is_tarred = parser_fn(grp_cfg)
-        _check_source_is_indexed(cuts, grp_cfg)
+        if grp_cfg.get("input_cfg") is None:
+            # Converters with a nested ``input_cfg`` read it recursively, which validates their leaves;
+            # an explicit opt-out on a nested leaf must not make the enclosing converter fail.
+            _check_source_is_indexed(cuts, grp_cfg)
     else:
         cuts, is_tarred = parse_and_combine_datasets(
             grp_cfg.input_cfg,

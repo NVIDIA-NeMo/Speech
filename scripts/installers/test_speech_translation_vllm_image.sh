@@ -17,7 +17,7 @@ IMAGE="nemo-speech-translation-vllm-smoke:${CHECKOUT:0:12}"
 docker build -f "${CONTEXT}/Dockerfile.speech_translation_vllm" \
   --build-arg GIT_URL="${GIT_URL}" --build-arg CHECKOUT="${CHECKOUT}" -t "${IMAGE}" "${CONTEXT}"
 
-docker run --rm "${IMAGE}" python - <<'PY'
+docker run --rm -i "${IMAGE}" python - <<'PY'
 import sys
 
 assert sys.version_info >= (3, 12), sys.version

@@ -43,7 +43,7 @@ from nemo.collections.speechlm2.vllm.salm.config import (
 _PKG = "nemo.collections.speechlm2.vllm.salm"
 _LOGGER = logging.getLogger(__name__)
 _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE = None
-# Oldest vLLM release whose internals the plugin hooks into (NeMo's ``vllm`` extra pins it).
+# Oldest vLLM release whose internals the plugin hooks into; NeMo's ``vllm`` extra pins a newer one.
 _MIN_VLLM_VERSION = "0.32.0"
 _AUTOMODEL_DFLASH2_ARCHITECTURES = frozenset(
     {

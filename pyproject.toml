@@ -193,7 +193,7 @@ speechlm2-only = [
 # Install this serving extra separately from the cu*/compiled* extras below.
 vllm = [
     "peft>=0.18.1",
-    "vllm==0.32.0; sys_platform == 'linux' and python_version >= '3.11'",
+    "vllm==0.33.0; sys_platform == 'linux' and python_version >= '3.11'",
 ]
 
 all = [

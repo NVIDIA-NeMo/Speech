@@ -15,16 +15,18 @@
 
 # This Dockerfile installs the necessary dependencies for streaming speech translation with vLLM.
 
-ARG BASE_IMAGE=pytorch/pytorch:2.9.0-cuda12.8-cudnn9-runtime
+ARG BASE_IMAGE=nvcr.io/nvidia/cuda-dl-base:26.04-cuda13.2-devel-ubuntu24.04
 
 FROM ${BASE_IMAGE}
 
 ARG GIT_URL="https://github.com/NVIDIA-NeMo/Speech.git"
 ARG CHECKOUT="main"
+ARG UV_VERSION=0.13.7
+ARG PYTHON_VERSION=3.12
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install dependencies
+# Install system dependencies
 RUN apt-get update && \
   apt-get upgrade -y && \
   apt-get install -y \
@@ -36,14 +38,19 @@ RUN apt-get update && \
   ffmpeg \
   libavdevice-dev \
   git \
+  curl \
   build-essential \
   cmake && \
   rm -rf /var/lib/apt/lists/*
 
-# Install NeMo
-RUN git clone --recursive ${GIT_URL} nemo_dir && cd nemo_dir && \
-  git checkout $CHECKOUT && \
-  pip install ".[all]"
+# NeMo requires Python >= 3.12; uv provisions it and the environment.
+RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | env UV_INSTALL_DIR=/usr/local/bin sh
 
-# Install vLLM for streaming speech translation
-RUN pip install vllm==0.12.0
+# Install NeMo with the ASR and vLLM extras. The vllm extra owns its own Torch/CUDA stack
+# and conflicts with the `all`, `cu*` and `compiled*` extras, so it is installed on its own.
+RUN git clone --recursive ${GIT_URL} /nemo_dir && cd /nemo_dir && \
+  git checkout ${CHECKOUT} && \
+  uv sync --locked --python ${PYTHON_VERSION} --extra asr --extra vllm
+
+ENV PATH="/nemo_dir/.venv/bin:${PATH}"
+WORKDIR /nemo_dir

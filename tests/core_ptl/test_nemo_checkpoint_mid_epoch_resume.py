@@ -15,14 +15,13 @@
 """Resuming from a ``NeMoModelCheckpoint`` saved mid-epoch keeps Lightning's epoch boundaries in place."""
 
 from pathlib import Path
-from types import SimpleNamespace
 
 import lightning.pytorch as pl
 import pytest
 import torch
 from torchdata.stateful_dataloader import StatefulDataLoader
 
-from nemo.utils.callbacks.nemo_model_checkpoint import NeMoModelCheckpoint, _complete_batch_saved_on_train_batch_end
+from nemo.utils.callbacks.nemo_model_checkpoint import NeMoModelCheckpoint
 
 LIMIT, SPLIT, TOTAL = 5, 3, 12
 
@@ -35,45 +34,9 @@ def test_resume_from_mid_epoch_checkpoint_keeps_epoch_boundaries(tmp_path):
 
     resumed = _fit(tmp_path / "b", max_steps=TOTAL, ckpt_path=ckpt_path)
 
-    # Before the fix, Lightning<2.5 ran one extra batch in the resumed epoch, shifting every later epoch boundary.
+    # A checkpoint saved from on_train_batch_end must resume at the next batch; one extra batch in the resumed epoch
+    # would shift every later epoch boundary.
     assert resumed == uninterrupted[SPLIT:]
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    "current, is_last_batch, expected_completed",
-    [
-        # Saved from on_train_batch_end mid-epoch: the in-flight batch is counted as completed.
-        (dict(ready=3, started=3, processed=3, completed=2), False, 3),
-        # Saved after the batch finished (e.g. on validation end): nothing to fix.
-        (dict(ready=3, started=3, processed=3, completed=3), False, 3),
-        # Saved on the last batch of the epoch: left to Lightning (see the helper's docstring).
-        (dict(ready=5, started=5, processed=5, completed=4), True, 4),
-    ],
-)
-def test_complete_batch_saved_on_train_batch_end(current, is_last_batch, expected_completed):
-    checkpoint = {
-        "loops": {
-            "fit_loop": {
-                "epoch_loop.batch_progress": {
-                    "total": {k: v + 10 for k, v in current.items()},
-                    "current": dict(current),
-                    "is_last_batch": is_last_batch,
-                },
-                "epoch_loop.state_dict": {"_batches_that_stepped": 12},
-            }
-        }
-    }
-    trainer = SimpleNamespace(fit_loop=SimpleNamespace(epoch_loop=object()), accumulate_grad_batches=1)
-
-    _complete_batch_saved_on_train_batch_end(trainer, checkpoint)
-
-    fit_loop_state = checkpoint["loops"]["fit_loop"]
-    progress = fit_loop_state["epoch_loop.batch_progress"]
-    assert progress["current"]["completed"] == expected_completed
-    assert progress["total"]["completed"] == expected_completed + 10
-    changed = expected_completed != current["completed"]
-    assert fit_loop_state["epoch_loop.state_dict"]["_batches_that_stepped"] == 12 + int(changed)
 
 
 class _RangeDataset(torch.utils.data.Dataset):

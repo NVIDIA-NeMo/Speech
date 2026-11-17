@@ -2227,19 +2227,20 @@ class NemotronTTSModel(NemotronTTSBase):
         return self._validation_dl
 
     def _attention_l1_loss(self, reference_loss: torch.Tensor) -> torch.Tensor:
-        """Return 0.1 times the L1 sum of trainable attention projection weights.
+        """Return 0.1 times the L1 sum of trainable query/key projection weights.
 
         Includes decoder and acoustic predictor attention (also FlashAttention2),
-        excluding biases, normalization, Mamba, MLP/MoE, embeddings and frozen
-        parameters. Accumulate in FP32 for mixed precision training. This penalty
-        is added only in training_step, leaving validation losses unchanged.
+        targeting the projections that produce the Q @ K.T attention scores.
+        Excludes value/output projections, biases and all other parameters.
+        Accumulate in FP32 for mixed precision training. This penalty is added
+        only in training_step, leaving validation losses unchanged.
         """
         terms = []
         seen = set()
         for root in (self.decoder, self.acoustic_codes_predictor):
             for module in root.modules():
                 if isinstance(module, NemotronHAttention):
-                    for name in ('q_proj', 'k_proj', 'v_proj', 'o_proj'):
+                    for name in ('q_proj', 'k_proj'):
                         weight = getattr(module, name).weight
                         if weight.requires_grad and id(weight) not in seen:
                             seen.add(id(weight))

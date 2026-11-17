@@ -4,12 +4,14 @@ Branch `vklimkov/nemotronttsv2_l1` adds a hardcoded attention weight penalty to
 `NemotronTTSModel.training_step`:
 
 ```text
-training loss = data loss + 0.1 * sum(abs(attention projection weights))
+training loss = data loss + 0.1 * sum(abs(query/key projection weights))
 ```
 
-The sum covers trainable Q/K/V/output projection weights in every Nemotron-H
+The sum covers trainable Q/K projection weights in every Nemotron-H
 attention layer of the main decoder and acoustic codes predictor, including the
-FlashAttention2 implementation. Shared weights are counted once. Biases,
+FlashAttention2 implementation. These projections produce the attention scores
+`Q @ K.T / sqrt(head_dim)`. Value/output projections are excluded.
+Shared weights are counted once. Biases,
 normalization, embeddings, Mamba and MLP/MoE weights are excluded. The reduction
 uses FP32 and is not normalized by parameter count.
 
@@ -21,4 +23,6 @@ keys are unchanged.
 Training logs expose `train/data_loss`, the weighted contribution
 `train/attention_l1_loss`, and their sum as `train/loss`. Compare generation
 stability and validation quality against the baseline; the unnormalized penalty
-scales with the number of trainable attention weights.
+scales with the number of trainable query/key weights. L1 on projection weights
+does not directly enforce sharp attention probabilities; shrinking Q/K can reduce
+score magnitudes and make softmax attention more uniform.

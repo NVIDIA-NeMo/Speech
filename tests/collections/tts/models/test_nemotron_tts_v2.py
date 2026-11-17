@@ -102,12 +102,16 @@ def test_attention_l1_value_and_gradient_scope(attention_cls, dtype):
         acoustic_codes_predictor=nn.Sequential(predictor_attention, decoder_attention),
     )
     weights = []
+    excluded_weights = []
     for attention in (decoder_attention, predictor_attention):
         for name in ('q_proj', 'k_proj', 'v_proj', 'o_proj'):
             weight = getattr(attention, name).weight
             with torch.no_grad():
                 weight.fill_(-2.0 if name == 'k_proj' else 3.0)
-            weights.append(weight)
+            if name in ('q_proj', 'k_proj'):
+                weights.append(weight)
+            else:
+                excluded_weights.append(weight)
     weights[-1].requires_grad_(False)
     reference = torch.tensor(2.0, requires_grad=True)
 
@@ -123,6 +127,7 @@ def test_attention_l1_value_and_gradient_scope(attention_cls, dtype):
         else:
             assert weight.grad is None
     assert reference.grad is None
+    assert all(weight.grad is None for weight in excluded_weights)
     assert all(parameter.grad is None for parameter in unrelated.parameters())
     for attention in (decoder_attention, predictor_attention):
         assert all(getattr(attention, name).bias.grad is None for name in ('q_proj', 'k_proj', 'v_proj', 'o_proj'))

@@ -1256,8 +1256,10 @@ resume:
 With ``indexed: true`` and ``shuffle: true``, a checkpoint saved after the
 shuffle buffer has read its whole source (always the case when the dataset is
 smaller than ``shuffle_buffer_size``) needs the Lhotse fix from
-`lhotse-speech/lhotse#1642 <https://github.com/lhotse-speech/lhotse/pull/1642>`_.
-With lhotse<=2.0.0a6 the epoch after the resumed one can come out empty.
+`lhotse-speech/lhotse#1642 <https://github.com/lhotse-speech/lhotse/pull/1642>`_,
+which is merged upstream but not yet in a Lhotse release that NeMo requires
+(NeMo currently pins ``lhotse==2.0.0a6``). With lhotse 2.0.0a6 the epoch after
+the resumed one can come out empty.
 
 Non-indexed pipelines fall back to Lhotse's ``_fast_forward()`` replay (O(N)
 in batches consumed before the checkpoint) and require ``num_workers`` only to

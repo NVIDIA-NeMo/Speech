@@ -17,7 +17,7 @@ import random
 import warnings
 from copy import deepcopy
 from dataclasses import dataclass
-from functools import lru_cache, partial
+from functools import partial
 from typing import Any, List, Optional, Sequence, Tuple, Union
 
 import lhotse
@@ -511,7 +511,11 @@ class _PerRankStatefulDataLoader:
     def __getattr__(self, name: str) -> Any:
         # ``__getattr__`` only fires when normal attribute lookup fails, so the
         # explicit attributes (``_inner``, ``_dp_rank``, ...) are reached
-        # directly without bouncing through here.
+        # directly without bouncing through here. While unpickling, ``_inner``
+        # is not set yet and pickle probes dunder hooks; forwarding those would
+        # recurse forever.
+        if name == "_inner" or (name.startswith("__") and name.endswith("__")):
+            raise AttributeError(name)
         return getattr(self._inner, name)
 
     def __iter__(self):
@@ -1464,35 +1468,7 @@ def _cut_text_into_windows(cut, num_tokens: int, tokenizer) -> list:
 
 
 def _lhotse_stateful_dataloader_cls() -> type:
-    """Return the ``StatefulDataLoader`` subclass used for Lhotse samplers (torchdata is imported lazily)."""
-    from torchdata.stateful_dataloader import StatefulDataLoader
-
-    return _make_lhotse_stateful_dataloader_cls(StatefulDataLoader)
-
-
-@lru_cache(maxsize=None)
-def _make_lhotse_stateful_dataloader_cls(base: type) -> type:
-    class LhotseStatefulDataLoader(base):
-        """``StatefulDataLoader`` that leaves a restored Lhotse sampler in a normal iterating state.
-
-        When torchdata restores a map-style loader, it loads the saved state into the index
-        sampler, calls ``iter()`` on it, and then loads the same state again into the sampler
-        iterator. A Lhotse ``CutSampler`` is its own iterator, so the second load re-arms the
-        deferred restore (``_needs_fast_forward``) of a sampler that is already positioned at the
-        checkpoint. In lhotse<=2.0.0a6 that flag is only consumed by the next ``iter()``. Until
-        then ``set_epoch()`` is ignored, so at the next epoch boundary the sampler rewinds to the
-        checkpoint instead of starting the new epoch, and the resumed run diverges from the
-        uninterrupted one.
-
-        Once the restored iterator exists, the restore has been applied, so we clear the pending
-        restore state with the public ``CutSampler.allow_iter_to_reset_state()``.
-        """
-
-        def __iter__(self):
-            restoring = self.next_iter_state is not None
-            iterator = super().__iter__()
-            if restoring and isinstance(self.sampler, CutSampler):
-                self.sampler.allow_iter_to_reset_state()
-            return iterator
+    """Return the ``StatefulDataLoader`` subclass used for Lhotse data (imports torchdata lazily)."""
+    from nemo.collections.common.data.lhotse._stateful_dataloader import LhotseStatefulDataLoader
 
     return LhotseStatefulDataLoader

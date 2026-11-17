@@ -19,6 +19,10 @@ These tests drive the dataloader the way Lightning does, without Lightning: at t
 Lightning loads the dataloader state, creates the iterator, and then calls ``set_epoch`` for the resumed epoch.
 """
 
+import os
+import pickle
+import subprocess
+import sys
 from copy import deepcopy
 
 import pytest
@@ -26,7 +30,11 @@ import torch
 from lhotse import CutSet
 from lhotse.testing.dummies import DummyManifest
 
-from nemo.collections.common.data.lhotse.dataloader import get_lhotse_dataloader_from_config
+from nemo.collections.common.data.lhotse.dataloader import (
+    _build_dataloader,
+    _PerRankStatefulDataLoader,
+    get_lhotse_dataloader_from_config,
+)
 
 pytest.importorskip("torchdata.stateful_dataloader")
 
@@ -66,6 +74,44 @@ def test_map_stateful_dataloader_resume_matches_across_epoch_boundary(cuts_path)
         actual.extend(batch for _, batch in zip(range(LIMIT), dloader))
 
     assert actual == expected[SPLIT:]
+
+
+@pytest.mark.unit
+def test_pending_restore_is_cleared_only_for_restored_loaders(cuts_path, monkeypatch):
+    dloader = _make_dataloader(cuts_path)
+    calls = []
+    monkeypatch.setattr(dloader.sampler, "allow_iter_to_reset_state", lambda: calls.append(1))
+    next(iter(dloader))
+    assert calls == []  # a fresh loader keeps the sampler untouched
+    state = deepcopy(dloader.state_dict())
+
+    dloader.load_state_dict(state)
+    next(iter(dloader))
+    assert calls == [1]
+
+
+@pytest.mark.unit
+def test_stateful_dataloader_is_picklable(cuts_path):
+    # Spawn-based launchers pickle models that hold their dataloaders.
+    dloader = _make_dataloader(cuts_path)
+    restored = pickle.loads(pickle.dumps(dloader))
+    assert next(iter(restored)) == next(iter(_make_dataloader(cuts_path)))
+
+    minimal = _build_dataloader(True, dataset=torch.utils.data.TensorDataset(torch.arange(4)), batch_size=2)
+    assert torch.equal(next(iter(pickle.loads(pickle.dumps(minimal))))[0], torch.tensor([0, 1]))
+
+    per_rank = _build_dataloader(
+        True, dp_rank=0, dp_world_size=2, dataset=torch.utils.data.TensorDataset(torch.arange(4)), batch_size=2
+    )
+    assert isinstance(per_rank, _PerRankStatefulDataLoader)
+    assert torch.equal(next(iter(pickle.loads(pickle.dumps(per_rank))))[0], torch.tensor([0, 1]))
+
+
+@pytest.mark.unit
+def test_dataloader_import_does_not_import_torchdata_subclass():
+    module = "nemo.collections.common.data.lhotse._stateful_dataloader"
+    code = f"import sys, nemo.collections.common.data.lhotse.dataloader; assert {module!r} not in sys.modules"
+    subprocess.run([sys.executable, "-c", code], check=True, env={**os.environ, "PYTHONPATH": ":".join(sys.path)})
 
 
 class _CutIds(torch.utils.data.Dataset):

@@ -337,6 +337,7 @@ class TestEncDecFrameClassificationModel(TestEncDecClassificationModel):
         assert dataclass_subset is None
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_frame_classification_model(self, frame_classification_model: EncDecFrameClassificationModel):
         with tempfile.TemporaryDirectory() as temp_dir:
             # generate random audio

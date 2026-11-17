@@ -18,8 +18,6 @@ import random
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from nemo.collections.common.data.lhotse.stateful_rng import process_seeded_rng
-
 
 class BaseG2p(ABC):
     def __init__(
@@ -46,16 +44,18 @@ class BaseG2p(ABC):
         """
         Random generator for stochastic G2P choices (e.g. ``phoneme_probability``).
 
-        A training dataset that owns a checkpointed generator (see
-        :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`) assigns it here in its
-        dataloading process, so G2P draws are restored on resume together with the dataset's own draws.
-        Otherwise, the G2P uses a generator seeded for the current process from ``torch.initial_seed()``
-        and the data-parallel rank. A generator assigned or created in another process (e.g. before the G2P was
-        copied into a dataloader worker) is replaced by a fresh per-process one, so workers never share a sequence.
+        By default this is an unseeded ``random.Random()`` per G2P instance and process, as before. A training
+        dataset with checkpointed randomness (see
+        :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`) assigns its generator
+        here in its dataloading process, so G2P draws are restored on resume together with the dataset's own
+        draws. For reproducible standalone use, assign a seeded generator, e.g.
+        ``g2p.rng = process_seeded_rng("g2p:")``. A generator assigned or created in another process (e.g. before
+        the G2P was copied into a dataloader worker) is replaced by a fresh unseeded one, so workers never share
+        a sequence.
         """
         rng = self.__dict__.get("_rng")
         if rng is None or self.__dict__.get("_rng_pid") != os.getpid():
-            self.rng = rng = process_seeded_rng("g2p:")
+            self.rng = rng = random.Random()
         return rng
 
     @rng.setter

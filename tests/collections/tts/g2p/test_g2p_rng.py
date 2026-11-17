@@ -19,6 +19,7 @@ import random
 import pytest
 import torch
 
+from nemo.collections.common.data.lhotse.stateful_rng import process_seeded_rng
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer, IPATokenizer
 from nemo.collections.tts.g2p.models import base as g2p_base
 from nemo.collections.tts.g2p.models.en_us_arpabet import EnglishG2p
@@ -57,13 +58,34 @@ def _phonemize(g2p, times: int = 3):
     return [tuple(map(str, g2p(TEXT))) for _ in range(times)]
 
 
-def test_default_rng_is_seeded_per_process(make_g2p):
+def test_default_rng_is_an_unseeded_private_generator(make_g2p, monkeypatch):
+    # Legacy behaviour: each G2P draws from its own unseeded random.Random().
+    created = []
+
+    class _RecordingRandom(random.Random):
+        def __init__(self, *args):
+            created.append(args)
+            super().__init__(*args)
+
+    monkeypatch.setattr(g2p_base.random, "Random", _RecordingRandom)
+    g2p = make_g2p()
+    _phonemize(g2p)
+
+    assert created == [()]
+    assert isinstance(g2p.rng, _RecordingRandom)
+
+
+def test_explicitly_seeded_rng_is_reproducible(make_g2p):
     torch.manual_seed(0)
     random.seed(0)
-    first = _phonemize(make_g2p())
+    first_g2p = make_g2p()
+    first_g2p.rng = process_seeded_rng("g2p:")
+    first = _phonemize(first_g2p)
     torch.manual_seed(0)
     random.seed(1)  # the global RNG plays no part
-    second = _phonemize(make_g2p())
+    second_g2p = make_g2p()
+    second_g2p.rng = process_seeded_rng("g2p:")
+    second = _phonemize(second_g2p)
 
     assert first == second
     # phoneme_probability=0.5 keeps some words as graphemes, so the output varies between calls.

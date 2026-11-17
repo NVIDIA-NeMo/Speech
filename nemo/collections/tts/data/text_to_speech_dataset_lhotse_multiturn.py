@@ -99,9 +99,10 @@ class MagpieTTSLhotseMultiturnDataset(StatefulRandomMixin, torch.utils.data.Data
     within each dataloader worker process upon first access.
 
     All random choices (context slicing, challenging text replacement, context shuffling, partial
-    phonemization, phoneme turn dropout, tokenizer choice, G2P ``phoneme_probability``, ...) use the dataset's checkpointed generator
-    ``self.rng`` (see :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`), so a
-    run resumed from a ``StatefulDataLoader`` checkpoint produces the same batches as an uninterrupted run.
+    phonemization, phoneme turn dropout, tokenizer choice, G2P ``phoneme_probability``, ...) use the dataset's
+    generator ``self.rng`` (see :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`). With
+    ``use_stateful_dataloader=True`` it is a checkpointed generator, so a run resumed from a ``StatefulDataLoader``
+    checkpoint produces the same batches as an uninterrupted run; otherwise it is the global ``random`` module.
 
     Args:
         sample_rate (int): Target sample rate for loading audio. Audio will be
@@ -986,9 +987,10 @@ class MagpieTTSLhotseMultiturnDataset(StatefulRandomMixin, torch.utils.data.Data
 
     def __getitem__(self, cuts: CutSet) -> Dict[str, Union[torch.Tensor, List]]:
         self._initialize_tokenizers()
-        # G2P randomness (e.g. phoneme_probability) draws from the checkpointed dataset generator.
-        set_g2p_rng(self.text_tokenizer, self.rng)
-        set_g2p_rng(self.phoneme_tokenizer, self.rng)
+        # With checkpointed randomness, G2P draws (e.g. phoneme_probability) come from the dataset generator.
+        if self.checkpointed_rng_enabled:
+            set_g2p_rng(self.text_tokenizer, self.rng)
+            set_g2p_rng(self.phoneme_tokenizer, self.rng)
         cuts, batch_tokenizer_names = self._prepare_cuts(cuts)
 
         audio_data = self._collate_audio_channels(cuts)
@@ -1023,12 +1025,14 @@ def collate_token_channel(
     apply_partial_phoneme_text: bool = False,
     load_normalized_text_percent: float = 1.0,
     *,
-    rng: random.Random,
+    rng: random.Random | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Build and collate token channels aligned to the audio frame grid.
 
-    ``rng`` is the random generator for normalized-text selection and partial phonemization.
+    ``rng`` is the random generator for normalized-text selection and partial phonemization
+    (the global ``random`` module when omitted).
     """
+    rng = random if rng is None else rng
     tokens = []
 
     for i, c in enumerate(cuts):
@@ -1114,9 +1118,9 @@ def build_token_channel(
     apply_partial_phoneme_text: bool = False,
     load_normalized_text_percent: float = 1.0,
     *,
-    rng: random.Random,
+    rng: random.Random | None = None,
 ) -> torch.Tensor:
-
+    rng = random if rng is None else rng
     total = compute_num_frames(cut.duration, frame_length, cut.sampling_rate)
     tokens = torch.ones(total, dtype=torch.long) * pad_id
 
@@ -1265,8 +1269,9 @@ def collate_phoneme_channel(
     phoneme_turn_max_words_to_drop: int = 2,
     apply_turn_dropout: bool = False,
     *,
-    rng: random.Random,
+    rng: random.Random | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    rng = random if rng is None else rng
     tokens = []
     dropout_flags = []
     for i, c in enumerate(cuts):
@@ -1305,8 +1310,9 @@ def build_phoneme_channel(
     phoneme_turn_max_words_to_drop: int = 2,
     apply_turn_dropout: bool = False,
     *,
-    rng: random.Random,
+    rng: random.Random | None = None,
 ) -> tuple[torch.Tensor, bool]:
+    rng = random if rng is None else rng
     language = (
         cut.lang
         if cut.has_custom("lang")

@@ -194,15 +194,10 @@ class TextToSpeechDataset(Dataset):
         sample_weights = []
         for entry in filtered_entries:
 
-            # The choice is made once per entry when the manifest is loaded, so it is seeded from the entry
-            # itself (not the global RNG): every run and every resume picks the same text for the same entry.
             text = _select_text_for_tts_input(
                 text=entry["text"],
                 normalized_text=entry.get("normalized_text"),
                 load_normalized_text_percent=self.load_normalized_text_percent,
-                rng=random.Random(
-                    f"{dataset_name}:{entry.get('audio_filepath')}:{entry.get('offset', 0.0)}:{entry['text']}"
-                ),
             )
 
             if self.include_speaker:
@@ -355,10 +350,11 @@ class MagpieTTSDataset(StatefulRandomMixin, TextToSpeechDataset):
     If they are not present in the manifest or if load_cached_codes_if_available=False, then the audio will be loaded
     and codes will be computed on the fly in the model class.
 
-    All random choices (context slicing, text context remapping, tokenizer choice, G2P ``phoneme_probability``)
-    draw from the dataset's own generator ``self.rng``
-    (see :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`), which is seeded per
-    dataloading process and saved/restored by ``StatefulDataLoader``.
+    All random choices (context slicing, text context remapping, tokenizer choice) draw from ``self.rng``
+    (see :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`). By default this is the
+    global ``random`` module, as before. After ``enable_checkpointed_rng()`` it is a generator seeded per
+    dataloading process whose state ``StatefulDataLoader`` saves and restores, and G2P ``phoneme_probability``
+    decisions draw from it too.
 
     Args:
         dataset_meta: Dict of dataset names (string) to dataset metadata.
@@ -471,9 +467,10 @@ class MagpieTTSDataset(StatefulRandomMixin, TextToSpeechDataset):
 
     def __getitem__(self, index):
         data = self.data_samples[index]
-        # G2P randomness (e.g. phoneme_probability) draws from the dataset generator.
-        set_g2p_rng(self.text_tokenizer, self.rng)
-        set_g2p_rng(self.phoneme_tokenizer, self.rng)
+        # With checkpointed randomness, G2P draws (e.g. phoneme_probability) come from the dataset generator.
+        if self.checkpointed_rng_enabled:
+            set_g2p_rng(self.text_tokenizer, self.rng)
+            set_g2p_rng(self.phoneme_tokenizer, self.rng)
 
         def _sample_context_duration_with_available_limit(available_duration_sec: float) -> float:
             effective_duration_max = min(self.context_duration_max, available_duration_sec)

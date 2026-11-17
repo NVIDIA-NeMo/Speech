@@ -32,7 +32,11 @@ from omegaconf import OmegaConf
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer, IPATokenizer
 from nemo.collections.tts.data.text_to_speech_dataset import MagpieTTSDataset
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import MagpieTTSLhotseDataset
-from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import MagpieTTSLhotseMultiturnDataset
+from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import (
+    MagpieTTSLhotseMultiturnDataset,
+    collate_phoneme_channel,
+    collate_token_channel,
+)
 from nemo.collections.tts.g2p.models.i18n_ipa import IpaG2p
 
 
@@ -580,6 +584,7 @@ def _dataset_with_fake_tokenizers(dataset_class):
             }
         )
     dataset = dataset_class(**kwargs)
+    dataset.enable_checkpointed_rng()
     dataset.text_tokenizer = _FakeTextTokenizer()
     dataset.bos_id = len(dataset.text_tokenizer.tokens)
     dataset.eos_id = dataset.bos_id + 1
@@ -611,7 +616,7 @@ class TestMagpieTTSLhotseDatasetRNG:
     def test_restored_rng_state_reproduces_batches(self, dataset_class):
         cuts = _cutset_with_long_context(dataset_class)
         dataset = _dataset_with_fake_tokenizers(dataset_class)
-        dataset[cuts]
+        _ = dataset[cuts]
         state = dataset.state_dict()
         expected = [dataset[cuts] for _ in range(3)]
 
@@ -631,6 +636,81 @@ class TestMagpieTTSLhotseDatasetRNG:
         contexts = [tuple(dataset[cuts]["context_audio_codes"].flatten().tolist()) for _ in range(5)]
 
         assert len(set(contexts)) > 1
+
+    def test_global_rng_is_used_unless_checkpointed_rng_is_enabled(self, dataset_class):
+        # Legacy behaviour: without use_stateful_dataloader the draws follow the global ``random`` module.
+        cuts = _cutset_with_long_context(dataset_class)
+        dataset = _dataset_with_fake_tokenizers(dataset_class)
+        dataset._checkpointed_rng_enabled = False
+
+        random.seed(0)
+        first = dataset[cuts]["context_audio_codes"]
+        random.seed(0)
+        second = dataset[cuts]["context_audio_codes"]
+
+        assert dataset.rng is random
+        torch.testing.assert_close(first, second)
+
+
+def _normalized_multiturn_cutset():
+    cuts = _multiturn_cutset()
+    for supervision in next(iter(cuts)).supervisions:
+        supervision.custom = {**(supervision.custom or {}), "normalized_text": f"normalized {supervision.text}"}
+    return cuts
+
+
+def _collate_tokens(**kwargs):
+    tokens, lens = collate_token_channel(
+        _normalized_multiturn_cutset(),
+        _FakeTextTokenizer(),
+        0.04,
+        roles={"assistant"},
+        pad_id=0,
+        eos_id=1,
+        bos_id=2,
+        interruption_token_id=3,
+        load_normalized_text_percent=0.5,
+        **kwargs,
+    )
+    return tokens.tolist(), lens.tolist()
+
+
+def _collate_phonemes(**kwargs):
+    tokens, lens, dropout = collate_phoneme_channel(
+        _multiturn_cutset(),
+        _FakeIPATokenizer(),
+        0.04,
+        roles={"assistant"},
+        ignore_phoneme_languages=[],
+        phoneme_turn_dropout_batch_prob=0.5,
+        phoneme_turn_dropout_turn_prob=0.5,
+        apply_turn_dropout=True,
+        **kwargs,
+    )
+    return tokens.tolist(), lens.tolist(), dropout.tolist()
+
+
+@pytest.mark.parametrize("collate", [_collate_tokens, _collate_phonemes])
+def test_multiturn_channel_helpers_default_to_the_global_rng(collate):
+    random.seed(0)
+    without_rng = [collate() for _ in range(8)]
+    random.seed(0)
+    with_global_module = [collate(rng=random) for _ in range(8)]
+
+    assert without_rng == with_global_module
+
+
+@pytest.mark.parametrize("collate", [_collate_tokens, _collate_phonemes])
+def test_multiturn_channel_helpers_draw_from_injected_rng(collate):
+    random.seed(0)
+    first = [collate(rng=random.Random(5)) for _ in range(8)]
+    random.seed(1)
+    second = [collate(rng=random.Random(5)) for _ in range(8)]
+    many = [collate(rng=random.Random(seed)) for seed in range(16)]
+
+    assert first == second
+    # The draws matter: different generators give different channels.
+    assert len({str(out) for out in many}) > 1
 
 
 G2P_PHONEME_DICT_PATH = os.path.join(
@@ -673,7 +753,7 @@ class TestMagpieTTSDatasetG2pRNG:
     def test_lhotse_dataset_restores_g2p_draws(self):
         cuts = _g2p_cutset()
         dataset = _single_turn_dataset_with_g2p()
-        dataset[cuts]
+        _ = dataset[cuts]
         state = dataset.state_dict()
         expected = [dataset[cuts]["text"] for _ in range(3)]
 
@@ -717,11 +797,12 @@ class TestMagpieTTSDatasetG2pRNG:
                 context_duration_min=0.1,
                 context_duration_max=0.6,
             )
+            dataset.enable_checkpointed_rng()
             dataset.text_tokenizer = _g2p_tokenizer()
             return dataset
 
         dataset = make_dataset()
-        dataset[0]
+        _ = dataset[0]
         state = dataset.state_dict()
         expected = [dataset[0] for _ in range(3)]
 
@@ -736,40 +817,3 @@ class TestMagpieTTSDatasetG2pRNG:
             torch.testing.assert_close(actual["context_audio_codes"], expected_example["context_audio_codes"])
         assert len({tuple(example["tokens"].tolist()) for example in expected}) > 1
         assert len({tuple(example["context_audio_codes"].flatten().tolist()) for example in expected}) > 1
-
-
-def test_non_lhotse_normalized_text_choice_ignores_global_rng(tmp_path):
-    manifest_path = tmp_path / "manifest.jsonl"
-    manifest_path.write_text(
-        "".join(
-            json.dumps(
-                {
-                    "audio_filepath": f"utt{i}.wav",
-                    "duration": 1.0,
-                    "text": f"Text {i}",
-                    "normalized_text": f"text {i}",
-                }
-            )
-            + "\n"
-            for i in range(32)
-        ),
-        encoding="utf-8",
-    )
-
-    def selected_texts(global_seed):
-        random.seed(global_seed)
-        dataset = MagpieTTSDataset(
-            dataset_meta={"test": {"manifest_path": str(manifest_path), "audio_dir": str(tmp_path)}},
-            sample_rate=22050,
-            codec_model_samples_per_frame=1024,
-            eos_id=1,
-            num_audio_codebooks=8,
-            load_normalized_text_percent=0.5,
-        )
-        return [sample.text for sample in dataset.data_samples]
-
-    first = selected_texts(0)
-
-    assert selected_texts(1) == first
-    # Both raw and normalized texts are selected.
-    assert any(text.startswith("Text") for text in first) and any(text.startswith("text") for text in first)

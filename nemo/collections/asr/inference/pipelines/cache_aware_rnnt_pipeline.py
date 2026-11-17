@@ -452,7 +452,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         1. Preprocess the features by stacking them and computing the lengths
         2. Collecting previous hypotheses for stateful decoding
-        3. Get the context and mapping from the context manager for cache aware streaming
+        3. Get the context from the context manager for cache aware streaming
         4. Perform a streaming step with the ASR model
         5. Update the cache and reset the cache slots for the streams that has ended
         6. Update the previous hypothesis and reset the previous hypothesis for the streams that has ended
@@ -481,7 +481,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             previous_hypotheses=previous_hypotheses,
         )
 
-        context, mapping = self.context_manager.get_context(stream_ids)
+        context = self.context_manager.get_context(stream_ids)
 
         prompt_vectors = None
         if self.prompt_enabled:
@@ -500,7 +500,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         )
 
         # update the cache and reset the cache slots for the streams that has ended
-        self.context_manager.update_cache(stream_ids, new_context, mapping)
+        self.context_manager.update_cache(stream_ids, new_context)
         self.context_manager.reset_slots(stream_ids, eos_flags)
 
         # update the previous hypothesis and reset the previous hypothesis for the streams that has ended

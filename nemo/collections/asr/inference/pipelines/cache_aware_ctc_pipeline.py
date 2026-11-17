@@ -293,7 +293,7 @@ class CacheAwareCTCPipeline(BasePipeline):
         It receives a list of requests (Frame or FeatureBuffer) and features and do the following:
 
         1. Preprocess the features by stacking them and computing the lengths
-        2. Get the context and mapping from the context manager for cache aware streaming
+        2. Get the context from the context manager for cache aware streaming
         3. Perform a streaming step with the ASR model
         4. Update the cache and reset the cache slots for the streams that has ended
         5. Decode the log probabilities and update the state
@@ -309,7 +309,7 @@ class CacheAwareCTCPipeline(BasePipeline):
 
         stream_ids = [request.stream_id for request in requests]
         eos_flags = [request.is_last for request in requests]
-        context, mapping = self.context_manager.get_context(stream_ids)
+        context = self.context_manager.get_context(stream_ids)
 
         drop_extra_pre_encoded = 0 if not self.use_cache else self.asr_model.drop_extra_pre_encoded
         log_probs, tail_log_probs, new_context = self.asr_model.stream_step(
@@ -325,7 +325,7 @@ class CacheAwareCTCPipeline(BasePipeline):
 
         if log_probs is not None:
             log_probs = normalize_log_probs(log_probs)
-        self.context_manager.update_cache(stream_ids, new_context, mapping)
+        self.context_manager.update_cache(stream_ids, new_context)
         self.context_manager.reset_slots(stream_ids, eos_flags)
         self.decode_log_probs(requests, log_probs, tail_log_probs, ready_state_ids)
 

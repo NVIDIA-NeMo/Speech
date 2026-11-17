@@ -740,19 +740,42 @@ def _single_turn_dataset_with_g2p():
     return dataset
 
 
-def _g2p_cutset():
-    cuts = _cutset_with_long_context(MagpieTTSLhotseDataset)
+def _g2p_cutset(dataset_class=MagpieTTSLhotseDataset):
+    cuts = _cutset_with_long_context(dataset_class)
     cut = next(iter(cuts))
     cut.tokenizer_names = ["english_phoneme"]
-    cut.supervisions[0].text = G2P_TEXT
-    cut.supervisions[0].normalized_text = G2P_TEXT
+    # The multiturn token channel is frame-aligned, so its turns only fit a short text.
+    text = G2P_TEXT if dataset_class is MagpieTTSLhotseDataset else "hello jones"
+    for supervision in cut.supervisions:
+        supervision.text = text
+        supervision.custom = {k: v for k, v in (supervision.custom or {}).items() if k not in ("ipa", "ipa_alignment")}
+        supervision.normalized_text = text
     return cuts
 
 
+def _multiturn_dataset_with_g2p():
+    dataset = _dataset_with_fake_tokenizers(MagpieTTSLhotseMultiturnDataset)
+    dataset.text_tokenizer = _g2p_tokenizer()
+    dataset.bos_id = len(dataset.text_tokenizer.tokens)
+    dataset.eos_id = dataset.bos_id + 1
+    dataset.cfg_unk_token_id = dataset.bos_id + 2
+    dataset.interruption_token_id = dataset.bos_id + 3
+    dataset.pad_id = dataset.text_tokenizer.pad
+    return dataset
+
+
+_G2P_DATASETS = {
+    MagpieTTSLhotseDataset: _single_turn_dataset_with_g2p,
+    MagpieTTSLhotseMultiturnDataset: _multiturn_dataset_with_g2p,
+}
+
+
+@pytest.mark.parametrize("dataset_class", [MagpieTTSLhotseDataset, MagpieTTSLhotseMultiturnDataset])
 class TestMagpieTTSDatasetG2pRNG:
-    def test_lhotse_dataset_restores_g2p_draws(self):
-        cuts = _g2p_cutset()
-        dataset = _single_turn_dataset_with_g2p()
+    def test_lhotse_dataset_restores_g2p_draws(self, dataset_class):
+        cuts = _g2p_cutset(dataset_class)
+        make_dataset = _G2P_DATASETS[dataset_class]
+        dataset = make_dataset()
         _ = dataset[cuts]
         state = dataset.state_dict()
         expected = [dataset[cuts]["text"] for _ in range(3)]
@@ -760,7 +783,7 @@ class TestMagpieTTSDatasetG2pRNG:
         # A resumed process starts with different global and torch RNG states.
         random.seed(1234)
         torch.manual_seed(1234)
-        restored = _single_turn_dataset_with_g2p()
+        restored = make_dataset()
         restored.load_state_dict(state)
 
         for expected_text in expected:
@@ -768,52 +791,64 @@ class TestMagpieTTSDatasetG2pRNG:
         # phoneme_probability=0.5 makes the tokens vary between reads.
         assert len({tuple(text.flatten().tolist()) for text in expected}) > 1
 
-    def test_non_lhotse_dataset_restores_random_draws(self, tmp_path):
-        sf.write(str(tmp_path / "target.wav"), np.random.default_rng(0).uniform(-0.5, 0.5, 24000), 24000)
-        torch.save(torch.from_numpy(_cached_codes(num_frames=40)), tmp_path / "context_codes.pt")
-        manifest_path = tmp_path / "manifest.jsonl"
-        manifest_path.write_text(
-            json.dumps(
-                {
-                    "audio_filepath": "target.wav",
-                    "duration": 1.0,
-                    "text": G2P_TEXT,
-                    "context_audio_codes_path": str(tmp_path / "context_codes.pt"),
-                    "tokenizer_names": ["english_phoneme"],
-                }
-            )
-            + "\n",
-            encoding="utf-8",
+    def test_g2p_keeps_its_own_generator_unless_checkpointed_rng_is_enabled(self, dataset_class):
+        cuts = _g2p_cutset(dataset_class)
+        dataset = _G2P_DATASETS[dataset_class]()
+        dataset._checkpointed_rng_enabled = False
+        g2p = dataset.text_tokenizer.tokenizers["english_phoneme"].g2p
+        own_rng = g2p.rng
+
+        _ = dataset[cuts]
+
+        assert g2p.rng is own_rng
+
+
+def test_non_lhotse_dataset_restores_random_draws(tmp_path):
+    sf.write(str(tmp_path / "target.wav"), np.random.default_rng(0).uniform(-0.5, 0.5, 24000), 24000)
+    torch.save(torch.from_numpy(_cached_codes(num_frames=40)), tmp_path / "context_codes.pt")
+    manifest_path = tmp_path / "manifest.jsonl"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "audio_filepath": "target.wav",
+                "duration": 1.0,
+                "text": G2P_TEXT,
+                "context_audio_codes_path": str(tmp_path / "context_codes.pt"),
+                "tokenizer_names": ["english_phoneme"],
+            }
         )
+        + "\n",
+        encoding="utf-8",
+    )
 
-        def make_dataset():
-            dataset = MagpieTTSDataset(
-                dataset_meta={"test": {"manifest_path": str(manifest_path), "audio_dir": str(tmp_path)}},
-                sample_rate=SAMPLE_RATE,
-                codec_model_samples_per_frame=CODEC_MODEL_SAMPLES_PER_FRAME,
-                eos_id=1,
-                num_audio_codebooks=NUM_AUDIO_CODEBOOKS,
-                load_16khz_audio=False,
-                context_duration_min=0.1,
-                context_duration_max=0.6,
-            )
-            dataset.enable_checkpointed_rng()
-            dataset.text_tokenizer = _g2p_tokenizer()
-            return dataset
+    def make_dataset():
+        dataset = MagpieTTSDataset(
+            dataset_meta={"test": {"manifest_path": str(manifest_path), "audio_dir": str(tmp_path)}},
+            sample_rate=SAMPLE_RATE,
+            codec_model_samples_per_frame=CODEC_MODEL_SAMPLES_PER_FRAME,
+            eos_id=1,
+            num_audio_codebooks=NUM_AUDIO_CODEBOOKS,
+            load_16khz_audio=False,
+            context_duration_min=0.1,
+            context_duration_max=0.6,
+        )
+        dataset.enable_checkpointed_rng()
+        dataset.text_tokenizer = _g2p_tokenizer()
+        return dataset
 
-        dataset = make_dataset()
-        _ = dataset[0]
-        state = dataset.state_dict()
-        expected = [dataset[0] for _ in range(3)]
+    dataset = make_dataset()
+    _ = dataset[0]
+    state = dataset.state_dict()
+    expected = [dataset[0] for _ in range(3)]
 
-        random.seed(1234)
-        torch.manual_seed(1234)
-        restored = make_dataset()
-        restored.load_state_dict(state)
+    random.seed(1234)
+    torch.manual_seed(1234)
+    restored = make_dataset()
+    restored.load_state_dict(state)
 
-        for expected_example in expected:
-            actual = restored[0]
-            torch.testing.assert_close(actual["tokens"], expected_example["tokens"])
-            torch.testing.assert_close(actual["context_audio_codes"], expected_example["context_audio_codes"])
-        assert len({tuple(example["tokens"].tolist()) for example in expected}) > 1
-        assert len({tuple(example["context_audio_codes"].flatten().tolist()) for example in expected}) > 1
+    for expected_example in expected:
+        actual = restored[0]
+        torch.testing.assert_close(actual["tokens"], expected_example["tokens"])
+        torch.testing.assert_close(actual["context_audio_codes"], expected_example["context_audio_codes"])
+    assert len({tuple(example["tokens"].tolist()) for example in expected}) > 1
+    assert len({tuple(example["context_audio_codes"].flatten().tolist()) for example in expected}) > 1

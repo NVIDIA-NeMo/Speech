@@ -13,10 +13,15 @@ the order), but it must not be silent: warn once per process.
 """
 import json
 
+import numpy as np
 import pytest
+import soundfile as sf
+from lhotse.dataset.collation import collate_audio
+from lhotse.index_pack import IndexPackCollectionSpec, write_index_pack
 from lhotse.indexing import create_jsonl_index
+from torch.utils.data import Dataset
 
-from nemo.collections.common.data.lhotse import nemo_adapters
+from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config, nemo_adapters
 from nemo.collections.common.data.lhotse.nemo_adapters import LazyNeMoIterator
 
 
@@ -37,7 +42,7 @@ def manifest_paths(tmp_path):
 @pytest.fixture
 def warnings_seen(monkeypatch):
     seen = []
-    monkeypatch.setattr(nemo_adapters, "_INDEXED_SHARD_SEED_WARNED", False, raising=False)
+    monkeypatch.setattr(nemo_adapters, "_INDEXED_SHARD_SEED_WARNINGS", set(), raising=False)
     monkeypatch.setattr(nemo_adapters.logging, "warning", lambda msg, *a, **kw: seen.append(msg))
     return seen
 
@@ -80,3 +85,61 @@ def test_indexed_nemo_source_unused_shard_seed_does_not_warn(manifest_paths, war
 def test_streaming_nemo_source_does_not_warn(manifest_paths, warnings_seen):
     LazyNeMoIterator(manifest_paths, indexed=False, shuffle_shards=True, shard_seed="trng")
     assert _shard_seed_warnings(warnings_seen) == []
+
+
+class _AudioDataset(Dataset):
+    def __getitem__(self, cuts):
+        audio, lengths = collate_audio(cuts)
+        return {"audio": audio, "lengths": lengths}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("packed", [False, True])
+@pytest.mark.parametrize("shard_seed", ["trng", "randomized"])
+def test_indexed_shard_seed_warning_from_dataloader_config(
+    manifest_paths, warnings_seen, tmp_path, monkeypatch, packed, shard_seed
+):
+    for shard in range(3):
+        for item in range(4):
+            sf.write(tmp_path / f"{shard}_{item}.wav", np.zeros(16000, dtype=np.float32), 16000)
+
+    # A scalar shard expression, so that all manifests form one source (a list would create one source per file).
+    source_spec = str(tmp_path / "manifest__OP_0..2_CL_.json")
+    config = dict(
+        manifest_filepath=source_spec,
+        indexed=True,
+        shuffle=True,
+        shard_seed=shard_seed,
+        sample_rate=16000,
+        batch_size=2,
+        num_workers=0,
+        use_bucketing=False,
+    )
+    if packed:
+        pack_path = tmp_path / "manifests.idxpack"
+        spec = IndexPackCollectionSpec(
+            role="manifest", kind="jsonl", source_spec=source_spec, paths=tuple(manifest_paths)
+        )
+        write_index_pack(pack_path, [spec])
+        config["index_pack"] = str(pack_path)
+
+    seeds = []
+    resolve = nemo_adapters._resolve_indexed_shard_seed
+
+    def capture_seed(seed, used):
+        assert used is True
+        value = resolve(seed, used=used)
+        seeds.append(value)
+        return value
+
+    monkeypatch.setattr(nemo_adapters, "_resolve_indexed_shard_seed", capture_seed)
+    for _ in range(2):  # two loaders in one process still warn only once
+        loader = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=_AudioDataset())
+        batch = next(iter(loader))
+        assert batch["audio"].shape == (2, 16000)
+        assert batch["lengths"].tolist() == [16000, 16000]
+
+    assert seeds == [0, 0]
+    msgs = _shard_seed_warnings(warnings_seen)
+    assert len(msgs) == 1
+    assert f"shard_seed={shard_seed!r}" in msgs[0]

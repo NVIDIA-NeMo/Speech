@@ -65,7 +65,8 @@ ShardKey = Union[int, tuple[int, int]]
 
 
 _MALFORMED_INDEXED_MANIFEST_WARNING_KEYS: set[tuple[str, str]] = set()
-_INDEXED_SHARD_SEED_WARNED = False
+# Holds a single marker once the indexed shard_seed replacement warning has been logged in this process.
+_INDEXED_SHARD_SEED_WARNINGS: set[str] = set()
 
 
 def _warn_malformed_indexed_manifest_record(ex: BaseException, idx: int, path: str | Path) -> None:
@@ -1648,11 +1649,10 @@ def _resolve_indexed_shard_seed(shard_seed, used: bool) -> int:
     a fixed seed of 0. Changing this fallback would reorder data for runs resumed from existing checkpoints.
     When the seed is ``used`` for shuffling, warn about the replacement once per process.
     """
-    global _INDEXED_SHARD_SEED_WARNED
     if shard_seed not in (None, "trng", "randomized"):
         return resolve_seed(shard_seed)
-    if used and not _INDEXED_SHARD_SEED_WARNED:
-        _INDEXED_SHARD_SEED_WARNED = True
+    if used and not _INDEXED_SHARD_SEED_WARNINGS:
+        _INDEXED_SHARD_SEED_WARNINGS.add("warned")
         logging.warning(
             f"shard_seed={shard_seed!r} is ignored for indexed NeMo manifest sources: they shuffle shards with a "
             "fixed seed (0) so that every rank and worker reads the same order and its own disjoint slice. "

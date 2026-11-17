@@ -98,6 +98,7 @@ def cleanup_local_folder():
 @pytest.mark.parametrize("loop_labels", [True, False])
 @pytest.mark.parametrize("use_cuda_graph_decoder", [True, False])
 @pytest.mark.with_downloads
+@pytest.mark.gpu
 def test_rnnt_alignments(
     loop_labels: bool,
     use_cuda_graph_decoder: bool,

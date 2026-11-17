@@ -74,6 +74,7 @@ def test_mamba_rmsnorm_gated_pytorch_fallback_matches_grouped_reference():
     not torch.cuda.is_available() or not RMSNORM_FN_AVAILABLE,
     reason="Triton gated RMSNorm requires CUDA and mamba-ssm",
 )
+@pytest.mark.gpu
 def test_mamba_rmsnorm_gated_triton_matches_pytorch_fallback(monkeypatch):
     hidden_states = torch.linspace(-3.0, 3.0, steps=2 * 4 * 64).reshape(2, 4, 64).cuda().half()
     gate = hidden_states.flip(-1).contiguous()

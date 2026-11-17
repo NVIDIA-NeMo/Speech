@@ -1256,14 +1256,6 @@ resume:
 * ``num_workers`` and ``world_size`` must match between save and restore (a
   hard requirement of ``StatefulDataLoader``).
 
-Epoch boundaries after a resume match the uninterrupted run only if Lightning
-also resumes the epoch at the right batch. Lightning<2.5 runs one extra batch
-in the resumed epoch when the checkpoint was saved from ``on_train_batch_end``
-(for example ``every_n_train_steps``). ``NeMoModelCheckpoint``, which
-``exp_manager`` installs, corrects mid-epoch checkpoints when they are loaded.
-A checkpoint saved on the last batch of an epoch still gets one extra batch
-with Lightning<2.5.
-
 With ``indexed: true`` and ``shuffle: true``, a checkpoint saved after the
 shuffle buffer has read its whole source (always the case when the dataset is
 smaller than ``shuffle_buffer_size``) needs the Lhotse fix from

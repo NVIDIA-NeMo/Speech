@@ -58,9 +58,10 @@ def test_formal_review_rubric_is_inert_and_uses_formal_submission() -> None:
     assert metadata["name"] == "nemo-speech-pr-review"
     assert metadata["disable-model-invocation"] is True
     assert metadata["user_invocable"] is False
-    assert "mode=light" in rubric
-    assert "mode=strict" in rubric
-    assert "Do not run GitHub commands or" in rubric
+    assert "**`light` (default).**" in rubric
+    assert "**`strict`.**" in rubric
+    assert "as a GitHub review" in rubric
+    assert "do not run GitHub commands or post comments" in rubric
     assert "Never approve an incomplete" in rubric
 
 

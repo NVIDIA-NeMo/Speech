@@ -210,34 +210,19 @@ class TestExpManager:
         assert isinstance(test_trainer.logger, pl.loggers.WandbLogger)
 
     @pytest.mark.unit
-    def test_trainer_neptune_logger(self, tmp_path):
-        pytest.importorskip("neptune", reason="could not import `neptune`, use `pip install neptune` to run this test")
-
-        test_trainer = pl.Trainer(accelerator='cpu', logger=False)
-        # Check that a create_neptune_logger=True errors out unless neptune_logger_kwargs is passed.
-        with pytest.raises(ValueError):
-            _ = exp_manager(
-                test_trainer,
+    @pytest.mark.parametrize('kwargs', [None, {"name": "test", "project": "test", "api_key": "unused"}])
+    def test_trainer_neptune_logger(self, tmp_path, kwargs):
+        trainer = pl.Trainer(accelerator='cpu', logger=False, enable_checkpointing=False)
+        with pytest.raises(ValueError, match='create_neptune_logger.*Lightning'):
+            exp_manager(
+                trainer,
                 {
-                    "create_tensorboard_logger": False,
-                    "create_checkpoint_callback": False,
-                    "exp_dir": str(tmp_path),
+                    "explicit_log_dir": str(tmp_path / 'experiment'),
                     "create_neptune_logger": True,
+                    "neptune_logger_kwargs": kwargs,
                 },
             )
-        # Check that a NeptuneLogger is attached to logger if create_neptune_logger=True and neptune_logger_kwargs has name
-        # and project
-        _ = exp_manager(
-            test_trainer,
-            {
-                "create_tensorboard_logger": False,
-                "create_checkpoint_callback": False,
-                "exp_dir": str(tmp_path),
-                "create_neptune_logger": True,
-                "neptune_logger_kwargs": {"name": "", "project": "", "api_key": ""},
-            },
-        )
-        assert isinstance(test_trainer.logger, pl.loggers.NeptuneLogger)
+        assert not (tmp_path / 'experiment').exists()
 
     @pytest.mark.unit
     def test_checkpoint_configurations(self):
@@ -458,6 +443,7 @@ class TestExpManager:
             )
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_nemo_checkpoint_save_best_model_1(self, tmp_path):
         test_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False, max_epochs=4)
         exp_manager(
@@ -473,6 +459,7 @@ class TestExpManager:
         assert float(model(torch.tensor([1.0, 1.0], device=model.device))) == 0.0
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_nemo_checkpoint_save_best_model_2(self, tmp_path):
         test_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False, max_epochs=4)
         exp_manager(
@@ -488,6 +475,7 @@ class TestExpManager:
         assert math.fabs(float(model(torch.tensor([1.0, 1.0], device=model.device))) - 0.03) < 1e-5
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_nemo_checkpoint_always_save_nemo(self, tmp_path):
         test_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False, max_epochs=4)
         exp_manager(
@@ -506,6 +494,7 @@ class TestExpManager:
         assert float(model(torch.tensor([1.0, 1.0], device=model.device))) == 0.0
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_nemo_checkpoint_doesnt_produce_too_many_nemo_ckpts(self, tmp_path):
         test_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False, max_epochs=4)
         exp_manager(

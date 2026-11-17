@@ -34,6 +34,7 @@ from torch.distributed.tensor.parallel import (
 
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.utils import get_pad_id
+from nemo.collections.speechlm2.one_logger import DuplexSTTThroughputPolicy
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.label_prep import maybe_prepend_prompt_tokens, prepare_text_and_asr_labels
 from nemo.collections.speechlm2.parts.lora import maybe_install_lora
@@ -51,6 +52,8 @@ from nemo.collections.speechlm2.parts.pretrained import (
 )
 from nemo.collections.speechlm2.streaming.duplex_stt_inference import DuplexSTTStreamingInference
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
+from nemo.lightning.callback_group import with_model_init_callbacks
+from nemo.lightning.speech_throughput import register_throughput_policy
 from nemo.utils import logging
 
 
@@ -65,6 +68,8 @@ def maybe_rename_llm_kwargs_for_nemotron(kwargs: dict, model_cfg) -> dict:
     return kwargs
 
 
+@register_throughput_policy(DuplexSTTThroughputPolicy)
+@with_model_init_callbacks
 class DuplexSTTModel(LightningModule, HFHubMixin):
     def __init__(self, cfg: dict) -> None:
         assert isinstance(cfg, dict), (

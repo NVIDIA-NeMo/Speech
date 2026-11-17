@@ -195,6 +195,9 @@ def test_checkpoint_shapes_read_only_header(tmp_path):
 @pytest.mark.unit
 @pytest.mark.parametrize("model_shape,expected_status", [((2, 3), 0), ((3, 2), 1)])
 def test_checkpoint_coverage_compares_shapes(tmp_path, monkeypatch, capsys, model_shape, expected_status):
+    # Import the real package before its models module is replaced by the fake below.
+    from nemo.collections.speechlm2.parts.ctc_timestamp_checkpoint import read_ctc_timestamp_config  # noqa: F401
+
     coverage = load("check_checkpoint_coverage")
     save_file(
         {"llm.weight": torch.zeros(2, 3), "counter": torch.tensor(1), "llm._extra_state": torch.ones(1)},
@@ -222,6 +225,114 @@ def test_checkpoint_coverage_compares_shapes(tmp_path, monkeypatch, capsys, mode
         assert "llm.weight: checkpoint (2, 3), model (3, 2)" in output
     else:
         assert "OK:" in output
+
+
+def _ctc_bundle_checkpoint(path: Path, value: float = 1.0) -> Path:
+    """A tiny checkpoint laid out like a released SALM with a bundled frozen CTC timestamp head.
+
+    The head has a Transformer bridge, a residual scale buffer and an integer ``upsample_factor``
+    buffer that safetensors stores as I64.
+    """
+    from nemo.collections.speechlm2.parts.ctc_timestamp_utils import (
+        CTC_TIMESTAMP_ARTIFACT_FORMAT,
+        TransformerCTCDecoder,
+    )
+
+    config = {
+        "feat_in": 32,
+        "num_classes": 3,
+        "vocabulary": ["a", "b", "c"],
+        "n_heads": 2,
+        "n_layers": 2,
+        "residual": True,
+        "upsampling_factor": 4,
+        "upsampling_mode": "repeat_phase",
+    }
+    decoder = TransformerCTCDecoder(**config)
+    state = {"ctc_timestamp.decoder." + k: v.contiguous() for k, v in decoder.state_dict().items()}
+    assert state["ctc_timestamp.decoder.upsample_factor"].dtype == torch.int64
+    state["ctc_timestamp.tokenizer.model_proto"] = torch.tensor([1, 2, 3], dtype=torch.uint8)
+    state["llm.weight"] = torch.full((2, 3), value)
+    metadata = {
+        "ctc_timestamp_format": CTC_TIMESTAMP_ARTIFACT_FORMAT,
+        "ctc_timestamp_decoder_config": json.dumps(config),
+        "ctc_timestamp_tokenizer_config": json.dumps({"legacy": False}),
+    }
+    path.mkdir(parents=True)
+    save_file(state, str(path / "model.safetensors"), metadata=metadata)
+    config = {"pretrained_asr": "test-encoder", "prompt_format": "test", "audio_locator_tag": "<audio>"}
+    (path / "config.json").write_text(json.dumps(config))
+    return path
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("use_ft_config", [True, False])
+def test_checkpoint_coverage_accepts_bundled_ctc_timestamp_head(tmp_path, monkeypatch, capsys, use_ft_config):
+    from nemo.collections.speechlm2.parts.ctc_timestamp_checkpoint import (
+        CTCTimestampCheckpoint,
+        read_ctc_timestamp_config,
+    )
+
+    ckpt = _ctc_bundle_checkpoint(tmp_path / "base")
+    config = None
+    if use_ft_config:
+        config = tmp_path / "ft.yaml"
+        argv = ["make_ft_config.py", "--checkpoint", str(ckpt), "--out", str(config), "--exp-dir", str(tmp_path)]
+        argv += ["--train-manifest", "train.json", "--val-manifest", "val.json"]
+        monkeypatch.setattr(sys, "argv", argv)
+        load("make_ft_config").main()
+        import yaml
+
+        model_cfg = yaml.safe_load(config.read_text())["model"]
+        assert model_cfg["ctc_timestamp_artifact"] == read_ctc_timestamp_config(ckpt / "model.safetensors")
+
+    def build(cfg):
+        model = torch.nn.Module()
+        model.llm = torch.nn.Linear(3, 2, bias=False)
+        if cfg.get("ctc_timestamp_artifact") is not None:
+            model.ctc_timestamp = CTCTimestampCheckpoint(cfg["ctc_timestamp_artifact"])
+        return model
+
+    coverage = load("check_checkpoint_coverage")
+    models = ModuleType("nemo.collections.speechlm2.models")
+    models.SALMAutomodel = build
+    monkeypatch.setitem(sys.modules, models.__name__, models)
+    monkeypatch.setattr(
+        coverage, "parse_args", lambda: Namespace(checkpoint=ckpt, config=config, ignore_suffix="_extra_state")
+    )
+    assert coverage.main() == 0, capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_merge_and_average_keep_bundled_ctc_timestamp_head(tmp_path, monkeypatch):
+    from nemo.collections.speechlm2.parts.ctc_timestamp_checkpoint import read_ctc_timestamp_config
+
+    a = _ctc_bundle_checkpoint(tmp_path / "a", 1.0)
+    b = _ctc_bundle_checkpoint(tmp_path / "b", 3.0)
+    expected = read_ctc_timestamp_config(a / "model.safetensors")
+    r = subprocess.run(
+        [sys.executable, str(FT / "average_checkpoints.py"), "--src", str(a), str(b), "--dst", str(tmp_path / "avg")],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr
+    assert read_ctc_timestamp_config(tmp_path / "avg" / "model.safetensors") == expected
+
+    raw = _ctc_bundle_checkpoint(tmp_path / "raw")
+    from safetensors import safe_open
+    from safetensors.torch import load_file
+
+    with safe_open(str(raw / "model.safetensors"), framework="pt") as f:
+        metadata = f.metadata()
+    state = load_file(str(raw / "model.safetensors"))
+    state["llm.lora_A.weight"] = torch.ones(1, 3)
+    state["llm.lora_B.weight"] = torch.ones(2, 1)
+    save_file(state, str(raw / "model.safetensors"), metadata=metadata)
+    (raw / "config.json").write_text(json.dumps({"lora": {"dim": 1, "alpha": 1}}))
+    merge = load("merge_lora_checkpoint")
+    monkeypatch.setattr(merge, "parse_args", lambda: Namespace(src=raw, dst=tmp_path / "merged", scaling=None))
+    merge.main()
+    assert read_ctc_timestamp_config(tmp_path / "merged" / "model.safetensors") == expected
 
 
 # ---------------------------------------------------------------- export and averaging

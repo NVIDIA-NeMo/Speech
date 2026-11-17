@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import re
 from copy import deepcopy
 from typing import List, Optional, Tuple, Union
 
@@ -217,6 +218,11 @@ class WER(Metric):
         batch_dim_index: Index corresponding to batch dimension. (For RNNT.)
         dist_dync_on_step: Whether to perform reduction on forward pass of metric.
         return_hypotheses: Whether to return the hypotheses.
+        wer_text_normalize: Whether to normalize both references and hypotheses before computing the error rate
+            (lowercase, remove punctuation, collapse whitespace; see
+            :func:`nemo.collections.asr.parts.utils.eval_utils.clean_label`).
+            Useful for models trained with punctuation and capitalization.
+            Logged predictions and returned hypotheses are not affected.
 
     Returns:
         res: a tuple of 3 zero dimensional float32 ``torch.Tensor` objects: a WER score, a sum of Levenstein's
@@ -235,6 +241,7 @@ class WER(Metric):
         dist_sync_on_step=False,
         sync_on_compute=True,
         return_hypotheses=False,
+        wer_text_normalize=False,
         **kwargs,
     ):
         super().__init__(dist_sync_on_step=dist_sync_on_step, sync_on_compute=sync_on_compute)
@@ -245,6 +252,7 @@ class WER(Metric):
         self.fold_consecutive = fold_consecutive
         self.batch_dim_index = batch_dim_index
         self.return_hypotheses = return_hypotheses
+        self.wer_text_normalize = wer_text_normalize
 
         self.decode = None
         if isinstance(self.decoding, AbstractRNNTDecoding):
@@ -323,11 +331,15 @@ class WER(Metric):
         for h, r in zip(hypotheses, references):
             if isinstance(h, list):
                 h = h[0]
+            h_text = h.text
+            if self.wer_text_normalize:
+                h_text = _normalize_text(h_text)
+                r = _normalize_text(r)
             if self.use_cer:
-                h_list = list(h.text)
+                h_list = list(h_text)
                 r_list = list(r)
             else:
-                h_list = h.text.split()
+                h_list = h_text.split()
                 r_list = r.split()
             words += len(r_list)
             scores += edit_distance(r_list, h_list)['total']
@@ -353,3 +365,17 @@ class WER(Metric):
         if self.hypotheses is None:
             raise ValueError("No hypotheses available. Please call update() first.")
         return deepcopy(self.hypotheses)
+
+
+def _normalize_text(text: str) -> str:
+    """Normalizes text for WER computation: lowercase, remove punctuation, collapse whitespace."""
+    # imported here to avoid circular import (eval_utils imports from this module)
+    from nemo.collections.asr.parts.utils.eval_utils import clean_label
+
+    # canonicalize intraword typographic apostrophes (e.g., "It’s" -> "It's"): clean_label removes them,
+    # but keeps ASCII apostrophes; surrounding typographic quotes (e.g., "‘fine’") are still removed by clean_label
+    text = _TYPOGRAPHIC_INTRAWORD_APOSTROPHE_RE.sub("'", text)
+    return clean_label(text, num_to_words=False, langid=None)
+
+
+_TYPOGRAPHIC_INTRAWORD_APOSTROPHE_RE = re.compile(r"(?<=\w)[‘’ʻ](?=\w)")

@@ -271,7 +271,9 @@ class EncDecTransfModelBPE(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
         self._update_dataset_config(dataset_name='train', config=train_data_config)
         self._train_dl = self._setup_dataloader_from_config(config=train_data_config)
 
-        self._set_limit_batches_for_iterable_dataset(self._train_dl, train_data_config.get('batch_size'))
+        # Only tarred data reports a global sample count to convert; other iterables keep Lightning's semantics.
+        if train_data_config.get('is_tarred', False):
+            self._set_limit_batches_for_iterable_dataset(self._train_dl, train_data_config.get('batch_size'))
 
     def setup_validation_data(self, val_data_config: Optional[Union[DictConfig, Dict]]):
         """

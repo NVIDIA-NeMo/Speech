@@ -487,7 +487,12 @@ class TestEncDecCTCModel:
     ):
         # Lhotse's IterableDatasetWrapper has no length; setup used to crash calling len() on it.
         cuts_path = tmp_path / "cuts.jsonl.gz"
-        DummyManifest(CutSet, begin_id=0, end_id=4).to_file(cuts_path)
+        cuts = DummyManifest(CutSet, begin_id=0, end_id=4, with_data=True)
+        for cut in cuts:
+            cut.features = None
+            cut.custom = None
+            cut.supervisions[0].custom = None
+        cuts.save_audios(tmp_path / "audio").to_file(cuts_path)
         trainer = pl.Trainer(
             accelerator="cpu",
             devices=1,
@@ -513,3 +518,7 @@ class TestEncDecCTCModel:
 
         assert isinstance(asr_model._train_dl.dataset, torch.utils.data.IterableDataset)
         assert trainer.limit_train_batches == limit_train_batches
+        assert type(trainer.limit_train_batches) is float
+        audio, audio_lens, tokens, token_lens = next(iter(asr_model._train_dl))
+        assert audio.shape[0] == audio_lens.shape[0] == 2
+        assert tokens.shape[0] == token_lens.shape[0] == 2

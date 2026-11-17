@@ -36,6 +36,17 @@ class _UnsizedIterableDataset(torch.utils.data.IterableDataset):
         return iter(range(10))
 
 
+class _NotImplementedLenIterableDataset(_UnsizedIterableDataset):
+    # Mirrors the Hugging Face streaming datasets' missing-length contract.
+    def __len__(self):
+        raise NotImplementedError
+
+
+class _BrokenLenIterableDataset(_UnsizedIterableDataset):
+    def __len__(self):
+        raise ValueError("broken length")
+
+
 class _MapDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         return idx
@@ -74,11 +85,20 @@ def test_sized_iterable_int_limit_is_kept():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("dataset_cls", [_UnsizedIterableDataset, _NotImplementedLenIterableDataset])
 @pytest.mark.parametrize("limit", [1.0, 0.5, 3])
-def test_unsized_iterable_limit_is_kept(limit):
-    trainer = _set_limit(_UnsizedIterableDataset(), batch_size=None, limit_train_batches=limit)
+def test_unsized_iterable_limit_is_kept(dataset_cls, limit):
+    trainer = _set_limit(dataset_cls(), batch_size=None, limit_train_batches=limit)
     assert trainer.limit_train_batches == limit
     assert type(trainer.limit_train_batches) is type(limit)
+
+
+@pytest.mark.unit
+def test_other_len_errors_propagate():
+    with pytest.raises(ValueError, match="broken length"):
+        _set_limit(_BrokenLenIterableDataset(), batch_size=4, limit_train_batches=1.0)
+    # An int limit returns before len() is called.
+    assert _set_limit(_BrokenLenIterableDataset(), batch_size=4, limit_train_batches=3).limit_train_batches == 3
 
 
 @pytest.mark.unit

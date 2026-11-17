@@ -581,10 +581,6 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
         self._train_dl = self._setup_dataloader_from_config(config=train_data_config)
 
-        # Need to set this because if using an IterableDataset, the length of the dataloader is the total number
-        # of samples rather than the number of batches, and this messes up the tqdm progress bar.
-        # So we set the number of steps manually (to the correct number) to fix this.
-
         self._set_limit_batches_for_iterable_dataset(self._train_dl, train_data_config.get('batch_size'))
 
     def setup_validation_data(self, val_data_config: Optional[Union[DictConfig, Dict]]):

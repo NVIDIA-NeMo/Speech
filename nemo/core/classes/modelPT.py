@@ -2158,8 +2158,9 @@ class ModelPT(LightningModule, Model):
         (including the default 1.0), it is replaced by ``int(limit * ceil(len(dataset) / world_size / batch_size))``.
         An int limit is assumed to be set deliberately and is kept.
 
-        Datasets without a length, such as Lhotse's ``IterableDatasetWrapper``, are left alone:
-        Lightning then treats the epoch length as unknown.
+        Datasets without a length are left alone, and Lightning then treats the epoch length as unknown. This covers
+        datasets with no ``__len__`` (``TypeError``, e.g. Lhotse's ``IterableDatasetWrapper``) and those whose
+        ``__len__`` raises ``NotImplementedError`` (e.g. Hugging Face streaming datasets). Other errors propagate.
 
         Args:
             dataloader: The dataloader that was just set up; ``None`` or a map-style dataset is a no-op.
@@ -2181,7 +2182,7 @@ class ModelPT(LightningModule, Model):
             return
         try:
             num_samples = len(dataset)
-        except TypeError:
+        except (TypeError, NotImplementedError):
             logging.info(
                 f"The {stage} dataset ({type(dataset).__name__}) has no length; "
                 f"keeping trainer.{attr}={limit} and letting Lightning treat the epoch length as unknown."

@@ -35,6 +35,7 @@ from nemo.collections.common.data.fallback import FallbackDataset
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import MagpieTTSLhotseDataset, setup_tokenizers
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import MagpieTTSLhotseMultiturnDataset
+from nemo.collections.tts.losses.attention_entropy import capture_attention_projections, mean_attention_entropy
 from nemo.collections.tts.models.nemotron_tts.v2.base import NemotronTTSBase, TrainingMode
 from nemo.collections.tts.modules.magpietts_modules import (
     add_special_tokens,
@@ -71,7 +72,7 @@ class ProcessBatchOutput:
     Output dataclass from process_batch containing loss values and model predictions.
 
     Attributes:
-        loss: Total combined loss.
+        loss: Combined data loss; training_step adds attention regularization.
         codebook_loss: Auxiliary parallel audio codebook loss (None if disabled)
         phoneme_loss: Cross-entropy loss for phoneme prediction (None if no phoneme tokenizer)
         acoustic_codes_predictor_loss: Loss from the acoustic codes predictor.
@@ -84,6 +85,7 @@ class ProcessBatchOutput:
         context_audio_codes: Processed context audio codes (B, C, T')
         context_audio_codes_lens: Length of processed context audio codes (B,)
         selected_training_mode: Name of the training mode used for this batch (e.g., "streaming_4_8")
+        attention_entropy: Mean normalized attention entropy (training only; excluded from loss here)
     """
 
     loss: torch.Tensor
@@ -99,6 +101,7 @@ class ProcessBatchOutput:
     context_audio_codes: torch.Tensor
     context_audio_codes_lens: torch.Tensor
     selected_training_mode: Optional[str]
+    attention_entropy: Optional[torch.Tensor] = None
 
 
 class NemotronTTSModel(NemotronTTSBase):
@@ -1250,10 +1253,16 @@ class NemotronTTSModel(NemotronTTSBase):
         full_embedding = context_embedding_padded + combined_channel_embedding
 
         # 8. Forward pass through transformer
-        transformer_out = self.forward(
-            inputs_embeds=full_embedding,
-            attention_mask=get_mask_from_lengths(combined_channel_lens),
-        )
+        attention_valid_mask = get_mask_from_lengths(combined_channel_lens)
+        regularize_attention = mode == 'train'
+        with capture_attention_projections(
+            (module for module in self.decoder.modules() if isinstance(module, NemotronHAttention)),
+            enabled=regularize_attention,
+        ) as decoder_projections:
+            transformer_out = self.forward(
+                inputs_embeds=full_embedding,
+                attention_mask=attention_valid_mask,
+            )
         transformer_hidden_states = transformer_out.last_hidden_state  # (B, T_total, E)
 
         # 9. Extract prediction embeddings and compute losses
@@ -1282,14 +1291,18 @@ class NemotronTTSModel(NemotronTTSBase):
             audio_delay=audio_delay,
             loss_mask=agent_mask if self.cfg.get("mask_user_on_loss", False) else None,
         )
-        acoustic_codes_predictor_loss = self.acoustic_codes_predictor.compute_loss(
-            hidden_states=transformer_hidden_states,
-            target_codes=predictor_targets,
-            lengths=combined_channel_lens,
-            loss_mask=predictor_loss_mask,
-            feature_masking=self.feature_masking if dropout_audio_conditioning else None,
-            label_smoothing=self.label_smoothing,
-        )
+        with capture_attention_projections(
+            (module for module in self.acoustic_codes_predictor.modules() if isinstance(module, NemotronHAttention)),
+            enabled=regularize_attention,
+        ) as predictor_projections:
+            acoustic_codes_predictor_loss = self.acoustic_codes_predictor.compute_loss(
+                hidden_states=transformer_hidden_states,
+                target_codes=predictor_targets,
+                lengths=combined_channel_lens,
+                loss_mask=predictor_loss_mask,
+                feature_masking=self.feature_masking if dropout_audio_conditioning else None,
+                label_smoothing=self.label_smoothing,
+            )
         loss = self.acoustic_codes_predictor_loss_scale * acoustic_codes_predictor_loss
         if codebook_loss is not None:
             loss = loss + self.parallel_codebook_loss_scale * codebook_loss
@@ -1344,6 +1357,11 @@ class NemotronTTSModel(NemotronTTSBase):
             context_audio_codes=context_audio_codes_processed,
             context_audio_codes_lens=context_audio_codes_lens_processed,
             selected_training_mode=selected_training_mode.name if selected_training_mode is not None else None,
+            attention_entropy=(
+                mean_attention_entropy(decoder_projections + predictor_projections, attention_valid_mask)
+                if regularize_attention
+                else None
+            ),
         )
 
     def training_step(self, batch, batch_idx):
@@ -1569,9 +1587,12 @@ class NemotronTTSModel(NemotronTTSBase):
             agent_mask=batch["agent_mask"] if self.cfg.get("use_multiturn_dataset", False) else None,
             user_audio_embedded=user_audio_embedded,
         )
+        attention_entropy_loss = 0.1 * batch_output.attention_entropy
         attention_l1_loss = self._attention_l1_loss(batch_output.loss)
-        loss = batch_output.loss + attention_l1_loss
+        loss = batch_output.loss + attention_l1_loss + attention_entropy_loss
         self.log('train/attention_l1_loss', attention_l1_loss, sync_dist=True)
+        self.log('train/attention_entropy', batch_output.attention_entropy, sync_dist=True)
+        self.log('train/attention_entropy_loss', attention_entropy_loss, sync_dist=True)
         self.log('train/data_loss', batch_output.loss, sync_dist=True)
         codebook_loss = batch_output.codebook_loss
         if codebook_loss is not None:

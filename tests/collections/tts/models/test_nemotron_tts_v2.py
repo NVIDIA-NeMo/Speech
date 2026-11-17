@@ -54,6 +54,11 @@ def test_auxiliary_loss_controls_projection_and_gradients(model, mode):
         assert output.logits is None
     torch.testing.assert_close(output.loss, expected_loss)
     assert torch.isfinite(output.loss) and output.loss.item() > 0
+    if mode == 'train':
+        assert output.attention_entropy is not None
+        assert 0.0 <= output.attention_entropy.item() <= 1.0 + 1e-6
+    else:
+        assert output.attention_entropy is None
 
     output.loss.backward()
     for module in (model.audio_out_projection, model.final_proj):
@@ -81,8 +86,16 @@ def test_auxiliary_loss_logging_and_validation_audio(model):
     assert log_audio.call_count == int(enabled)
     logged_names = {call.args[0] for call in log.call_args_list}
     logged_values = {call.args[0]: call.args[1] for call in log.call_args_list}
-    torch.testing.assert_close(loss, logged_values['train/data_loss'] + logged_values['train/attention_l1_loss'])
+    torch.testing.assert_close(
+        loss,
+        logged_values['train/data_loss']
+        + logged_values['train/attention_l1_loss']
+        + logged_values['train/attention_entropy_loss'],
+    )
     torch.testing.assert_close(logged_values['train/attention_l1_loss'], model._attention_l1_loss(loss))
+    torch.testing.assert_close(
+        logged_values['train/attention_entropy_loss'], 0.1 * logged_values['train/attention_entropy']
+    )
     assert ('train/codebook_loss' in logged_names) == enabled
     assert ('val/codebook_loss' in logged_names) == enabled
     assert {'train/acoustic_codes_predictor_loss', 'val/acoustic_codes_predictor_loss'} <= logged_names

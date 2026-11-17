@@ -619,6 +619,40 @@ def test_load_pretrained_automodel_llm_forwards_hf_resolution_kwargs():
     base_load.assert_called_once_with(result, "/cache/exact-snapshot/subdir", {"cache_dir": "/cache"})
 
 
+@pytest.mark.parametrize("pretrained_weights", [False, True])
+def test_load_pretrained_automodel_llm_hf_fallback_accepts_disabled_mtp(tmp_path, pretrained_weights):
+    automodel = _install_cpu_hf_fallback_automodel()
+    checkpoint = _save_tiny_gpt2_config(tmp_path)
+
+    # SALMAutomodel passes num_nextn_predict_layers=0 whenever MTP is disabled.
+    with patch.object(automodel, "NeMoAutoModelForCausalLM", _CpuHFFallbackAutoModel):
+        llm = pretrained.load_pretrained_automodel_llm(
+            checkpoint, pretrained_weights=pretrained_weights, num_nextn_predict_layers=0
+        )
+
+    assert type(llm).__name__ == "GPT2LMHeadModel"
+
+
+@pytest.mark.parametrize(
+    "mtp_kwargs",
+    [
+        {"num_nextn_predict_layers": 1},
+        {"num_nextn_predict_layers": 0, "mtp_loss_scaling_factor": 0.1},
+        {"mtp_config_overrides": {"num_nextn_predict_layers": 1}},
+    ],
+)
+@pytest.mark.parametrize("pretrained_weights", [False, True])
+def test_load_pretrained_automodel_llm_hf_fallback_rejects_mtp(tmp_path, mtp_kwargs, pretrained_weights):
+    automodel = _install_cpu_hf_fallback_automodel()
+    checkpoint = _save_tiny_gpt2_config(tmp_path)
+
+    with (
+        patch.object(automodel, "NeMoAutoModelForCausalLM", _CpuHFFallbackAutoModel),
+        pytest.raises(ValueError, match="does not support Multi-Token Prediction"),
+    ):
+        pretrained.load_pretrained_automodel_llm(checkpoint, pretrained_weights=pretrained_weights, **mtp_kwargs)
+
+
 @pytest.mark.parametrize(
     ("include_weights", "expected_extra_kwargs"),
     [(True, {}), (False, {"allow_patterns": ["*.json", "*.py"]})],
@@ -897,3 +931,31 @@ def test_inline_pe_encoder_config_mounts_through_setup_speech_encoder_and_restor
     assert set(restored) == set(expected)
     for key, value in expected.items():
         torch.testing.assert_close(restored[key], value)
+
+
+def _install_cpu_hf_fallback_automodel():
+    """Import Automodel for its real HF-fallback model selection; skip when unavailable."""
+    return pytest.importorskip("nemo_automodel")
+
+
+def _save_tiny_gpt2_config(path) -> str:
+    """Save a tiny local GPT-2 config, which Automodel serves through its Hugging Face fallback."""
+    from transformers import GPT2Config
+
+    GPT2Config(vocab_size=16, n_positions=16, n_embd=8, n_layer=1, n_head=2).save_pretrained(path)
+    return str(path)
+
+
+class _CpuHFFallbackAutoModel:
+    """CPU stand-in for Automodel's HF fallback: forwards extra kwargs to the HF model constructor."""
+
+    @staticmethod
+    def from_config(config, torch_dtype=None, trust_remote_code=False, **kwargs):
+        from transformers import AutoModelForCausalLM
+
+        return AutoModelForCausalLM.from_config(config, torch_dtype=torch_dtype, **kwargs)
+
+    @classmethod
+    def from_pretrained(cls, model_path_or_name, torch_dtype=None, trust_remote_code=False, **kwargs):
+        config = pretrained.AutoConfig.from_pretrained(model_path_or_name, local_files_only=True)
+        return cls.from_config(config, torch_dtype=torch_dtype, **kwargs)

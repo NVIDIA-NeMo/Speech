@@ -287,6 +287,16 @@ def main():
     # init_from_checkpoint then restores the consolidated trained weights.
     model["pretrained_weights"] = False
     model["init_from_checkpoint"] = str(ckpt)
+    # A bundled frozen CTC timestamp head is described by the safetensors header, not
+    # by config.json (from_pretrained reads it the same way). Build it so that
+    # init_from_checkpoint restores it and the exported fine-tune still carries it.
+    weights = ckpt / "model.safetensors"
+    if weights.is_file():
+        from nemo.collections.speechlm2.parts.ctc_timestamp_checkpoint import read_ctc_timestamp_config
+
+        ctc_config = read_ctc_timestamp_config(weights)
+        if ctc_config is not None:
+            model["ctc_timestamp_artifact"] = ctc_config
     model["torch_dtype"] = cfg.get("torch_dtype", "bfloat16")
 
     # Consumed by nemo.collections.speechlm2.parts.optim_setup.build_param_groups,

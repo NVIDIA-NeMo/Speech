@@ -35,6 +35,7 @@ from nemo.core.utils.cuda_python_utils import (
     create_conditional_node_mempool,
     cu_call,
     run_nvrtc,
+    use_conditional_node_mempool,
     with_conditional_node,
 )
 from nemo.core.utils.optional_libs import CUDA_PYTHON_AVAILABLE, cuda_python_required
@@ -873,7 +874,7 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraph
             torch.cuda.stream(stream_for_graph),
             torch.inference_mode(),
             torch.cuda.graph(self.state.full_graph, stream=stream_for_graph, capture_error_mode="thread_local"),
-            torch.cuda.use_mem_pool(self.state.full_graph_mempool),
+            use_conditional_node_mempool(self.state.full_graph_mempool, self.state.device),
         ):
             self._before_loop()
 

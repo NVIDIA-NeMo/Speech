@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import contextlib
 import copy
 import gc
 import glob
@@ -132,6 +133,116 @@ def test_conditional_node_restores_previous_stream_on_body_error(monkeypatch):
     assert fake_torch_cuda.current_stream(device="cuda") is fake_torch_cuda.parent_stream
     assert fake_torch_cuda.set_calls == [fake_torch_cuda.body_stream, fake_torch_cuda.parent_stream]
     assert fake_cudart.ended_streams == ["body"]
+
+
+EXPANDABLE_SEGMENTS_ALLOCATOR_SETTINGS: dict[str, object] = {
+    "expandable_segments": True,
+    "PYTORCH_CUDA_ALLOC_CONF": "max_split_size_mb:256,garbage_collection_threshold:0.6,expandable_segments:True",
+}
+
+
+def _record_mempool_events(
+    monkeypatch: pytest.MonkeyPatch, allocator_settings: dict[str, object], rejects_expandable_segments: bool
+) -> list[tuple]:
+    """Replace the allocator and the memory pool with fakes that append what happens to the returned list."""
+    from nemo.core.utils import cuda_python_utils
+
+    events: list[tuple] = []
+
+    @contextlib.contextmanager
+    def fake_use_mem_pool(pool, device=None):
+        events.append(("enter_pool", pool, device))
+        try:
+            yield
+        finally:
+            events.append(("exit_pool",))
+
+    def fake_snapshot() -> dict[str, object]:
+        events.append(("snapshot",))
+        return {"allocator_settings": allocator_settings}
+
+    monkeypatch.setattr(cuda_python_utils, "_MEMPOOL_REJECTS_EXPANDABLE_SEGMENTS", rejects_expandable_segments)
+    monkeypatch.setattr(torch.cuda, "use_mem_pool", fake_use_mem_pool)
+    monkeypatch.setattr(torch.cuda.memory, "_snapshot", fake_snapshot)
+    monkeypatch.setattr(torch.cuda.memory, "_set_allocator_settings", lambda s: events.append(("set_settings", s)))
+    return events
+
+
+@pytest.mark.parametrize(
+    "torch_version, rejects_expandable_segments",
+    [("2.7.0", True), ("2.7.1+cu126", True), ("2.8.0", False), ("2.8.0a0+git0123456", False), ("2.13.0+cu130", False)],
+)
+def test_torch_mempool_expandable_segments_gate(torch_version: str, rejects_expandable_segments: bool) -> None:
+    from nemo.core.utils import cuda_python_utils
+
+    assert cuda_python_utils._torch_mempool_rejects_expandable_segments(torch_version) is rejects_expandable_segments
+
+
+def test_conditional_node_mempool_turns_expandable_segments_off_on_torch_2_7(monkeypatch: pytest.MonkeyPatch) -> None:
+    from nemo.core.utils import cuda_python_utils
+
+    events = _record_mempool_events(
+        monkeypatch, EXPANDABLE_SEGMENTS_ALLOCATOR_SETTINGS, rejects_expandable_segments=True
+    )
+    configured = EXPANDABLE_SEGMENTS_ALLOCATOR_SETTINGS["PYTORCH_CUDA_ALLOC_CONF"]
+
+    with cuda_python_utils.use_conditional_node_mempool("pool", "cuda:0"):
+        events.append(("body",))
+
+    # Expandable segments are off before the pool is active and on again after it. The other options keep their values
+    # because the settings are appended to and restored verbatim, not rebuilt from the one option.
+    assert events == [
+        ("snapshot",),
+        ("set_settings", f"{configured},expandable_segments:False"),
+        ("enter_pool", "pool", "cuda:0"),
+        ("body",),
+        ("exit_pool",),
+        ("set_settings", configured),
+    ]
+
+
+def test_conditional_node_mempool_restores_expandable_segments_when_the_body_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nemo.core.utils import cuda_python_utils
+
+    events = _record_mempool_events(
+        monkeypatch, EXPANDABLE_SEGMENTS_ALLOCATOR_SETTINGS, rejects_expandable_segments=True
+    )
+
+    with pytest.raises(RuntimeError, match="capture failed"):
+        with cuda_python_utils.use_conditional_node_mempool("pool", "cuda:0"):
+            raise RuntimeError("capture failed")
+
+    assert events[-2:] == [
+        ("exit_pool",),
+        ("set_settings", EXPANDABLE_SEGMENTS_ALLOCATOR_SETTINGS["PYTORCH_CUDA_ALLOC_CONF"]),
+    ]
+
+
+def test_conditional_node_mempool_keeps_regular_segments_on_torch_2_7(monkeypatch: pytest.MonkeyPatch) -> None:
+    from nemo.core.utils import cuda_python_utils
+
+    settings = {"expandable_segments": False, "PYTORCH_CUDA_ALLOC_CONF": "max_split_size_mb:256"}
+    events = _record_mempool_events(monkeypatch, settings, rejects_expandable_segments=True)
+
+    with cuda_python_utils.use_conditional_node_mempool("pool", "cuda:0"):
+        pass
+
+    assert events == [("snapshot",), ("enter_pool", "pool", "cuda:0"), ("exit_pool",)]
+
+
+def test_conditional_node_mempool_does_not_touch_the_allocator_on_torch_2_8(monkeypatch: pytest.MonkeyPatch) -> None:
+    from nemo.core.utils import cuda_python_utils
+
+    events = _record_mempool_events(
+        monkeypatch, EXPANDABLE_SEGMENTS_ALLOCATOR_SETTINGS, rejects_expandable_segments=False
+    )
+
+    with cuda_python_utils.use_conditional_node_mempool("pool", "cuda:0"):
+        pass
+
+    assert events == [("enter_pool", "pool", "cuda:0"), ("exit_pool",)]
 
 
 @pytest.mark.unit

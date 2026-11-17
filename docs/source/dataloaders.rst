@@ -1484,6 +1484,11 @@ restored with the dataloader state: by ``StatefulDataLoader`` itself for map-sty
 ``state_dict()`` / ``load_state_dict()``, or the state is not saved. Each epoch continues the sequence, so a cut gets
 new random draws when it is read again.
 
+Randomness inside components a dataset calls must come from the same generator. For example, with checkpointed
+randomness enabled the TTS datasets pass ``self.rng`` to their tokenizers' G2P modules (``set_g2p_rng`` in
+``nemo.collections.tts.parts.utils.tts_dataset_utils``), so ``phoneme_probability`` decisions are restored on resume
+as well. Otherwise a G2P module draws from its own unseeded generator, as before.
+
 Random transforms applied to the ``CutSet`` itself (``.map(...)`` in a data type parser) can't keep a checkpointed
 generator. They can seed a generator from the cut ID instead, e.g. ``random.Random(f"{seed}:{cut.id}")``, so the
 result is a pure function of the cut, and a cut then gets the same draw in every epoch. The

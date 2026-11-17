@@ -34,6 +34,7 @@ from transformers import DynamicCache
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.utils import get_pad_id
+from nemo.collections.speechlm2.one_logger import SpeechToSpeechThroughputPolicy
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.lora import maybe_install_lora
 from nemo.collections.speechlm2.parts.metrics.asr_bleu import ASRBLEU
@@ -44,9 +45,13 @@ from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, setu
 from nemo.collections.speechlm2.parts.text_utils import tokens_to_str
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 from nemo.core.utils.lightning_utils import read_batch
+from nemo.lightning.callback_group import with_model_init_callbacks
+from nemo.lightning.speech_throughput import register_throughput_policy
 from nemo.utils import logging
 
 
+@register_throughput_policy(SpeechToSpeechThroughputPolicy)
+@with_model_init_callbacks
 class DuplexS2SModel(LightningModule, HFHubMixin):
     def __init__(self, cfg: dict) -> None:
         assert isinstance(cfg, dict), (

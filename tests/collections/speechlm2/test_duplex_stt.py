@@ -24,8 +24,8 @@ from nemo.collections.common.data.utils import move_data_to_device
 from nemo.collections.speechlm2.data import DuplexSTTDataset
 from nemo.collections.speechlm2.models import DuplexSTTModel
 
-if torch.cuda.is_available():
-    torch.set_default_device('cuda')
+# Run on CUDA when available, without leaking the default device to other test modules (see conftest.py).
+pytestmark = pytest.mark.usefixtures("cuda_default_device")
 
 
 def resolve_pretrained_models():
@@ -95,12 +95,12 @@ def create_model(
     return model
 
 
-@pytest.fixture(scope="session")
-def model():
+@pytest.fixture(scope="module")
+def model(cuda_default_device):
     return create_model(predict_user_text=False)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def dataset(model):
     return DuplexSTTDataset(
         model.tokenizer,
@@ -111,8 +111,8 @@ def dataset(model):
     )
 
 
-@pytest.fixture(scope="session")
-def training_cutset_batch():
+@pytest.fixture(scope="module")
+def training_cutset_batch(cuda_default_device):
     cut = dummy_cut(0, recording=dummy_recording(0, with_data=True))
     cut.supervisions = [
         SupervisionSegment(
@@ -151,6 +151,7 @@ def training_cutset_batch():
     return CutSet([cut])
 
 
+@pytest.mark.gpu
 def test_stt_training_step(model, dataset, training_cutset_batch):
     model.on_train_epoch_start()
     batch = dataset[training_cutset_batch]
@@ -192,6 +193,7 @@ def model_with_asr_and_noise():
     return model
 
 
+@pytest.mark.gpu
 def test_stt_training_step_with_asr(model_with_asr, dataset, training_cutset_batch):
     model_with_asr.on_train_epoch_start()
     batch = dataset[training_cutset_batch]
@@ -207,6 +209,7 @@ def test_stt_training_step_with_asr(model_with_asr, dataset, training_cutset_bat
     assert results["asr_loss"] >= 0
 
 
+@pytest.mark.gpu
 def test_stt_training_step_with_noise(model_with_asr_and_noise, dataset, training_cutset_batch):
     model_with_asr_and_noise.on_train_epoch_start()
     batch = dataset[training_cutset_batch]
@@ -222,6 +225,7 @@ def test_stt_training_step_with_noise(model_with_asr_and_noise, dataset, trainin
     assert results["asr_loss"] >= 0
 
 
+@pytest.mark.gpu
 def test_stt_validation_step(model, dataset, training_cutset_batch):
     model.on_validation_epoch_start()
     batch = dataset[training_cutset_batch]
@@ -230,6 +234,7 @@ def test_stt_validation_step(model, dataset, training_cutset_batch):
     assert results is None  # no return value
 
 
+@pytest.mark.gpu
 def test_stt_offline_generation(model):
     # 16000 samples == 1 second == 12.5 frames ~= 14 frames after encoder padding
     ans = model.streaming_inference.offline_inference(
@@ -257,6 +262,7 @@ def test_stt_offline_generation(model):
     assert (gen_text < model.text_vocab_size).all()
 
 
+@pytest.mark.gpu
 def test_stt_offline_generation_with_asr(model_with_asr):
     """Test offline generation with ASR head enabled for user text prediction."""
     # 16000 samples == 1 second == 12.5 frames ~= 14 frames after encoder padding
@@ -299,6 +305,7 @@ def test_stt_offline_generation_with_asr(model_with_asr):
     assert (asr_tokens < model_with_asr.text_vocab_size).all()
 
 
+@pytest.mark.gpu
 def test_trailing_pad_loss_scale_is_masked(dataset, training_cutset_batch):
     """Test that trailing pad positions (from batching) have loss_scale=0 when token_loss_weight is set."""
     model = create_model(predict_user_text=True)

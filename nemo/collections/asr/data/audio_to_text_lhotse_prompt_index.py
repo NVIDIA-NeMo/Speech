@@ -52,9 +52,10 @@ class LhotseSpeechToTextBpeDatasetWithPromptIndex(
         language_prompt_indices: Language ID indices [B] (NOT full tensors)
 
     In "unified" prompt mode the auto prompt is drawn at random.
-    Random draws use the dataset's checkpointed generator ``self.rng`` (see
-    :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`), so a run resumed from a
-    ``StatefulDataLoader`` checkpoint produces the same batches as an uninterrupted run.
+    Random draws use the dataset's generator ``self.rng`` (see
+    :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`). With
+    ``use_stateful_dataloader=True`` it is checkpointed, so a resumed run produces the same batches as an
+    uninterrupted run; otherwise the draws are the same as before (global generators).
     """
 
     @property

@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import random
+
 import pytest
 import torch
 from lhotse import CutSet, SupervisionSegment
@@ -106,10 +108,13 @@ def _two_speaker_cuts():
 def test_lhotse_asr_speaker_dataset_restored_rng_state_reproduces_target_speakers(tokenizer):
     cuts = _two_speaker_cuts()
     dataset = LhotseSpeechToTextSpkBpeDataset(cfg={}, tokenizer=tokenizer)
+    dataset.enable_checkpointed_rng()
+    dataset.rng.seed(0)  # a fixed sequence that picks different target speakers
     state = dataset.state_dict()
     expected = [dataset[cuts] for _ in range(4)]
 
     restored = LhotseSpeechToTextSpkBpeDataset(cfg={}, tokenizer=tokenizer)
+    restored.enable_checkpointed_rng()
     restored.load_state_dict(state)
 
     for expected_batch in expected:
@@ -117,3 +122,16 @@ def test_lhotse_asr_speaker_dataset_restored_rng_state_reproduces_target_speaker
             torch.testing.assert_close(actual, exp)
     # The target speaker is drawn at random, so the targets differ between reads of the same cuts.
     assert len({tuple(batch[4].flatten().tolist()) for batch in expected}) > 1
+
+
+def test_lhotse_asr_speaker_dataset_uses_global_rng_unless_checkpointed_rng_is_enabled(tokenizer):
+    # Legacy behaviour: without use_stateful_dataloader the target speaker follows the global ``random``.
+    cuts = _two_speaker_cuts()
+    dataset = LhotseSpeechToTextSpkBpeDataset(cfg={}, tokenizer=tokenizer)
+    random.seed(0)
+    first = dataset[cuts][4]
+    random.seed(0)
+    second = dataset[cuts][4]
+
+    assert dataset.rng is random
+    torch.testing.assert_close(first, second)

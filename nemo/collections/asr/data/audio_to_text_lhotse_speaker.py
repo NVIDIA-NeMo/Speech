@@ -37,9 +37,10 @@ class LhotseSpeechToTextSpkBpeDataset(StatefulRandomMixin, LhotseAudioLoadingDat
     by Lhotse samplers instead.
 
     The target speaker of each cut is drawn at random.
-    Random draws use the dataset's checkpointed generator ``self.rng`` (see
-    :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`), so a run resumed from a
-    ``StatefulDataLoader`` checkpoint produces the same batches as an uninterrupted run.
+    Random draws use the dataset's generator ``self.rng`` (see
+    :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`). With
+    ``use_stateful_dataloader=True`` it is checkpointed, so a resumed run produces the same batches as an
+    uninterrupted run; otherwise the draws are the same as before (global generators).
     """
 
     @property
@@ -86,7 +87,7 @@ class LhotseSpeechToTextSpkBpeDataset(StatefulRandomMixin, LhotseAudioLoadingDat
             )
             speaker_targets = speaker_targets.transpose(0, 1)[: len(texts)]
 
-            target_speaker_id = self.rng.randrange(len(texts))
+            target_speaker_id = self.rng.choice(range(len(texts)))
             non_target_speaker_ids = [i for i in range(len(texts)) if i != target_speaker_id]
             text = texts[target_speaker_id]
             speaker_target = speaker_targets[target_speaker_id]

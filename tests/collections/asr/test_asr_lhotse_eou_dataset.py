@@ -25,7 +25,7 @@ pytestmark = pytest.mark.unit
 SAMPLE_RATE = 16000
 
 
-def _dataset(pad_distribution: str) -> LhotseSpeechToTextBpeEOUDataset:
+def _dataset(pad_distribution: str, checkpointed_rng: bool = True) -> LhotseSpeechToTextBpeEOUDataset:
     cfg = OmegaConf.create(
         {
             "check_tokenizer": False,
@@ -38,7 +38,10 @@ def _dataset(pad_distribution: str) -> LhotseSpeechToTextBpeEOUDataset:
             },
         }
     )
-    return LhotseSpeechToTextBpeEOUDataset(cfg=cfg, tokenizer=None)
+    dataset = LhotseSpeechToTextBpeEOUDataset(cfg=cfg, tokenizer=None)
+    if checkpointed_rng:
+        dataset.enable_checkpointed_rng()
+    return dataset
 
 
 def _pad(dataset: LhotseSpeechToTextBpeEOUDataset):
@@ -54,6 +57,7 @@ def _pad(dataset: LhotseSpeechToTextBpeEOUDataset):
 @pytest.mark.parametrize("pad_distribution", ["uniform", "normal"])
 def test_restored_rng_state_reproduces_random_padding(pad_distribution):
     dataset = _dataset(pad_distribution)
+    dataset.rng.seed(0)  # a fixed sequence that pads to several different lengths
     state = dataset.state_dict()
     expected = [_pad(dataset) for _ in range(8)]
 
@@ -69,3 +73,16 @@ def test_restored_rng_state_reproduces_random_padding(pad_distribution):
         torch.testing.assert_close(actual_eou_targets, padded_eou_targets)
     # The padding is drawn at random, so it differs between reads of the same audio.
     assert len({padded_audio_len for _, padded_audio_len, _ in expected}) > 1
+
+
+@pytest.mark.parametrize("pad_distribution", ["uniform", "normal"])
+def test_random_padding_uses_numpy_rng_unless_checkpointed_rng_is_enabled(pad_distribution):
+    # Legacy behaviour: without use_stateful_dataloader the padding follows the global ``np.random``.
+    dataset = _dataset(pad_distribution, checkpointed_rng=False)
+    np.random.seed(0)
+    first = [_pad(dataset)[1] for _ in range(8)]
+    np.random.seed(0)
+    second = [_pad(dataset)[1] for _ in range(8)]
+
+    assert first == second
+    assert len(set(first)) > 1

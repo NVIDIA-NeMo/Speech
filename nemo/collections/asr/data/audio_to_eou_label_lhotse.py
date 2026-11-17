@@ -17,6 +17,7 @@ import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+import numpy as np
 import torch.utils.data
 from lhotse.cut import Cut, CutSet, MixedCut
 from lhotse.dataset import AudioSamples
@@ -138,9 +139,10 @@ class LhotseSpeechToTextBpeEOUDataset(StatefulRandomMixin, LhotseAudioLoadingDat
         5) concatenate the pre-padding, audio, and post-padding to get the padded audio signal
         6) update the EOU labels accordingly
 
-    Random draws use the dataset's checkpointed generator ``self.rng`` (see
-    :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`), so a run resumed from a
-    ``StatefulDataLoader`` checkpoint produces the same batches as an uninterrupted run.
+    Random draws use the dataset's generator ``self.rng`` (see
+    :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`). With
+    ``use_stateful_dataloader=True`` it is checkpointed, so a resumed run produces the same batches as an
+    uninterrupted run; otherwise the draws are the same as before (global ``np.random``).
     The ``augmentor`` perturbations keep their own random generators, which are not checkpointed.
     """
 
@@ -428,7 +430,7 @@ class LhotseSpeechToTextBpeEOUDataset(StatefulRandomMixin, LhotseAudioLoadingDat
             padded_eou_targets: torch.Tensor of padded EOU labels, shape [T+padding]
             padded_eou_targets_len: torch.Tensor of padded EOU label length, shape [1]
         """
-        p = self.rng.random()
+        p = self.rng.random() if self.checkpointed_rng_enabled else np.random.rand()
         if self.padding_cfg is None or p > self.padding_cfg.prob:
             # don't apply padding
             eou_targets = self._repeat_eou_labels(eou_targets)
@@ -459,9 +461,13 @@ class LhotseSpeechToTextBpeEOUDataset(StatefulRandomMixin, LhotseAudioLoadingDat
         post_padding_duration = None
 
         if self.padding_cfg.pad_distribution == 'uniform':
-            total_padding_duration = self.rng.uniform(min_padding_duration, max_padding_duration)
+            total_padding_duration = self._uniform(min_padding_duration, max_padding_duration)
         elif self.padding_cfg.pad_distribution == 'normal':
-            total_padding_duration = self.rng.gauss(self.padding_cfg.normal_mean, self.padding_cfg.normal_std)
+            mean, std = self.padding_cfg.normal_mean, self.padding_cfg.normal_std
+            if self.checkpointed_rng_enabled:
+                total_padding_duration = self.rng.gauss(mean, std)
+            else:
+                total_padding_duration = np.random.normal(mean, std)
             total_padding_duration = max(min_padding_duration, min(max_padding_duration, total_padding_duration))
         elif self.padding_cfg.pad_distribution == 'constant':
             pass
@@ -475,7 +481,7 @@ class LhotseSpeechToTextBpeEOUDataset(StatefulRandomMixin, LhotseAudioLoadingDat
             pre_padding_duration = total_padding_duration / 2
             post_padding_duration = total_padding_duration / 2
         else:
-            post_padding_duration = self.rng.uniform(
+            post_padding_duration = self._uniform(
                 self.padding_cfg.min_post_pad_duration, total_padding_duration - self.padding_cfg.min_pre_pad_duration
             )
             pre_padding_duration = total_padding_duration - post_padding_duration
@@ -501,6 +507,10 @@ class LhotseSpeechToTextBpeEOUDataset(StatefulRandomMixin, LhotseAudioLoadingDat
         padded_eou_targets = torch.cat((pre_padding_eou, eou_targets, post_padding_eou), dim=0)
         padded_eou_targets = self._repeat_eou_labels(padded_eou_targets)
         return padded_audio, padded_audio_len, padded_eou_targets
+
+    def _uniform(self, low: float, high: float) -> float:
+        """Uniform draw from the checkpointed generator when enabled, else from ``np.random`` as before."""
+        return self.rng.uniform(low, high) if self.checkpointed_rng_enabled else np.random.uniform(low, high)
 
     def _maybe_augment_audio(self, audio: torch.Tensor, audio_len: torch.Tensor):
         """

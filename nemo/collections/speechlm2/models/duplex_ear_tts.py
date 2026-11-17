@@ -646,10 +646,12 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         weight_mean = sum_w / total_w_params if total_w_params > 0 else 0.0
 
         # direct float logging avoids device sync penalty
-        self.log("weights/L2", weight_l2, on_epoch=True, sync_dist=True)
-        self.log("weights/RMS", weight_rms, on_epoch=True, sync_dist=True)
-        self.log("weights/max_abs", max_abs_w, on_epoch=True, sync_dist=True)
-        self.log("weights/mean", weight_mean, on_epoch=True, sync_dist=True)
+        # batch_size=1: each statistic is one model-level observation per epoch, and Lightning requires an
+        # explicit batch_size with the ``dataloader_iter`` training_step signature.
+        self.log("weights/L2", weight_l2, on_epoch=True, sync_dist=True, batch_size=1)
+        self.log("weights/RMS", weight_rms, on_epoch=True, sync_dist=True, batch_size=1)
+        self.log("weights/max_abs", max_abs_w, on_epoch=True, sync_dist=True, batch_size=1)
+        self.log("weights/mean", weight_mean, on_epoch=True, sync_dist=True, batch_size=1)
 
     def on_validation_epoch_start(self) -> None:
         if torch.distributed.is_initialized():

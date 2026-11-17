@@ -20,17 +20,24 @@ from nemo.collections.asr.losses.rnnt import RNNTLoss
 from nemo.collections.asr.losses.rnnt_pytorch import RNNTLossPytorch
 from nemo.collections.asr.parts.numba.rnnt_loss.rnnt_numpy import RNNTLoss as RNNTLoss_Numpy
 from nemo.collections.asr.parts.turbo_transducer.rnnt_loss import TurboRnntLoss
+from nemo.core.utils import numba_utils
+from nemo.core.utils.numba_utils import __NUMBA_MINIMUM_VERSION__
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
 # NB: tests use a small set of vocabulary sizes to reuse compiled Triton kernels (tests should be fast without cache)
 VOCAB_SIZE = 5
 LARGE_VOCAB_SIZE = 1025  # for memory tests (shared with other Turbo Transducer tests)
+# threshold for gradient clamping; NB: the gradient of the per-utterance loss for each logit is in [-1, 1]
+CLAMP = 0.1
 
 requires_two_gpus = pytest.mark.skipif(torch.cuda.device_count() < 2, reason="Test requires 2 CUDA devices")
 
 
-def compute_loss_and_grad(loss_fn, acts, labels, src_lengths=None, tgt_lengths=None, device="cuda"):
-    """Compute per-utterance loss and gradient for logits for the given loss function."""
+def compute_loss_and_grad(loss_fn, acts, labels, src_lengths=None, tgt_lengths=None, device="cuda", loss_weights=None):
+    """
+    Compute per-utterance loss and gradient for logits for the given loss function.
+    The gradient is computed for the sum of per-utterance losses, optionally weighted with `loss_weights`.
+    """
     acts = torch.as_tensor(acts).to(device).detach().requires_grad_(True)
     labels = torch.as_tensor(labels, dtype=torch.long, device=device)
     if src_lengths is None:
@@ -40,7 +47,11 @@ def compute_loss_and_grad(loss_fn, acts, labels, src_lengths=None, tgt_lengths=N
     src_lengths = torch.as_tensor(src_lengths, dtype=torch.long, device=device)
     tgt_lengths = torch.as_tensor(tgt_lengths, dtype=torch.long, device=device)
     loss = loss_fn(acts, labels, src_lengths, tgt_lengths)
-    loss.sum().backward()
+    if loss_weights is None:
+        loss.sum().backward()
+    else:
+        (loss * torch.as_tensor(loss_weights, dtype=loss.dtype, device=device)).sum().backward()
+    assert acts.grad.dtype == acts.dtype
     return loss.detach().cpu().double().numpy(), acts.grad.detach().cpu().double().numpy()
 
 
@@ -315,7 +326,8 @@ class TestTurboRnntLoss:
         assert np.isfinite(grad).all()
 
     @requires_two_gpus
-    def test_non_current_device(self):
+    @pytest.mark.parametrize("clamp", [-1.0, CLAMP])
+    def test_non_current_device(self, clamp: float):
         """Inputs are on a CUDA device that is not the current device."""
         torch.manual_seed(13)
         # NB: inputs are created on CPU; copying tensors between CUDA devices can hide the issue
@@ -323,13 +335,14 @@ class TestTurboRnntLoss:
         labels = torch.randint(1, VOCAB_SIZE, (2, 3))
         src_lengths, tgt_lengths = [6, 4], [3, 2]
         other_device = torch.device("cuda", (torch.cuda.current_device() + 1) % torch.cuda.device_count())
-        loss_fn = TurboRnntLoss(blank=0)
+        loss_fn = TurboRnntLoss(blank=0, clamp=clamp)
         expected_loss, expected_grad = compute_loss_and_grad(loss_fn, acts, labels, src_lengths, tgt_lengths)
         loss, grad = compute_loss_and_grad(loss_fn, acts, labels, src_lengths, tgt_lengths, device=other_device)
         assert np.array_equal(loss, expected_loss)
         assert np.array_equal(grad, expected_grad)
 
-    def test_no_cuda_sync_operations(self):
+    @pytest.mark.parametrize("clamp", [-1.0, CLAMP])
+    def test_no_cuda_sync_operations(self, clamp: float):
         from tests.collections.asr.decoding.utils import avoid_sync_operations
 
         torch.manual_seed(6)
@@ -337,7 +350,7 @@ class TestTurboRnntLoss:
         labels = torch.randint(1, VOCAB_SIZE, (2, 2), device="cuda")
         lengths = torch.tensor([4, 3], device="cuda")
         label_lengths = torch.tensor([2, 1], device="cuda")
-        loss_fn = TurboRnntLoss(blank=0)
+        loss_fn = TurboRnntLoss(blank=0, clamp=clamp)
         loss_fn(acts, labels, lengths, label_lengths).sum().backward()  # warmup
         with avoid_sync_operations(acts.device):
             loss_fn(acts, labels, lengths, label_lengths).sum().backward()
@@ -437,10 +450,179 @@ class TestTurboRnntLoss:
 
 
 @pytest.mark.unit
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+@pytest.mark.skipif(not TRITON_AVAILABLE, reason="Triton is unavailable")
+class TestTurboRnntLossClamp:
+    """
+    Gradient clamping: the gradient of each per-utterance loss for the logits is clamped to `[-clamp, clamp]`
+    before it is multiplied by the upstream gradient (as in `warprnnt_numba`).
+    """
+
+    @staticmethod
+    def _random_batch(dtype: torch.dtype = torch.float32):
+        torch.manual_seed(20)
+        acts = (2.0 * torch.randn(4, 8, 5, VOCAB_SIZE, device="cuda")).to(dtype)
+        labels = torch.randint(1, VOCAB_SIZE, (4, 4), device="cuda")
+        src_lengths, tgt_lengths = [8, 5, 7, 6], [4, 2, 0, 3]
+        return acts, labels, src_lengths, tgt_lengths
+
+    @pytest.mark.parametrize("fastemit_lambda", [0.0, 0.1])
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.float64, torch.bfloat16])
+    def test_clamps_per_utterance_gradient(self, dtype: torch.dtype, fastemit_lambda: float):
+        acts, labels, src_lengths, tgt_lengths = self._random_batch(dtype)
+        # NB: gradient for the sum of the losses consists of the gradients of per-utterance losses
+        loss_fn = TurboRnntLoss(blank=0, fastemit_lambda=fastemit_lambda)
+        expected_loss, unclamped_grad = compute_loss_and_grad(loss_fn, acts, labels, src_lengths, tgt_lengths)
+        # all the utterances have gradients above the threshold
+        assert (np.abs(unclamped_grad) > 2 * CLAMP).any(axis=(1, 2, 3)).all()
+
+        # upstream gradient for per-utterance losses (weights) is applied after clamping
+        loss_weights = np.array([1.0, -0.5, 3.0, 0.0])
+        expected_grad = np.clip(unclamped_grad, -CLAMP, CLAMP) * loss_weights[:, None, None, None]
+        loss_fn = TurboRnntLoss(blank=0, fastemit_lambda=fastemit_lambda, clamp=CLAMP)
+        loss, grad = compute_loss_and_grad(
+            loss_fn, acts, labels, src_lengths, tgt_lengths, loss_weights=loss_weights.tolist()
+        )
+        # clamping does not change the loss
+        assert np.array_equal(loss, expected_loss)
+        if dtype == torch.bfloat16:
+            # gradient is computed in float32 and stored in bfloat16
+            assert np.allclose(grad, expected_grad, rtol=1e-2, atol=1e-4)
+        else:
+            assert np.allclose(grad, expected_grad, rtol=1e-5, atol=1e-7)
+        assert (grad[3] == 0.0).all()
+
+    @pytest.mark.parametrize("clamp", [-1.0, 0.0, 10.0])
+    def test_clamp_without_effect(self, clamp: float):
+        """Non-positive value disables clamping; threshold above the maximum gradient does not change the result."""
+        acts, labels, src_lengths, tgt_lengths = self._random_batch()
+        expected_loss, expected_grad = compute_loss_and_grad(
+            TurboRnntLoss(blank=0), acts, labels, src_lengths, tgt_lengths
+        )
+        loss_fn = TurboRnntLoss(blank=0, clamp=clamp)
+        assert loss_fn.clamp == max(clamp, 0.0)
+        loss, grad = compute_loss_and_grad(loss_fn, acts, labels, src_lengths, tgt_lengths)
+        assert np.array_equal(loss, expected_loss)
+        assert np.array_equal(grad, expected_grad)
+
+    @pytest.mark.parametrize("fastemit_lambda", [0.0, 0.01])
+    @pytest.mark.parametrize("reduction", ["sum", "mean_batch", "mean_volume"])
+    def test_matches_warprnnt_numba(self, reduction: str, fastemit_lambda: float):
+        """`RNNTLoss` with `turbo_rnnt` and `warprnnt_numba` losses produces the same clamped gradient."""
+        numba_utils.skip_numba_cuda_test_if_unsupported(__NUMBA_MINIMUM_VERSION__)
+        acts, labels, src_lengths, tgt_lengths = self._random_batch()
+        labels = labels - 1  # blank is the last label for `RNNTLoss`
+        src_lengths, tgt_lengths = torch.tensor(src_lengths, device="cuda"), torch.tensor(tgt_lengths, device="cuda")
+
+        def compute_loss_and_grad_for_wrapper(loss_name: str, clamp: float):
+            wrapper = RNNTLoss(
+                num_classes=VOCAB_SIZE - 1,
+                reduction=reduction,
+                loss_name=loss_name,
+                loss_kwargs={"fastemit_lambda": fastemit_lambda, "clamp": clamp},
+            )
+            acts_ = acts.clone().requires_grad_(True)
+            loss = wrapper(log_probs=acts_, targets=labels, input_lengths=src_lengths, target_lengths=tgt_lengths)
+            loss.backward()
+            return loss.detach(), acts_.grad
+
+        expected_loss, expected_grad = compute_loss_and_grad_for_wrapper("warprnnt_numba", clamp=CLAMP)
+        loss, grad = compute_loss_and_grad_for_wrapper("turbo_rnnt", clamp=CLAMP)
+        assert torch.allclose(loss, expected_loss, rtol=1e-5)
+        assert torch.allclose(grad, expected_grad, rtol=1e-4, atol=1e-6)
+        # gradient is clamped: it differs from the gradient without clamping
+        _, unclamped_grad = compute_loss_and_grad_for_wrapper("turbo_rnnt", clamp=-1.0)
+        assert grad.abs().max() < 0.5 * unclamped_grad.abs().max()
+
+    @pytest.mark.parametrize("mask_non_finite", [False, True])
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "empty_source",
+            "source_length_exceeds_size",
+            "target_length_exceeds_size",
+            "out_of_vocabulary_target",
+            "impossible_alignment",
+            "nan_logit",
+        ],
+    )
+    def test_non_finite_loss(self, case: str, mask_non_finite: bool):
+        """Utterances with non-finite loss: loss and gradient are consistent with the loss without clamping."""
+        acts, labels, src_lengths, tgt_lengths = self._random_batch()
+        if case == "empty_source":
+            src_lengths[1] = 0
+        elif case == "source_length_exceeds_size":
+            src_lengths[1] = acts.shape[1] + 1
+        elif case == "target_length_exceeds_size":
+            tgt_lengths[1] = labels.shape[1] + 1
+        elif case == "out_of_vocabulary_target":
+            labels[1, 0] = VOCAB_SIZE
+        elif case == "impossible_alignment":
+            acts[1, :, :, labels[1, 0]] = float("-inf")
+        elif case == "nan_logit":
+            acts[1, 0, 0, 0] = float("nan")
+
+        loss_fn = TurboRnntLoss(blank=0, mask_non_finite=mask_non_finite)
+        expected_loss, unclamped_grad = compute_loss_and_grad(loss_fn, acts, labels, src_lengths, tgt_lengths)
+        assert mask_non_finite or not np.isfinite(expected_loss[1])
+        loss_fn = TurboRnntLoss(blank=0, mask_non_finite=mask_non_finite, clamp=CLAMP)
+        loss, grad = compute_loss_and_grad(loss_fn, acts, labels, src_lengths, tgt_lengths)
+        assert np.array_equal(loss, expected_loss, equal_nan=True)
+        # NaN values in the gradient are preserved
+        assert np.array_equal(np.isnan(grad), np.isnan(unclamped_grad))
+        assert np.allclose(grad, np.clip(unclamped_grad, -CLAMP, CLAMP), rtol=1e-5, atol=1e-7, equal_nan=True)
+        # other utterances are not affected: the gradient is finite and clamped (computed in float32)
+        assert np.isfinite(grad[[0, 2, 3]]).all()
+        assert (np.abs(grad[[0, 2, 3]]).max(axis=(1, 2, 3)) == np.float32(CLAMP)).all()
+        if mask_non_finite:
+            assert loss[1] == 0.0 and (grad[1] == 0.0).all()
+
+    def test_no_extra_memory(self):
+        """Clamping is fused in the kernel: no extra full-size tensors except for the gradient."""
+        torch.manual_seed(21)
+        batch_size, src_length, tgt_length = 4, 64, 32
+        acts = torch.randn(batch_size, src_length, tgt_length + 1, LARGE_VOCAB_SIZE, device="cuda", requires_grad=True)
+        labels = torch.randint(1, LARGE_VOCAB_SIZE, (batch_size, tgt_length), device="cuda")
+        src_lengths = torch.full([batch_size], src_length, device="cuda")
+        tgt_lengths = torch.full([batch_size], tgt_length, device="cuda")
+        loss_fn = TurboRnntLoss(blank=0, clamp=CLAMP)
+        loss_fn(acts, labels, src_lengths, tgt_lengths).sum().backward()  # warmup
+        acts.grad = None
+
+        logits_size_bytes = acts.numel() * acts.element_size()
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+        memory_before = torch.cuda.memory_allocated()
+        loss_fn(acts, labels, src_lengths, tgt_lengths).sum().backward()
+        torch.cuda.synchronize()
+        peak_memory = torch.cuda.max_memory_allocated() - memory_before
+        assert peak_memory < 1.1 * logits_size_bytes
+        assert acts.grad.abs().max() == CLAMP
+
+    def test_function_requires_positive_clamp(self):
+        from nemo.collections.asr.parts.turbo_transducer.rnnt_loss_triton import TritonRnntLossWithClampFunction
+
+        acts, labels, src_lengths, tgt_lengths = self._random_batch()
+        src_lengths, tgt_lengths = torch.tensor(src_lengths, device="cuda"), torch.tensor(tgt_lengths, device="cuda")
+        with pytest.raises(ValueError, match="clamp"):
+            TritonRnntLossWithClampFunction.apply(acts, labels, src_lengths, tgt_lengths, 0, 0.0, 0.0)
+
+
+@pytest.mark.unit
 class TestTurboRnntLossInit:
-    def test_clamp_not_supported(self):
-        with pytest.raises(NotImplementedError):
-            TurboRnntLoss(blank=0, clamp=1.0)
+    @pytest.mark.parametrize("clamp,expected_clamp", [(-1.0, 0.0), (0.0, 0.0), (0.5, 0.5), (1, 1.0)])
+    def test_clamp(self, clamp: float, expected_clamp: float):
+        loss_fn = TurboRnntLoss(blank=0, clamp=clamp)
+        assert loss_fn.clamp == expected_clamp and isinstance(loss_fn.clamp, float)
+
+    @pytest.mark.skipif(not TRITON_AVAILABLE, reason="Triton is unavailable")
+    def test_clamp_from_logprobs_not_supported(self):
+        """Clamping is applied to the gradient for the logits, the loss can't be computed from log-probabilities."""
+        logprobs = torch.zeros(1, 2, 2)
+        lengths = torch.tensor([2]), torch.tensor([1])
+        with pytest.raises(NotImplementedError, match="clamp"):
+            TurboRnntLoss(blank=0, clamp=0.5).forward_from_logprobs(logprobs, logprobs, *lengths)
 
     @pytest.mark.parametrize("backend", ["torch", "cutile"])
     def test_unsupported_backend(self, backend: str):

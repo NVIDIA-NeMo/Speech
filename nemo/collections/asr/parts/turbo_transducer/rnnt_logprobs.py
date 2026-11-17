@@ -70,8 +70,8 @@ def rnnt_logprobs_torch(
         For the last non-existent target (U+1) output is zero.
     """
     device = logits.device
-    batch_size = logits.shape[0]
-    tgt_length_max = logits.shape[2] - 1
+    batch_size, src_length_max, tgt_length_max_plus_1, _ = logits.shape
+    tgt_length_max = tgt_length_max_plus_1 - 1
     log_probs = F.log_softmax(logits, dim=-1)
     blank_scores = log_probs[..., blank_id]
     # Targets can be wider or narrower than the U dimension of logits (as for the Triton implementation),
@@ -91,7 +91,6 @@ def rnnt_logprobs_torch(
     ).squeeze(-1)
     target_scores[:, :, -1] = 0.0
     if src_lengths is not None or tgt_lengths is not None:
-        batch_size, src_length_max, tgt_length_max_plus_1, _ = logits.shape
         mask_nb, mask_blank = get_rnnt_mask(
             batch_size=batch_size,
             src_length_max=src_length_max,

@@ -102,8 +102,10 @@ def _rnnt_logprobs_bwd_kernel(
     num_targets: int,  # size of the last dimension of (contiguous) targets
     grad_target_scores_ptr,
     grad_blank_scores_ptr,
+    grad_clamp_ptr,  # per-utterance thresholds for gradient clamping of size [B], used only if USE_GRAD_CLAMP
     BLOCK_SIZE: tl.constexpr,
     USE_FP64: tl.constexpr,
+    USE_GRAD_CLAMP: tl.constexpr,
 ):
     """
     Backward kernel for RNN-T log probs. Stores result in `grad_logits_out_ptr`.
@@ -111,6 +113,8 @@ def _rnnt_logprobs_bwd_kernel(
     The kernel writes the full gradient tensor (zeros for positions outside the lengths or with zero upstream
     gradient), so the output buffer does not require initialization.
     Calculations are performed in float32 or float64 based on USE_FP64.
+    If USE_GRAD_CLAMP is set, each element of the gradient for the utterance `b` is clamped to
+    `[-grad_clamp[b], grad_clamp[b]]` (NaN values are preserved); otherwise `grad_clamp_ptr` is not used.
     """
     batch_i = tl.program_id(axis=0).to(tl.int64)
     source_i = tl.program_id(axis=1).to(tl.int64)
@@ -154,6 +158,9 @@ def _rnnt_logprobs_bwd_kernel(
     grad_not_in_targets = (-softmax) * (blank_grad + target_grad)
     grad = tl.where(col_offsets == blank_id, blank_grad + grad_not_in_targets, grad_not_in_targets)
     grad = tl.where(col_offsets == target_id, target_grad + grad_not_in_targets, grad)
+    if USE_GRAD_CLAMP:
+        grad_clamp = tl.load(grad_clamp_ptr + batch_i).to(compute_dtype)
+        grad = tl.clamp(grad, -grad_clamp, grad_clamp, propagate_nan=tl.PropagateNan.ALL)
     tl.store(grad_logits_out_ptr + col_offsets, grad, mask=mask)
 
 
@@ -479,8 +486,13 @@ def _rnnt_logprobs_bwd(
     shifted_log_sum_exp: torch.Tensor,
     grad_target_scores: torch.Tensor,
     grad_blank_scores: torch.Tensor,
+    grad_clamp: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Launch the backward kernel; returns the gradient for logits."""
+    """
+    Launch the backward kernel; returns the gradient for logits.
+    If `grad_clamp` (per-utterance thresholds of size [B]) is passed, the gradient for the utterance `b`
+    is clamped to `[-grad_clamp[b], grad_clamp[b]]`.
+    """
     batch_size, max_source_len, max_target_len_plus_1, num_labels = logits.shape
     # the kernel writes all the values (including zeros), no need to initialize the gradient
     grad_logits = torch.empty_like(logits)
@@ -500,7 +512,9 @@ def _rnnt_logprobs_bwd(
             # upstream gradients can be non-contiguous (e.g., expanded after `sum()`)
             grad_target_scores_ptr=grad_target_scores.contiguous(),
             grad_blank_scores_ptr=grad_blank_scores.contiguous(),
+            grad_clamp_ptr=grad_clamp,
             BLOCK_SIZE=triton.next_power_of_2(num_labels),
             USE_FP64=logits.dtype == torch.float64,
+            USE_GRAD_CLAMP=grad_clamp is not None,
         )
     return grad_logits

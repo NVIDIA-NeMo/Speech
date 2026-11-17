@@ -44,6 +44,10 @@ class TurboRnntLoss(nn.Module):
       the gradient is zero for such utterance.
 
     Use `mask_non_finite` to exclude such utterances from training, `warn_non_finite` to report them.
+
+    Gradient clamping (`clamp`) is applied to the gradient of each per-utterance loss for the logits before it is
+    multiplied by the upstream gradient (as in `warprnnt_numba`), so it does not depend on the reduction of the loss
+    and the batch size. Clamping requires the logits and is not available in `forward_from_logprobs`.
     """
 
     def __init__(
@@ -61,16 +65,16 @@ class TurboRnntLoss(nn.Module):
         Args:
             blank: blank label index
             fastemit_lambda: Float scaling factor for FastEmit regularization. Default 0.0 (disabled).
-            clamp: gradient clamping value; only non-positive values (no clamping) are supported.
+            clamp: Float value. When set to a positive value, the gradient for the logits (Joint output)
+                is clamped to [-clamp, clamp]. Default -1.0 (disabled).
             mask_non_finite: replace non-finite per-sample losses with 0.0 (the gradient for these samples is zero)
             warn_non_finite: log the loss tensor when non-finite values are detected
             backend: implementation backend; only `triton` is currently supported.
         """
         super().__init__()
-        if clamp > 0:
-            raise NotImplementedError("Turbo-RNNT loss does not support gradient clamping")
         self.blank = blank
         self.fastemit_lambda = fastemit_lambda
+        self.clamp = float(clamp) if clamp > 0 else 0.0  # 0.0: no clamping
         self.reduction = None  # NB: `RNNTLoss` wrapper reads/overrides this attribute and applies reduction itself
         self.mask_non_finite = mask_non_finite
         self.warn_non_finite = warn_non_finite
@@ -112,6 +116,7 @@ class TurboRnntLoss(nn.Module):
             src_lengths=act_lens,
             tgt_lengths=label_lens,
             fastemit_lambda=self.fastemit_lambda,
+            clamp=self.clamp,
         )
         return self._postprocess_loss(loss_batch)
 
@@ -135,6 +140,11 @@ class TurboRnntLoss(nn.Module):
         Returns:
             batch of RNN-T scores (loss) of size [B]
         """
+        if self.clamp > 0.0:
+            raise NotImplementedError(
+                "Gradient clamping is applied to the gradient for the logits "
+                "and is not supported when computing the loss from log-probabilities"
+            )
         if target_logprobs.device.type != "cuda" or blank_logprobs.device.type != "cuda":
             raise NotImplementedError("Turbo-RNNT loss supports only CUDA inputs")
 

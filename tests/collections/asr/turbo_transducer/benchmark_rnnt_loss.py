@@ -18,6 +18,7 @@ Benchmark script to compare Triton vs Numba implementations of RNN-T loss.
 Usage:
     python benchmark_rnnt_loss.py --loss-name turbo_rnnt --dtype float32 --vocab-size 1024
     python benchmark_rnnt_loss.py --loss-name warprnnt_numba --dtype bfloat16 --vocab-size 1025
+    python benchmark_rnnt_loss.py --loss-name turbo_rnnt --dtype bfloat16 --vocab-size 1025 --clamp 1.0
 """
 
 import argparse
@@ -70,6 +71,7 @@ def benchmark_rnnt_loss(
     batch_size: int = 64,
     max_time: int = 129,
     max_target_plus_1: int = 65,
+    clamp: float = -1.0,
 ) -> BenchmarkResults:
     """
     Benchmark RNN-T loss implementation.
@@ -83,6 +85,7 @@ def benchmark_rnnt_loss(
         batch_size: Batch size
         max_time: Maximum time dimension (T)
         max_target_plus_1: Maximum target dimension + 1 (U+1)
+        clamp: Gradient clamping value (non-positive: no clamping)
 
     Returns:
         BenchmarkResults with timing and memory measurements
@@ -95,7 +98,7 @@ def benchmark_rnnt_loss(
         # RNNTLoss expects `num_classes` to be blank index (vocab_size - 1), not vocab size.
         num_classes=blank_id,
         loss_name=loss_name,
-        loss_kwargs={'fastemit_lambda': 0.0},
+        loss_kwargs={'fastemit_lambda': 0.0, 'clamp': clamp},
         reduction='sum',
     )
 
@@ -305,6 +308,9 @@ def main():
     parser.add_argument(
         '--max-target-plus-1', type=int, default=65, help='Maximum target dimension + 1 (U+1) (default: 65)'
     )
+    parser.add_argument(
+        '--clamp', type=float, default=-1.0, help='Gradient clamping value (default: -1.0, no clamping)'
+    )
     parser.add_argument('--warmup-iterations', type=int, default=10, help='Number of warmup iterations (default: 10)')
     parser.add_argument(
         '--benchmark-iterations', type=int, default=100, help='Number of benchmark iterations (default: 100)'
@@ -321,6 +327,7 @@ def main():
     gpu_name = torch.cuda.get_device_name(0)
     print(f"\nGPU: {gpu_name}")
     print(f"Loss: {args.loss_name}")
+    print(f"Gradient clamping: {args.clamp if args.clamp > 0 else 'disabled'}")
     print(f"Logits shape: [{args.batch_size}, {args.max_time}, {args.max_target_plus_1}, {args.vocab_size}]")
     print(f"Warmup iterations: {args.warmup_iterations}")
     print(f"Benchmark iterations: {args.benchmark_iterations}")
@@ -336,6 +343,7 @@ def main():
         batch_size=args.batch_size,
         max_time=args.max_time,
         max_target_plus_1=args.max_target_plus_1,
+        clamp=args.clamp,
     )
 
     print_results(results)

@@ -769,7 +769,19 @@ This makes the loss significantly faster than ``warprnnt_numba`` and reduces mem
 Since the loss does not materialize additional full-size tensors, fused Joint and loss computation (``fuse_loss_wer``) is not
 required to limit the memory used by the loss itself. Fused computation can still reduce the memory used by the Joint output
 and its gradient (they are computed in sub-batches with the padding trimmed), so disable it for faster training when
-the full Joint output fits in memory. Gradient clamping (``clamp``) is not supported.
+the full Joint output fits in memory.
+
+Gradient clamping is supported with the ``clamp`` argument (as for ``warprnnt_numba``): when set to a positive value,
+the gradient of each per-utterance loss for the Joint output is clamped to ``[-clamp, clamp]`` before the reduction of the loss
+is applied, so the result does not depend on the batch size. Clamping is computed in the same kernel as the gradient
+and does not affect the speed or memory usage of the loss.
+
+.. code-block:: yaml
+
+  loss:
+    loss_name: "turbo_rnnt"
+    turbo_rnnt_kwargs:
+      clamp: 1.0
 
 The loss is infinite for an utterance without a valid alignment (e.g., ``-inf`` logits for a target label), and NaN for invalid
 targets (labels outside the vocabulary). Set ``mask_non_finite: true`` in ``turbo_rnnt_kwargs`` to exclude such utterances

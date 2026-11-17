@@ -29,7 +29,7 @@ apply it too.
    conflicts with `CLAUDE.md` or the prevailing code, follow those instead.
 2. Read the PR title, description, and linked issues to establish the goal. If the goal cannot be inferred, the review
    is incomplete.
-3. If the service supplies earlier review comments, read them. Do not repeat findings already raised, and check that
+3. If the service supplies earlier review comments, read them. Do not repeat resolved findings, and check that
    unresolved ones were addressed. On a re-review, re-walk each open finding from trigger to symptom at the new head;
    unchanged flagged lines prove nothing.
 4. Read the diff, and account for every changed file. Read the removed lines as carefully as the added ones.
@@ -177,7 +177,8 @@ code the PR introduces; for pre-existing shape, ask for a tracking issue at most
 - A skip or `importorskip` that always fires in the CI job that collects the test leaves the fix untested.
 - Parameters must exercise the feature, not its no-op case, such as a batch of one or identical input and output
   sizes.
-- A test that asserts nothing, or a config with local model, tokenizer, or data paths, is a finding.
+- A test that asserts nothing, or a config that hard-codes machine-specific model, tokenizer, or data paths
+  unavailable to its intended users or CI, is a finding. Repository fixtures and prepared local test assets are valid.
 - A PR that keeps an old path behind a flag needs a test that still reaches the old path.
 
 ## Verify before reporting

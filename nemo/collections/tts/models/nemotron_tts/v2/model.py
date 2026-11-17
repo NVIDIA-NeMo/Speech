@@ -42,6 +42,7 @@ from nemo.collections.tts.modules.magpietts_modules import (
     remove_special_tokens,
     worker_init_fn,
 )
+from nemo.collections.tts.modules.nemotron_h_decoder import NemotronHAttention
 from nemo.collections.tts.parts.utils.helpers import (
     get_mask_from_lengths,
     get_speaker_embeddings_from_filepaths,
@@ -1568,7 +1569,10 @@ class NemotronTTSModel(NemotronTTSBase):
             agent_mask=batch["agent_mask"] if self.cfg.get("use_multiturn_dataset", False) else None,
             user_audio_embedded=user_audio_embedded,
         )
-        loss = batch_output.loss
+        attention_l1_loss = self._attention_l1_loss(batch_output.loss)
+        loss = batch_output.loss + attention_l1_loss
+        self.log('train/attention_l1_loss', attention_l1_loss, sync_dist=True)
+        self.log('train/data_loss', batch_output.loss, sync_dist=True)
         codebook_loss = batch_output.codebook_loss
         if codebook_loss is not None:
             self.log('train/codebook_loss', codebook_loss, prog_bar=True, sync_dist=True)
@@ -2221,3 +2225,23 @@ class NemotronTTSModel(NemotronTTSBase):
 
         self._val_dl_wrapped_with_dist_sampler = True
         return self._validation_dl
+
+    def _attention_l1_loss(self, reference_loss: torch.Tensor) -> torch.Tensor:
+        """Return 0.1 times the L1 sum of trainable attention projection weights.
+
+        Includes decoder and acoustic predictor attention (also FlashAttention2),
+        excluding biases, normalization, Mamba, MLP/MoE, embeddings and frozen
+        parameters. Accumulate in FP32 for mixed precision training. This penalty
+        is added only in training_step, leaving validation losses unchanged.
+        """
+        terms = []
+        seen = set()
+        for root in (self.decoder, self.acoustic_codes_predictor):
+            for module in root.modules():
+                if isinstance(module, NemotronHAttention):
+                    for name in ('q_proj', 'k_proj', 'v_proj', 'o_proj'):
+                        weight = getattr(module, name).weight
+                        if weight.requires_grad and id(weight) not in seen:
+                            seen.add(id(weight))
+                            terms.append(torch.linalg.vector_norm(weight, ord=1, dtype=torch.float32))
+        return 0.1 * torch.stack(terms).sum() if terms else reference_loss.new_zeros((), dtype=torch.float32)

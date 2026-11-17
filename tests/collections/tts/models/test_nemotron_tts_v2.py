@@ -9,6 +9,11 @@ import torch
 from torch import nn
 
 from nemo.collections.tts.models.nemotron_tts.v2.model import NemotronTTSModel
+from nemo.collections.tts.modules.nemotron_h_decoder import (
+    NemotronHAttention,
+    NemotronHConfig,
+    NemotronHFlashAttention2,
+)
 from tests.collections.common.tokenizers.text_to_speech.test_pronunciation_tokens import _write_sidecar
 from tests.collections.common.tokenizers.text_to_speech.test_pronunciation_tokens import shared_bpe as shared_bpe
 from tests.collections.tts.models.test_easy_magpietts import (
@@ -75,10 +80,69 @@ def test_auxiliary_loss_logging_and_validation_audio(model):
     assert ('val_codebook_loss' in val_output) == enabled
     assert log_audio.call_count == int(enabled)
     logged_names = {call.args[0] for call in log.call_args_list}
+    logged_values = {call.args[0]: call.args[1] for call in log.call_args_list}
+    torch.testing.assert_close(loss, logged_values['train/data_loss'] + logged_values['train/attention_l1_loss'])
+    torch.testing.assert_close(logged_values['train/attention_l1_loss'], model._attention_l1_loss(loss))
     assert ('train/codebook_loss' in logged_names) == enabled
     assert ('val/codebook_loss' in logged_names) == enabled
     assert {'train/acoustic_codes_predictor_loss', 'val/acoustic_codes_predictor_loss'} <= logged_names
     assert not model.validation_step_outputs
+
+
+@pytest.mark.parametrize('attention_cls', [NemotronHAttention, NemotronHFlashAttention2])
+@pytest.mark.parametrize('dtype', [torch.float32, torch.bfloat16])
+def test_attention_l1_value_and_gradient_scope(attention_cls, dtype):
+    config = NemotronHConfig(hidden_size=8, num_attention_heads=2, num_key_value_heads=1, attention_bias=True)
+    decoder_attention = attention_cls(config, layer_idx=0).to(dtype=dtype)
+    predictor_attention = attention_cls(config, layer_idx=0).to(dtype=dtype)
+    unrelated = nn.Linear(8, 8).to(dtype=dtype)
+    model = SimpleNamespace(
+        decoder=nn.Sequential(decoder_attention, unrelated),
+        # A shared attention module must only be counted once.
+        acoustic_codes_predictor=nn.Sequential(predictor_attention, decoder_attention),
+    )
+    weights = []
+    for attention in (decoder_attention, predictor_attention):
+        for name in ('q_proj', 'k_proj', 'v_proj', 'o_proj'):
+            weight = getattr(attention, name).weight
+            with torch.no_grad():
+                weight.fill_(-2.0 if name == 'k_proj' else 3.0)
+            weights.append(weight)
+    weights[-1].requires_grad_(False)
+    reference = torch.tensor(2.0, requires_grad=True)
+
+    penalty = NemotronTTSModel._attention_l1_loss(model, reference)
+
+    expected = 0.1 * sum(weight.float().abs().sum() for weight in weights if weight.requires_grad)
+    assert penalty.dtype == torch.float32
+    torch.testing.assert_close(penalty, expected)
+    penalty.backward()
+    for weight in weights:
+        if weight.requires_grad:
+            torch.testing.assert_close(weight.grad, (0.1 * weight.sign()).to(dtype=dtype))
+        else:
+            assert weight.grad is None
+    assert reference.grad is None
+    assert all(parameter.grad is None for parameter in unrelated.parameters())
+    for attention in (decoder_attention, predictor_attention):
+        assert all(getattr(attention, name).bias.grad is None for name in ('q_proj', 'k_proj', 'v_proj', 'o_proj'))
+
+
+@pytest.mark.parametrize('frozen', [False, True])
+def test_attention_l1_without_trainable_attention(frozen):
+    root = nn.Linear(8, 8)
+    if frozen:
+        config = NemotronHConfig(hidden_size=8, num_attention_heads=2, num_key_value_heads=1)
+        root = NemotronHAttention(config, layer_idx=0).requires_grad_(False)
+    model = SimpleNamespace(decoder=root, acoustic_codes_predictor=nn.Identity())
+    reference = torch.tensor(2.0, requires_grad=True)
+
+    penalty = NemotronTTSModel._attention_l1_loss(model, reference)
+
+    assert penalty.item() == 0.0 and penalty.device == reference.device
+    (reference + penalty).backward()
+    assert reference.grad.item() == 1.0
+    assert all(parameter.grad is None for parameter in root.parameters())
 
 
 @pytest.mark.parametrize('drop_phonemes', [False, True])

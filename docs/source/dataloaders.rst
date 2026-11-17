@@ -1489,14 +1489,16 @@ Audio augmentation with an ``AudioAugmentor`` (``nemo.collections.asr.parts.prep
 ``augmentor.perturb(...)``. That generator is then used by every perturbation in the pipeline, including nested
 ones, so augmentation is restored on resume as well. ``LhotseSpeechToTextBpeEOUDataset`` does this.
 With an injected generator, noise and RIR perturbations that read tarred audio (``audio_tar_filepaths``) choose
-the file by index with that generator. They then read it by random access (``.idx`` next to each tar, or a
-cached temporary index for local tars). The sequential tar reader is not used, because its
-position is not checkpointed.
+a manifest entry with that generator and read its file by random access, from its own source's tars. They use the
+``.idx`` next to each tar; a local tar without one gets a cached temporary index, and a remote tar must have its
+``.idx`` (build it with ``scripts/dataloading/build_indexes.py``). The sequential tar reader is not used, because
+its position is not checkpointed.
 
-Noise mixing with ``noise_path`` (``CutSet.mix``) reads the noise once and lets Lhotse repeat and sample it. The
-noise shards are shuffled with the data's ``shard_seed`` unless ``noise_path`` sets its own. With an integer
-``shard_seed``, mixed audio is reproducible and is identical after a resume. ``rir_path`` reverb draws from a
-generator that is saved with the sampler state, and it is restored exactly as well.
+Noise mixing with ``noise_path`` (``CutSet.mix``) keeps the noise input as configured (repetition, blend weights,
+``max_open_streams``). Indexed noise with a length is sampled by index; repeated or blended noise is mixed as a
+stream. The noise shards are shuffled with the data's ``shard_seed`` unless ``noise_path`` sets its own. With an
+integer ``shard_seed``, mixed audio is reproducible and is identical after a resume. ``rir_path`` reverb draws from
+a generator that is saved with the sampler state, and it is restored exactly as well.
 
 Random transforms applied to the ``CutSet`` itself (``.map(...)`` in a data type parser) can't keep a checkpointed
 generator. They can seed a generator from the cut ID instead, e.g. ``random.Random(f"{seed}:{cut.id}")``, so the

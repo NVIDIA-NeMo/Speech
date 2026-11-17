@@ -14,8 +14,12 @@
 # limitations under the License.
 
 import json
+import os
 import random
+import subprocess
+import sys
 import tarfile
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -115,3 +119,128 @@ def test_tarred_audio_without_injected_rng_keeps_sequential_reading(tarred_audio
     monkeypatch.setattr(perturb.TarredAudioRandomAccess, "load", fail)
 
     assert len(_apply(perturbation, 3)) == 3
+
+
+def _write_tar(tar_path, members):
+    """Write a tar with ``(arcname, samples)`` members, in order (names may repeat)."""
+    with tarfile.open(tar_path, "w") as tar:
+        for i, (arcname, samples) in enumerate(members):
+            wav_path = tar_path.parent / f"{tar_path.stem}_{i}.wav"
+            sf.write(wav_path, samples.astype(np.float32), SAMPLE_RATE)
+            tar.add(wav_path, arcname=arcname)
+
+
+def _tone(frequency, seconds=1.2):
+    t = np.arange(int(seconds * SAMPLE_RATE)) / SAMPLE_RATE
+    return 0.1 * np.sin(2 * np.pi * frequency * t)
+
+
+def _manifest(path, entries):
+    path.write_text("".join(json.dumps({"text": "", **entry}) + "\n" for entry in entries))
+    return str(path)
+
+
+def _entry(audio_file, offset=None, duration=1.2):
+    return SimpleNamespace(audio_file=audio_file, offset=offset, duration=duration)
+
+
+def test_noise_sources_keep_their_own_file_names(tmp_path):
+    # Two sources each contain a different "noise.wav"; each entry must be read from its own source's tar.
+    source_dirs = [tmp_path / "a", tmp_path / "b"]
+    manifests, tars = [], []
+    for source_dir, frequency in zip(source_dirs, [300, 900]):
+        source_dir.mkdir()
+        _write_tar(source_dir / "noise.tar", [("noise.wav", _tone(frequency))])
+        manifests.append(_manifest(source_dir / "manifest.json", [{"audio_filepath": "noise.wav", "duration": 1.2}]))
+        tars.append(str(source_dir / "noise.tar"))
+
+    def make():
+        return NoisePerturbationWithNormalization(manifests, audio_tar_filepaths=tars, shuffle_n=1)
+
+    perturbation = make()
+    rng = random.Random(0)
+    perturbation.rng = rng
+    state = rng.getstate()
+    noises = [perturbation.read_one_audiosegment(SAMPLE_RATE).samples for _ in range(16)]
+
+    expected = {frequency: _tone(frequency).astype(np.float32) for frequency in [300, 900]}
+    matched = [
+        next(f for f, ref in expected.items() if np.allclose(noise, ref, atol=1e-4)) for noise in noises
+    ]  # raises StopIteration if a noise matches neither source
+    assert set(matched) == {300, 900}
+
+    resumed = make()
+    restored_rng = random.Random()
+    restored_rng.setstate(state)
+    resumed.rng = restored_rng
+    for noise in noises:
+        np.testing.assert_array_equal(resumed.read_one_audiosegment(SAMPLE_RATE).samples, noise)
+
+
+def test_duplicate_tar_member_names_are_rejected(tmp_path):
+    tar_path = tmp_path / "noise.tar"
+    _write_tar(tar_path, [("noise.wav", _tone(300)), ("other.wav", _tone(500)), ("noise.wav", _tone(700))])
+
+    with pytest.raises(ValueError, match="noise.wav"):
+        perturb.TarredAudioRandomAccess(str(tar_path)).load(_entry("noise.wav"), SAMPLE_RATE)
+
+
+def test_manifest_offsets_into_one_member_load_their_slices(tmp_path):
+    tar_path = tmp_path / "noise.tar"
+    samples = np.concatenate([_tone(300, 1.0), _tone(900, 1.0)])
+    _write_tar(tar_path, [("noise.wav", samples)])
+    access = perturb.TarredAudioRandomAccess(str(tar_path))
+
+    first = access.load(_entry("noise.wav", offset=0.0, duration=1.0), SAMPLE_RATE).samples
+    second = access.load(_entry("noise.wav", offset=1.0, duration=1.0), SAMPLE_RATE).samples
+
+    np.testing.assert_allclose(first, _tone(300, 1.0), atol=1e-4)
+    np.testing.assert_allclose(second, _tone(900, 1.0), atol=1e-4)
+
+
+def test_remote_tar_uses_its_existing_index(tarred_audio, monkeypatch):
+    manifest_path, tar_paths = tarred_audio
+    for path in tar_paths:
+        if not os.path.exists(path + ".idx"):
+            create_tar_index(path, path + ".idx")
+    # Treat the local tar as remote: its index must exist next to it and is never created.
+    monkeypatch.setattr(perturb, "_is_remote_tar", lambda path: True)
+
+    access = perturb.TarredAudioRandomAccess(tar_paths)
+    loaded = access.load(_entry("audio_3.wav"), SAMPLE_RATE).samples
+
+    assert loaded.shape == (int(1.2 * SAMPLE_RATE),)
+
+
+def test_remote_tar_without_index_raises_actionable_error(tmp_path, monkeypatch):
+    tar_path = tmp_path / "noise.tar"
+    _write_tar(tar_path, [("noise.wav", _tone(300))])
+    # Treat the local tar as remote: its index must exist next to it and is never created.
+    monkeypatch.setattr(perturb, "_is_remote_tar", lambda path: True)
+
+    with pytest.raises(FileNotFoundError, match="build_indexes.py"):
+        perturb.TarredAudioRandomAccess(str(tar_path)).load(_entry("noise.wav"), SAMPLE_RATE)
+
+
+def test_random_access_does_not_keep_tar_files_open(tmp_path):
+    # More single-member shards than the open-file limit must still be readable, on the first and later draws.
+    num_shards = 96
+    for i in range(num_shards):
+        _write_tar(tmp_path / f"noise_{i}.tar", [(f"noise_{i}.wav", _tone(200 + i, 0.1))])
+    script = f"""
+import os, random, resource, sys
+from types import SimpleNamespace
+from nemo.collections.asr.parts.preprocessing.perturb import TarredAudioRandomAccess
+num_open = len(os.listdir("/dev/fd"))
+resource.setrlimit(resource.RLIMIT_NOFILE, (num_open + 32, resource.getrlimit(resource.RLIMIT_NOFILE)[1]))
+access = TarredAudioRandomAccess(["{tmp_path}/noise_" + str(i) + ".tar" for i in range({num_shards})])
+rng = random.Random(0)
+for _ in range(3 * {num_shards}):
+    i = rng.randrange({num_shards})
+    access.load(SimpleNamespace(audio_file="noise_" + str(i) + ".wav", offset=None, duration=0.1), {SAMPLE_RATE})
+print("ok")
+"""
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, env=dict(os.environ))
+
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert result.stdout.strip().endswith("ok")

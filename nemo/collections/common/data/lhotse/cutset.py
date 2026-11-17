@@ -1963,7 +1963,6 @@ def mux(
 
 def guess_parse_cutset(
     inp: Union[str, dict, omegaconf.DictConfig],
-    force_finite: bool = False,
     shard_seed: Union[int, str, None] = None,
 ) -> CutSet:
     """
@@ -1976,8 +1975,6 @@ def guess_parse_cutset(
 
     It's intended to be used in a generic context where we are not sure which way the user will specify the inputs.
 
-    With ``force_finite=True`` the returned CutSet is iterated once instead of being repeated indefinitely
-    (tarred and Shar inputs are otherwise repeated), which consumers that do their own repetition require.
     ``shard_seed``, when given, is used for shard shuffling unless ``inp`` sets its own ``shard_seed``
     (the default is ``"trng"``, which makes the shard order differ between runs).
     """
@@ -1986,8 +1983,6 @@ def guess_parse_cutset(
     if isinstance(inp, (dict, omegaconf.DictConfig)):
         try:
             dotlist = [f"{k}={v}" for k, v in inp.items()]
-            if force_finite:
-                dotlist.append("force_finite=true")
             if shard_seed is not None and "shard_seed" not in inp:
                 dotlist.append(f"shard_seed={shard_seed}")
             config = make_structured_with_schema_warnings(OmegaConf.from_dotlist(dotlist))
@@ -2007,8 +2002,6 @@ def guess_parse_cutset(
         else:
             # Assume anything else is a NeMo non-tarred manifest
             config = make_structured_with_schema_warnings(OmegaConf.from_dotlist([f"manifest_filepath={inp}"]))
-        if force_finite:
-            config.force_finite = True
         if shard_seed is not None:
             config.shard_seed = shard_seed
         cuts, _ = read_cutset_from_config(config)

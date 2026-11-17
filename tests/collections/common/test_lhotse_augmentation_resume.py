@@ -43,7 +43,7 @@ def data_dir(tmp_path_factory):
     """Speech and noise as Shar (tarred audio; noise also in an indexed variant), plus a RecordingSet of RIRs."""
     root = tmp_path_factory.mktemp("aug_resume")
     rng = np.random.default_rng(0)
-    for name, count, shard_size in [("speech", 24, 8), ("noise", 12, 4)]:
+    for name, count, shard_size in [("speech", 24, 8), ("noise", 12, 4), ("noise_a", 8, 4), ("noise_b", 8, 4)]:
         (root / name).mkdir()
         _wav_cuts(root, name, count, rng).to_shar(root / name, fields={"recording": "wav"}, shard_size=shard_size)
     (root / "noise_indexed").mkdir()
@@ -59,8 +59,18 @@ def data_dir(tmp_path_factory):
     return root
 
 
+def _noise_path(data_dir, aug):
+    if aug == "noise_blend":
+        # A weighted blend of two equally sized sources.
+        return {"shar_path": [[str(data_dir / "noise_a"), 90], [str(data_dir / "noise_b"), 10]]}
+    if aug == "noise_bounded":
+        # A blend read with at most one open stream at a time.
+        return {"shar_path": [str(data_dir / "noise_a"), str(data_dir / "noise_b")], "max_open_streams": 1}
+    return {"shar_path": str(data_dir / aug)}
+
+
 def _loader(data_dir, mode, num_workers, aug):
-    """aug: "noise" / "noise_indexed" (noise mixing from Shar) or "rir" (reverb with RIR recordings)."""
+    """aug: "noise*" (noise mixing from Shar, see _noise_path) or "rir" (reverb with RIR recordings)."""
     cfg = {
         "shar_path": str(data_dir / "speech"),
         "batch_size": 2,
@@ -74,7 +84,7 @@ def _loader(data_dir, mode, num_workers, aug):
         "sample_rate": 16000,
     }
     if aug.startswith("noise"):
-        cfg.update(noise_path={"shar_path": str(data_dir / aug)}, noise_mix_prob=1.0)
+        cfg.update(noise_path=_noise_path(data_dir, aug), noise_mix_prob=1.0)
     else:
         cfg.update(rir_enabled=True, rir_prob=1.0, rir_path=str(data_dir / "rirs.jsonl"))
     return get_lhotse_dataloader_from_config(
@@ -96,7 +106,14 @@ def _take(data_dir, mode, num_workers, aug, num_batches, state=None):
 
 @pytest.mark.parametrize(
     "aug,num_workers",
-    [("noise", 0), ("noise_indexed", 0), ("noise_indexed", 2), ("rir", 0)],
+    [
+        ("noise", 0),
+        ("noise_indexed", 0),
+        ("noise_indexed", 2),
+        ("noise_blend", 0),
+        ("noise_bounded", 0),
+        ("rir", 0),
+    ],
 )
 @pytest.mark.parametrize("mode", ["map", "iterable"])
 def test_augmented_audio_is_bit_identical_after_resume(data_dir, mode, num_workers, aug):
@@ -105,3 +122,17 @@ def test_augmented_audio_is_bit_identical_after_resume(data_dir, mode, num_worke
     resumed, _ = _take(data_dir, mode, num_workers, aug, num_batches=4, state=state)
 
     assert resumed == uninterrupted[2:]
+
+
+@pytest.mark.parametrize("mode", ["map", "iterable"])
+def test_weighted_noise_blend_keeps_its_source_weights(data_dir, mode):
+    it = iter(_loader(data_dir, mode, 0, "noise_blend"))
+    sources = []
+    for _ in range(30):
+        for cut in next(it):
+            noise_track = cut.tracks[1]
+            sources.append(noise_track.cut.recording_id.split("_")[1])
+
+    share_a = sources.count("a") / len(sources)
+    # 90:10 weights; an unweighted (or finite, exhausting) blend of equal sources would give about 0.5.
+    assert share_a > 0.75

@@ -720,7 +720,9 @@ class NoisePerturbationWithNormalization(Perturbation):
         self._tarred_audio = False
         self._orig_sr = orig_sr
         self._data_iterator = None
-        self._tar_random_access = None
+        # (source index, manifest entry) for every entry of every tarred source; see read_one_audiosegment().
+        self._tar_entries = None
+        self._tar_random_access = []
 
         random.seed(rng) if rng else None
         self._rng = rng
@@ -742,6 +744,8 @@ class NoisePerturbationWithNormalization(Perturbation):
                     shard_strategy=shard_strategy,
                 )
                 datasets.append(dataset)
+                # Each source keeps its own file-id namespace: its manifest entries are read from its own tars.
+                self._tar_random_access.append(TarredAudioRandomAccess(tarred_audio_filepath))
             self._audiodataset = RandomizedChainDataset(
                 datasets, rnd_seed=(rng if rng else random.randint(0, 30000)) + global_rank
             )
@@ -750,7 +754,9 @@ class NoisePerturbationWithNormalization(Perturbation):
                     "NoisePerturbationWithNormalization detected a zero length RandomizedChainDataset, should never happen"
                 )
             self._data_iterator = iter(self._audiodataset)
-            self._tar_random_access = TarredAudioRandomAccess(audio_tar_filepaths)
+            self._tar_entries = [
+                (source_idx, entry) for source_idx, dataset in enumerate(datasets) for entry in dataset._manifest.data
+            ]
 
         self._min_snr_db = min_snr_db
         self._max_snr_db = max_snr_db
@@ -764,8 +770,10 @@ class NoisePerturbationWithNormalization(Perturbation):
 
     def read_one_audiosegment(self, target_sr):
         if self._tarred_audio and self.rng is not random:
-            # See the module-level read_one_audiosegment(): random access keeps the choice resumable.
-            return self._tar_random_access.load(self.rng.sample(self._manifest.data, 1)[0], target_sr)
+            # See the module-level read_one_audiosegment(): random access keeps the choice resumable. Entries are
+            # drawn uniformly over all sources' manifest entries and read from their own source's tars.
+            source_idx, entry = self.rng.sample(self._tar_entries, 1)[0]
+            return self._tar_random_access[source_idx].load(entry, target_sr)
         if self._tarred_audio:
             if self._data_iterator is None:
                 raise TypeError("Expected valid iterator but got None")
@@ -1388,12 +1396,16 @@ class TarredAudioRandomAccess:
     a ``.idx`` file next to it is indexed once into a cached temporary file (local tars only; build indexes for
     remote tars with ``scripts/dataloading/build_indexes.py``).
 
+    File ids must be unique within the tar files of one instance (one noise source); a duplicate member name or
+    file id raises ``ValueError``. Readers are closed after each use, so the number of tar files is not limited
+    by the open-file limit.
+
     Args:
-        tar_filepaths: Tar file paths in any format accepted by ``AugmentationDataset`` (brace-expandable string or
-            list), or a list of such specs (one per noise source).
+        tar_filepaths: Tar file paths of one source, in any format accepted by ``AugmentationDataset``
+            (brace-expandable string or list).
     """
 
-    def __init__(self, tar_filepaths: Union[str, List[str], List[Union[str, List[str]]]]):
+    def __init__(self, tar_filepaths: Union[str, List[str]]):
         self._tar_filepaths = tar_filepaths
         self._locations = None
 
@@ -1406,7 +1418,10 @@ class TarredAudioRandomAccess:
             raise KeyError(
                 f"Audio file '{manifest_entry.audio_file}' was not found in tar files {self._tar_filepaths}"
             ) from e
-        _, audio_bytes = reader[member_idx]
+        try:
+            _, audio_bytes = reader[member_idx]
+        finally:
+            reader.close()
         return AudioSegment.from_file(
             io.BytesIO(audio_bytes),
             target_sr=target_sr,
@@ -1420,8 +1435,12 @@ class TarredAudioRandomAccess:
 
             locations = {}
             for tar_path in self._expand_tar_filepaths():
-                reader = IndexedTarMemberReader(tar_path, idx_path=_tar_index_path(tar_path), auto_create_index=False)
-                for name, member_idx in reader.member_name_index().items():
+                reader = _open_indexed_tar(IndexedTarMemberReader, tar_path)
+                try:
+                    members = reader.member_name_index(reject_duplicates=True)
+                finally:
+                    reader.close()
+                for name, member_idx in members.items():
                     file_id = os.path.splitext(os.path.basename(name))[0]
                     if file_id in locations:
                         raise ValueError(
@@ -1436,12 +1455,7 @@ class TarredAudioRandomAccess:
         # import here to avoid circular import error
         from nemo.collections.asr.data.audio_to_text import expand_sharded_filepaths
 
-        # Each string is a tar path or a brace-expandable pattern; nested lists hold one source's tar paths.
-        specs = [self._tar_filepaths] if isinstance(self._tar_filepaths, str) else self._tar_filepaths
-        paths = []
-        for spec in specs:
-            paths.extend(expand_sharded_filepaths(spec, shard_strategy="replicate", world_size=1, global_rank=0))
-        return paths
+        return expand_sharded_filepaths(self._tar_filepaths, shard_strategy="replicate", world_size=1, global_rank=0)
 
 
 class AugmentationDataset(IterableDataset):
@@ -1552,18 +1566,35 @@ def _nested_perturbations(values):
             yield from (v for v in value if isinstance(v, Perturbation))
 
 
-def _tar_index_path(tar_path: str) -> str:
-    """Return the ``.idx`` path for ``tar_path``, creating a temporary index for a local tar that has none."""
-    from nemo.collections.common.data.lhotse.indexed_adapters import _is_remote_path, create_tar_index
-
+def _open_indexed_tar(reader_cls, tar_path: str):
+    """
+    Open ``tar_path`` with an indexed tar reader, using the ``.idx`` next to it. A local tar without one gets a
+    cached temporary index; a remote tar must have its index next to it (it is not scanned automatically).
+    """
     idx_path = tar_path + ".idx"
-    if os.path.exists(idx_path):
-        return idx_path
-    if _is_remote_path(tar_path):
+    if not _is_remote_tar(tar_path):
+        if not os.path.exists(idx_path):
+            idx_path = _cached_local_tar_index(tar_path)
+        return reader_cls(tar_path, idx_path=idx_path, auto_create_index=False)
+    try:
+        return reader_cls(tar_path, idx_path=idx_path, auto_create_index=False)
+    except Exception as e:
         raise FileNotFoundError(
-            f"Random access to remote tar {tar_path} requires an index at {idx_path}. "
+            f"Random access to remote tar {tar_path} requires an index at {idx_path}, which could not be read. "
             "Build it with scripts/dataloading/build_indexes.py."
-        )
+        ) from e
+
+
+def _is_remote_tar(tar_path: str) -> bool:
+    from nemo.collections.common.data.lhotse.indexed_adapters import _is_remote_path
+
+    return _is_remote_path(tar_path)
+
+
+def _cached_local_tar_index(tar_path: str) -> str:
+    """Create (once) and return a temporary ``.idx`` for a local tar that has no index next to it."""
+    from nemo.collections.common.data.lhotse.indexed_adapters import create_tar_index
+
     stat = os.stat(tar_path)
     key = hashlib.sha1(f"{os.path.abspath(tar_path)}:{stat.st_size}:{stat.st_mtime_ns}".encode()).hexdigest()
     cache_dir = os.path.join(tempfile.gettempdir(), "nemo_perturb_tar_indexes")

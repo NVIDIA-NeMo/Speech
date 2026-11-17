@@ -957,6 +957,8 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
     def _transcribe_chunk_validate(self, trcfg):
         if self.decoding.cfg.strategy not in ('greedy', 'greedy_batch'):
             raise ValueError('Planned RNNT/TDT chunking currently supports greedy and greedy_batch decoding.')
+        if not getattr(self.decoder, 'blank_as_pad', False):
+            raise ValueError('Planned RNNT/TDT chunking requires a prediction network with blank_as_pad=True.')
         if (
             self.decoding._is_tdt
             and (self.decoding.preserve_token_confidence or self.decoding.preserve_word_confidence)
@@ -968,11 +970,17 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         if trcfg._internal.chunk_decoding is None:
             decoding = self.decoding
             timestamps = trcfg.timestamps if trcfg.timestamps is not None else decoding.compute_timestamps
-            if decoding._is_tdt and timestamps and not decoding.tdt_include_token_duration:
-                # Collect durations in a call-local decoder; retain the released model config.
-                cfg = copy.deepcopy(decoding.cfg)
-                with open_dict(cfg):
+            cfg = copy.deepcopy(decoding.cfg)
+            with open_dict(cfg):
+                # Each chunk continues the decoder state of the previous chunk of its source.
+                # Label-looping greedy decoding carries that state and runs the same greedy search.
+                cfg.strategy = 'greedy_batch'
+                cfg.greedy = cfg.get('greedy') or {}
+                cfg.greedy.loop_labels = True
+                if decoding._is_tdt and timestamps:
                     cfg.tdt_include_token_duration = True
+            if cfg != decoding.cfg:
+                # Use a call-local decoder; retain the released model config.
                 kwargs = (
                     {'tokenizer': decoding.tokenizer}
                     if hasattr(decoding, 'tokenizer')
@@ -988,21 +996,47 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             select_chunk_frames(encoded[i, :, : int(length)].T, chunk, frame_samples)
             for i, (length, chunk) in enumerate(zip(lengths, chunks))
         ]
-        owned_lengths = torch.tensor([len(x) for x in owned], device=lengths.device, dtype=lengths.dtype)
-        owned = torch.nn.utils.rnn.pad_sequence(owned, batch_first=True).transpose(1, 2)
-        # Use raw greedy hypotheses. Compute words and their confidence only after assembly.
         decoding = self._transcribe_chunk_decoding(trcfg)
-        hypotheses = decoding.decoding(encoder_output=owned, encoded_lengths=owned_lengths)[0]
+        # The encoder saw context, so owned frames continue speech from the previous chunk.
+        # A decoder that restarts at the chunk start can stay blank through that speech.
+        # Each chunk therefore continues the decoder state of the previous chunk of its source.
+        # Chunks arrive in source order. Chunks of one source decode in sequence, and the
+        # n-th chunks of different sources in this batch decode together.
+        steps = []
+        for i, chunk in enumerate(chunks):
+            steps.append(steps[-1] + 1 if i > 0 and chunk.keep_start > 0 else 0)
+        hypotheses, states = [None] * len(chunks), [None] * len(chunks)
+        for step in range(max(steps) + 1):
+            batch = [i for i, s in enumerate(steps) if s == step]
+            previous = []
+            for i in batch:
+                if chunks[i].keep_start == 0:
+                    previous.append(None)
+                elif i > 0:
+                    previous.append(states[i - 1])
+                elif trcfg._internal.chunk_state is not None:
+                    previous.append(trcfg._internal.chunk_state)
+                else:
+                    raise RuntimeError('A continued chunk has no decoder state from its previous chunk.')
+            frames = torch.nn.utils.rnn.pad_sequence([owned[i] for i in batch], batch_first=True).transpose(1, 2)
+            frame_lengths = torch.tensor([len(owned[i]) for i in batch], device=lengths.device, dtype=lengths.dtype)
+            # Use raw greedy hypotheses. Compute words and their confidence only after assembly.
+            partial = [Hypothesis(score=0.0, y_sequence=None, timestamp=None, dec_state=s) for s in previous]
+            decoded = decoding.decoding(
+                encoder_output=frames, encoded_lengths=frame_lengths, partial_hypotheses=partial
+            )
+            for i, state, hyp in zip(batch, previous, decoded[0]):
+                if not isinstance(hyp, Hypothesis) or hyp.dec_state is None:
+                    raise RuntimeError('Chunk decoding must return one greedy hypothesis with state per chunk.')
+                if state is not None:
+                    # Label looping continues emission times from the carried state; keep them chunk-relative.
+                    offset = int(state.decoded_length)
+                    hyp.timestamp = [int(t) - offset for t in hyp.timestamp]
+                hypotheses[i], states[i] = hyp, hyp.dec_state
+        trcfg._internal.chunk_state = None if chunks[-1].is_last else states[-1]
         for i, hyp in enumerate(hypotheses):
-            if not isinstance(hyp, Hypothesis):
-                raise RuntimeError('Chunk decoding must return one greedy hypothesis per chunk.')
             if decoding._is_tdt:
-                num_frames = int(owned_lengths[i])
-                # A predicted duration may cross the owned boundary. Retain only its
-                # intersection with the frames supplied to this independent decoder.
-                if hyp.token_duration is not None and len(hyp.token_duration) == len(hyp.y_sequence):
-                    remaining = num_frames - torch.as_tensor(hyp.timestamp, dtype=torch.long)
-                    hyp.token_duration = torch.minimum(torch.as_tensor(hyp.token_duration), remaining)
+                num_frames = len(owned[i])
                 for name in ('alignments', 'frame_confidence'):
                     value = getattr(hyp, name)
                     if value is not None:

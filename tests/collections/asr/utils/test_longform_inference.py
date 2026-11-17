@@ -96,6 +96,7 @@ def test_rnnt_merge_preserves_tokens_confidence_and_absolute_offsets():
                 score=-0.5,
                 y_sequence=torch.tensor([1, 1]),
                 timestamp=[0, frames - 1],
+                length=frames,
                 token_duration=torch.tensor([1, 1]),
                 alignments=[['frame']] * frames,
                 frame_confidence=[[0.8]] * frames,
@@ -109,6 +110,28 @@ def test_rnnt_merge_preserves_tokens_confidence_and_absolute_offsets():
     assert merged.non_blank_step_confidence_precomputed == [0.8, 0.9, 0.8, 0.9]
     assert merged.token_duration.tolist() == [1, 1, 1, 1]
     assert merged.score == -1.0
+    assert merged.length == 10
+
+
+@pytest.mark.unit
+def test_hypothesis_merge_concatenates_tdt_durations():
+    merged = Hypothesis(score=0.0, y_sequence=None, timestamp=None)
+    merged.merge_(Hypothesis(score=0.0, y_sequence=torch.tensor([1]), timestamp=[0], token_duration=torch.tensor([3])))
+    merged.merge_(Hypothesis(score=0.0, y_sequence=torch.tensor([2]), timestamp=[3], token_duration=torch.tensor([1])))
+    assert merged.y_sequence.tolist() == [1, 2]
+    assert merged.token_duration.tolist() == [3, 1]
+
+
+@pytest.mark.unit
+def test_last_chunk_accepts_encoder_dropping_final_partial_hop():
+    # 25 frames plus 1 sample: the feature extractor drops the final partial hop.
+    last = make_chunk_plan(1280 * 25 + 1, 16000, ChunkingConfig(chunk_size=0.8, context_size=0.16), 1280)[-1]
+    assert last.is_last and select_chunk_frames(torch.arange(7), last, 1280).tolist() == [2, 3, 4, 5, 6]
+    with pytest.raises(RuntimeError, match='requires 8'):
+        select_chunk_frames(torch.arange(6), last, 1280)
+    inner = make_chunk_plan(1280 * 25, 16000, ChunkingConfig(chunk_size=0.8, context_size=0.16), 1280)[0]
+    with pytest.raises(RuntimeError, match='requires 10'):
+        select_chunk_frames(torch.arange(9), inner, 1280)
 
 
 @pytest.mark.unit
@@ -261,38 +284,46 @@ def test_cli_chunking_mapping_accepts_hydra_override():
     assert config.chunking.context_size == 2.0
 
 
+def _tiny_conformer_config(subsampling='striding', factor=4):
+    return {
+        'sample_rate': 16000,
+        'preprocessor': {
+            '_target_': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor',
+            'sample_rate': 16000,
+            'features': 8,
+            'n_fft': 256,
+            'window_size': 0.016,
+            'window_stride': 0.01,
+            'dither': 0.0,
+            'pad_to': 0,
+        },
+        'encoder': {
+            '_target_': 'nemo.collections.asr.modules.ConformerEncoder',
+            'feat_in': 8,
+            'n_layers': 1,
+            'd_model': 8,
+            'n_heads': 2,
+            'subsampling': subsampling,
+            'subsampling_factor': factor,
+            'subsampling_conv_channels': 8,
+            'ff_expansion_factor': 2,
+            'conv_kernel_size': 3,
+            'dropout': 0.0,
+            'dropout_pre_encoder': 0.0,
+            'dropout_att': 0.0,
+        },
+    }
+
+
 @pytest.mark.unit
-def test_restored_conformer_checkpoint_chunking_with_files_and_tensors(tmp_path):
+# 640 * 50 + r samples. A remainder below one 160-sample hop yields no final feature frame.
+@pytest.mark.parametrize('num_samples', [32163, 32001, 32159])
+def test_restored_conformer_checkpoint_chunking_with_files_and_tensors(tmp_path, num_samples):
     import soundfile as sf
 
     config = OmegaConf.create(
         {
-            'sample_rate': 16000,
-            'preprocessor': {
-                '_target_': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor',
-                'sample_rate': 16000,
-                'features': 8,
-                'n_fft': 256,
-                'window_size': 0.016,
-                'window_stride': 0.01,
-                'dither': 0.0,
-                'pad_to': 0,
-            },
-            'encoder': {
-                '_target_': 'nemo.collections.asr.modules.ConformerEncoder',
-                'feat_in': 8,
-                'n_layers': 1,
-                'd_model': 8,
-                'n_heads': 2,
-                'subsampling': 'striding',
-                'subsampling_factor': 4,
-                'subsampling_conv_channels': 8,
-                'ff_expansion_factor': 2,
-                'conv_kernel_size': 3,
-                'dropout': 0.0,
-                'dropout_pre_encoder': 0.0,
-                'dropout_att': 0.0,
-            },
+            **_tiny_conformer_config(),
             'decoder': {
                 '_target_': 'nemo.collections.asr.modules.ConvASRDecoder',
                 'feat_in': 8,
@@ -306,7 +337,7 @@ def test_restored_conformer_checkpoint_chunking_with_files_and_tensors(tmp_path)
     checkpoint = tmp_path / 'tiny.nemo'
     model.save_to(str(checkpoint))
     restored = EncDecCTCModel.restore_from(str(checkpoint), map_location='cpu')
-    waveform = torch.randn(32163, generator=torch.Generator().manual_seed(21)) * 0.1
+    waveform = torch.randn(num_samples, generator=torch.Generator().manual_seed(21)) * 0.1
     sf.write(tmp_path / 'audio.wav', waveform.numpy(), 16000, subtype='FLOAT')
     chunking = ChunkingConfig(chunk_size=0.64, context_size=0.16)
     tensor = restored.transcribe(
@@ -320,10 +351,69 @@ def test_restored_conformer_checkpoint_chunking_with_files_and_tensors(tmp_path)
         batch_size=2,
         verbose=False,
     )[0]
-    assert tensor.y_sequence.shape == file.y_sequence.shape == (math.ceil(len(waveform) / 640), 4)
+    with torch.inference_mode():
+        _, num_frames = restored.forward(input_signal=waveform[None], input_signal_length=torch.tensor([num_samples]))[
+            :2
+        ]
+    # Owned frames tile the encoder output of the whole source: none missing, none repeated.
+    assert tensor.y_sequence.shape == file.y_sequence.shape == (int(num_frames[0]), 4)
     assert tensor.text == file.text
     assert torch.allclose(tensor.y_sequence, file.y_sequence, atol=1e-5)
     assert tensor.timestamp == file.timestamp
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('model_type', ['rnnt', 'tdt'])
+# 1280 * 25 + r samples. A remainder below one 160-sample hop yields no final feature frame.
+@pytest.mark.parametrize('num_samples', [32001, 32159, 32160])
+def test_transducer_chunking_accepts_source_end_off_the_frame_grid(model_type, num_samples):
+    vocabulary = ['a', 'b', ' ']
+    durations = [0, 1, 2, 3, 4] if model_type == 'tdt' else []
+    config = OmegaConf.create(
+        {
+            **_tiny_conformer_config('dw_striding', 8),
+            'labels': vocabulary,
+            'model_defaults': {'enc_hidden': 8, 'pred_hidden': 8, 'tdt_durations': durations},
+            'decoder': {
+                '_target_': 'nemo.collections.asr.modules.RNNTDecoder',
+                'vocab_size': 3,
+                'prednet': {'pred_hidden': 8, 'pred_rnn_layers': 1},
+            },
+            'joint': {
+                '_target_': 'nemo.collections.asr.modules.RNNTJoint',
+                'num_classes': 3,
+                'num_extra_outputs': len(durations),
+                'vocabulary': vocabulary,
+                'jointnet': {'joint_hidden': 8, 'activation': 'relu', 'encoder_hidden': 8, 'pred_hidden': 8},
+            },
+            'decoding': {
+                'strategy': 'greedy_batch',
+                'greedy': {'max_symbols': 10},
+                'model_type': model_type,
+                'durations': durations,
+            },
+            'loss': (
+                {'loss_name': 'tdt', 'tdt_kwargs': {'durations': durations, 'sigma': 0.02}}
+                if model_type == 'tdt'
+                else {'loss_name': 'default'}
+            ),
+        }
+    )
+    torch.manual_seed(0)
+    model = EncDecRNNTModel(config).eval()
+    waveform = torch.randn(num_samples, generator=torch.Generator().manual_seed(5)) * 0.1
+    result = model.transcribe(
+        waveform,
+        chunking=ChunkingConfig(chunk_size=0.8, context_size=0.16),
+        return_hypotheses=True,
+        batch_size=2,
+        verbose=False,
+    )[0]
+    with torch.inference_mode():
+        _, num_frames = model.forward(input_signal=waveform[None], input_signal_length=torch.tensor([num_samples]))
+    assert int(result.length) == int(num_frames[0])
+    assert len(result.timestamp) == len(result.y_sequence) > 0
+    assert all(0 <= int(t) < int(num_frames[0]) for t in result.timestamp)
 
 
 @pytest.mark.unit
@@ -483,7 +573,8 @@ def test_tdt_chunk_timestamps_collect_durations_without_changing_model_config(st
 
 @pytest.mark.unit
 @pytest.mark.parametrize('strategy', ['greedy', 'greedy_batch'])
-def test_tdt_duration_stays_inside_owned_region(strategy):
+def test_tdt_duration_continues_across_chunks(strategy):
+    # A duration that crosses an owned boundary continues into the next chunk, as in one pass.
     model = _ConstantRNNTModel(model_type='tdt', strategy=strategy, duration=3)
     result = model.transcribe(
         torch.ones(11),
@@ -492,12 +583,62 @@ def test_tdt_duration_stays_inside_owned_region(strategy):
         verbose=False,
         chunking=ChunkingConfig(chunk_size=0.4, context_size=0.1),
     )[0]
-    assert result.timestamp['timestep'] == [0, 3, 4, 7, 8]
-    assert list(result.token_duration) == [3, 1, 3, 1, 3]
+    assert result.timestamp['timestep'] == [0, 3, 6, 9]
+    assert list(result.token_duration) == [3, 3, 3, 3]
     if result.frame_confidence is not None:
         assert len(result.frame_confidence) == 11
     words = result.timestamp['word']
     assert all(a['end'] <= b['start'] for a, b in zip(words, words[1:]))
+
+
+class _FramewiseRNNTModel(_ConstantRNNTModel):
+    """Random prediction and joint networks over a context-free encoder.
+
+    Owned encoder frames do not depend on chunk context here. Correct chunked decoding
+    must therefore equal one greedy pass over each source.
+    """
+
+    def __init__(self, model_type):
+        super().__init__(model_type=model_type, strategy='greedy_batch')
+        generator = torch.Generator().manual_seed(7)
+        with torch.no_grad():
+            for parameter in [*self.decoder.parameters(), *self.joint.parameters()]:
+                parameter.copy_(torch.randn(parameter.shape, generator=generator))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('model_type', ['rnnt', 'tdt'])
+@pytest.mark.parametrize('batch_size', [1, 3, 8])
+@pytest.mark.parametrize(
+    'device',
+    [
+        'cpu',
+        pytest.param(
+            'cuda',
+            marks=[pytest.mark.gpu, pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA is required.')],
+        ),
+    ],
+)
+def test_rnnt_chunks_continue_decoder_state_like_one_pass(model_type, batch_size, device):
+    model = _FramewiseRNNTModel(model_type).to(device)
+    generator = torch.Generator().manual_seed(3)
+    sources = [torch.randn(n, generator=generator) * 4 for n in (23, 9, 4, 17)]
+    results = model.transcribe(
+        sources,
+        return_hypotheses=True,
+        batch_size=batch_size,
+        verbose=False,
+        chunking=ChunkingConfig(chunk_size=0.4, context_size=0.2),
+    )
+    num_tokens = 0
+    for source, result in zip(sources, results):
+        encoded = source.to(device)[None, None]
+        reference = model.decoding.decoding(encoder_output=encoded, encoded_lengths=torch.tensor([len(source)]))[0][0]
+        assert result.y_sequence.tolist() == reference.y_sequence.tolist()
+        assert list(map(int, result.timestamp)) == list(map(int, reference.timestamp))
+        num_tokens += len(reference.y_sequence)
+    # A decoder that restarts at each chunk would differ; the test needs real emissions to show it.
+    assert num_tokens >= 20
 
 
 class _AlignedAEDModel(_LabelCTCModel):

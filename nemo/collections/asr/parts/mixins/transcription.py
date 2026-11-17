@@ -62,6 +62,7 @@ class InternalTranscribeConfig:
     temp_dir: Optional[str] = None
     manifest_filepath: Optional[str] = None
     chunk_decoding: Optional[Any] = None
+    chunk_state: Optional[Any] = None
 
 
 @dataclass

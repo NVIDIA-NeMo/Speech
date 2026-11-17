@@ -74,9 +74,16 @@ def make_chunk_plan(
 def select_chunk_frames(
     frames: torch.Tensor, chunk: AudioChunk, frame_samples: int, upsampling_factor: int = 1
 ) -> torch.Tensor:
-    """Select owned encoder frames along the first dimension, before decoding."""
+    """Select owned encoder frames along the first dimension, before decoding.
+
+    The feature extractor drops a final partial hop. A source that ends off the frame grid
+    can therefore yield one encoder frame fewer than its last owned interval spans. The
+    last chunk keeps every frame that the encoder returned. Any other shortfall raises.
+    """
     start = (chunk.keep_start - chunk.read_start) // frame_samples * upsampling_factor
     end = math.ceil((chunk.keep_end - chunk.read_start) / frame_samples) * upsampling_factor
+    if chunk.is_last and end - upsampling_factor <= frames.shape[0] < end:
+        end = frames.shape[0]
     if end > frames.shape[0]:
         raise RuntimeError(f'Encoder returned {frames.shape[0]} frames, but chunk ownership requires {end}.')
     return frames[start:end]
@@ -105,9 +112,11 @@ def select_chunk_words(words: list[dict], chunk: AudioChunk, sample_rate: int) -
 def merge_rnnt_chunks(parts: list[Hypothesis], plan: list[AudioChunk], frame_samples: int) -> Hypothesis:
     """Combine RNNT/TDT output decoded from disjoint owned encoder regions.
 
-    The decoder sees no context frames. Its token, alignment, and confidence entries
-    therefore have the same ownership. Word confidence and text must be recomputed
-    by the model's existing decoder after assembly.
+    The decoder sees only owned frames and continues its state across the chunks of one
+    source. Its token, alignment, and confidence entries therefore have the same ownership
+    as one pass over the source. Each part holds chunk-relative emission times and
+    its owned frame count in ``length``. Word confidence and text must be recomputed by
+    the model's existing decoder after assembly.
     """
     merged = Hypothesis(
         score=sum(h.score for h in parts),
@@ -120,7 +129,7 @@ def merge_rnnt_chunks(parts: list[Hypothesis], plan: list[AudioChunk], frame_sam
         if len(times) != len(hyp.y_sequence):
             raise RuntimeError('RNNT chunk decoding must return one emission time per token.')
         merged.timestamp.extend(int(t) + offset for t in times)
-    merged.length = math.ceil(plan[-1].keep_end / frame_samples)
+    merged.length = sum(int(h.length) for h in parts)
     for name in ('alignments', 'frame_confidence', 'non_blank_step_confidence_precomputed'):
         values = [getattr(h, name, None) for h in parts]
         if all(v is not None for v in values):

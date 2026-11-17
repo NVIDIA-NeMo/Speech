@@ -247,9 +247,12 @@ select output in their native representation:
 
 * **CTC:** discard context frames, assemble the retained frames, then perform one CTC
   collapse. Repeated labels and blank frames remain correct across chunk joins.
-* **RNNT/TDT:** discard encoder context before greedy decoding. Each chunk decodes
-  independently. Assemble token times, alignments, and confidence inputs from these disjoint
-  regions. Compute word timestamps and word confidence after assembly.
+* **RNNT/TDT:** discard encoder context before greedy decoding. Each chunk continues the
+  decoder state of the previous chunk of its source, as in one pass over the recording. A
+  TDT duration that crosses a chunk boundary continues into the next chunk. Assemble token
+  times, alignments, and confidence inputs from these disjoint regions. Compute word
+  timestamps and word confidence after assembly. Chunks of one source decode in sequence;
+  chunks of different sources in one batch decode together.
 * **AED/Canary:** decode the read interval and use the model's external CTC timestamp
   aligner. Retain words whose midpoints fall inside the owned interval. Repeated words keep
   their own aligned times. Actual read-start times place words on the utterance timeline.
@@ -258,7 +261,9 @@ select output in their native representation:
   selected words do not have an AED sequence score. Token confidence and cross-attention
   scores are not available for this path.
 
-CTC and RNNT/TDT currently support ``greedy`` and ``greedy_batch`` decoding. CTC n-gram LM
+CTC and RNNT/TDT currently support ``greedy`` and ``greedy_batch`` decoding. RNNT/TDT
+chunks use label-looping ``greedy_batch`` decoding in a call-local decoder, which runs the
+same greedy search and requires a prediction network with ``blank_as_pad=True``. CTC n-gram LM
 decoding, external DataLoaders, augmentations, and partial hypotheses are not supported in
 this mode and raise an error. Existing inference paths remain available when ``chunking``
 is unset. The existing Canary ``enable_chunking`` mode is separate; setting ``chunking``
@@ -274,8 +279,8 @@ the model's inference state is restored.
 CTC normally retains only frame labels on the CPU until an utterance is complete. Returning
 full hypotheses, alignments, or confidence can require retaining the owned log probabilities
 on the CPU. This memory use grows with the utterance duration and vocabulary size.
-RNNT/TDT decoder history resets for each chunk, and AED word selection depends on alignment
-quality. Results can differ from whole-recording inference. Validate recognition quality
+The encoder sees only the read interval of each chunk, and AED word selection depends on
+alignment quality. Results can differ from whole-recording inference. Validate recognition quality
 and memory use on representative audio before selecting production chunk sizes.
 
 **Buffered / chunked inference:**

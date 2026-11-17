@@ -39,10 +39,7 @@ from lhotse.serialization import load_yaml
 from lhotse.utils import fastcopy
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
-from nemo.collections.common.data.lhotse.indexed_adapters import (  # noqa: F401 (MissingIndexError re-export)
-    MissingIndexError,
-    require_prebuilt_indexes,
-)
+from nemo.collections.common.data.lhotse.indexed_adapters import require_prebuilt_indexes
 from nemo.collections.common.data.lhotse.nemo_adapters import (
     LazyNeMoIterator,
     LazyNeMoTarredIterator,

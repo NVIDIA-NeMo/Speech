@@ -21,14 +21,14 @@ pickled, e.g. by spawn-based launchers.
 from lhotse.dataset.sampling.base import CutSampler
 from torchdata.stateful_dataloader import StatefulDataLoader
 
-from nemo.collections.common.data.lhotse.dataloader import _ContinueIterableStreamMixin
+from nemo.collections.common.data.lhotse._iterable_stream import _ContinueIterableStreamMixin
 
 
 class LhotseStatefulDataLoader(_ContinueIterableStreamMixin, StatefulDataLoader):
     """``StatefulDataLoader`` that leaves a restored Lhotse sampler in a normal iterating state.
 
     Iterable-style datasets keep one live iterator across ``iter()`` calls; see
-    :class:`~nemo.collections.common.data.lhotse.dataloader._ContinueIterableStreamMixin`.
+    :class:`~nemo.collections.common.data.lhotse._iterable_stream._ContinueIterableStreamMixin`.
     ``load_state_dict()`` drops that iterator, so the next ``iter()`` resumes from the loaded state.
 
     When torchdata restores a map-style loader, it loads the saved state into the index

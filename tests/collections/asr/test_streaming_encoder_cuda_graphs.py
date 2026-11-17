@@ -88,6 +88,7 @@ def assert_stream_outputs_equal(reference, candidate):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graphs require a CUDA device")
+@pytest.mark.gpu
 class TestStreamingEncoderCudaGraphsGPU:
     @pytest.mark.unit
     @pytest.mark.parametrize("batch_size", [1, 4])

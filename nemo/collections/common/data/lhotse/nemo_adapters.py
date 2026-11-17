@@ -53,10 +53,12 @@ from nemo.collections.common.data.lhotse._compat import (
 )
 from nemo.collections.common.data.lhotse.nemo_tar_routing import (
     NEMO_TAR_SKIP_ORDINAL,
+    check_nemo_tar_route_binding,
     load_nemo_tar_route_sidecar,
     manifest_entry_is_explicitly_skipped,
     nemo_tar_audio_member_name,
     nemo_tar_ordinal_map_collection_key,
+    nemo_tar_route_binding_path,
     nemo_tar_route_sidecar_paths,
     nemo_tar_shard_map_collection_key,
 )
@@ -776,13 +778,17 @@ class LazyNeMoTarredIterator(IteratorNode):
                 ordinal_path,
             )
             return None
+        check_nemo_tar_route_binding(ordinal_path, [tar_path])
         route = load_nemo_tar_route_sidecar(ordinal_path, num_rows)
         _check_tar_route_targets(route, np.array([num_members]), np.zeros_like(route), ordinal_path)
         return route
 
     def _init_aggregate_tar_routes(self, manifest_path: str, num_rows: int) -> None:
         ordinal_path, shard_path = nemo_tar_route_sidecar_paths(manifest_path, self.indexes_root)
-        required = [shard_path] if self.use_ais_get_batch else [shard_path, ordinal_path]
+        # The binding file sits next to the ordinal sidecar, so it is required even in AIS GetBatch mode.
+        required = [shard_path, nemo_tar_route_binding_path(ordinal_path)]
+        if not self.use_ais_get_batch:
+            required.append(ordinal_path)
         missing = [str(path) for path in required if not path.is_file()]
         if missing:
             raise ValueError(
@@ -791,6 +797,13 @@ class LazyNeMoTarredIterator(IteratorNode):
                 f"{missing}. Build them with 'python scripts/dataloading/build_indexes.py <input_cfg.yaml>' "
                 "(pass the same --indexes-root as the training config, if any)."
             )
+        if not all(isinstance(key, int) for key in self._tar_position_keys):
+            raise ValueError(
+                f"Indexed nemo_tarred with one manifest ({manifest_path!r}) requires unique tar shard ids, "
+                f"got {self.tar_paths}."
+            )
+        # Stored tar positions and member ordinals only apply to the ordered tars the route was built for.
+        check_nemo_tar_route_binding(ordinal_path, self.tar_paths)
         shard_route = load_nemo_tar_route_sidecar(shard_path, num_rows)
         active = shard_route != NEMO_TAR_SKIP_ORDINAL
         if (shard_route[active] >= len(self._tar_position_keys)).any():
@@ -1181,6 +1194,12 @@ class LazyNeMoTarredIterator(IteratorNode):
                     return None
                 raise _stale_tar_route_error(manifest_path, local_idx)
             sid = self._tar_position_keys[tar_position]
+            # Defense in depth for the binding check: an active row must route to the tar of its own shard_id.
+            row_shard_id = data.get("shard_id")
+            if not manifest_entry_is_explicitly_skipped(data) and (
+                isinstance(row_shard_id, bool) or not isinstance(row_shard_id, int) or row_shard_id != sid
+            ):
+                raise _stale_tar_route_error(manifest_path, local_idx)
         tar_path = self.shard_id_to_tar_path[sid]
         if self._indexed_entry_is_explicitly_skipped(data, manifest_path, tar_path):
             return None
@@ -1785,10 +1804,11 @@ def _check_indexed_tar_covers_manifest(
         f"Indexed nemo_tarred shard mismatch: manifest {manifest_path!r} has {num_rows} rows, but the tar index "
         f"{str(tar_idx_path)!r} for {tar_path!r} lists only {num_members} members, a row past the last member "
         f"is not skipped with _skipme, and there is no row-to-member route sidecar ({route}). Either the tar "
-        "index has the wrong layout (e.g. it was written by 'lhotse index tar', which uses the Lhotse Shar paired-member layout), or several manifest rows "
-        "share one tar member (e.g. '-subN' rows). Run 'python scripts/dataloading/build_indexes.py "
-        "<input_cfg.yaml>' (with the same --indexes-root as the training config, if any): it rebuilds tar "
-        "indexes in the wrong layout and writes the route sidecar when one is needed."
+        "index has the wrong layout (e.g. it was written by 'lhotse index tar', which uses the Lhotse Shar "
+        "paired-member layout), or several manifest rows share one tar member (e.g. '-subN' rows). "
+        "Run 'python scripts/dataloading/build_indexes.py <input_cfg.yaml>' (with the same --indexes-root as "
+        "the training config, if any): it rebuilds tar indexes in the wrong layout and writes the route "
+        "sidecar when one is needed."
     )
 
 

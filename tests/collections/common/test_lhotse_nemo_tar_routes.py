@@ -157,6 +157,124 @@ def test_build_indexes_writes_routes_only_when_needed_and_fixes_lhotse_paired_ta
     assert jobs[0] in build_indexes._select_todo([jobs[0]])
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("use_ais_get_batch", [False, True], ids=["local", "ais"])
+def test_indexed_nemo_tarred_aggregate_route_is_bound_to_ordered_tars(tmp_path, monkeypatch, use_ais_get_batch):
+    data = _write_shared_member_aggregate(tmp_path)
+    entry = {"type": "nemo_tarred", "manifest_filepath": data["manifest"], "tarred_audio_filepaths": data["tars"]}
+    assert _run_build_indexes(tmp_path, [entry]).exit_code == 0
+    reversed_tars = data["tars"][::-1]
+    if use_ais_get_batch:
+        monkeypatch.setenv("USE_AIS_GET_BATCH", "true")
+
+    # Positions stored for [audio_0, audio_1] would silently swap the audio of the two rows.
+    with pytest.raises(ValueError, match="was built for tars"):
+        LazyNeMoTarredIterator(manifest_path=data["manifest"], tar_paths=reversed_tars, indexed=True)
+
+    # Rebuilding for the reversed order restores the right tar for each shard_id.
+    result = _run_build_indexes(tmp_path, [{**entry, "tarred_audio_filepaths": reversed_tars}])
+    assert result.exit_code == 0, result.output
+    cuts = list(LazyNeMoTarredIterator(manifest_path=data["manifest"], tar_paths=reversed_tars, indexed=True))
+    assert [cut.tar_origin for cut in cuts] == data["tars"]
+    if not use_ais_get_batch:
+        for cut in cuts:
+            expected = _member_audio(data["expected"][cut.supervisions[0].text])
+            np.testing.assert_array_equal(cut.load_audio()[0], expected)
+
+
+@pytest.mark.unit
+def test_indexed_nemo_tarred_aggregate_route_rejects_row_whose_shard_id_changed(tmp_path):
+    data = _write_shared_member_aggregate(tmp_path)
+    entry = {"type": "nemo_tarred", "manifest_filepath": data["manifest"], "tarred_audio_filepaths": data["tars"]}
+    assert _run_build_indexes(tmp_path, [entry]).exit_code == 0
+    # Swap the rows' shard ids in place (same byte offsets, so the manifest .idx stays valid) without rebuilding.
+    manifest = Path(data["manifest"])
+    swapped = manifest.read_text().replace('"shard_id": 0', '"shard_id": 9').replace('"shard_id": 1', '"shard_id": 0')
+    manifest.write_text(swapped.replace('"shard_id": 9', '"shard_id": 1'))
+
+    with pytest.raises(ValueError, match="does not match the current manifest"):
+        list(LazyNeMoTarredIterator(manifest_path=data["manifest"], tar_paths=data["tars"], indexed=True))
+
+
+@pytest.mark.unit
+def test_build_indexes_rejects_conflicting_tar_bindings_for_one_manifest(tmp_path):
+    data = _write_shared_member_aggregate(tmp_path)
+    entry = {"type": "nemo_tarred", "manifest_filepath": data["manifest"], "tarred_audio_filepaths": data["tars"]}
+
+    result = _run_build_indexes(tmp_path, [entry, {**entry, "tarred_audio_filepaths": data["tars"][::-1]}])
+
+    assert result.exit_code != 0
+    assert "paired with different tars" in result.output
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("form", ["concatenated", "weighted"])
+def test_build_indexes_routes_each_dataset_of_a_list_form_entry(tmp_path, form):
+    datasets = []
+    for name in ["A", "B"]:
+        (tmp_path / name).mkdir()
+        datasets.append(_write_dataset(tmp_path / name, "aggregate"))
+    if form == "concatenated":
+        manifests = [d["manifest_spec"] for d in datasets]
+        tars = [d["tar_spec"] for d in datasets]
+    else:
+        manifests = [[d["manifest_spec"], weight] for d, weight in zip(datasets, [1.0, 2.0])]
+        tars = [[d["tar_spec"]] for d in datasets]
+    entry = {"type": "nemo_tarred", "manifest_filepath": manifests, "tarred_audio_filepaths": tars}
+
+    result = _run_build_indexes(tmp_path, [entry])
+
+    assert result.exit_code == 0, result.output
+    for d in datasets:
+        assert all(path.is_file() for path in nemo_tar_route_sidecar_paths(d["manifest_spec"]))
+    batches = list(_dataloader_for_entry(entry))
+    assert all(len(batch) <= 2 for batch in batches)
+    loaded = [item for batch in batches for item in batch]
+    expected = {
+        (d["manifest_spec"], row["text"]): row["member"]
+        for d in datasets
+        for row in d["rows"]
+        if not row.get("_skipme")
+    }
+    assert sorted((origin, text) for origin, text, _ in loaded) == sorted(expected)
+    for origin, text, audio in loaded:
+        np.testing.assert_array_equal(audio, _member_audio(expected[(origin, text)]))
+
+
+@pytest.mark.unit
+def test_prefetch_then_build_indexes_prepares_routes_in_mirror(tmp_path):
+    from scripts.dataloading import prefetch_indexes
+
+    (tmp_path / "data").mkdir()
+    data = _write_dataset(tmp_path / "data", "aggregate")
+    _build_indexes(tmp_path / "data", data)
+    mirror = tmp_path / "mirror"
+    entry = {
+        "type": "nemo_tarred",
+        "manifest_filepath": data["manifest_spec"],
+        "tarred_audio_filepaths": data["tar_spec"],
+    }
+    cfg_path = tmp_path / "input_cfg.yaml"
+    cfg_path.write_text(json.dumps([entry]))
+
+    result = CliRunner().invoke(prefetch_indexes.main, [str(cfg_path), "--indexes-root", str(mirror)])
+    assert result.exit_code == 0, result.output
+    # Prefetch copies offset indexes only; the route is built locally into the mirror.
+    assert not nemo_tar_route_sidecar_paths(data["manifest_spec"], mirror)[0].exists()
+    result = _run_build_indexes(tmp_path, [entry], "--indexes-root", str(mirror))
+    assert result.exit_code == 0, result.output
+
+    cuts = list(
+        LazyNeMoTarredIterator(
+            manifest_path=data["manifest_spec"], tar_paths=data["tar_spec"], indexed=True, indexes_root=str(mirror)
+        )
+    )
+    expected = [row for row in data["rows"] if not row.get("_skipme")]
+    assert [cut.supervisions[0].text for cut in cuts] == [row["text"] for row in expected]
+    for cut, row in zip(cuts, expected):
+        np.testing.assert_array_equal(cut.load_audio()[0], _member_audio(row["member"]))
+
+
 def _write_dataset(tmp_path: Path, layout: str) -> dict:
     """Write a tiny nemo_tarred dataset whose manifest rows can't be looked up positionally in its tars.
 
@@ -221,15 +339,45 @@ def _write_dataset(tmp_path: Path, layout: str) -> dict:
 
 
 def _build_indexes(tmp_path: Path, data: dict) -> None:
-    cfg_path = tmp_path / "input_cfg.yaml"
     entry = {
         "type": "nemo_tarred",
         "manifest_filepath": data["manifest_spec"],
         "tarred_audio_filepaths": data["tar_spec"],
     }
-    cfg_path.write_text(json.dumps([entry]))
-    result = CliRunner().invoke(build_indexes.main, [str(cfg_path), "--executor", "thread"])
+    result = _run_build_indexes(tmp_path, [entry])
     assert result.exit_code == 0, result.output
+
+
+def _run_build_indexes(cfg_dir: Path, entries: list, *args: str):
+    cfg_path = cfg_dir / "input_cfg.yaml"
+    cfg_path.write_text(json.dumps(entries))
+    return CliRunner().invoke(build_indexes.main, [str(cfg_path), "--executor", "thread", *args])
+
+
+def _write_shared_member_aggregate(tmp_path: Path) -> dict:
+    """One manifest routed by shard_id to two tars that both hold a member named ``shared.wav`` (distinct audio)."""
+    tars = []
+    for shard, member in enumerate(["x", "y"]):
+        tar_path = tmp_path / f"audio_{shard}.tar"
+        with tarfile.open(tar_path, "w") as archive:
+            payload = _wav_bytes(_member_audio(member))
+            info = tarfile.TarInfo("shared.wav")
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+        tars.append(str(tar_path))
+    manifest_path = tmp_path / "manifest.json"
+    rows = [
+        {
+            "audio_filepath": "shared.wav",
+            "duration": MEMBER_SAMPLES / SR,
+            "text": t,
+            "shard_id": s,
+            "sampling_rate": SR,
+        }
+        for t, s in [("from-0", 0), ("from-1", 1)]
+    ]
+    manifest_path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    return {"manifest": str(manifest_path), "tars": tars, "expected": {"from-0": "x", "from-1": "y"}}
 
 
 def _iterator(data: dict) -> LazyNeMoTarredIterator:
@@ -261,6 +409,26 @@ def _dataloader(data: dict):
         "num_workers": 0,
     }
     return get_lhotse_dataloader_from_config(config, global_rank=0, world_size=1, dataset=_TextAndAudio())
+
+
+def _dataloader_for_entry(entry: dict):
+    config = {
+        "use_lhotse": True,
+        "input_cfg": [entry],
+        "indexed": True,
+        "force_finite": True,
+        "shuffle": True,
+        "seed": 0,
+        "shard_seed": 0,
+        "batch_size": 2,
+        "num_workers": 0,
+    }
+    return get_lhotse_dataloader_from_config(config, global_rank=0, world_size=1, dataset=_OriginTextAndAudio())
+
+
+class _OriginTextAndAudio(torch.utils.data.Dataset):
+    def __getitem__(self, cuts):
+        return [(cut.manifest_origin, cut.supervisions[0].text, cut.load_audio()[0]) for cut in cuts]
 
 
 class _TextAndAudio(torch.utils.data.Dataset):

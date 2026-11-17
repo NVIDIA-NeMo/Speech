@@ -1061,9 +1061,14 @@ Two ways, which differ for tar files:
    ``.idxpack``, so lookup stays O(1) and resume stays exact. Members are
    matched by name, so the selected member is validated strictly when its
    audio loads. Route sidecars must be local: for remote manifests, pass a
-   local ``--indexes-root``. Rerunning the script rebuilds them when the
-   manifest or tar indexes they were built from are newer. Indexed loading fails at startup with
-   an actionable error when a required route sidecar is missing.
+   local ``--indexes-root``. Stored ordinals and tar positions only apply to
+   the tars they were built for, so each route records its ordered tar paths
+   in ``<manifest>.nemo-tar-ordinal.idx.tars.json``. Rerunning the script
+   rebuilds a route when the manifest or tar indexes it was built from are
+   newer, or when the entry now pairs the manifest with different tars (or
+   the same tars in a different order). Indexed loading fails at startup with
+   an actionable error when a required route sidecar is missing or was built
+   for different tars.
 
 Packing sidecars into dataset-level ``.idxpack`` files
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -1229,6 +1234,17 @@ Two ways to populate the mirror:
    ``ais://`` / ``s3://`` / ``http://`` are all supported as sources),
    and copies it into the local mirror. Use ``--source-indexes-root``
    when the source sidecars themselves live under another mirror.
+
+   For ``nemo``/``nemo_tarred`` datasets that need route sidecars (repeated
+   ``-subN`` rows, filtered manifests, or one manifest paired with several
+   tars), prefetch copies only the offset indexes. Build the local routes
+   with the same ``indexes_root`` before starting training::
+
+       python scripts/dataloading/build_indexes.py \
+           --indexes-root /scratch/idx path/to/input_cfg.yaml
+
+   This reuses the prefetched ``.idx`` files and only writes the missing
+   routes, reading the manifests and tar headers (not audio payloads).
 
 Both scripts accept ``--force``, ``--workers N``, and ``--dry-run``.
 

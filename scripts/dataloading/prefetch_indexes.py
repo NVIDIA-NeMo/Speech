@@ -46,6 +46,14 @@ Examples::
 
 After prefetch, point your training config at the mirror via the top-level
 ``indexes_root: /scratch/idx`` option (no per-source changes required).
+
+``nemo``/``nemo_tarred`` datasets that need native-tar route sidecars (repeated
+``-subN`` rows, filtered manifests, or one manifest paired with several tars)
+get only their offset indexes here. Build the routes into the same mirror
+before training::
+
+    python scripts/dataloading/build_indexes.py \\
+        --indexes-root /scratch/idx path/to/input_cfg.yaml
 """
 
 import logging
@@ -129,6 +137,8 @@ def main(
     Prefetch .idx sidecars referenced by INPUT_CFGS into a local mirror.
 
     INPUT_CFGS are NeMo Lhotse dataloading configs (``input_cfg`` YAML).
+    nemo/nemo_tarred route sidecars are not copied: afterwards, run
+    ``build_indexes.py --indexes-root <same root>`` to build any that are needed.
     """
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 

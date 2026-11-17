@@ -77,6 +77,8 @@ from nemo.collections.common.data.lhotse.nemo_adapters import (
     pair_nemo_tarred_manifests_with_tars,
 )
 from nemo.collections.common.data.lhotse.nemo_tar_routing import (
+    check_nemo_tar_route_binding,
+    nemo_tar_route_binding_path,
     nemo_tar_route_is_needed,
     nemo_tar_route_sidecar_paths,
     write_nemo_tar_route_sidecars,
@@ -267,7 +269,8 @@ def _discover_keys(
             jobs.append(IndexJob(p, JSONL, indexes_root))
         for p in _expand_tars(entry.get("tarred_audio_filepaths")):
             jobs.append(IndexJob(p, NEMO_TAR, indexes_root))
-        _discover_nemo_tar_routes(mfp, entry.get("tarred_audio_filepaths"), jobs, indexes_root)
+        if entry.get("index_pack") is None:
+            _discover_nemo_tar_routes(mfp, entry.get("tarred_audio_filepaths"), jobs, indexes_root)
     if (paths := entry.get("paths")) is not None:
         _discover_paths(paths, jobs, indexes_root)
     if (sub := _resolve_input_cfg(entry.get("input_cfg"), data_blend_dir)) is not None:
@@ -275,18 +278,23 @@ def _discover_keys(
 
 
 def _discover_nemo_tar_routes(raw_manifests, raw_tars, jobs: list[IndexJob], indexes_root: Optional[str]) -> None:
-    """Add one route job per manifest that a nemo/nemo_tarred entry pairs with tars (built only if needed)."""
+    """Add one route job per manifest that a loose-indexed nemo/nemo_tarred entry pairs with tars.
+
+    Routes are built only when needed. Each dataset of a list-form entry is paired separately, exactly
+    like ``read_nemo_manifest()`` does, before its paths are expanded.
+    """
     if raw_manifests is None or raw_tars is None:
         return
-    tars = _expand_tars(raw_tars)
-    if not tars:
-        return
-    try:
-        pairs = pair_nemo_tarred_manifests_with_tars(_expand_jsonl(raw_manifests), tars)
-    except (AssertionError, ValueError) as error:
-        # The dataloader would reject this entry too; still build its plain .idx files.
-        logging.warning("  [SKIP route] cannot pair manifests with tars: %s", error)
-        return
+    pairs = []
+    for manifest_spec, tar_spec in _nemo_tarred_dataset_specs(raw_manifests, raw_tars):
+        tars = _expand_tars(tar_spec)
+        if not tars:
+            continue
+        try:
+            pairs.extend(pair_nemo_tarred_manifests_with_tars(_expand_jsonl(manifest_spec), tars))
+        except (AssertionError, ValueError) as error:
+            # The dataloader would reject this dataset too; still build its plain .idx files.
+            logging.warning("  [SKIP route] cannot pair manifests with tars: %s", error)
     for manifest_path, tar_paths in pairs:
         try:
             nemo_tar_route_sidecar_paths(manifest_path, indexes_root)
@@ -294,6 +302,25 @@ def _discover_nemo_tar_routes(raw_manifests, raw_tars, jobs: list[IndexJob], ind
             logging.warning("  [SKIP route] %s", error)
             continue
         jobs.append(IndexJob(manifest_path, NEMO_TAR_ROUTE, indexes_root, tar_paths=tar_paths))
+
+
+def _nemo_tarred_dataset_specs(raw_manifests, raw_tars) -> list[tuple]:
+    """Split ``manifest_filepath``/``tarred_audio_filepaths`` into per-dataset specs like ``read_nemo_manifest()``.
+
+    A scalar manifest spec is one dataset. List forms are zipped: ``[[m], ...]`` / ``[[m, weight], ...]``
+    with ``[[t], ...]`` (buckets or weighted blends), or ``[m, ...]`` with ``[t, ...]`` (concatenation).
+    """
+    if isinstance(raw_manifests, (str, Path)):
+        return [(raw_manifests, raw_tars)]
+    specs = []
+    for manifest_info, tar_spec in zip(raw_manifests, raw_tars):
+        if isinstance(tar_spec, (list, tuple, ListConfig)):
+            (tar_spec,) = tar_spec
+            manifest_spec = manifest_info[0]
+        else:
+            manifest_spec = manifest_info
+        specs.append((manifest_spec, tar_spec))
+    return specs
 
 
 def _discover_paths(paths, jobs: list[IndexJob], indexes_root: Optional[str]) -> None:
@@ -385,7 +412,7 @@ def discover(
             jobs.append(IndexJob(p, JSONL, indexes_root))
         for p in _expand_tars(raw_tars):
             jobs.append(IndexJob(p, NEMO_TAR, indexes_root))
-        if typ in ("nemo", "nemo_tarred"):
+        if typ in ("nemo", "nemo_tarred") and entry.get("index_pack") is None:
             _discover_nemo_tar_routes(raw_manifests, raw_tars, jobs, indexes_root)
         if collection_mode:
             route_path = entry.get("tar_routing_filepath")
@@ -517,7 +544,8 @@ def _build_one(job: IndexJob, *, force: bool = False) -> tuple[IndexJob, str]:
         create_wds_v2_tar_index(job.path, idx_path=idx)
     elif job.kind == NEMO_TAR_ROUTE:
         if not _nemo_tar_route_is_needed(job):
-            for path in nemo_tar_route_sidecar_paths(job.path, job.indexes_root):
+            ordinal_path, shard_path = nemo_tar_route_sidecar_paths(job.path, job.indexes_root)
+            for path in (ordinal_path, shard_path, nemo_tar_route_binding_path(ordinal_path)):
                 path.unlink(missing_ok=True)
             return job, "not needed"
         write_nemo_tar_route_sidecars(job.path, job.tar_paths, indexes_root=job.indexes_root)
@@ -611,9 +639,10 @@ def _validate_nemo_tar_route(job: IndexJob) -> None:
 
     ordinal_path, shard_path = nemo_tar_route_sidecar_paths(job.path, job.indexes_root)
     if not _nemo_tar_route_is_needed(job):
-        if ordinal_path.exists() or shard_path.exists():
+        if ordinal_path.exists() or shard_path.exists() or nemo_tar_route_binding_path(ordinal_path).exists():
             raise ValueError(f"Unneeded native NeMo tar route sidecar: {ordinal_path}")
         return
+    check_nemo_tar_route_binding(ordinal_path, job.tar_paths)
     sidecars = [ordinal_path] if len(job.tar_paths) == 1 else [ordinal_path, shard_path]
     manifest_idx = Path(index_file_path(job.path, job.indexes_root))
     num_rows = (manifest_idx.stat().st_size // 8) - 1
@@ -724,7 +753,15 @@ def main(
     # Deduplicate while preserving order.
     seen: set[tuple[str, str, Optional[str]]] = set()
     unique: list[IndexJob] = []
+    route_tars: dict[tuple[str, Optional[str]], tuple[str, ...]] = {}
     for j in jobs:
+        if j.kind == NEMO_TAR_ROUTE:
+            bound = route_tars.setdefault((j.path, j.indexes_root), j.tar_paths)
+            if bound != j.tar_paths:
+                raise click.UsageError(
+                    f"Manifest {j.path} is paired with different tars in different entries "
+                    f"({list(bound)} vs {list(j.tar_paths)}); one route sidecar can serve only one of them."
+                )
         key = (j.path, j.kind, j.indexes_root)
         if key not in seen:
             seen.add(key)

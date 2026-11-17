@@ -1464,9 +1464,14 @@ Other, more exotic configurations:
    sources, an integer ``shard_seed`` makes every dataloading worker on every rank yield the identical stream, so each
    batch would be seen ``num_workers * world_size`` times. The dataloader raises a ``ValueError`` for this combination
    whenever ``max(num_workers, 1) * world_size > 1``; use ``shard_seed: "randomized"`` for deterministic,
-   reproducible order instead. Indexed sources (``indexed: true``) partition data across ranks and workers, so they
-   accept an integer ``shard_seed`` (and indexed weighted blends require one). Single-process loading
-   (``num_workers <= 1`` on one rank) and map-style loading also still accept an integer ``shard_seed``.
+   reproducible order instead. The check uses each source's effective settings after ``input_cfg`` overrides: a
+   non-indexed source that sets ``shard_seed: randomized`` (or ``trng``) together with ``shuffle: true`` is accepted
+   under a loader-level integer ``shard_seed``, while every other non-indexed source in the blend that inherits the
+   integer seed is still rejected. Conversely, a source that shuffles with its own integer ``shard_seed`` is rejected
+   under a ``"randomized"``/``"trng"`` loader unless the loader also sets ``shuffle: true``. Indexed sources
+   (``indexed: true``) partition data across ranks and workers, so they accept an integer ``shard_seed`` (and
+   indexed weighted blends require one). Single-process loading (``num_workers <= 1`` on one rank) and map-style
+   loading also still accept an integer ``shard_seed``.
 
 * With ``seed="trng"``, the base random seed itself will be drawn using a TRNG. It will be different on each GPU training process. This setting is not recommended.
 

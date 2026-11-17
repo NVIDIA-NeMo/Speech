@@ -40,7 +40,7 @@ from lhotse.dataset import (
 )
 from lhotse.dataset.dataloading import resolve_seed
 from lhotse.dataset.sampling.base import CutSampler, SamplingConstraint, TimeConstraint
-from lhotse.lazy import LazyFlattener
+from lhotse.lazy import IteratorNode, LazyFlattener
 from lhotse.utils import fix_random_seed
 from omegaconf import DictConfig, OmegaConf
 
@@ -1470,25 +1470,72 @@ def _cut_text_into_windows(cut, num_tokens: int, tokenizer) -> list:
 
 
 def _validate_iterable_shard_seed(config: DictConfig, cuts: CutSet, world_size: int) -> None:
-    """Reject an integer ``shard_seed`` on a non-indexed iterable pipeline with more than one data shard.
+    """Reject integer shard seeds that make every worker of a non-indexed iterable pipeline yield the same stream.
 
     On the iterable path the sampler runs independently in every dataloading worker on every rank. Non-indexed
-    sources (NeMo tarred, Lhotse Shar, Parquet, plain JSONL streams) de-duplicate across those workers only through
-    a different per-worker shard seed (``"trng"`` or ``"randomized"``). With an integer ``shard_seed`` every worker
-    shuffles identically and yields the same stream, so each batch would be seen ``num_workers * world_size`` times.
-    Indexed sources partition indices by ``(rank, worker_id)`` and are safe with an integer seed.
+    sources (NeMo tarred, Lhotse Shar, Parquet, plain JSONL streams) yield different streams per worker only when
+    something on their path is shuffled with a per-worker seed (``"trng"`` or ``"randomized"``). When the order is
+    instead fixed by an integer seed, every worker yields the same stream and each batch is seen
+    ``num_workers * world_size`` times. Indexed sources partition indices by ``(rank, worker_id)`` and are safe.
+
+    The check inspects the resolved reader graph, so per-source ``shard_seed``/``shuffle`` overrides in ``input_cfg``
+    are honoured: a source that shuffles its own shards with ``shard_seed: randomized`` is accepted under a loader
+    with an integer ``shard_seed``, while every other non-indexed source in the same blend is still checked.
     """
-    shard_seed = config.get("shard_seed")
-    if not isinstance(shard_seed, int) or isinstance(shard_seed, bool):
-        return
     num_shards = max(int(config.get("num_workers", 0) or 0), 1) * max(int(world_size), 1)
-    if num_shards <= 1 or getattr(cuts, "is_indexed", False):
+    if num_shards <= 1:
+        return
+    shard_seed = config.get("shard_seed")
+    # The sampler shuffles with the loader-level shard_seed; it de-duplicates workers only with a per-worker seed.
+    sampler_randomizes = bool(config.get("shuffle", False)) and isinstance(shard_seed, str)
+    offending = _find_fixed_order_sources(
+        cuts,
+        randomized=sampler_randomizes,
+        int_seed_origin=f"loader shard_seed={shard_seed}" if _is_int_seed(shard_seed) else None,
+        found=[],
+    )
+    if not offending:
         return
     raise ValueError(
-        f"shard_seed={shard_seed} (an integer) is not supported for a non-indexed iterable dataset with "
-        f"num_workers={config.get('num_workers', 0)} and world_size={world_size}: every one of the {num_shards} "
-        "dataloading workers would yield the identical data stream, duplicating each batch. Either set "
-        "shard_seed='randomized' (deterministic and different in each worker/rank) or 'trng', or make every "
-        "source indexed (indexed: true, with .idx files built by scripts/dataloading/build_indexes.py), which "
-        "partitions data across workers and ranks and accepts an integer shard_seed."
+        f"shard_seed={shard_seed} with num_workers={config.get('num_workers', 0)} and world_size={world_size}: "
+        f"non-indexed iterable source(s) ordered by an integer seed ({', '.join(sorted(set(offending)))}) would make "
+        f"each of the {num_shards} dataloading workers yield the identical data stream, duplicating each batch. "
+        "Either use shard_seed='randomized' (deterministic and different in each worker/rank) or 'trng' for those "
+        "sources (at the loader level, or per source together with shuffle: true), or make every source indexed "
+        "(indexed: true, with .idx files built by scripts/dataloading/build_indexes.py), which partitions data across "
+        "workers and ranks and accepts an integer shard_seed."
     )
+
+
+def _is_int_seed(seed) -> bool:
+    return isinstance(seed, int) and not isinstance(seed, bool)
+
+
+def _find_fixed_order_sources(node, randomized: bool, int_seed_origin: Optional[str], found: list) -> list:
+    """Collect non-indexed leaf readers whose order is fixed by an integer seed and never per-worker randomized.
+
+    ``randomized`` / ``int_seed_origin`` describe the nodes above ``node``: a node that shuffles its sources or shards
+    (``shuffle_shards`` / ``shuffle_iters``) with a string seed randomizes everything below it per worker, and one
+    that does so with an integer seed fixes their order (``int_seed_origin`` names the nearest such node). Multiplexers
+    only interleave sources, so they don't count. Returns the ``int_seed_origin`` of every offending leaf.
+    """
+    if hasattr(node, "data") and not callable(getattr(node, "data")):
+        node = node.data  # unwrap CutSet
+    if getattr(node, "is_indexed", False):
+        return found
+    seed = getattr(node, "shard_seed", getattr(node, "seed", None))
+    if any(getattr(node, attr, False) is True for attr in ("shuffle_shards", "shuffle_iters")):
+        randomized = randomized or isinstance(seed, str)
+        if _is_int_seed(seed):
+            int_seed_origin = f"{type(node).__name__}(seed={seed})"
+    children = []
+    if isinstance(node, IteratorNode):
+        sources = getattr(node, "sources", None)
+        children = list(sources) if isinstance(sources, (list, tuple)) else [getattr(node, "source", None)]
+    children = [c for c in children if isinstance(c, (IteratorNode, CutSet))]
+    if children:
+        for child in children:
+            _find_fixed_order_sources(child, randomized=randomized, int_seed_origin=int_seed_origin, found=found)
+    elif int_seed_origin is not None and not randomized:
+        found.append(int_seed_origin)
+    return found

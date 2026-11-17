@@ -24,6 +24,7 @@ from typing import Any, cast
 from fastapi import WebSocket, WebSocketDisconnect
 from vllm.engine.protocol import StreamingInput
 from vllm.logger import init_logger
+from vllm.sampling_params import RequestOutputKind
 from vllm.utils import random_uuid
 from vllm_omni.entrypoints.openai.protocol.audio import OpenAICreateSpeechRequest
 from vllm_omni.entrypoints.openai.serving_speech_stream import OmniStreamingSpeechHandler
@@ -154,6 +155,7 @@ class EasyMagpieInputStream:
         first_token_ids = cast(list[int], first_item)
         first_prompt = copy.deepcopy(self.prefill_prompt)
         first_info = first_prompt.setdefault("additional_information", {})
+        first_info['streaming_initial_prompt_len'] = len(first_prompt['prompt_token_ids'])
         first_info["text_token"] = first_token_ids
         first_info["text_token_start"] = text_token_start
         if self.text_prefill_num:
@@ -240,11 +242,6 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
                     "Incremental EasyMagpie input requires stream_audio=true and response_format='pcm'.",
                 )
                 return
-            if config.word_timestamps:
-                await self._send_error(
-                    websocket, "word_timestamps is not supported with incremental EasyMagpie input."
-                )
-                return
             if config.model and hasattr(self._speech_service, "_check_model"):
                 error = await self._speech_service._check_model(
                     OpenAICreateSpeechRequest(input="ping", model=config.model)
@@ -267,9 +264,23 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
                 stream=True,
             )
             spec = adapter.build_streaming_spec(request)
+            alignment = None
+            if config.word_timestamps:
+                if not adapter.timestamps_enabled():
+                    await self._send_error(
+                        websocket, 'Start the V2 server with hf_overrides.easymagpie_timestamps=true'
+                    )
+                    return
+                from easymagpie_vllm_omni.timestamps import StreamingAlignmentDecoder
+
+                alignment = StreamingAlignmentDecoder(adapter._model_path(), tokenizer=spec.tokenizer)
+                spec.prefill_prompt['additional_information']['return_timestamps'] = True
             text_encoder = spec.tokenizer.incremental_encoder()
-            sampling_params_list = list(self._speech_service.engine_client.default_sampling_params_list)
+            sampling_params_list = copy.deepcopy(self._speech_service.engine_client.default_sampling_params_list)
             sampling_params_list = coerce_param_message_types(sampling_params_list, is_streaming=True)
+            if alignment is not None:
+                for params in sampling_params_list:
+                    params.output_kind = RequestOutputKind.DELTA
             stage0_params = sampling_params_list[0]
             max_new_tokens = config.max_new_tokens or getattr(stage0_params, "max_tokens", 2048)
             input_stream = EasyMagpieInputStream(
@@ -292,6 +303,13 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
             async def observed_generator():
                 async for output in generator:
                     input_stream.observe_output(output)
+                    if alignment is not None:
+                        from easymagpie_vllm_omni.timestamps import unpack_alignment_packets
+
+                        for packet in unpack_alignment_packets(output):
+                            delta = alignment.update(packet)
+                            if delta is not None:
+                                await websocket.send_json(delta)
                     yield output
 
             await websocket.send_json(
@@ -306,9 +324,12 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
 
             async def send_audio() -> int:
                 total_bytes = 0
-                async with aclosing(
-                    self._speech_service._generate_pcm_chunks(observed_generator(), request_id)
-                ) as chunks:
+                audio_chunks = (
+                    _alignment_pcm_deltas(observed_generator(), spec.sample_rate)
+                    if alignment is not None
+                    else self._speech_service._generate_pcm_chunks(observed_generator(), request_id)
+                )
+                async with aclosing(audio_chunks) as chunks:
                     async for chunk in chunks:
                         total_bytes += len(chunk)
                         await websocket.send_bytes(chunk)
@@ -362,6 +383,8 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
                             "input.tokens cannot be used while an input.text marker or IPA span is incomplete.",
                         )
                         continue
+                    if alignment is not None:
+                        alignment.append_token_ids(tokens)
                     await input_stream.put_tokens(tokens)
                     input_token_count += len(tokens)
                 elif msg_type == "input.text":
@@ -369,7 +392,13 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
                     if not isinstance(text, str):
                         await self._send_error(websocket, "input.text requires a string value")
                         continue
+                    if alignment is not None:
+                        # Complete spans per message make character offsets unambiguous;
+                        # ordinary text still supports arbitrarily small text chunks.
+                        spec.tokenizer.encode_with_offsets(text)
                     tokens = text_encoder.push(text)
+                    if alignment is not None:
+                        alignment.append_text(text, expected_ids=tokens)
                     text_parts.append(text)
                     if tokens:
                         await input_stream.put_tokens(tokens)
@@ -388,6 +417,8 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
                     await self._send_error(websocket, f"Unknown message type: {msg_type}")
 
             total_bytes = await audio_task
+            if alignment is not None:
+                await websocket.send_json(alignment.finalize(total_bytes / (2 * spec.sample_rate)))
             await websocket.send_json(
                 {
                     "type": "audio.done",
@@ -416,3 +447,18 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
                     await self._speech_service.engine_client.abort(request_id)
                 except Exception:
                     logger.debug("Failed to abort incremental request %s", request_id, exc_info=True)
+
+
+async def _alignment_pcm_deltas(generator, expected_sample_rate):
+    """Serialize DELTA audio lists without treating each list as cumulative history."""
+    import numpy as np
+    from easymagpie_vllm_omni.audio_output import extract_audio_from_stage_output
+
+    async for output in generator:
+        extracted = extract_audio_from_stage_output(output)
+        if extracted is None:
+            continue
+        waveform, rate = extracted
+        if rate != expected_sample_rate:
+            raise ValueError('The incremental audio sample rate differs from the timestamp clock')
+        yield (np.clip(waveform, -1.0, 1.0) * 32767.0).astype('<i2').tobytes()

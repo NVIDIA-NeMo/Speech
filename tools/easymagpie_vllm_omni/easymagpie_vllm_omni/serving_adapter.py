@@ -144,6 +144,13 @@ def _build_adapter_cls() -> type:
             extra = request.extra_params
             if extra is not None and not isinstance(extra, dict):
                 return "extra_params must be a JSON object/dict"
+            if extra and extra.get('return_timestamps'):
+                if not self.timestamps_enabled():
+                    return 'Start the V2 server with hf_overrides.easymagpie_timestamps=true for timestamps'
+                if self._arch().acoustic_predictor_type != 'acoustic_codes_predictor':
+                    return 'Attention timestamps currently require the V2 architecture'
+                if request.ref_audio is not None:
+                    return 'Attention timestamps currently require a known voice'
             ref_audio = request.ref_audio
             if ref_audio is None:
                 return None
@@ -182,6 +189,8 @@ def _build_adapter_cls() -> type:
                     "top_k": int(extra.get("top_k", _DEFAULT_TOP_K)),
                 },
             }
+            if extra.get('return_timestamps'):
+                prompt['additional_information']['return_timestamps'] = True
             ref_audio = request.ref_audio
             if ref_audio is None:
                 speaker_id = (request.voice or _DEFAULT_SPEAKER).strip()
@@ -233,6 +242,20 @@ def _build_adapter_cls() -> type:
                 sample_rate=sample_rate,
                 text_prefill_num=text_prefill_num,
             )
+
+        def timestamps_enabled(self) -> bool:
+            config = dict(self._model_config())
+            client = getattr(self.ctx, 'engine_client', None)
+            hf_config = getattr(getattr(client, 'model_config', None), 'hf_config', None)
+            value = getattr(hf_config, 'easymagpie_timestamps', None)
+            if value is not None:
+                config['easymagpie_timestamps'] = value
+            for stage in getattr(client, 'stage_configs', None) or []:
+                args = stage.get('engine_args', {}) if isinstance(stage, dict) else getattr(stage, 'engine_args', None)
+                overrides = args.get('hf_overrides') if isinstance(args, dict) else getattr(args, 'hf_overrides', None)
+                if isinstance(overrides, dict) and 'easymagpie_timestamps' in overrides:
+                    config['easymagpie_timestamps'] = overrides['easymagpie_timestamps']
+            return config.get('easymagpie_timestamps', False) is True
 
     return EasyMagpieTTSAdapter
 
@@ -290,6 +313,9 @@ def apply_serving_patches(force: bool = False) -> None:
         _patch_detection()
         _register_adapter()
         _patch_streaming_handler()
+        from easymagpie_vllm_omni.serving_timestamps import register_alignment_endpoint
+
+        register_alignment_endpoint()
         logger.info(
             "EasyMagpie: /v1/audio/speech and /v1/audio/speech/stream serving registered (model_type=%r).",
             MODEL_TYPE,

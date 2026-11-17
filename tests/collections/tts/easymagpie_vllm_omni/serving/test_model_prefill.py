@@ -534,3 +534,26 @@ def test_first_agent_decode_uses_user_speaking_end_token():
     model.has_phoneme = False
     model._combined_embeddings = torch.zeros(1, 3)
     model._dec_text_tokens = torch.zeros(1, dtype=torch.long)
+
+
+def test_incremental_synthetic_resume_keeps_autoregressive_state():
+    model = EasyMagpieTTSForConditionalGeneration.__new__(EasyMagpieTTSForConditionalGeneration)
+    nn.Module.__init__(model)
+    model._register_cfg_query = lambda *args: None
+    model._preprocess_prefill = lambda *args: pytest.fail('Synthetic resume must retain the AR decode state')
+    model._preprocess_decode = lambda ids, start, device, info: (
+        ids,
+        torch.zeros(len(ids), 3),
+        {'retained_decode_offset': info['decode_offset']},
+    )
+    info = {
+        'streaming_initial_prompt_len': 71,
+        '_omni_is_prefill': True,
+        '_omni_num_computed_tokens': 82,
+        '_omni_prompt_len': 83,
+        'decode_offset': 15,
+    }
+    _, _, update = model.preprocess(torch.zeros(1, dtype=torch.long), None, **info)
+    assert update['retained_decode_offset'] == 15
+    with pytest.raises(ValueError, match='one synthetic prompt token'):
+        model.preprocess(torch.zeros(2, dtype=torch.long), None, **info)

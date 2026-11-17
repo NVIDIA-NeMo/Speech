@@ -112,6 +112,37 @@ class EasyMagpieTextTokenizer:
         """Encode context text with the base tokenizer only."""
         return list(self.base_tokenizer.encode(text))
 
+    def encode_with_offsets(self, text: str) -> tuple[list[int], list[tuple[int, int]]]:
+        """Return the actual target IDs and Unicode character ranges, including IPA spans.
+
+        Marker syntax has no input-token occurrence. Overlapping offsets from
+        byte-level tokenization are preserved instead of splitting Unicode text.
+        """
+        expected = self.encode(text, add_special_tokens=False)
+        ids, offsets = [], []
+
+        def ordinary(segment, start):
+            if segment:
+                encoded = self.base_tokenizer(segment, add_special_tokens=False, return_offsets_mapping=True)
+                ids.extend(encoded['input_ids'])
+                offsets.extend((start + a, start + b) for a, b in encoded['offset_mapping'])
+
+        position = 0
+        while self.enabled and (opening := text.find(self.bop_marker, position)) >= 0:
+            ordinary(text[position:opening], position)
+            start = opening + len(self.bop_marker)
+            closing = text.index(self.eop_marker, start)  # encode() already validates marker syntax.
+            encoded = self.phoneme_tokenizer.encode(text[start:closing])
+            ids.extend(self.text_phoneme_token_offset + token_id for token_id in encoded.ids)
+            offsets.extend((start + a, start + b) for a, b in encoded.offsets)
+            position = closing + len(self.eop_marker)
+        ordinary(text[position:], position)
+        if ids != expected or len(ids) != len(offsets):
+            raise ValueError('Timestamp character offsets do not match the target input tokenization')
+        if any(not 0 <= a <= b <= len(text) for a, b in offsets):
+            raise ValueError('The tokenizer returned invalid Unicode character offsets')
+        return ids, offsets
+
     def incremental_encoder(self) -> "EasyMagpieIncrementalTextEncoder":
         return EasyMagpieIncrementalTextEncoder(self)
 

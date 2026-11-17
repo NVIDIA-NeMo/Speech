@@ -318,6 +318,11 @@ class EasyMagpieTTSForConditionalGeneration(
         # for that combo (see :meth:`_load_known_speaker_embedding`), then never
         # again. Raw-reference embeddings are owned by vLLM's multimodal cache.
         self._prefill_cache: dict[tuple, torch.Tensor] = {}
+        self._timestamp_observer = None
+        if bool(getattr(hf_config, 'easymagpie_timestamps', False)):
+            from easymagpie_vllm_omni.timestamp_observer import V2TimestampObserver
+
+            self._timestamp_observer = V2TimestampObserver(self, vllm_config)
 
     # ------------------------------------------------------------------
     # Embedding helpers
@@ -792,6 +797,16 @@ class EasyMagpieTTSForConditionalGeneration(
         hidden = model_outputs
         num_tokens = int(hidden.shape[0])
         audio_codes = self._out_codes[:num_tokens].clone()
+        alignment = {}
+        observer = getattr(self, '_timestamp_observer', None)
+        if observer is not None:
+            # vLLM-Omni invokes make_omni_output AFTER the original model
+            # forward/captured-graph replay. Keep request bookkeeping and the
+            # read-only attention posterior outside that graph entirely.
+            observer.finish_forward()
+            packets = observer.output_packets
+            if any(packet.numel() for packet in packets):
+                alignment['alignment'] = packets
         if self._single_stage_audio:
             # Drainable client key (see ``self._single_stage_audio`` in __init__):
             # ``model_outputs`` is remapped to the ``audio`` modality and drained
@@ -799,13 +814,14 @@ class EasyMagpieTTSForConditionalGeneration(
             # cumulative payload. ``postprocess`` also reads this key.
             return OmniOutput(
                 text_hidden_states=hidden,
-                multimodal_outputs={"model_outputs": audio_codes},
+                multimodal_outputs={"model_outputs": audio_codes, **alignment},
             )
         return OmniOutput(
             text_hidden_states=hidden,
             multimodal_outputs={
                 "audio_codes": audio_codes,
                 "codes": {"audio": audio_codes},
+                **alignment,
             },
         )
 
@@ -846,7 +862,23 @@ class EasyMagpieTTSForConditionalGeneration(
             base = input_embeds if input_embeds is not None else self.embed_input_ids(input_ids)
             return input_ids, base, {}
 
+        initial_stream_prompt = info_dict.get('streaming_initial_prompt_len')
+        if (
+            initial_stream_prompt is not None
+            and info_dict['_omni_is_prefill']
+            and int(info_dict['_omni_num_computed_tokens']) >= int(initial_stream_prompt)
+        ):
+            # vLLM-Omni 0.24 appends a one-token synthetic prompt on resume.
+            # Its runner labels that row prefill, but EasyMagpie must consume
+            # it as the next AR step with retained audio/phoneme/cache state.
+            if span_len != 1:
+                raise ValueError('Incremental EasyMagpie resumes require one synthetic prompt token')
+            info_dict = dict(info_dict, _omni_is_prefill=False)
+
         start = self._batch_slot_offset(input_ids, start)
+        observer = getattr(self, '_timestamp_observer', None)
+        if info_dict.get('return_timestamps') and observer is None:
+            raise ValueError('Start the V2 server with hf_overrides.easymagpie_timestamps=true for timestamps')
         if bool(info_dict["_omni_is_prefill"]):
             # A one-token prefill has the same query shape as decode. Clear the
             # per-slot decode gates so it cannot inherit stale state when the
@@ -856,9 +888,12 @@ class EasyMagpieTTSForConditionalGeneration(
             self._dec_audio_valid[start:stop].zero_()
             if self.has_phoneme:
                 self._dec_phoneme_valid[start:stop].zero_()
-            return self._preprocess_prefill(input_ids, input_embeds, span_len, device, info_dict)
-
-        return self._preprocess_decode(input_ids, start, device, info_dict)
+            result = self._preprocess_prefill(input_ids, input_embeds, span_len, device, info_dict)
+        else:
+            result = self._preprocess_decode(input_ids, start, device, info_dict)
+        if observer is not None:
+            observer.register_query(input_ids, info_dict, result[2], start)
+        return result
 
     @staticmethod
     def _batch_slot_offset(input_ids_view: torch.Tensor, fallback: int) -> int:

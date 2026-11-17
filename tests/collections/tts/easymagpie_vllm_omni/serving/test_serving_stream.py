@@ -19,10 +19,24 @@ import json
 from types import SimpleNamespace
 
 import pytest
+import torch
 from easymagpie_vllm_omni.serving_adapter import _build_adapter_cls
 from easymagpie_vllm_omni.serving_stream import EasyMagpieInputStream, EasyMagpieStreamingSpeechHandler
 from easymagpie_vllm_omni.tokenizer import EasyMagpieTextTokenizer
 from vllm.sampling_params import RequestOutputKind, SamplingParams
+
+
+@pytest.mark.asyncio
+async def test_timestamp_audio_lists_are_independent_deltas():
+    from easymagpie_vllm_omni.serving_stream import _alignment_pcm_deltas
+
+    async def outputs():
+        for _ in range(3):
+            yield SimpleNamespace(multimodal_output={'audio': [torch.ones(2560) * 0.1], 'sr': 32000})
+
+    chunks = [chunk async for chunk in _alignment_pcm_deltas(outputs(), 32000)]
+    assert len(chunks) == 3
+    assert sum(map(len, chunks)) == 3 * 2560 * 2
 
 
 def test_input_stream_default_pacing_tolerates_loaded_service_queueing():
@@ -64,6 +78,7 @@ async def test_input_stream_builds_one_resumable_request_from_token_chunks():
     assert chunks[0].prompt["prompt_token_ids"] == [0, 0]
     assert chunks[0].prompt["additional_information"] == {
         "speaker_id": "eng",
+        "streaming_initial_prompt_len": 2,
         "text_token": [10, 11, 12],
         "text_token_start": 0,
     }
@@ -96,6 +111,7 @@ async def test_input_stream_accumulates_tokens_until_first_prefill_is_complete()
 
     assert chunks[0].prompt["additional_information"] == {
         "speaker_id": "eng",
+        "streaming_initial_prompt_len": 6,
         "text_prefill_num": 4,
         "prefill_text_tokens": [10, 11, 12, 13],
         "text_token": [10, 11, 12, 13, 14],
@@ -228,7 +244,7 @@ async def test_input_stream_preserves_one_token_chunks_with_absolute_offsets():
     chunks = [chunk async for chunk in stream.inputs()]
 
     assert [chunk.prompt["additional_information"] for chunk in chunks] == [
-        {"text_token": [10], "text_token_start": 0},
+        {"text_token": [10], "text_token_start": 0, "streaming_initial_prompt_len": 1},
         {"text_token": [11], "text_token_start": 1},
         {"text_token": [12], "text_token_start": 2},
         {"text_token": [99], "text_token_start": 3},

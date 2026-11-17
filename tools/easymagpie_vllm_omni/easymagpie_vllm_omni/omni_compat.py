@@ -53,6 +53,12 @@ def patch_streaming_lifecycle() -> None:
         patched_outputs._easymagpie_patched = True
         Orchestrator._handle_processed_outputs = patched_outputs
 
+    # Newer pinned Omni builds retain terminal stage markers and wait for
+    # downstream audio in _route_output. The legacy eager terminal bridge
+    # below would instead close a live pipeline as soon as input ends.
+    if hasattr(Orchestrator, '_apply_raw_terminal_stage_finish'):
+        return
+
     original_update = Orchestrator._handle_streaming_update
     if getattr(original_update, "_easymagpie_terminal_patched", False):
         return

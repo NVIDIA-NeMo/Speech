@@ -127,6 +127,23 @@ Tutorial Overview
      - ASR Confidence Estimation
      - `ASR Confidence Estimation <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/ASR_Confidence_Estimation.ipynb>`_
 
+.. list-table:: **Audio Processing Tutorials**
+   :widths: 15 35 50
+   :header-rows: 1
+
+   * - Domain
+     - Title
+     - GitHub URL
+   * - Audio
+     - Speech Enhancement with NeMo
+     - `Speech Enhancement with NeMo <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/audio/speech_enhancement/Speech_Enhancement_with_NeMo.ipynb>`_
+   * - Audio
+     - Speech Enhancement with Online Augmentation
+     - `Speech Enhancement with Online Augmentation <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/audio/speech_enhancement/Speech_Enhancement_with_Online_Augmentation.ipynb>`_
+   * - Audio
+     - Maxine BNR Speech Enhancement
+     - `Maxine BNR Speech Enhancement <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/audio/speech_enhancement/BNR_Speech_enhancement_with_NeMo.ipynb>`_
+
 .. list-table:: **Text-to-Speech (TTS) Tutorials**
    :widths: 15 35 50
    :header-rows: 1

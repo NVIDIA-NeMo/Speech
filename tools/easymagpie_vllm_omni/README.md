@@ -142,6 +142,10 @@ user-audio history.
 
 ### Serve over HTTP and WebSocket
 
+V2 checkpoints with a trained alignment head can also return causal streaming
+token/frame and character/time dictionaries. See [TIMESTAMPS.md](TIMESTAMPS.md)
+for the opt-in deployment field, streaming response and clock conventions.
+
 ```bash
 bash ./scripts/run_server.sh ./converted_model 8091
 ```

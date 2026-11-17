@@ -63,6 +63,9 @@ def _register_streaming_compatibility() -> None:
     from easymagpie_vllm_omni.omni_compat import patch_streaming_lifecycle
 
     patch_streaming_lifecycle()
+    from easymagpie_vllm_omni.timestamp_observer import patch_alignment_transport
+
+    patch_alignment_transport()
 
 
 def _register_serving_adapter() -> None:

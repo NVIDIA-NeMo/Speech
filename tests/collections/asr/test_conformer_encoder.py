@@ -1101,6 +1101,41 @@ class TestPackedFastConformerSmoke:
 class TestCacheAwareTraining:
     """Testing that training matches cache-aware streaming."""
 
+    @pytest.mark.parametrize("n_frames", [7, 32])
+    @pytest.mark.parametrize("subsampling", ["striding", "dw_striding"])
+    def test_noncausal_train_matches_eval(self, n_frames, subsampling):
+        """Noncausal training preserves output lengths and frame alignment."""
+        torch.manual_seed(0)
+        model = ConformerEncoder(
+            feat_in=80,
+            n_layers=1,
+            d_model=16,
+            n_heads=4,
+            subsampling=subsampling,
+            subsampling_factor=8,
+            subsampling_conv_channels=8,
+            causal_downsampling=False,
+            att_context_size=[16, 3],
+            att_context_style="chunked_limited",
+            conv_kernel_size=5,
+            conv_context_size="causal",
+            conv_norm_type="layer_norm",
+            dropout=0.0,
+            dropout_pre_encoder=0.0,
+            dropout_emb=0.0,
+            dropout_att=0.0,
+        )
+        feats = torch.randn(1, 80, n_frames)
+        lengths = torch.tensor([n_frames])
+        with torch.no_grad():
+            model.eval()
+            eval_out, eval_len = model(audio_signal=feats, length=lengths)
+            model.train()
+            train_out, train_len = model(audio_signal=feats, length=lengths)
+
+        assert train_len.tolist() == eval_len.tolist() == [(n_frames + 7) // 8]
+        torch.testing.assert_close(train_out, eval_out)
+
     def test_train_matches_streaming(self):
         """Training output matches the cache-aware stream, first chunk included."""
         torch.manual_seed(0)

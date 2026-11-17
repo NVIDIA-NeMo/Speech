@@ -274,8 +274,8 @@ class RelPositionMultiHeadAttentionAdapter(mha.RelPositionMultiHeadAttention, ad
             self.linear_v = nn.Linear(n_feat, self.proj_dim)
             self.linear_out = nn.Linear(self.proj_dim, n_feat)
             self.linear_pos = nn.Linear(n_feat, self.proj_dim, bias=False)
-            self.pos_bias_u = nn.Parameter(torch.FloatTensor(self.h, self.d_k))
-            self.pos_bias_v = nn.Parameter(torch.FloatTensor(self.h, self.d_k))
+            self.pos_bias_u = nn.Parameter(torch.empty(self.h, self.d_k))
+            self.pos_bias_v = nn.Parameter(torch.empty(self.h, self.d_k))
 
         # Setup adapter strategy
         self.setup_adapter_strategy(adapter_strategy)

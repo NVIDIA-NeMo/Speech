@@ -43,6 +43,7 @@ from nemo.collections.asr.parts.mixins.transcription import TranscribeConfig
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.common.parts.utils import mask_sequence_tensor
+from nemo.collections.tts.g2p.models.base import BaseG2p
 
 try:
     from nemo_text_processing.text_normalization.normalize import Normalizer
@@ -1383,3 +1384,23 @@ class WhisperTranscriber(Transcriber):
             transcriptions = self.processor.batch_decode(predicted_ids, skip_special_tokens=True)
             all_transcriptions.extend(transcriptions)
         return all_transcriptions
+
+
+def set_g2p_rng(tokenizer: Any, rng: random.Random) -> None:
+    """
+    Make every G2P module reachable from ``tokenizer`` draw its random choices (e.g. ``phoneme_probability``)
+    from ``rng``.
+
+    Datasets call this with their checkpointed generator so that G2P randomness is restored on resume together
+    with the dataset's own draws. ``tokenizer`` may be a single TTS tokenizer with a ``g2p`` attribute, an
+    ``AggregatedTTSTokenizer`` (its ``tokenizers`` are visited), or any other tokenizer (ignored).
+    """
+    if tokenizer is None:
+        return
+    sub_tokenizers = getattr(tokenizer, "tokenizers", None)
+    if isinstance(sub_tokenizers, dict):
+        for sub_tokenizer in sub_tokenizers.values():
+            set_g2p_rng(sub_tokenizer, rng)
+    g2p = getattr(tokenizer, "g2p", None)
+    if isinstance(g2p, BaseG2p):
+        g2p.rng = rng

@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import json
+import os
 import random
 from io import BytesIO
 
@@ -27,6 +28,7 @@ from lhotse.array import Array, TemporalArray
 from lhotse.testing.dummies import dummy_cut, dummy_recording
 from omegaconf import OmegaConf
 
+from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer, IPATokenizer
 from nemo.collections.tts.data.text_to_speech_dataset import MagpieTTSDataset
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import MagpieTTSLhotseDataset
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import (
@@ -34,6 +36,7 @@ from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import (
     collate_phoneme_channel,
     collate_token_channel,
 )
+from nemo.collections.tts.g2p.models.i18n_ipa import IpaG2p
 
 
 pytestmark = pytest.mark.unit
@@ -707,3 +710,93 @@ def test_multiturn_channel_helpers_draw_from_injected_rng(collate):
     assert first == second
     # The draws matter: different generators give different channels.
     assert len({str(out) for out in many}) > 1
+
+
+G2P_PHONEME_DICT_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "g2p", "phoneme_dict", "test_dict_en.txt"
+)
+G2P_TEXT = " ".join(["hello world nvidia jones airport"] * 4)
+
+
+def _g2p_tokenizer():
+    """A real IPA tokenizer whose G2P keeps each word as graphemes with probability 0.5."""
+    g2p = IpaG2p(
+        G2P_PHONEME_DICT_PATH,
+        locale="en-US",
+        use_chars=True,
+        phoneme_probability=0.5,
+        apply_to_oov_word=lambda x: x,
+    )
+    return AggregatedTTSTokenizer([IPATokenizer(g2p=g2p, locale="en-US")], ["english_phoneme"])
+
+
+def _single_turn_dataset_with_g2p():
+    dataset = _dataset_with_fake_tokenizers(MagpieTTSLhotseDataset)
+    dataset.text_tokenizer = _g2p_tokenizer()
+    dataset.bos_id = len(dataset.text_tokenizer.tokens)
+    dataset.eos_id = dataset.bos_id + 1
+    dataset.pad_id = dataset.text_tokenizer.pad
+    return dataset
+
+
+def _g2p_cutset(dataset_class=MagpieTTSLhotseDataset):
+    cuts = _cutset_with_long_context(dataset_class)
+    cut = next(iter(cuts))
+    cut.tokenizer_names = ["english_phoneme"]
+    # The multiturn token channel is frame-aligned, so its turns only fit a short text.
+    text = G2P_TEXT if dataset_class is MagpieTTSLhotseDataset else "hello jones"
+    for supervision in cut.supervisions:
+        supervision.text = text
+        supervision.custom = {k: v for k, v in (supervision.custom or {}).items() if k not in ("ipa", "ipa_alignment")}
+        supervision.normalized_text = text
+    return cuts
+
+
+def _multiturn_dataset_with_g2p():
+    dataset = _dataset_with_fake_tokenizers(MagpieTTSLhotseMultiturnDataset)
+    dataset.text_tokenizer = _g2p_tokenizer()
+    dataset.bos_id = len(dataset.text_tokenizer.tokens)
+    dataset.eos_id = dataset.bos_id + 1
+    dataset.cfg_unk_token_id = dataset.bos_id + 2
+    dataset.interruption_token_id = dataset.bos_id + 3
+    dataset.pad_id = dataset.text_tokenizer.pad
+    return dataset
+
+
+_G2P_DATASETS = {
+    MagpieTTSLhotseDataset: _single_turn_dataset_with_g2p,
+    MagpieTTSLhotseMultiturnDataset: _multiturn_dataset_with_g2p,
+}
+
+
+@pytest.mark.parametrize("dataset_class", [MagpieTTSLhotseDataset, MagpieTTSLhotseMultiturnDataset])
+class TestMagpieTTSDatasetG2pRNG:
+    def test_lhotse_dataset_restores_g2p_draws(self, dataset_class):
+        cuts = _g2p_cutset(dataset_class)
+        make_dataset = _G2P_DATASETS[dataset_class]
+        dataset = make_dataset()
+        _ = dataset[cuts]
+        state = dataset.state_dict()
+        expected = [dataset[cuts]["text"] for _ in range(3)]
+
+        # A resumed process starts with different global and torch RNG states.
+        random.seed(1234)
+        torch.manual_seed(1234)
+        restored = make_dataset()
+        restored.load_state_dict(state)
+
+        for expected_text in expected:
+            torch.testing.assert_close(restored[cuts]["text"], expected_text)
+        # phoneme_probability=0.5 makes the tokens vary between reads.
+        assert len({tuple(text.flatten().tolist()) for text in expected}) > 1
+
+    def test_g2p_keeps_its_own_generator_unless_checkpointed_rng_is_enabled(self, dataset_class):
+        cuts = _g2p_cutset(dataset_class)
+        dataset = _G2P_DATASETS[dataset_class]()
+        dataset._checkpointed_rng_enabled = False
+        g2p = dataset.text_tokenizer.tokenizers["english_phoneme"].g2p
+        own_rng = g2p.rng
+
+        _ = dataset[cuts]
+
+        assert g2p.rng is own_rng

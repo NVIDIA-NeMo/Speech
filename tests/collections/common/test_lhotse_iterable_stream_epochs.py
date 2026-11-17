@@ -19,6 +19,8 @@ Lightning calls ``iter()`` on the train loader at every epoch boundary, includin
 batch counter, so a batch the workers produced but nobody consumed shows up as a gap in the counter.
 """
 
+import pickle
+import time
 from pathlib import Path
 
 import lightning.pytorch as pl
@@ -27,7 +29,7 @@ import torch
 from lhotse import CutSet
 from lhotse.testing.dummies import DummyManifest
 
-from nemo.collections.common.data.lhotse.dataloader import get_lhotse_dataloader_from_config
+from nemo.collections.common.data.lhotse.dataloader import _LhotseDataLoader, get_lhotse_dataloader_from_config
 from nemo.core.utils.lightning_utils import read_batch
 from nemo.utils.callbacks.nemo_model_checkpoint import NeMoModelCheckpoint
 
@@ -75,6 +77,42 @@ def test_lightning_epochs_consume_every_batch_and_resume_exactly(tmp_path, cuts_
 
     assert project(resumed) == project(uninterrupted[SPLIT:])
     _assert_no_gaps([batch for _, batch in resumed])
+
+
+@pytest.mark.unit
+def test_plain_dataloader_keeps_batches_buffered_after_all_workers_ended():
+    # Workers 1 and 2 finish (and report their end) while worker 0 is still running, so the iterator buffers
+    # their last records. After worker 0 ends too, every worker is marked done but a record is still buffered:
+    # the epoch boundary must not reset the iterator and drop it.
+    loader = _LhotseDataLoader(
+        _UnequalWorkerStream(), batch_size=None, num_workers=3, persistent_workers=True, prefetch_factor=2
+    )
+    expected = [(0, 0), (1, 0), (1, 1), (2, 0), (2, 1)]
+    iterator = iter(loader)
+    first = [tuple(next(iterator)) for _ in range(4)]
+    rest = [tuple(record) for record in loader]  # a Lightning epoch boundary falls here
+    assert sorted(first + rest) == expected
+    assert sorted(tuple(record) for record in loader) == expected  # the stream has ended: a new pass
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("use_stateful_dataloader", [False, True])
+def test_iterable_dataloader_is_picklable(cuts_path, use_stateful_dataloader):
+    # Spawn-based launchers pickle models that hold their dataloaders.
+    dloader = _make_dataloader(cuts_path, use_stateful_dataloader, num_workers=0)
+    restored = pickle.loads(pickle.dumps(dloader))
+    assert type(restored) is type(dloader)
+    expected = next(iter(_make_dataloader(cuts_path, use_stateful_dataloader, num_workers=0)))
+    assert next(iter(restored))["cut_ids"] == expected["cut_ids"]
+
+
+class _UnequalWorkerStream(torch.utils.data.IterableDataset):
+    def __iter__(self):
+        worker_id = torch.utils.data.get_worker_info().id
+        for idx in range(1 if worker_id == 0 else 2):
+            yield worker_id, idx
+        if worker_id == 0:
+            time.sleep(3.0)  # report worker 0's end only after the other workers have ended
 
 
 class _WorkerCountingDataset(torch.utils.data.Dataset):
@@ -134,14 +172,14 @@ def _fit(root: Path, cuts_path: Path, ckpt_path: Path | None = None) -> list[tup
     return model.seen
 
 
-def _make_dataloader(cuts_path: Path, use_stateful_dataloader: bool):
+def _make_dataloader(cuts_path: Path, use_stateful_dataloader: bool, num_workers: int = NUM_WORKERS):
     config = {
         "cuts_path": str(cuts_path),
         "batch_size": BATCH_SIZE,
         "shuffle": True,
         "seed": 0,
         "shard_seed": "randomized",
-        "num_workers": NUM_WORKERS,
+        "num_workers": num_workers,
         "force_iterable_dataset": True,
         "use_stateful_dataloader": use_stateful_dataloader,
     }

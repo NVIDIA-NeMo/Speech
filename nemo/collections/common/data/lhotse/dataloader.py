@@ -17,7 +17,7 @@ import random
 import warnings
 from copy import deepcopy
 from dataclasses import dataclass
-from functools import lru_cache, partial
+from functools import partial
 from typing import Any, List, Optional, Sequence, Tuple, Union
 
 import lhotse
@@ -43,7 +43,7 @@ from lhotse.dataset.sampling.base import CutSampler, SamplingConstraint, TimeCon
 from lhotse.lazy import LazyFlattener
 from lhotse.utils import fix_random_seed
 from omegaconf import DictConfig, OmegaConf
-from torch.utils.data.dataloader import _DatasetKind
+from torch.utils.data.dataloader import _DatasetKind, _MultiProcessingDataLoaderIter, _SingleProcessDataLoaderIter
 
 from nemo.collections.common.data.lhotse.audio_loading import configure_dataset_audio_loading
 from nemo.collections.common.data.lhotse.audio_token_estimator import AudioTokenEstimator
@@ -411,9 +411,12 @@ class _ContinueIterableStreamMixin:
     ``limit_train_batches`` (speechlm2 uses them as an epoch length over an infinite Lhotse stream). A stock
     ``DataLoader`` with persistent workers then resets its iterator, which discards the
     ``prefetch_factor * num_workers`` batches the workers had already read from the stream, so that data is
-    skipped at every boundary. Here ``iter()`` returns the existing iterator as long as the stream has not ended.
-    Once it raises ``StopIteration`` (a finite stream), the next ``iter()`` starts a new pass as before.
-    Map-style datasets keep the stock behavior: each ``iter()`` starts a new epoch of the sampler.
+    skipped at every boundary. Here ``iter()`` returns the existing iterator until the consumer has seen it raise
+    ``StopIteration`` (the iterator's ``_finished`` flag, which torchdata's iterators set and
+    :class:`_LhotseDataLoader`'s iterators mirror). Only then, i.e. at the end of a finite stream, does the next
+    ``iter()`` start a new pass. Workers that have reported the end of their stream are not enough: the iterator
+    may still hold their buffered batches. Map-style datasets keep the stock behavior: each ``iter()`` starts a
+    new epoch of the sampler.
     """
 
     def __iter__(self):
@@ -423,7 +426,7 @@ class _ContinueIterableStreamMixin:
             and iterator is not None
             # StatefulDataLoader created this iterator in state_dict(); its own __iter__ hands it out.
             and not getattr(self, "_initial_iter_for_state_dict", False)
-            and not _is_iterator_exhausted(iterator)
+            and not iterator._finished
         ):
             return iterator
         return super().__iter__()
@@ -431,6 +434,37 @@ class _ContinueIterableStreamMixin:
 
 class _LhotseDataLoader(_ContinueIterableStreamMixin, torch.utils.data.DataLoader):
     """``torch.utils.data.DataLoader`` used for Lhotse data when ``use_stateful_dataloader=False``."""
+
+    def _get_iterator(self):
+        if self.num_workers == 0:
+            return _FinishTrackingSingleProcessIter(self)
+        self.check_worker_number_rationality()
+        return _FinishTrackingMultiProcessingIter(self)
+
+
+class _FinishTrackingIterMixin:
+    """Record in ``_finished`` that the consumer saw ``StopIteration``, like torchdata's iterators do."""
+
+    _finished = False
+
+    def _reset(self, *args, **kwargs):
+        super()._reset(*args, **kwargs)
+        self._finished = False
+
+    def __next__(self):
+        try:
+            return super().__next__()
+        except StopIteration:
+            self._finished = True
+            raise
+
+
+class _FinishTrackingSingleProcessIter(_FinishTrackingIterMixin, _SingleProcessDataLoaderIter):
+    pass
+
+
+class _FinishTrackingMultiProcessingIter(_FinishTrackingIterMixin, _MultiProcessingDataLoaderIter):
+    pass
 
 
 class _PerRankStatefulDataLoader:
@@ -544,7 +578,11 @@ class _PerRankStatefulDataLoader:
     def __getattr__(self, name: str) -> Any:
         # ``__getattr__`` only fires when normal attribute lookup fails, so the
         # explicit attributes (``_inner``, ``_dp_rank``, ...) are reached
-        # directly without bouncing through here.
+        # directly without bouncing through here. While unpickling, ``_inner``
+        # is not set yet and pickle probes dunder hooks; forwarding those would
+        # recurse forever.
+        if name == "_inner" or (name.startswith("__") and name.endswith("__")):
+            raise AttributeError(name)
         return getattr(self._inner, name)
 
     def __iter__(self):
@@ -1497,48 +1535,7 @@ def _cut_text_into_windows(cut, num_tokens: int, tokenizer) -> list:
 
 
 def _lhotse_stateful_dataloader_cls() -> type:
-    """Return the ``StatefulDataLoader`` subclass used for Lhotse samplers (torchdata is imported lazily)."""
-    from torchdata.stateful_dataloader import StatefulDataLoader
-
-    return _make_lhotse_stateful_dataloader_cls(StatefulDataLoader)
-
-
-@lru_cache(maxsize=None)
-def _make_lhotse_stateful_dataloader_cls(base: type) -> type:
-    class LhotseStatefulDataLoader(_ContinueIterableStreamMixin, base):
-        """``StatefulDataLoader`` that leaves a restored Lhotse sampler in a normal iterating state.
-
-        Iterable-style datasets keep one live iterator across ``iter()`` calls; see
-        :class:`_ContinueIterableStreamMixin`. ``load_state_dict()`` drops that iterator, so the next
-        ``iter()`` resumes from the loaded state.
-
-        When torchdata restores a map-style loader, it loads the saved state into the index
-        sampler, calls ``iter()`` on it, and then loads the same state again into the sampler
-        iterator. A Lhotse ``CutSampler`` is its own iterator, so the second load re-arms the
-        deferred restore (``_needs_fast_forward``) of a sampler that is already positioned at the
-        checkpoint. In lhotse<=2.0.0a6 that flag is only consumed by the next ``iter()``. Until
-        then ``set_epoch()`` is ignored, so at the next epoch boundary the sampler rewinds to the
-        checkpoint instead of starting the new epoch, and the resumed run diverges from the
-        uninterrupted one.
-
-        Once the restored iterator exists, the restore has been applied, so we clear the pending
-        restore state with the public ``CutSampler.allow_iter_to_reset_state()``.
-        """
-
-        def __iter__(self):
-            restoring = self.next_iter_state is not None
-            iterator = super().__iter__()
-            if restoring and isinstance(self.sampler, CutSampler):
-                self.sampler.allow_iter_to_reset_state()
-            return iterator
+    """Return the ``StatefulDataLoader`` subclass used for Lhotse data (imports torchdata lazily)."""
+    from nemo.collections.common.data.lhotse._stateful_dataloader import LhotseStatefulDataLoader
 
     return LhotseStatefulDataLoader
-
-
-def _is_iterator_exhausted(iterator) -> bool:
-    """Whether a DataLoader iterator over an iterable-style dataset has raised ``StopIteration``."""
-    finished = getattr(iterator, "_finished", None)  # torchdata StatefulDataLoader iterators
-    if finished is not None:
-        return finished
-    # torch's persistent multi-worker iterator marks each worker as done when its stream ends.
-    return not any(getattr(iterator, "_workers_status", ()))

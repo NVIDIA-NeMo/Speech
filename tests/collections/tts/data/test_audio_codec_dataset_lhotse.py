@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import random
 from pathlib import Path
 
 import lhotse
@@ -85,6 +86,12 @@ def cutset(tmp_path) -> CutSet:
         for i in range(3)
     ]
     return CutSet.from_cuts(cuts)
+
+
+def _checkpointed_dataset() -> AudioCodecLhotseDataset:
+    dataset = AudioCodecLhotseDataset(sample_rate=TARGET_SAMPLE_RATE, segment_duration=0.25)
+    dataset.enable_checkpointed_rng()
+    return dataset
 
 
 @pytest.fixture()
@@ -168,20 +175,32 @@ class TestAudioCodecLhotseDataset:
         assert np.allclose(segment, full[fixed_start : fixed_start + segment_samples])
 
     @pytest.mark.unit
-    def test_restored_rng_state_reproduces_segments(self, cutset):
+    def test_crops_use_the_global_rng_unless_checkpointed_rng_is_enabled(self, cutset):
+        # Legacy behaviour: without use_stateful_dataloader the crop follows the global ``random`` module.
         dataset = AudioCodecLhotseDataset(sample_rate=TARGET_SAMPLE_RATE, segment_duration=0.25)
-        dataset[cutset]
+        random.seed(0)
+        first = dataset[cutset]["audio"]
+        random.seed(0)
+        second = dataset[cutset]["audio"]
+
+        assert not dataset.checkpointed_rng_enabled
+        torch.testing.assert_close(first, second)
+
+    @pytest.mark.unit
+    def test_restored_rng_state_reproduces_segments(self, cutset):
+        dataset = _checkpointed_dataset()
+        _ = dataset[cutset]
         state = dataset.state_dict()
         expected = dataset[cutset]["audio"]
 
-        restored = AudioCodecLhotseDataset(sample_rate=TARGET_SAMPLE_RATE, segment_duration=0.25)
+        restored = _checkpointed_dataset()
         restored.load_state_dict(state)
 
         torch.testing.assert_close(restored[cutset]["audio"], expected)
 
     @pytest.mark.unit
     def test_segments_differ_when_cuts_are_read_again(self, cutset):
-        dataset = AudioCodecLhotseDataset(sample_rate=TARGET_SAMPLE_RATE, segment_duration=0.25)
+        dataset = _checkpointed_dataset()
         first = dataset[cutset]["audio"]
         second = dataset[cutset]["audio"]
 
@@ -190,7 +209,7 @@ class TestAudioCodecLhotseDataset:
     @pytest.mark.unit
     def test_stateful_dataloader_resume_reproduces_segments(self, cutset):
         def make_loader():
-            dataset = AudioCodecLhotseDataset(sample_rate=TARGET_SAMPLE_RATE, segment_duration=0.25)
+            dataset = _checkpointed_dataset()
             sampler = SimpleCutSampler(cutset, max_cuts=1, shuffle=True, seed=0)
             return StatefulDataLoader(dataset, sampler=sampler, batch_size=None, num_workers=0)
 

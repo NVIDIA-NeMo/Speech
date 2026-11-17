@@ -1166,9 +1166,10 @@ def validate_tar_member_index_layout(tar_path, idx_path) -> None:
     ``lhotse index tar`` (:func:`lhotse.indexing.create_tar_index`) writes the Shar/WebDataset
     paired layout, with one entry per *two* consecutive members. Readers such as
     :class:`IndexedTarMemberReader` would then see only half of the samples. Only the first
-    indexed byte range is inspected: it must hold regular members of a single basename. This
-    reads just the tar headers in that range (no payloads), so it is cheap enough to run on
-    every existing sidecar.
+    indexed byte range is inspected: its regular members must share a single basename, while
+    non-regular entries (e.g. directories, which :func:`create_tar_index` skips) are allowed.
+    This reads just the tar headers in that range (no payloads), so it is cheap enough to run
+    on every existing sidecar.
     """
     from lhotse.indexing import read_index
 
@@ -1182,19 +1183,7 @@ def validate_tar_member_index_layout(tar_path, idx_path) -> None:
     def read_range(range_start: int, range_end: int) -> bytes:
         return read_exact_range(tar_path, range_start, range_end)
 
-    stems = []
-    position = start
-    while position + _TAR_BLOCK_SIZE <= end:
-        if read_range(position, position + _TAR_BLOCK_SIZE) == _TAR_ZERO_BLOCK:
-            break  # End-of-archive marker after the last member.
-        name, header_position = _read_tar_member_header(read_range, position, end, tar_path)
-        info = tarfile.TarInfo.frombuf(
-            read_range(header_position, header_position + _TAR_BLOCK_SIZE), tarfile.ENCODING, "surrogateescape"
-        )
-        stem = Path(name).stem
-        if stem not in stems:
-            stems.append(stem)
-        position = header_position + _TAR_BLOCK_SIZE + (-(-info.size // _TAR_BLOCK_SIZE) * _TAR_BLOCK_SIZE)
+    stems = _regular_member_stems_in_range(read_range, start, end, tar_path)
     if len(stems) > 1:
         raise ValueError(
             f"Tar index {idx_path} does not have the one-entry-per-member layout expected for {tar_path}: "
@@ -1202,6 +1191,52 @@ def validate_tar_member_index_layout(tar_path, idx_path) -> None:
             "It was likely written by 'lhotse index tar', which uses the Lhotse Shar paired-member layout. "
             "Rebuild it with 'python scripts/dataloading/build_indexes.py --force <input_cfg.yaml>'."
         )
+
+
+def _regular_member_stems_in_range(read_range, start: int, end: int, source_path: str) -> list[str]:
+    """Return the basename stems of the regular members in the tar byte range ``[start, end)``.
+
+    Walks headers only (no payload reads). Non-regular entries such as directories are skipped,
+    PAX and GNU long-name metadata name the following regular member, and the walk ends cleanly
+    at the range end or at the end-of-archive marker. An entry whose header or payload extends
+    past ``end`` raises ``ValueError`` because the range does not hold complete entries.
+    """
+    stems: list[str] = []
+    pax_headers: dict[str, str] = {}
+    long_name: str | None = None
+    position = start
+    while position < end:
+        if position + _TAR_BLOCK_SIZE > end:
+            raise ValueError(f"Truncated tar header at {position} in indexed range [{start}, {end}) of {source_path}")
+        header = read_range(position, position + _TAR_BLOCK_SIZE)
+        if header == _TAR_ZERO_BLOCK:
+            break  # End-of-archive marker after the last member.
+        try:
+            info = tarfile.TarInfo.frombuf(header, tarfile.ENCODING, "surrogateescape")
+        except tarfile.TarError as ex:
+            raise ValueError(f"{ex} — reading tar header at {position} in {source_path}") from ex
+        data_position = position + _TAR_BLOCK_SIZE
+        next_position = data_position + (-(-info.size // _TAR_BLOCK_SIZE) * _TAR_BLOCK_SIZE)
+        if data_position + info.size > end:
+            raise ValueError(
+                f"Tar entry {info.name!r} at {position} extends past indexed range [{start}, {end}) in {source_path}"
+            )
+        if info.type in (tarfile.XHDTYPE, tarfile.XGLTYPE):
+            pax_headers.update(_parse_pax_headers(read_range(data_position, data_position + info.size)))
+        elif info.type == tarfile.GNUTYPE_LONGNAME:
+            raw_name = read_range(data_position, data_position + info.size)
+            long_name = raw_name.rstrip(b"\0\n").decode(tarfile.ENCODING, "surrogateescape")
+        elif info.type == tarfile.GNUTYPE_LONGLINK:
+            pass  # Link target of the next entry; irrelevant for sample names.
+        else:
+            if info.type in (tarfile.REGTYPE, tarfile.AREGTYPE):
+                stem = Path(pax_headers.get("path") or long_name or info.name).stem
+                if stem not in stems:
+                    stems.append(stem)
+            # Per-entry metadata applies only to the entry that follows it.
+            pax_headers, long_name = {}, None
+        position = next_position
+    return stems
 
 
 def _scan_wds_v2_tar(tar_path: str) -> tuple[list[int], int, int]:

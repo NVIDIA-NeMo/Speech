@@ -769,7 +769,7 @@ class LazyNeMoTarredIterator(IteratorNode):
             # Positional lookup: row i -> member i, validated by member name at audio load.
             _check_indexed_tar_covers_manifest(
                 manifest_path,
-                num_rows,
+                self._cuts_readers[sid],
                 tar_path,
                 index_file_path(tar_path, self.indexes_root),
                 num_members,
@@ -1759,27 +1759,33 @@ def _extract_unique_shard_keys(
 
 def _check_indexed_tar_covers_manifest(
     manifest_path: str,
-    num_rows: int,
+    manifest_rows: Sequence,
     tar_path: str,
     tar_idx_path: str | Path,
     num_members: int,
     route_path: Path | None,
 ) -> None:
-    """Fail fast when positional lookup (manifest row ``i`` -> tar index entry ``i``) cannot work.
+    """Fail fast when positional lookup cannot serve an active manifest row ``i`` (row ``i`` -> tar entry ``i``).
 
     Without a route sidecar, indexed (loose ``.idx``) ``nemo_tarred`` loading resolves manifest row ``i``
-    to tar index entry ``i`` (and validates the member name when the audio is loaded). A tar index with
-    fewer entries than the manifest has rows would only fail mid-epoch with a bare ``IndexError``. Both
-    counts come from the already loaded ``.idx`` sidecars, so this check reads no data.
+    to tar index entry ``i`` (and validates the member name when the audio is loaded). Rows explicitly
+    skipped with ``_skipme`` never touch the tar, but an active row beyond the tar index would only fail
+    mid-epoch with a bare ``IndexError``. When the row count from the manifest ``.idx`` fits the tar index,
+    this reads no manifest data. Otherwise it reads the overflow rows (physical positions past the tar
+    index) and raises at the first active one. Rows are never renumbered, so an active row at an
+    out-of-range physical position fails even when earlier rows are skipped.
     """
+    num_rows = len(manifest_rows)
     if num_rows <= num_members:
+        return
+    if all(manifest_entry_is_explicitly_skipped(manifest_rows[i]) for i in range(num_members, num_rows)):
         return
     route = repr(str(route_path)) if route_path is not None else "which requires a local indexes_root"
     raise ValueError(
         f"Indexed nemo_tarred shard mismatch: manifest {manifest_path!r} has {num_rows} rows, but the tar index "
-        f"{str(tar_idx_path)!r} for {tar_path!r} lists only {num_members} members, and there is no row-to-member "
-        f"route sidecar ({route}). Either the tar index has the wrong layout (e.g. it was written "
-        "by 'lhotse index tar', which uses the Lhotse Shar paired-member layout), or several manifest rows "
+        f"{str(tar_idx_path)!r} for {tar_path!r} lists only {num_members} members, a row past the last member "
+        f"is not skipped with _skipme, and there is no row-to-member route sidecar ({route}). Either the tar "
+        "index has the wrong layout (e.g. it was written by 'lhotse index tar', which uses the Lhotse Shar paired-member layout), or several manifest rows "
         "share one tar member (e.g. '-subN' rows). Run 'python scripts/dataloading/build_indexes.py "
         "<input_cfg.yaml>' (with the same --indexes-root as the training config, if any): it rebuilds tar "
         "indexes in the wrong layout and writes the route sidecar when one is needed."

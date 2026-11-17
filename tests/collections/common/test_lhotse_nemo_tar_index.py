@@ -17,7 +17,9 @@ import json
 import struct
 import tarfile
 
+import numpy as np
 import pytest
+import soundfile as sf
 from click.testing import CliRunner
 from lhotse.indexing import create_jsonl_index
 from lhotse.indexing import create_tar_index as create_lhotse_tar_index
@@ -280,6 +282,105 @@ def test_build_indexes_rebuilds_nemo_tar_index_in_lhotse_paired_layout(tmp_path)
     assert len(read_index(f"{tar_path}.idx")) == 5
 
 
+@pytest.mark.unit
+def test_indexed_nemo_tarred_accepts_skipped_rows_past_tar_index(tmp_path):
+    audio = np.linspace(-0.5, 0.5, 1600, dtype=np.float32)
+    tar_path = _write_tar(tmp_path / "audio_0.tar", [("A.wav", _wav_bytes(audio))])
+    manifest_path = _write_manifest(
+        tmp_path / "manifest_0.json",
+        [_row("A.wav"), _row("B.wav", _skipme=True), _row("C.wav", custom={"_skipme": True})],
+    )
+    create_tar_index(tar_path, f"{tar_path}.idx")
+
+    iterator = LazyNeMoTarredIterator(manifest_path=str(manifest_path), tar_paths=str(tar_path), indexed=True)
+    cuts = list(iterator)
+
+    assert len(iterator) == 3
+    assert [cut.id for cut in cuts] == ["A.wav"]
+    np.testing.assert_allclose(cuts[0].load_audio()[0], audio, atol=1e-4)
+
+
+@pytest.mark.unit
+def test_indexed_nemo_tarred_accepts_empty_tar_with_only_skipped_rows(tmp_path):
+    tar_path = _write_tar(tmp_path / "audio_0.tar", [])
+    manifest_path = _write_manifest(
+        tmp_path / "manifest_0.json", [_row("A.wav", _skipme=True), _row("B.wav", custom={"_skipme": 1})]
+    )
+    create_tar_index(tar_path, f"{tar_path}.idx")
+
+    iterator = LazyNeMoTarredIterator(manifest_path=str(manifest_path), tar_paths=str(tar_path), indexed=True)
+
+    assert len(iterator) == 2
+    assert list(iterator) == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", ["marker-then-active", "falsy-marker"])
+def test_indexed_nemo_tarred_rejects_active_rows_past_tar_index(tmp_path, case):
+    if case == "marker-then-active":
+        # Rows are not renumbered: the active row sits at physical index 1 of a one-member tar.
+        rows = [_row("B.wav", _skipme=True), _row("A.wav")]
+    else:
+        rows = [_row("A.wav"), _row("B.wav", _skipme=False)]
+    tar_path = _write_tar(tmp_path / "audio_0.tar", [("A.wav", b"audio")])
+    manifest_path = _write_manifest(tmp_path / "manifest_0.json", rows)
+    create_tar_index(tar_path, f"{tar_path}.idx")
+
+    with pytest.raises(ValueError, match=r"has 2 rows.*lists only 1 members.*not skipped"):
+        LazyNeMoTarredIterator(manifest_path=str(manifest_path), tar_paths=str(tar_path), indexed=True)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "entries",
+    [
+        [("utt0.wav", b"0"), ("empty/", None), ("utt1.wav", b"1")],
+        [("utt0.wav", b"0"), ("empty/", None)],
+        [("utt0.wav", b"0"), ("empty/", {"comment": "pax metadata on a directory"}), ("utt1.wav", b"1")],
+        [("sample.json", b"{}"), ("sample.wav", b"0"), ("other.json", b"{}"), ("other.wav", b"1")],
+        [("d/" + "x" * 150 + ".wav", b"0"), ("d/" + "y" * 150 + ".wav", b"1")],
+        [],
+    ],
+    ids=["directory-between", "trailing-directory", "pax-directory", "same-stem-group", "long-names", "empty"],
+)
+@pytest.mark.parametrize("tar_format", [tarfile.PAX_FORMAT, tarfile.GNU_FORMAT], ids=["pax", "gnu"])
+def test_validate_tar_member_index_layout_accepts_nemo_index(tmp_path, entries, tar_format):
+    tar_path = _write_tar(tmp_path / "audio_0.tar", entries, tar_format=tar_format)
+    idx_path = tmp_path / "audio_0.tar.idx"
+    create_tar_index(tar_path, idx_path)
+
+    validate_tar_member_index_layout(tar_path, idx_path)
+
+    assert build_indexes._is_indexed(build_indexes.IndexJob(str(tar_path), build_indexes.NEMO_TAR))
+
+
+@pytest.mark.unit
+def test_build_indexes_keeps_valid_nemo_tar_index_with_directory_entries(tmp_path):
+    tar_path = _write_tar(tmp_path / "audio_0.tar", [("utt0.wav", b"0"), ("empty/", None), ("utt1.wav", b"1")])
+    manifest_path = _write_manifest(tmp_path / "manifest_0.json", [_row("utt0.wav"), _row("utt1.wav")])
+    create_tar_index(tar_path, f"{tar_path}.idx")
+    idx_mtime = (tmp_path / "audio_0.tar.idx").stat().st_mtime_ns
+    cfg_path = tmp_path / "input_cfg.yaml"
+    entry = {"type": "nemo_tarred", "manifest_filepath": str(manifest_path), "tarred_audio_filepaths": str(tar_path)}
+    cfg_path.write_text(json.dumps([entry]))
+
+    result = CliRunner().invoke(build_indexes.main, [str(cfg_path), "--executor", "thread"])
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "audio_0.tar.idx").stat().st_mtime_ns == idx_mtime
+
+
+@pytest.mark.unit
+def test_validate_tar_member_index_layout_rejects_metadata_past_indexed_range(tmp_path):
+    tar_path = _write_tar(tmp_path / "audio_0.tar", [("d/" + "x" * 150 + ".wav", b"0")], tar_format=tarfile.PAX_FORMAT)
+    idx_path = tmp_path / "bad.idx"
+    # The first range ends right after the PAX header block, inside the PAX payload.
+    idx_path.write_bytes(struct.pack("<QQQ", 0, 512, tar_path.stat().st_size))
+
+    with pytest.raises(ValueError, match="extends past indexed range"):
+        validate_tar_member_index_layout(tar_path, idx_path)
+
+
 def _write_nemo_tarred_shard(tmp_path, num_samples=4):
     """Write manifest_0.json + audio_0.tar with one tar member per manifest row (NeMo tarred layout)."""
     manifest_path = tmp_path / "manifest_0.json"
@@ -295,3 +396,36 @@ def _write_nemo_tarred_shard(tmp_path, num_samples=4):
     manifest_path.write_text("".join(json.dumps(row) + "\n" for row in rows))
     create_jsonl_index(manifest_path)
     return manifest_path, tar_path
+
+
+def _row(audio_filepath, **extra):
+    return {"audio_filepath": audio_filepath, "duration": 0.1, "text": audio_filepath, "sampling_rate": 16000, **extra}
+
+
+def _write_manifest(path, rows):
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    create_jsonl_index(path)
+    return path
+
+
+def _write_tar(path, entries, tar_format=tarfile.DEFAULT_FORMAT):
+    """Write a tar from ``(name, payload)`` entries; a None or dict payload makes a directory (dict = PAX headers)."""
+    with tarfile.open(path, "w", format=tar_format) as archive:
+        for name, payload in entries:
+            if payload is None or isinstance(payload, dict):
+                info = tarfile.TarInfo(name.rstrip("/"))
+                info.type = tarfile.DIRTYPE
+                if isinstance(payload, dict) and tar_format == tarfile.PAX_FORMAT:
+                    info.pax_headers = payload
+                archive.addfile(info)
+            else:
+                info = tarfile.TarInfo(name)
+                info.size = len(payload)
+                archive.addfile(info, io.BytesIO(payload))
+    return path
+
+
+def _wav_bytes(audio):
+    buffer = io.BytesIO()
+    sf.write(buffer, audio, 16000, format="WAV", subtype="PCM_16")
+    return buffer.getvalue()

@@ -119,7 +119,7 @@ class Perturbation(object):
 
     @rng.setter
     def rng(self, value: Union[random.Random, ModuleType]) -> None:
-        self.__dict__["_injected_rng"] = value
+        _store_injected_rng(self, value)
         for perturbation in _nested_perturbations(vars(self).values()):
             if perturbation is not self:
                 perturbation.rng = value
@@ -1231,7 +1231,7 @@ class AudioAugmentor(object):
 
     @rng.setter
     def rng(self, value: Union[random.Random, ModuleType]) -> None:
-        self.__dict__["_injected_rng"] = value
+        _store_injected_rng(self, value)
         for perturbation in _nested_perturbations(p for _, p in self._pipeline):
             perturbation.rng = value
 
@@ -1606,3 +1606,11 @@ def _cached_local_tar_index(tar_path: str) -> str:
         create_tar_index(tar_path, tmp_path)
         os.replace(tmp_path, idx_path)
     return idx_path
+
+
+def _store_injected_rng(obj, value) -> None:
+    """Store an injected generator; the global ``random`` module is stored as absent, which keeps ``obj`` picklable."""
+    if value is random:
+        obj.__dict__.pop("_injected_rng", None)
+    else:
+        obj.__dict__["_injected_rng"] = value

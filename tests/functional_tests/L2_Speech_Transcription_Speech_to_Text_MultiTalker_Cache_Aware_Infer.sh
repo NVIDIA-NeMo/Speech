@@ -31,4 +31,4 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     spk_supervision=diar \
     binary_diar_preds=False \
     output_path=/tmp/mt_parakeet.seglst.json \
-    log=False generate_realtime_scripts=False 
+    log=False generate_realtime_scripts=False

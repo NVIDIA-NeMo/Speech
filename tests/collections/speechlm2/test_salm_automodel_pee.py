@@ -242,6 +242,7 @@ def training_cutset_batch():
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_pee_uses_parallel_expert_encoder(model):
     assert isinstance(model.perception.encoder, ParallelExpertEncoder)
     assert model._uses_parallel_expert_encoder()
@@ -253,6 +254,7 @@ def test_salm_automodel_pee_uses_parallel_expert_encoder(model):
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_pee_dataset_emits_speaker_targets(dataset, prompt_formatter, training_cutset_batch):
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
     batch = dataset[training_cutset_batch]
@@ -266,6 +268,7 @@ def test_salm_automodel_pee_dataset_emits_speaker_targets(dataset, prompt_format
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_pee_training_step(model, dataset, prompt_formatter, training_cutset_batch):
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
     batch = dataset[training_cutset_batch]
@@ -278,6 +281,7 @@ def test_salm_automodel_pee_training_step(model, dataset, prompt_formatter, trai
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_pee_validation_step(model, dataset, prompt_formatter, training_cutset_batch):
     model.on_validation_epoch_start()
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
@@ -289,6 +293,7 @@ def test_salm_automodel_pee_validation_step(model, dataset, prompt_formatter, tr
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_pee_generation(model):
     # No spk_targets at inference -> the PE encoder predicts diarization internally.
     answer = model.generate(
@@ -560,3 +565,29 @@ def test_pee_generation_with_timestamps_aligns_generated_text(dummy_pe_encoder, 
     assert calls[2]["sot_transcripts"] == ["<spk:0> generated transcript"]
     assert calls[2]["audio_durations"] == [3 / 16000]
     assert "ctc_timestamp_model_path" not in calls[2]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    'options,expected',
+    [
+        ({}, '<spk:0> hello <ev:laughter>'),
+        (
+            {'special_token_ignored': [], 'special_token_added': ['<sty:*>', '<noise>']},
+            '<spk:0> <sty:stt:flat> hello <sty:end:flat> <noise>',
+        ),
+    ],
+)
+def test_pee_timestamp_decode_uses_configured_special_token_policy(dummy_pe_encoder, monkeypatch, options, expected):
+    model = _make_pee_routing_test_model(dummy_pe_encoder)
+    dummy_pe_encoder.ctc_timestamp_alignment = options
+    text = '<s> <spk:0> <sty:stt:flat> hello <ev:laughter> <sty:end:flat> <noise> </s>'
+    model.tokenizer = SimpleNamespace(
+        ids_to_text=lambda ids, remove_special_tokens: text,
+        tokenizer=SimpleNamespace(all_special_tokens=[word for word in text.split() if word.startswith('<')]),
+    )
+    captured = {}
+    monkeypatch.setattr(dummy_pe_encoder, 'generate_ctc_timestamps', lambda **kwargs: captured.update(kwargs))
+    model.generate_ctc_timestamps(torch.tensor([[11, 12]]), torch.ones(1, 3), torch.tensor([3]), object())
+    assert captured['sot_transcripts'] == [expected]
+    assert captured['audio_durations'] == [3 / 16000]

@@ -132,6 +132,8 @@ class BufferedRNNTPipeline(BasePipeline):
         self.residue_tokens_at_end = cfg.endpointing.residue_tokens_at_end
         self.word_boundary_tolerance = cfg.streaming.word_boundary_tolerance
         self.return_tail_result = cfg.return_tail_result
+        # Language used to select the prompt for prompt-conditioned models; None selects "auto".
+        self.default_language_code = cfg.get('lang', None)
         self.tokens_to_move = self.punctuation_ids.union(self.language_token_ids)
 
         self.zero_encoded = self.init_zero_enc() if self.right_padding else None
@@ -200,16 +202,15 @@ class BufferedRNNTPipeline(BasePipeline):
         )
 
         if self.prompt_enabled:
-            # Use "en-US" as the default prompt for zero encoding
-            # This region is sliced out before decoding, so language choice doesn't matter
-            default_prompt_idx = self._resolve_prompt_index("en-US")
+            # This region is sliced out before decoding, so the language choice doesn't matter; any
+            # index the model defines will do.
+            default_prompt_idx = next(iter(self._prompt_config['prompt_dict'].values()))
             prompt_indices = torch.tensor([default_prompt_idx], device=self.device, dtype=torch.long)
-            prompt_vector = self._create_one_hot_prompts(prompt_indices)  # [1, num_prompts]
 
             zero_encoded, _ = self.asr_model.encode_with_prompts(
                 processed_signal=zero_features,
                 processed_signal_length=zero_features_len,
-                prompt_vectors=prompt_vector,
+                language_prompt_indices=prompt_indices,
             )
         else:
             zero_encoded, _ = self.asr_model.encode(
@@ -235,16 +236,13 @@ class BufferedRNNTPipeline(BasePipeline):
             default_target_language=self.nmt_model.target_language if self.nmt_enabled else None,
             default_stop_history_eou=self.stop_history_eou_in_milliseconds,
             default_asr_output_granularity=self.asr_output_granularity,
-            default_language_code="en-US" if self.prompt_enabled else None,
+            default_language_code=self.default_language_code if self.prompt_enabled else None,
         )
         state.set_options(new_options)
 
-        # Create per-stream prompt index for prompt-enabled models
+        # Create per-stream prompt index for prompt-enabled models; no language selects "auto".
         if self.prompt_enabled:
-            lang_code = getattr(new_options, "language_code", None)
-            if not isinstance(lang_code, str) or len(lang_code) == 0:
-                raise ValueError("Prompt-enabled model requires a valid language_code in request options.")
-            prompt_idx = self._resolve_prompt_index(lang_code)
+            prompt_idx = self._resolve_prompt_index(getattr(new_options, "language_code", None))
             state.set_prompt_index(prompt_idx)
 
         return state
@@ -330,16 +328,15 @@ class BufferedRNNTPipeline(BasePipeline):
             expected_feature_buffer_len=self.expected_feature_buffer_len,
         )
 
-        # Build prompt vectors if prompts are enabled
+        # Build prompt indices if prompts are enabled
         if self.prompt_enabled:
             requests_states = [self.get_state(f.stream_id) for f in frames]
-            prompt_vectors = self._build_prompt_vectors(requests_states)
+            prompt_indices = self._build_prompt_indices(requests_states)
 
-            # Use encode_with_prompts which handles dimension expansion
             encoded, encoded_len = self.asr_model.encode_with_prompts(
                 processed_signal=feature_buffers,
                 processed_signal_length=feature_buffer_lens,
-                prompt_vectors=prompt_vectors,
+                language_prompt_indices=prompt_indices,
             )
         else:
             encoded, encoded_len = self.asr_model.encode(
@@ -378,16 +375,15 @@ class BufferedRNNTPipeline(BasePipeline):
         processed_signals = normalize_features(processed_signals, processed_signal_lengths)
         processed_signal_lengths = processed_signal_lengths.clamp(max=processed_signals.shape[2])
 
-        # Build prompt vectors if prompts are enabled
+        # Build prompt indices if prompts are enabled
         if self.prompt_enabled:
             requests_states = [self.get_state(f.stream_id) for f in fbuffers]
-            prompt_vectors = self._build_prompt_vectors(requests_states)
+            prompt_indices = self._build_prompt_indices(requests_states)
 
-            # Use encode_with_prompts which handles dimension expansion
             encoded, encoded_len = self.asr_model.encode_with_prompts(
                 processed_signal=processed_signals,
                 processed_signal_length=processed_signal_lengths,
-                prompt_vectors=prompt_vectors,
+                language_prompt_indices=prompt_indices,
             )
         else:
             encoded, encoded_len = self.asr_model.encode(

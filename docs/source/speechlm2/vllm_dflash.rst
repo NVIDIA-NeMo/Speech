@@ -12,7 +12,7 @@ Requirements
 
 * A vLLM-ready NeMo SpeechLM checkpoint whose language backbone is compatible
   with the DFlash draft.
-* vLLM 0.28.0, the version pinned by NeMo's ``vllm`` extra.
+* vLLM 0.32.0, the version pinned by NeMo's ``vllm`` extra.
 * An attention backend that supports the draft model's non-causal attention.
 
 Automodel is not required to serve an exported checkpoint. Install the ASR
@@ -63,7 +63,7 @@ model. Its checkpoint must be trained or fine-tuned separately for the target
 language backbone; NeMo's vLLM inference plugin does not create or convert
 DFlash2 weights.
 
-DFlash2 support is included in the pinned vLLM 0.28.0 release. DFlash2 uses
+DFlash2 support is included in the pinned vLLM 0.32.0 release. DFlash2 uses
 the same ``method`` value as DFlash; vLLM selects it from the trained draft
 checkpoint's architecture:
 
@@ -93,8 +93,8 @@ train the draft: vLLM constructs each runtime block from one anchor plus the
 configured number of draft tokens and does not reject a training/inference
 block-size mismatch.
 
-The DFlash2 architecture forces vLLM's V2 model runner, including for hybrid
-NemotronH targets that would otherwise use V1. vLLM raises an error for features
+DFlash2 runs on vLLM's V2 model runner, which vLLM 0.32 uses by default,
+hybrid NemotronH targets included. vLLM raises an error for features
 it knows are incompatible with V2, but the target and serving configuration
 should still be qualified on that runner. The SpeechLM target uses the same
 ``SupportsEagle3`` hidden-state contract for DFlash and DFlash2, so no draft

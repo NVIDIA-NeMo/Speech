@@ -130,6 +130,10 @@ def test_real_vllm_router_dispatch_matches_fp32_linear(monkeypatch):
     gate.weight = nn.Parameter(torch.empty(2, 3, dtype=torch.bfloat16))
     gate.bias = None
     gate.allow_specialized_router_gemm = False
+    # Set by __init__ for an unquantized CUDA gate; read by GateLinear.forward in vLLM 0.32.
+    gate.is_unquantized = True
+    gate.allow_rocm_bf16x3_router_gemm = False
+    gate.return_bias = True
     _promote_router_precision(gate)
     observed = []
 

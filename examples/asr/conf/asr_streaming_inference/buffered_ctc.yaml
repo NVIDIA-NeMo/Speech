@@ -7,6 +7,8 @@ asr:
   device_id: 0                                 # GPU device ID
   compute_dtype: bfloat16                      # Compute precision: 'bfloat16' for Ampere+, 'float16' for older GPUs, or 'float32' 
   use_amp: false                               # Enable Automatic Mixed Precision
+  compile_encoder: false                       # Compile the encoder with torch.compile (slow first calls, so warm up)
+  compile_cache_dir: null                      # Directory to store and reuse compiled artifacts, requires compile_encoder
 
 
 # ==========================================

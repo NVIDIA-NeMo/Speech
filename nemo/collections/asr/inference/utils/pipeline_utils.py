@@ -14,6 +14,7 @@
 # limitations under the License.
 
 
+import os
 import re
 from functools import partial, wraps
 from typing import Iterable
@@ -412,3 +413,15 @@ def filter_tokens_from_greedy_output(
     output["last_token"] = tokens[-1] if tokens else None
     output["last_token_idx"] = timesteps[-1] if timesteps else None
     return output, labels
+
+
+def set_compile_cache_dir(cache_dir: str) -> None:
+    """Make torch.compile store its compiled artifacts in cache_dir and reuse them in later runs.
+    It must be called before the first compiled call.
+    Args:
+        cache_dir: (str) Directory for the inductor and Triton caches, created if it does not exist.
+    """
+    cache_dir = os.path.abspath(os.path.expanduser(cache_dir))
+    os.makedirs(cache_dir, exist_ok=True)
+    os.environ["TORCHINDUCTOR_CACHE_DIR"] = cache_dir
+    os.environ["TRITON_CACHE_DIR"] = os.path.join(cache_dir, "triton")

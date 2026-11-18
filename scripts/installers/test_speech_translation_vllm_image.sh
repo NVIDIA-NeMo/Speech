@@ -21,6 +21,12 @@ docker run --rm -i "${IMAGE}" python - <<'PY'
 import sys
 
 assert sys.version_info >= (3, 12), sys.version
+# Triton compiles a CUDA helper against the interpreter headers the first time a pipeline runs.
+import os
+import sysconfig
+
+python_h = os.path.join(sysconfig.get_paths()["include"], "Python.h")
+assert os.path.exists(python_h), f"missing {python_h}: install python3-dev"
 import torch  # noqa: F401
 import vllm  # noqa: F401
 from nemo.collections.asr.inference.factory.pipeline_builder import PipelineBuilder  # noqa: F401

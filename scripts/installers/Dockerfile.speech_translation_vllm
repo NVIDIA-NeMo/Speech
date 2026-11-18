@@ -14,6 +14,11 @@
 # limitations under the License.
 
 # This Dockerfile installs the necessary dependencies for streaming speech translation with vLLM.
+#
+# CUDA driver requirement: the image ships CUDA 13.2 and the cu130 PyTorch build, so the host NVIDIA driver must
+# support CUDA 13 (R580 or newer). On an older driver (for example R560, CUDA 12.6) the image builds and imports,
+# but the first CUDA call fails with "The NVIDIA driver on your system is too old". Check with `nvidia-smi`:
+# its "CUDA Version" field must be 13.0 or higher. Run the container with `docker run --gpus all`.
 
 ARG BASE_IMAGE=nvcr.io/nvidia/cuda-dl-base:26.04-cuda13.2-devel-ubuntu24.04
 
@@ -40,6 +45,7 @@ RUN apt-get update && \
   git \
   curl \
   build-essential \
+  python3-dev \
   cmake && \
   rm -rf /var/lib/apt/lists/*
 

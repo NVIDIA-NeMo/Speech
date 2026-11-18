@@ -212,10 +212,8 @@ def _compute_flash_rnnt(
     masking_prob = joint.masking_prob if joint.training else -1.0
     predictor_mask = torch.rand(batch, projected_predictor.shape[1], device=encoder.device) > masking_prob
 
-    # Clamping bounds the gradient at unit scale, before the loss reduction and any AMP scale
-    # multiply it. Those factors are already folded in by the time the extraction backward runs, so
-    # the dynamic program publishes each sample's loss gradient in this buffer and the extraction
-    # divides it out, clamps, and reapplies it.
+    # Publish each sample's upstream gradient so extraction can scale the unit clamp bound
+    # to account for the loss reduction, sample weighting, and AMP scale.
     loss_grad_scale = torch.zeros(batch, device=encoder.device, dtype=torch.float32) if clamp > 0.0 else None
 
     output_layer = joint.joint_net[-1]

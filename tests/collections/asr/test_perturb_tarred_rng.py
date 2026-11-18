@@ -16,8 +16,6 @@
 import json
 import os
 import random
-import subprocess
-import sys
 import tarfile
 from types import SimpleNamespace
 
@@ -223,24 +221,18 @@ def test_remote_tar_without_index_raises_actionable_error(tmp_path, monkeypatch)
 
 
 def test_random_access_does_not_keep_tar_files_open(tmp_path):
-    # More single-member shards than the open-file limit must still be readable, on the first and later draws.
-    num_shards = 96
+    # Readers are closed after each use, so reading from many shards does not accumulate open files
+    # (otherwise a corpus with more shards than the open-file limit fails).
+    num_shards = 32
     for i in range(num_shards):
         _write_tar(tmp_path / f"noise_{i}.tar", [(f"noise_{i}.wav", _tone(200 + i, 0.1))])
-    script = f"""
-import os, random, resource, sys
-from types import SimpleNamespace
-from nemo.collections.asr.parts.preprocessing.perturb import TarredAudioRandomAccess
-num_open = len(os.listdir("/dev/fd"))
-resource.setrlimit(resource.RLIMIT_NOFILE, (num_open + 32, resource.getrlimit(resource.RLIMIT_NOFILE)[1]))
-access = TarredAudioRandomAccess(["{tmp_path}/noise_" + str(i) + ".tar" for i in range({num_shards})])
-rng = random.Random(0)
-for _ in range(3 * {num_shards}):
-    i = rng.randrange({num_shards})
-    access.load(SimpleNamespace(audio_file="noise_" + str(i) + ".wav", offset=None, duration=0.1), {SAMPLE_RATE})
-print("ok")
-"""
-    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, env=dict(os.environ))
+    access = perturb.TarredAudioRandomAccess([str(tmp_path / f"noise_{i}.tar") for i in range(num_shards)])
+    fd_dir = "/proc/self/fd" if os.path.isdir("/proc/self/fd") else "/dev/fd"
+    num_open_before = len(os.listdir(fd_dir))
 
-    assert result.returncode == 0, result.stderr[-2000:]
-    assert result.stdout.strip().endswith("ok")
+    rng = random.Random(0)
+    for _ in range(2 * num_shards):
+        i = rng.randrange(num_shards)
+        access.load(_entry(f"noise_{i}.wav", duration=0.1), SAMPLE_RATE)
+
+    assert len(os.listdir(fd_dir)) <= num_open_before + 2

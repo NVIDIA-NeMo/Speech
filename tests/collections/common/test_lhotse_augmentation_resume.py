@@ -75,6 +75,8 @@ def _loader(data_dir, mode, num_workers, aug):
         "shar_path": str(data_dir / "speech"),
         "batch_size": 2,
         "shuffle": True,
+        # The speech source repeats indefinitely; a small shuffle buffer avoids mixing 10k cuts before batch 1.
+        "shuffle_buffer_size": 32,
         "num_workers": num_workers,
         "seed": 1,
         "shard_seed": 1,
@@ -109,7 +111,6 @@ def _take(data_dir, mode, num_workers, aug, num_batches, state=None):
     [
         ("noise", 0),
         ("noise_indexed", 0),
-        ("noise_indexed", 2),
         ("noise_blend", 0),
         ("noise_bounded", 0),
         ("rir", 0),

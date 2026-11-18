@@ -259,6 +259,7 @@ def test_conditional_node_mempool_does_not_touch_the_allocator_on_torch_2_8(monk
         "ctc_beam",
     ],
 )
+@pytest.mark.gpu
 def test_full_graph_memory_survives_empty_cache(
     decoder_kind: str, test_data_dir: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

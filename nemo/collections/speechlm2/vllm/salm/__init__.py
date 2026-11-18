@@ -43,6 +43,8 @@ from nemo.collections.speechlm2.vllm.salm.config import (
 _PKG = "nemo.collections.speechlm2.vllm.salm"
 _LOGGER = logging.getLogger(__name__)
 _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE = None
+# Oldest vLLM release whose internals the plugin hooks into (NeMo's ``vllm`` extra pins it).
+_MIN_VLLM_VERSION = "0.32.0"
 _AUTOMODEL_DFLASH2_ARCHITECTURES = frozenset(
     {
         "Qwen3DFlash2DraftModel",
@@ -226,7 +228,25 @@ def _patch_vllm_for_nemo_speechlm_mtp() -> None:
 
 
 def register():
-    """Register the NeMo Speech LM model and config with vLLM."""
+    """Register the NeMo Speech LM model and config with vLLM.
+
+    vLLM calls this general plugin at engine start for every model, so an
+    unsupported vLLM version must not break serving unrelated models: the
+    plugin then registers nothing and NeMo Speech LM checkpoints stay unknown
+    to that vLLM installation.
+    """
+    import vllm
+    from packaging.version import Version
+
+    if Version(Version(vllm.__version__).base_version) < Version(_MIN_VLLM_VERSION):
+        _LOGGER.warning(
+            "NeMo Speech LM vLLM plugin requires vllm>=%s but found vllm==%s; skipping its registration. "
+            "NeMo Speech LM models cannot be served by this vLLM installation.",
+            _MIN_VLLM_VERSION,
+            vllm.__version__,
+        )
+        return
+
     from transformers import AutoConfig
 
     from nemo.collections.speechlm2.vllm.salm.config import NeMoSpeechLMConfig

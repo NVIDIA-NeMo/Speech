@@ -741,7 +741,13 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         logits = outputs['logits']
         lengths = outputs.get('logits_len', outputs.get('encoded_len'))
         decoding = self._transcribe_chunk_ctc_decoding()
-        retain_logits = trcfg.return_hypotheses or decoding.preserve_alignments or decoding.preserve_frame_confidence
+        # Fusion models (e.g. a boosting tree) score log probabilities, not argmax labels.
+        retain_logits = (
+            trcfg.return_hypotheses
+            or decoding.preserve_alignments
+            or decoding.preserve_frame_confidence
+            or getattr(decoding.decoding, 'fusion_models', None) is not None
+        )
         selected = []
         upsampling_factor = getattr(self._transcribe_chunk_ctc_decoder(), 'upsampling_factor', 1)
         for i, (length, chunk) in enumerate(zip(lengths, chunks)):

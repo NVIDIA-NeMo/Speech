@@ -657,8 +657,7 @@ class EncDecRNNTBPEModelWithPrompt(PromptStreamingMixin, EncDecRNNTBPEModel, ASR
         languages. With ``override_config``, set its ``chunking`` and ``target_lang``
         fields instead. Returns one transcription hypothesis per input utterance.
         """
-        planned_chunking = chunking is not None or getattr(override_config, 'chunking', None) is not None
-        if timestamps is not None and not planned_chunking:
+        if timestamps is not None:
             decoding_cfg = self.cfg.decoding
             if timestamps or (override_config is not None and override_config.timestamps):
                 return_hypotheses = True

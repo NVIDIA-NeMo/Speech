@@ -647,3 +647,36 @@ class TestBaseClassesAreUntouched:
         assert not {'language_prompt_features', 'language_prompt_indices', 'prompt', 'prompt_indices'} & set(
             parameters
         )
+
+
+@pytest.mark.unit
+def test_chunked_transcription_keeps_each_manifest_language(prompt_model, tmp_path):
+    import json
+
+    import soundfile as sf
+    from omegaconf import open_dict
+
+    from nemo.collections.asr.parts.mixins.transcription import ChunkingConfig
+
+    with open_dict(prompt_model.cfg):
+        prompt_model.cfg.sample_rate = 16000
+        prompt_model.cfg.preprocessor.window_stride = 0.01
+    signal, _ = make_audio(batch_size=1, samples=20000)
+    sf.write(tmp_path / 'audio.wav', signal[0].numpy(), 16000)
+    manifest = tmp_path / 'manifest.json'
+    entries = [
+        {'audio_filepath': str(tmp_path / 'audio.wav'), 'duration': 1.25, 'text': '', 'lang': lang}
+        for lang in ['de-DE', 'ja-JP']
+    ]
+    manifest.write_text(''.join(json.dumps(entry) + '\n' for entry in entries))
+    seen = []
+    forward = prompt_model.forward
+
+    def record(*args, language_prompt_indices=None, **kwargs):
+        seen.extend(language_prompt_indices.tolist())
+        return forward(*args, language_prompt_indices=language_prompt_indices, **kwargs)
+
+    prompt_model.forward = record
+    prompt_model.transcribe(str(manifest), batch_size=2, verbose=False, chunking=ChunkingConfig(10.0, 0.0))
+    # Each utterance conditions the encoder on its own manifest language.
+    assert seen == [PROMPT_DICTIONARY['de-DE'], PROMPT_DICTIONARY['ja-JP']]

@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import math
 from types import SimpleNamespace
 
 import pytest
@@ -16,15 +15,15 @@ from nemo.collections.asr.modules.rnnt import RNNTDecoder, RNNTJoint
 from nemo.collections.asr.parts.mixins.mixins import PromptStreamingMixin
 from nemo.collections.asr.parts.mixins.transcription import ASRTranscriptionMixin, TranscriptionMixin
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecoding
-from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTBPEDecoding, RNNTDecoding
+from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTBPEDecoding
 from nemo.collections.asr.parts.utils.longform_inference import (
     ChunkedAudioDataset,
     ChunkingConfig,
     collate_audio_chunks,
     make_chunk_plan,
-    merge_rnnt_chunks,
     select_chunk_frames,
     select_chunk_words,
+    transfer_word_times,
 )
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 
@@ -83,43 +82,6 @@ def test_word_selection_keeps_real_repetitions_and_exact_start_times():
     assert words[1]['start'] == 29.5 and words[1]['end'] == 29.7
     assert words[2]['start'] == pytest.approx(30.2)
     assert first[1]['start'] == 29.5  # Inputs must not be changed.
-
-
-@pytest.mark.unit
-def test_rnnt_merge_preserves_tokens_confidence_and_absolute_offsets():
-    plan = make_chunk_plan(1280 * 10, 16000, ChunkingConfig(chunk_size=0.4, context_size=0.16), 1280)
-    parts = []
-    for chunk in plan:
-        frames = math.ceil((chunk.keep_end - chunk.keep_start) / 1280)
-        parts.append(
-            Hypothesis(
-                score=-0.5,
-                y_sequence=torch.tensor([1, 1]),
-                timestamp=[0, frames - 1],
-                length=frames,
-                token_duration=torch.tensor([1, 1]),
-                alignments=[['frame']] * frames,
-                frame_confidence=[[0.8]] * frames,
-                non_blank_step_confidence_precomputed=[0.8, 0.9],
-            )
-        )
-    merged = merge_rnnt_chunks(parts, plan, 1280)
-    assert merged.y_sequence.tolist() == [1, 1, 1, 1]
-    assert merged.timestamp == [0, 4, 5, 9]
-    assert len(merged.alignments) == len(merged.frame_confidence) == 10
-    assert merged.non_blank_step_confidence_precomputed == [0.8, 0.9, 0.8, 0.9]
-    assert merged.token_duration.tolist() == [1, 1, 1, 1]
-    assert merged.score == -1.0
-    assert merged.length == 10
-
-
-@pytest.mark.unit
-def test_hypothesis_merge_concatenates_tdt_durations():
-    merged = Hypothesis(score=0.0, y_sequence=None, timestamp=None)
-    merged.merge_(Hypothesis(score=0.0, y_sequence=torch.tensor([1]), timestamp=[0], token_duration=torch.tensor([3])))
-    merged.merge_(Hypothesis(score=0.0, y_sequence=torch.tensor([2]), timestamp=[3], token_duration=torch.tensor([1])))
-    assert merged.y_sequence.tolist() == [1, 2]
-    assert merged.token_duration.tolist() == [3, 1]
 
 
 @pytest.mark.unit
@@ -236,6 +198,16 @@ def test_transcribe_ctc_confidence_matches_words_after_chunk_selection():
     assert result.timestamp == baseline.timestamp
     assert result.token_confidence == baseline.token_confidence
     assert result.word_confidence == baseline.word_confidence
+
+
+@pytest.mark.unit
+def test_ctc_fusion_model_keeps_log_probs():
+    model = _LabelCTCModel(strategy='greedy_batch')
+    model.decoding.decoding.fusion_models = [object()]
+    chunk = make_chunk_plan(4, 10, ChunkingConfig(chunk_size=1.0, context_size=0.0))[0]
+    outputs = {'logits': torch.zeros(1, 4, 4), 'logits_len': torch.tensor([4])}
+    [part] = model._transcribe_chunk_outputs(outputs, [chunk], 1, ASRTranscriptionMixin.get_transcribe_config())
+    assert part.shape == (4, 4)
 
 
 @pytest.mark.unit
@@ -363,12 +335,11 @@ def test_restored_conformer_checkpoint_chunking_with_files_and_tensors(tmp_path,
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize('model_type', ['rnnt', 'tdt'])
 # 1280 * 25 + r samples. A remainder below one 160-sample hop yields no final feature frame.
 @pytest.mark.parametrize('num_samples', [32001, 32159, 32160])
-def test_transducer_chunking_accepts_source_end_off_the_frame_grid(model_type, num_samples):
-    vocabulary = ['a', 'b', ' ']
-    durations = [0, 1, 2, 3, 4] if model_type == 'tdt' else []
+def test_transducer_chunking_accepts_source_end_off_the_frame_grid(num_samples):
+    # Character vocabulary, so RNNT only: NeMo's character TDT decoding cannot build timestamps.
+    model_type, vocabulary, durations = 'rnnt', ['a', 'b', ' '], []
     config = OmegaConf.create(
         {
             **_tiny_conformer_config('dw_striding', 8),
@@ -405,15 +376,13 @@ def test_transducer_chunking_accepts_source_end_off_the_frame_grid(model_type, n
     result = model.transcribe(
         waveform,
         chunking=ChunkingConfig(chunk_size=0.8, context_size=0.16),
-        return_hypotheses=True,
+        timestamps=True,
         batch_size=2,
         verbose=False,
     )[0]
-    with torch.inference_mode():
-        _, num_frames = model.forward(input_signal=waveform[None], input_signal_length=torch.tensor([num_samples]))
-    assert int(result.length) == int(num_frames[0])
-    assert len(result.timestamp) == len(result.y_sequence) > 0
-    assert all(0 <= int(t) < int(num_frames[0]) for t in result.timestamp)
+    words = result.timestamp['word']
+    assert result.text.split() == [w['word'] for w in words]
+    assert all(0 <= w['start'] <= w['end'] <= num_samples / 16000 + 0.08 for w in words)
 
 
 @pytest.mark.unit
@@ -481,6 +450,9 @@ class _TinyBPETokenizer:
     def ids_to_text(self, ids):
         return self.tokens_to_text(self.ids_to_tokens(ids))
 
+    def text_to_ids(self, text):
+        return [0 for _ in text.split()]
+
 
 class _ConstantRNNTModel(_LabelCTCModel):
     _transcribe_chunk_validate = EncDecRNNTModel._transcribe_chunk_validate
@@ -488,7 +460,7 @@ class _ConstantRNNTModel(_LabelCTCModel):
     _transcribe_chunk_outputs = EncDecRNNTModel._transcribe_chunk_outputs
     _transcribe_chunk_finalize = EncDecRNNTModel._transcribe_chunk_finalize
 
-    def __init__(self, model_type='rnnt', strategy='greedy', duration=1):
+    def __init__(self, model_type='rnnt', strategy='greedy', duration=1, timestamps=False):
         super().__init__()
         decoder = RNNTDecoder({'pred_hidden': 4, 'pred_rnn_layers': 1}, vocab_size=3)
         joint = RNNTJoint(
@@ -503,16 +475,18 @@ class _ConstantRNNTModel(_LabelCTCModel):
             if model_type == 'tdt':
                 joint.joint_net[-1].bias[5 if duration == 1 else 6] = 10
         self.decoder, self.joint = decoder, joint
-        decoding_class = RNNTBPEDecoding if model_type == 'tdt' else RNNTDecoding
-        kwargs = {'tokenizer': _TinyBPETokenizer()} if model_type == 'tdt' else {'vocabulary': ['a', 'b', ' ']}
-        self.decoding = decoding_class(
+        self.decoding = RNNTBPEDecoding(
             OmegaConf.create(
                 {
                     'strategy': strategy,
                     'model_type': model_type,
                     'durations': [0, 1, 3] if model_type == 'tdt' else [],
-                    'compute_timestamps': False,
+                    # EncDecRNNTModel.transcribe() sets this when timestamps are requested.
+                    'compute_timestamps': timestamps,
+                    # Non-batched TDT greedy confidence reads the alignments.
+                    'preserve_alignments': model_type == 'tdt' and strategy == 'greedy',
                     'greedy': {'max_symbols_per_step': 1, 'preserve_frame_confidence': True},
+                    'beam': {'beam_size': 2},
                     'confidence_cfg': {
                         'preserve_frame_confidence': True,
                         'preserve_token_confidence': True,
@@ -522,7 +496,7 @@ class _ConstantRNNTModel(_LabelCTCModel):
             ),
             decoder,
             joint,
-            **kwargs,
+            tokenizer=_TinyBPETokenizer(),
         )
 
     def _transcribe_forward(self, batch, trcfg):
@@ -530,10 +504,12 @@ class _ConstantRNNTModel(_LabelCTCModel):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize('model_type', ['rnnt', 'tdt'])
 @pytest.mark.parametrize('timestamps', [False, True])
 @pytest.mark.parametrize('strategy', ['greedy', 'greedy_batch'])
-def test_real_rnnt_decoder_selects_owned_frames_and_rebuilds_metadata(timestamps, strategy):
-    model = _ConstantRNNTModel(strategy=strategy)
+def test_rnnt_chunks_keep_each_word_once_at_its_time(model_type, timestamps, strategy):
+    # One word per frame; every read window is decoded, and only owned words are kept.
+    model = _ConstantRNNTModel(model_type=model_type, strategy=strategy)
     result = model.transcribe(
         torch.ones(11),
         return_hypotheses=True,
@@ -541,65 +517,27 @@ def test_real_rnnt_decoder_selects_owned_frames_and_rebuilds_metadata(timestamps
         verbose=False,
         chunking=ChunkingConfig(chunk_size=0.4, context_size=0.1),
     )[0]
-    assert result.text == 'a' * 11
-    assert len(result.y_sequence) == len(result.token_confidence) == 11
-    assert len(result.word_confidence) == 1
-    if timestamps:
-        assert result.timestamp['timestep'] == list(range(11))
-        assert result.timestamp['word'][0]['end'] == pytest.approx(1.1)
-    else:
-        assert result.timestamp == list(range(11))
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize('strategy', ['greedy', 'greedy_batch'])
-def test_tdt_chunk_timestamps_collect_durations_without_changing_model_config(strategy):
-    model = _ConstantRNNTModel(model_type='tdt', strategy=strategy)
-    original_decoding = model.decoding
-    assert not model.decoding.tdt_include_token_duration
-    result = model.transcribe(
-        torch.ones(11),
-        return_hypotheses=True,
-        timestamps=True,
-        verbose=False,
-        chunking=ChunkingConfig(chunk_size=0.4, context_size=0.1),
-    )[0]
     assert result.text.split() == ['a'] * 11
-    assert len(result.token_duration) == len(result.y_sequence) == len(result.token_confidence) == 11
-    assert result.timestamp['word'][-1]['end'] == pytest.approx(1.1)
-    assert model.decoding is original_decoding
-    assert not model.decoding.compute_timestamps
+    assert len(result.y_sequence) == 11
+    if timestamps:
+        assert [w['start'] for w in result.timestamp['word']] == pytest.approx([k / 10 for k in range(11)])
+        assert [w['start_offset'] for w in result.timestamp['word']] == list(range(11))
+    assert not model.decoding.compute_timestamps  # Word times come from a call-local decoding.
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize('strategy', ['greedy', 'greedy_batch'])
-def test_tdt_duration_continues_across_chunks(strategy):
-    # A duration that crosses an owned boundary continues into the next chunk, as in one pass.
-    model = _ConstantRNNTModel(model_type='tdt', strategy=strategy, duration=3)
-    result = model.transcribe(
-        torch.ones(11),
-        return_hypotheses=True,
-        timestamps=True,
-        verbose=False,
-        chunking=ChunkingConfig(chunk_size=0.4, context_size=0.1),
-    )[0]
-    assert result.timestamp['timestep'] == [0, 3, 6, 9]
-    assert list(result.token_duration) == [3, 3, 3, 3]
-    if result.frame_confidence is not None:
-        assert len(result.frame_confidence) == 11
-    words = result.timestamp['word']
-    assert all(a['end'] <= b['start'] for a, b in zip(words, words[1:]))
+def test_rnnt_chunking_rejects_n_best():
+    model = _ConstantRNNTModel(strategy='greedy_batch')
+    model.decoding.cfg = OmegaConf.create({'strategy': 'beam', 'beam': {'return_best_hypothesis': False}})
+    with pytest.raises(ValueError, match='one best hypothesis'):
+        model.transcribe(torch.ones(11), chunking=ChunkingConfig())
 
 
 class _FramewiseRNNTModel(_ConstantRNNTModel):
-    """Random prediction and joint networks over a context-free encoder.
+    """Random prediction and joint networks over a context-free encoder."""
 
-    Owned encoder frames do not depend on chunk context here. Correct chunked decoding
-    must therefore equal one greedy pass over each source.
-    """
-
-    def __init__(self, model_type):
-        super().__init__(model_type=model_type, strategy='greedy_batch')
+    def __init__(self, model_type, strategy):
+        super().__init__(model_type=model_type, strategy=strategy)
         generator = torch.Generator().manual_seed(7)
         with torch.no_grad():
             for parameter in [*self.decoder.parameters(), *self.joint.parameters()]:
@@ -608,7 +546,7 @@ class _FramewiseRNNTModel(_ConstantRNNTModel):
 
 @pytest.mark.unit
 @pytest.mark.parametrize('model_type', ['rnnt', 'tdt'])
-@pytest.mark.parametrize('batch_size', [1, 3, 8])
+@pytest.mark.parametrize('strategy', ['greedy_batch', 'malsd_batch'])
 @pytest.mark.parametrize(
     'device',
     [
@@ -619,30 +557,31 @@ class _FramewiseRNNTModel(_ConstantRNNTModel):
         ),
     ],
 )
-def test_rnnt_chunks_continue_decoder_state_like_one_pass(model_type, batch_size, device):
-    model = _FramewiseRNNTModel(model_type).to(device)
+def test_rnnt_chunking_is_batch_invariant_and_one_window_matches_plain_decoding(model_type, strategy, device):
+    model = _FramewiseRNNTModel(model_type, strategy).to(device)
     generator = torch.Generator().manual_seed(3)
     sources = [torch.randn(n, generator=generator) * 4 for n in (23, 9, 4, 17)]
-    results = model.transcribe(
-        sources,
-        return_hypotheses=True,
-        batch_size=batch_size,
-        verbose=False,
-        chunking=ChunkingConfig(chunk_size=0.4, context_size=0.2),
-    )
-    num_tokens = 0
-    for source, result in zip(sources, results):
+    chunked = [
+        [h.text for h in model.transcribe(sources, batch_size=b, verbose=False, chunking=ChunkingConfig(0.4, 0.2))]
+        for b in (1, 3, 8)
+    ]
+    assert chunked[0] == chunked[1] == chunked[2]
+    # A window that covers the whole source is one plain decode of that source.
+    whole = model.transcribe(sources, batch_size=8, verbose=False, chunking=ChunkingConfig(10.0, 0.0))
+    num_words = 0
+    for source, hyp in zip(sources, whole):
         encoded = source.to(device)[None, None]
-        reference = model.decoding.decoding(encoder_output=encoded, encoded_lengths=torch.tensor([len(source)]))[0][0]
-        assert result.y_sequence.tolist() == reference.y_sequence.tolist()
-        assert list(map(int, result.timestamp)) == list(map(int, reference.timestamp))
-        num_tokens += len(reference.y_sequence)
-    # A decoder that restarts at each chunk would differ; the test needs real emissions to show it.
-    assert num_tokens >= 20
+        reference = model.decoding.rnnt_decoder_predictions_tensor(
+            encoded, torch.tensor([len(source)], device=device), return_hypotheses=True
+        )[0]
+        assert hyp.text.split() == reference.text.split()
+        num_words += len(reference.text.split())
+    assert num_words >= 3  # The comparison needs real emissions.
 
 
 class _AlignedAEDModel(_LabelCTCModel):
     _transcribe_chunk_validate = EncDecMultiTaskModel._transcribe_chunk_validate
+    _transcribe_chunk_batch = EncDecMultiTaskModel._transcribe_chunk_batch
     _transcribe_chunk_outputs = EncDecMultiTaskModel._transcribe_chunk_outputs
     _transcribe_chunk_finalize = EncDecMultiTaskModel._transcribe_chunk_finalize
 
@@ -654,20 +593,29 @@ class _AlignedAEDModel(_LabelCTCModel):
         )
         self.tokenizer = SimpleNamespace(text_to_ids=lambda text: [ord(c) for c in text])
 
+        self.keep_ctc_words = lambda words: words
+
+    @staticmethod
+    def _words(audio, length):
+        # One word per sample: 'ja' for 1, otherwise a word naming the sample value.
+        return ['ja' if int(x) == 1 else f'w{int(x)}' for x in audio[: int(length)]]
+
     def _transcribe_forward(self, batch, trcfg):
         return {'batch': batch}
 
     def _transcribe_output_processing(self, outputs, trcfg):
-        assert trcfg.timestamps and not trcfg.enable_chunking
+        assert not trcfg.timestamps and not trcfg.enable_chunking
+        audio, lengths = outputs['batch'][:2]
         return [
-            Hypothesis(
-                score=-1,
-                y_sequence=torch.tensor([1]),
-                text=' '.join(['ja'] * int(length)),
-                timestamp={'word': [{'word': 'ja', 'start': i / 10, 'end': (i + 1) / 10} for i in range(int(length))]},
-            )
-            for length in outputs['batch'][1]
+            Hypothesis(score=-1, y_sequence=None, text=' '.join(self._words(a, n))) for a, n in zip(audio, lengths)
         ]
+
+    def _transcribe_chunk_ctc_words(self, audio, lengths):
+        timed = [
+            [{'word': w, 'start': k / 10, 'end': (k + 1) / 10} for k, w in enumerate(self._words(a, n))]
+            for a, n in zip(audio, lengths)
+        ]
+        return [self.keep_ctc_words(words) for words in timed]
 
 
 @pytest.mark.unit
@@ -691,11 +639,61 @@ def test_aed_adapter_keeps_repeated_words_with_original_duration():
 
 
 @pytest.mark.unit
-def test_aed_adapter_rejects_unaligned_or_translated_text():
+def test_aed_adapter_keeps_words_the_ctc_model_misses():
+    # Fast speech: the CTC model times only every third word; the AED words still all survive once.
+    model = _AlignedAEDModel()
+    model.keep_ctc_words = lambda words: words[::3]
+    audio = torch.arange(2, 25).float()
+    result = model.transcribe(audio, override_config=_aed_config())[0]
+    assert result.text.split() == [f'w{i}' for i in range(2, 25)]
+
+
+@pytest.mark.unit
+def test_aed_without_ctc_model_stitches_overlapping_windows():
     model = _AlignedAEDModel()
     model.timestamps_asr_model = None
-    with pytest.raises(ValueError, match='aligner'):
+    audio = torch.arange(2, 25).float()
+    result = model.transcribe(audio, override_config=_aed_config())[0]
+    assert result.text.split() == [f'w{i}' for i in range(2, 25)]
+    with pytest.raises(ValueError, match='CTC timestamp model'):
+        model.transcribe(audio, override_config=_aed_config(timestamps=True))
+
+
+def _aed_config(**kwargs):
+    from nemo.collections.asr.models.aed_multitask_models import MultiTaskTranscriptionConfig
+
+    return MultiTaskTranscriptionConfig(
+        chunking=ChunkingConfig(chunk_size=0.4, context_size=0.1), verbose=False, batch_size=2, **kwargs
+    )
+
+
+@pytest.mark.unit
+def test_transfer_word_times_matches_and_fills_gaps():
+    timed = [{'word': 'hello', 'start': 0.0, 'end': 1.0}, {'word': 'world', 'start': 2.0, 'end': 3.0}]
+    words = transfer_word_times(['Hello,', 'big', 'world', 'again'], timed, duration=5.0)
+    assert [(w['start'], w['end']) for w in words] == [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0), (3.0, 5.0)]
+    assert [(w['start'], w['end']) for w in transfer_word_times(['a', 'b'], [], duration=4.0)] == [(0, 2), (2, 4)]
+
+
+@pytest.mark.unit
+def test_aed_adapter_rejects_n_best():
+    model = _AlignedAEDModel()
+    model.decoding.cfg = OmegaConf.create({'strategy': 'beam', 'beam': {'return_best_hypothesis': False}})
+    with pytest.raises(ValueError, match='one best hypothesis'):
         model.transcribe(torch.ones(11), chunking=ChunkingConfig())
+
+
+@pytest.mark.unit
+def test_aed_adapter_accepts_wrapped_and_unset_prompt_languages():
+    from nemo.collections.asr.models.aed_multitask_models import MultiTaskTranscriptionConfig
+
+    config = MultiTaskTranscriptionConfig(
+        chunking=ChunkingConfig(chunk_size=0.4, context_size=0.1),
+        prompt={'source_lang': '<|de|>', 'target_lang': None},
+        verbose=False,
+    )
+    result = _AlignedAEDModel().transcribe(torch.ones(11), override_config=config)[0]
+    assert result.text.split() == ['ja'] * 11
 
 
 @pytest.mark.unit
@@ -776,7 +774,7 @@ def test_chunk_selection_and_metadata_on_cuda(kind):
     else:
         model = _ConstantRNNTModel(model_type=kind, strategy='greedy_batch')
         audio = torch.ones(11)
-        expected_words = ['a' * 11] if kind == 'rnnt' else ['a'] * 11
+        expected_words = ['a'] * 11
     model = model.to('cuda')
     result = model.transcribe(
         audio,
@@ -786,5 +784,6 @@ def test_chunk_selection_and_metadata_on_cuda(kind):
         chunking=ChunkingConfig(chunk_size=0.4, context_size=0.1),
     )[0]
     assert result.text.split() == expected_words
-    assert len(result.word_confidence) == len(expected_words)
+    if kind == 'ctc':  # Transducer chunks are assembled from words, without token confidence.
+        assert len(result.word_confidence) == len(expected_words)
     assert result.y_sequence.device.type == 'cpu'

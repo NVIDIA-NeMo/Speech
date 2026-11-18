@@ -422,8 +422,7 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
                 f"{self.cur_decoder} is not supported for cur_decoder. Supported values are ['ctc', 'rnnt']"
             )
 
-        planned_chunking = chunking is not None or getattr(override_config, 'chunking', None) is not None
-        if timestamps is not None and not planned_chunking:
+        if timestamps is not None:
             if self.cur_decoder not in ["ctc", "rnnt"]:
                 raise ValueError(
                     f"{self.cur_decoder} is not supported for cur_decoder. Supported values are ['ctc', 'rnnt']"

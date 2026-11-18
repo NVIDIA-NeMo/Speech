@@ -172,13 +172,6 @@ class Hypothesis:
             self.timestamp = torch.cat((self.timestamp, other.timestamp), dim=0)
         else:
             self.timestamp.extend(other.timestamp)
-        if other.token_duration is not None:
-            if self.token_duration is None:
-                self.token_duration = other.token_duration
-            else:
-                self.token_duration = torch.cat(
-                    (torch.as_tensor(self.token_duration), torch.as_tensor(other.token_duration))
-                )
         self.length += other.length
         self.last_token = other.last_token
         if self.alignments is None:

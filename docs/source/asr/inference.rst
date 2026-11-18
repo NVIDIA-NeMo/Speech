@@ -221,9 +221,10 @@ For audio longer than what fits in memory (especially with Conformer's quadratic
 
 ``chunk_size`` is the duration owned by one chunk. ``context_size`` is extra audio read on
 each side. Both values are in seconds and round up to complete encoder frames. The default
-values are 30 seconds and 2 seconds. Peak encoder input length is at most the owned duration
-plus context on both sides. Choose the batch size and durations for the available device
-memory. Chunking does not guarantee that any batch size fits.
+values are 30 seconds and 2 seconds; a 5-second context lowered transducer WER slightly (by
+up to 0.15) at about 12% lower throughput. Peak encoder input length is at most the owned
+duration plus context on both sides. Choose the batch size and durations for the available
+device memory. Chunking does not guarantee that any batch size fits.
 
 The transcription script accepts the same configuration:
 
@@ -247,28 +248,28 @@ select output in their native representation:
 
 * **CTC:** discard context frames, assemble the retained frames, then perform one CTC
   collapse. Repeated labels and blank frames remain correct across chunk joins.
-* **RNNT/TDT:** discard encoder context before greedy decoding. Each chunk continues the
-  decoder state of the previous chunk of its source, as in one pass over the recording. A
-  TDT duration that crosses a chunk boundary continues into the next chunk. Assemble token
-  times, alignments, and confidence inputs from these disjoint regions. Compute word
-  timestamps and word confidence after assembly. Chunks of one source decode in sequence;
-  chunks of different sources in one batch decode together.
-* **AED/Canary:** decode the read interval and use the model's external CTC timestamp
-  aligner. Retain words whose midpoints fall inside the owned interval. Repeated words keep
-  their own aligned times. Actual read-start times place words on the utterance timeline.
-  This path requires a checkpoint with an external timestamp aligner and supports ASR,
-  not speech translation. Its assembled hypothesis uses a neutral score of zero because
+* **RNNT/TDT:** decode each read interval with a fresh decoder and the model's own decoding
+  strategy, then keep words whose timestamp midpoints fall inside the owned interval. The
+  decoder warms up on the left context; carrying decoder state across chunks instead can
+  keep a transducer in blank through long stretches of speech. The result is assembled
+  from words: text and word/segment timestamps are returned, token-level confidence and
+  alignments are not.
+* **AED/Canary:** decode each read interval. With a CTC timestamp model (for example
+  ``canary-1b-v2``), match the decoded words to that model's greedy words for the same audio
+  and take their times; unmatched words share the time between their matched neighbours.
+  Keep words whose midpoints fall inside the owned interval. Without a CTC timestamp model
+  (for example ``canary-1b-flash``), join consecutive read intervals at the longest run of
+  words they share in their overlap; timestamps are then unavailable. This path supports
+  ASR, not speech translation. Its assembled hypothesis uses a neutral score of zero because
   selected words do not have an AED sequence score. Token confidence and cross-attention
   scores are not available for this path.
 
-CTC and RNNT/TDT currently support ``greedy`` and ``greedy_batch`` decoding. RNNT/TDT
-chunks use label-looping ``greedy_batch`` decoding in a call-local decoder, which runs the
-same greedy search and requires a prediction network with ``blank_as_pad=True``. CTC n-gram LM
-decoding, external DataLoaders, augmentations, and partial hypotheses are not supported in
-this mode and raise an error. Existing inference paths remain available when ``chunking``
-is unset. The existing Canary ``enable_chunking`` mode is separate; setting ``chunking``
-selects the shared chunk plan instead.
-TDT token and word confidence currently require ``confidence_cfg.exclude_blank=True``.
+CTC supports ``greedy`` and ``greedy_batch`` decoding without an n-gram LM. RNNT/TDT and AED
+support one best hypothesis per chunk. RNNT/TDT models with a character vocabulary and TDT
+durations are not supported, because their decoding cannot build word timestamps. External DataLoaders, augmentations, and partial hypotheses
+are not supported in this mode and raise an error. Existing inference paths remain available
+when ``chunking`` is unset. The existing Canary ``enable_chunking`` mode is separate; setting
+``chunking`` selects the shared chunk plan instead.
 
 For configuration-based calls, set ``config.chunking = ChunkingConfig(...)`` and pass
 ``override_config=config``. The same config works with ``transcribe_generator``. That
@@ -277,11 +278,20 @@ unmerged chunk hypotheses. The generator must be closed if iteration stops early
 the model's inference state is restored.
 
 CTC normally retains only frame labels on the CPU until an utterance is complete. Returning
-full hypotheses, alignments, or confidence can require retaining the owned log probabilities
-on the CPU. This memory use grows with the utterance duration and vocabulary size.
+full hypotheses, alignments, or confidence, or decoding with a fusion model, retains the
+owned log probabilities on the CPU instead. This memory use grows with the utterance duration
+and the vocabulary size. RNNT/TDT and AED retain only the selected words.
 The encoder sees only the read interval of each chunk, and AED word selection depends on
 alignment quality. Results can differ from whole-recording inference. Validate recognition quality
 and memory use on representative audio before selecting production chunk sizes.
+
+Which long-audio method to use:
+
+* **Local attention** (below) keeps one encoder pass over the whole recording. Use it for Fast
+  Conformer CTC and RNNT/TDT models when the full recording fits in device memory.
+* **Planned chunking** bounds encoder memory by the chunk duration, independent of the
+  recording length. Use it when local attention does not fit, and for AED models.
+* **Buffered inference scripts** (below) are the streaming-style alternative for offline files.
 
 **Buffered / chunked inference:**
 

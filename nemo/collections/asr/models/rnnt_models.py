@@ -41,11 +41,10 @@ from nemo.collections.asr.parts.mixins import (
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecoding, RNNTDecodingConfig
 from nemo.collections.asr.parts.utils.asr_batching import get_semi_sorted_batch_sampler
-from nemo.collections.asr.parts.utils.longform_inference import ChunkingConfig, merge_rnnt_chunks, select_chunk_frames
+from nemo.collections.asr.parts.utils.longform_inference import ChunkingConfig, select_chunk_words, words_to_hypothesis
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.timestamp_utils import process_timestamp_outputs
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
-from nemo.collections.common.data.utils import move_data_to_device
 from nemo.collections.common.parts.preprocessing.parsers import make_parser
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.classes.mixins import AccessMixin
@@ -291,7 +290,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             override_config: (Optional[TranscribeConfig]) override transcription config pre-defined by the user.
                 **Note**: All other arguments in the function will be ignored if override_config is passed.
                 You should call this argument as `model.transcribe(audio, override_config=TranscribeConfig(...))`.
-            chunking: Optional offline chunk plan. Inference discards encoder context before greedy decoding.
+            chunking: Optional offline chunk plan. Each read window is decoded; words are selected by time.
 
         Returns:
             Returns a tuple of 2 items -
@@ -300,8 +299,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         """
 
         timestamps = timestamps or (override_config.timestamps if override_config is not None else None)
-        planned_chunking = chunking is not None or getattr(override_config, 'chunking', None) is not None
-        if timestamps is not None and not planned_chunking:
+        if timestamps is not None:
             need_change_decoding = False
             if timestamps or (override_config is not None and override_config.timestamps):
                 logging.info(
@@ -955,32 +953,20 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
     """ Transcription related methods """
 
     def _transcribe_chunk_validate(self, trcfg):
-        if self.decoding.cfg.strategy not in ('greedy', 'greedy_batch'):
-            raise ValueError('Planned RNNT/TDT chunking currently supports greedy and greedy_batch decoding.')
-        if not getattr(self.decoder, 'blank_as_pad', False):
-            raise ValueError('Planned RNNT/TDT chunking requires a prediction network with blank_as_pad=True.')
-        if (
-            self.decoding._is_tdt
-            and (self.decoding.preserve_token_confidence or self.decoding.preserve_word_confidence)
-            and not self.decoding.exclude_blank_from_confidence
+        beam = self.decoding.cfg.get('beam') or {}
+        if self.decoding.cfg.strategy not in ('greedy', 'greedy_batch') and not beam.get(
+            'return_best_hypothesis', True
         ):
-            raise ValueError('Planned TDT confidence currently requires exclude_blank=True.')
+            raise ValueError('Planned RNNT/TDT chunking requires one best hypothesis per chunk.')
 
     def _transcribe_chunk_decoding(self, trcfg):
+        """The model's decoding with word timestamps, which select words by time; the model is unchanged."""
         if trcfg._internal.chunk_decoding is None:
             decoding = self.decoding
-            timestamps = trcfg.timestamps if trcfg.timestamps is not None else decoding.compute_timestamps
-            cfg = copy.deepcopy(decoding.cfg)
-            with open_dict(cfg):
-                # Each chunk continues the decoder state of the previous chunk of its source.
-                # Label-looping greedy decoding carries that state and runs the same greedy search.
-                cfg.strategy = 'greedy_batch'
-                cfg.greedy = cfg.get('greedy') or {}
-                cfg.greedy.loop_labels = True
-                if decoding._is_tdt and timestamps:
-                    cfg.tdt_include_token_duration = True
-            if cfg != decoding.cfg:
-                # Use a call-local decoder; retain the released model config.
+            if not decoding.compute_timestamps:
+                cfg = copy.deepcopy(decoding.cfg)
+                with open_dict(cfg):
+                    cfg.compute_timestamps = True
                 kwargs = (
                     {'tokenizer': decoding.tokenizer}
                     if hasattr(decoding, 'tokenizer')
@@ -991,83 +977,26 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         return trcfg._internal.chunk_decoding
 
     def _transcribe_chunk_outputs(self, outputs, chunks, frame_samples, trcfg):
-        encoded, lengths = outputs['encoded'], outputs['encoded_len']
-        owned = [
-            select_chunk_frames(encoded[i, :, : int(length)].T, chunk, frame_samples)
-            for i, (length, chunk) in enumerate(zip(lengths, chunks))
-        ]
+        # Decode each read window with a fresh decoder that warms up on its left context.
+        # A decoder state carried across chunks can stay in blank through long stretches of speech.
         decoding = self._transcribe_chunk_decoding(trcfg)
-        # The encoder saw context, so owned frames continue speech from the previous chunk.
-        # A decoder that restarts at the chunk start can stay blank through that speech.
-        # Each chunk therefore continues the decoder state of the previous chunk of its source.
-        # Chunks arrive in source order. Chunks of one source decode in sequence, and the
-        # n-th chunks of different sources in this batch decode together.
-        steps = []
-        for i, chunk in enumerate(chunks):
-            steps.append(steps[-1] + 1 if i > 0 and chunk.keep_start > 0 else 0)
-        hypotheses, states = [None] * len(chunks), [None] * len(chunks)
-        for step in range(max(steps) + 1):
-            batch = [i for i, s in enumerate(steps) if s == step]
-            previous = []
-            for i in batch:
-                if chunks[i].keep_start == 0:
-                    previous.append(None)
-                elif i > 0:
-                    previous.append(states[i - 1])
-                elif trcfg._internal.chunk_state is not None:
-                    previous.append(trcfg._internal.chunk_state)
-                else:
-                    raise RuntimeError('A continued chunk has no decoder state from its previous chunk.')
-            frames = torch.nn.utils.rnn.pad_sequence([owned[i] for i in batch], batch_first=True).transpose(1, 2)
-            frame_lengths = torch.tensor([len(owned[i]) for i in batch], device=lengths.device, dtype=lengths.dtype)
-            # Use raw greedy hypotheses. Compute words and their confidence only after assembly.
-            partial = [Hypothesis(score=0.0, y_sequence=None, timestamp=None, dec_state=s) for s in previous]
-            decoded = decoding.decoding(
-                encoder_output=frames, encoded_lengths=frame_lengths, partial_hypotheses=partial
-            )
-            for i, state, hyp in zip(batch, previous, decoded[0]):
-                if not isinstance(hyp, Hypothesis) or hyp.dec_state is None:
-                    raise RuntimeError('Chunk decoding must return one greedy hypothesis with state per chunk.')
-                if state is not None:
-                    # Label looping continues emission times from the carried state; keep them chunk-relative.
-                    offset = int(state.decoded_length)
-                    hyp.timestamp = [int(t) - offset for t in hyp.timestamp]
-                hypotheses[i], states[i] = hyp, hyp.dec_state
-        trcfg._internal.chunk_state = None if chunks[-1].is_last else states[-1]
-        for i, hyp in enumerate(hypotheses):
-            if decoding._is_tdt:
-                num_frames = len(owned[i])
-                for name in ('alignments', 'frame_confidence'):
-                    value = getattr(hyp, name)
-                    if value is not None:
-                        setattr(hyp, name, value[:num_frames])
-            if (
-                decoding._is_tdt
-                and decoding.preserve_frame_confidence
-                and hyp.non_blank_step_confidence_precomputed is None
-            ):
-                hyp.non_blank_step_confidence_precomputed = hyp.non_blank_frame_confidence
-            hyp.clean_decoding_state_()
-        return move_data_to_device(hypotheses, torch.device('cpu'))
+        hyps = decoding.rnnt_decoder_predictions_tensor(
+            outputs['encoded'], outputs['encoded_len'], return_hypotheses=True
+        )
+        hyps = process_timestamp_outputs(hyps, self.encoder.subsampling_factor, self.cfg.preprocessor.window_stride)
+        sample_rate = int(self.cfg.sample_rate)
+        return [select_chunk_words(hyp.timestamp['word'], chunk, sample_rate) for hyp, chunk in zip(hyps, chunks)]
 
     def _transcribe_chunk_finalize(self, parts, chunks, frame_samples, trcfg):
         decoding = self._transcribe_chunk_decoding(trcfg)
-        hyp = merge_rnnt_chunks(parts, chunks, frame_samples)
-        hyp = decoding.decode_hypothesis([hyp])[0]
-        if decoding.preserve_token_confidence or decoding.preserve_word_confidence:
-            hyp = decoding.compute_confidence([hyp])[0]
-        timestamps = trcfg.timestamps if trcfg.timestamps is not None else decoding.compute_timestamps
-        if timestamps:
-            hyp.timestamp = torch.tensor(hyp.timestamp, dtype=torch.long)
-            hyp = decoding.compute_rnnt_timestamps(hyp, decoding.cfg.get('rnnt_timestamp_type', 'all'))
-            hyp = process_timestamp_outputs(hyp, self.encoder.subsampling_factor, self.cfg.preprocessor.window_stride)[
-                0
-            ]
-        elif not trcfg.return_hypotheses:
-            hyp.timestamp = []
-        if not trcfg.return_hypotheses and not timestamps:
-            hyp = Hypothesis(hyp.score, hyp.y_sequence, hyp.text)
-        return hyp
+        if hasattr(decoding, 'tokenizer'):
+            text_to_ids = decoding.tokenizer.text_to_ids
+        else:
+            label_ids = {label: i for i, label in decoding.labels_map.items()}
+            text_to_ids = lambda text: [label_ids[c] for c in text if c in label_ids]
+        words = [word for part in parts for word in part]
+        frame_seconds = frame_samples / self.cfg.sample_rate
+        return words_to_hypothesis(words, text_to_ids, frame_seconds, trcfg.timestamps, decoding.segment_seperators)
 
     def _transcribe_forward(self, batch: Any, trcfg: TranscribeConfig):
         encoded, encoded_len = self.forward(input_signal=batch[0], input_signal_length=batch[1])

@@ -151,6 +151,48 @@ def test_dflash2_normalization_requires_canonical_only_runtime(supported_archs):
     assert config.architectures == ["Qwen3DFlash2DraftModel"]
 
 
+def _install_fake_vllm(monkeypatch, version):
+    """Install a minimal vLLM whose model config module lacks ``NemotronHForCausalLMConfig``."""
+    config_registry = {}
+    modules = {
+        "vllm": SimpleNamespace(__version__=version),
+        "vllm.transformers_utils": SimpleNamespace(),
+        "vllm.transformers_utils.config": SimpleNamespace(_CONFIG_REGISTRY=config_registry),
+        "vllm.model_executor": SimpleNamespace(),
+        "vllm.model_executor.models": SimpleNamespace(),
+        "vllm.model_executor.models.config": SimpleNamespace(MODELS_CONFIG_MAP={}),
+        "vllm.model_executor.models.registry": SimpleNamespace(ModelRegistry=SimpleNamespace()),
+    }
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.delitem(sys.modules, "nemo.collections.speechlm2.vllm.salm.config_hook", raising=False)
+    return config_registry
+
+
+@pytest.mark.skipif(not _HAS_CONFIG, reason="SpeechLM vLLM plugin not available")
+def test_register_skips_unsupported_vllm_without_breaking_other_models(monkeypatch, caplog):
+    """vLLM loads general plugins for every model; an old vLLM must keep serving unrelated models."""
+    config_registry = _install_fake_vllm(monkeypatch, "0.12.0")
+
+    with caplog.at_level("WARNING", logger=_salm_module.__name__):
+        _salm_module.register()
+
+    assert config_registry == {}
+    assert "requires vllm>=" in caplog.text
+
+
+@pytest.mark.skipif(not _HAS_CONFIG, reason="SpeechLM vLLM plugin not available")
+@pytest.mark.parametrize("version", ("0.32.0", "0.32.0rc1", "0.33.0.dev1+gabc"))
+def test_register_does_not_skip_supported_vllm(monkeypatch, version):
+    config_registry = _install_fake_vllm(monkeypatch, version)
+
+    # The fake vLLM lacks the internals the plugin needs, so registration proceeds and fails loudly.
+    with pytest.raises(ImportError, match="NemotronHForCausalLMConfig"):
+        _salm_module.register()
+
+    assert "nemo_speechlm" in config_registry
+
+
 @pytest.mark.skipif(not _HAS_CONFIG, reason="SpeechLM vLLM plugin not available")
 def test_dflash_alias_registration_supports_class_backed_registry():
     class NativeModel:
@@ -1741,6 +1783,7 @@ class TestAudioProcessing:
         assert runner(audio, lengths) is None
         assert len(attempts) == 2 and runner.graphs == {} and runner.pool is None and not runner.enabled
 
+    @pytest.mark.gpu
     def test_encoder_graph_runner_failed_capture_leaves_eager_inference_working(self, monkeypatch):
         """A capture that syncs the host fails; the eager forward still runs on the same device afterwards."""
         import torch
@@ -1762,6 +1805,7 @@ class TestAudioProcessing:
             emb, emb_len = perception(input_signal=audio, input_signal_length=lengths)
         assert torch.isfinite(emb).all() and emb_len.tolist()[0] > 0
 
+    @pytest.mark.gpu
     def test_encoder_graph_runner_matches_eager_forward(self):
         """Graph replays over padded buckets return the eager forward's per-row embeddings."""
         import torch
@@ -1787,6 +1831,7 @@ class TestAudioProcessing:
         assert runner(torch.randn(1, 30000, device="cuda"), torch.tensor([30000], device="cuda")) is None
         assert {b for b, _ in runner.graphs} <= {4, 8, 16}
 
+    @pytest.mark.gpu
     def test_perception_forward(self):
         """A small NeMo perception module should encode dummy audio to embeddings."""
         import torch

@@ -74,13 +74,16 @@ def test_model_training_step():
     T_audio = sr * 2  # 2 seconds of audio
     audio_locator_id = model.audio_locator_tag_id
 
-    # Build text token sequence: [<bos>, <audio_locator>, tok, tok, ..., <eos>]
+    # Build text token sequence: [<audio_locator>, tok, tok, ...]
     # The audio_locator_tag must appear exactly once to match the single audio sample.
     T_text = 16
-    # Use token id 1 as a generic text token (safe for most LLM tokenizers).
-    text_tok = 1
+    # Token IDs depend on the checkpoint: 1 may itself be the audio locator.
+    text_tok = next(
+        token_id for token_id in range(model.text_vocab_size) if token_id not in {audio_locator_id, model.text_pad_id}
+    )
     input_ids = torch.full((B, T_text), text_tok, dtype=torch.long, device=d)
     input_ids[0, 0] = audio_locator_id  # one placeholder at position 0
+    assert (input_ids == audio_locator_id).sum().item() == B, "Expected one audio placeholder per audio sample"
 
     # loss_mask=True on the final few tokens (the "response" portion).
     loss_mask = torch.zeros(B, T_text, dtype=torch.bool, device=d)

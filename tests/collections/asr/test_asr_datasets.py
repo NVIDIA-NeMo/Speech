@@ -229,6 +229,7 @@ class TestASRDatasets:
 
     @pytest.mark.skipif(not HAVE_DALI, reason="NVIDIA DALI is not installed or incompatible version")
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_dali_char_dataset(self, test_data_dir):
         manifest_path = os.path.abspath(os.path.join(test_data_dir, 'asr/an4_val.json'))
 
@@ -317,6 +318,7 @@ class TestASRDatasets:
 
     @pytest.mark.skipif(not HAVE_DALI, reason="NVIDIA DALI is not installed or incompatible version")
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_dali_bpe_dataset(self, test_data_dir):
         manifest_path = os.path.abspath(os.path.join(test_data_dir, 'asr/an4_val.json'))
 
@@ -483,6 +485,7 @@ class TestASRDatasets:
 
     @pytest.mark.skipif(not HAVE_DALI, reason="NVIDIA DALI is not installed or incompatible version")
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_tarred_dali_char_dataset(self, test_data_dir):
         manifest_path = os.path.abspath(os.path.join(test_data_dir, 'asr/tarred_an4/tarred_audio_manifest.json'))
         audio_tar_filepaths = [
@@ -646,6 +649,7 @@ class TestASRDatasets:
     @pytest.mark.skipif(not HAVE_DALI, reason="NVIDIA DALI is not installed or incompatible version")
     @pytest.mark.unit
     @pytest.mark.parametrize("log", [True, False])
+    @pytest.mark.gpu
     def test_dali_frontend_options_vs_ref_preprocessor(self, log):
         """The DALI pipeline applies the front-end options of the mel preprocessor as the regular front end does.
 
@@ -711,6 +715,7 @@ class TestASRDatasets:
     @pytest.mark.skipif(not HAVE_DALI, reason="NVIDIA DALI is not installed or incompatible version")
     @pytest.mark.unit
     @pytest.mark.parametrize("log_base", [None, 10.0])
+    @pytest.mark.gpu
     def test_dali_log_arguments(self, log_base):
         """The decibel operator of the DALI pipeline gets the multiplier and cutoff of the configured logarithm.
 

@@ -1220,7 +1220,7 @@ class BatchedFrameASRRNNT(FrameBatchASR):
             encoded, encoded_len = self.asr_model.forward(
                 processed_signal=feat_signal,
                 processed_signal_length=feat_signal_len,
-                prompt=prompt_tensor,
+                language_prompt_features=prompt_tensor,
             )
         else:
             encoded, encoded_len = self.asr_model.forward(

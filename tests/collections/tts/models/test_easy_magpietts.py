@@ -26,9 +26,12 @@ from huggingface_hub.errors import LocalEntryNotFoundError
 from omegaconf import OmegaConf
 from torch import nn
 
+from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import MagpieTTSLhotseMultiturnDataset
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.collections.tts.models.easy_magpietts import EasyMagpieTTSModel
 from nemo.collections.tts.models.easy_magpietts_inference import EasyModelInferenceParameters, TrainingMode
+from nemo.collections.tts.modules.magpietts_modules import FeatureMasking
+from tests.collections.tts.data.test_magpietts_dataset_lhotse import _multiturn_cutset
 from tests.collections.tts.models.test_audio_codec import create_codec_config
 
 
@@ -246,6 +249,7 @@ def test_training_mode_and_inference_parameters():
     )
 
 
+@pytest.mark.gpu
 def test_easy_magpietts_model_construction(model):
     expected_device = "cuda" if torch.cuda.is_available() else "cpu"
     assert next(model.parameters()).device.type == expected_device
@@ -265,6 +269,7 @@ def test_easy_magpietts_model_construction(model):
     assert hasattr(model, "cas_encoder")
 
 
+@pytest.mark.gpu
 def test_state_dict_excludes_codec(model):
     state = model.state_dict()
     assert state
@@ -273,6 +278,7 @@ def test_state_dict_excludes_codec(model):
     assert any(key.startswith("final_proj.") for key in state)
 
 
+@pytest.mark.gpu
 def test_audio_and_text_embedding_shapes(model):
     audio_tokens = _toy_codes(model, batch_size=2, num_frames=3)
     audio_tokens[0, :, -1] = model.audio_eos_id
@@ -288,6 +294,7 @@ def test_audio_and_text_embedding_shapes(model):
     assert torch.isfinite(text_embedded).all()
 
 
+@pytest.mark.gpu
 def test_stack_codes_round_trip_expected_shape(model):
     codes = _toy_codes(model, batch_size=2, num_frames=4)
     codes_lens = torch.tensor([4, 4], dtype=torch.long)
@@ -309,6 +316,7 @@ def test_stack_codes_round_trip_expected_shape(model):
     torch.testing.assert_close(unstacked, codes)
 
 
+@pytest.mark.gpu
 def test_compute_loss_with_and_without_agent_mask(model):
     _seed_everything()
     batch_size, num_frames = 2, 5
@@ -348,6 +356,7 @@ def test_compute_loss_with_and_without_agent_mask(model):
     assert loss_mask.dtype == torch.bool
 
 
+@pytest.mark.gpu
 def test_prepare_audio_channel_embeddings_shapes(model):
     audio_codes = _toy_codes(model, batch_size=2, num_frames=3)
     audio_codes[1, :, 2] = 0
@@ -378,6 +387,7 @@ def test_prepare_audio_channel_embeddings_shapes(model):
     assert loss_agent_mask.dtype == torch.bool
 
 
+@pytest.mark.gpu
 def test_forward_with_inputs_embeds(model):
     _seed_everything()
     inputs_embeds = torch.randn(2, 6, model.cfg.embedding_dim)
@@ -391,6 +401,7 @@ def test_forward_with_inputs_embeds(model):
     assert output.past_key_values is not None
 
 
+@pytest.mark.gpu
 def test_logits_to_audio_codes_schema(model):
     logits = torch.zeros(2, 4, model.num_audio_codebooks * model.num_all_tokens_per_codebook)
     expected_tokens = []
@@ -410,6 +421,7 @@ def test_logits_to_audio_codes_schema(model):
     assert audio_codes[1, :, 2:].eq(0).all()
 
 
+@pytest.mark.gpu
 def test_process_batch_smoke(model, toy_batch):
     _seed_everything()
     output = model.process_batch(
@@ -437,6 +449,7 @@ def test_process_batch_smoke(model, toy_batch):
     assert output.context_audio_codes.shape[1] == model.num_audio_codebooks
 
 
+@pytest.mark.gpu
 def test_process_batch_with_multiturn_dataset_enabled():
     _seed_everything()
     model = _make_easy_magpie_model(tiny_easy_magpie_cfg({"use_multiturn_dataset": True}))
@@ -465,6 +478,7 @@ def test_process_batch_with_multiturn_dataset_enabled():
     assert output.local_transformer_loss is None
 
 
+@pytest.mark.gpu
 def test_process_batch_with_autoregressive_local_transformer():
     _seed_everything()
     model = _make_easy_magpie_model(
@@ -501,6 +515,77 @@ def test_process_batch_with_autoregressive_local_transformer():
     assert output.local_transformer_logits.shape == output.logits.shape
 
 
+@pytest.mark.gpu
+def test_process_batch_with_feature_masking():
+    """``feature_masking`` runs through ``FeatureMasking.forward`` for the audio channel embeddings and for the
+    local transformer inputs: random masking in training mode, pass-through in eval mode."""
+    _seed_everything()
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "autoregressive",
+                "local_transformer_hidden_dim": 32,
+                "local_transformer_n_layers": 1,
+                "local_transformer_n_heads": 4,
+                "feature_masking": {
+                    "_target_": "nemo.collections.tts.modules.magpietts_modules.FeatureMasking",
+                    "hidden_size": 32,
+                    "mask_min": 0.5,
+                    "mask_max": 0.5,
+                },
+            }
+        )
+    )
+    assert isinstance(model.feature_masking, FeatureMasking)
+    # Make masked positions distinguishable from the zero embeddings of the delay padding.
+    torch.nn.init.constant_(model.feature_masking.masked_emb, 1.0)
+    batch = _toy_batch(model)
+    forward = model.feature_masking.forward
+    calls = []
+
+    def spy(inputs, input_len):
+        outputs = forward(inputs=inputs, input_len=input_len)
+        calls.append((inputs, input_len, outputs))
+        return outputs
+
+    for mode in ("train", "val"):
+        model.train(mode == "train")
+        calls.clear()
+        with patch.object(model.feature_masking, "forward", new=spy):
+            output = model.process_batch(
+                text=batch["text"],
+                text_lens=batch["text_lens"],
+                context_text_tokens=batch["context_text_tokens"],
+                context_text_tokens_lens=batch["context_text_tokens_lens"],
+                audio_codes=batch["audio_codes"],
+                audio_codes_lens=batch["audio_codes_lens"],
+                context_audio_codes=batch["context_audio_codes"],
+                context_audio_codes_lens=batch["context_audio_codes_lens"],
+                mode=mode,
+                training_mode=model.training_modes[0],
+                agent_mask=batch["agent_mask"],
+            )
+
+        assert torch.isfinite(output.loss)
+        assert torch.isfinite(output.codebook_loss)
+        assert torch.isfinite(output.local_transformer_loss)
+
+        # One call per site: the audio channel (B, T, E), then the local transformer inputs (B * T', C, E).
+        assert len(calls) == 2
+        (audio_inputs, _, _), (lt_inputs, lt_input_len, _) = calls
+        assert audio_inputs.shape[0] == batch["audio_codes"].shape[0]
+        assert lt_inputs.shape[1] == model.num_audio_codebooks
+        assert torch.all(lt_input_len == model.num_audio_codebooks)
+        for inputs, _, outputs in calls:
+            assert inputs.shape[-1] == model.feature_masking.masked_emb.shape[-1]
+            masked = (outputs == 1.0).all(dim=-1)
+            if mode == "train":
+                assert masked.any(dim=1).all(), "every item should have at least one masked timestep"
+            else:
+                assert torch.equal(outputs, inputs)
+
+
+@pytest.mark.gpu
 def test_training_step_smoke(model, toy_batch):
     _seed_everything()
     model.train()
@@ -516,6 +601,7 @@ def test_training_step_smoke(model, toy_batch):
     assert loss.item() > 0
 
 
+@pytest.mark.gpu
 def test_validation_step_smoke(model, toy_batch, tmp_path):
     _seed_everything()
     model.eval()
@@ -533,3 +619,49 @@ def test_validation_step_smoke(model, toy_batch, tmp_path):
     assert torch.isfinite(output["val_codebook_loss"])
     assert output["val_local_transformer_loss"] is None
     assert model.validation_step_outputs[-1] == output
+
+
+@pytest.mark.run_only_on('CPU')
+def test_multiturn_lhotse_dataloader_omits_alignment_prior():
+    """EMTTS multiturn batches must omit the alignment prior, rather than return a zero-scaled tensor."""
+    with torch.device('cpu'):
+        cfg = tiny_easy_magpie_cfg(
+            {'use_bpe_char_tokenizer': False, 'load_cached_codes_if_available': True, 'use_multiturn_dataset': True}
+        )
+        cfg.text_tokenizers = {
+            'english_char': {
+                '_target_': 'nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.EnglishCharsTokenizer'
+            }
+        }
+        cfg.text_conditioning_tokenizer_name = 'english_char'
+        cfg.context_duration_min = 0.04
+        cfg.context_duration_max = 0.04
+        model = _make_easy_magpie_model(cfg)
+
+        cuts = _multiturn_cutset()
+        for cut in cuts:
+            cut.tokenizer_names = ['english_char']
+        dataset_cfg = OmegaConf.create(
+            {
+                'use_lhotse': True,
+                'volume_norm': False,
+                'dataset': {'batch_size': 1},
+            }
+        )
+
+        # Supply in-memory cuts while exercising the real Lhotse sampler, dataset, and dataloader.
+        with patch(
+            'nemo.collections.common.data.lhotse.dataloader.read_cutset_from_config', return_value=(cuts, False)
+        ):
+            model.setup_training_data(dataset_cfg)
+        dataloader = model.train_dataloader()
+        assert isinstance(dataloader.dataset.dataset, MagpieTTSLhotseMultiturnDataset)
+        batch = next(iter(dataloader))
+
+        assert batch['audio_codes'].shape == (1, model.data_num_audio_codebooks, 8)
+        assert batch['text_lens'].item() > 0
+        assert batch['raw_texts'] == ['hello okay']
+        assert batch['user_mask'].sum().item() > 0
+        assert batch['agent_mask'].sum().item() > 0
+        # Ensure the alignment prior is not present
+        assert 'align_prior_matrix' not in batch

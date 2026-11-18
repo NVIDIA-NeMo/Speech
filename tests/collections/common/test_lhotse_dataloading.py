@@ -2195,11 +2195,14 @@ def test_dataloader_with_noise_cut_ids_are_deterministic_across_resume(tmp_path:
 
     def batch_ids(batch):
         assert all(isinstance(c, MixedCut) for c in batch)
+        # Each noise-mixed cut keeps the ID of the clean source cut it was mixed from.
+        assert all(c.id == c.tracks[0].cut.id for c in batch)
         return [c.id for c in batch]
 
-    # Two fresh iterations yield identical mixed cut IDs.
+    # Two fresh iterations yield identical mixed cut IDs, which are exactly the clean source cut IDs.
     ref = [batch_ids(b) for b in make_dl()]
     assert len(ref) == 5
+    assert sorted(cid for b in ref for cid in b) == sorted(c.id for c in cuts)
     assert [batch_ids(b) for b in make_dl()] == ref
 
     # Save state mid-epoch, then restore it into a fresh dataloader and finish the epoch:

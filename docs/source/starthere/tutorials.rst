@@ -29,9 +29,6 @@ Tutorial Overview
      - Getting Started: NeMo Fundamentals
      - `NeMo Fundamentals <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/00_NeMo_Primer.ipynb>`_
    * - General
-     - Getting Started: Audio translator example
-     - `Audio translator example <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/AudioTranslationSample.ipynb>`_
-   * - General
      - Getting Started: Voice swap example
      - `Voice swap example <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/VoiceSwapSample.ipynb>`_
    * - General
@@ -58,9 +55,6 @@ Tutorial Overview
      - ASR with Subword Tokenization
      - `ASR with Subword Tokenization <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/ASR_with_Subword_Tokenization.ipynb>`_
    * - ASR
-     - Offline ASR
-     - `Offline ASR <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Offline_ASR.ipynb>`_
-   * - ASR
      - Online ASR Microphone Cache Aware Streaming
      - `Online ASR Microphone Cache Aware Streaming <https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Online_ASR_Microphone_Demo_Cache_Aware_Streaming.ipynb>`_
    * - ASR
@@ -76,9 +70,6 @@ Tutorial Overview
      - ASR with Adapters
      - `ASR with Adapters <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/asr_adapters/ASR_with_Adapters.ipynb>`_
    * - ASR
-     - Speech Commands
-     - `Speech Commands <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Speech_Commands.ipynb>`_
-   * - ASR
      - Voice Activity Detection
      - `Voice Activity Detection <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Voice_Activity_Detection.ipynb>`_
    * - ASR
@@ -87,9 +78,6 @@ Tutorial Overview
    * - ASR
      - Speaker Recognition and Verification
      - `Speaker Recognition and Verification <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/speaker_tasks/Speaker_Identification_Verification.ipynb>`_
-   * - ASR
-     - Speaker Diarization Inference
-     - `Speaker Diarization Inference <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/speaker_tasks/Speaker_Diarization_Inference.ipynb>`_
    * - ASR
      - ASR with Speaker Diarization
      - `ASR with Speaker Diarization <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/speaker_tasks/ASR_with_SpeakerDiarization.ipynb>`_
@@ -131,30 +119,6 @@ Tutorial Overview
    * - TTS
      - Basic and Advanced: NeMo TTS Primer
      - `NeMo TTS Primer <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/tts/NeMo_TTS_Primer.ipynb>`_
-   * - TTS
-     - Basic and Advanced: FastPitch and MixerTTS Model Training
-     - `FastPitch and MixerTTS Model Training <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/tts/FastPitch_MixerTTS_Training.ipynb>`_
-   * - TTS
-     - Basic and Advanced: FastPitch Finetuning
-     - `FastPitch Finetuning <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/tts/FastPitch_Finetuning.ipynb>`_
-   * - TTS
-     - Basic and Advanced: FastPitch and HiFiGAN Model Training for German
-     - `FastPitch and HiFiGAN Model Training for German <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/tts/FastPitch_GermanTTS_Training.ipynb>`_
-   * - TTS
-     - Basic and Advanced: Tacotron2 Model Training
-     - `Tacotron2 Model Training <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/tts/Tacotron2_Training.ipynb>`_
-   * - TTS
-     - Basic and Advanced: FastPitch Duration and Pitch Control
-     - `FastPitch Duration and Pitch Control <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/tts/Inference_DurationPitchControl.ipynb>`_
-   * - TTS
-     - Basic and Advanced: FastPitch Speaker Interpolation
-     - `FastPitch Speaker Interpolation <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/tts/FastPitch_Speaker_Interpolation.ipynb>`_
-   * - TTS
-     - Basic and Advanced: TTS Inference and Model Selection
-     - `TTS Inference and Model Selection <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/tts/Inference_ModelSelect.ipynb>`_
-   * - TTS
-     - Basic and Advanced: TTS Pronunciation Customization
-     - `TTS Pronunciation Customization <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/tts/Pronunciation_customization.ipynb>`_
 
 .. list-table:: **Tools and Utilities**
    :widths: 15 25 60

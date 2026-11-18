@@ -12,7 +12,7 @@ In this repository, you will find several tutorials discussing what is Automatic
 
 2) `ASR_with_Subword_Tokenization`: Modern ASR models benefit from several improvements in neural network design and data processing. In this tutorial we discuss how we can use Tokenizers (commonly found in NLP) to significantly improve the efficiency of ASR models without sacrificing any accuracy during transcription.
 
-3) `Online_ASR_Microphone_Demo`: A short notebook that enables us to speak into a microphone and transcribe speech in an online manner. Note that this is not the most efficient way to perform streaming ASR, and it is more of a demo.
+3) `Online_ASR_Microphone_Demo_Buffered_Streaming`: A short notebook that enables us to speak into a microphone and transcribe speech in an online manner with buffered streaming. Note that this is not the most efficient way to perform streaming ASR, and it is more of a demo.
 
 4) `Online_ASR_Microphone_Demo_Cache_Aware_Streaming`: This notebook allows you to do real-time ("streaming") speech recognition on audio recorded from your microphone, using "cache-aware" NeMo ASR models specifically tuned for the streaming ASR usecase.
 
@@ -22,7 +22,7 @@ In this repository, you will find several tutorials discussing what is Automatic
 
 7) `Intro_to_Transducers`: Previous tutorials discuss ASR models in context of the Connectionist Temporal Classification Loss. In this tutorial, we introduce the Transducer loss, and the components of this loss function that are constructed in the config file. This tutorial is a prerequisite to the `ASR_with_Transducers` tutorial.
 
-8) `ASR_with_Transducers`: In this tutorial, we take a deep dive into Transducer based ASR models, discussing the similarity of setup and config to CTC models and then train a small ContextNet model on the AN4 dataset. We then discuss how to change the decoding strategy of a trained Transducer from greedy search to beam search. Finally, we wrap up this tutorial by extraining the alignment matrix from a trained Transducer model. 
+8) `ASR_with_Transducers`: In this tutorial, we take a deep dive into Transducer based ASR models, discussing the similarity of setup and config to CTC models and then train a small ContextNet model on the AN4 dataset. We then discuss how to change the decoding strategy of a trained Transducer from greedy search to beam search. Finally, we wrap up this tutorial by extraining the alignment matrix from a trained Transducer model.
 
 9) `Self_Supervised_Pre_Training`: It can often be difficult to obtain labeled data for ASR training. In this tutorial, we demonstrate how to pre-train a speech model in an unsupervised manner, and then fine-tune with CTC loss.
 
@@ -56,8 +56,6 @@ Please refer to the `asr_adapter` sub-folder which contains tutorials on the use
 
 # Speech Command Recognition
 
-1) `Speech_Commands`: Here, we study the task of speech classification - a subset of speech recognition that allows us to classify a spoken sentence into a single label. This allows to speak a command and the model can then recognize this command and perform an action.
+1) `Voice_Activity_Detection`: A special case of Speech Command Recognition - where the task is to classify whether some audio segment is speech or not. It is often a tiny model that is used prior to a large ASR model being used.
 
-2) `Voice_Activity_Detection`: A special case of Speech Command Recognition - where the task is to classify whether some audio segment is speech or not. It is often a tiny model that is used prior to a large ASR model being used.
-
-3) `Online_Offline_Microphone_VAD_Demo`: Similar to before, we demo an online-offline inference of voice activity detection. We discuss metrics for comparing the performance of streaming VAD models, and how one can try to perform streaming VAD inference with a microphone. Note that as always, this demo is a demonstration of a possible approach and is not meant for large scale use.
+2) `Online_Offline_Microphone_VAD_Demo`: Similar to before, we demo an online-offline inference of voice activity detection. We discuss metrics for comparing the performance of streaming VAD models, and how one can try to perform streaming VAD inference with a microphone. Note that as always, this demo is a demonstration of a possible approach and is not meant for large scale use.

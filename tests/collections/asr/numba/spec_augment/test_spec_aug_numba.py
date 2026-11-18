@@ -143,6 +143,7 @@ def time_mask_check(x, x_len, t_start, t_len, mask_value, bidx):
     assert check_result
 
 
+@pytest.mark.gpu
 class TestSpecAugmentNumba:
     @pytest.mark.unit
     @pytest.mark.run_only_on('GPU')

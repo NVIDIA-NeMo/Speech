@@ -29,7 +29,6 @@ from nemo.collections.asr.models.configs import CacheAwareStreamingConfig
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.packed_sequence import (
     PackedEncoderActivations,
-    _new_packed_encoder_activations,
     pack_encoder_output,
     packed_slot_layout,
 )
@@ -46,7 +45,10 @@ from nemo.collections.asr.parts.submodules.multi_head_attention import (
     RelPositionalEncoding,
     RotaryPositionalEncoding,
 )
-from nemo.collections.asr.parts.submodules.packed_attention import PackedAttentionContext
+from nemo.collections.asr.parts.submodules.packed_attention import (
+    PackedAttentionContext,
+    packed_attention_supports_dropout,
+)
 from nemo.collections.asr.parts.submodules.subsampling import (
     ConvSubsampling,
     StackingSubsampling,
@@ -75,17 +77,6 @@ try:
     from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import CheckpointWrapper
 except ImportError:  # a torch build without torch.distributed
     CheckpointWrapper = ()
-
-
-def _forward_packed_module(module: nn.Module, *args, **kwargs):
-    """A module's ``forward_packed``, through its activation-checkpoint wrapper when it has one.
-
-    SpeechLM wraps the frontend and the layers in ``CheckpointWrapper`` (``_set_encoder_activation_checkpointing``):
-    its attribute access reaches the wrapped module's methods, but only ``checkpoint_fn`` checkpoints them.
-    """
-    if isinstance(module, CheckpointWrapper):
-        return module.checkpoint_fn(module._checkpoint_wrapped_module.forward_packed, *args, **kwargs)
-    return module.forward_packed(*args, **kwargs)
 
 
 class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
@@ -235,9 +226,6 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
     Besides the padded ``forward``, the encoder runs sequence-packed through ``forward_sequence_packed``,
     which keeps all activations token-flat with explicit utterance boundaries; see that method for its contract.
     """
-
-    # the opt-in token-flat contract that packed perception modules look for
-    supports_sequence_packed_output = True
 
     def input_example(self, max_batch=1, max_dim=256):
         """
@@ -503,8 +491,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         # Biases for relative positional encoding
         if not untie_biases and self_attention_model == "rel_pos":
             d_head = d_model // n_heads
-            pos_bias_u = nn.Parameter(torch.Tensor(n_heads, d_head))
-            pos_bias_v = nn.Parameter(torch.Tensor(n_heads, d_head))
+            pos_bias_u = nn.Parameter(torch.empty(n_heads, d_head))
+            pos_bias_v = nn.Parameter(torch.empty(n_heads, d_head))
             nn.init.zeros_(pos_bias_u)
             nn.init.zeros_(pos_bias_v)
         else:
@@ -890,12 +878,18 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         batch normalization in the convolution modules takes its training statistics from the valid frames only,
         while the padded forward includes the padded frames (see ``ConformerConvolution.forward_packed``).
         Dropout draws its masks per token, so same-seed elementwise equality with the padded forward is not promised.
+        A ``dw_striding`` frontend runs its stack layer by layer here, while the padded forward may run the fused
+        Triton kernel (``use_triton``), so with the fusion on the two forms differ by that kernel's precision:
+        2e-2 at most and 2e-4 on average on the released 110M FastConformer over a five-second and a one-second
+        recording, the fused padded forward's own deviation from the plain one, against 2e-5 at most without
+        the fusion (see the smoke test).
 
-        Not supported: streaming caches, limited or chunked attention context, ``rel_pos_local_attn``,
-        reduction layers, adapters, causal subsampling,
-        intermediate layer captures (InterCTC and ``save_encoder_tensors``, whose consumers expect padded tensors),
-        and on CUDA attention dropout except through ``abs_pos`` or ``rope`` attention in half precision
-        (FlexAttention has no dropout, variable-length FlashAttention has).
+        Configurations without a sequence-packed form (streaming caches, limited or chunked attention context,
+        ``rel_pos_local_attn``, reduction layers, adapters, causal or VGGNet subsampling, intermediate layer captures,
+        and in training mode attention dropout where FlexAttention would have to apply it)
+        are named by ``sequence_packed_unsupported_reason`` and refused here with ``NotImplementedError``;
+        the parallel expert encoder and the independent dual encoder consult ``supports_sequence_packed_output``
+        at dispatch time and keep their padded path for them, the plain perception module reports the reason.
 
         Args:
             audio_signal: packed features (``PackedEncoderActivations`` with data ``(sum(T_i), feat_in)``),
@@ -908,55 +902,17 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             The encoder output as ``PackedEncoderActivations`` with data ``(sum(T'_i), feat_out)``;
             the padded ``forward`` output is ``unpack_encoder_output(...).transpose(1, 2)``.
         """
-        if self.self_attention_model == 'rel_pos_local_attn':
-            raise NotImplementedError("rel_pos_local_attn has no sequence-packed form.")
-        if self.att_context_style != 'regular' or any(size != -1 for size in self.att_context_size):
-            raise NotImplementedError("Sequence-packed execution supports the full attention context only.")
-        if self.training and len(self.att_context_size_all) > 1:
-            raise NotImplementedError("Sequence-packed execution does not sample attention context sizes.")
-        if self.reduction_position is not None:
-            raise NotImplementedError("Reduction layers have no sequence-packed form.")
-        if self.is_access_enabled(getattr(self, "model_guid", None)):
-            if self.interctc_capture_at_layers is None:
-                self.interctc_capture_at_layers = self.access_cfg.get('interctc', {}).get('capture_layers', [])
-            if self.interctc_capture_at_layers or self.access_cfg.get('save_encoder_tensors', False):
-                raise NotImplementedError(
-                    "Intermediate layer captures (InterCTC, save_encoder_tensors) have no sequence-packed form: "
-                    "their consumers expect padded (B, D, T) tensors."
-                )
-
-        if isinstance(audio_signal, PackedEncoderActivations):
-            if (
-                length is not None
-                and length is not audio_signal.lengths
-                and not torch.equal(length.to(audio_signal.lengths), audio_signal.lengths)
-            ):
-                raise ValueError("length must match audio_signal.lengths for packed input.")
-            packed = audio_signal
-        else:
-            states = audio_signal if bypass_pre_encode else audio_signal.transpose(1, 2)
-            if length is None:
-                length = states.new_full((states.size(0),), states.size(1), dtype=torch.int64)
-            packed = pack_encoder_output(states, length)
-        expected_width = self.d_model if bypass_pre_encode else self._feat_in
-        if packed.data.shape[-1] != expected_width:
-            raise ValueError(
-                f"Packed audio_signal must have feature width {expected_width}, got {packed.data.shape[-1]}."
-            )
+        self._check_sequence_packed_support()
+        packed = self._packed_input(audio_signal, length, bypass_pre_encode)
 
         if not bypass_pre_encode:
-            pre_encode = self.pre_encode
-            if isinstance(pre_encode, CheckpointWrapper):
-                pre_encode = pre_encode._checkpoint_wrapped_module
-            if isinstance(pre_encode, nn.Linear):
+            if isinstance(_unwrap_checkpoint(self.pre_encode), nn.Linear):
                 # the input's padding metadata describes features, not the projected states
-                packed = _new_packed_encoder_activations(
+                packed = PackedEncoderActivations.from_validated(
                     self.pre_encode(packed.data), packed.lengths, packed.cu_seqlens, packed.max_seqlen
                 )
-            elif isinstance(pre_encode, ConvSubsampling):
-                packed = _forward_packed_module(self.pre_encode, packed)
             else:
-                raise NotImplementedError(f"{type(pre_encode).__name__} has no sequence-packed form.")
+                packed = _forward_packed_module(self.pre_encode, packed)
 
         attention_context = PackedAttentionContext(packed)
         # the relative-position table covers the length the attention backend reads:
@@ -1010,7 +966,122 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         if self.out_proj is not None:
             x = self.out_proj(x)
         # encoder outputs pad with zeros, whatever padding metadata the input carried
-        return _new_packed_encoder_activations(x, packed.lengths, packed.cu_seqlens, packed.max_seqlen)
+        return PackedEncoderActivations.from_validated(x, packed.lengths, packed.cu_seqlens, packed.max_seqlen)
+
+    @property
+    def supports_sequence_packed_output(self) -> bool:
+        """Whether ``forward_sequence_packed`` runs this encoder as configured and in its current mode.
+
+        The parallel expert encoder and the independent dual encoder read it before they dispatch and keep their
+        padded path when it is False, so an encoder whose configuration has no packed form
+        (see ``sequence_packed_unsupported_reason``) trains as it did before the packed path existed;
+        the answer depends on the mode and, under autocast, on the autocast dtype, so it is read per forward.
+        """
+        return self.sequence_packed_unsupported_reason() is None
+
+    def sequence_packed_unsupported_reason(self) -> str | None:
+        """Why ``forward_sequence_packed`` cannot run this encoder as configured, or None when it can.
+
+        Without a sequence-packed form: limited or chunked attention context, ``rel_pos_local_attn``,
+        the sampling of attention context sizes in training, reduction layers, adapters,
+        intermediate layer captures (InterCTC and ``save_encoder_tensors``, whose consumers expect padded tensors),
+        frontends other than a linear layer or a non-causal ``striding`` or ``dw_striding`` ``ConvSubsampling``,
+        and instance or group normalization in the convolution modules.
+        Attention dropout in training mode on CUDA: FlexAttention has no dropout, so ``rel_pos`` attention
+        keeps its dropout only through its Triton kernel (Triton installed, float32, bfloat16 or float16),
+        and ``abs_pos`` and ``rope`` attention only where variable-length FlashAttention runs,
+        in float16 or bfloat16 (autocast counts) with a head width that is a multiple of 8 up to 256;
+        see ``packed_attention_supports_dropout``. Off CUDA the dense reference attention applies the dropout.
+        """
+        if self.self_attention_model == 'rel_pos_local_attn':
+            return "rel_pos_local_attn has no sequence-packed form."
+        if self.att_context_style != 'regular' or any(size != -1 for size in self.att_context_size):
+            return "Sequence-packed execution supports the full attention context only."
+        if self.training and len(self.att_context_size_all) > 1:
+            return "Sequence-packed execution does not sample attention context sizes."
+        if self.reduction_position is not None:
+            return "Reduction layers have no sequence-packed form."
+        if isinstance(self, adapter_mixins.AdapterModuleMixin) and self.is_adapter_available():
+            return "Adapters have no sequence-packed form."
+        if self.is_access_enabled(getattr(self, "model_guid", None)):
+            if self.interctc_capture_at_layers is None:
+                self.interctc_capture_at_layers = self.access_cfg.get('interctc', {}).get('capture_layers', [])
+            if self.interctc_capture_at_layers or self.access_cfg.get('save_encoder_tensors', False):
+                return (
+                    "Intermediate layer captures (InterCTC, save_encoder_tensors) have no sequence-packed form: "
+                    "their consumers expect padded (B, D, T) tensors."
+                )
+        pre_encode = _unwrap_checkpoint(self.pre_encode)
+        if isinstance(pre_encode, ConvSubsampling):
+            reason = pre_encode.sequence_packed_unsupported_reason()
+            if reason is not None:
+                return reason
+        elif not isinstance(pre_encode, nn.Linear):
+            return f"{type(pre_encode).__name__} has no sequence-packed form."
+        layers = [_unwrap_checkpoint(layer) for layer in self.layers]
+        for layer in layers:
+            reason = layer.conv.sequence_packed_unsupported_reason()
+            if reason is not None:
+                return reason
+        parameter = next(self.parameters(), None)
+        if (
+            self.training
+            and parameter is not None
+            and parameter.device.type == 'cuda'
+            and any(layer.self_attn.dropout_rate > 0 for layer in layers)
+        ):
+            # off CUDA the dense per-utterance reference path applies the dropout, with or without a position term
+            autocast = torch.is_autocast_enabled('cuda')
+            dtype = torch.get_autocast_dtype('cuda') if autocast else parameter.dtype
+            head_dim = layers[0].self_attn.d_k
+            if self.self_attention_model == 'rel_pos':
+                if not packed_attention_supports_dropout(parameter.device, dtype, head_dim, rel_pos=True):
+                    return (
+                        "rel_pos attention over packed sequences keeps its dropout through its Triton kernel "
+                        "(Triton installed; float32, bfloat16 or float16), and FlexAttention, the path without it, "
+                        "has no dropout on the attention weights: set dropout_att: 0 on the encoder or install Triton."
+                    )
+            elif not packed_attention_supports_dropout(parameter.device, dtype, head_dim):
+                return (
+                    "Attention dropout over packed sequences runs through variable-length FlashAttention, which "
+                    "needs float16 or bfloat16 (autocast), a head width that is a multiple of 8 up to 256, and a CUDA "
+                    "device of compute capability 8 or newer; FlexAttention, the other path, has no dropout: "
+                    "set dropout_att: 0 or meet those conditions."
+                )
+        return None
+
+    def _check_sequence_packed_support(self) -> None:
+        """Refuse ``forward_sequence_packed`` with the reason when the configuration has no packed form."""
+        reason = self.sequence_packed_unsupported_reason()
+        if reason is not None:
+            raise NotImplementedError(reason)
+
+    def _packed_input(
+        self,
+        audio_signal: torch.Tensor | PackedEncoderActivations,
+        length: torch.Tensor | None,
+        bypass_pre_encode: bool,
+    ) -> PackedEncoderActivations:
+        """The input of ``forward_sequence_packed`` as packed activations of the expected width."""
+        if isinstance(audio_signal, PackedEncoderActivations):
+            if (
+                length is not None
+                and length is not audio_signal.lengths
+                and not torch.equal(length.to(audio_signal.lengths), audio_signal.lengths)
+            ):
+                raise ValueError("length must match audio_signal.lengths for packed input.")
+            packed = audio_signal
+        else:
+            states = audio_signal if bypass_pre_encode else audio_signal.transpose(1, 2)
+            if length is None:
+                length = states.new_full((states.size(0),), states.size(1), dtype=torch.int64)
+            packed = pack_encoder_output(states, length)
+        expected_width = self.d_model if bypass_pre_encode else self._feat_in
+        if packed.data.shape[-1] != expected_width:
+            raise ValueError(
+                f"Packed audio_signal must have feature width {expected_width}, got {packed.data.shape[-1]}."
+            )
+        return packed
 
     def update_max_seq_length(self, seq_length: int, device):
         """
@@ -1745,3 +1816,21 @@ class ConformerChangeConfig:
     # config are kept.
     rope_base: Optional[float] = None
     rotary_fraction: Optional[float] = None
+
+
+def _unwrap_checkpoint(module: nn.Module) -> nn.Module:
+    """The module behind its activation-checkpoint wrapper, or the module itself."""
+    if isinstance(module, CheckpointWrapper):
+        return module._checkpoint_wrapped_module
+    return module
+
+
+def _forward_packed_module(module: nn.Module, *args, **kwargs):
+    """A module's ``forward_packed``, through its activation-checkpoint wrapper when it has one.
+
+    SpeechLM wraps the frontend and the layers in ``CheckpointWrapper`` (``_set_encoder_activation_checkpointing``):
+    its attribute access reaches the wrapped module's methods, but only ``checkpoint_fn`` checkpoints them.
+    """
+    if isinstance(module, CheckpointWrapper):
+        return module.checkpoint_fn(module._checkpoint_wrapped_module.forward_packed, *args, **kwargs)
+    return module.forward_packed(*args, **kwargs)

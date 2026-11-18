@@ -13,11 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import os
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
 import torch
+from huggingface_hub import PyTorchModelHubMixin
 from lhotse import CutSet, SupervisionSegment
 from lhotse.testing.dummies import dummy_cut, dummy_recording
 from omegaconf import DictConfig
@@ -29,10 +32,11 @@ from nemo.collections.speechlm2.data.duplex_ear_tts_dataset import (
     sample_audio_segments_repeat,
 )
 from nemo.collections.speechlm2.models import DuplexEARTTS
+from nemo.collections.speechlm2.parts import hf_hub
 
 
-if torch.cuda.is_available():
-    torch.set_default_device('cuda')
+# Run on CUDA when available, without leaking the default device to other test modules (see conftest.py).
+pytestmark = pytest.mark.usefixtures("cuda_default_device")
 
 
 def test_load_language_model_uses_configured_remote_code_policy(monkeypatch):
@@ -52,6 +56,67 @@ def test_load_language_model_uses_configured_remote_code_policy(monkeypatch):
     DuplexEARTTS._load_language_model(SimpleNamespace(cfg=cfg), cfg)
 
     assert captured["trust_remote_code"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('route', ['hub', 'local_weights', 'distributed'])
+@pytest.mark.parametrize(
+    'stored_policy,caller_kwargs,expected',
+    [(True, {}, False), (True, {'trust_remote_code': False}, False), (False, {'trust_remote_code': True}, True)],
+)
+def test_from_pretrained_applies_policy_to_nested_eartts_config(
+    tmp_path, monkeypatch, route, stored_policy, caller_kwargs, expected
+):
+    config = deepcopy(test_eartts_config)
+    config['trust_remote_code'] = stored_policy
+    config['model']['trust_remote_code'] = stored_policy
+    config['model']['tts_config']['context_hidden_size'] = None
+    config_path = tmp_path / 'config.json'
+    config_path.write_text(json.dumps(config))
+    captured = {}
+
+    class TokenizerReached(Exception):
+        pass
+
+    def capture_tokenizer(*args, **kwargs):
+        captured.update(kwargs)
+        raise TokenizerReached
+
+    def construct_model(cls, **kwargs):
+        return cls(cfg=kwargs['cfg'])
+
+    monkeypatch.setattr('nemo.collections.speechlm2.models.duplex_ear_tts.AutoTokenizer', capture_tokenizer)
+    monkeypatch.setattr(
+        hf_hub,
+        'cached_file',
+        lambda _model_id, filename, **kwargs: str(config_path) if filename == hf_hub.CONFIG_NAME else None,
+    )
+    monkeypatch.setattr(PyTorchModelHubMixin, '_from_pretrained', classmethod(construct_model))
+    if route == 'local_weights':
+        from safetensors.torch import save_file
+
+        weights = tmp_path / 'model.safetensors'
+        save_file({'weight': torch.ones(1, device='cpu')}, weights)
+        caller_kwargs = dict(caller_kwargs, weights_path=weights)
+    elif route == 'distributed':
+        monkeypatch.setattr(
+            hf_hub, '_distributed_from_pretrained', lambda cls, model_kwargs, **kwargs: cls(**model_kwargs)
+        )
+        caller_kwargs = dict(
+            caller_kwargs, distributed_setup=SimpleNamespace(mesh_context=SimpleNamespace(device_mesh=object()))
+        )
+
+    with pytest.raises(TokenizerReached):
+        DuplexEARTTS._from_pretrained(
+            model_id=str(tmp_path),
+            revision=None,
+            cache_dir=None,
+            force_download=False,
+            local_files_only=True,
+            token=None,
+            **caller_kwargs,
+        )
+    assert captured['trust_remote_code'] is expected
 
 
 test_eartts_config = {
@@ -219,15 +284,15 @@ if os.path.exists("/home/TestData/nvidia--NVIDIA-Nemotron-Nano-9B-v2/"):
     test_eartts_config["model"]["pretrained_lm_name"] = "/home/TestData/nvidia--NVIDIA-Nemotron-Nano-9B-v2/"
 
 
-@pytest.fixture(scope="session")
-def model():
+@pytest.fixture(scope="module")
+def model(cuda_default_device):
     model = DuplexEARTTS(test_eartts_config)
     if torch.cuda.is_available():
         model.to("cuda")
     return model
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def dataset(model):
     return DuplexEARTTSDataset(
         model.tokenizer,
@@ -242,8 +307,8 @@ def dataset(model):
     )
 
 
-@pytest.fixture(scope="session")
-def training_cutset_batch():
+@pytest.fixture(scope="module")
+def training_cutset_batch(cuda_default_device):
     cut = dummy_cut(0, recording=dummy_recording(0, with_data=True, duration=1.0, sampling_rate=22050))
     cut.target_audio = dummy_recording(1, with_data=True, duration=1.0, sampling_rate=22050)
     cut.supervisions = [
@@ -283,6 +348,7 @@ def training_cutset_batch():
     return CutSet([cut])
 
 
+@pytest.mark.gpu
 def test_eartts_dataset(dataset, training_cutset_batch):
     batch = dataset[training_cutset_batch]
     expected_keys = {
@@ -446,6 +512,7 @@ def test_eartts_dataset(dataset, training_cutset_batch):
 
 
 # test extra functions inside of eartts dataset
+@pytest.mark.gpu
 def test_add_speech_delay():
     source_audio = torch.ones(1, 16000)
     target_audio = torch.ones(1, 22050)
@@ -492,6 +559,7 @@ def test_add_speech_delay():
     assert torch.all(out_src[:, source_audio.size(1) :] == 0)
 
 
+@pytest.mark.gpu
 def test_sample_audio_segments_repeat():
     cases = [
         # (audio, lens, n_sample, expected_when_sample_false)
@@ -542,6 +610,7 @@ def test_sample_audio_segments_repeat():
         assert out.shape == expected.shape
 
 
+@pytest.mark.gpu
 def test_eartts_training_step(model, dataset, training_cutset_batch):
     model.train()
     model.on_train_epoch_start()
@@ -553,6 +622,7 @@ def test_eartts_training_step(model, dataset, training_cutset_batch):
     assert results["loss"] > 0
 
 
+@pytest.mark.gpu
 def test_eartts_validation_step(model, dataset, training_cutset_batch):
     model.eval()
     model.on_validation_epoch_start()
@@ -562,6 +632,7 @@ def test_eartts_validation_step(model, dataset, training_cutset_batch):
     assert results is None  # no return value
 
 
+@pytest.mark.gpu
 def test_eartts_offline_generation(model):
     model.eval()
     # generate random subword_ids

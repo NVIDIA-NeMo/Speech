@@ -18,6 +18,8 @@ from typing import Any, Union
 
 import torch
 
+from nemo.utils.dependency import is_module_available
+
 
 def move_data_to_device(inputs: Any, device: Union[str, torch.device], non_blocking: bool = True) -> Any:
     """Recursively moves inputs to the specified device"""
@@ -53,7 +55,9 @@ def is_dataloader(obj: Any) -> bool:
     """
     if isinstance(obj, torch.utils.data.DataLoader):
         return True
-    # Imported locally so that this module does not require Lhotse.
+    # Lhotse is optional for this module: without it, the stateful Lhotse wrapper cannot exist.
+    if not is_module_available("lhotse"):
+        return False
     from nemo.collections.common.data.lhotse.dataloader import _PerRankStatefulDataLoader
 
     return isinstance(obj, _PerRankStatefulDataLoader)

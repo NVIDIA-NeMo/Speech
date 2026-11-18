@@ -164,3 +164,26 @@ def test_is_dataloader_recognises_stateful_wrapper_only_for_loaders(cuts_path):
     assert is_dataloader(torch.utils.data.DataLoader(list(range(4))))
     for not_a_loader in ["a.wav", ["a.wav", "b.wav"], np.zeros(4), torch.zeros(4), [torch.zeros(4)]]:
         assert not is_dataloader(not_a_loader)
+
+
+@pytest.mark.unit
+def test_is_dataloader_without_lhotse_returns_false_for_non_loaders(monkeypatch):
+    """With Lhotse not installed, non-loaders return False instead of raising ModuleNotFoundError."""
+    import sys
+
+    import numpy as np
+
+    from nemo.collections.common.data.utils import is_dataloader
+
+    # Block Lhotse (``sys.modules[name] = None`` makes both ``import`` and ``find_spec`` fail) and drop
+    # the cached NeMo Lhotse modules so that an unguarded import would actually be attempted.
+    for name in list(sys.modules):
+        if name == "lhotse" or name.startswith("lhotse.") or name.startswith("nemo.collections.common.data.lhotse"):
+            monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setitem(sys.modules, "lhotse", None)
+    with pytest.raises(ImportError):
+        import lhotse  # noqa: F401
+
+    assert is_dataloader(torch.utils.data.DataLoader(list(range(4))))
+    for not_a_loader in ["a.wav", None, ["a.wav"], np.zeros(4), torch.zeros(4)]:
+        assert not is_dataloader(not_a_loader)

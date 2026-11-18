@@ -76,7 +76,7 @@ if TRITON_AVAILABLE:
         combines beta with stored alpha to compute blank and target occupancies
         for autograd backward.
         """
-        batch_idx = tl.program_id(0)
+        batch_idx = tl.program_id(0).to(tl.int64)
         source_len = tl.load(source_lengths_ptr + batch_idx)
         target_len = tl.load(target_lengths_ptr + batch_idx)
         valid_lengths = (source_len >= 1) & (source_len <= max_source) & (target_len >= 0) & (target_len <= max_target)

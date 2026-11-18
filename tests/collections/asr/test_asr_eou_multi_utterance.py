@@ -25,18 +25,15 @@ import dataclasses
 
 import pytest
 import torch
-from omegaconf import DictConfig, open_dict
+from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo.collections.asr.models import EncDecRNNTBPEModel
-from nemo.collections.asr.parts.utils.eou_utils import (
-    append_hypothesis_segment_,
-    get_restart_token_ids,
-    reset_hypothesis_decoder_state_,
-)
+from nemo.collections.asr.parts.mixins.mixins import _append_hypothesis_segment, _reset_hypothesis_decoder_state
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import create_spt_model
 
 WORD_ID = 5
+SEED = 0
 SUBSAMPLING_FACTOR = 4
 
 
@@ -125,14 +122,15 @@ class _SingleUtteranceDecodingSim:
     Decoder states are real label-looping state items: ``decoded_length`` gives the absolute frame offset, and the last
     label is ``<EOU>`` once the utterance has ended. A hypothesis that has not ended emits ``<word> <EOU>`` on the next
     utterance frame (absolute encoder frame); after ``<EOU>``, it emits nothing unless its decoder state is reset.
-    Utterance frames are looked up by batch index, so only the first stream may restart within a chunk
-    (single-stream re-decoding uses batch index 0).
+    Utterance frames are looked up by stream: a new stream is identified by its batch index (so all streams must start
+    in the first call), stored in the unused ``time_jump`` field of the state, which persists across decoder resets.
     """
 
     def __init__(self, decoding_computer, utterance_frames: list[list[int]], eou_id: int):
         self.decoding_computer = decoding_computer
         self.utterance_frames = utterance_frames
         self.eou_id = eou_id
+        self.calls = []  # (stream, start frame, encoder output) of each decoded segment
 
     def __call__(self, encoder_output, encoded_lengths, partial_hypotheses=None):
         hypotheses = []
@@ -141,10 +139,12 @@ class _SingleUtteranceDecodingSim:
             state = prev.dec_state if prev is not None and prev.dec_state is not None else None
             if state is None:
                 state = self.decoding_computer._get_decoding_state_item_after_sos(device=encoder_output.device)
+                state.time_jump = torch.tensor(b)
             start = int(state.decoded_length)
+            self.calls.append((int(state.time_jump), start, encoder_output[b, :, :num_frames].clone()))
             tokens, timestamps, label = [], [], int(state.label)
             if label != self.eou_id:
-                for u in self.utterance_frames[b]:
+                for u in self.utterance_frames[int(state.time_jump)]:
                     if start <= u < start + num_frames:
                         tokens, timestamps, label = [WORD_ID, self.eou_id], [u, u], self.eou_id
                         break
@@ -168,28 +168,33 @@ class _SingleUtteranceDecodingSim:
 
 
 def _simulate(model, utterance_frames: list[list[int]]) -> int:
-    eou_id = get_restart_token_ids(model)[0]
-    model.decoding.decoding = _SingleUtteranceDecodingSim(
-        model.decoding.decoding.decoding_computer, utterance_frames, eou_id=eou_id
-    )
+    eou_id = model.tokenizer.token_to_id("<EOU>")
+    computer = model.decoding.decoding.decoding_computer
+    model.decoding.decoding = _SingleUtteranceDecodingSim(computer, utterance_frames, eou_id=eou_id)
     return eou_id
 
 
+def _change_decoding(model, overrides: dict) -> None:
+    cfg = model.cfg.decoding
+    with open_dict(cfg):
+        for key, value in overrides.items():
+            OmegaConf.update(cfg, key, value)
+    model.change_decoding_strategy(cfg, verbose=False)
+
+
 @pytest.mark.unit
-def test_get_restart_token_ids(eou_model):
-    assert eou_model.tokenizer.ids_to_tokens(get_restart_token_ids(eou_model)) == ["<EOU>", "<EOB>"]
-    with open_dict(eou_model.decoding.cfg):
-        eou_model.decoding.cfg.restart_after_tokens = ["<XYZ>"]
+def test_restart_token_ids(eou_model):
+    """Restart token ids are resolved once, and unsupported setups are rejected when the decoding is configured."""
+    assert eou_model.tokenizer.ids_to_tokens(eou_model.decoding.restart_token_ids) == ["<EOU>", "<EOB>"]
     with pytest.raises(ValueError):
-        get_restart_token_ids(eou_model)
-    with open_dict(eou_model.decoding.cfg):
-        eou_model.decoding.cfg.restart_after_tokens = ["<EOU>"]
-        eou_model.decoding.cfg.strategy = "beam"
-    with pytest.raises(NotImplementedError):
-        get_restart_token_ids(eou_model)
-    with open_dict(eou_model.decoding.cfg):
-        eou_model.decoding.cfg.restart_after_tokens = None
-    assert get_restart_token_ids(eou_model) == []
+        _change_decoding(eou_model, {"restart_after_tokens": ["<XYZ>"]})
+    for strategy in ("greedy", "beam"):
+        with pytest.raises(NotImplementedError, match="greedy_batch"):
+            _change_decoding(eou_model, {"restart_after_tokens": ["<EOU>"], "strategy": strategy})
+    with pytest.raises(NotImplementedError, match="greedy_batch"):
+        _change_decoding(eou_model, {"strategy": "greedy_batch", "greedy.loop_labels": False})
+    _change_decoding(eou_model, {"restart_after_tokens": None, "greedy.loop_labels": True})
+    assert eou_model.decoding.restart_token_ids == []
 
 
 @pytest.mark.unit
@@ -232,9 +237,8 @@ def test_transcribe_encodes_audio_once(eou_model):
 @pytest.mark.unit
 def test_transcribe_without_restart_tokens_is_unchanged(eou_model):
     """Without ``restart_after_tokens``, the regular single-pass decoding is used."""
+    _change_decoding(eou_model, {"restart_after_tokens": None})
     eou_id = _simulate(eou_model, [[3, 20]])
-    with open_dict(eou_model.decoding.cfg):
-        eou_model.decoding.cfg.restart_after_tokens = None
     hyp = eou_model.transcribe([(torch.randn(16000 * 3) * 0.1).numpy()], batch_size=1, return_hypotheses=True)[0]
     assert hyp.y_sequence.tolist() == [WORD_ID, eou_id]
 
@@ -311,6 +315,10 @@ def test_cache_aware_streaming_continues_after_eou(eou_model):
     assert hyps[0].timestamp.tolist() == [t for u in utterance_frames[0] for t in (u, u)]
     assert hyps[1].y_sequence.tolist() == []
     assert cache_last_channel_len[1].item() == cfg.last_channel_cache_size
+    # `length` counts all encoder frames decoded for the stream, not only those of the last chunk
+    for hyp in hyps:
+        assert int(hyp.length) == hyp.dec_state.decoded_length.item()
+    assert int(hyps[1].length) == sum(num_frames for _, num_frames in _decoded_segments(eou_model, 1))
 
 
 @pytest.mark.unit
@@ -324,7 +332,7 @@ def test_reset_hypothesis_decoder_state_keeps_time_offset(eou_model):
         )[0]
         start_item = computer.split_batched_state(computer._get_batched_decoding_state_after_sos("cpu", 1))[0]
         hyp.dec_state.label.fill_(WORD_ID)
-        reset_hypothesis_decoder_state_(hyp, decoding_computer=computer)
+        _reset_hypothesis_decoder_state(hyp, computer)
 
     assert hyp.dec_state.decoded_length.item() == 10
     assert hyp.dec_state.label.item() == start_item.label.item()
@@ -336,8 +344,8 @@ def test_reset_hypothesis_decoder_state_keeps_time_offset(eou_model):
 @pytest.mark.unit
 def test_append_hypothesis_segment():
     hyp = Hypothesis(score=-1.0, y_sequence=[5, 1], timestamp=[1, 2], token_duration=[0, 1], length=3)
-    segment = Hypothesis(score=-2.0, y_sequence=[6], timestamp=[0], token_duration=[2], length=4)
-    append_hypothesis_segment_(hyp, segment, frame_offset=3)
+    segment = Hypothesis(score=-2.0, y_sequence=[6], timestamp=[3], token_duration=[2], length=4)
+    _append_hypothesis_segment(hyp, segment)
     assert hyp.y_sequence == [5, 1, 6]
     assert hyp.timestamp == [1, 2, 3]
     assert hyp.token_duration == [0, 1, 2]
@@ -348,8 +356,7 @@ def test_append_hypothesis_segment():
 @pytest.mark.unit
 def test_stream_step_without_restart_tokens_uses_regular_decoding(eou_model):
     """Without ``restart_after_tokens``, streaming keeps the regular batched decoding path."""
-    with open_dict(eou_model.decoding.cfg):
-        eou_model.decoding.cfg.restart_after_tokens = None
+    _change_decoding(eou_model, {"restart_after_tokens": None})
     eou_model.decode_chunk_with_restart = None  # must not be called
     eou_model.encoder.setup_streaming_params()
     features = torch.randn(1, 64, 10 * SUBSAMPLING_FACTOR)
@@ -365,3 +372,135 @@ def test_stream_step_without_restart_tokens_uses_regular_decoding(eou_model):
             drop_extra_pre_encoded=0,
         )
     assert len(hyps) == 1
+
+
+@pytest.mark.unit
+def test_offline_batch_matches_single_streams(eou_model):
+    """Offline restarts advance the whole batch through each chunk, with the same results as one stream at a time."""
+    utterance_frames = [[3, 20, 21, 40, 70], [5, 6, 30], [10, 23]]  # 23 is on the last frame of the third stream
+    lengths = [301, 180, 97]
+    features = torch.randn(3, 64, max(lengths))
+    for b, length in enumerate(lengths):
+        features[b, :, length:] = 100.0  # padding must not leak into the shorter streams
+    restart_token_ids = eou_model.decoding.restart_token_ids
+
+    _simulate(eou_model, utterance_frames)
+    with torch.inference_mode():
+        batched = eou_model.cache_aware_transcribe_with_restart(features, torch.tensor(lengths), restart_token_ids)
+    batched_calls = _segments_by_stream(eou_model.decoding.decoding.calls)
+
+    for b, length in enumerate(lengths):
+        _simulate(eou_model, [utterance_frames[b]])
+        with torch.inference_mode():
+            single = eou_model.cache_aware_transcribe_with_restart(
+                features[b : b + 1, :, :length], torch.tensor([length]), restart_token_ids
+            )[0]
+        assert batched[b].y_sequence.tolist() == single.y_sequence.tolist()
+        assert batched[b].timestamp.tolist() == [t for u in utterance_frames[b] for t in (u, u)]
+        assert batched[b].timestamp.tolist() == single.timestamp.tolist()
+        assert batched[b].score == single.score
+        assert int(batched[b].length) == int(single.length) == batched[b].dec_state.decoded_length.item()
+        single_calls = _segments_by_stream(eou_model.decoding.decoding.calls)[0]
+        assert [start for start, _ in batched_calls[b]] == [start for start, _ in single_calls]
+        for (_, batched_enc), (_, single_enc) in zip(batched_calls[b], single_calls):
+            torch.testing.assert_close(batched_enc, single_enc, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.unit
+def test_transcribe_batch_matches_batch_size_one(eou_model):
+    """transcribe() gives the same multi-utterance results with and without batching audio of different lengths."""
+    utterance_frames = [[3, 20, 21, 40], [5, 30], [10]]
+    audio = [(torch.randn(int(16000 * seconds)) * 0.1).numpy() for seconds in (2, 1.5, 0.5)]
+    results = {}
+    for batch_size in (1, 3):
+        hyps = []
+        for b in range(len(audio)) if batch_size == 1 else [None]:
+            _simulate(eou_model, utterance_frames if b is None else [utterance_frames[b]])
+            inputs = audio if b is None else [audio[b]]
+            hyps += eou_model.transcribe(inputs, batch_size=batch_size, return_hypotheses=True)
+        results[batch_size] = hyps
+    for single, batched, frames in zip(results[1], results[3], utterance_frames):
+        assert batched.y_sequence.tolist() == single.y_sequence.tolist()
+        assert batched.timestamp.tolist() == single.timestamp.tolist() == [t for u in frames for t in (u, u)]
+        assert batched.text == single.text
+        assert int(batched.length) == int(single.length)
+
+
+@pytest.mark.unit
+def test_offline_decodes_each_frame_once_with_overlapping_chunks(eou_model):
+    """With a shift smaller than the chunk size, decoding stops at the last chunk instead of re-decoding its frames."""
+    eou_model.encoder.setup_streaming_params(chunk_size=4, shift_size=2)
+    assert eou_model.encoder.streaming_cfg.shift_size[1] < eou_model.encoder.streaming_cfg.chunk_size[1]
+    eou_id = _simulate(eou_model, [[3, 20, 73]])  # an utterance ends near the end of the audio
+    features = torch.randn(1, 64, 301)
+    with torch.inference_mode():
+        _, num_frames = eou_model.encoder(audio_signal=features, length=torch.tensor([301]))
+        hyp = eou_model.cache_aware_transcribe_with_restart(
+            features, torch.tensor([301]), eou_model.decoding.restart_token_ids
+        )[0]
+    assert hyp.y_sequence.tolist() == [WORD_ID, eou_id] * 3
+    assert hyp.timestamp.tolist() == [3, 3, 20, 20, 73, 73]
+    assert int(hyp.length) == hyp.dec_state.decoded_length.item() == num_frames.item()
+    segments = _decoded_segments(eou_model, 0)
+    for (start, num), (next_start, _) in zip(segments, segments[1:]):
+        assert next_start >= start + num or next_start == start  # contiguous; equal starts are re-decoded prefixes
+
+
+@pytest.mark.unit
+def test_offline_restart_with_greedy_batch_decoder(eou_tokenizer_dir):
+    """
+    The real greedy_batch decoder continues after <EOU>, with the same results in a batch and one stream at a time.
+    The joint ignores the prediction network and emits <EOU> instead of blank on ~20% of the frames.
+    """
+    torch.manual_seed(SEED)
+    eou_model = _make_model(eou_tokenizer_dir)
+    _change_decoding(eou_model, {"greedy.max_symbols": 1})
+    eou_id, blank_id = eou_model.decoding.restart_token_ids[0], eou_model.decoding.blank_id
+    lengths = [301, 180, 97]
+    features = torch.randn(3, 64, max(lengths))
+    joint, output_layer = eou_model.joint, eou_model.joint.joint_net[-1]
+    with torch.no_grad():
+        joint.pred.weight.zero_()
+        joint.pred.bias.zero_()
+        output_layer.bias.fill_(-1e4)
+        output_layer.bias[blank_id] = 0.0
+    # calibrate the <EOU> bias on the streaming encoder outputs (all blank)
+    encoded = []
+    eou_model._apply_prompt_to_encoded = lambda enc: encoded.append(enc.transpose(1, 2).flatten(0, 1)) or enc
+    with torch.inference_mode():
+        eou_model.cache_aware_transcribe_with_restart(
+            features, torch.tensor(lengths), eou_model.decoding.restart_token_ids
+        )
+        del eou_model._apply_prompt_to_encoded
+        logits = output_layer(joint.joint_net[:-1](joint.project_encoder(torch.cat(encoded))))
+    with torch.no_grad():
+        output_layer.bias[eou_id] = -(logits[:, eou_id] - logits[:, blank_id]).quantile(0.8)
+
+    with torch.inference_mode():
+        batched = eou_model.cache_aware_transcribe_with_restart(
+            features, torch.tensor(lengths), eou_model.decoding.restart_token_ids
+        )
+        _, num_frames = eou_model.encoder(audio_signal=features, length=torch.tensor(lengths))
+        for b, length in enumerate(lengths):
+            single = eou_model.cache_aware_transcribe_with_restart(
+                features[b : b + 1, :, :length], torch.tensor([length]), eou_model.decoding.restart_token_ids
+            )[0]
+            assert batched[b].y_sequence.tolist() == single.y_sequence.tolist()
+            assert batched[b].timestamp.tolist() == single.timestamp.tolist()
+            assert int(batched[b].length) == int(single.length) == num_frames[b].item()
+
+    tokens, timestamps = batched[0].y_sequence.tolist(), batched[0].timestamp.tolist()
+    assert set(tokens) == {eou_id} and len(tokens) > 2  # decoding continues after the first <EOU>
+    assert timestamps == sorted(set(timestamps)) and timestamps[-1] > eou_model.encoder.streaming_cfg.chunk_size[1]
+
+
+def _segments_by_stream(calls) -> dict:
+    segments = {}
+    for stream, start, encoded in calls:
+        segments.setdefault(stream, []).append((start, encoded))
+    return segments
+
+
+def _decoded_segments(model, stream: int) -> list:
+    """(start frame, number of frames) of the segments decoded for ``stream`` by the simulator."""
+    return [(start, enc.shape[-1]) for s, start, enc in model.decoding.decoding.calls if s == stream]

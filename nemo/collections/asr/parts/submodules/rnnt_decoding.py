@@ -699,6 +699,9 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         # Update the joint fused batch size or disable it entirely if needed.
         self.update_joint_fused_batch_size()
 
+        # ids of `restart_after_tokens`, resolved once (empty when not configured)
+        self.restart_token_ids = self._resolve_restart_token_ids()
+
     def set_strip_lang_tags(self, strip_lang_tags: bool, lang_tag_pattern: Optional[str] = None):
         """
         Toggle language-tag stripping on decoded text.
@@ -1259,6 +1262,32 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             raise ImportError(
                 "KenLM package (https://github.com/kpu/kenlm) is not installed. " "Use ngram_lm_model=None."
             )
+
+    def _resolve_restart_token_ids(self) -> List[int]:
+        """Validate ``restart_after_tokens`` against the decoding setup and return the ids of these tokens."""
+        tokens = self.cfg.get('restart_after_tokens', None)
+        if not tokens:
+            return []
+        if getattr(self.decoding, 'decoding_computer', None) is None:
+            raise NotImplementedError(
+                "`restart_after_tokens` is only supported with `greedy_batch` decoding using label looping, "
+                f"got strategy={self.cfg.strategy}"
+            )
+        tokenizer = getattr(self, 'tokenizer', None)
+        if tokenizer is None:  # character vocabulary
+            vocabulary = {label: idx for idx, label in self.labels_map.items()}
+        token_ids = []
+        for token in tokens:
+            if tokenizer is not None:
+                token_id = tokenizer.token_to_id(token)
+                is_token = tokenizer.ids_to_tokens([token_id]) == [token]
+            else:
+                token_id = vocabulary.get(token)
+                is_token = token_id is not None
+            if not is_token:
+                raise ValueError(f"`restart_after_tokens`: {token} is not a single token in the model vocabulary.")
+            token_ids.append(int(token_id))
+        return token_ids
 
 
 class RNNTDecoding(AbstractRNNTDecoding):
@@ -1900,7 +1929,7 @@ class RNNTDecodingConfig:
     rnnt_timestamp_type: str = "all"  # can be char, word or all for both
 
     # Tokens (e.g. ['<EOU>', '<EOB>'] for end-of-utterance models) after which `transcribe()` and cache-aware
-    # streaming restart the encoder and decoder from a fresh state. Greedy decoding only.
+    # streaming restart the encoder and decoder from a fresh state. Requires `greedy_batch` decoding (label looping).
     restart_after_tokens: Optional[List[str]] = None
 
     # greedy decoding config

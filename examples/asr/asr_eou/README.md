@@ -309,7 +309,7 @@ with open_dict(decoding_cfg):
 model.change_decoding_strategy(decoding_cfg)
 model.transcribe(["long_audio.wav"])
 ```
-With this option, `transcribe()` runs cache-aware streaming over the audio, so its cost stays linear in the audio length. For streaming inference, use `rnnt_decoding.restart_after_tokens='["<EOU>","<EOB>"]'` with `speech_to_text_cache_aware_streaming_infer.py`, or `++asr.decoding.restart_after_tokens='["<EOU>","<EOB>"]'` with `asr_streaming_infer.py`. The option requires a cache-aware streaming model and greedy decoding (`greedy_batch` for streaming); beam search, buffered (no-cache) streaming, and `partial_hypothesis` are not supported.
+With this option, `transcribe()` runs batched cache-aware streaming over the audio, so its cost stays linear in the audio length. For streaming inference, use `rnnt_decoding.restart_after_tokens='["<EOU>","<EOB>"]'` with `speech_to_text_cache_aware_streaming_infer.py`. The option requires a cache-aware streaming model and `greedy_batch` decoding; other decoding strategies, buffered (no-cache) streaming, and `partial_hypothesis` are not supported. With this option, `Hypothesis.length` is the total number of encoder frames decoded for the audio (also in streaming).
 
 
 ## 5. Model deployment with voice agent

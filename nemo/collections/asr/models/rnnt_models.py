@@ -41,7 +41,6 @@ from nemo.collections.asr.parts.mixins import (
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecoding, RNNTDecodingConfig
 from nemo.collections.asr.parts.utils.asr_batching import get_semi_sorted_batch_sampler
-from nemo.collections.asr.parts.utils.eou_utils import get_restart_token_ids
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.timestamp_utils import process_timestamp_outputs
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
@@ -954,7 +953,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
     def _transcribe_encode(self, signal: torch.Tensor, signal_len: torch.Tensor, trcfg: TranscribeConfig) -> dict:
         """Encode audio for ``transcribe()``; with ``decoding.restart_after_tokens``, only extract features."""
-        if get_restart_token_ids(self):
+        if getattr(self, 'cur_decoder', 'rnnt') == 'rnnt' and getattr(self.decoding, 'restart_token_ids', None):
             if trcfg.partial_hypothesis is not None:
                 raise NotImplementedError("`partial_hypothesis` is not supported with `restart_after_tokens`.")
             processed_signal, processed_signal_length = self.preprocessor(input_signal=signal, length=signal_len)
@@ -970,7 +969,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
                 hyp = self.cache_aware_transcribe_with_restart(
                     outputs.pop('processed_signal'),
                     outputs.pop('processed_signal_length'),
-                    get_restart_token_ids(self),
+                    self.decoding.restart_token_ids,
                 )
             hyp = self.decoding.postprocess_hypotheses(hyp, return_hypotheses=trcfg.return_hypotheses)
         else:

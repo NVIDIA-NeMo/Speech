@@ -669,6 +669,11 @@ def test_chunked_transcription_keeps_each_manifest_language(prompt_model, tmp_pa
         for lang in ['de-DE', 'ja-JP']
     ]
     manifest.write_text(''.join(json.dumps(entry) + '\n' for entry in entries))
+    # Run the language-conditioned path through a saved and restored checkpoint.
+    checkpoint = tmp_path / 'prompted.nemo'
+    prompt_model.save_to(str(checkpoint))
+    prompt_model = type(prompt_model).restore_from(str(checkpoint), map_location='cpu').eval()
+    assert isinstance(prompt_model, EncDecRNNTBPEModelWithPrompt) and prompt_model.concat
     seen = []
     forward = prompt_model.forward
 

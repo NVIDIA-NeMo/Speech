@@ -3,6 +3,7 @@
 
 """Planned chunking through small saved and restored transducer, hybrid and AED checkpoints."""
 
+import json
 import os
 
 import pytest
@@ -263,7 +264,7 @@ def _ctc_timestamp_model(test_data_dir):
 def test_restored_aed_chunks_with_ctc_word_timing(test_data_dir, tmp_path):
     model = _restore(_aed_model(test_data_dir), tmp_path)
     object.__setattr__(model, 'timestamps_asr_model', _ctc_timestamp_model(test_data_dir))
-    tensors, _ = _sources(tmp_path)
+    tensors, files = _sources(tmp_path)
 
     results = model.transcribe(tensors, batch_size=4, chunking=CHUNKING, timestamps=True, verbose=False)
     assert len(results) == 2 and all(h.text for h in results)  # The checks below need real emissions.
@@ -279,6 +280,19 @@ def test_restored_aed_chunks_with_ctc_word_timing(test_data_dir, tmp_path):
         assert [h.y_sequence.tolist() for h in german] == [model.tokenizer.text_to_ids(h.text, 'de') for h in german]
     with pytest.raises(ValueError, match='not speech translation'):
         model.transcribe(tensors, chunking=CHUNKING, source_lang='en', target_lang='de', verbose=False)
+
+    # A manifest builds each file's prompt from its own entry; final IDs use that file's language.
+    manifest = tmp_path / 'aed_manifest.json'
+    entries = [
+        {'audio_filepath': path, 'duration': len(source) / 16000, 'answer': '', 'task': 'asr', 'pnc': 'yes'}
+        | {'source_lang': lang, 'target_lang': lang}
+        for path, source, lang in zip(files, tensors, ('en', 'de'))
+    ]
+    manifest.write_text(''.join(json.dumps(entry) + '\n' for entry in entries))
+    per_file = model.transcribe(str(manifest), batch_size=4, chunking=CHUNKING, verbose=False)
+    assert len(per_file) == 2 and all(h.text for h in per_file)
+    for hyp, lang in zip(per_file, ('en', 'de')):
+        assert hyp.y_sequence.tolist() == model.tokenizer.text_to_ids(hyp.text, lang)
 
 
 @pytest.mark.unit

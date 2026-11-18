@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 import torch
 from lhotse import CutSet
+from lhotse.dataset.dataloading import LHOTSE_PROCESS_SEED, LHOTSE_USE_WORKER_PARTITION
 from lhotse.indexing import create_jsonl_index
 from lhotse.serialization import SequentialJsonlWriter
 from lhotse.shar.writers import TarWriter
@@ -52,20 +53,16 @@ def other_cuts_path(tmp_path: Path) -> Path:
     return _write_cuts(tmp_path / "cuts_other.jsonl", begin_id=100)
 
 
-@pytest.fixture
-def nemo_tarred_four_shards(tmp_path: Path) -> tuple[str, str]:
-    """Non-indexed NeMo tarred dataset: four shards with two cuts each."""
-    cuts = DummyManifest(CutSet, begin_id=0, end_id=8, with_data=True).save_audios(
-        tmp_path / "audio", progress_bar=False
-    )
-    root = tmp_path / "nemo_tar"
-    root.mkdir()
+def _write_nemo_tarred(root: Path, begin_id: int, cuts_per_shard: int) -> tuple[str, str]:
+    """Write a non-indexed NeMo tarred dataset with four shards of ``cuts_per_shard`` cuts each."""
+    cuts = DummyManifest(CutSet, begin_id=begin_id, end_id=begin_id + 4 * cuts_per_shard, with_data=True)
+    cuts = cuts.save_audios(root / "audio", progress_bar=False)
     for shard_id in range(4):
         with (
             TarWriter(str(root / f"audio_{shard_id}.tar"), shard_size=None) as tar_writer,
             SequentialJsonlWriter(root / f"manifest_{shard_id}.jsonl") as manifest_writer,
         ):
-            for cut in cuts.subset(first=2 * (shard_id + 1)).subset(last=2):
+            for cut in cuts.subset(first=cuts_per_shard * (shard_id + 1)).subset(last=cuts_per_shard):
                 src = cut.recording.sources[0].source
                 with open(src, "rb") as f:
                     tar_writer.write(Path(src).name, BytesIO(f.read()))
@@ -78,6 +75,31 @@ def nemo_tarred_four_shards(tmp_path: Path) -> tuple[str, str]:
                     }
                 )
     return str(root / "manifest__OP_0..3_CL_.jsonl"), str(root / "audio__OP_0..3_CL_.tar")
+
+
+@pytest.fixture
+def nemo_tarred_four_shards(tmp_path: Path) -> tuple[str, str]:
+    """Non-indexed NeMo tarred dataset: four shards with two cuts each."""
+    return _write_nemo_tarred(tmp_path / "nemo_tar", begin_id=0, cuts_per_shard=2)
+
+
+@pytest.fixture
+def other_nemo_tarred_four_shards(tmp_path: Path) -> tuple[str, str]:
+    """Like ``nemo_tarred_four_shards`` with different cut IDs."""
+    return _write_nemo_tarred(tmp_path / "nemo_tar_other", begin_id=100, cuts_per_shard=2)
+
+
+@pytest.fixture
+def nemo_tarred_four_long_shards(tmp_path: Path) -> tuple[str, str]:
+    """Non-indexed NeMo tarred dataset: four shards with eight cuts each (for slice_length tests)."""
+    return _write_nemo_tarred(tmp_path / "nemo_tar_long", begin_id=0, cuts_per_shard=8)
+
+
+@pytest.fixture(autouse=True)
+def _restore_worker_partition_env(monkeypatch):
+    """Loaders built with ``num_workers=0`` run lhotse's worker_init_fn in this process, which sets env vars."""
+    for key in ("RANK", "WORLD_SIZE", LHOTSE_USE_WORKER_PARTITION, LHOTSE_PROCESS_SEED):
+        monkeypatch.delenv(key, raising=False)
 
 
 def _tarred_source(nemo_tarred_four_shards, **overrides) -> dict:
@@ -103,8 +125,10 @@ def _config(**overrides) -> dict:
     }
 
 
-def _build(config: dict, world_size: int = 1):
-    return get_lhotse_dataloader_from_config(config, global_rank=0, world_size=world_size, dataset=_Identity())
+def _build(config: dict, world_size: int = 1, global_rank: int = 0, tokenizer=None):
+    return get_lhotse_dataloader_from_config(
+        config, global_rank=global_rank, world_size=world_size, dataset=_Identity(), tokenizer=tokenizer
+    )
 
 
 @pytest.mark.unit
@@ -257,3 +281,136 @@ def test_int_source_seed_override_under_randomized_loader(nemo_tarred_four_shard
     else:
         with pytest.raises(ValueError, match=r"LazyNeMoTarredIterator\(seed=1234\)"):
             _build(config)
+
+
+def _two_member_blend(active, disabled, disabled_weight: float) -> list[dict]:
+    return [
+        {**active, "weight": 1.0},
+        {**disabled, "weight": disabled_weight},
+    ]
+
+
+@pytest.mark.unit
+def test_zero_weight_fixed_seed_member_is_ignored(nemo_tarred_four_shards, other_nemo_tarred_four_shards):
+    active = _tarred_source(nemo_tarred_four_shards, **_RANDOMIZED_SOURCE)
+    disabled = _tarred_source(other_nemo_tarred_four_shards, shard_seed=1234, shuffle=True)
+    config = _config(
+        shuffle=False, force_finite=False, num_workers=0, input_cfg=_two_member_blend(active, disabled, 0.0)
+    )
+    # num_workers=0 on two ranks: two data shards without spawning worker processes.
+    batches = list(islice(_build(config, world_size=2), 6))
+    assert all(len(batch) == 2 for batch in batches)
+    seen = {c.id for batch in batches for c in batch}
+    # The active member has IDs 0..7, the disabled one 100..107.
+    assert seen and all(int(i.split("-")[-1].split(".")[0]) < 100 for i in seen), seen
+
+
+@pytest.mark.unit
+def test_positive_weight_fixed_seed_member_raises(nemo_tarred_four_shards, other_nemo_tarred_four_shards):
+    active = _tarred_source(nemo_tarred_four_shards, **_RANDOMIZED_SOURCE)
+    disabled = _tarred_source(other_nemo_tarred_four_shards, shard_seed=1234, shuffle=True)
+    config = _config(shuffle=False, force_finite=False, input_cfg=_two_member_blend(active, disabled, 0.5))
+    with pytest.raises(ValueError, match=r"LazyNeMoTarredIterator\(seed=1234\)"):
+        _build(config)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("disabled_weight,raises", [(0.0, False), (0.5, True)])
+def test_zero_weight_nested_group_is_ignored(
+    nemo_tarred_four_shards, other_nemo_tarred_four_shards, disabled_weight, raises
+):
+    active = _tarred_source(nemo_tarred_four_shards, **_RANDOMIZED_SOURCE)
+    disabled_group = {
+        "type": "group",
+        "input_cfg": [_tarred_source(other_nemo_tarred_four_shards, shard_seed=1234, shuffle=True)],
+    }
+    config = _config(
+        shuffle=False, force_finite=False, input_cfg=_two_member_blend(active, disabled_group, disabled_weight)
+    )
+    if raises:
+        with pytest.raises(ValueError, match="shard_seed=1234"):
+            _build(config)
+    else:
+        _build(config)
+
+
+def _packed_config(source: dict, **overrides) -> dict:
+    return _config(
+        shard_seed="randomized",
+        shuffle=True,
+        batch_size=None,
+        batch_tokens=2,
+        use_multimodal_sampling=True,
+        pretokenize=False,
+        use_packed_sequence_sampling=True,
+        audio_token_estimator={
+            "preprocessor": {"n_fft": 16000, "hop_length": 16000, "stft_pad_amount": 8000},
+            "subsampling": [],
+        },
+        input_cfg=[source],
+        **overrides,
+    )
+
+
+@pytest.mark.unit
+def test_packed_sampler_does_not_count_as_randomizing(nemo_tarred_four_shards):
+    # PackedSequenceDynamicCutSampler ignores ``shuffle``; the fixed-seed source order reaches every worker unchanged.
+    config = _packed_config(_tarred_source(nemo_tarred_four_shards, shard_seed=1234, shuffle=True))
+    with pytest.raises(ValueError, match=r"LazyNeMoTarredIterator\(seed=1234\)"):
+        _build(config, tokenizer=object())
+
+
+@pytest.mark.unit
+def test_packed_sampler_accepts_randomized_source(nemo_tarred_four_shards):
+    config = _packed_config(_tarred_source(nemo_tarred_four_shards, **_RANDOMIZED_SOURCE))
+    _build(config, tokenizer=object())
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "bucketing", [{"use_bucketing": True, "bucket_duration_bins": [1.5]}, {"bucket_duration_bins": [1.5]}]
+)
+def test_packed_bucketing_sampler_shuffle_counts_as_randomizing(nemo_tarred_four_shards, bucketing):
+    # Explicit and auto-enabled bucketing select a shuffle-capable bucketing sampler.
+    config = _packed_config(
+        _tarred_source(nemo_tarred_four_shards, shard_seed=1234, shuffle=True), num_buckets=2, **bucketing
+    )
+    _build(config, tokenizer=object())
+
+
+def _slice_source(nemo_tarred_four_long_shards, **overrides) -> dict:
+    return _tarred_source(nemo_tarred_four_long_shards, shard_seed="randomized", shuffle=False, **overrides)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("use_ais_get_batch", [False, True])
+def test_randomized_slice_selection_counts_as_randomizing(
+    nemo_tarred_four_long_shards, monkeypatch, use_ais_get_batch
+):
+    # Both the sequential and the AIS GetBatch readers draw per-shard slice offsets from the resolved source seed.
+    monkeypatch.setenv("USE_AIS_GET_BATCH", str(use_ais_get_batch))
+    config = _config(shuffle=False, input_cfg=[_slice_source(nemo_tarred_four_long_shards, slice_length=2)])
+    if use_ais_get_batch:
+        # Constructing is enough here: the AIS branch needs a GetBatch endpoint to iterate.
+        _build(config)
+        return
+    first = _per_worker_ids(_build(config))
+    assert all(len(batch) == 2 for worker in first for batch in worker)
+    assert first == _per_worker_ids(_build(config))  # repeatable across rebuilds
+    assert first[0] != first[1]  # but the two workers select different slices
+
+
+@pytest.mark.unit
+def test_slice_length_with_integer_seed_raises(nemo_tarred_four_long_shards):
+    source = _tarred_source(nemo_tarred_four_long_shards, shuffle=False, slice_length=2)
+    config = _config(shuffle=False, input_cfg=[source])
+    with pytest.raises(ValueError, match="shard_seed=1234"):
+        _build(config)
+
+
+@pytest.mark.unit
+def test_no_slicing_no_shuffle_randomized_source_seed_raises(nemo_tarred_four_long_shards):
+    # A string source seed without shuffling or slicing doesn't randomize anything; the integer loader seed decides.
+    config = _config(shuffle=False, input_cfg=[_slice_source(nemo_tarred_four_long_shards)])
+    with pytest.raises(ValueError, match="shard_seed=1234"):
+        _build(config)

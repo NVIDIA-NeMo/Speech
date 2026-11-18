@@ -825,8 +825,7 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     # 1. Load a manifest as a Lhotse CutSet.
     cuts, use_iterable_dataset = read_cutset_from_config(config)
     use_iterable_dataset = determine_use_iterable_dataset(use_iterable_dataset, config)
-    if use_iterable_dataset:
-        _validate_iterable_shard_seed(config, cuts, world_size)
+    source_cuts = cuts
 
     # Map-style + StatefulDataLoader requires shard_seed to be a fixed integer:
     #   * On the map path, cross-rank de-duplication is by ``rank/world_size``
@@ -1058,6 +1057,13 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
             rank=0 if use_iterable_dataset else global_rank,
             world_size=1 if use_iterable_dataset else world_size,
             **sampler_kwargs,
+        )
+
+    if use_iterable_dataset:
+        # Validate after sampler selection: whether the sampler shuffles depends on the selected class
+        # (e.g. PackedSequenceDynamicCutSampler never shuffles), not only on ``config.shuffle``.
+        _validate_iterable_shard_seed(
+            config, source_cuts, world_size, sampler_shuffles=bool(getattr(sampler, "shuffle", False))
         )
 
     if config.concatenate_samples:
@@ -1469,7 +1475,7 @@ def _cut_text_into_windows(cut, num_tokens: int, tokenizer) -> list:
     return ans
 
 
-def _validate_iterable_shard_seed(config: DictConfig, cuts: CutSet, world_size: int) -> None:
+def _validate_iterable_shard_seed(config: DictConfig, cuts: CutSet, world_size: int, sampler_shuffles: bool) -> None:
     """Reject integer shard seeds that make every worker of a non-indexed iterable pipeline yield the same stream.
 
     On the iterable path the sampler runs independently in every dataloading worker on every rank. Non-indexed
@@ -1479,15 +1485,17 @@ def _validate_iterable_shard_seed(config: DictConfig, cuts: CutSet, world_size: 
     ``num_workers * world_size`` times. Indexed sources partition indices by ``(rank, worker_id)`` and are safe.
 
     The check inspects the resolved reader graph, so per-source ``shard_seed``/``shuffle`` overrides in ``input_cfg``
-    are honoured: a source that shuffles its own shards with ``shard_seed: randomized`` is accepted under a loader
-    with an integer ``shard_seed``, while every other non-indexed source in the same blend is still checked.
+    are honoured: a source that shuffles its own shards (or draws random per-shard slices via ``slice_length``) with
+    ``shard_seed: randomized`` is accepted under a loader with an integer ``shard_seed``, while every other active
+    non-indexed source in the same blend is still checked. Zero-weight blend members are skipped because they never
+    contribute examples. ``sampler_shuffles`` is the effective shuffle setting of the selected sampler.
     """
     num_shards = max(int(config.get("num_workers", 0) or 0), 1) * max(int(world_size), 1)
     if num_shards <= 1:
         return
     shard_seed = config.get("shard_seed")
     # The sampler shuffles with the loader-level shard_seed; it de-duplicates workers only with a per-worker seed.
-    sampler_randomizes = bool(config.get("shuffle", False)) and isinstance(shard_seed, str)
+    sampler_randomizes = sampler_shuffles and isinstance(shard_seed, str)
     offending = _find_fixed_order_sources(
         cuts,
         randomized=sampler_randomizes,
@@ -1515,16 +1523,24 @@ def _find_fixed_order_sources(node, randomized: bool, int_seed_origin: Optional[
     """Collect non-indexed leaf readers whose order is fixed by an integer seed and never per-worker randomized.
 
     ``randomized`` / ``int_seed_origin`` describe the nodes above ``node``: a node that shuffles its sources or shards
-    (``shuffle_shards`` / ``shuffle_iters``) with a string seed randomizes everything below it per worker, and one
-    that does so with an integer seed fixes their order (``int_seed_origin`` names the nearest such node). Multiplexers
-    only interleave sources, so they don't count. Returns the ``int_seed_origin`` of every offending leaf.
+    (``shuffle_shards`` / ``shuffle_iters``) or selects random per-shard slices (``slice_length``) with a string seed
+    randomizes everything below it per worker, and one that does so with an integer seed fixes their order
+    (``int_seed_origin`` names the nearest such node). Multiplexers only interleave sources, so they don't count, and
+    their zero-weight sources are skipped because they are never sampled. Returns the ``int_seed_origin`` of every
+    offending leaf.
+
+    A ``slice_length`` that covers a whole shard draws no offset; detecting that would require reading every shard
+    manifest, so such a source is conservatively treated as randomized (the check may miss it, but never rejects a
+    randomized source).
     """
     if hasattr(node, "data") and not callable(getattr(node, "data")):
         node = node.data  # unwrap CutSet
     if getattr(node, "is_indexed", False):
         return found
     seed = getattr(node, "shard_seed", getattr(node, "seed", None))
-    if any(getattr(node, attr, False) is True for attr in ("shuffle_shards", "shuffle_iters")):
+    shuffles = any(getattr(node, attr, False) is True for attr in ("shuffle_shards", "shuffle_iters"))
+    slices = getattr(node, "slice_length", None) is not None
+    if shuffles or slices:
         randomized = randomized or isinstance(seed, str)
         if _is_int_seed(seed):
             int_seed_origin = f"{type(node).__name__}(seed={seed})"
@@ -1532,6 +1548,9 @@ def _find_fixed_order_sources(node, randomized: bool, int_seed_origin: Optional[
     if isinstance(node, IteratorNode):
         sources = getattr(node, "sources", None)
         children = list(sources) if isinstance(sources, (list, tuple)) else [getattr(node, "source", None)]
+        weights = getattr(node, "weights", None)
+        if isinstance(weights, (list, tuple)) and len(weights) == len(children):
+            children = [c for c, w in zip(children, weights) if w > 0]
     children = [c for c in children if isinstance(c, (IteratorNode, CutSet))]
     if children:
         for child in children:

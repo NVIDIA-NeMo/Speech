@@ -1254,7 +1254,7 @@ class NemotronTTSModel(NemotronTTSBase):
 
         # 8. Forward pass through transformer
         attention_valid_mask = get_mask_from_lengths(combined_channel_lens)
-        regularize_attention = mode == 'train'
+        regularize_attention = mode == 'train' and self.cfg.get('enable_attention_entropy', False)
         with capture_attention_projections(
             (module for module in self.decoder.modules() if isinstance(module, NemotronHAttention)),
             enabled=regularize_attention,
@@ -1587,12 +1587,14 @@ class NemotronTTSModel(NemotronTTSBase):
             agent_mask=batch["agent_mask"] if self.cfg.get("use_multiturn_dataset", False) else None,
             user_audio_embedded=user_audio_embedded,
         )
-        attention_entropy_loss = 0.1 * batch_output.attention_entropy
         attention_l1_loss = self._attention_l1_loss(batch_output.loss)
-        loss = batch_output.loss + attention_l1_loss + attention_entropy_loss
+        loss = batch_output.loss + attention_l1_loss
         self.log('train/attention_l1_loss', attention_l1_loss, sync_dist=True)
-        self.log('train/attention_entropy', batch_output.attention_entropy, sync_dist=True)
-        self.log('train/attention_entropy_loss', attention_entropy_loss, sync_dist=True)
+        if batch_output.attention_entropy is not None:
+            attention_entropy_loss = 0.1 * batch_output.attention_entropy
+            loss = loss + attention_entropy_loss
+            self.log('train/attention_entropy', batch_output.attention_entropy, sync_dist=True)
+            self.log('train/attention_entropy_loss', attention_entropy_loss, sync_dist=True)
         self.log('train/data_loss', batch_output.loss, sync_dist=True)
         codebook_loss = batch_output.codebook_loss
         if codebook_loss is not None:
@@ -2248,7 +2250,7 @@ class NemotronTTSModel(NemotronTTSBase):
         return self._validation_dl
 
     def _attention_l1_loss(self, reference_loss: torch.Tensor) -> torch.Tensor:
-        """Return 0.1 times the L1 sum of trainable query/key projection weights.
+        """Return the weighted L1 sum of trainable query/key projection weights.
 
         Includes decoder and acoustic predictor attention (also FlashAttention2),
         targeting the projections that produce the Q @ K.T attention scores.
@@ -2256,6 +2258,9 @@ class NemotronTTSModel(NemotronTTSBase):
         Accumulate in FP32 for mixed precision training. This penalty is added
         only in training_step, leaving validation losses unchanged.
         """
+        weight_scale = self.cfg.get('attention_l1_weight', 0.002)
+        if weight_scale == 0:
+            return reference_loss.new_zeros((), dtype=torch.float32)
         terms = []
         seen = set()
         for root in (self.decoder, self.acoustic_codes_predictor):
@@ -2266,4 +2271,4 @@ class NemotronTTSModel(NemotronTTSBase):
                         if weight.requires_grad and id(weight) not in seen:
                             seen.add(id(weight))
                             terms.append(torch.linalg.vector_norm(weight, ord=1, dtype=torch.float32))
-        return 0.1 * torch.stack(terms).sum() if terms else reference_loss.new_zeros((), dtype=torch.float32)
+        return weight_scale * torch.stack(terms).sum() if terms else reference_loss.new_zeros((), dtype=torch.float32)

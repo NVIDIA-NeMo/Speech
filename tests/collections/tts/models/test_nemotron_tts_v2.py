@@ -6,8 +6,10 @@ from unittest.mock import patch
 
 import pytest
 import torch
+from omegaconf import open_dict
 from torch import nn
 
+from nemo.collections.tts.losses.attention_entropy import mean_attention_entropy
 from nemo.collections.tts.models.nemotron_tts.v2.model import NemotronTTSModel
 from nemo.collections.tts.modules.nemotron_h_decoder import (
     NemotronHAttention,
@@ -54,11 +56,7 @@ def test_auxiliary_loss_controls_projection_and_gradients(model, mode):
         assert output.logits is None
     torch.testing.assert_close(output.loss, expected_loss)
     assert torch.isfinite(output.loss) and output.loss.item() > 0
-    if mode == 'train':
-        assert output.attention_entropy is not None
-        assert 0.0 <= output.attention_entropy.item() <= 1.0 + 1e-6
-    else:
-        assert output.attention_entropy is None
+    assert output.attention_entropy is None
 
     output.loss.backward()
     for module in (model.audio_out_projection, model.final_proj):
@@ -69,7 +67,10 @@ def test_auxiliary_loss_controls_projection_and_gradients(model, mode):
     assert any(p.grad is not None and p.grad.count_nonzero() > 0 for p in model.acoustic_codes_predictor.parameters())
 
 
-def test_auxiliary_loss_logging_and_validation_audio(model):
+@pytest.mark.parametrize('enable_entropy', [False, True])
+def test_auxiliary_loss_logging_and_validation_audio(model, enable_entropy):
+    with open_dict(model.cfg):
+        model.cfg.enable_attention_entropy = enable_entropy
     enabled = model.compute_auxiliary_codebook_loss
     model._trainer = SimpleNamespace(global_rank=0, local_rank=0, world_size=1, loggers=[])
     with (
@@ -86,20 +87,58 @@ def test_auxiliary_loss_logging_and_validation_audio(model):
     assert log_audio.call_count == int(enabled)
     logged_names = {call.args[0] for call in log.call_args_list}
     logged_values = {call.args[0]: call.args[1] for call in log.call_args_list}
-    torch.testing.assert_close(
-        loss,
-        logged_values['train/data_loss']
-        + logged_values['train/attention_l1_loss']
-        + logged_values['train/attention_entropy_loss'],
-    )
+    expected_loss = logged_values['train/data_loss'] + logged_values['train/attention_l1_loss']
+    if enable_entropy:
+        assert 0.0 <= logged_values['train/attention_entropy'].item() <= 1.0 + 1e-6
+        torch.testing.assert_close(
+            logged_values['train/attention_entropy_loss'], 0.1 * logged_values['train/attention_entropy']
+        )
+        expected_loss = expected_loss + logged_values['train/attention_entropy_loss']
+    else:
+        assert not {'train/attention_entropy', 'train/attention_entropy_loss'} & logged_names
+    torch.testing.assert_close(loss, expected_loss)
     torch.testing.assert_close(logged_values['train/attention_l1_loss'], model._attention_l1_loss(loss))
-    torch.testing.assert_close(
-        logged_values['train/attention_entropy_loss'], 0.1 * logged_values['train/attention_entropy']
-    )
     assert ('train/codebook_loss' in logged_names) == enabled
     assert ('val/codebook_loss' in logged_names) == enabled
     assert {'train/acoustic_codes_predictor_loss', 'val/acoustic_codes_predictor_loss'} <= logged_names
     assert not model.validation_step_outputs
+
+
+@pytest.mark.parametrize('enable_entropy', [None, False, True])
+@pytest.mark.parametrize('mode', ['train', 'val'])
+def test_entropy_flag_skips_hooks_and_computation(enable_entropy, mode):
+    overrides = {} if enable_entropy is None else {'enable_attention_entropy': enable_entropy}
+    model = _make_model(False, overrides)
+    module_path = 'nemo.collections.tts.models.nemotron_tts.v2.model'
+    expected = enable_entropy is True and mode == 'train'
+    with (
+        patch(f'{module_path}.mean_attention_entropy', wraps=mean_attention_entropy) as entropy,
+        patch.object(
+            nn.Module, 'register_forward_hook', autospec=True, side_effect=nn.Module.register_forward_hook
+        ) as hooks,
+    ):
+        output = model.process_batch(**_toy_batch(model), mode=mode)
+    assert entropy.call_count == int(expected)
+    assert bool(hooks.call_count) == expected
+    assert (output.attention_entropy is not None) == expected
+
+
+@pytest.mark.parametrize('weight_scale', [0.0, 0.0005, 0.002, 0.005])
+def test_attention_l1_configurable_weight(weight_scale):
+    config = NemotronHConfig(hidden_size=8, num_attention_heads=2, num_key_value_heads=1)
+    attention = NemotronHAttention(config, layer_idx=0)
+    with torch.no_grad():
+        attention.q_proj.weight.fill_(-2.0)
+        attention.k_proj.weight.fill_(3.0)
+    model = SimpleNamespace(
+        cfg={'attention_l1_weight': weight_scale},
+        decoder=attention,
+        acoustic_codes_predictor=nn.Identity(),
+    )
+    reference = torch.tensor(2.0)
+    loss = NemotronTTSModel._attention_l1_loss(model, reference)
+    expected = weight_scale * (2 * attention.q_proj.weight.numel() + 3 * attention.k_proj.weight.numel())
+    torch.testing.assert_close(loss, reference.new_tensor(expected))
 
 
 @pytest.mark.parametrize('attention_cls', [NemotronHAttention, NemotronHFlashAttention2])
@@ -110,6 +149,7 @@ def test_attention_l1_value_and_gradient_scope(attention_cls, dtype):
     predictor_attention = attention_cls(config, layer_idx=0).to(dtype=dtype)
     unrelated = nn.Linear(8, 8).to(dtype=dtype)
     model = SimpleNamespace(
+        cfg={},
         decoder=nn.Sequential(decoder_attention, unrelated),
         # A shared attention module must only be counted once.
         acoustic_codes_predictor=nn.Sequential(predictor_attention, decoder_attention),
@@ -152,7 +192,7 @@ def test_attention_l1_without_trainable_attention(frozen):
     if frozen:
         config = NemotronHConfig(hidden_size=8, num_attention_heads=2, num_key_value_heads=1)
         root = NemotronHAttention(config, layer_idx=0).requires_grad_(False)
-    model = SimpleNamespace(decoder=root, acoustic_codes_predictor=nn.Identity())
+    model = SimpleNamespace(cfg={}, decoder=root, acoustic_codes_predictor=nn.Identity())
     reference = torch.tensor(2.0, requires_grad=True)
 
     penalty = NemotronTTSModel._attention_l1_loss(model, reference)

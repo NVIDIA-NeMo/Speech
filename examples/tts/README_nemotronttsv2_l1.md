@@ -1,18 +1,32 @@
 # Nemotron TTS v2 attention regularization experiment
 
-Branch `vklimkov/nemotronttsv2_l1` combines two hardcoded training penalties:
+Branch `vklimkov/nemotronttsv2_l1` enables Q/K L1 by default, with optional
+attention entropy regularization:
 
 ```text
-training loss = data loss + 0.1 * sum(abs(Q/K projection weights))
-                          + 0.1 * mean(normalized attention entropy)
+training loss = data loss + attention_l1_weight * sum(abs(Q/K projection weights))
+                          + optional 0.1 * mean(normalized attention entropy)
 ```
 
 Both terms cover the main decoder and acoustic codes predictor, including
-FlashAttention2. The existing `model_type=v2` submission enables them automatically
-on this branch; no Hydra override is needed. AdamW weight decay is unchanged.
+FlashAttention2. With the existing `model_type=v2` submission, L1 defaults to
+`attention_l1_weight=0.1` and entropy defaults to `enable_attention_entropy=false`.
+When entropy is disabled, no Q/K hooks are installed, no activations are retained
+for entropy, and no entropy scores, reductions, backward graph or logs are computed.
+AdamW weight decay is unchanged.
 Validation and inference do not compute either penalty; checkpoint keys are
 unchanged. `process_batch.loss` remains the data loss; `training_step` adds both
-penalties.
+enabled penalties.
+
+Hydra overrides (the `+` adds fields absent from the base YAML):
+
+```text
++model.attention_l1_weight=0.0005       # smaller L1 coefficient
++model.enable_attention_entropy=true  # opt into entropy; omitted means disabled
+```
+
+Set `attention_l1_weight=0` to skip the L1 traversal/reduction as well. There is
+no delayed start or ramp schedule; enabled penalties apply from the first step.
 
 ## Q/K weight L1
 
@@ -59,11 +73,16 @@ For four available keys:
 ## Logging and interpretation
 
 Training logs expose `train/data_loss`, weighted `train/attention_l1_loss`,
-unweighted normalized `train/attention_entropy`, weighted
-`train/attention_entropy_loss`, and their sum as `train/loss`.
+and their sum as `train/loss`. Only when entropy is enabled, they additionally
+expose unweighted normalized `train/attention_entropy` and weighted
+`train/attention_entropy_loss`, which is included in the total loss.
 
 L1 can shrink attention-score magnitudes while entropy favors concentrated
 probabilities, so the objectives may compete. The L1 sum scales with parameter
 count; normalized entropy contributes at most approximately 0.1. Equal
-coefficients do not imply comparable contributions. Inspect the separate logs
+coefficients do not imply comparable contributions. At fixed model weights,
+changing L1 weight from 0.1 to 0.005 divides the logged L1 contribution by 20;
+0.002 divides it by 50 and 0.0005 divides it by 200. These ratios do not predict
+how the weights will evolve, nor the contribution at a fresh initialization.
+Inspect the separate logs
 and compare generated-speech stability and validation quality against a baseline.

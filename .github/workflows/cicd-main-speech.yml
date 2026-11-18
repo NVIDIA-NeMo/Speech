@@ -305,6 +305,12 @@ jobs:
           - runner: ${{ inputs.runner }}
             script: L2_Speech_Transcription_Speech_to_Text_Inference_Boost_GT
           - runner: ${{ inputs.runner }}
+            script: L2_Speech_Transcription_Speech_to_Text_Inference_Boost_GT_TDT
+          - runner: ${{ inputs.runner }}
+            script: L2_Speech_Transcription_Speech_to_Text_Inference_Boost_GT_Cache_Aware
+          - runner: ${{ inputs.runner }}
+            script: L2_Speech_Transcription_Speech_to_Text_Inference_Boost_GT_Cache_Aware_Case_Insensitive
+          - runner: ${{ inputs.runner }}
             script: L2_Speech_Transcription_Speech_to_Text_Transcribe_Boost_GT
           - runner: ${{ inputs.runner }}
             script: L2_Speech_Transcription_Canary_Transcribe

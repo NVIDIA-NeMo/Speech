@@ -1,4 +1,4 @@
-name: "Transformer-Stacking-TDT-BPE"
+name: "Transformer-Stacking-RNNT-BPE"
 
 model:
   sample_rate: 16000

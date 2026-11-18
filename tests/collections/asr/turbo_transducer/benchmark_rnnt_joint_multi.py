@@ -30,7 +30,7 @@ Usage:
     python benchmark_rnnt_joint_multi.py --with-consistency
 
 With `--with-consistency`, `BATCH_SIZE` is the double batch (teacher + student halves) and the consistency loss is
-added; experiments without consistency support (`fused` Joint, cuTile backend) are skipped.
+added; experiments without consistency support (cuTile backend) are skipped.
 
 Mixed precision keeps the projection parameters in FP32 and runs forward under BF16 autocast.
 Matmul precision overrides apply to optimized Joint implementations; standard Joint follows PyTorch settings.
@@ -70,8 +70,6 @@ EXPERIMENTS: list[tuple[str, str, str]] = [
     ("standard", "-", "turbo_rnnt"),
     ("fused_vocab", "triton", "turbo_rnnt"),
     # ("fused_vocab", "cutile", "turbo_rnnt"),
-    ("fused", "triton", "turbo_rnnt"),
-    # ("fused", "cutile", "turbo_rnnt"),  # not yet implemented
 ]
 
 # Tensor shape / training-knob defaults from `_dev/flow/projects/turbo_transducer/main.md`.

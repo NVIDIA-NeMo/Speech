@@ -16,7 +16,7 @@
 import copy
 import os
 from math import ceil
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -40,6 +40,7 @@ from nemo.collections.asr.parts.mixins import (
 )
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecoding, RNNTDecodingConfig
+from nemo.collections.asr.parts.turbo_transducer.rnnt_consistency import ConsistencyRNNTLoss
 from nemo.collections.asr.parts.utils.asr_batching import get_semi_sorted_batch_sampler
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.timestamp_utils import process_timestamp_outputs
@@ -94,6 +95,12 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             loss_kwargs=loss_kwargs,
             reduction=self.cfg.get("rnnt_reduction", "mean_batch"),
         )
+        self._validate_joint_turbo_kernel()
+
+        # Optional consistency loss (`ConsistencyRNNTLoss`), used by `_compute_losses(..., compute_consistency=True)`.
+        # Not configured by this model: a model with consistency regularization is responsible for setting it up
+        # and for constructing the double batch.
+        self.consistency_loss: Optional[ConsistencyRNNTLoss] = None
 
         if hasattr(self.cfg, 'spec_augment') and self._cfg.spec_augment is not None:
             self.spec_augmentation = EncDecRNNTModel.from_config_dict(self.cfg.spec_augment)
@@ -725,6 +732,96 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         encoded, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
         return encoded, encoded_len
 
+    def _validate_joint_turbo_kernel(self):
+        """The Joint turbo kernel does not produce logits: the loss must accept target/blank log-probabilities"""
+        if self.joint.uses_turbo_kernel and not self.loss.supports_logprobs_input:
+            raise ValueError(
+                "Joint `turbo_kernel` requires an RNN-T loss that can be computed from target/blank log-probabilities: "
+                "use `loss.loss_name=turbo_rnnt` without gradient clamping"
+            )
+
+    def _compute_losses(
+        self,
+        encoded: torch.Tensor,
+        decoder: torch.Tensor,
+        transcript: torch.Tensor,
+        encoded_len: torch.Tensor,
+        target_length: torch.Tensor,
+        compute_consistency: bool = False,
+        current_step: Optional[int] = None,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Compute the RNN-T loss and, optionally, the consistency loss from the encoder and prediction network outputs.
+
+        With the Joint turbo kernel the loss is computed from the target/blank log-probabilities
+        (`Joint.forward_for_loss`), without materializing the Joint output. Otherwise the full Joint output is used.
+
+        When `compute_consistency` is set, `self.consistency_loss` is required and the batch is expected to be
+        a double batch: the first half is the teacher pass, the second half is the student pass of the same utterances.
+        If both the loss and the Joint support log-probabilities, both losses are computed by `Joint.forward_for_loss`
+        with a single gradient buffer for the Joint output.
+
+        Args:
+            encoded: encoder output, [B, D, T]
+            decoder: prediction network output, [B, D, U+1]
+            transcript: targets, [B, U]
+            encoded_len: lengths of the encoder output, [B]
+            target_length: lengths of the targets, [B]
+            compute_consistency: whether to compute the consistency loss between the halves of the batch
+            current_step: optimizer step (training only), used by the Joint turbo kernel to schedule backward pruning
+
+        Returns:
+            Tuple (RNN-T loss, consistency loss or None)
+        """
+        if compute_consistency:
+            if self.consistency_loss is None:
+                raise ValueError("`compute_consistency` requires the consistency loss (`self.consistency_loss`)")
+            if getattr(self.joint, "num_extra_outputs", 0) > 0:
+                raise NotImplementedError("Consistency loss is not supported for the Joint with extra outputs (TDT)")
+            half_batch_size = encoded.shape[0] // 2
+
+        if self.joint.uses_turbo_kernel or (
+            compute_consistency and self.loss.supports_logprobs_input and self.joint.supports_loss_logprobs
+        ):
+            loss_inputs = self.joint.forward_for_loss(
+                encoder_outputs=encoded,
+                decoder_outputs=decoder,
+                encoder_lengths=encoded_len,
+                transcripts=transcript,
+                transcript_lengths=target_length,
+                compute_consistency=compute_consistency,
+                consistency_symmetrical=self.consistency_loss.symmetrical if compute_consistency else True,
+                current_step=current_step,
+            )
+            loss_value = self.loss.forward_from_logprobs(
+                target_logprobs=loss_inputs.target_logprobs,
+                blank_logprobs=loss_inputs.blank_logprobs,
+                input_lengths=encoded_len,
+                target_lengths=target_length,
+            )
+            if not compute_consistency:
+                return loss_value, None
+            consistency_loss_value = self.consistency_loss.forward_from_kl(
+                consistency_kl=loss_inputs.consistency_kl,
+                src_lengths=encoded_len[:half_batch_size],
+                tgt_lengths=target_length[:half_batch_size],
+            )
+            return loss_value, consistency_loss_value
+
+        joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
+        loss_value = self.loss(
+            log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
+        )
+        if not compute_consistency:
+            return loss_value, None
+        consistency_loss_value = self.consistency_loss(
+            teacher_logits=joint[:half_batch_size],
+            student_logits=joint[half_batch_size:],
+            src_lengths=encoded_len[:half_batch_size],
+            tgt_lengths=target_length[:half_batch_size],
+        )
+        return loss_value, consistency_loss_value
+
     # PTL-specific methods
     def training_step(self, batch, batch_nb):
         # Reset access registry
@@ -752,10 +849,14 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
         # If experimental fused Joint-Loss-WER is not used
         if not self.joint.fuse_loss_wer:
-            # Compute full joint and loss
-            joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
-            loss_value = self.loss(
-                log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
+            # Compute joint and loss
+            loss_value, _ = self._compute_losses(
+                encoded=encoded,
+                decoder=decoder,
+                transcript=transcript,
+                encoded_len=encoded_len,
+                target_length=target_length,
+                current_step=self.global_step,
             )
 
             # Add auxiliary losses, if registered
@@ -858,10 +959,12 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         if not self.joint.fuse_loss_wer:
             if self.compute_eval_loss:
                 decoder, target_length, states = self.decoder(targets=transcript, target_length=transcript_len)
-                joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
-
-                loss_value = self.loss(
-                    log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
+                loss_value, _ = self._compute_losses(
+                    encoded=encoded,
+                    decoder=decoder,
+                    transcript=transcript,
+                    encoded_len=encoded_len,
+                    target_length=target_length,
                 )
 
                 tensorboard_logs['val_loss'] = loss_value

@@ -13,24 +13,23 @@
 # limitations under the License.
 
 """
-Benchmark script comparing standard joint + loss vs fused Triton joint + loss.
+Benchmark script comparing standard Joint + loss vs optimized (`fused_vocab`) Joint + loss.
 
 Usage:
     python benchmark_rnnt_joint.py --joint standard --loss turbo_rnnt --dtype bfloat16
-    python benchmark_rnnt_joint.py --joint fused --loss turbo_rnnt --dtype bfloat16
     python benchmark_rnnt_joint.py --joint fused_vocab --loss turbo_rnnt --dtype bfloat16
     python benchmark_rnnt_joint.py --joint fused_vocab --dtype bf16-mixed
     python benchmark_rnnt_joint.py --joint fused_vocab --dtype bf16-mixed --pruning-range-size 8
     python benchmark_rnnt_joint.py --joint fused_vocab --dtype bf16-mixed --mm-full-precision
     python benchmark_rnnt_joint.py --joint standard --loss warprnnt_numba --dtype bfloat16
-    python benchmark_rnnt_joint.py --joint fused --dtype bfloat16 -fo  # forward only
+    python benchmark_rnnt_joint.py --joint fused_vocab --dtype bfloat16 -fo  # forward only
     python benchmark_rnnt_joint.py --joint fused_vocab --dtype bfloat16 --with-consistency
 
 With `--with-consistency`, `--batch-size` is the double batch (teacher + student halves), and the loss is
 RNN-T loss + `CONSISTENCY_LOSS_WEIGHT` * consistency (KL) loss. Each Joint uses its optimal route:
 standard + warprnnt_numba computes the consistency loss separately from the logits (legacy), standard + turbo_rnnt
 uses fused log-probs + KL extraction from the logits, Triton fused_vocab computes the KL inside the kernels.
-`fused` Joint and cuTile backend do not support the consistency loss.
+cuTile backend does not support the consistency loss.
 
 For a multi-config sweep (matrix defined at top of the file) see
 `benchmark_rnnt_joint_multi.py`.
@@ -51,7 +50,6 @@ from nemo.collections.asr.parts.turbo_transducer.rnnt_consistency import (
     ConsistencyRNNTLoss,
     rnnt_logprobs_with_consistency,
 )
-from nemo.collections.asr.parts.turbo_transducer.rnnt_fused_joint import rnnt_fused_joint
 from nemo.collections.asr.parts.turbo_transducer.rnnt_joint_fused_vocab import (
     rnnt_joint_fused_vocab,
     rnnt_joint_fused_vocab_with_consistency,
@@ -60,7 +58,7 @@ from nemo.collections.asr.parts.turbo_transducer.rnnt_loss_triton import rnnt_lo
 
 STANDARD_BACKEND_LABEL = "-"
 
-VALID_JOINTS = ("standard", "fused_vocab", "fused")
+VALID_JOINTS = ("standard", "fused_vocab")
 VALID_JOINT_BACKENDS = ("triton", "cutile")
 VALID_LOSSES = ("warprnnt_numba", "turbo_rnnt")
 VALID_DTYPES = ("float32", "fp32", "bfloat16", "bf16", "bfloat16-mixed", "bf16-mixed")
@@ -369,33 +367,9 @@ def run_benchmark(
             return add_consistency_loss(loss_batch.sum(), consistency_kl)
         return loss_batch.sum()
 
-    def run_fwd_fused() -> torch.Tensor:
-        target_logprobs, blank_logprobs = rnnt_fused_joint(
-            encoder_output_projected=enc_proj,
-            predictor_output_projected=pred_proj,
-            targets=targets,
-            tgt_lengths=tgt_lengths,
-            src_lengths=src_lengths,
-            weight=linear.weight,
-            bias=linear.bias,
-            blank_id=blank_id,
-            dropout_p=dropout_p,
-            backend=joint_backend,
-            mm_full_precision=mm_full_precision,
-            use_high_precision_mm=use_high_precision_mm,
-        )
-        loss_batch = rnnt_loss_from_logprobs_triton(
-            target_logprobs=target_logprobs,
-            blank_logprobs=blank_logprobs,
-            src_lengths=src_lengths,
-            tgt_lengths=tgt_lengths,
-        )
-        return loss_batch.sum()
-
     run_fwd_impl = {
         "standard": run_fwd_standard,
         "fused_vocab": run_fwd_fused_vocab,
-        "fused": run_fwd_fused,
     }[joint]
 
     def run_fwd():
@@ -625,7 +599,7 @@ def main():
         default=None,
         choices=[*VALID_JOINT_BACKENDS, STANDARD_BACKEND_LABEL],
         help=(
-            'Joint backend (only meaningful for fused/fused_vocab). '
+            'Joint backend (only meaningful for fused_vocab). '
             f'Defaults to {STANDARD_BACKEND_LABEL!r} for standard joint and "triton" otherwise.'
         ),
     )

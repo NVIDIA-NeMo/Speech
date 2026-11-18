@@ -331,13 +331,11 @@ def test_joint_forward_for_loss_matches_materialized_logits_path(symmetrical, pr
         **joint_config,
         turbo_kernel={
             "type": "fused_vocab",
-            "kwargs": {
-                "backend": "triton",
-                "use_high_precision_mm": True,
-                "input_grad_full_precision": True,
-                "weight_grad_full_precision": True,
-            },
-            "backward_pruning_range_size": pruning_range_size,
+            "backend": "triton",
+            "use_high_precision_mm": True,
+            "input_grad_full_precision": True,
+            "weight_grad_full_precision": True,
+            "backward_pruning": {"range_size": pruning_range_size},
         },
     ).to(DEVICE)
     turbo_joint.load_state_dict(reference_joint.state_dict())

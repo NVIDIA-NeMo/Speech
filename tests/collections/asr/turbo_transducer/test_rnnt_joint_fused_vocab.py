@@ -42,6 +42,14 @@ def _reference_joint_vocab_logprobs(joint_hidden, weight, bias, targets, src_len
     return target_logprobs, blank_logprobs
 
 
+# cuTile backward accumulates gradients with bfloat16 atomics, which are supported only on sm_90+
+CUTILE_MIN_COMPUTE_CAPABILITY = (9, 0)
+
+
+def _has_min_compute_capability(min_capability: tuple[int, int]) -> bool:
+    return torch.cuda.is_available() and torch.cuda.get_device_capability() >= min_capability
+
+
 _BACKEND_PARAMS = [
     pytest.param(
         TurboTransducerBackend.TRITON,
@@ -50,7 +58,13 @@ _BACKEND_PARAMS = [
     ),
     pytest.param(
         TurboTransducerBackend.CUTILE,
-        marks=pytest.mark.skipif(not CUTILE_AVAILABLE, reason="cuTile is not installed"),
+        marks=[
+            pytest.mark.skipif(not CUTILE_AVAILABLE, reason="cuTile is not installed"),
+            pytest.mark.skipif(
+                not _has_min_compute_capability(CUTILE_MIN_COMPUTE_CAPABILITY),
+                reason=f"cuTile backend requires compute capability {CUTILE_MIN_COMPUTE_CAPABILITY}+",
+            ),
+        ],
         id="cutile",
     ),
 ]

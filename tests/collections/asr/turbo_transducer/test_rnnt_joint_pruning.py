@@ -38,8 +38,6 @@ def test_training_supplies_optimizer_step():
     transcript = torch.tensor([[1, 2, 3], [1, 2, 0]])
     model = SimpleNamespace(
         model_guid='pruning-step-test',
-        use_double_batch=False,
-        consistency_loss=None,
         global_step=7,
         _trainer=SimpleNamespace(log_every_n_steps=100, global_step=7),
         is_interctc_enabled=lambda: False,

@@ -435,10 +435,11 @@ class BeamSearchSequenceGenerator(GreedySequenceGenerator):
         scores, prefixes = torch.topk(log_probs.permute(0, 2, 1), self.beam_size, dim=1)
         scores, prefixes = scores.view(-1, 1), prefixes.view(-1, 1)
 
-        # repeat init target prefixes and cached memory states beam_size times
+        # repeat init target prefixes and cached memory states beam_size times,
+        # every source sequence beam_size times in a row, as the prefixes and the encoder states
         prefixes = torch.cat((tgt.repeat(1, self.beam_size).view(-1, tgt.shape[1]), prefixes), dim=1)
         for j in range(len(decoder_mems_list)):
-            decoder_mems_list[j] = decoder_mems_list[j].repeat(self.beam_size, 1, 1)
+            decoder_mems_list[j] = decoder_mems_list[j].repeat_interleave(self.beam_size, dim=0)
 
         # repeat source sequence beam_size times for beam search
         if encoder_hidden_states is not None:
@@ -452,7 +453,7 @@ class BeamSearchSequenceGenerator(GreedySequenceGenerator):
 
         # repeat xattn scores
         if xatt_scores_list is not None:
-            xatt_scores_list = [xatt_layer.repeat(self.beam_size, 1, 1, 1) for xatt_layer in xatt_scores_list]
+            xatt_scores_list = [xatt_layer.repeat_interleave(self.beam_size, dim=0) for xatt_layer in xatt_scores_list]
 
         # pad_profile tracks finished hypotheses to generate only <pad> tokens
         # if <eos> or <pad> has been generated
@@ -620,10 +621,11 @@ class BeamSearchSequenceGeneratorWithFusionModels(BeamSearchSequenceGenerator):
 
         scores, prefixes = scores.view(-1, 1), prefixes.view(-1, 1)  # [Batch*Beam, 1]
 
-        # repeat init target prefixes and cached memory states beam_size times
+        # repeat init target prefixes and cached memory states beam_size times,
+        # every source sequence beam_size times in a row, as the prefixes and the encoder states
         prefixes = torch.cat((tgt.repeat(1, self.beam_size).view(-1, tgt.shape[1]), prefixes), dim=1)
         for j in range(len(decoder_mems_list)):
-            decoder_mems_list[j] = decoder_mems_list[j].repeat(self.beam_size, 1, 1)
+            decoder_mems_list[j] = decoder_mems_list[j].repeat_interleave(self.beam_size, dim=0)
 
         # repeat source sequence beam_size times for beam search
         if encoder_hidden_states is not None:
@@ -637,7 +639,7 @@ class BeamSearchSequenceGeneratorWithFusionModels(BeamSearchSequenceGenerator):
 
         # repeat xattn scores
         if xatt_scores_list is not None:
-            xatt_scores_list = [xatt_layer.repeat(self.beam_size, 1, 1, 1) for xatt_layer in xatt_scores_list]
+            xatt_scores_list = [xatt_layer.repeat_interleave(self.beam_size, dim=0) for xatt_layer in xatt_scores_list]
 
         # pad_profile tracks finished hypotheses to generate only <pad> tokens
         # if <eos> or <pad> has been generated
@@ -860,7 +862,7 @@ class EnsembleBeamSearchSequenceGenerator:
         decoder_input_mask = mask_padded_tokens(decoder_input_ids, self.pad).float()
 
         if encoder_hidden_states is not None:
-            decoder_mems_list = self.decoders[ensemble_index].forward(
+            decoder_mems_list, _ = self.decoders[ensemble_index].forward(
                 decoder_hidden_states,
                 decoder_input_mask,
                 encoder_hidden_states,
@@ -869,7 +871,7 @@ class EnsembleBeamSearchSequenceGenerator:
                 return_mems=True,
             )
         else:
-            decoder_mems_list = self.decoders[ensemble_index].forward(
+            decoder_mems_list, _ = self.decoders[ensemble_index].forward(
                 decoder_hidden_states, decoder_input_mask, decoder_mems_list, return_mems=True
             )
         log_probs = self.log_softmaxes[ensemble_index].forward(hidden_states=decoder_mems_list[-1][:, -1:])
@@ -937,15 +939,16 @@ class EnsembleBeamSearchSequenceGenerator:
         scores, prefixes = torch.topk(log_probs.permute(0, 2, 1), self.beam_size, dim=1)
         scores, prefixes = scores.view(-1, 1), prefixes.view(-1, 1)
 
-        # repeat init target prefixes and cached memory states beam_size times
+        # repeat init target prefixes and cached memory states beam_size times,
+        # every source sequence beam_size times in a row, as the prefixes and the encoder states
         prefixes = torch.cat((tgt.repeat(1, self.beam_size).view(-1, 1), prefixes), dim=1)
         for i in range(self.num_models):
             for j in range(len(decoder_mems_lists[i])):
-                decoder_mems_lists[i][j] = decoder_mems_lists[i][j].repeat(self.beam_size, 1, 1)
+                decoder_mems_lists[i][j] = decoder_mems_lists[i][j].repeat_interleave(self.beam_size, dim=0)
 
         if self.language_model is not None:
             for j in range(len(lm_mems_list)):
-                lm_mems_list[j] = lm_mems_list[j].repeat(self.beam_size, 1, 1)
+                lm_mems_list[j] = lm_mems_list[j].repeat_interleave(self.beam_size, dim=0)
             lm_hidden_size = lm_mems_list[0].size(2)
 
         encoder_input_mask = encoder_input_mask.repeat(1, self.beam_size).view(-1, encoder_input_mask.size(1))
@@ -1182,12 +1185,13 @@ class BeamSearchSequenceGeneratorWithLanguageModel(GreedySequenceGenerator):
         scores, prefixes = torch.topk(log_probs.permute(0, 2, 1), self.beam_size, dim=1)
         scores, prefixes = scores.view(-1, 1), prefixes.view(-1, 1)
 
-        # repeat init target prefixes and cached memory states beam_size times
+        # repeat init target prefixes and cached memory states beam_size times,
+        # every source sequence beam_size times in a row, as the prefixes and the encoder states
         prefixes = torch.cat((tgt.repeat(1, self.beam_size).view(-1, 1), prefixes), dim=1)
         for j in range(len(decoder_mems_list)):
-            decoder_mems_list[j] = decoder_mems_list[j].repeat(self.beam_size, 1, 1)
+            decoder_mems_list[j] = decoder_mems_list[j].repeat_interleave(self.beam_size, dim=0)
         for j in range(len(lm_mems_list)):
-            lm_mems_list[j] = lm_mems_list[j].repeat(self.beam_size, 1, 1)
+            lm_mems_list[j] = lm_mems_list[j].repeat_interleave(self.beam_size, dim=0)
 
         # repeat source sequence beam_size times for beam search
         if encoder_hidden_states is not None:

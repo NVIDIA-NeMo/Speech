@@ -167,8 +167,11 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
         if frames_to_remove <= 0:
             return
 
-        # Update target_tokens: place eos at new_eos_pos, shift tail, pad at end
-        target_tokens[batch_idx, new_eos_pos] = eos_id
+        # Update target_tokens: shift tail, pad at end, then place eos at new_eos_pos.
+        # The eos write must happen last: when the turn's original eos sits close enough
+        # to the sequence end that no tail remains to shift (tail_length <= 0 below), the
+        # final pad-fill range starts at or before new_eos_pos and would otherwise
+        # immediately overwrite the eos token just written.
         seq_len = target_tokens.shape[1]
         cont_start_pos = original_eos_pos + overlap_tokens
         tail_length = seq_len - (cont_start_pos + 1)
@@ -177,6 +180,7 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
                 batch_idx, cont_start_pos + 1 : cont_start_pos + 1 + tail_length
             ].clone()
         target_tokens[batch_idx, -frames_to_remove:] = pad_id
+        target_tokens[batch_idx, new_eos_pos] = eos_id
 
         # Update source_tokens: shift tail (from cutoff_pos)
         src_frames_to_remove = original_eos_pos - cutoff_pos

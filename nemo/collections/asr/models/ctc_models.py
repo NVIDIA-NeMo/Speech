@@ -107,6 +107,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
             use_cer=self._cfg.get('use_cer', False),
             dist_sync_on_step=True,
             log_prediction=self._cfg.get("log_prediction", False),
+            wer_text_normalize=self._cfg.get('wer_text_normalize', False),
         )
 
         # Setup optional Optimization flags
@@ -262,6 +263,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
                 use_cer=self._cfg.get('use_cer', False),
                 dist_sync_on_step=True,
                 log_prediction=self._cfg.get("log_prediction", False),
+                wer_text_normalize=self._cfg.get('wer_text_normalize', False),
             )
 
             # Update config
@@ -307,6 +309,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
             use_cer=self.wer.use_cer,
             log_prediction=self.wer.log_prediction,
             dist_sync_on_step=True,
+            wer_text_normalize=self.wer.wer_text_normalize,
         )
 
         self.decoder.temperature = decoding_cfg.get('temperature', 1.0)
@@ -557,6 +560,8 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
             log_probs = self.decoder(encoder_output=encoded, encoded_lengths=encoded_len)
         else:
             log_probs = self.decoder(encoder_output=encoded)
+        if hasattr(self.decoder, "output_lengths"):
+            encoded_len = self.decoder.output_lengths(encoded_len)
         greedy_predictions = log_probs.argmax(dim=-1, keepdim=False)
 
         return (
@@ -758,7 +763,9 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
 
         if trcfg.timestamps:
             hypotheses = process_timestamp_outputs(
-                hypotheses, self.encoder.subsampling_factor, self.cfg['preprocessor']['window_stride']
+                hypotheses,
+                self.encoder.subsampling_factor,
+                self.cfg['preprocessor']['window_stride'] / getattr(self.decoder, 'upsampling_factor', 1),
             )
 
         return hypotheses

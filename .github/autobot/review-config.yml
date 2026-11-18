@@ -4,3 +4,13 @@ approval:
   eligible_teams:
     - automation
     - speech_maintainers
+
+# Automatically review every new head of a ready-for-review PR, and the head a draft has when
+# it is marked ready. Draft PRs are skipped. commit = opened/synchronize;
+# status_change = ready_for_review/converted_to_draft (not CI status).
+# Comment-only: automatic reviews never approve or request changes.
+auto-review:
+  enabled: true
+  mode: comment
+  on: [commit, status_change]
+  when: ready_for_review

@@ -84,6 +84,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin, ASRT
             use_cer=self.cfg.aux_ctc.get('use_cer', False),
             dist_sync_on_step=True,
             log_prediction=self.cfg.get("log_prediction", False),
+            wer_text_normalize=self.cfg.get('wer_text_normalize', False),
         )
 
         # setting the RNNT decoder as the default one
@@ -305,6 +306,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin, ASRT
                     use_cer=self.ctc_wer.use_cer,
                     log_prediction=self.ctc_wer.log_prediction,
                     dist_sync_on_step=True,
+                    wer_text_normalize=self.ctc_wer.wer_text_normalize,
                 )
 
                 # Update config
@@ -362,6 +364,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin, ASRT
             use_cer=self.ctc_wer.use_cer,
             log_prediction=self.ctc_wer.log_prediction,
             dist_sync_on_step=True,
+            wer_text_normalize=self.ctc_wer.wer_text_normalize,
         )
 
         self.ctc_decoder.temperature = decoding_cfg.get('temperature', 1.0)

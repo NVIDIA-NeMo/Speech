@@ -17,6 +17,7 @@ from nemo.collections.asr.parts.mixins.transcription import ASRTranscriptionMixi
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecoding
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTBPEDecoding
 from nemo.collections.asr.parts.utils.longform_inference import (
+    ChunkBatches,
     ChunkedAudioDataset,
     ChunkingConfig,
     collate_audio_chunks,
@@ -408,10 +409,49 @@ def test_chunked_file_tensor_and_offset_manifest_match(tmp_path):
 @pytest.mark.parametrize('workers', [0, 2])
 def test_lazy_chunk_dataset_preserves_order_with_workers(workers):
     sources = [torch.arange(13), torch.arange(7)]
-    ds = ChunkedAudioDataset(sources, 1, ChunkingConfig(chunk_size=4, context_size=1), frame_samples=1, batch_size=2)
-    loader = torch.utils.data.DataLoader(ds, batch_size=2, num_workers=workers, collate_fn=collate_audio_chunks)
+    plan = ChunkBatches(sources, 1, ChunkingConfig(chunk_size=4, context_size=1), frame_samples=1, batch_size=2)
+    loader = torch.utils.data.DataLoader(
+        ChunkedAudioDataset(sources, 1), batch_sampler=plan, num_workers=workers, collate_fn=collate_audio_chunks
+    )
     order = [(idx, chunk.keep_start) for _, _, ids, chunks, _ in loader for idx, chunk in zip(ids, chunks)]
     assert order == [(0, 0), (0, 4), (0, 8), (0, 12), (1, 0), (1, 4)]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('workers', [0, 2, 4])
+def test_manifest_entries_are_parsed_once_whatever_the_worker_count(tmp_path, monkeypatch, workers):
+    import json
+
+    import soundfile as sf
+
+    from nemo.collections.common.data.lhotse.nemo_adapters import LazyNeMoIterator
+
+    audio = torch.tensor([0.0, 0.0, 3.0, 1.0, 1.0, 3.0, 1.0, 3.0, 2.0, 0.0, 3.0])
+    sf.write(tmp_path / 'a.wav', audio.numpy(), 10, subtype='FLOAT')
+    sf.write(tmp_path / 'b.wav', audio[:4].numpy(), 10, subtype='FLOAT')
+    manifest = tmp_path / 'input.jsonl'
+    # No sample-rate field, so every parse reads the file header; a.wav appears twice.
+    entries = [('a.wav', 1.1), ('b.wav', 0.4), ('a.wav', 1.1)]
+    manifest.write_text(
+        ''.join(json.dumps({'audio_filepath': f, 'duration': d, 'text': ''}) + '\n' for f, d in entries)
+    )
+    parses = []
+    create = LazyNeMoIterator._create_recording
+
+    def counted(self, *args, **kwargs):
+        assert torch.utils.data.get_worker_info() is None, 'workers must not parse the manifest'
+        parses.append(1)
+        return create(self, *args, **kwargs)
+
+    monkeypatch.setattr(LazyNeMoIterator, '_create_recording', counted)
+    model = _LabelCTCModel()
+    # 3 + 1 + 3 chunks in batches of 2 leave a partial final batch.
+    results = model.transcribe(
+        str(manifest), chunking=ChunkingConfig(0.4, 0.1), batch_size=2, num_workers=workers, verbose=False
+    )
+    assert len(parses) == len(entries)
+    expected = model.transcribe([audio, audio[:4], audio], chunking=ChunkingConfig(0.4, 0.1), verbose=False)
+    assert [h.text for h in results] == [h.text for h in expected]
 
 
 @pytest.mark.unit
@@ -676,11 +716,29 @@ def test_transfer_word_times_matches_and_fills_gaps():
 
 
 @pytest.mark.unit
-def test_aed_adapter_rejects_n_best():
+@pytest.mark.parametrize(
+    'decoding, rejected',
+    [
+        ({'strategy': 'beam', 'beam': {'beam_size': 2, 'return_best_hypothesis': False}}, True),
+        ({'strategy': 'greedy', 'greedy': {'temperature': 1.0, 'n_samples': 2}}, True),
+        ({'strategy': 'greedy_batch', 'greedy': {'temperature': 1.0, 'n_samples': 2}}, True),
+        ({'strategy': 'greedy', 'greedy': {'temperature': 1.0, 'n_samples': 1}}, False),
+        ({'strategy': 'greedy_batch', 'greedy': {'temperature': None, 'n_samples': 2}}, False),
+        ({'strategy': 'beam', 'beam': {'beam_size': 2, 'return_best_hypothesis': True}}, False),
+    ],
+)
+def test_aed_adapter_rejects_multiple_outputs_per_chunk(decoding, rejected):
     model = _AlignedAEDModel()
-    model.decoding.cfg = OmegaConf.create({'strategy': 'beam', 'beam': {'return_best_hypothesis': False}})
-    with pytest.raises(ValueError, match='one best hypothesis'):
-        model.transcribe(torch.ones(11), chunking=ChunkingConfig())
+    model.decoding.cfg = OmegaConf.create(decoding)
+    forward = model._transcribe_forward
+    calls = []
+    model._transcribe_forward = lambda *args: calls.append(1) or forward(*args)
+    if rejected:
+        with pytest.raises(ValueError, match='one best hypothesis'):
+            model.transcribe(torch.ones(11), override_config=_aed_config())
+        assert not calls  # Rejected before any forward pass.
+    else:
+        assert model.transcribe(torch.ones(11), override_config=_aed_config())[0].text.split() == ['ja'] * 11
 
 
 @pytest.mark.unit

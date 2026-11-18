@@ -937,7 +937,13 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             raise ValueError('Planned AED chunking returns timestamps only for models with a CTC timestamp model.')
         if self.decoding.cfg.get('return_xattn_scores', False):
             raise ValueError('Planned AED chunking does not return cross-attention scores.')
-        if self.decoding.cfg.strategy == 'beam' and not self.decoding.cfg.beam.get('return_best_hypothesis', True):
+        cfg = self.decoding.cfg
+        n_best = cfg.strategy == 'beam' and not cfg.beam.get('return_best_hypothesis', True)
+        # Greedy decoding samples several outputs when a temperature is set and n_samples > 1.
+        sampling = (
+            cfg.strategy in ('greedy', 'greedy_batch') and (cfg.get('greedy') or {}).get('temperature') is not None
+        )
+        if n_best or (sampling and cfg.greedy.get('n_samples', 1) > 1):
             raise ValueError('Planned AED chunking requires one best hypothesis per chunk.')
 
     def _transcribe_chunk_batch(self, audio, lengths, cuts, trcfg):

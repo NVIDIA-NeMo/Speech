@@ -677,6 +677,12 @@ def test_chunked_transcription_keeps_each_manifest_language(prompt_model, tmp_pa
         return forward(*args, language_prompt_indices=language_prompt_indices, **kwargs)
 
     prompt_model.forward = record
-    prompt_model.transcribe(str(manifest), batch_size=2, verbose=False, chunking=ChunkingConfig(10.0, 0.0))
-    # Each utterance conditions the encoder on its own manifest language.
-    assert seen == [PROMPT_DICTIONARY['de-DE'], PROMPT_DICTIONARY['ja-JP']]
+    # Three windows per 1.25 s source, batched across the two sources.
+    chunking = ChunkingConfig(0.5, 0.1)
+    results = prompt_model.transcribe(str(manifest), batch_size=2, verbose=False, chunking=chunking)
+    assert len(results) == 2
+    # Every window conditions the encoder on its own utterance's manifest language.
+    assert seen == [PROMPT_DICTIONARY['de-DE']] * 3 + [PROMPT_DICTIONARY['ja-JP']] * 3
+    seen.clear()
+    prompt_model.transcribe(str(manifest), batch_size=2, verbose=False, chunking=chunking, target_lang='de-DE')
+    assert seen == [PROMPT_DICTIONARY['de-DE']] * 6  # An explicit language applies to every utterance.

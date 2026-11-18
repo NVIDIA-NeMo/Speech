@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import torch
-from torch.utils.data import IterableDataset, get_worker_info
+from torch.utils.data import Dataset
 
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 
@@ -181,41 +181,54 @@ def stitch_chunk_words(parts: list[list[str]], plan: list[AudioChunk], sample_ra
     return out
 
 
-class ChunkedAudioDataset(IterableDataset):
-    """Read planned slices lazily from Lhotse cuts or mono tensors.
+class ChunkBatches:
+    """Plan batches of chunk descriptors once, in source and chunk order, for a DataLoader.
 
-    Only interval metadata is expanded. Audio tensors are sliced on demand and files
-    are read through Lhotse at the model sample rate. Duplicate file entries retain
-    separate source indices.
+    The DataLoader iterates this planner in the main process, so lazy sources are consumed
+    once: each manifest entry is parsed, and its file header read, a single time for any
+    number of workers. A descriptor is ``(source_index, source, chunk)``; tensor sources are
+    referenced by index only. Workers load the audio of the batches they are given.
     """
 
-    def __init__(self, sources, sample_rate, config, frame_samples, channel_selector=None, batch_size=1):
+    def __init__(self, sources, sample_rate, config, frame_samples, batch_size):
         self.sources = sources
         self.sample_rate = sample_rate
-        self.channel_selector = channel_selector
         self.config = config
         self.frame_samples = frame_samples
         self.batch_size = batch_size
         make_chunk_plan(1, sample_rate, config, frame_samples)
 
     def __iter__(self):
-        worker = get_worker_info()
-        ordinal = 0
-        for source_idx, source in enumerate(self.sources):
-            if isinstance(source, (np.ndarray, torch.Tensor)):
-                if source.ndim != 1:
-                    raise ValueError('Chunked tensor input must contain one mono waveform per entry.')
-                length = len(source)
-            else:
-                length = round(source.duration * self.sample_rate)
-            plan = make_chunk_plan(length, self.sample_rate, self.config, self.frame_samples)
-            for chunk in plan:
-                # Route whole batches to workers, so DataLoader's ordered task delivery
-                # preserves source and chunk order, including a final partial batch.
-                owner = ordinal // self.batch_size
-                ordinal += 1
-                if worker is None or owner % worker.num_workers == worker.id:
-                    yield self._load_chunk(source, source_idx, chunk)
+        batch = []
+        for index, source in enumerate(self.sources):
+            is_tensor = isinstance(source, (np.ndarray, torch.Tensor))
+            if is_tensor and source.ndim != 1:
+                raise ValueError('Chunked tensor input must contain one mono waveform per entry.')
+            length = len(source) if is_tensor else round(source.duration * self.sample_rate)
+            for chunk in make_chunk_plan(length, self.sample_rate, self.config, self.frame_samples):
+                batch.append((index, None if is_tensor else source, chunk))
+                if len(batch) == self.batch_size:
+                    yield batch
+                    batch = []
+        if batch:
+            yield batch
+
+
+class ChunkedAudioDataset(Dataset):
+    """Load the audio of one planned chunk from a mono tensor or a Lhotse cut.
+
+    Tensor sources stay with the dataset; file cuts arrive with their descriptor. Files are
+    read through Lhotse at the model sample rate.
+    """
+
+    def __init__(self, tensors, sample_rate, channel_selector=None):
+        self.tensors = tensors
+        self.sample_rate = sample_rate
+        self.channel_selector = channel_selector
+
+    def __getitem__(self, descriptor):
+        index, source, chunk = descriptor
+        return self._load_chunk(self.tensors[index] if source is None else source, index, chunk)
 
     def _load_chunk(self, source, source_idx, chunk):
         cut = None

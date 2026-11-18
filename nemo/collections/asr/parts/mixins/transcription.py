@@ -33,6 +33,7 @@ from nemo.collections.asr.parts.preprocessing.perturb import process_augmentatio
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment, ChannelSelectorType
 from nemo.collections.asr.parts.utils import manifest_utils
 from nemo.collections.asr.parts.utils.longform_inference import (
+    ChunkBatches,
     ChunkedAudioDataset,
     ChunkingConfig,
     collate_audio_chunks,
@@ -478,6 +479,7 @@ class TranscriptionMixin(ABC):
             self._transcribe_on_begin(audio, trcfg)
             with tempfile.TemporaryDirectory() as tmpdir:
                 trcfg._internal.temp_dir = tmpdir
+                tensors = None
                 if isinstance(audio[0], str):
                     from lhotse.lazy import LazyJsonlIterator
 
@@ -503,16 +505,13 @@ class TranscriptionMixin(ABC):
                         lang_field=ds_config.get('lang_field', 'lang'),
                     )
                 elif all(isinstance(a, (np.ndarray, torch.Tensor)) for a in audio):
-                    sources = audio
+                    sources = tensors = audio
                 else:
                     raise ValueError('Provide a homogeneous list of file paths or mono waveforms.')
-                dataset = ChunkedAudioDataset(
-                    sources, sample_rate, trcfg.chunking, frame_samples, trcfg.channel_selector, trcfg.batch_size
-                )
+                # Plan in the main process; workers only load the audio of their batches.
                 loader = DataLoader(
-                    dataset,
-                    batch_size=trcfg.batch_size,
-                    shuffle=False,
+                    ChunkedAudioDataset(tensors, sample_rate, trcfg.channel_selector),
+                    batch_sampler=ChunkBatches(sources, sample_rate, trcfg.chunking, frame_samples, trcfg.batch_size),
                     num_workers=trcfg.num_workers or 0,
                     collate_fn=collate_audio_chunks,
                 )

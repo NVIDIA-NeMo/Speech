@@ -96,6 +96,7 @@ class CacheAwareCTCInferenceWrapper(CacheAwareASRInferenceWrapper):
         drop_left_context: int | None = None,
         valid_out_len: int | None = None,
         return_tail_result: bool = False,
+        keep_all_outputs_mask: Tensor | None = None,
     ) -> tuple[Tensor, Tensor | None, CacheAwareContext]:
         """
         Executes a single streaming step.
@@ -108,9 +109,14 @@ class CacheAwareCTCInferenceWrapper(CacheAwareASRInferenceWrapper):
             drop_left_context: (int | None) number of left context frames to drop.
             valid_out_len: (int | None) number of valid output frames.
             return_tail_result: (bool) whether to return tail result or not.
+            keep_all_outputs_mask: (Tensor | None) bool vector of shape [B] for a batch that mixes last and non-last
+                chunks; keep_all_outputs is ignored when it is given. The encoder then keeps every output of every
+                stream, no output is trimmed here and there is no tail result: the caller keeps the first
+                `non_final_frames` frames of the streams that are not last, see there.
         Returns:
             (tuple[Tensor, Tensor | None, CacheAwareContext]) log probabilities, tail log probabilities and new context.
         """
+        per_sample_keep = keep_all_outputs_mask is not None
 
         (
             encoded,
@@ -124,7 +130,7 @@ class CacheAwareCTCInferenceWrapper(CacheAwareASRInferenceWrapper):
             cache_last_channel=context.cache_last_channel,
             cache_last_time=context.cache_last_time,
             cache_last_channel_len=context.cache_last_channel_len,
-            keep_all_outputs=keep_all_outputs,
+            keep_all_outputs=True if per_sample_keep else keep_all_outputs,
             drop_extra_pre_encoded=drop_extra_pre_encoded,
         )
 
@@ -138,7 +144,9 @@ class CacheAwareCTCInferenceWrapper(CacheAwareASRInferenceWrapper):
             all_log_probs = self.asr_model.decoder(encoder_output=encoded)
 
         tail_log_probs = None
-        if valid_out_len and not keep_all_outputs:
+        if per_sample_keep:
+            log_probs = all_log_probs
+        elif valid_out_len and not keep_all_outputs:
             # drop right context if any
             log_probs = all_log_probs[:, :valid_out_len, :]
             if return_tail_result:
@@ -164,6 +172,7 @@ class CacheAwareCTCInferenceWrapper(CacheAwareASRInferenceWrapper):
         drop_left_context: int | None = None,
         valid_out_len: int | None = None,
         return_tail_result: bool = False,
+        keep_all_outputs_mask: Tensor | None = None,
     ) -> tuple[Tensor, Tensor | None, CacheAwareContext]:
         """
         Executes a single streaming step.
@@ -176,6 +185,8 @@ class CacheAwareCTCInferenceWrapper(CacheAwareASRInferenceWrapper):
             drop_left_context: (int | None) number of left context frames to drop.
             valid_out_len: (int | None) number of valid output frames.
             return_tail_result: (bool) whether to return tail result or not.
+            keep_all_outputs_mask: (Tensor | None) bool vector of shape [B] that serves a batch mixing last and
+                non-last chunks in one call, see `execute_step`.
         Returns:
             (tuple[Tensor, Tensor | None, CacheAwareContext]) log probabilities, tail log probabilities and new context.
         """
@@ -207,5 +218,29 @@ class CacheAwareCTCInferenceWrapper(CacheAwareASRInferenceWrapper):
                 drop_left_context,
                 valid_out_len,
                 return_tail_result,
+                keep_all_outputs_mask,
             )
         return log_probs, tail_log_probs, new_context
+
+    def non_final_frames(
+        self, num_frames: int, drop_left_context: int | None, valid_out_len: int | None
+    ) -> tuple[int, tuple[int, int] | None]:
+        """
+        Frames of a stream that is not on its last chunk, in the output of a step that kept every output.
+        It is what a step of non-last streams alone would return: the encoder drops the right context beyond its own
+        valid_out_len, the left context is dropped, and valid_out_len keeps the head, the rest being the tail.
+        Args:
+            num_frames: (int) number of frames of the kept output, after the left context was dropped.
+            drop_left_context: (int | None) number of left context frames that were dropped.
+            valid_out_len: (int | None) number of valid output frames.
+        Returns:
+            (tuple[int, tuple[int, int] | None]) number of head frames, and the (start, end) of the tail frames, if any.
+        """
+        encoder_frames = num_frames + (drop_left_context or 0)
+        encoder_valid_out_len = self.asr_model.encoder.streaming_cfg.valid_out_len
+        if encoder_valid_out_len > 0:
+            encoder_frames = min(encoder_frames, encoder_valid_out_len)
+        kept = max(encoder_frames - (drop_left_context or 0), 0)
+        if not valid_out_len:
+            return kept, None
+        return min(kept, valid_out_len), (valid_out_len, kept)

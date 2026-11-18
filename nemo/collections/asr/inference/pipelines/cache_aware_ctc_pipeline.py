@@ -195,15 +195,28 @@ class CacheAwareCTCPipeline(BasePipeline):
         """Return the separator for the text processor."""
         return self.sep
 
-    def preprocess(self, buffers: list[Tensor], right_paddings: list[int] | None = None) -> tuple[Tensor, Tensor]:
+    def preprocess(
+        self, buffers: list[Tensor] | Tensor, right_paddings: list[int] | Tensor | None = None
+    ) -> tuple[Tensor, Tensor]:
         """
         Preprocess the feature buffers by stacking them and computing the lengths
         Args:
-            buffers: (list[Tensor]) List of feature buffers.
-            right_paddings: (list[int] | None) List of right paddings.
+            buffers: (list[Tensor] | Tensor) List of feature buffers, or one batched (B, F, T) tensor.
+            right_paddings: (list[int] | Tensor | None) Right paddings, per stream or batched.
         Returns:
             (tuple[Tensor, Tensor]) Processed feature buffers and their lengths.
         """
+        if isinstance(buffers, Tensor):
+            # already batched by the bufferer: no stacking, and no host round trip for the lengths
+            feature_buffers = buffers
+            feature_buffer_lens = torch.full(
+                (feature_buffers.shape[0],), feature_buffers.shape[2], device=self.device, dtype=torch.long
+            )
+            if right_paddings is not None:
+                right_paddings = torch.as_tensor(right_paddings, device=feature_buffer_lens.device)
+                feature_buffer_lens = feature_buffer_lens - right_paddings
+            return feature_buffers.to(self.device), feature_buffer_lens
+
         feature_buffers = [f_buffer.unsqueeze_(0) for f_buffer in buffers]
         feature_buffer_lens = torch.tensor([f_buffer.shape[2] for f_buffer in feature_buffers], device=self.device)
         if right_paddings is not None:
@@ -249,8 +262,8 @@ class CacheAwareCTCPipeline(BasePipeline):
         Decode the log probabilities and update the state
         Args:
             requests: (list[Frame]) List of requests (frames) to transcribe.
-            log_probs: (Tensor) Log probabilities.
-            tail_log_probs: (Tensor | None) Tail log probabilities.
+            log_probs: (Tensor | list[Tensor]) Log probabilities, one [T, V] matrix per request.
+            tail_log_probs: (Tensor | list[Tensor | None] | None) Tail log probabilities, a request without one is None.
             ready_state_ids: (set) Set of ready state IDs.
         """
 
@@ -263,7 +276,7 @@ class CacheAwareCTCPipeline(BasePipeline):
                 state.cleanup_after_eou()
                 ready_state_ids.add(request.stream_id)
 
-            if tail_log_probs is not None:
+            if tail_log_probs is not None and tail_log_probs[idx] is not None:
                 last_token = state.label_buffer[-1] if len(state.label_buffer) > 0 else self.blank_id
                 tail_output = self.greedy_ctc_decoder(
                     tail_log_probs[idx], compute_confidence=False, previous=last_token
@@ -273,10 +286,11 @@ class CacheAwareCTCPipeline(BasePipeline):
     def cache_aware_transcribe_step(
         self,
         requests: list[Frame],
-        buffered_features: list[Tensor],
-        right_paddings: list[int] | None,
+        buffered_features: list[Tensor] | Tensor,
+        right_paddings: list[int] | Tensor | None,
         ready_state_ids: set,
         keep_all_outputs: bool = False,
+        keep_all_outputs_mask: list[bool] | None = None,
     ) -> None:
         """
         Cache Aware Transcribe Step
@@ -290,10 +304,12 @@ class CacheAwareCTCPipeline(BasePipeline):
 
         Args:
             requests: (list[Frame]) List of requests (frames) to transcribe.
-            buffered_features: (list[Tensor]) List of buffered features.
-            right_paddings: (list[int] | None) List of right paddings.
+            buffered_features: (list[Tensor] | Tensor) List of buffered features, or one batched (B, F, T) tensor.
+            right_paddings: (list[int] | Tensor | None) Right paddings, per stream or batched.
             ready_state_ids: (set) Set of ready state IDs.
             keep_all_outputs: (bool) Whether to keep all outputs or not.
+            keep_all_outputs_mask: (list[bool] | None) For each request whether it is on its last chunk, when the batch
+                mixes last and non-last requests, so that one call serves both; keep_all_outputs is ignored then.
         """
         feature_buffers, feature_buffer_lens = self.preprocess(buffered_features, right_paddings)
 
@@ -311,13 +327,66 @@ class CacheAwareCTCPipeline(BasePipeline):
             drop_left_context=self.drop_left_context,
             valid_out_len=self.valid_out_len,
             return_tail_result=self.return_tail_result,
+            keep_all_outputs_mask=(
+                None
+                if keep_all_outputs_mask is None
+                else torch.tensor(keep_all_outputs_mask, device=self.device, dtype=torch.bool)
+            ),
         )
 
         if log_probs is not None:
             log_probs = normalize_log_probs(log_probs)
         self.context_manager.update_cache(stream_ids, new_context)
         self.context_manager.reset_slots(stream_ids, eos_flags)
+        if keep_all_outputs_mask is not None:
+            log_probs, tail_log_probs = self.split_mixed_log_probs(log_probs, keep_all_outputs_mask)
         self.decode_log_probs(requests, log_probs, tail_log_probs, ready_state_ids)
+
+    def split_mixed_log_probs(
+        self, log_probs: Tensor, is_last: list[bool]
+    ) -> tuple[list[Tensor], list[Tensor | None] | None]:
+        """
+        Cut the log probabilities of a step that kept every output into what each request would have had in a step
+        of its own: all frames for a request on its last chunk, the head (and the tail) for the others.
+        Args:
+            log_probs: (Tensor) Log probabilities of the whole batch, shape [B, T, V].
+            is_last: (list[bool]) For each request whether it is on its last chunk.
+        Returns:
+            (tuple[list[Tensor], list[Tensor | None] | None]) The log probabilities and the tail log probabilities,
+            one entry per request, as views. The tail is None unless it is asked for and there is one.
+        """
+        head, tail = self.asr_model.non_final_frames(log_probs.shape[1], self.drop_left_context, self.valid_out_len)
+        heads = [row if last else row[:head] for row, last in zip(log_probs, is_last)]
+        if not (self.return_tail_result and tail is not None):
+            return heads, None
+        tails = [None if last else row[tail[0] : tail[1]] for row, last in zip(log_probs, is_last)]
+        return heads, tails
+
+    def step_arguments(
+        self, right_paddings: list[int] | Tensor, is_last: list[bool]
+    ) -> tuple[list[int] | Tensor | None, dict]:
+        """
+        The right paddings and the keep_all_outputs arguments of cache_aware_transcribe_step for a batch of requests.
+
+        A batch that is all last or all non-last uses the scalar keep_all_outputs, which lets the encoder trim the right
+        context itself; only a mixed batch needs the per-request mask, which is what lets one call serve it instead of
+        two. Only the requests on their last chunk have right padding.
+        Args:
+            right_paddings: (list[int] | Tensor) The right paddings of the requests, per request or batched.
+            is_last: (list[bool]) For each request whether it is on its last chunk.
+        Returns:
+            (tuple[list[int] | Tensor | None, dict]) The right paddings and the keep_all_outputs arguments.
+        """
+        if not any(is_last):
+            return None, {"keep_all_outputs": False}
+        if all(is_last):
+            return right_paddings, {"keep_all_outputs": True}
+        if isinstance(right_paddings, Tensor):
+            last = torch.tensor(is_last, device=right_paddings.device, dtype=torch.bool)
+            paddings = torch.where(last, right_paddings, torch.zeros_like(right_paddings))
+        else:
+            paddings = [padding if last else 0 for padding, last in zip(right_paddings, is_last)]
+        return paddings, {"keep_all_outputs_mask": is_last}
 
     def transcribe_step_for_frames(self, frames: list[Frame]) -> None:
         """
@@ -328,32 +397,12 @@ class CacheAwareCTCPipeline(BasePipeline):
             frames: (list[Frame]) List of frames to transcribe.
         """
         all_fbuffers, right_paddings = self.bufferer.update(frames)
-        # the bufferer keeps the batch together for the RNNT pipeline; this one still works per stream
-        all_fbuffers, right_paddings = list(all_fbuffers.unbind(0)), right_paddings.tolist()
 
         ready_state_ids = set()
         if len(all_fbuffers) > 0:
-            nonfinal_frames, nonfinal_fbuffers = [], []
-            final_frames, final_fbuffers = [], []
-            final_right_paddings = []
-            for jdx, bfeature in enumerate(all_fbuffers):
-                frame = frames[jdx]
-                if frame.is_last:
-                    final_frames.append(frame)
-                    final_fbuffers.append(bfeature)
-                    final_right_paddings.append(right_paddings[jdx])
-                else:
-                    nonfinal_frames.append(frame)
-                    nonfinal_fbuffers.append(bfeature)
-
-            if len(nonfinal_frames) > 0:
-                self.cache_aware_transcribe_step(
-                    nonfinal_frames, nonfinal_fbuffers, None, ready_state_ids, keep_all_outputs=False
-                )
-            if len(final_frames) > 0:
-                self.cache_aware_transcribe_step(
-                    final_frames, final_fbuffers, final_right_paddings, ready_state_ids, keep_all_outputs=True
-                )
+            is_last = [frame.is_last for frame in frames]
+            right_paddings, keep_args = self.step_arguments(right_paddings, is_last)
+            self.cache_aware_transcribe_step(frames, all_fbuffers, right_paddings, ready_state_ids, **keep_args)
 
         # Postprocess the ready states
         if len(ready_state_ids) > 0:

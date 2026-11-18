@@ -34,6 +34,7 @@ from nemo.collections.common.tokenizers.aggregate_tokenizer import AggregateToke
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.utils import logging
 from nemo.utils.enum import PrettyStrEnum
+from nemo.utils.serialization import register_checkpoint_schema_types
 
 try:
     import kenlm
@@ -1753,8 +1754,13 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
         Returns:
             A list of word-level confidence scores.
         """
+        # ``words`` comes from ``hypothesis.text``, which strips the space before punctuation, so
+        # the boundary oracle has to apply the same transform or a token lands on the wrong word.
         return self._aggregate_token_confidence_subwords_sentencepiece(
-            hypothesis.words, hypothesis.token_confidence, hypothesis.y_sequence
+            hypothesis.words,
+            hypothesis.token_confidence,
+            hypothesis.y_sequence,
+            self.decode_tokens_to_str_with_strip_punctuation,
         )
 
     def decode_tokens_to_str(self, tokens: List[str]) -> str:
@@ -1922,3 +1928,6 @@ class RNNTBPEDecodingConfig(RNNTDecodingConfig):
     """
 
     pass
+
+
+register_checkpoint_schema_types(RNNTDecodingConfig, RNNTBPEDecodingConfig)

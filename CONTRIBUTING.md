@@ -71,6 +71,26 @@ Replace `path/to/relevant_tests` with the test directory to run such as `tests/c
 that begin with `L0_Unit_Tests_` for the specific test configuration used by different parts of the unit test suite. Different suites may expect
 different environment variables to be set.
 
+Each test has a 300-second timeout, set through `pytest-timeout` in `[tool.pytest.ini_options]` in `pyproject.toml`. A test that hangs or
+runs longer fails on its own instead of exhausting the CI job timeout. Keep unit tests far below this limit. Put long-running checks, such as
+inference with a large released checkpoint, behind `@pytest.mark.run_only_on('GPU')` or in a functional test.
+
+### GPU tests
+
+CI runs every unit test in the CPU jobs (`--cpu`). The GPU jobs on pull requests run only the tests marked
+`@pytest.mark.gpu`, so mark every test that exercises CUDA code, for example a test parametrized over `cuda`, a CUDA
+graph or kernel test, or a test that runs a model on the GPU. `@pytest.mark.run_only_on('GPU')` implies the marker.
+Tests that run the same CPU code in both modes must not be marked.
+
+```
+pytest -m "gpu and not pleasefixme" path/to/relevant_tests   # what the GPU jobs run on a pull request
+```
+
+The scheduled nightly run executes the whole suite on GPU with `--check-gpu-markers`, which fails if a test without
+the marker allocates CUDA memory. The audit sees only PyTorch's CUDA allocator, so a test that runs CUDA only through
+Numba, DALI, or another library must be marked by hand. For a test parametrized over devices, mark only the CUDA case:
+`pytest.param("cuda", marks=pytest.mark.gpu)`.
+
 ## Running the Github CI
 
 CI is powered by [copy-pr-bot](https://github.com/apps/copy-pr-bot), which mirrors each PR to a `pull-request/<number>` branch and triggers the workflow on push.
@@ -144,3 +164,21 @@ We use ``black`` as our style guide. To check whether your code will pass style 
 Collection is a logical grouping of related Neural Modules. It is a grouping of modules that share a domain area or semantics.
 When contributing module to a collection, please make sure it belongs to that category.
 If you would like to start a new one and contribute back to the platform, you are very welcome to do so.
+
+## Pull-request reviews
+
+Comment `/review` on a pull request for a comprehensive review from the formal
+review service. Use `/review mode=strict` for an exhaustive, maximally strict
+review, or add `model=claude` to select a
+Claude reviewer instead of the default Codex reviewer. `/review help` lists
+all options. The retired `/claude review` and `/claude strict-review` commands
+only reply with migration instructions when posted as an exact command by an
+owner, member, or collaborator. Quoted mentions, other commenters, and bots
+do not trigger a notice. These commands never run or automatically request a review.
+
+The repository policy lives in `.claude/skills/nemo-speech-pr-review/SKILL.md`. The review service
+must load this rubric from protected `main`, not the pull-request branch.
+Before deploying this migration, publish the rubric, register its repository
+profile, and verify a Ready plugin snapshot containing it. Until those
+prerequisites are verified, do not rely on the redirect as evidence that the
+repository-specific review policy is active.

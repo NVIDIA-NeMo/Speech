@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import math
+from collections.abc import Sequence
 
 import torch
 import torch.nn as nn
@@ -76,10 +77,11 @@ class FeatureStacking(nn.Module):
             raise ValueError("lengths are required for padded FeatureStacking input.")
         x = x.transpose(1, 2)  # (B, C, T) -> (B, T, C)
         b, t, c = x.size()
-        pad_size = (self.subsampling_factor - (t % self.subsampling_factor)) % self.subsampling_factor
-        if pad_size > 0:
+        t_new = self.compute_num_out_frames(t)
+        pad_size = t_new * self.subsampling_factor - t
+        # Keep padding in the exported graph even when the example length is divisible.
+        if torch.jit.is_tracing() or torch.compiler.is_compiling() or pad_size > 0:
             x = nn.functional.pad(x, (0, 0, 0, pad_size))
-        t_new = (t + pad_size) // self.subsampling_factor
         x = x.reshape(b, t_new, c * self.subsampling_factor)
         x = self.proj(x)
         lengths = self.compute_num_out_frames(lengths)
@@ -150,12 +152,12 @@ class StackingSubsampling(torch.nn.Module):
 
     def forward(self, x, lengths):
         b, t, h = x.size()
-        pad_size = (self.subsampling_factor - (t % self.subsampling_factor)) % self.subsampling_factor
+        t_new = (t + self.subsampling_factor - 1) // self.subsampling_factor
+        pad_size = t_new * self.subsampling_factor - t
         x = torch.nn.functional.pad(x, (0, 0, 0, pad_size))
         if self.pre_norm is not None:
             x = self.pre_norm(x)
-        _, t, _ = x.size()
-        x = torch.reshape(x, (b, t // self.subsampling_factor, h * self.subsampling_factor))
+        x = torch.reshape(x, (b, t_new, h * self.subsampling_factor))
         x = self.proj_out(x)
         lengths = torch.div(lengths + pad_size, self.subsampling_factor, rounding_mode='floor')
         return x, lengths
@@ -172,13 +174,20 @@ class ConvSubsampling(torch.nn.Module):
     Striding Subsampling: "Speech-Transformer: A No-Recurrence Sequence-to-Sequence Model for Speech Recognition" by Linhao Dong et al. (https://ieeexplore.ieee.org/document/8462506)
     Args:
         subsampling (str): The subsampling technique from {"vggnet", "striding", "dw-striding"}
-        subsampling_factor (int): The subsampling factor which should be a power of 2
+        subsampling_factor (int): The subsampling factor, a power of 2 for the default layout;
+            with `conv_strides`, the product of the per-stage time strides
         subsampling_conv_chunking_factor (int): Input chunking factor which can be -1 (no chunking)
         1 (auto) or a power of 2. Default is 1
         feat_in (int): size of the input features
         feat_out (int): size of the output features
-        conv_channels (int): Number of channels for the convolution layers.
+        conv_channels: number of channels of the convolution layers,
+            one value for all stages, or one per stage together with `conv_strides`
         activation (Module): activation function, default is nn.ReLU()
+        conv_strides: for "striding", the time stride of each 3x3 stage instead of stride 2 on both axes;
+            the frequency axis is then reduced only by `freq_pools`,
+            and the product of the strides must equal `subsampling_factor`
+        freq_pools: with `conv_strides`, a max-pool over the frequency axis after each stage, 1 for none
+        out_bias: bias of the output projection
     """
 
     def __init__(
@@ -187,21 +196,50 @@ class ConvSubsampling(torch.nn.Module):
         subsampling_factor,
         feat_in,
         feat_out,
-        conv_channels,
+        conv_channels: int | Sequence[int],
         subsampling_conv_chunking_factor=1,
         activation=nn.ReLU(),
         is_causal=False,
         use_triton: bool | None = None,
+        conv_strides: Sequence[int] | None = None,
+        freq_pools: Sequence[int] | None = None,
+        out_bias: bool = True,
     ):
         super(ConvSubsampling, self).__init__()
         self._subsampling = subsampling
-        self._conv_channels = conv_channels
+        # per-stage channel lists arrive as plain lists or as OmegaConf sequences from Hydra instantiation
+        channels_per_stage = isinstance(conv_channels, Sequence) and not isinstance(conv_channels, str)
+        if channels_per_stage and conv_strides is None:
+            raise ValueError(f"conv_channels per stage ({list(conv_channels)}) needs conv_strides")
+        # the 32-bit indexing guard sizes the output of the first convolution
+        self._conv_channels = conv_channels[0] if channels_per_stage else conv_channels
         self._feat_in = feat_in
         self._feat_out = feat_out
+        self._time_strides = list(conv_strides) if conv_strides is not None else None
+        self._freq_pools = list(freq_pools) if freq_pools is not None else None
 
-        if subsampling_factor % 2 != 0:
-            raise ValueError("Sampling factor should be a multiply of 2!")
-        self._sampling_num = int(math.log(subsampling_factor, 2))
+        if self._time_strides is not None:
+            if subsampling != 'striding':
+                raise ValueError("conv_strides is only supported with subsampling='striding'")
+            if is_causal:
+                raise ValueError("conv_strides is not supported with causal subsampling")
+            if any(not isinstance(stride, int) or stride < 1 for stride in self._time_strides):
+                raise ValueError(f"conv_strides must be positive integers, got {self._time_strides}")
+            if self._freq_pools is not None and any(
+                not isinstance(pool, int) or pool < 1 for pool in self._freq_pools
+            ):
+                raise ValueError(f"freq_pools must be positive integers, got {self._freq_pools}")
+            if math.prod(self._time_strides) != subsampling_factor:
+                raise ValueError(
+                    f"The product of conv_strides {self._time_strides} must equal subsampling_factor {subsampling_factor}"
+                )
+            self._sampling_num = len(self._time_strides)
+            if self._freq_pools is None:
+                self._freq_pools = [1] * self._sampling_num
+        else:
+            if subsampling_factor % 2 != 0:
+                raise ValueError("Sampling factor should be a multiply of 2!")
+            self._sampling_num = int(math.log(subsampling_factor, 2))
         self.subsampling_factor = subsampling_factor
         self.is_causal = is_causal
 
@@ -321,6 +359,31 @@ class ConvSubsampling(torch.nn.Module):
                 )
                 layers.append(activation)
                 in_channels = conv_channels
+
+        elif subsampling == 'striding' and self._time_strides is not None:
+            self._stride = max(self._time_strides)
+            self._kernel_size = 3
+            self._ceil_mode = False
+            self._left_padding = 1
+            self._right_padding = 1
+            self._max_cache_len = 0
+            channels = list(conv_channels) if channels_per_stage else [conv_channels] * self._sampling_num
+            if len(channels) != self._sampling_num or len(self._freq_pools) != self._sampling_num:
+                raise ValueError("conv_channels and freq_pools need one entry per stride")
+            for out_channels, stride, pool in zip(channels, self._time_strides, self._freq_pools):
+                layers.append(
+                    torch.nn.Conv2d(
+                        in_channels=in_channels,
+                        out_channels=out_channels,
+                        kernel_size=self._kernel_size,
+                        stride=(stride, 1),
+                        padding=self._left_padding,
+                    )
+                )
+                layers.append(activation)
+                if pool > 1:
+                    layers.append(torch.nn.MaxPool2d(kernel_size=(1, pool), stride=(1, pool)))
+                in_channels = out_channels
 
         elif subsampling == 'striding':
             self._stride = 2
@@ -463,7 +526,14 @@ class ConvSubsampling(torch.nn.Module):
         else:
             raise ValueError(f"Not valid sub-sampling: {subsampling}!")
 
-        if subsampling in ["vggnet", "dw_striding", "striding"]:
+        if subsampling == "striding" and self._time_strides is not None:
+            # the strided stages keep the frequency axis; only the pools reduce it
+            freq = feat_in
+            for pool in self._freq_pools:
+                freq //= pool
+            self.out = torch.nn.Linear(in_channels * freq, feat_out, bias=out_bias)
+            self.conv2d_subsampling = True
+        elif subsampling in ["vggnet", "dw_striding", "striding"]:
 
             in_length = torch.tensor(feat_in, dtype=torch.float)
             out_length = calc_length(
@@ -474,7 +544,7 @@ class ConvSubsampling(torch.nn.Module):
                 ceil_mode=self._ceil_mode,
                 repeat_num=self._sampling_num,
             )
-            self.out = torch.nn.Linear(conv_channels * int(out_length), feat_out)
+            self.out = torch.nn.Linear(conv_channels * int(out_length), feat_out, bias=out_bias)
             self.conv2d_subsampling = True
         elif subsampling in ["striding_conv1d", "dw_striding_conv1d"]:
             self.out = None
@@ -502,27 +572,66 @@ class ConvSubsampling(torch.nn.Module):
         return [0, self.subsampling_factor + 1]
 
     def _first_conv_output_numel(self, x):
-        """Element count of the first conv's output, the largest activation in the stack.
+        """Element count of the first conv's output, the largest activation of the default stacks.
 
         ``x`` is the ``(B, T, F)`` input before the channel dim is added. Only valid for the
         strided 'striding'/'dw_striding' variants; 'vgg' starts with stride-1 convs, so its
         largest activation is not bounded by this estimate.
+        With per-stage strides a later conv can be larger, see ``_max_conv_numel``.
         """
         b, t, f = x.size()
         pad = (self._left_padding, self._right_padding)
-        out_t = calculate_conv_output_size(t, self._kernel_size, self._stride, pad)
-        out_f = calculate_conv_output_size(f, self._kernel_size, self._stride, pad)
+        if self._time_strides is not None:
+            # the per-stage stages stride only in time and keep the frequency axis
+            out_t = calculate_conv_output_size(t, self._kernel_size, self._time_strides[0], pad)
+            out_f = calculate_conv_output_size(f, self._kernel_size, 1, pad)
+        else:
+            out_t = calculate_conv_output_size(t, self._kernel_size, self._stride, pad)
+            out_f = calculate_conv_output_size(f, self._kernel_size, self._stride, pad)
         return b * self._conv_channels * out_t * out_f
 
+    def _max_conv_numel(self, x):
+        """Largest element count among the conv input and every conv output of the stack.
+
+        The 32-bit indexing guard and the automatic chunking bound the batch by this count.
+        With per-stage strides and channels a later conv can hold more elements than the first,
+        when its channels grow faster than the strides and pools shrink the map,
+        so the stages are walked one by one; the default stacks keep the first-conv estimate.
+        """
+        b, t, f = x.size()
+        largest = b * t * f
+        if self._time_strides is None:
+            return max(largest, self._first_conv_output_numel(x))
+        pad = (self._left_padding, self._right_padding)
+        convs = (layer for layer in self.conv if isinstance(layer, torch.nn.Conv2d))
+        for conv, stride, pool in zip(convs, self._time_strides, self._freq_pools):
+            t = calculate_conv_output_size(t, self._kernel_size, stride, pad)
+            f = calculate_conv_output_size(f, self._kernel_size, 1, pad)
+            # the conv output is counted before the pool that follows it
+            largest = max(largest, b * conv.out_channels * t * f)
+            f //= pool
+        return largest
+
     def forward(self, x, lengths):
-        out_lengths = calc_length(
-            lengths,
-            all_paddings=self._left_padding + self._right_padding,
-            kernel_size=self._kernel_size,
-            stride=self._stride,
-            ceil_mode=self._ceil_mode,
-            repeat_num=self._sampling_num,
-        )
+        if self._time_strides is not None:
+            out_lengths = lengths
+            for stride in self._time_strides:
+                out_lengths = calc_length(
+                    out_lengths,
+                    all_paddings=self._left_padding + self._right_padding,
+                    kernel_size=self._kernel_size,
+                    stride=stride,
+                    ceil_mode=self._ceil_mode,
+                )
+        else:
+            out_lengths = calc_length(
+                lengths,
+                all_paddings=self._left_padding + self._right_padding,
+                kernel_size=self._kernel_size,
+                stride=self._stride,
+                ceil_mode=self._ceil_mode,
+                repeat_num=self._sampling_num,
+            )
 
         # Transpose to Channel First mode
         if not self.conv2d_subsampling:
@@ -535,11 +644,8 @@ class ConvSubsampling(torch.nn.Module):
                 # avoiding a bug / feature limiting indexing of tensors to 2**31
                 # see https://github.com/pytorch/pytorch/issues/80020
                 # Split on '>=': at equality the tensor already holds INT_MAX elements, the
-                # value that trips canUse32BitIndexMath. Guard the conv input and its output.
-                need_to_split = (
-                    self._first_conv_output_numel(x) >= _MAX_CONV_NUMEL_32BIT
-                    or torch.numel(x) >= _MAX_CONV_NUMEL_32BIT
-                )
+                # value that trips canUse32BitIndexMath. Guard the conv input and every conv output.
+                need_to_split = self._max_conv_numel(x) >= _MAX_CONV_NUMEL_32BIT
             else:
                 # if subsampling_conv_chunking_factor > 1 we always split
                 need_to_split = True
@@ -589,7 +695,8 @@ class ConvSubsampling(torch.nn.Module):
                 # init fc (80 * 64 = 5120 from https://github.com/kssteven418/Squeezeformer/blob/13c97d6cf92f2844d2cb3142b4c5bfa9ad1a8951/src/models/conformer_encoder.py#L487
                 fc_scale = (self._feat_out * self._feat_in / self._sampling_num) ** -0.5
                 torch.nn.init.uniform_(self.out.weight, -fc_scale, fc_scale)
-                torch.nn.init.uniform_(self.out.bias, -fc_scale, fc_scale)
+                if self.out.bias is not None:
+                    torch.nn.init.uniform_(self.out.bias, -fc_scale, fc_scale)
 
     def conv_split_by_batch(self, x, lengths):
         """Tries to split input by batch, run conv and concat results"""
@@ -604,8 +711,8 @@ class ConvSubsampling(torch.nn.Module):
             # avoiding a bug / feature limiting indexing of tensors to 2**31
             # see https://github.com/pytorch/pytorch/issues/80020
             # Smallest power-of-two split with each chunk strictly below the limit (+1 forces
-            # strict); size against the larger of conv input and first-conv output.
-            numel = max(self._first_conv_output_numel(x), torch.numel(x))
+            # strict); size against the largest of conv input and conv outputs.
+            numel = self._max_conv_numel(x)
             cf = 2 ** math.ceil(math.log(numel // _MAX_CONV_NUMEL_32BIT + 1, 2))
             logging.debug(f'using auto set chunking factor: {cf}')
 
@@ -613,7 +720,7 @@ class ConvSubsampling(torch.nn.Module):
         if new_batch_size == 0:
             # If cf > b and one sample fits, use single-sample batches rather than the channel
             # fallback (which runs the full first conv up front).
-            if max(self._first_conv_output_numel(x[:1]), torch.numel(x[:1])) >= _MAX_CONV_NUMEL_32BIT:
+            if self._max_conv_numel(x[:1]) >= _MAX_CONV_NUMEL_32BIT:
                 return x, lengths, False
             new_batch_size = 1
 
@@ -902,6 +1009,8 @@ def _layer_padding(layer):
     """
     if hasattr(layer, "_left_padding"):
         return layer._left_padding, layer._right_padding
+    if isinstance(layer.padding, int):  # pooling layers keep one value for both axes
+        return layer.padding, layer.padding
     return layer.padding[0], layer.padding[0]
 
 

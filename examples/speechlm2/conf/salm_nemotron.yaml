@@ -1,0 +1,276 @@
+# Large-scale SALM training: a pretrained Nemotron hybrid MoE LLM, an ASR encoder and a speaker-diarization encoder
+# become one speech LLM, trained end to end on a weighted multitask blend across many nodes.
+#
+# Launch: python examples/speechlm2/salm_train.py --config-name=salm_nemotron
+# Procedure, preflight checks and pitfalls: .claude/skills/train-speech-llm/SKILL.md
+#
+# Hydra refuses to start until every ??? is set; values in <angle brackets> are placeholders.
+# Comments flag settings whose wrong value fails silently.
+model:
+  pretrained_llm: ???  # a Nemotron hybrid Mamba-attention MoE chat checkpoint; also the tokenizer source
+  pad_token: <unk>  # the LLM tokenizer's padding token
+  # An ASR .nemo checkpoint. It supplies the preprocessor; its encoder is replaced by the pe_encoder_path bundle.
+  pretrained_asr: ???
+  # A ParallelExpertEncoder .nemo bundle: the ASR encoder and a diarization encoder side by side, fused per frame.
+  pe_encoder_path: ???
+  pe_encoder_overrides:
+    # Feature normalization must match between training and serving; a mismatch only moves WER.
+    asr_normalize_type: per_feature
+    diar_normalize_type: NA
+    speaker_feature_mode: thresholded
+    speaker_activity_threshold: 0.5
+    speaker_feature_config_version: 1
+    sync_max_audio_length: false
+  spk_kernel_scale: 1.0
+  pretrained_weights: true
+  init_from_checkpoint: null  # weights only; to continue a run with its full state, rely on exp_manager resume
+  use_nemo_automodel: true
+  trust_remote_code: true
+  gc_every_steps: 10  # run Python GC on all ranks together every 10 steps, not at random times on each
+
+  # The main stage trains everything except the feature extractor.
+  freeze_params:
+    - "^perception\\.preprocessor\\..+$"
+  prevent_freeze_params: []
+
+  prompt_format: ???  # must match the LLM's chat template, e.g. nemotron-nano-v3 for Nemotron 3 Nano
+  audio_locator_tag: "<|audio|>"
+  encoder_chunk_size_seconds: 30.0  # long recordings are encoded in 30 s windows
+
+  cross_entropy_backend: fused_linear  # never materializes full-vocabulary logits
+  packed_sequences: true  # the LLM sees examples concatenated without padding
+  # The encoders see packed waveforms too. Needs a TransformerEncoder or ParallelExpertEncoder with IdentityConnector
+  # and perception.rote null; a FastConformer encoder raises an error when this is true.
+  packed_encoder_sequences: true
+
+  # Multi-token prediction heads, trained jointly. Training reads only this block; `compute_mtp` is ignored.
+  mtp:
+    enabled: true
+    training_mode: joint
+    num_nextn_predict_layers: 2
+    use_repeated_layer: true
+    replace_existing_head: false
+
+  train_gate: true  # let the MoE router adapt to speech
+  aux_loss_coeff: 1.0e-4  # MoE load-balancing loss; 0 keeps the checkpoint's coefficient rather than disabling it
+
+  automodel_backend:
+    attn: te
+    linear: te
+    experts: gmm
+    dispatcher: deepep  # requires NVLink and NVSHMEM; use `torch` elsewhere
+    dispatcher_num_sms: 32
+    dispatcher_async_dispatch: false
+  moe_metrics:
+    enabled: true
+    mode: detailed
+    every_steps: 100
+    detailed_every_steps: 500
+    top_k_experts: 5
+
+  perception:
+    target: nemo.collections.speechlm2.modules.perception.AudioPerceptionModule
+    output_dim: 4096  # replaced by the LLM hidden size when the model loads
+    spec_augment:
+      _target_: nemo.collections.asr.modules.SpectrogramAugmentation
+      freq_masks: 2
+      time_masks: 10
+      freq_width: 27
+      time_width: 5
+    # Encoder states pass through unchanged, followed by a single Linear(d_model -> output_dim).
+    modality_adapter:
+      _target_: nemo.collections.speechlm2.modules.perception.IdentityConnector
+      d_model: ???  # the ParallelExpertEncoder's output width; a mismatch raises at load
+
+  optimizer:
+    _target_: transformer_engine.pytorch.optimizers.fused_adam.FusedAdam
+    lr: 9.0e-5
+    betas: [0.9, 0.999]
+    weight_decay: 0.05
+    eps: 1.0e-8
+    master_weights: true  # FP32 master copy of BF16 parameters
+    store_param_remainders: true
+    exp_avg_dtype: torch.bfloat16
+    exp_avg_sq_dtype: torch.bfloat16
+  lr_scheduler:
+    _target_: nemo.core.optim.lr_scheduler.CosineAnnealing
+    warmup_steps: 500
+    min_lr: 7.5e-7
+    max_steps: ${trainer.max_steps}
+
+trainer:
+  devices: -1
+  accelerator: gpu
+  num_nodes: ???
+  # Automodel owns parameter dtypes, so tensors the LLM keeps in FP32 stay FP32.
+  # Never use bf16-true here: it casts them to BF16 without any error.
+  precision: bf16-automodel
+  logger: false  # provided by exp_manager
+  enable_checkpointing: false
+  use_distributed_sampler: false
+  max_steps: 30000
+  limit_train_batches: 500  # the length of one Lightning "epoch" of the infinite dataloader
+  val_check_interval: ${trainer.limit_train_batches}
+  limit_val_batches: 0  # select checkpoints by decoding, not by validation loss; raise to log a divergence signal
+  num_sanity_val_steps: 0
+  log_every_n_steps: 10
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+  strategy:
+    _target_: nemo.collections.speechlm2.parts.parallel.AutomodelParallelStrategy
+    dp_size: null  # FSDP over all ranks
+    dp_replicate_size: 1
+    tp_size: 1  # MTP requires tp_size 1
+    pp_size: 1
+    cp_size: 1
+    ep_size: 8
+    timeout_minutes: 60
+    moe_config:
+      ignore_router_for_ac: true
+      reshard_after_forward: true
+      # Offload the repeated MTP layer's large saved activations (>= 1 GiB) to host memory.
+      repeated_mtp_first_depth_saved_tensor_offload: true
+      repeated_mtp_saved_tensor_offload_min_bytes: 1073741824
+    activation_checkpointing_llm: true
+    activation_checkpointing_perception: true
+    perception_fsdp_wrap_asr_layers: true
+
+data:
+  # Speaker supervision for multi-speaker sources; must agree with the diarization encoder.
+  multispeaker_cfg:
+    num_speakers: 8
+    max_alignment_permutations: 720  # 6!, the speaker orders tried when aligning a transcript to diarization
+    sample_rate: ${data.train_ds.sample_rate}
+    window_stride: 0.01  # preprocessor hop in seconds
+    subsampling_factor: 8  # encoder frames per output frame
+    no_rttm_to_ones: true  # a row without speaker timing counts as one speaker throughout
+
+  train_ds:
+    seed: 42
+    shard_seed: 42
+    shuffle: true
+    num_workers: 4
+    prefetch_factor: 4
+    sample_rate: 16000
+    prompt_format: ${model.prompt_format}
+    audio_locator_tag: ${model.audio_locator_tag}
+    text_field: answer
+    lang_field: target_lang
+
+    # Exact token-budget packing: every batch holds batch_tokens tokens per rank, prompt and audio included.
+    use_multimodal_sampling: true
+    use_packed_sequence_sampling: true
+    measure_total_length: true
+    batch_tokens: 65536
+    max_tokens: 65536  # a filter, not a cap: longer examples are dropped silently
+    min_tokens: 2
+    min_duration: 0.1
+    packing_buffer_size: 1024
+    use_bucketing: false  # packing already removes padding
+    token_equivalent_duration: 0.08
+    audio_token_estimator: &audio_token_estimator  # must mirror the encoder front end
+      preprocessor:
+        n_fft: 512
+        hop_length: 160
+        stft_pad_amount: 256
+      subsampling:
+        type: feature_stacking
+        factor: 8
+      chunk_size_seconds: null
+
+    # Indexed, stateful loading resumes the exact data order after every restart.
+    # See .claude/skills/migrate-to-resumable-dataloader/SKILL.md.
+    indexed: true
+    use_stateful_dataloader: true
+    force_iterable_dataset: true
+    force_finite: true
+    indexes_root: <indexes_root>
+    index_pack_root: <immutable index-pack root, one per blend revision>
+    skip_missing_manifest_entries: false  # fail loudly on missing data
+    fault_tolerant_audio_loading: true
+
+    # Weights are draw probabilities. Derive them from measured answer tokens per draw (see the skill).
+    # force_finite: false repeats an exhausted source instead of ending the blend.
+    input_cfg:
+      # Speech rows that carry several alternative targets: one task is drawn per row.
+      # preference_sampling works only inside lhotse_as_conversation.
+      - type: lhotse_as_conversation
+        force_finite: false
+        input_cfg: <multi_target_speech.yaml>
+        index_pack: <multi_target_speech.idxpack>
+        weight: <weight>
+        preference_sampling:
+          seed: 42
+          fallback_text_field: text
+          skip_invalid_target: true
+          weights: {<task_a>: 0.6, <task_b>: 0.4}
+        # Tags overwrite same-named fields on every row. These two train without a system prompt.
+        tags:
+          system_prompt: ''
+          override_system_prompt: true
+      # Speech with one target and a fixed instruction.
+      - type: lhotse_as_conversation
+        force_finite: false
+        input_cfg: <single_target_speech.yaml>
+        index_pack: <single_target_speech.idxpack>
+        weight: <weight>
+        tags:
+          system_prompt: ''
+          override_system_prompt: true
+          context: Transcribe the audio.
+      # Data that is already in conversation form, such as multi-speaker transcripts or text-only chat kept to
+      # retain LLM capabilities.
+      - type: group
+        force_finite: false
+        input_cfg: <conversations.yaml>
+        index_pack: <conversations.idxpack>
+        weight: <weight>
+
+  validation_ds:
+    prompt_format: ${model.prompt_format}
+    audio_locator_tag: ${model.audio_locator_tag}
+    token_equivalent_duration: 0.08
+    audio_token_estimator: *audio_token_estimator
+    sample_rate: 16000
+    batch_size: 4
+    seed: 42
+    shard_seed: 42
+    num_workers: 2
+    indexed: true
+    use_stateful_dataloader: false
+    force_map_dataset: true
+    force_finite: true
+    indexes_root: ${data.train_ds.indexes_root}
+    index_pack_root: ${data.train_ds.index_pack_root}
+    datasets:
+      dev_asr:
+        input_cfg: <dev_asr.yaml>
+        index_pack: <dev_asr.idxpack>
+
+exp_manager:
+  exp_dir: null
+  explicit_log_dir: <log directory, unique per run and per fork>
+  name: <experiment name>
+  create_tensorboard_logger: false
+  create_checkpoint_callback: true
+  use_datetime_version: true
+  # Stop and save a few minutes before the job's wall-time limit, in DD:HH:MM:SS (e.g. 00:03:45:00 for 4 hours).
+  max_time_per_run: ???
+  resume_from_checkpoint: null  # a fork's starting checkpoint; ignored once the log directory holds a -last checkpoint
+  resume_if_exists: true
+  resume_select_latest_last_checkpoint: true  # several -last files after a crash: take the highest step
+  resume_ignore_no_checkpoint: true
+  create_wandb_logger: true
+  wandb_logger_kwargs:
+    name: <experiment name>
+    project: <project>
+    resume: true
+  checkpoint_callback_params:
+    filename: "{step}"
+    monitor: step
+    mode: max
+    every_n_train_steps: 500
+    save_on_train_epoch_end: false
+    save_top_k: -1  # keep every checkpoint; selection happens by decoding
+    save_last: true
+    always_save_nemo: false

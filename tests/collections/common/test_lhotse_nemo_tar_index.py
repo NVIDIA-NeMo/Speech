@@ -82,7 +82,8 @@ def test_nemo_tar_index_and_reader_use_s3_local_mirror(tmp_path, monkeypatch):
     reader.close()
 
 
-def test_nemo_tar_index_uses_generic_streaming_opener_for_http(tmp_path, monkeypatch):
+@pytest.mark.parametrize("scheme", ["https", "s3", "ais"])
+def test_nemo_tar_index_uses_streaming_opener(tmp_path, monkeypatch, scheme):
     tar_path = tmp_path / "data.tar"
     with tarfile.open(tar_path, "w") as archive:
         payload = b"sample"
@@ -97,15 +98,15 @@ def test_nemo_tar_index_uses_generic_streaming_opener_for_http(tmp_path, monkeyp
         return io.BytesIO(raw)
 
     def fail_ais(*args, **kwargs):
-        raise AssertionError("generic URLs must not be routed through AISRangeReader")
+        raise AssertionError("Sequential tar scans must not use AISRangeReader")
 
     monkeypatch.setattr("lhotse.serialization.open_best", open_http)
     monkeypatch.setattr("lhotse.ais.AISRangeReader", fail_ais)
     idx_path = tmp_path / "http.idx"
 
-    create_tar_index("https://example.test/data.tar", idx_path)
+    create_tar_index(f"{scheme}://example.test/data.tar", idx_path)
 
-    assert opened == [("https://example.test/data.tar", "rb")]
+    assert opened == [(f"{scheme}://example.test/data.tar", "rb")]
     assert read_index(idx_path).tolist() == [0, len(raw)]
 
 
@@ -147,7 +148,7 @@ def test_nemo_tar_index_seekable_matches_streaming_and_skips_payloads(tmp_path, 
     assert local_source.bytes_read < 64 * 1024
     assert local_source.bytes_read < len(raw_tar) // 16
 
-    monkeypatch.setattr("lhotse.ais.AISRangeReader", lambda path: io.BytesIO(raw_tar))
+    monkeypatch.setattr("lhotse.serialization.open_best", lambda path, mode: io.BytesIO(raw_tar))
     remote_idx = tmp_path / "remote.idx"
     create_tar_index("ais://bucket/data.tar", remote_idx)
 
@@ -173,7 +174,7 @@ def test_nemo_tar_index_dense_local_tar_selects_streaming(tmp_path, monkeypatch)
     create_tar_index(tar_path, local_idx)
 
     raw_tar = tar_path.read_bytes()
-    monkeypatch.setattr("lhotse.ais.AISRangeReader", lambda path: io.BytesIO(raw_tar))
+    monkeypatch.setattr("lhotse.serialization.open_best", lambda path, mode: io.BytesIO(raw_tar))
     streaming_idx = tmp_path / "dense-streaming.idx"
     create_tar_index("ais://bucket/dense.tar", streaming_idx)
     assert local_idx.read_bytes() == streaming_idx.read_bytes()
@@ -214,6 +215,6 @@ def test_nemo_tar_index_seekable_and_streaming_reject_truncated_member(tmp_path,
     with pytest.raises(tarfile.ReadError, match="unexpected end of data"):
         create_tar_index(truncated_path, tmp_path / "local-truncated.idx")
 
-    monkeypatch.setattr("lhotse.ais.AISRangeReader", lambda path: io.BytesIO(truncated))
+    monkeypatch.setattr("lhotse.serialization.open_best", lambda path, mode: io.BytesIO(truncated))
     with pytest.raises(tarfile.ReadError, match="unexpected end of data"):
         create_tar_index("ais://bucket/truncated.tar", tmp_path / "remote-truncated.idx")

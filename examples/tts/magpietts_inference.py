@@ -118,6 +118,7 @@ def run_inference_and_evaluation(
     violin_plot_metrics: Optional[List[str]] = None,
     clean_up_disk: bool = False,
     skip_evaluation: bool = False,
+    ignore_manifest_language: bool = False,
 ) -> Tuple[Optional[float], Optional[float]]:
     """Run inference and optional evaluation on specified datasets.
 
@@ -139,6 +140,7 @@ def run_inference_and_evaluation(
         violin_plot_metrics: Metrics to include in violin plots.
         clean_up_disk: Whether to clean up output directory after completion.
         skip_evaluation: Whether to skip evaluation (inference only mode).
+        ignore_manifest_language: Whether dataset-level language should override manifest records.
 
     Returns:
         Tuple of (mean CER across datasets, mean SSIM across datasets).
@@ -176,14 +178,15 @@ def run_inference_and_evaluation(
         meta = dataset_meta_info[dataset]
         manifest_records = read_manifest(meta['manifest_path'])
 
-        # Per-dataset overrides (asr_model, language) come from the evalset entry; everything else is inherited from
-        # the CLI-level eval_config.
+        # asr_model and language in the evalset entry override the CLI-level eval_config; stripping of annotation
+        # markers for CER/WER is set per dataset only (strip_text_annotations_for_metrics key, default off).
         eval_config_for_dataset = resolve_evaluation_config_for_dataset(eval_config, meta)
         language = eval_config_for_dataset.language
         if not skip_evaluation:
             logging.info(
                 f"Dataset {dataset}: language={language}, "
-                f"asr_model={eval_config_for_dataset.asr_model_name} ({eval_config_for_dataset.asr_model_type})"
+                f"asr_model={eval_config_for_dataset.asr_model_name} ({eval_config_for_dataset.asr_model_type}), "
+                f"strip_text_annotations_for_metrics={eval_config_for_dataset.strip_text_annotations_for_metrics}"
             )
 
         tokenizer_names = meta.get('tokenizer_names', None)
@@ -193,7 +196,12 @@ def run_inference_and_evaluation(
             "audio_dir": meta["audio_dir"],
             "language": language,
             "tokenizer_names": tokenizer_names,
+            "ignore_manifest_language": ignore_manifest_language,
         }
+        if "precomputed_context_audio_embedding_key" in meta:
+            dataset_meta_for_dl["precomputed_context_audio_embedding_key"] = meta[
+                "precomputed_context_audio_embedding_key"
+            ]
 
         # Setup output directories
         eval_dir = os.path.join(out_dir, f"{full_checkpoint_name}_{language}_{dataset}")
@@ -436,7 +444,6 @@ def main(argv=None):
         codec_model_path=args.codecmodel_path if not args.disable_fcd else None,
         with_prosody_metrics=args.with_prosody_metrics,
         prosody_model_size=args.prosody_model_size,
-        strip_text_annotations_for_metrics=args.strip_text_annotations_for_metrics,
         asr_batch_size=args.asr_batch_size,
         eou_batch_size=args.eou_batch_size,
     )
@@ -493,6 +500,7 @@ def main(argv=None):
                 violin_plot_metrics=args.violin_plot_metrics,
                 clean_up_disk=args.clean_up_disk,
                 skip_evaluation=not args.run_evaluation,
+                ignore_manifest_language=args.ignore_manifest_language,
             )
 
     else:  # nemo mode
@@ -531,6 +539,7 @@ def main(argv=None):
                 violin_plot_metrics=args.violin_plot_metrics,
                 clean_up_disk=args.clean_up_disk,
                 skip_evaluation=not args.run_evaluation,
+                ignore_manifest_language=args.ignore_manifest_language,
             )
 
     # Check quality targets

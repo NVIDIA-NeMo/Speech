@@ -23,8 +23,8 @@ from nemo.collections.common.data.utils import move_data_to_device
 from nemo.collections.speechlm2.data import DuplexS2SDataset
 from nemo.collections.speechlm2.models import DuplexS2SModel
 
-if torch.cuda.is_available():
-    torch.set_default_device('cuda')
+# Run on CUDA when available, without leaking the default device to other test modules (see conftest.py).
+pytestmark = pytest.mark.usefixtures("cuda_default_device")
 
 
 def resolve_pretrained_models():
@@ -46,8 +46,8 @@ def resolve_pretrained_models():
         }
 
 
-@pytest.fixture(scope="session")
-def model():
+@pytest.fixture(scope="module")
+def model(cuda_default_device):
     cfg = {
         **resolve_pretrained_models(),
         "pretrained_weights": False,
@@ -108,7 +108,7 @@ def model():
     return model
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def dataset(model):
     return DuplexS2SDataset(
         model.tokenizer,
@@ -120,8 +120,8 @@ def dataset(model):
     )
 
 
-@pytest.fixture(scope="session")
-def training_cutset_batch():
+@pytest.fixture(scope="module")
+def training_cutset_batch(cuda_default_device):
     cut = dummy_cut(0, recording=dummy_recording(0, with_data=True))
     cut.target_audio = dummy_recording(1, with_data=True)
     cut.supervisions = [
@@ -161,6 +161,7 @@ def training_cutset_batch():
     return CutSet([cut])
 
 
+@pytest.mark.gpu
 def test_s2s_dataset(dataset, training_cutset_batch):
     batch = dataset[training_cutset_batch]
     for key in (
@@ -182,6 +183,7 @@ def test_s2s_dataset(dataset, training_cutset_batch):
     assert batch["source_tokens"].tolist() == [[1, 2, 0, 0, 0, 0, 1, 3431, 2, 0, 0, 0, 0]]
 
 
+@pytest.mark.gpu
 def test_s2s_training_step(model, dataset, training_cutset_batch):
     model.on_train_epoch_start()
     batch = dataset[training_cutset_batch]
@@ -192,6 +194,7 @@ def test_s2s_training_step(model, dataset, training_cutset_batch):
     assert results["loss"] > 0
 
 
+@pytest.mark.gpu
 def test_s2s_validation_step(model, dataset, training_cutset_batch):
     model.on_validation_epoch_start()
     batch = dataset[training_cutset_batch]
@@ -200,6 +203,7 @@ def test_s2s_validation_step(model, dataset, training_cutset_batch):
     assert results is None  # no return value
 
 
+@pytest.mark.gpu
 def test_s2s_offline_generation(model):
     # 16000 samples == 1 second == 12.5 frames ~= 14 frames after encoder padding
     ans = model.offline_inference(

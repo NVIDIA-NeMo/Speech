@@ -104,8 +104,9 @@ model:
 
     turbo_kernel:
       type: fused_vocab  # options: null, fused_vocab
-      backward_pruning_range_size: null  # disabled by default; use values 8 or 16
-      backward_pruning_start_step: 5000
+      backward_pruning:
+          range_size: null  # disabled by default; use values 8 or 16
+          start_step: 5000
       use_high_precision_mm: false
       mm_full_precision: false
       input_grad_full_precision: false

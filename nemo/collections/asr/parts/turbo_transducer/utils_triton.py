@@ -42,3 +42,14 @@ def log_add_exp(log_probs_1, log_probs_2):
     # Both arguments are checked explicitly (not the maximum): `tl.maximum` ignores NaN, but NaN must be propagated
     both_neg_inf = (log_probs_1 == -float("inf")) & (log_probs_2 == -float("inf"))
     return tl.where(both_neg_inf, -float("inf"), log_sum)
+
+
+@triton.jit
+def matmul(a: tl.tensor, b: tl.tensor, USE_FP64: tl.constexpr = False, USE_HIGH_PRECISION: tl.constexpr = False):
+    if USE_FP64:
+        result = tl.sum(a.T[:, :, None] * b[:, None, :], axis=0)
+    elif USE_HIGH_PRECISION:
+        result = tl.dot(a, b, input_precision="ieee")
+    else:
+        result = tl.dot(a, b)
+    return result

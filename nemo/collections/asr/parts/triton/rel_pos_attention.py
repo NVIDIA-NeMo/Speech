@@ -45,6 +45,11 @@ One head dimension serves queries, keys, values and the position embedding, as i
 The backward recomputes ``delta = sum_j p_ij dp_ij`` in a pass of its own instead of the flash-attention shortcut
 ``rowsum(out * d_out)``, which holds only for an exactly accumulated ``out``;
 with bf16 storage the shortcut's rounding error enters the position-term gradient as a per-row bias.
+
+The tiles of the four kernels are tuned on a GB300 (228 KB of shared memory per block).
+A GPU with less shared memory refuses the first configuration at its first launch (Triton's ``OutOfResources``);
+the launch then steps down a ladder of smaller tiles, once per kernel, device, dtype and head width,
+so the kernels run on workstation and consumer GPUs as well, at a lower speed.
 """
 
 import math
@@ -53,11 +58,46 @@ import torch
 import triton
 import triton.language as tl
 from torch import Tensor
+from triton.runtime.errors import OutOfResources
 
 __all__ = ["PACKED_REL_POS_ATTENTION_DTYPES", "packed_rel_pos_attention"]
 
 # the dtypes the kernels read and write; the softmax and the accumulations run in float32 either way
 PACKED_REL_POS_ATTENTION_DTYPES = (torch.float32, torch.bfloat16, torch.float16)
+
+# Tiles (BLOCK_M, BLOCK_N, warps, pipeline stages); the first entry of each ladder is the configuration tuned on a
+# GB300, the later ones need less shared memory (see _launch).
+# The forward: 64 x 128 tiles with eight warps and two stages (tuned at D = 128 in bf16);
+# rows above 256 bytes (float32 at D = 128) start at 64 key columns.
+FORWARD_TILES = ((64, 128, 8, 2), (64, 64, 8, 2), (64, 64, 4, 1), (32, 64, 4, 1), (32, 32, 4, 1))
+FORWARD_TILES_WIDE = FORWARD_TILES[1:]
+# The backward kernels: 64 x 64 tiles up to D = 64, 32 x 32 above.
+BACKWARD_TILES = ((64, 64, 4, 3), (32, 32, 4, 3), (32, 32, 4, 1), (16, 32, 4, 1))
+BACKWARD_TILES_WIDE = BACKWARD_TILES[1:]
+# the ladder entry in use per (kernel, device, dtype, head width)
+_tiles_in_use: dict[tuple, int] = {}
+
+
+def _launch(kernel, ladder, key, grid, args, constexprs):
+    """Launch ``kernel`` with the first entry of ``ladder`` that the device's shared memory takes.
+
+    Triton refuses a configuration beyond the device's shared memory at its first launch (``OutOfResources``);
+    the next entry is tried, and the one that runs is remembered under ``key``.
+    ``grid`` maps the tile sizes (BLOCK_M, BLOCK_N) to the launch grid.
+    """
+    error = None
+    for index in range(_tiles_in_use.get(key, 0), len(ladder)):
+        block_m, block_n, num_warps, num_stages = ladder[index]
+        try:
+            kernel[grid(block_m, block_n)](
+                *args, BLOCK_M=block_m, BLOCK_N=block_n, num_warps=num_warps, num_stages=num_stages, **constexprs
+            )
+        except OutOfResources as exc:
+            error = exc
+            continue
+        _tiles_in_use[key] = index
+        return
+    raise error
 
 
 def packed_rel_pos_attention(
@@ -363,38 +403,34 @@ def _forward(q, k, v, position_term, seq_starts, seq_lens, max_seqlen, dropout_p
     lse = torch.empty((total, heads), dtype=torch.float32, device=q.device)
     n_batch = seq_starts.numel()
     if n_batch and max_seqlen:
-        # 64 x 128 tiles with eight warps and two pipeline stages (tuned at D = 128 in bf16 on a GB300);
-        # rows above 256 bytes (float32 at D = 128) take 64 key columns to fit the shared memory
         head_dim_block = _head_dim_block(head_dim)
-        block_m, block_n = 64, (128 if head_dim_block * q.element_size() <= 256 else 64)
-        _forward_kernel[(n_batch * heads, triton.cdiv(max_seqlen, block_m))](
-            q,
-            k,
-            v,
-            position_term,
-            out,
-            lse,
-            seq_starts,
-            seq_lens,
-            dropout_seed,
-            dropout_p,
-            scale,
-            q.stride(0),
-            q.stride(1),
-            position_term.stride(0),
-            position_term.stride(1),
-            2 * max_seqlen - 1,
-            max_seqlen - 1,
-            max_seqlen,
-            H=heads,
-            D=head_dim,
-            D_PAD=head_dim_block,
-            BLOCK_M=block_m,
-            BLOCK_N=block_n,
-            DROPOUT=dropout_p > 0.0,
-            IEEE=q.dtype == torch.float32,
-            num_warps=8,
-            num_stages=2,
+        ladder = FORWARD_TILES if head_dim_block * q.element_size() <= 256 else FORWARD_TILES_WIDE
+        _launch(
+            _forward_kernel,
+            ladder,
+            ("forward", q.device.index, q.dtype, head_dim_block),
+            lambda block_m, block_n: (n_batch * heads, triton.cdiv(max_seqlen, block_m)),
+            (
+                q,
+                k,
+                v,
+                position_term,
+                out,
+                lse,
+                seq_starts,
+                seq_lens,
+                dropout_seed,
+                dropout_p,
+                scale,
+                q.stride(0),
+                q.stride(1),
+                position_term.stride(0),
+                position_term.stride(1),
+                2 * max_seqlen - 1,
+                max_seqlen - 1,
+                max_seqlen,
+            ),
+            dict(H=heads, D=head_dim, D_PAD=head_dim_block, DROPOUT=dropout_p > 0.0, IEEE=q.dtype == torch.float32),
         )
     return out, lse
 
@@ -422,66 +458,42 @@ def _backward(
     n_batch = seq_starts.numel()
     if n_batch and max_seqlen:
         head_dim_block = _head_dim_block(head_dim)
-        # smaller tiles for wide heads (the shared memory of the backward tiles)
-        block_m, block_n = (64, 64) if head_dim_block <= 64 else (32, 32)
+        ladder = BACKWARD_TILES if head_dim_block <= 64 else BACKWARD_TILES_WIDE
         common = dict(
-            H=heads,
-            D=head_dim,
-            D_PAD=head_dim_block,
-            BLOCK_M=block_m,
-            BLOCK_N=block_n,
-            DROPOUT=dropout_p > 0.0,
-            IEEE=q.dtype == torch.float32,
+            H=heads, D=head_dim, D_PAD=head_dim_block, DROPOUT=dropout_p > 0.0, IEEE=q.dtype == torch.float32
         )
         strides = (q.stride(0), q.stride(1), position_term.stride(0), position_term.stride(1))
         inputs = (q, k, v, position_term, d_out, lse)
-        _delta_kernel[(n_batch * heads, triton.cdiv(max_seqlen, block_m))](
-            *inputs,
-            delta,
-            seq_starts,
-            seq_lens,
-            dropout_seed,
-            dropout_p,
-            scale,
-            *strides,
-            2 * max_seqlen - 1,
-            max_seqlen - 1,
-            max_seqlen,
-            **common,
-        )
-        _dkv_kernel[(n_batch * heads, triton.cdiv(max_seqlen, block_n))](
-            *inputs,
-            delta,
-            dk,
-            dv,
-            seq_starts,
-            seq_lens,
-            dropout_seed,
-            dropout_p,
-            scale,
-            *strides,
-            2 * max_seqlen - 1,
-            max_seqlen - 1,
-            max_seqlen,
-            **common,
-        )
-        _dq_kernel[(n_batch * heads, triton.cdiv(max_seqlen, block_m))](
-            *inputs,
-            delta,
-            dq,
-            d_position_term,
-            seq_starts,
-            seq_lens,
-            dropout_seed,
-            dropout_p,
-            scale,
-            *strides,
-            d_position_term.stride(0),
-            d_position_term.stride(1),
-            2 * max_seqlen - 1,
-            max_seqlen - 1,
-            max_seqlen,
-            **common,
+        widths = (2 * max_seqlen - 1, max_seqlen - 1, max_seqlen)
+
+        def key(name):
+            return (name, q.device.index, q.dtype, head_dim_block)
+
+        def rows(block_m, block_n):
+            return n_batch * heads, triton.cdiv(max_seqlen, block_m)
+
+        def columns(block_m, block_n):
+            return n_batch * heads, triton.cdiv(max_seqlen, block_n)
+
+        bounds = (seq_starts, seq_lens, dropout_seed, dropout_p, scale, *strides)
+        _launch(_delta_kernel, ladder, key("delta"), rows, (*inputs, delta, *bounds, *widths), common)
+        _launch(_dkv_kernel, ladder, key("dkv"), columns, (*inputs, delta, dk, dv, *bounds, *widths), common)
+        _launch(
+            _dq_kernel,
+            ladder,
+            key("dq"),
+            rows,
+            (
+                *inputs,
+                delta,
+                dq,
+                d_position_term,
+                *bounds,
+                d_position_term.stride(0),
+                d_position_term.stride(1),
+                *widths,
+            ),
+            common,
         )
     return dq, dk, dv
 

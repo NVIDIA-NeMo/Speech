@@ -1256,6 +1256,17 @@ resume:
   ``use_stateful_dataloader: true`` raises a ``ValueError``. Without the
   stateful dataloader it stays enabled by default.
 
+  **Upgrading an existing run.** Before this default changed, a stateful run
+  that did not set ``concurrent_bucketing`` used concurrent bucketing. Resuming
+  such a checkpoint on a newer NeMo switches it to synchronous bucketing, so
+  the resumed batches won't match what the interrupted run would have
+  produced. For non-indexed checkpoints, replaying the saved position under
+  the new mode can repeat cuts that were already consumed and skip cuts that
+  were never seen. Exact resume applies only to runs that had concurrent
+  bucketing disabled from the start (set explicitly to ``false``, or started
+  after this default changed). To get exact resume for an older run, start it
+  again from scratch.
+
 Non-indexed pipelines fall back to Lhotse's ``_fast_forward()`` replay (O(N)
 in batches consumed before the checkpoint) and require ``num_workers`` only to
 be consistent for replay-based restore — not exact restore.

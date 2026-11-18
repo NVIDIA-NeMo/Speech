@@ -62,6 +62,23 @@ def sampler_concurrent_flags(monkeypatch):
     return flags
 
 
+@pytest.fixture
+def slow_source(monkeypatch):
+    """Slows the cut source with a random per-cut jitter so a background bucketing thread would race."""
+    original_read = lhotse_dataloader.read_cutset_from_config
+    jitter = random.Random(1234)  # only drives sleep durations, never the data order
+
+    def _slow(cut):
+        time.sleep(jitter.random() * 0.004)
+        return cut
+
+    def _read_slowly(config):
+        cuts, is_tarred = original_read(config)
+        return cuts.map(_slow), is_tarred
+
+    monkeypatch.setattr(lhotse_dataloader, "read_cutset_from_config", _read_slowly)
+
+
 def _bucketing_options(**overrides):
     options = dict(
         shuffle=True,
@@ -157,7 +174,7 @@ def test_concurrent_bucketing_multi_config_explicit_true_with_stateful_raises(cu
 
 
 @pytest.mark.unit
-def test_stateful_bucketing_batch_order_is_deterministic(cutset_path, monkeypatch, sampler_concurrent_flags):
+def test_stateful_bucketing_batch_order_is_deterministic(cutset_path, slow_source, sampler_concurrent_flags):
     """
     Regression test: with the old default (concurrent_bucketing=True), the background producer thread filled
     the buckets while batches were being selected, so the batch order depended on thread timing and the
@@ -168,22 +185,31 @@ def test_stateful_bucketing_batch_order_is_deterministic(cutset_path, monkeypatc
     assert the mechanism: the sampler is built with ``concurrent=False``.
     """
     pytest.importorskip("torchdata.stateful_dataloader")
-    original_read = lhotse_dataloader.read_cutset_from_config
-    jitter = random.Random(1234)  # only drives sleep durations, never the data order
-
-    def _slow(cut):
-        time.sleep(jitter.random() * 0.004)
-        return cut
-
-    def _read_slowly(config):
-        cuts, is_tarred = original_read(config)
-        return cuts.map(_slow), is_tarred
-
-    monkeypatch.setattr(lhotse_dataloader, "read_cutset_from_config", _read_slowly)
-
     runs = [list(_build(cutset_path, use_stateful_dataloader=True)) for _ in range(3)]
 
     assert sampler_concurrent_flags == [False, False, False]
     assert sum(len(b) for b in runs[0]) == 48
     assert runs[1] == runs[0]
     assert runs[2] == runs[0]
+
+
+@pytest.mark.unit
+def test_stateful_bucketing_resume_matches_uninterrupted_run(cutset_path, slow_source):
+    """Save the loader state mid-epoch, restore it into a fresh loader and compare the remaining batches."""
+    pytest.importorskip("torchdata.stateful_dataloader")
+    expected = list(_build(cutset_path, use_stateful_dataloader=True))
+    split = len(expected) // 2
+    assert 0 < split < len(expected)
+
+    interrupted = _build(cutset_path, use_stateful_dataloader=True)
+    it = iter(interrupted)
+    consumed = [next(it) for _ in range(split)]
+    state = interrupted.state_dict()
+    del it, interrupted
+
+    resumed = _build(cutset_path, use_stateful_dataloader=True)
+    resumed.load_state_dict(state)
+    remaining = list(resumed)
+
+    assert consumed == expected[:split]
+    assert remaining == expected[split:]

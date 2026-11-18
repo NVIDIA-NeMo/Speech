@@ -697,6 +697,7 @@ class TestTransformerEncoder:
         assert not torch.isnan(out).any()
 
     @pytest.mark.run_only_on('GPU')
+    @pytest.mark.gpu
     def test_forward_basic(self):
         model = TransformerEncoder(feat_in=128, d_model=64, n_heads=4, n_layers=2, drop_rate=0.0, subsampling_factor=4)
         model = model.cuda().to(torch.bfloat16)
@@ -715,6 +716,7 @@ class TestTransformerEncoder:
         assert not torch.isnan(out).any()
 
     @pytest.mark.run_only_on('GPU')
+    @pytest.mark.gpu
     def test_forward_with_qk_norm(self):
         model = TransformerEncoder(
             feat_in=128, d_model=128, n_heads=8, n_layers=2, drop_rate=0.0, qk_norm=True, subsampling_factor=8
@@ -734,6 +736,7 @@ class TestTransformerEncoder:
         assert not torch.isnan(out).any()
 
     @pytest.mark.run_only_on('GPU')
+    @pytest.mark.gpu
     def test_forward_output_channels_first(self):
         """Verify output is (B, D, T) channels-first as expected by downstream decoders."""
         model = TransformerEncoder(feat_in=128, d_model=64, n_heads=4, n_layers=1, drop_rate=0.0)
@@ -750,6 +753,7 @@ class TestTransformerEncoder:
         assert out.shape[2] == 200 // 4  # T dimension
 
     @pytest.mark.run_only_on('GPU')
+    @pytest.mark.gpu
     def test_eval_deterministic(self):
         """In eval mode with no dropout, repeated forward passes should produce identical output."""
         model = TransformerEncoder(feat_in=128, d_model=64, n_heads=4, n_layers=2, drop_rate=0.0)
@@ -765,6 +769,7 @@ class TestTransformerEncoder:
         assert torch.allclose(out1, out2, atol=1e-6)
 
     @pytest.mark.run_only_on('GPU')
+    @pytest.mark.gpu
     def test_padding_does_not_affect_valid_output(self):
         """Padding frames should not change the encoded output at valid positions."""
         model = TransformerEncoder(feat_in=128, d_model=64, n_heads=4, n_layers=2, drop_rate=0.0)
@@ -789,6 +794,7 @@ class TestTransformerEncoder:
         assert torch.allclose(out_short[:, :, :valid_t], out_long[:, :, :valid_t], atol=5e-2)
 
     @pytest.mark.run_only_on('GPU')
+    @pytest.mark.gpu
     def test_backward_pass(self):
         model = TransformerEncoder(feat_in=128, d_model=64, n_heads=4, n_layers=2, drop_rate=0.0)
         model = model.cuda().to(torch.bfloat16).train()

@@ -60,6 +60,7 @@ def test_cutset_from_audio_file():
     return CutSet([cut])
 
 
+@pytest.mark.gpu
 def test_force_align_audio_file(force_aligner, test_cutset_from_audio_file):
     """Test force alignment with a pre-recorded audio file."""
     import re
@@ -91,10 +92,9 @@ def test_force_align_audio_file(force_aligner, test_cutset_from_audio_file):
             print(f"\nALIGNED TEXT:\n  {aligned_text}")
             print(f"{'='*80}")
 
-            if "<|" not in aligned_text:
-                # TODO(kevinhu): Fix CUDA/numpy device mismatch in NeMo aligner utils
-                # (get_batch_variables returns CUDA tensors that fail on .numpy() calls)
-                pytest.skip("Force alignment did not produce timestamps (likely CUDA/numpy device mismatch in CI)")
+            # This used to be skipped as a "CUDA/numpy device mismatch in CI": other test modules set CUDA as the
+            # default device at import time, so the aligner's tensors landed on CUDA. That leak is fixed now.
+            assert "<|" in aligned_text, "Force alignment did not produce timestamps"
 
             # Extract timestamp-word-timestamp patterns: <|start|> word <|end|>
             pattern = r'<\|(\d+)\|>\s+(\S+)\s+<\|(\d+)\|>'

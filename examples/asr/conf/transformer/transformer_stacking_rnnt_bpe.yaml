@@ -111,7 +111,7 @@ model:
       mm_full_precision: false
       input_grad_full_precision: false
       weight_grad_full_precision: false
-      backend: triton
+      backend: triton  # options: triton, cutile
 
     jointnet:
       joint_hidden: ${model.model_defaults.joint_hidden}

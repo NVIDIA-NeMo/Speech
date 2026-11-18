@@ -13,7 +13,6 @@ happened to exist, while ``nemo`` manifests streamed. A stateful blend could the
 can't be checkpointed with bucketing and resumes by O(N) replay instead of O(1).
 """
 import json
-import logging
 
 import pytest
 from lhotse import CutSet
@@ -363,28 +362,37 @@ def test_non_stateful_unset_indexed_keeps_auto_detection(lhotse_path, nemo_path)
     assert not other.with_name("other.jsonl.idx").exists()
 
 
-def _partly_indexed_warnings(caplog):
-    return [r for r in caplog.records if r.levelno == logging.WARNING and "only partly indexed" in r.getMessage()]
+def _build_and_collect_partly_indexed_warnings(monkeypatch, cfg) -> list[str]:
+    # Spy on NeMo's logger directly rather than using caplog: whether NeMo's logger propagates to the root
+    # logger depends on what other tests ran earlier in the same session.
+    from nemo.collections.common.data.lhotse import dataloader as dataloader_module
+
+    messages = []
+    original = dataloader_module.logging.warning
+
+    def spy(msg, *args, **kwargs):
+        messages.append(str(msg))
+        return original(msg, *args, **kwargs)
+
+    monkeypatch.setattr(dataloader_module.logging, "warning", spy)
+    get_lhotse_dataloader_from_config(OmegaConf.create(cfg), global_rank=0, world_size=1, dataset=_Identity())
+    return [m for m in messages if "only partly indexed" in m]
 
 
 @pytest.mark.unit
-def test_non_stateful_partly_indexed_blend_warns_once(lhotse_path, nemo_path, caplog):
+def test_non_stateful_partly_indexed_blend_warns_once(lhotse_path, nemo_path, monkeypatch):
     create_jsonl_index(lhotse_path)
     cfg = _cfg([_nemo(nemo_path), _lhotse(lhotse_path)], use_stateful_dataloader=False)
-    with caplog.at_level(logging.WARNING):
-        get_lhotse_dataloader_from_config(OmegaConf.create(cfg), global_rank=0, world_size=1, dataset=_Identity())
-    assert len(_partly_indexed_warnings(caplog)) == 1
+    assert len(_build_and_collect_partly_indexed_warnings(monkeypatch, cfg)) == 1
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("indexed", [True, False])
-def test_non_stateful_explicit_indexed_blend_does_not_warn(lhotse_path, nemo_path, caplog, indexed):
+def test_non_stateful_explicit_indexed_blend_does_not_warn(lhotse_path, nemo_path, monkeypatch, indexed):
     create_jsonl_index(lhotse_path)
     create_jsonl_index(nemo_path)
     cfg = _cfg([_nemo(nemo_path), _lhotse(lhotse_path)], use_stateful_dataloader=False, indexed=indexed)
-    with caplog.at_level(logging.WARNING):
-        get_lhotse_dataloader_from_config(OmegaConf.create(cfg), global_rank=0, world_size=1, dataset=_Identity())
-    assert _partly_indexed_warnings(caplog) == []
+    assert _build_and_collect_partly_indexed_warnings(monkeypatch, cfg) == []
 
 
 @pytest.mark.unit

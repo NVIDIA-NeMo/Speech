@@ -197,6 +197,8 @@ def _make_dataloader(cuts_path, mode: str, num_workers: int = 0, use_stateful_da
             "force_iterable_dataset": mode == "iterable",
         }
     )
+    # Seed first so the generator initialized below doesn't depend on the ambient torch seed.
+    torch.manual_seed(config.seed)
     dataset = _RandomDrawDataset()
     # Initialize the generator in the parent process, as a state_dict() or a diagnostic read before the loader
     # starts would. Dataloader workers must still each get their own stream.

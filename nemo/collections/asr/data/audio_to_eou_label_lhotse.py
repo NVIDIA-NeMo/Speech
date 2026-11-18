@@ -143,7 +143,9 @@ class LhotseSpeechToTextBpeEOUDataset(StatefulRandomMixin, LhotseAudioLoadingDat
     :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`). With
     ``use_stateful_dataloader=True`` it is checkpointed, so a resumed run produces the same batches as an
     uninterrupted run; otherwise the draws are the same as before (global ``np.random``).
-    The ``augmentor`` perturbations draw from the same generator (see ``AudioAugmentor.rng``).
+    The ``augmentor`` perturbations draw from the same generator (see ``AudioAugmentor.rng``). Perturbations that
+    read tarred audio (``audio_tar_filepaths``) also advance a WebDataset iterator that is not checkpointed, so
+    they are not resumed exactly.
     """
 
     @property

@@ -108,7 +108,7 @@ class Perturbation(object):
 
     @rng.setter
     def rng(self, value: Union[random.Random, ModuleType]) -> None:
-        self.__dict__["_injected_rng"] = value
+        _store_injected_rng(self, value)
         for perturbation in _nested_perturbations(vars(self).values()):
             if perturbation is not self:
                 perturbation.rng = value
@@ -1194,7 +1194,7 @@ class AudioAugmentor(object):
 
     @rng.setter
     def rng(self, value: Union[random.Random, ModuleType]) -> None:
-        self.__dict__["_injected_rng"] = value
+        _store_injected_rng(self, value)
         for perturbation in _nested_perturbations(p for _, p in self._pipeline):
             perturbation.rng = value
 
@@ -1454,3 +1454,11 @@ def _nested_perturbations(values):
             yield from (v for v in value.values() if isinstance(v, Perturbation))
         elif isinstance(value, (list, tuple)):
             yield from (v for v in value if isinstance(v, Perturbation))
+
+
+def _store_injected_rng(obj, value) -> None:
+    """Store an injected generator; the global ``random`` module is stored as absent, which keeps ``obj`` picklable."""
+    if value is random:
+        obj.__dict__.pop("_injected_rng", None)
+    else:
+        obj.__dict__["_injected_rng"] = value

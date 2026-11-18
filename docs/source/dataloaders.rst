@@ -1492,7 +1492,10 @@ as well. Otherwise a G2P module draws from its own unseeded generator, as before
 Audio augmentation with an ``AudioAugmentor`` (``nemo.collections.asr.parts.preprocessing.perturb``) uses the global
 ``random`` module by default. A dataset assigns its generator with ``augmentor.rng = self.rng`` before calling
 ``augmentor.perturb(...)``. That generator is then used by every perturbation in the pipeline, including nested
-ones, so augmentation is restored on resume as well. ``LhotseSpeechToTextBpeEOUDataset`` does this.
+ones, so augmentation is restored on resume as well. ``LhotseSpeechToTextBpeEOUDataset`` does this. Manifest-based
+noise/RIR sampling and generated-noise draws are restored with the injected generator. Perturbations configured
+with ``audio_tar_filepaths`` read their audio through a separate WebDataset iterator whose position is not
+checkpointed, so exact augmentation resume is not guaranteed for them.
 
 Random transforms applied to the ``CutSet`` itself (``.map(...)`` in a data type parser) can't keep a checkpointed
 generator. They can seed a generator from the cut ID instead, e.g. ``random.Random(f"{seed}:{cut.id}")``, so the

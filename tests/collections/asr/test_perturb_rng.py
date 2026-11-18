@@ -13,10 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import pickle
 import random
 
 import numpy as np
 import pytest
+import torch
 
 from nemo.collections.asr.parts.preprocessing.perturb import (
     GainPerturbation,
@@ -122,3 +124,40 @@ def test_default_rng_is_the_global_random_module():
     # Backward compatibility: without an injected generator, perturbations use the global RNG as before.
     assert GainPerturbation().rng is random
     assert process_augmentations(AUGMENTOR_CFG).rng is random
+
+
+@pytest.mark.parametrize("assignment", ["default", "global", "private", "private_then_global"])
+def test_augmentor_stays_picklable(assignment):
+    # Dataloader workers started with spawn receive a pickled dataset (and its augmentor).
+    augmentor = process_augmentations(AUGMENTOR_CFG)
+    if assignment in ("private", "private_then_global"):
+        augmentor.rng = random.Random(0)
+    if assignment in ("global", "private_then_global"):
+        augmentor.rng = random
+
+    copy = pickle.loads(pickle.dumps(augmentor))
+
+    expect_private = assignment == "private"
+    for obj in [copy, *(p for _, p in copy._pipeline)]:
+        assert (obj.rng is not random) == expect_private
+    if expect_private:
+        assert all(p.rng is copy.rng for _, p in copy._pipeline)
+        _assert_same(_augment(copy), _augment(augmentor))
+
+
+def test_eou_dataset_with_augmentor_stays_picklable_after_a_legacy_read():
+    from omegaconf import OmegaConf
+
+    from nemo.collections.asr.data.audio_to_eou_label_lhotse import LhotseSpeechToTextBpeEOUDataset
+
+    dataset = LhotseSpeechToTextBpeEOUDataset(
+        cfg=OmegaConf.create({"check_tokenizer": False, "sample_rate": SAMPLE_RATE, "augmentor": AUGMENTOR_CFG}),
+        tokenizer=None,
+    )
+    audio = np.sin(np.arange(SAMPLE_RATE, dtype=np.float32) / 10.0)
+    # A diagnostic read in the parent with checkpointing disabled assigns the legacy generator.
+    dataset._maybe_augment_audio(torch.from_numpy(audio), torch.tensor(SAMPLE_RATE))
+
+    copy = pickle.loads(pickle.dumps(dataset))
+
+    assert copy.augmentor.rng is random

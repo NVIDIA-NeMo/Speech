@@ -345,7 +345,8 @@ def save_llm_backbone_config(model: torch.nn.Module, output_dir: str | Path) -> 
         return
 
     llm_backbone_dir = Path(output_dir) / LLM_BACKBONE_DIR
-    llm_backbone_dir.mkdir(parents=True, exist_ok=True)
+    # save_pretrained also copies remote-code modules referenced by ``auto_map``.
+    llm_config.save_pretrained(str(llm_backbone_dir))
     if getattr(llm_config, "model_type", None) == "nemotron_h":
         # Transformers >= 5.15 renames these discriminators in memory. Serialize
         # the original names, which both older and newer serving runtimes accept.
@@ -356,8 +357,6 @@ def save_llm_backbone_config(model: torch.nn.Module, output_dir: str | Path) -> 
             if config.get(key) is not None:
                 config[key] = [aliases.get(block, block) for block in config[key]]
         (llm_backbone_dir / "config.json").write_text(json.dumps(config, indent=2) + "\n")
-    else:
-        llm_config.save_pretrained(str(llm_backbone_dir))
 
 
 def _detect_vllm_architecture(model_cfg: dict) -> tuple[str, int]:

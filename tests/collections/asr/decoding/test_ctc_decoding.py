@@ -120,6 +120,8 @@ class TestCTCDecoding:
     @pytest.mark.parametrize('alignments', [False, True])
     @pytest.mark.parametrize('timestamps', [False, True])
     def test_char_decoding_greedy_forward_hypotheses(self, alignments, timestamps):
+        # Random outputs occasionally decode to a punctuation-only word, which the word-count check doesn't expect.
+        torch.manual_seed(0)
         cfg = CTCDecodingConfig(strategy='greedy', preserve_alignments=alignments, compute_timestamps=timestamps)
         vocab = char_vocabulary()
         decoding = CTCDecoding(decoding_cfg=cfg, vocabulary=vocab)

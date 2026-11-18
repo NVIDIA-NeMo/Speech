@@ -217,6 +217,7 @@ def _run_fsdp2_canonical_pee_test(rank: int, world_size: int, init_file: str):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.device_count() < 2, reason="Test requires 2 GPUs")
+@pytest.mark.gpu
 def test_canonical_pee_packed_perception_fsdp2_empty_rank_all_empty_and_cp(tmp_path):
     mp.spawn(
         _run_fsdp2_canonical_pee_test,
@@ -227,5 +228,6 @@ def test_canonical_pee_packed_perception_fsdp2_empty_rank_all_empty_and_cp(tmp_p
 
 
 @pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.device_count() < 2, reason="Test requires 2 GPUs")
+@pytest.mark.gpu
 def test_packed_perception_fsdp2_custom_forward_empty_rank_and_cp_gather(tmp_path):
     mp.spawn(_run_fsdp2_packed_perception_test, args=(2, str(tmp_path / "fsdp2_init")), nprocs=2, join=True)

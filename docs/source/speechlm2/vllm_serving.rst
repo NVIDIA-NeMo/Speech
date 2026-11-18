@@ -5,6 +5,9 @@ The NeMo SpeechLM vLLM plugin serves exported SpeechLM checkpoints with
 their speech encoder and language backbone. It supports ordinary generation
 and checkpoint-backed speculative decoding.
 
+For a complete released-model example, including checkpoint download, server launch, transcription,
+and speaker-attributed word timestamps, see :doc:`nemotron_transcribe`.
+
 CTC word timestamp alignment
 ----------------------------
 

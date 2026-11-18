@@ -18,6 +18,12 @@ weight checkpoints and demos!
 > [v2.7.3](https://github.com/NVIDIA-NeMo/Speech/releases/tag/v2.7.3), available in the
 > [26.04 NeMo NGC container](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/nemo?version=26.04).
 
+- 2026-10: [Nemotron 3.5 Transcribe](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B)
+    is now available: an open-weight, offline speech LLM for 40 languages and recordings up to one hour.
+    Control transcription with instructions and vocabulary context, request speaker-attributed transcripts with
+    word timestamps, translate speech, and ask questions about audio. Start with the
+    [NeMo Speech quickstart](https://docs.nvidia.com/nemo/speech/nightly/speechlm2/nemotron_transcribe.html)
+    or try the [demo](https://huggingface.co/spaces/nvidia/nemotron-transcribe).
 - 2026-07: [MagpieTTS v2607](https://huggingface.co/nvidia/magpie_tts_multilingual_357m) has been released with support
     for 3 new languages (Ar, Ko, Pt) + 9 existing languages (En, Es, De, Fr, Vi, It, Zh, Hi, Ja). Try out
     [the demo](https://huggingface.co/spaces/nvidia/magpie_tts_multilingual_demo)!

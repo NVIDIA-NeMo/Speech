@@ -189,6 +189,7 @@ class TestAudioCodecLhotseDataset:
     @pytest.mark.unit
     def test_restored_rng_state_reproduces_segments(self, cutset):
         dataset = _checkpointed_dataset()
+        dataset.rng.seed(0)
         _ = dataset[cutset]
         state = dataset.state_dict()
         expected = dataset[cutset]["audio"]
@@ -201,6 +202,7 @@ class TestAudioCodecLhotseDataset:
     @pytest.mark.unit
     def test_segments_differ_when_cuts_are_read_again(self, cutset):
         dataset = _checkpointed_dataset()
+        dataset.rng.seed(0)
         first = dataset[cutset]["audio"]
         second = dataset[cutset]["audio"]
 

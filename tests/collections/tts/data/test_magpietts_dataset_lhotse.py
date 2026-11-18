@@ -616,6 +616,7 @@ class TestMagpieTTSLhotseDatasetRNG:
     def test_restored_rng_state_reproduces_batches(self, dataset_class):
         cuts = _cutset_with_long_context(dataset_class)
         dataset = _dataset_with_fake_tokenizers(dataset_class)
+        dataset.rng.seed(0)
         _ = dataset[cuts]
         state = dataset.state_dict()
         expected = [dataset[cuts] for _ in range(3)]
@@ -632,6 +633,7 @@ class TestMagpieTTSLhotseDatasetRNG:
     def test_context_slice_differs_when_cut_is_read_again(self, dataset_class):
         cuts = _cutset_with_long_context(dataset_class)
         dataset = _dataset_with_fake_tokenizers(dataset_class)
+        dataset.rng.seed(0)
 
         contexts = [tuple(dataset[cuts]["context_audio_codes"].flatten().tolist()) for _ in range(5)]
 
@@ -776,6 +778,7 @@ class TestMagpieTTSDatasetG2pRNG:
         cuts = _g2p_cutset(dataset_class)
         make_dataset = _G2P_DATASETS[dataset_class]
         dataset = make_dataset()
+        dataset.rng.seed(0)  # a fixed sequence that picks both pronunciations
         _ = dataset[cuts]
         state = dataset.state_dict()
         expected = [dataset[cuts]["text"] for _ in range(3)]
@@ -801,6 +804,112 @@ class TestMagpieTTSDatasetG2pRNG:
         _ = dataset[cuts]
 
         assert g2p.rng is own_rng
+
+
+def _g2p_tokenizer_config():
+    """Config for a lazily constructed real IPA tokenizer whose G2P keeps words as graphemes with probability 0.5."""
+    return OmegaConf.create(
+        {
+            "english_phoneme": {
+                "_target_": "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPATokenizer",
+                "locale": "en-US",
+                "g2p": {
+                    "_target_": "nemo.collections.tts.g2p.models.i18n_ipa.IpaG2p",
+                    "phoneme_dict": G2P_PHONEME_DICT_PATH,
+                    "locale": "en-US",
+                    "use_chars": True,
+                    "phoneme_probability": 0.5,
+                },
+            }
+        }
+    )
+
+
+def _g2p_loader_cuts(dataset_class, num_cuts=6):
+    from lhotse.utils import fastcopy
+
+    template = next(iter(_g2p_cutset(dataset_class)))
+    return CutSet.from_cuts(fastcopy(template, id=f"g2p-{i}") for i in range(num_cuts))
+
+
+def _g2p_loader(dataset_class, mode):
+    from unittest.mock import patch
+
+    from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
+
+    kwargs = _dataset_kwargs()
+    kwargs.update(
+        {
+            "use_text_conditioning_tokenizer": False,
+            "context_duration_min": 0.1,
+            "context_duration_max": 0.6,
+            "tokenizer_config": _g2p_tokenizer_config(),
+        }
+    )
+    if dataset_class is MagpieTTSLhotseMultiturnDataset:
+        kwargs.update(
+            {
+                "codec_model_input_sample_rate": CODEC_MODEL_INPUT_SAMPLE_RATE,
+                "frame_stacking_factor": FRAME_STACKING_FACTOR,
+                "source_sample_rate": SAMPLE_RATE,
+                "input_roles": ["user"],
+                "output_roles": ["assistant"],
+                "add_text_bos": False,
+            }
+        )
+    config = OmegaConf.create(
+        {
+            "batch_size": 2,
+            "shuffle": True,
+            "seed": 0,
+            "shard_seed": 0,
+            "num_workers": 0,
+            "use_stateful_dataloader": True,
+            "force_map_dataset": mode == "map",
+            "force_iterable_dataset": mode == "iterable",
+        }
+    )
+    # Note: the tokenizer is not set here; the dataset builds it lazily on its first read.
+    with patch(
+        "nemo.collections.common.data.lhotse.dataloader.read_cutset_from_config",
+        return_value=(_g2p_loader_cuts(dataset_class), False),
+    ):
+        return get_lhotse_dataloader_from_config(config, global_rank=0, world_size=1, dataset=dataset_class(**kwargs))
+
+
+def _summarize_g2p_batch(batch):
+    return (batch["text"].tolist(), batch["text_lens"].tolist(), batch["context_audio_codes"].tolist())
+
+
+@pytest.mark.parametrize("restore_into", ["fresh_loader", "initialized_loader"])
+@pytest.mark.parametrize("mode", ["map", "iterable"])
+@pytest.mark.parametrize("dataset_class", [MagpieTTSLhotseDataset, MagpieTTSLhotseMultiturnDataset])
+def test_stateful_loader_restores_lazily_built_g2p_draws(dataset_class, mode, restore_into):
+    torch.manual_seed(0)
+    uninterrupted = [_summarize_g2p_batch(batch) for batch in _g2p_loader(dataset_class, mode)]
+    loader = _g2p_loader(dataset_class, mode)
+    it = iter(loader)
+    _ = next(it)
+    state = loader.state_dict()
+
+    # A resumed process starts with different global and torch RNG states.
+    random.seed(1234)
+    torch.manual_seed(1234)
+    if restore_into == "fresh_loader":
+        # The checkpoint is restored before the dataset has built its tokenizer.
+        resumed_loader = _g2p_loader(dataset_class, mode)
+    else:
+        # The checkpoint is restored into a loader whose dataset already built (and bound) its tokenizer.
+        resumed_loader = _g2p_loader(dataset_class, mode)
+        _ = next(iter(resumed_loader))
+    resumed_loader.load_state_dict(state)
+    resumed = [_summarize_g2p_batch(batch) for batch in resumed_loader]
+
+    assert len(uninterrupted) == 3
+    assert resumed == uninterrupted[1:]
+    # phoneme_probability=0.5 chooses different pronunciations for the identical texts.
+    texts = {tuple(row) for text, _, _ in uninterrupted for row in text}
+    assert len(texts) > 1
 
 
 def test_non_lhotse_dataset_restores_random_draws(tmp_path):
@@ -837,6 +946,7 @@ def test_non_lhotse_dataset_restores_random_draws(tmp_path):
         return dataset
 
     dataset = make_dataset()
+    dataset.rng.seed(0)  # a fixed sequence whose reads differ
     _ = dataset[0]
     state = dataset.state_dict()
     expected = [dataset[0] for _ in range(3)]

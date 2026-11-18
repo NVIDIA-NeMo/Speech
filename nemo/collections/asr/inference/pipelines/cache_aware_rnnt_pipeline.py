@@ -52,6 +52,7 @@ from nemo.collections.asr.inference.utils.pipeline_utils import (
     get_confidence_utils,
 )
 from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import ModifiedALSDBatchedRNNTComputer
+from nemo.collections.asr.parts.utils.prompt_language_utils import resolve_prompt_language
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.utils import logging
 
@@ -121,7 +122,10 @@ class CacheAwareRNNTPipeline(BasePipeline):
         # Language prompt for multilingual models, taken from the top-level `lang` field.
         self.strip_lang_tags = cfg.asr.get("strip_lang_tags", True)
         if self.prompt_enabled:
-            self.default_language_code = cfg.get("lang", None) or self._resolve_default_language_code()
+            # Validated up front, so an unsupported `lang` fails before streaming starts; None selects "auto".
+            self.default_language_code = resolve_prompt_language(
+                cfg.get("lang", None), self._prompt_config['prompt_dict']
+            )
             logging.info(f"Multilingual ASR model: conditioning on language '{self.default_language_code}'.")
         else:
             self.default_language_code = None
@@ -186,6 +190,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.residue_tokens_at_end = cfg.endpointing.residue_tokens_at_end
         self.word_boundary_tolerance = cfg.streaming.word_boundary_tolerance
         self.return_tail_result = cfg.return_tail_result
+        self.length_norm_power = self.asr_model.asr_model_cfg.decoding.beam.length_norm_power
 
         self.request_type = RequestType.from_str(cfg.streaming.request_type)
         self.flush_size_in_secs = cfg.streaming.get("flush_size_in_secs", 0.0)  # 0.0 disables
@@ -250,10 +255,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         # Create per-stream prompt index for prompt-enabled models
         if self.prompt_enabled:
-            lang_code = getattr(new_options, "language_code", None)
-            if not isinstance(lang_code, str) or len(lang_code) == 0:
-                raise ValueError("Prompt-enabled model requires a valid language_code in request options.")
-            prompt_idx = self._resolve_prompt_index(lang_code)
+            prompt_idx = self._resolve_prompt_index(getattr(new_options, "language_code", None))
             state.set_prompt_index(prompt_idx)
 
         return state
@@ -268,15 +270,30 @@ class CacheAwareRNNTPipeline(BasePipeline):
         """Return the separator for the text processor."""
         return self.sep
 
-    def preprocess(self, buffers: list[Tensor], right_paddings: list[int] | None = None) -> tuple[Tensor, Tensor]:
+    def preprocess(
+        self,
+        buffers: list[Tensor] | Tensor,
+        right_paddings: list[int] | Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
         """
         Preprocess the feature buffers by stacking them and computing the lengths
         Args:
-            buffers: (list[Tensor]) List of feature buffers.
-            right_paddings: (list[int] | None) List of right paddings.
+            buffers: (list[Tensor] | Tensor) List of feature buffers, or one batched (B, F, T) tensor.
+            right_paddings: (list[int] | Tensor | None) Right paddings, per stream or batched.
         Returns:
             (tuple[Tensor, Tensor]) Processed feature buffers and their lengths.
         """
+        if isinstance(buffers, Tensor):
+            # already batched by the bufferer: no stacking, and no host round trip for the lengths
+            feature_buffers = drop_trailing_features(buffers, self.expected_feature_buffer_len)
+            feature_buffer_lens = torch.full(
+                (feature_buffers.shape[0],), feature_buffers.shape[2], device=self.device, dtype=torch.long
+            )
+            if right_paddings is not None:
+                right_paddings = torch.as_tensor(right_paddings, device=feature_buffer_lens.device)
+                feature_buffer_lens = feature_buffer_lens - right_paddings
+            return feature_buffers.to(self.device), feature_buffer_lens
+
         feature_buffers = [f_buffer.unsqueeze_(0) for f_buffer in buffers]
         # Trim to expected feature buffer length (safeguard for external feature buffer inputs)
         feature_buffers = [
@@ -284,7 +301,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         ]
         feature_buffer_lens = torch.tensor([f_buffer.shape[2] for f_buffer in feature_buffers], device=self.device)
         if right_paddings is not None:
-            right_paddings = torch.tensor(right_paddings, device=feature_buffer_lens.device)
+            right_paddings = torch.as_tensor(right_paddings, device=feature_buffer_lens.device)
             feature_buffer_lens = feature_buffer_lens - right_paddings
         feature_buffers = torch.cat(feature_buffers).to(self.device)
         return feature_buffers, feature_buffer_lens
@@ -299,6 +316,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         drop_extra_pre_encoded: int,
         keep_all_outputs: bool,
         prompt_vectors: Tensor | None,
+        keep_all_outputs_mask: Tensor | None = None,
     ) -> tuple[list[Hypothesis], object]:
         """
         Run one cache-aware encode/decode step for the current chunk.
@@ -315,6 +333,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
                 drop_left_context=self.drop_left_context,
                 valid_out_len=self.valid_out_len,
                 prompt_vectors=prompt_vectors,
+                keep_all_outputs_mask=keep_all_outputs_mask,
             )
         return self.asr_model.malsd_stream_step(
             malsd_computer=self.beam_decoder_computer,
@@ -327,6 +346,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             drop_left_context=self.drop_left_context,
             valid_out_len=self.valid_out_len,
             prompt_vectors=prompt_vectors,
+            keep_all_outputs_mask=keep_all_outputs_mask,
         )
 
     def _prepare_per_stream_biasing(
@@ -363,8 +383,9 @@ class CacheAwareRNNTPipeline(BasePipeline):
     def _apply_beam_update_(self, state: CacheAwareRNNTBeamStreamingState, eou_detected: bool) -> None:
         """After endpointing: refresh beam publish tokens and fold cumulative prefix on EOU."""
         if eou_detected and state.hyp_decoding_state is not None:
-            beam_idx = state.select_best_beam_idx_(score_norm=True)
+            beam_idx = state.select_best_beam_idx_(score_norm=True, length_norm_power=self.length_norm_power)
             self.beam_decoder_computer.select_beam_in_state_item_(state.hyp_decoding_state, beam_idx)
+            state.reset_beam_score_()
         state.update_(eou_detected)
 
         if self._lang_tag_filtering_enabled() and state.tokens:
@@ -423,10 +444,11 @@ class CacheAwareRNNTPipeline(BasePipeline):
     def cache_aware_transcribe_step(
         self,
         requests: list[Request],
-        features: list[Tensor],
-        right_paddings: list[int],
+        features: list[Tensor] | Tensor,
+        right_paddings: list[int] | Tensor,
         ready_state_ids: set,
         keep_all_outputs: bool = False,
+        keep_all_outputs_mask: Tensor | None = None,
     ) -> None:
         """
         Cache Aware Transcribe Step
@@ -434,7 +456,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         1. Preprocess the features by stacking them and computing the lengths
         2. Collecting previous hypotheses for stateful decoding
-        3. Get the context and mapping from the context manager for cache aware streaming
+        3. Get the context from the context manager for cache aware streaming
         4. Perform a streaming step with the ASR model
         5. Update the cache and reset the cache slots for the streams that has ended
         6. Update the previous hypothesis and reset the previous hypothesis for the streams that has ended
@@ -442,10 +464,12 @@ class CacheAwareRNNTPipeline(BasePipeline):
         8. Update the ready states to indicate that the state is ready for text post-processing
         Args:
             requests: (list[Request]) List of requests (frames or feature buffers) to transcribe.
-            features: (list[Tensor]) List of feature buffers.
-            right_paddings: (list[int] | None) List of right paddings.
+            features: (list[Tensor] | Tensor) Feature buffers, per stream or batched (B, F, T).
+            right_paddings: (list[int] | Tensor | None) Right paddings, per stream or batched.
             ready_state_ids: (set) Set of ready state IDs.
             keep_all_outputs: (bool) Whether to keep all outputs or not.
+            keep_all_outputs_mask: (Tensor | None) Bool vector of shape [B] that keeps all outputs per stream, so one
+                call can serve last and non-last chunks together; keep_all_outputs is ignored when it is given.
         """
 
         feature_buffers, feature_buffer_lens = self.preprocess(features, right_paddings)
@@ -462,7 +486,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             previous_hypotheses=previous_hypotheses,
         )
 
-        context, mapping = self.context_manager.get_context(stream_ids)
+        context = self.context_manager.get_context(stream_ids)
 
         prompt_vectors = None
         if self.prompt_enabled:
@@ -478,10 +502,11 @@ class CacheAwareRNNTPipeline(BasePipeline):
             drop_extra_pre_encoded=drop_extra_pre_encoded,
             keep_all_outputs=keep_all_outputs,
             prompt_vectors=prompt_vectors,
+            keep_all_outputs_mask=keep_all_outputs_mask,
         )
 
         # update the cache and reset the cache slots for the streams that has ended
-        self.context_manager.update_cache(stream_ids, new_context, mapping)
+        self.context_manager.update_cache(stream_ids, new_context)
         self.context_manager.reset_slots(stream_ids, eos_flags)
 
         # update the previous hypothesis and reset the previous hypothesis for the streams that has ended
@@ -513,6 +538,22 @@ class CacheAwareRNNTPipeline(BasePipeline):
                 if eos:
                     state.reset_beam_decoding_state_()
 
+    def _keep_args(self, is_last: list[bool]) -> dict:
+        """
+        The keep_all_outputs arguments of cache_aware_transcribe_step for a batch of streams.
+
+        A batch that is all last or all non-last uses the scalar keep_all_outputs, which lets the encoder
+        trim the right context itself; only a mixed batch needs the per-stream mask, which is what
+        lets one call serve it instead of two.
+        Args:
+            is_last: (list[bool]) whether each stream of the batch is on its last chunk
+        Returns:
+            (dict) keep_all_outputs, and keep_all_outputs_mask when the batch mixes last and non-last streams
+        """
+        if all(is_last) or not any(is_last):
+            return {"keep_all_outputs": all(is_last)}
+        return {"keep_all_outputs_mask": torch.tensor(is_last, device=self.device, dtype=torch.bool)}
+
     def transcribe_step_for_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> None:
         """
         Transcribes the feature buffers in a streaming manner.
@@ -523,30 +564,13 @@ class CacheAwareRNNTPipeline(BasePipeline):
         """
         ready_state_ids = set()
 
-        final_fbuffers, final_features = [], []
-        nonfinal_fbuffers, nonfinal_features = [], []
-        final_right_paddings = []
+        features = [fbuffer.features for fbuffer in fbuffers]
+        right_paddings = [max(0, self.expected_feature_buffer_len - fbuffer.valid_size) for fbuffer in fbuffers]
+        is_last = [fbuffer.is_last for fbuffer in fbuffers]
 
-        for fbuffer in fbuffers:
-            feature = fbuffer.features
-            right_padding = max(0, self.expected_feature_buffer_len - fbuffer.valid_size)
-
-            if fbuffer.is_last:
-                final_fbuffers.append(fbuffer)
-                final_features.append(feature)
-                final_right_paddings.append(right_padding)
-            else:
-                nonfinal_fbuffers.append(fbuffer)
-                nonfinal_features.append(feature)
-
-        if len(nonfinal_fbuffers) > 0:
+        if len(fbuffers) > 0:
             self.cache_aware_transcribe_step(
-                nonfinal_fbuffers, nonfinal_features, None, ready_state_ids, keep_all_outputs=False
-            )
-
-        if len(final_fbuffers) > 0:
-            self.cache_aware_transcribe_step(
-                final_fbuffers, final_features, final_right_paddings, ready_state_ids, keep_all_outputs=True
+                fbuffers, features, right_paddings, ready_state_ids, **self._keep_args(is_last)
             )
 
         if len(ready_state_ids) > 0:
@@ -569,30 +593,10 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         # streams that contains multiple frames
         if len(all_fbuffers) > 0:
-            final_frames, final_fbuffers = [], []
-            nonfinal_frames, nonfinal_fbuffers = [], []
-            final_right_paddings = []
-
-            for jdx, bfeature in enumerate(all_fbuffers):
-                bframe = frames[jdx]
-
-                if bframe.is_last:
-                    final_frames.append(bframe)
-                    final_fbuffers.append(bfeature)
-                    final_right_paddings.append(right_paddings[jdx])
-                else:
-                    nonfinal_frames.append(bframe)
-                    nonfinal_fbuffers.append(bfeature)
-
-            if len(nonfinal_frames) > 0:
-                self.cache_aware_transcribe_step(
-                    nonfinal_frames, nonfinal_fbuffers, None, ready_state_ids, keep_all_outputs=False
-                )
-
-            if len(final_frames) > 0:
-                self.cache_aware_transcribe_step(
-                    final_frames, final_fbuffers, final_right_paddings, ready_state_ids, keep_all_outputs=True
-                )
+            is_last = [frame.is_last for frame in frames]
+            self.cache_aware_transcribe_step(
+                frames, all_fbuffers, right_paddings, ready_state_ids, **self._keep_args(is_last)
+            )
 
         # post-process the ready states
         if len(ready_state_ids) > 0:

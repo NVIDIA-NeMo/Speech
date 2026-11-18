@@ -317,8 +317,13 @@ The Hybrid-Transducer-CTC model with prompt conditioning (``EncDecHybridRNNTCTCB
   # Transcribe with language prompts
   transcriptions = model.transcribe(
       paths2audio_files=["audio1.wav", "audio2.wav"],
-      target_lang="en-US"  # Specify target language
+      target_lang="en-US"  # Language of the audio; must be supported by the model
   )
+
+``target_lang`` must be a language from the model's ``prompt_dictionary``; an unsupported language
+raises an error. If the language is unknown, pass ``target_lang="auto"`` or leave it unset (``auto``
+is the default). The model is also trained with this language-agnostic prompt, so it still works,
+but accuracy is usually slightly lower than with the correct language.
 
 **Configuration and Training:**
 
@@ -338,8 +343,9 @@ auxiliary CTC head.
 
 - Cache-aware streaming RNN-T with language-ID prompt conditioning
 - Concatenation-based feature fusion with learned projection (shared with the hybrid variant)
-- Per-sample dynamic language selection from the manifest (``target_lang=auto``) or
-  fixed-language batches (e.g. ``target_lang=en-US``)
+- Fixed-language decoding (e.g. ``target_lang=en-US``), the language-agnostic prompt
+  (``target_lang=auto``), or, when ``target_lang`` is unset, per-utterance languages read from the
+  manifest ``lang`` field. Languages missing from the model's ``prompt_dictionary`` raise an error.
 - Optional automatic stripping of language tags from decoded text via ``strip_lang_tags``
 
 **Usage Example:**

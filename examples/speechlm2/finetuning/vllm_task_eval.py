@@ -25,11 +25,12 @@ intent classification with a label list, translation with a target language):
 * scoring is delegated to task_metrics.py (WER, BLEU/chrF, accuracy, SQuAD F1).
 
 Runs in the vLLM environment. Thinking is disabled in the chat template. For checkpoints with multi-token-prediction
-heads, speculative decoding is on by default; on hybrid (state-space) backbones keep ``--mamba-cache-mode all`` so it
-stays exact.
+heads, speculative decoding is on by default; on hybrid (state-space) backbones it runs through vLLM's ReplaySSM, with
+prefix caching off.
 """
 import argparse
 import fcntl
+import functools
 import json
 import os
 import re
@@ -44,6 +45,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import task_metrics  # noqa: E402
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+DEFAULT_SPEC_K = 2
 
 
 def parse_args():
@@ -82,12 +84,11 @@ def parse_args():
         default=float(os.environ.get("VLLM_GPU_UTIL", 0.85)),
         help="default 0.85, or $VLLM_GPU_UTIL (0.33 lets an eval share one large GPU with a small training run)",
     )
-    p.add_argument("--spec-k", type=int, default=2)
     p.add_argument(
-        "--mamba-cache-mode",
-        default="all",
-        choices=["none", "align", "all"],
-        help="'all' is required for exact greedy output with spec-k>=2 (docs/fine-tuning-guide.md, section 9)",
+        "--spec-k",
+        type=int,
+        default=None,
+        help=f"MTP draft tokens; default {DEFAULT_SPEC_K} if the checkpoint has MTP heads, else 0 (no speculation)",
     )
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--normalizer", default="simple")
@@ -153,7 +154,7 @@ def eval_fingerprint(args, manifest, prompt, template):
             "max_tokens_per_sec": args.max_tokens_per_sec,
             "max_model_len": args.max_model_len,
             "spec_k": args.spec_k,
-            "mamba_cache_mode": args.mamba_cache_mode,
+            "replayssm": args.replayssm,
             "limit": args.limit,
         },
         "scoring": {
@@ -171,13 +172,7 @@ def main():
     args = parse_args()
     assert len(args.manifest) == len(args.out), "--manifest and --out must pair up"
     task_metrics.check_dependencies(args.task)
-    if args.score_labels:
-        # Exact label scores need exact prompt_logprobs. With prefix caching (and the hybrid-cache mode that
-        # speculative decoding requires), requests sharing a cached prompt+audio prefix get wrong prompt_logprobs on
-        # hybrid backbones, so label scoring runs on a plain engine. Generation is unaffected, just slower.
-        if args.spec_k > 0:
-            print("[eval] --score-labels: disabling speculative decoding and prefix caching for exact scores")
-        args.spec_k = 0
+    resolve_speculation(args)
     from fingerprint import differences
 
     jobs = list(zip(args.manifest, args.out, [args.prompt] * len(args.manifest)))
@@ -238,7 +233,11 @@ def main():
             "model": args.model,
             "num_speculative_tokens": args.spec_k,
         }
-        llm_kwargs["mamba_cache_mode"] = args.mamba_cache_mode
+    if args.replayssm:
+        # ReplaySSM verifies drafts from one Mamba state checkpoint per request; vLLM requires the FlashInfer Mamba
+        # backend and no Mamba prefix caching for it.
+        llm_kwargs.update(use_replayssm=True, mamba_backend="flashinfer", mamba_cache_mode="none")
+        llm_kwargs["enable_prefix_caching"] = False
     llm = start_engine(**llm_kwargs)
     sampling = SamplingParams(temperature=0.0, max_tokens=args.max_tokens)
     labels = task_metrics.load_labels(args.labels)
@@ -291,7 +290,7 @@ def main():
             "task": args.task,
             "prompt": template or fixed_prompt,
             "spec_k": args.spec_k,
-            "mamba_cache_mode": args.mamba_cache_mode,
+            "replayssm": args.replayssm,
             "max_tokens_per_sec": args.max_tokens_per_sec,
             "num_rows": len(rows),
             "rtfx": total_audio / elapsed if elapsed else None,
@@ -370,6 +369,46 @@ def start_engine(**llm_kwargs):
             return LLM(**llm_kwargs)
         finally:
             fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def speechlm_is_hybrid(model: str) -> bool:
+    """Whether the checkpoint's LLM backbone is hybrid (Mamba), decided as the SpeechLM vLLM plugin decides it."""
+    return bool(_speechlm_config(model).is_hybrid)
+
+
+def speechlm_mtp_layers(model: str) -> int:
+    """Number of MTP layers in the checkpoint (0 without MTP heads), as the SpeechLM vLLM plugin reads it."""
+    mtp = _speechlm_config(model).mtp
+    return int(mtp["num_nextn_predict_layers"]) if mtp else 0
+
+
+def resolve_speculation(args):
+    """Settle the speculation settings the engine, the fingerprint and the summary all record."""
+    if args.score_labels:
+        # Exact label scores need exact prompt_logprobs. With prefix caching (and the hybrid-cache mode that
+        # speculative decoding requires), requests sharing a cached prompt+audio prefix get wrong prompt_logprobs on
+        # hybrid backbones, so label scoring runs on a plain engine. Generation is unaffected, just slower.
+        if args.spec_k:
+            print("[eval] --score-labels: disabling speculative decoding and prefix caching for exact scores")
+        args.spec_k = 0
+    if args.spec_k is None:
+        args.spec_k = DEFAULT_SPEC_K if speechlm_mtp_layers(args.model) > 0 else 0
+        if args.spec_k == 0:
+            print("[eval] checkpoint has no MTP heads: decoding without speculative decoding")
+    elif args.spec_k > 0 and speechlm_mtp_layers(args.model) == 0:
+        raise SystemExit(
+            f"--spec-k {args.spec_k} requests MTP speculative decoding, but {args.model} has no MTP heads; "
+            "pass --spec-k 0 or omit it."
+        )
+    # vLLM 0.32 removed mamba_cache_mode "all"; speculative decoding through Mamba layers uses ReplaySSM instead.
+    args.replayssm = args.spec_k > 0 and speechlm_is_hybrid(args.model)
+
+
+@functools.lru_cache(maxsize=None)
+def _speechlm_config(model: str):
+    from nemo.collections.speechlm2.vllm.salm.config import NeMoSpeechLMConfig
+
+    return NeMoSpeechLMConfig.from_pretrained(model)
 
 
 if __name__ == "__main__":

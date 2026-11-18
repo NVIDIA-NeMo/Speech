@@ -28,6 +28,7 @@ __all__ = [
     'AdamaxParams',
     'AdagradParams',
     'AdamWParams',
+    'MuonParams',
     'RMSpropParams',
     'RpropParams',
 ]
@@ -235,6 +236,37 @@ class AdafactorParams(OptimizerParams):
     warmup_init: bool = False
 
 
+@dataclass
+class MuonParams(OptimizerParams):
+    """
+    Configuration of the Muon optimizer with an AdamW fallback (``nemo.core.optim.muon.Muon``).
+
+    Args:
+        lr: learning rate of the Muon update
+        momentum: momentum factor of the gradient buffer
+        nesterov: apply the momentum buffer in Nesterov form
+        ns_steps: number of Newton-Schulz iterations
+        weight_decay: decoupled weight decay
+        scale_mode: shape factor of the orthogonalized update, ``'fan_in'``, ``'fan_out'`` or ``'none'``
+        adam_betas: coefficients of the AdamW moving averages
+        adam_eps: term added to the AdamW denominator
+        adam_lr_ratio: the AdamW learning rate is ``lr * adam_lr_ratio``
+        adam_dim_threshold: matrices with a dimension of at least this size use AdamW
+        use_muon: force or exclude the Muon update; None selects by shape
+    """
+
+    momentum: float = 0.95
+    nesterov: bool = True
+    ns_steps: int = 5
+    weight_decay: float = 0
+    scale_mode: str = 'fan_in'
+    adam_betas: Tuple[float, float] = (0.9, 0.95)
+    adam_eps: float = 1e-8
+    adam_lr_ratio: float = 0.025
+    adam_dim_threshold: int = 8192
+    use_muon: Optional[bool] = None
+
+
 def register_optimizer_params(name: str, optimizer_params: OptimizerParams):
     """
     Checks if the optimizer param name exists in the registry, and if it doesnt, adds it.
@@ -293,4 +325,5 @@ AVAILABLE_OPTIMIZER_PARAMS = {
     'rmsprop_params': RMSpropParams,
     'rprop_params': RpropParams,
     'adafactor_params': AdafactorParams,
+    'muon_params': MuonParams,
 }

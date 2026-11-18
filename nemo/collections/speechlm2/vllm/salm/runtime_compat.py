@@ -26,6 +26,8 @@ from collections.abc import Iterable
 from functools import wraps
 from typing import Any
 
+from nemo.collections.speechlm2.vllm.salm.config import SPEECHLM_MTP_MODEL_TYPE, TRANSCRIBE_MTP_MODEL_TYPE
+
 _AUDIO_LOCATOR = "<|audio|>"
 _AUDIO_PART_TYPES = frozenset({"audio_url", "input_audio", "audio_embeds"})
 _TEXT_PART_TYPES = frozenset({"text", "input_text", "output_text"})
@@ -37,7 +39,8 @@ def _is_nemo_speechlm_tracker(mm_tracker: Any) -> bool:
     hf_config = getattr(model_config, "hf_config", None)
     return getattr(hf_config, "model_type", None) in {
         "nemo_speechlm",
-        "nemo_speechlm_mtp",
+        SPEECHLM_MTP_MODEL_TYPE,
+        TRANSCRIBE_MTP_MODEL_TYPE,
     }
 
 
@@ -178,6 +181,9 @@ def _patch_speechlm_training_prompt_contract(chat_utils: Any) -> None:
 
 def install_prompt_contract() -> None:
     """Install the SpeechLM-only vLLM chat rendering adapter."""
-    from vllm.entrypoints import chat_utils
+    try:
+        from vllm.renderers import chat_utils  # vLLM 0.32
+    except ImportError:
+        from vllm.entrypoints import chat_utils
 
     _patch_speechlm_training_prompt_contract(chat_utils)

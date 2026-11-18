@@ -97,7 +97,8 @@ def test_from_pretrained_remote_code_requires_explicit_opt_in(
     assert cfg["trust_remote_code"] is expected
 
 
-def test_save_pretrained_does_not_persist_remote_code_trust(tmp_path, monkeypatch):
+@pytest.mark.parametrize('nested', [False, True])
+def test_save_pretrained_does_not_persist_remote_code_trust(tmp_path, monkeypatch, nested):
     captured = {}
 
     def fake_save_pretrained(_self, **kwargs):
@@ -105,12 +106,42 @@ def test_save_pretrained_does_not_persist_remote_code_trust(tmp_path, monkeypatc
 
     monkeypatch.setattr(PyTorchModelHubMixin, "save_pretrained", fake_save_pretrained)
     model = object.__new__(_DummyHubModel)
-    model.cfg = {"trust_remote_code": True}
+    model.cfg = {"model": {"trust_remote_code": True}} if nested else {"trust_remote_code": True}
 
     model.save_pretrained(tmp_path)
 
-    assert "trust_remote_code" not in captured["config"]
-    assert model.cfg["trust_remote_code"] is True
+    effective_saved = captured["config"]["model"] if nested else captured["config"]
+    effective_original = model.cfg["model"] if nested else model.cfg
+    assert "trust_remote_code" not in effective_saved
+    assert effective_original["trust_remote_code"] is True
+
+
+@pytest.mark.parametrize(
+    ("cfg", "expected"),
+    [
+        pytest.param(
+            {"pe_encoder_path": "/models/pee.nemo"},
+            "Nemotron3_5TranscribeForConditionalGeneration",
+            id="transcribe",
+        ),
+        pytest.param({}, "NeMoSpeechLMForConditionalGeneration", id="no-pe-encoder"),
+        pytest.param({"architectures": ["Custom"]}, "Custom", id="explicit-name-kept"),
+    ],
+)
+def test_save_pretrained_names_architecture_after_structure(tmp_path, monkeypatch, cfg, expected):
+    captured = {}
+
+    def fake_save_pretrained(_self, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(PyTorchModelHubMixin, "save_pretrained", fake_save_pretrained)
+    model = object.__new__(_DummyHubModel)
+    model.cfg = cfg
+    model.llm = SimpleNamespace(config=SimpleNamespace(architectures=["NemotronHForCausalLM"]))
+
+    model.save_pretrained(tmp_path)
+
+    assert captured["config"]["architectures"] == [expected]
 
 
 def test_inject_local_artifact_paths_salm_config(tmp_path):

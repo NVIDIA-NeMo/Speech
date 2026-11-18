@@ -44,7 +44,10 @@ def make_features(device: str, dtype: torch.dtype) -> tuple[torch.Tensor, torch.
     "device",
     [
         "cpu",
-        pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")),
+        pytest.param(
+            "cuda",
+            marks=[pytest.mark.gpu, pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")],
+        ),
     ],
 )
 def test_low_precision_packed_statistics_match_fp32_reference(device, normalize_type):
@@ -60,6 +63,7 @@ def test_low_precision_packed_statistics_match_fp32_reference(device, normalize_
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+@pytest.mark.gpu
 def test_legacy_bf16_segmented_statistics_are_not_silently_equivalent_to_fp32_fix():
     features, lengths = make_features("cuda", torch.bfloat16)
     packed = pack_encoder_output(features.transpose(1, 2), lengths)

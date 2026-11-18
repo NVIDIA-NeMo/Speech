@@ -197,30 +197,34 @@ def test_parquet_corrupt_audio_skipped_when_fault_tolerant(parquet_with_corrupt_
 @pytest.mark.skipif(not HAVE_PARQUET, reason="PyArrow required for this test")
 @pytest.mark.parametrize("indexed", [False, True])
 @pytest.mark.parametrize("fault_tolerant", [False, True])
+# Parameters that need pyarrow are lambdas, so collection works without pyarrow (the tests are then skipped).
 @pytest.mark.parametrize(
-    "columns,match",
-    (
-        [
-            ({"audio": pa.array([None], type=pa.binary())}, r"audio column 'audio' holds NoneType, expected bytes"),
-            ({"audio": pa.array([1], type=pa.int64())}, r"audio column 'audio' holds int, expected bytes"),
-            ({"text": pa.array([None], type=pa.string())}, r"text column 'text' holds NoneType, expected str"),
-            ({"duration": [-1.0]}, r"duration column 'duration' holds -1.0, expected a non-negative number"),
-            ({"duration": [float("nan")]}, r"duration column 'duration' holds nan"),
-            ({"duration": pa.array([Decimal("-0.10")], type=pa.decimal128(8, 2))}, r"holds Decimal\('-0.10'\)"),
-            ({"duration": ["0.1"]}, r"duration column 'duration' holds '0.1'"),
-            ({"duration": [True]}, r"duration column 'duration' holds True"),
-        ]
-        if HAVE_PARQUET
-        else []
-    ),
+    "make_columns,match",
+    [
+        (
+            lambda: {"audio": pa.array([None], type=pa.binary())},
+            r"audio column 'audio' holds NoneType, expected bytes",
+        ),
+        (lambda: {"audio": pa.array([1], type=pa.int64())}, r"audio column 'audio' holds int, expected bytes"),
+        (lambda: {"text": pa.array([None], type=pa.string())}, r"text column 'text' holds NoneType, expected str"),
+        (lambda: {"duration": [-1.0]}, r"duration column 'duration' holds -1.0, expected a non-negative number"),
+        (lambda: {"duration": [float("nan")]}, r"duration column 'duration' holds nan"),
+        (
+            lambda: {"duration": pa.array([Decimal("-0.10")], type=pa.decimal128(8, 2))},
+            r"holds Decimal\('-0.10'\)",
+        ),
+        (lambda: {"duration": ["0.1"]}, r"duration column 'duration' holds '0.1'"),
+        (lambda: {"duration": [True]}, r"duration column 'duration' holds True"),
+    ],
+    ids=["null_audio", "int_audio", "null_text", "negative", "nan", "negative_decimal", "string", "bool"],
 )
-def test_parquet_malformed_row_always_raises(tmp_path, indexed, fault_tolerant, columns, match):
+def test_parquet_malformed_row_always_raises(tmp_path, indexed, fault_tolerant, make_columns, match):
     # Row-level problems are not audio-decoding failures, so fault-tolerant audio loading never skips them.
     path = tmp_path / "malformed.parquet"
     buf = io.BytesIO()
     sf.write(buf, np.zeros(1600, dtype=np.float32), 16000, format='WAV')
     table = {"audio": [buf.getvalue()], "text": ["x"], "duration": [0.1]}
-    table.update(columns)
+    table.update(make_columns())
     pq.write_table(pa.table(table), path)
     it = _parquet_iterator(str(path), indexed=indexed, fault_tolerant_audio_loading=fault_tolerant)
     with pytest.raises(ParquetRowError, match=r"row 0 .*" + match):
@@ -232,22 +236,19 @@ def test_parquet_malformed_row_always_raises(tmp_path, indexed, fault_tolerant, 
 @pytest.mark.parametrize("indexed", [False, True])
 @pytest.mark.parametrize("fault_tolerant", [False, True])
 @pytest.mark.parametrize(
-    "duration",
-    (
-        [
-            pa.array([Decimal("0.10")], type=pa.decimal128(8, 2)),
-            pa.array([0], type=pa.int64()),
-            pa.array([0.1], type=pa.float64()),
-            pa.array([0.0], type=pa.float32()),
-            None,
-        ]
-        if HAVE_PARQUET
-        else []
-    ),
+    "make_duration",
+    [
+        lambda: pa.array([Decimal("0.10")], type=pa.decimal128(8, 2)),
+        lambda: pa.array([0], type=pa.int64()),
+        lambda: pa.array([0.1], type=pa.float64()),
+        lambda: pa.array([0.0], type=pa.float32()),
+        lambda: None,
+    ],
     ids=["decimal", "int_zero", "float", "float32_zero", "omitted"],
 )
-def test_parquet_valid_duration_values_are_accepted(tmp_path, indexed, fault_tolerant, duration):
+def test_parquet_valid_duration_values_are_accepted(tmp_path, indexed, fault_tolerant, make_duration):
     # The cut duration always comes from the decoded audio; the duration column is only validated metadata.
+    duration = make_duration()
     path = tmp_path / "valid_duration.parquet"
     buf = io.BytesIO()
     sf.write(buf, np.zeros(1600, dtype=np.float32), 16000, format='WAV')

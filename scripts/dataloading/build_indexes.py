@@ -668,6 +668,36 @@ def _select_todo(jobs: list[IndexJob]) -> list[IndexJob]:
     return todo
 
 
+def _resolve_route_conflicts(jobs: list[IndexJob], route_todo: list[IndexJob]) -> list[IndexJob]:
+    """Handle one manifest paired with different tars by different entries; return the route jobs to run.
+
+    One route sidecar can serve only one ordered tar collection, so such pairings are rejected when any
+    of them needs a route. When none does, every dataset loads positionally without a route, and a single
+    job removes any leftover route artifacts. Called once the manifest and tar indexes are built.
+    """
+    groups: dict[tuple[str, Optional[str]], list[IndexJob]] = {}
+    for job in jobs:
+        if job.kind == NEMO_TAR_ROUTE:
+            groups.setdefault((job.path, job.indexes_root), []).append(job)
+    todo_ids = {id(job) for job in route_todo}
+    for (manifest_path, _), group in groups.items():
+        if len(group) < 2:
+            continue
+        if any(_nemo_tar_route_is_needed(job) for job in group):
+            pairings = "; ".join(str(list(job.tar_paths)) for job in group)
+            raise click.ClickException(
+                f"Manifest {manifest_path} is paired with different tars in different entries ({pairings}) "
+                "and needs a route sidecar, which can serve only one ordered tar collection. Give each dataset "
+                "its own manifest file."
+            )
+        if any(id(job) in todo_ids for job in group):
+            todo_ids.add(id(group[0]))
+        todo_ids -= {id(job) for job in group[1:]}
+    return [job for job in route_todo if id(job) in todo_ids] + [
+        job for job in jobs if id(job) in todo_ids and job not in route_todo
+    ]
+
+
 def _validate_nemo_tar_layout(job: IndexJob) -> None:
     """Reject NeMo tar sidecars in the Shar paired layout (e.g. written by ``lhotse index tar``)."""
     try:
@@ -751,18 +781,12 @@ def main(
         )
 
     # Deduplicate while preserving order.
-    seen: set[tuple[str, str, Optional[str]]] = set()
+    seen: set[tuple] = set()
     unique: list[IndexJob] = []
-    route_tars: dict[tuple[str, Optional[str]], tuple[str, ...]] = {}
     for j in jobs:
-        if j.kind == NEMO_TAR_ROUTE:
-            bound = route_tars.setdefault((j.path, j.indexes_root), j.tar_paths)
-            if bound != j.tar_paths:
-                raise click.UsageError(
-                    f"Manifest {j.path} is paired with different tars in different entries "
-                    f"({list(bound)} vs {list(j.tar_paths)}); one route sidecar can serve only one of them."
-                )
-        key = (j.path, j.kind, j.indexes_root)
+        # Route jobs for one manifest paired with different tars stay distinct until their input indexes
+        # exist; see _resolve_route_conflicts().
+        key = (j.path, j.kind, j.indexes_root, j.tar_paths if j.kind == NEMO_TAR_ROUTE else ())
         if key not in seen:
             seen.add(key)
             unique.append(j)
@@ -818,6 +842,7 @@ def main(
             )
 
     if not failures:
+        route_todo = _resolve_route_conflicts(unique, route_todo)
         for job in route_todo:
             try:
                 _build_one(job, force=force)

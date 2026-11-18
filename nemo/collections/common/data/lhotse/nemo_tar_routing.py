@@ -216,12 +216,14 @@ def check_nemo_tar_route_binding(ordinal_path: Path, tar_paths: Sequence[str]) -
     binding_path = nemo_tar_route_binding_path(ordinal_path)
     try:
         bound = json.loads(binding_path.read_text())["tar_paths"]
+        if not isinstance(bound, list) or any(not isinstance(path, str) for path in bound):
+            raise ValueError("tar_paths must be a list of strings")
     except (OSError, ValueError, KeyError, TypeError) as ex:
         raise ValueError(
             f"Native NeMo tar route {str(ordinal_path)!r} has no valid tar binding ({str(binding_path)!r}). "
             "Rebuild it with 'python scripts/dataloading/build_indexes.py <input_cfg.yaml>'."
         ) from ex
-    if list(bound) != list(tar_paths):
+    if bound != list(tar_paths):
         raise ValueError(
             f"Native NeMo tar route {str(ordinal_path)!r} was built for tars {bound}, but the dataset now pairs "
             f"its manifest with {list(tar_paths)}. Stored ordinals and tar positions only apply to the tars "

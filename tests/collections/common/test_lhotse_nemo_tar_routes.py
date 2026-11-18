@@ -30,7 +30,11 @@ from scripts.dataloading import build_indexes
 from nemo.collections.common.data.lhotse.dataloader import get_lhotse_dataloader_from_config
 from nemo.collections.common.data.lhotse.indexed_adapters import create_tar_index
 from nemo.collections.common.data.lhotse.nemo_adapters import LazyNeMoTarredIterator
-from nemo.collections.common.data.lhotse.nemo_tar_routing import nemo_tar_route_sidecar_paths
+from nemo.collections.common.data.lhotse.nemo_tar_routing import (
+    check_nemo_tar_route_binding,
+    nemo_tar_route_binding_path,
+    nemo_tar_route_sidecar_paths,
+)
 
 SR = 16000
 MEMBER_SAMPLES = 1600
@@ -205,6 +209,77 @@ def test_build_indexes_rejects_conflicting_tar_bindings_for_one_manifest(tmp_pat
 
     assert result.exit_code != 0
     assert "paired with different tars" in result.output
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("kind_args", [(), ("--kind", "jsonl")], ids=["all-kinds", "jsonl-only"])
+def test_build_indexes_allows_one_manifest_with_different_tars_when_no_route_is_needed(tmp_path, kind_args):
+    manifest_path = tmp_path / "manifest_0.json"
+    row = {"audio_filepath": "a.wav", "duration": MEMBER_SAMPLES / SR, "text": "a", "shard_id": 0, "sampling_rate": SR}
+    manifest_path.write_text(json.dumps(row) + "\n")
+    entries, expected = [], {}
+    for name, member in [("A", "x"), ("B", "y")]:
+        (tmp_path / name).mkdir()
+        tar_path = tmp_path / name / "audio_0.tar"
+        with tarfile.open(tar_path, "w") as archive:
+            payload = _wav_bytes(_member_audio(member))
+            info = tarfile.TarInfo("a.wav")
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+        entries.append(
+            {"type": "nemo_tarred", "manifest_filepath": str(manifest_path), "tarred_audio_filepaths": str(tar_path)}
+        )
+        expected[str(tar_path)] = member
+
+    result = _run_build_indexes(tmp_path, entries, *kind_args)
+
+    assert result.exit_code == 0, result.output
+    assert Path(f"{manifest_path}.idx").is_file()
+    ordinal_path, shard_path = nemo_tar_route_sidecar_paths(str(manifest_path))
+    assert not ordinal_path.exists() and not shard_path.exists()
+    if kind_args:
+        return
+    assert all(Path(f"{tar}.idx").is_file() for tar in expected)
+    config = {
+        "use_lhotse": True,
+        "input_cfg": entries,
+        "indexed": True,
+        "force_finite": True,
+        "shuffle": True,
+        "seed": 0,
+        "shard_seed": 0,
+        "batch_size": 2,
+        "num_workers": 0,
+    }
+    loader = get_lhotse_dataloader_from_config(config, global_rank=0, world_size=1, dataset=_TarOriginAndAudio())
+    loaded = [item for batch in loader for item in batch]
+    assert sorted(origin for origin, _ in loaded) == sorted(expected)
+    for origin, audio in loaded:
+        np.testing.assert_array_equal(audio, _member_audio(expected[origin]))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad_value", [None, 3, [1]], ids=["null", "int", "non-string-item"])
+def test_malformed_route_binding_is_stale_and_rebuilt(tmp_path, bad_value):
+    data = _write_dataset(tmp_path, "aggregate")
+    _build_indexes(tmp_path, data)
+    ordinal_path, _ = nemo_tar_route_sidecar_paths(data["manifest_spec"])
+    binding_path = nemo_tar_route_binding_path(ordinal_path)
+    good_binding = binding_path.read_text()
+    binding_path.write_text(json.dumps({"tar_paths": bad_value}))
+
+    with pytest.raises(ValueError, match=r"build_indexes\.py"):
+        check_nemo_tar_route_binding(ordinal_path, data["tars"])
+    job = build_indexes.IndexJob(data["manifest_spec"], build_indexes.NEMO_TAR_ROUTE, tar_paths=tuple(data["tars"]))
+    assert not build_indexes._is_indexed(job)
+
+    _build_indexes(tmp_path, data)
+
+    assert json.loads(binding_path.read_text()) == json.loads(good_binding)
+    cuts = list(_iterator(data))
+    expected = [row for row in data["rows"] if not row.get("_skipme")]
+    for cut, row in zip(cuts, expected, strict=True):
+        np.testing.assert_array_equal(cut.load_audio()[0], _member_audio(row["member"]))
 
 
 @pytest.mark.unit
@@ -424,6 +499,11 @@ def _dataloader_for_entry(entry: dict):
         "num_workers": 0,
     }
     return get_lhotse_dataloader_from_config(config, global_rank=0, world_size=1, dataset=_OriginTextAndAudio())
+
+
+class _TarOriginAndAudio(torch.utils.data.Dataset):
+    def __getitem__(self, cuts):
+        return [(cut.tar_origin, cut.load_audio()[0]) for cut in cuts]
 
 
 class _OriginTextAndAudio(torch.utils.data.Dataset):

@@ -94,6 +94,7 @@ class ExampleModel(ModelPT):
         self.validation_step_outputs.clear()  # free memory
 
 
+@pytest.mark.gpu
 class TestStatelessTimer:
     def setup_model(self):
         # Stateless timer for 3 seconds.

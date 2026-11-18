@@ -26,8 +26,7 @@ from torch.nn.attention.flex_attention import BlockMask, flex_attention
 
 from nemo.collections.asr.parts.packed_sequence import (
     PackedEncoderActivations,
-    _lengths_to_cu_seqlens,
-    _new_packed_encoder_activations,
+    lengths_to_cu_seqlens,
     packed_encoder_position_ids,
     packed_sequence_ids,
 )
@@ -39,11 +38,15 @@ if TRITON_AVAILABLE:
         packed_rel_pos_attention,
     )
 
-__all__ = ["PackedAttentionContext", "packed_attention"]
+__all__ = ["PackedAttentionContext", "document_block_mask", "packed_attention", "packed_attention_supports_dropout"]
 
 # the sparse block size of FlexAttention; the document block mask is built at this granularity
 BLOCK_SIZE = 128
-# the smallest head width FlexAttention's Triton kernels take (tl.dot); narrower heads are zero-padded for the kernel
+# The head width the FlexAttention kernels see is rounded up to a power of two from this floor,
+# the smallest width their Triton kernels take (tl.dot); the zero features change nothing and the output is sliced.
+# The kernels round the width to the next power of two internally anyway, and torch's tuned kernel configurations
+# are keyed by the powers of two 64, 128 and 256: any other width falls to a generic configuration
+# whose shared memory exceeds the 101 KB of consumer Blackwell GPUs (torch 2.12, width 44, the FastConformer Small head).
 FLEX_MIN_HEAD_DIM = 16
 # FlexAttention is the relative-position path without Triton
 # (with it, nemo.collections.asr.parts.triton.rel_pos_attention runs; float64 takes the reference path).
@@ -57,38 +60,6 @@ FLEX_MIN_HEAD_DIM = 16
 TOKEN_PADDING = 4096
 LENGTH_PADDING = 128
 RECOMPILE_LIMIT = 64
-
-
-def _padded_size(value: int, floor: int) -> int:
-    """Round ``value`` up to a power of two, at least ``floor`` (a power of two itself)."""
-    return max(floor, 1 << max(value - 1, 0).bit_length())
-
-
-@functools.cache
-def _compiled_flex_attention() -> Callable:
-    """FlexAttention compiled statically per shape, at the first call so that importing the encoders stays cheap.
-
-    The compile goes through a function of this module, not through ``flex_attention`` itself:
-    Dynamo keeps a compiled function's entries on its code object and counts them against the recompile limit there,
-    so the kernels of this module would otherwise share the cache, and the limit, with every other compile
-    of ``flex_attention`` in the process (the Transformer encoders compile it with dynamic shapes),
-    and the entries of one site would send the other to eager FlexAttention.
-    """
-
-    def packed_flex_attention(q, k, v, score_mod, block_mask, scale):
-        return flex_attention(q, k, v, score_mod=score_mod, block_mask=block_mask, scale=scale)
-
-    return torch.compile(packed_flex_attention, dynamic=False)
-
-
-def _recompile_limit_patch():
-    """Dynamo settings for the per-shape FlexAttention kernels: room for RECOMPILE_LIMIT shapes, an error beyond."""
-    # torch renamed `cache_size_limit` to `recompile_limit`; older versions have only the old name
-    name = "recompile_limit" if hasattr(torch._dynamo.config, "recompile_limit") else "cache_size_limit"
-    settings = {name: max(getattr(torch._dynamo.config, name), RECOMPILE_LIMIT)}
-    if hasattr(torch._dynamo.config, "fail_on_recompile_limit_hit"):
-        settings["fail_on_recompile_limit_hit"] = True
-    return torch._dynamo.config.patch(**settings)
 
 
 class PackedAttentionContext:
@@ -133,7 +104,10 @@ class PackedAttentionContext:
         total_tokens = int(lengths.sum().item())
         max_seqlen = int(lengths.max().item()) if lengths.numel() else 0
         placeholder = lengths.new_empty((total_tokens, 0), dtype=torch.float32)
-        return cls(_new_packed_encoder_activations(placeholder, lengths, _lengths_to_cu_seqlens(lengths), max_seqlen))
+        packed = PackedEncoderActivations.from_validated(
+            placeholder, lengths, lengths_to_cu_seqlens(lengths), max_seqlen
+        )
+        return cls(packed)
 
     @property
     def sequence_slices(self) -> tuple[tuple[int, int], ...]:
@@ -273,7 +247,8 @@ def packed_attention(
         pos_emb: projected relative position embedding, shape ``(R, H, d_k)`` with odd ``R``,
             whose row ``c = (R - 1) / 2`` is the relative position zero;
             it covers at least ``context.rel_pos_max_seqlen - 1`` positions each way.
-        dropout_p: dropout on the attention weights, supported by every path but FlexAttention.
+        dropout_p: dropout on the attention weights, supported by every path but FlexAttention
+            (see ``packed_attention_supports_dropout``).
         scale: score scale, ``1 / sqrt(d_k)`` by default.
 
     Returns:
@@ -334,12 +309,69 @@ def packed_attention(
     )
 
 
+def packed_attention_supports_dropout(
+    device: torch.device, dtype: torch.dtype, head_dim: int, *, rel_pos: bool = False
+) -> bool:
+    """Whether ``packed_attention`` applies dropout on this device, dtype and head width.
+
+    Off CUDA it always does (the dense reference path).
+    On CUDA without a position term, only where variable-length FlashAttention runs:
+    float16 or bfloat16, a head width that is a multiple of 8 up to 256, compute capability 8 or newer.
+    With the Transformer-XL position term (``rel_pos``), only where its Triton kernel runs:
+    Triton installed, in float32, bfloat16 or float16.
+    FlexAttention, the path otherwise, has no dropout.
+    """
+    if device.type != 'cuda':
+        return True
+    if rel_pos:
+        return TRITON_AVAILABLE and dtype in PACKED_REL_POS_ATTENTION_DTYPES
+    if dtype not in (torch.float16, torch.bfloat16) or head_dim > 256 or head_dim % 8 != 0:
+        return False
+    # a function-level import: the modules package initializes the encoders, which import this module
+    from nemo.collections.asr.modules.transformer_encoder_utils import _get_flash_attention_varlen_for_device
+
+    return _get_flash_attention_varlen_for_device(device) is not None
+
+
+def _padded_size(value: int, floor: int) -> int:
+    """Round ``value`` up to a power of two, at least ``floor`` (a power of two itself)."""
+    return max(floor, 1 << max(value - 1, 0).bit_length())
+
+
+@functools.cache
+def _compiled_flex_attention() -> Callable:
+    """FlexAttention compiled statically per shape, at the first call so that importing the encoders stays cheap.
+
+    The compile goes through a function of this module, not through ``flex_attention`` itself:
+    Dynamo keeps a compiled function's entries on its code object and counts them against the recompile limit there,
+    so the kernels of this module would otherwise share the cache, and the limit, with every other compile
+    of ``flex_attention`` in the process (the Transformer encoders compile it with dynamic shapes),
+    and the entries of one site would send the other to eager FlexAttention.
+    """
+
+    def packed_flex_attention(q, k, v, score_mod, block_mask, scale):
+        return flex_attention(q, k, v, score_mod=score_mod, block_mask=block_mask, scale=scale)
+
+    return torch.compile(packed_flex_attention, dynamic=False)
+
+
+def _recompile_limit_patch():
+    """Dynamo settings for the per-shape FlexAttention kernels: room for RECOMPILE_LIMIT shapes, an error beyond."""
+    # torch renamed `cache_size_limit` to `recompile_limit`; older versions have only the old name
+    name = "recompile_limit" if hasattr(torch._dynamo.config, "recompile_limit") else "cache_size_limit"
+    settings = {name: max(getattr(torch._dynamo.config, name), RECOMPILE_LIMIT)}
+    if hasattr(torch._dynamo.config, "fail_on_recompile_limit_hit"):
+        settings["fail_on_recompile_limit_hit"] = True
+    return torch._dynamo.config.patch(**settings)
+
+
 def _flash_attention_varlen(q: Tensor) -> Callable | None:
     """The variable-length FlashAttention provider for bias-free attention, or None when it does not apply."""
     # a function-level import: the modules package initializes the encoders, which import this module
     from nemo.collections.asr.modules.transformer_encoder_utils import _select_flash_attention_varlen
 
     head_dim = q.shape[-1]
+    # the same width rule as packed_attention_supports_dropout
     return _select_flash_attention_varlen(q, static_eligible=head_dim <= 256 and head_dim % 8 == 0)
 
 
@@ -362,9 +394,9 @@ def _flex_packed_attention(
     padded_total = context.padded_total_tokens
     tail = padded_total - total_tokens
     head_dim = q.shape[-1]
-    # zero features change neither the scores nor the context vectors, and the output is sliced back;
-    # wider heads are rounded inside the kernel, without a copy here
-    width_pad = max(FLEX_MIN_HEAD_DIM - head_dim, 0)
+    # the power-of-two head width the kernels are tuned for, see FLEX_MIN_HEAD_DIM;
+    # zero features change neither the scores nor the context vectors, and the output is sliced back
+    width_pad = _padded_size(head_dim, FLEX_MIN_HEAD_DIM) - head_dim
 
     def pad_tokens(tensor: Tensor) -> Tensor:
         return torch.nn.functional.pad(tensor, (0, width_pad, 0, 0, 0, tail)) if tail or width_pad else tensor

@@ -80,6 +80,7 @@ def test_canonical_pee_dense_contract_is_unchanged_after_packed_use():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="PEE ASR-gradient parity requires CUDA")
+@pytest.mark.gpu
 def test_canonical_pee_packed_matches_dense_trainable_asr_gradients():
     torch.manual_seed(0)
     dense_encoder = build_toy_packed_pe_encoder(freeze_asr=False, freeze_diar=True).cuda().eval()

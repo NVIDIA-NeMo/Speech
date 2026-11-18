@@ -39,7 +39,7 @@ from nemo.collections.tts.modules.magpietts_modules import (
     remove_embedded_eos_token,
 )
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
-from nemo.lightning.callback_group import CallbackGroup
+from nemo.lightning.callback_group import with_callback_context
 from nemo.utils import logging
 
 __all__ = ["OnlineCFGDistillation"]
@@ -741,6 +741,7 @@ class OnlineCFGDistillation(MagpieTTSModel):
         self._load_teacher_model()
 
     @rank_zero_only
+    @with_callback_context('on_load_checkpoint_start', 'on_load_checkpoint_end')
     def maybe_init_from_pretrained_checkpoint(
         self,
         cfg: OmegaConf,
@@ -758,8 +759,6 @@ class OnlineCFGDistillation(MagpieTTSModel):
                 f"Cannot pass more than one model initialization arguments to config!\n"
                 f"Found : {[args[idx] for idx, arg_present in enumerate(arg_matches) if arg_present]}"
             )
-
-        CallbackGroup.get_instance().on_load_checkpoint_start()
 
         if "init_from_nemo_model" in cfg and cfg.init_from_nemo_model is not None:
             model_path = cfg.init_from_nemo_model
@@ -795,8 +794,6 @@ class OnlineCFGDistillation(MagpieTTSModel):
                     del ckpt
                 else:
                     raise TypeError("Invalid type: init_from_ptl_ckpt is not a string!")
-
-        CallbackGroup.get_instance().on_load_checkpoint_end()
 
     def _init_extra_attributes(self) -> None:
         defaults = vars(_DEFAULT_PARAMS)

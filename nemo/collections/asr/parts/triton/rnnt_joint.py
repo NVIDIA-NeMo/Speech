@@ -420,20 +420,14 @@ if TRITON_AVAILABLE:
         grad_token = tl.load(grad_target_ptr + local, mask=scored, other=0.0).to(tl.float32)
         token = tl.load(targets_ptr + batch_idx * target_stride + target_idx, mask=scored, other=-1)
 
-        if clamp_grad:
-            # Clamping bounds the gradient at unit scale, before the loss reduction or any AMP
-            # scale multiplies it, so divide that scale out here, clamp, and reapply below.
-            loss_grad_scale = tl.load(loss_grad_scale_ptr + batch_idx).to(tl.float32)
-            inverse_scale = tl.where(loss_grad_scale != 0.0, 1.0 / loss_grad_scale, 0.0)
-            grad_blank *= inverse_scale
-            grad_token *= inverse_scale
-
         grad = -softmax * (grad_blank + grad_token)
         grad += tl.where(offsets == blank_id, grad_blank, 0.0)
         grad += tl.where(offsets == token, grad_token, 0.0)
         if clamp_grad:
-            grad = tl.maximum(tl.minimum(grad, clamp), -clamp)
-            grad *= loss_grad_scale
+            # The unit-scale bound follows the magnitude of each sample's upstream gradient.
+            loss_grad_scale = tl.load(loss_grad_scale_ptr + batch_idx).to(tl.float32)
+            scaled_clamp = clamp * tl.abs(loss_grad_scale)
+            grad = tl.maximum(tl.minimum(grad, scaled_clamp), -scaled_clamp)
         tl.store(grad_logits_ptr + local * vocab + offsets, grad, mask=mask)
 
 

@@ -346,15 +346,12 @@ def _make_joint(fused_batch_size, activation="relu", log_softmax=False, dropout=
     reason="CUDA, Triton, and Numba RNN-T are required",
 )
 @pytest.mark.parametrize(
-    ("objective_reduction", "amp_scale"), [("mean_batch", 1.0), ("mean_batch", 1024.0), ("weighted", 1.0)]
+    ("objective_reduction", "amp_scale"),
+    [("mean_batch", 1.0), ("mean_batch", 1024.0), ("weighted", 1.0), ("weighted", 1024.0), ("weighted", 1e-6)],
 )
+@pytest.mark.gpu
 def test_flash_rnnt_clamp_matches_numba_across_tiles(objective_reduction, amp_scale):
-    """Clamping applies to the unit-scale gradient, which autograd has already scaled.
-
-    Dividing that scale back out has to survive tiling, the loss reduction and the AMP scale at
-    once, so compare against warprnnt_numba, which clamps the same unit-scale gradient, rather than
-    against another Triton path sharing the same plumbing.
-    """
+    """Match Numba's unit-scale clamping across tiles, reductions, AMP scales, and signed sample weights."""
     from nemo.collections.asr.parts.numba.rnnt_loss import RNNTLossNumba
 
     torch.manual_seed(23)

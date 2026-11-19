@@ -1015,7 +1015,10 @@ class TestAudioProcessing:
         model._uses_pe_encoder = True
         return model
 
-    def test_independent_speaker_encoder_mount_reconstructs_dual_encoder(self, monkeypatch, tmp_path):
+    @pytest.mark.parametrize("fallback_option, allowed", [({}, False), ({"allow_padded_fallback": True}, True)])
+    def test_independent_speaker_encoder_mount_reconstructs_dual_encoder(
+        self, monkeypatch, tmp_path, fallback_option, allowed
+    ):
         import torch
 
         from nemo.collections.speechlm2.modules.perception import IdentityConnector, IndependentDualEncoder
@@ -1058,7 +1061,7 @@ class TestAudioProcessing:
                 "frozen": True,
                 "chunk_size_seconds": 120.0,
                 "asr_chunk_size_seconds": None,
-                "allow_padded_fallback": True,
+                **fallback_option,
             },
         )
 
@@ -1070,7 +1073,7 @@ class TestAudioProcessing:
         assert perception.encoder.asr_chunk_size_seconds is None
         assert perception.encoder.auxiliary_chunk_size_seconds == 120.0
         assert perception.encoder.freeze_auxiliary is True
-        assert perception.encoder.allow_padded_fallback is True
+        assert perception.encoder.allow_padded_fallback is allowed
         assert all(not parameter.requires_grad for parameter in speaker.parameters())
         assert perception.proj.in_features == 8
         assert perception.proj.out_features == 7

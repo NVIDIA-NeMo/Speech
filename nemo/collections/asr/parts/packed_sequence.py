@@ -293,7 +293,9 @@ def forward_padded_fallback(
     if not allowed:
         raise NotImplementedError(
             f"{unsupported} Running it on the padded batch would cost the padded frames "
-            "that sequence-packed execution avoids; set allow_padded_fallback=True to allow that."
+            "that sequence-packed execution avoids; set allow_padded_fallback=True to allow that "
+            "(the option of ParallelExpertEncoder, in SpeechLM2 configs under pe_encoder_overrides or inside "
+            "pe_encoder_config, and of the speaker_encoder section)."
         )
     logging.warning(
         f"{unsupported} It runs on the padded batch and is re-packed (allow_padded_fallback=True), "

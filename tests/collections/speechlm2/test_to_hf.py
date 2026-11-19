@@ -539,12 +539,14 @@ def test_hf_export_config_embeds_portable_phpee_architecture():
         speaker_feature_mode="thresholded",
         speaker_activity_threshold=0.5,
         spk_kernel_scale=1.0,
+        allow_padded_fallback=True,
     )
     model = SimpleNamespace(cfg=original_cfg, perception=SimpleNamespace(encoder=pe_encoder))
 
     exported = to_hf._hf_export_config(model, "bfloat16")
 
     assert exported["pe_encoder_path"] is None
+    assert exported["pe_encoder_config"]["allow_padded_fallback"] is True
     assert exported["pe_encoder_config"]["target"] == "ParallelExpertEncoderPT"
     assert exported["pe_encoder_config"]["speaker_feature_config_version"] == 1
     assert exported["pe_encoder_config"]["speaker_feature_mode"] == "thresholded"

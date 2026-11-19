@@ -884,7 +884,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         and in training mode attention dropout where FlexAttention would have to apply it)
         are named by ``sequence_packed_unsupported_reason`` and refused here with ``NotImplementedError``;
         the parallel expert encoder and the independent dual encoder consult ``supports_sequence_packed_output``
-        at dispatch time and keep their padded path for them, the plain perception module reports the reason.
+        at dispatch time and refuse them with the same reason unless their ``allow_padded_fallback`` is set,
+        which runs the padded path with a warning; the plain perception module reports the reason.
 
         Args:
             audio_signal: packed features (``PackedEncoderActivations`` with data ``(sum(T_i), feat_in)``),
@@ -963,9 +964,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
     def supports_sequence_packed_output(self) -> bool:
         """Whether ``forward_sequence_packed`` runs this encoder as configured and in its current mode.
 
-        The parallel expert encoder and the independent dual encoder read it before they dispatch and keep their
-        padded path when it is False, so an encoder whose configuration has no packed form
-        (see ``sequence_packed_unsupported_reason``) trains as it did before the packed path existed;
+        The parallel expert encoder and the independent dual encoder read it before they dispatch.
+        When it is False (see ``sequence_packed_unsupported_reason``) they raise with the reason,
+        or run the encoder on the padded batch with a warning when their ``allow_padded_fallback`` is set;
         the answer depends on the mode and, under autocast, on the autocast dtype, so it is read per forward.
         """
         return self.sequence_packed_unsupported_reason() is None

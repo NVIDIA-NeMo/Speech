@@ -2014,7 +2014,7 @@ def test_fastconformer_asr_branch_with_attention_dropout_needs_the_padded_fallba
 
     A FastConformer branch with ``dropout_att > 0`` therefore has no native packed form in training mode:
     its ``supports_sequence_packed_output`` says so and the PEE refuses the step with that reason.
-    With ``allow_padded_fallback=True`` the PEE runs the padded fallback it ran before the native path existed,
+    With ``allow_padded_fallback=True`` the PEE runs that branch on the padded batch,
     and the step completes forward and backward; in evaluation mode the native path is available again.
     """
     asr_encoder_cfg = toy_asr_encoder_cfg()
@@ -2197,7 +2197,8 @@ def test_padded_fallback_raises_with_the_reason_by_default(monkeypatch):
 
 @pytest.mark.unit
 def test_allow_padded_fallback_is_read_from_the_bundle_config_and_its_overrides(tmp_path):
-    assert ParallelExpertEncoderPT(bundle_config()).encoder.allow_padded_fallback is False
+    default = ParallelExpertEncoderPT(bundle_config()).encoder
+    assert default.allow_padded_fallback is False and default._bundle_config.allow_padded_fallback is False
     assert ParallelExpertEncoderPT(bundle_config(allow_padded_fallback=True)).encoder.allow_padded_fallback is True
 
     source = build_toy_pe_encoder()

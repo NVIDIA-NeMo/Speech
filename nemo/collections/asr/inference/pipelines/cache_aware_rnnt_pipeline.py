@@ -36,7 +36,10 @@ from nemo.collections.asr.inference.streaming.state.cache_aware_rnnt_state impor
     CacheAwareRNNTBeamStreamingState,
     CacheAwareRNNTStreamingState,
 )
-from nemo.collections.asr.inference.utils.endpointing_utils import millisecond_to_frames
+from nemo.collections.asr.inference.utils.endpointing_utils import (
+    derive_cache_aware_eou_buffer_size,
+    validate_eou_thresholds,
+)
 from nemo.collections.asr.inference.utils.enums import RequestType
 from nemo.collections.asr.inference.utils.per_stream_biasing import (
     build_multi_biasing_ids_np,
@@ -48,7 +51,6 @@ from nemo.collections.asr.inference.utils.pipeline_utils import (
     drop_trailing_features,
     filter_token_sequences,
     filter_token_triples,
-    filter_tokens_from_greedy_output,
     get_confidence_utils,
 )
 from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import ModifiedALSDBatchedRNNTComputer
@@ -187,7 +189,8 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.expected_feature_buffer_len = int(self.buffer_size_in_secs / self.window_stride)
 
         self.stop_history_eou_in_milliseconds = cfg.endpointing.stop_history_eou
-        self.residue_tokens_at_end = cfg.endpointing.residue_tokens_at_end
+        self.stop_history_eou_end_in_milliseconds = cfg.endpointing.stop_history_eou_end
+        validate_eou_thresholds(self.stop_history_eou_in_milliseconds, self.stop_history_eou_end_in_milliseconds)
         self.word_boundary_tolerance = cfg.streaming.word_boundary_tolerance
         self.return_tail_result = cfg.return_tail_result
         self.length_norm_power = self.asr_model.asr_model_cfg.decoding.beam.length_norm_power
@@ -208,7 +211,9 @@ class CacheAwareRNNTPipeline(BasePipeline):
                 'vocabulary',
                 'model_stride_in_milliseconds',
                 'stop_history_eou_in_milliseconds',
-                'residue_tokens_at_end',
+                'stop_history_eou_end_in_milliseconds',
+                'punctuation_ids',
+                'language_token_ids',
             ],
         )
 
@@ -216,7 +221,8 @@ class CacheAwareRNNTPipeline(BasePipeline):
             vocabulary=self.vocabulary,
             ms_per_timestep=self.model_stride_in_milliseconds,
             stop_history_eou=self.stop_history_eou_in_milliseconds,
-            residue_tokens_at_end=self.residue_tokens_at_end,
+            stop_history_eou_end=self.stop_history_eou_end_in_milliseconds,
+            absorb_token_ids=self.punctuation_ids | self.language_token_ids,
         )
 
     def create_state(self, options: ASRRequestOptions) -> CacheAwareRNNTStreamingState:
@@ -241,14 +247,18 @@ class CacheAwareRNNTPipeline(BasePipeline):
             default_stop_history_eou=self.stop_history_eou_in_milliseconds,
             default_asr_output_granularity=self.asr_output_granularity,
             default_language_code=self.default_language_code,
+            default_stop_history_eou_end=self.stop_history_eou_end_in_milliseconds,
         )
 
         eou_label_buffer_size = 0
         if new_options.stop_history_eou > 0:
-            eou_label_buffer_size = millisecond_to_frames(
-                new_options.stop_history_eou, math.ceil(self.model_stride_in_milliseconds)
+            # Size the buffer for the largest run we may need to detect (the end-of-buffer threshold).
+            buffer_threshold_ms = max(new_options.stop_history_eou, new_options.stop_history_eou_end)
+            eou_label_buffer_size = derive_cache_aware_eou_buffer_size(
+                buffer_threshold_ms,
+                self.tokens_per_frame,
+                math.ceil(self.model_stride_in_milliseconds),
             )
-            eou_label_buffer_size += self.residue_tokens_at_end
         state.setup_label_buffer(eou_label_buffer_size, self.blank_id)
         state.set_previous_hypothesis(None)
         state.set_options(new_options)
@@ -380,26 +390,69 @@ class CacheAwareRNNTPipeline(BasePipeline):
                 previous_hyp.biasing_cfg = biasing_cfg
         return previous_hypotheses
 
-    def _apply_beam_update_(self, state: CacheAwareRNNTBeamStreamingState, eou_detected: bool) -> None:
-        """After endpointing: refresh beam publish tokens and fold cumulative prefix on EOU."""
+    def _filter_language_tag_triple(
+        self, tokens: list[int], timesteps: list[int], confidences: list[float]
+    ) -> tuple[list[int], list[int], list[float]]:
+        """Drop language tags (e.g. <en-US>) from an aligned (tokens, timesteps, confidences) triple."""
+        tokens, timesteps, confidences = filter_token_triples(tokens, timesteps, confidences, self.language_token_ids)
+        return filter_token_sequences(tokens, timesteps, confidences, self.language_token_sequences)
+
+    def _apply_beam_update_(
+        self, state: CacheAwareRNNTBeamStreamingState, eou_detected: bool, resume_local: int
+    ) -> None:
+        """
+        After endpointing: refresh beam publish tokens and, on EOU, fold the cumulative prefix.
+
+        Language-tag filtering is applied to `state.tokens`/carryover *after* the carryover split
+        (`prepare_finalize`), not before -- the split is computed against the raw (unfiltered) beam
+        token stream so the resulting `fold_at` index stays consistent with `cumulative_*`/`partial_*`
+        bookkeeping, which is never filtered.
+        Args:
+            state: (CacheAwareRNNTBeamStreamingState) The state of the stream.
+            eou_detected: (bool) Whether EOU was detected on this chunk.
+            resume_local: (int) Buffer-local resume index from `detect_eou_in_buffer`, or -1 if there
+                is no carryover to preserve (e.g. the final frame of a session).
+        """
         if eou_detected and state.hyp_decoding_state is not None:
             beam_idx = state.select_best_beam_idx_(score_norm=True, length_norm_power=self.length_norm_power)
             self.beam_decoder_computer.select_beam_in_state_item_(state.hyp_decoding_state, beam_idx)
             state.reset_beam_score_()
-        state.update_(eou_detected)
+
+        old_start = state._cumulative_tokens_len
+        beam_size = len(state.partial_tokens) if state.partial_tokens is not None else None
+        cum_tokens, cum_ts, cum_conf = state.refresh_publish_tokens()
+
+        fold_at, carryover = None, None
+        if eou_detected and resume_local >= 0:
+            resume_global = state.buffer_local_to_global(resume_local)
+            state.prepare_finalize(resume_global, is_token_start_of_word=self.endpointer.is_token_start_of_word)
+            fold_at = old_start + len(state.tokens)
+            state.set_eou_search_start(resume_global)
+            if self._lang_tag_filtering_enabled():
+                state._carryover_tokens, state._carryover_timesteps, state._carryover_confidences = (
+                    self._filter_language_tag_triple(
+                        state._carryover_tokens, state._carryover_timesteps, state._carryover_confidences
+                    )
+                )
+            carryover = (state._carryover_tokens, state._carryover_timesteps, state._carryover_confidences)
+
+        if eou_detected:
+            state.fold_cumulative_(
+                cum_tokens, cum_ts, cum_conf, fold_at=fold_at, carryover=carryover, beam_size=beam_size
+            )
 
         if self._lang_tag_filtering_enabled() and state.tokens:
-            # ``update_`` rebuilds the tokens from the raw beam stream, so language tags reappear here.
-            state.tokens, state.timesteps, state.confidences = filter_token_triples(
-                state.tokens, state.timesteps, state.confidences, self.language_token_ids
-            )
-            state.tokens, state.timesteps, state.confidences = filter_token_sequences(
-                state.tokens, state.timesteps, state.confidences, self.language_token_sequences
+            # `refresh_publish_tokens` rebuilds the tokens from the raw beam stream, so language tags
+            # reappear here.
+            state.tokens, state.timesteps, state.confidences = self._filter_language_tag_triple(
+                state.tokens, state.timesteps, state.confidences
             )
             state.last_token = state.tokens[-1] if state.tokens else None
             state.last_token_idx = state.timesteps[-1] if state.timesteps else None
 
-    def run_greedy_decoder(self, state: CacheAwareRNNTStreamingState, request: Request, hyp: Hypothesis) -> bool:
+    def run_greedy_decoder(
+        self, state: CacheAwareRNNTStreamingState, request: Request, hyp: Hypothesis
+    ) -> tuple[bool, int]:
         """
         Run the greedy RNNT decoder on the hypothesis and update the state
         Args:
@@ -407,9 +460,12 @@ class CacheAwareRNNTPipeline(BasePipeline):
             request: (Request) The current request (frame or feature buffer)
             hyp: (Hypothesis) The hypothesis of the current request
         Returns:
-            (bool) Whether EOU is detected.
+            tuple[bool, int]: whether EoU is detected, and (if detected and not the final frame) the
+                buffer-local resume index for the next utterance; -1 if not applicable. Finalization
+                (`prepare_finalize`/carryover) is left to the caller, since in beam mode `state.tokens`
+                is not authoritative until after the beam update is applied.
         """
-        eou_detected = request.is_last
+        is_last = request.is_last
         # Per-token non-blank confidence precomputed during RNN-T decoding (aligned with `hyp.y_sequence`).
         # Populated when greedy or batched-beam preserve_frame_confidence is enabled; otherwise None.
         cur_output, cur_labels, new_offset = self.greedy_rnnt_decoder(
@@ -422,24 +478,34 @@ class CacheAwareRNNTPipeline(BasePipeline):
         state.set_offset(new_offset)
 
         if self._lang_tag_filtering_enabled():
-            # Drop language tags (e.g. <en-US>) so they are excluded from the transcript
-            # and are not counted as speech for EOU detection.
-            cur_output, cur_labels = filter_tokens_from_greedy_output(
-                cur_output, cur_labels, self.language_token_ids, self.blank_id, self.language_token_sequences
+            # Drop language tags (e.g. <en-US>) from the published transcript. They are NOT blanked
+            # out of `cur_labels`: the endpointer absorbs them (like punctuation) via
+            # `absorb_token_ids`, so a trailing tag confirms a boundary instead of masquerading as
+            # silence.
+            tokens, timesteps, confidences = self._filter_language_tag_triple(
+                cur_output["tokens"], cur_output["timesteps"], cur_output["confidences"]
             )
+            cur_output = dict(cur_output)
+            cur_output["tokens"], cur_output["timesteps"], cur_output["confidences"] = tokens, timesteps, confidences
+            cur_output["last_token"] = tokens[-1] if tokens else None
+            cur_output["last_token_idx"] = timesteps[-1] if timesteps else None
 
         # cur labels contains blank tokens as well, it is needed for EOU detection
         state.update_label_buffer(cur_labels)
+        state.update_state(cur_output, eou_detected=is_last)
 
-        if not eou_detected:
-            emissions = state.get_label_buffer()
-            pivot_point = len(emissions) - 1
-            eou_detected, _ = self.endpointer.detect_eou_near_pivot(
-                emissions, pivot_point, stop_history_eou=state.options.stop_history_eou
-            )
+        # Final frame: flush everything, no detection and no carryover.
+        if is_last:
+            return True, -1
 
-        state.update_state(cur_output, eou_detected=eou_detected)
-        return eou_detected
+        emissions = state.get_label_buffer()
+        eou_detected, _, resume_local = self.endpointer.detect_eou_in_buffer(
+            emissions,
+            search_start_point=state.get_local_search_start(),
+            stop_history_eou=state.options.stop_history_eou,
+            stop_history_eou_end=state.options.stop_history_eou_end,
+        )
+        return eou_detected, (resume_local if eou_detected else -1)
 
     def cache_aware_transcribe_step(
         self,
@@ -518,12 +584,20 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         # run greedy decoder for each request-state-hypothesis tuple
         for request, state, hyp in zip(requests, states, best_hyp):
-            eou_detected = self.run_greedy_decoder(state, request, hyp)
+            eou_detected, resume_local = self.run_greedy_decoder(state, request, hyp)
             if self.beam_decoder_computer is not None:
-                self._apply_beam_update_(state, eou_detected)
+                self._apply_beam_update_(state, eou_detected, resume_local)
+            elif eou_detected and resume_local >= 0:
+                # Keep valid tokens emitted after the EoU point (the next utterance) instead of
+                # dropping them.
+                resume_global = state.buffer_local_to_global(resume_local)
+                state.prepare_finalize(resume_global, is_token_start_of_word=self.endpointer.is_token_start_of_word)
+                state.set_eou_search_start(resume_global)
             if eou_detected:
                 self.bpe_decoder.decode_bpe_tokens(state)
                 state.cleanup_after_eou()
+                # Restore tokens that survived past the EoU as the start of the next utterance.
+                state.restore_carryover()
                 ready_state_ids.add(request.stream_id)
 
         # Cleanup per-stream biasing models when stream ends

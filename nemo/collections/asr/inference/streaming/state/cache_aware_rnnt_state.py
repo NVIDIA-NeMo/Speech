@@ -229,8 +229,14 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
             non_blank_step_confidence_precomputed=cum_conf if cum_conf else None,
         )
 
-    def update_(self, eou_detected: bool) -> None:
-        """Refresh publish tokens; on EOU fold utterance into ``cumulative_*`` and clear ``partial_*``."""
+    def refresh_publish_tokens(self) -> tuple[list[int], list[int], list[float]]:
+        """
+        Refresh ``self.tokens/timesteps/confidences`` (the tokens since the last fold) from the
+        current beam's cumulative+partial stream, without folding.
+        Returns:
+            tuple[list[int], list[int], list[float]]: the full ``cumulative_* + partial_*`` stream
+                (``cum_tokens``, ``cum_timestamps``, ``cum_confidences``) as of this call.
+        """
         cum_tokens, cum_ts, cum_conf = self._get_tokens()
         if cum_tokens:
             start = max(0, min(int(self._cumulative_tokens_len), len(cum_tokens)))
@@ -243,16 +249,78 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
             if tokens:
                 self.last_token = tokens[-1]
                 self.last_token_idx = timesteps[-1] if timesteps else None
+        return cum_tokens, cum_ts, cum_conf
 
-        if not eou_detected:
+    def fold_cumulative_(
+        self,
+        cum_tokens: list[int],
+        cum_timestamps: list[int],
+        cum_confidences: list[float],
+        fold_at: int | None = None,
+        carryover: tuple[list[int], list[int], list[float]] | None = None,
+        beam_size: int | None = None,
+    ) -> None:
+        """
+        Fold the utterance into ``cumulative_*`` at ``fold_at`` (an index into ``cum_tokens``).
+
+        ``partial_*`` (the beam decoder's own per-beam in-flight bookkeeping) is NEVER left holding
+        content that overlaps ``cumulative_*`` -- growing it via lineage (`append_chunk_beam_`) would
+        otherwise duplicate whatever both sides already contain. So:
+          - No carryover (``fold_at`` is None, or empty ``carryover``): a full fold, matching a plain
+            EOU with nothing pending (e.g. the final frame of a session). ``cumulative_*`` absorbs the
+            whole stream and ``partial_*``/``best_hyp_idx`` are cleared.
+          - Carryover survives past the EoU point (``fold_at`` leaves a suffix of ``cum_tokens``
+            un-folded): ``cumulative_*`` absorbs only the prefix up to ``fold_at``. ``partial_*`` is
+            RESET and re-seeded with the carryover content for every beam slot (rather than left as
+            the old, now-overlapping content) -- the underlying decoder's live hypothesis lattice was
+            already collapsed to a single (top-1) hypothesis on this EOU (see
+            ``select_beam_in_state_item_`` in the pipeline), so every beam slot re-diversifies from
+            that same carryover point going forward, and the next `append_chunk_beam_` call correctly
+            appends new tokens after the (uniformly-seeded) carryover with no duplication.
+        Args:
+            cum_tokens: (list[int]) the full ``cumulative_* + partial_*`` token stream (from
+                `refresh_publish_tokens`).
+            cum_timestamps: (list[int]) matching timestamps.
+            cum_confidences: (list[float]) matching confidences.
+            fold_at: (int | None) index into `cum_tokens` to fold at; None folds the whole stream.
+            carryover: (tuple[list[int], list[int], list[float]] | None) the carryover
+                (tokens, timestamps, confidences) surviving past `fold_at`, if any.
+            beam_size: (int | None) number of beam slots to seed `partial_*` with; defaults to 1.
+        """
+        if not cum_tokens:
+            return
+        if fold_at is None:
+            fold_at = len(cum_tokens)
+        fold_at = max(0, min(int(fold_at), len(cum_tokens)))
+
+        self._cumulative_tokens_len = fold_at
+        self.cumulative_tokens = list(cum_tokens[:fold_at])
+        self.cumulative_timestamps = list(cum_timestamps[:fold_at])
+        self.cumulative_confidences = list(cum_confidences[:fold_at])
+
+        carryover_tokens = carryover[0] if carryover else []
+        if fold_at >= len(cum_tokens) or not carryover_tokens:
+            # No carryover survives past the fold point: safe to reset the beam's own bookkeeping.
+            self.partial_tokens = None
+            self.partial_timestamps = None
+            self.partial_confidences = None
+            self.best_hyp_idx = None
             return
 
-        if cum_tokens:
-            self._cumulative_tokens_len = len(cum_tokens)
-            self.cumulative_tokens = list(cum_tokens)
-            self.cumulative_timestamps = list(cum_ts)
-            self.cumulative_confidences = list(cum_conf)
-        self.partial_tokens = None
-        self.partial_timestamps = None
-        self.partial_confidences = None
-        self.best_hyp_idx = None
+        carryover_timestamps, carryover_confidences = carryover[1], carryover[2]
+        beam_size = beam_size or 1
+        self.partial_tokens = [list(carryover_tokens) for _ in range(beam_size)]
+        self.partial_timestamps = [list(carryover_timestamps) for _ in range(beam_size)]
+        self.partial_confidences = [list(carryover_confidences) for _ in range(beam_size)]
+        self.best_hyp_idx = 0
+
+    def update_(self, eou_detected: bool) -> None:
+        """
+        Refresh publish tokens; on EOU fold the whole utterance into ``cumulative_*`` and clear
+        ``partial_*``. Convenience wrapper for the no-carryover case (e.g. final-frame flush); the
+        carryover-aware path calls `refresh_publish_tokens`/`fold_cumulative_` directly with an
+        explicit `fold_at`.
+        """
+        cum_tokens, cum_ts, cum_conf = self.refresh_publish_tokens()
+        if eou_detected:
+            self.fold_cumulative_(cum_tokens, cum_ts, cum_conf)

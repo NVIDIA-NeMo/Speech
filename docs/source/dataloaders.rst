@@ -1458,6 +1458,8 @@ Other, more exotic configurations:
 
 * With ``shard_seed=<int>``, all dataloading workers will yield the same results. This is only useful for unit testing and maybe debugging.
 
+* Indexed ``nemo`` manifest sources (``indexed: true``) ignore ``shard_seed="trng"`` and ``shard_seed="randomized"`` and shuffle shards with a fixed seed of 0, so every rank and worker uses the same order and reads its own disjoint slice. NeMo logs a warning about this once per process. Set an integer ``shard_seed`` to choose a different order.
+
 .. note::
 
    On the iterable path (tarred, Lhotse Shar, Parquet, or ``force_iterable_dataset: true``) with non-indexed
@@ -1473,8 +1475,8 @@ Other, more exotic configurations:
    shuffles with its own integer ``shard_seed`` is rejected under a ``"randomized"``/``"trng"`` loader unless the
    selected sampler shuffles: ``shuffle: true`` with the default or bucketing samplers does, while the non-bucketing
    ``use_packed_sequence_sampling`` sampler never shuffles. Indexed sources (``indexed: true``) partition data across
-   ranks and workers, so they accept an integer ``shard_seed`` (and indexed weighted blends require one).
-   Single-process loading (``num_workers <= 1`` on one rank) and map-style loading also still accept an integer
+   ranks and workers, so they accept an integer ``shard_seed`` (and indexed weighted blends require one; see the
+   item above for how indexed ``nemo`` sources treat string seeds). Single-process loading (``num_workers <= 1`` on one rank) and map-style loading also still accept an integer
    ``shard_seed``.
 
 * With ``seed="trng"``, the base random seed itself will be drawn using a TRNG. It will be different on each GPU training process. This setting is not recommended.

@@ -21,8 +21,9 @@ import pytest
 import torch
 from omegaconf import DictConfig, OmegaConf
 
+from nemo.collections.asr.models import EncDecCTCModel
 from nemo.collections.asr.modules import transformer_encoder_utils
-from nemo.collections.asr.modules.conformer_encoder import LOG_MEL_SILENCE, ConformerEncoder
+from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
 from nemo.collections.asr.parts.packed_sequence import (
     PackedEncoderActivations,
     pack_encoder_output,
@@ -40,6 +41,7 @@ from nemo.collections.asr.parts.submodules.multi_head_attention import (
     RelPositionMultiHeadAttention,
 )
 from nemo.collections.asr.parts.submodules.subsampling import ConvSubsampling
+from nemo.collections.asr.parts.utils.streaming_utils import CacheAwareStreamingAudioBuffer
 
 
 class TestStochasticDepth:
@@ -1103,29 +1105,15 @@ class TestCacheAwareTraining:
 
     @pytest.mark.parametrize("n_frames", [7, 32])
     @pytest.mark.parametrize("subsampling", ["striding", "dw_striding"])
-    def test_noncausal_train_matches_eval(self, n_frames, subsampling):
+    def test_noncausal_train_matches_eval(self, cache_aware_model_cfg, n_frames, subsampling):
         """Noncausal training preserves output lengths and frame alignment."""
         torch.manual_seed(0)
-        model = ConformerEncoder(
-            feat_in=80,
-            n_layers=1,
-            d_model=16,
-            n_heads=4,
-            subsampling=subsampling,
-            subsampling_factor=8,
-            subsampling_conv_channels=8,
-            causal_downsampling=False,
-            att_context_size=[16, 3],
-            att_context_style="chunked_limited",
-            conv_kernel_size=5,
-            conv_context_size="causal",
-            conv_norm_type="layer_norm",
-            dropout=0.0,
-            dropout_pre_encoder=0.0,
-            dropout_emb=0.0,
-            dropout_att=0.0,
+        encoder_cfg = cache_aware_model_cfg.encoder
+        encoder_cfg.update(
+            n_layers=1, d_model=16, subsampling=subsampling, subsampling_conv_channels=8, causal_downsampling=False
         )
-        feats = torch.randn(1, 80, n_frames)
+        model = ConformerEncoder.from_config_dict(encoder_cfg).cpu()
+        feats = torch.randn(1, encoder_cfg.feat_in, n_frames)
         lengths = torch.tensor([n_frames])
         with torch.no_grad():
             model.eval()
@@ -1133,57 +1121,53 @@ class TestCacheAwareTraining:
             model.train()
             train_out, train_len = model(audio_signal=feats, length=lengths)
 
-        assert train_len.tolist() == eval_len.tolist() == [(n_frames + 7) // 8]
+        factor = encoder_cfg.subsampling_factor
+        assert train_len.tolist() == eval_len.tolist() == [(n_frames + factor - 1) // factor]
         torch.testing.assert_close(train_out, eval_out)
 
-    def test_train_matches_streaming(self):
-        """Training output matches the cache-aware stream, first chunk included."""
+    @pytest.mark.parametrize("lengths", [(128,), (127,), (127, 73)])
+    @pytest.mark.parametrize(
+        "att_context_size,context_index",
+        [([16, 3], 0), ([[16, 3], [16, 1]], 0), ([[16, 3], [16, 1]], 1)],
+    )
+    def test_train_matches_streaming(self, cache_aware_model_cfg, lengths, att_context_size, context_index):
+        """Training matches real buffered streaming for partial chunks and ragged batches."""
         torch.manual_seed(0)
-        model = ConformerEncoder(
-            feat_in=80,
-            n_layers=2,
-            d_model=64,
-            n_heads=4,
-            subsampling_factor=8,
-            subsampling_conv_channels=32,
-            causal_downsampling=True,
-            att_context_size=[16, 3],
-            att_context_style="chunked_limited",
-            conv_kernel_size=5,
-            conv_context_size="causal",
-            conv_norm_type="layer_norm",
-            dropout=0.0,
-            dropout_pre_encoder=0.0,
-            dropout_emb=0.0,
-        )
-        model.setup_streaming_params()
-        cfg = model.streaming_cfg
-        shift, pre_encode = cfg.shift_size[1], cfg.pre_encode_cache_size[1]
-        n_chunks = 4
-        feats = torch.randn(1, 80, shift * n_chunks)
+        encoder_cfg = cache_aware_model_cfg.encoder
+        num_contexts = len(att_context_size) if isinstance(att_context_size[0], list) else 1
+        encoder_cfg.att_context_size = att_context_size
+        # Select each supported training lookahead deterministically for comparison with eval.
+        encoder_cfg.att_context_probs = [float(i == context_index) for i in range(num_contexts)]
+        model = EncDecCTCModel(cfg=cache_aware_model_cfg).cpu()
+        encoder = model.encoder
+        encoder.set_default_att_context_size(encoder.att_context_size_all[context_index])
+        buffer = CacheAwareStreamingAudioBuffer(model, pad_and_drop_preencoded=True)
+        for length in lengths:
+            buffer.append_processed_signal(torch.randn(1, encoder_cfg.feat_in, length))
+        feats, input_lengths = buffer.get_all_audios()
 
         model.train()
         with torch.no_grad():
-            train_out, _ = model(audio_signal=feats, length=torch.tensor([feats.size(-1)]))
+            train_out, train_len = encoder(audio_signal=feats, length=input_lengths)
 
-        # Same chunking as CacheAwareStreamingAudioBuffer with pad_and_drop_preencoded=True,
-        # with the first chunk padded the same way as in training.
         model.eval()
-        padded = torch.cat([torch.full((1, 80, pre_encode), LOG_MEL_SILENCE), feats], dim=-1)
-        cache_channel, cache_time, cache_len = model.get_initial_cache_state(batch_size=1)
-        stream_out = []
+        cache_channel, cache_time, cache_len = encoder.get_initial_cache_state(batch_size=len(lengths))
+        stream_out = [[] for _ in lengths]
         with torch.no_grad():
-            for i in range(n_chunks):
-                chunk = padded[:, :, i * shift : (i + 1) * shift + pre_encode]
-                out, out_len, cache_channel, cache_time, cache_len = model.cache_aware_stream_step(
+            for chunk, chunk_len in buffer:
+                out, out_len, cache_channel, cache_time, cache_len = encoder.cache_aware_stream_step(
                     processed_signal=chunk,
-                    processed_signal_length=torch.tensor([chunk.size(-1)]),
+                    processed_signal_length=chunk_len,
                     cache_last_channel=cache_channel,
                     cache_last_time=cache_time,
                     cache_last_channel_len=cache_len,
-                    keep_all_outputs=i == n_chunks - 1,
-                    drop_extra_pre_encoded=cfg.drop_extra_pre_encoded,
+                    keep_all_outputs=buffer.is_buffer_empty(),
+                    drop_extra_pre_encoded=encoder.streaming_cfg.drop_extra_pre_encoded,
                 )
-                stream_out.append(out[:, :, : out_len[0]])
+                for i, length in enumerate(out_len):
+                    stream_out[i].append(out[i, :, :length])
 
-        assert torch.allclose(train_out, torch.cat(stream_out, dim=-1), atol=1e-5)
+        for i, outputs in enumerate(stream_out):
+            streamed = torch.cat(outputs, dim=-1)
+            assert streamed.shape[-1] == train_len[i].item()
+            torch.testing.assert_close(train_out[i, :, : train_len[i]], streamed, atol=1e-5, rtol=1e-5)

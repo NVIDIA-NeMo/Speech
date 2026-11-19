@@ -32,6 +32,7 @@ from nemo.collections.asr.parts.packed_sequence import (
     pack_encoder_output,
     packed_slot_layout,
 )
+from nemo.collections.asr.parts.preprocessing.features import ZERO_LEVEL_SPEC_DB_VAL
 from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D
 from nemo.collections.asr.parts.submodules.conformer_modules import ConformerLayer, build_self_attention
 from nemo.collections.asr.parts.submodules.multi_head_attention import (
@@ -73,9 +74,6 @@ try:
     from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import CheckpointWrapper
 except ImportError:  # a torch build without torch.distributed
     CheckpointWrapper = ()
-
-# Precomputed log-mel feature value of digital silence.
-LOG_MEL_SILENCE = math.log(2**-24)
 
 
 class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
@@ -740,7 +738,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                     cache_size = self.streaming_cfg.pre_encode_cache_size
                     pad_frames = cache_size[1] if isinstance(cache_size, list) else cache_size
                     if pad_frames > 0:
-                        audio_signal = nn.functional.pad(audio_signal, (0, 0, pad_frames, 0), value=LOG_MEL_SILENCE)
+                        audio_signal = nn.functional.pad(
+                            audio_signal, (0, 0, pad_frames, 0), value=ZERO_LEVEL_SPEC_DB_VAL
+                        )
                         length = length + pad_frames
 
                 audio_signal, length = self.pre_encode(x=audio_signal, lengths=length)

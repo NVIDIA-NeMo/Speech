@@ -39,6 +39,7 @@ from nemo.collections.asr.parts.submodules.multi_head_attention import (
     MultiHeadAttention,
     PositionalEncoding,
     RelPositionalEncoding,
+    RelPositionMultiHeadAttentionLongformer,
     RotaryPositionalEncoding,
 )
 from nemo.collections.asr.parts.submodules.packed_attention import (
@@ -711,12 +712,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 (audio_signal.size(0),), audio_signal.size(-1), dtype=torch.int64, device=audio_signal.device
             )
 
-        # select a random att_context_size with the distribution specified by att_context_probs during training
-        # for non-validation cases like test, validation or inference, it uses the first mode in self.att_context_size
-        if self.training and len(self.att_context_size_all) > 1:
-            cur_att_context_size = random.choices(self.att_context_size_all, weights=self.att_context_probs)[0]
-        else:
-            cur_att_context_size = self.att_context_size
+        cur_att_context_size = self._current_att_context_size()
 
         if not bypass_pre_encode:
             audio_signal = torch.transpose(audio_signal, 1, 2)
@@ -879,9 +875,15 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         recording, the fused padded forward's own deviation from the plain one, against 2e-5 at most without
         the fusion (see the smoke test).
 
-        Configurations without a sequence-packed form (streaming caches, limited or chunked attention context,
-        ``rel_pos_local_attn``, reduction layers, adapters, causal or VGGNet subsampling, intermediate layer captures,
-        and in training mode attention dropout where FlexAttention would have to apply it)
+        A limited attention context (``att_context_size`` with any ``att_context_style``, drawn per forward
+        in training mode as in ``forward``, and ``rel_pos_local_attn`` without global tokens)
+        narrows the keys of every frame inside its utterance; on CUDA it runs through FlexAttention,
+        whose block mask skips the keys outside the context.
+
+        Configurations without a sequence-packed form (streaming caches, ``rel_pos_local_attn`` with global tokens
+        or different context sizes on the two sides, context sizes that ``att_context_style`` does not define,
+        reduction layers, adapters, causal or VGGNet subsampling,
+        intermediate layer captures, and in training mode attention dropout where FlexAttention would have to apply it)
         are named by ``sequence_packed_unsupported_reason`` and refused here with ``NotImplementedError``;
         the parallel expert encoder and the independent dual encoder consult ``supports_sequence_packed_output``
         at dispatch time and keep their padded path for them, the plain perception module reports the reason.
@@ -898,6 +900,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             the padded ``forward`` output is ``unpack_encoder_output(...).transpose(1, 2)``.
         """
         self._check_sequence_packed_support()
+        cur_att_context_size = self._current_att_context_size()
         packed = self._packed_input(audio_signal, length, bypass_pre_encode)
 
         if not bypass_pre_encode:
@@ -909,7 +912,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             else:
                 packed = _forward_packed_module(self.pre_encode, packed)
 
-        attention_context = PackedAttentionContext(packed)
+        key_window = self._packed_key_window(cur_att_context_size, packed.max_seqlen)
+        attention_context = PackedAttentionContext(packed, key_window=key_window)
         # the relative-position table covers the padded length the attention kernels see
         self.update_max_seq_length(seq_length=attention_context.padded_max_seqlen, device=packed.data.device)
         x = packed.data
@@ -930,10 +934,20 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             if self.pos_enc.xscale:
                 x = x * self.pos_enc.xscale
             x = self.pos_enc.dropout(x)
-            # the relative positions L - 1 down to -(L - 1) for the padded length L, as RelPositionalEncoding.forward
-            center_pos = self.pos_enc.pe.size(1) // 2 + 1
-            padded_len = attention_context.padded_max_seqlen
-            pos_emb = self.pos_enc.pe[:, center_pos - padded_len : center_pos + padded_len - 1]
+            if self.self_attention_model == 'rel_pos_local_attn':
+                # the relative positions of the window, as LocalAttRelPositionalEncoding.forward
+                pos_emb = self.pos_enc.pe[:, : self.pos_enc.left_context + self.pos_enc.right_context + 1]
+            else:
+                # the relative positions L - 1 down to -(L - 1) for the padded length L,
+                # as RelPositionalEncoding.forward
+                center_pos = self.pos_enc.pe.size(1) // 2 + 1
+                padded_len = attention_context.padded_max_seqlen
+                if key_window is not None and None not in key_window and packed.max_seqlen > 0:
+                    # no key is further from its query than the window reaches, so a shorter table serves it
+                    positions = torch.arange(packed.max_seqlen)
+                    reach = max((positions - key_window[0]).max(), (key_window[1] - positions).max())
+                    padded_len = min(padded_len, int(reach) + 1)
+                pos_emb = self.pos_enc.pe[:, center_pos - padded_len : center_pos + padded_len - 1]
             if self.pos_enc.dropout_emb:
                 pos_emb = self.pos_enc.dropout_emb(pos_emb)
 
@@ -973,8 +987,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
     def sequence_packed_unsupported_reason(self) -> str | None:
         """Why ``forward_sequence_packed`` cannot run this encoder as configured, or None when it can.
 
-        Without a sequence-packed form: limited or chunked attention context, ``rel_pos_local_attn``,
-        the sampling of attention context sizes in training, reduction layers, adapters,
+        Without a sequence-packed form: ``rel_pos_local_attn`` with global tokens or with different context sizes
+        on the two sides, attention context sizes that ``att_context_style`` does not define
+        (see ``_att_context_unsupported_reason``), reduction layers, adapters,
         intermediate layer captures (InterCTC and ``save_encoder_tensors``, whose consumers expect padded tensors),
         frontends other than a linear layer or a non-causal ``striding`` or ``dw_striding`` ``ConvSubsampling``,
         and instance or group normalization in the convolution modules.
@@ -982,14 +997,27 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         which carries its position bias through FlexAttention, needs ``dropout_att: 0``,
         and ``abs_pos`` and ``rope`` attention keep their dropout only where variable-length FlashAttention runs,
         in float16 or bfloat16 (autocast counts) with a head width that is a multiple of 8 up to 256;
+        a limited attention context runs through FlexAttention as well and needs ``dropout_att: 0`` there;
         see ``packed_attention_supports_dropout``. Off CUDA the dense reference attention applies the dropout.
         """
+        layers = [_unwrap_checkpoint(layer) for layer in self.layers]
         if self.self_attention_model == 'rel_pos_local_attn':
-            return "rel_pos_local_attn has no sequence-packed form."
-        if self.att_context_style != 'regular' or any(size != -1 for size in self.att_context_size):
-            return "Sequence-packed execution supports the full attention context only."
-        if self.training and len(self.att_context_size_all) > 1:
-            return "Sequence-packed execution does not sample attention context sizes."
+            self_attn = layers[0].self_attn
+            if not isinstance(self_attn, RelPositionMultiHeadAttentionLongformer):
+                return f"{type(self_attn).__name__} as rel_pos_local_attn has no sequence-packed form."
+            reason = self_attn.sequence_packed_unsupported_reason()
+            if reason is not None:
+                return reason
+            limited_context = True
+        else:
+            # in training mode any of the sizes may be drawn
+            sampled = self.training and len(self.att_context_size_all) > 1
+            att_context_sizes = self.att_context_size_all if sampled else [self.att_context_size]
+            for att_context_size in att_context_sizes:
+                reason = self._att_context_unsupported_reason(att_context_size)
+                if reason is not None:
+                    return reason
+            limited_context = not all(self._att_context_is_full(size) for size in att_context_sizes)
         if self.reduction_position is not None:
             return "Reduction layers have no sequence-packed form."
         if isinstance(self, adapter_mixins.AdapterModuleMixin) and self.is_adapter_available():
@@ -1009,7 +1037,6 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 return reason
         elif not isinstance(pre_encode, nn.Linear):
             return f"{type(pre_encode).__name__} has no sequence-packed form."
-        layers = [_unwrap_checkpoint(layer) for layer in self.layers]
         for layer in layers:
             reason = layer.conv.sequence_packed_unsupported_reason()
             if reason is not None:
@@ -1022,6 +1049,11 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             and any(layer.self_attn.dropout_rate > 0 for layer in layers)
         ):
             # off CUDA the dense per-utterance reference path applies the dropout, with or without a position bias
+            if limited_context:
+                return (
+                    "A limited attention context over packed sequences runs through FlexAttention, "
+                    "which has no dropout on the attention weights: set dropout_att: 0 on the encoder."
+                )
             if self.self_attention_model == 'rel_pos':
                 return (
                     "FlexAttention has no dropout on the attention weights: set dropout_att: 0 on the encoder "
@@ -1071,6 +1103,82 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 f"Packed audio_signal must have feature width {expected_width}, got {packed.data.shape[-1]}."
             )
         return packed
+
+    def _current_att_context_size(self) -> list[int]:
+        # select a random att_context_size with the distribution specified by att_context_probs during training
+        # for non-validation cases like test, validation or inference, it uses the first mode in self.att_context_size
+        if self.training and len(self.att_context_size_all) > 1:
+            return random.choices(self.att_context_size_all, weights=self.att_context_probs)[0]
+        return self.att_context_size
+
+    def _packed_key_window(
+        self, att_context_size: list[int], max_seqlen: int
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None] | None:
+        """The attention context as the first and the last key position of every query position of an utterance.
+
+        What ``_create_masks`` masks in the padded forward, in the form of ``PackedAttentionContext(key_window=...)``:
+        None for the full context, and None in place of a bound for a side without a limit.
+        The bounds are host tensors: they are metadata of ``max_seqlen`` entries, and the forward reads their reach.
+        """
+        positions = torch.arange(max_seqlen)
+        if self.self_attention_model == 'rel_pos_local_attn':
+            # the window of the layers' local attention, whatever the style and the drawn size;
+            # the support check admits the same context on both sides only
+            return positions - self.pos_enc.left_context, positions + self.pos_enc.right_context
+        if self._att_context_is_full(att_context_size):
+            return None
+        style = self.att_context_style
+        if style == 'regular':
+            left, right = att_context_size
+            return positions - left if left >= 0 else None, positions + right if right >= 0 else None
+        if style == 'chunked_limited':
+            left, right = att_context_size
+            if right == -1:
+                return positions - left, None
+            # the chunk of the query and whole chunks to its left, 10000 of them without a limit, as _create_masks
+            chunk_size = right + 1
+            left_chunks = left // chunk_size if left >= 0 else 10000
+            chunk_start = positions // chunk_size * chunk_size
+            return chunk_start - left_chunks * chunk_size, chunk_start + right
+        # chunked_limited_with_rc: the chunk of the query with the frames to its left and to its right
+        left, chunk_size, right = att_context_size
+        chunk_start = positions // chunk_size * chunk_size
+        return chunk_start - left, chunk_start + chunk_size - 1 + right
+
+    def _att_context_is_full(self, att_context_size: list[int]) -> bool:
+        """Whether ``att_context_size`` leaves the attention unrestricted under the style, as ``_create_masks``."""
+        if self.att_context_style == 'chunked_limited':
+            return att_context_size[1] == -1 and att_context_size[0] < 0
+        if self.att_context_style == 'chunked_limited_with_rc':
+            return sum(att_context_size) == -3
+        return att_context_size[0] < 0 and att_context_size[1] < 0
+
+    def _att_context_unsupported_reason(self, att_context_size: list[int]) -> str | None:
+        """Why ``att_context_size`` has no sequence-packed form under ``att_context_style``, or None when it has.
+
+        The sizes for which the masks of ``_create_masks`` are no context window around the frame.
+        """
+        style = self.att_context_style
+        if style == 'regular':
+            return None
+        if style == 'chunked_limited':
+            if att_context_size[1] < -1:
+                return (
+                    f"att_context_size={list(att_context_size)} has no sequence-packed form with chunked_limited: "
+                    "the right context is a chunk size minus one, or -1 for no limit."
+                )
+            return None
+        if style == 'chunked_limited_with_rc':
+            if self._att_context_is_full(att_context_size):
+                return None
+            if len(att_context_size) != 3 or att_context_size[1] < 1 or min(att_context_size) < 0:
+                return (
+                    f"att_context_size={list(att_context_size)} has no sequence-packed form with "
+                    "chunked_limited_with_rc: it takes [left_context, chunk_size, right_context] "
+                    "with a chunk size of at least 1 and no negative context, or -1 for all three."
+                )
+            return None
+        return f"att_context_style={style!r} has no sequence-packed form."
 
     def update_max_seq_length(self, seq_length: int, device):
         """

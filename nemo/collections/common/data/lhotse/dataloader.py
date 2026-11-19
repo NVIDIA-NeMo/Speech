@@ -121,6 +121,11 @@ class LhotseDataLoadingConfig:
     # Explicit legacy shuffle_buffer_size values are copied here during schema
     # merge; otherwise packed sampling uses DEFAULT_PACKING_BUFFER_SIZE candidates.
     packing_buffer_size: int | None = None
+    # How packed sequence sampling without bucketing forms a batch:
+    # "best_fit" selects the best-fitting subset of the packing buffer,
+    # "sequential" takes the examples in reading order
+    # and closes the batch before the first one that would exceed a limit.
+    packing_policy: str = "best_fit"
     concurrent_bucketing: bool = True  # fetches data in a background thread
     bucketing_2d_strict_mode: bool = True  # reduces padding by discarding significant outliers
     #   d. Other Lhotse sampling options.
@@ -993,6 +998,12 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     )
 
     # 3. The sampler.
+    if config.packing_policy != "best_fit" and (config.use_bucketing or not config.use_packed_sequence_sampling):
+        raise ValueError(
+            f"packing_policy={config.packing_policy!r} is available only "
+            "for packed sequence sampling without bucketing "
+            "(use_packed_sequence_sampling=True, use_bucketing=False); every other sampler uses 'best_fit'."
+        )
     if config.use_bucketing:
         # Bucketing. Some differences from NeMo's native bucketing:
         #    - we can tweak the number of buckets and bucket duration bins using the configuration
@@ -1045,6 +1056,7 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
             if packing_buffer_size is None:
                 packing_buffer_size = DEFAULT_PACKING_BUFFER_SIZE
             sampler_kwargs["packing_buffer_size"] = packing_buffer_size
+            sampler_kwargs["packing_policy"] = config.packing_policy
         else:
             sampler_kwargs["shuffle_buffer_size"] = config.shuffle_buffer_size
         sampler = sampler_cls(

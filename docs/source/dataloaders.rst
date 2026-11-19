@@ -743,6 +743,30 @@ To enable bucketing, set ``batch_size: null`` and use the following options:
   It needs tokenized examples, so pass a tokenizer with ``pretokenize: true`` (with or without ``prompt_format``);
   an untokenized example raises, and so does a single example above the cap, which ``max_tokens`` filters beforehand.
 
+* ``packing_policy`` (packed sequence sampling without bucketing only) selects how a batch is formed.
+  The default ``best_fit`` is the selection from the packing buffer described above.
+  ``sequential`` takes the examples in reading order
+  and closes the batch before the first example that would exceed
+  ``batch_tokens``, ``batch_output_tokens`` or ``batch_size``;
+  that example opens the next batch.
+  Use it when the batches must follow the order of the data,
+  for instance to reproduce a training whose batches were formed this way,
+  or when the packing buffer costs too much host memory or time:
+  nothing beyond the example that closes a batch is read ahead, so ``packing_buffer_size`` has no effect.
+  A batch then stays below ``batch_tokens`` by a part of one example,
+  where ``best_fit`` with a buffer larger than a batch fills the budget exactly.
+  The policy is saved with the sampler state, and a restored sampler continues with the saved one.
+  With bucketing or without ``use_packed_sequence_sampling``, a value other than ``best_fit`` raises.
+
+  .. code-block:: yaml
+
+      use_multimodal_sampling: true
+      use_packed_sequence_sampling: true
+      packing_policy: sequential
+      batch_tokens: 60000
+      batch_output_tokens: 30000
+      batch_size: 1000
+
 * (non-oomptimizer-only) ``quadratic_factor`` is a quadratic penalty to equalize the GPU memory usage between buckets of short and long sequence lengths for models with quadratic memory usage. It is only a heuristic and may not be as efficient as using OOMptimizer.
 
 **Joint dataloading of text/audio/multimodal data.** The key strength of this approach is that we can easily combine audio datasets and text datasets,

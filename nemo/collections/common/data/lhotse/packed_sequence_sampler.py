@@ -27,6 +27,8 @@ from lhotse.lazy import get_graph_origin, resolve_iterator_source
 
 from nemo.collections.common.data.lhotse.sampling import MultimodalSamplingConstraint
 
+PACKING_POLICIES = ("best_fit", "sequential")
+
 
 def _select_best_fit_indices(lengths: Sequence[int], capacity: int, max_items: int | None = None) -> list[int]:
     """Select an exact best-fit subset, preferring earlier items on ties."""
@@ -137,15 +139,21 @@ def _fit_output_cap(
 
 
 class ExactTokenBatcher(DurationBatcher):
-    """Bounded-lookahead best-fit batching for padding-free sequences."""
+    """Bounded-lookahead best-fit batching for padding-free sequences.
 
-    def __init__(self, *args, packing_buffer_size: int, **kwargs):
+    With ``packing_policy="sequential"`` the examples are taken in reading order instead,
+    and a batch closes before the first example that would exceed a limit.
+    """
+
+    def __init__(self, *args, packing_buffer_size: int, packing_policy: str = "best_fit", **kwargs):
         super().__init__(*args, **kwargs)
         if packing_buffer_size <= 0:
             raise ValueError(
                 "packing_buffer_size must be a positive packing-buffer size " f"(got {packing_buffer_size})"
             )
+        _check_packing_policy(packing_policy, self.constraint)
         self.packing_buffer_size = packing_buffer_size
+        self.packing_policy = packing_policy
         self._source_exhausted = False
 
     @staticmethod
@@ -161,8 +169,8 @@ class ExactTokenBatcher(DurationBatcher):
     def _measured_example(example_or_tuple):
         return example_or_tuple[0] if isinstance(example_or_tuple, tuple) else example_or_tuple
 
-    def _fill_packing_buffer(self) -> None:
-        while len(self.reuse_cuts_buffer) < self.packing_buffer_size and not self._source_exhausted:
+    def _fill_packing_buffer(self, size: int) -> None:
+        while len(self.reuse_cuts_buffer) < size and not self._source_exhausted:
             try:
                 self.reuse_cuts_buffer.append(next(self.cuts_iter))
             except StopIteration:
@@ -211,7 +219,8 @@ class ExactTokenBatcher(DurationBatcher):
             self.diagnostics.discard(examples[0])
 
     def _collect_batch(self):
-        self._fill_packing_buffer()
+        # the sequential policy needs no lookahead: it reads on while the examples fit
+        self._fill_packing_buffer(1 if self.packing_policy == "sequential" else self.packing_buffer_size)
         if not self.reuse_cuts_buffer:
             raise StopIteration()
 
@@ -235,35 +244,38 @@ class ExactTokenBatcher(DurationBatcher):
             )
 
         remaining_items = None if max_examples is None else max_examples - 1
-        tail_indices = _select_best_fit_indices(
-            budget_lengths[1:],
-            batch_tokens - anchor_budget,
-            max_items=remaining_items,
-        )
-        if (
-            isinstance(self.constraint, MultimodalSamplingConstraint)
-            and self.constraint.batch_output_tokens is not None
-        ):
-            output_lengths = [self.constraint.measure_output_length(self._measured_example(ex)) for ex in pool]
-            tail_indices = _fit_output_cap(
-                tail_indices,
-                budget_lengths,
-                output_lengths,
-                batch_tokens=batch_tokens,
-                output_cap=self.constraint.batch_output_tokens,
+        if self.packing_policy == "sequential":
+            examples = self._take_examples_in_order()
+        else:
+            tail_indices = _select_best_fit_indices(
+                budget_lengths[1:],
+                batch_tokens - anchor_budget,
                 max_items=remaining_items,
             )
-        selected_indices = {0, *(index + 1 for index in tail_indices)}
-        examples = [example for index, example in enumerate(pool) if index in selected_indices]
-        deferred = [example for index, example in enumerate(pool) if index not in selected_indices]
-        self.reuse_cuts_buffer.clear()
-        self.reuse_cuts_buffer.extend(deferred)
+            if (
+                isinstance(self.constraint, MultimodalSamplingConstraint)
+                and self.constraint.batch_output_tokens is not None
+            ):
+                output_lengths = [self.constraint.measure_output_length(self._measured_example(ex)) for ex in pool]
+                tail_indices = _fit_output_cap(
+                    tail_indices,
+                    budget_lengths,
+                    output_lengths,
+                    batch_tokens=batch_tokens,
+                    output_cap=self.constraint.batch_output_tokens,
+                    max_items=remaining_items,
+                )
+            selected_indices = {0, *(index + 1 for index in tail_indices)}
+            examples = [example for index, example in enumerate(pool) if index in selected_indices]
+            deferred = [example for index, example in enumerate(pool) if index not in selected_indices]
+            self.reuse_cuts_buffer.clear()
+            self.reuse_cuts_buffer.extend(deferred)
 
         self.constraint.reset()
         for example in examples:
             self.constraint.add(self._measured_example(example))
         if self.constraint.exceeded():
-            raise AssertionError("Best-fit packed batch exceeded its configured constraint.")
+            raise AssertionError("Packed batch exceeded its configured constraint.")
 
         is_final_batch = self._source_exhausted and not self.reuse_cuts_buffer
         if is_final_batch and self.drop_last and not self.constraint.close_to_exceeding():
@@ -271,6 +283,28 @@ class ExactTokenBatcher(DurationBatcher):
             raise StopIteration()
 
         return self._detuplify(examples)
+
+    def _take_examples_in_order(self) -> list:
+        """Take examples in reading order until the next one would exceed a limit; that one stays buffered."""
+        self.constraint.reset()
+        examples = []
+        while True:
+            self._fill_packing_buffer(1)
+            if not self.reuse_cuts_buffer:
+                break
+            measured = self._measured_example(self.reuse_cuts_buffer[0])
+            if self.constraint.would_exceed(measured):
+                if examples:
+                    break
+                # the token cap was checked for the first example before, so this is the output-token cap
+                raise ValueError(
+                    f"An individual example's output tokens ({self.constraint.measure_output_length(measured)}) "
+                    f"exceed batch_output_tokens={self.constraint.batch_output_tokens}; "
+                    "filter it with max_tokens or raise the cap."
+                )
+            self.constraint.add(measured)
+            examples.append(self.reuse_cuts_buffer.popleft())
+        return examples
 
 
 class PackedSequenceDynamicBucketer(DynamicBucketer):
@@ -600,6 +634,14 @@ class PackedSequenceDynamicCutSampler(DynamicCutSampler):
     already provide an O(1)-memory Feistel permutation. Consequently,
     ``shuffle_buffer_size`` retains its parent-class meaning but has no effect
     on packing lookahead in this sampler.
+
+    ``packing_policy="sequential"`` replaces the best-fit selection:
+    the examples are taken in reading order,
+    and a batch closes before the first example that would exceed
+    the token cap, the output-token cap or the example cap.
+    That example opens the next batch.
+    Nothing beyond it is read ahead, so ``packing_buffer_size`` has no effect.
+    The policy is part of the sampler state: a restored sampler continues with the saved one.
     """
 
     def __init__(
@@ -607,6 +649,7 @@ class PackedSequenceDynamicCutSampler(DynamicCutSampler):
         *args,
         shuffle: bool = False,
         packing_buffer_size: int = 128,
+        packing_policy: str = "best_fit",
         shuffle_buffer_size: int = 20000,
         **kwargs,
     ):
@@ -623,7 +666,9 @@ class PackedSequenceDynamicCutSampler(DynamicCutSampler):
             shuffle_buffer_size=shuffle_buffer_size,
             **kwargs,
         )
+        _check_packing_policy(packing_policy, self.constraint)
         self.packing_buffer_size = packing_buffer_size
+        self.packing_policy = packing_policy
         self._batcher = None
         self._restored_packing_buffer_tokens = []
         self._restored_legacy_examples = []
@@ -649,6 +694,7 @@ class PackedSequenceDynamicCutSampler(DynamicCutSampler):
     def state_dict(self) -> dict[str, Any]:
         state = super().state_dict()
         state["packing_buffer_size"] = self.packing_buffer_size
+        state["packing_policy"] = self.packing_policy
         if self._uses_indexed_restore():
             if self._batcher is not None:
                 state["packing_buffer_tokens"] = self._capture_packing_buffer_tokens(self._batcher.reuse_cuts_buffer)
@@ -666,6 +712,11 @@ class PackedSequenceDynamicCutSampler(DynamicCutSampler):
                 "Restored packing_buffer_size must be a positive packing-buffer size " f"(got {packing_buffer_size})"
             )
         self.packing_buffer_size = packing_buffer_size
+        # A replay restore re-forms the consumed batches, so it needs the policy that formed them;
+        # a state without the key was saved before the option existed.
+        packing_policy = state_dict.pop("packing_policy", "best_fit")
+        _check_packing_policy(packing_policy, self.constraint)
+        self.packing_policy = packing_policy
         tokens = state_dict.pop("packing_buffer_tokens", None)
         self._restored_packing_buffer_tokens = [] if tokens is None else list(tokens)
         # Read checkpoints created by the previous one-candidate implementation.
@@ -722,7 +773,20 @@ class PackedSequenceDynamicCutSampler(DynamicCutSampler):
             quadratic_duration=self.quadratic_duration,
             diagnostics=self.diagnostics,
             packing_buffer_size=self.packing_buffer_size,
+            packing_policy=self.packing_policy,
         )
         if self._inject_restored_packing_buffer:
             self._batcher.reuse_cuts_buffer.extend(self._restore_packing_buffer())
         self.cuts_iter = iter(self._batcher)
+
+
+def _check_packing_policy(packing_policy: str, constraint: Any) -> None:
+    if packing_policy not in PACKING_POLICIES:
+        raise ValueError(f"packing_policy must be one of {PACKING_POLICIES} (got {packing_policy!r})")
+    if packing_policy == "sequential" and not (
+        isinstance(constraint, MultimodalSamplingConstraint) and constraint.use_packed_sequence_sampling
+    ):
+        raise ValueError(
+            "packing_policy='sequential' requires a MultimodalSamplingConstraint "
+            f"with use_packed_sequence_sampling=True (got {constraint!r})"
+        )

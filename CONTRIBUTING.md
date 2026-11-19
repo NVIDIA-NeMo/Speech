@@ -140,12 +140,12 @@ Your  pull requests must pass all checks and peer-review before they can be merg
 
 # General principles
 1. **User-oriented**: make it easy for end users, even at the cost of writing more code in the background
-1. **Robust**: make it hard for users to make mistakes.
-1. **Well-tested**: please add simple, fast unittests. Consider adding CI tests for end-to-end functionality.
-1. **Reusable**: for every piece of code, think about how it can be reused in the future and make it easy to be reused.
-1. **Readable**: code should be easier to read.
-1. **Legal**: if you copy even one line of code from the Internet, make sure that the code allows the license that NeMo supports. Give credit and link back to the code.
-1. **Sensible**: code should make sense. If you think a piece of code might be confusing, write comments.
+2. **Robust**: make it hard for users to make mistakes.
+3. **Well-tested**: please add simple, fast unittests. Consider adding CI tests for end-to-end functionality.
+4. **Reusable**: for every piece of code, think about how it can be reused in the future and make it easy to be reused.
+5. **Readable**: code should be easier to read.
+6. **Legal**: if you copy even one line of code from the Internet, make sure that the code allows the license that NeMo supports. Give credit and link back to the code.
+7. **Sensible**: code should make sense. If you think a piece of code might be confusing, write comments.
 
 ## Class naming conventions
 * No “I”, “Interface”, “NM” nor “NeMo” pre/postfixes anywhere
@@ -164,50 +164,50 @@ We use ``black`` and ``isort`` (see ``pyproject.toml``) as our style guide. Run 
 
 1. Include docstrings for every new public class, function and method, and document every new parameter. Follow the docstring format of
    the file you change (Google style with ``Args:`` and ``Returns:``).
-1. Use Python 3 type hints for every new function and method. Prefer the builtin generics (``list``, ``dict``, ``X | None``) to ``typing.List`` and
+2. Use Python 3 type hints for every new function and method. Prefer the builtin generics (``list``, ``dict``, ``X | None``) to ``typing.List`` and
    friends, and accept ``str | Path`` for paths where it costs nothing.
-1. Avoid wild import: ``from X import *`` unless in ``X.py``, ``__all__`` is defined.
-1. Minimize the use of ``**kwargs``.
-1. ``RaiseError`` is preferred to ``assert``. Write: ```if X: raise Error``` instead of ```assert X```. Reject a bad option when the object
+3. Avoid wild import: ``from X import *`` unless in ``X.py``, ``__all__`` is defined.
+4. Minimize the use of ``**kwargs``.
+5. ``RaiseError`` is preferred to ``assert``. Write: ```if X: raise Error``` instead of ```assert X```. Reject a bad option when the object
    is constructed and before expensive work such as loading a model, and do not replace an error with a warning that lets the run continue
    with a wrong result. Re-raise with ``raise NewError(...) from e`` to keep the cause.
-1. Generic helpers are private functions, tied to a class only when they need its state. A loss is a class with ``input_types``,
+6. Generic helpers are private functions, tied to a class only when they need its state. A loss is a class with ``input_types``,
    ``output_types``, ``__init__`` and ``forward`` (see ``nemo/collections/asr/losses/bce_loss.py``).
-1. Methods should be atomic. A method shouldn't be longer than 75 lines, e.g. can be fit into the computer screen without scrolling.
-1. If a method has arguments that don't fit into one line, each argument should be in its own line for readability.
-1. Add ``__init__.py`` for every folder.
-1. F-strings are prefered to formatted strings.
-1. Loggers are preferred to print. In NeMo, you can use logger from ``from nemo.utils import logging``
-1. Private functions (functions start with ``_``) shouldn't be called outside its host file. If you need one elsewhere, drop the underscore.
-1. Order a file by importance: ``__all__`` after the imports, then the public functions and classes (the main one first), and the helpers
-   they are built on after the code that uses them, private helpers at the bottom. Follow the order of the file if it already has one.
-1. Keep imports at the top of the file, in tests as well. A local import is only for an optional dependency or an import cycle. A required
-   dependency is a normal top-level import.
-1. Give a literal that appears more than once, or whose meaning is not obvious (a model name, a shape, a magic number), a name or make it
-   a parameter. Avoid mutable module-level state.
-1. Choose names that say what the thing is and match the neighbours (option names, config keys, scripts). A broad word such as ``prompt``
-   or ``config`` needs a qualifier when the repository already uses it for something else.
-1. Comments are short and only for what the code cannot show: a non-obvious constraint or the reason for a workaround. Do not restate the
-   code, do not mention PR numbers or earlier versions, and cite a paper by its link. Mark a workaround for another project with a ``TODO``
-   that names the upstream issue, and a deprecated alias with ``TODO(<your login>)`` and the release in which it is removed.
-1. Prefer the simplest solution that does the job. Search the code for an existing helper before writing a new one, and for the same
-   pattern elsewhere: when it already exists twice, share it instead of writing it a third time. Do not add code for cases that cannot
-   occur, or an option with one sensible value.
-1. YAML configs use ASCII only. A new option also goes into the structured config (dataclass) that its siblings are in.
+7. Methods should be atomic. A method shouldn't be longer than 75 lines, e.g. can be fit into the computer screen without scrolling.
+8. If a method has arguments that don't fit into one line, each argument should be in its own line for readability.
+9. Add ``__init__.py`` for every folder.
+10. F-strings are prefered to formatted strings.
+11. Loggers are preferred to print. In NeMo, you can use logger from ``from nemo.utils import logging``
+12. Private functions (functions start with ``_``) shouldn't be called outside its host file. If you need one elsewhere, drop the underscore.
+13. Order a file by importance: ``__all__`` after the imports, then the public functions and classes (the main one first), and the helpers
+    they are built on after the code that uses them, private helpers at the bottom. Follow the order of the file if it already has one.
+14. Keep imports at the top of the file, in tests as well. A local import is only for an optional dependency or an import cycle. A required
+    dependency is a normal top-level import.
+15. Give a literal that appears more than once, or whose meaning is not obvious (a model name, a shape, a magic number), a name or make it
+    a parameter. Avoid mutable module-level state.
+16. Choose names that say what the thing is and match the neighbours (option names, config keys, scripts). A broad word such as ``prompt``
+    or ``config`` needs a qualifier when the repository already uses it for something else.
+17. Comments are short and only for what the code cannot show: a non-obvious constraint or the reason for a workaround. Do not restate the
+    code, do not mention PR numbers or earlier versions, and cite a paper by its link. Mark a workaround for another project with a ``TODO``
+    that names the upstream issue, and a deprecated alias with ``TODO(<your login>)`` and the release in which it is removed.
+18. Prefer the simplest solution that does the job. Search the code for an existing helper before writing a new one, and for the same
+    pattern elsewhere: when it already exists twice, share it instead of writing it a third time. Do not add code for cases that cannot
+    occur, or an option with one sensible value.
+19. YAML configs use ASCII only. A new option also goes into the structured config (dataclass) that its siblings are in.
 
 ## Documentation, dependencies and compatibility
 
 1. Update the documentation in the same PR when you change a public API, a configuration option, a script or a workflow. After a rename or
    removal, search ``docs/``, ``examples/`` and the configs for the old name.
-1. Write documentation for readers: simple language, one consistent narrative, no list of what each commit did. Implementation details
+2. Write documentation for readers: simple language, one consistent narrative, no list of what each commit did. Implementation details
    belong in code comments, not in a README or a user guide. Put a fact that several pages need on one page and link to it.
-1. Examples and configs point to released models and public datasets. Do not mention internal datasets, internal paths or models that are
+3. Examples and configs point to released models and public datasets. Do not mention internal datasets, internal paths or models that are
    not released yet.
-1. Released checkpoints and existing configurations keep their behavior: add new behavior as a new class or an opt-in option. When you
+4. Released checkpoints and existing configurations keep their behavior: add new behavior as a new class or an opt-in option. When you
    rename a public argument, keep the old name as a deprecated alias that warns and names the release in which it is removed.
-1. Optional dependencies are imported inside the function that uses them. A new dependency goes into ``pyproject.toml`` with its version
+5. Optional dependencies are imported inside the function that uses them. A new dependency goes into ``pyproject.toml`` with its version
    constraint; do not raise the minimum torch or Python version in a feature PR.
-1. Do not load checkpoints with ``torch.load(..., weights_only=False)``.
+6. Do not load checkpoints with ``torch.load(..., weights_only=False)``.
 
 # Collections
 Collection is a logical grouping of related Neural Modules. It is a grouping of modules that share a domain area or semantics.

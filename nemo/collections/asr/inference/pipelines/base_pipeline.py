@@ -28,8 +28,8 @@ from torch import Tensor
 
 from nemo.collections.asr.inference.model_wrappers.asr_inference_wrapper import ASRInferenceWrapper
 from nemo.collections.asr.inference.pipelines.pipeline_interface import PipelineInterface
-from nemo.collections.asr.inference.streaming.buffering.audio_bufferer import BatchedAudioBufferer
 from nemo.collections.asr.inference.streaming.buffering.cache_feature_bufferer import BatchedCacheFeatureBufferer
+from nemo.collections.asr.inference.streaming.buffering.stacked_audio_bufferer import StackedAudioBufferer
 from nemo.collections.asr.inference.streaming.framing.multi_stream import ContinuousBatchedFrameStreamer
 from nemo.collections.asr.inference.streaming.framing.request import Frame
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
@@ -412,11 +412,11 @@ class BasePipeline(PipelineInterface):
         """Initialize the bufferer."""
         check_existance_of_required_attributes(
             self,
-            ['sample_rate', 'buffer_size_in_secs'],
+            ['sample_rate', 'buffer_size_in_secs', 'device'],
         )
 
-        self.bufferer = BatchedAudioBufferer(
-            sample_rate=self.sample_rate, buffer_size_in_secs=self.buffer_size_in_secs
+        self.bufferer = StackedAudioBufferer(
+            sample_rate=self.sample_rate, buffer_size_in_secs=self.buffer_size_in_secs, device=self.device
         )
 
     def init_bufferer_for_cache_aware_streaming(self) -> None:

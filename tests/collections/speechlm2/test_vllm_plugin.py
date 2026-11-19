@@ -22,6 +22,7 @@ weights.
 
 import contextlib
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -166,6 +167,9 @@ def _install_fake_vllm(monkeypatch, version):
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
     monkeypatch.delitem(sys.modules, "nemo.collections.speechlm2.vllm.salm.config_hook", raising=False)
+    # register() writes this variable; setting it before deleting it makes monkeypatch restore the original state.
+    monkeypatch.setenv("VLLM_WORKER_MULTIPROC_METHOD", "")
+    monkeypatch.delenv("VLLM_WORKER_MULTIPROC_METHOD")
     return config_registry
 
 
@@ -191,6 +195,19 @@ def test_register_does_not_skip_supported_vllm(monkeypatch, version):
         _salm_module.register()
 
     assert "nemo_speechlm" in config_registry
+
+
+@pytest.mark.skipif(not _HAS_CONFIG, reason="SpeechLM vLLM plugin not available")
+@pytest.mark.parametrize(("preset", "expected"), ((None, "spawn"), ("fork", "fork")))
+def test_register_defaults_vllm_workers_to_spawn(monkeypatch, preset, expected):
+    """Importing the plugin initializes CUDA, so a forked engine process would fail; explicit choices win."""
+    _install_fake_vllm(monkeypatch, "0.12.0")
+    if preset is not None:
+        monkeypatch.setenv("VLLM_WORKER_MULTIPROC_METHOD", preset)
+
+    _salm_module.register()
+
+    assert os.environ["VLLM_WORKER_MULTIPROC_METHOD"] == expected
 
 
 @pytest.mark.skipif(not _HAS_CONFIG, reason="SpeechLM vLLM plugin not available")

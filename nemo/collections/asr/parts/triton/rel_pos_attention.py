@@ -26,8 +26,8 @@ the convention of ``RelPositionMultiHeadAttention`` (``rel_shift`` selects the s
 The position term ``(T_total, H, 2 * max_seqlen - 1)`` is computed from ``pos_query`` and ``pos_emb``
 inside the custom ops, in the forward and again in the backward,
 so it is never saved for the backward and no layer retains one;
-the kernels read it through 64-bit offsets, since ``H * T_total * (2 * max_seqlen - 1)`` passes 2**31
-at large packed batches.
+the kernels read it through 64-bit offsets,
+since ``H * T_total * (2 * max_seqlen - 1)`` passes 2**31 at large packed batches.
 Its buffer is ``(H, T_total, R)`` with ``R`` rounded up to a multiple of eight,
 because an odd leading dimension sends the GEMMs to slow unaligned kernels;
 the kernels take the strides of the ``(T_total, H, R)`` view.
@@ -42,8 +42,8 @@ so the backward is deterministic.
 
 One head dimension serves queries, keys, values and the position embedding, as in RETURNN's kernel
 (``returnn/torch/util/rel_pos_att_triton.py`` of https://github.com/rwth-i6/returnn), which this follows.
-The backward recomputes ``delta = sum_j p_ij dp_ij`` in a pass of its own instead of the flash-attention shortcut
-``rowsum(out * d_out)``, which holds only for an exactly accumulated ``out``;
+The backward recomputes ``delta = sum_j p_ij dp_ij`` in a pass of its own
+instead of the flash-attention shortcut ``rowsum(out * d_out)``, which holds only for an exactly accumulated ``out``;
 with bf16 storage the shortcut's rounding error enters the position-term gradient as a per-row bias.
 
 The tiles of the four kernels are tuned on a GB300 (228 KB of shared memory per block).
@@ -53,6 +53,7 @@ so the kernels run on workstation and consumer GPUs as well, at a lower speed.
 """
 
 import math
+from typing import Callable
 
 import torch
 import triton
@@ -65,39 +66,15 @@ __all__ = ["PACKED_REL_POS_ATTENTION_DTYPES", "packed_rel_pos_attention"]
 # the dtypes the kernels read and write; the softmax and the accumulations run in float32 either way
 PACKED_REL_POS_ATTENTION_DTYPES = (torch.float32, torch.bfloat16, torch.float16)
 
-# Tiles (BLOCK_M, BLOCK_N, warps, pipeline stages); the first entry of each ladder is the configuration tuned on a
-# GB300, the later ones need less shared memory (see _launch).
-# The forward: 64 x 128 tiles with eight warps and two stages (tuned at D = 128 in bf16);
-# rows above 256 bytes (float32 at D = 128) start at 64 key columns.
+# Tiles (BLOCK_M, BLOCK_N, warps, pipeline stages);
+# the first entry of each ladder is the configuration tuned on a GB300, the later ones need less shared memory.
+# The forward: 64 x 128 tiles with eight warps and two stages (tuned at D = 128; 148 KB in float32).
 FORWARD_TILES = ((64, 128, 8, 2), (64, 64, 8, 2), (64, 64, 4, 1), (32, 64, 4, 1), (32, 32, 4, 1))
-FORWARD_TILES_WIDE = FORWARD_TILES[1:]
 # The backward kernels: 64 x 64 tiles up to D = 64, 32 x 32 above.
 BACKWARD_TILES = ((64, 64, 4, 3), (32, 32, 4, 3), (32, 32, 4, 1), (16, 32, 4, 1))
 BACKWARD_TILES_WIDE = BACKWARD_TILES[1:]
-# the ladder entry in use per (kernel, device, dtype, head width)
-_tiles_in_use: dict[tuple, int] = {}
-
-
-def _launch(kernel, ladder, key, grid, args, constexprs):
-    """Launch ``kernel`` with the first entry of ``ladder`` that the device's shared memory takes.
-
-    Triton refuses a configuration beyond the device's shared memory at its first launch (``OutOfResources``);
-    the next entry is tried, and the one that runs is remembered under ``key``.
-    ``grid`` maps the tile sizes (BLOCK_M, BLOCK_N) to the launch grid.
-    """
-    error = None
-    for index in range(_tiles_in_use.get(key, 0), len(ladder)):
-        block_m, block_n, num_warps, num_stages = ladder[index]
-        try:
-            kernel[grid(block_m, block_n)](
-                *args, BLOCK_M=block_m, BLOCK_N=block_n, num_warps=num_warps, num_stages=num_stages, **constexprs
-            )
-        except OutOfResources as exc:
-            error = exc
-            continue
-        _tiles_in_use[key] = index
-        return
-    raise error
+# the head enters the dropout seed through this stride
+DROPOUT_HEAD_SEED_STRIDE = tl.constexpr(1000003)
 
 
 def packed_rel_pos_attention(
@@ -126,8 +103,9 @@ def packed_rel_pos_attention(
             so the table must cover at least ``max_seqlen - 1`` positions each way (``R >= 2 * max_seqlen - 1``).
         seq_starts: first row of every utterance, shape ``(B,)``, integer.
         seq_lens: rows of every utterance, shape ``(B,)``, integer; the rows between the utterances are never read.
-        max_seqlen: longest utterance, a host integer; the lengths are not checked against it (no device read),
-            and an utterance beyond it attends within ``max_seqlen`` positions with its later query rows left zero.
+        max_seqlen: longest utterance, a host integer; the lengths are not checked against it (no device read):
+            an utterance beyond it is attended within the table's reach,
+            and its query rows past the last launched tile row are left zero.
         dropout_p: dropout probability on the attention weights, below one.
         dropout_seed: one-element integer tensor with the Philox seed for a reproducible mask;
             drawn on the device of ``q`` by default, which gives a fresh mask on every CUDA-graph replay.
@@ -172,7 +150,9 @@ def packed_rel_pos_attention(
     if scale is None:
         scale = 1.0 / math.sqrt(head_dim)
     if total == 0 or max_seqlen == 0:
-        return torch.zeros_like(q)
+        # nothing to attend; every input keeps a zero gradient edge
+        anchor = (k.sum() + v.sum() + pos_query.sum() + pos_emb.sum()).to(q.dtype) * 0.0
+        return q * 0.0 + anchor
     if width > 2 * max_seqlen - 1:
         center = (width - 1) // 2
         pos_emb = pos_emb[center - (max_seqlen - 1) : center + max_seqlen]
@@ -204,37 +184,6 @@ def packed_rel_pos_attention(
     return out
 
 
-def _keep_mask(
-    total: int, heads: int, max_seqlen: int, *, dropout_p: float, dropout_seed: Tensor, device: torch.device
-) -> Tensor:
-    """The attention weights the kernels keep under dropout, for exact comparisons with a dense reference.
-
-    Args:
-        total: rows of the packed batch.
-        heads: attention heads.
-        max_seqlen: longest utterance.
-        dropout_p: dropout probability on the attention weights.
-        dropout_seed: the one-element integer seed tensor the kernels ran with.
-        device: the CUDA device.
-
-    Returns:
-        Boolean mask of shape ``(T_total, H, max_seqlen)``:
-        entry ``(i, h, j)`` says whether query row ``i`` keeps the weight of the key at local position ``j``.
-    """
-    mask = torch.zeros((total, heads, max_seqlen), dtype=torch.int8, device=device)
-    if total and heads and max_seqlen:
-        _keep_mask_kernel[(total, heads)](
-            mask,
-            dropout_seed.to(device=device, dtype=torch.int32),
-            dropout_p,
-            max_seqlen,
-            mask.stride(0),
-            mask.stride(1),
-            BLOCK_N=triton.next_power_of_2(max_seqlen),
-        )
-    return mask.bool()
-
-
 @torch.library.custom_op("nemo_asr::packed_rel_pos_attention_fwd", mutates_args=(), device_types="cuda")
 def _attention_fwd(
     q: Tensor,
@@ -260,7 +209,19 @@ def _attention_fwd(
 
 
 @_attention_fwd.register_fake
-def _attention_fwd_fake(q, k, v, pos_query, pos_emb, seq_starts, seq_lens, max_seqlen, dropout_p, dropout_seed, scale):
+def _attention_fwd_fake(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    pos_query: Tensor,
+    pos_emb: Tensor,
+    seq_starts: Tensor,
+    seq_lens: Tensor,
+    max_seqlen: int,
+    dropout_p: float,
+    dropout_seed: Tensor,
+    scale: float,
+) -> tuple[Tensor, Tensor]:
     del k, v, pos_query, pos_emb, seq_starts, seq_lens, max_seqlen, dropout_p, dropout_seed, scale
     # new_empty, not empty_like: the outputs are contiguous whatever the traced input layout
     return q.new_empty(tuple(q.shape)), q.new_empty(tuple(q.shape[:2]), dtype=torch.float32)
@@ -325,8 +286,20 @@ def _attention_bwd(
 
 @_attention_bwd.register_fake
 def _attention_bwd_fake(
-    q, k, v, pos_query, pos_emb, seq_starts, seq_lens, max_seqlen, lse, d_out, dropout_p, dropout_seed, scale
-):
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    pos_query: Tensor,
+    pos_emb: Tensor,
+    seq_starts: Tensor,
+    seq_lens: Tensor,
+    max_seqlen: int,
+    lse: Tensor,
+    d_out: Tensor,
+    dropout_p: float,
+    dropout_seed: Tensor,
+    scale: float,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     del seq_starts, seq_lens, max_seqlen, lse, d_out, dropout_p, dropout_seed, scale
     return (
         q.new_empty(tuple(q.shape)),
@@ -392,11 +365,18 @@ def _term_view(buffer: Tensor) -> Tensor:
     return buffer.permute(1, 0, 2)
 
 
-def _head_dim_block(head_dim: int) -> int:
-    return max(16, triton.next_power_of_2(head_dim))
-
-
-def _forward(q, k, v, position_term, seq_starts, seq_lens, max_seqlen, dropout_p, dropout_seed, scale):
+def _forward(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    position_term: Tensor,
+    seq_starts: Tensor,
+    seq_lens: Tensor,
+    max_seqlen: int,
+    dropout_p: float,
+    dropout_seed: Tensor,
+    scale: float,
+) -> tuple[Tensor, Tensor]:
     total, heads, head_dim = q.shape
     # zeros, not empty: the kernels write the rows of the utterances only
     out = torch.zeros_like(q)
@@ -404,10 +384,9 @@ def _forward(q, k, v, position_term, seq_starts, seq_lens, max_seqlen, dropout_p
     n_batch = seq_starts.numel()
     if n_batch and max_seqlen:
         head_dim_block = _head_dim_block(head_dim)
-        ladder = FORWARD_TILES if head_dim_block * q.element_size() <= 256 else FORWARD_TILES_WIDE
         _launch(
             _forward_kernel,
-            ladder,
+            FORWARD_TILES,
             ("forward", q.device.index, q.dtype, head_dim_block),
             lambda block_m, block_n: (n_batch * heads, triton.cdiv(max_seqlen, block_m)),
             (
@@ -436,20 +415,20 @@ def _forward(q, k, v, position_term, seq_starts, seq_lens, max_seqlen, dropout_p
 
 
 def _backward(
-    q,
-    k,
-    v,
-    position_term,
-    seq_starts,
-    seq_lens,
-    max_seqlen,
-    lse,
-    d_out,
-    dropout_p,
-    dropout_seed,
-    scale,
-    d_position_term,
-):
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    position_term: Tensor,
+    seq_starts: Tensor,
+    seq_lens: Tensor,
+    max_seqlen: int,
+    lse: Tensor,
+    d_out: Tensor,
+    dropout_p: float,
+    dropout_seed: Tensor,
+    scale: float,
+    d_position_term: Tensor,
+) -> tuple[Tensor, Tensor, Tensor]:
     total, heads, head_dim = q.shape
     delta = torch.zeros((total, heads), dtype=torch.float32, device=q.device)
     dq = torch.zeros_like(q, dtype=torch.float32)
@@ -498,6 +477,43 @@ def _backward(
     return dq, dk, dv
 
 
+def _head_dim_block(head_dim: int) -> int:
+    return max(16, triton.next_power_of_2(head_dim))
+
+
+# the ladder entry in use per (kernel, device, dtype, head width)
+_tiles_in_use: dict[tuple[str, int, torch.dtype, int], int] = {}
+
+
+def _launch(
+    kernel: triton.JITFunction,
+    ladder: tuple[tuple[int, int, int, int], ...],
+    key: tuple[str, int, torch.dtype, int],
+    grid: Callable[[int, int], tuple[int, int]],
+    args: tuple,
+    constexprs: dict[str, object],
+) -> None:
+    """Launch ``kernel`` with the first entry of ``ladder`` that the device's shared memory takes.
+
+    Triton refuses a configuration beyond the device's shared memory at its first launch (``OutOfResources``);
+    the next entry is tried, and the one that runs is remembered under ``key``.
+    ``grid`` maps the tile sizes (BLOCK_M, BLOCK_N) to the launch grid.
+    """
+    error = None
+    for index in range(_tiles_in_use.get(key, 0), len(ladder)):
+        block_m, block_n, num_warps, num_stages = ladder[index]
+        try:
+            kernel[grid(block_m, block_n)](
+                *args, BLOCK_M=block_m, BLOCK_N=block_n, num_warps=num_warps, num_stages=num_stages, **constexprs
+            )
+        except OutOfResources as exc:
+            error = exc
+            continue
+        _tiles_in_use[key] = index
+        return
+    raise error
+
+
 @triton.jit
 def _load_rows(ptr, rows, h, stride_t, stride_h, offs_d, row_mask, D: tl.constexpr, D_PAD: tl.constexpr):
     """A ``(rows, D_PAD)`` tile of a ``(T_total, H, D)`` tensor at head ``h``, zero outside the rows and past ``D``."""
@@ -536,12 +552,9 @@ def _term_offsets(q_rows, h, rel, stride_bt, stride_bh):
 
 @triton.jit
 def _keep(dropout_seed, h, q_rows, offs_n, drop_stride, dropout_p):
-    """The kept attention weights of the (global query row, local key column) pairs; 32-bit Philox offsets.
-
-    The head enters the seed through a literal stride (Triton takes no Python globals in a kernel).
-    """
-    offsets = q_rows[:, None] * drop_stride + offs_n[None, :]
-    return tl.rand(tl.load(dropout_seed) + h * 1000003, offsets) >= dropout_p
+    """Which (global query row, local key column) pairs keep their weight: a Philox hash with the head in the seed."""
+    offsets = q_rows[:, None].to(tl.int64) * drop_stride + offs_n[None, :]
+    return tl.rand(tl.load(dropout_seed) + h * DROPOUT_HEAD_SEED_STRIDE, offsets) >= dropout_p
 
 
 @triton.jit
@@ -616,15 +629,6 @@ def _forward_kernel(
     out = acc / l_i[:, None]
     _store_rows(Out, q_rows, h, stride_qt, stride_qh, offs_d, q_mask, out, D, D_PAD)
     tl.store(Lse + q_rows * H + h, m_i + tl.log(l_i), mask=q_mask)
-
-
-@triton.jit
-def _keep_mask_kernel(Mask, Seed, dropout_p, max_seqlen, stride_mt, stride_mh, BLOCK_N: tl.constexpr):
-    i = tl.program_id(0)
-    h = tl.program_id(1)
-    offs_n = tl.arange(0, BLOCK_N)
-    keep = tl.rand(tl.load(Seed) + h * 1000003, i * max_seqlen + offs_n) >= dropout_p
-    tl.store(Mask + i * stride_mt + h * stride_mh + offs_n, keep.to(tl.int8), mask=offs_n < max_seqlen)
 
 
 @triton.jit
@@ -763,8 +767,8 @@ def _dkv_kernel(
         dp = _dot(do, tl.trans(v), IEEE)
         if DROPOUT:
             dp = tl.where(keep, dp / (1.0 - dropout_p), 0.0)
-        # the scale is folded into ds before the dot, as in the flash-attention backward:
-        # Triton 3.8 compiled a scaled dot (dot(trans(ds), q) * scale) in bf16 and fp16 to a non-accumulating update
+        # the scale is folded into ds before the dot, as in the flash-attention backward;
+        # the scaled dot (dot(trans(ds), q) * scale) miscompiles on Blackwell in bf16 and fp16 (triton-lang/triton#12757)
         ds = tl.where(valid, p * (dp - delta[:, None]) * scale, 0.0)
         dk += _dot(tl.trans(ds.to(q.dtype)), q, IEEE)
     _store_rows(DK, k_rows, h, stride_qt, stride_qh, offs_d, n_mask, dk, D, D_PAD)

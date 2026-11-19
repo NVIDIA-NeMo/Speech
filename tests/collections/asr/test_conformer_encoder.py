@@ -1046,8 +1046,13 @@ class TestPackedConformerEncoderCuda:
 
     @pytest.mark.unit
     @pytest.mark.skipif(not TRITON_AVAILABLE, reason="requires Triton")
-    def test_rel_pos_attention_dropout_runs_through_the_kernel(self):
+    def test_rel_pos_attention_dropout_runs_through_the_kernel(self, monkeypatch):
         """Attention dropout with rel_pos trains packed, in float32 and under bf16 autocast, without FlexAttention."""
+
+        def no_flex_attention(*args, **kwargs):
+            raise AssertionError("FlexAttention must not run")
+
+        monkeypatch.setattr(packed_attention_module, "_flex_packed_attention", no_flex_attention)
         torch.manual_seed(11)
         encoder = _packed_encoder(self_attention_model="rel_pos", dropout_att=0.1, d_model=32, n_heads=2)
         encoder = encoder.cuda().train()
@@ -1056,7 +1061,10 @@ class TestPackedConformerEncoderCuda:
         for autocast in (False, True):
             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=autocast):
                 packed = encoder.forward_sequence_packed(features, lengths)
+                again = encoder.forward_sequence_packed(features, lengths)
             assert packed.data.shape == (int(packed.lengths.sum()), 32) and torch.isfinite(packed.data).all()
+            # the dropout draws a fresh mask per call
+            assert not torch.equal(packed.data, again.data)
             encoder.zero_grad()
             packed.data.float().square().mean().backward()
             assert encoder.layers[0].self_attn.linear_pos.weight.grad is not None

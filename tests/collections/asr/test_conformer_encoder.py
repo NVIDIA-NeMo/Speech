@@ -814,27 +814,61 @@ class TestPackedConformerEncoder:
         assert frame.grad is not None and not frame.grad.any() and conv.batch_norm.weight.grad is not None
 
     @pytest.mark.unit
-    def test_interctc_capture_is_rejected(self):
-        """The InterCTC consumer expects padded (B, D, T) tensors, so the packed forward refuses the capture."""
-        encoder = _packed_encoder().double().eval()
-        lengths = torch.tensor([20, 13])
+    @pytest.mark.parametrize("feat_out", [-1, 12])
+    def test_interctc_capture_is_packed(self, feat_out):
+        """The packed forward registers the InterCTC capture token-flat, the padded forward as (B, D, T)."""
+        encoder = _packed_encoder(feat_out=feat_out).double().eval()
+        lengths = torch.tensor([20, 13, 2])
         features = _packed_test_features(lengths)
         guid = getattr(encoder, "model_guid", None)
         encoder.update_access_cfg({"interctc": {"capture_layers": [0]}, "detach": True}, guid=guid)
-        encoder.set_access_enabled(access_enabled=True, guid=guid)
         try:
-            with pytest.raises(NotImplementedError, match="InterCTC"):
-                encoder.forward_sequence_packed(features, lengths)
-            # the padded forward still captures
-            encoder(audio_signal=features, length=lengths)
-            registry = {}
-            for module_registry in encoder.get_module_registry(encoder).values():
-                registry.update(module_registry)
-            assert registry["interctc/layer_output_0"][0].shape[1] == 16  # (B, D, T)
+            registries = []
+            for packed in (False, True):
+                # reset_registry switches the access off
+                encoder.set_access_enabled(access_enabled=True, guid=guid)
+                if packed:
+                    assert encoder.supports_sequence_packed_output
+                    encoder.forward_sequence_packed(features, lengths)
+                else:
+                    encoder(audio_signal=features, length=lengths)
+                registry = {}
+                for module_registry in encoder.get_module_registry(encoder).values():
+                    registry.update(module_registry)
+                assert sorted(registry) == ["interctc/layer_length_0", "interctc/layer_output_0"]
+                assert all(len(captures) == 1 for captures in registry.values())
+                registries.append({name: captures[0] for name, captures in registry.items()})
+                encoder.reset_registry()
+            padded, packed = registries
+            capture = packed["interctc/layer_output_0"]
+            assert isinstance(capture, PackedEncoderActivations) and not capture.data.requires_grad
+            assert capture.data.shape[1] == (16 if feat_out == -1 else feat_out)
+            padded_lengths = padded["interctc/layer_length_0"]
+            assert padded_lengths.tolist() == [4, 3, 1]
+            assert capture.lengths.tolist() == packed["interctc/layer_length_0"].tolist() == padded_lengths.tolist()
+            torch.testing.assert_close(capture.data, _valid_frames(padded["interctc/layer_output_0"], padded_lengths))
         finally:
             encoder.reset_registry()
             encoder.set_access_enabled(access_enabled=False, guid=guid)
             encoder.interctc_capture_at_layers = None
+
+    @pytest.mark.unit
+    def test_save_encoder_tensors_capture_is_rejected(self):
+        """The consumers of this capture expect padded layer outputs, so the packed forward refuses it."""
+        encoder = _packed_encoder().double().eval()
+        lengths = torch.tensor([20, 13])
+        features = _packed_test_features(lengths)
+        guid = getattr(encoder, "model_guid", None)
+        encoder.update_access_cfg({"save_encoder_tensors": True}, guid=guid)
+        encoder.set_access_enabled(access_enabled=True, guid=guid)
+        try:
+            assert not encoder.supports_sequence_packed_output
+            with pytest.raises(NotImplementedError, match="save_encoder_tensors"):
+                encoder.forward_sequence_packed(features, lengths)
+        finally:
+            encoder.reset_registry()
+            encoder.set_access_enabled(access_enabled=False, guid=guid)
+            encoder.access_cfg.pop("save_encoder_tensors")
 
     @pytest.mark.unit
     def test_rejects_unsupported_configurations(self):

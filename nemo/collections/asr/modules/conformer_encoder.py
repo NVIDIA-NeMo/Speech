@@ -880,11 +880,17 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         the fusion (see the smoke test).
 
         Configurations without a sequence-packed form (streaming caches, limited or chunked attention context,
-        ``rel_pos_local_attn``, reduction layers, adapters, causal or VGGNet subsampling, intermediate layer captures,
+        ``rel_pos_local_attn``, reduction layers, adapters, causal or VGGNet subsampling,
+        the ``save_encoder_tensors`` capture,
         and in training mode attention dropout where FlexAttention would have to apply it)
         are named by ``sequence_packed_unsupported_reason`` and refused here with ``NotImplementedError``;
         the parallel expert encoder and the independent dual encoder consult ``supports_sequence_packed_output``
         at dispatch time and keep their padded path for them, the plain perception module reports the reason.
+
+        InterCTC captures are registered token-flat:
+        ``interctc/layer_output_X`` is a ``PackedEncoderActivations`` with data ``(sum(T'_i), feat_out)``
+        where the padded forward registers ``(B, feat_out, T')``,
+        and ``InterCTCMixin`` takes it through ``ConvASRDecoder.forward_packed`` and ``CTCLoss.forward_packed``.
 
         Args:
             audio_signal: packed features (``PackedEncoderActivations`` with data ``(sum(T_i), feat_in)``),
@@ -953,6 +959,19 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                     x = x * 0.0 + original_signal
                 else:
                     x = (x - original_signal) / (1.0 - drop_prob) + original_signal
+            if self.is_access_enabled(getattr(self, "model_guid", None)):
+                if self.interctc_capture_at_layers is None:
+                    self.interctc_capture_at_layers = self.access_cfg.get('interctc', {}).get('capture_layers', [])
+                if lth in self.interctc_capture_at_layers:
+                    # the capture stays token-flat, see InterCTCMixin for its consumer
+                    lth_x = x if self.out_proj is None else self.out_proj(x)
+                    self.register_accessible_tensor(
+                        name=f'interctc/layer_output_{lth}',
+                        tensor=PackedEncoderActivations.from_validated(
+                            lth_x, packed.lengths, packed.cu_seqlens, packed.max_seqlen
+                        ),
+                    )
+                    self.register_accessible_tensor(name=f'interctc/layer_length_{lth}', tensor=packed.lengths)
 
         if self.out_proj is not None:
             x = self.out_proj(x)
@@ -975,7 +994,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
 
         Without a sequence-packed form: limited or chunked attention context, ``rel_pos_local_attn``,
         the sampling of attention context sizes in training, reduction layers, adapters,
-        intermediate layer captures (InterCTC and ``save_encoder_tensors``, whose consumers expect padded tensors),
+        the ``save_encoder_tensors`` capture (its consumers expect padded tensors),
         frontends other than a linear layer or a non-causal ``striding`` or ``dw_striding`` ``ConvSubsampling``,
         and instance or group normalization in the convolution modules.
         Attention dropout in training mode on CUDA: FlexAttention has no dropout, so ``rel_pos`` attention,
@@ -994,14 +1013,13 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             return "Reduction layers have no sequence-packed form."
         if isinstance(self, adapter_mixins.AdapterModuleMixin) and self.is_adapter_available():
             return "Adapters have no sequence-packed form."
-        if self.is_access_enabled(getattr(self, "model_guid", None)):
-            if self.interctc_capture_at_layers is None:
-                self.interctc_capture_at_layers = self.access_cfg.get('interctc', {}).get('capture_layers', [])
-            if self.interctc_capture_at_layers or self.access_cfg.get('save_encoder_tensors', False):
-                return (
-                    "Intermediate layer captures (InterCTC, save_encoder_tensors) have no sequence-packed form: "
-                    "their consumers expect padded (B, D, T) tensors."
-                )
+        if self.is_access_enabled(getattr(self, "model_guid", None)) and self.access_cfg.get(
+            'save_encoder_tensors', False
+        ):
+            return (
+                "The save_encoder_tensors capture has no sequence-packed form: "
+                "its consumers, the self-supervised decoders and losses, expect padded (B, T, D) layer outputs."
+            )
         pre_encode = _unwrap_checkpoint(self.pre_encode)
         if isinstance(pre_encode, ConvSubsampling):
             reason = pre_encode.sequence_packed_unsupported_reason()

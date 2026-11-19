@@ -12,10 +12,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 
+from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, unpack_encoder_output
 from nemo.core.classes.mixins import AccessMixin
 from nemo.utils import logging
 
@@ -42,6 +43,15 @@ class InterCTCMixin:
           in the `multi_validation_epoch_end` method.
         * ``self.finalize_interctc_metrics(metrics, outputs, prefix="test_")``
           in the `multi_test_epoch_end` method.
+
+    An encoder that ran sequence-packed (``ConformerEncoder.forward_sequence_packed``)
+    registers ``interctc/layer_output_X`` as ``PackedEncoderActivations``.
+    Such a capture stays token-flat through the CTC decoder and the loss,
+    which need a ``forward_packed`` method (``ConvASRDecoder`` and ``CTCLoss`` have one),
+    so the padded log probabilities are not formed where ``CTCLoss.forward_packed`` runs its token-flat kernel.
+    The WER of a packed capture is decoded from its per-frame best labels,
+    which the ``greedy`` and ``greedy_batch`` CTC decoding strategies accept
+    unless they preserve alignments or confidences; other decoding configurations raise.
     """
 
     def _process_config_values(self, loss_weights: List[float], apply_at_layers: List[int]):
@@ -173,10 +183,14 @@ class InterCTCMixin:
             if f"{prefix}final_loss" in outputs[0]:
                 metrics["log"][f"{prefix}final_loss"] = torch.stack([x[f"{prefix}final_loss"] for x in outputs]).mean()
 
-    def get_captured_interctc_tensors(self) -> List[Tuple[torch.Tensor, torch.Tensor]]:
+    def get_captured_interctc_tensors(
+        self,
+    ) -> List[Tuple[Union[torch.Tensor, PackedEncoderActivations], torch.Tensor]]:
         """Returns a list of captured tensors from encoder: tuples of (output, length).
 
         Applies ``ctc_decoder`` and returns lengths in the decoder's output-frame domain.
+        The output is the padded ``(B, T, D)`` log probabilities,
+        or for a sequence-packed capture ``PackedEncoderActivations`` with data ``(sum(T_i), D)``.
         """
         if not self.is_interctc_enabled():
             return []
@@ -208,6 +222,15 @@ class InterCTCMixin:
                     "Make sure encoder.forward is called exactly one time before interCTC loss is computed."
                 )
             decoder = self.get_interctc_param('decoder')
+            if isinstance(layer_outputs[0], PackedEncoderActivations):
+                if not hasattr(decoder, 'forward_packed'):
+                    raise NotImplementedError(
+                        f"The encoder captured layer {layer_idx} sequence-packed, "
+                        f"and {type(decoder).__name__} has no forward_packed for it."
+                    )
+                log_probs = decoder.forward_packed(layer_outputs[0])
+                captured_tensors.append((log_probs, log_probs.lengths))
+                continue
             decoder_kwargs = {'encoder_output': layer_outputs[0]}
             if getattr(decoder, 'requires_encoded_lengths', False):
                 decoder_kwargs['encoded_lengths'] = layer_lengths[0]
@@ -270,22 +293,48 @@ class InterCTCMixin:
             captured_tensors,
             self.get_interctc_param('intermediate_loss_weights'),
         ):
+            predictions = intermediate_result[0]
+            packed = isinstance(predictions, PackedEncoderActivations)
             if compute_loss:
-                inter_loss_value = self.get_interctc_param('loss')(
-                    log_probs=intermediate_result[0],
-                    targets=transcript,
-                    target_lengths=transcript_len,
-                    input_lengths=intermediate_result[1],
-                )
+                if packed:
+                    loss = self.get_interctc_param('loss')
+                    if not hasattr(loss, 'forward_packed'):
+                        raise NotImplementedError(
+                            f"The encoder captured layer {layer_idx} sequence-packed, "
+                            f"and {type(loss).__name__} has no forward_packed for it."
+                        )
+                    inter_loss_value = loss.forward_packed(
+                        log_probs=predictions, targets=transcript, target_lengths=transcript_len
+                    )
+                else:
+                    inter_loss_value = self.get_interctc_param('loss')(
+                        log_probs=predictions,
+                        targets=transcript,
+                        target_lengths=transcript_len,
+                        input_lengths=intermediate_result[1],
+                    )
                 metrics[f"{log_prefix}inter_ctc_loss_l{layer_idx}"] = inter_loss_value.detach()
                 loss_value += inter_loss_value * loss_weight
             if compute_wer:
-                self.get_interctc_param('wer').update(
-                    predictions=intermediate_result[0],
-                    targets=transcript,
-                    targets_lengths=transcript_len,
-                    predictions_lengths=intermediate_result[1],
-                )
+                if packed:
+                    # the metric decodes padded input: it gets the (B, T) best labels, not the log probabilities
+                    labels = predictions.with_data(predictions.data.argmax(dim=-1, keepdim=True))
+                    predictions = unpack_encoder_output(labels).squeeze(-1)
+                try:
+                    self.get_interctc_param('wer').update(
+                        predictions=predictions,
+                        targets=transcript,
+                        targets_lengths=transcript_len,
+                        predictions_lengths=intermediate_result[1],
+                    )
+                except (TypeError, ValueError) as e:
+                    if not packed:
+                        raise
+                    raise NotImplementedError(
+                        f"The WER of the sequence-packed capture of layer {layer_idx} is decoded from per-frame labels, "
+                        "which the configured CTC decoding does not accept: use the greedy or greedy_batch strategy "
+                        "without preserved alignments and confidences, or pass compute_wer=False."
+                    ) from e
                 wer, wer_num, wer_denom = self.get_interctc_param('wer').compute()
                 self.get_interctc_param('wer').reset()
                 metrics.update({f'{log_prefix}inter_wer_l{layer_idx}': wer})

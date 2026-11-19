@@ -19,6 +19,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+import torch
 from easymagpie_vllm_omni.serving_adapter import _build_adapter_cls
 from easymagpie_vllm_omni.serving_stream import EasyMagpieInputStream, EasyMagpieStreamingSpeechHandler
 from easymagpie_vllm_omni.tokenizer import EasyMagpieTextTokenizer
@@ -370,7 +371,14 @@ async def test_handler_tokenizes_ipa_span_split_across_text_events():
             SamplingParams(max_tokens=20, output_kind=RequestOutputKind.DELTA),
         ]
 
+        emitted_audio_chunks = 0
+
         def generate(self, *, prompt, **_kwargs):
+            assert all(
+                actual is not default
+                for actual, default in zip(_kwargs["sampling_params_list"], self.default_sampling_params_list)
+            )
+
             async def outputs():
                 async for chunk in prompt:
                     count = chunk.sampling_params.max_tokens
@@ -378,6 +386,8 @@ async def test_handler_tokenizes_ipa_span_split_across_text_events():
                         stage_id=0,
                         outputs=[SimpleNamespace(token_ids=[1] * count, finish_reason="length")],
                     )
+                    self.emitted_audio_chunks += 1
+                    yield SimpleNamespace(stage_id=1, multimodal_output={"audio": [torch.ones(8) * 0.1], "sr": 22050})
 
             return outputs()
 
@@ -425,8 +435,8 @@ async def test_handler_tokenizes_ipa_span_split_across_text_events():
 
         @staticmethod
         async def _generate_pcm_chunks(generator, _request_id):
-            async for _output in generator:
-                yield b"\x01\x02"
+            pytest.fail("DELTA audio lists must not use the upstream cumulative-list serializer")
+            yield b""
 
     websocket = FakeWebSocket()
     handler = EasyMagpieStreamingSpeechHandler(FakeSpeechService())
@@ -434,8 +444,34 @@ async def test_handler_tokenizes_ipa_span_split_across_text_events():
 
     assert websocket.accepted
     assert websocket.audio_chunks
+    assert len(websocket.audio_chunks) == FakeSpeechService.engine_client.emitted_audio_chunks
     assert websocket.json_messages[0]["type"] == "audio.start"
     assert websocket.json_messages[-2]["sentence_text"] == "x<bop>ab<eop>y"
     assert websocket.json_messages[-2]["text_tokens"] == 4
     assert websocket.json_messages[-2]["type"] == "audio.done"
     assert websocket.json_messages[-1] == {"type": "session.done", "total_sentences": 1}
+
+
+@pytest.mark.asyncio
+async def test_streaming_audio_lists_are_independent_deltas():
+    from easymagpie_vllm_omni.serving_stream import _streaming_pcm_deltas
+
+    async def outputs():
+        yield SimpleNamespace(stage_id=0, outputs=[])
+        for _ in range(3):
+            yield SimpleNamespace(multimodal_output={"audio": [torch.ones(2560) * 0.1], "sr": 32000})
+
+    chunks = [chunk async for chunk in _streaming_pcm_deltas(outputs(), 32000)]
+    assert len(chunks) == 3
+    assert sum(map(len, chunks)) == 3 * 2560 * 2
+
+
+@pytest.mark.asyncio
+async def test_streaming_audio_rejects_a_sample_rate_change():
+    from easymagpie_vllm_omni.serving_stream import _streaming_pcm_deltas
+
+    async def outputs():
+        yield SimpleNamespace(multimodal_output={"audio": [torch.ones(16)], "sr": 22050})
+
+    with pytest.raises(ValueError, match="session sample rate"):
+        _ = [chunk async for chunk in _streaming_pcm_deltas(outputs(), 32000)]

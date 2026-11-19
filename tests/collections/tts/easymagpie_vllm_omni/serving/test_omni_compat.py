@@ -78,6 +78,7 @@ async def test_terminal_update_publishes_completion_when_stages_are_already_wait
         calls.append(msg)
 
     monkeypatch.setattr(Orchestrator, "_handle_streaming_update", original)
+    monkeypatch.delattr(Orchestrator, '_apply_raw_terminal_stage_finish', raising=False)
     patch_streaming_lifecycle()
     patched = Orchestrator._handle_streaming_update
 
@@ -113,3 +114,19 @@ async def test_terminal_update_publishes_completion_when_stages_are_already_wait
     assert audio["audio"].numel() == 0
     assert audio["sr"] == 22050
     assert cleanups == [["request"]]
+
+
+@pytest.mark.asyncio
+async def test_native_terminal_lifecycle_waits_for_downstream_audio(monkeypatch):
+    calls = []
+
+    async def original(self, message):
+        calls.append(message)
+
+    monkeypatch.setattr(Orchestrator, '_handle_streaming_update', original)
+    monkeypatch.setattr(Orchestrator, '_apply_raw_terminal_stage_finish', object(), raising=False)
+    patch_streaming_lifecycle()
+    assert Orchestrator._handle_streaming_update is original
+    message = SimpleNamespace(prompt=SimpleNamespace(resumable=False))
+    await Orchestrator._handle_streaming_update(SimpleNamespace(), message)
+    assert calls == [message]

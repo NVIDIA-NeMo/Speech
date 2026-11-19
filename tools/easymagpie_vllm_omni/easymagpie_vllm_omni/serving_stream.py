@@ -24,6 +24,7 @@ from typing import Any, cast
 from fastapi import WebSocket, WebSocketDisconnect
 from vllm.engine.protocol import StreamingInput
 from vllm.logger import init_logger
+from vllm.sampling_params import RequestOutputKind
 from vllm.utils import random_uuid
 from vllm_omni.entrypoints.openai.protocol.audio import OpenAICreateSpeechRequest
 from vllm_omni.entrypoints.openai.serving_speech_stream import OmniStreamingSpeechHandler
@@ -269,8 +270,10 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
             )
             spec = adapter.build_streaming_spec(request)
             text_encoder = spec.tokenizer.incremental_encoder()
-            sampling_params_list = list(self._speech_service.engine_client.default_sampling_params_list)
+            sampling_params_list = copy.deepcopy(self._speech_service.engine_client.default_sampling_params_list)
             sampling_params_list = coerce_param_message_types(sampling_params_list, is_streaming=True)
+            for params in sampling_params_list:
+                params.output_kind = RequestOutputKind.DELTA
             stage0_params = sampling_params_list[0]
             max_new_tokens = config.max_new_tokens or getattr(stage0_params, "max_tokens", 2048)
             input_stream = EasyMagpieInputStream(
@@ -307,9 +310,9 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
 
             async def send_audio() -> int:
                 total_bytes = 0
-                async with aclosing(
-                    self._speech_service._generate_pcm_chunks(observed_generator(), request_id)
-                ) as chunks:
+                # The pinned Omni runtime emits DELTA audio lists. The generic
+                # serializer treats lists as cumulative and drops later chunks.
+                async with aclosing(_streaming_pcm_deltas(observed_generator(), spec.sample_rate)) as chunks:
                     async for chunk in chunks:
                         total_bytes += len(chunk)
                         await websocket.send_bytes(chunk)
@@ -417,3 +420,18 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
                     await self._speech_service.engine_client.abort(request_id)
                 except Exception:
                     logger.debug("Failed to abort incremental request %s", request_id, exc_info=True)
+
+
+async def _streaming_pcm_deltas(generator, expected_sample_rate):
+    """Serialize every DELTA audio list without applying a cumulative cursor."""
+    import numpy as np
+    from easymagpie_vllm_omni.audio_output import extract_audio_from_stage_output
+
+    async for output in generator:
+        extracted = extract_audio_from_stage_output(output)
+        if extracted is None:
+            continue
+        waveform, rate = extracted
+        if rate != expected_sample_rate:
+            raise ValueError("The incremental audio sample rate differs from the session sample rate")
+        yield (np.clip(waveform, -1.0, 1.0) * 32767.0).astype('<i2').tobytes()

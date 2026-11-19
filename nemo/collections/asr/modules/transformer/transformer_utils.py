@@ -136,6 +136,8 @@ def get_nemo_transformer(
             self_attn=cfg.get('self_attn', None),
             cross_attn=cfg.get('cross_attn', None),
             feed_forward=cfg.get('feed_forward', None),
+            ffn_hidden_dropout=cfg.get('ffn_hidden_dropout', 0.0),
+            dropout_broadcast=cfg.get('dropout_broadcast', False),
         )
 
     return model

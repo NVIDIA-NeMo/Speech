@@ -77,6 +77,11 @@ class NeMoTransformerDecoderConfig(NeMoTransformerConfig):
     cross_attn: Optional[Any] = None
     feed_forward: Optional[Any] = None
 
+    # dropout inside the feed-forward, and one mask over the feature axis per call
+    # for the dropouts on the sub-layer outputs and inside the feed-forward, see TransformerDecoderNM
+    ffn_hidden_dropout: float = 0.0
+    dropout_broadcast: bool = False
+
 
 class TransformerEncoderNM(EncoderModule, Exportable):
     def __init__(
@@ -195,6 +200,11 @@ class TransformerDecoderNM(DecoderModule, Exportable):
         self_attn: block of the self-attention of every block, see `TransformerDecoderBlock`
         cross_attn: block of the attention over the encoder states of every block, see `TransformerDecoderBlock`
         feed_forward: block of the feed-forward sub-layer of every block, see `TransformerDecoderBlock`
+        ffn_hidden_dropout: probability of dropout applied inside the feed-forward,
+            to the activation output before the second projection
+        dropout_broadcast: one mask over the feature axis per call, shared over batch and time,
+            for the dropouts on the sub-layer outputs and inside the feed-forward, see `TransformerDecoderBlock`;
+            the embedding dropout and the dropout on the attention scores keep their masks per element
     """
 
     DECODER_TYPE: type = TransformerDecoder
@@ -221,6 +231,8 @@ class TransformerDecoderNM(DecoderModule, Exportable):
         self_attn: ModuleBlock | None = None,
         cross_attn: ModuleBlock | None = None,
         feed_forward: ModuleBlock | None = None,
+        ffn_hidden_dropout: float = 0.0,
+        dropout_broadcast: bool = False,
     ):
         super().__init__()
 
@@ -257,6 +269,8 @@ class TransformerDecoderNM(DecoderModule, Exportable):
             self_attn=self_attn,
             cross_attn=cross_attn,
             feed_forward=feed_forward,
+            ffn_hidden_dropout=ffn_hidden_dropout,
+            dropout_broadcast=dropout_broadcast,
         )
 
     @typecheck()

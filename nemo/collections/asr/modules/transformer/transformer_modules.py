@@ -21,6 +21,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from nemo.collections.asr.parts.submodules.broadcast_dropout import BroadcastDropout
 from nemo.collections.asr.parts.submodules.multi_head_attention import RotaryPositionalEncoding
 from nemo.collections.common.parts import form_attention_mask
 from nemo.collections.common.parts.utils import build_activation
@@ -216,6 +217,9 @@ class MultiHeadAttention(nn.Module):
         rotary_base: theta base of a rotary position embedding applied to queries and keys, self-attention only;
             keys longer than the queries are treated as a cache prefix;
             None (default) for no rotation
+        dropout_broadcast: draw the mask of ``attn_layer_dropout`` once per call over the feature axis,
+            shared over batch and time, see ``BroadcastDropout``;
+            the dropout on the attention scores keeps its mask per element
     """
 
     def __init__(
@@ -227,6 +231,7 @@ class MultiHeadAttention(nn.Module):
         return_xatt_scores=False,
         use_bias: bool = True,
         rotary_base: float | None = None,
+        dropout_broadcast: bool = False,
     ):
         super().__init__()
         if hidden_size % num_attention_heads != 0:
@@ -250,7 +255,7 @@ class MultiHeadAttention(nn.Module):
         )
 
         self.attn_dropout = nn.Dropout(attn_score_dropout)
-        self.layer_dropout = nn.Dropout(attn_layer_dropout)
+        self.layer_dropout = _dropout(attn_layer_dropout, dropout_broadcast)
         self.return_xatt_scores = return_xatt_scores
 
     def transpose_for_scores(self, x):
@@ -310,20 +315,32 @@ class PositionWiseFF(nn.Module):
         hidden_act: activation between the two linear layers, a module or its name in the activation registry
             (``relu``, ``gelu``, ``swish``, ``squared_relu``, ...)
         use_bias: bias in both projections (default True)
+        ffn_hidden_dropout: probability of dropout applied to the activation output, before the second projection
+        dropout_broadcast: draw the masks of both dropouts once per call over the feature axis,
+            shared over batch and time, see ``BroadcastDropout``
     """
 
     def __init__(
-        self, hidden_size, inner_size, ffn_dropout=0.0, hidden_act: nn.Module | str = "relu", use_bias: bool = True
+        self,
+        hidden_size,
+        inner_size,
+        ffn_dropout=0.0,
+        hidden_act: nn.Module | str = "relu",
+        use_bias: bool = True,
+        ffn_hidden_dropout: float = 0.0,
+        dropout_broadcast: bool = False,
     ):
         super().__init__()
         self.dense_in = nn.Linear(hidden_size, inner_size, bias=use_bias)
         self.dense_out = nn.Linear(inner_size, hidden_size, bias=use_bias)
-        self.layer_dropout = nn.Dropout(ffn_dropout)
+        self.hidden_dropout = _dropout(ffn_hidden_dropout, dropout_broadcast)
+        self.layer_dropout = _dropout(ffn_dropout, dropout_broadcast)
         self.act_fn = build_activation(hidden_act)
 
     def forward(self, hidden_states):
         output_states = self.dense_in(hidden_states)
         output_states = self.act_fn(output_states)
+        output_states = self.hidden_dropout(output_states)
         output_states = self.dense_out(output_states)
         output_states = self.layer_dropout(output_states)
         return output_states
@@ -347,6 +364,9 @@ class GatedPositionWiseFF(nn.Module):
         hidden_act: activation of the first half, a module or its name in the activation registry; default ``swish``
         gate_act: activation of the second half; default ``identity``
         use_bias: bias in both projections; default False, as the gated variants are usually trained
+        ffn_hidden_dropout: probability of dropout applied to the gated product, before the second projection
+        dropout_broadcast: draw the masks of both dropouts once per call over the feature axis,
+            shared over batch and time, see ``BroadcastDropout``
     """
 
     def __init__(
@@ -357,17 +377,21 @@ class GatedPositionWiseFF(nn.Module):
         hidden_act: nn.Module | str = "swish",
         gate_act: nn.Module | str = "identity",
         use_bias: bool = False,
+        ffn_hidden_dropout: float = 0.0,
+        dropout_broadcast: bool = False,
     ):
         super().__init__()
         self.dense_in = nn.Linear(hidden_size, 2 * inner_size, bias=use_bias)
         self.dense_out = nn.Linear(inner_size, hidden_size, bias=use_bias)
-        self.layer_dropout = nn.Dropout(ffn_dropout)
+        self.hidden_dropout = _dropout(ffn_hidden_dropout, dropout_broadcast)
+        self.layer_dropout = _dropout(ffn_dropout, dropout_broadcast)
         self.act_fn = build_activation(hidden_act)
         self.gate_act_fn = build_activation(gate_act)
 
     def forward(self, hidden_states):
         activated, gate = self.dense_in(hidden_states).chunk(2, dim=-1)
         output_states = self.act_fn(activated) * self.gate_act_fn(gate)
+        output_states = self.hidden_dropout(output_states)
         output_states = self.dense_out(output_states)
         output_states = self.layer_dropout(output_states)
         return output_states
@@ -425,3 +449,7 @@ class AttentionBridge(torch.nn.Module):
             return M, ortho_loss
         else:
             return M
+
+
+def _dropout(p: float, broadcast: bool) -> nn.Module:
+    return BroadcastDropout(p) if broadcast else nn.Dropout(p)

@@ -2042,6 +2042,13 @@ def test_fastconformer_asr_branch_with_attention_dropout_in_packed_training(monk
         assert encoder.asr_encoder.supports_sequence_packed_output
         packed = encoder.forward_sequence_packed(mels, lengths, spk_targets=targets)
         assert native_calls == [1] and torch.isfinite(packed.data).all()
+        # the backward through the native path as well
+        packed.data.square().mean().backward()
+        assert mels.grad is not None and torch.isfinite(mels.grad).all()
+        query_grad = encoder.asr_encoder.layers[0].self_attn.linear_q.weight.grad
+        assert query_grad is not None and torch.isfinite(query_grad).all()
+        mels.grad = None
+        encoder.zero_grad()
         native_calls.clear()
     monkeypatch.setattr(packed_attention_module, "TRITON_AVAILABLE", False)
     assert not encoder.asr_encoder.supports_sequence_packed_output
@@ -2052,6 +2059,44 @@ def test_fastconformer_asr_branch_with_attention_dropout_in_packed_training(monk
     assert encoder.asr_encoder.layers[0].self_attn.linear_q.weight.grad is not None
     encoder.eval()
     assert encoder.asr_encoder.supports_sequence_packed_output
+
+
+@pytest.mark.unit
+@pytest.mark.run_only_on("GPU")
+@pytest.mark.skipif(not (torch.cuda.is_available() and TRITON_AVAILABLE), reason="requires CUDA and Triton")
+def test_fastconformer_asr_branch_with_full_attention_dropout_trains_packed(monkeypatch):
+    """``dropout_att: 1.0`` is a valid ``nn.Dropout`` setting: the native packed path drops every attention weight
+    and the step completes forward and backward, as the padded fallback did before the kernel."""
+    asr_encoder_cfg = toy_asr_encoder_cfg()
+    asr_encoder_cfg.n_heads = 2
+    asr_encoder_cfg.dropout_att = 1.0
+    diarization_model_cfg = toy_diarization_model_cfg()
+    diarization_model_cfg.encoder.n_heads = 2
+    encoder = build_toy_pe_encoder(asr_encoder_cfg=asr_encoder_cfg, diarization_model_cfg=diarization_model_cfg)
+    encoder = encoder.train().cuda()
+    native_calls = []
+    native_forward = encoder.asr_encoder.forward_sequence_packed
+
+    def tracked_native_forward(*args, **kwargs):
+        native_calls.append(1)
+        return native_forward(*args, **kwargs)
+
+    monkeypatch.setattr(encoder.asr_encoder, "forward_sequence_packed", tracked_native_forward)
+    assert encoder.asr_encoder.supports_sequence_packed_output
+    lengths = torch.tensor([80, 53], device="cuda")
+    mels = torch.randn(2, _MEL_FEATURES, 80, device="cuda", requires_grad=True)
+    targets = torch.ones(2, 10, _N_SPK, device="cuda")
+    for autocast in (False, True):
+        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=autocast):
+            packed = encoder.forward_sequence_packed(mels, lengths, spk_targets=targets)
+        assert torch.isfinite(packed.data).all()
+        packed.data.float().square().mean().backward()
+        assert mels.grad is not None and torch.isfinite(mels.grad).all()
+        for name, parameter in encoder.asr_encoder.named_parameters():
+            assert parameter.grad is None or torch.isfinite(parameter.grad).all(), name
+        mels.grad = None
+        encoder.zero_grad()
+    assert native_calls == [1, 1]
 
 
 @pytest.mark.unit

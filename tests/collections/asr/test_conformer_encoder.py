@@ -993,6 +993,31 @@ class TestPackedConformerEncoderCuda:
             assert encoder.layers[0].self_attn.linear_pos.weight.grad is not None
             assert encoder.layers[0].self_attn.pos_bias_v.grad.abs().sum() > 0
 
+    @pytest.mark.unit
+    @pytest.mark.skipif(not TRITON_AVAILABLE, reason="requires Triton")
+    def test_flex_attention_stays_selectable_for_rel_pos(self, monkeypatch):
+        """``packed_rel_pos_attention: flex`` keeps the backend before the kernel: FlexAttention over the rounded
+        table, which has no dropout, so attention dropout in training mode is refused as before."""
+        with pytest.raises(ValueError, match="packed_rel_pos_attention"):
+            _packed_encoder(packed_rel_pos_attention="cuda")
+        torch.manual_seed(8)
+        encoder = _packed_encoder(self_attention_model="rel_pos", dropout_att=0.1, packed_rel_pos_attention="flex")
+        encoder = encoder.cuda().train()
+        reason = encoder.sequence_packed_unsupported_reason()
+        assert reason is not None and "FlexAttention" in reason
+        encoder.eval()
+        assert encoder.sequence_packed_unsupported_reason() is None
+
+        def no_kernel(*args, **kwargs):
+            raise AssertionError("the Triton kernel must not run")
+
+        monkeypatch.setattr(packed_attention_module, "packed_rel_pos_attention", no_kernel)
+        lengths = torch.tensor([300, 7, 150], device="cuda")
+        features = _packed_test_features(lengths, dtype=torch.float32, device="cuda")
+        padded_out, padded_lengths = encoder(audio_signal=features, length=lengths)
+        packed = encoder.forward_sequence_packed(features, lengths)
+        torch.testing.assert_close(packed.data, _valid_frames(padded_out, padded_lengths), atol=1e-4, rtol=1e-4)
+
     @pytest.mark.parametrize("self_attention_model", ["abs_pos", "rope"])
     def test_flash_and_flex_backends_match_padded_in_bf16(self, self_attention_model):
         """The same weights and inputs through both CUDA attention backends, each against the padded forward.

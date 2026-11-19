@@ -276,6 +276,38 @@ Padding overhead drops from ``O(B * (T_max - T_avg))`` to
 ``O(per-utt rounding to 2*cp_size)``. Throughput improvement scales with
 the variance of utterance lengths in your bucketing.
 
+**Packed encoder sequences:**
+
+.. code-block:: yaml
+
+    model:
+      packed_encoder_sequences: true   # default false (padded encoder batches)
+
+With ``packed_encoder_sequences`` a ``ParallelExpertEncoder`` runs its ASR and
+diarization branches over the utterances of a batch token-flat, without padding
+between them, and ``encoder_chunk_size_seconds`` chunks both branches after
+feature stacking (see above). The attention over the packed batch picks its
+backend per branch, device and precision:
+
+* ``rel_pos`` attention (FastConformer, Sortformer) runs a fused Triton kernel on
+  CUDA in float32, bfloat16 and float16, with attention dropout (``dropout_att``,
+  any value up to ``1.0``). Without Triton it runs FlexAttention, which computes in
+  float32 and has no attention dropout.
+* ``abs_pos`` and ``rope`` attention (Transformer) run variable-length
+  FlashAttention in float16 or bfloat16, with attention dropout; otherwise
+  FlexAttention, without it.
+* ``packed_rel_pos_attention: flex`` on a ``ConformerEncoder`` (the
+  ``asr_encoder_cfg``, or the ``encoder`` of the ``diarization_model_cfg``) selects
+  FlexAttention for ``rel_pos`` attention, the backend of packed runs before the
+  kernel, which reproduces their outputs; it has no attention dropout. Keep it for a
+  run that thresholds the diarization probabilities of a frozen Sortformer and has
+  not been validated on the kernel.
+* A branch whose configuration has no packed form in training mode (attention
+  dropout on a backend without it, among the cases
+  ``ConformerEncoder.sequence_packed_unsupported_reason`` names) runs padded and
+  is re-packed, so the step completes either way; in evaluation mode every branch
+  runs packed.
+
 DuplexS2SModel Configuration
 -----------------------------
 

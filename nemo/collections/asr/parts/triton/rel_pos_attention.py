@@ -90,6 +90,7 @@ def packed_rel_pos_attention(
     dropout_p: float = 0.0,
     dropout_seed: Tensor | None = None,
     scale: float | None = None,
+    check_lengths: bool = True,
 ) -> Tensor:
     """Attend within utterances over token-flat queries, keys and values with the Transformer-XL position term.
 
@@ -103,13 +104,19 @@ def packed_rel_pos_attention(
             so the table must cover at least ``max_seqlen - 1`` positions each way (``R >= 2 * max_seqlen - 1``).
         seq_starts: first row of every utterance, shape ``(B,)``, integer.
         seq_lens: rows of every utterance, shape ``(B,)``, integer; the rows between the utterances are never read.
-        max_seqlen: longest utterance, a host integer; the lengths are not checked against it (no device read):
-            an utterance beyond it is attended within the table's reach,
-            and its query rows past the last launched tile row are left zero.
-        dropout_p: dropout probability on the attention weights, below one.
+        max_seqlen: longest utterance, a host integer, which sizes the launch grid and the table the kernels read;
+            a length beyond it is rejected (``check_lengths``).
+        dropout_p: dropout probability on the attention weights, up to one;
+            at one every weight is dropped and the output is zero, as ``nn.Dropout(1.0)`` on the weights.
         dropout_seed: one-element integer tensor with the Philox seed for a reproducible mask;
             drawn on the device of ``q`` by default, which gives a fresh mask on every CUDA-graph replay.
         scale: factor of both score terms, ``1 / sqrt(D)`` by default.
+        check_lengths: read the lengths from the device once and reject one beyond ``max_seqlen``,
+            which would otherwise leave the query rows past the launched tiles zero
+            and send the position lookups past the table; the read is impossible under CUDA-graph capture
+            and in compiled code, where the check is skipped.
+            ``False`` for metadata whose bound holds by construction, as the ``PackedAttentionContext`` of the
+            encoders passes, which keeps the launch free of device reads.
 
     Returns:
         Context vectors of shape ``(T_total, H, D)`` and the dtype of ``q``; rows outside every utterance are zero.
@@ -141,18 +148,19 @@ def packed_rel_pos_attention(
     for name, tensor in (("seq_starts", seq_starts), ("seq_lens", seq_lens)):
         if tensor.dtype not in (torch.int32, torch.int64) or tensor.device != q.device:
             raise TypeError(f"{name} must be int32 or int64 on {q.device}, got {tensor.dtype} on {tensor.device}.")
-    if not 0.0 <= dropout_p < 1.0:
-        raise ValueError(f"dropout_p must be in [0, 1), got {dropout_p}.")
+    if not 0.0 <= dropout_p <= 1.0:
+        raise ValueError(f"dropout_p must be in [0, 1], got {dropout_p}.")
     if total * heads * head_dim >= 2**31:
         raise ValueError(
             f"q with {total} x {heads} x {head_dim} elements exceeds the 32-bit row offsets of the kernels."
         )
     if scale is None:
         scale = 1.0 / math.sqrt(head_dim)
-    if total == 0 or max_seqlen == 0:
-        # nothing to attend; every input keeps a zero gradient edge
-        anchor = (k.sum() + v.sum() + pos_query.sum() + pos_emb.sum()).to(q.dtype) * 0.0
-        return q * 0.0 + anchor
+    if check_lengths:
+        _check_lengths(seq_lens, max_seqlen)
+    if total == 0 or max_seqlen == 0 or dropout_p == 1.0:
+        # nothing to attend, or every weight dropped: zeros, with a zero gradient edge to every input
+        return _zeros_with_gradient_edges(q, k, v, pos_query, pos_emb)
     if width > 2 * max_seqlen - 1:
         center = (width - 1) // 2
         pos_emb = pos_emb[center - (max_seqlen - 1) : center + max_seqlen]
@@ -378,6 +386,35 @@ def _utterance_rows(seq_starts: Tensor, seq_lens: Tensor, total: int) -> Tensor:
     return torch.cumsum(marks[:-1], 0) > 0
 
 
+def _check_lengths(seq_lens: Tensor, max_seqlen: int) -> None:
+    """Reject a length beyond ``max_seqlen`` with one device read, where a read is possible."""
+    if seq_lens.numel() == 0 or torch.compiler.is_compiling():
+        return
+    with torch.cuda.device(seq_lens.device):
+        if torch.cuda.is_current_stream_capturing():
+            return
+        longest = int(seq_lens.max())
+    if longest > max_seqlen:
+        raise ValueError(
+            f"max_seqlen {max_seqlen} is below the longest utterance of {longest} rows: "
+            "its rows past the launched tiles would stay zero and its position lookups would pass the table."
+        )
+
+
+def _zeros_with_gradient_edges(q: Tensor, *inputs: Tensor) -> Tensor:
+    """Zeros of the shape and dtype of ``q`` with a zero gradient edge to ``q`` and every input.
+
+    ``torch.where`` with a false condition selects nothing from a tensor and sends it a zero gradient,
+    so a non-finite payload (in a gap row, say) reaches neither the output nor a gradient,
+    which ``0.0 * tensor`` would not guarantee.
+    """
+    nothing = torch.zeros((), dtype=torch.bool, device=q.device)
+    out = q.new_zeros(tuple(q.shape))
+    for tensor in (q, *inputs):
+        out = torch.where(nothing, tensor.sum(), out)
+    return out
+
+
 def _forward(
     q: Tensor,
     k: Tensor,
@@ -400,6 +437,7 @@ def _forward(
         _launch(
             _forward_kernel,
             FORWARD_TILES,
+            q.device,
             ("forward", q.device.index, q.dtype, head_dim_block),
             lambda block_m, block_n: (n_batch * heads, triton.cdiv(max_seqlen, block_m)),
             (
@@ -468,11 +506,12 @@ def _backward(
             return n_batch * heads, triton.cdiv(max_seqlen, block_n)
 
         bounds = (seq_starts, seq_lens, dropout_seed, dropout_p, scale, *strides)
-        _launch(_delta_kernel, ladder, key("delta"), rows, (*inputs, delta, *bounds, *widths), common)
-        _launch(_dkv_kernel, ladder, key("dkv"), columns, (*inputs, delta, dk, dv, *bounds, *widths), common)
+        _launch(_delta_kernel, ladder, q.device, key("delta"), rows, (*inputs, delta, *bounds, *widths), common)
+        _launch(_dkv_kernel, ladder, q.device, key("dkv"), columns, (*inputs, delta, dk, dv, *bounds, *widths), common)
         _launch(
             _dq_kernel,
             ladder,
+            q.device,
             key("dq"),
             rows,
             (
@@ -501,13 +540,15 @@ _tiles_in_use: dict[tuple[str, int, torch.dtype, int], int] = {}
 def _launch(
     kernel: triton.JITFunction,
     ladder: tuple[tuple[int, int, int, int], ...],
+    device: torch.device,
     key: tuple[str, int, torch.dtype, int],
     grid: Callable[[int, int], tuple[int, int]],
     args: tuple,
     constexprs: dict[str, object],
 ) -> None:
-    """Launch ``kernel`` with the first entry of ``ladder`` that the device's shared memory takes.
+    """Launch ``kernel`` on ``device`` with the first entry of ``ladder`` that its shared memory takes.
 
+    Triton launches in the current CUDA context, not on the tensors' device, so the device is pinned for the launch.
     Triton refuses a configuration beyond the device's shared memory at its first launch (``OutOfResources``);
     the next entry is tried, and the one that runs is remembered under ``key``.
     ``grid`` maps the tile sizes (BLOCK_M, BLOCK_N) to the launch grid.
@@ -516,9 +557,10 @@ def _launch(
     for index in range(_tiles_in_use.get(key, 0), len(ladder)):
         block_m, block_n, num_warps, num_stages = ladder[index]
         try:
-            kernel[grid(block_m, block_n)](
-                *args, BLOCK_M=block_m, BLOCK_N=block_n, num_warps=num_warps, num_stages=num_stages, **constexprs
-            )
+            with torch.cuda.device(device):
+                kernel[grid(block_m, block_n)](
+                    *args, BLOCK_M=block_m, BLOCK_N=block_n, num_warps=num_warps, num_stages=num_stages, **constexprs
+                )
         except OutOfResources as exc:
             error = exc
             continue

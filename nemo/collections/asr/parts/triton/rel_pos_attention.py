@@ -409,7 +409,7 @@ def _forward(
                 max_seqlen - 1,
                 max_seqlen,
             ),
-            dict(H=heads, D=head_dim, D_PAD=head_dim_block, DROPOUT=dropout_p > 0.0, IEEE=q.dtype == torch.float32),
+            dict(H=heads, D=head_dim, D_PAD=head_dim_block, DROPOUT=dropout_p > 0.0, FP32=q.dtype == torch.float32),
         )
     return out, lse
 
@@ -439,7 +439,7 @@ def _backward(
         head_dim_block = _head_dim_block(head_dim)
         ladder = BACKWARD_TILES if head_dim_block <= 64 else BACKWARD_TILES_WIDE
         common = dict(
-            H=heads, D=head_dim, D_PAD=head_dim_block, DROPOUT=dropout_p > 0.0, IEEE=q.dtype == torch.float32
+            H=heads, D=head_dim, D_PAD=head_dim_block, DROPOUT=dropout_p > 0.0, FP32=q.dtype == torch.float32
         )
         strides = (q.stride(0), q.stride(1), position_term.stride(0), position_term.stride(1))
         inputs = (q, k, v, position_term, d_out, lse)
@@ -536,9 +536,11 @@ def _store_rows(ptr, rows, h, stride_t, stride_h, offs_d, row_mask, tile, D: tl.
 
 
 @triton.jit
-def _dot(a, b, IEEE: tl.constexpr):
-    if IEEE:
-        product = tl.dot(a, b, input_precision="ieee")
+def _dot(a, b, FP32: tl.constexpr):
+    # float32 dots as three TF32 products: the accuracy of float32 on the tensor cores,
+    # where plain float32 dots run on the FMA units at several times the time
+    if FP32:
+        product = tl.dot(a, b, input_precision="tf32x3")
     else:
         product = tl.dot(a, b)
     return product
@@ -583,7 +585,7 @@ def _forward_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     DROPOUT: tl.constexpr,
-    IEEE: tl.constexpr,
+    FP32: tl.constexpr,
 ):
     pid_bh = tl.program_id(0)
     pid_m = tl.program_id(1)
@@ -606,7 +608,7 @@ def _forward_kernel(
         n_mask = offs_n < seq_len
         k_rows = seq_start + offs_n
         k = _load_rows(K, k_rows, h, stride_qt, stride_qh, offs_d, n_mask, D, D_PAD)
-        s = _dot(q, tl.trans(k), IEEE) * scale
+        s = _dot(q, tl.trans(k), FP32) * scale
         rel = center + offs_n[None, :] - offs_m[:, None]
         valid = q_mask[:, None] & n_mask[None, :] & (rel >= 0) & (rel < R)
         bd = tl.load(BD + _term_offsets(q_rows, h, rel, stride_bt, stride_bh), mask=valid, other=0.0)
@@ -624,7 +626,7 @@ def _forward_kernel(
         else:
             p_use = p
         v_tile = _load_rows(V, k_rows, h, stride_qt, stride_qh, offs_d, n_mask, D, D_PAD)
-        acc += _dot(p_use.to(v_tile.dtype), v_tile, IEEE)
+        acc += _dot(p_use.to(v_tile.dtype), v_tile, FP32)
         m_i = m_new
     out = acc / l_i[:, None]
     _store_rows(Out, q_rows, h, stride_qt, stride_qh, offs_d, q_mask, out, D, D_PAD)
@@ -658,7 +660,7 @@ def _delta_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     DROPOUT: tl.constexpr,
-    IEEE: tl.constexpr,
+    FP32: tl.constexpr,
 ):
     # delta_i = sum_j p_ij dp_ij from the recomputed weights, see the module docstring
     pid_bh = tl.program_id(0)
@@ -683,8 +685,8 @@ def _delta_kernel(
         k_rows = seq_start + offs_n
         k = _load_rows(K, k_rows, h, stride_qt, stride_qh, offs_d, n_mask, D, D_PAD)
         v = _load_rows(V, k_rows, h, stride_qt, stride_qh, offs_d, n_mask, D, D_PAD)
-        s = _dot(q, tl.trans(k), IEEE) * scale
-        dp = _dot(do, tl.trans(v), IEEE)
+        s = _dot(q, tl.trans(k), FP32) * scale
+        dp = _dot(do, tl.trans(v), FP32)
         rel = center + offs_n[None, :] - offs_m[:, None]
         valid = m_mask[:, None] & n_mask[None, :] & (rel >= 0) & (rel < R)
         bd = tl.load(BD + _term_offsets(q_rows, h, rel, stride_bt, stride_bh), mask=valid, other=0.0)
@@ -726,7 +728,7 @@ def _dkv_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     DROPOUT: tl.constexpr,
-    IEEE: tl.constexpr,
+    FP32: tl.constexpr,
 ):
     pid_bh = tl.program_id(0)
     pid_n = tl.program_id(1)
@@ -752,7 +754,7 @@ def _dkv_kernel(
         do = _load_rows(DO, q_rows, h, stride_qt, stride_qh, offs_d, m_mask, D, D_PAD)
         lse = tl.load(Lse + q_rows * H + h, mask=m_mask, other=0.0)
         delta = tl.load(Delta + q_rows * H + h, mask=m_mask, other=0.0)
-        s = _dot(q, tl.trans(k), IEEE) * scale
+        s = _dot(q, tl.trans(k), FP32) * scale
         rel = center + offs_n[None, :] - offs_m[:, None]
         valid = m_mask[:, None] & n_mask[None, :] & (rel >= 0) & (rel < R)
         bd = tl.load(BD + _term_offsets(q_rows, h, rel, stride_bt, stride_bh), mask=valid, other=0.0)
@@ -763,14 +765,14 @@ def _dkv_kernel(
             p_use = tl.where(keep, p / (1.0 - dropout_p), 0.0)
         else:
             p_use = p
-        dv += _dot(tl.trans(p_use.to(do.dtype)), do, IEEE)
-        dp = _dot(do, tl.trans(v), IEEE)
+        dv += _dot(tl.trans(p_use.to(do.dtype)), do, FP32)
+        dp = _dot(do, tl.trans(v), FP32)
         if DROPOUT:
             dp = tl.where(keep, dp / (1.0 - dropout_p), 0.0)
         # the scale is folded into ds before the dot, as in the flash-attention backward;
         # the scaled dot (dot(trans(ds), q) * scale) miscompiles on Blackwell in bf16 and fp16 (triton-lang/triton#12757)
         ds = tl.where(valid, p * (dp - delta[:, None]) * scale, 0.0)
-        dk += _dot(tl.trans(ds.to(q.dtype)), q, IEEE)
+        dk += _dot(tl.trans(ds.to(q.dtype)), q, FP32)
     _store_rows(DK, k_rows, h, stride_qt, stride_qh, offs_d, n_mask, dk, D, D_PAD)
     _store_rows(DV, k_rows, h, stride_qt, stride_qh, offs_d, n_mask, dv, D, D_PAD)
 
@@ -806,7 +808,7 @@ def _dq_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     DROPOUT: tl.constexpr,
-    IEEE: tl.constexpr,
+    FP32: tl.constexpr,
 ):
     pid_bh = tl.program_id(0)
     pid_m = tl.program_id(1)
@@ -831,18 +833,18 @@ def _dq_kernel(
         k_rows = seq_start + offs_n
         k = _load_rows(K, k_rows, h, stride_qt, stride_qh, offs_d, n_mask, D, D_PAD)
         v = _load_rows(V, k_rows, h, stride_qt, stride_qh, offs_d, n_mask, D, D_PAD)
-        s = _dot(q, tl.trans(k), IEEE) * scale
+        s = _dot(q, tl.trans(k), FP32) * scale
         rel = center + offs_n[None, :] - offs_m[:, None]
         valid = m_mask[:, None] & n_mask[None, :] & (rel >= 0) & (rel < R)
         bd = tl.load(BD + _term_offsets(q_rows, h, rel, stride_bt, stride_bh), mask=valid, other=0.0)
         s = tl.where(valid, s + bd, float("-inf"))
         p = tl.exp(s - lse[:, None])
-        dp = _dot(do, tl.trans(v), IEEE)
+        dp = _dot(do, tl.trans(v), FP32)
         if DROPOUT:
             keep = _keep(Seed, h, q_rows, offs_n, drop_stride, dropout_p)
             dp = tl.where(keep, dp / (1.0 - dropout_p), 0.0)
         ds = tl.where(valid, p * (dp - delta[:, None]), 0.0)
-        dq += _dot((ds * scale).to(k.dtype), k, IEEE)
+        dq += _dot((ds * scale).to(k.dtype), k, FP32)
         # the position-term gradient is ds itself, row-owned: every (i, j) of a row has its own entry
         tl.store(DBD + _term_offsets(q_rows, h, rel, stride_dbt, stride_dbh), ds, mask=valid)
     _store_rows(DQ, q_rows, h, stride_qt, stride_qh, offs_d, m_mask, dq, D, D_PAD)

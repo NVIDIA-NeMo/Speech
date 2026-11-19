@@ -100,10 +100,12 @@ class EasyMagpieInputStream:
     async def finish(self) -> None:
         if not self._finished:
             if self._pending_first_tokens:
-                raise ValueError(
-                    f"first input update must contain at least {self.text_prefill_num} text tokens; "
-                    f"received {len(self._pending_first_tokens)}"
-                )
+                # input.done can finalize text shorter than the configured
+                # prefill. The model pads those fixed prefill rows just as it
+                # does for a short complete-text request.
+                await self._input_queue.put(self._pending_first_tokens)
+                self._pending_first_tokens = []
+                self._received_first_update = True
             self._finished = True
             await self._input_queue.put(_DONE)
 
@@ -152,7 +154,13 @@ class EasyMagpieInputStream:
         # EasyMagpieTTSForConditionalGeneration._preprocess_decode).
         text_token_start = 0
 
-        first_token_ids = cast(list[int], first_item)
+        first_token_ids = list(cast(list[int], first_item))
+        # Only finish() can flush fewer tokens than the prefill threshold.
+        # Include EOS in that final prefix without changing the architecture's
+        # fixed prefill length or waiting for text that will never arrive.
+        first_is_final = len(first_token_ids) < self.text_prefill_num
+        if first_is_final and first_token_ids[-1] != self.text_eos_id:
+            first_token_ids.append(self.text_eos_id)
         first_prompt = copy.deepcopy(self.prefill_prompt)
         first_info = first_prompt.setdefault("additional_information", {})
         first_info["streaming_initial_prompt_len"] = len(first_prompt["prompt_token_ids"])
@@ -170,7 +178,7 @@ class EasyMagpieInputStream:
         )
         text_token_start += len(first_token_ids)
 
-        input_done = False
+        input_done = first_is_final
         while True:
             item = await self._input_queue.get()
             if item is _DONE:

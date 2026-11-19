@@ -475,3 +475,40 @@ async def test_streaming_audio_rejects_a_sample_rate_change():
 
     with pytest.raises(ValueError, match="session sample rate"):
         _ = [chunk async for chunk in _streaming_pcm_deltas(outputs(), 32000)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("token_count", [1, 2, 3])
+async def test_input_stream_finalizes_short_prefill_without_losing_text(token_count):
+    prompt = {
+        "prompt_token_ids": [0] * 6,
+        "additional_information": {"speaker_id": "eng", "text_prefill_num": 4},
+    }
+    stream = EasyMagpieInputStream(
+        prefill_prompt=prompt,
+        sampling_params=SamplingParams(max_tokens=32, output_kind=RequestOutputKind.DELTA),
+        text_eos_id=99,
+        max_new_tokens=32,
+        text_prefill_num=4,
+        pace_timeout_s=0.0,
+    )
+    tokens = list(range(10, 10 + token_count))
+    await stream.put_tokens(tokens)
+    await stream.finish()
+    chunks = [chunk async for chunk in stream.inputs()]
+
+    assert len(chunks) == 2
+    first = chunks[0].prompt
+    assert first["prompt_token_ids"] == [0] * 6
+    assert first["additional_information"] == {
+        "speaker_id": "eng",
+        "text_prefill_num": 4,
+        "streaming_initial_prompt_len": 6,
+        "text_token": tokens + [99],
+        "text_token_start": 0,
+        "prefill_text_tokens": tokens + [99],
+    }
+    assert chunks[0].sampling_params.max_tokens == 1
+    assert chunks[1].prompt["additional_information"] == {"text_token": []}
+    assert prompt["additional_information"] == {"speaker_id": "eng", "text_prefill_num": 4}
+    assert tokens == list(range(10, 10 + token_count))

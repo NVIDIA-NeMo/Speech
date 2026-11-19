@@ -655,7 +655,7 @@ def test_multiturn_lhotse_dataloader_omits_alignment_prior():
         ):
             model.setup_training_data(dataset_cfg)
         dataloader = model.train_dataloader()
-        assert isinstance(dataloader.dataset, MagpieTTSLhotseMultiturnDataset)
+        assert isinstance(dataloader.dataset.dataset, MagpieTTSLhotseMultiturnDataset)
         batch = next(iter(dataloader))
 
         assert batch['audio_codes'].shape == (1, model.data_num_audio_codebooks, 8)

@@ -1399,8 +1399,27 @@ def set_g2p_rng(tokenizer: Any, rng: random.Random) -> None:
         return
     sub_tokenizers = getattr(tokenizer, "tokenizers", None)
     if isinstance(sub_tokenizers, dict):
-        for sub_tokenizer in sub_tokenizers.values():
+        sub_tokenizers = list(sub_tokenizers.values())
+    if isinstance(sub_tokenizers, (list, tuple)):
+        for sub_tokenizer in sub_tokenizers:
             set_g2p_rng(sub_tokenizer, rng)
+    elif sub_tokenizers is not None:
+        _warn_once_g2p_rng_skipped(tokenizer, f"its 'tokenizers' is a {type(sub_tokenizers).__name__}")
     g2p = getattr(tokenizer, "g2p", None)
     if isinstance(g2p, BaseG2p):
         g2p.rng = rng
+    elif g2p is not None:
+        _warn_once_g2p_rng_skipped(tokenizer, f"its g2p ({type(g2p).__name__}) is not a BaseG2p")
+
+
+_G2P_RNG_SKIP_WARNED = set()
+
+
+def _warn_once_g2p_rng_skipped(tokenizer: Any, reason: str) -> None:
+    key = (type(tokenizer).__name__, reason)
+    if key not in _G2P_RNG_SKIP_WARNED:
+        _G2P_RNG_SKIP_WARNED.add(key)
+        logging.warning(
+            f"set_g2p_rng: skipped {type(tokenizer).__name__} because {reason}; its random G2P choices keep their own "
+            "generator and are not restored on resume."
+        )

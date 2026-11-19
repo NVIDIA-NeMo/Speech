@@ -167,6 +167,15 @@ Note the differences from the SALM configuration:
   and diarization branches after feature stacking; set the data audio-token
   estimator's ``chunk_size_seconds`` to ``null`` because this does not change the
   total encoder-token count.
+* A ``ParallelExpertEncoder`` under ``packed_encoder_sequences: true`` and the independent speaker encoder
+  (``speaker_encoder``, which always runs its two encoders sequence-packed)
+  run a branch encoder whose configuration has no sequence-packed form on the padded batch and re-pack its output.
+  That is slower than the packed form, so it logs one warning with the encoder's reason.
+  Set ``allow_padded_fallback: false`` to get an error instead:
+  under ``pe_encoder_overrides`` for a ``ParallelExpertEncoder`` bundle (``pe_encoder_path``),
+  inside ``pe_encoder_config`` for an inline one,
+  and under ``speaker_encoder`` for the independent speaker encoder.
+  The Sortformer modules after the diarization encoder of a ``ParallelExpertEncoder`` always run padded.
 
 SALMAutomodel-Specific Options
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

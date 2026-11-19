@@ -19,6 +19,7 @@ from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 from nemo.collections.asr.parts.packed_sequence import pack_encoder_output
 from nemo.collections.speechlm2.modules.perception import IndependentDualEncoder
+from nemo.utils import logging
 
 
 def make_encoder(d_model: int, *, subsampling_factor: int = 2) -> TransformerEncoder:
@@ -136,3 +137,50 @@ def test_independent_dual_encoder_keeps_the_padded_fallback_for_a_branch_without
     assert any(parameter.grad is not None for parameter in asr.parameters())
     dual.eval()
     assert asr.supports_sequence_packed_output
+
+
+_UNSUPPORTED_REASON = "This toy configuration has no sequence-packed form."
+
+
+def test_independent_dual_encoder_warns_once_about_the_padded_fallback_of_a_branch(monkeypatch, caplog):
+    """The ASR branch reports no sequence-packed form: it runs padded, which the log says once, not per forward."""
+    torch.manual_seed(7)
+    asr = make_conformer_encoder(dropout_att=0.0)
+    dual = IndependentDualEncoder(asr, make_encoder(32), frame_shift_seconds=0.01).eval()
+    features = torch.randn(2, 17, 4)
+    lengths = torch.tensor([17, 10], dtype=torch.int64)
+    packed_features = pack_encoder_output(features, lengths)
+    with torch.no_grad():
+        native = dual.forward_sequence_packed(packed_features, lengths)
+    assert "no sequence-packed form" not in caplog.text
+
+    monkeypatch.setattr(logging, "once_logged", set())
+    monkeypatch.setattr(asr, "sequence_packed_unsupported_reason", lambda: _UNSUPPORTED_REASON)
+    assert not asr.supports_sequence_packed_output
+    with torch.no_grad():
+        first = dual.forward_sequence_packed(packed_features, lengths)
+        second = dual.forward_sequence_packed(packed_features, lengths)
+
+    warning = f"ConformerEncoder has no sequence-packed form in this configuration: {_UNSUPPORTED_REASON}"
+    assert caplog.text.count(warning) == 1
+    assert caplog.text.count("allow_padded_fallback=False") == 1
+    assert torch.equal(first.lengths, native.lengths) and torch.equal(first.data, second.data)
+    torch.testing.assert_close(first.data, native.data, rtol=1e-4, atol=1e-5)
+
+
+def test_independent_dual_encoder_raises_with_the_reason_when_the_padded_fallback_is_not_allowed(monkeypatch):
+    """With the option off, the branch without a sequence-packed form is an error; native branches still run."""
+    asr = make_conformer_encoder(dropout_att=0.0)
+    dual = IndependentDualEncoder(asr, make_encoder(32), frame_shift_seconds=0.01, allow_padded_fallback=False)
+    dual.eval()
+    lengths = torch.tensor([17, 10], dtype=torch.int64)
+    packed_features = pack_encoder_output(torch.randn(2, 17, 4), lengths)
+    with torch.no_grad():
+        assert torch.isfinite(dual.forward_sequence_packed(packed_features, lengths).data).all()
+
+    monkeypatch.setattr(asr, "sequence_packed_unsupported_reason", lambda: _UNSUPPORTED_REASON)
+    with pytest.raises(NotImplementedError, match=_UNSUPPORTED_REASON) as error, torch.no_grad():
+        dual.forward_sequence_packed(packed_features, lengths)
+    assert "ConformerEncoder" in str(error.value) and "allow_padded_fallback=False" in str(error.value)
+    with pytest.raises(TypeError, match="allow_padded_fallback must be a bool"):
+        IndependentDualEncoder(asr, make_encoder(32), frame_shift_seconds=0.01, allow_padded_fallback="false")

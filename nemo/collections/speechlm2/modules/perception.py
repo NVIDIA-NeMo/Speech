@@ -23,6 +23,7 @@ from transformers.models.bert.modeling_bert import BertEncoder
 
 from nemo.collections.asr.parts.packed_sequence import (
     PackedEncoderActivations,
+    forward_padded_fallback,
     pack_encoder_output,
     unpack_encoder_output,
 )
@@ -338,6 +339,10 @@ class IndependentDualEncoder(nn.Module):
     This is primarily intended for a trainable ASR encoder paired with a frozen
     auxiliary encoder. A frozen branch is kept in evaluation mode and runs under
     ``no_grad`` even when the parent perception module is training.
+
+    A branch whose configuration has no sequence-packed form runs on the padded batch
+    and is re-packed, with one warning; ``allow_padded_fallback=False`` makes that an error
+    with the encoder's reason instead.
     """
 
     supports_sequence_packed_output = True
@@ -351,6 +356,7 @@ class IndependentDualEncoder(nn.Module):
         asr_chunk_size_seconds: float | None = None,
         auxiliary_chunk_size_seconds: float | None = None,
         freeze_auxiliary: bool = True,
+        allow_padded_fallback: bool = True,
     ) -> None:
         super().__init__()
         self.asr_encoder = asr_encoder
@@ -359,6 +365,9 @@ class IndependentDualEncoder(nn.Module):
         self.asr_chunk_size_seconds = asr_chunk_size_seconds
         self.auxiliary_chunk_size_seconds = auxiliary_chunk_size_seconds
         self.freeze_auxiliary = bool(freeze_auxiliary)
+        if not isinstance(allow_padded_fallback, bool):
+            raise TypeError(f"allow_padded_fallback must be a bool, got {allow_padded_fallback!r}.")
+        self.allow_padded_fallback = allow_padded_fallback
         self.auxiliary_encoder_config = None
 
         if self.frame_shift_seconds <= 0:
@@ -438,16 +447,12 @@ class IndependentDualEncoder(nn.Module):
     ) -> PackedEncoderActivations:
         max_tokens = self._chunk_size_tokens(chunk_size_seconds)
         if not getattr(encoder, "supports_sequence_packed_output", True):
-            # a configuration without a native packed form (see ConformerEncoder.sequence_packed_unsupported_reason)
-            # runs padded and is re-packed, as it did before the encoder had a packed forward
             if max_tokens is not None and features.max_seqlen > max_tokens:
                 raise TypeError(
                     f"{type(encoder).__name__} does not support packed chunking in this configuration: "
                     f"{_sequence_packed_unsupported_reason(encoder)}"
                 )
-            padded = unpack_encoder_output(features, total_length=features.padded_length).transpose(1, 2)
-            encoded, encoded_lengths = encoder(audio_signal=padded, length=features.lengths)
-            return pack_encoder_output(encoded.transpose(1, 2), encoded_lengths)
+            return forward_padded_fallback(encoder, features, allowed=self.allow_padded_fallback)
         if max_tokens is None or features.max_seqlen <= max_tokens:
             return encoder.forward_sequence_packed(features, features.lengths)
 

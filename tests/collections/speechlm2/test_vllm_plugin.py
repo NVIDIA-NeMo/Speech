@@ -1058,6 +1058,7 @@ class TestAudioProcessing:
                 "frozen": True,
                 "chunk_size_seconds": 120.0,
                 "asr_chunk_size_seconds": None,
+                "allow_padded_fallback": False,
             },
         )
 
@@ -1069,6 +1070,7 @@ class TestAudioProcessing:
         assert perception.encoder.asr_chunk_size_seconds is None
         assert perception.encoder.auxiliary_chunk_size_seconds == 120.0
         assert perception.encoder.freeze_auxiliary is True
+        assert perception.encoder.allow_padded_fallback is False
         assert all(not parameter.requires_grad for parameter in speaker.parameters())
         assert perception.proj.in_features == 8
         assert perception.proj.out_features == 7

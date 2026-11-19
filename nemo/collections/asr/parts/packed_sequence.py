@@ -17,12 +17,15 @@
 from dataclasses import dataclass
 
 import torch
-from torch import Tensor
+from torch import Tensor, nn
 from torch.utils._pytree import GetAttrKey, register_pytree_node
+
+from nemo.utils import logging, logging_mode
 
 __all__ = [
     "PackedEncoderActivations",
     "PackedSlotLayout",
+    "forward_padded_fallback",
     "lengths_to_cu_seqlens",
     "pack_encoder_output",
     "packed_encoder_position_ids",
@@ -258,6 +261,45 @@ def unpack_encoder_output(packed: PackedEncoderActivations, *, total_length: int
     if packed.total_tokens:
         output[_length_mask(packed.lengths, total_length)] = packed.data
     return output
+
+
+def forward_padded_fallback(
+    encoder: nn.Module, features: PackedEncoderActivations, *, allowed: bool
+) -> PackedEncoderActivations:
+    """Run an encoder without a sequence-packed form on the padded batch and re-pack its output.
+
+    The padded forward computes the padding that the packed layout exists to avoid, so it is never taken silently:
+    it logs one warning per encoder class and reason, and with ``allowed=False`` it raises instead.
+    Both name ``allow_padded_fallback``, the option of the encoders that call this.
+
+    Args:
+        encoder: an encoder with the padded ``forward(audio_signal, length)`` contract,
+            ``(B, D, T)`` features in and ``(B, D', T')`` states out.
+        features: packed features, data of shape ``(T_total, D)``.
+        allowed: whether the padded forward may run.
+
+    Returns:
+        The encoder states as ``PackedEncoderActivations`` with data of shape ``(T'_total, D')``.
+
+    Raises:
+        NotImplementedError: when ``allowed`` is False, with the encoder's ``sequence_packed_unsupported_reason()``.
+    """
+    reason = getattr(encoder, "sequence_packed_unsupported_reason", None)
+    reason = reason() if callable(reason) else None
+    # the fixed prefix keeps the class name inside the key that logging_mode.ONCE deduplicates on
+    unsupported = f"Padded fallback: {type(encoder).__name__} has no sequence-packed form" + (
+        f" in this configuration: {reason}" if reason else "."
+    )
+    if not allowed:
+        raise NotImplementedError(f"{unsupported} It is refused by allow_padded_fallback=False.")
+    logging.warning(
+        f"{unsupported} It runs on the padded batch and is re-packed, which costs the padded frames "
+        "that sequence-packed execution avoids; set allow_padded_fallback=False to raise instead.",
+        mode=logging_mode.ONCE,
+    )
+    padded = unpack_encoder_output(features, total_length=features.padded_length).transpose(1, 2)
+    encoded, encoded_lengths = encoder(audio_signal=padded, length=features.lengths)
+    return pack_encoder_output(encoded.transpose(1, 2), encoded_lengths)
 
 
 def split_encoder_output(packed: PackedEncoderActivations) -> tuple[Tensor, ...]:

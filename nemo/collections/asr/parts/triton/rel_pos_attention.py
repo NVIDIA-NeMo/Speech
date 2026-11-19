@@ -198,8 +198,10 @@ def _attention_fwd(
     dropout_seed: Tensor,
     scale: float,
 ) -> tuple[Tensor, Tensor]:
-    # the inputs are made contiguous here as well: a compiled graph may feed the op any layout
+    # the inputs are made contiguous here as well: a compiled graph may feed the op any layout,
+    # and the kernels read the starts and lengths with unit stride
     q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
+    seq_starts, seq_lens = seq_starts.contiguous(), seq_lens.contiguous()
     pos_emb = _padded_rows(pos_emb.contiguous())
     position_term = _position_term(pos_query.contiguous(), pos_emb, scale)
     out, lse = _forward(
@@ -244,6 +246,7 @@ def _attention_bwd(
     scale: float,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     q, k, v, pos_query = q.contiguous(), k.contiguous(), v.contiguous(), pos_query.contiguous()
+    seq_starts, seq_lens = seq_starts.contiguous(), seq_lens.contiguous()
     total, heads, head_dim = q.shape
     width = pos_emb.shape[0]
     pos_emb = _padded_rows(pos_emb.contiguous())
@@ -267,14 +270,16 @@ def _attention_bwd(
     )
     del position_term
     # the chain rule through the position term, GEMMs in the io dtype on the row-padded buffers
-    # (the zero padding columns contribute nothing), with the scale in their epilogue
-    d_position_term = d_position_term.to(q.dtype)
+    # (the zero padding columns contribute nothing); the scale is applied in float32 before the cast,
+    # as the kernels do for the content gradients, since the unscaled term can exceed the float16 range
+    d_position_term = d_position_term.mul_(scale).to(q.dtype)
     d_pos_query = torch.empty((heads, total, head_dim), dtype=q.dtype, device=q.device)
-    torch.baddbmm(d_pos_query, d_position_term, pos_emb.transpose(0, 1), beta=0.0, alpha=scale, out=d_pos_query)
+    torch.baddbmm(d_pos_query, d_position_term, pos_emb.transpose(0, 1), beta=0.0, out=d_pos_query)
+    # rows outside every utterance have a zero gradient row, but their position queries may hold anything,
+    # and zero times a non-finite payload is NaN: they are zeroed for this GEMM
+    pos_query = torch.where(_utterance_rows(seq_starts, seq_lens, total)[:, None, None], pos_query, 0.0)
     d_pos_emb = torch.empty((heads, pos_emb.shape[0], head_dim), dtype=q.dtype, device=q.device)
-    torch.baddbmm(
-        d_pos_emb, d_position_term.transpose(1, 2), pos_query.transpose(0, 1), beta=0.0, alpha=scale, out=d_pos_emb
-    )
+    torch.baddbmm(d_pos_emb, d_position_term.transpose(1, 2), pos_query.transpose(0, 1), beta=0.0, out=d_pos_emb)
     return (
         dq.to(q.dtype),
         dk.to(q.dtype),
@@ -363,6 +368,14 @@ def _position_term(pos_query: Tensor, pos_emb: Tensor, scale: float) -> Tensor:
 def _term_view(buffer: Tensor) -> Tensor:
     """The ``(T_total, H, R)`` view the kernels index, of an ``(H, T_total, R)`` buffer."""
     return buffer.permute(1, 0, 2)
+
+
+def _utterance_rows(seq_starts: Tensor, seq_lens: Tensor, total: int) -> Tensor:
+    """Boolean mask of the rows inside an utterance, from the starts and lengths on the device (no host read)."""
+    marks = torch.zeros(total + 1, dtype=torch.int32, device=seq_starts.device)
+    marks.scatter_add_(0, seq_starts.long(), torch.ones_like(seq_starts))
+    marks.scatter_add_(0, (seq_starts + seq_lens).long(), -torch.ones_like(seq_starts))
+    return torch.cumsum(marks[:-1], 0) > 0
 
 
 def _forward(

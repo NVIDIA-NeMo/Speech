@@ -18,6 +18,7 @@ import pytest
 import torch.utils.data
 from lhotse import CutSet, Seconds, SupervisionSegment
 from lhotse.dataset import DynamicBucketingSampler
+from lhotse.dataset.collation import collate_vectors
 from lhotse.testing.dummies import dummy_cut
 from lhotse.testing.random import deterministic_rng
 from omegaconf import OmegaConf
@@ -526,3 +527,32 @@ def test_filter_duration_bins_counts_the_tokens_of_the_dataloader_tokenizer(
     assert num_tokens[0] < num_tokens[1]
     assert kept == [cuts[0].id, cuts[2].id, cuts[3].id]
     assert kept == _sampled_ids({**_bucketing_2d_config(cuts_path, bins), **tokenization}, filter_bins_tokenizer)
+
+
+class _CollatedTokensDataset(torch.utils.data.Dataset):
+    def __getitem__(self, cuts):
+        tokens = [torch.as_tensor(cut.supervisions[0].tokens) for cut in cuts]
+        return [cut.id for cut in cuts], torch.tensor([len(t) for t in tokens]), collate_vectors(tokens, 0)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_filter_duration_bins_reaches_collated_dataloader(tmp_path, enabled):
+    cuts_path = tmp_path / "cuts.jsonl"
+    CutSet([make_cut(i, duration=1.0, num_tokens=num_tokens) for i, num_tokens in enumerate([2, 3, 6])]).to_file(
+        cuts_path
+    )
+    config = {"cuts_path": str(cuts_path), "force_finite": True, "batch_size": 3, "num_workers": 0, "shuffle": False}
+    if enabled:
+        config["filter_duration_bins"] = [(2.0, 3)]
+
+    dataloader = get_lhotse_dataloader_from_config(
+        config, global_rank=0, world_size=1, dataset=_CollatedTokensDataset()
+    )
+    batches = list(dataloader)
+
+    expected = [2, 3] if enabled else [2, 3, 6]
+    assert len(batches) == 1
+    ids, lengths, tokens = batches[0]
+    assert ids == [_cut_id(i) for i in range(len(expected))]
+    assert lengths.tolist() == expected
+    assert tokens.shape == (len(expected), max(expected))

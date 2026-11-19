@@ -150,7 +150,7 @@ Run the scripts from ``scripts/speechlm2/quantization/``:
 
    .. code-block:: bash
 
-      VLLM_PLUGINS=nemo_speechlm VLLM_WORKER_MULTIPROC_METHOD=spawn \
+      VLLM_PLUGINS=nemo_speechlm \
       python calibrate_activations.py \
          --checkpoint $WORK/ckpt_bf16_heads \
          --manifest calib.jsonl --output $WORK/ranges.json
@@ -176,7 +176,7 @@ Serving
 
 .. code-block:: bash
 
-   VLLM_PLUGINS=nemo_speechlm VLLM_WORKER_MULTIPROC_METHOD=spawn \
+   VLLM_PLUGINS=nemo_speechlm \
    vllm serve $OUT --trust-remote-code --dtype bfloat16 \
       --kv-cache-dtype fp8 \
       --speculative-config '{"method":"mtp","num_speculative_tokens":2}'

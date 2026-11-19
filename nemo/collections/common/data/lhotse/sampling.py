@@ -594,7 +594,7 @@ class CustomFieldFilter:
             if not isinstance(name, str) or not name:
                 raise ValueError(f"custom_field_filter: a field name must be a non-empty string, got {name!r}.")
             # NaN equals nothing, so it would reject every cut that has the field.
-            if not isinstance(value, (bool, int, float, str)) or value != value:
+            if not isinstance(value, (bool, int, float, str)) or (isinstance(value, float) and math.isnan(value)):
                 raise ValueError(
                     f"custom_field_filter: the value to keep for field {name!r} must be a bool, a number or a string, "
                     f"got {value!r}."

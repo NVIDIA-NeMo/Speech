@@ -721,14 +721,15 @@ class IndexedTarMemberReader:
         self,
         tar_path: str | Path,
         idx_path: str | Path | None = None,
-        auto_create_index: bool = False,
+        auto_create_index: bool = True,
         sentinel_size_override: int | None = None,
     ):
         self.data_path = str(tar_path)
         self._fh = None
         resolved_idx = str(idx_path) if idx_path else self.data_path + ".idx"
         if auto_create_index:
-            # Opt-in for offline tools only; dataloaders require pre-built indexes.
+            # Standalone default. NeMo's dataloader adapters pass auto_create_index=False,
+            # because indexed data loading requires pre-built indexes.
             if not os.path.exists(resolved_idx):
                 create_tar_index(self.data_path, resolved_idx)
         else:

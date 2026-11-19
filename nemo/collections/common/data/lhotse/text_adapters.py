@@ -812,7 +812,7 @@ class NemotronTextConversationAdapter(IteratorNode):
             self._cum_lens.append(cum)
 
     def _add_indexed_tar_reader(self, tar_path: str, idx_path: Pathlike) -> None:
-        self._readers.append(IndexedTarMemberReader(tar_path, idx_path=idx_path))
+        self._readers.append(IndexedTarMemberReader(tar_path, idx_path=idx_path, auto_create_index=False))
         self._reader_kinds.append("tar")
         self._source_paths.append(tar_path)
 
@@ -1435,7 +1435,9 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
             from nemo.collections.common.data.lhotse.indexed_adapters import IndexedTarMemberReader
 
             for p in self.tarred_audio_filepaths:
-                self._tar_readers.append(IndexedTarMemberReader(p, idx_path=index_file_path(p, self.indexes_root)))
+                self._tar_readers.append(
+                    IndexedTarMemberReader(p, idx_path=index_file_path(p, self.indexes_root), auto_create_index=False)
+                )
         cum = 0
         self._cum_lens.append(cum)
         for r in self._cuts_readers:
@@ -2001,7 +2003,11 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
                 ]
             else:
                 for p in self.tarred_audio_filepaths:
-                    self._tar_readers.append(IndexedTarMemberReader(p, idx_path=index_file_path(p, self.indexes_root)))
+                    self._tar_readers.append(
+                        IndexedTarMemberReader(
+                            p, idx_path=index_file_path(p, self.indexes_root), auto_create_index=False
+                        )
+                    )
         cum = 0
         self._cum_lens.append(cum)
         for r in self._cuts_readers:

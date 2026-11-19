@@ -734,7 +734,7 @@ class LazyNeMoTarredIterator(IteratorNode):
             )
             if not self.use_ais_get_batch:
                 self._tar_readers[sid] = IndexedTarMemberReader(
-                    tar_path, idx_path=index_file_path(tar_path, self.indexes_root)
+                    tar_path, idx_path=index_file_path(tar_path, self.indexes_root), auto_create_index=False
                 )
             cum += len(self._cuts_readers[sid])
             cum_lens.append(cum)

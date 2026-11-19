@@ -15,6 +15,7 @@ can't be checkpointed with bucketing and resumes by O(N) replay instead of O(1).
 import json
 
 import pytest
+import torch
 from lhotse import CutSet
 from lhotse.indexing import create_jsonl_index, create_tar_index, index_file_path
 from lhotse.testing.dummies import DummyManifest
@@ -111,6 +112,100 @@ def _nemo(path, **kw):
 
 def _lhotse(path, **kw):
     return {"type": "lhotse", "cuts_path": str(path), **kw}
+
+
+class _LoadAudio:
+    """Loads and collates the batch's audio, like the ASR datasets do."""
+
+    def __getitem__(self, cuts):
+        from lhotse.dataset import AudioSamples
+
+        audio, audio_lens = AudioSamples(fault_tolerant=False)(cuts)
+        return {"ids": [c.id for c in cuts], "audio": audio, "audio_lens": audio_lens}
+
+
+@pytest.fixture
+def audio_sources(tmp_path):
+    """Four short WAVs of distinct lengths, described by a NeMo manifest and by a Lhotse cuts manifest."""
+    import numpy as np
+    import soundfile as sf
+    from lhotse import Recording
+
+    nemo_manifest, cuts = tmp_path / "audio_nemo.json", []
+    with nemo_manifest.open("w") as f:
+        for i in range(4):
+            wav = tmp_path / f"utt{i}.wav"
+            sf.write(wav, np.full(1600 * (i + 1), 0.01 * (i + 1), dtype=np.float32), 16000)
+            print(json.dumps({"audio_filepath": str(wav), "duration": 0.1 * (i + 1), "text": f"utt {i}"}), file=f)
+            cuts.append(Recording.from_file(wav, recording_id=f"lhotse-utt{i}").to_cut())
+    lhotse_manifest = tmp_path / "audio_cuts.jsonl"
+    CutSet(cuts).to_file(lhotse_manifest)
+    return {"nemo": nemo_manifest, "lhotse": lhotse_manifest}
+
+
+def _build_audio_loader(cfg):
+    return get_lhotse_dataloader_from_config(OmegaConf.create(cfg), global_rank=0, world_size=1, dataset=_LoadAudio())
+
+
+def _assert_collated(batch):
+    assert len(batch["ids"]) == 2
+    assert batch["audio"].shape[0] == 2
+    assert batch["audio_lens"].tolist() == [int((batch["audio"][i] != 0).sum()) for i in range(2)]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "sources,overrides,expect_indexed",
+    [
+        (["nemo"], {}, True),  # stateful + unset -> indexed
+        (["lhotse"], {}, True),
+        (["nemo", "lhotse"], {}, True),  # blend, both indexed
+        (["nemo"], {"indexed": True}, True),  # explicit
+        (["nemo", "lhotse"], {"indexed": False}, False),  # explicit opt-out streams, no index needed
+    ],
+)
+def test_stateful_dataloader_end_to_end(audio_sources, sources, overrides, expect_indexed):
+    entries = [_nemo(audio_sources["nemo"]) if s == "nemo" else _lhotse(audio_sources["lhotse"]) for s in sources]
+    cfg = _cfg(entries, **overrides)
+    data_files = [audio_sources[s] for s in sources]
+
+    if expect_indexed:
+        # Startup rejects missing indexes without creating them ...
+        with pytest.raises(MissingIndexError):
+            _build_audio_loader(cfg)
+        assert not any(f.with_name(f.name + ".idx").exists() for f in data_files)
+        # ... and loads once they're built ahead of time.
+        for f in data_files:
+            create_jsonl_index(f)
+    assert _sampler_cuts(cfg).is_indexed == expect_indexed
+    if not expect_indexed:
+        assert not any(f.with_name(f.name + ".idx").exists() for f in data_files)
+
+    # Consume collated batches through the real (stateful) dataloader, then check checkpoint/restore.
+    dl = _build_audio_loader(cfg)
+    it = iter(dl)
+    _assert_collated(next(it))
+    state = dl.state_dict()
+    second = next(it)
+    _assert_collated(second)
+
+    restored = _build_audio_loader(cfg)
+    restored.load_state_dict(state)
+    second_restored = next(iter(restored))
+    assert second_restored["ids"] == second["ids"]
+    assert torch.equal(second_restored["audio"], second["audio"])
+
+
+@pytest.mark.unit
+def test_non_stateful_unset_indexed_end_to_end_auto_detects(audio_sources):
+    # Without the stateful dataloader: a Lhotse manifest with a sidecar is indexed, a NeMo manifest streams.
+    create_jsonl_index(audio_sources["lhotse"])
+    for source, expect_indexed in (("lhotse", True), ("nemo", False)):
+        entry = _lhotse(audio_sources["lhotse"]) if source == "lhotse" else _nemo(audio_sources["nemo"])
+        cfg = _cfg([entry], use_stateful_dataloader=False)
+        assert _sampler_cuts(cfg).is_indexed == expect_indexed
+        _assert_collated(next(iter(_build_audio_loader(cfg))))
+    assert not audio_sources["nemo"].with_name(audio_sources["nemo"].name + ".idx").exists()
 
 
 @pytest.mark.unit
@@ -236,11 +331,30 @@ def test_missing_index_error_respects_indexes_root(nemo_path, tmp_path):
 
 
 @pytest.mark.unit
-def test_offline_tools_can_still_build_tar_indexes(nemo_tarred_paths):
+def test_standalone_tar_reader_keeps_auto_building_by_default(nemo_tarred_paths):
+    # The standalone reader's default is unchanged: it builds a missing index. Only the dataloader adapters
+    # pass auto_create_index=False.
     _, tar = nemo_tarred_paths
+    idx = tar.with_name(tar.name + ".idx")
+    reader = IndexedTarMemberReader(tar)
+    assert idx.exists()
+    assert len(reader) == 4
+    name, payload = reader[0]
+    assert name == "0.wav" and payload[:4] == b"RIFF"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("adjacent", [True, False])
+def test_tar_reader_auto_create_index_false_requires_prebuilt_index(nemo_tarred_paths, tmp_path, adjacent):
+    _, tar = nemo_tarred_paths
+    idx = tar.with_name(tar.name + ".idx") if adjacent else tmp_path / "elsewhere" / "audio_0.tar.idx"
+    idx.parent.mkdir(exist_ok=True)
     with pytest.raises(MissingIndexError):
-        IndexedTarMemberReader(tar)
-    assert len(IndexedTarMemberReader(tar, auto_create_index=True)) == 4  # explicit opt-in
+        IndexedTarMemberReader(tar, idx_path=idx, auto_create_index=False)
+    assert not idx.exists()
+    create_nemo_tar_index(tar, idx)
+    reader = IndexedTarMemberReader(tar, idx_path=idx, auto_create_index=False)
+    assert [reader[i][0] for i in range(len(reader))] == [f"{i}.wav" for i in range(4)]
 
 
 @pytest.mark.unit

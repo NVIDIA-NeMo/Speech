@@ -104,7 +104,8 @@ def select_chunk_words(words: list[dict], chunk: AudioChunk, sample_rate: int) -
         if not math.isfinite(start) or not math.isfinite(end) or start < 0 or end < start:
             raise ValueError('Aligned chunk words must have finite, nonnegative, ordered timestamps.')
         midpoint = (offset + (start + end) / 2) * sample_rate
-        if chunk.keep_start <= midpoint < chunk.keep_end:
+        # The last chunk also owns words whose timing runs past the source end.
+        if chunk.keep_start <= midpoint and (chunk.is_last or midpoint < chunk.keep_end):
             entry = {k: v for k, v in word.items() if k not in ('start_offset', 'end_offset')}
             entry.update(start=offset + start, end=offset + end)
             selected.append(entry)

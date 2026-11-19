@@ -113,6 +113,14 @@ def test_word_ownership_uses_half_open_intervals():
     assert len(words) == 1 and words[0]['start'] == 29
 
 
+@pytest.mark.unit
+def test_last_chunk_keeps_words_timed_past_the_source_end():
+    # A transducer can emit the last word on the padded final frame, with a duration past the end.
+    plan = make_chunk_plan(45, 1, ChunkingConfig(chunk_size=30, context_size=2))
+    words = select_chunk_words([{'word': 'last', 'start': 15, 'end': 21}], plan[1], 1)
+    assert [(w['word'], w['start'], w['end']) for w in words] == [('last', 43, 49)]
+
+
 class _LabelCTCModel(TranscriptionMixin, torch.nn.Module):
     """Real mixin and CTC decoder; deterministic acoustic output needs no checkpoint."""
 

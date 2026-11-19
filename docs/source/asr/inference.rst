@@ -201,12 +201,14 @@ For decoding customization (confidence, CUDA graphs, language models, word boost
         print(f"{start:0.2f} - {end:0.2f} : {word}")
 
 
+.. _asr-long-audio-inference:
+
 Long Audio Inference
 --------------------
 
 For audio longer than what fits in memory (especially with Conformer's quadratic attention):
 
-**Planned offline chunking through the Python API:**
+**Planned offline chunking (recommended):**
 
 .. code-block:: python
 
@@ -287,10 +289,12 @@ and memory use on representative audio before selecting production chunk sizes.
 
 Which long-audio method to use:
 
-* **Local attention** (below) keeps one encoder pass over the whole recording. Use it for Fast
-  Conformer CTC and RNNT/TDT models when the full recording fits in device memory.
-* **Planned chunking** bounds encoder memory by the chunk duration, independent of the
-  recording length. Use it when local attention does not fit, and for AED models.
+* **Planned chunking** is recommended for CTC, RNNT/TDT, hybrid, and AED models. It bounds
+  encoder memory by the chunk duration, independent of the recording length.
+* **Local attention** (below) is an alternative for Fast Conformer models. It keeps one encoder
+  pass over the whole recording, so memory still grows with the recording length. Released
+  checkpoints were trained with full attention, and on long-form evaluation sets planned
+  chunking gave lower WER and lower peak memory.
 * **Buffered inference scripts** (below) are the streaming-style alternative for offline files.
 
 **Buffered / chunked inference:**
@@ -298,7 +302,7 @@ Which long-audio method to use:
 Divide audio into overlapping chunks and merge outputs. Scripts are in
 `examples/asr/asr_chunked_inference <https://github.com/NVIDIA-NeMo/Speech/tree/main/examples/asr/asr_chunked_inference>`_.
 
-**Local attention (recommended for Fast Conformer):**
+**Local attention (alternative for Fast Conformer):**
 
 Switch to Longformer-style local+global attention for linear-cost inference on audio >1 hour:
 

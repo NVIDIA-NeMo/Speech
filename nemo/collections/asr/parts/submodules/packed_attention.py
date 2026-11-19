@@ -230,23 +230,24 @@ def packed_attention(
         dropout_p: dropout on the attention weights, in ``[0, 1)``,
             supported by the variable-length FlashAttention path and the reference path but not by FlexAttention
             (see ``packed_attention_supports_dropout``).
-        scale: positive score scale, ``1 / sqrt(d_k)`` by default.
+        scale: positive score scale, ``1 / sqrt(d_k)`` by default;
+            a one-element tensor or NumPy scalar is read as a number, so it must not require a gradient.
 
     Returns:
         Context vectors of shape ``(T_total, H, d_k)``.
 
     Raises:
         ValueError: for inputs that do not match the context and for scalars outside their ranges,
-            checked before the dispatch so that every backend rejects the same calls.
+            checked before the dispatch so that the backends reject these calls alike.
         NotImplementedError: on CUDA for a positive ``dropout_p`` where FlexAttention would have to apply it.
     """
-    if scale is None:
-        scale = 1.0 / math.sqrt(q.shape[-1])
-    # the compiled FlexAttention kernel takes a Python number
-    scale = float(scale)
     if not 0.0 <= dropout_p < 1.0:
         raise ValueError(f"dropout_p must be in [0, 1), got {dropout_p}.")
-    if not (math.isfinite(scale) and scale > 0.0):
+    if isinstance(scale, Tensor) and scale.requires_grad:
+        raise ValueError("scale is read as a number, so it must not require a gradient.")
+    # the compiled FlexAttention kernel takes a Python number
+    scale = None if scale is None else float(scale)
+    if scale is not None and not (math.isfinite(scale) and scale > 0.0):
         raise ValueError(f"scale must be positive and finite, got {scale}.")
     if q.device != context.device:
         raise ValueError(f"q is on {q.device}, the context on {context.device}.")
@@ -256,8 +257,10 @@ def packed_attention(
             f"with the {context.total_tokens} tokens of the context, "
             f"got {tuple(q.shape)}, {tuple(k.shape)} and {tuple(v.shape)}."
         )
+    if scale is None:
+        scale = 1.0 / math.sqrt(q.shape[-1])
     if rel_pos_bias is not None:
-        min_width = 2 * context.max_seqlen - 1
+        min_width = max(2 * context.max_seqlen - 1, 1)
         if (
             rel_pos_bias.ndim != 3
             or rel_pos_bias.shape[:2] != q.shape[:2]
@@ -420,15 +423,15 @@ def _reference_packed_attention(
     """Dense attention one utterance at a time, with the same bias convention as the kernels."""
     outputs = []
     center = (rel_pos_bias.shape[-1] - 1) // 2 if rel_pos_bias is not None else 0
+    # scaled before the product like torch's scaled_dot_product_attention:
+    # a product beyond the half-precision range whose scaled score is in range stays finite
+    root = math.sqrt(scale)
     for start, end in context.sequence_slices:
         if end == start:
             continue
         qi = q[start:end].transpose(0, 1)
         ki = k[start:end].transpose(0, 1)
         vi = v[start:end].transpose(0, 1)
-        # scaled before the product like torch's scaled_dot_product_attention:
-        # a product beyond the half-precision range whose scaled score is in range stays finite
-        root = math.sqrt(scale)
         scores = torch.matmul(qi * root, (ki * root).transpose(-2, -1))
         if rel_pos_bias is not None:
             length = end - start

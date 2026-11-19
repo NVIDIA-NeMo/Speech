@@ -256,6 +256,9 @@ class TestPackedAttentionArguments:
         "name, shape, match",
         [
             ("q", (9, 2, 16), "q, k and v must share one shape"),
+            ("qkv", (9, 2, 16), "q, k and v must share one shape"),
+            ("qkv", (7, 2, 16), "q, k and v must share one shape"),
+            ("qkv", (8, 32), "q, k and v must share one shape"),
             ("k", (9, 2, 16), "q, k and v must share one shape"),
             ("k", (7, 2, 16), "q, k and v must share one shape"),
             ("k", (8, 3, 16), "q, k and v must share one shape"),
@@ -264,15 +267,27 @@ class TestPackedAttentionArguments:
             ("rel_pos_bias", (8, 3, 9), "rel_pos_bias must have shape"),
             ("rel_pos_bias", (8, 2, 8), "rel_pos_bias must have shape"),
             ("rel_pos_bias", (8, 2, 7), "rel_pos_bias must have shape"),
+            ("rel_pos_bias", (8, 2, 10), "rel_pos_bias must have shape"),
+            ("rel_pos_bias", (8, 2, 9, 1), "rel_pos_bias must have shape"),
+            ("rel_pos_bias", (16, 9), "rel_pos_bias must have shape"),
         ],
         ids=lambda value: "x".join(map(str, value)) if isinstance(value, tuple) else str(value).split(" must")[0],
     )
     def test_shapes_must_match_the_context(self, device, dtype, lengths, name, shape, match):
         q, k, v, context, bias = self._inputs(device, dtype, lengths, with_bias=True)
         tensors = {"q": q, "k": k, "v": v, "rel_pos_bias": bias}
-        tensors[name] = torch.zeros(shape, device=device, dtype=dtype)
+        for key in ("q", "k", "v") if name == "qkv" else (name,):
+            tensors[key] = torch.zeros(shape, device=device, dtype=dtype)
         with pytest.raises(ValueError, match=match):
             packed_attention(tensors["q"], tensors["k"], tensors["v"], context, rel_pos_bias=tensors["rel_pos_bias"])
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("lengths", [[5, 0, 3], [0, 0]], ids=["tokens", "empty"])
+    def test_scale_tensor_with_a_gradient_is_rejected(self, lengths):
+        """The scale is read as a number, which would drop the gradient of a tensor without a word."""
+        q, k, v, context, _ = self._inputs("cpu", torch.float32, lengths, with_bias=False)
+        with pytest.raises(ValueError, match="must not require a gradient"):
+            packed_attention(q, k, v, context, scale=torch.tensor(0.5, requires_grad=True))
 
     @pytest.mark.unit
     @pytest.mark.gpu

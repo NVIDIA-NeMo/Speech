@@ -1331,6 +1331,8 @@ class NemoTranscriberWithPrompt(Transcriber):
             "de": "de-DE",
             "fr": "fr-FR",
             "ja": "ja-JP",
+            "pt": "pt-BR",
+            "vi": "vi-VN",
         }
 
     def transcribe(self, audio_paths: List[Path], batch_size: int, language: Optional[str]) -> List[str]:

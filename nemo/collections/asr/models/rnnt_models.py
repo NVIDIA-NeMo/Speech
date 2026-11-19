@@ -956,6 +956,8 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
     """ Transcription related methods """
 
     def _transcribe_chunk_validate(self, trcfg):
+        if getattr(self.decoding, 'restart_token_ids', None):
+            raise ValueError('Planned RNNT/TDT chunking does not support `restart_after_tokens`.')
         beam = self.decoding.cfg.get('beam') or {}
         if self.decoding.cfg.strategy not in ('greedy', 'greedy_batch') and not beam.get(
             'return_best_hypothesis', True

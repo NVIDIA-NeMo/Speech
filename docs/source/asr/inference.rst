@@ -266,8 +266,8 @@ select output in their native representation:
 
 CTC supports ``greedy`` and ``greedy_batch`` decoding without an n-gram LM. RNNT/TDT and AED
 support one best hypothesis per chunk. RNNT/TDT models with a character vocabulary and TDT
-durations are not supported, because their decoding cannot build word timestamps. External DataLoaders, augmentations, and partial hypotheses
-are not supported in this mode and raise an error. Existing inference paths remain available
+durations are not supported, because their decoding cannot build word timestamps. External DataLoaders, augmentations, partial hypotheses,
+and RNNT ``decoding.restart_after_tokens`` are not supported in this mode and raise an error. Existing inference paths remain available
 when ``chunking`` is unset. The existing Canary ``enable_chunking`` mode is separate; setting
 ``chunking`` selects the shared chunk plan instead.
 

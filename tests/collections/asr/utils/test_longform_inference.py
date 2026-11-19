@@ -573,6 +573,14 @@ def test_rnnt_chunking_rejects_n_best():
         model.transcribe(torch.ones(11), chunking=ChunkingConfig())
 
 
+@pytest.mark.unit
+def test_rnnt_chunking_rejects_restart_after_tokens():
+    model = _ConstantRNNTModel(strategy='greedy_batch')
+    model.decoding.restart_token_ids = [0]  # Restart decoding encodes inside output processing, not per chunk.
+    with pytest.raises(ValueError, match='restart_after_tokens'):
+        model.transcribe(torch.ones(11), chunking=ChunkingConfig())
+
+
 class _FramewiseRNNTModel(_ConstantRNNTModel):
     """Random prediction and joint networks over a context-free encoder."""
 

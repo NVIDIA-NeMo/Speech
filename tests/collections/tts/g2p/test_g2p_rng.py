@@ -15,6 +15,7 @@
 
 import os
 import random
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -124,3 +125,32 @@ def test_set_g2p_rng_reaches_aggregated_tokenizers():
     set_g2p_rng(None, rng)  # tokenizers that are not configured are skipped
 
     assert g2p.rng is rng
+
+
+def test_set_g2p_rng_reaches_tokenizers_in_a_list():
+    g2p = _ipa_g2p()
+    container = SimpleNamespace(tokenizers=[IPATokenizer(g2p=g2p, locale="en-US")])
+    rng = random.Random(0)
+
+    set_g2p_rng(container, rng)
+
+    assert g2p.rng is rng
+
+
+def test_set_g2p_rng_warns_once_about_skipped_g2p(monkeypatch):
+    from nemo.collections.tts.parts.utils import tts_dataset_utils
+
+    warnings = []
+    monkeypatch.setattr(tts_dataset_utils.logging, "warning", lambda msg, *args: warnings.append(msg))
+    monkeypatch.setattr(tts_dataset_utils, "_G2P_RNG_SKIP_WARNED", set())
+
+    class _CustomG2p:
+        def __call__(self, text):
+            return list(text)
+
+    tokenizer = SimpleNamespace(g2p=_CustomG2p())
+    set_g2p_rng(tokenizer, random.Random(0))
+    set_g2p_rng(tokenizer, random.Random(0))
+
+    assert len(warnings) == 1
+    assert "_CustomG2p" in warnings[0]

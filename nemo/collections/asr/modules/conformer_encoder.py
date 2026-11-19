@@ -880,7 +880,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         the fusion (see the smoke test).
 
         Configurations without a sequence-packed form (streaming caches, limited or chunked attention context,
-        ``rel_pos_local_attn``, reduction layers, adapters, causal or VGGNet subsampling, intermediate layer captures,
+        ``rel_pos_local_attn``, reduction layers, adapters, VGGNet subsampling, intermediate layer captures,
         and in training mode attention dropout where FlexAttention would have to apply it)
         are named by ``sequence_packed_unsupported_reason`` and refused here with ``NotImplementedError``;
         the parallel expert encoder and the independent dual encoder consult ``supports_sequence_packed_output``
@@ -976,8 +976,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         Without a sequence-packed form: limited or chunked attention context, ``rel_pos_local_attn``,
         the sampling of attention context sizes in training, reduction layers, adapters,
         intermediate layer captures (InterCTC and ``save_encoder_tensors``, whose consumers expect padded tensors),
-        frontends other than a linear layer or a non-causal ``striding`` or ``dw_striding`` ``ConvSubsampling``,
-        and instance or group normalization in the convolution modules.
+        frontends other than a linear layer or a ``ConvSubsampling`` that names no reason of its own,
+        and whatever the convolution module of a layer names (both by ``sequence_packed_unsupported_reason``).
         Attention dropout in training mode on CUDA: FlexAttention has no dropout, so ``rel_pos`` attention,
         which carries its position bias through FlexAttention, needs ``dropout_att: 0``,
         and ``abs_pos`` and ``rope`` attention keep their dropout only where variable-length FlashAttention runs,

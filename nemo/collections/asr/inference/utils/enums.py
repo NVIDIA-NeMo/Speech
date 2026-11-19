@@ -58,15 +58,6 @@ class PipelineType(StrEnumMixin, Enum):
     CACHE_AWARE = auto()
 
 
-class RequestType(StrEnumMixin, Enum):
-    """
-    Enumeration of the request types.
-    """
-
-    FRAME = auto()
-    FEATURE_BUFFER = auto()
-
-
 class FeatureBufferPaddingMode(StrEnumMixin, Enum):
     """
     Enumeration of the feature buffer padding modes.

@@ -26,11 +26,11 @@ from nemo.collections.asr.inference.pipelines.base_pipeline import BasePipeline
 from nemo.collections.asr.inference.streaming.buffering.incremental_audio_bufferer import (
     BatchedIncrementalAudioBufferer,
 )
-from nemo.collections.asr.inference.streaming.framing.multi_stream import ContinuousBatchedRequestStreamer
-from nemo.collections.asr.inference.streaming.framing.request import FeatureBuffer, Frame
+from nemo.collections.asr.inference.streaming.framing.multi_stream import ContinuousBatchedFrameStreamer
+from nemo.collections.asr.inference.streaming.framing.request import Frame
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
 from nemo.collections.asr.inference.streaming.state.salm_state import SALMStreamingState
-from nemo.collections.asr.inference.utils.enums import ASROutputGranularity, MergingStrategy, RequestType
+from nemo.collections.asr.inference.utils.enums import ASROutputGranularity, MergingStrategy
 from nemo.collections.asr.inference.utils.lcs_merge import lcs_merge
 from nemo.utils.decorators import experimental
 
@@ -109,9 +109,6 @@ class BufferedSALMPipeline(BasePipeline):
             self.overlap_size_in_secs,
         )
 
-        self.request_type = RequestType.from_str(cfg.streaming.request_type)
-        if self.request_type is RequestType.FEATURE_BUFFER:
-            raise ValueError("Feature buffer request type is not supported for SALM pipeline")
 
         self.prompts = [[{"role": "user", "content": f"Transcribe the following: {self.asr_model.audio_locator_tag}"}]]
         self.tokens = self.asr_model.preprocess_prompts(self.prompts)
@@ -120,7 +117,7 @@ class BufferedSALMPipeline(BasePipeline):
         """
         Create new empty state.
         Args:
-            options: (ASRRequestOptions) Request options for particular stream.
+            options: (ASRRequestOptions) Frame options for particular stream.
         Returns:
             (SALMStreamingState) New empty state.
         """
@@ -224,26 +221,17 @@ class BufferedSALMPipeline(BasePipeline):
                 else:
                     state.partial_transcript = ""
 
-    def transcribe_step_for_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> None:
-        """
-        Transcribe a step for feature buffers.
-        Args:
-            fbuffers: (list[FeatureBuffer]) List of feature buffers to transcribe.
-        """
-        raise NotImplementedError("Feature buffer request type is not supported for SALM pipeline")
-
-    def get_request_generator(self) -> ContinuousBatchedRequestStreamer:
+    def get_request_generator(self) -> ContinuousBatchedFrameStreamer:
         """
         Initialize the request generator.
         Returns:
-            (ContinuousBatchedRequestStreamer) Request generator.
+            (ContinuousBatchedFrameStreamer) Frame generator.
         """
-        request_generator = ContinuousBatchedRequestStreamer(
+        request_generator = ContinuousBatchedFrameStreamer(
             n_frames_per_stream=1,
             frame_size_in_secs=self.chunk_size_in_secs,
             sample_rate=self.sample_rate,
             batch_size=self.batch_size,
-            request_type=self.request_type,
             pad_last_frame=True,
         )
         return request_generator

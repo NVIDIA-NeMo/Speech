@@ -20,7 +20,6 @@ from nemo.collections.asr.inference.utils.enums import (
     ASROutputGranularity,
     FeatureBufferPaddingMode,
     PipelineType,
-    RequestType,
 )
 
 
@@ -46,13 +45,6 @@ class TestEnums:
         assert PipelineType.from_str("cache_aware") == PipelineType.CACHE_AWARE
         with pytest.raises(ValueError):
             PipelineType.from_str("invalid")
-
-    @pytest.mark.unit
-    def test_RequestType(self):
-        assert RequestType.from_str("frame") == RequestType.FRAME
-        assert RequestType.from_str("feature_buffer") == RequestType.FEATURE_BUFFER
-        with pytest.raises(ValueError):
-            RequestType.from_str("invalid")
 
     @pytest.mark.unit
     def test_FeatureBufferPaddingMode(self):

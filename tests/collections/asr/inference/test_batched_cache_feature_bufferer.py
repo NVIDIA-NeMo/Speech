@@ -100,3 +100,69 @@ def test_update_returns_batched_buffers_that_match_the_stored_state_and_tensor_p
     # only the short last frame is padded
     assert right_paddings[0] == 0 and right_paddings[1] > 0
     assert 9 not in bufferer.streamidx2slotidx
+
+
+def _const_frame(stream_id, value, is_last=False):
+    return Frame(samples=torch.full((CHUNK_SAMPLES,), float(value)), stream_id=stream_id, is_last=is_last)
+
+
+def _audio_seen_by_the_preprocessor(bufferer):
+    seen = []
+    preprocess = bufferer.preprocess
+
+    def spy(audio_buffers, right_paddings, expected_feat_len):
+        seen.append(audio_buffers.clone())
+        return preprocess(audio_buffers, right_paddings, expected_feat_len)
+
+    bufferer.preprocess = spy
+    return seen
+
+
+@pytest.mark.unit
+def test_preprocessor_gets_the_latest_chunk_with_the_look_back_of_each_stream():
+    bufferer = _bufferer()
+    seen = _audio_seen_by_the_preprocessor(bufferer)
+    look_back = int(0.01 * SAMPLE_RATE)  # one feature stride
+
+    bufferer.update([_const_frame(0, 1), _const_frame(1, 5)])
+    bufferer.update([_const_frame(0, 2), _const_frame(1, 6)])
+
+    # first step: nothing before the first chunk, so the look back is silence
+    assert seen[0].shape == (2, look_back + CHUNK_SAMPLES)
+    assert seen[0][0, :look_back].eq(0).all() and seen[0][0, look_back:].eq(1).all()
+    assert seen[0][1, :look_back].eq(0).all() and seen[0][1, look_back:].eq(5).all()
+    # second step: the look back is the end of the previous chunk of the same stream
+    assert seen[1][0, :look_back].eq(1).all() and seen[1][0, look_back:].eq(2).all()
+    assert seen[1][1, :look_back].eq(5).all() and seen[1][1, look_back:].eq(6).all()
+
+
+@pytest.mark.unit
+def test_a_new_stream_does_not_see_the_audio_of_the_stream_that_used_the_slot_before():
+    bufferer = _bufferer(num_slots=1)
+    seen = _audio_seen_by_the_preprocessor(bufferer)
+    look_back = int(0.01 * SAMPLE_RATE)
+
+    bufferer.update([_const_frame(0, 9, is_last=True)])
+    bufferer.update([_const_frame(1, 3)])
+
+    assert seen[1][0, :look_back].eq(0).all() and seen[1][0, look_back:].eq(3).all()
+
+
+@pytest.mark.unit
+def test_audio_buffer_as_long_as_the_chunk_is_handed_over_whole_and_a_frame_shorter_than_it_shifts_it():
+    # use_feat_cache=false: the features of the whole buffer are computed, the frames are shorter than the buffer
+    bufferer = BatchedCacheFeatureBufferer(
+        num_slots=1,
+        sample_rate=SAMPLE_RATE,
+        buffer_size_in_secs=0.4,
+        chunk_size_in_secs=0.4,
+        preprocessor_cfg=PREPROCESSOR_CFG,
+        device=torch.device("cpu"),
+    )
+    seen = _audio_seen_by_the_preprocessor(bufferer)
+
+    bufferer.update([_const_frame(0, 1)])
+    bufferer.update([_const_frame(0, 2)])
+
+    assert seen[1].shape == (1, 2 * CHUNK_SAMPLES)
+    assert seen[1][0, :CHUNK_SAMPLES].eq(1).all() and seen[1][0, CHUNK_SAMPLES:].eq(2).all()

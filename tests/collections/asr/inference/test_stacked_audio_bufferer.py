@@ -19,8 +19,9 @@ import pytest
 import torch
 
 from nemo.collections.asr.inference.pipelines.buffered_ctc_pipeline import BufferedCTCPipeline
-from nemo.collections.asr.inference.streaming.buffering.audio_bufferer import BatchedAudioBufferer
 from nemo.collections.asr.inference.streaming.buffering.stacked_audio_bufferer import StackedAudioBufferer
+from nemo.collections.asr.inference.streaming.framing.mono_stream import MonoStream
+from nemo.collections.asr.inference.streaming.framing.multi_stream import MultiStream
 from nemo.collections.asr.inference.streaming.framing.request import Frame
 from nemo.collections.asr.inference.utils.enums import PaddingMode
 
@@ -59,12 +60,32 @@ def test_a_stream_that_takes_over_a_released_slot_starts_from_a_zero_buffer():
     assert left_paddings.tolist() == [5]
 
 
+class _ReferenceBuffers:
+    """Plain Python model of the buffers: the last buffer_size samples of each stream, zero padded in front."""
+
+    def __init__(self, buffer_size):
+        self.buffer_size = buffer_size
+        self.history = {}
+
+    def update(self, frames):
+        buffers, left_paddings = [], []
+        for frame in frames:
+            samples = self.history.setdefault(frame.stream_id, []) + frame.samples.tolist()
+            self.history[frame.stream_id] = samples
+            window = samples[-self.buffer_size :]
+            buffers.append([0.0] * (self.buffer_size - len(window)) + window)
+            left_paddings.append(max(0, self.buffer_size - len(samples)))
+            if frame.is_last:
+                del self.history[frame.stream_id]
+        return buffers, left_paddings
+
+
 @pytest.mark.unit
-def test_buffers_of_streams_that_start_and_end_at_different_steps_match_the_per_stream_bufferer():
+def test_buffers_of_streams_that_start_and_end_at_different_steps_match_a_plain_python_model():
     rng = random.Random(0)
     # (first step, number of frames) per stream; more streams than the initial slots, so slots are reused and grown
     schedule = {0: (0, 4), 1: (0, 2), 2: (1, 5), 3: (3, 3), 4: (3, 1), 5: (4, 4)}
-    reference = BatchedAudioBufferer(SAMPLE_RATE, BUFFER_SECS)
+    reference = _ReferenceBuffers(buffer_size=int(BUFFER_SECS * SAMPLE_RATE))
     stacked = StackedAudioBufferer(SAMPLE_RATE, BUFFER_SECS, device="cpu", num_slots=2)
 
     for step in range(9):
@@ -77,8 +98,39 @@ def test_buffers_of_streams_that_start_and_end_at_different_steps_match_the_per_
             continue
         ref_buffers, ref_left_paddings = reference.update(frames)
         buffers, left_paddings = stacked.update(frames)
-        assert torch.equal(buffers, torch.stack(ref_buffers))
+        assert torch.equal(buffers, torch.tensor(ref_buffers, dtype=torch.float32))
         assert left_paddings.tolist() == ref_left_paddings
+
+
+@pytest.mark.unit
+def test_the_end_of_each_buffer_is_the_latest_frame_of_its_stream():
+    audios = (torch.ones(83200), 2 * torch.ones(118960))
+    multi_stream = MultiStream(n_frames_per_stream=1)
+    for stream_id, audio in enumerate(audios):
+        stream = MonoStream(16000, 2.5, stream_id=stream_id, pad_last_frame=False)
+        stream.load_audio(audio, options=None)
+        multi_stream.add_stream(stream, stream_id=stream_id)
+    bufferer = StackedAudioBufferer(16000, buffer_size_in_secs=5.0, device="cpu")
+
+    steps = 0
+    for frames in iter(multi_stream):
+        # frames are buffered one at a time, since the last frame of a stream is shorter without padding
+        for frame in frames:
+            buffers, _ = bufferer.update([frame])
+            assert buffers.shape == (1, 80000)
+            assert torch.equal(buffers[0, -frame.size :], frame.samples)
+        steps += 1
+    assert steps > 1
+
+
+@pytest.mark.unit
+def test_a_buffer_shorter_than_the_default_slot_count_and_an_explicit_size_in_samples_are_honored():
+    bufferer = StackedAudioBufferer(SAMPLE_RATE, BUFFER_SECS, device="cpu", num_slots=1, buffer_size=5)
+
+    buffers, left_paddings = bufferer.update([_frame(0, [1, 2, 3])])
+
+    assert buffers.tolist() == [[0, 0, 1, 2, 3]]
+    assert left_paddings.tolist() == [2]
 
 
 @pytest.mark.unit

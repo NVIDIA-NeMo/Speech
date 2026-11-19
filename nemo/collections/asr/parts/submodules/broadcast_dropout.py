@@ -57,5 +57,7 @@ class BroadcastDropout(nn.Module):
         if not self.training or self.p == 0.0:
             return x
         if x.dim() < 2:
-            raise ValueError(f"BroadcastDropout needs a time and a feature axis, shape (..., T, D), got {tuple(x.shape)}")
+            raise ValueError(
+                f"BroadcastDropout needs a time and a feature axis, shape (..., T, D), got {tuple(x.shape)}"
+            )
         return x * F.dropout(x.new_ones(*x.shape[:-2], 1, x.shape[-1]), self.p)

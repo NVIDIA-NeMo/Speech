@@ -165,12 +165,18 @@ class BaseTimestampsTest:
 
         hypothesis_text = re.sub(r'\s+', ' ', hyp.text.strip())
 
-        words = hyp.text.split(decoding.word_seperator)
-        words = list(filter(lambda x: x != '', words))
+        # A delimiter followed by punctuation does not start a new word: 'b.e .' is one word.
+        punctuation = decoding.supported_punctuation or set()
+        words = []
+        for word in filter(None, hyp.text.split(decoding.word_seperator)):
+            if words and word[0] in punctuation:
+                words[-1] += decoding.word_seperator + word
+            else:
+                words.append(word)
         assert len(hyp.timestamp['word']) == len(words)
 
         words_from_timestamps = [ts['word'] for ts in hyp.timestamp['word']]
-        assert hypothesis_text == decoding.word_seperator.join(words_from_timestamps)
+        assert hypothesis_text == re.sub(r'\s+', ' ', decoding.word_seperator.join(words_from_timestamps))
 
         segments = []
         segment = []
@@ -187,7 +193,7 @@ class BaseTimestampsTest:
         assert len(hyp.timestamp['segment']) == len(segments)
 
         segments_from_timestamps = [ts['segment'] for ts in hyp.timestamp['segment']]
-        assert hypothesis_text == decoding.word_seperator.join(segments_from_timestamps)
+        assert hypothesis_text == re.sub(r'\s+', ' ', decoding.word_seperator.join(segments_from_timestamps))
 
     @staticmethod
     def check_subword_timestamps(hyp: Hypothesis, decoding: Any):

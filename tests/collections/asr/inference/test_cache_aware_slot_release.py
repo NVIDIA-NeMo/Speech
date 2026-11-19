@@ -28,7 +28,12 @@ from nemo.collections.asr.inference.pipelines.base_pipeline import BasePipeline
 from nemo.collections.asr.inference.pipelines.cache_aware_ctc_pipeline import CacheAwareCTCPipeline
 from nemo.collections.asr.inference.pipelines.cache_aware_rnnt_pipeline import CacheAwareRNNTPipeline
 from nemo.collections.asr.inference.streaming.buffering.cache_feature_bufferer import BatchedCacheFeatureBufferer
+from nemo.collections.asr.inference.streaming.framing.request import Frame
+from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
+from nemo.collections.asr.inference.streaming.state.cache_aware_rnnt_state import CacheAwareRNNTStreamingState
 from nemo.collections.asr.inference.utils.context_manager import CacheAwareContextManager
+from nemo.collections.asr.inference.utils.per_stream_biasing import release_auto_managed_stream_biasing
+from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
 
 PIPELINES = [
     pytest.param(CacheAwareRNNTPipeline, id="cache_aware_rnnt"),
@@ -85,6 +90,27 @@ def _allocate_bufferer_slot(bufferer: BatchedCacheFeatureBufferer, stream_id: in
     return slot_idx
 
 
+def _fill_bufferer(bufferer: BatchedCacheFeatureBufferer) -> None:
+    """Take every slot through the real update() path with non-zero audio."""
+    bufferer.update(
+        [
+            Frame(samples=torch.full((bufferer.chunk_size,), float(stream_id + 1)), stream_id=stream_id, is_first=True)
+            for stream_id in range(bufferer.num_slots)
+        ]
+    )
+
+
+def _assert_bufferer_clean(bufferer: BatchedCacheFeatureBufferer) -> None:
+    assert bufferer.available_slots.qsize() == bufferer.num_slots
+    assert bufferer.streamidx2slotidx == {}
+    assert bufferer.slotidx2streamidx == {}
+    # compare with the configured fill value, not 0, so log-mel fill semantics stay intact
+    assert torch.all(bufferer.feature_buffer == bufferer.ZERO_LEVEL_SPEC_DB_VAL)
+    for audio_bufferer in bufferer.audio_bufferers:
+        assert torch.count_nonzero(audio_bufferer.sample_buffer) == 0
+        assert audio_bufferer.left_padding == audio_bufferer.buffer_size
+
+
 def _make_context_manager(num_slots: int = NUM_SLOTS) -> CacheAwareContextManager:
     return CacheAwareContextManager(_StubCacheAwareModel(), num_slots=num_slots, use_cache=True)
 
@@ -136,16 +162,16 @@ def test_bufferer_free_stream_returns_slot_and_is_idempotent():
 
 @pytest.mark.unit
 def test_bufferer_reset_restores_all_slots_after_leak():
+    """reset() restores capacity and buffer contents after streams leaked their slots through update()."""
     bufferer = _make_bufferer()
-    for stream_id in range(NUM_SLOTS):
-        _allocate_bufferer_slot(bufferer, stream_id)
+    _fill_bufferer(bufferer)
+    bufferer.feature_buffer.fill_(1.0)
     assert bufferer.available_slots.qsize() == 0
 
     bufferer.reset()
-    assert bufferer.available_slots.qsize() == NUM_SLOTS
-    assert bufferer.streamidx2slotidx == {}
-    assert bufferer.slotidx2streamidx == {}
-    _allocate_bufferer_slot(bufferer, 99)
+
+    _assert_bufferer_clean(bufferer)
+    bufferer.update([Frame(samples=torch.zeros(bufferer.chunk_size), stream_id=99, is_first=True)])
     assert bufferer.available_slots.qsize() == NUM_SLOTS - 1
 
 
@@ -218,6 +244,61 @@ def test_context_manager_reset_zeros_in_place_without_realloc():
 
 
 @pytest.mark.unit
+def test_teardown_outside_inference_mode_after_inference_mode_setup():
+    """Resources built and dirtied inside inference mode can be reset and freed outside it."""
+    with torch.inference_mode():
+        bufferer = _make_bufferer()
+        _fill_bufferer(bufferer)
+        context_manager = _make_context_manager()
+        _allocate_context_slot(context_manager, 0)
+        _allocate_context_slot(context_manager, 1)
+        context_manager.cache_last_channel[:, 0].fill_(1.0)
+        context_manager.cache_last_channel[:, 1].fill_(2.0)
+        context_manager.cache_last_time[:, 1].fill_(2.0)
+        context_manager.cache_last_channel_len[1] = 2
+    # make sure the test really exercises inference tensors
+    assert bufferer.feature_buffer.is_inference()
+    assert bufferer.audio_bufferers[0].sample_buffer.is_inference()
+    assert context_manager.cache_last_channel.is_inference()
+    channel = context_manager.cache_last_channel
+    channel_ptr = channel.data_ptr()
+
+    context_manager.free_stream(0)
+    assert torch.all(channel[:, 0] == 0)
+    # the live neighbor keeps its cache
+    assert torch.all(channel[:, 1] == 2.0)
+    assert torch.all(context_manager.cache_last_time[:, 1] == 2.0)
+    assert context_manager.cache_last_channel_len[1] == 2
+    assert context_manager.free_slots.qsize() == 1
+    context_manager.free_stream(0)
+    assert context_manager.free_slots.qsize() == 1
+
+    context_manager.reset()
+    assert context_manager.free_slots.qsize() == NUM_SLOTS
+    assert context_manager.streamidx2slotidx == {}
+    assert context_manager.cache_last_channel is channel
+    assert context_manager.cache_last_channel.data_ptr() == channel_ptr
+    assert torch.all(context_manager.cache_last_channel == 0)
+    assert torch.all(context_manager.cache_last_time == 0)
+    assert torch.all(context_manager.cache_last_channel_len == 0)
+
+    feature_buffer = bufferer.feature_buffer
+    bufferer.reset()
+    _assert_bufferer_clean(bufferer)
+    assert bufferer.feature_buffer is feature_buffer
+
+
+@pytest.mark.unit
+def test_context_manager_with_cache_disabled_ignores_free_and_reset():
+    context_manager = CacheAwareContextManager(_StubCacheAwareModel(), num_slots=NUM_SLOTS, use_cache=False)
+    context_manager.free_stream(0)
+    context_manager.reset()
+    assert context_manager.cache_last_channel is None
+    assert context_manager.cache_last_time is None
+    assert context_manager.cache_last_channel_len is None
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("pipeline_cls", PIPELINES)
 def test_delete_state_frees_slots_for_streams_ended_without_is_last(pipeline_cls):
     """Many short streams ending via delete_state must recover free slot counts (issue repro shape)."""
@@ -259,6 +340,40 @@ def test_delete_state_after_is_last_free_is_idempotent(pipeline_cls):
 
     pipeline.delete_state(0)
     assert pipeline._state_pool == {}
+    assert _free_counts(pipeline) == (NUM_SLOTS, NUM_SLOTS)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("auto_manage", [True, False])
+@pytest.mark.parametrize("released_first", [False, True])
+def test_delete_state_releases_only_owned_biasing(auto_manage, released_first):
+    """RNNT delete_state drops an auto-managed biasing model once, while its state still exists."""
+    pipeline = _make_pipeline(CacheAwareRNNTPipeline)
+    _take_slots(pipeline, [0])
+    cfg = BiasingRequestItemConfig(multi_model_id=7, auto_manage_multi_model=auto_manage)
+    state = CacheAwareRNNTStreamingState()
+    state.set_options(ASRRequestOptions(biasing_cfg=cfg))
+    pipeline._state_pool[0] = state
+    removed = []
+
+    def remove_model(model_id):
+        assert pipeline.get_state(0) is state
+        removed.append(model_id)
+
+    multi_model = SimpleNamespace(remove_model=remove_model)
+    pipeline.decoding_computer = SimpleNamespace(per_stream_biasing_enabled=True, biasing_multi_model=multi_model)
+    if released_first:
+        # graceful is_last teardown already released the model and both slots
+        release_auto_managed_stream_biasing(state, multi_model)
+        pipeline.bufferer.free_stream(0)
+        pipeline.context_manager.free_stream(0)
+
+    pipeline.delete_state(0)
+    pipeline.delete_state(0)
+
+    assert removed == ([7] if auto_manage else [])
+    assert cfg.multi_model_id == (None if auto_manage else 7)
+    assert pipeline.get_state(0) is None
     assert _free_counts(pipeline) == (NUM_SLOTS, NUM_SLOTS)
 
 

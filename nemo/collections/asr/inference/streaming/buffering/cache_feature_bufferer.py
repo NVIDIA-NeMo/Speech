@@ -133,7 +133,8 @@ class BatchedCacheFeatureBufferer:
         """
         Clear all stream-to-slot mappings and restore every slot to the free pool.
 
-        Also zeroes the feature buffer and resets each per-slot audio bufferer.
+        Also refills the feature buffer and resets each per-slot audio bufferer, under
+        inference mode so buffers filled inside inference mode can be reset from outside it.
         Used by cache-aware pipeline session open/close/reset.
         """
         self.streamidx2slotidx.clear()
@@ -141,9 +142,10 @@ class BatchedCacheFeatureBufferer:
         self.available_slots = Queue(self.num_slots)
         for i in range(self.num_slots):
             self.available_slots.put(i)
-        self.feature_buffer.fill_(self.ZERO_LEVEL_SPEC_DB_VAL)
-        for audio_bufferer in self.audio_bufferers:
-            audio_bufferer.reset()
+        with torch.inference_mode():
+            self.feature_buffer.fill_(self.ZERO_LEVEL_SPEC_DB_VAL)
+            for audio_bufferer in self.audio_bufferers:
+                audio_bufferer.reset()
 
     def reset_slots(self, slot_ids: list[int]) -> None:
         """

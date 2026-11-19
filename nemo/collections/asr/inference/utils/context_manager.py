@@ -81,6 +81,8 @@ class CacheAwareContextManager:
         On later calls (session open/close) zero existing tensors in place so peak RSS
         does not grow from a second full cache while the old one is still referenced.
         Assumes a zero initial cache, the same assumption as _reset_slots.
+        The in-place zeroing runs under inference mode, so a cache created inside inference
+        mode can still be reset from outside it; the first allocation is left unchanged.
         """
         if self.cache_disabled:
             return
@@ -98,9 +100,10 @@ class CacheAwareContextManager:
             ) = self.cache_aware_model.get_initial_cache_state(self.num_slots)
             self.device = self.cache_last_channel.device
         else:
-            self.cache_last_channel.zero_()
-            self.cache_last_time.zero_()
-            self.cache_last_channel_len.zero_()
+            with torch.inference_mode():
+                self.cache_last_channel.zero_()
+                self.cache_last_time.zero_()
+                self.cache_last_channel_len.zero_()
         # slot ids of the last get_context call, so update_cache does not build them again
         self._active_slot_ids: list[int] = []
         self._active_slot_ids_dev: Tensor | None = None
@@ -155,7 +158,8 @@ class CacheAwareContextManager:
         Idempotent: a no-op when the stream has no mapped slot (for example after an
         is_last free via reset_slots()). Safe to call from delete_state(). Unlike
         _reset_slots, this guards on membership so a double free cannot corrupt
-        the free_slots queue.
+        the free_slots queue. Runs under inference mode so it also works on a cache
+        created inside inference mode.
         Args:
             stream_id (int): stream id whose slot should be returned to the free pool
         """
@@ -163,7 +167,8 @@ class CacheAwareContextManager:
             return
         slot_idx = self.streamidx2slotidx.get(stream_id)
         if slot_idx is not None:
-            self._reset_slots([slot_idx])
+            with torch.inference_mode():
+                self._reset_slots([slot_idx])
 
     def reset_slots(self, stream_ids: list[int], eos_flags: list[bool]) -> None:
         """

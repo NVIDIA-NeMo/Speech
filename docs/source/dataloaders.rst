@@ -1458,6 +1458,8 @@ Other, more exotic configurations:
 
 * With ``shard_seed=<int>``, all dataloading workers will yield the same results. This is only useful for unit testing and maybe debugging.
 
+* Indexed ``nemo`` manifest sources (``indexed: true``) ignore ``shard_seed="trng"`` and ``shard_seed="randomized"`` and shuffle shards with a fixed seed of 0, so every rank and worker uses the same order and reads its own disjoint slice. NeMo logs a warning about this once per process. Set an integer ``shard_seed`` to choose a different order.
+
 * With ``seed="trng"``, the base random seed itself will be drawn using a TRNG. It will be different on each GPU training process. This setting is not recommended.
 
 * With ``seed="randomized"``, the base random seed is set to Python's global RNG seed. It might be different on each GPU training process. This setting is not recommended.

@@ -1379,6 +1379,38 @@ For Canary-1B, we'll also provide the special tokens tokenizer. Example:
         --sub-buckets 5 \
         input_cfg.yaml
 
+Filtering by 2D bins without bucketing
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Strict 2D bucketing (``bucketing_2d_strict_mode: true``, the default) also selects the training data:
+a cut that fits none of the bins is discarded.
+The option ``filter_duration_bins`` applies this selection on its own, with any sampler.
+Use it to train on the same data as a 2D-bucketed setup with a sampler that does not take 2D buckets,
+such as packed sequence sampling (``use_packed_sequence_sampling: true``),
+or to bound the number of tokens by the duration of a cut without bucketing.
+
+.. code-block:: yaml
+
+    filter_duration_bins: [[5.0, 20], [5.0, 40], [10.0, 35], [10.0, 70]]
+
+The value has the format of two-dimensional ``bucket_duration_bins`` for audio,
+so the bins of an existing audio configuration (without ``use_multimodal_sampling``) can be copied as they are,
+together with its ``max_tps`` list if it has one.
+Two-dimensional bins of a ``use_multimodal_sampling`` configuration measure the audio in tokens and cannot be reused here.
+A cut is assigned to the bins with the smallest maximum duration that is not below its duration,
+and is kept if its number of tokens is within the largest maximum of these bins.
+With the bins above, a cut of 4 seconds is kept up to 40 tokens and a cut of 8 seconds up to 70 tokens,
+and every cut longer than 10 seconds is discarded.
+
+The tokens are counted as 2D bucketing counts them:
+the supervision tokens of a cut, or its ``input_ids`` when a ``prompt_format`` is applied.
+The cuts must therefore be tokenized before sampling,
+by passing a tokenizer with ``pretokenize: true`` or by tokens stored in the manifest;
+an untokenized cut raises an error.
+The bins always hold durations in seconds, and examples other than cuts (text, conversations) pass the filter unchanged.
+A ``max_tps`` list with one value per bin is applied as in 2D bucketing:
+a cut with more tokens per second than the value of the smallest bin that fits it is discarded.
+
 Pushing GPU utilization to the limits with bucketing and OOMptimizer
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -1783,7 +1815,7 @@ audio payload, configure:
 
 **Sampling — basic.** ``batch_size``, ``batch_duration``,
 ``quadratic_duration``, ``min_duration``, ``max_duration``, ``min_tps``,
-``max_tps``.
+``max_tps``, ``filter_duration_bins``.
 
 **Sampling — bucketing.** ``use_bucketing``, ``num_buckets``,
 ``bucket_duration_bins``, ``bucket_batch_size``, ``bucket_buffer_size``,

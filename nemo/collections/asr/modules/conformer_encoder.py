@@ -1030,8 +1030,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 if not packed_attention_supports_dropout(parameter.device, dtype, head_dim, rel_pos=True):
                     return (
                         "rel_pos attention over packed sequences keeps its dropout through its Triton kernel "
-                        "(Triton installed; float32, bfloat16 or float16), and FlexAttention, the path without it, "
-                        "has no dropout on the attention weights: set dropout_att: 0 on the encoder or install Triton."
+                        "(Triton installed; float32, bfloat16 or float16), "
+                        "and FlexAttention, the path without it, has no dropout on the attention weights: "
+                        "set dropout_att: 0 on the encoder or install Triton."
                     )
             elif not packed_attention_supports_dropout(parameter.device, dtype, head_dim):
                 return (

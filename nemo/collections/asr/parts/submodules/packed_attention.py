@@ -50,8 +50,9 @@ BLOCK_SIZE = 128
 FLEX_MIN_HEAD_DIM = 16
 # FlexAttention is the relative-position path without Triton
 # (with it, nemo.collections.asr.parts.triton.rel_pos_attention runs; float64 takes the reference path).
-# Its kernels are compiled statically per shape (a fully dynamic compile cannot trace the computed
-# gather of the relative-position bias; only the bias's token axis is marked dynamic, see _flex_packed_attention).
+# Its kernels are compiled statically per shape
+# (a fully dynamic compile cannot trace the computed gather of the relative-position bias;
+# only the bias's token axis is marked dynamic, see _flex_packed_attention).
 # The token axis and the relative-position width the kernels see are rounded up to powers of two
 # from these floors, so the kernels of a run are bounded by the logarithms of the two ranges,
 # not by the number of distinct batches, and the recompile limit below leaves room for them.
@@ -241,9 +242,10 @@ def packed_attention(
         k: keys, shape ``(T_total, H, d_k)``.
         v: values, shape ``(T_total, H, d_k)``.
         context: packing metadata of the batch.
-        pos_query: queries with their position bias added, shape ``(T_total, H, d_k)``; with ``pos_emb``
-            the Transformer-XL position term ``pos_query[i] . pos_emb[c - (i - j)]`` of query position ``i``
-            and key position ``j`` is scaled like the content scores and added to them; both or neither.
+        pos_query: queries with their position bias added, shape ``(T_total, H, d_k)``;
+            with ``pos_emb`` the Transformer-XL position term ``pos_query[i] . pos_emb[c - (i - j)]``
+            of query position ``i`` and key position ``j`` is scaled like the content scores and added to them;
+            both or neither.
         pos_emb: projected relative position embedding, shape ``(R, H, d_k)`` with odd ``R``,
             whose row ``c = (R - 1) / 2`` is the relative position zero;
             it covers at least ``context.rel_pos_max_seqlen - 1`` positions each way.

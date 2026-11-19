@@ -34,11 +34,44 @@ from nemo.collections.asr.parts.submodules.packed_attention import (
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
 if TRITON_AVAILABLE:
+    import triton
+    import triton.language as tl
+
     from nemo.collections.asr.parts.triton import rel_pos_attention as kernel_module
+    from nemo.collections.asr.parts.triton.rel_pos_attention import _keep as _kernel_keep
+
+    @triton.jit
+    def _keep_mask_kernel(
+        Mask, Seed, dropout_p, total, max_seqlen, stride_mt, stride_mh, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr
+    ):
+        rows = tl.program_id(0) * BLOCK_M + tl.arange(0, BLOCK_M)
+        h = tl.program_id(1)
+        offs_n = tl.arange(0, BLOCK_N)
+        keep = _kernel_keep(Seed, h, rows, offs_n, max_seqlen, dropout_p)
+        ptrs = Mask + rows[:, None] * stride_mt + h * stride_mh + offs_n[None, :]
+        tl.store(ptrs, keep.to(tl.int8), mask=(rows < total)[:, None] & (offs_n < max_seqlen)[None, :])
+
 
 requires_kernel = pytest.mark.skipif(
     not (torch.cuda.is_available() and TRITON_AVAILABLE), reason="requires CUDA and Triton"
 )
+
+
+def _keep_mask(total, heads, max_seqlen, *, dropout_p, dropout_seed):
+    """The (T_total, H, max_seqlen) mask of attention weights the kernels keep under dropout, from the kernels' hash."""
+    mask = torch.zeros((total, heads, max_seqlen), dtype=torch.int8, device="cuda")
+    _keep_mask_kernel[(triton.cdiv(total, 32), heads)](
+        mask,
+        dropout_seed,
+        dropout_p,
+        total,
+        max_seqlen,
+        mask.stride(0),
+        mask.stride(1),
+        BLOCK_M=32,
+        BLOCK_N=triton.next_power_of_2(max_seqlen),
+    )
+    return mask.bool()
 
 
 def _valid_frames(padded, lengths):
@@ -476,21 +509,56 @@ class TestPackedRelPosAttentionKernel:
         assert _max_relative_error(reference32, reference64[0]) <= 2e-5
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("dtype, tolerance", [(torch.bfloat16, 3e-2), (torch.float16, 1e-2)])
     @pytest.mark.parametrize("head_dim", [64, 128])
-    def test_matches_float64_reference_in_bfloat16(self, head_dim):
+    def test_matches_float64_reference_in_half_precision(self, dtype, tolerance, head_dim):
+        """Outputs and gradients in bfloat16 and float16 against the float64 reference, by relative norm error."""
         torch.manual_seed(1)
         lengths = [300, 7, 150, 1, 260]
         context = PackedAttentionContext.from_lengths(torch.tensor(lengths, device="cuda"))
-        q, k, v, pos_query, pos_emb = _rel_pos_inputs(
-            context, heads=4, head_dim=head_dim, dtype=torch.bfloat16, pos_scale=0.5
-        )
+        q, k, v, pos_query, pos_emb = _rel_pos_inputs(context, heads=4, head_dim=head_dim, dtype=dtype, pos_scale=0.5)
         scale = head_dim**-0.5
         kernel = self._run(
             q, k, v, pos_query, pos_emb, context.seq_starts, context.seq_lens, context.max_seqlen, scale
         )
         reference64 = self._reference(q, k, v, pos_query, pos_emb, _lengths_starts(lengths), lengths, scale, kernel[2])
-        assert kernel[0].dtype == torch.bfloat16 and all(grad.dtype == torch.bfloat16 for grad in kernel[1])
-        self._check(kernel, reference64, tolerance=3e-2, norm=True)
+        assert kernel[0].dtype == dtype and all(grad.dtype == dtype for grad in kernel[1])
+        self._check(kernel, reference64, tolerance=tolerance, norm=True)
+
+    @pytest.mark.unit
+    def test_tile_ladder_steps_down_where_the_shared_memory_ends(self, monkeypatch):
+        """A configuration Triton refuses is skipped once per key and the next one runs; an exhausted ladder raises."""
+        torch.manual_seed(12)
+        lengths = [300, 7, 150]
+        context = PackedAttentionContext.from_lengths(torch.tensor(lengths, device="cuda"))
+        q, k, v, pos_query, pos_emb = _rel_pos_inputs(context, heads=2, head_dim=64, pos_scale=0.5)
+        starts, lens, max_seqlen, scale = context.seq_starts, context.seq_lens, context.max_seqlen, 64**-0.5
+        key = ("forward", q.device.index, q.dtype, 64)
+        monkeypatch.setattr(kernel_module, "_tiles_in_use", {})
+        self._run(q, k, v, pos_query, pos_emb, starts, lens, max_seqlen, scale)
+        entry = kernel_module._tiles_in_use[key]  # the entry this GPU runs without interference
+        oversized = (64, 128, 8, 64)  # 64 pipeline stages of key and value tiles exceed any shared memory
+        monkeypatch.setattr(kernel_module, "_tiles_in_use", {})
+        monkeypatch.setattr(kernel_module, "FORWARD_TILES", (oversized,) + kernel_module.FORWARD_TILES)
+        kernel = self._run(q, k, v, pos_query, pos_emb, starts, lens, max_seqlen, scale)
+        reference64 = self._reference(q, k, v, pos_query, pos_emb, _lengths_starts(lengths), lengths, scale, kernel[2])
+        self._check(kernel, reference64, tolerance=2e-5)
+        assert kernel_module._tiles_in_use[key] == entry + 1
+        monkeypatch.setattr(kernel_module, "_tiles_in_use", {})
+        monkeypatch.setattr(kernel_module, "FORWARD_TILES", (oversized,))
+        with pytest.raises(kernel_module.OutOfResources):
+            self._run(q, k, v, pos_query, pos_emb, starts, lens, max_seqlen, scale)
+
+    @pytest.mark.unit
+    def test_empty_input_keeps_the_gradient_edges(self):
+        heads, head_dim = 2, 32
+        leaves = [torch.randn(0, heads, head_dim, device="cuda", requires_grad=True) for _ in range(4)]
+        pos_emb = torch.randn(1, heads, head_dim, device="cuda", requires_grad=True)
+        starts = torch.zeros(2, dtype=torch.int32, device="cuda")
+        out = kernel_module.packed_rel_pos_attention(*leaves, pos_emb, starts, starts, 0)
+        assert out.shape == (0, heads, head_dim)
+        grads = torch.autograd.grad(out.sum(), (*leaves, pos_emb))
+        assert all(grad.shape == leaf.shape and not grad.any() for grad, leaf in zip(grads, (*leaves, pos_emb)))
 
     @pytest.mark.unit
     def test_gaps_between_utterances_and_junk_rows(self):
@@ -542,9 +610,7 @@ class TestPackedRelPosAttentionKernel:
         heads, head_dim, dropout_p = 4, 64, 0.3
         q, k, v, pos_query, pos_emb = _rel_pos_inputs(context, heads=heads, head_dim=head_dim, pos_scale=0.5)
         seed = torch.tensor([12345], dtype=torch.int32, device="cuda")
-        keep = kernel_module._keep_mask(
-            context.total_tokens, heads, context.max_seqlen, dropout_p=dropout_p, dropout_seed=seed, device="cuda"
-        )
+        keep = _keep_mask(context.total_tokens, heads, context.max_seqlen, dropout_p=dropout_p, dropout_seed=seed)
         assert keep.shape == (context.total_tokens, heads, context.max_seqlen)
         valid_pairs = sum(length * length for length in lengths) * heads
         kept = sum(

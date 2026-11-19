@@ -155,7 +155,7 @@ class BufferedCTCPipeline(BasePipeline):
         """
         Create new empty state.
         Args:
-            options: (ASRRequestOptions) Frame options for particular stream.
+            options: (ASRRequestOptions) Request options for particular stream.
         Returns:
             (CTCStreamingState) New empty state.
         """
@@ -357,7 +357,7 @@ class BufferedCTCPipeline(BasePipeline):
 
         self.update_partial_transcript(requests, self.tokenizer, self.leading_regex_pattern)
 
-    def transcribe_step_for_frames(self, frames: list[Frame]) -> None:
+    def transcribe_frames(self, frames: list[Frame]) -> None:
         """
         Transcribe step for frames.
         Args:
@@ -372,7 +372,7 @@ class BufferedCTCPipeline(BasePipeline):
         """
         Initialize the request generator.
         Returns:
-            (ContinuousBatchedFrameStreamer) Frame generator.
+            (ContinuousBatchedFrameStreamer) Request generator.
         """
         request_generator = ContinuousBatchedFrameStreamer(
             n_frames_per_stream=1,

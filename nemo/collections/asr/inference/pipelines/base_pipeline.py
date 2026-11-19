@@ -167,7 +167,7 @@ class BasePipeline(PipelineInterface):
         self.reset_session()
 
     @abstractmethod
-    def transcribe_step_for_frames(self, frames: list[Frame]) -> None:
+    def transcribe_frames(self, frames: list[Frame]) -> None:
         """Transcribe a step for frames"""
         pass
 
@@ -268,7 +268,7 @@ class BasePipeline(PipelineInterface):
             states.append(self.get_state(request.stream_id))
 
         # Perform the transcribe step for the frames
-        self.transcribe_step_for_frames(frames=requests)
+        self.transcribe_frames(frames=requests)
 
         # Create current step output for each request
         outputs = []
@@ -415,7 +415,9 @@ class BasePipeline(PipelineInterface):
             ['sample_rate', 'buffer_size_in_secs'],
         )
 
-        self.bufferer = BatchedAudioBufferer(sample_rate=self.sample_rate, buffer_size_in_secs=self.buffer_size_in_secs)
+        self.bufferer = BatchedAudioBufferer(
+            sample_rate=self.sample_rate, buffer_size_in_secs=self.buffer_size_in_secs
+        )
 
     def init_bufferer_for_cache_aware_streaming(self) -> None:
         """Initialize the bufferer for cache-aware streaming."""

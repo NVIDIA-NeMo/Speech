@@ -109,7 +109,6 @@ class BufferedSALMPipeline(BasePipeline):
             self.overlap_size_in_secs,
         )
 
-
         self.prompts = [[{"role": "user", "content": f"Transcribe the following: {self.asr_model.audio_locator_tag}"}]]
         self.tokens = self.asr_model.preprocess_prompts(self.prompts)
 
@@ -117,7 +116,7 @@ class BufferedSALMPipeline(BasePipeline):
         """
         Create new empty state.
         Args:
-            options: (ASRRequestOptions) Frame options for particular stream.
+            options: (ASRRequestOptions) Request options for particular stream.
         Returns:
             (SALMStreamingState) New empty state.
         """
@@ -162,7 +161,7 @@ class BufferedSALMPipeline(BasePipeline):
         )
         state.tokens.extend(data[delay:])
 
-    def transcribe_step_for_frames(self, frames: list[Frame]) -> None:
+    def transcribe_frames(self, frames: list[Frame]) -> None:
         """
         Perform the transcribe step for frames.
         Args:
@@ -225,7 +224,7 @@ class BufferedSALMPipeline(BasePipeline):
         """
         Initialize the request generator.
         Returns:
-            (ContinuousBatchedFrameStreamer) Frame generator.
+            (ContinuousBatchedFrameStreamer) Request generator.
         """
         request_generator = ContinuousBatchedFrameStreamer(
             n_frames_per_stream=1,

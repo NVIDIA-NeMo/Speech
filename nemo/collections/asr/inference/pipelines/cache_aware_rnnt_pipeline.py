@@ -217,7 +217,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         """
         Create new empty state.
         Args:
-            options: (ASRRequestOptions) Frame options for particular stream.
+            options: (ASRRequestOptions) Request options for particular stream.
         Returns:
             (CacheAwareRNNTStreamingState) New empty state.
         """
@@ -544,7 +544,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             return {"keep_all_outputs": all(is_last)}
         return {"keep_all_outputs_mask": torch.tensor(is_last, device=self.device, dtype=torch.bool)}
 
-    def transcribe_step_for_frames(self, frames: list[Frame]) -> None:
+    def transcribe_frames(self, frames: list[Frame]) -> None:
         """
         Transcribes the frames in a streaming manner.
         After detecting EOU, it updates the state and run text processor.
@@ -574,7 +574,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         """
         Initialize the request generator.
         Returns:
-            (ContinuousBatchedFrameStreamer) Frame generator.
+            (ContinuousBatchedFrameStreamer) Request generator.
         """
         # for cache aware streaming we need to process one frame at a time -> n_frames_per_stream=1
         request_generator = ContinuousBatchedFrameStreamer(

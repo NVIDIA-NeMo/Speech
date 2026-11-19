@@ -15,6 +15,7 @@
 
 
 from dataclasses import dataclass
+from typing import TypeAlias
 
 import torch
 
@@ -56,3 +57,6 @@ class Frame:
     def valid_size(self) -> int:
         """Returns the size of the frame without padding"""
         return self.size if self.length == -1 else self.length
+
+
+Request: TypeAlias = Frame

@@ -166,7 +166,7 @@ class CacheAwareCTCPipeline(BasePipeline):
         """
         Create new empty state.
         Args:
-            options: (ASRRequestOptions) Frame options for particular stream.
+            options: (ASRRequestOptions) Request options for particular stream.
         Returns:
             (CacheAwareCTCStreamingState) New empty state.
         """
@@ -319,7 +319,7 @@ class CacheAwareCTCPipeline(BasePipeline):
         self.context_manager.reset_slots(stream_ids, eos_flags)
         self.decode_log_probs(requests, log_probs, tail_log_probs, ready_state_ids)
 
-    def transcribe_step_for_frames(self, frames: list[Frame]) -> None:
+    def transcribe_frames(self, frames: list[Frame]) -> None:
         """
         Transcribes the frames in a streaming manner.
         After detecting EOU, it updates the state and run text processor.
@@ -366,7 +366,7 @@ class CacheAwareCTCPipeline(BasePipeline):
         """
         Initialize the request generator.
         Returns:
-            (ContinuousBatchedFrameStreamer) Frame generator.
+            (ContinuousBatchedFrameStreamer) Request generator.
         """
         request_generator = ContinuousBatchedFrameStreamer(
             n_frames_per_stream=1,

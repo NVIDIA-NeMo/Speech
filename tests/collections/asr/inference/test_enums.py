@@ -15,12 +15,7 @@
 
 import pytest
 
-from nemo.collections.asr.inference.utils.enums import (
-    ASRDecodingType,
-    ASROutputGranularity,
-    PaddingMode,
-    PipelineType,
-)
+from nemo.collections.asr.inference.utils.enums import ASRDecodingType, ASROutputGranularity, PaddingMode, PipelineType
 
 
 class TestEnums:

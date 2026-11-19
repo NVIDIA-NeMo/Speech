@@ -1981,6 +1981,69 @@ def test_packed_fallback_matches_padded_forward_for_dense_and_packed_inputs():
 
 
 @pytest.mark.unit
+def test_fastconformer_asr_branch_runs_packed_in_training_mode(monkeypatch):
+    """The FastConformer branch runs ``forward_sequence_packed`` itself (no padded fallback), in training mode too;
+    its BatchNorm then sees the valid frames only, so with equal lengths the result equals the padded forward."""
+    torch.manual_seed(0)
+    encoder = build_toy_pe_encoder().train()
+    assert isinstance(encoder.asr_encoder, ConformerEncoder) and encoder.asr_encoder.training
+    packed_calls = []
+    packed_forward = encoder.asr_encoder.forward_sequence_packed
+
+    def tracked_packed_forward(*args, **kwargs):
+        packed_calls.append(1)
+        return packed_forward(*args, **kwargs)
+
+    monkeypatch.setattr(encoder.asr_encoder, "forward_sequence_packed", tracked_packed_forward)
+    lengths = torch.tensor([80, 80])
+    mels = torch.randn(2, _MEL_FEATURES, 80)
+    padded, padded_lengths = encoder(mels, lengths)
+    packed = encoder.forward_sequence_packed(mels, lengths)
+    assert packed_calls == [1]
+    assert torch.equal(packed.lengths, padded_lengths)
+    restored = unpack_encoder_output(packed, total_length=padded.shape[-1])
+    torch.testing.assert_close(restored, padded.transpose(1, 2), rtol=1e-4, atol=1e-5)
+
+
+@pytest.mark.unit
+@pytest.mark.run_only_on("GPU")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="PEE GPU test requires CUDA")
+def test_fastconformer_asr_branch_with_attention_dropout_keeps_the_padded_fallback_in_packed_training(monkeypatch):
+    """rel_pos attention over packed sequences runs FlexAttention on CUDA, which has no dropout.
+
+    A FastConformer branch with ``dropout_att > 0`` therefore has no native packed form in training mode:
+    its ``supports_sequence_packed_output`` says so, the PEE keeps the padded fallback it ran before the native path
+    existed, and the step completes forward and backward; in evaluation mode the native path is available again.
+    """
+    asr_encoder_cfg = toy_asr_encoder_cfg()
+    asr_encoder_cfg.n_heads = 2
+    asr_encoder_cfg.dropout_att = 0.1
+    diarization_model_cfg = toy_diarization_model_cfg()
+    diarization_model_cfg.encoder.n_heads = 2
+    encoder = build_toy_pe_encoder(asr_encoder_cfg=asr_encoder_cfg, diarization_model_cfg=diarization_model_cfg)
+    encoder = encoder.train().cuda()
+    assert not encoder.asr_encoder.supports_sequence_packed_output
+    native_calls = []
+    native_forward = encoder.asr_encoder.forward_sequence_packed
+
+    def tracked_native_forward(*args, **kwargs):
+        native_calls.append(1)
+        return native_forward(*args, **kwargs)
+
+    monkeypatch.setattr(encoder.asr_encoder, "forward_sequence_packed", tracked_native_forward)
+    lengths = torch.tensor([80, 53], device="cuda")
+    mels = torch.randn(2, _MEL_FEATURES, 80, device="cuda", requires_grad=True)
+    targets = torch.ones(2, 10, _N_SPK, device="cuda")  # external speaker targets: Sortformer is skipped
+    packed = encoder.forward_sequence_packed(mels, lengths, spk_targets=targets)
+    assert native_calls == [] and torch.isfinite(packed.data).all()
+    packed.data.square().mean().backward()
+    assert mels.grad is not None and torch.isfinite(mels.grad).all()
+    assert encoder.asr_encoder.layers[0].self_attn.linear_q.weight.grad is not None
+    encoder.eval()
+    assert encoder.asr_encoder.supports_sequence_packed_output
+
+
+@pytest.mark.unit
 def test_native_packed_path_normalizes_diar_and_asr_independently_without_unpack(
     monkeypatch,
 ):

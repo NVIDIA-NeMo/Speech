@@ -1497,7 +1497,8 @@ With an injected generator, noise and RIR perturbations that read tarred audio (
 a manifest entry with that generator and read its file by random access, from its own source's tars. They use the
 ``.idx`` next to each tar; a local tar without one gets a cached temporary index, and a remote tar must have its
 ``.idx`` (build it with ``scripts/dataloading/build_indexes.py``). The sequential tar reader is not used, because
-its position is not checkpointed.
+its position is not checkpointed. Random access needs uncompressed tars (a ``.tar.gz`` raises an error), and with
+``shard_strategy: scatter`` each rank samples only from the entries in its own shards.
 
 Noise mixing with ``noise_path`` (``CutSet.mix``) keeps the noise input as configured (repetition, blend weights,
 ``max_open_streams``). Indexed noise with a length is sampled by index; repeated or blended noise is mixed as a

@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import gzip
 import json
 import os
 import random
@@ -236,3 +237,82 @@ def test_random_access_does_not_keep_tar_files_open(tmp_path):
         access.load(_entry(f"noise_{i}.wav", duration=0.1), SAMPLE_RATE)
 
     assert len(os.listdir(fd_dir)) <= num_open_before + 2
+
+
+@pytest.mark.parametrize("with_index", [False, True], ids=["without_idx", "with_idx"])
+def test_adjacent_duplicate_tar_members_are_rejected(tmp_path, with_index):
+    # The index groups consecutive members with the same stem into one entry; both members must still be checked.
+    tar_path = tmp_path / "noise.tar"
+    _write_tar(tar_path, [("noise.wav", _tone(300)), ("noise.wav", _tone(900))])
+    if with_index:
+        create_tar_index(str(tar_path), str(tar_path) + ".idx")
+
+    with pytest.raises(ValueError, match="noise.wav"):
+        perturb.TarredAudioRandomAccess(str(tar_path)).load(_entry("noise.wav"), SAMPLE_RATE)
+
+
+def test_compressed_tar_with_injected_rng_raises(tmp_path):
+    tar_path = tmp_path / "noise.tar"
+    _write_tar(tar_path, [("noise.wav", _tone(300))])
+    gz_path = tmp_path / "noise.tar.gz"
+    with open(tar_path, "rb") as src, gzip.open(gz_path, "wb") as dst:
+        dst.write(src.read())
+    manifest = _manifest(tmp_path / "manifest.json", [{"audio_filepath": "noise.wav", "duration": 1.2}])
+    perturbation = NoisePerturbation(manifest, min_snr_db=10, max_snr_db=10, audio_tar_filepaths=str(gz_path))
+    perturbation.rng = random.Random(0)
+
+    with pytest.raises(ValueError, match="compressed archive"):
+        _apply(perturbation, 1)
+
+
+@pytest.mark.parametrize("strategy", ["scatter", "replicate"])
+def test_noise_with_normalization_respects_the_shard_partition(tmp_path, strategy, monkeypatch):
+    # Two shards with distinct tones; under 'scatter' rank r must read only shard r.
+    tones = {0: 300, 1: 900}
+    tar_paths = []
+    for shard, frequency in tones.items():
+        tar_path = tmp_path / f"noise_{shard}.tar"
+        _write_tar(tar_path, [(f"noise_{shard}.wav", _tone(frequency))])
+        tar_paths.append(str(tar_path))
+    manifest = _manifest(
+        tmp_path / "manifest.json", [{"audio_filepath": f"noise_{shard}.wav", "duration": 1.2} for shard in tones]
+    )
+    opened = []
+    original = perturb._open_indexed_tar
+    monkeypatch.setattr(
+        perturb, "_open_indexed_tar", lambda cls, path: opened.append(os.path.basename(path)) or original(cls, path)
+    )
+
+    def make(rank):
+        return NoisePerturbationWithNormalization(
+            [manifest],
+            audio_tar_filepaths=[tar_paths],
+            shuffle_n=1,
+            global_rank=rank,
+            world_size=2,
+            shard_strategy=strategy,
+        )
+
+    for rank in [0, 1]:
+        opened.clear()
+        perturbation = make(rank)
+        rng = random.Random(0)
+        perturbation.rng = rng
+        state = rng.getstate()
+        noises = [perturbation.read_one_audiosegment(SAMPLE_RATE).samples for _ in range(12)]
+        frequencies = {
+            next(f for f in tones.values() if np.allclose(noise, _tone(f).astype(np.float32), atol=1e-4))
+            for noise in noises
+        }
+        if strategy == "scatter":
+            assert frequencies == {tones[rank]}
+            assert set(opened) == {f"noise_{rank}.tar"}
+        else:
+            assert frequencies == set(tones.values())
+
+        resumed = make(rank)
+        restored = random.Random()
+        restored.setstate(state)
+        resumed.rng = restored
+        for noise in noises:
+            np.testing.assert_array_equal(resumed.read_one_audiosegment(SAMPLE_RATE).samples, noise)

@@ -40,6 +40,7 @@ import io
 import os
 import random
 import subprocess
+import tarfile
 import tempfile
 from tempfile import NamedTemporaryFile
 from types import ModuleType
@@ -720,9 +721,12 @@ class NoisePerturbationWithNormalization(Perturbation):
         self._tarred_audio = False
         self._orig_sr = orig_sr
         self._data_iterator = None
-        # (source index, manifest entry) for every entry of every tarred source; see read_one_audiosegment().
+        # (source index, manifest entry) for the entries of every tarred source that this rank reads; built
+        # lazily on the first draw with an injected generator, see read_one_audiosegment().
         self._tar_entries = None
+        self._tar_manifests = []
         self._tar_random_access = []
+        self._tar_partitioned = shard_strategy == "scatter" and world_size > 1
 
         random.seed(rng) if rng else None
         self._rng = rng
@@ -733,6 +737,9 @@ class NoisePerturbationWithNormalization(Perturbation):
                 manifest_path = [manifest_path]
             if isinstance(audio_tar_filepaths, str):
                 audio_tar_filepaths = [audio_tar_filepaths]
+            # import here to avoid circular import error
+            from nemo.collections.asr.data.audio_to_text import expand_sharded_filepaths
+
             datasets = []
             for tarred_audio_filepath, manifest_filepath in zip(audio_tar_filepaths, manifest_path):
                 dataset = AugmentationDataset(
@@ -744,8 +751,16 @@ class NoisePerturbationWithNormalization(Perturbation):
                     shard_strategy=shard_strategy,
                 )
                 datasets.append(dataset)
-                # Each source keeps its own file-id namespace: its manifest entries are read from its own tars.
-                self._tar_random_access.append(TarredAudioRandomAccess(tarred_audio_filepath))
+                # Each source keeps its own file-id namespace: its manifest entries are read from its own tars,
+                # restricted to this rank's shards under the 'scatter' strategy.
+                rank_tar_filepaths = expand_sharded_filepaths(
+                    tarred_audio_filepath,
+                    shard_strategy=shard_strategy,
+                    world_size=world_size,
+                    global_rank=global_rank,
+                )
+                self._tar_random_access.append(TarredAudioRandomAccess(rank_tar_filepaths))
+                self._tar_manifests.append(dataset._manifest)
             self._audiodataset = RandomizedChainDataset(
                 datasets, rnd_seed=(rng if rng else random.randint(0, 30000)) + global_rank
             )
@@ -754,9 +769,6 @@ class NoisePerturbationWithNormalization(Perturbation):
                     "NoisePerturbationWithNormalization detected a zero length RandomizedChainDataset, should never happen"
                 )
             self._data_iterator = iter(self._audiodataset)
-            self._tar_entries = [
-                (source_idx, entry) for source_idx, dataset in enumerate(datasets) for entry in dataset._manifest.data
-            ]
 
         self._min_snr_db = min_snr_db
         self._max_snr_db = max_snr_db
@@ -772,7 +784,7 @@ class NoisePerturbationWithNormalization(Perturbation):
         if self._tarred_audio and self.rng is not random:
             # See the module-level read_one_audiosegment(): random access keeps the choice resumable. Entries are
             # drawn uniformly over all sources' manifest entries and read from their own source's tars.
-            source_idx, entry = self.rng.sample(self._tar_entries, 1)[0]
+            source_idx, entry = self.rng.sample(self._rank_tar_entries(), 1)[0]
             return self._tar_random_access[source_idx].load(entry, target_sr)
         if self._tarred_audio:
             if self._data_iterator is None:
@@ -793,6 +805,26 @@ class NoisePerturbationWithNormalization(Perturbation):
             duration = 0 if audio_record.duration is None else audio_record.duration
 
         return AudioSegment.from_file(audio_file, target_sr=target_sr, offset=offset, duration=duration)
+
+    def _rank_tar_entries(self) -> list:
+        """
+        ``(source index, manifest entry)`` pairs that this rank can read: with the 'scatter' strategy, the entries
+        stored in this rank's shards; otherwise every manifest entry, each of which must be in the source's tars.
+        """
+        if self._tar_entries is None:
+            entries = []
+            for source_idx, (manifest, access) in enumerate(zip(self._tar_manifests, self._tar_random_access)):
+                present = [entry for entry in manifest.data if access.contains(entry)]
+                if not self._tar_partitioned and len(present) != len(manifest.data):
+                    raise ValueError(
+                        f"{len(manifest.data) - len(present)} manifest entries of noise source {source_idx} are not "
+                        f"in its tar files {access.tar_filepaths}."
+                    )
+                entries.extend((source_idx, entry) for entry in present)
+            if not entries:
+                raise ValueError("None of the noise manifest entries are in this rank's tar shards.")
+            self._tar_entries = entries
+        return self._tar_entries
 
     def perturb(self, data, ref_mic=0):
         """
@@ -1396,9 +1428,11 @@ class TarredAudioRandomAccess:
     a ``.idx`` file next to it is indexed once into a cached temporary file (local tars only; build indexes for
     remote tars with ``scripts/dataloading/build_indexes.py``).
 
-    File ids must be unique within the tar files of one instance (one noise source); a duplicate member name or
-    file id raises ``ValueError``. Readers are closed after each use, so the number of tar files is not limited
-    by the open-file limit.
+    File ids must be unique within the tar files of one instance (one noise source): every regular member of
+    every indexed range is checked, and a duplicate member name or file id raises ``ValueError``. Compressed
+    archives (e.g. ``.tar.gz``) can't be read by random access and raise ``ValueError``; use uncompressed tars for
+    resumable augmentation. Readers are closed after each use, so the number of tar files is not limited by the
+    open-file limit.
 
     Args:
         tar_filepaths: Tar file paths of one source, in any format accepted by ``AugmentationDataset``
@@ -1409,9 +1443,17 @@ class TarredAudioRandomAccess:
         self._tar_filepaths = tar_filepaths
         self._locations = None
 
+    @property
+    def tar_filepaths(self) -> Union[str, List[str]]:
+        return self._tar_filepaths
+
+    def contains(self, manifest_entry) -> bool:
+        """Whether the audio of ``manifest_entry`` is in these tar files."""
+        return _file_id(manifest_entry.audio_file) in self._member_locations()
+
     def load(self, manifest_entry, target_sr: int) -> AudioSegment:
         """Read the audio of ``manifest_entry`` (an ``ASRAudioText`` item), honouring its offset and duration."""
-        file_id = os.path.splitext(os.path.basename(manifest_entry.audio_file))[0]
+        file_id = _file_id(manifest_entry.audio_file)
         try:
             reader, member_idx = self._member_locations()[file_id]
         except KeyError as e:
@@ -1435,19 +1477,22 @@ class TarredAudioRandomAccess:
 
             locations = {}
             for tar_path in self._expand_tar_filepaths():
+                _reject_compressed_tar(tar_path)
                 reader = _open_indexed_tar(IndexedTarMemberReader, tar_path)
                 try:
-                    members = reader.member_name_index(reject_duplicates=True)
+                    # An index entry may span several members (the index groups consecutive members with the same
+                    # stem), so every regular member in its range is checked, not only the first one.
+                    for member_idx in range(len(reader)):
+                        for name in _regular_member_names(reader, member_idx):
+                            file_id = _file_id(name)
+                            if file_id in locations:
+                                raise ValueError(
+                                    f"Tar member '{name}' repeats audio file id '{file_id}' ({tar_path}); "
+                                    "random access by file id would be ambiguous."
+                                )
+                            locations[file_id] = (reader, member_idx)
                 finally:
                     reader.close()
-                for name, member_idx in members.items():
-                    file_id = os.path.splitext(os.path.basename(name))[0]
-                    if file_id in locations:
-                        raise ValueError(
-                            f"Audio file id '{file_id}' appears in more than one tar member ({tar_path}); "
-                            "random access by file id would be ambiguous."
-                        )
-                    locations[file_id] = (reader, member_idx)
             self._locations = locations
         return self._locations
 
@@ -1614,3 +1659,41 @@ def _store_injected_rng(obj, value) -> None:
         obj.__dict__.pop("_injected_rng", None)
     else:
         obj.__dict__["_injected_rng"] = value
+
+
+def _file_id(path: str) -> str:
+    return os.path.splitext(os.path.basename(path))[0]
+
+
+_COMPRESSED_TAR_SUFFIXES = (".gz", ".tgz", ".bz2", ".tbz2", ".xz", ".txz", ".zst", ".zstd")
+_COMPRESSION_MAGIC = (b"\x1f\x8b", b"BZh", b"\xfd7zXZ\x00", b"\x28\xb5\x2f\xfd")
+
+
+def _reject_compressed_tar(tar_path: str) -> None:
+    """Random access needs byte offsets into an uncompressed tar; compressed archives raise a clear error."""
+    compressed = str(tar_path).lower().endswith(_COMPRESSED_TAR_SUFFIXES)
+    if not compressed and not _is_remote_tar(tar_path) and os.path.exists(tar_path):
+        with open(tar_path, "rb") as f:
+            compressed = f.read(6).startswith(_COMPRESSION_MAGIC)
+    if compressed:
+        raise ValueError(
+            f"{tar_path} is a compressed archive, which can't be read by random access. Tarred noise/RIR audio read "
+            "with an injected (checkpointed) generator must be stored in uncompressed tar files."
+        )
+
+
+def _regular_member_names(reader, member_idx: int) -> List[str]:
+    """Names of all regular members within the byte range of index entry ``member_idx`` (PAX headers resolved)."""
+    start, end = int(reader.offsets[member_idx]), int(reader.offsets[member_idx + 1])
+    reader._ensure_open()
+    reader._fh.seek(start)
+    # TarFile starts reading at the current position of the file object and seeks over member payloads.
+    archive = tarfile.open(fileobj=reader._fh, mode="r:")
+    names = []
+    while True:
+        member = archive.next()
+        if member is None or member.offset >= end:
+            break
+        if member.isfile():
+            names.append(member.name)
+    return names

@@ -650,6 +650,115 @@ def test_multiturn_streaming_init_matches_model_api(model_type, use_local_transf
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("model_type", ["v1", "v2"])
+@pytest.mark.parametrize("user_audio_frames", [1, 5], ids=["short_user", "normal_user"])
+def test_multiturn_user_conditioning_matches_training_timeline(model_type, user_audio_frames):
+    class GenerationStarted(Exception):
+        pass
+
+    delay = 2
+    samples_per_frame = 4
+    bos_id, eos_id = 100, 101
+    conditioning = []
+    first_text_position = None
+    first_agent_position = None
+    state = SimpleNamespace(
+        config=SimpleNamespace(training_mode=SimpleNamespace(streaming_speech_delay=delay)),
+        phoneme_stream_ended=torch.zeros(1, dtype=torch.bool),
+        finished=torch.zeros(1, dtype=torch.bool),
+        text_finished=torch.zeros(1, dtype=torch.bool),
+        audio_prediction_start_idx=torch.full((1,), -1),
+        audio_prediction_end_idx=torch.full((1,), -1),
+        text_tokens_seen=torch.zeros(1, dtype=torch.long),
+        turn_text_tokens_seen=torch.zeros(1, dtype=torch.long),
+        cache_seq_len=0,
+        all_predictions=[],
+        all_phoneme_predictions=[],
+    )
+
+    def audio_to_codes(audio, lengths):
+        frames = audio.size(-1) // samples_per_frame
+        codes = torch.arange(11, 11 + frames).view(1, 1, frames)
+        return codes, torch.tensor([frames])
+
+    def streaming_prefill(state, text_tokens, user_audio_channel_embedding, **kwargs):
+        conditioning.append(user_audio_channel_embedding.clone())
+        state.cache_seq_len += text_tokens.size(1)
+        state.text_tokens_seen += text_tokens.size(1)
+        return state
+
+    def streaming_step(state, text_tokens, prefill_like_step=False, user_audio_channel_embedding=None, **kwargs):
+        nonlocal first_text_position, first_agent_position
+        if user_audio_channel_embedding is not None:
+            conditioning.append(user_audio_channel_embedding.unsqueeze(1).clone())
+        if not prefill_like_step:
+            if conditioning:
+                first_agent_position = state.cache_seq_len
+                raise GenerationStarted
+            assert text_tokens.eq(0).all()
+        if text_tokens.ne(0).any() and first_text_position is None:
+            first_text_position = state.cache_seq_len
+        state.cache_seq_len += 1
+        state.text_tokens_seen += 1
+        state.turn_text_tokens_seen += 1
+        return state, None, None
+
+    model = SimpleNamespace(
+        cfg=OmegaConf.create({"model_type": model_type, "condition_on_user_speech": True}),
+        device=torch.device("cpu"),
+        tokenizer=SimpleNamespace(encode=lambda *args, **kwargs: [1]),
+        text_conditioning_tokenizer_name="bpe",
+        _codec_sil_codes_buffer=torch.zeros(1, 1, 1, dtype=torch.long),
+        _codec_helper=SimpleNamespace(audio_to_codes=audio_to_codes),
+        _codec_converter=None,
+        audio_bos_id=bos_id,
+        audio_eos_id=eos_id,
+        eos_id=3,
+        pad_id=0,
+        codec_model_samples_per_frame=samples_per_frame,
+        frame_stacking_factor=1,
+        num_audio_codebooks=1,
+        stack_codes=lambda *args: NemotronTTSBase.stack_codes(None, *args),
+        embed_audio_tokens=lambda codes: codes.transpose(1, 2).float(),
+        streaming_init=lambda **kwargs: state,
+        streaming_prefill=streaming_prefill,
+        streaming_step=streaming_step,
+    )
+    runner = EasyMagpieMultiturnUserAudioInferenceRunner(
+        model, EasyMagpieMultiturnUserAudioInferenceConfig(batch_size=1)
+    )
+    batch = {
+        "context_audio": torch.zeros(1, 8),
+        "context_audio_lengths": torch.tensor([8]),
+        "languages": ["en"],
+        "batched_turns": [torch.tensor([[1, 2, 3]])],
+        "batched_turn_lens": [torch.tensor([3])],
+        "valid_turn_masks": [torch.tensor([True])],
+        "user_audio_turns": [torch.zeros(1, user_audio_frames * samples_per_frame)],
+        "user_audio_turns_lens": [torch.tensor([user_audio_frames * samples_per_frame])],
+    }
+
+    with pytest.raises(GenerationStarted):
+        runner._run_multiturn_generation(batch)
+
+    # stack_codes does not add BOS/EOS. Mirror training's edge-frame removal, restoration,
+    # and one-frame input shift on the original user-audio timeline.
+    real_frames = max(delay, user_audio_frames)
+    raw_codes = torch.arange(11, 11 + real_frames).float()
+    if model_type == "v2":
+        restored = torch.zeros(real_frames)
+        restored[: real_frames - 2] = raw_codes[1:-1]
+        expected = torch.cat([torch.zeros(1), restored])[:real_frames]
+        assert first_text_position == real_frames
+        assert first_agent_position == real_frames + delay
+    else:
+        expected = torch.cat([torch.zeros(1), raw_codes])
+        assert first_text_position == real_frames + 1 - delay
+        assert first_agent_position == real_frames + 1
+    torch.testing.assert_close(torch.cat(conditioning, dim=1), expected.view(1, -1, 1))
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("probability", [0.0, 1.0])
 def test_multiturn_saved_manifest_separates_model_input_from_metric_reference(tmp_path, monkeypatch, probability):
     raw_text = ["July 15th", "$10"]

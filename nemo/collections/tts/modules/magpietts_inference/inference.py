@@ -1390,8 +1390,9 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                 ctx_toks[b, : len(ctx_text_ids)] = torch.tensor(ctx_text_ids, dtype=torch.long, device=device)
 
             params = self.config.model_inference_parameters
+            is_v2 = model.cfg.get("model_type") == "v2"
             streaming_init_kwargs = {}
-            if model.cfg.get("model_type") != "v2":
+            if not is_v2:
                 streaming_init_kwargs["use_local_transformer"] = self.config.use_local_transformer
             state = model.streaming_init(
                 context_audio_codes=codes,
@@ -1407,6 +1408,13 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                 use_inference_mode=True,
                 **streaming_init_kwargs,
             )
+
+            if is_v2:
+                # Training delays the audio and user-conditioning channels after the speaker context.
+                state.phoneme_stream_ended.fill_(True)
+                padding = torch.full((B,), model.pad_id, dtype=torch.long, device=device)
+                for _ in range(state.config.training_mode.streaming_speech_delay):
+                    state, _, _ = model.streaming_step(state, padding, use_inference_mode=True)
 
             turn_frame_ranges = []
             turn_phoneme_outputs = []
@@ -1482,18 +1490,22 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                     )
 
                     user_audio_embedded = model.embed_audio_tokens(user_audio_codes)
-                    real_start = 0
-                    real_end = int(user_audio_codes_lens[0].item())
-                    user_audio_embedded = user_audio_embedded[:, real_start:real_end]
-
-                    bos_user_pad = torch.zeros(
-                        user_audio_embedded.size(0),
-                        1,
-                        user_audio_embedded.size(2),
-                        device=user_audio_embedded.device,
-                        dtype=user_audio_embedded.dtype,
-                    )
-                    user_audio_embedded = torch.cat([bos_user_pad, user_audio_embedded], dim=1)
+                    user_frames = int(user_audio_codes_lens[0].item())
+                    if is_v2:
+                        # Match training's edge-frame crop, timeline restoration, and input shift.
+                        restored = torch.zeros_like(user_audio_embedded[:, :user_frames])
+                        if user_frames > 2:
+                            restored[:, 1:-1] = user_audio_embedded[:, 1 : user_frames - 1]
+                        user_audio_embedded = restored
+                    else:
+                        bos_user_pad = torch.zeros(
+                            user_audio_embedded.size(0),
+                            1,
+                            user_audio_embedded.size(2),
+                            device=user_audio_embedded.device,
+                            dtype=user_audio_embedded.dtype,
+                        )
+                        user_audio_embedded = torch.cat([bos_user_pad, user_audio_embedded], dim=1)
                     user_audio_prefill_steps = user_audio_embedded.size(1)
                     user_audio_prefill_tokens = torch.full(
                         (B, user_audio_prefill_steps), model.pad_id, dtype=torch.long, device=device
@@ -1529,6 +1541,8 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                     user_audio_prefill_tokens = user_audio_prefill_tokens[:, :-delay_tokens]
                 else:
                     warmup_user_audio = None
+                    if is_v2 and delay_tokens > 0:
+                        user_audio_prefill_tokens = user_audio_prefill_tokens[:, :-delay_tokens]
 
                 if user_audio_prefill_tokens.size(1) > 0:
                     state = model.streaming_prefill(

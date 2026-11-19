@@ -7,6 +7,7 @@ import pytest
 import torch
 
 from nemo.collections.tts.models.nemotron_tts.v2.base import NemotronTTSBase
+from nemo.collections.tts.models.nemotron_tts.v2.model import NemotronTTSModel
 from tests.collections.tts.modules.nemotron_tts.v2.test_streaming_timestamps_model import _init_stream, _model
 
 pytestmark = pytest.mark.unit
@@ -118,6 +119,129 @@ def test_target_text_warmup_retains_keys_without_emitting_timestamps_for_silence
     assert codes is not None and events
     assert all(event['turn_index'] == turn['turn_index'] for event in events)
     assert model.get_timestamps(state)[0]['turns'][-1]['source_token_ids'] == [13, 14, 15, 16, 17]
+
+
+@pytest.mark.parametrize('use_cfg', [False, True])
+@pytest.mark.parametrize('has_user_prefix', [False, True])
+def test_user_audio_warmup_preserves_training_audio_inputs(use_cfg, has_user_prefix):
+    model = _model()
+    del model._predict_audio_codes
+    state = _init_stream(model, use_cfg=use_cfg)
+    delay = state.config.training_mode.streaming_speech_delay
+    offset = int(has_user_prefix)
+    codes = torch.zeros(2, 4, delay + offset + 1, dtype=torch.long)
+    agent_mask = torch.zeros(2, codes.size(-1), dtype=torch.bool)
+    agent_mask[:, -1] = True
+    training_audio, *_ = NemotronTTSModel.prepare_audio_channel_embeddings(
+        model,
+        codes,
+        torch.full((2,), codes.size(-1)),
+        torch.zeros(2, dtype=torch.long),
+        agent_mask=agent_mask,
+        audio_codes_are_stacked=True,
+    )
+    if has_user_prefix:
+        with torch.inference_mode():
+            state.audio_steps.fill_(2)
+            state.last_audio_codes = torch.full((2, 4), model.audio_user_speaking_id)
+    token = torch.full((2,), 7)
+    text_embedding = model.embed_text_tokens(token[:, None], text_lens=torch.ones(2, dtype=torch.long))
+    user_embedding = torch.full((2, model.cfg.embedding_dim), 0.125)
+    with patch.object(model, 'forward', wraps=model.forward) as forward:
+        for step in range(delay):
+            state, audio, _ = model.streaming_step(
+                state,
+                token,
+                user_audio_channel_embedding=user_embedding,
+                prefill_like_step=True,
+                prefill_like_is_last_step=step == delay - 1,
+            )
+            assert audio is None
+    for step, call in enumerate(forward.call_args_list):
+        expected_audio = training_audio[:, step + offset : step + offset + 1]
+        expected = text_embedding + expected_audio + user_embedding[:, None]
+        if use_cfg:
+            expected = torch.cat([expected, expected_audio])
+        torch.testing.assert_close(call.kwargs['inputs_embeds'], expected)
+    with patch.object(model, 'forward', wraps=model.forward) as forward:
+        state, audio, _ = model.streaming_step(state, token)
+    assert audio is not None
+    expected_audio = training_audio[:, delay + offset : delay + offset + 1]
+    expected = text_embedding + expected_audio
+    if use_cfg:
+        expected = torch.cat([expected, expected_audio])
+    torch.testing.assert_close(forward.call_args.kwargs['inputs_embeds'], expected)
+    assert all(cache.get_seq_length() == state.cache_seq_len for cache in state.acoustic_codes_predictor_cache)
+
+
+@pytest.mark.parametrize('use_cfg', [False, True])
+@pytest.mark.parametrize('previous_agent_eos', [False, True])
+def test_user_prefill_preserves_training_previous_audio_input(use_cfg, previous_agent_eos):
+    model = _model()
+    state = _init_stream(model, use_cfg=use_cfg)
+    codes = torch.zeros(2, 4, 5, dtype=torch.long)
+    agent_mask = torch.zeros(2, 5, dtype=torch.bool)
+    agent_mask[:, -1] = True
+    if previous_agent_eos:
+        codes[:, :, 0] = model.audio_eos_id
+        agent_mask[:, 0] = True
+        state.last_audio_codes = torch.full((2, 4), model.audio_eos_id)
+    training_audio, *_ = NemotronTTSModel.prepare_audio_channel_embeddings(
+        model,
+        codes,
+        torch.full((2,), codes.size(-1)),
+        torch.zeros(2, dtype=torch.long),
+        agent_mask=agent_mask,
+        audio_codes_are_stacked=True,
+    )
+    with patch.object(model, 'forward', wraps=model.forward) as forward:
+        state = model.streaming_prefill(state, torch.full((2, 3), model.pad_id))
+    offset = int(previous_agent_eos)
+    expected = training_audio[:, offset : offset + 3]
+    if use_cfg:
+        expected = expected.repeat(2, 1, 1)
+    torch.testing.assert_close(forward.call_args.kwargs['inputs_embeds'], expected)
+    assert all(cache.get_seq_length() == state.cache_seq_len for cache in state.acoustic_codes_predictor_cache)
+
+
+@pytest.mark.parametrize('use_cfg', [False, True])
+def test_user_prefill_matches_serialized_predictor_cache_contents(use_cfg):
+    models = [_model(), _model()]
+    states = []
+    for model in models:
+        del model._predict_audio_codes
+        model.cfg.condition_on_user_speech = True
+        with torch.no_grad():
+            for block in model.acoustic_codes_predictor.blocks:
+                block.codebook_projection.bias.view(block.num_codes, block.num_output_tokens)[:, -1].fill_(-10000.0)
+        state = _init_stream(model, use_cfg=use_cfg)
+        state.config.temperature = 0.0
+        for token_id in range(7, 14):
+            state, _, _ = model.streaming_step(state, torch.full((2,), token_id))
+        assert state.all_predictions
+        states.append(state)
+    user_audio = torch.arange(96, dtype=torch.float32).reshape(2, 3, 16) / 128
+    tokens = torch.zeros(2, 3, dtype=torch.long)
+    with (
+        patch.object(models[0], 'forward', wraps=models[0].forward) as bulk,
+        patch.object(models[1], 'forward', wraps=models[1].forward) as serial,
+    ):
+        states[0] = models[0].streaming_prefill(states[0], tokens, user_audio_channel_embedding=user_audio)
+        for step in range(tokens.size(1)):
+            states[1], audio, _ = models[1].streaming_step(
+                states[1], tokens[:, step], user_audio_channel_embedding=user_audio[:, step], prefill_like_step=True
+            )
+            assert audio is None
+    torch.testing.assert_close(
+        bulk.call_args.kwargs['inputs_embeds'],
+        torch.cat([call.kwargs['inputs_embeds'] for call in serial.call_args_list], dim=1),
+    )
+    torch.testing.assert_close(states[0].last_hidden[:, -1:], states[1].last_hidden, rtol=1e-5, atol=1e-6)
+    for left, right in zip(states[0].acoustic_codes_predictor_cache, states[1].acoustic_codes_predictor_cache):
+        assert left.get_seq_length() == right.get_seq_length() == states[0].cache_seq_len == states[1].cache_seq_len
+        for name in ('key_cache', 'value_cache'):
+            for left_tensor, right_tensor in zip(getattr(left, name), getattr(right, name)):
+                torch.testing.assert_close(left_tensor, right_tensor, rtol=1e-5, atol=1e-6)
 
 
 def _rng_snapshot():

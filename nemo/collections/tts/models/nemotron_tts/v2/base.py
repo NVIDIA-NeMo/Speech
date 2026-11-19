@@ -739,6 +739,11 @@ class NemotronTTSBase(ModelPT):
                     num_codebooks=C,
                 )  # (B, C*S, T)
 
+            if T > 0:
+                profile_audio_stacked = profile_audio_stacked.clone()
+                profile_audio_stacked[:, :, 0] = (
+                    self.audio_bos_id if state.last_audio_codes is None else state.last_audio_codes
+                )
             audio_emb = self.embed_audio_tokens(profile_audio_stacked)
 
             # Match training channel sum: text + audio profile-token/silence input.
@@ -1900,6 +1905,7 @@ class NemotronTTSBase(ModelPT):
                 text_tokens,
                 force_dropout_text,
                 user_audio_channel_embedding=user_audio_channel_embedding,
+                prefill_like_step=prefill_like_step,
             )
             if prefill_like_step and not timestamp_text_warmup:
                 self.reset_timestamp_turn(state)
@@ -1988,7 +1994,7 @@ class NemotronTTSBase(ModelPT):
                         )
 
                 state.phoneme_steps += needs_phoneme.long()
-                state.audio_steps += needs_audio.long()
+                state.audio_steps += (~needs_context).long()
 
                 # Match training: the input slot that predicts the first agent frame after
                 # a user/non-agent region should receive the learned user-speaking-end token.
@@ -2035,13 +2041,15 @@ class NemotronTTSBase(ModelPT):
         text_tokens: Optional[torch.Tensor],
         force_dropout_text: bool,
         user_audio_channel_embedding: Optional[torch.Tensor] = None,
+        prefill_like_step: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Build the input embedding for one streaming step.
 
         Determines per-batch-item phase (context / text / phoneme / audio), composes
         the corresponding embeddings, handles CFG doubling, and updates text_finished
-        and phoneme_stream_ended flags on state.
+        and phoneme_stream_ended flags on state. Prefill-like steps retain the
+        previous audio input during user-speech warmup.
 
         Returns:
             Tuple of (next_input, needs_context, needs_phoneme, needs_audio) where
@@ -2154,9 +2162,10 @@ class NemotronTTSBase(ModelPT):
 
                 next_input = next_input + phoneme_emb
 
-        # --- Audio embedding for audio phase items ---
+        # Profile warmup consumes the previous audio input without predicting agent speech.
+        needs_audio_input = needs_audio | ((~needs_context) if prefill_like_step else False)
         audio_emb = None
-        if needs_audio.any():
+        if needs_audio_input.any():
             audio_emb = torch.zeros(batch_size, 1, self.cfg.embedding_dim, device=device)
 
             if state.gt_audio_embeddings is not None:
@@ -2165,11 +2174,13 @@ class NemotronTTSBase(ModelPT):
                 gt_emb = state.gt_audio_embeddings[torch.arange(batch_size, device=device), positions, :].unsqueeze(
                     1
                 )  # (B, 1, E)
-                audio_mask = (needs_audio & within_gt_len).view(batch_size, 1, 1).float()
+                audio_mask = (needs_audio_input & within_gt_len).view(batch_size, 1, 1).float()
                 audio_emb = audio_emb + gt_emb * audio_mask
             else:
                 first_audio_step = needs_audio & (state.audio_steps == 0)
-                has_last_audio = needs_audio & ~first_audio_step & (state.last_audio_codes is not None)
+                if prefill_like_step:
+                    first_audio_step = needs_audio_input & (state.last_audio_codes is None)
+                has_last_audio = needs_audio_input & ~first_audio_step & (state.last_audio_codes is not None)
 
                 if first_audio_step.any():
                     audio_bos = torch.full(
@@ -2207,8 +2218,8 @@ class NemotronTTSBase(ModelPT):
                 context_mask * next_input_unconditional_context + (1 - context_mask) * next_input_unconditional_zeros
             )
 
-            if needs_audio.any():
-                audio_mask = needs_audio.view(batch_size, 1, 1).float()
+            if audio_emb is not None:
+                audio_mask = needs_audio_input.view(batch_size, 1, 1).float()
                 next_input_unconditional = next_input_unconditional * (1 - audio_mask) + audio_emb * audio_mask
 
             next_input = torch.cat([next_input, next_input_unconditional], dim=0)

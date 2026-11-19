@@ -534,3 +534,62 @@ def test_first_agent_decode_uses_user_speaking_end_token():
     model.has_phoneme = False
     model._combined_embeddings = torch.zeros(1, 3)
     model._dec_text_tokens = torch.zeros(1, dtype=torch.long)
+
+
+@pytest.mark.parametrize("computed_tokens", [71, 73, 82])
+@pytest.mark.parametrize("nested_information", [False, True])
+def test_incremental_synthetic_resume_keeps_autoregressive_state(computed_tokens, nested_information):
+    model = EasyMagpieTTSForConditionalGeneration.__new__(EasyMagpieTTSForConditionalGeneration)
+    nn.Module.__init__(model)
+    model.has_phoneme = False
+    model._dec_text_mask = torch.zeros(2)
+    model._dec_audio_valid = torch.zeros(2)
+    model._preprocess_prefill = lambda *args: pytest.fail("Synthetic resume must retain the AR decode state")
+    model._preprocess_decode = lambda ids, start, device, info: (
+        ids,
+        torch.zeros(len(ids), 3),
+        {"retained_decode_offset": info["decode_offset"]},
+    )
+    info = {
+        "streaming_initial_prompt_len": 71,
+        "_omni_is_prefill": True,
+        "_omni_num_computed_tokens": computed_tokens,
+        "_omni_prompt_len": computed_tokens + 1,
+        "decode_offset": 15,
+    }
+    arguments = {"additional_information": info} if nested_information else info
+    _, _, update = model.preprocess(torch.zeros(1, dtype=torch.long), None, **arguments)
+    assert update["retained_decode_offset"] == 15
+    assert info["_omni_is_prefill"] is True
+    with pytest.raises(ValueError, match="one synthetic prompt token"):
+        model.preprocess(torch.zeros(2, dtype=torch.long), None, **arguments)
+
+
+@pytest.mark.parametrize(
+    "initial_prompt_len,computed_tokens,is_prefill,span_len,expected",
+    [
+        (71, 0, True, 2, "prefill"),
+        (71, 70, True, 1, "prefill"),
+        (None, 73, True, 1, "prefill"),
+        (71, 73, False, 1, "decode"),
+    ],
+)
+def test_streaming_resume_guard_preserves_initial_prefill_and_ordinary_decode(
+    initial_prompt_len, computed_tokens, is_prefill, span_len, expected
+):
+    model = EasyMagpieTTSForConditionalGeneration.__new__(EasyMagpieTTSForConditionalGeneration)
+    nn.Module.__init__(model)
+    model.has_phoneme = False
+    model._dec_text_mask = torch.ones(span_len)
+    model._dec_audio_valid = torch.ones(span_len)
+    model._preprocess_prefill = lambda ids, embeds, count, device, info: (ids, embeds, {"route": "prefill"})
+    model._preprocess_decode = lambda ids, start, device, info: (ids, None, {"route": "decode"})
+    info = {
+        "_omni_is_prefill": is_prefill,
+        "_omni_num_computed_tokens": computed_tokens,
+        "_omni_prompt_len": computed_tokens + span_len,
+    }
+    if initial_prompt_len is not None:
+        info["streaming_initial_prompt_len"] = initial_prompt_len
+    _, _, update = model.preprocess(torch.zeros(span_len, dtype=torch.long), None, **info)
+    assert update["route"] == expected

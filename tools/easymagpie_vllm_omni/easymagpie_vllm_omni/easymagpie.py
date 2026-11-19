@@ -846,6 +846,19 @@ class EasyMagpieTTSForConditionalGeneration(
             base = input_embeds if input_embeds is not None else self.embed_input_ids(input_ids)
             return input_ids, base, {}
 
+        initial_stream_prompt = info_dict.get("streaming_initial_prompt_len")
+        if (
+            initial_stream_prompt is not None
+            and info_dict["_omni_is_prefill"]
+            and int(info_dict["_omni_num_computed_tokens"]) >= int(initial_stream_prompt)
+        ):
+            # vLLM-Omni 0.24 appends a one-token synthetic prompt on resume.
+            # Its runner labels that row prefill, but EasyMagpie must consume
+            # it as the next AR step with retained audio/phoneme/cache state.
+            if span_len != 1:
+                raise ValueError("Incremental EasyMagpie resumes require one synthetic prompt token")
+            info_dict = dict(info_dict, _omni_is_prefill=False)
+
         start = self._batch_slot_offset(input_ids, start)
         if bool(info_dict["_omni_is_prefill"]):
             # A one-token prefill has the same query shape as decode. Clear the

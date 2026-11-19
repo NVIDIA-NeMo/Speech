@@ -154,6 +154,7 @@ class EasyMagpieInputStream:
         first_token_ids = cast(list[int], first_item)
         first_prompt = copy.deepcopy(self.prefill_prompt)
         first_info = first_prompt.setdefault("additional_information", {})
+        first_info["streaming_initial_prompt_len"] = len(first_prompt["prompt_token_ids"])
         first_info["text_token"] = first_token_ids
         first_info["text_token_start"] = text_token_start
         if self.text_prefill_num:

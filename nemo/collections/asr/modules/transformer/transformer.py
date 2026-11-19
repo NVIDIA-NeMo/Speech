@@ -307,6 +307,8 @@ class TransformerDecoderNM(DecoderModule, Exportable):
         Returns:
             The decoder hidden states, shape ``(U_total, hidden_size)``.
         """
+        if self.return_mems:
+            raise NotImplementedError("forward_packed does not return the decoder memories of incremental decoding.")
         if (
             isinstance(self._embedding, TransformerEmbedding)
             and self._embedding.learn_positional_encodings

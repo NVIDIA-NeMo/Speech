@@ -321,13 +321,17 @@ class TestPackedTransformerDecoder:
             decoder.forward_packed(ids, decoder_context, states, encoder_context)
 
     @pytest.mark.unit
-    def test_rejects_other_diagonals(self):
+    def test_rejects_other_diagonals_and_memories(self):
         decoder = _composed_decoder()
-        decoder.decoder.diagonal = 1
         ids, decoder_context, states, encoder_context = _packed_inputs(
             torch.tensor([[10, 1]]), torch.tensor([2]), torch.randn(1, 3, 16), torch.tensor([3])
         )
+        decoder.decoder.diagonal = 1
         with pytest.raises(NotImplementedError, match="diagonal"):
+            decoder.forward_packed(ids, decoder_context, states, encoder_context)
+        decoder.decoder.diagonal = 0
+        decoder.return_mems = True
+        with pytest.raises(NotImplementedError, match="memories"):
             decoder.forward_packed(ids, decoder_context, states, encoder_context)
 
     @pytest.mark.unit

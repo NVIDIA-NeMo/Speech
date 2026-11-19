@@ -324,6 +324,7 @@ class MultiHeadAttention(nn.Module):
         values: torch.Tensor,
         query_context: PackedAttentionContext,
         key_context: PackedAttentionContext,
+        *,
         causal: bool = False,
     ) -> tuple[torch.Tensor, dict]:
         """Attention over token-flat queries and keys with explicit sequence boundaries instead of masks.

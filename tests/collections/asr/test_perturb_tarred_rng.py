@@ -23,6 +23,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import soundfile as sf
+import torch
 
 from nemo.collections.asr.parts.preprocessing import perturb
 from nemo.collections.asr.parts.preprocessing.perturb import (
@@ -316,3 +317,46 @@ def test_noise_with_normalization_respects_the_shard_partition(tmp_path, strateg
         resumed.rng = restored
         for noise in noises:
             np.testing.assert_array_equal(resumed.read_one_audiosegment(SAMPLE_RATE).samples, noise)
+
+
+@pytest.mark.parametrize("checkpointed_rng", [False, True])
+def test_eou_augmentor_with_compressed_tarred_noise(tmp_path, checkpointed_rng):
+    # Existing (non-stateful) configurations with .tar.gz noise keep working through the sequential reader; with
+    # checkpointed randomness enabled (use_stateful_dataloader=True) random access needs an uncompressed tar.
+    from omegaconf import OmegaConf
+
+    from nemo.collections.asr.data.audio_to_eou_label_lhotse import LhotseSpeechToTextBpeEOUDataset
+
+    tar_path = tmp_path / "noise.tar"
+    _write_tar(tar_path, [("noise_0.wav", _tone(300)), ("noise_1.wav", _tone(900))])
+    gz_path = tmp_path / "noise.tar.gz"
+    with open(tar_path, "rb") as src, gzip.open(gz_path, "wb") as dst:
+        dst.write(src.read())
+    manifest = _manifest(
+        tmp_path / "manifest.json", [{"audio_filepath": f"noise_{i}.wav", "duration": 1.2} for i in range(2)]
+    )
+    cfg = {
+        "check_tokenizer": False,
+        "sample_rate": SAMPLE_RATE,
+        "augmentor": {
+            "noise": {
+                "prob": 1.0,
+                "manifest_path": manifest,
+                "audio_tar_filepaths": str(gz_path),
+                "min_snr_db": 10,
+                "max_snr_db": 10,
+            }
+        },
+    }
+    dataset = LhotseSpeechToTextBpeEOUDataset(cfg=OmegaConf.create(cfg), tokenizer=None)
+    if checkpointed_rng:
+        dataset.enable_checkpointed_rng()
+    audio = torch.from_numpy(_tone(440, 1.0).astype(np.float32))
+
+    if checkpointed_rng:
+        with pytest.raises(ValueError, match="compressed archive"):
+            dataset._maybe_augment_audio(audio, torch.tensor(SAMPLE_RATE))
+    else:
+        augmented, augmented_len = dataset._maybe_augment_audio(audio, torch.tensor(SAMPLE_RATE))
+        assert int(augmented_len) == SAMPLE_RATE
+        assert not torch.equal(augmented, audio)

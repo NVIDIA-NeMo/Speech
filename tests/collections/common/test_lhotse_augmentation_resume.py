@@ -137,3 +137,43 @@ def test_weighted_noise_blend_keeps_its_source_weights(data_dir, mode):
     share_a = sources.count("a") / len(sources)
     # 90:10 weights; an unweighted (or finite, exhausting) blend of equal sources would give about 0.5.
     assert share_a > 0.75
+
+
+@pytest.mark.parametrize("use_stateful_dataloader", [False, True])
+def test_noise_shard_seed_follows_the_stateful_flag(data_dir, monkeypatch, use_stateful_dataloader):
+    from nemo.collections.common.data.lhotse import dataloader
+
+    calls = []
+
+    def fake_guess_parse_cutset(inp, shard_seed=None):
+        calls.append(shard_seed)
+        return _wav_cuts(data_dir, "flag_noise", 2, np.random.default_rng(0), duration=0.5)
+
+    monkeypatch.setattr(dataloader, "guess_parse_cutset", fake_guess_parse_cutset)
+    cfg = {
+        "shar_path": str(data_dir / "speech"),
+        "batch_size": 2,
+        "seed": 1,
+        "shard_seed": 1234,
+        "use_stateful_dataloader": use_stateful_dataloader,
+        "noise_path": "unused",
+        "sample_rate": 16000,
+    }
+    get_lhotse_dataloader_from_config(OmegaConf.create(cfg), global_rank=0, world_size=1, dataset=IdentityDataset())
+
+    # Without the flag the noise keeps its own default shard_seed, as before.
+    assert calls == [1234 if use_stateful_dataloader else None]
+
+
+def test_mixable_noise_only_changes_noise_that_cannot_be_mixed(data_dir):
+    from nemo.collections.common.data.lhotse.dataloader import _mixable_noise, _StreamingNoise
+
+    eager = _wav_cuts(data_dir, "eager_noise", 2, np.random.default_rng(0), duration=0.5)
+    streamed = CutSet.from_shar(in_dir=data_dir / "noise")
+    indexed_finite = CutSet.from_shar(in_dir=data_dir / "noise_indexed", indexed=True)
+    indexed_infinite = indexed_finite.repeat()
+
+    for noise in [eager, streamed, indexed_finite]:
+        assert _mixable_noise(noise) is noise
+    # Indexed noise without a length used to fail on the first mixed batch ("... is an infinite iterator").
+    assert isinstance(_mixable_noise(indexed_infinite).data, _StreamingNoise)

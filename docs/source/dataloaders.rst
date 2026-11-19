@@ -1509,9 +1509,12 @@ its position is not checkpointed. Random access needs uncompressed tars (a ``.ta
 ``shard_strategy: scatter`` each rank samples only from the entries in its own shards.
 
 Noise mixing with ``noise_path`` (``CutSet.mix``) keeps the noise input as configured (repetition, blend weights,
-``max_open_streams``). Indexed noise with a length is sampled by index; repeated or blended noise is mixed as a
-stream. The noise shards are shuffled with the data's ``shard_seed`` unless ``noise_path`` sets its own. With an
-integer ``shard_seed``, mixed audio is reproducible and is identical after a resume. ``rir_path`` reverb draws from
+``max_open_streams``). Indexed noise with a length is sampled by index. Indexed noise without a length (repeated or
+blended tarred/Shar noise), which used to fail on the first batch with an "infinite iterator" error, is mixed as a
+stream; this bug fix applies with or without ``use_stateful_dataloader``. With ``use_stateful_dataloader=True``, the
+noise shards are shuffled with the data's ``shard_seed`` unless ``noise_path`` sets its own, so with an integer
+``shard_seed`` the mixed audio is reproducible and identical after a resume. Without it, the noise keeps its own
+default ``shard_seed`` (``"trng"``), as before. ``rir_path`` reverb draws from
 a generator that is saved with the sampler state, and it is restored exactly as well.
 
 Random transforms applied to the ``CutSet`` itself (``.map(...)`` in a data type parser) can't keep a checkpointed

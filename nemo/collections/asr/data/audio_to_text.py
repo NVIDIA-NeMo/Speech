@@ -20,7 +20,6 @@ import os
 from collections.abc import Iterable as IterableABC
 from typing import Callable, Dict, Iterable, List, Optional, Tuple, Union
 
-import braceexpand
 import numpy as np
 import torch
 from torch.utils.data import ChainDataset
@@ -29,6 +28,7 @@ from tqdm import tqdm
 from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.preprocessing.segment import available_formats as valid_sf_formats
+from nemo.collections.asr.parts.utils.tarred_shards import expand_sharded_filepaths  # noqa: F401 (re-export)
 from nemo.collections.common import tokenizers
 from nemo.collections.common.parts.preprocessing import collections, parsers
 from nemo.core.classes import Dataset, IterableDataset
@@ -179,54 +179,6 @@ class ASRManifestProcessor:
             tl += 1
 
         return t, tl
-
-
-def expand_sharded_filepaths(sharded_filepaths, shard_strategy: str, world_size: int, global_rank: int):
-    valid_shard_strategies = ['scatter', 'replicate']
-    if shard_strategy not in valid_shard_strategies:
-        raise ValueError(f"`shard_strategy` must be one of {valid_shard_strategies}")
-
-    if isinstance(sharded_filepaths, str):
-        # Replace '(' and '[' with '{'
-        brace_keys_open = ['(', '[', '<', '_OP_']
-        for bkey in brace_keys_open:
-            if bkey in sharded_filepaths:
-                sharded_filepaths = sharded_filepaths.replace(bkey, "{")
-
-        # Replace ')' and ']' with '}'
-        brace_keys_close = [')', ']', '>', '_CL_']
-        for bkey in brace_keys_close:
-            if bkey in sharded_filepaths:
-                sharded_filepaths = sharded_filepaths.replace(bkey, "}")
-
-    if isinstance(sharded_filepaths, str):
-        # Brace expand, set escape=False for Windows compatibility
-        sharded_filepaths = list(braceexpand.braceexpand(sharded_filepaths, escape=False))
-
-    # Check for distributed and partition shards accordingly
-    if world_size > 1:
-        if shard_strategy == 'scatter':
-            logging.info("All tarred dataset shards will be scattered evenly across all nodes.")
-
-            if len(sharded_filepaths) % world_size != 0:
-                logging.warning(
-                    f"Number of shards in tarred dataset ({len(sharded_filepaths)}) is not divisible "
-                    f"by number of distributed workers ({world_size})."
-                )
-
-            begin_idx = (len(sharded_filepaths) // world_size) * global_rank
-            end_idx = begin_idx + len(sharded_filepaths) // world_size
-            sharded_filepaths = sharded_filepaths[begin_idx:end_idx]
-            logging.info(
-                "Partitioning tarred dataset: process (%d) taking shards [%d, %d)", global_rank, begin_idx, end_idx
-            )
-
-        elif shard_strategy == 'replicate':
-            logging.info("All tarred dataset shards will be replicated across all nodes.")
-        else:
-            raise ValueError(f"Invalid shard strategy ! Allowed values are : {valid_shard_strategies}")
-
-    return sharded_filepaths
 
 
 def cache_datastore_manifests(

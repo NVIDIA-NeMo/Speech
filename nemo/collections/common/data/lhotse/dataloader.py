@@ -39,7 +39,7 @@ from lhotse.dataset import (
 )
 from lhotse.dataset.dataloading import resolve_seed
 from lhotse.dataset.sampling.base import CutSampler, SamplingConstraint, TimeConstraint
-from lhotse.lazy import IteratorNode, LazyFlattener
+from lhotse.lazy import IteratorNode, LazyFlattener, supports_graph_restore
 from lhotse.utils import fix_random_seed
 from omegaconf import DictConfig, OmegaConf
 
@@ -919,9 +919,11 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     # 2. Optional augmentations.
     # 2.a. Noise mixing.
     if config.noise_path is not None:
-        # The noise shards are shuffled with the data's shard_seed (unless noise_path sets its own), so the noise
-        # order, and therefore the mixed audio, is reproducible and is replayed exactly on resume.
-        noise = guess_parse_cutset(config.noise_path, shard_seed=config.shard_seed)
+        # With use_stateful_dataloader, the noise shards are shuffled with the data's shard_seed (unless noise_path
+        # sets its own), so the noise order, and therefore the mixed audio, is reproducible and replayed exactly on
+        # resume. Without it, the noise keeps its own default shard_seed, as before.
+        noise_shard_seed = config.shard_seed if config.use_stateful_dataloader else None
+        noise = guess_parse_cutset(config.noise_path, shard_seed=noise_shard_seed)
         # make sure the noise is resampled to the same sample rate as the audio cuts
         noise = _mixable_noise(noise.resample(config.sample_rate))
         cuts = cuts.mix(
@@ -1478,12 +1480,15 @@ def _mixable_noise(noise: CutSet) -> CutSet:
     """
     Make a noise CutSet usable by ``CutSet.mix``.
 
-    Lhotse's ``LazyCutMixer`` samples indexed noise by index, which needs the noise length. Tarred and Shar noise is
-    repeated indefinitely by default (and blends may be weighted or stream-bounded), so an indexed noise CutSet can
-    have no length. Such noise is mixed as a stream instead, which keeps the configured repetition, weights and
-    ``max_open_streams``.
+    Lhotse's ``LazyCutMixer`` samples indexed, graph-restorable noise by index, which needs the noise length. Tarred
+    and Shar noise is repeated indefinitely by default (and blends may be weighted or stream-bounded), so such a noise
+    CutSet can have no length, and mixing then fails on the first batch with "... is an infinite iterator". Only
+    that case is changed: the noise is mixed as a stream, which keeps the configured repetition, weights and
+    ``max_open_streams``. Every other noise CutSet is returned unchanged, whatever ``use_stateful_dataloader`` is.
     """
-    if not noise.is_lazy or not getattr(noise.data, "is_indexed", False):
+    if not noise.is_lazy or not (
+        getattr(noise.data, "is_indexed", False) and supports_graph_restore(noise.data, require_length=True)
+    ):
         return noise
     try:
         len(noise.data)

@@ -52,6 +52,7 @@ import soundfile as sf
 from scipy import signal
 
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
+from nemo.collections.asr.parts.utils.tarred_shards import expand_sharded_filepaths
 from nemo.collections.common.parts.preprocessing import collections, parsers
 from nemo.core.classes import IterableDataset
 from nemo.utils import logging
@@ -737,8 +738,6 @@ class NoisePerturbationWithNormalization(Perturbation):
                 manifest_path = [manifest_path]
             if isinstance(audio_tar_filepaths, str):
                 audio_tar_filepaths = [audio_tar_filepaths]
-            # import here to avoid circular import error
-            from nemo.collections.asr.data.audio_to_text import expand_sharded_filepaths
 
             datasets = []
             for tarred_audio_filepath, manifest_filepath in zip(audio_tar_filepaths, manifest_path):
@@ -1497,8 +1496,6 @@ class TarredAudioRandomAccess:
         return self._locations
 
     def _expand_tar_filepaths(self) -> List[str]:
-        # import here to avoid circular import error
-        from nemo.collections.asr.data.audio_to_text import expand_sharded_filepaths
 
         return expand_sharded_filepaths(self._tar_filepaths, shard_strategy="replicate", world_size=1, global_rank=0)
 
@@ -1530,8 +1527,6 @@ class AugmentationDataset(IterableDataset):
         world_size: int = 1,
         shard_strategy: str = "replicate",
     ):
-        # import here to avoid circular import error
-        from nemo.collections.asr.data.audio_to_text import expand_sharded_filepaths
 
         self._manifest = collections.ASRAudioText(manifest_path, parser=parsers.make_parser([]), index_by_file_id=True)
 

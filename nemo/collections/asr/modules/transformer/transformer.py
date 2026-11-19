@@ -77,7 +77,7 @@ class NeMoTransformerDecoderConfig(NeMoTransformerConfig):
     cross_attn: Optional[Any] = None
     feed_forward: Optional[Any] = None
 
-    # dropout inside the feed-forward, and one mask over the feature axis per call
+    # dropout inside the feed-forward, and one mask over the feature axis per sequence, shared over time,
     # for the dropouts on the sub-layer outputs and inside the feed-forward, see TransformerDecoderNM
     ffn_hidden_dropout: float = 0.0
     dropout_broadcast: bool = False
@@ -202,7 +202,7 @@ class TransformerDecoderNM(DecoderModule, Exportable):
         feed_forward: block of the feed-forward sub-layer of every block, see `TransformerDecoderBlock`
         ffn_hidden_dropout: probability of dropout applied inside the feed-forward,
             to the activation output before the second projection
-        dropout_broadcast: one mask over the feature axis per call, shared over batch and time,
+        dropout_broadcast: one mask over the feature axis per sequence, shared over time,
             for the dropouts on the sub-layer outputs and inside the feed-forward, see `TransformerDecoderBlock`;
             the embedding dropout and the dropout on the attention scores keep their masks per element
     """

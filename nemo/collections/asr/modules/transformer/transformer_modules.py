@@ -217,8 +217,8 @@ class MultiHeadAttention(nn.Module):
         rotary_base: theta base of a rotary position embedding applied to queries and keys, self-attention only;
             keys longer than the queries are treated as a cache prefix;
             None (default) for no rotation
-        dropout_broadcast: draw the mask of ``attn_layer_dropout`` once per call over the feature axis,
-            shared over batch and time, see ``BroadcastDropout``;
+        dropout_broadcast: draw the mask of ``attn_layer_dropout`` once per sequence over the feature axis,
+            shared over time, see ``BroadcastDropout``;
             the dropout on the attention scores keeps its mask per element
     """
 
@@ -316,8 +316,8 @@ class PositionWiseFF(nn.Module):
             (``relu``, ``gelu``, ``swish``, ``squared_relu``, ...)
         use_bias: bias in both projections (default True)
         ffn_hidden_dropout: probability of dropout applied to the activation output, before the second projection
-        dropout_broadcast: draw the masks of both dropouts once per call over the feature axis,
-            shared over batch and time, see ``BroadcastDropout``
+        dropout_broadcast: draw the masks of both dropouts once per sequence over the feature axis,
+            shared over time, see ``BroadcastDropout``
     """
 
     def __init__(
@@ -365,8 +365,8 @@ class GatedPositionWiseFF(nn.Module):
         gate_act: activation of the second half; default ``identity``
         use_bias: bias in both projections; default False, as the gated variants are usually trained
         ffn_hidden_dropout: probability of dropout applied to the gated product, before the second projection
-        dropout_broadcast: draw the masks of both dropouts once per call over the feature axis,
-            shared over batch and time, see ``BroadcastDropout``
+        dropout_broadcast: draw the masks of both dropouts once per sequence over the feature axis,
+            shared over time, see ``BroadcastDropout``
     """
 
     def __init__(

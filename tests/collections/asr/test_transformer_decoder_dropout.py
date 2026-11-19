@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Dropout of the Transformer decoder: where it acts, and whether a mask is per element or shared over positions."""
+"""Dropout of the Transformer decoder: where it acts, and whether a mask is per element or shared over time."""
 
 import functools
 
@@ -66,11 +66,11 @@ def _decoder(**overrides):
     return decoder
 
 
-def _inputs():
-    input_ids = torch.tensor([[10, 1, 5, 7, 2, 4], [10, 3, 4, 6, 0, 0], [10, 8, 0, 0, 0, 0]])
+def _inputs(batch_size=3):
+    input_ids = torch.tensor([[10, 1, 5, 7, 2, 4], [10, 3, 4, 6, 0, 0], [10, 8, 0, 0, 0, 0]])[:batch_size]
     decoder_mask = (input_ids != 0).long()
-    encoder_states = torch.randn(3, 9, HIDDEN)
-    encoder_mask = torch.ones(3, 9, dtype=torch.long)
+    encoder_states = torch.randn(batch_size, 9, HIDDEN)
+    encoder_mask = torch.ones(batch_size, 9, dtype=torch.long)
     return dict(
         input_ids=input_ids, decoder_mask=decoder_mask, encoder_embeddings=encoder_states, encoder_mask=encoder_mask
     )
@@ -102,23 +102,32 @@ def _record_dropouts(decoder):
 
 
 def _kept(record):
-    """The keep mask of a recorded dropout call, shape (positions, features).
+    """The keep masks of a recorded dropout call, one tensor of shape (positions, features) per sequence.
 
     Positions with an exact zero in the input are left out, since the mask is not visible there:
     a query whose attention weights were all dropped has a zero attention output.
     """
-    dropped_input, output = (tensor.flatten(0, -2) for tensor in record)
-    positions = (dropped_input != 0).all(dim=-1)
-    assert positions.sum() >= positions.numel() // 2
-    dropped_input, output = dropped_input[positions].float(), output[positions].float()
-    kept = output != 0
-    # what is kept is scaled, nothing else changes; the tolerance covers bfloat16
-    torch.testing.assert_close(output[kept], dropped_input[kept] / (1.0 - RATE), rtol=1e-2, atol=0)
-    return kept
+    dropped_input, output = record
+    if dropped_input.dim() == 2:
+        dropped_input, output = dropped_input[None], output[None]
+    masks = []
+    for sequence_input, sequence_output in zip(dropped_input.float(), output.float()):
+        positions = (sequence_input != 0).all(dim=-1)
+        assert positions.sum() >= 2
+        sequence_input, sequence_output = sequence_input[positions], sequence_output[positions]
+        kept = sequence_output != 0
+        # what is kept is scaled, nothing else changes; the tolerance covers bfloat16
+        torch.testing.assert_close(sequence_output[kept], sequence_input[kept] / (1.0 - RATE), rtol=1e-2, atol=0)
+        masks.append(kept)
+    return masks
 
 
-def _is_shared_over_positions(kept):
-    return bool((kept == kept[0]).all())
+def _is_shared_over_time(masks):
+    return all(bool((kept == kept[0]).all()) for kept in masks)
+
+
+def _is_shared_over_batch(masks):
+    return all(bool((kept[0] == masks[0][0]).all()) for kept in masks)
 
 
 BRANCH_SITES = ["self_attn_output", "cross_attn_output", "ffn_hidden", "ffn_output"]
@@ -126,19 +135,26 @@ BRANCH_SITES = ["self_attn_output", "cross_attn_output", "ffn_hidden", "ffn_outp
 
 class TestBroadcastDropout:
     @pytest.mark.unit
-    @pytest.mark.parametrize("shape", [(7,), (5, 7), (3, 4, 7)])
-    def test_one_mask_over_the_last_axis(self, shape):
+    @pytest.mark.parametrize("shape", [(5, 7), (3, 5, 7), (2, 3, 5, 7)])
+    def test_one_mask_per_sequence_shared_over_time(self, shape):
         torch.manual_seed(0)
         dropout = BroadcastDropout(0.5).train()
         x = torch.randn(shape).abs() + 1.0
         out = dropout(x)
-        kept = (out != 0).reshape(-1, 7)
-        assert _is_shared_over_positions(kept)
-        assert 0 < kept[0].sum() < 7
-        torch.testing.assert_close(out, x * kept[0] * 2.0)
-        # a new mask per call
+        kept = (out != 0).reshape(-1, 5, 7)
+        assert (kept == kept[:, :1]).all()
+        assert 0 < kept[0, 0].sum() < 7
+        torch.testing.assert_close(out, x * (out != 0) * 2.0)
+        # every sequence has its own mask, and a call draws new ones
+        if kept.shape[0] > 1:
+            assert not (kept == kept[:1]).all()
         masks = {tuple((dropout(x) != 0).reshape(-1, 7)[0].tolist()) for _ in range(8)}
         assert len(masks) > 1
+
+    @pytest.mark.unit
+    def test_rejects_an_input_without_time_axis(self):
+        with pytest.raises(ValueError, match="time and a feature axis"):
+            BroadcastDropout(0.5).train()(torch.ones(7))
 
     @pytest.mark.unit
     def test_drop_rate(self):
@@ -190,15 +206,16 @@ class TestTransformerDecoderDropout:
         records = _record_dropouts(decoder)
         decoder(**_inputs())
         for site in BRANCH_SITES:
-            kept = _kept(records[site])
-            assert _is_shared_over_positions(kept), site
-            assert 0 < kept[0].sum() < kept.shape[1], site
+            masks = _kept(records[site])
+            assert _is_shared_over_time(masks) and not _is_shared_over_batch(masks), site
+            assert 0 < masks[0][0].sum() < masks[0].shape[1], site
         assert records["ffn_hidden"][0].shape[-1] == INNER and records["ffn_output"][0].shape[-1] == HIDDEN
         # the embedding and the attention weights keep one draw per element
-        assert not _is_shared_over_positions(_kept(records["embedding"]))
+        assert not _is_shared_over_time(_kept(records["embedding"]))
         for site in ("self_attn_scores", "cross_attn_scores"):
             _, output = records[site]
-            assert not _is_shared_over_positions((output != 0).flatten(0, -2)), site
+            kept = (output != 0).flatten(0, -2)
+            assert not (kept == kept[0]).all(), site
 
     @pytest.mark.unit
     def test_masks_per_element_by_default(self):
@@ -207,7 +224,7 @@ class TestTransformerDecoderDropout:
         records = _record_dropouts(decoder)
         decoder(**_inputs())
         for site in BRANCH_SITES + ["embedding"]:
-            assert not _is_shared_over_positions(_kept(records[site])), site
+            assert not _is_shared_over_time(_kept(records[site])), site
 
     @pytest.mark.unit
     @pytest.mark.parametrize("feed_forward", [GatedPositionWiseFF, PositionWiseFF])
@@ -229,21 +246,22 @@ class TestTransformerDecoderDropout:
         else:
             expected = torch.nn.functional.silu(first)
         torch.testing.assert_close(activated, expected)
-        assert _is_shared_over_positions(_kept((activated, dropped))) == dropout_broadcast
+        masks = _kept((activated, dropped))
+        assert _is_shared_over_time(masks) == dropout_broadcast and not _is_shared_over_batch(masks)
         torch.testing.assert_close(out, ff.dense_out(dropped))
 
     @pytest.mark.unit
     @pytest.mark.parametrize("feed_forward", [GatedPositionWiseFF, PositionWiseFF])
     def test_dropped_hidden_features_get_no_gradient(self, feed_forward):
-        # forward and backward through the whole decoder: with a shared mask a dropped hidden feature
-        # is dropped at every position, so its column of the second projection receives no gradient
+        # forward and backward through the whole decoder on one sequence: with a shared mask a dropped
+        # hidden feature is dropped at every position, so its column of the second projection receives no gradient
         torch.manual_seed(0)
         overrides = dict(embedding_dropout=0.0, ffn_dropout=0.0, attn_score_dropout=0.0, attn_layer_dropout=0.0)
         decoder = _decoder(feed_forward=feed_forward, num_layers=1, dropout_broadcast=True, **overrides).train()
         records = _record_dropouts(decoder)
-        out = decoder(**_inputs())
+        out = decoder(**_inputs(batch_size=1))
         out.square().sum().backward()
-        kept = _kept(records["ffn_hidden"])[0]
+        kept = _kept(records["ffn_hidden"])[0][0]
         gradient = decoder.decoder.layers[0].third_sub_layer.dense_out.weight.grad
         assert (gradient[:, ~kept] == 0).all()
         assert (gradient[:, kept].abs().sum(dim=0) > 0).all()
@@ -368,7 +386,8 @@ class TestTransformerDecoderDropout:
         x = torch.randn(3, 5, HIDDEN, requires_grad=True)
         out, _ = attention(x, x, x, None)
         out.sum().backward()
-        assert _is_shared_over_positions(_kept(records["output"])) == dropout_broadcast
+        masks = _kept(records["output"])
+        assert _is_shared_over_time(masks) == dropout_broadcast and not _is_shared_over_batch(masks)
         assert torch.isfinite(x.grad).all()
 
     @pytest.mark.unit
@@ -385,5 +404,6 @@ class TestTransformerDecoderDropout:
         for site in BRANCH_SITES:
             dropped_input, output = records[site]
             assert output.dtype == dropped_input.dtype == torch.bfloat16, site
-            assert _is_shared_over_positions(_kept(records[site])), site
+            masks = _kept(records[site])
+            assert _is_shared_over_time(masks) and not _is_shared_over_batch(masks), site
         assert all(torch.isfinite(parameter.grad).all() for parameter in decoder.parameters())

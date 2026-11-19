@@ -56,7 +56,7 @@ class TransformerDecoderBlock(nn.Module, AttentionAdapterModuleMixin):
             passed on to the feed-forward block when not zero, which then has to accept it
         dropout_broadcast: draw the masks of the dropouts on the three sub-layer outputs
             (``attn_layer_dropout``, ``ffn_dropout``) and inside the feed-forward (``ffn_hidden_dropout``)
-            once per call over the feature axis, shared over batch and time, instead of per element;
+            once per sequence over the feature axis, shared over time, instead of per element;
             passed on to the three blocks when set, which then have to accept it
     """
 
@@ -237,7 +237,7 @@ class TransformerDecoder(nn.Module):
         feed_forward: block of the feed-forward sub-layer of every block, see `TransformerDecoderBlock`
         ffn_hidden_dropout: probability of dropout applied inside the feed-forward,
             to the activation output before the second projection
-        dropout_broadcast: one mask over the feature axis per call, shared over batch and time,
+        dropout_broadcast: one mask over the feature axis per sequence, shared over time,
             for the dropouts on the sub-layer outputs and inside the feed-forward, see `TransformerDecoderBlock`
     """
 

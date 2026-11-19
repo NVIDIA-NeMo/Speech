@@ -350,23 +350,62 @@ class TestPackedTransformerDecoder:
     @pytest.mark.unit
     @pytest.mark.gpu
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-    def test_bf16_matches_padded_on_cuda(self):
+    @pytest.mark.parametrize("pre_ln", [True, False])
+    def test_bf16_training_step_matches_padded_on_cuda(self, pre_ln):
+        """Forward and backward under bfloat16 autocast through the projections, residual adds and norms.
+
+        Both paths run in eval mode, so that dropout does not separate them, with a shared random upstream gradient.
+        Gradients are compared by L2 norm: a relative part for the bfloat16 noise of two kernel orders and an absolute
+        floor from the largest parameter gradient, since a key bias cancels in the softmax and its gradient is noise
+        around zero on both paths.
+        """
         torch.manual_seed(1)
-        decoder = _composed_decoder(hidden_size=64, num_attention_heads=2, inner_size=96).cuda()
+        sizes = dict(vocab_size=11, hidden_size=64, num_layers=2, inner_size=96, num_attention_heads=2)
+        if pre_ln:
+            decoder = _composed_decoder(**sizes).cuda()
+        else:
+            decoder = TransformerDecoderNM(num_token_types=0, **sizes).cuda().eval()
         for parameter in decoder.parameters():
             parameter.data.normal_(0, 0.1)
         input_ids = torch.randint(1, 11, (3, 30), device="cuda")
         input_lengths = torch.tensor([30, 17, 2], device="cuda")
         encoder_lengths = torch.tensor([200, 45, 130], device="cuda")
-        encoder_states = torch.randn(3, 200, 64, device="cuda")
+        encoder_states = torch.randn(3, 200, 64, device="cuda", requires_grad=True)
         decoder_mask = (torch.arange(30, device="cuda")[None, :] < input_lengths[:, None]).to(torch.int64)
         encoder_mask = (torch.arange(200, device="cuda")[None, :] < encoder_lengths[:, None]).to(torch.int64)
-        with torch.autocast("cuda", dtype=torch.bfloat16), torch.no_grad():
+        upstream = torch.randn(int(input_lengths.sum()), 64, device="cuda")
+
+        with torch.autocast("cuda", dtype=torch.bfloat16):
             padded = decoder(
                 input_ids=input_ids,
                 decoder_mask=decoder_mask,
                 encoder_embeddings=encoder_states,
                 encoder_mask=encoder_mask,
             )
+        padded = _valid_rows(padded, input_lengths)
+        (padded.float() * upstream).sum().backward()
+        reference_grads = {name: p.grad.clone() for name, p in decoder.named_parameters() if p.grad is not None}
+        reference_encoder_grad = _valid_rows(encoder_states.grad, encoder_lengths).clone()
+        decoder.zero_grad()
+        encoder_states.grad = None
+
+        with torch.autocast("cuda", dtype=torch.bfloat16):
             packed = decoder.forward_packed(*_packed_inputs(input_ids, input_lengths, encoder_states, encoder_lengths))
-        torch.testing.assert_close(packed.float(), _valid_rows(padded, input_lengths).float(), atol=5e-2, rtol=5e-2)
+        (packed.float() * upstream).sum().backward()
+
+        torch.testing.assert_close(packed.float(), padded.float(), atol=5e-2, rtol=5e-2)
+        encoder_grad = _valid_rows(encoder_states.grad, encoder_lengths)
+        assert (encoder_grad - reference_encoder_grad).norm() <= 5e-2 * reference_encoder_grad.norm()
+        largest = max(grad.norm() for grad in reference_grads.values())
+        for name, parameter in decoder.named_parameters():
+            if name not in reference_grads:
+                continue
+            assert parameter.grad is not None, name
+            reference = reference_grads[name]
+            difference = (parameter.grad.float() - reference.float()).norm()
+            assert difference <= 0.15 * reference.norm() + 0.02 * largest, (
+                name,
+                difference,
+                reference.norm(),
+                largest,
+            )

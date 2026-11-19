@@ -307,14 +307,23 @@ def packed_cross_attention(
         query_context: packing metadata of the queries.
         key_context: packing metadata of the keys; the same object as ``query_context`` in self-attention.
         causal: let every query see only the keys at its position or before; needs equal query and key lengths.
-        dropout_p: dropout on the attention weights.
-        scale: score scale, ``1 / sqrt(d_k)`` by default.
+        dropout_p: dropout on the attention weights, in ``[0, 1)``.
+        scale: positive score scale, ``1 / sqrt(d_k)`` by default.
 
     Returns:
         Context vectors of shape ``(Q_total, H, d_k)``.
+
+    Raises:
+        ValueError: for inputs that do not match their contexts and for scalars outside their ranges,
+            checked before the dispatch so that every backend rejects the same calls.
+        NotImplementedError: on CUDA when variable-length FlashAttention does not apply.
     """
     if scale is None:
         scale = 1.0 / math.sqrt(q.shape[-1])
+    if not 0.0 <= dropout_p < 1.0:
+        raise ValueError(f"dropout_p must be in [0, 1), got {dropout_p}.")
+    if not (math.isfinite(scale) and scale > 0.0):
+        raise ValueError(f"scale must be positive, got {scale}.")
     if query_context.lengths.numel() != key_context.lengths.numel():
         raise ValueError("query_context and key_context must describe the same number of sequences.")
     if q.shape[0] != query_context.total_tokens:
@@ -326,7 +335,9 @@ def packed_cross_attention(
     if causal and query_context is not key_context and not torch.equal(query_context.lengths, key_context.lengths):
         raise ValueError("causal packed attention needs equal query and key lengths per sequence.")
     if query_context.total_tokens == 0 or key_context.total_tokens == 0:
-        anchor = (q.sum() + k.sum() + v.sum()) * 0.0
+        # empty-slice sums keep the gradient edges to q, k and v without summing the inputs,
+        # which overflows in float16 and turns the zero anchor into NaN
+        anchor = q[:0].sum() + k[:0].sum() + v[:0].sum()
         return q.new_zeros(q.shape) + anchor.to(q.dtype)
     if q.is_cuda:
         flash = _flash_attention_varlen(q)

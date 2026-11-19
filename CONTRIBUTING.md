@@ -98,7 +98,7 @@ Numba, DALI, or another library must be marked by hand. For a test parametrized 
 
 A bug fix comes with a test that fails without the fix, and a behavior change with tests for the new behavior and its edge cases.
 
-- Prioritize reusing existing tests to cover a bug fix. If necessary, create new tests.
+- Prioritize reusing existing tests to cover a bug fix. If only necessary, create new tests.
 - Put the test in the directory that mirrors the source (``tests/collections/<collection>/``), and do not repeat tests that another
   file of the same module already has. Use ``pytest.mark.parametrize`` for variants of one test.
 - Assert the values you expect, not only that the code runs or that a count matches. Where the exact value is hard to state (statistical or

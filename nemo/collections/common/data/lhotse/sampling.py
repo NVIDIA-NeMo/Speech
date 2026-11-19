@@ -15,9 +15,10 @@
 # pylint: disable=C0116
 import math
 from bisect import bisect_left
+from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import Any, Mapping, Sequence
+from typing import Any, Sequence
 
 import numpy as np
 from lhotse.custom import CustomFieldMixin

@@ -294,9 +294,11 @@ def packed_cross_attention(
 ) -> Tensor:
     """Attend from token-flat queries to the token-flat keys of the same sequence, without a position bias.
 
-    On CUDA in half precision this runs variable-length FlashAttention;
-    otherwise the sequences are attended one at a time with dense attention,
-    on CUDA in float32 as well, several times slower than the padded attention: train under autocast.
+    On CUDA this runs variable-length FlashAttention and raises when that does not apply
+    (float32, a head width above 256 or not divisible by 8, a GPU before Ampere):
+    the dense attention below would be several times slower than the padded attention.
+    On the CPU the sequences are attended one at a time with dense attention,
+    which is also the reference of the unit tests.
 
     Args:
         q: queries, shape ``(Q_total, H, d_k)``.
@@ -328,19 +330,25 @@ def packed_cross_attention(
         return q.new_zeros(q.shape) + anchor.to(q.dtype)
     if q.is_cuda:
         flash = _flash_attention_varlen(q)
-        if flash is not None:
-            return flash(
-                q.contiguous(),
-                k.contiguous(),
-                v.contiguous(),
-                query_context.cu_seqlens,
-                key_context.cu_seqlens,
-                query_context.max_seqlen,
-                key_context.max_seqlen,
-                dropout_p=dropout_p,
-                softmax_scale=scale,
-                causal=causal,
+        if flash is None:
+            raise NotImplementedError(
+                "packed cross attention on CUDA runs variable-length FlashAttention only, which needs float16 or "
+                "bfloat16 (train under autocast), a head width of at most 256 and divisible by 8, and a GPU of "
+                f"compute capability 8.0 or newer; got {q.dtype} with head width {q.shape[-1]} on "
+                f"{torch.cuda.get_device_name(q.device)}."
             )
+        return flash(
+            q.contiguous(),
+            k.contiguous(),
+            v.contiguous(),
+            query_context.cu_seqlens,
+            key_context.cu_seqlens,
+            query_context.max_seqlen,
+            key_context.max_seqlen,
+            dropout_p=dropout_p,
+            softmax_scale=scale,
+            causal=causal,
+        )
     return _reference_packed_cross_attention(
         q, k, v, query_context, key_context, causal=causal, dropout_p=dropout_p, scale=scale
     )

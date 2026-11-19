@@ -319,6 +319,19 @@ class TestPackedCrossAttention:
             for tensor in (q, k, v):
                 assert tensor.grad is not None and not tensor.grad.any()
 
+    @pytest.mark.unit
+    @pytest.mark.gpu
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+    def test_rejects_cuda_inputs_outside_flash_attention(self):
+        """No silent fall-back to the dense per-sequence attention on CUDA: float32 and an odd head width."""
+        context = PackedAttentionContext.from_lengths(torch.tensor([3, 2], device="cuda"))
+        x = torch.randn(context.total_tokens, 2, 64, device="cuda")
+        with pytest.raises(NotImplementedError, match="FlashAttention only"):
+            packed_cross_attention(x, x, x, context, context)
+        narrow = torch.randn(context.total_tokens, 2, 12, device="cuda", dtype=torch.bfloat16)
+        with pytest.raises(NotImplementedError, match="FlashAttention only"):
+            packed_cross_attention(narrow, narrow, narrow, context, context)
+
     @staticmethod
     def _skip_without_flash_attention(dtype):
         if packed_attention_module._flash_attention_varlen(torch.empty(1, 1, 8, device="cuda", dtype=dtype)) is None:

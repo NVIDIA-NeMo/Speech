@@ -44,7 +44,6 @@ from nemo.collections.asr.inference.utils.per_stream_biasing import (
 )
 from nemo.collections.asr.inference.utils.pipeline_utils import (
     check_existance_of_required_attributes,
-    drop_trailing_features,
     filter_token_sequences,
     filter_token_triples,
     filter_tokens_from_greedy_output,
@@ -182,9 +181,6 @@ class CacheAwareRNNTPipeline(BasePipeline):
             self.drop_left_context = left_context_size
             self.valid_out_len = self.tokens_per_frame
 
-        # Expected feature buffer length for trimming (safeguard for feature buffer inputs)
-        self.expected_feature_buffer_len = int(self.buffer_size_in_secs / self.window_stride)
-
         self.stop_history_eou_in_milliseconds = cfg.endpointing.stop_history_eou
         self.residue_tokens_at_end = cfg.endpointing.residue_tokens_at_end
         self.word_boundary_tolerance = cfg.streaming.word_boundary_tolerance
@@ -283,7 +279,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         """
         if isinstance(buffers, Tensor):
             # already batched by the bufferer: no stacking, and no host round trip for the lengths
-            feature_buffers = drop_trailing_features(buffers, self.expected_feature_buffer_len)
+            feature_buffers = buffers
             feature_buffer_lens = torch.full(
                 (feature_buffers.shape[0],), feature_buffers.shape[2], device=self.device, dtype=torch.long
             )
@@ -293,10 +289,6 @@ class CacheAwareRNNTPipeline(BasePipeline):
             return feature_buffers.to(self.device), feature_buffer_lens
 
         feature_buffers = [f_buffer.unsqueeze_(0) for f_buffer in buffers]
-        # Trim to expected feature buffer length (safeguard for external feature buffer inputs)
-        feature_buffers = [
-            drop_trailing_features(f_buffer, self.expected_feature_buffer_len) for f_buffer in feature_buffers
-        ]
         feature_buffer_lens = torch.tensor([f_buffer.shape[2] for f_buffer in feature_buffers], device=self.device)
         if right_paddings is not None:
             right_paddings = torch.as_tensor(right_paddings, device=feature_buffer_lens.device)
@@ -402,7 +394,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         Run the greedy RNNT decoder on the hypothesis and update the state
         Args:
             state: (CacheAwareRNNTStreamingState) The state of the stream
-            request: (Frame) The current request (frame or feature buffer)
+            request: (Frame) The current request (frame)
             hyp: (Hypothesis) The hypothesis of the current request
         Returns:
             (bool) Whether EOU is detected.
@@ -461,7 +453,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         7. Perform greedy RNNT decoding to get the best hypothesis and update the states
         8. Update the ready states to indicate that the state is ready for text post-processing
         Args:
-            requests: (list[Frame]) List of requests (frames or feature buffers) to transcribe.
+            requests: (list[Frame]) List of requests (frames) to transcribe.
             features: (list[Tensor] | Tensor) Feature buffers, per stream or batched (B, F, T).
             right_paddings: (list[int] | Tensor | None) Right paddings, per stream or batched.
             ready_state_ids: (set) Set of ready state IDs.

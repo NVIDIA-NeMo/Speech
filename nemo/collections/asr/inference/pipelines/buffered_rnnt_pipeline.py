@@ -31,7 +31,7 @@ from nemo.collections.asr.inference.streaming.framing.multi_stream import Contin
 from nemo.collections.asr.inference.streaming.framing.request import Frame
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
 from nemo.collections.asr.inference.streaming.state.rnnt_state import RNNTStreamingState
-from nemo.collections.asr.inference.utils.enums import FeatureBufferPaddingMode
+from nemo.collections.asr.inference.utils.enums import PaddingMode
 from nemo.collections.asr.inference.utils.pipeline_utils import (
     adjust_vad_segments,
     check_existance_of_required_attributes,
@@ -125,8 +125,8 @@ class BufferedRNNTPipeline(BasePipeline):
             self.buffer_size_in_secs = self.chunk_size + self.left_padding_size + self.right_padding_size
 
         self.flush_size_in_secs = cfg.streaming.get("flush_size_in_secs", 0.0)  # 0.0 disables
-        self.padding_mode = FeatureBufferPaddingMode.from_str(cfg.streaming.padding_mode)
-        self.right_padding = self.padding_mode is FeatureBufferPaddingMode.RIGHT
+        self.padding_mode = PaddingMode.from_str(cfg.streaming.padding_mode)
+        self.right_padding = self.padding_mode is PaddingMode.RIGHT
         self.stop_history_eou_in_milliseconds = cfg.endpointing.stop_history_eou
         self.residue_tokens_at_end = cfg.endpointing.residue_tokens_at_end
         self.word_boundary_tolerance = cfg.streaming.word_boundary_tolerance

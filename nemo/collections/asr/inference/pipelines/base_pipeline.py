@@ -412,12 +412,7 @@ class BasePipeline(PipelineInterface):
         """Initialize the bufferer."""
         check_existance_of_required_attributes(
             self,
-            [
-                'sample_rate',
-                'buffer_size_in_secs',
-                'preprocessor_config',
-                'device',
-            ],
+            ['sample_rate', 'buffer_size_in_secs'],
         )
 
         self.bufferer = BatchedAudioBufferer(sample_rate=self.sample_rate, buffer_size_in_secs=self.buffer_size_in_secs)

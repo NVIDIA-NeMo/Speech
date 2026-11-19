@@ -58,9 +58,9 @@ class PipelineType(StrEnumMixin, Enum):
     CACHE_AWARE = auto()
 
 
-class FeatureBufferPaddingMode(StrEnumMixin, Enum):
+class PaddingMode(StrEnumMixin, Enum):
     """
-    Enumeration of the feature buffer padding modes.
+    Enumeration of the padding modes of the audio buffers.
     """
 
     LEFT = auto()

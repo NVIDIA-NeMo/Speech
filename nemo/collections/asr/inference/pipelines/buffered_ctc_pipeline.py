@@ -30,7 +30,7 @@ from nemo.collections.asr.inference.streaming.framing.multi_stream import Contin
 from nemo.collections.asr.inference.streaming.framing.request import Frame
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
 from nemo.collections.asr.inference.streaming.state.ctc_state import CTCStreamingState
-from nemo.collections.asr.inference.utils.enums import FeatureBufferPaddingMode
+from nemo.collections.asr.inference.utils.enums import PaddingMode
 from nemo.collections.asr.inference.utils.pipeline_utils import (
     check_existance_of_required_attributes,
     drop_trailing_features,
@@ -96,8 +96,8 @@ class BufferedCTCPipeline(BasePipeline):
         self.stop_history_eou_in_milliseconds = cfg.endpointing.stop_history_eou
         self.residue_tokens_at_end = cfg.endpointing.residue_tokens_at_end
         self.word_boundary_tolerance = cfg.streaming.word_boundary_tolerance
-        self.padding_mode = FeatureBufferPaddingMode.from_str(cfg.streaming.padding_mode)
-        self.right_padding = self.padding_mode is FeatureBufferPaddingMode.RIGHT
+        self.padding_mode = PaddingMode.from_str(cfg.streaming.padding_mode)
+        self.right_padding = self.padding_mode is PaddingMode.RIGHT
         self.return_tail_result = cfg.return_tail_result
 
         self.zero_log_probs = self.init_zero_log_probs() if self.right_padding else None
@@ -319,9 +319,9 @@ class BufferedCTCPipeline(BasePipeline):
 
     def shared_transcribe_step(self, requests: list[Frame], log_probs: Tensor) -> None:
         """
-        Shared transcribe step for frames and feature buffers.
+        Shared transcribe step for frames.
         Args:
-            requests: (list[Frame]) List of frames or feature buffers to transcribe.
+            requests: (list[Frame]) List of frames to transcribe.
             log_probs: (Tensor) Log probabilities.
         """
         postponed_requests = [(ridx, request.stream_id) for ridx, request in enumerate(requests)]

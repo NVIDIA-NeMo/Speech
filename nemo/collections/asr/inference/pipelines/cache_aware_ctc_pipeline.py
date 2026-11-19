@@ -36,7 +36,6 @@ from nemo.collections.asr.inference.streaming.state.cache_aware_ctc_state import
 from nemo.collections.asr.inference.utils.endpointing_utils import millisecond_to_frames
 from nemo.collections.asr.inference.utils.pipeline_utils import (
     check_existance_of_required_attributes,
-    drop_trailing_features,
     get_confidence_utils,
     normalize_log_probs,
 )
@@ -139,9 +138,6 @@ class CacheAwareCTCPipeline(BasePipeline):
             self.drop_left_context = left_context_size
             self.valid_out_len = self.tokens_per_frame
 
-        # Expected feature buffer length for trimming (safeguard for feature buffer inputs)
-        self.expected_feature_buffer_len = int(self.buffer_size_in_secs / self.window_stride)
-
     def init_greedy_ctc_decoder(self) -> None:
         """Initialize the CTC decoder."""
         check_existance_of_required_attributes(self, ['vocabulary', 'conf_func'])
@@ -209,10 +205,6 @@ class CacheAwareCTCPipeline(BasePipeline):
             (tuple[Tensor, Tensor]) Processed feature buffers and their lengths.
         """
         feature_buffers = [f_buffer.unsqueeze_(0) for f_buffer in buffers]
-        # Trim to expected feature buffer length (safeguard for external feature buffer inputs)
-        feature_buffers = [
-            drop_trailing_features(f_buffer, self.expected_feature_buffer_len) for f_buffer in feature_buffers
-        ]
         feature_buffer_lens = torch.tensor([f_buffer.shape[2] for f_buffer in feature_buffers], device=self.device)
         if right_paddings is not None:
             right_paddings = torch.tensor(right_paddings, device=feature_buffer_lens.device)
@@ -225,7 +217,7 @@ class CacheAwareCTCPipeline(BasePipeline):
         Run the greedy CTC decoder on the log_probs and update the state
         Args:
             state: (CacheAwareCTCStreamingState) The state of the stream
-            request: (Frame) The current request (frame or feature buffer)
+            request: (Frame) The current request (frame)
             log_probs: (Tensor) The log probabilities of the current request
         Returns:
             (bool) Whether EOU is detected.
@@ -256,7 +248,7 @@ class CacheAwareCTCPipeline(BasePipeline):
         """
         Decode the log probabilities and update the state
         Args:
-            requests: (list[Frame]) List of requests (frames or feature buffers) to transcribe.
+            requests: (list[Frame]) List of requests (frames) to transcribe.
             log_probs: (Tensor) Log probabilities.
             tail_log_probs: (Tensor | None) Tail log probabilities.
             ready_state_ids: (set) Set of ready state IDs.
@@ -297,7 +289,7 @@ class CacheAwareCTCPipeline(BasePipeline):
         5. Decode the log probabilities and update the state
 
         Args:
-            requests: (list[Frame]) List of requests (frames or feature buffers) to transcribe.
+            requests: (list[Frame]) List of requests (frames) to transcribe.
             buffered_features: (list[Tensor]) List of buffered features.
             right_paddings: (list[int] | None) List of right paddings.
             ready_state_ids: (set) Set of ready state IDs.

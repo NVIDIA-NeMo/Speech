@@ -30,6 +30,7 @@ implementation. The plugin serves both names with the same classes.
 """
 
 import logging
+import os
 
 from nemo.collections.speechlm2.vllm.salm.config import (
     SPEECHLM_ARCHITECTURE,
@@ -235,6 +236,10 @@ def register():
     plugin then registers nothing and NeMo Speech LM checkpoints stay unknown
     to that vLLM installation.
     """
+    # Importing this plugin initializes the CUDA driver (NeMo's numba-cuda check), so an engine process
+    # forked afterwards cannot use CUDA. Offline ``vllm.LLM`` defaults to fork; ``vllm serve`` already spawns.
+    os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+
     import vllm
     from packaging.version import Version
 

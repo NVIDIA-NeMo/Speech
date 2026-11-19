@@ -163,6 +163,7 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
             use_cer=self.cfg.get('use_cer', False),
             log_prediction=self.cfg.get('log_prediction', True),
             dist_sync_on_step=True,
+            wer_text_normalize=self.cfg.get('wer_text_normalize', False),
         )
 
         # Setup bleu object
@@ -187,6 +188,7 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
             use_cer=self.cfg.aux_ctc.get('use_cer', False),
             dist_sync_on_step=True,
             log_prediction=self.cfg.get("log_prediction", False),
+            wer_text_normalize=self.cfg.get('wer_text_normalize', False),
         )
 
         # setting the RNNT decoder as the default one

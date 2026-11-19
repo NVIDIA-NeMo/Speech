@@ -27,8 +27,10 @@ from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaG
 from nemo.core.utils.cuda_python_utils import (
     NeMoCUDAPythonException,
     check_cuda_python_cuda_graphs_conditional_nodes_supported,
+    create_conditional_node_mempool,
     cu_call,
     run_nvrtc,
+    use_conditional_node_mempool,
     with_conditional_node,
 )
 from nemo.core.utils.optional_libs import CUDA_PYTHON_AVAILABLE, cuda_python_required
@@ -167,6 +169,7 @@ class BatchedBeamCTCComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
 
     separate_graphs: Optional[SeparateGraphsBatchedBeamCTC]
     full_graph: Optional[torch.cuda.CUDAGraph]
+    full_graph_mempool: Optional[torch.cuda.MemPool]
     cuda_graphs_mode: Optional[CudaGraphsMode]
     state: Optional[BacthedBeamCTCState]
     fusion_models: Optional[List[NGramGPULanguageModel]]
@@ -216,6 +219,7 @@ class BatchedBeamCTCComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
 
         self.state = None
         self.full_graph = None
+        self.full_graph_mempool = None
         self.separate_graphs = None
 
         self.cuda_graphs_mode = None
@@ -271,6 +275,7 @@ class BatchedBeamCTCComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
         """Reset state to release memory (for CUDA graphs implementations)"""
         self.state = None
         self.full_graph = None
+        self.full_graph_mempool = None
         self.separate_graphs = None
 
     @torch.no_grad()
@@ -578,11 +583,13 @@ class BatchedBeamCTCComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
         # Always create a new stream, because the per-thread default stream disallows stream capture to a graph.
         stream_for_graph = torch.cuda.Stream(self.state.device)
         self.full_graph = torch.cuda.CUDAGraph()
+        self.full_graph_mempool = create_conditional_node_mempool(self.state.device)
 
         with (
             torch.cuda.stream(stream_for_graph),
             torch.inference_mode(),
             torch.cuda.graph(self.full_graph, stream=stream_for_graph, capture_error_mode="thread_local"),
+            use_conditional_node_mempool(self.full_graph_mempool, self.state.device),
         ):
             self._before_process_batch()
             # NB: depending on cuda-python version, cudaStreamGetCaptureInfo can return either 5 or 6 elements

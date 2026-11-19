@@ -21,6 +21,7 @@ import torch
 from torch import nn as nn
 
 from nemo.collections.asr.parts.submodules import multi_head_attention as mha
+from nemo.collections.asr.parts.submodules.packed_attention import PackedAttentionContext
 from nemo.collections.common.parts import adapter_modules
 from nemo.core.classes.mixins import adapter_mixin_strategies
 
@@ -176,7 +177,17 @@ class MultiHeadAttentionAdapter(mha.MultiHeadAttention, adapter_modules.AdapterM
         # reset parameters for Q to be identity operation
         self.reset_parameters()
 
-    def forward(self, query, key, value, mask, pos_emb=None, cache=None):
+    def forward(
+        self,
+        query,
+        key,
+        value,
+        mask,
+        pos_emb=None,
+        cache=None,
+        *,
+        attention_context: PackedAttentionContext | None = None,
+    ):
         """Compute 'Scaled Dot Product Attention'.
         Args:
             query (torch.Tensor): (batch, time1, size)
@@ -184,11 +195,15 @@ class MultiHeadAttentionAdapter(mha.MultiHeadAttention, adapter_modules.AdapterM
             value(torch.Tensor): (batch, time2, size)
             mask (torch.Tensor): (batch, time1, time2)
             cache (torch.Tensor) : (batch, time_cache, size)
+            attention_context: packing metadata of token-flat `value` (T_total, size), which then runs `forward_packed`
 
         returns:
             output (torch.Tensor): transformed `value` (batch, time1, d_model) weighted by the query dot key attention
             cache  (torch.Tensor) : (batch, time_cache_next, size)
         """
+        if attention_context is not None:
+            return self.forward_packed(value, attention_context, pos_emb=pos_emb)
+
         # Need to perform duplicate computations as at this point the tensors have been
         # separated by the adapter forward
         query = self.pre_norm(query)
@@ -196,6 +211,12 @@ class MultiHeadAttentionAdapter(mha.MultiHeadAttention, adapter_modules.AdapterM
         value = self.pre_norm(value)
 
         return super().forward(query, key, value, mask, pos_emb, cache=cache)
+
+    def forward_packed(
+        self, x: torch.Tensor, context: PackedAttentionContext, pos_emb: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """The adapter over token-flat input ``(T_total, n_feat)``, see ``MultiHeadAttention.forward_packed``."""
+        return super().forward_packed(self.pre_norm(x), context, pos_emb=pos_emb)
 
     def reset_parameters(self):
         with torch.no_grad():
@@ -283,7 +304,9 @@ class RelPositionMultiHeadAttentionAdapter(mha.RelPositionMultiHeadAttention, ad
         # reset parameters for Q to be identity operation
         self.reset_parameters()
 
-    def forward(self, query, key, value, mask, pos_emb, cache=None):
+    def forward(
+        self, query, key, value, mask, pos_emb, cache=None, *, attention_context: PackedAttentionContext | None = None
+    ):
         """Compute 'Scaled Dot Product Attention' with rel. positional encoding.
         Args:
             query (torch.Tensor): (batch, time1, size)
@@ -292,10 +315,14 @@ class RelPositionMultiHeadAttentionAdapter(mha.RelPositionMultiHeadAttention, ad
             mask (torch.Tensor): (batch, time1, time2)
             pos_emb (torch.Tensor) : (batch, time1, size)
             cache (torch.Tensor) : (batch, time_cache, size)
+            attention_context: packing metadata of token-flat `value` (T_total, size), which then runs `forward_packed`
         Returns:
             output (torch.Tensor): transformed `value` (batch, time1, d_model) weighted by the query dot key attention
             cache_next (torch.Tensor) : (batch, time_cache_next, size)
         """
+        if attention_context is not None:
+            return self.forward_packed(value, attention_context, pos_emb=pos_emb)
+
         # Need to perform duplicate computations as at this point the tensors have been
         # separated by the adapter forward
         query = self.pre_norm(query)
@@ -303,6 +330,12 @@ class RelPositionMultiHeadAttentionAdapter(mha.RelPositionMultiHeadAttention, ad
         value = self.pre_norm(value)
 
         return super().forward(query, key, value, mask, pos_emb, cache=cache)
+
+    def forward_packed(
+        self, x: torch.Tensor, context: PackedAttentionContext, pos_emb: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """The adapter over token-flat input ``(T_total, n_feat)``, see ``MultiHeadAttention.forward_packed``."""
+        return super().forward_packed(self.pre_norm(x), context, pos_emb=pos_emb)
 
     def reset_parameters(self):
         with torch.no_grad():

@@ -39,6 +39,7 @@ from nemo.collections.asr.parts.submodules.multi_head_attention import (
     MultiHeadAttention,
     PositionalEncoding,
     RelPositionalEncoding,
+    RelPositionMultiHeadAttention,
     RotaryPositionalEncoding,
 )
 from nemo.collections.asr.parts.submodules.packed_attention import (
@@ -885,6 +886,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         are named by ``sequence_packed_unsupported_reason`` and refused here with ``NotImplementedError``;
         the parallel expert encoder and the independent dual encoder consult ``supports_sequence_packed_output``
         at dispatch time and keep their padded path for them, the plain perception module reports the reason.
+        Of the adapters, only those are refused that ``ConformerLayer.sequence_packed_adapters_unsupported_reason``
+        names: enabled linear and Conformer attention adapters run on the token-flat states.
 
         Args:
             audio_signal: packed features (``PackedEncoderActivations`` with data ``(sum(T_i), feat_in)``),
@@ -974,7 +977,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         """Why ``forward_sequence_packed`` cannot run this encoder as configured, or None when it can.
 
         Without a sequence-packed form: limited or chunked attention context, ``rel_pos_local_attn``,
-        the sampling of attention context sizes in training, reduction layers, adapters,
+        the sampling of attention context sizes in training, reduction layers,
+        what ``ConformerLayer.sequence_packed_adapters_unsupported_reason`` names of the enabled adapters
+        (linear and Conformer attention adapters run on the token-flat states, disabled adapters do not run),
         intermediate layer captures (InterCTC and ``save_encoder_tensors``, whose consumers expect padded tensors),
         frontends other than a linear layer or a non-causal ``striding`` or ``dw_striding`` ``ConvSubsampling``,
         and instance or group normalization in the convolution modules.
@@ -992,8 +997,6 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             return "Sequence-packed execution does not sample attention context sizes."
         if self.reduction_position is not None:
             return "Reduction layers have no sequence-packed form."
-        if isinstance(self, adapter_mixins.AdapterModuleMixin) and self.is_adapter_available():
-            return "Adapters have no sequence-packed form."
         if self.is_access_enabled(getattr(self, "model_guid", None)):
             if self.interctc_capture_at_layers is None:
                 self.interctc_capture_at_layers = self.access_cfg.get('interctc', {}).get('capture_layers', [])
@@ -1010,32 +1013,38 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         elif not isinstance(pre_encode, nn.Linear):
             return f"{type(pre_encode).__name__} has no sequence-packed form."
         layers = [_unwrap_checkpoint(layer) for layer in self.layers]
+        # the self-attention of every layer and its enabled attention adapters, which run the same packed attention
+        attention_modules = []
         for layer in layers:
             reason = layer.conv.sequence_packed_unsupported_reason()
             if reason is not None:
                 return reason
+            reason = layer.sequence_packed_adapters_unsupported_reason()
+            if reason is not None:
+                return reason
+            attention_modules.append(layer.self_attn)
+            adapters = [layer.adapter_layer[name] for name in layer.get_enabled_adapters()]
+            attention_modules.extend(adapter for adapter in adapters if isinstance(adapter, MultiHeadAttention))
+        # every module applies its dropout by its own mode: a frozen encoder can hold adapters in training mode
+        dropout_modules = [module for module in attention_modules if module.training and module.dropout_rate > 0]
         parameter = next(self.parameters(), None)
-        if (
-            self.training
-            and parameter is not None
-            and parameter.device.type == 'cuda'
-            and any(layer.self_attn.dropout_rate > 0 for layer in layers)
-        ):
+        if parameter is not None and parameter.device.type == 'cuda' and dropout_modules:
             # off CUDA the dense per-utterance reference path applies the dropout, with or without a position bias
-            if self.self_attention_model == 'rel_pos':
+            if any(isinstance(module, RelPositionMultiHeadAttention) for module in dropout_modules):
                 return (
                     "FlexAttention has no dropout on the attention weights: set dropout_att: 0 on the encoder "
+                    "(and dropout_rate: 0 on its attention adapters) "
                     "for rel_pos attention over packed sequences; abs_pos and rope attention keep their dropout "
                     "through variable-length FlashAttention, which runs in float16 or bfloat16 (autocast) only."
                 )
             autocast = torch.is_autocast_enabled('cuda')
             dtype = torch.get_autocast_dtype('cuda') if autocast else parameter.dtype
-            if not packed_attention_supports_dropout(parameter.device, dtype, layers[0].self_attn.d_k):
+            if not all(packed_attention_supports_dropout(parameter.device, dtype, m.d_k) for m in dropout_modules):
                 return (
                     "Attention dropout over packed sequences runs through variable-length FlashAttention, which "
                     "needs float16 or bfloat16 (autocast), a head width that is a multiple of 8 up to 256, and a CUDA "
                     "device of compute capability 8 or newer; FlexAttention, the other path, has no dropout: "
-                    "set dropout_att: 0 or meet those conditions."
+                    "set dropout_att: 0 (and dropout_rate: 0 on the attention adapters) or meet those conditions."
                 )
         return None
 

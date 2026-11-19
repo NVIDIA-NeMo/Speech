@@ -727,6 +727,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             else:
                 pad_for_streaming = (
                     self.training
+                    and cache_last_channel is None
                     and self.att_context_style == "chunked_limited"
                     and isinstance(self.pre_encode, ConvSubsampling)
                     and self.pre_encode.is_causal

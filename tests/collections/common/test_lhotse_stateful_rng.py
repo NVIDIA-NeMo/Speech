@@ -24,6 +24,7 @@ from lhotse.dataset import SimpleCutSampler
 from lhotse.testing.dummies import DummyManifest
 from omegaconf import OmegaConf
 
+from nemo.collections.common.data.fallback import FallbackDataset
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config, stateful_rng
 from nemo.collections.common.data.lhotse.stateful_rng import StatefulIterableDatasetWrapper, StatefulRandomMixin
 
@@ -182,7 +183,9 @@ def cuts_path(tmp_path_factory):
     return path
 
 
-def _make_dataloader(cuts_path, mode: str, num_workers: int = 0, use_stateful_dataloader: bool = True):
+def _make_dataloader(
+    cuts_path, mode: str, num_workers: int = 0, use_stateful_dataloader: bool = True, fallback: bool = False
+):
     config = OmegaConf.create(
         {
             "cuts_path": str(cuts_path),
@@ -204,11 +207,13 @@ def _make_dataloader(cuts_path, mode: str, num_workers: int = 0, use_stateful_da
     # starts would. Dataloader workers must still each get their own stream.
     dataset.enable_checkpointed_rng()
     dataset.state_dict()
+    if fallback:
+        dataset = FallbackDataset(dataset)
     return get_lhotse_dataloader_from_config(config, global_rank=0, world_size=1, dataset=dataset)
 
 
-def _take(cuts_path, mode: str, num_batches: int, state=None, num_workers: int = 0):
-    dloader = _make_dataloader(cuts_path, mode, num_workers)
+def _take(cuts_path, mode: str, num_batches: int, state=None, num_workers: int = 0, fallback: bool = False):
+    dloader = _make_dataloader(cuts_path, mode, num_workers, fallback=fallback)
     if state is not None:
         dloader.load_state_dict(state)
     it = iter(dloader)
@@ -257,3 +262,31 @@ def test_random_draws_differ_across_epochs(cuts_path, mode):
 
     assert len(draws) == 20
     assert all(len(values) == 2 and values[0] != values[1] for values in draws.values())
+
+
+@pytest.mark.parametrize("mode", ["map", "iterable"])
+def test_fallback_dataset_forwards_the_wrapped_dataset_state(cuts_path, mode):
+    # FallbackDataset (EasyMagpie multiturn, speechlm2 datamodule) must not hide the wrapped dataset's generator.
+    uninterrupted, _ = _take(cuts_path, mode, num_batches=8, fallback=True)
+    _, state = _take(cuts_path, mode, num_batches=3, fallback=True)
+    resumed, _ = _take(cuts_path, mode, num_batches=5, state=state, fallback=True)
+
+    assert "rng_state" in str(state)
+    assert resumed == uninterrupted[3:]
+
+
+def test_builder_enables_checkpointed_rng_through_fallback_dataset(cuts_path):
+    inner = _RandomDrawDataset()
+    config = OmegaConf.create(
+        {"cuts_path": str(cuts_path), "batch_size": 2, "force_map_dataset": True, "use_stateful_dataloader": True}
+    )
+    get_lhotse_dataloader_from_config(config, global_rank=0, world_size=1, dataset=FallbackDataset(inner))
+
+    assert inner.checkpointed_rng_enabled
+
+
+def test_fallback_dataset_with_stateless_dataset_has_empty_state():
+    wrapper = FallbackDataset(_StatelessDataset())
+
+    assert wrapper.state_dict() == {}
+    wrapper.load_state_dict({})

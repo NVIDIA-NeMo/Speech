@@ -1481,8 +1481,16 @@ the global ``random`` module and the dataset draws exactly the same numbers as b
 is seeded per dataloading process from the dataloader seed and the data-parallel rank, and its state is saved and
 restored with the dataloader state: by ``StatefulDataLoader`` itself for map-style datasets, and by NeMo's
 ``StatefulIterableDatasetWrapper`` for iterable-style datasets. A wrapper placed around the dataset must forward
-``state_dict()`` / ``load_state_dict()``, or the state is not saved. Each epoch continues the sequence, so a cut gets
-new random draws when it is read again.
+``state_dict()`` / ``load_state_dict()``, or the state is not saved (``FallbackDataset`` does). Across epochs: with
+``num_workers=0`` or persistent workers, the same generator continues its sequence, so a cut gets new random draws
+when it is read again. With non-persistent workers, each epoch starts new workers whose generators are seeded
+from that epoch's worker seeds, so the draws still differ between epochs but don't continue the previous
+sequence. Exact resume is guaranteed within an epoch.
+
+Not covered yet: these datasets still draw from the global ``random`` / ``np.random`` / ``torch`` generators, so
+they don't resume exactly even with ``use_stateful_dataloader=True``: ``LhotseAudioNoiseDataset``
+(``nemo/collections/asr/data/ssl_dataset.py``) and the speechlm2 duplex datasets
+(``nemo/collections/speechlm2/data/duplex_stt_dataset.py`` and ``duplex_ear_tts_dataset.py``).
 
 Randomness inside components a dataset calls must come from the same generator. For example, with checkpointed
 randomness enabled the TTS datasets pass ``self.rng`` to their tokenizers' G2P modules (``set_g2p_rng`` in

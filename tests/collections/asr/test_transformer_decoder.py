@@ -312,6 +312,19 @@ class TestPackedTransformerDecoder:
                 torch.testing.assert_close(parameter.grad, reference_grads[name], msg=name)
 
     @pytest.mark.unit
+    def test_half_precision_attention_matches_padded_on_cpu(self):
+        """Rows of 40 through identity projections: the padded attention pre-scales, the packed one must stay finite too."""
+        attention = MultiHeadAttention(64, 1, use_bias=False).half().eval()
+        for net in (attention.query_net, attention.key_net, attention.value_net, attention.out_projection):
+            net.weight.data.copy_(torch.eye(64, dtype=torch.float16))
+        x = torch.full((1, 2, 64), 40.0, dtype=torch.float16)
+        padded, _ = attention(x, x, x, None)
+        context = PackedAttentionContext.from_lengths(torch.tensor([2]))
+        packed, _ = attention.forward_packed(x[0], x[0], x[0], context, context)
+        assert torch.isfinite(packed).all()
+        torch.testing.assert_close(packed, padded[0])
+
+    @pytest.mark.unit
     def test_rejects_sequences_beyond_the_learned_positions(self):
         decoder = _composed_decoder(max_sequence_length=4, learn_positional_encodings=True)
         ids, decoder_context, states, encoder_context = _packed_inputs(

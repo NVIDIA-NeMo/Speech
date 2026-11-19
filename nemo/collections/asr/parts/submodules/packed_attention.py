@@ -483,12 +483,16 @@ def _reference_packed_cross_attention(
         if q_end == q_start:
             continue
         if k_end == k_start:
-            outputs.append(q.new_zeros((q_end - q_start,) + tuple(q.shape[1:])))
+            # a zero context that keeps the gradient edges to q, k and v, like the empty-batch case
+            anchor = q[:0].sum() + k[:0].sum() + v[:0].sum()
+            outputs.append(q.new_zeros((q_end - q_start,) + tuple(q.shape[1:])) + anchor)
             continue
         qi = q[q_start:q_end].transpose(0, 1)
         ki = k[k_start:k_end].transpose(0, 1)
         vi = v[k_start:k_end].transpose(0, 1)
-        scores = torch.matmul(qi, ki.transpose(-2, -1)) * scale
+        # scaled before the product like the padded attention, so that half-precision scores stay finite
+        root = math.sqrt(scale)
+        scores = torch.matmul(qi * root, (ki * root).transpose(-2, -1))
         if causal:
             visible = torch.ones(q_end - q_start, k_end - k_start, dtype=torch.bool, device=q.device).tril()
             scores = scores.masked_fill(~visible, float("-inf"))

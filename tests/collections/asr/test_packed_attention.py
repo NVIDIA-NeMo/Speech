@@ -295,6 +295,30 @@ class TestPackedCrossAttention:
         with pytest.raises(ValueError, match="number of sequences"):
             packed_cross_attention(q, k, v, queries, PackedAttentionContext.from_lengths(torch.tensor([9])))
 
+    @pytest.mark.unit
+    def test_half_precision_scores_stay_finite_on_the_dense_path(self):
+        """Unscaled products of 64 times 40 squared overflow float16; the scaling happens before the product."""
+        context = PackedAttentionContext.from_lengths(torch.tensor([2]))
+        x = torch.full((2, 1, 64), 40.0, dtype=torch.float16)
+        out = packed_cross_attention(x, x, x, context, context)
+        assert torch.isfinite(out).all()
+        torch.testing.assert_close(out, x)
+
+    @pytest.mark.unit
+    def test_queries_without_keys_keep_gradient_edges(self):
+        """A sequence with queries and no keys gets a zero context that still connects q, k and v."""
+        cases = [([1, 0], [0, 1], (1, 1, 8)), ([1, 1], [0, 0], (2, 1, 8)), ([0, 0], [1, 1], (0, 1, 8))]
+        for query_lengths, key_lengths, out_shape in cases:
+            query_context = PackedAttentionContext.from_lengths(torch.tensor(query_lengths))
+            key_context = PackedAttentionContext.from_lengths(torch.tensor(key_lengths))
+            q = torch.randn(query_context.total_tokens, 1, 8, requires_grad=True)
+            k, v = (torch.randn(key_context.total_tokens, 1, 8, requires_grad=True) for _ in range(2))
+            out = packed_cross_attention(q, k, v, query_context, key_context)
+            assert out.shape == out_shape and not out.any()
+            out.sum().backward()
+            for tensor in (q, k, v):
+                assert tensor.grad is not None and not tensor.grad.any()
+
     @staticmethod
     def _skip_without_flash_attention(dtype):
         if packed_attention_module._flash_attention_varlen(torch.empty(1, 1, 8, device="cuda", dtype=dtype)) is None:

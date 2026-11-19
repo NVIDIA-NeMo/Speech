@@ -1019,7 +1019,8 @@ class ParallelExpertEncoder(nn.Module):
         Run an encoder token-flat, optionally splitting after feature stacking.
         Encoders without ``forward_sequence_packed``, or whose ``supports_sequence_packed_output``
         denies it for their configuration (a ``ConformerEncoder`` training with attention dropout
-        over ``rel_pos`` attention, for one), fall back to a padded forward and are re-packed.
+        on a packed attention backend without it, FlexAttention, for one;
+        its ``sequence_packed_unsupported_reason`` lists them), fall back to a padded forward and are re-packed.
         When a chunk size is set and an utterance exceeds it, feature stacking runs
         once over each full utterance, and the encoder layers then see each chunk as an
         independent sequence. Chunking requires ``subsampling='feature_stacking'``.

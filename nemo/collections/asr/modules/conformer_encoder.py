@@ -104,6 +104,11 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         use_triton (bool, Optional): use the fused Triton subsampling kernels, for CUDA input with
             'dw_striding' subsampling. Defaults to None, enabling them whenever Triton is
             installed. Export always uses the PyTorch path.
+        packed_rel_pos_attention (str): the backend of 'rel_pos' attention over packed sequences
+            (``forward_sequence_packed``) on CUDA: 'triton', the fused attention kernel with attention
+            dropout wherever Triton is installed (FlexAttention otherwise), or 'flex', FlexAttention always,
+            the backend before the kernel, which computes in float32 and has no attention dropout.
+            Defaults to 'triton'.
         reduction (str, Optional): the method of reduction, choices=['pooling', 'striding']. If no value
             is passed, then no reduction is performed and the models runs with the original 4x subsampling.
         reduction_position (int, Optional): the index of the layer to apply reduction. If -1, apply reduction
@@ -382,6 +387,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         rope_base: float = 10000.0,
         rotary_fraction: float = 1.0,
         use_triton: bool | None = None,
+        packed_rel_pos_attention: str = 'triton',
         pre_encode: ModuleBlock | None = None,
         feed_forward: ModuleBlock | None = None,
         conv: ModuleBlock | None = None,
@@ -398,6 +404,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         self.subsampling_conv_chunking_factor = subsampling_conv_chunking_factor
 
         self.self_attention_model = self_attention_model
+        if packed_rel_pos_attention not in ('triton', 'flex'):
+            raise ValueError(f"packed_rel_pos_attention must be 'triton' or 'flex', got {packed_rel_pos_attention!r}.")
+        self.packed_rel_pos_attention = packed_rel_pos_attention
         self.global_tokens = global_tokens
         self.global_attn_separate = global_attn_separate
         self.global_tokens_spacing = global_tokens_spacing
@@ -914,7 +923,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             else:
                 packed = _forward_packed_module(self.pre_encode, packed)
 
-        attention_context = PackedAttentionContext(packed)
+        attention_context = PackedAttentionContext(packed, rel_pos_kernel=self.packed_rel_pos_attention == 'triton')
         # the relative-position table covers the length the attention backend reads:
         # the longest utterance for the Triton kernel, the rounded kernel shape for FlexAttention
         self.update_max_seq_length(seq_length=attention_context.rel_pos_max_seqlen, device=packed.data.device)
@@ -988,7 +997,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         frontends other than a linear layer or a non-causal ``striding`` or ``dw_striding`` ``ConvSubsampling``,
         and instance or group normalization in the convolution modules.
         Attention dropout in training mode on CUDA: FlexAttention has no dropout, so ``rel_pos`` attention
-        keeps its dropout only through its Triton kernel (Triton installed, float32, bfloat16 or float16),
+        keeps its dropout only through its Triton kernel
+        (``packed_rel_pos_attention: triton``, Triton installed, float32, bfloat16 or float16),
         and ``abs_pos`` and ``rope`` attention only where variable-length FlashAttention runs,
         in float16 or bfloat16 (autocast counts) with a head width that is a multiple of 8 up to 256;
         see ``packed_attention_supports_dropout``. Off CUDA the dense reference attention applies the dropout.
@@ -1035,12 +1045,14 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             dtype = torch.get_autocast_dtype('cuda') if autocast else parameter.dtype
             head_dim = layers[0].self_attn.d_k
             if self.self_attention_model == 'rel_pos':
-                if not packed_attention_supports_dropout(parameter.device, dtype, head_dim, rel_pos=True):
+                if self.packed_rel_pos_attention != 'triton' or not packed_attention_supports_dropout(
+                    parameter.device, dtype, head_dim, rel_pos=True
+                ):
                     return (
                         "rel_pos attention over packed sequences keeps its dropout through its Triton kernel "
-                        "(Triton installed; float32, bfloat16 or float16), "
-                        "and FlexAttention, the path without it, has no dropout on the attention weights: "
-                        "set dropout_att: 0 on the encoder or install Triton."
+                        "(packed_rel_pos_attention: triton; Triton installed; float32, bfloat16 or float16), "
+                        "and FlexAttention, the path otherwise, has no dropout on the attention weights: "
+                        "set dropout_att: 0 on the encoder or select the kernel."
                     )
             elif not packed_attention_supports_dropout(parameter.device, dtype, head_dim):
                 return (

@@ -71,8 +71,8 @@ While reviewing:
     option.
   - Removals go in a separate PR. When a PR drops an on-disk format, size who is affected from the last release's
     defaults and shipped configs.
-  - New code gets no compatibility shims. A renamed public argument keeps a deprecated alias with a warning and a
-    `TODO(<login>)` naming the removal release.
+  - New code gets no compatibility shims. Renaming or moving an existing public name keeps a deprecated alias, with a
+    warning and a `TODO(<login>)` naming the removal release.
 - **Design**
   - Generic code never names a model. Its constants come from the model config.
   - Reuse or fix existing code. Do not add a second implementation of the same behavior. A mechanism with no
@@ -156,7 +156,8 @@ or a comment carrying an issue link. Classify what survives:
 
 - A definition with no caller left is dead code. So is a new symbol nothing uses yet. Callers that exist only in tests
   do not keep it alive. Before calling it dead, look for indirect use: `getattr`, registries, `_target_` and other
-  YAML keys, and interface methods that subclasses must implement.
+  YAML keys, and interface methods that subclasses must implement. A public API meant for users, such as a name
+  exported in `__all__`, is not dead, and neither is a symbol the PR description says a follow-up PR uses.
 - A removed test still named in a skip or deselect list is a stale entry.
 - An abstract declaration kept on only one concrete class is a contract downgrade.
 - A removed guard still described in `docs/` leaves the docs wrong. Search the docs for what the guard rejected, not
@@ -184,7 +185,8 @@ code the PR introduces; for pre-existing shape, ask for a tracking issue at most
 
 - **Abstraction runs both ways.** Ask to decouple only when two variants already exist or a second one is named and
   near. Ask to keep code separate when merging it would scatter mode conditionals through a shared path, or when the
-  two things change for different reasons. Prefer duplication over the wrong abstraction.
+  two things change for different reasons; only then is duplication better than a shared abstraction. Code that
+  already exists in the repo for the same job is reused, as Design requires.
 - **Placement.** A pure helper belongs in the module that defines the data it operates on, when that module already
   exists. A function-local import added to dodge an import cycle is usually a misplaced helper. Do not propose a move
   that creates a new cycle.
@@ -209,7 +211,8 @@ code the PR introduces; for pre-existing shape, ask for a tracking issue at most
 
 - **The failure must be reachable.** Show that the bad state can occur and that something reads it. For a value's
   meaning, such as an inclusive bound or a unit, read the consumer, not the validator. Check that the config block is
-  live under the setup in question. A race needs a real ordering in which both sides run.
+  live under the setup in question. A race needs a real ordering in which both sides run. For a claimed regression,
+  also state what the code did before the PR, read from the base.
 - **Claims about external behavior** of torch, Lhotse, transformers, or other upstream code need the pinned source,
   not memory. If you could not confirm it, describe the guard that is bypassed, not an invented symptom.
 - **Absence needs proof.** An empty search or a truncated read does not prove absence. "Only", "every", and "none"

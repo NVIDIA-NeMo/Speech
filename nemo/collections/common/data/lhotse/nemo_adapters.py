@@ -65,6 +65,8 @@ ShardKey = Union[int, tuple[int, int]]
 
 
 _MALFORMED_INDEXED_MANIFEST_WARNING_KEYS: set[tuple[str, str]] = set()
+# Holds a single marker once the indexed shard_seed replacement warning has been logged in this process.
+_INDEXED_SHARD_SEED_WARNINGS: set[str] = set()
 
 
 def _warn_malformed_indexed_manifest_record(ex: BaseException, idx: int, path: str | Path) -> None:
@@ -181,7 +183,7 @@ class LazyNeMoIterator(IteratorNode):
                 from lhotse.index_pack import index_pack_collection_key
                 from lhotse.packed_lazy import LazyPackedManifestIterator
 
-                seed = resolve_seed(shard_seed) if shard_seed not in (None, "trng", "randomized") else 0
+                seed = _resolve_indexed_shard_seed(shard_seed, used=shuffle_shards)
                 self.source = LazyPackedManifestIterator(
                     index_pack,
                     index_pack_collection_key("manifest", "jsonl", path),
@@ -196,7 +198,7 @@ class LazyNeMoIterator(IteratorNode):
 
             from lhotse.indexing import index_file_path
 
-            seed = resolve_seed(shard_seed) if shard_seed not in (None, "trng", "randomized") else 0
+            seed = _resolve_indexed_shard_seed(shard_seed, used=shuffle_shards and len(paths) > 1)
             indexed_sources = [
                 LazyIndexedManifestIterator(
                     p,
@@ -1671,3 +1673,24 @@ def _check_indexed_tar_covers_manifest(
         "has more rows than the tar has members (e.g. repeated '-subN' rows), convert the dataset to an "
         ".idxpack with 'scripts/dataloading/convert_indexes_to_idxpack.py', which stores the row-to-member mapping."
     )
+
+
+def _resolve_indexed_shard_seed(shard_seed, used: bool) -> int:
+    """Return the shard shuffle seed of an indexed NeMo manifest source.
+
+    Indexed sources partition their items across DP ranks and DataLoader workers, so every rank and worker
+    must shuffle shards identically. The per-process seeds 'trng' and 'randomized' (and None) are replaced with
+    a fixed seed of 0. Changing this fallback would reorder data for runs resumed from existing checkpoints.
+    When the seed is ``used`` for shuffling, warn about the replacement once per process.
+    """
+    if shard_seed not in (None, "trng", "randomized"):
+        return resolve_seed(shard_seed)
+    if used and not _INDEXED_SHARD_SEED_WARNINGS:
+        _INDEXED_SHARD_SEED_WARNINGS.add("warned")
+        logging.warning(
+            f"shard_seed={shard_seed!r} is ignored for indexed NeMo manifest sources: they shuffle shards with a "
+            "fixed seed (0) so that every rank and worker reads the same order and its own disjoint slice. "
+            "Set an integer shard_seed to choose a different shard order. "
+            "This warning is shown once per process."
+        )
+    return 0

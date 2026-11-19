@@ -74,6 +74,6 @@ training split, and teaching a transcriber to hear what it was trained to ignore
 ------------
 
 **Requirements.** A large GPU (the expected results were measured on a single NVIDIA GB300; training uses 70-160 GB of
-GPU memory), this repository with `speechlm2`, a separate environment with vLLM 0.28.0 for decoding, and a SALM
+GPU memory), this repository with `speechlm2`, a separate environment with vLLM 0.32.0 for decoding, and a SALM
 checkpoint in HuggingFace format (exported by `SALMAutomodel`), set via the `SALM_CHECKPOINT`
 environment variable. See `00_Overview_and_Setup` for details and the other environment variables.

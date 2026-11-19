@@ -82,8 +82,8 @@ if TRITON_AVAILABLE:
     def _locate(row_starts_ptr, states_ptr, row, batch, batch_pow2: tl.constexpr):
         """Resolve a packed row to its sample, frame, state, and that sample's state count."""
         lanes = tl.arange(0, batch_pow2)
-        starts = tl.load(row_starts_ptr + lanes, mask=lanes <= batch, other=2**30)
-        batch_idx = tl.sum(tl.where(starts <= row, 1, 0)) - 1
+        starts = tl.load(row_starts_ptr + lanes, mask=lanes <= batch, other=0)
+        batch_idx = tl.sum(tl.where((lanes <= batch) & (starts <= row), 1, 0)) - 1
         start = tl.sum(tl.where(lanes == batch_idx, starts, 0))
         states = tl.sum(tl.where(lanes == batch_idx, tl.load(states_ptr + lanes, mask=lanes < batch, other=1), 0))
         within = row - start
@@ -182,13 +182,11 @@ if TRITON_AVAILABLE:
         predictor_mask_ptr,
         tile_start,
         tile_rows,
-        batch,
         source_stride,
         target_stride,
         hidden_size,
         activation: tl.constexpr,
         dropout_p: tl.constexpr,
-        batch_pow2: tl.constexpr,
         block_frames: tl.constexpr,
         block_states: tl.constexpr,
         block_hidden: tl.constexpr,
@@ -209,12 +207,9 @@ if TRITON_AVAILABLE:
         batch_idx = tl.program_id(2) // state_blocks
         state_block = tl.program_id(2) % state_blocks
 
-        lanes = tl.arange(0, batch_pow2)
-        start = tl.sum(tl.where(lanes == batch_idx, tl.load(row_starts_ptr + lanes, mask=lanes <= batch, other=0), 0))
-        states = tl.sum(tl.where(lanes == batch_idx, tl.load(states_ptr + lanes, mask=lanes < batch, other=1), 0))
-        source_length = tl.sum(
-            tl.where(lanes == batch_idx, tl.load(lengths_ptr + lanes, mask=lanes < batch, other=0), 0)
-        )
+        start = tl.load(row_starts_ptr + batch_idx)
+        states = tl.load(states_ptr + batch_idx)
+        source_length = tl.load(lengths_ptr + batch_idx)
 
         frame = frame_block * block_frames + tl.arange(0, block_frames)
         hidden = chunk * block_hidden + tl.arange(0, block_hidden)
@@ -317,9 +312,9 @@ if TRITON_AVAILABLE:
         row = (tile_start + local).to(tl.int64)
 
         lanes = tl.arange(0, batch_pow2)
-        starts = tl.load(row_starts_ptr + lanes, mask=lanes <= batch, other=2**30)
+        starts = tl.load(row_starts_ptr + lanes, mask=lanes <= batch, other=0)
         counts = tl.load(states_ptr + lanes, mask=lanes < batch, other=1)
-        batch_idx = tl.sum(tl.where(starts[None, :] <= row[:, None], 1, 0), axis=1) - 1
+        batch_idx = tl.sum(tl.where((lanes[None, :] <= batch) & (starts[None, :] <= row[:, None]), 1, 0), axis=1) - 1
         picked = lanes[None, :] == batch_idx[:, None]
         start = tl.sum(tl.where(picked, starts[None, :], 0), axis=1)
         states = tl.sum(tl.where(picked, counts[None, :], 0), axis=1)
@@ -485,14 +480,14 @@ class _PackedJoint(torch.autograd.Function):
             block_hidden=block,
         )
         ctx.save_for_backward(encoder, predictor, offsets, states, lengths, seed, predictor_mask)
-        ctx.meta = (activation, dropout_p, batch_pow2, block)
+        ctx.meta = (activation, dropout_p)
         ctx.tile_start = start
         return hidden
 
     @staticmethod
     def backward(ctx, grad_hidden):
         encoder, predictor, offsets, states, lengths, seed, predictor_mask = ctx.saved_tensors
-        activation, dropout_p, batch_pow2, _ = ctx.meta
+        activation, dropout_p = ctx.meta
         grad_hidden = grad_hidden.contiguous()
         batch, hidden_size = len(states), encoder.shape[2]
         grad_encoder = torch.zeros_like(encoder, dtype=torch.float32)
@@ -516,13 +511,11 @@ class _PackedJoint(torch.autograd.Function):
             predictor_mask,
             ctx.tile_start,
             grad_hidden.shape[0],
-            batch,
             max_frames,
             max_states,
             hidden_size,
             activation=activation,
             dropout_p=dropout_p,
-            batch_pow2=batch_pow2,
         )
         return (
             grad_encoder.to(encoder.dtype),

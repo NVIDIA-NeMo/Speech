@@ -436,6 +436,38 @@ specify the tokenizer if you want to use sub-word encoding instead of character-
 The encoder section includes the details about the Conformer-CTC encoder architecture. You may find more information in the
 config files and also :ref:`nemo.collections.asr.modules.ConformerEncoder <conformer-encoder-api>`.
 
+The attention of each encoder layer projects its input to queries, keys and values with three weight matrices.
+With ``fused_qkv: true`` in the ``self_attn`` block, each layer holds them as one matrix instead.
+The layer computes the same function, and the weights of a checkpoint saved in either form load into a model of the other.
+What changes is the parameter the optimizer sees:
+an optimizer that updates every weight matrix as a whole, such as ``muon`` (see :ref:`optimizers-label`),
+then treats the three projections as one matrix.
+The option exists for ``rel_pos``, ``abs_pos`` and ``rope`` attention, and the block names the attention class of the chosen model:
+
+.. code-block:: yaml
+
+    model:
+      encoder:
+        _target_: nemo.collections.asr.modules.ConformerEncoder
+        self_attention_model: rel_pos
+        self_attn:
+          _target_: nemo.collections.asr.parts.submodules.multi_head_attention.RelPositionMultiHeadAttention
+          _partial_: true
+          fused_qkv: true
+
+A model that was trained with separate projections converts in place with
+``model.change_attention_model(self_attn=...)`` and the same block.
+
+Limitations:
+
+* The optimizer state of a checkpoint does not carry over between the two forms, since the parameters differ;
+  a training that switches the form starts with a new optimizer state.
+* Local attention (``rel_pos_local_attn``) has no fused form.
+  To switch a fused model to it, pass ``change_attention_model`` a ``self_attn`` block of the local attention class;
+  the projections are split again.
+* ``muon`` leaves a matrix with a dimension of ``adam_dim_threshold`` or more to AdamW,
+  and the fused matrix has ``3 * d_model`` rows.
+
 
 Conformer-Transducer
 ~~~~~~~~~~~~~~~~~~~~

@@ -41,6 +41,7 @@ CUDA_TRITON_AVAILABLE = TRITON_AVAILABLE and torch.cuda.is_available()
         (9, 5, 0, 0.01),
     ],
 )
+@pytest.mark.gpu
 def test_rnnt_loss_and_gradients(frames, tokens, target_bias, fastemit_lambda):
     """Check ragged boundaries, cross-warp neighbours, padding, and incoming gradient scales."""
     from nemo.collections.asr.parts.numba.rnnt_loss import rnnt_numpy
@@ -92,6 +93,7 @@ def test_rnnt_loss_and_gradients(frames, tokens, target_bias, fastemit_lambda):
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.gpu
 def test_rnnt_loss_repeated_backward_preserves_occupancies():
     target = torch.full((2, 4, 5), -2.0, device="cuda", requires_grad=True)
     blank = torch.full((2, 4, 6), -1.0, device="cuda", requires_grad=True)
@@ -115,6 +117,7 @@ def test_rnnt_loss_repeated_backward_preserves_occupancies():
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.gpu
 def test_rnnt_loss_invalid_lengths_are_masked():
     target = torch.full((4, 3, 2), -2.0, device="cuda", requires_grad=True)
     blank = torch.full((4, 3, 3), -1.0, device="cuda", requires_grad=True)

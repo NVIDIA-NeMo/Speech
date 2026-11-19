@@ -69,6 +69,7 @@ def _scatter_row_numbers(source_lengths, target_lengths, frames, target_states):
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.gpu
 def test_packed_rows_run_frame_major_within_a_sample():
     """Rows advance through transcript states first, then frames, with samples laid end to end.
 
@@ -90,6 +91,7 @@ def test_packed_rows_run_frame_major_within_a_sample():
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.gpu
 def test_packed_rows_of_a_full_lattice_are_a_dense_reshape():
     """With every sample at full extent nothing is padded, so packed order is dense order."""
     batch, frames, target_states = 4, 5, 3
@@ -102,6 +104,7 @@ def test_packed_rows_of_a_full_lattice_are_a_dense_reshape():
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.gpu
 def test_flash_rnnt_reads_labels_from_a_strided_transcript():
     """The extraction addresses a label by row stride alone, so the columns must be adjacent.
 
@@ -140,6 +143,7 @@ def test_flash_rnnt_reads_labels_from_a_strided_transcript():
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
 @pytest.mark.parametrize("axis", ["source", "target"])
+@pytest.mark.gpu
 def test_flash_rnnt_rejects_lengths_past_the_states_they_index(axis):
     """A length beyond its tensor would be read, not masked, so it has to be refused up front."""
     joint = _make_joint(4)
@@ -191,6 +195,7 @@ def test_flash_rnnt_rejects_dense_path():
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.gpu
 def test_flash_rnnt_rejects_hat_joint_without_reading_blank_out_of_bounds():
     """A HAT joint scores blank in a separate head, so its joint_net is one column short.
 
@@ -263,6 +268,7 @@ def test_flash_rnnt_early_return_preserves_requested_empty_hypotheses():
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
 @pytest.mark.parametrize("activation", ["relu", "sigmoid", "tanh"])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.gpu
 def test_flash_rnnt_join_matches_the_eager_broadcast_add(activation, dtype):
     """The fused kernel must compute the same function as an eager broadcast-add plus activation.
 
@@ -412,6 +418,7 @@ def test_flash_rnnt_clamp_matches_numba_across_tiles(objective_reduction, amp_sc
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
 @pytest.mark.parametrize("hidden_size", [6, 8, 1536])
+@pytest.mark.gpu
 def test_joint_dropout_mask_agrees_across_kernels(hidden_size):
     """The forward and both backward kernels must reach the same verdict on every element.
 
@@ -456,6 +463,7 @@ def test_joint_dropout_mask_agrees_across_kernels(hidden_size):
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.gpu
 def test_flash_rnnt_rejects_invalid_joint_dropout():
     joint = _make_joint(4, dropout=1.0)
     joint.set_loss(RNNTLoss(num_classes=NUM_LABELS, reduction="mean_batch", loss_name="flash_rnnt"))
@@ -475,6 +483,7 @@ def test_flash_rnnt_rejects_invalid_joint_dropout():
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
 @pytest.mark.parametrize("max_joint_rows", [10_000, 13])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.gpu
 def test_flash_rnnt_tile_budget_equivalence(dtype, max_joint_rows):
     """The tile budget bounds the workspace without changing the answer.
 
@@ -528,6 +537,7 @@ def test_flash_rnnt_tile_budget_equivalence(dtype, max_joint_rows):
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.gpu
 def test_flash_rnnt_joint_dropout_recomputes_the_same_mask(monkeypatch):
     """A tile draws its own seed, so its recompute has to land on the mask the forward used."""
     from nemo.collections.asr.parts.triton import rnnt_joint
@@ -583,6 +593,7 @@ def test_flash_rnnt_joint_dropout_recomputes_the_same_mask(monkeypatch):
 )
 @pytest.mark.parametrize("activation", ["relu", "sigmoid", "tanh"])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.gpu
 def test_flash_rnnt_matches_numba_loss_and_gradients(dtype, activation):
     """The whole path -- joint, extraction, dynamic program -- against an independent backend.
 
@@ -633,6 +644,7 @@ def test_flash_rnnt_matches_numba_loss_and_gradients(dtype, activation):
     not CUDA_TRITON_AVAILABLE or not NUMBA_RNNT_AVAILABLE,
     reason="CUDA, Triton, and Numba RNN-T are required",
 )
+@pytest.mark.gpu
 def test_flash_rnnt_prediction_masking_matches_numba():
     """HAINAN masking zeroes a transcript state's projected predictor row; the kernels skip it instead.
 
@@ -689,6 +701,7 @@ def test_flash_rnnt_prediction_masking_matches_numba():
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.gpu
 def test_flash_rnnt_does_not_materialize_dense_joint_logits(monkeypatch):
     joint = _make_joint(1, activation="tanh")
     loss = RNNTLoss(num_classes=NUM_LABELS, reduction="mean_batch", loss_name="flash_rnnt")

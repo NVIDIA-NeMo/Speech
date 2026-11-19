@@ -28,17 +28,25 @@ class StackedAudioBufferer:
     It buffers exactly like BatchedAudioBufferer.
     """
 
-    def __init__(self, sample_rate: int, buffer_size_in_secs: float, device: torch.device | str, num_slots: int = 64):
+    def __init__(
+        self,
+        sample_rate: int,
+        buffer_size_in_secs: float,
+        device: torch.device | str,
+        num_slots: int = 64,
+        buffer_size: int | None = None,
+    ):
         """
         Args:
             sample_rate (int): sample rate
             buffer_size_in_secs (float): buffer size in seconds
             device (torch.device | str): device that holds the buffers
             num_slots (int): initial number of streams that fit, the capacity doubles when it is exceeded
+            buffer_size (int | None): buffer size in samples, overrides buffer_size_in_secs when given
         """
         self.sample_rate = sample_rate
         self.buffer_size_in_secs = buffer_size_in_secs
-        self.buffer_size = int(buffer_size_in_secs * sample_rate)
+        self.buffer_size = int(buffer_size_in_secs * sample_rate) if buffer_size is None else buffer_size
         self.device = torch.device(device)
         self.reset(num_slots)
 

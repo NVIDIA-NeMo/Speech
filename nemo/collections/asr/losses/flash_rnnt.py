@@ -214,7 +214,7 @@ def _compute_flash_rnnt(
 
     # Publish each sample's upstream gradient so extraction can scale the unit clamp bound
     # to account for the loss reduction, sample weighting, and AMP scale.
-    loss_grad_scale = torch.zeros(batch, device=encoder.device, dtype=torch.float32) if clamp > 0.0 else None
+    loss_grad_scale = torch.empty(batch, device=encoder.device, dtype=torch.float32) if clamp > 0.0 else None
 
     output_layer = joint.joint_net[-1]
     dropout_p = joint.dropout if joint.training else 0.0

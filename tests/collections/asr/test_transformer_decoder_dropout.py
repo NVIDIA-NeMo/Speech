@@ -31,6 +31,7 @@ from nemo.collections.asr.modules.transformer.transformer_modules import (
 )
 from nemo.collections.asr.modules.transformer.transformer_utils import get_nemo_transformer
 from nemo.collections.asr.parts.submodules.broadcast_dropout import BroadcastDropout
+from nemo.collections.asr.parts.submodules.packed_attention import PackedAttentionContext
 
 HIDDEN = 16
 INNER = 24
@@ -135,7 +136,7 @@ BRANCH_SITES = ["self_attn_output", "cross_attn_output", "ffn_hidden", "ffn_outp
 
 class TestBroadcastDropout:
     @pytest.mark.unit
-    @pytest.mark.parametrize("shape", [(5, 7), (3, 5, 7), (2, 3, 5, 7)])
+    @pytest.mark.parametrize("shape", [(1, 5, 7), (3, 5, 7), (2, 3, 5, 7)])
     def test_one_mask_per_sequence_shared_over_time(self, shape):
         torch.manual_seed(0)
         dropout = BroadcastDropout(0.5).train()
@@ -152,15 +153,47 @@ class TestBroadcastDropout:
         assert len(masks) > 1
 
     @pytest.mark.unit
-    def test_rejects_an_input_without_time_axis(self):
-        with pytest.raises(ValueError, match="time and a feature axis"):
-            BroadcastDropout(0.5).train()(torch.ones(7))
+    @pytest.mark.parametrize("shape", [(7,), (5, 7)])
+    def test_rejects_states_without_batch_axis(self, shape):
+        # token-flat states without their packing would silently share one mask over the batch
+        with pytest.raises(ValueError, match="packing context"):
+            BroadcastDropout(0.5).train()(torch.ones(shape))
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+    def test_packed_states_get_one_mask_per_sequence(self, dtype):
+        torch.manual_seed(0)
+        lengths = torch.tensor([4, 1, 0, 6])
+        context = PackedAttentionContext.from_lengths(lengths)
+        x = (torch.randn(11, 7).abs() + 1.0).to(dtype).requires_grad_()
+        out = BroadcastDropout(0.5).train()(x, context)
+        assert out.dtype == dtype and out.shape == x.shape
+        out.sum().backward()
+        kept = out != 0
+        torch.testing.assert_close(out, x.detach() * kept * 2.0)
+        torch.testing.assert_close(x.grad, kept.to(dtype) * 2.0)
+        sequences = kept.split(lengths.tolist())
+        for sequence in sequences:
+            assert (sequence == sequence[:1]).all()
+        assert not (sequences[0][0] == sequences[3][0]).all()
+        # the padded form of the same batch: the same rule, one mask per row of the batch
+        padded = BroadcastDropout(0.5).train()(torch.ones(4, 6, 7)) != 0
+        assert (padded == padded[:, :1]).all() and not (padded[0, 0] == padded[3, 0]).all()
+
+    @pytest.mark.unit
+    def test_packed_states_must_match_their_context(self):
+        context = PackedAttentionContext.from_lengths(torch.tensor([4, 2]))
+        for shape in [(5, 7), (2, 3, 7)]:
+            with pytest.raises(ValueError, match="packing context of 6 tokens"):
+                BroadcastDropout(0.5).train()(torch.ones(shape), context)
+        x = torch.ones(5, 7)
+        assert BroadcastDropout(0.5).eval()(x, context) is x
 
     @pytest.mark.unit
     def test_drop_rate(self):
         torch.manual_seed(0)
         dropout = BroadcastDropout(0.25).train()
-        kept = dropout(torch.ones(2, 20000)) != 0
+        kept = dropout(torch.ones(2, 1, 20000)) != 0
         assert abs(kept.float().mean().item() - 0.75) < 0.02
 
     @pytest.mark.unit
@@ -179,7 +212,7 @@ class TestBroadcastDropout:
 
     @pytest.mark.unit
     def test_everything_dropped_at_rate_one(self):
-        out = BroadcastDropout(1.0).train()(torch.randn(3, 7))
+        out = BroadcastDropout(1.0).train()(torch.randn(2, 3, 7))
         assert (out == 0).all()
 
     @pytest.mark.unit

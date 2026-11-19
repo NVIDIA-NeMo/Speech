@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from collections import Counter
+from dataclasses import replace
 from io import BytesIO
 from itertools import islice
 from pathlib import Path
@@ -1150,6 +1151,73 @@ def test_lhotse_cuts_resolve_relative_paths(tmp_path: Path):
 class Identity(torch.utils.data.Dataset):
     def __getitem__(self, cuts: lhotse.CutSet) -> lhotse.CutSet:
         return cuts
+
+
+@pytest.mark.unit
+def test_dataloader_applies_language_quality_filters_to_tagged_sources(tmp_path, cutset_path):
+    cases = [
+        ("pass", "pass", 0.02, 0.65, None),
+        ("cer", "pass", 0.04, 0.65, None),
+        ("similarity", "fail_ssim", 0.02, 0.4, None),
+        ("global-cer", "pass", 0.06, 0.65, None),
+        ("global-similarity", "pass", 0.02, 0.2, None),
+        ("status", "fail_cer", 0.02, 0.65, None),
+        ("missing", None, None, None, None),
+        ("multiturn", "pass", 0.01, 0.65, 0.07),
+    ]
+    sources = []
+    for lang in ["en", "fr"]:
+        cuts = []
+        for cut, (name, status, cer, similarity, second_cer) in zip(CutSet.from_file(cutset_path), cases):
+            cut.id = f"{lang}-{name}"
+            cut.custom = {"validation_status": status} if status is not None else None
+            metrics = {} if cer is None else {"cer": cer, "context_speaker_similarity": similarity}
+            cut.supervisions = [replace(cut.supervisions[0], custom=metrics)]
+            if second_cer is not None:
+                cut.supervisions.append(
+                    replace(cut.supervisions[0], id=f"{cut.id}-second", custom={"asr_cer": second_cer})
+                )
+            cuts.append(cut)
+        path = tmp_path / f"{lang}.jsonl.gz"
+        CutSet.from_cuts(cuts).to_file(path)
+        sources.append(
+            {
+                "type": "group",
+                "tags": {"lang": lang},
+                "weight": 1.0,
+                "input_cfg": [{"type": "lhotse", "cuts_path": str(path), "weight": 1.0}],
+            }
+        )
+
+    config = OmegaConf.create(
+        {
+            "input_cfg": sources,
+            "force_finite": True,
+            "shuffle": False,
+            "num_workers": 0,
+            "batch_size": 2,
+            "shard_seed": 0,
+            "reweight_temperature": [0.5, 0.7],
+            "keep": ["pass", "fail_ssim"],
+            "max_cer": 0.05,
+            "max_cer_by_lang": {"en": 0.03},
+            "min_context_speaker_similarity": 0.3,
+            "min_context_speaker_similarity_by_lang": {"en": 0.6},
+        }
+    )
+    loader = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity())
+    kept = {cut.id: cut for batch in loader for cut in batch}
+
+    assert set(kept) == {
+        "en-pass",
+        "en-missing",
+        "fr-pass",
+        "fr-cer",
+        "fr-similarity",
+        "fr-missing",
+        "fr-multiturn",
+    }
+    assert all(cut.lang == cut.id.split("-", maxsplit=1)[0] for cut in kept.values())
 
 
 def test_extended_data_input_cfg(cutset_shar_path, nemo_tarred_manifest_path_multi):

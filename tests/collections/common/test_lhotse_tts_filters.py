@@ -12,6 +12,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from dataclasses import replace
+
 import pytest
 from lhotse import SupervisionSegment
 from lhotse.array import Array, TemporalArray
@@ -161,11 +163,41 @@ def test_cer_filter_applies_to_mixed_cuts(cut_example):
     mixed = cut_example.mix(cut_example.with_id('second-cut'))
     assert CERFilter(0.04)(mixed)
     assert not CERFilter(0.02)(mixed)
+    assert CERFilter(0.04, {'en': 0.01})(mixed)
 
 
 @pytest.mark.parametrize('example', ['text example', None, object()])
 def test_cer_filter_passes_non_cut_examples(example):
     assert CERFilter(0.0)(example)
+    assert CERFilter(0.0, {'en': 0.0})(example)
+
+
+@pytest.mark.parametrize(
+    'language,default,overrides,expected',
+    [
+        (None, 0.01, {'en': 0.05}, False),
+        ('en', 0.01, {'en': 0.05}, True),
+        ('de', 0.01, {'en': 0.05}, False),
+        ('en', 0.4, {'en': 0.01}, False),
+        ('en', 0.01, {'en': None}, True),
+        ('en', None, {'en': 0.01}, False),
+        ('en', 0.0, {'en': 0.03}, True),
+    ],
+)
+def test_cut_cer_filter_by_lang(cut_example, language, default, overrides, expected):
+    if language is not None:
+        cut_example.lang = language
+    assert CERFilter(default, overrides)(cut_example) is expected
+
+
+def test_cut_cer_filter_by_lang_uses_mean_of_all_available_scores(cut_example):
+    cut_example.lang = 'en'
+    first = cut_example.supervisions[0]
+    first.custom['cer'] = 0.0
+    second = replace(first, id='second-supervision', custom={'asr_cer': 0.08})
+    cut_example.supervisions = [first, second]
+    assert CERFilter(0.01, {'en': 0.05})(cut_example)
+    assert not CERFilter(0.2, {'en': 0.03})(cut_example)
 
 
 def test_cut_context_speaker_similarity_filter(cut_example):
@@ -179,6 +211,33 @@ def test_cut_context_speaker_similarity_filter(cut_example):
     assert f(cut_example) == True
 
 
+@pytest.mark.parametrize(
+    'language,default,overrides,expected',
+    [
+        (None, 0.95, {'en': 0.6}, False),
+        ('en', 0.95, {'en': 0.6}, True),
+        ('de', 0.95, {'en': 0.6}, False),
+        ('en', 0.3, {'en': 0.95}, False),
+        ('en', 0.95, {'en': None}, True),
+        ('en', None, {'en': 0.95}, False),
+    ],
+)
+def test_cut_context_speaker_similarity_filter_by_lang(cut_example, language, default, overrides, expected):
+    if language is not None:
+        cut_example.lang = language
+    assert ContextSpeakerSimilarityFilter(default, overrides)(cut_example) is expected
+
+
+@pytest.mark.parametrize('score', [None, 'missing'])
+def test_cut_context_speaker_similarity_filter_by_lang_passes_missing_scores(cut_example, score):
+    cut_example.lang = 'en'
+    if score == 'missing':
+        del cut_example.supervisions[0].custom['context_speaker_similarity']
+    else:
+        cut_example.supervisions[0].custom['context_speaker_similarity'] = score
+    assert ContextSpeakerSimilarityFilter(1.0, {'en': 1.0})(cut_example)
+
+
 def test_cut_validation_status_filter(cut_example):
     f = ValidationStatusFilter("pass")
     assert f(cut_example) == True
@@ -188,6 +247,32 @@ def test_cut_validation_status_filter(cut_example):
 
     f = ValidationStatusFilter("any_other_status")
     assert f(cut_example) == False
+
+
+@pytest.mark.parametrize(
+    'keep,status,expected',
+    [
+        ('pass', 'pass', True),
+        (['pass', 'fail_ssim'], 'fail_ssim', True),
+        (['wrong_text', 'fail_ssim'], 'pass', False),
+        ([], 'pass', False),
+        (('pass', 'fail_ssim'), 'pass', True),
+    ],
+)
+def test_cut_validation_status_filter_multiple_statuses(cut_example, keep, status, expected):
+    cut_example.validation_status = status
+    assert ValidationStatusFilter(keep)(cut_example) is expected
+
+
+def test_cut_validation_status_filter_multiple_statuses_passes_missing_status(cut_example):
+    del cut_example.custom['validation_status']
+    assert ValidationStatusFilter([])(cut_example)
+
+
+@pytest.mark.parametrize('example', ['text example', None, object()])
+def test_quality_filters_pass_non_cut_examples(example):
+    assert ContextSpeakerSimilarityFilter(1.0, {'en': 1.0})(example)
+    assert ValidationStatusFilter(['pass', 'fail_ssim'])(example)
 
 
 def test_cut_speaker_filter_by_speaker(cut_example):

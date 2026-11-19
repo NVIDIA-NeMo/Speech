@@ -1810,10 +1810,42 @@ audio payload, configure:
 **Field-name overrides.** ``text_field``, ``lang_field``,
 ``channel_selector``, ``sample_rate``.
 
-**Filtering.** ``max_cer``, ``min_context_speaker_similarity``, ``keep``.
+**Filtering.** ``max_cer``, ``max_cer_by_lang``, ``min_context_speaker_similarity``,
+``min_context_speaker_similarity_by_lang``, ``keep``.
 
 For exact types and defaults, see the dataclass definition in the source
 file — it is the single source of truth.
+
+TTS quality filtering
+---------------------
+
+Configure quality filters separately for each source in a multi-config dataloader.
+For example, a source under ``model.train_ds.dataset.tts_data`` can use:
+
+.. code-block:: yaml
+
+   input_cfg: /path/to/train_all_singleturn.yaml
+   reweight_temperature: [0.5, 0.7]
+   keep: [pass, fail_ssim]
+   max_cer: 0.05
+   max_cer_by_lang: {en: 0.03}
+   min_context_speaker_similarity: 0.3
+   min_context_speaker_similarity_by_lang: {en: 0.6}
+
+``keep`` accepts one validation status or a list of allowed statuses. Cuts without
+``validation_status`` pass this filter. Language overrides use the cut's ``lang``
+tag, including tags assigned by ``input_cfg``. An absent language override uses
+the global threshold; a ``null`` override disables that filter for the language.
+
+CER filtering averages the available supervision scores within each cut. For
+each supervision, ``cer`` takes precedence over ``asr_cer``; a null score is
+treated as missing. Cuts without scores pass through. Context speaker similarity
+uses the first supervision's score, with missing or null scores passing through.
+
+List-valued ``reweight_temperature`` is already supported: one temperature is
+applied per manifest nesting level. In the example, a two-level language/dataset
+hierarchy uses 0.5 across languages and 0.7 within each language. The list length
+must match the maximum nesting depth of ``input_cfg``.
 
 See also
 --------

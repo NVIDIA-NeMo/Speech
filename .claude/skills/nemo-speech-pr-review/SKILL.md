@@ -34,7 +34,9 @@ apply it too.
    unchanged flagged lines prove nothing.
 4. Read the diff, and account for every changed file. Read the removed lines as carefully as the added ones.
 5. Read the code around the changes and the code they interact with, such as callers and callees. Also find sibling
-   implementations of the same behavior, and check whether the change must reach them too.
+   implementations of the same behavior, and check whether the change must reach them too. Search the existing code
+   for a generic helper that already does the job, or for the same pattern written elsewhere, and check open PRs for
+   the same area.
 6. Run the checks below that apply. Only then form findings. Opinions formed earlier invent rules this repository
    does not have.
 7. Try to refute every finding before reporting it, using "Verify before reporting". Drop what does not survive.
@@ -69,7 +71,8 @@ While reviewing:
     option.
   - Removals go in a separate PR. When a PR drops an on-disk format, size who is affected from the last release's
     defaults and shipped configs.
-  - New code gets no compatibility shims.
+  - New code gets no compatibility shims. A renamed public argument keeps a deprecated alias with a warning and a
+    `TODO(<login>)` naming the removal release.
 - **Design**
   - Generic code never names a model. Its constants come from the model config.
   - Reuse or fix existing code. Do not add a second implementation of the same behavior. A mechanism with no
@@ -77,6 +80,11 @@ While reviewing:
     only when the existing one does not work.
   - If new behavior is better and leaves existing results unchanged, adopt it without a flag.
   - Drop options that have only one sensible value.
+  - The simplest solution that does the job wins. Check it explicitly for each new mechanism, option, class or branch:
+    would a simpler approach give the same result? If so, name it in the finding. Code for cases that cannot occur is a
+    finding. When the same pattern already exists elsewhere, share a generic helper instead of writing it again.
+  - Public functions and classes come first in a file, the main one first. Helpers stand after the code that uses
+    them, private helpers at the bottom.
   - Core model methods take tensors. Audio I/O and batching belong in dataloaders or `transcribe()`.
   - A model that departs from the shared workflow gets its own minimal files, not branches in shared code.
   - Evaluation and export are separate scripts.
@@ -88,6 +96,9 @@ While reviewing:
     is opt-in.
   - Never override or drop a value the user configured. Reject the unsupported combination at setup, next to the
     existing validation, and remove any second bypass the override needed.
+  - A bad configuration raises at construction, before models are loaded, not as a warning. A re-raise keeps its
+    cause with `from e`.
+  - A new option appears wherever its sibling options do: the structured config, the YAML files, and the docs.
   - A required config key or invariant is read without a default. A `KeyError` there is correct; at most, ask for a
     clearer message.
   - Audio changes update sample rate, durations, and supervisions. Use sample-rate-aware duration helpers.
@@ -104,6 +115,10 @@ While reviewing:
 - **Dependencies**
   - Optional imports go inside the function that uses them, guarded by `is_module_available`.
   - Never add optional packages to the core requirements.
+  - Required dependencies and all other imports stand at the top of the file, in tests too. A local import needs an
+    optional dependency or a cycle.
+  - Raising the minimum torch or Python version, and Dockerfile or CI changes, belong in their own PR.
+  - Loading with `torch.load(weights_only=False)` is not accepted.
   - A patch of upstream code (a monkeypatch, a string-matched rewrite, a replaced method) lives in one place, is
     applied from one place, raises when its target no longer matches, and names the upstream version it was written
     for. Prefer a supported extension point, and expect the code to say why none fits.
@@ -115,13 +130,22 @@ While reviewing:
   - Test through the real path, such as `get_lhotse_dataloader_from_config`, with collation of at least two items.
   - New scripts and model paths get a functional test with a local `.nemo` and CI data.
   - Add new fixtures instead of changing shared ones. Seed statistical tests.
+  - Tests assert the expected values where they can be stated, not only counts or lengths. Build the object under test
+    through its constructor, not `object.__new__` with hand-set attributes. A test sits in the directory that mirrors
+    the source, and its name describes the behavior, not the bug that was fixed.
+  - Do not restructure code only to raise coverage.
   - Mark CUDA tests with `@pytest.mark.gpu`. Never set the default device at import time.
 - **Docs, comments, and diffs**
   - New formats and scripts get a full input example.
   - Doc commands must run as written.
-  - Revert unrelated changes.
-  - Comments explain why, not what. A comment that is false, or that explains a config key no code reads, is a
-    finding. A refactor keeps comments whose reason still holds at the new location.
+  - Revert unrelated changes, and files that are not part of the change (local environment files, scratch scripts). A
+    PR with a release-branch label touches only files that exist on that branch.
+  - Docs are written in plain language. Implementation details go into code comments, not into a README. After a
+    rename, search docs, configs, and examples for the old name. Examples and configs name released models and public
+    datasets only.
+  - Comments are short, and carry no PR numbers or history. Comments explain why, not what. A comment that is false,
+    or that explains a config key no code reads, is a finding. A refactor keeps comments whose reason still holds at
+    the new location.
 
 ## Checks
 

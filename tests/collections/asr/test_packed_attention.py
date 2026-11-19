@@ -174,6 +174,7 @@ class TestPackedAttentionKernelShapes:
         assert context.bias_rows().tolist() == list(range(307)) + [306] * (4096 - 307)
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_rel_pos_table_length_follows_the_backend(self, monkeypatch):
         """FlexAttention needs the rounded length, the Triton kernel the longest utterance; the CPU runs neither."""
         context = PackedAttentionContext.from_lengths(torch.tensor([300, 7]))
@@ -585,6 +586,62 @@ class TestPackedRelPosAttentionKernel:
         assert (kernel[0][~valid] == 0).all()
         for grad in kernel[1][:4]:
             assert (grad[~valid] == 0).all()
+        # non-finite payloads in the gap rows change nothing: the kernels never read them,
+        # and the position-embedding gradient excludes them
+        for tensor in leaves:
+            with torch.no_grad():
+                tensor[~valid] = float("nan")
+                tensor[~valid, :, 0] = float("inf")
+        poisoned = self._run(*leaves, pos_emb, starts_t, lens_t, 40, scale)
+        for name, before, after in zip(
+            ("out", "d_q", "d_k", "d_v", "d_pos_query", "d_pos_emb"),
+            (kernel[0], *kernel[1]),
+            (poisoned[0], *poisoned[1]),
+        ):
+            assert torch.equal(before, after), name
+
+    @pytest.mark.unit
+    def test_strided_metadata_reads_every_utterance(self):
+        """Starts and lengths may arrive as strided views; the kernels read them as laid out."""
+        torch.manual_seed(13)
+        heads, head_dim = 2, 32
+        leaves = [torch.randn(3, heads, head_dim, device="cuda", requires_grad=True) for _ in range(4)]
+        pos_emb = torch.randn(1, heads, head_dim, device="cuda", requires_grad=True)
+        starts = torch.tensor([0, 0, 2, 0], device="cuda", dtype=torch.int32)[::2]
+        lens = torch.tensor([1, 0, 1, 0], device="cuda", dtype=torch.int64)[::2]
+        assert not starts.is_contiguous() and not lens.is_contiguous()
+        strided = self._run(*leaves, pos_emb, starts, lens, 1, head_dim**-0.5)
+        contiguous = self._run(*leaves, pos_emb, starts.contiguous(), lens.contiguous(), 1, head_dim**-0.5)
+        torch.testing.assert_close(strided[0][0], leaves[2][0])
+        torch.testing.assert_close(strided[0][2], leaves[2][2])
+        assert (strided[0][1] == 0).all()
+        for before, after in zip((strided[0], *strided[1]), (contiguous[0], *contiguous[1])):
+            assert torch.equal(before, after)
+
+    @pytest.mark.unit
+    def test_large_upstream_gradient_in_float16_keeps_finite_position_gradients(self):
+        """The position-term gradient is scaled in float32 before its float16 cast, so it does not overflow."""
+        heads, head_dim = 1, 16
+        zeros = [
+            torch.zeros(2, heads, head_dim, device="cuda", dtype=torch.float16, requires_grad=True) for _ in range(3)
+        ]
+        q, k, pos_query = zeros
+        v = torch.zeros(2, heads, head_dim, device="cuda", dtype=torch.float16)
+        v[:, 0, 0] = torch.tensor([4.0, -4.0])
+        v.requires_grad_()
+        pos_emb = torch.zeros(3, heads, head_dim, device="cuda", dtype=torch.float16, requires_grad=True)
+        starts = torch.tensor([0], device="cuda", dtype=torch.int32)
+        lens = torch.tensor([2], device="cuda", dtype=torch.int32)
+        for scale in (None, 0.5):
+            out = kernel_module.packed_rel_pos_attention(q, k, v, pos_query, pos_emb, starts, lens, 2, scale=scale)
+            d_out = torch.zeros_like(out)
+            d_out[:, 0, 0] = 60000.0
+            grads = torch.autograd.grad(out, (q, k, v, pos_query, pos_emb), d_out)
+            assert all(torch.isfinite(grad).all() for grad in grads)
+            assert all(not grad.any() for grad in (grads[0], grads[1], grads[3], grads[4]))
+            torch.testing.assert_close(
+                grads[2][:, 0, 0], torch.full((2,), 60000.0, device="cuda", dtype=torch.float16)
+            )
 
     @pytest.mark.unit
     def test_wider_position_table_is_sliced_to_the_utterances(self):
@@ -840,6 +897,13 @@ class TestPackedRelPosAttentionDispatch:
         q, k, v, pos_query, pos_emb = _rel_pos_inputs(context, heads=2, head_dim=32, dtype=torch.float64)
         out = packed_attention(q, k, v, context, pos_query=pos_query, pos_emb=pos_emb, dropout_p=0.1)
         assert calls == [1] and out.dtype == torch.float64 and out.shape == q.shape
+        # the capability query agrees: the reference applies the dropout, with and without a position term
+        device = torch.device("cuda")
+        assert packed_attention_module.packed_attention_supports_dropout(device, torch.float64, 44)
+        assert packed_attention_module.packed_attention_supports_dropout(device, torch.float64, 44, rel_pos=True)
+        monkeypatch.setattr(packed_attention_module, "TRITON_AVAILABLE", False)
+        assert packed_attention_module.packed_attention_supports_dropout(device, torch.float64, 44, rel_pos=True)
+        assert not packed_attention_module.packed_attention_supports_dropout(device, torch.float32, 44, rel_pos=True)
 
     @pytest.mark.unit
     def test_dropout_is_refused_only_without_the_kernel(self, flex_attention_only):

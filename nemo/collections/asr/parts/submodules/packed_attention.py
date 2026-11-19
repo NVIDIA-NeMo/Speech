@@ -316,14 +316,14 @@ def packed_attention_supports_dropout(
 ) -> bool:
     """Whether ``packed_attention`` applies dropout on this device, dtype and head width.
 
-    Off CUDA it always does (the dense reference path).
+    Off CUDA, and on CUDA in float64, it always does (the dense reference path).
     On CUDA without a position term, only where variable-length FlashAttention runs:
     float16 or bfloat16, a head width that is a multiple of 8 up to 256, compute capability 8 or newer.
     With the Transformer-XL position term (``rel_pos``), only where its Triton kernel runs:
     Triton installed, in float32, bfloat16 or float16.
     FlexAttention, the path otherwise, has no dropout.
     """
-    if device.type != 'cuda':
+    if device.type != 'cuda' or dtype == torch.float64:
         return True
     if rel_pos:
         return TRITON_AVAILABLE and dtype in PACKED_REL_POS_ATTENTION_DTYPES

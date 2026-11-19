@@ -47,6 +47,7 @@ import torch.nn as nn
 import torch.nn.attention
 import torch.nn.functional as F
 
+from nemo.collections.asr.parts.submodules.packed_attention import PackedAttentionContext, packed_attention
 from nemo.utils import avoid_float16_autocast_context
 
 __all__ = [
@@ -210,6 +211,55 @@ class MultiHeadAttention(nn.Module):
         else:
             return out, cache
 
+    def forward_packed(
+        self, x: torch.Tensor, context: PackedAttentionContext, pos_emb: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """Self-attention over token-flat input with explicit utterance boundaries.
+
+        Streaming caches are not supported in this form.
+        The dtype handling is that of ``forward``:
+        the projections run under the autocast context and float16 autocast is avoided.
+
+        Args:
+            x: layer input of all utterances, shape ``(T_total, n_feat)``.
+            context: packing metadata of the batch.
+            pos_emb: relative positional embedding ``(1, 2 * max_seqlen - 1, n_feat)``,
+                used by the Transformer-XL subclass only.
+
+        Returns:
+            The attention output, shape ``(T_total, n_feat)``.
+        """
+        if torch.is_autocast_enabled():
+            x = x.to(torch.float32)
+
+        with avoid_float16_autocast_context():
+            q = self.linear_q(x).view(-1, self.h, self.d_k)
+            k = self.linear_k(x).view(-1, self.h, self.d_k)
+            v = self.linear_v(x).view(-1, self.h, self.d_k)
+            q, k = self._apply_packed_pos_emb(q, k, context)
+            q, rel_pos_bias = self._packed_rel_pos_terms(q, pos_emb)
+            out = packed_attention(
+                q,
+                k,
+                v,
+                context,
+                rel_pos_bias=rel_pos_bias,
+                dropout_p=self.dropout_rate if self.training else 0.0,
+            )
+            return self.linear_out(out.reshape(-1, self.h * self.d_k))
+
+    def _apply_packed_pos_emb(
+        self, q: torch.Tensor, k: torch.Tensor, context: PackedAttentionContext
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Hook for the rotary subclass; q and k have shape (T_total, head, d_k). No-op by default."""
+        return q, k
+
+    def _packed_rel_pos_terms(
+        self, q: torch.Tensor, pos_emb: torch.Tensor | None
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Hook for the Transformer-XL subclass: the query with its content bias and the position bias, or None."""
+        return q, None
+
     def update_cache(self, key, value, query, cache):
         if cache is not None:
             key = value = torch.cat([cache, key], dim=1)
@@ -366,6 +416,23 @@ class RelPositionMultiHeadAttention(MultiHeadAttention):
         else:
             return out, cache
 
+    def _packed_rel_pos_terms(
+        self, q: torch.Tensor, pos_emb: torch.Tensor | None
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Matrix (c) folded into the query and matrices (b) + (d) as a bias over relative positions.
+
+        The bias has shape (T_total, head, 2 * max_seqlen - 1);
+        entry ``max_seqlen - 1 - (i - j)`` of the last axis is the term of query position i and key position j,
+        which is what ``rel_shift`` selects in the padded forward.
+        """
+        if pos_emb is None:
+            raise ValueError("Transformer-XL attention over packed sequences needs pos_emb.")
+        p = self.linear_pos(pos_emb).view(-1, self.h, self.d_k)  # (2 * max_seqlen - 1, head, d_k)
+        bias_u = self.pos_bias_u.to(q.dtype)
+        bias_v = self.pos_bias_v.to(q.dtype)
+        rel_pos_bias = torch.einsum('thd,phd->thp', q + bias_v, p)
+        return q + bias_u, rel_pos_bias
+
 
 class RelPositionMultiHeadAttentionLongformer(RelPositionMultiHeadAttention):
     """Multi-Head Attention layer of Transformer-XL with sliding window local+global attention from Longformer.
@@ -428,6 +495,11 @@ class RelPositionMultiHeadAttentionLongformer(RelPositionMultiHeadAttention):
             self.global_q = nn.Linear(n_feat, n_feat, bias=use_bias)
             self.global_k = nn.Linear(n_feat, n_feat, bias=use_bias)
             self.global_v = nn.Linear(n_feat, n_feat, bias=use_bias)
+
+    def forward_packed(
+        self, x: torch.Tensor, context: PackedAttentionContext, pos_emb: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        raise NotImplementedError("Local attention with overlapping chunks has no sequence-packed form.")
 
     def forward(self, query, key, value, pad_mask, pos_emb, cache=None):
         """Compute Scaled Dot Product Local Attention with rel. positional encoding. using overlapping chunks
@@ -1047,6 +1119,16 @@ class RoPEMultiHeadAttention(MultiHeadAttention):
     def _apply_pos_emb(self, q, k):
         """Rotate Q and K via the attached RotaryPositionalEncoding."""
         return self.pos_enc(q, k)
+
+    def _apply_packed_pos_emb(
+        self, q: torch.Tensor, k: torch.Tensor, context: PackedAttentionContext
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Rotate token-flat Q and K by their positions within their utterances."""
+        # a function-level import: the modules package initializes the encoders, which import this module
+        from nemo.collections.asr.modules.transformer_encoder_utils import _apply_packed_rope
+
+        self.pos_enc.extend_pe(context.max_seqlen, q.device, q.dtype)
+        return _apply_packed_rope(self.pos_enc, q, k, context.position_ids)
 
 
 class PositionalEncoding(torch.nn.Module):

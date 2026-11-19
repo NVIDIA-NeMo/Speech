@@ -9,7 +9,7 @@ import os
 import pytest
 import soundfile as sf
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.models import (
     EncDecCTCModelBPE,
@@ -179,6 +179,37 @@ def test_restored_hybrid_chunks_with_both_heads(test_data_dir, tmp_path):
     assert [h.text for h in ctc] == [h.text for h in plain] == [WORD, WORD]
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize('head', ['rnnt', 'hybrid-rnnt', 'hybrid-ctc'])
+@pytest.mark.parametrize('timestamps', [True, False])
+def test_restored_transducer_chunking_leaves_model_decoding_unchanged(test_data_dir, tmp_path, head, timestamps):
+    if head == 'rnnt':
+        model = EncDecRNNTBPEModel(cfg=_transducer_config(test_data_dir, 'rnnt')).eval()
+    else:
+        model = EncDecHybridRNNTCTCBPEModel(cfg=_transducer_config(test_data_dir, 'rnnt', hybrid=True)).eval()
+        model.change_decoding_strategy(decoder_type=head.split('-')[1], verbose=False)
+    model = _restore(model, tmp_path)
+    tensors, _ = _sources(tmp_path)
+    decoding, ctc_decoding = model.decoding, getattr(model, 'ctc_decoding', None)
+    settings = OmegaConf.to_container(model.cfg)
+    results = model.transcribe(tensors, chunking=CHUNKING, timestamps=timestamps, verbose=False)
+    assert len(results) == 2 and bool(results[0].timestamp) is timestamps
+    assert model.decoding is decoding and getattr(model, 'ctc_decoding', None) is ctc_decoding
+    assert OmegaConf.to_container(model.cfg) == settings
+
+
+@pytest.mark.unit
+def test_transducer_with_aggregate_tokenizer_rejects_chunking(test_data_dir, tmp_path):
+    config = _transducer_config(test_data_dir, 'rnnt')
+    wpe = {'dir': config.tokenizer.dir, 'type': 'wpe'}
+    config.tokenizer = {'dir': None, 'type': 'agg', 'langs': {'en': wpe, 'de': wpe}}
+    model = EncDecRNNTBPEModel(cfg=config).eval()
+    tensors, _ = _sources(tmp_path)
+    assert len(model.transcribe(tensors, verbose=False)) == 2  # Plain transcription supports it.
+    with pytest.raises(ValueError, match='aggregate tokenizer'):
+        model.transcribe(tensors, chunking=CHUNKING, verbose=False)
+
+
 def _aed_model(test_data_dir):
     tokenizers = os.path.join(test_data_dir, 'asr', 'tokenizers')
     config = DictConfig(
@@ -303,5 +334,22 @@ def test_restored_aed_without_timestamp_model_stitches_windows(test_data_dir, tm
     results = model.transcribe(tensors, batch_size=4, chunking=CHUNKING, verbose=False)
     assert len(results) == 2 and all(h.text for h in results)
     assert all(h.y_sequence.tolist() == model.tokenizer.text_to_ids(h.text, 'en') for h in results)
+    # An explicit text-only request needs no timestamp model.
+    text_only = model.transcribe(tensors, batch_size=4, chunking=CHUNKING, timestamps=False, verbose=False)
+    assert len(text_only) == 2 and all(h.text for h in text_only)
     with pytest.raises(ValueError, match='CTC timestamp model'):
         model.transcribe(tensors, chunking=CHUNKING, timestamps=True, verbose=False)
+
+
+@pytest.mark.unit
+def test_restored_aed_chunks_a_selected_channel_of_a_stereo_file(test_data_dir, tmp_path):
+    model = _restore(_aed_model(test_data_dir), tmp_path)
+    object.__setattr__(model, 'timestamps_asr_model', None)
+    tensors, _ = _sources(tmp_path)
+    other = torch.randn(len(tensors[1]), generator=torch.Generator().manual_seed(9)) * 0.1
+    stereo, mono = str(tmp_path / 'stereo.wav'), str(tmp_path / 'mono.wav')
+    sf.write(stereo, torch.stack([other, tensors[1]], dim=1).numpy(), 16000, subtype='FLOAT')
+    sf.write(mono, tensors[1].numpy(), 16000, subtype='FLOAT')
+    selected = model.transcribe(stereo, channel_selector=1, chunking=CHUNKING, verbose=False)
+    reference = model.transcribe(mono, chunking=CHUNKING, verbose=False)
+    assert selected[0].text and [h.text for h in selected] == [h.text for h in reference]

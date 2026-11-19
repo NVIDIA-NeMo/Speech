@@ -637,3 +637,31 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
         # Should not crash and should produce valid output
         assert encoded.shape[0] == 1
         assert encoded_len.shape[0] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('decoder_type', ['rnnt', 'ctc'])
+@pytest.mark.parametrize('timestamps', [True, False])
+def test_planned_chunking_skips_legacy_timestamp_setup(
+    hybrid_asr_model_with_prompt, monkeypatch, decoder_type, timestamps
+):
+    from nemo.collections.asr.parts.mixins.transcription import ChunkingConfig, TranscriptionMixin
+
+    model = hybrid_asr_model_with_prompt
+    model.change_decoding_strategy(decoder_type=decoder_type, verbose=False)
+    settings = copy.deepcopy(model.cfg)
+
+    def change_decoding_strategy(*args, **kwargs):
+        raise AssertionError('Planned chunking must not change the model decoding.')
+
+    seen = []
+    monkeypatch.setattr(model, 'change_decoding_strategy', change_decoding_strategy)
+    monkeypatch.setattr(
+        TranscriptionMixin,
+        'transcribe',
+        lambda self, audio, override_config=None, **kwargs: seen.append(override_config),
+    )
+    chunking = ChunkingConfig(chunk_size=10.0, context_size=1.0)
+    model.transcribe(['audio.wav'], chunking=chunking, timestamps=timestamps)
+    assert len(seen) == 1 and seen[0].chunking == chunking and seen[0].timestamps is timestamps
+    assert model.cfg == settings

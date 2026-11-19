@@ -18,7 +18,7 @@ import json
 import os
 import tempfile
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -75,7 +75,8 @@ class TranscribeConfig:
     augmentor: Optional[DictConfig] = None
     timestamps: Optional[bool] = None  # returns timestamps for each word and segments if model supports punctuations
     verbose: bool = True
-    chunking: Optional[ChunkingConfig] = None  # opt-in offline chunk planning and output selection
+    # Opt-in offline chunk planning and output selection. Keyword-only, so positional fields keep their order.
+    chunking: Optional[ChunkingConfig] = field(default=None, kw_only=True)
 
     # Utility
     partial_hypothesis: Optional[List[Any]] = None
@@ -521,8 +522,8 @@ class TranscriptionMixin(ABC):
                     loader, disable=not trcfg.verbose, desc='Transcribing chunks'
                 ):
                     saw_chunk = True
-                    # Right padding permits feature extraction on sub-second final chunks
-                    # without shifting their times. Semantic lengths still exclude padding.
+                    # Right padding permits feature extraction on sub-second sources without
+                    # shifting their times. Semantic lengths still exclude padding.
                     if waveforms.shape[1] < sample_rate:
                         waveforms = torch.nn.functional.pad(waveforms, (0, sample_rate - waveforms.shape[1]))
                     waveforms, lengths = move_data_to_device((waveforms, lengths), trcfg._internal.device)

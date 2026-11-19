@@ -593,6 +593,8 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             # Keep the released Canary chunker separate from planned offline chunking.
             trcfg = copy.deepcopy(trcfg)
             trcfg.enable_chunking = False
+            # The prompt carries the timestamp slot ('no' for text only); the output request is a boolean.
+            trcfg.timestamps = _requests_timestamps(trcfg.timestamps)
             return super().transcribe(audio=audio, override_config=trcfg)
 
         if trcfg.enable_chunking:
@@ -1573,3 +1575,10 @@ def parse_multitask_prompt(prompt: dict | None) -> list[dict]:
     # )
     role = prompt.pop("role", "user")
     return [dict(role=role, slots=prompt)]
+
+
+def _requests_timestamps(value) -> Optional[bool]:
+    """Read a timestamp request given as a boolean or as a legacy Canary prompt value ('yes', 'no', ...)."""
+    if value is None:
+        return None
+    return str(value).lower() in ('true', 'yes', 'timestamp', '1')

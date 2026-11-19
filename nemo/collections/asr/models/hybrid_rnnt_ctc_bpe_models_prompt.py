@@ -424,7 +424,9 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
                 f"{self.cur_decoder} is not supported for cur_decoder. Supported values are ['ctc', 'rnnt']"
             )
 
-        if timestamps is not None:
+        # Planned chunking computes timestamps call-locally and leaves the model decoding unchanged.
+        planned_chunking = chunking is not None or getattr(override_config, 'chunking', None) is not None
+        if timestamps is not None and not planned_chunking:
             if self.cur_decoder not in ["ctc", "rnnt"]:
                 raise ValueError(
                     f"{self.cur_decoder} is not supported for cur_decoder. Supported values are ['ctc', 'rnnt']"

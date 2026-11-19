@@ -1,7 +1,21 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Chunk planning and output selection for offline long-form transcription."""
+"""Chunk planning and output selection for offline long-form transcription.
+
+The transcription mixin splits every input into disjoint owned intervals with read context,
+loads and batches the read intervals, and assembles one result per input. Each model selects
+output from a read interval in its native representation:
+
+* CTC keeps the owned logit frames. One CTC collapse runs over the joined frames, so repeated
+  labels and blanks stay correct across joins.
+* RNNT/TDT decodes each read interval with a fresh decoder, which warms up on the left context,
+  and keeps the words whose timestamp midpoints fall in the owned interval. A decoder state
+  carried across chunks can keep a transducer in blank through long stretches of speech.
+* AED times its decoded words by matching them to the greedy words of its CTC timestamp model,
+  then keeps the words in the owned interval. Without a timestamp model, neighbouring windows
+  are joined at the longest run of words they share in their overlap.
+"""
 
 import difflib
 import math
@@ -51,7 +65,9 @@ def make_chunk_plan(
         frame_samples: Samples per encoder frame; read starts align to this grid.
 
     Returns:
-        Ordered chunks with half-open intervals. Every source sample has one owner.
+        Ordered chunks with half-open intervals. Every source sample has one owner. The final
+        read interval spans at least one second where the source allows it, adding left context
+        to a short final chunk, so that its features are computed over more than a few frames.
     """
     if num_samples <= 0 or sample_rate <= 0 or frame_samples <= 0:
         raise ValueError('Audio length, sample rate, and frame size must be positive.')
@@ -61,16 +77,24 @@ def make_chunk_plan(
         raise ValueError('context_size must be finite and nonnegative.')
     size = max(1, math.ceil(config.chunk_size * sample_rate / frame_samples)) * frame_samples
     context = math.ceil(config.context_size * sample_rate / frame_samples) * frame_samples
-    return [
-        AudioChunk(
-            read_start=max(0, start - context),
-            read_end=min(num_samples, start + size + context),
-            keep_start=start,
-            keep_end=min(num_samples, start + size),
-            is_last=start + size >= num_samples,
+    min_read = math.ceil(sample_rate / frame_samples) * frame_samples
+    chunks = []
+    for start in range(0, num_samples, size):
+        read_start = start - context
+        read_end = min(num_samples, start + size + context)
+        is_last = start + size >= num_samples
+        if is_last:
+            read_start = min(read_start, (read_end - min_read) // frame_samples * frame_samples)
+        chunks.append(
+            AudioChunk(
+                read_start=max(0, read_start),
+                read_end=read_end,
+                keep_start=start,
+                keep_end=min(num_samples, start + size),
+                is_last=is_last,
+            )
         )
-        for start in range(0, num_samples, size)
-    ]
+    return chunks
 
 
 def select_chunk_frames(
@@ -103,9 +127,11 @@ def select_chunk_words(words: list[dict], chunk: AudioChunk, sample_rate: int) -
         start, end = word['start'], word['end']
         if not math.isfinite(start) or not math.isfinite(end) or start < 0 or end < start:
             raise ValueError('Aligned chunk words must have finite, nonnegative, ordered timestamps.')
-        midpoint = (offset + (start + end) / 2) * sample_rate
+        # Twice the midpoint, in whole samples. Frame-aligned word times land on half samples, so
+        # rounding removes only float error and neighbouring windows agree at their shared boundary.
+        midpoint2 = 2 * chunk.read_start + round((start + end) * sample_rate)
         # The last chunk also owns words whose timing runs past the source end.
-        if chunk.keep_start <= midpoint and (chunk.is_last or midpoint < chunk.keep_end):
+        if 2 * chunk.keep_start <= midpoint2 and (chunk.is_last or midpoint2 < 2 * chunk.keep_end):
             entry = {k: v for k, v in word.items() if k not in ('start_offset', 'end_offset')}
             entry.update(start=offset + start, end=offset + end)
             selected.append(entry)
@@ -236,6 +262,8 @@ class ChunkedAudioDataset(Dataset):
         if isinstance(source, (np.ndarray, torch.Tensor)):
             audio = torch.as_tensor(source[chunk.read_start : chunk.read_end])
         else:
+            from lhotse.cut import MultiCut
+
             from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 
             cut = source.truncate(
@@ -247,6 +275,9 @@ class ChunkedAudioDataset(Dataset):
             samples = samples[0] if samples.shape[0] == 1 else samples.T
             samples = AudioSegment(samples, self.sample_rate, channel_selector=self.channel_selector).samples
             audio = torch.as_tensor(samples)
+            if isinstance(cut, MultiCut):
+                # The audio is now one channel; prompts and languages read single-channel cut metadata.
+                cut = cut.to_mono(mono_downmix=True)
         if audio.ndim != 1:
             raise ValueError('Select one channel or average channels for chunked transcription.')
         return audio, source_idx, chunk, cut

@@ -208,7 +208,7 @@ Long Audio Inference
 
 For audio longer than what fits in memory (especially with Conformer's quadratic attention):
 
-**Planned offline chunking (recommended):**
+**Planned chunking (recommended):**
 
 .. code-block:: python
 
@@ -217,18 +217,12 @@ For audio longer than what fits in memory (especially with Conformer's quadratic
     outputs = model.transcribe(
         ["recording.wav"],
         batch_size=4,
+        timestamps=True,  # optional
         chunking=ChunkingConfig(chunk_size=30.0, context_size=2.0),
     )
     print(outputs[0].text)
 
-``chunk_size`` is the duration owned by one chunk. ``context_size`` is extra audio read on
-each side. Both values are in seconds and round up to complete encoder frames. The default
-values are 30 seconds and 2 seconds; a 5-second context lowered transducer WER slightly (by
-up to 0.15) at about 12% lower throughput. Peak encoder input length is at most the owned
-duration plus context on both sides. Choose the batch size and durations for the available
-device memory. Chunking does not guarantee that any batch size fits.
-
-The transcription script accepts the same configuration:
+From the command line:
 
 .. code-block:: bash
 
@@ -237,65 +231,32 @@ The transcription script accepts the same configuration:
         audio_dir=/path/to/audio \
         '+chunking={chunk_size:30.0,context_size:2.0}'
 
-File paths, lists of file paths, NeMo JSON/JSONL manifests, and mono NumPy/PyTorch waveforms
-use the same chunk plan. Waveforms must already have the model's sample rate. File slices
-are read through Lhotse and resampled as needed. Manifest offsets are relative to each source
-utterance; returned times start at zero for that utterance. Duplicate file entries produce
-separate results in input order. Audio is loaded one batch at a time.
-Prompt-conditioned RNNT models retain each manifest entry's language. An explicit
-``target_lang`` continues to apply to every utterance in that run.
+Each recording is split into chunks of ``chunk_size`` seconds. Each chunk is transcribed with
+``context_size`` seconds of extra audio on each side; the context improves recognition near
+chunk edges, and its output is kept from one chunk only, so joins are not duplicated. Memory
+depends on the chunk duration plus context and on the batch size, not on the recording length.
+The defaults (30 s and 2 s) suit Parakeet and Canary models.
 
-The transcription mixin controls planning, loading, batching, and result assembly. Models
-select output in their native representation:
+Planned chunking works with CTC, RNNT/TDT, hybrid and AED (Canary) models, and accepts files,
+manifests and waveforms at the model's sample rate. It is off unless ``chunking`` is set. With
+``override_config`` or ``transcribe_generator``, set ``config.chunking`` instead.
 
-* **CTC:** discard context frames, assemble the retained frames, then perform one CTC
-  collapse. Repeated labels and blank frames remain correct across chunk joins.
-* **RNNT/TDT:** decode each read interval with a fresh decoder and the model's own decoding
-  strategy, then keep words whose timestamp midpoints fall inside the owned interval. The
-  decoder warms up on the left context; carrying decoder state across chunks instead can
-  keep a transducer in blank through long stretches of speech. The result is assembled
-  from words: text and word/segment timestamps are returned, token-level confidence and
-  alignments are not.
-* **AED/Canary:** decode each read interval. With a CTC timestamp model (for example
-  ``canary-1b-v2``), match the decoded words to that model's greedy words for the same audio
-  and take their times; unmatched words share the time between their matched neighbours.
-  Keep words whose midpoints fall inside the owned interval. Without a CTC timestamp model
-  (for example ``canary-1b-flash``), join consecutive read intervals at the longest run of
-  words they share in their overlap; timestamps are then unavailable. This path supports
-  ASR, not speech translation. Its assembled hypothesis uses a neutral score of zero because
-  selected words do not have an AED sequence score. Token confidence and cross-attention
-  scores are not available for this path.
+Limitations:
 
-CTC supports ``greedy`` and ``greedy_batch`` decoding without an n-gram LM. RNNT/TDT and AED
-support one best hypothesis per chunk. RNNT/TDT models with a character vocabulary and TDT
-durations are not supported, because their decoding cannot build word timestamps. External DataLoaders, augmentations, partial hypotheses,
-and RNNT ``decoding.restart_after_tokens`` are not supported in this mode and raise an error. Existing inference paths remain available
-when ``chunking`` is unset. The existing Canary ``enable_chunking`` mode is separate; setting
-``chunking`` selects the shared chunk plan instead.
+* Results contain text and word/segment timestamps. Token confidence, alignments and AED
+  cross-attention scores are not returned.
+* AED models transcribe only (no speech translation). Their timestamps require a CTC timestamp
+  model, as in ``canary-1b-v2``.
+* One best hypothesis per chunk. CTC supports ``greedy`` and ``greedy_batch`` without an n-gram LM.
+* These raise an error: RNNT/TDT models with an aggregate tokenizer, or with a character
+  vocabulary and TDT durations; ``decoding.restart_after_tokens``; augmentations; partial
+  hypotheses; external DataLoaders.
+* The encoder sees one chunk at a time, so results can differ from whole-recording inference.
 
-For configuration-based calls, set ``config.chunking = ChunkingConfig(...)`` and pass
-``override_config=config``. The same config works with ``transcribe_generator``. That
-generator yields complete utterance results as they become available, rather than exposing
-unmerged chunk hypotheses. The generator must be closed if iteration stops early, so that
-the model's inference state is restored.
-
-CTC normally retains only frame labels on the CPU until an utterance is complete. Returning
-full hypotheses, alignments, or confidence, or decoding with a fusion model, retains the
-owned log probabilities on the CPU instead. This memory use grows with the utterance duration
-and the vocabulary size. RNNT/TDT and AED retain only the selected words.
-The encoder sees only the read interval of each chunk, and AED word selection depends on
-alignment quality. Results can differ from whole-recording inference. Validate recognition quality
-and memory use on representative audio before selecting production chunk sizes.
-
-Which long-audio method to use:
-
-* **Planned chunking** is recommended for CTC, RNNT/TDT, hybrid, and AED models. It bounds
-  encoder memory by the chunk duration, independent of the recording length.
-* **Local attention** (below) is an alternative for Fast Conformer models. It keeps one encoder
-  pass over the whole recording, so memory still grows with the recording length. Released
-  checkpoints were trained with full attention, and on long-form evaluation sets planned
-  chunking gave lower WER and lower peak memory.
-* **Buffered inference scripts** (below) are the streaming-style alternative for offline files.
+**Which method to use:** planned chunking for every model type. Local attention (below) is an
+alternative for Fast Conformer models; it keeps one encoder pass over the whole recording, so
+memory still grows with its length. Buffered inference scripts (below) are a streaming-style
+alternative.
 
 **Buffered / chunked inference:**
 

@@ -46,6 +46,7 @@ from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.timestamp_utils import process_timestamp_outputs
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.collections.common.parts.preprocessing.parsers import make_parser
+from nemo.collections.common.tokenizers.aggregate_tokenizer import AggregateTokenizer
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.classes.mixins import AccessMixin
 from nemo.core.neural_types import AcousticEncodedRepresentation, AudioSignal, LengthsType, NeuralType, SpectrogramType
@@ -300,7 +301,9 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         """
 
         timestamps = timestamps or (override_config.timestamps if override_config is not None else None)
-        if timestamps is not None:
+        # Planned chunking computes word timestamps call-locally and leaves the model decoding unchanged.
+        planned_chunking = chunking is not None or getattr(override_config, 'chunking', None) is not None
+        if timestamps is not None and not planned_chunking:
             need_change_decoding = False
             if timestamps or (override_config is not None and override_config.timestamps):
                 logging.info(
@@ -958,6 +961,9 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
     def _transcribe_chunk_validate(self, trcfg):
         if getattr(self.decoding, 'restart_token_ids', None):
             raise ValueError('Planned RNNT/TDT chunking does not support `restart_after_tokens`.')
+        if isinstance(getattr(self.decoding, 'tokenizer', None), AggregateTokenizer):
+            # Word timestamps and assembled token IDs would need a language for every word.
+            raise ValueError('Planned RNNT/TDT chunking does not support an aggregate tokenizer.')
         beam = self.decoding.cfg.get('beam') or {}
         if self.decoding.cfg.strategy not in ('greedy', 'greedy_batch') and not beam.get(
             'return_best_hypothesis', True
@@ -968,10 +974,12 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         """The model's decoding with word timestamps, which select words by time; the model is unchanged."""
         if trcfg._internal.chunk_decoding is None:
             decoding = self.decoding
-            if not decoding.compute_timestamps:
+            timestamp_type = decoding.cfg.get('rnnt_timestamp_type', 'all')
+            if not decoding.compute_timestamps or timestamp_type not in ('all', 'word'):
                 cfg = copy.deepcopy(decoding.cfg)
                 with open_dict(cfg):
                     cfg.compute_timestamps = True
+                    cfg.rnnt_timestamp_type = 'all'
                 kwargs = (
                     {'tokenizer': decoding.tokenizer}
                     if hasattr(decoding, 'tokenizer')

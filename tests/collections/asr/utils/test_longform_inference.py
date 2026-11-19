@@ -1,19 +1,27 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import inspect
 from types import SimpleNamespace
 
 import pytest
 import torch
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, open_dict
 
-from nemo.collections.asr.models.aed_multitask_models import EncDecMultiTaskModel
+from nemo.collections.asr.models.aed_multitask_models import EncDecMultiTaskModel, MultiTaskTranscriptionConfig
 from nemo.collections.asr.models.ctc_models import EncDecCTCModel
+from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models_prompt import HybridRNNTCTCPromptTranscribeConfig
 from nemo.collections.asr.models.hybrid_rnnt_ctc_models import EncDecHybridRNNTCTCModel
+from nemo.collections.asr.models.rnnt_bpe_models_prompt import RNNTPromptTranscribeConfig
 from nemo.collections.asr.models.rnnt_models import EncDecRNNTModel
 from nemo.collections.asr.modules.rnnt import RNNTDecoder, RNNTJoint
 from nemo.collections.asr.parts.mixins.mixins import PromptStreamingMixin
-from nemo.collections.asr.parts.mixins.transcription import ASRTranscriptionMixin, TranscriptionMixin
+from nemo.collections.asr.parts.mixins.transcription import (
+    ASRTranscriptionMixin,
+    InternalTranscribeConfig,
+    TranscribeConfig,
+    TranscriptionMixin,
+)
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecoding
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTBPEDecoding
 from nemo.collections.asr.parts.utils.longform_inference import (
@@ -87,11 +95,12 @@ def test_word_selection_keeps_real_repetitions_and_exact_start_times():
 
 @pytest.mark.unit
 def test_last_chunk_accepts_encoder_dropping_final_partial_hop():
-    # 25 frames plus 1 sample: the feature extractor drops the final partial hop.
+    # 25 frames plus 1 sample: the feature extractor drops the final partial hop. The final
+    # window reads one second (frames 12 to 25); frames 20 to 24 are owned.
     last = make_chunk_plan(1280 * 25 + 1, 16000, ChunkingConfig(chunk_size=0.8, context_size=0.16), 1280)[-1]
-    assert last.is_last and select_chunk_frames(torch.arange(7), last, 1280).tolist() == [2, 3, 4, 5, 6]
-    with pytest.raises(RuntimeError, match='requires 8'):
-        select_chunk_frames(torch.arange(6), last, 1280)
+    assert last.is_last and select_chunk_frames(torch.arange(13), last, 1280).tolist() == [8, 9, 10, 11, 12]
+    with pytest.raises(RuntimeError, match='requires 14'):
+        select_chunk_frames(torch.arange(12), last, 1280)
     inner = make_chunk_plan(1280 * 25, 16000, ChunkingConfig(chunk_size=0.8, context_size=0.16), 1280)[0]
     with pytest.raises(RuntimeError, match='requires 10'):
         select_chunk_frames(torch.arange(9), inner, 1280)
@@ -119,6 +128,122 @@ def test_last_chunk_keeps_words_timed_past_the_source_end():
     plan = make_chunk_plan(45, 1, ChunkingConfig(chunk_size=30, context_size=2))
     words = select_chunk_words([{'word': 'last', 'start': 15, 'end': 21}], plan[1], 1)
     assert [(w['word'], w['start'], w['end']) for w in words] == [('last', 43, 49)]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('boundary_index', [1, 2])
+@pytest.mark.parametrize('half_width', [0, 1, 2])
+def test_frame_timed_word_on_a_chunk_boundary_has_one_owner(boundary_index, half_width):
+    # 16 kHz, 80 ms frames, 0.8 s chunks and 0.16 s context: both neighbours read from nonzero offsets.
+    frame = 1280
+    plan = make_chunk_plan(16000 * 3, 16000, ChunkingConfig(chunk_size=0.8, context_size=0.16), frame)
+    boundary = plan[boundary_index].keep_start // frame
+    first, last = boundary - half_width, boundary + half_width  # Midpoint exactly on the boundary.
+    owners = 0
+    for chunk in plan:
+        read_first = chunk.read_start // frame
+        if first < read_first or last > chunk.read_end // frame:
+            continue
+        # Transducer word times are frame offsets times the frame duration, relative to the read start.
+        word = {'word': 'w', 'start': (first - read_first) * 0.01 * 8, 'end': (last - read_first) * 0.01 * 8}
+        owners += len(select_chunk_words([word], chunk, 16000))
+    assert owners == 1
+
+
+@pytest.mark.unit
+def test_word_midpoints_on_half_samples_have_one_owner_whatever_the_read_offset():
+    # One-sample words have midpoints on half samples; read starts alternate in parity here.
+    plan = make_chunk_plan(40, 10, ChunkingConfig(chunk_size=0.3, context_size=0.1))
+    assert {chunk.read_start % 2 for chunk in plan[1:]} == {0, 1}
+    for sample in range(40):
+        owners = 0
+        for chunk in plan:
+            if chunk.read_start <= sample < chunk.read_end:
+                word = {'word': 'w', 'start': (sample - chunk.read_start) * 0.1}
+                word['end'] = word['start'] + 0.1
+                owners += len(select_chunk_words([word], chunk, 10))
+        assert owners == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('num_samples', [12960, 12800 * 4 + 160])
+def test_short_final_window_reads_real_left_context(num_samples):
+    # Without context, 0.8 s chunks leave a 160-sample final window: a single feature frame.
+    plan = make_chunk_plan(num_samples, 16000, ChunkingConfig(chunk_size=0.8, context_size=0), frame_samples=640)
+    last = plan[-1]
+    assert (last.keep_start, last.keep_end) == (num_samples - 160, num_samples)
+    assert last.read_start % 640 == 0
+    assert last.read_end - last.read_start >= 16000 or last.read_start == 0
+    assert all(a.keep_end == b.keep_start for a, b in zip(plan, plan[1:]))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    'device',
+    [
+        'cpu',
+        pytest.param(
+            'cuda',
+            marks=[pytest.mark.gpu, pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA is required.')],
+        ),
+    ],
+)
+def test_conformer_ctc_chunking_with_a_one_frame_final_window(device):
+    config = OmegaConf.create(
+        {
+            **_tiny_conformer_config(),
+            'decoder': {
+                '_target_': 'nemo.collections.asr.modules.ConvASRDecoder',
+                'feat_in': 8,
+                'num_classes': 3,
+                'vocabulary': ['a', 'b', ' '],
+            },
+            'decoding': {'strategy': 'greedy_batch'},
+        }
+    )
+    model = EncDecCTCModel(config).eval().to(device)
+    waveform = torch.randn(12960, generator=torch.Generator().manual_seed(5)) * 0.1
+    result = model.transcribe(
+        waveform,
+        chunking=ChunkingConfig(chunk_size=0.8, context_size=0),
+        return_hypotheses=True,
+        batch_size=2,
+        verbose=False,
+    )[0]
+    with torch.inference_mode():
+        _, num_frames = model.forward(
+            input_signal=waveform[None].to(device), input_signal_length=torch.tensor([12960], device=device)
+        )[:2]
+    # The final window owns its single encoder frame; owned frames tile the whole source.
+    assert result.y_sequence.shape[0] == int(num_frames[0])
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    'config_class',
+    [TranscribeConfig, MultiTaskTranscriptionConfig, RNNTPromptTranscribeConfig, HybridRNNTCTCPromptTranscribeConfig],
+)
+def test_chunking_does_not_shift_positional_transcribe_config_fields(config_class):
+    parameters = inspect.signature(config_class).parameters
+    assert parameters['chunking'].kind is inspect.Parameter.KEYWORD_ONLY
+    positional = [name for name, p in parameters.items() if p.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD]
+    # The field order released before planned chunking.
+    released = [
+        'use_lhotse',
+        'batch_size',
+        'return_hypotheses',
+        'num_workers',
+        'channel_selector',
+        'augmentor',
+        'timestamps',
+        'verbose',
+        'partial_hypothesis',
+        '_internal',
+    ]
+    assert positional[: len(released)] == released
+    internal = InternalTranscribeConfig()
+    config = config_class(True, 4, False, None, None, None, None, True, ['partial'], internal)
+    assert config.partial_hypothesis == ['partial'] and config._internal is internal and config.chunking is None
 
 
 class _LabelCTCModel(TranscriptionMixin, torch.nn.Module):
@@ -571,6 +696,29 @@ def test_rnnt_chunks_keep_each_word_once_at_its_time(model_type, timestamps, str
         assert [w['start'] for w in result.timestamp['word']] == pytest.approx([k / 10 for k in range(11)])
         assert [w['start_offset'] for w in result.timestamp['word']] == list(range(11))
     assert not model.decoding.compute_timestamps  # Word times come from a call-local decoding.
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('compute_timestamps', [False, True])
+@pytest.mark.parametrize('timestamp_type', ['char', 'segment'])
+@pytest.mark.parametrize('timestamps', [None, True])
+def test_rnnt_chunking_computes_word_times_for_any_timestamp_type(compute_timestamps, timestamp_type, timestamps):
+    model = _ConstantRNNTModel(strategy='greedy_batch', timestamps=compute_timestamps)
+    with open_dict(model.decoding.cfg):
+        model.decoding.cfg.rnnt_timestamp_type = timestamp_type
+    decoding = model.decoding
+    result = model.transcribe(
+        torch.ones(11),
+        timestamps=timestamps,
+        verbose=False,
+        chunking=ChunkingConfig(chunk_size=0.4, context_size=0.1),
+    )[0]
+    assert result.text.split() == ['a'] * 11
+    if timestamps:
+        assert [w['start_offset'] for w in result.timestamp['word']] == list(range(11))
+    # Selection uses call-local word times; the model's decoding is unchanged.
+    assert model.decoding is decoding and decoding.cfg.rnnt_timestamp_type == timestamp_type
+    assert decoding.compute_timestamps is compute_timestamps
 
 
 @pytest.mark.unit

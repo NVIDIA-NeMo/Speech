@@ -691,3 +691,22 @@ def test_chunked_transcription_keeps_each_manifest_language(prompt_model, tmp_pa
     seen.clear()
     prompt_model.transcribe(str(manifest), batch_size=2, verbose=False, chunking=chunking, target_lang='de-DE')
     assert seen == [PROMPT_DICTIONARY['de-DE']] * 6  # An explicit language applies to every utterance.
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('timestamps', [True, False])
+def test_chunked_transcription_leaves_model_decoding_unchanged(prompt_model, timestamps):
+    from omegaconf import OmegaConf, open_dict
+
+    from nemo.collections.asr.parts.mixins.transcription import ChunkingConfig
+
+    with open_dict(prompt_model.cfg):
+        prompt_model.cfg.sample_rate = 16000
+        prompt_model.cfg.preprocessor.window_stride = 0.01
+    signal, _ = make_audio(batch_size=1, samples=20000)
+    decoding, settings = prompt_model.decoding, OmegaConf.to_container(prompt_model.cfg)
+    results = prompt_model.transcribe(
+        [signal[0]], chunking=ChunkingConfig(0.5, 0.1), timestamps=timestamps, target_lang='de-DE', verbose=False
+    )
+    assert len(results) == 1
+    assert prompt_model.decoding is decoding and OmegaConf.to_container(prompt_model.cfg) == settings

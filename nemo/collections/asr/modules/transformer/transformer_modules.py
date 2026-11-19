@@ -19,6 +19,7 @@ import math
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 from nemo.collections.asr.parts.submodules.multi_head_attention import RotaryPositionalEncoding
@@ -26,6 +27,9 @@ from nemo.collections.common.parts import form_attention_mask
 from nemo.collections.common.parts.utils import build_activation
 
 __all__ = ["TransformerEmbedding", "AttentionBridge", "RMSNorm", "PositionWiseFF", "GatedPositionWiseFF"]
+
+# fused projection of MultiHeadAttention -> the separate projections whose output rows it holds, in this order
+_FUSED_PROJECTIONS = {"qkv_net": ("query_net", "key_net", "value_net"), "kv_net": ("key_net", "value_net")}
 
 
 class RMSNorm(nn.Module):
@@ -216,6 +220,30 @@ class MultiHeadAttention(nn.Module):
         rotary_base: theta base of a rotary position embedding applied to queries and keys, self-attention only;
             keys longer than the queries are treated as a cache prefix;
             None (default) for no rotation
+        fused_qkv: hold the query, key and value projections as one weight matrix ``qkv_net``
+            of shape ``(3 * hidden_size, hidden_size)``, rows in the order query, key, value,
+            in place of ``query_net``, ``key_net`` and ``value_net``;
+            for self-attention, where queries and keys are states of the same sequence.
+            Only the parameter layout changes, not the function or the computation:
+            an optimizer that treats a weight matrix as a whole, such as Muon, updates one matrix instead of three,
+            and an initializer that depends on the shape, such as Xavier, sees the fused shape.
+            A state dict of either layout loads into either.
+        fused_kv: hold the key and value projections as one weight matrix ``kv_net``
+            of shape ``(2 * hidden_size, hidden_size)``, rows in the order key, value,
+            in place of ``key_net`` and ``value_net``, and keep ``query_net``;
+            for cross-attention, where keys and values are projections of the same encoder states.
+            Excludes ``fused_qkv``.
+
+    Example, the block sections of a decoder with fused projections::
+
+        self_attn:
+          _target_: nemo.collections.asr.modules.transformer.transformer_modules.MultiHeadAttention
+          _partial_: true
+          fused_qkv: true
+        cross_attn:
+          _target_: nemo.collections.asr.modules.transformer.transformer_modules.MultiHeadAttention
+          _partial_: true
+          fused_kv: true
     """
 
     def __init__(
@@ -227,6 +255,8 @@ class MultiHeadAttention(nn.Module):
         return_xatt_scores=False,
         use_bias: bool = True,
         rotary_base: float | None = None,
+        fused_qkv: bool = False,
+        fused_kv: bool = False,
     ):
         super().__init__()
         if hidden_size % num_attention_heads != 0:
@@ -234,14 +264,21 @@ class MultiHeadAttention(nn.Module):
                 "The hidden size (%d) is not a multiple of the number "
                 "of attention heads (%d)" % (hidden_size, num_attention_heads)
             )
+        if fused_qkv and fused_kv:
+            raise ValueError(
+                "MultiHeadAttention: fused_qkv=True already holds the key and value projections in qkv_net, "
+                "so fused_kv=True cannot be set with it."
+            )
         self.hidden_size = hidden_size
         self.num_attention_heads = num_attention_heads
         self.attn_head_size = int(hidden_size / num_attention_heads)
         self.attn_scale = math.sqrt(math.sqrt(self.attn_head_size))
 
-        self.query_net = nn.Linear(hidden_size, hidden_size, bias=use_bias)
-        self.key_net = nn.Linear(hidden_size, hidden_size, bias=use_bias)
-        self.value_net = nn.Linear(hidden_size, hidden_size, bias=use_bias)
+        self.query_net = None if fused_qkv else nn.Linear(hidden_size, hidden_size, bias=use_bias)
+        self.key_net = None if fused_qkv or fused_kv else nn.Linear(hidden_size, hidden_size, bias=use_bias)
+        self.value_net = None if fused_qkv or fused_kv else nn.Linear(hidden_size, hidden_size, bias=use_bias)
+        self.qkv_net = nn.Linear(hidden_size, 3 * hidden_size, bias=use_bias) if fused_qkv else None
+        self.kv_net = nn.Linear(hidden_size, 2 * hidden_size, bias=use_bias) if fused_kv else None
         self.out_projection = nn.Linear(hidden_size, hidden_size, bias=use_bias)
         self.rotary_pos_enc = (
             RotaryPositionalEncoding(d_k=self.attn_head_size, rope_base=rotary_base)
@@ -258,14 +295,45 @@ class MultiHeadAttention(nn.Module):
         x = x.view(*new_x_shape)
         return x.permute(0, 2, 1, 3)
 
+    def _project(
+        self, queries: torch.Tensor, keys: torch.Tensor, values: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        size = self.hidden_size
+        if self.qkv_net is not None:
+            return (
+                _linear_rows(self.qkv_net, queries, 0, size),
+                _linear_rows(self.qkv_net, keys, size, 2 * size),
+                _linear_rows(self.qkv_net, values, 2 * size, 3 * size),
+            )
+        if self.kv_net is not None:
+            return (
+                self.query_net(queries),
+                _linear_rows(self.kv_net, keys, 0, size),
+                _linear_rows(self.kv_net, values, size, 2 * size),
+            )
+        return self.query_net(queries), self.key_net(keys), self.value_net(values)
+
+    def _load_from_state_dict(self, state_dict: dict[str, torch.Tensor], prefix: str, *args, **kwargs) -> None:
+        # a checkpoint of another projection layout holds the same weights under other names:
+        # split the fused entries this module does not hold, then join the ones it holds
+        for leaf in ("weight", "bias"):
+            for fused, parts in _FUSED_PROJECTIONS.items():
+                key = f"{prefix}{fused}.{leaf}"
+                if getattr(self, fused) is None and key in state_dict:
+                    chunks = state_dict.pop(key).chunk(len(parts))
+                    state_dict.update({f"{prefix}{part}.{leaf}": chunk for part, chunk in zip(parts, chunks)})
+            for fused, parts in _FUSED_PROJECTIONS.items():
+                keys = [f"{prefix}{part}.{leaf}" for part in parts]
+                if getattr(self, fused) is not None and all(key in state_dict for key in keys):
+                    state_dict[f"{prefix}{fused}.{leaf}"] = torch.cat([state_dict.pop(key) for key in keys])
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
     def forward(self, queries, keys, values, attention_mask):
 
         # attention_mask is needed to hide the tokens which correspond to [PAD]
         # in the case of BERT, or to hide the future tokens in the case of
         # vanilla language modeling and translation
-        query = self.query_net(queries)
-        key = self.key_net(keys)
-        value = self.value_net(values)
+        query, key, value = self._project(queries, keys, values)
         query = self.transpose_for_scores(query) / self.attn_scale
         key = self.transpose_for_scores(key) / self.attn_scale
         value = self.transpose_for_scores(value)
@@ -425,3 +493,9 @@ class AttentionBridge(torch.nn.Module):
             return M, ortho_loss
         else:
             return M
+
+
+def _linear_rows(linear: nn.Linear, inputs: torch.Tensor, start: int, stop: int) -> torch.Tensor:
+    # queries, keys and values can be three different tensors, so each takes its rows of the fused layer
+    bias = None if linear.bias is None else linear.bias[start:stop]
+    return F.linear(inputs, linear.weight[start:stop], bias)

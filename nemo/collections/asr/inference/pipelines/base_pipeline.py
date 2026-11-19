@@ -412,11 +412,18 @@ class BasePipeline(PipelineInterface):
         """Initialize the bufferer."""
         check_existance_of_required_attributes(
             self,
-            ['sample_rate', 'buffer_size_in_secs', 'device'],
+            ['sample_rate', 'buffer_size_in_secs', 'device', 'num_slots', 'batch_size'],
         )
+        if self.num_slots < self.batch_size:
+            raise ValueError(
+                f"Number of slots of the audio bufferer must be >= batch_size: {self.num_slots} < {self.batch_size}"
+            )
 
         self.bufferer = StackedAudioBufferer(
-            sample_rate=self.sample_rate, buffer_size_in_secs=self.buffer_size_in_secs, device=self.device
+            sample_rate=self.sample_rate,
+            buffer_size_in_secs=self.buffer_size_in_secs,
+            device=self.device,
+            num_slots=self.num_slots,
         )
 
     def init_bufferer_for_cache_aware_streaming(self) -> None:

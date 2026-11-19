@@ -82,6 +82,7 @@ class BufferedCTCPipeline(BasePipeline):
         self.sample_rate = cfg.streaming.sample_rate
         self.asr_output_granularity = cfg.asr_output_granularity
         self.batch_size = cfg.streaming.batch_size
+        self.num_slots = cfg.streaming.get('num_slots') or self.batch_size
 
         self.chunk_size = cfg.streaming.chunk_size
         self.left_padding_size = cfg.streaming.left_padding_size

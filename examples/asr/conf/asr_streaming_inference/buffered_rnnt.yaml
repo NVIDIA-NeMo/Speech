@@ -103,6 +103,7 @@ endpointing:
 streaming:
   sample_rate: 16000                          # Audio sample rate in Hz
   batch_size: 256                             # Number of audio frames per batch
+  num_slots: null                             # Number of slots of the audio bufferer, must be >= batch_size; null means batch_size
   left_padding_size: 1.6                      # Left padding duration in seconds
   right_padding_size: 1.6                     # Right padding duration in seconds
   chunk_size: 4.8                             # Audio chunk size in seconds

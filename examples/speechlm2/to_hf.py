@@ -220,7 +220,7 @@ def _hf_export_config(model: torch.nn.Module, dtype: str | torch.dtype) -> dict[
             "frozen": bool(getattr(dual, "freeze_auxiliary", True)),
             "chunk_size_seconds": getattr(dual, "auxiliary_chunk_size_seconds", None),
             "asr_chunk_size_seconds": getattr(dual, "asr_chunk_size_seconds", None),
-            "allow_padded_fallback": bool(getattr(dual, "allow_padded_fallback", True)),
+            "allow_padded_fallback": bool(getattr(dual, "allow_padded_fallback", False)),
         }
     dtype_name = _canonical_torch_dtype_name(dtype)
     config["dtype"] = dtype_name

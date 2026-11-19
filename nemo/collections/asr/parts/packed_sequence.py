@@ -269,8 +269,8 @@ def forward_padded_fallback(
     """Run an encoder without a sequence-packed form on the padded batch and re-pack its output.
 
     The padded forward computes the padding that the packed layout exists to avoid, so it is never taken silently:
-    it logs one warning per encoder class and reason, and with ``allowed=False`` it raises instead.
-    Both name ``allow_padded_fallback``, the option of the encoders that call this.
+    with ``allowed=False`` it raises, and otherwise it logs one warning per encoder class and reason.
+    Both name ``allow_padded_fallback``, the option of the encoders that call this, which is off by default.
 
     Args:
         encoder: an encoder with the padded ``forward(audio_signal, length)`` contract,
@@ -291,10 +291,13 @@ def forward_padded_fallback(
         f" in this configuration: {reason}" if reason else "."
     )
     if not allowed:
-        raise NotImplementedError(f"{unsupported} It is refused by allow_padded_fallback=False.")
+        raise NotImplementedError(
+            f"{unsupported} Running it on the padded batch would cost the padded frames "
+            "that sequence-packed execution avoids; set allow_padded_fallback=True to allow that."
+        )
     logging.warning(
-        f"{unsupported} It runs on the padded batch and is re-packed, which costs the padded frames "
-        "that sequence-packed execution avoids; set allow_padded_fallback=False to raise instead.",
+        f"{unsupported} It runs on the padded batch and is re-packed (allow_padded_fallback=True), "
+        "which costs the padded frames that sequence-packed execution avoids.",
         mode=logging_mode.ONCE,
     )
     padded = unpack_encoder_output(features, total_length=features.padded_length).transpose(1, 2)

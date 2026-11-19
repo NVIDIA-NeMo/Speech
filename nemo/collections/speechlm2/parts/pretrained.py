@@ -359,7 +359,7 @@ def setup_independent_speaker_encoder(model: torch.nn.Module):
         asr_chunk_size_seconds=cfg.get("asr_chunk_size_seconds", None),
         auxiliary_chunk_size_seconds=cfg.get("chunk_size_seconds", None),
         freeze_auxiliary=cfg.get("frozen", True),
-        allow_padded_fallback=cfg.get("allow_padded_fallback", True),
+        allow_padded_fallback=cfg.get("allow_padded_fallback", False),
     )
     dual.auxiliary_encoder_config = OmegaConf.to_container(speaker_config, resolve=True)
 

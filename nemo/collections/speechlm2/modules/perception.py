@@ -340,9 +340,8 @@ class IndependentDualEncoder(nn.Module):
     auxiliary encoder. A frozen branch is kept in evaluation mode and runs under
     ``no_grad`` even when the parent perception module is training.
 
-    A branch whose configuration has no sequence-packed form runs on the padded batch
-    and is re-packed, with one warning; ``allow_padded_fallback=False`` makes that an error
-    with the encoder's reason instead.
+    A branch whose configuration has no sequence-packed form is an error with the encoder's reason;
+    with ``allow_padded_fallback=True`` it runs on the padded batch and is re-packed, with one warning.
     """
 
     supports_sequence_packed_output = True
@@ -356,7 +355,7 @@ class IndependentDualEncoder(nn.Module):
         asr_chunk_size_seconds: float | None = None,
         auxiliary_chunk_size_seconds: float | None = None,
         freeze_auxiliary: bool = True,
-        allow_padded_fallback: bool = True,
+        allow_padded_fallback: bool = False,
     ) -> None:
         super().__init__()
         self.asr_encoder = asr_encoder

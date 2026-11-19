@@ -418,7 +418,7 @@ class ParallelExpertEncoderPT(ModelPT):
             chunk_size_seconds=self._cfg.get("chunk_size_seconds", None),
             sync_max_audio_length=self._cfg.get("sync_max_audio_length", False),
             max_speaker_count=self._cfg.get("max_speaker_count", 8),
-            allow_padded_fallback=self._cfg.get("allow_padded_fallback", True),
+            allow_padded_fallback=self._cfg.get("allow_padded_fallback", False),
             # Timestamp artifacts are deployment inputs, not portable PEE architecture.
             ctc_timestamp_model_path=None,
         )
@@ -709,7 +709,7 @@ class ParallelExpertEncoder(nn.Module):
         max_speaker_count: int = 8,
         ctc_timestamp_model_path: Optional[str] = None,
         ctc_timestamp_alignment: Optional[Dict[str, Any]] = None,
-        allow_padded_fallback: bool = True,
+        allow_padded_fallback: bool = False,
     ):
         """
         Initialize the ASR and diarization experts and their fusion layers.
@@ -743,7 +743,7 @@ class ParallelExpertEncoder(nn.Module):
             ctc_timestamp_alignment (Optional[Dict[str, Any]]): Timestamp aligner options, including backend selection.
             allow_padded_fallback (bool): Whether ``forward_sequence_packed`` may run a branch encoder
                 without a sequence-packed form for its configuration on the padded batch, with one warning.
-                Set it to False to get an error with the encoder's reason instead of the slower path.
+                By default such a branch is an error with the encoder's reason, not the slower path.
                 The Sortformer modules after the diarization encoder always run padded.
         """
         super().__init__()
@@ -1032,8 +1032,8 @@ class ParallelExpertEncoder(nn.Module):
         Run an encoder token-flat, optionally splitting after feature stacking.
         Encoders without ``forward_sequence_packed``, or whose ``supports_sequence_packed_output``
         denies it for their configuration (a ``ConformerEncoder`` training with attention dropout
-        over ``rel_pos`` attention, for one), fall back to a padded forward and are re-packed,
-        with a warning, or raise when ``allow_padded_fallback`` is False.
+        over ``rel_pos`` attention, for one), raise unless ``allow_padded_fallback`` is set;
+        then they fall back to a padded forward and are re-packed, with a warning.
         When a chunk size is set and an utterance exceeds it, feature stacking runs
         once over each full utterance, and the encoder layers then see each chunk as an
         independent sequence. Chunking requires ``subsampling='feature_stacking'``.

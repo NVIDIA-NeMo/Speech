@@ -169,9 +169,9 @@ Note the differences from the SALM configuration:
   total encoder-token count.
 * A ``ParallelExpertEncoder`` under ``packed_encoder_sequences: true`` and the independent speaker encoder
   (``speaker_encoder``, which always runs its two encoders sequence-packed)
-  run a branch encoder whose configuration has no sequence-packed form on the padded batch and re-pack its output.
-  That is slower than the packed form, so it logs one warning with the encoder's reason.
-  Set ``allow_padded_fallback: false`` to get an error instead:
+  raise an error with the encoder's reason for a branch encoder whose configuration has no sequence-packed form.
+  Set ``allow_padded_fallback: true`` to run such a branch on the padded batch and re-pack its output instead;
+  that is slower than the packed form and logs one warning with the reason. The option is set
   under ``pe_encoder_overrides`` for a ``ParallelExpertEncoder`` bundle (``pe_encoder_path``),
   inside ``pe_encoder_config`` for an inline one,
   and under ``speaker_encoder`` for the independent speaker encoder.

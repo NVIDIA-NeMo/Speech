@@ -98,7 +98,6 @@ concurrent runs queue.
 | Variable | Value | Why |
 |---|---|---|
 | `CUDA_VISIBLE_DEVICES` | the compute GPU's CUDA index | see above |
-| `VLLM_WORKER_MULTIPROC_METHOD` | `spawn` | otherwise the `EngineCore` subprocess reports `CUDA driver initialization failed` |
 | `HF_HUB_OFFLINE` | `1` | keeps a local checkpoint from triggering hub lookups |
 | `PYTORCH_CUDA_ALLOC_CONF` | `expandable_segments:True` | reduces fragmentation with variable-length batches |
 | `SALM_FT_WORK` | a work directory | where the tools write audio, manifests, and the GPU lock |
@@ -690,7 +689,7 @@ needs no further training.
 | Target metric improves, general-domain WER collapses | reference surface style differs from model output | audit style before training; blend in a cased, punctuated source |
 | `OverrideParseException: mismatched input '='` | Hydra override value contains `=` | symlink the checkpoint to a name without `=` (`export_checkpoint.py` does this) |
 | `to_hf.py`: `No such file or directory` on an existing checkpoint | the save is still in progress | wait until `<step>-unfinished` is gone |
-| `RuntimeError: CUDA driver initialization failed` in `EngineCore` | fork start method | `VLLM_WORKER_MULTIPROC_METHOD=spawn` |
+| `RuntimeError: CUDA driver initialization failed` in `EngineCore` | `VLLM_WORKER_MULTIPROC_METHOD=fork` | unset it; the NeMo plugin defaults to `spawn` |
 | vLLM appears hung on its first start | one-time kernel JIT compilation (about 15 minutes) | wait; persist the flashinfer and vLLM caches |
 | `incorrect regex pattern … set fix_mistral_regex=True` when loading the tokenizer | transformers assumes an old Mistral tokenizer because the SALM `config.json` has no `transformers_version` | harmless: the checkpoint's `tokenizer.json` already has the corrected pattern, and token IDs are identical with or without the flag |
 | `CUDA out of memory` in a job that normally fits | another GPU job holds the device | run jobs one at a time; check `nvidia-smi --query-compute-apps` |

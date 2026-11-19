@@ -208,32 +208,40 @@ class TransformerDecoderBlock(nn.Module, AttentionAdapterModuleMixin):
         Returns:
             The output states, shape ``(U_total, hidden_size)``.
         """
-        if self.is_adapter_available():
-            raise NotImplementedError("Adapters are not supported in the sequence-packed decoder block.")
+        if self.get_enabled_adapters():
+            raise NotImplementedError("Enabled adapters are not supported in the sequence-packed decoder block.")
+        # the residual adds are in place like in the padded blocks, which keeps the residual stream in the
+        # autocast dtype from the first block on
         if self.pre_ln:
             residual = decoder_states
             normed = self.layer_norm_1(decoder_states)
             attended, _ = self.first_sub_layer.forward_packed(
                 normed, normed, normed, decoder_context, decoder_context, causal=True
             )
-            decoder_states = attended + residual
-            residual = decoder_states
-            normed = self.layer_norm_2(decoder_states)
+            attended += residual
+            residual = attended
+            normed = self.layer_norm_2(attended)
             attended, _ = self.second_sub_layer.forward_packed(
                 normed, encoder_states, encoder_states, decoder_context, encoder_context
             )
-            decoder_states = attended + residual
-            return self.third_sub_layer(self.layer_norm_3(decoder_states)) + decoder_states
+            attended += residual
+            output_states = self.third_sub_layer(self.layer_norm_3(attended))
+            output_states += attended
+            return output_states
 
         attended, _ = self.first_sub_layer.forward_packed(
             decoder_states, decoder_states, decoder_states, decoder_context, decoder_context, causal=True
         )
-        decoder_states = self.layer_norm_1(attended + decoder_states)
+        attended += decoder_states
+        decoder_states = self.layer_norm_1(attended)
         attended, _ = self.second_sub_layer.forward_packed(
             decoder_states, encoder_states, encoder_states, decoder_context, encoder_context
         )
-        decoder_states = self.layer_norm_2(attended + decoder_states)
-        return self.layer_norm_3(self.third_sub_layer(decoder_states) + decoder_states)
+        attended += decoder_states
+        decoder_states = self.layer_norm_2(attended)
+        output_states = self.third_sub_layer(decoder_states)
+        output_states += decoder_states
+        return self.layer_norm_3(output_states)
 
     def get_accepted_adapter_types(self) -> Set[type]:
         types = super().get_accepted_adapter_types()
@@ -288,11 +296,6 @@ class TransformerDecoder(nn.Module):
         cross_attn: ModuleBlock | None = None,
         feed_forward: ModuleBlock | None = None,
     ):
-        """
-        Args:
-            norm, self_attn, cross_attn, feed_forward: configurable blocks of every TransformerDecoderBlock
-                and of the final norm, see TransformerDecoderBlock
-        """
         super().__init__()
 
         if pre_ln and pre_ln_final_layer_norm:
@@ -401,7 +404,9 @@ class TransformerDecoder(nn.Module):
         The decoder and encoder masks of ``forward`` are replaced by the two packings:
         no padded position is computed,
         self-attention is causal within every sequence (the mask of diagonal 0)
-        and the cross-attention of a sequence sees only its own encoder states.
+        and the cross-attention of a sequence sees only its own encoder states;
+        a sequence without encoder states gets a zero cross-attention context,
+        where ``forward`` attends uniformly over its masked frames.
         The cached memory lists of incremental decoding, the cross-attention scores and adapters
         are not provided in this form.
 

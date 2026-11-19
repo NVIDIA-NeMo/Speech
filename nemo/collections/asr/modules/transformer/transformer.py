@@ -223,14 +223,6 @@ class TransformerDecoderNM(DecoderModule, Exportable):
         cross_attn: ModuleBlock | None = None,
         feed_forward: ModuleBlock | None = None,
     ):
-        """
-        Args:
-            embedding: configurable embedding block (class, callable or Hydra partial with ``_target_`` and
-                ``_partial_: true``) built with the vocabulary and embedding arguments above; default
-                TransformerEmbedding
-            norm, self_attn, cross_attn, feed_forward: configurable blocks of the decoder layers, see
-                TransformerDecoderBlock
-        """
         super().__init__()
 
         self._vocab_size = vocab_size
@@ -315,6 +307,15 @@ class TransformerDecoderNM(DecoderModule, Exportable):
         Returns:
             The decoder hidden states, shape ``(U_total, hidden_size)``.
         """
+        if (
+            isinstance(self._embedding, TransformerEmbedding)
+            and self._embedding.learn_positional_encodings
+            and decoder_context.max_seqlen > self._embedding.max_sequence_length
+        ):
+            raise ValueError(
+                f"Input sequence is longer than maximum allowed sequence length for positional encoding. "
+                f"Got {decoder_context.max_seqlen} and {self._embedding.max_sequence_length}"
+            )
         decoder_embeddings = self._embedding.forward_packed(input_ids, decoder_context.position_ids)
         return self._decoder.forward_packed(decoder_embeddings, decoder_context, encoder_states, encoder_context)
 

@@ -252,7 +252,7 @@ class TestTransformerDecoderBlockComposition:
 
 def _packed_inputs(input_ids, input_lengths, encoder_states, encoder_lengths):
     """Token-flat ids and encoder states with their packing metadata, in batch order."""
-    valid = torch.arange(input_ids.shape[1])[None, :] < input_lengths[:, None]
+    valid = torch.arange(input_ids.shape[1], device=input_ids.device)[None, :] < input_lengths[:, None]
     packed_encoder = pack_encoder_output(encoder_states, encoder_lengths)
     return (
         input_ids[valid],
@@ -263,7 +263,7 @@ def _packed_inputs(input_ids, input_lengths, encoder_states, encoder_lengths):
 
 
 def _valid_rows(padded, lengths):
-    return padded[torch.arange(padded.shape[1])[None, :] < lengths[:, None]]
+    return padded[torch.arange(padded.shape[1], device=padded.device)[None, :] < lengths[:, None]]
 
 
 class TestPackedTransformerDecoder:
@@ -312,6 +312,15 @@ class TestPackedTransformerDecoder:
                 torch.testing.assert_close(parameter.grad, reference_grads[name], msg=name)
 
     @pytest.mark.unit
+    def test_rejects_sequences_beyond_the_learned_positions(self):
+        decoder = _composed_decoder(max_sequence_length=4, learn_positional_encodings=True)
+        ids, decoder_context, states, encoder_context = _packed_inputs(
+            torch.tensor([[10, 1, 5, 7, 2]]), torch.tensor([5]), torch.randn(1, 3, 16), torch.tensor([3])
+        )
+        with pytest.raises(ValueError, match="longer than maximum"):
+            decoder.forward_packed(ids, decoder_context, states, encoder_context)
+
+    @pytest.mark.unit
     def test_rejects_other_diagonals(self):
         decoder = _composed_decoder()
         decoder.decoder.diagonal = 1
@@ -322,6 +331,7 @@ class TestPackedTransformerDecoder:
             decoder.forward_packed(ids, decoder_context, states, encoder_context)
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
     def test_bf16_matches_padded_on_cuda(self):
         torch.manual_seed(1)
@@ -341,14 +351,5 @@ class TestPackedTransformerDecoder:
                 encoder_embeddings=encoder_states,
                 encoder_mask=encoder_mask,
             )
-            ids, decoder_context, states, encoder_context = _packed_inputs(
-                input_ids.cpu(), input_lengths.cpu(), encoder_states.cpu(), encoder_lengths.cpu()
-            )
-            packed = decoder.forward_packed(
-                ids.cuda(),
-                PackedAttentionContext.from_lengths(input_lengths),
-                states.cuda(),
-                PackedAttentionContext(pack_encoder_output(encoder_states, encoder_lengths)),
-            )
-        valid = torch.arange(30, device="cuda")[None, :] < input_lengths[:, None]
-        torch.testing.assert_close(packed.float(), padded[valid].float(), atol=5e-2, rtol=5e-2)
+            packed = decoder.forward_packed(*_packed_inputs(input_ids, input_lengths, encoder_states, encoder_lengths))
+        torch.testing.assert_close(packed.float(), _valid_rows(padded, input_lengths).float(), atol=5e-2, rtol=5e-2)

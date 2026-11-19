@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Self-attention over sequence-packed activations with explicit per-utterance boundaries."""
+"""Self- and cross-attention over sequence-packed activations with explicit per-sequence boundaries."""
 
 import functools
 import math
@@ -295,7 +295,8 @@ def packed_cross_attention(
     """Attend from token-flat queries to the token-flat keys of the same sequence, without a position bias.
 
     On CUDA in half precision this runs variable-length FlashAttention;
-    otherwise the sequences are attended one at a time with dense attention.
+    otherwise the sequences are attended one at a time with dense attention,
+    on CUDA in float32 as well, several times slower than the padded attention: train under autocast.
 
     Args:
         q: queries, shape ``(Q_total, H, d_k)``.
@@ -314,6 +315,14 @@ def packed_cross_attention(
         scale = 1.0 / math.sqrt(q.shape[-1])
     if query_context.lengths.numel() != key_context.lengths.numel():
         raise ValueError("query_context and key_context must describe the same number of sequences.")
+    if q.shape[0] != query_context.total_tokens:
+        raise ValueError(f"q has {q.shape[0]} rows, query_context describes {query_context.total_tokens} tokens.")
+    if k.shape[0] != key_context.total_tokens or v.shape[0] != key_context.total_tokens:
+        raise ValueError(
+            f"k and v have {k.shape[0]} and {v.shape[0]} rows, key_context describes {key_context.total_tokens} tokens."
+        )
+    if causal and query_context is not key_context and not torch.equal(query_context.lengths, key_context.lengths):
+        raise ValueError("causal packed attention needs equal query and key lengths per sequence.")
     if query_context.total_tokens == 0 or key_context.total_tokens == 0:
         anchor = (q.sum() + k.sum() + v.sum()) * 0.0
         return q.new_zeros(q.shape) + anchor.to(q.dtype)
@@ -481,8 +490,6 @@ def _reference_packed_cross_attention(
         vi = v[k_start:k_end].transpose(0, 1)
         scores = torch.matmul(qi, ki.transpose(-2, -1)) * scale
         if causal:
-            if q_end - q_start != k_end - k_start:
-                raise ValueError("causal packed attention needs equal query and key lengths per sequence.")
             visible = torch.ones(q_end - q_start, k_end - k_start, dtype=torch.bool, device=q.device).tril()
             scores = scores.masked_fill(~visible, float("-inf"))
         weights = torch.softmax(scores, dim=-1)

@@ -136,9 +136,16 @@ class StatefulIterableDatasetWrapper(IterableDatasetWrapper):
 
 
 def configure_dataset_checkpointed_rng(dataset: Any, enabled: bool) -> Any:
-    """Enable checkpointed randomness on a :class:`StatefulRandomMixin` dataset when ``enabled``."""
-    if enabled and isinstance(dataset, StatefulRandomMixin):
-        dataset.enable_checkpointed_rng()
+    """
+    Enable checkpointed randomness on a :class:`StatefulRandomMixin` dataset when ``enabled``. Wrappers that keep
+    the wrapped dataset in ``.dataset`` (e.g. ``FallbackDataset``) are looked through.
+    """
+    target = dataset
+    while enabled and target is not None:
+        if isinstance(target, StatefulRandomMixin):
+            target.enable_checkpointed_rng()
+            break
+        target = getattr(target, "dataset", None)
     return dataset
 
 

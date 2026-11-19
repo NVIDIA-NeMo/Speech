@@ -29,11 +29,30 @@ class FallbackDataset(torch.utils.data.Dataset):
 
         >>> dataset = AudioToTextLhotseDataset(...)
         ... dataset = FallbackDataset(dataset)
+
+    The wrapper is transparent to dataloader checkpointing: ``state_dict()`` / ``load_state_dict()`` save and
+    restore the wrapped dataset's state (e.g. the generator of a
+    :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin` dataset) when it has one.
+    The cached fallback batch is not saved: after a restore, a ``None`` batch before any successful read returns
+    ``None``, as on a first read.
     """
 
     def __init__(self, dataset):
         self.dataset = dataset
         self._fallback = None
+
+    def state_dict(self) -> dict:
+        """The wrapped dataset's checkpoint state, if it has one."""
+        if callable(getattr(self.dataset, "state_dict", None)) and callable(
+            getattr(self.dataset, "load_state_dict", None)
+        ):
+            return {"dataset": self.dataset.state_dict()}
+        return {}
+
+    def load_state_dict(self, state_dict: dict) -> None:
+        """Restore the wrapped dataset's checkpoint state saved by :meth:`state_dict`."""
+        if "dataset" in state_dict:
+            self.dataset.load_state_dict(state_dict["dataset"])
 
     def __getitem__(self, item):
         ans = self.dataset[item]

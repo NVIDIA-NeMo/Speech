@@ -677,11 +677,18 @@ class ConvSubsampling(torch.nn.Module):
         The ``striding`` and ``dw_striding`` stacks have one, causal or not;
         VGGNet pools with ``ceil_mode``, which the floor-mode lengths of the gapped layout do not model,
         and the Conv1d stacks are not laid out on the gapped axis.
+        A ``subsampling_factor`` that is no power of two builds a default stack that subsamples by less,
+        while the slots are aligned to the factor, so the utterances would lose their stride phase.
         """
         # TODO(albertz): a packed form for these stacks once their padded forward runs again,
         # https://github.com/NVIDIA-NeMo/Speech/issues/16223
         if not self.conv2d_subsampling or self._subsampling == 'vggnet':
             return f"subsampling={self._subsampling!r} has no sequence-packed form."
+        if self._time_strides is None and 2**self._sampling_num != self.subsampling_factor:
+            return (
+                f"subsampling_factor={self.subsampling_factor} is not a power of two: the stack subsamples by "
+                f"{2**self._sampling_num}, which the sequence-packed form does not lay out."
+            )
         return None
 
     def _check_packed_stack_gaps(self) -> int:

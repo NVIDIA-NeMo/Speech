@@ -135,15 +135,25 @@ class TestPackedCausalConvSubsampling:
         assert grouped.lengths.tolist() == whole.lengths.tolist()
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("is_causal", [True, False])
+    def test_factor_that_is_no_power_of_two_is_refused(self, is_causal):
+        """Factor 6 builds two stages, which subsample by 4, while the slots would be aligned to 6."""
+        module = ConvSubsampling("striding", 6, FEAT_IN, FEAT_OUT, conv_channels=4, is_causal=is_causal)
+        packed = pack_encoder_output(torch.randn(2, 20, FEAT_IN), torch.tensor([20, 7]))
+        with pytest.raises(NotImplementedError, match="subsampling_factor=6 is not a power of two"):
+            module.forward_packed(packed)
+
+    @pytest.mark.unit
     @pytest.mark.parametrize("subsampling", ["striding", "dw_striding"])
     @pytest.mark.parametrize("self_attention_model", ["rel_pos", "abs_pos"])
     def test_encoder_matches_padded_outputs_and_gradients(self, subsampling, self_attention_model):
-        """Through ``forward_sequence_packed`` in training mode, with one utterance of a single frame."""
+        """Through ``forward_sequence_packed`` in training mode, with utterances of a single frame, without frames,
+        and of multiples of the factor, whose slots hold the gap and no further frame."""
         torch.manual_seed(4)
         encoder = _encoder(subsampling, self_attention_model=self_attention_model).double().train()
         assert encoder.supports_sequence_packed_output
-        lengths = torch.tensor([50, 1, 31])
-        features = torch.randn(3, FEAT_IN, 50, dtype=torch.float64, requires_grad=True)
+        lengths = torch.tensor([48, 1, 4, 0, 8, 31])
+        features = torch.randn(6, FEAT_IN, 48, dtype=torch.float64, requires_grad=True)
         packed = encoder.forward_sequence_packed(features, lengths)
         padded = _encoder_padded(encoder, features, lengths)
         torch.testing.assert_close(packed.data, padded)
@@ -181,8 +191,8 @@ class TestPackedCausalConvSubsamplingCuda:
         """Forward and backward, in float32 and under bfloat16 autocast, compared in norm.
 
         Measured over twelve seeds: outputs within 7e-8 and 0.4 percent, gradients within 4e-4 and 6 percent.
-        With a gap of half the factor between the utterances the outputs are off by 3 to 7 percent
-        and the gradients by 18 to 32 percent.
+        With the gap of the non-causal stacks (the factor) the outputs are off by up to 5 percent
+        and the gradients by up to 24 percent, depending on the seed.
         """
         torch.manual_seed(5)
         module = _causal(subsampling, factor).cuda()
@@ -206,9 +216,9 @@ class TestPackedCausalConvSubsamplingCuda:
 
         Short utterances, so that a frame read across a boundary would move a large share of the output.
         Measured over twelve seeds: outputs within 0.8 percent,
-        and 4 to 8 percent with a gap of half the factor between the utterances.
-        The gradients of the small convolution stack are noisy in bfloat16 on these few frames:
-        within 54 percent, against 140 to 180 percent with the short gap.
+        and up to 8 percent with a gap of half the factor between the utterances, which is what the output bound catches.
+        The gradients of the small convolution stack are noisy in bfloat16 on these few frames, within 54 percent,
+        so their bound only excludes gross errors.
         """
         torch.manual_seed(6)
         encoder = _encoder(subsampling, d_model=32).cuda().train()

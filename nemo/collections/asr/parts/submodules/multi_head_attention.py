@@ -519,7 +519,7 @@ class RelPositionMultiHeadAttentionLongformer(RelPositionMultiHeadAttention):
         reason = self.sequence_packed_unsupported_reason()
         if reason is not None:
             raise NotImplementedError(reason)
-        if context.key_window is None or None in context.key_window:
+        if not context.key_window_is_bounded:
             raise ValueError("Local attention over packed sequences needs the key window of att_context_size.")
         window = 2 * self.att_context_size[0] + 1
         if pos_emb is None or pos_emb.size(1) != window:

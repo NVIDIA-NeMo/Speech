@@ -942,7 +942,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 # as RelPositionalEncoding.forward
                 center_pos = self.pos_enc.pe.size(1) // 2 + 1
                 padded_len = attention_context.padded_max_seqlen
-                if key_window is not None and None not in key_window and packed.max_seqlen > 0:
+                if attention_context.key_window_is_bounded and packed.max_seqlen > 0:
                     # no key is further from its query than the window reaches, so a shorter table serves it
                     positions = torch.arange(packed.max_seqlen)
                     reach = max((positions - key_window[0]).max(), (key_window[1] - positions).max())

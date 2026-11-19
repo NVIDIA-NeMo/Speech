@@ -104,6 +104,8 @@ class PackedAttentionContext:
             if first_key is None and last_key is None:
                 key_window = None
         self.key_window = key_window
+        # whether the window limits both sides, so that no key is further from its query than the window reaches
+        self.key_window_is_bounded = key_window is not None and key_window[0] is not None and key_window[1] is not None
         self._block_mask = None
         self._bias_rows = None
         self._sequence_slices = None
@@ -291,7 +293,7 @@ def packed_attention(
         scale = 1.0 / math.sqrt(q.shape[-1])
     if (
         rel_pos_bias is not None
-        and (context.key_window is None or None in context.key_window)
+        and not context.key_window_is_bounded
         and rel_pos_bias.shape[-1] < 2 * context.max_seqlen - 1
     ):
         raise ValueError(

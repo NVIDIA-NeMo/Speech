@@ -1015,13 +1015,21 @@ class TestPackedConformerEncoderAttentionContext:
         lengths = torch.tensor([200, 7, 100])
         features = _packed_test_features(lengths)
         outputs = []
+        padded_grads = dict(padded_encoder.named_parameters())
         for seed in range(8):
+            padded_encoder.zero_grad()
+            packed_encoder.zero_grad()
             random.seed(seed)
             padded_out, padded_lengths = padded_encoder(audio_signal=features, length=lengths)
             random.seed(seed)
             packed = packed_encoder.forward_sequence_packed(features, lengths)
-            torch.testing.assert_close(packed.data, _valid_frames(padded_out, padded_lengths), msg=f"seed {seed}")
-            outputs.append(packed.data)
+            padded_valid = _valid_frames(padded_out, padded_lengths)
+            torch.testing.assert_close(packed.data, padded_valid, msg=f"seed {seed}")
+            padded_valid.square().mean().backward()
+            packed.data.square().mean().backward()
+            for name, parameter in packed_encoder.named_parameters():
+                torch.testing.assert_close(parameter.grad, padded_grads[name].grad, msg=f"seed {seed}, {name}")
+            outputs.append(packed.data.detach())
         distinct = {tuple(output.flatten()[:8].tolist()) for output in outputs}
         assert len(distinct) > 1
 

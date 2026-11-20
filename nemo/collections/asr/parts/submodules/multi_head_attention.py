@@ -1140,8 +1140,8 @@ class PositionalEncoding(torch.nn.Module):
         max_len (int): maximum input length
         xscale (bool): whether to scale the input by sqrt(d_model)
         dropout_rate_emb (float): dropout rate for the positional embeddings
-        dropout_broadcast (bool): one input dropout mask over the feature axis per call, shared over batch and time
-            (`BroadcastDropout`), instead of a mask per element; the embedding dropout stays per element.
+        dropout_broadcast (bool): one input dropout mask over the feature axis per sequence, shared over its
+            positions (`BroadcastDropout`), instead of a mask per element; the embedding dropout stays per element.
             Defaults to False.
     """
 
@@ -1209,8 +1209,8 @@ class RelPositionalEncoding(PositionalEncoding):
         max_len (int): maximum input length
         xscale (bool): whether to scale the input by sqrt(d_model)
         dropout_rate_emb (float): dropout rate for the positional embeddings
-        dropout_broadcast (bool): one input dropout mask over the feature axis, shared over batch and time;
-            see `PositionalEncoding`
+        dropout_broadcast (bool): one input dropout mask over the feature axis per sequence, shared over its
+            positions; see `PositionalEncoding`
     """
 
     def extend_pe(self, length, device, dtype):
@@ -1260,8 +1260,8 @@ class LocalAttRelPositionalEncoding(PositionalEncoding):
         max_len (int): maximum input length
         xscale (bool): whether to scale the input by sqrt(d_model)
         dropout_rate_emb (float): dropout rate for the positional embeddings
-        dropout_broadcast (bool): one input dropout mask over the feature axis, shared over batch and time;
-            see `PositionalEncoding`
+        dropout_broadcast (bool): one input dropout mask over the feature axis per sequence, shared over its
+            positions; see `PositionalEncoding`
     """
 
     def __init__(self, att_context_size, **kwargs):

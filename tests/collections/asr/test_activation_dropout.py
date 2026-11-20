@@ -18,6 +18,7 @@
 import pytest
 import torch
 
+from nemo.collections.asr.parts.submodules.packed_attention import PackedAttentionContext
 from nemo.collections.asr.parts.utils.activations import Swish
 from nemo.collections.common.parts.utils import SquaredReLU
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
@@ -254,67 +255,107 @@ class TestActivationDropoutKernel:
         with pytest.raises(ValueError, match="seed must be one integer"):
             activation_dropout(x, "relu", 0.1, seed=torch.tensor([1, 2], device="cuda"))
         assert activation_dropout(x[:0], "relu", 0.1).shape == (0, 8)
-        with pytest.raises(ValueError, match="broadcast mask needs an axis"):
-            activation_dropout(x[0, 0], "relu", 0.1, broadcast=True)
-        assert activation_dropout(x[:0], "relu", 0.1, broadcast=True).shape == (0, 8)
 
 
 class TestBroadcastActivationDropout:
-    """One mask over the last axis, shared by every row: the kernels read it from a vector instead of hashing."""
+    """One mask over the last axis per sequence, shared by its positions, read from a (sequences, D) matrix."""
 
-    # widths below, at and above the kernel's tile of 1,024, so a tile wraps rows, matches them, or crosses one row end
+    # widths below, at and above the kernel's tile of 1,024, so a row takes a partial tile, one tile, or two
     WIDTHS = [48, 1024, 1536]
 
     @pytest.mark.unit
     @pytest.mark.parametrize("activation", sorted(FUSED_ACTIVATIONS))
     @pytest.mark.parametrize("width", WIDTHS)
     @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-    def test_matches_reference_under_its_mask(self, activation, width, dtype):
+    def test_padded_states_match_reference_under_their_masks(self, activation, width, dtype):
         torch.manual_seed(0)
-        x = (torch.randn(37, width, device="cuda") * 3).to(dtype).requires_grad_()
-        d_out = torch.randn(37, width, device="cuda").to(dtype)
+        x = (torch.randn(3, 37, width, device="cuda") * 3).to(dtype).requires_grad_()
+        d_out = torch.randn(3, 37, width, device="cuda").to(dtype)
         p = 0.3
         out = activation_dropout(x, activation, p, broadcast=True, seed=_seed(123))
         out.backward(d_out)
-        keep = activation_dropout_mask((width,), p, _seed(123), x.device)
+        keep = activation_dropout_mask((3, width), p, _seed(123), x.device)
         reference = x.detach().double().requires_grad_()
-        expected = torch.where(keep, REFERENCE[activation](reference) / (1 - p), 0.0)
+        expected = torch.where(keep[:, None, :], REFERENCE[activation](reference) / (1 - p), 0.0)
         expected.backward(d_out.double())
         tolerance = dict(rtol=1e-5, atol=1e-5) if dtype == torch.float32 else dict(rtol=2e-2, atol=2e-2)
         assert out.dtype == dtype and x.grad.dtype == dtype
         torch.testing.assert_close(out.double(), expected, **tolerance)
         torch.testing.assert_close(x.grad.double(), reference.grad, **tolerance)
-        # the same features are dropped in every row
-        assert torch.equal(out[:, ~keep], torch.zeros_like(out[:, ~keep]))
-        assert 0.5 < keep.float().mean().item() < 0.9
+        # a sequence drops the same features at every position, and every sequence its own
+        for sequence in range(3):
+            dropped = out[sequence][:, ~keep[sequence]]
+            assert torch.equal(dropped, torch.zeros_like(dropped))
+        assert not torch.equal(keep[0], keep[1]) and 0.5 < keep.float().mean().item() < 0.9
 
     @pytest.mark.unit
-    def test_mask_is_shared_over_the_leading_axes_and_fresh_per_call(self):
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+    def test_packed_states_take_the_mask_of_their_sequence(self, dtype):
+        torch.manual_seed(0)
+        lengths = torch.tensor([4, 1, 0, 6], device="cuda")
+        context = PackedAttentionContext.from_lengths(lengths)
+        x = (torch.randn(11, 1000, device="cuda") * 3).to(dtype).requires_grad_()
+        d_out = torch.randn(11, 1000, device="cuda").to(dtype)
+        p = 0.4
+        out = activation_dropout(
+            x, "silu", p, broadcast=True, sequence_ids=context.sequence_ids, num_sequences=4, seed=_seed(5)
+        )
+        out.backward(d_out)
+        keep = activation_dropout_mask((4, 1000), p, _seed(5), x.device)[context.sequence_ids]
+        reference = x.detach().double().requires_grad_()
+        expected = torch.where(keep, torch.nn.functional.silu(reference) / (1 - p), 0.0)
+        expected.backward(d_out.double())
+        tolerance = dict(rtol=1e-5, atol=1e-5) if dtype == torch.float32 else dict(rtol=2e-2, atol=2e-2)
+        torch.testing.assert_close(out.double(), expected, **tolerance)
+        torch.testing.assert_close(x.grad.double(), reference.grad, **tolerance)
+        # the rows of a sequence share their mask, the sequences differ; a zero input is zero under either mask
+        assert torch.equal(out[~keep], torch.zeros_like(out[~keep])) and (out != 0)[keep & (x.detach() != 0)].all()
+        sequences = keep.split(lengths.tolist())
+        assert all(torch.equal(rows, rows[:1].expand_as(rows)) for rows in sequences)
+        assert not torch.equal(sequences[0][0], sequences[3][0])
+
+    @pytest.mark.unit
+    def test_masks_differ_per_sequence_and_per_call(self):
         torch.manual_seed(0)
         x = torch.ones(4, 16, 1000, device="cuda")
         p = 0.35
         out = activation_dropout(x, "identity", p, broadcast=True)
         kept = out != 0
-        assert torch.equal(kept, kept[:1, :1].expand_as(kept))
+        assert torch.equal(kept, kept[:, :1].expand_as(kept))
+        assert not torch.equal(kept[0, 0], kept[1, 0])
         torch.testing.assert_close(out[kept], torch.full_like(out[kept], 1 / (1 - p)))
-        # a thousand Bernoulli draws of the feature mask: four standard deviations of the kept fraction
-        assert abs(kept[0, 0].float().mean().item() - (1 - p)) < 4 * ((1 - p) * p / 1000) ** 0.5
+        # four thousand Bernoulli draws of the feature masks: four standard deviations of the kept fraction
+        assert abs(kept[:, 0].float().mean().item() - (1 - p)) < 4 * ((1 - p) * p / 4000) ** 0.5
         assert not torch.equal(kept, activation_dropout(x, "identity", p, broadcast=True) != 0)
         same = [activation_dropout(x, "identity", p, broadcast=True, seed=_seed(3)) for _ in range(2)]
         torch.testing.assert_close(same[0], same[1], rtol=0.0, atol=0.0)
 
     @pytest.mark.unit
-    def test_identity_saves_the_mask_alone_and_drops_the_gradient(self):
-        x = torch.randn(64, 4096, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    def test_identity_saves_the_masks_alone_and_drops_the_gradient(self):
+        x = torch.randn(8, 64, 4096, device="cuda", dtype=torch.bfloat16, requires_grad=True)
         saved = []
         with torch.autograd.graph.saved_tensors_hooks(lambda t: saved.append((t.dtype, t.numel())) or t, lambda t: t):
-            out = activation_dropout(x, "identity", 0.1, broadcast=True)
-        assert sorted(saved, key=str) == [(torch.bool, 4096), (torch.int32, 1)]
+            out = activation_dropout(x, "identity", 0.1, broadcast=True, seed=_seed(11))
+        assert sorted(saved, key=str) == [(torch.bool, 8 * 4096), (torch.int32, 1)]
         d_out = torch.randn_like(out)
         out.backward(d_out)
-        kept = out != 0
+        # the mask itself is the oracle: an input of exactly zero (bfloat16 randn draws a few) is zero either way
+        kept = activation_dropout_mask((8, 4096), 0.1, _seed(11), x.device)[:, None, :].expand_as(out)
+        torch.testing.assert_close(out[kept], (x.detach() / 0.9)[kept], rtol=1e-2, atol=1e-2)
         torch.testing.assert_close(x.grad[kept], (d_out / 0.9)[kept], rtol=1e-2, atol=1e-2)
+        assert torch.equal(out[~kept], torch.zeros_like(out[~kept]))
         assert torch.equal(x.grad[~kept], torch.zeros_like(x.grad[~kept]))
+        # sequence-packed states save their sequence ids as well, never a mask of their own size
+        context = PackedAttentionContext.from_lengths(torch.tensor([300, 212], device="cuda"))
+        packed = torch.randn(512, 4096, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+        saved.clear()
+        with torch.autograd.graph.saved_tensors_hooks(lambda t: saved.append((t.dtype, t.numel())) or t, lambda t: t):
+            out = activation_dropout(
+                packed, "identity", 0.1, broadcast=True, sequence_ids=context.sequence_ids, num_sequences=2
+            )
+        assert sorted(saved, key=str) == [(torch.bool, 2 * 4096), (torch.int32, 1), (torch.int64, 512)]
+        out.sum().backward()
+        assert packed.grad.shape == packed.shape
         # without the broadcast the identity saves the seed alone
         saved.clear()
         with torch.autograd.graph.saved_tensors_hooks(lambda t: saved.append((t.dtype, t.numel())) or t, lambda t: t):
@@ -326,40 +367,67 @@ class TestBroadcastActivationDropout:
     def test_with_the_linear_layer_matches_the_separate_modules(self, dtype):
         torch.manual_seed(0)
         linear = torch.nn.Linear(96, 24).cuda().to(dtype)
-        x = torch.randn(3, 11, 96, device="cuda", dtype=dtype, requires_grad=True)
-        d_out = torch.randn(3, 11, 24, device="cuda", dtype=dtype)
-        p = 0.4
-        saved = []
-        with torch.autograd.graph.saved_tensors_hooks(lambda t: saved.append(t) or t, lambda t: t):
-            out = activation_dropout_linear(
-                x, "squared_relu", p, linear.weight, linear.bias, broadcast=True, seed=_seed(5)
-            )
-        # the pre-activation, the seed, the 96 kept features and the weight
-        assert sorted((str(t.dtype), t.numel()) for t in saved) == sorted(
-            [(str(dtype), x.numel()), ("torch.int32", 1), ("torch.bool", 96), (str(dtype), linear.weight.numel())]
-        )
-        out.backward(d_out)
-        keep = activation_dropout_mask((96,), p, _seed(5), x.device)
         reference = torch.nn.Linear(96, 24).cuda().double()
         reference.load_state_dict(linear.state_dict())
-        x_ref = x.detach().double().requires_grad_()
-        expected = reference(torch.where(keep, torch.relu(x_ref) ** 2 / (1 - p), 0.0))
-        expected.backward(d_out.double())
+        p = 0.4
 
         def close(actual, reference_value):
             relative = 1e-4 if dtype == torch.float32 else 2e-2
             scale = float(reference_value.detach().abs().max())
             torch.testing.assert_close(actual.double(), reference_value, rtol=relative, atol=relative * scale)
 
+        # padded states: one mask per batch row
+        x = torch.randn(3, 11, 96, device="cuda", dtype=dtype, requires_grad=True)
+        d_out = torch.randn(3, 11, 24, device="cuda", dtype=dtype)
+        saved = []
+        with torch.autograd.graph.saved_tensors_hooks(lambda t: saved.append(t) or t, lambda t: t):
+            out = activation_dropout_linear(
+                x, "squared_relu", p, linear.weight, linear.bias, broadcast=True, seed=_seed(5)
+            )
+        # the pre-activation, the seed, the three masks and the weight
+        assert sorted((str(t.dtype), t.numel()) for t in saved) == sorted(
+            [(str(dtype), x.numel()), ("torch.int32", 1), ("torch.bool", 3 * 96), (str(dtype), linear.weight.numel())]
+        )
+        out.backward(d_out)
+        keep = activation_dropout_mask((3, 96), p, _seed(5), x.device)
+        x_ref = x.detach().double().requires_grad_()
+        expected = reference(torch.where(keep[:, None, :], torch.relu(x_ref) ** 2 / (1 - p), 0.0))
+        expected.backward(d_out.double())
         close(out, expected)
         close(x.grad, x_ref.grad)
         close(linear.weight.grad, reference.weight.grad)
         close(linear.bias.grad, reference.bias.grad)
 
+        # sequence-packed states: the mask of the row's sequence
+        linear.zero_grad()
+        reference.zero_grad()
+        context = PackedAttentionContext.from_lengths(torch.tensor([5, 6], device="cuda"))
+        packed = torch.randn(11, 96, device="cuda", dtype=dtype, requires_grad=True)
+        d_out = torch.randn(11, 24, device="cuda", dtype=dtype)
+        out = activation_dropout_linear(
+            packed,
+            "squared_relu",
+            p,
+            linear.weight,
+            linear.bias,
+            broadcast=True,
+            sequence_ids=context.sequence_ids,
+            num_sequences=2,
+            seed=_seed(6),
+        )
+        out.backward(d_out)
+        keep = activation_dropout_mask((2, 96), p, _seed(6), x.device)[context.sequence_ids]
+        packed_ref = packed.detach().double().requires_grad_()
+        expected = reference(torch.where(keep, torch.relu(packed_ref) ** 2 / (1 - p), 0.0))
+        expected.backward(d_out.double())
+        close(out, expected)
+        close(packed.grad, packed_ref.grad)
+        close(linear.weight.grad, reference.weight.grad)
+
     @pytest.mark.unit
-    def test_cuda_graph_replays_draw_fresh_feature_masks(self):
+    def test_cuda_graph_replays_draw_fresh_sequence_masks(self):
         torch.manual_seed(3)
-        x = torch.randn(8, 512, device="cuda", requires_grad=True)
+        x = torch.randn(2, 8, 512, device="cuda", requires_grad=True)
 
         def step():
             x.grad = None
@@ -382,8 +450,41 @@ class TestBroadcastActivationDropout:
             torch.cuda.synchronize()
             kept = static_out != 0
             masks.append(kept.clone())
-            # one feature mask for every row: a kept feature is nonzero wherever the activation is, so is its gradient
-            assert torch.equal(kept, kept.any(0)[None] & (x.detach() > 0))
+            # one feature mask per sequence: a kept feature is nonzero wherever the activation is, so is its gradient
+            assert torch.equal(kept, kept.any(1, keepdim=True) & (x.detach() > 0))
             torch.testing.assert_close(static_out[kept], (torch.relu(x.detach()) / 0.75)[kept], rtol=1e-5, atol=1e-5)
             assert torch.equal(x.grad != 0, kept)
         assert not torch.equal(masks[0], masks[1])
+
+    @pytest.mark.unit
+    def test_rejects_states_without_a_batch_axis_or_a_mismatched_packing(self):
+        flat = torch.randn(5, 7, device="cuda")
+        ids = torch.zeros(5, dtype=torch.int64, device="cuda")
+        # token-flat states without their packing would share one mask over the batch
+        with pytest.raises(ValueError, match="padded states"):
+            activation_dropout(flat, "relu", 0.1, broadcast=True)
+        with pytest.raises(ValueError, match="padded states"):
+            activation_dropout(flat[0], "relu", 0.1, broadcast=True)
+        with pytest.raises(ValueError, match="num_sequences"):
+            activation_dropout(flat, "relu", 0.1, broadcast=True, sequence_ids=ids)
+        with pytest.raises(ValueError, match="sequence of every row"):
+            activation_dropout(
+                torch.randn(2, 5, 7, device="cuda"), "relu", 0.1, broadcast=True, sequence_ids=ids, num_sequences=1
+            )
+        with pytest.raises(ValueError, match="sequence of every row"):
+            activation_dropout(flat, "relu", 0.1, broadcast=True, sequence_ids=ids[:3], num_sequences=1)
+        with pytest.raises(ValueError, match="need broadcast=True"):
+            activation_dropout(flat, "relu", 0.1, sequence_ids=ids, num_sequences=1)
+        with pytest.raises(ValueError, match="needs sequence_ids"):
+            activation_dropout(torch.randn(2, 5, 7, device="cuda"), "relu", 0.1, broadcast=True, num_sequences=2)
+        with pytest.raises(TypeError, match="int32 or int64"):
+            activation_dropout(flat, "relu", 0.1, broadcast=True, sequence_ids=ids.float(), num_sequences=1)
+        # empty batches, empty sequences and dropout zero
+        assert activation_dropout(torch.randn(0, 5, 7, device="cuda"), "relu", 0.1, broadcast=True).shape == (0, 5, 7)
+        assert activation_dropout(torch.randn(3, 0, 7, device="cuda"), "relu", 0.1, broadcast=True).shape == (3, 0, 7)
+        empty = PackedAttentionContext.from_lengths(torch.tensor([0, 0], device="cuda"))
+        assert activation_dropout(
+            flat[:0], "relu", 0.1, broadcast=True, sequence_ids=empty.sequence_ids, num_sequences=2
+        ).shape == (0, 7)
+        padded = torch.randn(2, 5, 7, device="cuda")
+        torch.testing.assert_close(activation_dropout(padded, "relu", 0.0, broadcast=True), torch.relu(padded))

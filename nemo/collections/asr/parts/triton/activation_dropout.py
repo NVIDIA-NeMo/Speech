@@ -29,10 +29,13 @@ The mask is a Philox hash of the element index (``tl.rand``)
 with a seed read from a one-element device tensor;
 the seed is drawn on the device for every call, so a CUDA-graph replay draws a fresh mask,
 and a caller may pass a seed for a reproducible mask.
-With ``broadcast=True`` the mask has the width of the last axis alone and every position of the leading axes
-(batch and time) shares it, as RETURNN's ``rf_dropout_broadcast`` draws its feed-forward and residual masks:
-the kernels read the kept features from a vector of ``x.shape[-1]`` booleans,
-``activation_dropout_mask((x.shape[-1],), p, seed, device)``, instead of hashing every element.
+With ``broadcast=True`` every sequence has one mask of the width of the last axis,
+shared by all its positions, as ``BroadcastDropout`` draws them:
+the sequences of padded states ``(..., T, D)`` are the leading indices,
+the sequence of a row of sequence-packed states ``(T_total, D)`` comes from ``sequence_ids``.
+The kernels read the kept features from the ``(sequences, D)`` matrix of booleans
+``activation_dropout_mask((sequences, D), p, seed, device)`` at the row's sequence and the element's column,
+instead of hashing every element.
 The activation and its derivative are evaluated in float32 and the results stored in the input dtype,
 so the output is rounded once where the separate modules round after the activation and after the scaling.
 
@@ -84,7 +87,14 @@ def fused_activation_name(activation: torch.nn.Module) -> str | None:
 
 
 def activation_dropout(
-    x: Tensor, activation: str, p: float, *, broadcast: bool = False, seed: Tensor | None = None
+    x: Tensor,
+    activation: str,
+    p: float,
+    *,
+    broadcast: bool = False,
+    sequence_ids: Tensor | None = None,
+    num_sequences: int | None = None,
+    seed: Tensor | None = None,
 ) -> Tensor:
     """``dropout(activation(x), p)`` of a training step, with ``x`` and the mask's seed saved for the backward.
 
@@ -92,19 +102,28 @@ def activation_dropout(
 
     Args:
         x: the pre-activation, any shape; float32, bfloat16 or float16 on CUDA.
+            With ``broadcast`` padded states ``(..., T, D)`` with at least one batch axis,
+            or with ``sequence_ids`` sequence-packed states ``(T_total, D)``.
         activation: a name in ``FUSED_ACTIVATIONS`` (``identity``, ``relu``, ``squared_relu``, ``silu``, ``gelu``).
         p: dropout probability in ``[0, 1)``; the kept elements are scaled by ``1 / (1 - p)``.
-        broadcast: one mask over the last axis, shared by every position of the leading axes,
+        broadcast: one mask over the last axis per sequence, shared by all positions of the sequence,
             instead of a mask per element.
+        sequence_ids: the sequence of every row of sequence-packed states, an integer tensor of ``T_total``
+            on the device of ``x``; needs ``broadcast`` and ``num_sequences``.
+            The ids are not range-checked (that would cost a device sync): a row whose id is outside
+            ``[0, num_sequences)`` is dropped whole.
+        num_sequences: the number of sequences the ids index.
         seed: one-element integer tensor with the Philox seed of the mask, taken modulo ``2**31``;
             drawn on the device of ``x`` by default, which gives a fresh mask on every CUDA-graph replay.
 
     Returns:
         A tensor of the shape and dtype of ``x``.
     """
-    seed = _checked_seed(x, activation, p, seed, broadcast)
-    keep = _broadcast_keep(x, p, seed) if broadcast else None
-    return torch.ops.nemo_asr.activation_dropout_fwd(x, FUSED_ACTIVATIONS[activation], p, seed, keep)
+    seed = _checked_seed(x, activation, p, seed)
+    keep, sequence_ids, rows_per_sequence = _broadcast_mask(x, p, seed, broadcast, sequence_ids, num_sequences)
+    return torch.ops.nemo_asr.activation_dropout_fwd(
+        x, FUSED_ACTIVATIONS[activation], p, seed, keep, sequence_ids, rows_per_sequence
+    )
 
 
 def activation_dropout_linear(
@@ -115,6 +134,8 @@ def activation_dropout_linear(
     bias: Tensor | None,
     *,
     broadcast: bool = False,
+    sequence_ids: Tensor | None = None,
+    num_sequences: int | None = None,
     seed: Tensor | None = None,
 ) -> Tensor:
     """``linear(dropout(activation(x), p), weight, bias)`` of a training step, with ``x`` saved for the backward.
@@ -124,42 +145,52 @@ def activation_dropout_linear(
 
     Args:
         x: the pre-activation, shape ``(..., D_in)``; float32, bfloat16 or float16 on CUDA.
+            With ``broadcast`` padded states ``(..., T, D_in)`` with at least one batch axis,
+            or with ``sequence_ids`` sequence-packed states ``(T_total, D_in)``.
         activation: a name in ``FUSED_ACTIVATIONS``.
         p: dropout probability in ``[0, 1)``.
         weight: the linear layer's weight, shape ``(D_out, D_in)``.
         bias: the linear layer's bias, shape ``(D_out,)``, or None.
-        broadcast: one mask over ``D_in``, shared by every row of ``x``, instead of a mask per element.
+        broadcast: one mask over ``D_in`` per sequence, shared by all its positions, instead of a mask per element.
+        sequence_ids: the sequence of every row of sequence-packed states, on the device of ``x``;
+            needs ``broadcast`` and ``num_sequences``; see ``activation_dropout`` for ids outside the range.
+        num_sequences: the number of sequences the ids index.
         seed: one-element integer tensor with the Philox seed of the mask, taken modulo ``2**31``,
             drawn on the device by default.
 
     Returns:
         A tensor of shape ``(..., D_out)`` in the dtype the linear layer produces.
     """
-    seed = _checked_seed(x, activation, p, seed, broadcast)
+    seed = _checked_seed(x, activation, p, seed)
     if weight.ndim != 2 or weight.shape[1] != x.shape[-1]:
         raise ValueError(f"weight must have shape (D_out, {x.shape[-1]}), got {tuple(weight.shape)}.")
-    keep = _broadcast_keep(x, p, seed) if broadcast else None
-    return _ActivationDropoutLinear.apply(x, FUSED_ACTIVATIONS[activation], p, seed, keep, weight, bias)
+    keep, sequence_ids, rows_per_sequence = _broadcast_mask(x, p, seed, broadcast, sequence_ids, num_sequences)
+    return _ActivationDropoutLinear.apply(
+        x, FUSED_ACTIVATIONS[activation], p, seed, keep, sequence_ids, rows_per_sequence, weight, bias
+    )
 
 
 def activation_dropout_mask(shape: tuple[int, ...], p: float, seed: Tensor, device: torch.device) -> Tensor:
-    """The kept elements of ``activation_dropout`` for this seed, a bool tensor of ``shape``, for exact comparisons."""
+    """The kept elements of ``activation_dropout`` for this seed, a bool tensor of ``shape``, for exact comparisons.
+
+    For the per-element mask ``shape`` is the shape of ``x``;
+    for the broadcast mask it is ``(sequences, D)``, the mask of every sequence in its row.
+    """
     seed = seed.to(device=device, dtype=torch.int32)
     mask = torch.empty(shape, dtype=torch.bool, device=device)
     numel = mask.numel()
     if numel:
-        _mask_kernel[(triton.cdiv(numel, BLOCK),)](mask, seed, numel, p, BLOCK=BLOCK)
+        # the kernels read and write the booleans as bytes: Triton's one-bit pointers are not reliable
+        _mask_kernel[(triton.cdiv(numel, BLOCK),)](mask.view(torch.uint8), seed, numel, p, BLOCK=BLOCK)
     return mask
 
 
-def _checked_seed(x: Tensor, activation: str, p: float, seed: Tensor | None, broadcast: bool = False) -> Tensor:
+def _checked_seed(x: Tensor, activation: str, p: float, seed: Tensor | None) -> Tensor:
     """Validate the inputs of the kernels and return the int32 seed tensor on the device of ``x``."""
     if not x.is_cuda:
         raise RuntimeError("activation_dropout requires a CUDA tensor.")
     if x.dtype not in ACTIVATION_DROPOUT_DTYPES:
         raise TypeError(f"x must be float32, bfloat16 or float16, got {x.dtype}.")
-    if broadcast and x.ndim == 0:
-        raise ValueError("a broadcast mask needs an axis to span; x has none.")
     if activation not in FUSED_ACTIVATIONS:
         raise ValueError(f"unknown activation {activation!r}; the kernels implement {sorted(FUSED_ACTIVATIONS)}")
     if not 0.0 <= p < 1.0:
@@ -174,11 +205,52 @@ def _checked_seed(x: Tensor, activation: str, p: float, seed: Tensor | None, bro
     return torch.zeros((1,), dtype=torch.int32, device=x.device)
 
 
-def _broadcast_keep(x: Tensor, p: float, seed: Tensor) -> Tensor | None:
-    """The kept features of a broadcast mask, ``x.shape[-1]`` booleans, or None without dropout."""
+def _broadcast_mask(
+    x: Tensor, p: float, seed: Tensor, broadcast: bool, sequence_ids: Tensor | None, num_sequences: int | None
+) -> tuple[Tensor | None, Tensor | None, int]:
+    """The ``(sequences, D)`` mask of a broadcast call with the row-to-sequence map, or none for the per-element mask.
+
+    Returns the kept features, the sequence ids of the rows (None for padded states, whose rows map by position)
+    and the number of rows per sequence (the time axis of padded states, 1 with sequence ids).
+    """
+    if not broadcast:
+        if sequence_ids is not None or num_sequences is not None:
+            raise ValueError("sequence_ids and num_sequences need broadcast=True.")
+        return None, None, 1
+    width = x.shape[-1] if x.ndim else 1
+    if sequence_ids is not None:
+        if x.ndim != 2 or sequence_ids.ndim != 1 or sequence_ids.shape[0] != x.shape[0]:
+            raise ValueError(
+                f"sequence_ids give the sequence of every row of (T_total, D) states, got ids of shape"
+                f" {tuple(sequence_ids.shape)} for states of shape {tuple(x.shape)}."
+            )
+        if not isinstance(num_sequences, int) or isinstance(num_sequences, bool) or num_sequences < 0:
+            raise ValueError(
+                f"num_sequences, the number of sequences the ids index, is needed with sequence_ids, got {num_sequences!r}."
+            )
+        if sequence_ids.dtype not in (torch.int32, torch.int64):
+            raise TypeError(f"sequence_ids must be int32 or int64, got {sequence_ids.dtype}.")
+        if sequence_ids.device != x.device:
+            raise ValueError(f"sequence_ids must be on the device of x, got {sequence_ids.device} and {x.device}.")
+        if num_sequences == 0 and x.shape[0]:
+            raise ValueError(f"{x.shape[0]} rows cannot belong to zero sequences.")
+        # the kernel reads one id per row; a row whose id is outside [0, num_sequences) is dropped whole,
+        # since a range check would cost a device sync
+        sequence_ids = sequence_ids.contiguous()
+        sequences, rows_per_sequence = num_sequences, 1
+    else:
+        if num_sequences is not None:
+            raise ValueError("num_sequences needs sequence_ids.")
+        if x.ndim < 3:
+            raise ValueError(
+                f"a broadcast mask needs padded states of shape (..., T, D) with a batch axis, got {tuple(x.shape)};"
+                " sequence-packed states (T_total, D) need their packing context (sequence_ids)"
+            )
+        rows_per_sequence = x.shape[-2]
+        sequences = x.numel() // (rows_per_sequence * width) if rows_per_sequence and width else 0
     if p <= 0.0:
-        return None
-    return activation_dropout_mask((x.shape[-1],), p, seed, x.device)
+        return None, None, 1
+    return activation_dropout_mask((sequences, width), p, seed, x.device), sequence_ids, rows_per_sequence
 
 
 class _ActivationDropoutLinear(torch.autograd.Function):
@@ -193,119 +265,168 @@ class _ActivationDropoutLinear(torch.autograd.Function):
         p: float,
         seed: Tensor,
         keep: Tensor | None,
+        sequence_ids: Tensor | None,
+        rows_per_sequence: int,
         weight: Tensor,
         bias: Tensor | None,
     ):
-        hidden = torch.ops.nemo_asr.activation_dropout_fwd(x, activation, p, seed, keep)
-        ctx.save_for_backward(x, seed, keep, weight)
-        ctx.activation, ctx.p, ctx.has_bias = activation, p, bias is not None
+        hidden = torch.ops.nemo_asr.activation_dropout_fwd(
+            x, activation, p, seed, keep, sequence_ids, rows_per_sequence
+        )
+        ctx.save_for_backward(x, seed, keep, sequence_ids, weight)
+        ctx.activation, ctx.p, ctx.rows_per_sequence, ctx.has_bias = activation, p, rows_per_sequence, bias is not None
         return torch.nn.functional.linear(hidden, weight, bias)
 
     @staticmethod
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, d_out: Tensor):
-        x, seed, keep, weight = ctx.saved_tensors
-        needs_x, _, _, _, _, needs_weight, needs_bias = ctx.needs_input_grad
+        x, seed, keep, sequence_ids, weight = ctx.saved_tensors
+        needs_x, _, _, _, _, _, _, needs_weight, needs_bias = ctx.needs_input_grad
         d_out_rows = d_out.reshape(-1, d_out.shape[-1])
         # the matmuls run under the autocast state of the forward,
         # so a float32 weight meets a half-precision gradient as in the backward of a linear layer under autocast
         d_weight = d_bias = d_x = None
         if needs_weight:
-            hidden = torch.ops.nemo_asr.activation_dropout_fwd(x, ctx.activation, ctx.p, seed, keep)
+            hidden = torch.ops.nemo_asr.activation_dropout_fwd(
+                x, ctx.activation, ctx.p, seed, keep, sequence_ids, ctx.rows_per_sequence
+            )
             d_weight = torch.matmul(d_out_rows.transpose(0, 1), hidden.reshape(-1, hidden.shape[-1]))
             d_weight = d_weight.to(weight.dtype)
         if needs_bias and ctx.has_bias:
             d_bias = d_out_rows.sum(dim=0).to(weight.dtype)
         if needs_x:
             d_hidden = torch.matmul(d_out, weight).to(x.dtype)
-            d_x = torch.ops.nemo_asr.activation_dropout_bwd(x, d_hidden, ctx.activation, ctx.p, seed, keep)
-        return d_x, None, None, None, None, d_weight, d_bias
+            d_x = torch.ops.nemo_asr.activation_dropout_bwd(
+                x, d_hidden, ctx.activation, ctx.p, seed, keep, sequence_ids, ctx.rows_per_sequence
+            )
+        return d_x, None, None, None, None, None, None, d_weight, d_bias
 
 
-def _kernel_mask(x: Tensor, keep: Tensor | None) -> dict:
-    """The mask arguments of the kernels: the broadcast vector and its width, or the per-element hash."""
+def _launch(kernel, x: Tensor, keep: Tensor | None, sequence_ids: Tensor | None, rows_per_sequence: int, **tensors):
+    """Launch a kernel over ``x``: flat tiles for the per-element mask, one program per row and column tile otherwise."""
+    numel = x.numel()
+    if not numel:
+        return
+    width = x.shape[-1] if x.ndim else 1
+    common = dict(numel=numel, width=width, rows_per_sequence=rows_per_sequence, BLOCK=BLOCK, **tensors)
     if keep is None:
-        return dict(Keep=None, width=1, BROADCAST=False, ALIGNED=True)
-    width = x.shape[-1]
-    if keep.numel() != width or keep.dtype != torch.bool:
-        raise ValueError(f"keep must hold {width} booleans, got {keep.dtype} of shape {tuple(keep.shape)}.")
-    return dict(Keep=keep, width=width, BROADCAST=True, ALIGNED=width % BLOCK == 0)
+        kernel[(triton.cdiv(numel, BLOCK),)](
+            Keep=None, SeqIds=None, num_sequences=0, BROADCAST=False, HAS_IDS=False, **common
+        )
+        return
+    if keep.dtype != torch.bool or keep.ndim != 2 or keep.shape[1] != width:
+        raise ValueError(
+            f"keep must be a (sequences, {width}) bool matrix, got {keep.dtype} of shape {tuple(keep.shape)}."
+        )
+    rows = numel // width
+    if sequence_ids is None and (
+        rows_per_sequence <= 0 or rows % rows_per_sequence or rows // rows_per_sequence != keep.shape[0]
+    ):
+        raise ValueError(f"{rows} rows of {rows_per_sequence} per sequence do not match the {keep.shape[0]} masks.")
+    grid = (rows, triton.cdiv(width, BLOCK))
+    kernel[grid](
+        Keep=keep.view(torch.uint8),
+        SeqIds=sequence_ids,
+        num_sequences=keep.shape[0],
+        BROADCAST=True,
+        HAS_IDS=sequence_ids is not None,
+        **common,
+    )
 
 
 @torch.library.custom_op("nemo_asr::activation_dropout_fwd", mutates_args=(), device_types="cuda")
-def _activation_dropout_fwd(x: Tensor, activation: int, p: float, seed: Tensor, keep: Tensor | None) -> Tensor:
+def _activation_dropout_fwd(
+    x: Tensor,
+    activation: int,
+    p: float,
+    seed: Tensor,
+    keep: Tensor | None,
+    sequence_ids: Tensor | None,
+    rows_per_sequence: int,
+) -> Tensor:
     # the input is made contiguous here as well: a compiled graph may feed the op any layout
     x = x.contiguous()
     out = torch.empty_like(x)
-    numel = x.numel()
-    if numel:
-        _forward_kernel[(triton.cdiv(numel, BLOCK),)](
-            X=x,
-            Out=out,
-            Seed=seed,
-            numel=numel,
-            p=p,
-            scale=1.0 / (1.0 - p),
-            ACT=activation,
-            DROPOUT=p > 0.0,
-            BLOCK=BLOCK,
-            **_kernel_mask(x, keep),
-        )
+    _launch(
+        _forward_kernel,
+        x,
+        keep,
+        sequence_ids,
+        rows_per_sequence,
+        X=x,
+        Out=out,
+        Seed=seed,
+        p=p,
+        scale=1.0 / (1.0 - p),
+        ACT=activation,
+        DROPOUT=p > 0.0,
+    )
     return out
 
 
 @_activation_dropout_fwd.register_fake
-def _activation_dropout_fwd_fake(x, activation, p, seed, keep):
-    del activation, p, seed, keep
+def _activation_dropout_fwd_fake(x, activation, p, seed, keep, sequence_ids, rows_per_sequence):
+    del activation, p, seed, keep, sequence_ids, rows_per_sequence
     # new_empty, not empty_like: the output is contiguous whatever the traced input layout
     return x.new_empty(tuple(x.shape))
 
 
 @torch.library.custom_op("nemo_asr::activation_dropout_bwd", mutates_args=(), device_types="cuda")
 def _activation_dropout_bwd(
-    x: Tensor, d_out: Tensor, activation: int, p: float, seed: Tensor, keep: Tensor | None
+    x: Tensor,
+    d_out: Tensor,
+    activation: int,
+    p: float,
+    seed: Tensor,
+    keep: Tensor | None,
+    sequence_ids: Tensor | None,
+    rows_per_sequence: int,
 ) -> Tensor:
     x, d_out = x.contiguous(), d_out.contiguous()
     d_x = torch.empty_like(x)
-    numel = x.numel()
-    if numel:
-        _backward_kernel[(triton.cdiv(numel, BLOCK),)](
-            X=x,
-            DOut=d_out,
-            DX=d_x,
-            Seed=seed,
-            numel=numel,
-            p=p,
-            scale=1.0 / (1.0 - p),
-            ACT=activation,
-            DROPOUT=p > 0.0,
-            BLOCK=BLOCK,
-            **_kernel_mask(x, keep),
-        )
+    _launch(
+        _backward_kernel,
+        x,
+        keep,
+        sequence_ids,
+        rows_per_sequence,
+        X=x,
+        DOut=d_out,
+        DX=d_x,
+        Seed=seed,
+        p=p,
+        scale=1.0 / (1.0 - p),
+        ACT=activation,
+        DROPOUT=p > 0.0,
+    )
     return d_x
 
 
 @_activation_dropout_bwd.register_fake
-def _activation_dropout_bwd_fake(x, d_out, activation, p, seed, keep):
-    del d_out, activation, p, seed, keep
+def _activation_dropout_bwd_fake(x, d_out, activation, p, seed, keep, sequence_ids, rows_per_sequence):
+    del d_out, activation, p, seed, keep, sequence_ids, rows_per_sequence
     return x.new_empty(tuple(x.shape))
 
 
 def _setup_context(ctx, inputs, output):
     del output
-    x, activation, p, seed, keep = inputs
+    x, activation, p, seed, keep, sequence_ids, rows_per_sequence = inputs
     # the identity's derivative is one: its backward needs the mask alone
-    ctx.save_for_backward(None if activation == FUSED_ACTIVATIONS["identity"] else x, seed, keep)
-    ctx.activation, ctx.p = activation, p
+    ctx.save_for_backward(None if activation == FUSED_ACTIVATIONS["identity"] else x, seed, keep, sequence_ids)
+    ctx.activation, ctx.p, ctx.rows_per_sequence = activation, p, rows_per_sequence
 
 
 def _autograd_backward(ctx, d_out):
-    x, seed, keep = ctx.saved_tensors
+    x, seed, keep, sequence_ids = ctx.saved_tensors
     if x is None:
-        d_x = torch.ops.nemo_asr.activation_dropout_fwd(d_out, ctx.activation, ctx.p, seed, keep)
+        d_x = torch.ops.nemo_asr.activation_dropout_fwd(
+            d_out, ctx.activation, ctx.p, seed, keep, sequence_ids, ctx.rows_per_sequence
+        )
     else:
-        d_x = torch.ops.nemo_asr.activation_dropout_bwd(x, d_out, ctx.activation, ctx.p, seed, keep)
-    return d_x, None, None, None, None
+        d_x = torch.ops.nemo_asr.activation_dropout_bwd(
+            x, d_out, ctx.activation, ctx.p, seed, keep, sequence_ids, ctx.rows_per_sequence
+        )
+    return d_x, None, None, None, None, None, None
 
 
 torch.library.register_autograd("nemo_asr::activation_dropout_fwd", _autograd_backward, setup_context=_setup_context)
@@ -338,17 +459,48 @@ def _activation(x, ACT: tl.constexpr):
 
 
 @triton.jit
-def _keep(Seed, Keep, offsets, width, p, BROADCAST: tl.constexpr, ALIGNED: tl.constexpr, BLOCK: tl.constexpr):
-    """The kept elements of the tile: the Philox hash of the element index, or the broadcast mask at its column."""
+def _tile(
+    Seed,
+    Keep,
+    SeqIds,
+    numel,
+    width,
+    rows_per_sequence,
+    num_sequences,
+    p,
+    DROPOUT: tl.constexpr,
+    BROADCAST: tl.constexpr,
+    HAS_IDS: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
+    """The element offsets of this program, their bounds mask and their kept flags.
+
+    Per-element masks run over flat tiles, with the Philox hash of the element index as the mask.
+    Broadcast masks run one program per row and column tile and read the row's sequence mask:
+    the sequence is the row's id, or its row index divided by the rows per sequence for padded states.
+    """
     if BROADCAST:
-        # the tile's first column from one 64-bit modulo per program; the rest counts on in 32 bits
-        first = ((tl.program_id(0).to(tl.int64) * BLOCK) % width).to(tl.int32)
-        columns = first + tl.arange(0, BLOCK)
-        if not ALIGNED:
-            # a tile that crosses the end of a row wraps; a width that divides the tile never does
-            columns = columns % width
-        return tl.load(Keep + columns)
-    return tl.rand(tl.load(Seed), offsets) >= p
+        # the broadcast path always carries a mask: _launch takes the flat path for dropout zero
+        tl.static_assert(DROPOUT, "the broadcast path needs a mask")
+        row = tl.program_id(0).to(tl.int64)
+        columns = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
+        offsets = row * width + columns
+        mask = columns < width
+        if HAS_IDS:
+            sequence = tl.load(SeqIds + row).to(tl.int64)
+        else:
+            sequence = row // rows_per_sequence
+        # a row whose id lies outside the mask matrix is dropped whole instead of read out of bounds
+        in_range = (sequence >= 0) & (sequence < num_sequences)
+        keep = tl.load(Keep + sequence * width + columns, mask=mask & in_range, other=0) != 0
+    else:
+        offsets = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+        mask = offsets < numel
+        if DROPOUT:
+            keep = tl.rand(tl.load(Seed), offsets) >= p
+        else:
+            keep = mask
+    return offsets, mask, keep
 
 
 @triton.jit
@@ -357,22 +509,26 @@ def _forward_kernel(
     Out,
     Seed,
     Keep,
+    SeqIds,
     numel,
     width,
+    rows_per_sequence,
+    num_sequences,
     p,
     scale,
     ACT: tl.constexpr,
     DROPOUT: tl.constexpr,
     BROADCAST: tl.constexpr,
-    ALIGNED: tl.constexpr,
+    HAS_IDS: tl.constexpr,
     BLOCK: tl.constexpr,
 ):
-    offsets = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
-    mask = offsets < numel
+    offsets, mask, keep = _tile(
+        Seed, Keep, SeqIds, numel, width, rows_per_sequence, num_sequences, p, DROPOUT, BROADCAST, HAS_IDS, BLOCK
+    )
     x = tl.load(X + offsets, mask=mask, other=0.0).to(tl.float32)
     y, _ = _activation(x, ACT)
     if DROPOUT:
-        y = tl.where(_keep(Seed, Keep, offsets, width, p, BROADCAST, ALIGNED, BLOCK), y * scale, 0.0)
+        y = tl.where(keep, y * scale, 0.0)
     tl.store(Out + offsets, y.to(Out.dtype.element_ty), mask=mask)
 
 
@@ -383,24 +539,28 @@ def _backward_kernel(
     DX,
     Seed,
     Keep,
+    SeqIds,
     numel,
     width,
+    rows_per_sequence,
+    num_sequences,
     p,
     scale,
     ACT: tl.constexpr,
     DROPOUT: tl.constexpr,
     BROADCAST: tl.constexpr,
-    ALIGNED: tl.constexpr,
+    HAS_IDS: tl.constexpr,
     BLOCK: tl.constexpr,
 ):
-    offsets = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
-    mask = offsets < numel
+    offsets, mask, keep = _tile(
+        Seed, Keep, SeqIds, numel, width, rows_per_sequence, num_sequences, p, DROPOUT, BROADCAST, HAS_IDS, BLOCK
+    )
     x = tl.load(X + offsets, mask=mask, other=0.0).to(tl.float32)
     d_out = tl.load(DOut + offsets, mask=mask, other=0.0).to(tl.float32)
     _, dy = _activation(x, ACT)
     d_x = dy * d_out
     if DROPOUT:
-        d_x = tl.where(_keep(Seed, Keep, offsets, width, p, BROADCAST, ALIGNED, BLOCK), d_x * scale, 0.0)
+        d_x = tl.where(keep, d_x * scale, 0.0)
     tl.store(DX + offsets, d_x.to(DX.dtype.element_ty), mask=mask)
 
 
@@ -408,4 +568,4 @@ def _backward_kernel(
 def _mask_kernel(Mask, Seed, numel, p, BLOCK: tl.constexpr):
     offsets = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
     mask = offsets < numel
-    tl.store(Mask + offsets, (tl.rand(tl.load(Seed), offsets) >= p).to(tl.int1), mask=mask)
+    tl.store(Mask + offsets, (tl.rand(tl.load(Seed), offsets) >= p).to(tl.uint8), mask=mask)

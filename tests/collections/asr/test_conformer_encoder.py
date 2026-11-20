@@ -31,11 +31,13 @@ from nemo.collections.asr.parts.packed_sequence import (
 )
 from nemo.collections.asr.parts.submodules import conformer_modules
 from nemo.collections.asr.parts.submodules import packed_attention as packed_attention_module
+from nemo.collections.asr.parts.submodules.packed_attention import PackedAttentionContext
 from nemo.collections.asr.parts.submodules.broadcast_dropout import BroadcastDropout
 from nemo.collections.asr.parts.submodules.conformer_modules import (
     ConformerConvolution,
     ConformerFeedForward,
     ConformerLayer,
+    FusedBroadcastDropout,
 )
 from nemo.collections.asr.parts.submodules.multi_head_attention import (
     MultiHeadAttention,
@@ -378,7 +380,7 @@ class TestConformerFeedForwardActivationDropout:
 
 
 class TestDropoutBroadcast:
-    """`dropout_broadcast`: one mask over the feature axis per call, shared over batch and time."""
+    """`dropout_broadcast`: one mask over the feature axis per sequence, shared over the sequence's positions."""
 
     @staticmethod
     def _dropouts(encoder):
@@ -399,7 +401,10 @@ class TestDropoutBroadcast:
     def test_option_reaches_every_layer_and_leaves_evaluation_unchanged(self):
         torch.manual_seed(0)
         encoder = _composed_encoder(dropout=0.1, dropout_pre_encoder=0.1, dropout_broadcast=True)
-        assert all(type(module) is BroadcastDropout and module.p == 0.1 for module in self._dropouts(encoder))
+        assert all(isinstance(module, BroadcastDropout) and module.p == 0.1 for module in self._dropouts(encoder))
+        # the layers take the kernel form, the positional encoding the plain module
+        assert all(type(module) is FusedBroadcastDropout for module in list(self._dropouts(encoder))[1:])
+        assert type(encoder.pos_enc.dropout) is BroadcastDropout
         assert type(encoder.layers[0].self_attn.dropout) is torch.nn.Dropout
         default = _composed_encoder(dropout=0.1, dropout_pre_encoder=0.1)
         default.load_state_dict(encoder.state_dict())
@@ -421,29 +426,6 @@ class TestDropoutBroadcast:
             _composed_encoder(dropout=0.1, dropout_broadcast=True, feed_forward=PlainFeedForward)
 
     @pytest.mark.unit
-    @pytest.mark.parametrize("device_type", ["cpu", pytest.param("cuda", marks=pytest.mark.run_only_on("GPU"))])
-    def test_module_shares_one_mask_over_the_leading_axes(self, device_type):
-        torch.manual_seed(0)
-        module = BroadcastDropout(0.5).to(device_type).train()
-        assert repr(module) == "BroadcastDropout(p=0.5)"
-        x = torch.ones(4, 7, 1000, device=device_type, requires_grad=True)
-        out = module(x)
-        kept = out != 0
-        assert torch.equal(kept, kept[:1, :1].expand_as(kept))
-        assert 0.4 < kept[0, 0].float().mean().item() < 0.6
-        torch.testing.assert_close(out[kept], torch.full_like(out[kept], 2.0))
-        out.sum().backward()
-        assert torch.equal(x.grad != 0, kept) and torch.equal(x.grad[kept], torch.full_like(out[kept], 2.0))
-        assert not torch.equal(module(x) != 0, kept)
-        module.eval()
-        assert module(x) is x
-        assert BroadcastDropout(0.0).train()(x) is x
-        with pytest.raises(ValueError, match=r"\[0, 1\)"):
-            BroadcastDropout(1.0)
-        half = module.train()(x.detach().to(torch.bfloat16))
-        assert half.dtype == torch.bfloat16 and set(half.unique().tolist()) == {0.0, 2.0}
-
-    @pytest.mark.unit
     def test_option_reaches_the_input_dropout_of_every_attention_model(self):
         """The pre-encoder dropout follows the option in the positional encodings and in the rope path."""
         pre = dict(dropout=0.1, dropout_pre_encoder=0.2, dropout_emb=0.1, dropout_broadcast=True)
@@ -461,13 +443,14 @@ class TestDropoutBroadcast:
         assert type(_composed_encoder(self_attention_model="rope", dropout_pre_encoder=0.2).dropout_pre_encoder) is (
             torch.nn.Dropout
         )
-        # a positional encoding with the option drops whole features of the input in training
+        # a positional encoding with the option drops whole features of every sequence of its input
         encoding = RelPositionalEncoding(d_model=16, dropout_rate=0.5, max_len=64, dropout_broadcast=True).train()
         encoding.extend_pe(5, torch.device("cpu"), torch.float32)
         torch.manual_seed(0)
         out, _ = encoding(torch.ones(2, 5, 16))
         kept = out != 0
-        assert torch.equal(kept, kept[:1, :1].expand_as(kept)) and 0 < kept[0, 0].sum() < 16
+        assert torch.equal(kept, kept[:, :1].expand_as(kept)) and 0 < kept[0, 0].sum() < 16
+        assert not torch.equal(kept[0, 0], kept[1, 0])
         assert type(RelPositionalEncoding(d_model=16, dropout_rate=0.5).dropout) is torch.nn.Dropout
         # a change of the attention model keeps the option from the config
         rel_pos._cfg = OmegaConf.create(
@@ -488,6 +471,45 @@ class TestDropoutBroadcast:
         assert type(rel_pos.dropout_pre_encoder) is BroadcastDropout and rel_pos.dropout_pre_encoder.p == 0.2
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("device_type", ["cpu", pytest.param("cuda", marks=pytest.mark.run_only_on("GPU"))])
+    def test_fused_module_keeps_the_semantics_of_the_plain_module(self, device_type):
+        """Padded states get one mask per sequence over time, packed rows the mask of their sequence."""
+        torch.manual_seed(0)
+        module = FusedBroadcastDropout(0.5).to(device_type).train()
+        assert repr(module) == "FusedBroadcastDropout(p=0.5)"
+        x = torch.ones(4, 7, 1000, device=device_type, requires_grad=True)
+        out = module(x)
+        kept = out != 0
+        assert torch.equal(kept, kept[:, :1].expand_as(kept))
+        assert not torch.equal(kept[0, 0], kept[3, 0])
+        assert 0.4 < kept[:, 0].float().mean().item() < 0.6
+        torch.testing.assert_close(out[kept], torch.full_like(out[kept], 2.0))
+        out.sum().backward()
+        assert torch.equal(x.grad != 0, kept) and torch.equal(x.grad[kept], torch.full_like(out[kept], 2.0))
+        assert not torch.equal(module(x) != 0, kept)
+        # sequence-packed states with their packing
+        lengths = torch.tensor([4, 1, 0, 6], device=device_type)
+        context = PackedAttentionContext.from_lengths(lengths)
+        packed = torch.ones(11, 1000, device=device_type, dtype=torch.bfloat16, requires_grad=True)
+        out = module(packed, context)
+        assert out.dtype == torch.bfloat16 and set(out.unique().tolist()) == {0.0, 2.0}
+        kept = (out != 0).split(lengths.tolist())
+        assert all(torch.equal(rows, rows[:1].expand_as(rows)) for rows in kept)
+        assert not torch.equal(kept[0][0], kept[3][0])
+        out.float().sum().backward()
+        assert torch.equal(packed.grad != 0, out != 0)
+        # what the plain module refuses, the fused one refuses with the same words
+        with pytest.raises(ValueError, match="packing context"):
+            module(torch.ones(11, 1000, device=device_type))
+        with pytest.raises(ValueError, match="packing context of 11 tokens"):
+            module(torch.ones(5, 1000, device=device_type), context)
+        module.eval()
+        assert module(x) is x and module(packed, context) is packed
+        assert FusedBroadcastDropout(0.0).train()(x) is x
+        # a rate of one is torch's range, served by the plain path
+        assert (FusedBroadcastDropout(1.0).to(device_type).train()(x) == 0).all()
+
+    @pytest.mark.unit
     def test_feed_forward_on_cpu_runs_the_modules_with_the_broadcast_mask(self):
         torch.manual_seed(0)
         module = ConformerFeedForward(16, 32, 0.5, activation="squared_relu", dropout_broadcast=True).train()
@@ -497,6 +519,15 @@ class TestDropoutBroadcast:
         torch.manual_seed(1)
         expected = module.linear2(module.dropout(module.activation(module.linear1(x))))
         torch.testing.assert_close(out, expected)
+        context = PackedAttentionContext.from_lengths(torch.tensor([5, 6]))
+        packed = torch.randn(11, 16)
+        torch.manual_seed(2)
+        out = module(packed, context=context)
+        torch.manual_seed(2)
+        expected = module.linear2(module.dropout(module.activation(module.linear1(packed)), context))
+        torch.testing.assert_close(out, expected)
+        with pytest.raises(ValueError, match="packing context"):
+            module(packed)
 
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
@@ -515,7 +546,21 @@ class TestDropoutBroadcast:
 
         monkeypatch.setattr(conformer_modules, "activation_dropout_linear", spy)
         out = module(x)
-        assert calls == [{"broadcast": True}] and out.shape == (4, 50, 16)
+        assert calls == [{"broadcast": True, "sequence_ids": None, "num_sequences": None}] and out.shape == (4, 50, 16)
+        context = PackedAttentionContext.from_lengths(torch.tensor([5, 6], device="cuda"))
+        packed_out = module(torch.randn(11, 16, device="cuda"), context=context)
+        assert packed_out.shape == (11, 16) and calls[-1]["num_sequences"] == 2
+        assert calls[-1]["sequence_ids"] is context.sequence_ids
+        with pytest.raises(ValueError, match="padded states"):
+            module(torch.randn(11, 16, device="cuda"))
+        # the training form: packed states under bfloat16 autocast, forward and backward through the fused path
+        packed = torch.randn(11, 16, device="cuda", requires_grad=True)
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            packed_out = module(packed, context=context)
+        assert packed_out.dtype == torch.bfloat16 and calls[-1]["num_sequences"] == 2
+        packed_out.float().sum().backward()
+        assert packed.grad.dtype == torch.float32 and torch.isfinite(packed.grad).all()
+        assert all(torch.isfinite(p.grad).all() for p in module.parameters())
         # the expectation over draws is the evaluation output, as with the per-element mask
         module.eval()
         with torch.no_grad():
@@ -524,6 +569,36 @@ class TestDropoutBroadcast:
             draws = torch.stack([module(x) for _ in range(1000)])
         torch.testing.assert_close(draws.mean(0), expected, atol=0.1, rtol=0.0)
         assert not torch.equal(draws[0], draws[1])
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device_type", ["cpu", pytest.param("cuda", marks=pytest.mark.run_only_on("GPU"))])
+    def test_packed_forward_passes_the_packing_to_the_dropouts(self, device_type):
+        """The packed encoder forward with the option gives every token the mask of its sequence."""
+        torch.manual_seed(0)
+        encoder = _packed_encoder(dropout=0.3, dropout_pre_encoder=0.2, dropout_broadcast=True).to(device_type).train()
+        lengths = torch.tensor([40, 25, 61], device=device_type)
+        features = _packed_test_features(lengths, dtype=torch.float32, device=device_type)
+        captured = []
+        encoder.layers[0].dropout.register_forward_hook(lambda module, args, out: captured.append((args[0], out)))
+        packed = encoder.forward_sequence_packed(features, lengths)
+        assert len(captured) == 4 and torch.isfinite(packed.data).all()
+        for branch, out in captured:
+            # the zero pattern of the rows with nonzero inputs (a zero frame stays zero under any mask)
+            kept = [
+                (rows != 0)[inputs.ne(0).all(1)]
+                for inputs, rows in zip(branch.split(packed.lengths.tolist()), out.split(packed.lengths.tolist()))
+            ]
+            assert all(torch.equal(rows, rows[:1].expand_as(rows)) for rows in kept)
+            assert not torch.equal(kept[0][0], kept[2][0])
+        packed.data.square().mean().backward()
+        assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in encoder.parameters())
+        # the default stays per token
+        plain = _packed_encoder(dropout=0.3, dropout_pre_encoder=0.2).to(device_type).train()
+        captured.clear()
+        plain.layers[0].dropout.register_forward_hook(lambda module, args, out: captured.append((args[0], out)))
+        plain.forward_sequence_packed(features, lengths)
+        kept = captured[0][1] != 0
+        assert not torch.equal(kept[:1].expand_as(kept), kept)
 
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit

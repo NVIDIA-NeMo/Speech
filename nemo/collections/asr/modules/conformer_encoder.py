@@ -34,7 +34,7 @@ from nemo.collections.asr.parts.packed_sequence import (
 )
 from nemo.collections.asr.parts.submodules.broadcast_dropout import BroadcastDropout
 from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D
-from nemo.collections.asr.parts.submodules.conformer_modules import ConformerLayer, build_self_attention
+from nemo.collections.asr.parts.submodules.conformer_modules import ConformerLayer, apply_dropout, build_self_attention
 from nemo.collections.asr.parts.submodules.multi_head_attention import (
     LocalAttRelPositionalEncoding,
     MultiHeadAttention,
@@ -174,8 +174,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         dropout_att (float): the dropout rate used for the attention layer
             Defaults to 0.0.
         dropout_broadcast (bool): draw the masks of the pre-encoder dropout and of the feed-forward and residual
-            dropouts of every layer once per call over the feature axis and share them over batch and time,
-            instead of a mask per element (see `ConformerLayer` and `PositionalEncoding`);
+            dropouts of every layer once per sequence over the feature axis and share them over the sequence's
+            positions, instead of a mask per element (see `ConformerLayer` and `PositionalEncoding`);
             the positional-embedding and attention dropouts stay per element.
             Defaults to False.
         stochastic_depth_drop_prob (float): if non-zero, will randomly drop
@@ -929,10 +929,11 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         # the relative-position table covers the padded length the attention kernels see
         self.update_max_seq_length(seq_length=attention_context.padded_max_seqlen, device=packed.data.device)
         x = packed.data
+        # a broadcast pre-encoder dropout takes the packing to give every row the mask of its sequence
         if self.self_attention_model == 'rope':
             if self.xscale:
                 x = x * self.xscale
-            x = self.dropout_pre_encoder(x)
+            x = apply_dropout(self.dropout_pre_encoder, x, attention_context)
             pos_emb = None
         elif self.self_attention_model == 'abs_pos':
             if self.pos_enc.xscale:
@@ -940,12 +941,12 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             token_pos_emb = self.pos_enc.pe[0].index_select(0, attention_context.position_ids)
             if self.pos_enc.dropout_emb:
                 token_pos_emb = self.pos_enc.dropout_emb(token_pos_emb)
-            x = self.pos_enc.dropout(x + token_pos_emb)
+            x = apply_dropout(self.pos_enc.dropout, x + token_pos_emb, attention_context)
             pos_emb = None
         else:
             if self.pos_enc.xscale:
                 x = x * self.pos_enc.xscale
-            x = self.pos_enc.dropout(x)
+            x = apply_dropout(self.pos_enc.dropout, x, attention_context)
             # the relative positions L - 1 down to -(L - 1) for the padded length L, as RelPositionalEncoding.forward
             center_pos = self.pos_enc.pe.size(1) // 2 + 1
             padded_len = attention_context.padded_max_seqlen

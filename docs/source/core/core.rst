@@ -520,6 +520,11 @@ so construct the optimizer with ``capturable: true`` (or compile the step before
 and pass the learning rate as a tensor when the compiled step is captured,
 since the compiled step performs no capture check.
 
+.. code-block:: python
+
+    # a step to be captured in a CUDA graph: the schedule fills the tensor learning rate in place
+    optimizer = Muon(model.parameters(), lr=torch.tensor(0.02, device="cuda"), capturable=True)
+
 Optimizer Params
 ~~~~~~~~~~~~~~~~
 

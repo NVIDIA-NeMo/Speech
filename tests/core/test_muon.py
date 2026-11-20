@@ -15,7 +15,7 @@
 
 import copy
 import math
-from typing import Tuple
+from typing import Sequence, Tuple
 from unittest import mock
 
 import pytest
@@ -333,7 +333,9 @@ def _run_layered(optimizer: Muon, parameters: torch.nn.ParameterDict, steps: int
 MUON_FOREACH_ATOL = 0.05 * LR * 2.5**0.5
 
 
-def _assert_same_result(loop: Muon, foreach: Muon, loop_params, foreach_params) -> None:
+def _assert_same_result(
+    loop: Muon, foreach: Muon, loop_params: torch.nn.ParameterDict, foreach_params: torch.nn.ParameterDict
+) -> None:
     for name in loop_params:
         a, b = loop_params[name], foreach_params[name]
         loop_state, foreach_state = loop.state[a], foreach.state[b]
@@ -484,7 +486,9 @@ class TestMuonForeach:
             zeropower_via_newtonschulz5(torch.zeros(2, 3, 4, 5))
 
 
-def _run_with_learning_rates(optimizer: Muon, parameters: torch.nn.ParameterDict, learning_rates) -> None:
+def _run_with_learning_rates(
+    optimizer: Muon, parameters: torch.nn.ParameterDict, learning_rates: Sequence[float]
+) -> None:
     """Steps at the given learning rates (a tensor learning rate is filled in place); two parameters skip step 1."""
     for step, learning_rate in enumerate(learning_rates):
         for group in optimizer.param_groups:
@@ -504,7 +508,9 @@ def _run_with_learning_rates(optimizer: Muon, parameters: torch.nn.ParameterDict
 CAPTURABLE_TOLERANCE = dict(rtol=1e-5, atol=1e-6)
 
 
-def _assert_close_result(reference: Muon, other: Muon, reference_params, other_params) -> None:
+def _assert_close_result(
+    reference: Muon, other: Muon, reference_params: torch.nn.ParameterDict, other_params: torch.nn.ParameterDict
+) -> None:
     for name in reference_params:
         a, b = reference_params[name], other_params[name]
         torch.testing.assert_close(b, a, **CAPTURABLE_TOLERANCE, msg=name)
@@ -550,6 +556,10 @@ class TestMuonCapturable:
             Muon(parameters.parameters(), lr=torch.tensor(-LR))
         with pytest.raises(ValueError, match="one element"):
             Muon(parameters.parameters(), lr=torch.tensor([0.1, 0.2]))
+        # a half-precision learning rate would round the decay factor 1 - lr * weight_decay to 1
+        for dtype in (torch.bfloat16, torch.float16, torch.int64):
+            with pytest.raises(ValueError, match="float32 or float64"):
+                Muon(parameters.parameters(), lr=torch.tensor(1, dtype=dtype))
 
     @pytest.mark.unit
     @pytest.mark.parametrize('foreach', [False, True])

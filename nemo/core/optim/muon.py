@@ -91,7 +91,7 @@ class Muon(Optimizer):
 
     For a step captured in a CUDA graph, the learning rate and the AdamW step count must live on the device,
     since the capture bakes Python numbers in:
-    pass ``lr`` as a one-element tensor on the parameters' device,
+    pass ``lr`` as a one-element float32 or float64 tensor on the parameters' device,
     which the step reads from ``param_groups[i]['lr']`` every time
     (a scheduler writes the new value into that tensor in place, as ``torch.optim.lr_scheduler`` does),
     and set ``capturable=True``, which keeps each parameter's AdamW step count as a float tensor on its device
@@ -149,8 +149,12 @@ class Muon(Optimizer):
         foreach: bool = True,
         capturable: bool = False,
     ) -> None:
-        if isinstance(lr, torch.Tensor) and lr.numel() != 1:
-            raise ValueError(f"A tensor learning rate needs one element, got shape {tuple(lr.shape)}")
+        if isinstance(lr, torch.Tensor):
+            if lr.numel() != 1:
+                raise ValueError(f"A tensor learning rate needs one element, got shape {tuple(lr.shape)}")
+            if not lr.dtype.is_floating_point or torch.finfo(lr.dtype).bits < 32:
+                # a half-precision learning rate rounds the decay factor 1 - lr * weight_decay to 1
+                raise ValueError(f"A tensor learning rate needs a float32 or float64 tensor, got {lr.dtype}")
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
         if not 0.0 <= momentum < 1.0:

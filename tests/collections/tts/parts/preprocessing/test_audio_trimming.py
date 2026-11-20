@@ -81,7 +81,7 @@ class TestAudioTrimming:
         trimmer = EnergyAudioTrimmer(volume_norm=volume_norm, speech_frame_threshold=3, pad_seconds=0.1)
         trimmed, start_sample, end_sample = trimmer.trim_audio(audio, sample_rate, audio_id="test")
 
-        assert 0 < start_sample < sample_rate
-        assert 2 * sample_rate < end_sample < len(audio)
+        # Speech frames 30 to 64 (2048-sample centered windows, hop 512), padded by 0.1 s = 1600 samples.
+        assert (start_sample, end_sample) == (13760, 34880)
         # volume_norm only changes the signal used for speech detection, not the returned audio.
         np.testing.assert_array_equal(trimmed, audio[start_sample:end_sample])

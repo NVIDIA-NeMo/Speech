@@ -74,6 +74,7 @@ class TestFusedActivationName:
 
 
 @requires_cuda
+@pytest.mark.gpu
 class TestActivationDropoutKernel:
     @pytest.mark.unit
     @pytest.mark.parametrize("activation", sorted(FUSED_ACTIVATIONS))
@@ -257,6 +258,8 @@ class TestActivationDropoutKernel:
         assert activation_dropout(x[:0], "relu", 0.1).shape == (0, 8)
 
 
+@requires_cuda
+@pytest.mark.gpu
 class TestBroadcastActivationDropout:
     """One mask over the last axis per sequence, shared by its positions, read from a (sequences, D) matrix."""
 

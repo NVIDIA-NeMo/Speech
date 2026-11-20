@@ -92,6 +92,7 @@ class BufferedRNNTPipeline(BasePipeline):
         self.stateful = cfg.streaming.stateful
         self.stateless = not self.stateful
         self.batch_size = cfg.streaming.batch_size
+        self.num_slots = cfg.streaming.get('num_slots') or self.batch_size
 
         self.chunk_size = cfg.streaming.chunk_size
         self.left_padding_size = cfg.streaming.left_padding_size
@@ -282,32 +283,25 @@ class BufferedRNNTPipeline(BasePipeline):
         return start, end
 
     def encode_raw_signals(
-        self, frames: list[Frame], raw_signals: list[Tensor], left_paddings: list[int]
+        self, frames: list[Frame], raw_signals: Tensor, left_paddings: Tensor
     ) -> tuple[Tensor, Tensor]:
         """
         Run Encoder part on the audio buffers.
         Args:
             frames: (list[Frame]) Frames to transcribe.
-            raw_signals: (list[Tensor]) Audio buffers.
-            left_paddings: (list[int]) Left paddings for audio buffers.
+            raw_signals: (Tensor) Audio buffers, [batch, buffer_size].
+            left_paddings: (Tensor) Left paddings of the audio buffers, [batch].
         Returns:
             (tuple[Tensor, Tensor]) Encoded signals and their lengths.
         """
 
+        buffer_len = raw_signals.size(1)
         if self.right_padding:
-            left_paddings = torch.tensor(left_paddings, dtype=torch.int64, device=self.device)
-
-        buffers = []
-        for i in range(len(raw_signals)):
-            buffer = raw_signals[i]
-            if self.right_padding:
-                # Roll the buffered frames to the left by the left padding
-                # This is done to avoid the padding at the beginning of the buffered frames
-                # which can cause the performance degradation
-                lpad = left_paddings[i].item()
-                if lpad > 0:
-                    buffer = buffer.roll(shifts=-lpad)
-            buffers.append(buffer.unsqueeze_(0))
+            # Roll every buffer to the left by its left padding
+            # This is done to avoid the padding at the beginning of the buffered frames
+            # which can cause the performance degradation
+            positions = torch.arange(buffer_len, device=raw_signals.device) + left_paddings.unsqueeze(1)
+            raw_signals = raw_signals.gather(1, positions % buffer_len)
 
         # Only final frames have right padding
         # Calculate right paddings
@@ -316,13 +310,12 @@ class BufferedRNNTPipeline(BasePipeline):
         )
 
         # Create and adjust the buffer lens
-        buffer_lens = torch.tensor([buffers[0].size(1)] * len(buffers), device=self.device)
-        buffer_lens = buffer_lens - right_paddings
+        buffer_lens = buffer_len - right_paddings
         if self.right_padding:
             buffer_lens = buffer_lens - left_paddings
 
         feature_buffers, feature_buffer_lens = self.preprocess(
-            buffers=torch.cat(buffers).to(self.device),
+            buffers=raw_signals,
             buffer_lens=buffer_lens,
             expected_feature_buffer_len=self.expected_feature_buffer_len,
         )

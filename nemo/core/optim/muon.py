@@ -74,17 +74,18 @@ class Muon(Optimizer):
     set ``weight_decay: 0.0`` on a parameter group to exclude it.
 
     ``foreach`` selects the form of the step.
-    The per-parameter loop (``False``, the default) updates one parameter after the other.
-    The multi-tensor form (``True``) runs one batched Newton-Schulz iteration
+    The multi-tensor form (``True``, the default) runs one batched Newton-Schulz iteration
     for all matrices of one shape
     and the momentum, weight decay and AdamW arithmetic as ``torch._foreach`` operations,
     a few dozen kernel launches per step instead of a sequence per parameter;
     it allocates the stacked copies of the largest shape group and their iteration intermediates
     while it runs.
+    The per-parameter loop (``False``) updates one parameter after the other.
     Both forms keep the same per-parameter state, so a state dict moves between them,
     and compute the same arithmetic for float32 parameters;
     their updates differ only where the batched matrix products of the Newton-Schulz iteration
-    round differently in bfloat16.
+    round differently in bfloat16, which leaves the iteration's error against a float64 evaluation
+    the same or smaller (about two percent in either form, the bfloat16 error of the iteration itself).
     With bfloat16 or float16 parameters on CPU the multi-tensor form applies the scalar coefficients
     (``momentum``, the AdamW coefficients, the decay factor) rounded to the parameter dtype,
     as the CPU ``torch._foreach`` scalar operations do; the CUDA operations apply them exactly.
@@ -146,7 +147,7 @@ class Muon(Optimizer):
         adam_lr_ratio: float = 0.025,
         adam_dim_threshold: int = 8192,
         use_muon: Optional[bool] = None,
-        foreach: bool = False,
+        foreach: bool = True,
         capturable: bool = False,
     ) -> None:
         _validate_lr(lr)
@@ -197,7 +198,7 @@ class Muon(Optimizer):
         super().__setstate__(state)
         for group in self.param_groups:
             # an optimizer state saved before the options existed has neither in its parameter groups
-            group.setdefault('foreach', False)
+            group.setdefault('foreach', True)
             group.setdefault('capturable', False)
         self._convert_step_counts()
 

@@ -354,14 +354,14 @@ class TestMuonForeach:
     @pytest.mark.unit
     def test_option_default_and_parsing(self):
         parameters = _parameters()
-        # the multi-tensor form is opt-in: its updates differ from the loop's at bfloat16 rounding
-        assert Muon(parameters.parameters(), lr=LR).param_groups[0]['foreach'] is False
-        assert Muon(parameters.parameters(), lr=LR, foreach=True).param_groups[0]['foreach'] is True
-        assert optim.parse_optimizer_args('muon', {'name': 'auto'})['foreach'] is False
-        assert optim.parse_optimizer_args('muon', {'name': 'auto', 'foreach': True})['foreach'] is True
-        assert config.optimizers.MuonParams().foreach is False
-        mixed = Muon([{'params': [parameters['tall']], 'foreach': True}, {'params': [parameters['hidden']]}], lr=LR)
-        assert [group['foreach'] for group in mixed.param_groups] == [True, False]
+        # the multi-tensor form is the default: the same update, as accurate as the loop's and faster
+        assert Muon(parameters.parameters(), lr=LR).param_groups[0]['foreach'] is True
+        assert Muon(parameters.parameters(), lr=LR, foreach=False).param_groups[0]['foreach'] is False
+        assert optim.parse_optimizer_args('muon', {'name': 'auto'})['foreach'] is True
+        assert optim.parse_optimizer_args('muon', {'name': 'auto', 'foreach': False})['foreach'] is False
+        assert config.optimizers.MuonParams().foreach is True
+        mixed = Muon([{'params': [parameters['tall']], 'foreach': False}, {'params': [parameters['hidden']]}], lr=LR)
+        assert [group['foreach'] for group in mixed.param_groups] == [False, True]
 
     @pytest.mark.unit
     def test_foreach_matches_the_loop_on_mixed_shape_groups(self):
@@ -421,20 +421,20 @@ class TestMuonForeach:
             del group['foreach']
             del group['capturable']
         restored_params = copy.deepcopy(parameters)
-        # the destination's choice is kept, the default is the loop
+        # the destination's choice is kept, the default is the multi-tensor form
         options = {} if foreach is None else {'foreach': foreach}
         restored = _layered_optimizer(restored_params, capturable=capturable, **options)
         restored.load_state_dict(saved)
-        assert all(group['foreach'] is bool(foreach) for group in restored.param_groups)
+        assert all(group['foreach'] is (foreach is not False) for group in restored.param_groups)
         assert all(group['capturable'] is capturable for group in restored.param_groups)
-        # an unpickled optimizer of that time gets the loop
+        # an unpickled optimizer of that time gets the default as well
         legacy = copy.deepcopy(optimizer.__getstate__())
         for group in legacy['param_groups']:
             del group['foreach']
             del group['capturable']
         unpickled = Muon.__new__(Muon)
         unpickled.__setstate__(legacy)
-        assert all(group['foreach'] is False and group['capturable'] is False for group in unpickled.param_groups)
+        assert all(group['foreach'] is True and group['capturable'] is False for group in unpickled.param_groups)
         assert isinstance(restored.state[restored_params['bias_0']]['step'], torch.Tensor) is capturable
         _set_gradients(parameters, 650)
         _set_gradients(restored_params, 650)
@@ -478,11 +478,13 @@ class TestMuonForeach:
         parameters = _layered_parameters()
         _set_gradients(parameters, 700)
         with mock.patch.object(torch, '_foreach_mul_', wraps=torch._foreach_mul_) as spy:
-            _layered_optimizer(parameters).step()
             _layered_optimizer(parameters, foreach=False).step()
             spy.assert_not_called()
+            _layered_optimizer(parameters).step()
+            calls = spy.call_count
+            assert calls > 0
             _layered_optimizer(parameters, foreach=True).step()
-            assert spy.call_count > 0
+            assert spy.call_count > calls
 
     @pytest.mark.unit
     def test_newton_schulz_on_a_batch(self):

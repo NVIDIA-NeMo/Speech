@@ -268,7 +268,7 @@ class MuonParams(OptimizerParams):
     adam_lr_ratio: float = 0.025
     adam_dim_threshold: int = 8192
     use_muon: Optional[bool] = None
-    foreach: bool = False
+    foreach: bool = True
     capturable: bool = False
 
 

@@ -166,6 +166,16 @@ class TestPackedCausalConvSubsampling:
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 class TestPackedCausalConvSubsamplingCuda:
+    @pytest.fixture(autouse=True)
+    def _float32_arithmetic(self):
+        """TF32 off, which another test of the process may have left on: the float32 bounds are those of float32."""
+        cudnn, matmul = torch.backends.cudnn.allow_tf32, torch.backends.cuda.matmul.allow_tf32
+        torch.backends.cudnn.allow_tf32 = False
+        torch.backends.cuda.matmul.allow_tf32 = False
+        yield
+        torch.backends.cudnn.allow_tf32 = cudnn
+        torch.backends.cuda.matmul.allow_tf32 = matmul
+
     @staticmethod
     def _reference(module: ConvSubsampling, features: torch.Tensor, lengths: torch.Tensor):
         """Outputs, lengths and gradients of the padded forward in float64."""
@@ -190,7 +200,8 @@ class TestPackedCausalConvSubsamplingCuda:
     def test_matches_the_float64_padded_reference(self, subsampling, factor, dtype):
         """Forward and backward, in float32 and under bfloat16 autocast, compared in norm.
 
-        Measured over twelve seeds: outputs within 7e-8 and 0.4 percent, gradients within 4e-4 and 6 percent.
+        Measured over twelve seeds: outputs within 7e-8 and 0.4 percent, gradients within 6e-7 and 6 percent.
+        With TF32 in the matrix products the float32 outputs are within 3e-4 and the gradients within 2e-3.
         With the gap of the non-causal stacks (the factor) the outputs are off by up to 5 percent
         and the gradients by up to 24 percent, depending on the seed.
         """
@@ -207,7 +218,7 @@ class TestPackedCausalConvSubsamplingCuda:
         assert (packed.data.double() - reference).norm() <= relative * reference.norm()
         gradients = _gradients(module, features, packed.data.float().square().sum())
         for name, error in self._gradient_errors(gradients, reference_grads).items():
-            assert error <= (1e-3 if dtype == torch.float32 else 0.12), name
+            assert error <= (1e-5 if dtype == torch.float32 else 0.12), name
 
     @pytest.mark.unit
     @pytest.mark.parametrize("subsampling", ["striding", "dw_striding"])

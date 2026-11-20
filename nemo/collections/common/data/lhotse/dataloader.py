@@ -1058,6 +1058,18 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
             **sampler_kwargs,
         )
 
+    # Indexed-only Lhotse versions cannot snapshot streamed or eager sources.
+    if (
+        config.use_stateful_dataloader
+        and hasattr(DynamicCutSampler, "_consume_pending_restore")
+        and not getattr(cuts, "has_constant_time_access", False)
+    ):
+        raise ValueError(
+            "use_stateful_dataloader=True requires indexed lazy inputs with this Lhotse version. "
+            "Set indexed: true and build indexes for every source with scripts/dataloading/build_indexes.py, "
+            "or set use_stateful_dataloader: false for non-resumable streaming."
+        )
+
     if config.concatenate_samples:
         # Cut concatenation will produce longer samples out of shorter samples
         # by gluing them together from the shortest to longest not to exceed a duration

@@ -28,6 +28,7 @@ from omegaconf import OmegaConf
 from nemo.collections.common.data.lhotse.audio_token_estimator import AudioTokenEstimator
 from nemo.collections.common.data.lhotse.dataloader import (
     _auto_detect_bucketing_and_validate_batch_size,
+    get_lhotse_dataloader_from_config,
     get_lhotse_sampler_from_config,
     make_structured_with_schema_warnings,
     tokenize_with_prompt,
@@ -649,11 +650,15 @@ def test_bucketed_packed_sampler_indexed_concurrent_resume_restarts_and_cleans_p
     next(iterator)
 
     original_bucketer = sampler._bucketer
-    assert original_bucketer._producer_thread is not None
-    assert original_bucketer._producer_thread.is_alive()
+    if sampler.concurrent:
+        assert original_bucketer._producer_thread is not None
+        assert original_bucketer._producer_thread.is_alive()
+    else:
+        assert original_bucketer._producer_thread is None
     state = sampler.state_dict()
-    assert original_bucketer._producer_thread is not None
-    assert original_bucketer._producer_thread.is_alive() or original_bucketer._source_exhausted
+    if sampler.concurrent:
+        assert original_bucketer._producer_thread is not None
+        assert original_bucketer._producer_thread.is_alive() or original_bucketer._source_exhausted
     expected_remaining = _batch_ids(_drain(iterator))
 
     resumed = _make_bucketed_sampler(
@@ -667,8 +672,11 @@ def test_bucketed_packed_sampler_indexed_concurrent_resume_restarts_and_cleans_p
     first_resumed_batch = next(resumed_iterator)
 
     restored_bucketer = resumed._bucketer
-    assert restored_bucketer._producer_thread is not None
-    assert restored_bucketer._producer_thread.is_alive() or restored_bucketer._source_exhausted
+    if resumed.concurrent:
+        assert restored_bucketer._producer_thread is not None
+        assert restored_bucketer._producer_thread.is_alive() or restored_bucketer._source_exhausted
+    else:
+        assert restored_bucketer._producer_thread is None
     actual_remaining = _batch_ids([first_resumed_batch, *_drain(resumed_iterator)])
 
     assert actual_remaining == expected_remaining
@@ -1033,6 +1041,10 @@ def test_packed_sequence_sampler_resume_preserves_packing_buffer(tmp_path, index
     sampler = _make_sampler(make_source())
     iterator = iter(sampler)
     assert _batch_ids([next(iterator)]) == [["dummy-mono-cut-0000", "dummy-mono-cut-0003"]]
+    if not indexed and hasattr(DynamicCutSampler, "_consume_pending_restore"):
+        with pytest.raises(RuntimeError, match="checkpointing requires indexed lazy inputs"):
+            sampler.state_dict()
+        return
     state = sampler.state_dict()
     assert state["packing_buffer_size"] == 4
     if indexed:
@@ -1155,3 +1167,55 @@ def test_packed_sequence_sampler_rejects_single_example_over_budget():
 def test_packed_sequence_sampler_rejects_invalid_buffer_size():
     with pytest.raises(ValueError, match="positive packing-buffer size"):
         _make_sampler(_make_cuts(), packing_buffer_size=0)
+
+
+@pytest.mark.parametrize("make_sampler", [_make_sampler, _make_bucketed_sampler], ids=["packed", "bucketed"])
+def test_indexed_packed_sampler_pending_roundtrip_and_next_epoch(tmp_path, make_sampler):
+    if not hasattr(DynamicCutSampler, "_consume_pending_restore"):
+        pytest.skip("Requires Lhotse's deferred indexed restore lifecycle.")
+    cuts_path = tmp_path / "cuts.jsonl"
+    _make_cuts((7.0, 4.0, 6.0, 3.0) * 20).to_file(cuts_path)
+    create_jsonl_index(cuts_path)
+
+    def make():
+        return make_sampler(CutSet(LazyIndexedManifestIterator(cuts_path)), packing_buffer_size=8)
+
+    original = make()
+    iterator = iter(original)
+    prefix = _batch_ids([next(iterator) for _ in range(3)])
+    checkpoint = deepcopy(original.state_dict())
+    expected = _batch_ids(_drain(iterator))
+    assert prefix and expected
+
+    pending = make()
+    pending.load_state_dict(deepcopy(checkpoint))
+    checkpoint_again = deepcopy(pending.state_dict())
+    resumed = make()
+    resumed.load_state_dict(checkpoint_again)
+    assert _batch_ids(_drain(iter(resumed))) == expected
+
+    original.set_epoch(1)
+    resumed.set_epoch(1)
+    assert _batch_ids(_drain(iter(resumed))) == _batch_ids(_drain(iter(original)))
+
+
+@pytest.mark.parametrize("use_bucketing", [False, True])
+def test_stateful_streaming_inputs_rejected_before_worker_start(tmp_path, use_bucketing):
+    if not hasattr(DynamicCutSampler, "_consume_pending_restore"):
+        pytest.skip("Requires Lhotse's indexed-only sampler checkpoint contract.")
+    cuts_path = tmp_path / "cuts.jsonl"
+    _make_cuts().to_file(cuts_path)
+    config = {
+        "cuts_path": str(cuts_path),
+        "batch_size": 2,
+        "use_bucketing": use_bucketing,
+        "bucket_duration_bins": [5.0] if use_bucketing else None,
+        "num_buckets": 2,
+        "indexed": False,
+        "use_stateful_dataloader": True,
+        "num_workers": 0,
+        "shard_seed": 0,
+        "seed": 0,
+    }
+    with pytest.raises(ValueError, match="use_stateful_dataloader.*indexed"):
+        get_lhotse_dataloader_from_config(config, global_rank=0, world_size=1, dataset=IdentityDataset())

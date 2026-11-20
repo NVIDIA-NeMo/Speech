@@ -92,6 +92,55 @@ Modules
     :members:
 
 
+.. _sequence-packed-teacher-forcing:
+
+Sequence-packed teacher forcing
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``TransformerDecoderNM.forward_packed`` (``nemo.collections.asr.modules.transformer.transformer``) runs the Transformer decoder in teacher forcing over token-flat inputs:
+the target ids of all sequences in one row, the encoder states of all sequences in one row, and the sequence boundaries as explicit metadata instead of masks.
+No padded position is computed, so a batch of mixed lengths costs its valid tokens only.
+The result equals the rows of the padded ``forward`` at the valid positions, in batch order.
+
+.. code-block:: python
+
+    import torch
+
+    from nemo.collections.asr.parts.packed_sequence import pack_encoder_output
+    from nemo.collections.asr.parts.submodules.packed_attention import PackedAttentionContext
+
+    # encoder_states: (B, T, D) with encoder_lengths: (B,), for example from ConformerEncoder.forward;
+    # ConformerEncoder.forward_sequence_packed returns the PackedEncoderActivations directly
+    packed_encoder = pack_encoder_output(encoder_states, encoder_lengths)
+    encoder_context = PackedAttentionContext(packed_encoder)
+
+    # input_ids: (B, U) with input_lengths: (B,); the valid ids of all sequences, in batch order
+    valid = torch.arange(input_ids.shape[1], device=input_ids.device)[None, :] < input_lengths[:, None]
+    decoder_context = PackedAttentionContext.from_lengths(input_lengths)
+
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        hidden = decoder.forward_packed(input_ids[valid], decoder_context, packed_encoder.data, encoder_context)
+    # hidden: (sum(input_lengths), D); the log probabilities follow as in the padded path
+
+The attention of the packed path runs variable-length FlashAttention, which sets the requirements on CUDA:
+
+* float16 or bfloat16 inputs, in training through ``torch.autocast``;
+* a head width (``hidden_size / num_attention_heads``) of at most 256 and divisible by 8;
+* a GPU of compute capability 8.0 (Ampere) or newer.
+
+Other CUDA inputs, float32 among them, raise ``NotImplementedError`` instead of falling back to a slower path.
+On the CPU the sequences are attended one at a time with dense attention in any dtype, which is the reference of the unit tests.
+
+The packed path covers the training forward and backward and leaves out what the padded ``forward`` does beyond that:
+
+* no incremental decoding: ``return_mems`` raises, the decoder memories of the generators are not formed;
+* no attention scores: the ``return_xatt_scores`` output of the cross-attention sublayers is empty, the fused kernels do not form the weights;
+* no adapters: a decoder block with an enabled adapter raises;
+* the causal mask is the standard one, a ``diagonal`` other than 0 raises;
+* learned positional encodings bound the sequence length by ``max_sequence_length`` as in the padded path;
+* a sequence without encoder states gets a zero cross-attention context, where the padded ``forward`` attends uniformly over its masked frames.
+
+
 .. _rnn-encoder-api:
 
 .. autoclass:: nemo.collections.asr.modules.RNNEncoder

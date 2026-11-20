@@ -606,17 +606,20 @@ class ConformerConvolution(nn.Module):
         # utterances without frames can share their slot start with the next utterance,
         # so a token belongs to the last utterance that starts at or before its slot
         sequence_ids = torch.bucketize(layout.token_slots, layout.slot_offsets[1:], right=True)
-        counts = torch.bincount(sequence_ids, minlength=batch_size).clamp(min=1) * (x.shape[1] // num_groups)
+        lengths = torch.bincount(sequence_ids, minlength=batch_size)
+        counts = lengths.clamp(min=1) * (x.shape[1] // num_groups)
 
         def utterance_mean(values: torch.Tensor) -> torch.Tensor:
             """(T_total, G, C / G) to the mean over the utterance's frames and the group, per token (T_total, G, 1)."""
-            sums = values.new_zeros((batch_size, num_groups)).index_add(0, sequence_ids, values.sum(dim=2))
-            return (sums / counts.unsqueeze(1)).index_select(0, sequence_ids).unsqueeze(2)
+            # the tokens of an utterance are consecutive; segment_reduce adds them in a fixed order,
+            # which index_add on CUDA does not, and the lengths are counted here, so they need no check
+            sums = torch.segment_reduce(values.sum(dim=2), "sum", lengths=lengths, unsafe=True)
+            return _UtteranceValuePerToken.apply(sums / counts.unsqueeze(1), sequence_ids, lengths).unsqueeze(2)
 
         dtype = x.dtype
         x = x.to(torch.promote_types(dtype, torch.float32)).unflatten(1, (num_groups, -1))
         x = x - utterance_mean(x)
-        x = (x / torch.sqrt(utterance_mean(x.square()) + norm.eps)).flatten(1)
+        x = (x * torch.rsqrt(utterance_mean(x.square()) + norm.eps)).flatten(1)
         if norm.weight is not None:
             x = x * norm.weight.to(x.dtype) + norm.bias.to(x.dtype)
         return x.to(dtype)
@@ -675,3 +678,23 @@ class ConformerFeedForward(nn.Module):
             if self.use_bias:
                 nn.init.uniform_(self.linear1.bias, -ffn1_max, ffn1_max)
                 nn.init.uniform_(self.linear2.bias, -ffn2_max, ffn2_max)
+
+
+class _UtteranceValuePerToken(torch.autograd.Function):
+    """One row per utterance ``(B, ...)`` repeated for every token of the utterance, ``(T_total, ...)``.
+
+    The same values as ``values.index_select(0, sequence_ids)``.
+    Its backward adds the token gradients of an utterance with ``segment_reduce``, in a fixed order,
+    where the backward of ``index_select`` is an ``index_add``, whose result on CUDA changes from run to run.
+    """
+
+    @staticmethod
+    def forward(ctx, values: torch.Tensor, sequence_ids: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+        ctx.save_for_backward(lengths)
+        return values.index_select(0, sequence_ids)
+
+    @staticmethod
+    @torch.autograd.function.once_differentiable
+    def backward(ctx, grad_output: torch.Tensor) -> tuple[torch.Tensor, None, None]:
+        (lengths,) = ctx.saved_tensors
+        return torch.segment_reduce(grad_output, "sum", lengths=lengths, unsafe=True), None, None

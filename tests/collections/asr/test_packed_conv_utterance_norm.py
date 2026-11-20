@@ -174,6 +174,23 @@ class TestPackedConvUtteranceNorm:
         assert all(gradient.abs().sum() == 0 for gradient in gradients.values())
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("norm_type", ["instance_norm", "group_norm2"])
+    def test_utterances_without_frames_in_a_layout_without_gap(self, norm_type):
+        """A kernel of one frame needs no gap, so the utterances without frames share their slot start with the next."""
+        torch.manual_seed(9)
+        module = ConformerConvolution(d_model=D_MODEL, kernel_size=1, norm_type=norm_type).double()
+        lengths = torch.tensor([0, 0, 5, 0, 3, 0])
+        padded = _varied(torch.randn(6, 5, D_MODEL, dtype=torch.float64))
+        packed = pack_encoder_output(padded, lengths)
+        packed_out = module.forward_packed(packed.data, packed_slot_layout(packed, gap=0))
+        alone_out = _alone_forward(module, padded, lengths)
+        torch.testing.assert_close(packed_out, alone_out)
+        packed_grads = _gradients(module, padded, packed_out.square().sum())
+        alone_grads = _gradients(module, padded, alone_out.square().sum())
+        for name, gradient in packed_grads.items():
+            torch.testing.assert_close(gradient, alone_grads[name], msg=name)
+
+    @pytest.mark.unit
     @pytest.mark.parametrize("norm_type, lengths", [("instance_norm", [50, 13, 31]), ("group_norm4", [50, 3, 31])])
     @pytest.mark.parametrize("self_attention_model", ["rel_pos", "abs_pos"])
     def test_encoder_matches_every_utterance_alone(self, norm_type, lengths, self_attention_model):
@@ -224,7 +241,7 @@ class TestPackedConvUtteranceNormCuda:
         """Forward and backward under autocast; half precision rounds, so the gradients are compared in norm.
 
         Measured over twelve seeds: outputs within 1 percent (bfloat16) and 0.13 percent (float16),
-        gradients within 9 percent and 1.2 percent; the bounds are about twice that.
+        gradients within 9 percent and 1.2 percent; the bounds are about twice that for bfloat16, four times for float16.
         A normalization per channel removes the bias of the depthwise convolution,
         so its gradient is zero in exact arithmetic and 8e-5 in bfloat16, hence the absolute floor.
         """
@@ -241,6 +258,22 @@ class TestPackedConvUtteranceNormCuda:
         for name, gradient in _gradients(module, padded, outputs.float().square().mean()).items():
             error = (gradient.double() - reference_grads[name]).norm()
             assert error <= 10 * relative * reference_grads[name].norm() + 5e-4, name
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("norm_type", ["instance_norm", "group_norm2"])
+    def test_forward_and_backward_are_reproducible(self, norm_type):
+        """The sums over an utterance run in a fixed order, forward and backward, as the other norm types do."""
+        torch.manual_seed(10)
+        module = _module(norm_type, d_model=64).cuda()
+        lengths = torch.tensor([2900, 0, 1, 700, 1500], device="cuda")
+        padded = _varied(torch.randn(5, 2900, 64, device="cuda"))
+        results = []
+        for _ in range(4):
+            outputs = _packed_forward(module, padded, lengths)
+            results.append((outputs, _gradients(module, padded, outputs.square().sum())))
+        for outputs, gradients in results[1:]:
+            assert torch.equal(outputs, results[0][0])
+            assert all(torch.equal(gradient, results[0][1][name]) for name, gradient in gradients.items())
 
     @pytest.mark.unit
     @pytest.mark.parametrize("norm_type", ["instance_norm", "group_norm2"])
@@ -267,7 +300,9 @@ class TestPackedConvUtteranceNormCuda:
         """The training path through ``forward_sequence_packed`` in the precision the trainings use.
 
         Measured over twelve seeds: outputs within 7.2 percent with instance norm, whose padded forward
-        has the same bfloat16 error, and 0.6 percent with group norm; gradients within 1.2 percent.
+        has the same bfloat16 error, and 0.6 percent with group norm;
+        gradients within 1 percent of their reference norm plus the absolute floor,
+        which covers the tensors of the subsampling whose gradient norm is below 1e-5.
         """
         torch.manual_seed(8)
         encoder = _encoder(norm_type, d_model=32).cuda().train()

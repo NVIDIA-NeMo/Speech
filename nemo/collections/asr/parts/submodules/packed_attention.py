@@ -424,8 +424,9 @@ def _reference_packed_attention(
     outputs = []
     center = (rel_pos_bias.shape[-1] - 1) // 2 if rel_pos_bias is not None else 0
     # scaled before the product like torch's scaled_dot_product_attention:
-    # a product beyond the half-precision range whose scaled score is in range stays finite
-    root = math.sqrt(scale)
+    # a product beyond the half-precision range whose scaled score is in range stays finite.
+    # A scale above one is applied after the product, so that it does not enlarge an operand beyond the range.
+    root = math.sqrt(min(scale, 1.0))
     for start, end in context.sequence_slices:
         if end == start:
             continue
@@ -433,6 +434,8 @@ def _reference_packed_attention(
         ki = k[start:end].transpose(0, 1)
         vi = v[start:end].transpose(0, 1)
         scores = torch.matmul(qi * root, (ki * root).transpose(-2, -1))
+        if scale > 1.0:
+            scores = scores * scale
         if rel_pos_bias is not None:
             length = end - start
             rows = torch.arange(length, device=q.device).view(length, 1)

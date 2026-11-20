@@ -361,6 +361,27 @@ class TestPackedAttentionArguments:
         torch.testing.assert_close(out.double(), reference, rtol=2e-3, atol=2e-3)
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("with_bias", [False, True], ids=["no_bias", "zero_rel_pos_bias"])
+    def test_reference_path_scale_above_one_stays_finite_in_float16(self, with_bias):
+        """A scale above one must not push a representable query beyond the float16 range."""
+        context = PackedAttentionContext.from_lengths(torch.tensor([2]))
+        q = torch.tensor([32768.0, 32768.0], dtype=torch.float64).view(2, 1, 1)
+        k = torch.tensor([0.0, 2.0**-15], dtype=torch.float64).view(2, 1, 1)
+        v = torch.tensor([0.0, 1.0], dtype=torch.float64).view(2, 1, 1)
+
+        def run(dtype):
+            inputs = [t.to(dtype).requires_grad_() for t in (q, k, v)]
+            bias = torch.zeros(2, 1, 3, dtype=dtype) if with_bias else None
+            out = packed_attention(*inputs, context, rel_pos_bias=bias, scale=4.0)
+            out.float().sum().backward()
+            return out, [t.grad for t in inputs]
+
+        out, grads = run(torch.float16)
+        reference, _ = run(torch.float64)
+        assert out.dtype == torch.float16 and all(torch.isfinite(grad).all() for grad in grads)
+        torch.testing.assert_close(out.double(), reference, rtol=2e-3, atol=2e-3)
+
+    @pytest.mark.unit
     @pytest.mark.parametrize("device", _CPU_AND_CUDA)
     def test_context_from_lengths_accepts_integer_lengths(self, device):
         reference = PackedAttentionContext.from_lengths(torch.tensor([3, 0, 2], device=device))

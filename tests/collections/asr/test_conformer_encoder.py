@@ -14,6 +14,7 @@
 # limitations under the License.
 import copy
 import functools
+import inspect
 import os
 
 import numpy as np
@@ -954,6 +955,22 @@ class TestPackedConformerEncoder:
         assert sorted(encoder.state_dict()) == sorted(keys)
         assert "layers.0.self_attn.linear_pos.weight" in _packed_encoder().state_dict()
 
+    @pytest.mark.unit
+    def test_block_arguments_keep_their_positions(self):
+        """``packed_rel_pos_attention`` is keyword-only, after the block arguments: a positional ``None`` after
+        ``use_triton`` still binds to ``pre_encode``, as it did before the option existed."""
+        parameters = list(inspect.signature(ConformerEncoder.__init__).parameters.values())[1:]
+        names = [parameter.name for parameter in parameters]
+        assert names.index("pre_encode") == names.index("use_triton") + 1
+        option = inspect.signature(ConformerEncoder.__init__).parameters["packed_rel_pos_attention"]
+        assert option.kind is inspect.Parameter.KEYWORD_ONLY and option.default == "triton"
+        sizes = {"feat_in": 8, "n_layers": 1, "d_model": 16}
+        positional = [
+            sizes.get(parameter.name, parameter.default) for parameter in parameters[: names.index("pre_encode")]
+        ]
+        encoder = ConformerEncoder(*positional, None)
+        assert isinstance(encoder.pre_encode, ConvSubsampling) and encoder.packed_rel_pos_attention == "triton"
+
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
@@ -1094,6 +1111,36 @@ class TestPackedConformerEncoderCuda:
         padded_out, padded_lengths = encoder(audio_signal=features, length=lengths)
         packed = encoder.forward_sequence_packed(features, lengths)
         torch.testing.assert_close(packed.data, _valid_frames(padded_out, padded_lengths), atol=1e-4, rtol=1e-4)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("backend", ["flex", "triton"])
+    def test_float64_attention_dropout_runs_the_reference_on_either_backend(self, monkeypatch, backend):
+        """In float64 ``packed_attention`` runs the dense reference attention, with dropout, whichever backend the
+        encoder selects, and the capability check at the encoder entry point follows that dispatch rule."""
+
+        def no_flex_attention(*args, **kwargs):
+            raise AssertionError("FlexAttention must not run")
+
+        def no_kernel(*args, **kwargs):
+            raise AssertionError("the Triton kernel must not run")
+
+        monkeypatch.setattr(packed_attention_module, "_flex_packed_attention", no_flex_attention)
+        monkeypatch.setattr(packed_attention_module, "packed_rel_pos_attention", no_kernel, raising=False)
+        torch.manual_seed(5)
+        encoder = _packed_encoder(
+            self_attention_model="rel_pos", dropout_att=0.1, d_model=32, n_heads=2, packed_rel_pos_attention=backend
+        )
+        encoder = encoder.cuda().double().train()
+        assert encoder.sequence_packed_unsupported_reason() is None
+        lengths = torch.tensor([40, 7, 25], device="cuda")
+        features = _packed_test_features(lengths, dtype=torch.float64, device="cuda")
+        packed = encoder.forward_sequence_packed(features, lengths)
+        again = encoder.forward_sequence_packed(features, lengths)
+        assert packed.data.dtype == torch.float64 and torch.isfinite(packed.data).all()
+        # the dropout draws a fresh mask per call
+        assert not torch.equal(packed.data, again.data)
+        packed.data.square().mean().backward()
+        assert encoder.layers[0].self_attn.linear_pos.weight.grad is not None
 
     @pytest.mark.parametrize("self_attention_model", ["abs_pos", "rope"])
     def test_flash_and_flex_backends_match_padded_in_bf16(self, self_attention_model):

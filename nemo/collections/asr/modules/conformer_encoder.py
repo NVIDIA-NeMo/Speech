@@ -108,7 +108,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             (``forward_sequence_packed``) on CUDA: 'triton', the fused attention kernel with attention
             dropout wherever Triton is installed (FlexAttention otherwise), or 'flex', FlexAttention always,
             the backend before the kernel, which computes in float32 and has no attention dropout.
-            Defaults to 'triton'.
+            Keyword-only; defaults to 'triton'. In float64 both run the dense reference attention.
         reduction (str, Optional): the method of reduction, choices=['pooling', 'striding']. If no value
             is passed, then no reduction is performed and the models runs with the original 4x subsampling.
         reduction_position (int, Optional): the index of the layer to apply reduction. If -1, apply reduction
@@ -387,12 +387,13 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         rope_base: float = 10000.0,
         rotary_fraction: float = 1.0,
         use_triton: bool | None = None,
-        packed_rel_pos_attention: str = 'triton',
         pre_encode: ModuleBlock | None = None,
         feed_forward: ModuleBlock | None = None,
         conv: ModuleBlock | None = None,
         self_attn: ModuleBlock | None = None,
         norm: ModuleBlock | None = None,
+        *,
+        packed_rel_pos_attention: str = 'triton',
     ):
         super().__init__()
         d_ff = d_model * ff_expansion_factor
@@ -998,7 +999,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         and instance or group normalization in the convolution modules.
         Attention dropout in training mode on CUDA: FlexAttention has no dropout, so ``rel_pos`` attention
         keeps its dropout only through its Triton kernel
-        (``packed_rel_pos_attention: triton``, Triton installed, float32, bfloat16 or float16),
+        (``packed_rel_pos_attention: triton``, Triton installed, float32, bfloat16 or float16)
+        or in float64, which runs the dense reference attention on every backend,
         and ``abs_pos`` and ``rope`` attention only where variable-length FlashAttention runs,
         in float16 or bfloat16 (autocast counts) with a head width that is a multiple of 8 up to 256;
         see ``packed_attention_supports_dropout``. Off CUDA the dense reference attention applies the dropout.
@@ -1045,12 +1047,19 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             dtype = torch.get_autocast_dtype('cuda') if autocast else parameter.dtype
             head_dim = layers[0].self_attn.d_k
             if self.self_attention_model == 'rel_pos':
-                if self.packed_rel_pos_attention != 'triton' or not packed_attention_supports_dropout(
-                    parameter.device, dtype, head_dim, rel_pos=True
+                # the same rule as the dispatch of packed_attention: the kernel where it is selected and runs,
+                # the dense reference in float64, FlexAttention otherwise
+                if not packed_attention_supports_dropout(
+                    parameter.device,
+                    dtype,
+                    head_dim,
+                    rel_pos=True,
+                    rel_pos_kernel=self.packed_rel_pos_attention == 'triton',
                 ):
                     return (
                         "rel_pos attention over packed sequences keeps its dropout through its Triton kernel "
-                        "(packed_rel_pos_attention: triton; Triton installed; float32, bfloat16 or float16), "
+                        "(packed_rel_pos_attention: triton; Triton installed; float32, bfloat16 or float16) "
+                        "or in float64 (the dense reference attention), "
                         "and FlexAttention, the path otherwise, has no dropout on the attention weights: "
                         "set dropout_att: 0 on the encoder or select the kernel."
                     )

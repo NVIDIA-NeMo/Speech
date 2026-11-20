@@ -2654,6 +2654,60 @@ def test_legacy_canonical_bundle_requires_explicit_speaker_contract(tmp_path):
 
 
 @pytest.mark.unit
+def test_bundle_override_selects_the_diarization_attention_backend(tmp_path):
+    """``diar_packed_rel_pos_attention`` is a runtime override of a bundle: it selects the packed attention backend
+    of the diarization ConformerEncoder, leaves the architecture and the strictly loaded weights as they are, and
+    is the only accepted way to reach that setting (``diarization_model_cfg`` is not an override key)."""
+    source = build_toy_pe_encoder().eval()
+    state = {f"encoder.{key}": value for key, value in source.state_dict().items()}
+    archive = tmp_path / "diar-backend.nemo"
+    write_bundle(archive, bundle_config(), state)
+
+    with pytest.raises(ValueError, match="Unsupported ParallelExpertEncoder config_overrides keys"):
+        ParallelExpertEncoderPT.load_from_nemo(
+            str(archive),
+            strict=True,
+            config_overrides={"diarization_model_cfg": {"encoder": {"packed_rel_pos_attention": "flex"}}},
+        )
+    with pytest.raises(ValueError, match="diar_packed_rel_pos_attention must be 'triton' or 'flex'"):
+        ParallelExpertEncoderPT.load_from_nemo(
+            str(archive), strict=True, config_overrides={"diar_packed_rel_pos_attention": "cuda"}
+        )
+
+    restored = ParallelExpertEncoderPT.load_from_nemo(
+        str(archive), strict=True, config_overrides={"diar_packed_rel_pos_attention": "flex"}
+    ).eval()
+    assert restored.diarization_model.encoder.packed_rel_pos_attention == "flex"
+    assert restored.asr_encoder.packed_rel_pos_attention == "triton"
+    assert restored.diar_packed_rel_pos_attention == "flex"
+    assert restored._bundle_config.diar_packed_rel_pos_attention == "flex"
+    assert set(restored.state_dict()) == set(source.state_dict())
+    for key, value in source.state_dict().items():
+        torch.testing.assert_close(restored.state_dict()[key], value)
+    # without the override the bundle keeps its config's backend
+    plain = ParallelExpertEncoderPT.load_from_nemo(str(archive), strict=True)
+    assert plain.diarization_model.encoder.packed_rel_pos_attention == "triton"
+    assert plain.diar_packed_rel_pos_attention is None
+
+    # the override names a ConformerEncoder setting: a Transformer diarization branch has none
+    packed_source = build_toy_packed_pe_encoder().eval()
+    packed_archive = tmp_path / "transformer-diar.nemo"
+    write_bundle(
+        packed_archive,
+        bundle_config(
+            asr_encoder_type="transformer",
+            asr_encoder_cfg=toy_transformer_asr_encoder_cfg(),
+            diarization_model_cfg=toy_packed_diarization_model_cfg(),
+        ),
+        {f"encoder.{key}": value for key, value in packed_source.state_dict().items()},
+    )
+    with pytest.raises(ValueError, match="ConformerEncoder diarization branch"):
+        ParallelExpertEncoderPT.load_from_nemo(
+            str(packed_archive), strict=True, config_overrides={"diar_packed_rel_pos_attention": "flex"}
+        )
+
+
+@pytest.mark.unit
 def test_sync_max_audio_length_is_disabled_by_portable_config():
     config = bundle_config(sync_max_audio_length=False)
     config.asr_encoder_cfg.sync_max_audio_length = True

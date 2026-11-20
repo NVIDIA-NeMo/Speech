@@ -481,9 +481,9 @@ class TestSquaredReLU:
         "device_type, dtype",
         [
             # CPU autocast leaves ``square`` in the input dtype, so this cell holds for either form: a control
-            ("cpu", torch.bfloat16),
-            pytest.param("cuda", torch.bfloat16, marks=pytest.mark.run_only_on('GPU')),
-            pytest.param("cuda", torch.float16, marks=pytest.mark.run_only_on('GPU')),
+            pytest.param("cpu", torch.bfloat16, id="cpu-bfloat16-control"),
+            pytest.param("cuda", torch.bfloat16, marks=pytest.mark.run_only_on('GPU'), id="cuda-bfloat16"),
+            pytest.param("cuda", torch.float16, marks=pytest.mark.run_only_on('GPU'), id="cuda-float16"),
         ],
     )
     def test_saves_one_tensor_of_the_input_dtype_under_autocast(self, device_type, dtype):
@@ -507,19 +507,23 @@ class TestSquaredReLU:
     @pytest.mark.unit
     @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
     def test_feed_forward_under_autocast_matches_the_float32_square(self, dtype):
-        """Between two linear layers the product equals ``torch.square`` in float32 followed by autocast's cast."""
+        """Between two linear layers the product equals the float32 square followed by the cast to the half dtype."""
         torch.manual_seed(0)
         linear1, linear2 = torch.nn.Linear(32, 64).cuda(), torch.nn.Linear(64, 16).cuda()
         x = torch.randn(4, 50, 32, device="cuda", requires_grad=True)
         reference = x.detach().clone().requires_grad_()
         with torch.autocast("cuda", dtype=dtype):
-            out = linear2(SquaredReLU()(linear1(x)))
-            expected = linear2(torch.square(torch.relu(linear1(reference))))
-        assert out.dtype == dtype and torch.equal(out, expected)
+            hidden = SquaredReLU()(linear1(x))
+            # the explicit float32 square, so the comparison does not depend on autocast's list of float32 ops
+            expected_hidden = torch.square(torch.relu(linear1(reference)).float()).to(dtype)
+            out, expected = linear2(hidden), linear2(expected_hidden)
+        assert hidden.dtype == dtype and torch.equal(hidden, expected_hidden) and torch.equal(out, expected)
         out.float().sum().backward()
         expected.float().sum().backward()
-        torch.testing.assert_close(x.grad, reference.grad, rtol=1e-3, atol=1e-3)
-        # the half-precision square overflows where the float32 square cast to the half dtype overflows
-        large = torch.tensor([200.0, 255.0, 256.0, 1000.0], device="cuda", dtype=dtype)
-        with torch.autocast("cuda", dtype=dtype):
-            assert torch.equal(SquaredReLU()(large), torch.square(torch.relu(large)).to(dtype))
+        assert torch.equal(x.grad, reference.grad)
+        # the half-precision square and the cast float32 square agree where float16 overflows (from 256 on)
+        # and where bfloat16 only rounds; 255.875 is the largest float16 below 256 (bfloat16 rounds it to 256)
+        large = torch.tensor([200.0, 255.0, 255.875, 256.0, 1000.0], device="cuda", dtype=dtype)
+        torch.testing.assert_close(
+            SquaredReLU()(large), torch.square(torch.relu(large).float()).to(dtype), rtol=0, atol=0
+        )

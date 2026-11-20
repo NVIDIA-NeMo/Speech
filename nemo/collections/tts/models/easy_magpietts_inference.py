@@ -29,7 +29,6 @@ from torch import nn
 from transformers import AutoConfig, AutoModelForCausalLM
 
 from nemo.collections.audio.parts.utils.transforms import resample
-from nemo.collections.speechlm2.parts.pretrained import set_model_dict_for_partial_init
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import (
     check_text_embedding_matches_tokenizer,
     setup_tokenizers,
@@ -685,6 +684,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             None. The model is updated in-place.
         """
         if checkpoint_path is not None:
+            # Imported here because nemo.collections.speechlm2 needs the speechlm2 extra.
+            from nemo.collections.speechlm2.parts.pretrained import set_model_dict_for_partial_init
+
             if '.nemo' in checkpoint_path:
                 with tempfile.TemporaryDirectory() as tmpdir:
                     SaveRestoreConnector._unpack_nemo_file(checkpoint_path, tmpdir)

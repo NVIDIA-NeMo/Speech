@@ -188,8 +188,8 @@ class LhotseDataLoadingConfig:
     # 2.4 Filters on validation status. If the validation status is not "pass", the cut will be filtered out.
     keep: str = "pass"
 
-    # 2.5 Filter on custom fields of a cut (``cut.custom``; for NeMo manifests, the keys other than
-    # audio_filepath, duration, offset and sampling_rate, plus the tags of input_cfg).
+    # 2.5 Filter on custom fields of a cut (``cut.custom``; for NeMo manifests, the additional keys
+    # of a row, plus the tags of input_cfg).
     # Maps a field name to the value to keep, e.g. {verified: true}.
     # A cut that has the field with another value is filtered out; a cut without the field is kept.
     custom_field_filter: dict[str, Any] | None = None

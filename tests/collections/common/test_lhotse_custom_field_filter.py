@@ -21,11 +21,12 @@ from lhotse.cut import Cut, PaddingCut
 from lhotse.serialization import SequentialJsonlWriter, save_to_jsonl
 from lhotse.shar.writers import TarWriter
 from lhotse.testing.dummies import DummyManifest, dummy_cut, dummy_supervision
+from lhotse.utils import fastcopy
 from omegaconf import OmegaConf
 
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.collections.common.data.lhotse.sampling import CustomFieldFilter
-from nemo.collections.common.data.lhotse.text_adapters import TextExample
+from nemo.collections.common.data.lhotse.text_adapters import NeMoMultimodalConversation, TextExample, TextTurn
 
 # The "verified" value of each manifest row, in row order; ``_ABSENT`` rows do not have the key.
 _ABSENT = object()
@@ -155,9 +156,23 @@ class TestCustomFieldFilter:
         assert CustomFieldFilter({"verified": True})(cuts[0].mix(cuts[1])) is expected
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("second, expected", [(True, True), (None, True), (False, False)])
+    def test_mixed_cut_skips_a_muted_track(self, second, expected):
+        cuts = [dummy_cut(0), dummy_cut(1)]
+        cuts[0].custom = {"verified": False}
+        cuts[1].custom = None if second is None else {"verified": second}
+        mixed = cuts[0].mix(cuts[1])
+        mixed = fastcopy(mixed, tracks=[fastcopy(mixed.tracks[0], mute=True), mixed.tracks[1]])
+        assert mixed.has_custom("verified") is (second is not None)
+        assert CustomFieldFilter({"verified": True})(mixed) is expected
+
+    @pytest.mark.unit
     @pytest.mark.parametrize("custom, expected", [({"verified": True}, True), ({"verified": False}, False)])
-    def test_filters_text_examples_by_their_custom_fields(self, custom, expected):
-        assert CustomFieldFilter({"verified": True})(TextExample("some text", custom=custom)) is expected
+    def test_filters_text_and_conversation_examples_by_their_custom_fields(self, custom, expected):
+        custom_field_filter = CustomFieldFilter({"verified": True})
+        assert custom_field_filter(TextExample("some text", custom=custom)) is expected
+        conversation = NeMoMultimodalConversation(id="conversation", turns=[TextTurn("hi", "user")], custom=custom)
+        assert custom_field_filter(conversation) is expected
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
@@ -233,11 +248,44 @@ class TestCustomFieldFilterDataloader:
         expected = [f"utt-{idx}" for idx in range(10)] + ["utt-0", "utt-2", "utt-3", "utt-5", "utt-6", "utt-9"]
         assert texts == sorted(expected)
 
-        config = {**config, "custom_field_filter": {"verified": True}}
-        with pytest.raises(ValueError, match="custom_field_filter.*sub-config"):
-            get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=_Identity())
+        for top_level_value in ({"verified": True}, {}):
+            config = {**config, "custom_field_filter": top_level_value}
+            with pytest.raises(ValueError, match="custom_field_filter.*sub-config"):
+                get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=_Identity())
+
+    @pytest.mark.unit
+    def test_input_cfg_tags_are_custom_fields(self, manifest_config):
+        input_cfg = [
+            {"type": "nemo", **manifest_config, "tags": {"origin": "first"}},
+            {"type": "nemo", **manifest_config, "tags": {"origin": "second"}},
+        ]
+        source_config = {"input_cfg": input_cfg, "force_finite": True}
+        cuts = _read_all_cuts(source_config, custom_field_filter={"verified": True})
+        assert len(cuts) == 12
+
+        cuts = _read_all_cuts(source_config, custom_field_filter={"verified": True, "origin": "second"})
+        texts = sorted(cut.supervisions[0].text for cut in cuts)
+        assert texts == ["utt-0", "utt-2", "utt-3", "utt-5", "utt-6", "utt-9"]
+        assert all(cut.origin == "second" for cut in cuts)
+
+    @pytest.mark.unit
+    def test_rejected_cuts_are_not_tokenized(self, manifest_config):
+        tokenized = []
+
+        def tokenizer(text: str) -> list[int]:
+            tokenized.append(text)
+            return [1]
+
+        config = {**manifest_config, "sample_rate": 16000, "batch_size": 3, "custom_field_filter": {"verified": True}}
+        dl = get_lhotse_dataloader_from_config(
+            config=config, global_rank=0, world_size=1, dataset=_Identity(), tokenizer=tokenizer
+        )
+        assert len([cut for batch in dl for cut in batch]) == 6
+        assert sorted(tokenized) == ["utt-0", "utt-2", "utt-3", "utt-5", "utt-6", "utt-9"]
 
     @pytest.mark.unit
     def test_invalid_value_raises_at_construction(self, manifest_config):
+        config = {**manifest_config, "sample_rate": 16000, "batch_size": 3}
+        config["custom_field_filter"] = {"verified": [True, False]}
         with pytest.raises(ValueError, match="custom_field_filter.*'verified'"):
-            _read_all_cuts(manifest_config, custom_field_filter={"verified": [True, False]})
+            get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=_Identity())

@@ -602,8 +602,12 @@ class CustomFieldFilter:
 
     def __call__(self, example) -> bool:
         if isinstance(example, MixedCut):
-            # As Lhotse resolves a custom field of a mixed cut: the first data track that has the field.
-            customs = [track.cut.custom for track in example.tracks if isinstance(track.cut, CustomFieldMixin)]
+            # As Lhotse resolves a custom field of a mixed cut: the first unmuted data track that has the field.
+            customs = [
+                track.cut.custom
+                for track in example.tracks
+                if isinstance(track.cut, CustomFieldMixin) and not track.mute
+            ]
         elif isinstance(example, CustomFieldMixin):
             customs = [example.custom]
         else:

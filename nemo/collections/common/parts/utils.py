@@ -42,10 +42,15 @@ __all__ = [
 
 
 class SquaredReLU(nn.Module):
-    """ReLU squared, ``relu(x) ** 2`` (So et al., Primer, 2021)."""
+    """ReLU squared, ``relu(x) ** 2`` (So et al., Primer, 2021).
+
+    Computed and returned in the input's dtype, also under autocast: the product ``relu(x) * relu(x)`` stays in
+    the half-precision dtype where ``torch.square`` would run in float32 and save a float32 copy of the input for
+    the backward. A consumer that casts to the half dtype next (a linear layer under autocast) sees the same values;
+    in float16 the square overflows for ``relu(x) >= 256`` here as it does at that cast.
+    """
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # a product, not ``torch.square``: autocast runs ``square`` in float32 and saves a float32 copy of the input
         x = torch.relu(x)
         return x * x
 

@@ -66,6 +66,7 @@ from nemo.collections.asr.parts.utils.streaming_utils import FrameBatchMultiTask
 from nemo.collections.asr.parts.utils.transcribe_utils import (
     compute_output_filename,
     get_buffered_pred_feat_multitaskAED,
+    get_inference_device,
     setup_model,
     write_transcription,
 )
@@ -159,18 +160,8 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
 
     # setup GPU
     torch.set_float32_matmul_precision(cfg.matmul_precision)
-    if cfg.cuda is None:
-        if torch.cuda.is_available():
-            device = [0]  # use 0th CUDA device
-            accelerator = 'gpu'
-        else:
-            device = 1
-            accelerator = 'cpu'
-    else:
-        device = [cfg.cuda]
-        accelerator = 'gpu'
-    map_location = torch.device('cuda:{}'.format(device[0]) if accelerator == 'gpu' else 'cpu')
-    logging.info(f"Inference will be done on device : {device}")
+    map_location = get_inference_device(cuda=cfg.cuda, allow_mps=False)
+    logging.info(f"Inference will be done on device : {map_location}")
 
     asr_model, model_name = setup_model(cfg, map_location)
 

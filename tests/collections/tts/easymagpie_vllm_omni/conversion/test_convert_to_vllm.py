@@ -34,8 +34,8 @@ class _FakeEmbeddingModel(torch.nn.Module):
         self.interruption_token_id = 13
         self.cfg = types.SimpleNamespace(embedding_dim=2)
 
-    def embed_text_tokens(self, ids, text_lens, disable_cas_embedding):
-        del text_lens, disable_cas_embedding
+    def embed_text_tokens(self, ids, text_lens, is_multiturn=False):
+        del text_lens, is_multiturn
         return ids.unsqueeze(-1).expand(-1, -1, self.cfg.embedding_dim).float()
 
 

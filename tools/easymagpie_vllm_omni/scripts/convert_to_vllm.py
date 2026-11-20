@@ -239,7 +239,7 @@ def precompute_text_embeddings(model, batch_size: int) -> torch.Tensor:
         end = min(start + batch_size, vocab_size)
         ids = torch.arange(start, end, dtype=torch.long, device=device).unsqueeze(0)  # (1, n)
         lens = torch.tensor([end - start], dtype=torch.long, device=device)
-        embeds = model.embed_text_tokens(ids, text_lens=lens, disable_cas_embedding=False)  # (1, n, E)
+        embeds = model.embed_text_tokens(ids, text_lens=lens)  # (1, n, E)
         table[start:end] = embeds.squeeze(0).to(torch.float32)
     return table.cpu()
 

@@ -1691,7 +1691,12 @@ class EasyMagpieTTSForConditionalGeneration(
         # Nemotron-H names. The wrapper's ``backbone -> model`` prefix rule is a
         # no-op here because we already stripped the ``decoder.`` prefix.
         backbone_weights = list(NemotronHForCausalLM.hf_to_vllm_mapper.apply(backbone_weights))
-        backbone_loaded = self.backbone.load_weights(backbone_weights)
+        if hasattr(self.backbone, "load_weights"):
+            backbone_loaded = self.backbone.load_weights(backbone_weights)
+        else:  # vLLM >= 0.26: NemotronHModel has no load_weights
+            from vllm.model_executor.models.utils import AutoWeightsLoader
+
+            backbone_loaded = AutoWeightsLoader(self.backbone).load_weights(backbone_weights)
         loaded |= {f"backbone.{n}" for n in backbone_loaded}
         if predictor_weights:
             predictor_loaded = self.code_predictor.load_weights(predictor_weights)

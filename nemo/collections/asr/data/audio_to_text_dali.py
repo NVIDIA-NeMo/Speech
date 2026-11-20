@@ -250,30 +250,9 @@ class _AudioTextDALIDataset(Iterator):
                     f" It must be either 'per_feature' or 'all_features'."
                 )
 
-            self.window = None
             window_name = params['window'] if 'window' in params else 'hann'
             periodic_window = params['periodic_window'] if 'periodic_window' in params else False
-            torch_windows = {
-                'hann': torch.hann_window,
-                'hamming': torch.hamming_window,
-                'blackman': torch.blackman_window,
-                'bartlett': torch.bartlett_window,
-                'none': None,
-            }
-
-            if window_name == 'ones':
-                window_tensor = torch.ones(self.window_size)
-            else:
-                try:
-                    window_fn = torch_windows.get(window_name, None)
-                except:
-                    raise ValueError(
-                        f"{self} received '{window_name}' for the window parameter."
-                        f" It must be one of: ('hann', 'ones', 'hamming', 'blackman', 'bartlett', None)."
-                        f" None is equivalent to 'hann'."
-                    )
-                window_tensor = window_fn(self.window_size, periodic=periodic_window) if window_fn else None
-            self.window = window_tensor.numpy().tolist() if window_tensor is not None else None
+            self.window = _resolve_window(window_name, self.window_size, periodic_window)
 
             self.n_fft = params['n_fft'] if 'n_fft' in params else 2 ** math.ceil(math.log2(self.window_size))
             self.snip_edges = params['snip_edges'] if 'snip_edges' in params else False
@@ -806,3 +785,37 @@ class AudioToBPEDALIDataset(_AudioTextDALIDataset):
             preprocessor_cfg=preprocessor_cfg,
             return_sample_id=return_sample_id,
         )
+
+
+def _resolve_window(window_name: Optional[str], window_size: int, periodic: bool) -> Optional[List[float]]:
+    """Builds the analysis window that the DALI spectrogram uses for the preprocessor's ``window`` option.
+
+    Args:
+        window_name: One of 'hann', 'hamming', 'blackman', 'bartlett', 'ones', 'none' or None.
+        window_size: Window length in samples.
+        periodic: Whether to build the periodic variant of the window.
+
+    Returns:
+        The window coefficients, or None for 'none' and None, which leave DALI's default Hann window in place.
+
+    Raises:
+        ValueError: If ``window_name`` is not a supported window.
+    """
+    torch_windows = {
+        'hann': torch.hann_window,
+        'hamming': torch.hamming_window,
+        'blackman': torch.blackman_window,
+        'bartlett': torch.bartlett_window,
+    }
+    supported_windows = (*torch_windows, 'ones', 'none', None)
+    if window_name not in supported_windows:
+        raise ValueError(
+            f"The DALI dataset received {window_name!r} for the window parameter. It must be one of: "
+            f"{supported_windows}. 'none' and None are equivalent to 'hann', DALI's default window."
+        )
+
+    if window_name == 'ones':
+        return torch.ones(window_size).numpy().tolist()
+    if window_name in torch_windows:
+        return torch_windows[window_name](window_size, periodic=periodic).numpy().tolist()
+    return None

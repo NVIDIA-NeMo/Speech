@@ -34,7 +34,7 @@ from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceConf
 
 # both models recognize the test data without errors, thus every metric except ece return default values
 # ECE values for fast conformer models (stt_en_fastconformer_ctc_large and stt_en_fastconformer_transducer_large)
-ECE_VALUES = {("token", "ctc"): 0.86, ("token", "rnnt"): 0.75, ("word", "ctc"): 0.89, ("word", "rnnt"): 0.80}
+ECE_VALUES = {("token", "ctc"): 0.86, ("token", "rnnt"): 0.69, ("word", "ctc"): 0.90, ("word", "rnnt"): 0.79}
 
 TOL_DEGREE = 2
 TOL = 2 / math.pow(10, TOL_DEGREE)

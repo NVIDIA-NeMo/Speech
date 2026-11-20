@@ -130,6 +130,36 @@ def test_async_rejects_resumable_without_mutation(monkeypatch):
     assert not scheduler.requests
 
 
+def test_async_streaming_opt_in_admits_resumable_then_final_sentinel(monkeypatch):
+    from easymagpie_vllm_omni.config import ASYNC_STREAMING_ENV
+    from test_cfg_streaming import _chunk
+
+    monkeypatch.setenv(ASYNC_STREAMING_ENV, '1')
+    scheduler = async_scheduler(monkeypatch, max_num_seqs=4, num_blocks=128)
+    scheduler.add_request(_chunk(initial=True))
+    assert 'stream' in scheduler.cfg_pairs
+    scheduler.add_request(_chunk())
+    scheduler.add_request(_request('stream', prompt=[0], info={}, resumable=False))
+    assert len(scheduler.cfg_pairs['stream'].physical_ids) == 2
+
+
+def test_async_streaming_opt_in_does_not_change_complete_text_admission(monkeypatch):
+    from easymagpie_vllm_omni.config import ASYNC_STREAMING_ENV
+
+    monkeypatch.setenv(ASYNC_STREAMING_ENV, '1')
+    scheduler = async_scheduler(monkeypatch)
+    scheduler.add_request(_request('a'))
+    assert 'a' in scheduler.cfg_pairs or 'a' in scheduler.requests
+
+
+@pytest.mark.parametrize('value', ['', '0', 'false', 'no'])
+def test_async_streaming_opt_in_requires_explicit_enable(monkeypatch, value):
+    from easymagpie_vllm_omni.config import ASYNC_STREAMING_ENV, async_streaming_enabled
+
+    monkeypatch.setenv(ASYNC_STREAMING_ENV, value)
+    assert not async_streaming_enabled()
+
+
 def test_default_sync_profile_still_rejects_second_step():
     scheduler = _mixed_scheduler()
     assert isinstance(scheduler, EasyMagpieCFGScheduler)
@@ -485,3 +515,92 @@ def test_allocator_pressure_cannot_preempt_half_of_submitted_pair(monkeypatch):
     assert manager.block_pool.get_num_free_blocks() == held
     assert all(r.num_computed_tokens == 3 for r in scheduler.requests.values())
     assert len(scheduler._cfg_steps) == 1  # No successor batch can reach dispatch.
+
+
+def test_async_streaming_opt_in_late_empty_sentinel_after_cleanup_is_ignored(monkeypatch):
+    from easymagpie_vllm_omni.config import ASYNC_STREAMING_ENV
+    from test_cfg_streaming import _chunk
+
+    monkeypatch.setenv(ASYNC_STREAMING_ENV, '1')
+    scheduler = async_scheduler(monkeypatch, max_num_seqs=4, num_blocks=128)
+    scheduler.add_request(_chunk(initial=True))
+    scheduler.finish_requests('stream', RequestStatus.FINISHED_ABORTED)
+    for _ in range(3):
+        if not scheduler.requests:
+            break
+        step = scheduler.schedule()
+        scheduler.update_from_output(step, _batch_output(step))
+    scheduler._cfg_retiring.clear()
+    terminal = _request(
+        'stream', prompt=[0], info={'global_request_id': ['stream'], 'omni_final_stage_id': 1}, resumable=False
+    )
+    scheduler.add_request(terminal)
+    assert not scheduler.requests and not scheduler.cfg_pairs and not scheduler._cfg_streams
+
+
+@pytest.mark.parametrize('retired', [False, True])
+@pytest.mark.parametrize('kind', ['sentinel', 'continuation_chunk', 'final_update_with_tokens'])
+def test_async_streaming_opt_in_late_input_for_aborted_stream_is_dropped(monkeypatch, kind, retired):
+    """A client disconnect can race the input iterator: late input for an aborted stream must not kill the engine."""
+    from easymagpie_vllm_omni.config import ASYNC_STREAMING_ENV
+    from test_cfg_streaming import _chunk
+
+    monkeypatch.setenv(ASYNC_STREAMING_ENV, '1')
+    scheduler = async_scheduler(monkeypatch, max_num_seqs=4, num_blocks=128)
+    scheduler.add_request(_chunk(initial=True))
+    scheduler.finish_requests('stream', RequestStatus.FINISHED_ABORTED)
+    assert 'stream' in scheduler._cfg_retiring
+    if retired:
+        for _ in range(4):
+            step = scheduler.schedule()
+            scheduler.update_from_output(step, _batch_output(step))
+        assert 'stream' not in scheduler._cfg_retiring
+    if kind == 'sentinel':
+        late = _request(
+            'stream', prompt=[0], info={'global_request_id': ['stream'], 'omni_final_stage_id': 1}, resumable=False
+        )
+    elif kind == 'final_update_with_tokens':
+        late = _request('stream', prompt=[0], info={'text_token': [4, 5], 'text_token_start': 2}, resumable=False)
+    else:
+        late = _chunk()
+    free = scheduler.kv_cache_manager.block_pool.get_num_free_blocks()
+    scheduler.add_request(late)
+    assert not scheduler.requests and not scheduler.cfg_pairs and not scheduler._cfg_streams
+    assert scheduler.kv_cache_manager.block_pool.get_num_free_blocks() == free
+
+
+@pytest.mark.parametrize('resumable', [True, False])
+@pytest.mark.parametrize(
+    'info',
+    [
+        {'text_token': [], 'text_token_start': 3},
+        {'text_token_start': 0},
+        {'global_request_id': ['stream'], 'omni_final_stage_id': 1, 'text_token': [4], 'text_token_start': 2},
+        {'text_token': [4, 5]},
+    ],
+)
+def test_async_streaming_opt_in_drops_any_placeholder_input_for_removed_stream(monkeypatch, info, resumable):
+    """Any placeholder-prompt input for an id that is not live is stream tail, never synthesis, and must not raise."""
+    from easymagpie_vllm_omni.config import ASYNC_STREAMING_ENV
+    from test_cfg_streaming import _chunk
+
+    monkeypatch.setenv(ASYNC_STREAMING_ENV, '1')
+    scheduler = async_scheduler(monkeypatch, max_num_seqs=4, num_blocks=128)
+    scheduler.add_request(_chunk(initial=True))
+    scheduler.finish_requests('stream', RequestStatus.FINISHED_ABORTED)
+    assert 'stream' in scheduler._cfg_retiring
+    scheduler.add_request(_request('stream', prompt=[0], info=dict(info), resumable=resumable))
+    assert not scheduler.requests and not scheduler.cfg_pairs and not scheduler._cfg_streams
+
+
+def test_async_streaming_opt_in_still_rejects_placeholder_input_for_live_stream_without_stream_state(monkeypatch):
+    """The drop applies only to ids that are not live; a real fresh request with a retiring id is still refused."""
+    from easymagpie_vllm_omni.config import ASYNC_STREAMING_ENV
+
+    monkeypatch.setenv(ASYNC_STREAMING_ENV, '1')
+    scheduler = async_scheduler(monkeypatch)
+    scheduler.add_request(_request('a'))
+    scheduler.finish_requests('a', RequestStatus.FINISHED_ABORTED)
+    assert 'a' in scheduler._cfg_retiring
+    with pytest.raises(ValueError, match='retiring'):
+        scheduler.add_request(_request('a'))

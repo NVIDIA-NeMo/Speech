@@ -1510,18 +1510,31 @@ class EasyMagpieTTSForConditionalGeneration(
         return task_len + t_audio + ctx_len
 
     @classmethod
-    def get_prompt_len(cls, speaker_id: str, model_path: str, *, tokenize: Callable[[str], Iterable[int]]) -> int:
+    def get_prompt_len(
+        cls,
+        speaker_id: str,
+        model_path: str,
+        *,
+        tokenize: Callable[[str], Iterable[int]],
+        context_text: Optional[str] = _DEFAULT_CONTEXT_TEXT,
+    ) -> int:
         """Known-speaker convenience wrapper around :meth:`estimate_prompt_len`.
 
-        Resolves everything from the checkpoint dir so it cannot disagree with
-        what the engine actually uses: loads the speaker embedding from
-        ``speaker_embeddings/<speaker_id>.pt`` (the same file the engine reads in
-        :meth:`_load_known_speaker_embedding`), reads ``has_task_embedding`` from
-        ``config.json`` (``num_task_embeddings``),
-        and conditions on the fixed :data:`_DEFAULT_CONTEXT_TEXT`. Lets a caller
-        holding only a ``speaker_id`` size ``prompt_token_ids`` without an engine
-        instance (``context_text`` / ``has_task_embedding`` are intentionally not
-        params — they must match the precomputed checkpoint, not be overridden).
+        Resolves the speaker and task rows from the checkpoint dir (see :meth:`get_speaker_prefix_len`) and adds
+        the tokenized request ``context_text``. A missing or empty context falls back to
+        :data:`_DEFAULT_CONTEXT_TEXT`, exactly as :meth:`_build_prefill_embeds` does, so the advertised length
+        matches the assembled prefill.
+        """
+        ctx_len = len(list(tokenize(context_text or _DEFAULT_CONTEXT_TEXT)))
+        return cls.get_speaker_prefix_len(speaker_id, model_path) + ctx_len
+
+    @staticmethod
+    def get_speaker_prefix_len(speaker_id: str, model_path: str) -> int:
+        """Return the context-independent ``[task? | speaker]`` prefill rows for a known speaker.
+
+        Loads the speaker embedding from ``speaker_embeddings/<speaker_id>.pt`` (the same file the engine reads
+        in :meth:`_load_known_speaker_embedding`) and ``num_task_embeddings`` from ``config.json``. Callers can
+        cache this per speaker and add the per-request context length.
         """
         import json
         import os
@@ -1535,12 +1548,7 @@ class EasyMagpieTTSForConditionalGeneration(
         with open(os.path.join(model_path, "config.json")) as f:
             num_task_embeddings = int(json.load(f).get("num_task_embeddings", 0))
 
-        return cls.estimate_prompt_len(
-            speaker_embedding,
-            tokenize=tokenize,
-            context_text=_DEFAULT_CONTEXT_TEXT,
-            has_task_embedding=num_task_embeddings > 0,
-        )
+        return int(num_task_embeddings > 0) + int(speaker_embedding.shape[0])
 
     def _preprocess_decode(
         self,

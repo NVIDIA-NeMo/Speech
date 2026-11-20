@@ -26,6 +26,8 @@ from types import MethodType
 from typing import TYPE_CHECKING, Any
 
 import torch
+from easymagpie_vllm_omni.stream_policy import end_stream_at_terminal_stop, is_late_stream_input
+from vllm.logger import init_logger
 from vllm.v1.request import Request, RequestStatus, StreamingUpdate
 from vllm_omni.core.sched.omni_ar_scheduler import OmniARAsyncScheduler
 from vllm_omni.core.sched.omni_generation_scheduler import OmniGenerationScheduler
@@ -34,6 +36,8 @@ from vllm_omni.engine.serialization import deserialize_additional_information, s
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+
+logger = init_logger(__name__)
 
 
 class EasyMagpieARAsyncScheduler(OmniARAsyncScheduler):
@@ -73,6 +77,11 @@ class EasyMagpieARAsyncScheduler(OmniARAsyncScheduler):
 
     def add_request(self, request: Request) -> None:
         session = self.requests.get(request.request_id)
+        if is_late_stream_input(request, live=session is not None) and self.vllm_config.model_config.stage_id == 0:
+            logger.info(
+                "Dropping late input for finished stream %s (resumable=%s)", request.request_id, request.resumable
+            )
+            return
         if session is None and request.resumable and self.vllm_config.model_config.stage_id == 0:
             # Record the initial prefill boundary once. Later text updates append
             # placeholders that vLLM can label as prefill, although they must consume
@@ -84,6 +93,9 @@ class EasyMagpieARAsyncScheduler(OmniARAsyncScheduler):
                 raise ValueError("Streaming prompt boundary is reserved for the scheduler")
             info["_stream_prompt_len"] = request.num_prompt_tokens
             request.additional_information = serialize_additional_information(info)
+            # Incremental text_token input streams one utterance, which acoustic
+            # EOS ends; complete-text dialogue replies pause after each EOS.
+            request._easymagpie_text_stream = "text_token" in info
         if (
             session is not None
             and session.status == RequestStatus.WAITING_FOR_STREAMING_REQ
@@ -146,14 +158,13 @@ class EasyMagpieARAsyncScheduler(OmniARAsyncScheduler):
         return outputs
 
     def _handle_stopped_request(self, request: Request) -> bool:
-        # The input engine queues ``None`` after the final StreamingInput but
-        # leaves the existing session's ``resumable`` flag set. Clear it before
-        # the base handler consumes the sentinel so the chunk-transfer adapter
-        # emits a true terminal payload and releases request-persistent codec
-        # state. An empty queue still means "waiting for more websocket input".
-        streaming_queue = getattr(request, "streaming_queue", None)
-        if getattr(request, "resumable", False) and streaming_queue and streaming_queue[0] is None:
-            request.resumable = False
+        # The input engine's final ``None`` sentinel, and acoustic EOS of an
+        # incremental text stream, end the session; see stream_policy. Clear
+        # ``resumable`` before the base handler runs so the chunk-transfer
+        # adapter emits a true terminal payload and releases request-persistent
+        # codec state. A segment limit with an empty queue, or the EOS of a
+        # dialogue reply, still means "waiting for more input".
+        end_stream_at_terminal_stop(request, eos_ends_stream=getattr(request, "_easymagpie_text_stream", False))
         return super()._handle_stopped_request(request)
 
     def _update_request_as_session(self, session: Request, update: StreamingUpdate) -> None:
@@ -236,7 +247,15 @@ def _poll_native_codec_chunk_unlocked(adapter: OmniChunkTransferAdapter, request
             adapter._finished_load_reqs.add(request.request_id)
         return segment_boundary_received
 
-    frames = _codec_payload_frames(request.additional_information, adapter._easymagpie_num_quantizers)
+    # Native generation receive merges metadata and may retain the previous
+    # codes.audio when a terminal-only chunk contains no new codes. Its freshly
+    # replaced prompt is empty in that case: wake terminal handling without
+    # scheduling another decode of the old acoustic rows.
+    frames = (
+        _codec_payload_frames(request.additional_information, adapter._easymagpie_num_quantizers)
+        if request.prompt_token_ids
+        else 0
+    )
     placeholders = [0] * frames
     request.prompt_token_ids = old_prompt + placeholders
     request._all_token_ids[:] = old_all_token_ids + placeholders
@@ -249,6 +268,13 @@ def _poll_native_codec_chunk_unlocked(adapter: OmniChunkTransferAdapter, request
 def _poll_native_codec_chunk(adapter: OmniChunkTransferAdapter, request: Request) -> bool:
     """Publish connector readiness only after the request payload is coherent."""
     with adapter._easymagpie_chunk_lock:
+        if getattr(request, "_easymagpie_receiver_retired", False):
+            # recv_loop may dequeue before abort, then write this request's ID
+            # mapping after cleanup. Drain that stale task without polling or
+            # requeueing it; no terminal/readiness payload is published.
+            adapter.cleanup_receiver(request.request_id)
+            adapter._cancelled_load_reqs.discard(request.request_id)
+            return True
         return _poll_native_codec_chunk_unlocked(adapter, request)
 
 
@@ -274,7 +300,8 @@ class EasyMagpieCodecScheduler(OmniGenerationScheduler):
         num_quantizers = int(getattr(config, "num_stacked_codebooks", 0))
         if num_quantizers <= 0:
             raise ValueError("native EasyMagpie codec config has no stacked codebooks")
-        adapter._easymagpie_chunk_lock = threading.Lock()
+        # schedule() can free a request while holding this same receive lock.
+        adapter._easymagpie_chunk_lock = threading.RLock()
         adapter._easymagpie_num_quantizers = num_quantizers
         adapter._poll_single_request = MethodType(_poll_native_codec_chunk, adapter)
         # The legacy connector queue can preempt a partly decoded stream back
@@ -330,18 +357,31 @@ class EasyMagpieCodecScheduler(OmniGenerationScheduler):
         Returns:
             Optional cache-transfer metadata returned by the base scheduler.
         """
-        if (
-            getattr(request, "streaming_queue", None) is not None
-            and request.status == RequestStatus.FINISHED_STOPPED
-            and not getattr(request, "_easymagpie_terminal_prewarm_seen", False)
-        ):
-            self._easymagpie_pending_terminal.add(request.request_id)
-        try:
-            return super()._free_request(request, delay_free_blocks)
-        finally:
-            # Generation output cleanup covers normal finishes, but the base
-            # abort path leaves the connector's active-stream entry behind.
-            self.chunk_transfer_adapter.cleanup_receiver(request.request_id)
+        adapter = self.chunk_transfer_adapter
+        with adapter._easymagpie_chunk_lock:
+            # Wait for any active native receive before clearing its maps, and
+            # prevent already-dequeued tasks from restoring them afterward.
+            request._easymagpie_receiver_retired = True
+            freed_receiver_ids = getattr(self, "_easymagpie_freed_receiver_ids", None)
+            if freed_receiver_ids is not None:
+                freed_receiver_ids.add(request.request_id)
+            if (
+                getattr(request, "streaming_queue", None) is not None
+                and request.status == RequestStatus.FINISHED_STOPPED
+                and not getattr(request, "_easymagpie_terminal_prewarm_seen", False)
+            ):
+                self._easymagpie_pending_terminal.add(request.request_id)
+            try:
+                return super()._free_request(request, delay_free_blocks)
+            finally:
+                # Generation output cleanup covers normal finishes, but the base
+                # abort path leaves the connector's active-stream entry behind.
+                adapter.cleanup_receiver(request.request_id)
+                # The request marker protects every queued/dequeued callback;
+                # a process-lifetime identity tombstone is no longer necessary.
+                cancelled = getattr(adapter, "_cancelled_load_reqs", None)
+                if cancelled is not None:
+                    cancelled.discard(request.request_id)
 
     def finish_requests(
         self,
@@ -364,7 +404,19 @@ class EasyMagpieCodecScheduler(OmniGenerationScheduler):
         else:
             request_ids = tuple(request_ids)
             self._easymagpie_pending_terminal.difference_update(request_ids)
-        return super().finish_requests(request_ids, finished_status)
+        ids = (
+            tuple(self.requests)
+            if request_ids is None
+            else (request_ids,) if isinstance(request_ids, str) else request_ids
+        )
+        result = super().finish_requests(request_ids, finished_status)
+        with self.chunk_transfer_adapter._easymagpie_chunk_lock:
+            # Native repeated aborts add cancellation IDs even for requests
+            # already freed. Their stale tasks still carry the retired marker.
+            cancelled = getattr(self.chunk_transfer_adapter, "_cancelled_load_reqs", None)
+            if cancelled is not None:
+                cancelled.difference_update(rid for rid in ids if rid not in self.requests)
+        return result
 
     def _update_request_as_session(self, session: Request, update: StreamingUpdate) -> None:
         """Resume a text chunk, or reset Stage 1 for a new dialogue reply.
@@ -461,6 +513,7 @@ class EasyMagpieCodecScheduler(OmniGenerationScheduler):
         # then scheduled as cached tokens against the same state pages.
         self._easymagpie_stopped_sessions = []
         self._easymagpie_segment_requests = set()
+        self._easymagpie_freed_receiver_ids = set()
         try:
             outputs = super().update_from_output(scheduler_output, model_runner_output)
             for request_id in self._easymagpie_segment_requests:
@@ -470,6 +523,19 @@ class EasyMagpieCodecScheduler(OmniGenerationScheduler):
         finally:
             self._easymagpie_stopped_sessions = None
             self._easymagpie_segment_requests = None
+            freed_receiver_ids = self._easymagpie_freed_receiver_ids
+            self._easymagpie_freed_receiver_ids = None
+            if freed_receiver_ids:
+                adapter = self.chunk_transfer_adapter
+                with adapter._easymagpie_chunk_lock:
+                    # Native output handling calls adapter.cleanup() AFTER
+                    # _free_request(), restoring cancellation tombstones even
+                    # when no receive tasks remain. Retired Request markers
+                    # still protect dequeued callbacks; release only identities
+                    # freed by this output, including when later handling fails.
+                    adapter._cancelled_load_reqs.difference_update(
+                        rid for rid in freed_receiver_ids if rid not in self.requests
+                    )
         return outputs
 
     def schedule(self, *args, **kwargs):

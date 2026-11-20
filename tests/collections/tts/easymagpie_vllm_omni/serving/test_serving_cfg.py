@@ -14,6 +14,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -54,7 +55,7 @@ def adapter(tmp_path: Path) -> Any:
         "text_vocab_size": 100,
     }
     instance._text_stream_metadata = lambda: (99, 0)
-    instance._prompt_len = lambda _speaker: 2
+    instance._prompt_len = lambda _speaker, _context: 2
     instance._model_tokenizer = lambda: SimpleNamespace(encode=lambda *_args, **_kwargs: [10, 11])
     return instance
 
@@ -83,6 +84,18 @@ def test_async_cfg_profile_rejects_incremental_before_generation(async_adapter: 
     request = OpenAICreateSpeechRequest(input="", voice="demon", extra_params={"use_cfg": use_cfg})
     with pytest.raises(ValueError, match="complete.text"):
         async_adapter.build_streaming_spec(request)
+
+
+@pytest.mark.parametrize("use_cfg", [True, False])
+def test_async_cfg_profile_builds_incremental_spec_only_when_opted_in(
+    async_adapter: Any, monkeypatch: pytest.MonkeyPatch, use_cfg: bool
+) -> None:
+    from easymagpie_vllm_omni.config import ASYNC_STREAMING_ENV
+
+    monkeypatch.setenv(ASYNC_STREAMING_ENV, "1")
+    request = OpenAICreateSpeechRequest(input="", voice="demon", extra_params={"use_cfg": use_cfg})
+    spec = async_adapter.build_streaming_spec(request)
+    assert spec.prefill_prompt["additional_information"]["use_cfg"] is use_cfg
 
 
 @pytest.mark.asyncio
@@ -460,6 +473,10 @@ class _Socket:
             The next configured JSON message.
         """
         return json.dumps(next(self.incoming))
+
+    async def receive(self) -> dict[str, Any]:
+        """Keep the connected client idle while the handler drains final audio."""
+        return await asyncio.Future()
 
     async def send_json(self, message: str) -> None:
         """Record a JSON message sent by the streaming handler.

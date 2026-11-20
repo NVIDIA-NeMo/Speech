@@ -16,7 +16,8 @@
 from __future__ import annotations
 
 import threading
-from collections import deque
+from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -176,6 +177,118 @@ def test_empty_streaming_queue_remains_resumable_while_waiting(monkeypatch):
     assert request.resumable is True
 
 
+@pytest.mark.parametrize("queue", [(), ("update",), ("update", None)])
+def test_acoustic_eos_ends_incremental_text_stream_and_drops_queued_input(monkeypatch, queue):
+    """Audio EOS ends the utterance; a speculative async successor then only targets a finished request."""
+    scheduler = object.__new__(EasyMagpieARAsyncScheduler)
+    request = _stopped_stream(last_token=7, queue=queue, text_stream=True)
+    seen = []
+
+    def fake_handle_stopped_request(self, req):
+        seen.append((req.resumable, list(req.streaming_queue)))
+        return not req.resumable
+
+    monkeypatch.setattr(OmniARAsyncScheduler, "_handle_stopped_request", fake_handle_stopped_request)
+
+    assert scheduler._handle_stopped_request(request) is True
+    assert seen == [(False, [])]
+
+
+@pytest.mark.parametrize("queue", [(), ("next reply",)])
+def test_acoustic_eos_ends_only_the_reply_of_a_dialogue_session(monkeypatch, queue):
+    """A dialogue session ends one reply per EOS and resumes the retained state with the next reply."""
+    scheduler = object.__new__(EasyMagpieARAsyncScheduler)
+    request = _stopped_stream(last_token=7, queue=queue, text_stream=False)
+    monkeypatch.setattr(OmniARAsyncScheduler, "_handle_stopped_request", lambda self, req: not req.resumable)
+
+    assert scheduler._handle_stopped_request(request) is False
+    assert request.resumable is True and list(request.streaming_queue) == list(queue)
+
+
+@pytest.mark.parametrize(
+    ("info", "text_stream"),
+    [
+        ({"text_token": [2, 3], "text_token_start": 0}, True),
+        ({"text": "Hello.", "reset_codec_on_segment": True}, False),
+    ],
+)
+def test_new_stage0_session_records_whether_it_streams_one_utterance(monkeypatch, info, text_stream):
+    from vllm_omni.engine.serialization import serialize_additional_information
+
+    scheduler = object.__new__(EasyMagpieARAsyncScheduler)
+    scheduler.requests = {}
+    scheduler.vllm_config = SimpleNamespace(model_config=SimpleNamespace(stage_id=0))
+    scheduler.chunk_transfer_adapter = None
+    monkeypatch.setattr(OmniARAsyncScheduler, "add_request", lambda self, request: None)
+    request = SimpleNamespace(
+        request_id="session",
+        resumable=True,
+        prompt_token_ids=[0, 0, 0],
+        num_prompt_tokens=3,
+        additional_information=serialize_additional_information(info),
+    )
+
+    scheduler.add_request(request)
+
+    assert request._easymagpie_text_stream is text_stream
+
+
+def test_segment_limit_keeps_stream_resumable_with_its_queued_update(monkeypatch):
+    scheduler = object.__new__(EasyMagpieARAsyncScheduler)
+    request = _stopped_stream(last_token=0, queue=("update",), text_stream=True)
+    monkeypatch.setattr(OmniARAsyncScheduler, "_handle_stopped_request", lambda self, req: not req.resumable)
+
+    assert scheduler._handle_stopped_request(request) is False
+    assert request.resumable is True and list(request.streaming_queue) == ["update"]
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+def test_late_placeholder_input_for_a_finished_stream_is_dropped(monkeypatch, resumable):
+    """The orchestrator turns an update for an unknown stream into add_request; it must not start synthesis."""
+    from vllm_omni.engine.serialization import serialize_additional_information
+
+    scheduler = object.__new__(EasyMagpieARAsyncScheduler)
+    scheduler.requests = {}
+    scheduler.vllm_config = SimpleNamespace(model_config=SimpleNamespace(stage_id=0))
+    scheduler.chunk_transfer_adapter = None
+    admitted = []
+    monkeypatch.setattr(OmniARAsyncScheduler, "add_request", lambda self, request: admitted.append(request))
+    late = SimpleNamespace(
+        request_id="stream",
+        resumable=resumable,
+        prompt_token_ids=[0],
+        num_prompt_tokens=1,
+        additional_information=serialize_additional_information({"text_token": [], "text_token_start": 5}),
+    )
+
+    scheduler.add_request(late)
+
+    assert admitted == []
+
+
+def test_fresh_stream_prefill_is_still_admitted_with_its_prompt_boundary(monkeypatch):
+    from vllm_omni.engine.serialization import deserialize_additional_information, serialize_additional_information
+
+    scheduler = object.__new__(EasyMagpieARAsyncScheduler)
+    scheduler.requests = {}
+    scheduler.vllm_config = SimpleNamespace(model_config=SimpleNamespace(stage_id=0))
+    scheduler.chunk_transfer_adapter = None
+    admitted = []
+    monkeypatch.setattr(OmniARAsyncScheduler, "add_request", lambda self, request: admitted.append(request))
+    fresh = SimpleNamespace(
+        request_id="stream",
+        resumable=True,
+        prompt_token_ids=[0, 0, 0],
+        num_prompt_tokens=3,
+        additional_information=serialize_additional_information({"text_token": [2, 3], "text_token_start": 0}),
+    )
+
+    scheduler.add_request(fresh)
+
+    assert admitted == [fresh]
+    assert deserialize_additional_information(fresh.additional_information)["_stream_prompt_len"] == 3
+
+
 def test_final_streaming_update_sends_terminal_codec_payload_for_waiting_session(monkeypatch):
     class _Session(SimpleNamespace):
         def is_finished(self):
@@ -247,6 +360,44 @@ def test_scheduler_output_marks_only_the_matching_segment():
 
     assert matching.is_segment_finished is True
     assert other.is_segment_finished is False
+
+
+@pytest.mark.parametrize(
+    "empty_codes", [None, torch.empty(0, dtype=torch.long), torch.empty((0, 2), dtype=torch.long)]
+)
+def test_native_codec_terminal_only_chunk_does_not_replay_previous_audio(empty_codes):
+    """A final wire notification must not reuse codes retained by native metadata merging."""
+    payload = {"meta": {"finished": True}}
+    if empty_codes is not None:
+        payload["codes"] = {"audio": empty_codes}
+    adapter = object.__new__(OmniChunkTransferAdapter)
+    adapter.connector = SimpleNamespace(stage_id=1, get=lambda *args: (payload, 0))
+    adapter.model_mode = "generation"
+    adapter._easymagpie_num_quantizers = 2
+    adapter._easymagpie_chunk_lock = threading.Lock()
+    adapter.get_req_chunk = {"request": 1}
+    adapter.request_ids_mapping = {}
+    adapter.finished_requests = set()
+    adapter.segment_finished_requests = set()
+    adapter._finished_load_reqs = set()
+    request = SimpleNamespace(
+        prompt_token_ids=[0, 0, 0],
+        request_id="request",
+        _all_token_ids=[0, 0, 0],
+        num_computed_tokens=3,
+        num_prompt_tokens=3,
+        resumable=True,
+        additional_information={"codes": {"audio": torch.ones((3, 2), dtype=torch.long)}},
+        update_block_hashes=lambda: None,
+    )
+
+    assert _poll_native_codec_chunk(adapter, request) is True
+    assert request.prompt_token_ids == [0, 0, 0]
+    assert request._all_token_ids == [0, 0, 0]
+    assert request.num_prompt_tokens == request.num_computed_tokens == 3
+    assert request.resumable is False
+    assert adapter.finished_requests == adapter._finished_load_reqs == {"request"}
+    assert adapter.get_req_chunk == {"request": 2}
 
 
 def test_native_codec_chunk_appends_prompt_without_resetting_state(monkeypatch):
@@ -420,6 +571,7 @@ def test_native_codec_abort_releases_active_stream_for_reuse(monkeypatch: pytest
     request = SimpleNamespace(request_id="aborted")
     adapter = object.__new__(OmniChunkTransferAdapter)
     adapter._active_window = 1
+    adapter._easymagpie_chunk_lock = threading.RLock()
     adapter._active_streams = {"aborted": request}
     adapter.finished_requests = set()
     adapter.segment_finished_requests = set()
@@ -438,6 +590,135 @@ def test_native_codec_abort_releases_active_stream_for_reuse(monkeypatch: pytest
     adapter._promote_active_streams([replacement])
     assert adapter._active_streams == {"replacement": replacement}
     assert "aborted" not in adapter.requests_with_ready_chunks
+
+
+def test_retired_codec_receive_task_cannot_recreate_receiver_maps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A receive task dequeued before abort must drain without polling again."""
+    scheduler, adapter, request = _codec_receiver_for_retirement()
+    monkeypatch.setattr(OmniGenerationScheduler, "_free_request", lambda self, req, delay_free_blocks=False: "freed")
+    calls = []
+    adapter.connector.get = lambda *args: calls.append(args)
+
+    assert scheduler._free_request(request) == "freed"
+    # The native recv loop writes this mapping after dequeue, outside the poll lock.
+    adapter.request_ids_mapping[request.request_id] = request.external_req_id
+    before = dict(vars(request))
+    assert _poll_native_codec_chunk(adapter, request) is True
+    assert vars(request) == before
+    assert calls == []
+    assert not adapter.get_req_chunk
+    assert not adapter.request_ids_mapping
+    assert not adapter._finished_load_reqs
+
+
+def test_codec_retirement_waits_for_active_receive_before_clearing_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An active native receive cannot republish its counters after cleanup."""
+    scheduler, adapter, request = _codec_receiver_for_retirement()
+    monkeypatch.setattr(OmniGenerationScheduler, "_free_request", lambda self, req, delay_free_blocks=False: "freed")
+    entered, release, retiring = threading.Event(), threading.Event(), threading.Event()
+
+    def blocked_get(*args):
+        entered.set()
+        assert release.wait(timeout=2)
+        return {"codes": {"audio": torch.ones((1, 2), dtype=torch.long)}}, 0
+
+    def retire():
+        retiring.set()
+        return scheduler._free_request(request)
+
+    adapter.connector.get = blocked_get
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        poll = executor.submit(_poll_native_codec_chunk, adapter, request)
+        assert entered.wait(timeout=2)
+        free = executor.submit(retire)
+        try:
+            assert retiring.wait(timeout=2)
+            with pytest.raises(TimeoutError):
+                free.result(timeout=0.05)
+        finally:
+            release.set()
+        assert poll.result(timeout=2) is True
+        assert free.result(timeout=2) == "freed"
+    assert not adapter.get_req_chunk
+    assert not adapter.request_ids_mapping
+    assert not adapter._finished_load_reqs
+
+
+def test_codec_retirement_does_not_accumulate_cancellation_identities(monkeypatch: pytest.MonkeyPatch) -> None:
+    scheduler, adapter, request = _codec_receiver_for_retirement()
+    monkeypatch.setattr(OmniGenerationScheduler, "_free_request", lambda self, req, delay_free_blocks=False: None)
+    for index in range(64):
+        request = SimpleNamespace(**{**vars(request), "request_id": f"codec-{index}"})
+        scheduler._free_request(request)
+        # Even repeated dequeued tasks must drain using the request marker,
+        # without growing a process-lifetime set of retired identities.
+        for _ in range(2):
+            adapter.request_ids_mapping[request.request_id] = request.external_req_id
+            assert _poll_native_codec_chunk(adapter, request) is True
+        assert not adapter._cancelled_load_reqs
+        assert not adapter.request_ids_mapping
+
+
+@pytest.mark.parametrize("fail_after_cleanup", [False, True])
+def test_codec_output_cleanup_does_not_restore_retired_cancellation_ids(monkeypatch, fail_after_cleanup):
+    """Native output handling calls adapter.cleanup() after _free_request()."""
+    scheduler, adapter, request = _codec_receiver_for_retirement()
+    scheduler.requests = {request.request_id: request, "live": SimpleNamespace()}
+    adapter._cancelled_load_reqs.add("live")
+    for name in (
+        "put_req_chunk",
+        "request_payload",
+        "code_prompt_token_ids",
+        "requests_num_chunks_sent",
+        "_pending_streaming_prefills",
+    ):
+        setattr(adapter, name, {})
+
+    def free(self, req, delay_free_blocks=False):
+        del self.requests[req.request_id]
+
+    def native_update(self, scheduler_output, model_runner_output):
+        self._free_request(request)
+        # Exercise the real pinned adapter cleanup following native generation
+        # output handling, including the zero-token pending-finish path.
+        adapter.cleanup(request.request_id, request.external_req_id)
+        if fail_after_cleanup:
+            raise RuntimeError("output failure after cleanup")
+        return {}
+
+    monkeypatch.setattr(OmniGenerationScheduler, "_free_request", free)
+    monkeypatch.setattr(OmniGenerationScheduler, "update_from_output", native_update)
+    if fail_after_cleanup:
+        with pytest.raises(RuntimeError, match="output failure after cleanup"):
+            scheduler.update_from_output(None, None)
+    else:
+        assert scheduler.update_from_output(None, None) == {}
+
+    assert request._easymagpie_receiver_retired
+    assert scheduler._easymagpie_freed_receiver_ids is None
+    assert adapter._cancelled_load_reqs == {"live"}
+    # A callback dequeued before normal completion is still protected by the
+    # actual retired Request even after its cancellation identity is released.
+    adapter.request_ids_mapping[request.request_id] = request.external_req_id
+    assert _poll_native_codec_chunk(adapter, request) is True
+    assert not adapter.request_ids_mapping
+    assert adapter._cancelled_load_reqs == {"live"}
+
+
+def test_repeated_codec_abort_drops_unknown_ids_and_preserves_live_cancellation(monkeypatch):
+    scheduler, adapter, request = _codec_receiver_for_retirement()
+    scheduler.requests = {"live": request}
+    scheduler._easymagpie_pending_terminal = set()
+    adapter._cancelled_load_reqs.add("live")
+
+    def finish(self, ids, status):
+        self.chunk_transfer_adapter._cancelled_load_reqs.update(ids)
+        return []
+
+    monkeypatch.setattr(OmniGenerationScheduler, "finish_requests", finish)
+    for index in range(64):
+        assert scheduler.finish_requests((f"already-freed-{index}",), RequestStatus.FINISHED_ABORTED) == []
+        assert adapter._cancelled_load_reqs == {"live"}
 
 
 @pytest.mark.parametrize("terminal_arrives_first", [False, True])
@@ -459,7 +740,9 @@ def test_native_codec_terminal_prewarm_cannot_recreate_finished_stream(
         status=RequestStatus.FINISHED_STOPPED,
     )
     scheduler.requests = {stream.request_id: stream}
-    scheduler.chunk_transfer_adapter = SimpleNamespace(cleanup_receiver=lambda request_id: None)
+    scheduler.chunk_transfer_adapter = SimpleNamespace(
+        cleanup_receiver=lambda request_id: None, _easymagpie_chunk_lock=threading.RLock()
+    )
     admitted = []
     monkeypatch.setattr(OmniGenerationScheduler, "add_request", lambda self, req: admitted.append(req))
     monkeypatch.setattr(OmniGenerationScheduler, "_free_request", lambda self, req, delay_free_blocks=False: None)
@@ -502,6 +785,10 @@ def test_native_codec_abort_clears_pending_terminal_tracking(
     """
     scheduler = object.__new__(EasyMagpieCodecScheduler)
     scheduler._easymagpie_pending_terminal = {"closed", "other"}
+    scheduler.requests = {}
+    scheduler.chunk_transfer_adapter = SimpleNamespace(
+        _easymagpie_chunk_lock=threading.RLock(), _cancelled_load_reqs=set()
+    )
     calls = []
     monkeypatch.setattr(
         OmniGenerationScheduler, "finish_requests", lambda self, ids, status: calls.append((ids, status)) or []
@@ -814,3 +1101,47 @@ def test_codec_initial_requests_and_resumable_updates_are_forwarded(
     scheduler.add_request(request)
 
     assert calls == [request]
+
+
+def _codec_receiver_for_retirement():
+    adapter = object.__new__(OmniChunkTransferAdapter)
+    adapter._easymagpie_chunk_lock = threading.RLock()
+    adapter._easymagpie_num_quantizers = 2
+    adapter.connector = SimpleNamespace(stage_id=1, get=lambda *args: None)
+    adapter.model_mode = "generation"
+    adapter._active_window = 1
+    adapter._active_streams = {}
+    adapter.get_req_chunk = defaultdict(int)
+    adapter.finished_requests = set()
+    adapter.segment_finished_requests = set()
+    adapter.requests_with_ready_chunks = set()
+    adapter.request_ids_mapping = {}
+    adapter.requests_origin_status = {}
+    adapter._cancelled_load_reqs = set()
+    adapter._finished_load_reqs = set()
+    request = SimpleNamespace(
+        request_id="retired-codec",
+        external_req_id="external",
+        status=RequestStatus.FINISHED_ABORTED,
+        prompt_token_ids=[0, 0],
+        _all_token_ids=[0, 0],
+        num_computed_tokens=2,
+        num_prompt_tokens=2,
+        additional_information=None,
+        update_block_hashes=lambda: None,
+    )
+    scheduler = object.__new__(EasyMagpieCodecScheduler)
+    scheduler.chunk_transfer_adapter = adapter
+    return scheduler, adapter, request
+
+
+def _stopped_stream(*, last_token: int, text_stream: bool, queue: Iterable[Any] = ()) -> SimpleNamespace:
+    """Build a resumable Stage-0 request that has just stopped on ``last_token``."""
+    return SimpleNamespace(
+        resumable=True,
+        streaming_queue=deque(queue),
+        output_token_ids=[0, last_token],
+        sampling_params=SimpleNamespace(stop_token_ids=[7], ignore_eos=False),
+        eos_token_id=None,
+        _easymagpie_text_stream=text_stream,
+    )

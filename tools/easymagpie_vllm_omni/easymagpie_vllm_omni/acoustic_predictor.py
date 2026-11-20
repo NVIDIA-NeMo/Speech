@@ -202,6 +202,9 @@ class EasyMagpieAcousticCodesPredictor(nn.Module):
     def advance(self, hidden_states: torch.Tensor, *, positions: torch.Tensor) -> None:
         """Populate every predictor cache using MASK conditioning between blocks."""
         num_tokens = hidden_states.shape[0]
+        # Decoder residual norms may update their input in place. The phoneme
+        # head still consumes the shared backbone output after this predictor.
+        hidden_states = hidden_states.clone()
         previous_codes = None
         previous_indices = None
         for block in self.blocks:
@@ -305,6 +308,9 @@ class EasyMagpieAcousticCodesPredictor(nn.Module):
             dtype=torch.long,
             device=hidden_states.device,
         )
+        # Decoder residual norms may update their input in place. The phoneme
+        # head still consumes the shared backbone output after this predictor.
+        hidden_states = hidden_states.clone()
         previous_codes = None
         previous_indices = None
         code_offset = 0

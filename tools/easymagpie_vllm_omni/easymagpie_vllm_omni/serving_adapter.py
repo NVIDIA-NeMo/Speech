@@ -23,7 +23,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable
 
 from easymagpie_vllm_omni.cfg import AcousticSamplingSettings, validate_cfg_capability
-from easymagpie_vllm_omni.config import EasyMagpieOmniArch
+from easymagpie_vllm_omni.config import EasyMagpieOmniArch, async_streaming_enabled
 from easymagpie_vllm_omni.tokenizer import EasyMagpieTextTokenizer
 
 logger = logging.getLogger(__name__)
@@ -101,19 +101,24 @@ def _build_adapter_cls() -> type:
             self._tokenize()
             return self._tokenizer
 
-        def _prompt_len(self, speaker_id: str) -> int:
-            cached = self._prompt_len_cache.get(speaker_id)
-            if cached is not None:
-                return cached
-            from easymagpie_vllm_omni.easymagpie import EasyMagpieTTSForConditionalGeneration
+        def _prompt_len(self, speaker_id: str, context_text: str | None) -> int:
+            """Return known-speaker conditioning rows for the request's effective context.
 
-            plen = int(
-                EasyMagpieTTSForConditionalGeneration.get_prompt_len(
-                    speaker_id, self._model_path(), tokenize=self._tokenize()
+            The ``[task? | speaker]`` prefix is cached per speaker; the context rows are added per request with
+            the same empty/missing fallback the model applies when it assembles the prefill.
+            """
+            prefix = self._prompt_len_cache.get(speaker_id)
+            if prefix is None:
+                from easymagpie_vllm_omni.easymagpie import EasyMagpieTTSForConditionalGeneration
+
+                prefix = int(
+                    EasyMagpieTTSForConditionalGeneration.get_speaker_prefix_len(speaker_id, self._model_path())
                 )
-            )
-            self._prompt_len_cache[speaker_id] = plen
-            return plen
+                self._prompt_len_cache[speaker_id] = prefix
+            return prefix + self._context_len(context_text)
+
+        def _context_len(self, context_text: str | None) -> int:
+            return len(self._tokenize()(context_text or _DEFAULT_CONTEXT_TEXT))
 
         def _model_config(self) -> dict[str, Any]:
             if self._model_config_cache is None:
@@ -190,7 +195,8 @@ def _build_adapter_cls() -> type:
             ref_audio = request.ref_audio
             if ref_audio is None:
                 speaker_id = (request.voice or _DEFAULT_SPEAKER).strip()
-                prompt["prompt_token_ids"] = [0] * (self._prompt_len(speaker_id) + text_prefill_num)
+                context_text = prompt["additional_information"]["context_text"]
+                prompt["prompt_token_ids"] = [0] * (self._prompt_len(speaker_id, context_text) + text_prefill_num)
                 prompt["additional_information"]["speaker_id"] = speaker_id
                 self._validate_async_history(request, len(prompt["prompt_token_ids"]))
                 return PreparedRequest(prompt=prompt, tts_params={}, model_type=MODEL_TYPE)
@@ -202,8 +208,7 @@ def _build_adapter_cls() -> type:
                 raise ValueError(
                     f"EasyMagpie reference audio must be {arch.codec_input_sample_rate} Hz; received {sample_rate} Hz"
                 )
-            context_text = prompt["additional_information"]["context_text"]
-            context_len = len(self._tokenize()(context_text))
+            context_len = self._context_len(prompt["additional_information"]["context_text"])
             task_len = int(arch.num_task_embeddings > 0)
             prompt["prompt_token_ids"] = (
                 [0] * task_len + [arch.audio_input_token_id] + [0] * context_len + [0] * text_prefill_num
@@ -213,7 +218,7 @@ def _build_adapter_cls() -> type:
 
         def build_streaming_spec(self, request: OpenAICreateSpeechRequest) -> EasyMagpieStreamingSpec:
             """Build the speaker prefill and tokenizer metadata without complete text."""
-            if self._uses_async_cfg_scheduler():
+            if self._uses_async_cfg_scheduler() and not async_streaming_enabled():
                 raise ValueError("Async CFG requires complete-text input; incremental/resumable input is unsupported")
             acoustic_info = self._acoustic_info(request)
             if request.ref_audio is not None:
@@ -230,11 +235,12 @@ def _build_adapter_cls() -> type:
                 codec_config = json.loads(codec_config_path.read_text())
                 sample_rate = int(codec_config.get("output_sample_rate", sample_rate))
 
+            context_text = (request.extra_params or {}).get("context_text", _DEFAULT_CONTEXT_TEXT)
             return EasyMagpieStreamingSpec(
                 prefill_prompt={
-                    "prompt_token_ids": [0] * (self._prompt_len(speaker_id) + text_prefill_num),
+                    "prompt_token_ids": [0] * (self._prompt_len(speaker_id, context_text) + text_prefill_num),
                     "additional_information": {
-                        "context_text": (request.extra_params or {}).get("context_text", _DEFAULT_CONTEXT_TEXT),
+                        "context_text": context_text,
                         **acoustic_info,
                         "speaker_id": speaker_id,
                         "text_prefill_num": text_prefill_num,

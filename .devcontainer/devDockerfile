@@ -9,3 +9,7 @@ LABEL \
 WORKDIR /workspace/NeMo
 
 USER root
+
+# Claude Code state (auth, settings, per-project memory) lives here; devcontainer.json
+# mounts a named volume over it so it survives container rebuilds.
+RUN mkdir -p /root/.claude

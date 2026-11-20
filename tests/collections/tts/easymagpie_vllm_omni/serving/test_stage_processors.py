@@ -393,6 +393,48 @@ def test_parked_stream_final_sentinel_flushes_codec_tail(monkeypatch, scheduler_
     assert session.external_req_id not in sender.code_prompt_token_ids
 
 
+@pytest.mark.parametrize("queued", [False, True])
+def test_cfg_abort_retires_sender_after_queued_frames_and_preserves_fresh_generation(queued):
+    from easymagpie_vllm_omni.cfg_pairing import CFGPairingTransferFilter
+    from vllm.v1.request import RequestStatus
+
+    sender, payloads = _native_sender()
+    transfer = CFGPairingTransferFilter(sender)
+    request = _Request()
+    request.request_id = "old-internal"
+    request.num_computed_tokens = 1
+    transfer.save_async(_output(1), request)
+    if not queued:
+        sender._send_single_request(sender._pending_save_reqs.popleft())
+        assert request.external_req_id in sender._emp_frame_buffer
+    transfer.finish_requests([request.request_id], RequestStatus.FINISHED_ABORTED, {request.request_id: request})
+    # Abort queues retirement; it cannot clear buffers under an in-flight send.
+    if not queued:
+        assert request.external_req_id in sender._emp_frame_buffer
+    transfer.save_async(_output(99), request)  # stale callback after abort
+    fresh = _Request()
+    fresh.request_id = "fresh-internal"
+    fresh.external_req_id = "fresh-external"
+    fresh.num_computed_tokens = 1
+    transfer.save_async(_output(2), fresh)
+    while sender._pending_save_reqs:
+        sender._send_single_request(sender._pending_save_reqs.popleft())
+    for name in (
+        "put_req_chunk",
+        "code_prompt_token_ids",
+        "requests_num_chunks_sent",
+        "_emp_frame_buffer",
+        "_emp_frame_buffer_base",
+        "_emp_seen_frames",
+        "_emp_request_speech_delay",
+        "_emp_emitted_frames",
+        "_emp_emitted_chunks",
+    ):
+        assert request.external_req_id not in getattr(sender, name, {})
+    torch.testing.assert_close(sender._emp_frame_buffer[fresh.external_req_id][0], torch.tensor([2, 102]))
+    assert not payloads  # retirement does not inject a terminal transport publication
+
+
 def _parked_stream(scheduler_kind, monkeypatch):
     from easymagpie_vllm_omni.scheduler import EasyMagpieARAsyncScheduler
     from test_cfg_concurrency import _batch_output, _mixed_scheduler

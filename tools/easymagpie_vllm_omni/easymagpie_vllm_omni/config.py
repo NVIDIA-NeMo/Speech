@@ -15,11 +15,21 @@
 """EasyMagpieTTS architecture configuration for vLLM-Omni."""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from math import prod
 from typing import Any
 
 from easymagpie_vllm_omni.cfg import validate_cfg_capability
+
+# Experimental opt-in for incremental (resumable) input under the async CFG scheduler.
+ASYNC_STREAMING_ENV: str = "EASYMAGPIE_ASYNC_STREAMING"
+
+
+def async_streaming_enabled() -> bool:
+    """Return whether async CFG may admit incremental input (explicit opt-in, default off)."""
+    return os.environ.get(ASYNC_STREAMING_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
 
 # Each audio codebook appends BOS, EOS, context, mask, and reserved tokens.
 NUM_SPECIAL_AUDIO_TOKENS: int = 8

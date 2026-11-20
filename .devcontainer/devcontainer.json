@@ -22,7 +22,8 @@
   ],
   "workspaceFolder": "/workspace/NeMo",
   "mounts": [
-    "source=${localWorkspaceFolder},target=/workspace/NeMo,type=bind"
+    "source=${localWorkspaceFolder},target=/workspace/NeMo,type=bind",
+    "source=claude-code-config-${devcontainerId},target=/root/.claude,type=volume"
   ],
   "remoteUser": "root",
   "postCreateCommand": "pip install -e /workspace/NeMo --no-deps && pip install lhotse==2.0.0a1",
@@ -32,7 +33,7 @@
             "terminal.integrated.shell.linux": "/bin/bash"
         },
         "extensions": [
-          "openai.chatgpt",
+          "anthropic.claude-code",
           "ms-python.python",
           "ms-toolsai.jupyter"
         ]

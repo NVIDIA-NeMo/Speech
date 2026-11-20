@@ -316,7 +316,7 @@ async def test_input_stream_accumulates_tokens_until_first_prefill_is_complete()
 @pytest.mark.asyncio
 async def test_http_adapter_folds_four_text_positions_into_prefill():
     adapter = _build_adapter_cls()(SimpleNamespace(engine_client=None))
-    adapter._prompt_len = lambda _speaker_id: 2
+    adapter._prompt_len = lambda _speaker_id, _context: 2
     adapter._text_stream_metadata = lambda: (99, 4)
     adapter._model_tokenizer = lambda: SimpleNamespace(encode=lambda *_args, **_kwargs: [10, 11, 12, 13, 14])
     request = SimpleNamespace(
@@ -532,6 +532,37 @@ async def test_input_stream_accepts_segment_completion_with_a_dropped_output_fra
     assert next_input.prompt["additional_information"] == {"text_token": [12], "text_token_start": 2}
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("waiting_on", ["segment_completion", "client_input"])
+async def test_input_stream_close_ends_input_after_the_engine_ends_the_utterance(waiting_on):
+    """Acoustic EOS can end Stage 0 before input.done; input must stop instead of waiting for completions."""
+    params = SamplingParams(max_tokens=32, output_kind=RequestOutputKind.DELTA)
+    stream = EasyMagpieInputStream(
+        prefill_prompt={"prompt_token_ids": [0]},
+        sampling_params=params,
+        text_eos_id=99,
+        max_new_tokens=32,
+        pace_timeout_s=30.0,
+    )
+    await stream.put_tokens([10, 11])
+    if waiting_on == "segment_completion":
+        await stream.put_tokens([12])
+    inputs = stream.inputs()
+    await anext(inputs)
+    pending = asyncio.create_task(anext(inputs))
+    await asyncio.sleep(0)
+    assert not pending.done()
+
+    stream.close()
+
+    # Neither the queued text nor text EOS/tail segments reach the engine after its request ended.
+    with pytest.raises(StopAsyncIteration):
+        await asyncio.wait_for(pending, 1)
+    await stream.put_tokens([13])
+    await stream.finish()
+    assert stream.finished
+
+
 def test_two_stage_pipeline_exposes_lm_progress_for_stream_pacing():
     from easymagpie_vllm_omni.pipeline import EASYMAGPIE_PIPELINE
 
@@ -564,6 +595,10 @@ async def test_handler_tokenizes_ipa_span_split_across_text_events():
 
         async def receive_text(self):
             return json.dumps(next(self.received))
+
+        async def receive(self):
+            # The connected client stays idle after input.done until audio drains.
+            return await asyncio.Future()
 
         async def send_json(self, payload):
             self.json_messages.append(payload)

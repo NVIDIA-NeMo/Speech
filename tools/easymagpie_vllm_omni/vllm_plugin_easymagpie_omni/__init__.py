@@ -61,8 +61,10 @@ def register() -> None:
 def _register_streaming_compatibility() -> None:
     """Keep resumable turn boundaries distinct from request completion."""
     from easymagpie_vllm_omni.omni_compat import patch_streaming_lifecycle
+    from easymagpie_vllm_omni.producer_lifecycle import patch_producer_lifecycle
 
     patch_streaming_lifecycle()
+    patch_producer_lifecycle()
 
 
 def _register_serving_adapter() -> None:

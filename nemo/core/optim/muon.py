@@ -74,13 +74,13 @@ class Muon(Optimizer):
     set ``weight_decay: 0.0`` on a parameter group to exclude it.
 
     ``foreach`` selects the form of the step.
-    The multi-tensor form (``True``, the default) runs one batched Newton-Schulz iteration
+    The per-parameter loop (``False``, the default) updates one parameter after the other.
+    The multi-tensor form (``True``) runs one batched Newton-Schulz iteration
     for all matrices of one shape
     and the momentum, weight decay and AdamW arithmetic as ``torch._foreach`` operations,
     a few dozen kernel launches per step instead of a sequence per parameter;
     it allocates the stacked copies of the largest shape group and their iteration intermediates
     while it runs.
-    The per-parameter loop (``False``) updates one parameter after the other.
     Both forms keep the same per-parameter state, so a state dict moves between them,
     and compute the same arithmetic for float32 parameters;
     their updates differ only where the batched matrix products of the Newton-Schulz iteration
@@ -106,7 +106,7 @@ class Muon(Optimizer):
     The Muon update of a compiled step differs from the eager one at the bfloat16 rounding of the Newton-Schulz
     iteration, whose fused kernels round differently.
     For float32 parameters, a tensor learning rate changes the updates at float32 rounding
-    (the orthogonal factor is scaled as a separate product, the AdamW step size is folded into the denominator)
+    (the orthogonal factor and the AdamW quotient are scaled by the tensor as separate products)
     and the device step count changes the AdamW update at float32 rounding, the Muon update not at all;
     the step then performs no host synchronization and no Python control flow on tensor values.
     A state dict moves between ``capturable`` and ``foreach`` settings:
@@ -127,8 +127,8 @@ class Muon(Optimizer):
         adam_lr_ratio: the AdamW learning rate is ``lr * adam_lr_ratio``
         adam_dim_threshold: matrices with a dimension of at least this size fall back to AdamW
         use_muon: force (``True``) or exclude (``False``) the Muon update; ``None`` selects by shape
-        foreach: the multi-tensor form of the step (``True``, faster, more transient memory)
-            or the per-parameter loop (``False``), see above
+        foreach: the per-parameter loop (``False``) or the multi-tensor form of the step
+            (``True``, faster, more transient memory, updates equal up to bfloat16 rounding), see above
         capturable: keep the AdamW step count on the device, for a step captured in a CUDA graph, see above
     """
 
@@ -146,7 +146,7 @@ class Muon(Optimizer):
         adam_lr_ratio: float = 0.025,
         adam_dim_threshold: int = 8192,
         use_muon: Optional[bool] = None,
-        foreach: bool = True,
+        foreach: bool = False,
         capturable: bool = False,
     ) -> None:
         _validate_lr(lr)
@@ -197,7 +197,7 @@ class Muon(Optimizer):
         super().__setstate__(state)
         for group in self.param_groups:
             # an optimizer state saved before the options existed has neither in its parameter groups
-            group.setdefault('foreach', True)
+            group.setdefault('foreach', False)
             group.setdefault('capturable', False)
         self._convert_step_counts()
 

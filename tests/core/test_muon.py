@@ -354,11 +354,14 @@ class TestMuonForeach:
     @pytest.mark.unit
     def test_option_default_and_parsing(self):
         parameters = _parameters()
-        assert Muon(parameters.parameters(), lr=LR).param_groups[0]['foreach'] is True
-        assert Muon(parameters.parameters(), lr=LR, foreach=False).param_groups[0]['foreach'] is False
-        parsed = optim.parse_optimizer_args('muon', {'name': 'auto', 'foreach': False})
-        assert parsed['foreach'] is False
-        assert config.optimizers.MuonParams().foreach is True
+        # the multi-tensor form is opt-in: its updates differ from the loop's at bfloat16 rounding
+        assert Muon(parameters.parameters(), lr=LR).param_groups[0]['foreach'] is False
+        assert Muon(parameters.parameters(), lr=LR, foreach=True).param_groups[0]['foreach'] is True
+        assert optim.parse_optimizer_args('muon', {'name': 'auto'})['foreach'] is False
+        assert optim.parse_optimizer_args('muon', {'name': 'auto', 'foreach': True})['foreach'] is True
+        assert config.optimizers.MuonParams().foreach is False
+        mixed = Muon([{'params': [parameters['tall']], 'foreach': True}, {'params': [parameters['hidden']]}], lr=LR)
+        assert [group['foreach'] for group in mixed.param_groups] == [True, False]
 
     @pytest.mark.unit
     def test_foreach_matches_the_loop_on_mixed_shape_groups(self):
@@ -406,8 +409,9 @@ class TestMuonForeach:
                 _assert_same_result(optimizer, continued, parameters, continued_params)
 
     @pytest.mark.unit
+    @pytest.mark.parametrize('foreach', [None, False, True])
     @pytest.mark.parametrize('capturable', [False, True])
-    def test_state_dict_saved_without_the_options_loads(self, capturable):
+    def test_state_dict_saved_without_the_options_loads(self, capturable, foreach):
         # a state saved by the Muon before these options has neither `foreach` nor `capturable` in its groups
         parameters = _layered_parameters()
         optimizer = _layered_optimizer(parameters, foreach=False)
@@ -417,9 +421,20 @@ class TestMuonForeach:
             del group['foreach']
             del group['capturable']
         restored_params = copy.deepcopy(parameters)
-        restored = _layered_optimizer(restored_params, capturable=capturable)
+        # the destination's choice is kept, the default is the loop
+        options = {} if foreach is None else {'foreach': foreach}
+        restored = _layered_optimizer(restored_params, capturable=capturable, **options)
         restored.load_state_dict(saved)
-        assert all(group['foreach'] is True and group['capturable'] is capturable for group in restored.param_groups)
+        assert all(group['foreach'] is bool(foreach) for group in restored.param_groups)
+        assert all(group['capturable'] is capturable for group in restored.param_groups)
+        # an unpickled optimizer of that time gets the loop
+        legacy = copy.deepcopy(optimizer.__getstate__())
+        for group in legacy['param_groups']:
+            del group['foreach']
+            del group['capturable']
+        unpickled = Muon.__new__(Muon)
+        unpickled.__setstate__(legacy)
+        assert all(group['foreach'] is False and group['capturable'] is False for group in unpickled.param_groups)
         assert isinstance(restored.state[restored_params['bias_0']]['step'], torch.Tensor) is capturable
         _set_gradients(parameters, 650)
         _set_gradients(restored_params, 650)
@@ -463,6 +478,7 @@ class TestMuonForeach:
         parameters = _layered_parameters()
         _set_gradients(parameters, 700)
         with mock.patch.object(torch, '_foreach_mul_', wraps=torch._foreach_mul_) as spy:
+            _layered_optimizer(parameters).step()
             _layered_optimizer(parameters, foreach=False).step()
             spy.assert_not_called()
             _layered_optimizer(parameters, foreach=True).step()

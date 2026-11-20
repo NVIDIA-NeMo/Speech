@@ -17,8 +17,21 @@ from typing import Dict, List, Optional, Tuple, Union
 import torch
 
 from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, unpack_encoder_output
+from nemo.collections.asr.parts.submodules.ctc_greedy_decoding import GreedyBatchedCTCInfer, GreedyCTCInfer
 from nemo.core.classes.mixins import AccessMixin
 from nemo.utils import logging
+
+
+def _label_decoding_unsupported_reason(wer) -> Optional[str]:
+    """Why the CTC decoding of a WER metric cannot decode ``(B, T)`` label ids, or ``None`` if it can."""
+    infer = getattr(getattr(wer, 'decoding', None), 'decoding', None)
+    if not isinstance(infer, (GreedyCTCInfer, GreedyBatchedCTCInfer)):
+        return f"{type(infer).__name__} needs the log probabilities"
+    if infer.preserve_alignments or infer.preserve_frame_confidence:
+        return "preserved alignments and confidences need the log probabilities"
+    if getattr(infer, 'fusion_models', None) is not None:
+        return "a fusion model (n-gram LM, boosting tree) needs the log probabilities"
+    return None
 
 
 class InterCTCMixin:
@@ -51,7 +64,8 @@ class InterCTCMixin:
     so the padded log probabilities are not formed where ``CTCLoss.forward_packed`` runs its token-flat kernel.
     The WER of a packed capture is decoded from its per-frame best labels,
     which the ``greedy`` and ``greedy_batch`` CTC decoding strategies accept
-    unless they preserve alignments or confidences; other decoding configurations raise.
+    unless they preserve alignments or confidences or score with a fusion model;
+    other decoding configurations raise.
     """
 
     def _process_config_values(self, loss_weights: List[float], apply_at_layers: List[int]):
@@ -317,24 +331,22 @@ class InterCTCMixin:
                 loss_value += inter_loss_value * loss_weight
             if compute_wer:
                 if packed:
+                    reason = _label_decoding_unsupported_reason(self.get_interctc_param('wer'))
+                    if reason is not None:
+                        raise NotImplementedError(
+                            f"The WER of the sequence-packed capture of layer {layer_idx} is decoded "
+                            f"from per-frame labels, and {reason}: use the greedy or greedy_batch strategy without "
+                            "preserved alignments, confidences and fusion models, or pass compute_wer=False."
+                        )
                     # the metric decodes padded input: it gets the (B, T) best labels, not the log probabilities
                     labels = predictions.with_data(predictions.data.argmax(dim=-1, keepdim=True))
                     predictions = unpack_encoder_output(labels).squeeze(-1)
-                try:
-                    self.get_interctc_param('wer').update(
-                        predictions=predictions,
-                        targets=transcript,
-                        targets_lengths=transcript_len,
-                        predictions_lengths=intermediate_result[1],
-                    )
-                except (TypeError, ValueError) as e:
-                    if not packed:
-                        raise
-                    raise NotImplementedError(
-                        f"The WER of the sequence-packed capture of layer {layer_idx} is decoded from per-frame labels, "
-                        "which the configured CTC decoding does not accept: use the greedy or greedy_batch strategy "
-                        "without preserved alignments and confidences, or pass compute_wer=False."
-                    ) from e
+                self.get_interctc_param('wer').update(
+                    predictions=predictions,
+                    targets=transcript,
+                    targets_lengths=transcript_len,
+                    predictions_lengths=intermediate_result[1],
+                )
                 wer, wer_num, wer_denom = self.get_interctc_param('wer').compute()
                 self.get_interctc_param('wer').reset()
                 metrics.update({f'{log_prefix}inter_wer_l{layer_idx}': wer})

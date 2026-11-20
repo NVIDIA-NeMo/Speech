@@ -39,6 +39,7 @@ from nemo.collections.asr.parts.submodules.conformer_modules import (
 from nemo.collections.asr.parts.submodules.multi_head_attention import (
     MultiHeadAttention,
     RelPositionMultiHeadAttention,
+    RelPositionMultiHeadAttentionLongformer,
 )
 from nemo.collections.asr.parts.submodules.subsampling import ConvSubsampling
 
@@ -983,6 +984,44 @@ class TestPackedConformerEncoderAttentionContext:
         padded_out, padded_lengths = encoder(audio_signal=features, length=lengths)
         packed = encoder.forward_sequence_packed(features, lengths)
         torch.testing.assert_close(packed.data, _valid_frames(padded_out, padded_lengths))
+
+    @pytest.mark.unit
+    def test_local_window_follows_the_attention_block(self):
+        """A ``self_attn`` block may bind another context than the encoder's; the layers attend by the block's."""
+        torch.manual_seed(19)
+        padded_encoder = ConformerEncoder(
+            feat_in=8,
+            n_layers=1,
+            d_model=8,
+            n_heads=2,
+            subsampling_factor=1,
+            dropout=0.0,
+            dropout_pre_encoder=0.0,
+            dropout_emb=0.0,
+            dropout_att=0.0,
+            self_attention_model="rel_pos_local_attn",
+            att_context_size=[2, 4],
+            self_attn=functools.partial(RelPositionMultiHeadAttentionLongformer, att_context_size=[3, 3]),
+        )
+        for name, parameter in padded_encoder.named_parameters():
+            if "pos_bias" in name:
+                torch.nn.init.normal_(parameter, std=0.5)
+        padded_encoder = padded_encoder.double().eval()
+        packed_encoder = copy.deepcopy(padded_encoder)
+        assert packed_encoder.supports_sequence_packed_output
+        first_key, last_key = packed_encoder._packed_key_window(packed_encoder.att_context_size, 10)
+        assert (int(first_key[3]), int(last_key[3])) == (0, 6)
+        states = torch.randn(2, 10, 8, dtype=torch.float64)
+        lengths = torch.tensor([10, 7])
+        padded_out, padded_lengths = padded_encoder(audio_signal=states, length=lengths, bypass_pre_encode=True)
+        packed = packed_encoder.forward_sequence_packed(states, lengths, bypass_pre_encode=True)
+        padded_valid = _valid_frames(padded_out, padded_lengths)
+        torch.testing.assert_close(packed.data, padded_valid)
+        padded_valid.square().mean().backward()
+        packed.data.square().mean().backward()
+        padded_grads = dict(padded_encoder.named_parameters())
+        for name, parameter in packed_encoder.named_parameters():
+            torch.testing.assert_close(parameter.grad, padded_grads[name].grad, msg=name)
 
     @pytest.mark.unit
     def test_limited_context_changes_the_output(self):

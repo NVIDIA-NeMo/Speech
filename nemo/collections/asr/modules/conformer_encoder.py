@@ -1122,9 +1122,11 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         """
         positions = torch.arange(max_seqlen)
         if self.self_attention_model == 'rel_pos_local_attn':
-            # the window of the layers' local attention, whatever the style and the drawn size;
-            # the support check admits the same context on both sides only
-            return positions - self.pos_enc.left_context, positions + self.pos_enc.right_context
+            # the window of the layers' local attention, whatever the style and the drawn size:
+            # the attention block decides it (a block may bind another context than the encoder's),
+            # and the support check admits the same context on both sides only
+            left, right = _unwrap_checkpoint(self.layers[0]).self_attn.att_context_size
+            return positions - left, positions + right
         if self._att_context_is_full(att_context_size):
             return None
         style = self.att_context_style

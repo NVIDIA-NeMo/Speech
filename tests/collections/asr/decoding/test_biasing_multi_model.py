@@ -28,7 +28,8 @@ from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
 DEVICES = [torch.device("cpu")]
 if torch.cuda.is_available():
-    DEVICES.append(torch.device("cuda"))
+    # The `gpu` marker puts the CUDA cases in the GPU CI jobs (see tests/functional_tests/_gpu_unit_test_selection.sh).
+    DEVICES.append(pytest.param(torch.device("cuda"), marks=pytest.mark.gpu))
 if hasattr(torch, "mps") and torch.mps.is_available():
     DEVICES.append(torch.device("mps"))
 
@@ -299,6 +300,30 @@ class TestGPUBiasingMultiModel:
             scores_mm, scores_ref, atol=1e-5
         ), f"Scores mismatch: max diff = {(scores_mm - scores_ref).abs().max()}"
         assert torch.equal(next_states_mm, next_states_ref), "Next states mismatch"
+
+    @pytest.mark.unit
+    @pytest.mark.with_downloads
+    @pytest.mark.skipif(not TRITON_AVAILABLE, reason="Triton is not available")
+    @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="Requires at least 2 CUDA devices")
+    @pytest.mark.gpu
+    def test_triton_on_non_current_device(self, stt_en_conformer_transducer_small, batch_size=2):
+        """Triton advance works when the model is not on the current CUDA device"""
+        device = torch.device("cuda:1")
+        tokenizer = stt_en_conformer_transducer_small.tokenizer
+        multi_model = GPUBiasingMultiModel(vocab_size=tokenizer.vocab_size, use_triton=True).to(device)
+        reference = GPUBiasingMultiModelReference(vocab_size=tokenizer.vocab_size).to(device)
+        phrases = ["hello world", "test"]
+        model_id = multi_model.add_model(create_boosting_model(phrases, tokenizer, device), alpha=1.0)
+        assert model_id == reference.add_model(create_boosting_model(phrases, tokenizer, device), alpha=1.0)
+        states = multi_model.get_init_states(batch_size=batch_size, bos=True)
+        model_ids = torch.full([batch_size], fill_value=model_id, dtype=torch.long, device=device)
+        scores_ref, states_ref = reference.advance(states, model_ids)
+        # make the context of device 0 current, as any operation on device 0 does
+        torch.cuda.synchronize(0)
+        scores, next_states = multi_model.advance(states, model_ids)
+        assert torch.cuda.current_device() == 0
+        assert torch.equal(next_states, states_ref)
+        assert torch.allclose(scores, scores_ref, atol=1e-5)
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)

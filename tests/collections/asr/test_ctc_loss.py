@@ -75,6 +75,7 @@ class TestPackedCTCLoss:
 
 
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="the packed CTC loss kernel needs CUDA and Triton")
+@pytest.mark.gpu
 class TestPackedCTCLossKernel:
     """On CUDA `forward_packed` runs the Triton kernel over the token-flat log probabilities:
     loss and gradient parity with the padded `forward`, the edge cases of the recursion, dtypes."""

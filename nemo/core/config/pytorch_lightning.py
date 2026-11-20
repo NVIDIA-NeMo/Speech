@@ -75,6 +75,8 @@ class TrainerConfig:
     enable_model_summary: bool = True
     inference_mode: bool = True
     barebones: bool = False
+    model_registry: Optional[str] = None
+    enable_autolog_hparams: bool = True
 
 
 # Register the trainer config.

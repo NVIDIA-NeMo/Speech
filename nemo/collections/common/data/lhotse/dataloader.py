@@ -44,6 +44,7 @@ from lhotse.lazy import LazyFlattener
 from lhotse.utils import fix_random_seed
 from omegaconf import DictConfig, OmegaConf
 
+from nemo.collections.common.data.lhotse._iterable_stream import _LhotseDataLoader
 from nemo.collections.common.data.lhotse.audio_loading import configure_dataset_audio_loading
 from nemo.collections.common.data.lhotse.audio_token_estimator import AudioTokenEstimator
 from nemo.collections.common.data.lhotse.cutset import (
@@ -387,10 +388,11 @@ def _build_dataloader(
     ``CombinedLoader._state_dicts()`` doesn't broadcast rank-0's iterator
     state to every rank (which would corrupt per-shard partitioning — see
     the 2026-05-14 post-mortem).
+
+    For iterable-style datasets, the returned loader keeps one iterator alive across ``iter()`` calls until the
+    stream is exhausted (see ``_ContinueIterableStreamMixin`` in ``_iterable_stream.py``).
     """
     if use_stateful_dataloader:
-        from torchdata.stateful_dataloader import StatefulDataLoader
-
         if dp_world_size is not None and dp_world_size > 1:
             return _PerRankStatefulDataLoader(
                 dp_rank=dp_rank if dp_rank is not None else 0,
@@ -398,8 +400,8 @@ def _build_dataloader(
                 dp_group=dp_group,
                 **kwargs,
             )
-        return StatefulDataLoader(**kwargs)
-    return torch.utils.data.DataLoader(**kwargs)
+        return _lhotse_stateful_dataloader_cls()(**kwargs)
+    return _LhotseDataLoader(**kwargs)
 
 
 class _PerRankStatefulDataLoader:
@@ -443,12 +445,10 @@ class _PerRankStatefulDataLoader:
         dp_group: Optional[Any] = None,
         **kwargs,
     ) -> None:
-        from torchdata.stateful_dataloader import StatefulDataLoader
-
         self._dp_rank = int(dp_rank)
         self._dp_world_size = int(dp_world_size)
         self._dp_group = dp_group
-        self._inner = StatefulDataLoader(**kwargs)
+        self._inner = _lhotse_stateful_dataloader_cls()(**kwargs)
 
     def state_dict(self) -> dict:
         local_state = self._inner.state_dict()
@@ -515,7 +515,11 @@ class _PerRankStatefulDataLoader:
     def __getattr__(self, name: str) -> Any:
         # ``__getattr__`` only fires when normal attribute lookup fails, so the
         # explicit attributes (``_inner``, ``_dp_rank``, ...) are reached
-        # directly without bouncing through here.
+        # directly without bouncing through here. While unpickling, ``_inner``
+        # is not set yet and pickle probes dunder hooks; forwarding those would
+        # recurse forever.
+        if name == "_inner" or (name.startswith("__") and name.endswith("__")):
+            raise AttributeError(name)
         return getattr(self._inner, name)
 
     def __iter__(self):
@@ -1465,3 +1469,10 @@ def _cut_text_into_windows(cut, num_tokens: int, tokenizer) -> list:
         )
         ans.append(new_cut)
     return ans
+
+
+def _lhotse_stateful_dataloader_cls() -> type:
+    """Return the ``StatefulDataLoader`` subclass used for Lhotse data (imports torchdata lazily)."""
+    from nemo.collections.common.data.lhotse._stateful_dataloader import LhotseStatefulDataLoader
+
+    return LhotseStatefulDataLoader

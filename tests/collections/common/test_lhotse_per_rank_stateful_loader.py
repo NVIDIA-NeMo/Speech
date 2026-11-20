@@ -25,9 +25,6 @@ stub that records what ``load_state_dict`` was called with).
 
 from __future__ import annotations
 
-import sys
-import types
-
 import pytest
 import torch
 
@@ -39,7 +36,7 @@ class _StubStatefulDataLoader:
 
     The wrapper's tests only need ``state_dict()`` and ``load_state_dict()``
     to be observable; they don't care about iteration. We install this stub
-    as the ``StatefulDataLoader`` import inside the wrapper module so the
+    as the stateful loader class the wrapper builds, so the
     test runs without ``torchdata`` and stays focused on the gather/scatter
     logic we own.
     """
@@ -60,14 +57,11 @@ class _StubStatefulDataLoader:
 
 @pytest.fixture(autouse=True)
 def _patch_stateful_loader(monkeypatch):
-    """Make ``from torchdata.stateful_dataloader import StatefulDataLoader``
-    inside the wrapper resolve to our stub."""
-    fake_module = types.ModuleType("torchdata.stateful_dataloader")
-    fake_module.StatefulDataLoader = _StubStatefulDataLoader
-    fake_pkg = types.ModuleType("torchdata")
-    fake_pkg.stateful_dataloader = fake_module
-    monkeypatch.setitem(sys.modules, "torchdata", fake_pkg)
-    monkeypatch.setitem(sys.modules, "torchdata.stateful_dataloader", fake_module)
+    """Make the wrapper build our stub instead of the real stateful loader."""
+    monkeypatch.setattr(
+        "nemo.collections.common.data.lhotse.dataloader._lhotse_stateful_dataloader_cls",
+        lambda: _StubStatefulDataLoader,
+    )
 
 
 def _new_wrapper(dp_rank: int, dp_world_size: int, dp_group=None) -> _PerRankStatefulDataLoader:

@@ -1198,6 +1198,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         # in the input manifest and if not, it injects the defaults.
         out_json_items = []
         timestamps_required = False
+        prompt_slots = self.prompt.get_slots("user") if "user" in self.prompt.get_roles() else {}
         for item in json_items:
             if isinstance(item, str):
                 # assume it is a path to audio file
@@ -1224,6 +1225,11 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
                         "Context feature is not supported in Canary prompt format. Please use latest canary-1b-flash or canary-180m-flash"
                     )
 
+            # Prompt slots provided in the manifest take precedence over the ones passed to transcribe().
+            for k, v in default_turn.items():
+                if k in prompt_slots and v is not None and not _has_prompt_slot(entry, k):
+                    entry[k] = v
+
             for k, dv in (
                 ("source_lang", "en"),
                 ("target_lang", "en"),
@@ -1232,7 +1238,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
                 ("context", ""),
                 ("timestamp", 'notimestamp'),
             ):
-                if k not in entry:
+                if not _has_prompt_slot(entry, k):
                     # last-chance fallback injecting legacy Canary defaults if none were provided.
                     entry[k] = default_turn.get(k, dv)
                 if k == "timestamp":
@@ -1461,3 +1467,10 @@ def parse_multitask_prompt(prompt: dict | None) -> list[dict]:
     # )
     role = prompt.pop("role", "user")
     return [dict(role=role, slots=prompt)]
+
+
+def _has_prompt_slot(entry: dict, slot: str) -> bool:
+    """Check whether a manifest entry sets a prompt slot. 'task' and 'taskname' are aliases of the same slot."""
+    if slot in ("task", "taskname"):
+        return "task" in entry or "taskname" in entry
+    return slot in entry

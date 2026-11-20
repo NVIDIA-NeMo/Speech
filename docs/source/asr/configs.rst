@@ -862,6 +862,9 @@ Requirements and limits of the packed form:
   The ``greedy`` and ``greedy_batch`` decoding strategies accept that, unless they preserve alignments or confidences
   or score with a fusion model (n-gram LM, boosting tree);
   those options and the beam search strategies raise ``NotImplementedError``.
+* Adapters on the CTC decoder run on the token-flat states.
+  An adapter strategy with ``l2_lambda`` above zero raises in training mode:
+  its auxiliary loss sums over the frames of an utterance.
 
 
 Stochastic Depth Config

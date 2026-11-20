@@ -475,7 +475,9 @@ class ConvASRDecoder(NeuralModule, Exportable, adapter_mixins.AdapterModuleMixin
         The kernel-1 convolution runs as a linear layer over the token axis,
         so no padded ``(B, D, T)`` tensor is formed;
         ``CTCLoss.forward_packed`` takes the result.
-        Enabled adapters run on the token-flat states.
+        Enabled adapters run on the token-flat states;
+        an adapter strategy with ``l2_lambda`` above zero raises in training mode,
+        since its auxiliary loss sums over the frames of an utterance.
         A subclass that overrides ``forward`` overrides this method as well, or raises in it.
 
         Args:
@@ -496,6 +498,15 @@ class ConvASRDecoder(NeuralModule, Exportable, adapter_mixins.AdapterModuleMixin
             )
         data = encoder_output.data
         if self.is_adapter_available():
+            if self.training:
+                for name in self.get_enabled_adapters():
+                    strategy = getattr(self.adapter_layer[name], 'adapter_strategy', None)
+                    if getattr(strategy, 'l2_lambda', 0.0) > 0.0:
+                        # the auxiliary loss sums over the frames of an utterance, which token-flat states do not have
+                        raise NotImplementedError(
+                            f"The l2_lambda auxiliary loss of adapter {name!r} has no sequence-packed form: "
+                            "set l2_lambda to 0 or run the padded forward."
+                        )
             # adapters act on the last axis, so they take the token-flat states as they are
             data = self.forward_enabled_adapters(data)
         conv = self.decoder_layers[0]

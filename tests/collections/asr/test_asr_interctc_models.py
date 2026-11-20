@@ -26,6 +26,7 @@ from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations,
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecodingConfig
 from nemo.collections.common.parts.adapter_modules import LinearAdapterConfig
 from nemo.core.classes.mixins import AccessMixin
+from nemo.core.classes.mixins.adapter_mixin_strategies import ResidualAddAdapterStrategyConfig
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
 
@@ -733,6 +734,21 @@ class TestSequencePackedInterCTC:
             assert (padded_grad is None) == (packed_grad is None) == ("adapter" in name and not enabled), name
             if padded_grad is not None:
                 torch.testing.assert_close(packed_grad, padded_grad, msg=name)
+
+    @pytest.mark.unit
+    def test_decoder_forward_packed_refuses_the_adapter_l2_loss_in_training(self):
+        """The auxiliary L2 loss sums over the frames of an utterance, so token-flat states would rescale it."""
+        decoder = _packed_interctc_model().decoder
+        strategy = ResidualAddAdapterStrategyConfig(l2_lambda=0.1)
+        decoder.add_adapter(name='adapter', cfg=LinearAdapterConfig(in_features=32, dim=4, adapter_strategy=strategy))
+        decoder.double().train()
+        states = pack_encoder_output(torch.randn(3, 5, 32, dtype=torch.float64), torch.tensor([5, 0, 2]))
+        with pytest.raises(NotImplementedError, match="l2_lambda auxiliary loss of adapter 'adapter'"):
+            decoder.forward_packed(states)
+        # evaluation computes no auxiliary loss, and a disabled adapter none either
+        assert decoder.eval().forward_packed(states).data.shape[0] == 7
+        decoder.train().set_enabled_adapters(enabled=False)
+        assert decoder.forward_packed(states).data.shape[0] == 7
 
 
 @pytest.mark.gpu

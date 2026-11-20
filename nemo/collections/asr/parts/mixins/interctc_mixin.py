@@ -17,21 +17,10 @@ from typing import Dict, List, Optional, Tuple, Union
 import torch
 
 from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, unpack_encoder_output
+from nemo.collections.asr.parts.submodules.ctc_decoding import AbstractCTCDecoding
 from nemo.collections.asr.parts.submodules.ctc_greedy_decoding import GreedyBatchedCTCInfer, GreedyCTCInfer
 from nemo.core.classes.mixins import AccessMixin
 from nemo.utils import logging
-
-
-def _label_decoding_unsupported_reason(wer) -> Optional[str]:
-    """Why the CTC decoding of a WER metric cannot decode ``(B, T)`` label ids, or ``None`` if it can."""
-    infer = getattr(getattr(wer, 'decoding', None), 'decoding', None)
-    if not isinstance(infer, (GreedyCTCInfer, GreedyBatchedCTCInfer)):
-        return f"{type(infer).__name__} needs the log probabilities"
-    if infer.preserve_alignments or infer.preserve_frame_confidence:
-        return "preserved alignments and confidences need the log probabilities"
-    if getattr(infer, 'fusion_models', None) is not None:
-        return "a fusion model (n-gram LM, boosting tree) needs the log probabilities"
-    return None
 
 
 class InterCTCMixin:
@@ -360,3 +349,18 @@ class InterCTCMixin:
 
         # return total loss and dictionary of metrics
         return loss_value, metrics
+
+
+def _label_decoding_unsupported_reason(wer: torch.nn.Module) -> Optional[str]:
+    """Why the CTC decoding of a WER metric cannot decode ``(B, T)`` label ids, or ``None`` if it can."""
+    decoding = getattr(wer, 'decoding', None)
+    if not isinstance(decoding, AbstractCTCDecoding):
+        return f"the metric decodes with {type(decoding).__name__}, which is not a CTC decoding"
+    infer = decoding.decoding
+    if not isinstance(infer, (GreedyCTCInfer, GreedyBatchedCTCInfer)):
+        return f"{type(infer).__name__} needs the log probabilities"
+    if infer.preserve_alignments or infer.preserve_frame_confidence:
+        return "preserved alignments and confidences need the log probabilities"
+    if isinstance(infer, GreedyBatchedCTCInfer) and infer.fusion_models is not None:
+        return "a fusion model (n-gram LM, boosting tree) needs the log probabilities"
+    return None

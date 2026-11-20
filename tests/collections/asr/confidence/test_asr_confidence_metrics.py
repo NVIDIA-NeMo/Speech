@@ -113,7 +113,9 @@ class TestConfidenceMetrics:
         y_true = np.array([0, 0, 1, 0, 1, 1, 0, 1, 1, 1])
         result, (thresholds, ece_curve) = ece(y_true, y_score, n_bins=n_bins, return_curve=True)
 
-        bins = np.clip(np.ceil(y_score * n_bins).astype(int) - 1, 0, n_bins - 1)
+        # same (m / n_bins, (m + 1) / n_bins] edges as ece(); a score of zero goes to the first bin
+        edges = np.arange(n_bins + 1) / n_bins
+        bins = np.maximum(np.searchsorted(edges, y_score, side="left") - 1, 0)
         expected_curve = np.zeros(n_bins)
         for m in range(n_bins):
             in_bin = bins == m

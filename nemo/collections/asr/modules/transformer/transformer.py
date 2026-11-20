@@ -25,6 +25,7 @@ from nemo.collections.asr.modules.transformer.transformer_decoders import Transf
 from nemo.collections.asr.modules.transformer.transformer_encoders import TransformerEncoder
 from nemo.collections.asr.modules.transformer.transformer_modules import TransformerEmbedding
 from nemo.collections.asr.parts.submodules.multi_head_attention import RotaryPositionalEncoding
+from nemo.collections.asr.parts.submodules.packed_attention import PackedAttentionContext
 from nemo.collections.asr.parts.utils import adapter_utils
 from nemo.collections.common.parts.utils import ModuleBlock, build_module
 from nemo.core.classes.common import typecheck
@@ -301,6 +302,38 @@ class TransformerDecoderNM(DecoderModule, Exportable):
         if self.return_mems:
             decoder_hidden_states = torch.transpose(decoder_hidden_states, 0, 1)
         return decoder_hidden_states
+
+    def forward_packed(
+        self,
+        input_ids: torch.Tensor,
+        decoder_context: PackedAttentionContext,
+        encoder_states: torch.Tensor,
+        encoder_context: PackedAttentionContext,
+    ) -> torch.Tensor:
+        """Decoder hidden states for token-flat input ids, see ``TransformerDecoder.forward_packed``.
+
+        Args:
+            input_ids: token ids of all sequences, shape ``(U_total,)``.
+            decoder_context: boundaries and positions of the ids.
+            encoder_states: packed encoder output, shape ``(T_total, hidden_size)``.
+            encoder_context: boundaries of the encoder output.
+
+        Returns:
+            The decoder hidden states, shape ``(U_total, hidden_size)``.
+        """
+        if self.return_mems:
+            raise NotImplementedError("forward_packed does not return the decoder memories of incremental decoding.")
+        if (
+            isinstance(self._embedding, TransformerEmbedding)
+            and self._embedding.learn_positional_encodings
+            and decoder_context.max_seqlen > self._embedding.max_sequence_length
+        ):
+            raise ValueError(
+                f"Input sequence is longer than maximum allowed sequence length for positional encoding. "
+                f"Got {decoder_context.max_seqlen} and {self._embedding.max_sequence_length}"
+            )
+        decoder_embeddings = self._embedding.forward_packed(input_ids, decoder_context.position_ids)
+        return self._decoder.forward_packed(decoder_embeddings, decoder_context, encoder_states, encoder_context)
 
     @property
     def hidden_size(self):

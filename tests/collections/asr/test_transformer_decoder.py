@@ -32,6 +32,7 @@ from nemo.collections.asr.modules.transformer.transformer_modules import (
     TransformerEmbedding,
 )
 from nemo.collections.asr.modules.transformer.transformer_utils import get_nemo_transformer
+from nemo.collections.asr.parts.submodules.multi_head_attention import RotaryPositionalEncoding
 
 
 def _composed_decoder(**overrides):
@@ -63,8 +64,9 @@ class TestRotaryDecoderBuffers:
     def test_buffers_have_one_shape_whatever_the_target_lengths(self):
         """Two ranks of a distributed training see different target lengths; their buffers must still match.
 
-        DDP broadcasts the buffers of every module before the forward, and a buffer whose size depends on the
-        batch a rank has seen hangs the broadcast; the rotary tables are built for the module's maximum length.
+        DDP broadcasts the buffers of every module before the forward; a buffer whose size depends on the batch
+        a rank has seen hangs the broadcast under NCCL and overwrites a rank's table under gloo.
+        The rotary tables are plain tensors of one size, built for the module's maximum length.
         """
         torch.manual_seed(0)
         ranks = [_composed_decoder(), _composed_decoder()]
@@ -75,9 +77,13 @@ class TestRotaryDecoderBuffers:
                 decoder.decoder(decoder.embedding(input_ids), torch.ones_like(input_ids), encoder_states, encoder_mask)
         shapes = [[(name, tuple(buffer.shape)) for name, buffer in decoder.named_buffers()] for decoder in ranks]
         assert shapes[0] == shapes[1]
-        rotary = [name for name, _ in shapes[0] if name.endswith(('.cos', '.sin'))]
-        assert len(rotary) == 2 * 2, rotary  # cos and sin of the two self-attention blocks
-        assert dict(shapes[0])[rotary[0]] == (5000, 8)  # the module's default max_len, the per-head rotary width
+        assert not any(name.endswith(('.cos', '.sin')) for name, _ in shapes[0])
+        tables = [
+            [tuple(module.cos.shape) for module in decoder.modules() if isinstance(module, RotaryPositionalEncoding)]
+            for decoder in ranks
+        ]
+        # the two self-attention blocks, at the module's default max_len and the per-head rotary width
+        assert tables[0] == tables[1] == [(5000, 8), (5000, 8)]
 
 
 class TestTransformerDecoderBlockComposition:

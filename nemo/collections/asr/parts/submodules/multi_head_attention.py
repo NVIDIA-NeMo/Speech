@@ -1209,11 +1209,20 @@ class LocalAttRelPositionalEncoding(PositionalEncoding):
 class RotaryPositionalEncoding(torch.nn.Module):
     """Rotary position embedding.
 
+    The cos and sin tables are built for ``max_len`` positions at construction, in float32 on the CPU,
+    and ``extend_pe`` rebuilds them when a call needs more positions or another device.
+    They are plain tensors of the module, not buffers: they follow from ``inv_freq`` alone, so a distributed
+    training has nothing to broadcast for them and a checkpoint nothing to store, and a table that one rank
+    extended beyond ``max_len`` harms nothing on the others.
+    (Tables that were buffers and grew with the batches broke DDP's buffer broadcast once the ranks' sizes
+    differed: a hang with NCCL, a silently overwritten table with gloo.)
+    Memory: ``2 * max_len * d_k * rotary_fraction * 4`` bytes per module, 4.9 MiB for 5,000 positions of 128.
+
     Args:
         d_k (int): per-head feature dim
         rotary_fraction (float): fraction of d_k to rotate
         rope_base (float): theta base
-        max_len (int): maximum input length
+        max_len (int): positions the tables cover from construction on
     """
 
     def __init__(self, d_k, rotary_fraction=1.0, rope_base=10000.0, max_len=5000):
@@ -1234,12 +1243,15 @@ class RotaryPositionalEncoding(torch.nn.Module):
 
         inv_freq = 1.0 / (rope_base ** (torch.arange(0, d_k_rot, 2, dtype=torch.float32, device="cpu") / d_k_rot))
         self.register_buffer('inv_freq', inv_freq, persistent=False)
-        # the tables cover max_len from construction on,
-        # so that their size does not depend on the batches a module has seen:
-        # a distributed training broadcasts the buffers, and a size that differs per rank hangs it
-        cos, sin = self._tables(torch.arange(0, max_len, dtype=torch.float32, device="cpu"), torch.float32)
-        self.register_buffer('cos', cos, persistent=False)
-        self.register_buffer('sin', sin, persistent=False)
+        # plain tensors, see the class docstring; they follow the module's device through _apply
+        self.cos, self.sin = self._tables(torch.arange(0, max_len, dtype=torch.float32, device="cpu"))
+
+    def _apply(self, fn, recurse=True):
+        # `.to()`, `.cuda()` and the like move the tables with the module; a dtype change leaves them float32
+        module = super()._apply(fn, recurse)
+        self.cos = self.cos.to(self.inv_freq.device)
+        self.sin = self.sin.to(self.inv_freq.device)
+        return module
 
     def _rotate_half(self, x):
         """Split the last dim of x in half and rotate: (x1, x2) -> (-x2, x1)."""
@@ -1255,12 +1267,11 @@ class RotaryPositionalEncoding(torch.nn.Module):
         t_rot = t_rot * cos + self._rotate_half(t_rot) * sin
         return torch.cat((t_rot, t_pass), dim=-1)
 
-    def _tables(self, positions, dtype):
-        """The cos and sin tables of ``positions`` (1D fp32 tensor), stored in ``dtype`` on the positions' device.
+    def _tables(self, positions):
+        """The cos and sin tables of ``positions`` (1D fp32 tensor), in float32 on the positions' device.
 
-        Frequencies are computed in fp32 for numerical stability and cast to
-        ``dtype`` for storage. The final cast to Q/K runtime dtype happens in
-        ``forward``.
+        The tables stay float32 whatever the model's dtype, so their precision does not depend on
+        which call built them; the cast to the Q/K runtime dtype happens in ``forward``.
         """
         # Build the tables with one device-independent fp32 reference.
         # CPU and CUDA transcendental kernels can round differently
@@ -1272,19 +1283,22 @@ class RotaryPositionalEncoding(torch.nn.Module):
         freqs = torch.outer(positions_cpu, inv_freq_cpu)
         # Duplicate to align with `_rotate_half`: tail half mirrors the head half.
         emb = torch.cat((freqs, freqs), dim=-1)
-        return emb.cos().to(device=target_device, dtype=dtype), emb.sin().to(device=target_device, dtype=dtype)
+        return emb.cos().to(device=target_device), emb.sin().to(device=target_device)
 
-    def create_pe(self, positions, dtype):
-        """Rebuild the cos/sin buffers to cover ``positions`` (1D fp32 tensor), see ``_tables``."""
-        self.cos, self.sin = self._tables(positions, dtype)
+    def create_pe(self, positions, dtype=None):
+        """Rebuild the cos/sin tables to cover ``positions`` (1D fp32 tensor), see ``_tables``.
 
-    def extend_pe(self, length, device, dtype):
-        """Extend the cos/sin buffers when ``length`` exceeds them, or rebuild them on ``device`` when it differs.
+        ``dtype`` is accepted for the interface the positional encodings share and ignored: the tables are float32.
+        """
+        del dtype
+        self.cos, self.sin = self._tables(positions)
+
+    def extend_pe(self, length, device, dtype=None):
+        """Extend the cos/sin tables when ``length`` exceeds them, or rebuild them on ``device`` when it differs.
 
         They cover ``max_len`` from construction on, built on the CPU like ``inv_freq``,
         so a module built under another default device gets them there at its first call.
-        A caller that extends them in a distributed training does so on every rank alike,
-        since the buffers are broadcast.
+        ``dtype`` is accepted for the interface the positional encodings share and ignored: the tables are float32.
         """
         device = torch.device(device)
         same_device = self.cos.device.type == device.type and device.index in (None, self.cos.device.index)
@@ -1313,7 +1327,7 @@ class RotaryPositionalEncoding(torch.nn.Module):
         cos_q = self.cos[cache_len:t_k].view(1, 1, t_q, self.d_k_rot)
         sin_q = self.sin[cache_len:t_k].view(1, 1, t_q, self.d_k_rot)
 
-        # Buffers are stored in model dtype; cast to Q/K runtime dtype (which may have
+        # The tables are float32; cast to the Q/K runtime dtype (which may have
         # been upgraded to fp32 by autocast handling in MultiHeadAttention.forward).
         q = self._apply_rotary(q, cos_q.to(q.dtype), sin_q.to(q.dtype))
         k = self._apply_rotary(k, cos_k.to(k.dtype), sin_k.to(k.dtype))

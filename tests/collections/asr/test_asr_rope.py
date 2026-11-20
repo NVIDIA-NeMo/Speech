@@ -71,7 +71,8 @@ class TestRotaryPositionalEncoding:
         pe = RotaryPositionalEncoding(d_k=16, max_len=128)
         assert pe.cos.shape == (128, 16) and pe.sin.shape == (128, 16)
         assert pe.cos.dtype == torch.float32 and pe.sin.dtype == torch.float32
-        assert dict(pe.named_buffers()).keys() == {'inv_freq', 'cos', 'sin'}
+        # plain tensors: nothing for DDP's buffer broadcast or for a checkpoint
+        assert dict(pe.named_buffers()).keys() == {'inv_freq'} and pe.state_dict() == {}
         # the same tables as a rebuild for these positions
         positions = torch.arange(0, 128, dtype=torch.float32)
         assert torch.equal(pe.cos, torch.cat([torch.outer(positions, pe.inv_freq)] * 2, dim=-1).cos())
@@ -91,16 +92,28 @@ class TestRotaryPositionalEncoding:
         assert pe.cos.shape == (200, 16) and pe.sin.shape == (200, 16)
 
     @pytest.mark.unit
-    def test_buffer_shapes_do_not_follow_the_inputs(self):
-        # two modules of one configuration that see different lengths hold tables of the same shape,
-        # the condition for the buffer broadcast of a distributed training
+    def test_tables_do_not_follow_the_inputs(self):
+        # two modules of one configuration that see different lengths and dtypes hold the same tables,
+        # so the ranks of a distributed training stay alike whatever their batches
         short, long = RotaryPositionalEncoding(d_k=16, max_len=64), RotaryPositionalEncoding(d_k=16, max_len=64)
         short.extend_pe(7, device=torch.device('cpu'), dtype=torch.bfloat16)
-        long.extend_pe(31, device=torch.device('cpu'), dtype=torch.bfloat16)
+        long.extend_pe(31, device=torch.device('cpu'), dtype=torch.float16)
         short(torch.randn(2, 2, 7, 16), torch.randn(2, 2, 7, 16))
         long(torch.randn(2, 2, 31, 16), torch.randn(2, 2, 31, 16))
+        assert torch.equal(short.cos, long.cos) and torch.equal(short.sin, long.sin)
+        assert short.cos.dtype == torch.float32 and short.cos.shape == (64, 16)
         assert [tuple(b.shape) for _, b in short.named_buffers()] == [tuple(b.shape) for _, b in long.named_buffers()]
-        assert [b.dtype for _, b in short.named_buffers()] == [b.dtype for _, b in long.named_buffers()]
+
+    @pytest.mark.unit
+    def test_growth_keeps_the_precision_and_the_covered_rows(self):
+        # the requested dtype never reaches the tables, so growth does not move the rows already covered
+        pe = RotaryPositionalEncoding(d_k=16, max_len=128)
+        before = pe.cos.clone(), pe.sin.clone()
+        pe.extend_pe(129, device=torch.device('cpu'), dtype=torch.bfloat16)
+        assert pe.cos.dtype == torch.float32 and pe.cos.shape == (129, 16)
+        assert torch.equal(pe.cos[:128], before[0]) and torch.equal(pe.sin[:128], before[1])
+        pe.extend_pe(10, device=torch.device('cpu'), dtype=torch.float16)
+        assert pe.cos.shape == (129, 16)
 
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
@@ -116,10 +129,14 @@ class TestRotaryPositionalEncoding:
         q_rot, _ = pe(q, q)
         assert q_rot.device.type == 'cuda'
         moved = RotaryPositionalEncoding(d_k=16, max_len=64).to('cuda')
+        assert moved.cos.device.type == 'cuda' and moved.cos.shape == (64, 16)
         torch.testing.assert_close(moved.cos, pe.cos)
         prev = moved.cos.data_ptr()
-        moved.extend_pe(32, device=q.device, dtype=torch.float32)
-        assert moved.cos.data_ptr() == prev
+        moved.extend_pe(64, device=q.device, dtype=torch.bfloat16)
+        assert moved.cos.data_ptr() == prev and moved.cos.dtype == torch.float32
+        # a dtype change of the module leaves the tables float32 and in place
+        assert moved.to(torch.bfloat16).cos.dtype == torch.float32 and moved.cos.device.type == 'cuda'
+        assert moved.cpu().cos.device.type == 'cpu'
 
     @pytest.mark.unit
     def test_forward_first_token_is_identity(self):
@@ -279,6 +296,8 @@ class TestRotaryPositionalEncoding:
         cuda = RotaryPositionalEncoding(d_k=64, max_len=8192).to('cuda')
         cuda.extend_pe(8192, device=torch.device('cuda'), dtype=torch.bfloat16)
 
+        # the same float32 tables, whatever dtype the calls asked for and wherever the module was built
+        assert cuda.cos.device.type == 'cuda' and cuda.cos.dtype == cpu.cos.dtype == torch.float32
         assert torch.equal(cuda.cos.cpu(), cpu.cos)
         assert torch.equal(cuda.sin.cpu(), cpu.sin)
 
@@ -391,8 +410,9 @@ class TestRoPEMultiHeadAttention:
         with torch.no_grad():
             out_ref = attn(query=x, key=x, value=x, mask=None)
 
-        # `attn.to(dtype=...)` converts every buffer including pos_enc.cos/sin to `dtype`.
+        # `attn.to(dtype=...)` converts the parameters and buffers; the tables stay float32 and are cast in forward.
         attn_dt = attn.to(dtype=dtype)
+        assert attn_dt.pos_enc.cos.dtype == torch.float32
         x_dt = x.to(dtype=dtype)
         with torch.no_grad():
             out_dt = attn_dt(query=x_dt, key=x_dt, value=x_dt, mask=None)

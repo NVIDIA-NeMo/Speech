@@ -158,7 +158,8 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         self_attn: block of the self-attention, default the attention class of `self_attention_model`
         norm: block of every layer norm, default `torch.nn.LayerNorm`
         autocast_residual: under autocast, keep the residual stream and the layer norm inputs in the autocast dtype
-            instead of float32, which halves what the norms save for the backward; default False, the float32 stream.
+            instead of float32, which halves what the plain layer norms save for the backward (another norm block
+            saves what it saved before); default False, the float32 stream.
             With it the layer returns the autocast dtype instead of float32 (so do the encoder's output, its InterCTC
             captures and the ``save_encoder_tensors`` capture), the residual additions and the norm inputs are rounded
             to that dtype, and a branch output or adapter output of another dtype is cast back to it; streaming caches
@@ -410,17 +411,19 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         forms with the parameters cast to the stream's dtype, since their fused kernels take no float32 parameters
         with a half-precision input (the composite fallback would upcast and save float32 copies).
         Another norm block, a subclass with its own ``forward`` included, runs under autocast as on the float32
-        stream, so its own kernels decide what it saves, and its output returns to the stream's dtype.
+        stream, so its own kernels decide what it saves (a block around a plain norm saves what it saved before),
+        and its output returns to the stream's dtype.
         """
         if dtype is None:
             return norm(x)
-        # the keyword form: Dynamo binds autocast's arguments by name when it traces the context manager
-        if type(norm) is LayerNorm:
+        # the keyword form: Dynamo binds autocast's arguments by name when it traces the context manager;
+        # a subclass that keeps the plain forward takes the plain path
+        if isinstance(norm, LayerNorm) and type(norm).forward is LayerNorm.forward:
             with torch.autocast(device_type=x.device.type, enabled=False):
                 weight = norm.weight.to(dtype) if norm.weight is not None else None
                 bias = norm.bias.to(dtype) if norm.bias is not None else None
                 return nn.functional.layer_norm(x, norm.normalized_shape, weight, bias, norm.eps)
-        if type(norm) is nn.RMSNorm:
+        if isinstance(norm, nn.RMSNorm) and type(norm).forward is nn.RMSNorm.forward:
             with torch.autocast(device_type=x.device.type, enabled=False):
                 weight = norm.weight.to(dtype) if norm.weight is not None else None
                 return nn.functional.rms_norm(x, norm.normalized_shape, weight, norm.eps)

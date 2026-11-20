@@ -1301,6 +1301,9 @@ class TestConformerLayerAutocastResidual:
         assert out.dtype == dtype and packed.dtype == dtype
         valid = (torch.arange(10, device="cuda")[None, None, :] < (lengths // 4)[:, None, None]).float()
         torch.testing.assert_close(out.float() * valid, expected * valid, atol=0.1, rtol=0.1)
+        self._readout_loss(expected * valid).backward()
+        self._readout_loss(out.float() * valid).backward()
+        self._assert_gradients_close(encoder, reference, tolerance=0.1)
         # in training mode the packed form's batch norms see the valid frames only, so its values are checked
         # for finiteness here and against the padded form in evaluation by TestPackedConformerEncoder
         assert torch.isfinite(packed).all()
@@ -1310,7 +1313,12 @@ class TestConformerLayerAutocastResidual:
     @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
     @pytest.mark.parametrize("adapter", ["linear_pre", "linear_post", "mha"])
     def test_adapters_keep_the_stream_in_the_autocast_dtype(self, dtype, adapter):
-        """An adapter returns float32; the stream takes it back, so the option neither stops nor fails after it."""
+        """An adapter's output joins the stream in its dtype, so the option neither stops nor fails after it.
+
+        The linear adapter after the norm and the attention adapter under float16 return float32 (the cells that
+        failed before the fix); the linear adapter before the norm and the attention adapter under bfloat16 return
+        the autocast dtype already and serve as controls.
+        """
         options = dict(
             feat_in=8,
             n_layers=2,

@@ -315,6 +315,16 @@ class TestPackedConformerAdapters:
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 class TestPackedConformerAdaptersCuda:
+    @pytest.fixture(autouse=True)
+    def _float32_arithmetic(self):
+        """TF32 off, which another test of the process may have left on: the float32 bounds are those of float32."""
+        cudnn, matmul = torch.backends.cudnn.allow_tf32, torch.backends.cuda.matmul.allow_tf32
+        torch.backends.cudnn.allow_tf32 = False
+        torch.backends.cuda.matmul.allow_tf32 = False
+        yield
+        torch.backends.cudnn.allow_tf32 = cudnn
+        torch.backends.cuda.matmul.allow_tf32 = matmul
+
     @staticmethod
     def _reference(encoder: ConformerEncoderAdapter, features: torch.Tensor, lengths: torch.Tensor):
         """Outputs and gradients of the padded forward in float64."""

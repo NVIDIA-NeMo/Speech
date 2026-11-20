@@ -79,6 +79,8 @@ class TestRotaryPositionalEncoding:
         q = torch.randn(1, 2, 128, 16)
         q_rot, _ = pe(q, q)
         assert q_rot.shape == q.shape
+        # a dtype change of the module leaves the tables float32
+        assert pe.double().cos.dtype == torch.float32 and pe.inv_freq.dtype == torch.float64
 
     @pytest.mark.unit
     def test_extend_pe_grows_buffers_beyond_max_len_only(self):
@@ -137,6 +139,26 @@ class TestRotaryPositionalEncoding:
         # a dtype change of the module leaves the tables float32 and in place
         assert moved.to(torch.bfloat16).cos.dtype == torch.float32 and moved.cos.device.type == 'cuda'
         assert moved.cpu().cos.device.type == 'cpu'
+
+    @pytest.mark.run_only_on('GPU')
+    @pytest.mark.unit
+    def test_forward_follows_a_move_of_parameters_and_buffers_alone(self):
+        # FSDP moves parameters and buffers, not plain tensors: the forward brings the tables along
+        enc = ConformerEncoder(
+            feat_in=16, n_layers=2, d_model=32, n_heads=4, self_attention_model='rope', pos_emb_max_len=128
+        ).eval()
+        for parameter in enc.parameters():
+            parameter.data = parameter.data.cuda()
+        for name, buffer in enc.named_buffers():
+            module_name, _, buffer_name = name.rpartition('.')
+            setattr(enc.get_submodule(module_name), buffer_name, buffer.cuda())
+        assert enc.pos_enc.cos.device.type == 'cpu'
+        x, lengths = torch.randn(2, 16, 40, device='cuda'), torch.tensor([40, 30], device='cuda')
+        with torch.no_grad():
+            out, _ = enc(audio_signal=x, length=lengths)
+            expected, _ = enc.cuda()(audio_signal=x, length=lengths)
+        assert enc.pos_enc.cos.device.type == 'cuda' and enc.pos_enc.cos.shape == (128, 8)
+        torch.testing.assert_close(out, expected)
 
     @pytest.mark.unit
     def test_forward_first_token_is_identity(self):

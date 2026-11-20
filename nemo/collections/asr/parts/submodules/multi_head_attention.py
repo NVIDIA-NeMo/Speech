@@ -1214,8 +1214,8 @@ class RotaryPositionalEncoding(torch.nn.Module):
     They are plain tensors of the module, not buffers: they follow from ``inv_freq`` alone, so a distributed
     training has nothing to broadcast for them and a checkpoint nothing to store, and a table that one rank
     extended beyond ``max_len`` harms nothing on the others.
-    (Tables that were buffers and grew with the batches broke DDP's buffer broadcast once the ranks' sizes
-    differed: a hang with NCCL, a silently overwritten table with gloo.)
+    They follow the module's device through ``.to()`` and the like, and ``forward`` moves them to the queries'
+    device when a wrapper moved the parameters and buffers alone (FSDP does).
     Memory: ``2 * max_len * d_k * rotary_fraction * 4`` bytes per module, 4.9 MiB for 5,000 positions of 128.
 
     Args:
@@ -1321,6 +1321,11 @@ class RotaryPositionalEncoding(torch.nn.Module):
         t_q = q.size(2)
         t_k = k.size(2)
         cache_len = t_k - t_q
+        # the tables' device and size, a Python compare without a sync: a wrapper that moved the parameters and
+        # buffers alone (FSDP) leaves plain tensors behind, and a caller may skip extend_pe;
+        # a scripted module keeps the tables it was scripted with
+        if not torch.jit.is_scripting():
+            self.extend_pe(t_k, q.device)
 
         cos_k = self.cos[:t_k].view(1, 1, t_k, self.d_k_rot)
         sin_k = self.sin[:t_k].view(1, 1, t_k, self.d_k_rot)

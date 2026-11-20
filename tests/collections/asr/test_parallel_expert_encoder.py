@@ -2154,8 +2154,13 @@ _UNSUPPORTED_REASON = "This toy configuration has no sequence-packed form."
 
 
 @pytest.mark.unit
-def test_padded_fallback_of_a_branch_is_warned_once_with_the_reason(monkeypatch, caplog):
+def test_padded_fallback_of_a_branch_is_warned_once_with_the_reason(monkeypatch, caplog, request):
     """The ASR branch reports no sequence-packed form: it runs padded, which the log says once, not per forward."""
+    # caplog reads the root logger, to which the NeMo logger propagates only in some environments:
+    # attach its handler to the NeMo logger alone, so that a record is captured exactly once
+    monkeypatch.setattr(logging._logger, "propagate", False)
+    logging._logger.addHandler(caplog.handler)
+    request.addfinalizer(lambda: logging._logger.removeHandler(caplog.handler))
     torch.manual_seed(0)
     encoder = build_toy_pe_encoder(allow_padded_fallback=True).eval()
     lengths = torch.tensor([80, 53])

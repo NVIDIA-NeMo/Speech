@@ -94,7 +94,7 @@ nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader
 
 Use **separate environments** for training (NeMo) and serving (vLLM); they pin different torch versions. Pin
 **vLLM 0.28.0** (0.29 is incompatible with the SpeechLM plugin's processor). Pin `nvidia-cudnn-cu13==9.21.0.82` in
-both and re-pin after any install. Export `VLLM_WORKER_MULTIPROC_METHOD=spawn`. Install commands: guide section 2.
+both and re-pin after any install. Install commands: guide section 2.
 
 ## Step 3: Read the checkpoint, don't assume
 
@@ -232,7 +232,7 @@ It wraps `examples/speechlm2/to_hf.py` and `merge_lora_checkpoint.py`. If you do
 
 ```bash
 python vllm_task_eval.py --model <merged> --task asr --manifest dev.json librispeech.json \
-  --out eval/dev.jsonl eval/libri.jsonl --spec-k 2 --max-num-seqs 64 --normalizer <n>
+  --out eval/dev.jsonl eval/libri.jsonl --max-num-seqs 64 --normalizer <n>
 ```
 
 **Prove every decode-time optimization is exact before trusting the harness.** Decode a few hundred utterances with

@@ -328,6 +328,7 @@ class TestRotaryPositionalEncoding:
 
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_cache_is_identical_across_construction_devices(self):
         cpu = RotaryPositionalEncoding(d_k=64, max_len=8192)
         cpu.extend_pe(8192, device=torch.device('cpu'), dtype=torch.bfloat16)
@@ -394,6 +395,7 @@ class TestRoPEMultiHeadAttention:
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
     @pytest.mark.parametrize("backend", ['MATH', 'FLASH_ATTENTION', 'EFFICIENT_ATTENTION', 'CUDNN_ATTENTION'])
+    @pytest.mark.gpu
     def test_sdpa_backend_smoke_gpu(self, backend):
         # Each SDPA backend must run with RoPE pre-rotation under bf16 autocast
         # (the production training path) without falling back or crashing on
@@ -421,6 +423,7 @@ class TestRoPEMultiHeadAttention:
 
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_autocast_gpu(self):
         # Mixed-precision forward (CUDA autocast in bf16) must produce finite output.
         # Exercises the interaction between RoPE's .to(q.dtype) cast and the
@@ -439,6 +442,7 @@ class TestRoPEMultiHeadAttention:
         "dtype,atol",
         [(torch.float32, 1e-5), (torch.bfloat16, 5e-2), (torch.float16, 1e-2)],
     )
+    @pytest.mark.gpu
     def test_dtype_stability_gpu(self, dtype, atol):
         # Forward in low precision must stay close to the fp32 reference.
         pe = RotaryPositionalEncoding(d_k=16, max_len=32).to("cuda")
@@ -513,6 +517,7 @@ class TestConformerEncoderRoPE:
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
     @pytest.mark.parametrize("backend", ['MATH', 'EFFICIENT_ATTENTION', 'CUDNN_ATTENTION'])
+    @pytest.mark.gpu
     def test_sdpa_backend_matches_manual_gpu(self, backend):
         # Forward + backward parity vs the manual path under bf16 autocast.
         # RoPE applies to Q/K before the SDPA call, so each backend sees the

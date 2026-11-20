@@ -393,6 +393,7 @@ def test_deferred_columns_stay_float32_while_another_thread_changes_the_default_
 
 @pytest.mark.unit
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+@pytest.mark.gpu
 def test_deferred_head_never_decodes_a_batch_of_one_on_the_gpu():
     # torch.compile specializes the decoder's attention for a batch of one; a lone record is decoded twice instead, so
     # the CTC head never adds that variant to the compiled function it shares with the speech encoder.
@@ -429,6 +430,7 @@ def test_deferred_head_never_decodes_a_batch_of_one_on_the_gpu():
 
 @pytest.mark.unit
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+@pytest.mark.gpu
 def test_deferred_columns_reach_the_host_under_a_cuda_default_device():
     from nemo.collections.speechlm2.parts.ctc_timestamp_utils import _read_deferred_ctc_columns
 

@@ -423,9 +423,7 @@ class EncDecRNNTBPEEOUModel(EncDecRNNTBPEModel, ASREOUModelMixin):
         else:
             signal = batch[0]
             signal_len = batch[1]
-        encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len)
-        output = dict(encoded=encoded, encoded_len=encoded_len)
-        return output
+        return self._transcribe_encode(signal, signal_len, trcfg)
 
     def training_step(self, batch: AudioToTextEOUBatch, batch_nb):
         # Reset access registry
@@ -771,9 +769,7 @@ class EncDecHybridRNNTCTCBPEEOUModel(EncDecHybridRNNTCTCBPEModel, ASREOUModelMix
         else:
             signal = batch[0]
             signal_len = batch[1]
-        encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len)
-        output = dict(encoded=encoded, encoded_len=encoded_len)
-        return output
+        return self._transcribe_encode(signal, signal_len, trcfg)
 
     def training_step(self, batch: AudioToTextEOUBatch, batch_nb):
         signal = batch.audio_signal

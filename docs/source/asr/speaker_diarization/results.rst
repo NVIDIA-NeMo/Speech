@@ -152,7 +152,7 @@ Inference
 ^^^^^^^^^
 
 .. note::
-  For details and deep understanding, please refer to ``<NeMo_root>/tutorials/speaker_tasks/Speaker_Diarization_Inference.ipynb``.
+  For details and deep understanding, please refer to ``<NeMo_root>/examples/speaker_tasks/diarization/README.md``.
 
 Check out :doc:`Datasets <./datasets>` for preparing audio files and optional label files.
 
@@ -161,7 +161,7 @@ Run and evaluate speaker diarizer with below command:
 .. code-block:: bash
 
   # Have a look at the instruction inside the script and pass the arguments you might need. 
-  python <NeMo_root>/examples/speaker_tasks/diarization/offline_diarization.py 
+  python <NeMo_root>/examples/speaker_tasks/diarization/clustering_diarizer/offline_diar_infer.py
 
 
 NGC Pretrained Checkpoints

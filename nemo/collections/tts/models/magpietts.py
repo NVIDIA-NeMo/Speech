@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,7 +18,6 @@ import os
 import random
 import re
 import time
-
 from dataclasses import dataclass, field, fields
 from functools import partial
 from pathlib import Path
@@ -32,8 +32,13 @@ from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 from omegaconf import DictConfig, ListConfig, OmegaConf, open_dict
 from torch import nn
+
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
-from nemo.collections.tts.data.text_to_speech_dataset_lhotse import MagpieTTSLhotseDataset, setup_tokenizers
+from nemo.collections.tts.data.text_to_speech_dataset_lhotse import (
+    MagpieTTSLhotseDataset,
+    check_text_embedding_matches_tokenizer,
+    setup_tokenizers,
+)
 from nemo.collections.tts.losses.aligner_loss import ForwardSumLoss
 from nemo.collections.tts.losses.moe_loss import MoEAuxiliaryLoss, compute_expert_usage
 from nemo.collections.tts.models import AudioCodecModel
@@ -57,6 +62,7 @@ from nemo.collections.tts.modules.magpietts_modules import (
     remove_special_tokens,
     worker_init_fn,
 )
+from nemo.collections.tts.one_logger import TTSThroughputPolicy
 from nemo.collections.tts.parts.utils.helpers import (
     binarize_attention_parallel,
     get_mask_from_lengths,
@@ -70,6 +76,7 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
 )
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
+from nemo.lightning.speech_throughput import register_throughput_policy
 from nemo.utils import logging
 from nemo.utils.exceptions import NeMoBaseException
 
@@ -302,6 +309,7 @@ class ModelInferenceParameters:
         return cls(**filtered_data)
 
 
+@register_throughput_policy(TTSThroughputPolicy)
 class MagpieTTSModel(ModelPT):
     """
     Magpie-TTS Model Base Class used for training a TTS model that can generate audio codes from transcript and a context
@@ -434,6 +442,8 @@ class MagpieTTSModel(ModelPT):
         self.tokenizer = setup_tokenizers(
             all_tokenizers_config=cfg.text_tokenizers,
             mode='train',
+            # Read before super().__init__, which stamps the *current* version into configs that lack one.
+            cfg_nemo_version=cfg.get('nemo_version', None),
         )
 
         num_tokens_tokenizer = len(self.tokenizer.tokens)
@@ -1071,6 +1081,13 @@ class MagpieTTSModel(ModelPT):
         (N, T*D) and reconstructed to (N, T, D) at inference time using stored T and D dimensions.
         """
         state_dict = self.update_ckpt(state_dict)
+        # `text_embedding` is absent on the CAS-encoder variant, which has no such table to compare.
+        check_text_embedding_matches_tokenizer(
+            state_dict,
+            text_embedding=getattr(self, 'text_embedding', None),
+            tokenizer=self.tokenizer,
+            model_cfg=self.cfg,
+        )
 
         # Check if checkpoint has baked context embedding (nn.Embedding format)
         has_baked_embedding_in_ckpt = 'baked_context_embedding.weight' in state_dict
@@ -3606,6 +3623,7 @@ class MagpieTTSModel(ModelPT):
             load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
             dataset_type=mode,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
             load_16khz_audio=False,
+            load_normalized_text_percent=dataset_cfg.get("load_normalized_text_percent", 1.0),
             pad_context_text_to_max_duration=self.pad_context_text_to_max_duration,
             context_duration_min=self.cfg.context_duration_min,
             context_duration_max=self.cfg.context_duration_max,

@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -27,6 +28,7 @@ from nemo.collections.tts.modules.audio_codec_modules import (
     MultiBandMelEncoder,
     ResidualBlock,
     ResNetEncoder,
+    ResNetSpeakerEncoder,
     get_down_sample_padding,
 )
 from nemo.collections.tts.modules.encodec_modules import GroupResidualVectorQuantizer, ResidualVectorQuantizer
@@ -162,6 +164,20 @@ class TestAudioCodecModules:
         assert torch.all(out[0, :, self.len1 :] == 0.0)
         assert torch.all(out[1, :, : self.len2] != 0.0)
         assert torch.all(out[1, :, self.len2 :] == 0.0)
+
+    @pytest.mark.unit
+    def test_resnet_speaker_encoder_loads_local_checkpoint(self, mocker):
+        checkpoint_path = "speaker_encoder.pt"
+        state_dict = mocker.sentinel.state_dict
+        torch_load = mocker.patch(
+            "nemo.collections.tts.modules.audio_codec_modules.torch.load", return_value={"model": state_dict}
+        )
+        speaker_encoder = mocker.Mock()
+
+        ResNetSpeakerEncoder.load_checkpoint(speaker_encoder, checkpoint_path, strict=False)
+
+        torch_load.assert_called_once_with(checkpoint_path, map_location=torch.device("cpu"))
+        speaker_encoder.load_state_dict.assert_called_once_with(state_dict, strict=False)
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
@@ -435,7 +451,7 @@ class TestFiniteScalarQuantizer:
     @pytest.mark.unit
     @pytest.mark.parametrize('num_groups', [1, 2, 4])
     @pytest.mark.parametrize('num_levels_per_group', [[2, 3], [8, 5, 5]])
-    def test_group_fsq_eval(self, num_groups: int, num_levels_per_group: int):
+    def test_group_fsq_eval(self, num_groups: int, num_levels_per_group: list[int]):
         """Simple test to confirm that the group FSQ module can be instantiated and run,
         and that forward produces the same result as encode-decode.
         """
@@ -471,3 +487,30 @@ class TestFiniteScalarQuantizer:
                 torch.testing.assert_close(
                     indices, indices_fw_grouped[g], msg=f'example {i}: indices mismatch for group {g}'
                 )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('num_groups', [2, 4, 7])
+    @pytest.mark.parametrize('num_levels_per_group', [[2, 3], [8, 5, 5]])
+    def test_group_fsq_dropout(self, num_groups: int, num_levels_per_group: list[int]):
+        """Tests that FSQ dropout correctly zeros out the correct encoder dimensions"""
+        gfsq = GroupFiniteScalarQuantizer(num_groups=num_groups, num_levels_per_group=num_levels_per_group)
+
+        inputs = torch.randn([self.batch_size, gfsq.codebook_dim, self.max_len])
+        input_len = torch.tensor([self.max_len] * self.batch_size, dtype=torch.int32)
+        encoded, _ = gfsq(inputs=inputs, input_len=input_len)  # (B, D, T)
+
+        # Should not dropout any input
+        encoded_without_dropout = gfsq.dropout_codebooks(encoded=encoded, num_codebooks=torch.tensor([num_groups]))
+        torch.testing.assert_close(actual=encoded_without_dropout, expected=encoded)
+
+        for i in range(num_groups):
+            # Dropout different number of codebooks for each batch element
+            codebooks_to_keep = list(range(i, i + self.batch_size))
+            encoded_with_dropout = gfsq.dropout_codebooks(
+                encoded=encoded, num_codebooks=torch.tensor(codebooks_to_keep)
+            )
+            # Validate appropriate dimensions are zero
+            for batch_i in range(self.batch_size):
+                dropout_start_i = codebooks_to_keep[batch_i] * len(num_levels_per_group)
+                dropped_codes = encoded_with_dropout[batch_i, dropout_start_i:, :]
+                torch.testing.assert_close(actual=dropped_codes, expected=torch.zeros_like(dropped_codes))

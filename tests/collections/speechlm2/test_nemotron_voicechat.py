@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,8 +24,8 @@ from nemo.collections.common.data.utils import move_data_to_device
 from nemo.collections.speechlm2 import DuplexSTTDataset
 from nemo.collections.speechlm2.models import NemotronVoiceChat
 
-if torch.cuda.is_available():
-    torch.set_default_device('cuda')
+# Run on CUDA when available, without leaking the default device to other test modules (see conftest.py).
+pytestmark = pytest.mark.usefixtures("cuda_default_device")
 
 
 pretrained_llm = "TinyLlama/TinyLlama_v1.1"
@@ -230,12 +231,12 @@ def create_model(
     return model
 
 
-@pytest.fixture(scope="session")
-def model():
+@pytest.fixture(scope="module")
+def model(cuda_default_device):
     return create_model(predict_user_text=False)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def dataset(model):
     return DuplexSTTDataset(
         model.stt_model.tokenizer,
@@ -246,8 +247,8 @@ def dataset(model):
     )
 
 
-@pytest.fixture(scope="session")
-def training_cutset_batch():
+@pytest.fixture(scope="module")
+def training_cutset_batch(cuda_default_device):
     cut = dummy_cut(0, recording=dummy_recording(0, with_data=True, duration=1.0, sampling_rate=22050))
     cut.target_audio = dummy_recording(1, with_data=True, duration=1.0, sampling_rate=22050)
     cut.supervisions = [
@@ -287,6 +288,7 @@ def training_cutset_batch():
     return CutSet([cut])
 
 
+@pytest.mark.gpu
 def test_e2e_validation_step(model, dataset, training_cutset_batch):
     model.eval()
     model.on_validation_epoch_start()
@@ -301,6 +303,34 @@ def test_e2e_validation_step(model, dataset, training_cutset_batch):
     assert results is None  # no return value
 
 
+@pytest.mark.gpu
+def test_safetensors_load_revalidates_codec_silence_tokens(model, tmp_path, monkeypatch):
+    from safetensors.torch import save_file
+
+    tts = model.tts_model
+    expected = tts.get_codec_silence_tokens().clone()
+    calls = []
+    monkeypatch.setattr(tts, "get_codec_silence_frame", lambda: calls.append(1) or expected)
+    sentinel = torch.full_like(expected, -1).cpu()
+
+    # A checkpoint saved before first use holds the -1 placeholder; it is recomputed on next use.
+    save_file({"tts_model.codec_silence_tokens": sentinel}, tmp_path / "model.safetensors")
+    model.init_from_safetensors_ckpt(str(tmp_path))
+    assert calls == []
+    assert torch.equal(tts.get_codec_silence_tokens(), expected)
+    assert torch.equal(tts.get_codec_silence_tokens(), expected)
+    assert len(calls) == 1
+
+    # Prefixed route with valid stored tokens: they are used as-is.
+    stored = (expected.cpu() + 1) % tts.audio_codec.config.codebook_size
+    save_file({"codec_silence_tokens": stored}, tmp_path / "model.safetensors")
+    model.init_from_safetensors_ckpt(str(tmp_path), prefix="tts_model.")
+    assert torch.equal(tts.get_codec_silence_tokens(), stored.to(expected.device))
+    assert len(calls) == 1
+    tts.codec_silence_tokens.copy_(expected)
+
+
+@pytest.mark.gpu
 def test_e2s_offline_generation(model):
     model.eval()
     # 16000 samples == 1 second == 12.5 frames ~= 14 frames after encoder padding

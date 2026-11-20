@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -232,6 +233,28 @@ def test_tokenize_with_prompt_passes_enable_thinking_to_multimodal_formatter(tok
     )
 
     assert tokenized.input_ids.tolist() == [0]
+
+
+@pytest.mark.parametrize("value", [None, 123])
+def test_tokenize_with_prompt_diagnoses_non_string_multimodal_turn(tokenizer, value):
+    conversation = NeMoMultimodalConversation(
+        id="broken-example",
+        turns=[TextTurn(role="assistant", value=value)],
+        token_equivalent_duration=0.08,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"conversation_id='broken-example' turn_index=0 role='assistant' "
+            rf"turn_type=TextTurn message_type={type(value).__name__}"
+        ),
+    ):
+        tokenize_with_prompt(
+            conversation,
+            tokenizer=tokenizer,
+            prompt_format=_DummyMultimodalPromptFormatter(tokenizer),
+        )
 
 
 def test_prompt_format_cut_filtered_out(cuts_path, tokenizer):

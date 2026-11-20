@@ -1,5 +1,5 @@
 # This is an example config for setting up a NeMo FastPitch-Hifigan TTS model for a NeMo Voice Agent server.
-# Please refer to https://github.com/NVIDIA-NeMo/NeMo/tree/main/examples/voice_agent/README.md for more details
+# Please refer to https://github.com/NVIDIA-NeMo/Speech/tree/main/examples/voice_agent/README.md for more details
 
 main_model_id: "hexgrad/Kokoro-82M"
 sub_model_id: "af_heart" # "af_heart" "af_bella" "am_fenrir" "am_michael"

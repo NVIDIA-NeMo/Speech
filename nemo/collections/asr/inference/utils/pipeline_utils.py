@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -310,3 +311,104 @@ def seconds_to_frames(seconds: float | int | Iterable[float | int], model_stride
         return [int(s / model_stride_in_secs) for s in seconds]
 
     raise ValueError(f"Invalid type for seconds: {type(seconds)}")
+
+
+def filter_token_triples(
+    tokens: list[int], timesteps: list[int], confidences: list[float], token_ids_to_remove: set[int]
+) -> tuple[list[int], list[int], list[float]]:
+    """
+    Remove the given token ids from aligned (tokens, timesteps, confidences) lists.
+    Args:
+        tokens: (list[int]) Token ids.
+        timesteps: (list[int]) Timesteps aligned with tokens.
+        confidences: (list[float]) Confidences aligned with tokens.
+        token_ids_to_remove: (set[int]) Token ids to filter out.
+    Returns:
+        (tuple[list[int], list[int], list[float]]) Filtered aligned lists.
+    """
+    kept = [
+        (token, timestep, confidence)
+        for token, timestep, confidence in zip(tokens, timesteps, confidences)
+        if token not in token_ids_to_remove
+    ]
+    if not kept:
+        return [], [], []
+    filtered_tokens, filtered_timesteps, filtered_confidences = (list(column) for column in zip(*kept))
+    return filtered_tokens, filtered_timesteps, filtered_confidences
+
+
+def filter_token_sequences(
+    tokens: list[int], timesteps: list[int], confidences: list[float], sequences: tuple[tuple[int, ...], ...]
+) -> tuple[list[int], list[int], list[float]]:
+    """
+    Remove contiguous token sub-sequences from aligned (tokens, timesteps, confidences) lists.
+    Used for language tags that are spelled out from sub-word pieces (e.g. "<mt-MT>") instead of
+    existing as a single vocabulary token, which ``filter_token_triples`` cannot match.
+    Args:
+        tokens: (list[int]) Token ids.
+        timesteps: (list[int]) Timesteps aligned with tokens.
+        confidences: (list[float]) Confidences aligned with tokens.
+        sequences: (tuple[tuple[int, ...], ...]) Token id sequences to remove, longest first.
+    Returns:
+        (tuple[list[int], list[int], list[float]]) Filtered aligned lists.
+    """
+    if not sequences or not tokens:
+        return tokens, timesteps, confidences
+
+    keep = [True] * len(tokens)
+    i = 0
+    while i < len(tokens):
+        for sequence in sequences:
+            end = i + len(sequence)
+            if tuple(tokens[i:end]) == sequence:
+                keep[i:end] = [False] * len(sequence)
+                i = end
+                break
+        else:
+            i += 1
+
+    if all(keep):
+        return tokens, timesteps, confidences
+    return (
+        [t for t, k in zip(tokens, keep) if k],
+        [t for t, k in zip(timesteps, keep) if k],
+        [c for c, k in zip(confidences, keep) if k],
+    )
+
+
+def filter_tokens_from_greedy_output(
+    output: dict,
+    labels: list[int],
+    token_ids_to_remove: set[int],
+    blank_id: int,
+    token_sequences_to_remove: tuple[tuple[int, ...], ...] = (),
+) -> tuple[dict, list[int]]:
+    """
+    Remove language tags emitted by multilingual models from a greedy-decoder chunk output,
+    keeping tokens/timesteps/confidences aligned.
+    Single-token tags are also replaced with blanks in the label buffer so that they are not
+    counted as speech during EOU detection. Multi-token tags are only dropped from the output,
+    since their pieces are ordinary tokens that also occur in normal text.
+    Args:
+        output: (dict) Greedy decoder output with "tokens", "timesteps", "confidences",
+            "last_token" and "last_token_idx" keys.
+        labels: (list[int]) Current labels (including blanks) aligned with the chunk frames.
+        token_ids_to_remove: (set[int]) Token ids to filter out.
+        blank_id: (int) Blank token id used in the label buffer.
+        token_sequences_to_remove: (tuple[tuple[int, ...], ...]) Token id sequences to filter out.
+    Returns:
+        (tuple[dict, list[int]]) Filtered output and labels.
+    """
+    if not output["tokens"] or not (token_ids_to_remove or token_sequences_to_remove):
+        return output, labels
+
+    tokens, timesteps, confidences = filter_token_triples(
+        output["tokens"], output["timesteps"], output["confidences"], token_ids_to_remove
+    )
+    tokens, timesteps, confidences = filter_token_sequences(tokens, timesteps, confidences, token_sequences_to_remove)
+    labels = [blank_id if label in token_ids_to_remove else label for label in labels]
+    output = dict(output)
+    output["tokens"], output["timesteps"], output["confidences"] = tokens, timesteps, confidences
+    output["last_token"] = tokens[-1] if tokens else None
+    output["last_token_idx"] = timesteps[-1] if timesteps else None
+    return output, labels

@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -57,8 +58,8 @@ __package_name__ = "nemo_toolkit"
 __contact_names__ = "NVIDIA"
 __contact_emails__ = "nemo-toolkit@nvidia.com"
 __homepage__ = "https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/"
-__repository_url__ = "https://github.com/NVIDIA-NeMo/NeMo"
-__download_url__ = "https://github.com/NVIDIA-NeMo/NeMo/releases"
+__repository_url__ = "https://github.com/NVIDIA-NeMo/Speech"
+__download_url__ = "https://github.com/NVIDIA-NeMo/Speech/releases"
 __description__ = "NeMo - a toolkit for Conversational AI"
 __license__ = "Apache2"
 __keywords__ = "deep learning, machine learning, gpu, NLP, NeMo, nvidia, pytorch, torch, tts, speech, language"

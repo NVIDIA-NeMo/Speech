@@ -1,4 +1,5 @@
-# Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2021, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,6 +12,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+# Portions derived from Patter:
+# Copyright (c) 2018 Ryan Leary. Licensed under the MIT License.
+# Source: https://github.com/ryanleary/patter
 
 # This script is heavily derived from the Patter HUB5 processing script written
 # by Ryan Leary

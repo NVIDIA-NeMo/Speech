@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +14,7 @@
 # limitations under the License.
 
 import contextlib
+from collections.abc import Iterator
 
 import numpy as np
 import torch
@@ -120,6 +122,59 @@ def cu_call(f_call_out):
         return tuple(others)
 
 
+def create_conditional_node_mempool(device: torch.device) -> torch.cuda.MemPool:
+    """
+    Create a memory pool for capturing a CUDA graph that contains conditional nodes.
+
+    Capture the graph inside ``use_conditional_node_mempool`` with this pool, and keep the pool for as long as the
+    graph can be replayed. Allocations made while capturing the conditional node bodies then come from this pool
+    instead of the default pool, where ``torch.cuda.empty_cache()`` can return them to the driver while the graph
+    still uses them.
+    """
+    with torch.cuda.device(device):
+        return torch.cuda.MemPool()
+
+
+def _torch_mempool_rejects_expandable_segments(torch_version: str) -> bool:
+    """
+    torch 2.7 raises on any allocation inside ``torch.cuda.use_mem_pool`` while expandable segments are enabled
+    ("torch.cuda.MemPool doesn't currently support expandable_segments"). torch 2.8 narrowed the check to pools
+    with a custom allocator.
+    """
+    return Version(torch_version).release[:2] < (2, 8)
+
+
+_MEMPOOL_REJECTS_EXPANDABLE_SEGMENTS: bool = _torch_mempool_rejects_expandable_segments(torch.__version__)
+
+
+@contextlib.contextmanager
+def use_conditional_node_mempool(pool: torch.cuda.MemPool, device: torch.device) -> Iterator[None]:
+    """
+    Route the allocations made inside the block to ``pool``, which ``create_conditional_node_mempool`` returns.
+
+    Use it as the innermost item of the ``with`` statement that captures the graph: on torch 2.7 the check above
+    fires for every allocation made while a pool is active, including the parent graph's own. On torch < 2.8
+    expandable segments are turned off for the duration of the block and restored afterwards, so the segments
+    allocated meanwhile are regular ones, which ``MemPool`` accepts.
+    """
+    restore_settings: str | None = None
+    if _MEMPOOL_REJECTS_EXPANDABLE_SEGMENTS:
+        # torch 2.7 has no public getter for the allocator settings. The snapshot reports the live ones, including
+        # settings applied at runtime, which the environment variable alone would miss.
+        settings = torch.cuda.memory._snapshot()["allocator_settings"]
+        if settings.get("expandable_segments", False):
+            restore_settings = settings["PYTORCH_CUDA_ALLOC_CONF"]
+            # Setting only expandable_segments:False would reset every other option to its default on torch 2.7.
+            # Appending to the current settings keeps them, because later keys win.
+            torch.cuda.memory._set_allocator_settings(restore_settings + ",expandable_segments:False")
+    try:
+        with torch.cuda.use_mem_pool(pool, device=device):
+            yield
+    finally:
+        if restore_settings is not None:
+            torch.cuda.memory._set_allocator_settings(restore_settings)
+
+
 @contextlib.contextmanager
 @cuda_python_required
 def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditional_handle, device):
@@ -130,6 +185,9 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
     and after the rest of the while loop body graph (because we need
     to decide both whether to enter the loop, and also whether to
     execute the next iteration of the loop).
+
+    The body is captured on its own stream, so ``torch.cuda.graph`` does not route the body's allocations to
+    the parent graph's private pool. Callers route them with ``create_conditional_node_mempool``.
     """
     # NB: depending on cuda-python version, cudaStreamGetCaptureInfo can return either 5 or 6 elements
     capture_status, _, graph, *_ = cu_call(
@@ -255,18 +313,18 @@ def run_nvrtc(kernel_string: str, kernel_name: bytes, program_name: bytes):
     assert_drv(err)
     err, size = nvrtc.nvrtcGetProgramLogSize(prog)
     assert_drv(err)
-    buf = b" " * size
+    buf = bytearray(size)
     (err,) = nvrtc.nvrtcGetProgramLog(prog, buf)
     assert_drv(err)
 
     # Get PTX from compilation
     err, ptxSize = nvrtc.nvrtcGetPTXSize(prog)
     assert_drv(err)
-    ptx = b" " * ptxSize
+    ptx = bytearray(ptxSize)
     (err,) = nvrtc.nvrtcGetPTX(prog, ptx)
     assert_drv(err)
 
-    ptx = np.char.array(ptx)
+    ptx = np.char.array(bytes(ptx))
     err, module = cuda.cuModuleLoadData(ptx.ctypes.data)
     assert_drv(err)
     err, kernel = cuda.cuModuleGetFunction(module, kernel_name)

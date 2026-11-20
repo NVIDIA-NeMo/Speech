@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +14,7 @@
 # limitations under the License.
 
 import itertools
+
 import pytest
 import torch
 
@@ -20,8 +22,11 @@ from nemo.collections.asr.parts.utils.asr_multispeaker_utils import (
     find_best_permutation,
     find_first_nonzero,
     get_ats_targets,
+    get_ats_targets_hungarian,
     get_hidden_length_from_sample_length,
     get_pil_targets,
+    get_pil_targets_hungarian,
+    get_soft_mask,
     reconstruct_labels,
 )
 
@@ -209,6 +214,25 @@ class TestSortingUtils:
 
 
 class TestTargetGenerators:
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "frame_target_values, num_frames, stride, expected_values",
+        [
+            (
+                ((1.0, 0.0), (0.0, 1.0), (1.0, 1.0)),
+                3,
+                1,
+                ((1.0, 0.0), (0.0, 1.0), (1.0, 1.0)),
+            )
+        ],
+    )
+    def test_get_soft_mask_without_subsampling(self, frame_target_values, num_frames, stride, expected_values):
+        frame_targets = torch.tensor(frame_target_values)
+        expected = torch.tensor(expected_values)
+
+        result = get_soft_mask(frame_targets, num_frames=num_frames, stride=stride)
+
+        assert torch.equal(result, expected)
 
     @pytest.mark.parametrize(
         "labels, preds, num_speakers, expected_output",
@@ -305,6 +329,183 @@ class TestTargetGenerators:
 
         result = get_pil_targets(labels, preds, speaker_permutations)
         assert torch.equal(result, expected_output), f"Expected {expected_output} but got {result}"
+
+
+class TestHungarianTargetGenerators:
+    @pytest.mark.unit
+    @pytest.mark.parametrize("seed", [0, 1])
+    @pytest.mark.parametrize("num_speakers", [2, 3, 4, 5])
+    def test_matches_exhaustive_target_generators(self, num_speakers, seed):
+        torch.manual_seed(seed)
+        labels = (torch.rand(8, 20, num_speakers) > 0.5).float()
+        preds = torch.rand(8, 20, num_speakers)
+        speaker_permutations = torch.tensor(list(itertools.permutations(range(num_speakers))))
+
+        expected_pil = get_pil_targets(labels, preds, speaker_permutations)
+        expected_ats = get_ats_targets(labels, preds, speaker_permutations)
+        result_pil, _ = get_pil_targets_hungarian(labels, preds)
+        result_ats, _ = get_ats_targets_hungarian(labels, preds)
+
+        assert torch.allclose(result_pil, expected_pil)
+        assert torch.allclose(result_ats, expected_ats)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        (
+            "label_values, prediction_values, num_label_speakers, "
+            "num_prediction_speakers, expected_speaker_index_values"
+        ),
+        [
+            (
+                ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+                ((0.9, 0.1), (0.1, 0.1), (0.1, 0.9)),
+                3,
+                2,
+                ((0, 2),),
+            )
+        ],
+    )
+    def test_pil_supports_fewer_prediction_streams_than_label_speakers(
+        self,
+        label_values,
+        prediction_values,
+        num_label_speakers,
+        num_prediction_speakers,
+        expected_speaker_index_values,
+    ):
+        labels = torch.tensor(label_values).reshape(1, -1, num_label_speakers)
+        preds = torch.tensor(prediction_values).reshape(1, -1, num_prediction_speakers)
+        expected_speaker_indices = torch.tensor(expected_speaker_index_values)
+
+        result, speaker_indices = get_pil_targets_hungarian(labels, preds)
+
+        assert torch.equal(result, labels[:, :, expected_speaker_indices[0]])
+        assert torch.equal(speaker_indices, expected_speaker_indices)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        (
+            "label_values, prediction_values, num_label_speakers, "
+            "num_prediction_speakers, expected_target_values, expected_speaker_index_values"
+        ),
+        [
+            (
+                ((1.0, 0.0), (0.0, 1.0)),
+                ((0.1, 0.1, 0.9), (0.9, 0.1, 0.1)),
+                2,
+                3,
+                ((0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
+                ((1, -1, 0),),
+            )
+        ],
+    )
+    def test_pil_supports_more_prediction_streams_than_label_speakers(
+        self,
+        label_values,
+        prediction_values,
+        num_label_speakers,
+        num_prediction_speakers,
+        expected_target_values,
+        expected_speaker_index_values,
+    ):
+        labels = torch.tensor(label_values).reshape(1, -1, num_label_speakers)
+        preds = torch.tensor(prediction_values).reshape(1, -1, num_prediction_speakers)
+        expected = torch.tensor(expected_target_values).reshape(1, -1, num_prediction_speakers)
+        expected_speaker_indices = torch.tensor(expected_speaker_index_values)
+
+        result, speaker_indices = get_pil_targets_hungarian(labels, preds)
+
+        assert torch.equal(result, expected)
+        assert torch.equal(speaker_indices, expected_speaker_indices)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("num_pred_speakers", [2, 4])
+    def test_ats_supports_rectangular_assignments(self, num_pred_speakers):
+        labels = torch.eye(3).unsqueeze(0)
+        preds = torch.rand(1, 3, num_pred_speakers)
+
+        result, speaker_indices = get_ats_targets_hungarian(labels, preds)
+
+        if num_pred_speakers < labels.shape[2]:
+            assert torch.equal(result, labels[:, :, :num_pred_speakers])
+            assert torch.equal(speaker_indices, torch.arange(num_pred_speakers).unsqueeze(0))
+        else:
+            assert torch.equal(result[:, :, : labels.shape[2]], labels)
+            assert torch.count_nonzero(result[:, :, labels.shape[2] :]) == 0
+            expected_indices = torch.tensor([[0, 1, 2, -1]])
+            assert torch.equal(speaker_indices, expected_indices)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        (
+            "label_values, prediction_permutation_values, exact_tolerance, tolerant_tolerance, "
+            "expected_exact_values, expected_tolerant_values"
+        ),
+        [
+            (
+                (((1.0, 0.0), (0.0, 1.0), (0.0, 1.0)),),
+                (1, 0),
+                0,
+                1,
+                (((1.0, 0.0), (0.0, 1.0), (0.0, 1.0)),),
+                (((0.0, 1.0), (1.0, 0.0), (1.0, 0.0)),),
+            )
+        ],
+    )
+    def test_ats_tolerance_allows_nearby_arrivals_to_be_reordered(
+        self,
+        label_values,
+        prediction_permutation_values,
+        exact_tolerance,
+        tolerant_tolerance,
+        expected_exact_values,
+        expected_tolerant_values,
+    ):
+        labels = torch.tensor(label_values)
+        prediction_permutation = torch.tensor(prediction_permutation_values)
+        preds = labels[:, :, prediction_permutation]
+        expected_exact = torch.tensor(expected_exact_values)
+        expected_tolerant = torch.tensor(expected_tolerant_values)
+
+        exact_result, _ = get_ats_targets_hungarian(labels, preds, tolerance=exact_tolerance)
+        tolerant_result, _ = get_ats_targets_hungarian(labels, preds, tolerance=tolerant_tolerance)
+
+        assert torch.equal(exact_result, expected_exact)
+        assert torch.equal(tolerant_result, expected_tolerant)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+    def test_eight_speaker_targets(self, dtype):
+        labels = torch.eye(8, dtype=dtype).unsqueeze(0)
+        reverse_order = torch.arange(7, -1, -1)
+        preds = labels[:, :, reverse_order]
+
+        pil_result, pil_speaker_indices = get_pil_targets_hungarian(labels, preds)
+        ats_result, ats_speaker_indices = get_ats_targets_hungarian(labels, preds)
+
+        assert torch.equal(pil_result, preds)
+        assert torch.equal(pil_speaker_indices, reverse_order.unsqueeze(0))
+        assert torch.equal(ats_result, labels)
+        assert torch.equal(ats_speaker_indices, torch.arange(8).unsqueeze(0))
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "autocast_dtype, num_speakers, prediction_permutation_values",
+        [(torch.bfloat16, 4, (3, 2, 1, 0))],
+    )
+    def test_bfloat16_autocast(self, autocast_dtype, num_speakers, prediction_permutation_values):
+        labels = torch.eye(num_speakers).unsqueeze(0)
+        prediction_permutation = torch.tensor(prediction_permutation_values)
+        preds = labels[:, :, prediction_permutation]
+
+        with torch.autocast(device_type="cpu", dtype=autocast_dtype):
+            pil_result, _ = get_pil_targets_hungarian(labels, preds)
+            ats_result, _ = get_ats_targets_hungarian(labels, preds)
+
+        assert pil_result.dtype == labels.dtype
+        assert ats_result.dtype == labels.dtype
+        assert torch.equal(pil_result, preds)
+        assert torch.equal(ats_result, labels)
 
 
 class TestGetHiddenLengthFromSampleLength:

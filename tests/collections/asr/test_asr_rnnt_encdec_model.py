@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,13 +14,14 @@
 # limitations under the License.
 import copy
 from typing import Any, Dict, List, Optional, Tuple
+from unittest.mock import Mock
 
 import pytest
 import torch
 import torch.nn.functional as F
 from lhotse import CutSet, MonoCut
 from lhotse.testing.dummies import DummyManifest
-from omegaconf import DictConfig, ListConfig
+from omegaconf import DictConfig, ListConfig, open_dict
 
 from nemo.collections.asr.data.audio_to_text_lhotse import LhotseSpeechToTextBpeDataset
 from nemo.collections.asr.models import EncDecRNNTModel
@@ -252,6 +254,15 @@ def asr_model():
 
 
 class TestEncDecRNNTModel:
+
+    @pytest.mark.unit
+    def test_loss_startup_warmup(self, asr_model, monkeypatch):
+        warmup = Mock()
+        monkeypatch.setattr(asr_model.loss, 'warmup', warmup)
+        asr_model.on_train_start()
+        assert hasattr(asr_model, '_freeze_cfg')
+        warmup.assert_called_once_with(asr_model.device)
+
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE,
         reason='RNNTLoss has not been compiled with appropriate numba version.',
@@ -374,6 +385,27 @@ class TestEncDecRNNTModel:
         reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.unit
+    def test_wer_text_normalize(self, asr_model):
+        assert asr_model.wer.wer_text_normalize is False
+
+        cfg = copy.deepcopy(asr_model.cfg)
+        with open_dict(cfg):
+            cfg.wer_text_normalize = True
+        model = EncDecRNNTModel(cfg=cfg)
+        assert model.wer.wer_text_normalize is True
+
+        # flag is preserved when WER is re-created
+        model.change_decoding_strategy(decoding_cfg=DictConfig({'strategy': 'greedy', 'greedy': {'max_symbols': 10}}))
+        assert model.wer.wer_text_normalize is True
+
+        model.change_vocabulary(new_vocabulary=copy.deepcopy(model.joint.vocabulary) + ['!'])
+        assert model.wer.wer_text_normalize is True
+
+    @pytest.mark.skipif(
+        not NUMBA_RNNT_LOSS_AVAILABLE,
+        reason='RNNTLoss has not been compiled with appropriate numba version.',
+    )
+    @pytest.mark.unit
     def test_decoding_change(self, asr_model):
         assert isinstance(asr_model.decoding.decoding, greedy_decode.GreedyBatchedRNNTInfer)
 
@@ -469,6 +501,7 @@ class TestEncDecRNNTModel:
             'preserve_frame_confidence',
             'tdt_include_duration_confidence',
             'confidence_method_cfg',
+            'length_norm_power',  # cache-aware streaming only
         ]
 
         result = assert_dataclass_signature_match(
@@ -582,18 +615,36 @@ class TestEncDecRNNTModel:
         reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.unit
-    @pytest.mark.parametrize(
-        "greedy_class",
-        [greedy_decode.GreedyMultiblankRNNTInfer, greedy_decode.GreedyBatchedMultiblankRNNTInfer],
-    )
-    def test_multiblank_rnnt_greedy_decoding(self, greedy_class):
+    @pytest.mark.parametrize("max_symbols_per_step", [1, 2, 5])
+    def test_tdt_greedy_decoding_advances_by_predicted_duration(self, max_symbols_per_step: int):
+        """TDT greedy decoding must advance the time index by exactly the predicted duration.
+
+        A joint that always predicts token 1 with duration 2 makes the answer computable by hand:
+        the tokens have to land on t = 0, 2, 4, ... for every value of `max_symbols_per_step`.
+        """
         token_list = [" ", "a", "b", "c"]
         vocab_size = len(token_list)
-        big_blank_durations = [2, 4]
+        durations = [0, 1, 2, 4]
+        duration_index = 2
+        num_frames = 10
 
         encoder_output_size = 4
         decoder_output_size = 4
         joint_output_shape = 4
+
+        class ConstantTDTJoint(RNNTJoint):
+            """Joint that always predicts token 1 with duration `durations[duration_index]`."""
+
+            def joint_after_projection(self, f: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
+                batch_size = f.shape[0]
+                time_steps = f.shape[1] if f.dim() == 3 else 1
+                target_steps = g.shape[1] if g.dim() == 3 else 1
+                logits = torch.full(
+                    (batch_size, time_steps, target_steps, vocab_size + 1 + len(durations)), -10.0, device=f.device
+                )
+                logits[..., 1] = 5.0
+                logits[..., vocab_size + 1 + duration_index] = 5.0
+                return logits
 
         prednet_cfg = {'pred_hidden': decoder_output_size, 'pred_rnn_layers': 1}
         jointnet_cfg = {
@@ -604,42 +655,74 @@ class TestEncDecRNNTModel:
         }
 
         decoder = RNNTDecoder(prednet_cfg, vocab_size)
-        joint_net = RNNTJoint(
-            jointnet_cfg, vocab_size, vocabulary=token_list, num_extra_outputs=len(big_blank_durations)
-        )
+        joint_net = ConstantTDTJoint(jointnet_cfg, vocab_size, vocabulary=token_list, num_extra_outputs=len(durations))
 
-        greedy = greedy_class(
-            decoder,
-            joint_net,
-            blank_index=len(token_list),
-            big_blank_durations=big_blank_durations,
-            max_symbols_per_step=5,
-        )
+        duration = durations[duration_index]
+        expected_timestamp = list(range(0, num_frames, duration))
 
         # (B, D, T)
-        enc_out = torch.randn(1, encoder_output_size, 30)
-        enc_len = torch.tensor([30], dtype=torch.int32)
+        enc_out = torch.zeros(1, encoder_output_size, num_frames)
+        enc_len = torch.tensor([num_frames], dtype=torch.int32)
 
-        with torch.no_grad():
-            _ = greedy(encoder_output=enc_out, encoded_lengths=enc_len)
+        for greedy_class, additional_decoding_kwargs in [
+            (greedy_decode.GreedyTDTInfer, {}),
+            (greedy_decode.GreedyBatchedTDTInfer, {"use_cuda_graph_decoder": False}),
+        ]:
+            greedy = greedy_class(
+                decoder,
+                joint_net,
+                blank_index=vocab_size,
+                durations=durations,
+                max_symbols_per_step=max_symbols_per_step,
+                include_duration=True,
+                **additional_decoding_kwargs,
+            )
+
+            with torch.no_grad():
+                hyp = greedy(encoder_output=enc_out, encoded_lengths=enc_len)[0][0]
+
+            assert [int(t) for t in hyp.timestamp] == expected_timestamp, greedy_class.__name__
+            assert [int(d) for d in hyp.token_duration] == [duration] * len(expected_timestamp)
 
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE,
         reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.unit
-    @pytest.mark.parametrize(
-        "greedy_class",
-        [greedy_decode.GreedyMultiblankRNNTInfer, greedy_decode.GreedyBatchedMultiblankRNNTInfer],
-    )
-    def test_multiblank_rnnt_greedy_decoding(self, greedy_class):
+    def test_tdt_greedy_decoding_exhausted_symbol_budget(self):
+        """Exhausting the symbol budget on a non-zero duration must not advance the time index further.
+
+        The joint alternates duration 0 and duration 2 on successive calls, so with
+        `max_symbols_per_step=2` every time step emits one token with duration 0 and one with duration 2,
+        exhausting the budget exactly when the time index has already advanced by 2.
+        """
         token_list = [" ", "a", "b", "c"]
         vocab_size = len(token_list)
-        big_blank_durations = [2, 4]
+        durations = [0, 1, 2, 4]
+        num_frames = 10
 
         encoder_output_size = 4
         decoder_output_size = 4
         joint_output_shape = 4
+
+        class AlternatingTDTJoint(RNNTJoint):
+            """Joint that always predicts token 1, with duration 0 and 2 on alternating calls."""
+
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.num_calls = 0
+
+            def joint_after_projection(self, f: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
+                batch_size = f.shape[0]
+                time_steps = f.shape[1] if f.dim() == 3 else 1
+                target_steps = g.shape[1] if g.dim() == 3 else 1
+                logits = torch.full(
+                    (batch_size, time_steps, target_steps, vocab_size + 1 + len(durations)), -10.0, device=f.device
+                )
+                logits[..., 1] = 5.0
+                logits[..., vocab_size + 1 + (0 if self.num_calls % 2 == 0 else 2)] = 5.0
+                self.num_calls += 1
+                return logits
 
         prednet_cfg = {'pred_hidden': decoder_output_size, 'pred_rnn_layers': 1}
         jointnet_cfg = {
@@ -650,25 +733,29 @@ class TestEncDecRNNTModel:
         }
 
         decoder = RNNTDecoder(prednet_cfg, vocab_size)
-        for joint_type in [RNNTJoint, HATJoint]:
-            joint_net = joint_type(
-                jointnet_cfg, vocab_size, vocabulary=token_list, num_extra_outputs=len(big_blank_durations)
-            )
+        joint_net = AlternatingTDTJoint(
+            jointnet_cfg, vocab_size, vocabulary=token_list, num_extra_outputs=len(durations)
+        )
 
-            greedy = greedy_class(
-                decoder,
-                joint_net,
-                blank_index=len(token_list),
-                big_blank_durations=big_blank_durations,
-                max_symbols_per_step=5,
-            )
+        greedy = greedy_decode.GreedyTDTInfer(
+            decoder,
+            joint_net,
+            blank_index=vocab_size,
+            durations=durations,
+            max_symbols_per_step=2,
+            include_duration=True,
+        )
 
-            # (B, D, T)
-            enc_out = torch.randn(1, encoder_output_size, 30)
-            enc_len = torch.tensor([30], dtype=torch.int32)
+        # (B, D, T)
+        enc_out = torch.zeros(1, encoder_output_size, num_frames)
+        enc_len = torch.tensor([num_frames], dtype=torch.int32)
 
-            with torch.no_grad():
-                _ = greedy(encoder_output=enc_out, encoded_lengths=enc_len)
+        with torch.no_grad():
+            hyp = greedy(encoder_output=enc_out, encoded_lengths=enc_len)[0][0]
+
+        # two tokens per time step, and the time step advances by the duration of the second one
+        assert [int(t) for t in hyp.timestamp] == [t for t in range(0, num_frames, 2) for _ in range(2)]
+        assert [int(d) for d in hyp.token_duration] == [0, 2] * (num_frames // 2)
 
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE,

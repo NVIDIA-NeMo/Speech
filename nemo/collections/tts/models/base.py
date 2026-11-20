@@ -1,4 +1,5 @@
-# Copyright (c) 2021, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2021, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,7 +31,8 @@ from nemo.utils import logging, model_utils
 
 PYNINI_AVAILABLE = True
 try:
-    import nemo_text_processing
+    # Used to define PYNINI_AVAILABLE global var which is used in L44
+    import nemo_text_processing  # noqa: F401 # pylint: disable=unused-import
 except (ImportError, ModuleNotFoundError):
     PYNINI_AVAILABLE = False
 

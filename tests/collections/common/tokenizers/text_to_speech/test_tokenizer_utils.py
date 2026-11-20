@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -144,7 +145,7 @@ class TestTokenizerUtils:
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_any_locale_word_tokenize_with_numbers(self):
+    def test_any_locale_word_tokenize_with_numbers_fr(self):
         input_text = r"Trois fois× quatorze^ et dix ÷ divisé par [films] sur \slash."
         expected_output = self._create_expected_output(
             [

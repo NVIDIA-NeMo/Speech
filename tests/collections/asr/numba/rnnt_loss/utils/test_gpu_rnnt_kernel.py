@@ -1,4 +1,5 @@
-# Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2021, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -45,6 +46,7 @@ def log_softmax_grad(x, axis=-1):
     return x.grad.numpy()
 
 
+@pytest.mark.gpu
 class TestRNNTCUDAKernels:
     @pytest.mark.skipif(not cuda.is_available(), reason="CUDA Reductions can only be run when CUDA is available")
     @pytest.mark.unit
@@ -611,6 +613,7 @@ class TestRNNTCUDAKernels:
         assert np.square(diff).mean() <= (threshold**2) * 5
 
 
+@pytest.mark.gpu
 class TestTDTCUDAKernels:
     @pytest.mark.skipif(not cuda.is_available(), reason="CUDA Reductions can only be run when CUDA is available")
     @pytest.mark.unit
@@ -708,6 +711,7 @@ class TestTDTCUDAKernels:
         assert ll_diff <= 1e-3
 
 
+@pytest.mark.gpu
 class TestMultiblankRNNTCUDAKernels:
     @pytest.mark.skipif(not cuda.is_available(), reason="CUDA Reductions can only be run when CUDA is available")
     @pytest.mark.unit

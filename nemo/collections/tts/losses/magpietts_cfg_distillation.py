@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,7 +16,7 @@
 Losses used in CFG distillation of the MagpieTTS model.
 """
 
-from typing import Generator, Optional
+from typing import Callable, Generator, Optional
 
 import torch
 from torch import Tensor, nn
@@ -29,8 +30,13 @@ __all__ = [
     "NRMSELogitsLoss",
 ]
 
+_CODEBOOK_ORDERING_MODES: set[str] = {
+    "frame-major",
+    "codebook-major",
+}
 
-def _iter_slices(
+
+def _iter_slices_frame_major(
     num_codebooks: int,
     num_tokens_per_codebook: int,
     frame_stacking_factor: int,
@@ -46,6 +52,33 @@ def _iter_slices(
             end = start + num_tokens_per_codebook
 
             yield fs_index, codebook, start, end, slice_mask, slice_len
+
+
+def _iter_slices_codebook_major(
+    num_codebooks: int,
+    num_tokens_per_codebook: int,
+    frame_stacking_factor: int,
+    mask: Tensor,
+) -> Generator[tuple[int, int, int, int, Tensor, Tensor], None, None]:
+    for codebook in range(num_codebooks):
+        for fs_index in range(frame_stacking_factor):
+            slice_mask = mask[:, fs_index::frame_stacking_factor].float()
+            slice_len = slice_mask.sum(dim=-1).clamp_min(1)
+
+            channel = codebook * frame_stacking_factor + fs_index
+            start = channel * num_tokens_per_codebook
+            end = start + num_tokens_per_codebook
+
+            yield fs_index, codebook, start, end, slice_mask, slice_len
+
+
+def _get_slice_iterator(mode: str) -> Callable:
+    if mode not in _CODEBOOK_ORDERING_MODES:
+        raise ValueError(
+            f"Unsupported codebook ordering {mode!r}; expected one of {sorted(_CODEBOOK_ORDERING_MODES)}."
+        )
+
+    return _iter_slices_frame_major if mode == "frame-major" else _iter_slices_codebook_major
 
 
 class KLDivergenceLoss(Loss):
@@ -79,11 +112,13 @@ class KLDivergenceLoss(Loss):
         num_codebooks: int,
         num_tokens_per_codebook: int,
         frame_stacking_factor: int,
+        codebook_ordering: str = "frame-major",
     ) -> None:
         super().__init__()
         self.num_codebooks = num_codebooks
         self.num_tokens_per_codebook = num_tokens_per_codebook
         self.frame_stacking_factor = frame_stacking_factor
+        self.iter_slices: Callable = _get_slice_iterator(mode=codebook_ordering)
         self.criterion = nn.KLDivLoss(reduction="none", log_target=False)
 
     @typecheck()
@@ -111,17 +146,19 @@ class KLDivergenceLoss(Loss):
             Tensor: Scalar tensor representing the averaged masked KL divergence loss.
         """
         loss = 0.0
-        student_log_probs = student_logits.log_softmax(dim=-1)
-        teacher_probs = teacher_logits.softmax(dim=-1)
 
-        for _, _, start, end, slice_mask, slice_len in _iter_slices(
+        for _, _, start, end, slice_mask, slice_len in self.iter_slices(
             self.num_codebooks,
             self.num_tokens_per_codebook,
             self.frame_stacking_factor,
             mask,
         ):
-            teacher_probs_slice = teacher_probs[:, :, start:end]
-            student_log_probs_slice = student_log_probs[:, :, start:end]
+            # Normalize within this head only. Normalizing over the full
+            # concatenated dimension would incorrectly make
+            # independent codebook heads compete for probability mass.
+            student_log_probs_slice = student_logits[:, :, start:end].log_softmax(dim=-1)
+            teacher_probs_slice = teacher_logits[:, :, start:end].softmax(dim=-1)
+
             slice_loss = self.criterion(input=student_log_probs_slice, target=teacher_probs_slice)
             slice_loss = slice_loss.sum(dim=-1)
             slice_loss = (slice_loss * slice_mask).sum(dim=-1) / slice_len
@@ -166,11 +203,13 @@ class CodesCrossEntropyLoss(Loss):
         num_codebooks: int,
         num_tokens_per_codebook: int,
         frame_stacking_factor: int,
+        codebook_ordering: str = "frame-major",
     ) -> None:
         super().__init__()
         self.num_codebooks = num_codebooks
         self.num_tokens_per_codebook = num_tokens_per_codebook
         self.frame_stacking_factor = frame_stacking_factor
+        self.iter_slices: Callable = _get_slice_iterator(mode=codebook_ordering)
         self.criterion = nn.CrossEntropyLoss(reduction="none")
 
     @typecheck()
@@ -199,7 +238,7 @@ class CodesCrossEntropyLoss(Loss):
         """
         loss = 0.0
 
-        for fs_index, codebook, start, end, slice_mask, slice_len in _iter_slices(
+        for fs_index, codebook, start, end, slice_mask, slice_len in self.iter_slices(
             self.num_codebooks,
             self.num_tokens_per_codebook,
             self.frame_stacking_factor,
@@ -250,11 +289,13 @@ class NRMSELogitsLoss(Loss):
         num_codebooks: int,
         num_tokens_per_codebook: int,
         frame_stacking_factor: int,
+        codebook_ordering: str = "frame-major",
     ) -> None:
         super().__init__()
         self.num_codebooks = num_codebooks
         self.num_tokens_per_codebook = num_tokens_per_codebook
         self.frame_stacking_factor = frame_stacking_factor
+        self.iter_slices: Callable = _get_slice_iterator(mode=codebook_ordering)
         self.eps = 1e-8
         self.criterion = nn.MSELoss(reduction="none")
 
@@ -286,7 +327,7 @@ class NRMSELogitsLoss(Loss):
         student_logits = student_logits.masked_fill(inf_mask, 0.0)
         loss = 0.0
 
-        for _, _, start, end, slice_mask, slice_len in _iter_slices(
+        for _, _, start, end, slice_mask, slice_len in self.iter_slices(
             self.num_codebooks,
             self.num_tokens_per_codebook,
             self.frame_stacking_factor,

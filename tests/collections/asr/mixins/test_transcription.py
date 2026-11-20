@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -317,6 +318,7 @@ class TestTranscriptionMixin:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_transcribe_return_hypothesis(self, test_data_dir, fast_conformer_ctc_model):
         audio_file = os.path.join(test_data_dir, "asr", "train", "an4", "wav", "an46-mmap-b.wav")
 
@@ -332,6 +334,7 @@ class TestTranscriptionMixin:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_transcribe_tensor(self, audio_files, fast_conformer_ctc_model):
 
         audio, _ = audio_files
@@ -342,6 +345,7 @@ class TestTranscriptionMixin:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_transcribe_multiple_tensor(self, audio_files, fast_conformer_ctc_model):
 
         audio, audio_2 = audio_files
@@ -356,6 +360,7 @@ class TestTranscriptionMixin:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_transcribe_dataloader(self, audio_files, fast_conformer_ctc_model):
 
         audio, audio2 = audio_files
@@ -372,6 +377,7 @@ class TestTranscriptionMixin:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_transcribe_return_nbest_rnnt(self, audio_files, fast_conformer_transducer_model):
         fast_conformer_transducer_model.eval()
         audio1, audio2 = audio_files
@@ -398,6 +404,7 @@ class TestTranscriptionMixin:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_transcribe_return_nbest_canary(self, audio_files, canary_1b_flash):
         canary_1b_flash.eval()
         audio1, audio2 = audio_files
@@ -422,6 +429,7 @@ class TestTranscriptionMixin:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_timestamps_with_transcribe(self, audio_files, fast_conformer_ctc_model):
         audio1, audio2 = audio_files
 
@@ -442,6 +450,7 @@ class TestTranscriptionMixin:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_timestamps_with_transcribe_hybrid(self, audio_files, fast_conformer_hybrid_model):
         audio1, audio2 = audio_files
 
@@ -462,6 +471,7 @@ class TestTranscriptionMixin:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_timestamps_with_transcribe_hybrid_ctc_head(self, audio_files, fast_conformer_hybrid_model):
         audio1, audio2 = audio_files
 
@@ -484,6 +494,7 @@ class TestTranscriptionMixin:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_timestamps_with_transcribe_canary_flash(self, audio_files, canary_1b_flash):
         audio1, audio2 = audio_files
 
@@ -504,6 +515,7 @@ class TestTranscriptionMixin:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_transcribe_return_nbest_hybrid_rnnt_ctc_prompt(self, audio_files, hybrid_rnnt_ctc_bpe_model_with_prompt):
         """Test n-best hypothesis return for hybrid RNNT-CTC BPE model with prompts."""
         hybrid_rnnt_ctc_bpe_model_with_prompt.eval()
@@ -534,6 +546,7 @@ class TestTranscriptionMixin:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_timestamps_with_transcribe_hybrid_prompt(self, audio_files, hybrid_rnnt_ctc_bpe_model_with_prompt):
         audio1, audio2 = audio_files
 
@@ -556,6 +569,7 @@ class TestTranscriptionMixin:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_transcribe_returns_xattn(self, audio_files, canary_1b_v2):
         canary_1b_v2.eval()
         audio1, audio2 = audio_files

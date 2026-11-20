@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -71,7 +72,7 @@ class NemoSTTService(STTService):
     def __init__(
         self,
         *,
-        model: Optional[str] = "nnvidia/parakeet_realtime_eou_120m-v1",
+        model: Optional[str] = "nvidia/parakeet_realtime_eou_120m-v1",
         device: Optional[str] = "cuda:0",
         sample_rate: Optional[int] = 16000,
         params: Optional[NeMoSTTInputParams] = None,

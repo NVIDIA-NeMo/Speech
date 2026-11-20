@@ -1,4 +1,5 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,5 +31,15 @@ from nemo.collections.asr.parts.submodules.adapters.transformer_multi_head_atten
     TransformerMultiHeadAttentionAdapter,
     TransformerMultiHeadAttentionAdapterConfig,
 )
+from nemo.utils.serialization import register_checkpoint_schema_types
 
 # fmt: on
+
+
+register_checkpoint_schema_types(
+    MultiHeadAttentionAdapterConfig,
+    PositionalEncodingAdapterConfig,
+    RelPositionalEncodingAdapterConfig,
+    RelPositionMultiHeadAttentionAdapterConfig,
+    TransformerMultiHeadAttentionAdapterConfig,
+)

@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -70,6 +71,11 @@ def setup_logging():
 
 
 setup_logging()
+
+logger.warning(
+    "examples/voice_agent is deprecated. "
+    "Please use the new repository at https://github.com/NVIDIA-NeMo/labs-Voice-Agent instead."
+)
 
 # Global flag for graceful shutdown
 shutdown_event = asyncio.Event()

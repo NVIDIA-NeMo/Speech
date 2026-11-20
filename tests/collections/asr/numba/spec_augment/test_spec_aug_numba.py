@@ -1,4 +1,5 @@
-# Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2021, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -142,6 +143,7 @@ def time_mask_check(x, x_len, t_start, t_len, mask_value, bidx):
     assert check_result
 
 
+@pytest.mark.gpu
 class TestSpecAugmentNumba:
     @pytest.mark.unit
     @pytest.mark.run_only_on('GPU')

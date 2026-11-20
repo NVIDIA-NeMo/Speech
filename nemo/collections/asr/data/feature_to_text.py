@@ -1,4 +1,5 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 
@@ -25,6 +26,9 @@ from nemo.collections.common import tokenizers
 from nemo.collections.common.parts.preprocessing import collections, parsers
 from nemo.core.classes import Dataset
 from nemo.core.neural_types import AcousticEncodedRepresentation, LabelsType, LengthsType, NeuralType
+
+if TYPE_CHECKING:
+    from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 
 
 class ASRFeatureManifestProcessor:
@@ -136,7 +140,7 @@ class _FeatureTextDataset(Dataset):
         feat_mask_val: Optional[float] = None,
         frame_unit_time_secs: float = 0.01,
         sample_rate: Optional[int] = 16000,
-        augmentor: 'nemo.collections.asr.parts.perturb.FeatureAugmentor' = None,
+        augmentor: Any = None,
         max_duration: Optional[int] = None,
         min_duration: Optional[int] = None,
         max_utts: int = 0,
@@ -321,7 +325,7 @@ class FeatureToCharDataset(_FeatureTextDataset):
         feat_mask_val: Optional[float] = None,
         frame_unit_time_secs: float = 0.01,
         sample_rate: Optional[int] = 16000,
-        augmentor: 'nemo.collections.asr.parts.perturb.FeatureAugmentor' = None,
+        augmentor: Any = None,
         max_duration: Optional[int] = None,
         min_duration: Optional[int] = None,
         max_utts: int = 0,
@@ -412,7 +416,7 @@ class FeatureToBPEDataset(_FeatureTextDataset):
     def __init__(
         self,
         manifest_filepath: str,
-        tokenizer: 'nemo.collections.common.tokenizers.TokenizerSpec',
+        tokenizer: 'TokenizerSpec',
         normalize: Optional[str] = "post_norm",
         normalize_type: Union[str, dict] = "per_feature",
         use_rttm: bool = False,
@@ -421,7 +425,7 @@ class FeatureToBPEDataset(_FeatureTextDataset):
         feat_mask_val: Optional[float] = None,
         frame_unit_time_secs: float = 0.01,
         sample_rate: Optional[int] = 16000,
-        augmentor: 'nemo.collections.asr.parts.perturb.FeatureAugmentor' = None,
+        augmentor: Any = None,
         max_duration: Optional[int] = None,
         min_duration: Optional[int] = None,
         max_utts: int = 0,

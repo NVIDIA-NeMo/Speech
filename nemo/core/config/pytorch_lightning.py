@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -74,6 +75,8 @@ class TrainerConfig:
     enable_model_summary: bool = True
     inference_mode: bool = True
     barebones: bool = False
+    model_registry: Optional[str] = None
+    enable_autolog_hparams: bool = True
 
 
 # Register the trainer config.

@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -54,11 +55,6 @@ def test_cut_token_per_second_filter(cut):
 
     f = TokenPerSecondFilter(tps_min=10.0, tps_max=12.0)
     assert f(cut) == False
-
-
-def test_cut_passes_by_token_count_and_tpt_filter(cut):
-    assert TokenCountFilter(1, 10, measure_total_length=True)(cut) == True
-    assert TokenPerTokenFilter(1, 10)(cut) == True
 
 
 def test_cut_passes_by_token_count_and_tpt_filter(cut):

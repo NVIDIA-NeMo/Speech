@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,22 +20,73 @@ import numpy as np
 import pytest
 import torch
 
+import nemo.collections.tts.parts.utils.tts_dataset_utils as tts_dataset_utils
+from nemo.collections.tts.modules.magpietts_modules import build_vocabs
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     LanguageThresholds,
     _get_sentence_separators_for_language,
+    _sample_probability_range,
+    _select_text_for_tts_input,
     chunk_and_tokenize_text_by_sentence,
+    chunk_text_for_inference,
     filter_dataset_by_duration,
     get_abs_rel_paths,
     get_audio_filepaths,
     get_tokenizer_for_language,
     load_audio,
     normalize_volume,
+    partially_phonemize_text,
     split_by_sentence,
     stack_tensors,
+    tokenize_text_with_phoneme_spans,
 )
+from nemo.core.utils.numba_utils import __NUMBA_MINIMUM_VERSION__ as NUMBA_MINIMUM_VERSION
+from nemo.core.utils.numba_utils import NUMBA_INSTALLATION_MESSAGE, numba_cpu_is_supported
+
+
+class _FakeTextTokenizer:
+    def encode(self, text: str, tokenizer_name: str):
+        return [ord(char) for char in text]
+
+
+class _FakePhonemeTokenizer:
+    vocab_size = 4
+
+    def __init__(self):
+        self.seen_text = []
+
+    def encode(self, text: str):
+        self.seen_text.append(text)
+        vocab = {"a": 1, "b": 2, "c": 3}
+        return [vocab[char] for char in text if char in vocab]
 
 
 class TestTTSDatasetUtils:
+    @pytest.mark.parametrize(
+        "load_normalized_text_percent,random_value,expected_text",
+        [(0.0, None, "raw"), (1.0, None, "normalized"), (0.5, 0.25, "normalized"), (0.5, 0.75, "raw")],
+    )
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_select_text_for_tts_input(self, monkeypatch, load_normalized_text_percent, random_value, expected_text):
+        if random_value is None:
+            monkeypatch.setattr(
+                tts_dataset_utils.random,
+                "random",
+                lambda: pytest.fail("Endpoint probabilities should not sample the random number generator"),
+            )
+        else:
+            monkeypatch.setattr(tts_dataset_utils.random, "random", lambda: random_value)
+
+        text = _select_text_for_tts_input("raw", "normalized", load_normalized_text_percent)
+
+        assert text == expected_text
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_select_text_for_tts_input_falls_back_when_normalized_text_is_missing(self):
+        assert _select_text_for_tts_input("raw", None, 1.0) == "raw"
+
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_get_abs_rel_paths_input_abs(self):
@@ -399,6 +451,222 @@ class TestChunkTextForInference:
         # Empty text should still return something valid
         assert len(tokens) == 1
         assert tokens[0][-1].item() == eos_id
+
+
+class TestPhonemeTextInput:
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_disabled_mixed_tokenization_uses_text_tokenizer_only(self):
+        text_tokenizer = _FakeTextTokenizer()
+        phoneme_tokenizer = _FakePhonemeTokenizer()
+        text = "Hi <bop>ab<eop>."
+
+        tokens = tokenize_text_with_phoneme_spans(
+            text_tokenizer=text_tokenizer,
+            text_str=text,
+            tokenizer_name="english_phoneme",
+            enable_phoneme_text_input=False,
+            phoneme_tokenizer=phoneme_tokenizer,
+            text_phoneme_token_offset=100,
+        )
+
+        assert tokens == [ord(char) for char in text]
+        assert phoneme_tokenizer.seen_text == []
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_mixed_tokenization_interleaves_text_and_offset_phoneme_ids(self):
+        phoneme_tokenizer = _FakePhonemeTokenizer()
+
+        tokens = tokenize_text_with_phoneme_spans(
+            text_tokenizer=_FakeTextTokenizer(),
+            text_str="Hi <bop>ab<eop>!",
+            tokenizer_name="english_phoneme",
+            enable_phoneme_text_input=True,
+            phoneme_tokenizer=phoneme_tokenizer,
+            text_phoneme_token_offset=100,
+        )
+
+        assert tokens == [ord("H"), ord("i"), ord(" "), 101, 102, ord("!")]
+        assert phoneme_tokenizer.seen_text == ["ab"]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_phoneme_span_body_uses_offset_ids(self):
+        tokens = tokenize_text_with_phoneme_spans(
+            text_tokenizer=_FakeTextTokenizer(),
+            text_str="<bop>ab<eop>",
+            tokenizer_name="english_phoneme",
+            enable_phoneme_text_input=True,
+            phoneme_tokenizer=_FakePhonemeTokenizer(),
+            text_phoneme_token_offset=100,
+        )
+
+        assert tokens == [101, 102]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_unmatched_phoneme_span_raises(self):
+        with pytest.raises(ValueError, match="without a matching"):
+            tokenize_text_with_phoneme_spans(
+                text_tokenizer=_FakeTextTokenizer(),
+                text_str="Hi <bop>ab",
+                tokenizer_name="english_phoneme",
+                enable_phoneme_text_input=True,
+                phoneme_tokenizer=_FakePhonemeTokenizer(),
+                text_phoneme_token_offset=100,
+            )
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_partially_phonemize_text_uses_full_ipa_for_full_portion(self):
+        text = partially_phonemize_text(
+            text="hi how",
+            ipa_alignment=[[0, 2, "hi", "ab"], [3, 6, "how", "c"]],
+            partial_phoneme_portion=1.0,
+            full_ipa_text="ab c",
+        )
+
+        assert text == "<bop>ab c<eop>"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_partially_phonemize_text_samples_exact_portion(self, monkeypatch):
+        monkeypatch.setattr(tts_dataset_utils.random, "sample", lambda population, count: [0, 2])
+
+        text = partially_phonemize_text(
+            text="one two three four",
+            ipa_alignment=[
+                [0, 3, "one", "a"],
+                [4, 7, "two", "b"],
+                [8, 13, "three", "c"],
+                [14, 18, "four", "d"],
+            ],
+            partial_phoneme_portion=0.5,
+            full_ipa_text="a b c d",
+        )
+
+        assert text == "<bop>a<eop> two <bop>c<eop> four"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_partially_phonemize_text_merges_adjacent_words(self, monkeypatch):
+        monkeypatch.setattr(tts_dataset_utils.random, "sample", lambda population, count: [1, 2])
+
+        text = partially_phonemize_text(
+            text="one two three four",
+            ipa_alignment=[
+                [0, 3, "one", "a"],
+                [4, 7, "two", "b"],
+                [8, 13, "three", "c"],
+                [14, 18, "four", "d"],
+            ],
+            partial_phoneme_portion=0.5,
+            full_ipa_text="a b c d",
+        )
+
+        assert text == "one <bop>b c<eop> four"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_partially_phonemize_text_skips_unmatched_full_ipa(self):
+        text = "one two three"
+
+        phonemized_text = partially_phonemize_text(
+            text=text,
+            ipa_alignment=[[0, 3, "one", "a"], [4, 7, "two", "b"], [8, 13, "three", "c"]],
+            partial_phoneme_portion=0.5,
+            full_ipa_text="unmatched",
+        )
+
+        assert phonemized_text == text
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_partially_phonemize_text_without_alignment_is_noop(self):
+        assert partially_phonemize_text("hello", None, 1.0) == "hello"
+        assert partially_phonemize_text("hello", [], 1.0) == "hello"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_full_ipa_span_tokens_match_phoneme_channel_tokens(self):
+        text = partially_phonemize_text(
+            text="hello world",
+            ipa_alignment=[[0, 5, "hello", "ab"], [6, 11, "world", "c"]],
+            partial_phoneme_portion=1.0,
+            full_ipa_text="ab c",
+        )
+        phoneme_tokenizer = _FakePhonemeTokenizer()
+        tokens = tokenize_text_with_phoneme_spans(
+            text_tokenizer=_FakeTextTokenizer(),
+            text_str=text,
+            tokenizer_name="english_phoneme",
+            enable_phoneme_text_input=True,
+            phoneme_tokenizer=phoneme_tokenizer,
+            text_phoneme_token_offset=100,
+        )
+
+        assert tokens == [100 + token_id for token_id in phoneme_tokenizer.encode("ab c")]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_samples_phoneme_portion_range(self, monkeypatch):
+        sampled_ranges = []
+
+        def fake_uniform(min_value, max_value):
+            sampled_ranges.append((min_value, max_value))
+            return 0.5
+
+        monkeypatch.setattr(tts_dataset_utils.random, "uniform", fake_uniform)
+
+        probability = _sample_probability_range("partial_phoneme_portion", 0.25, 0.75)
+
+        assert sampled_ranges == [(0.25, 0.75)]
+        assert probability == 0.5
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_cas_vocab_accepts_expanded_mixed_text_ids(self):
+        subword_id_to_char_ids, char_vocab = build_vocabs(
+            subword_vocab={"a": 0, "b": 1},
+            subword_padding_idx=7,
+            special_vocab={
+                "<BOS>": 2,
+                "<EOS>": 3,
+                "<CFG_UNK>": 4,
+                "<TEXT_PHONEME_0>": 5,
+                "<TEXT_PHONEME_1>": 6,
+            },
+        )
+
+        assert subword_id_to_char_ids[5] == (char_vocab["<TEXT_PHONEME_0>"],)
+        assert subword_id_to_char_ids[6] == (char_vocab["<TEXT_PHONEME_1>"],)
+        assert max(subword_id_to_char_ids) == 7
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_chunk_text_for_inference_does_not_split_mixed_span(self):
+        text = "one two three <bop>ab<eop>. four five."
+        eos_id = 999
+
+        tokens, lens, texts = chunk_text_for_inference(
+            text=text,
+            language="en",
+            tokenizer_name="english_phoneme",
+            text_tokenizer=_FakeTextTokenizer(),
+            eos_token_id=eos_id,
+            language_thresholds=LanguageThresholds(thresholds={"en": 1}),
+            enable_phoneme_text_input=True,
+            phoneme_tokenizer=_FakePhonemeTokenizer(),
+            text_phoneme_token_offset=100,
+        )
+
+        assert len(tokens) == 1
+        assert lens == [tokens[0].shape[0]]
+        assert texts == [text]
+        assert tokens[0][-1].item() == eos_id
+        assert 101 in tokens[0].tolist()
+        assert 102 in tokens[0].tolist()
 
 
 class TestSentenceSplitting:
@@ -849,3 +1117,129 @@ class TestGetTokenizerForLanguage:
         )
 
         assert result == "english_phoneme"
+
+
+_requires_rnnt_numba = pytest.mark.skipif(
+    not numba_cpu_is_supported(NUMBA_MINIMUM_VERSION),
+    reason=f"RNNTLoss has not been compiled with appropriate numba version. {NUMBA_INSTALLATION_MESSAGE}",
+)
+
+
+class TestNemoTranscriberWithPrompt:
+    """The ``nemo_with_prompt`` evaluator transcriber accepts every ASR model whose transcription takes a language."""
+
+    @staticmethod
+    def _make_transcriber(monkeypatch, model):
+        monkeypatch.setattr(tts_dataset_utils.ASRModel, "restore_from", lambda restore_path, map_location: model)
+        return tts_dataset_utils.NemoTranscriberWithPrompt(device="cpu", model_name="tiny.nemo")
+
+    @staticmethod
+    def _restore_rnnt_prompt_transcriber(test_data_dir, tmp_path, prompt_dictionary=None):
+        """Save a tiny RNNT prompt model to ``.nemo`` and restore it through the transcriber."""
+        from nemo.collections.asr.models.rnnt_bpe_models_prompt import EncDecRNNTBPEModelWithPrompt
+        from tests.collections.asr.test_asr_rnnt_prompt_language import build_config
+
+        cfg = build_config(test_data_dir, prompt_enabled=True, prompt_dictionary=prompt_dictionary)
+        model_path = tmp_path / "tiny.nemo"
+        EncDecRNNTBPEModelWithPrompt(cfg=cfg).save_to(str(model_path))
+        transcriber = tts_dataset_utils.NemoTranscriberWithPrompt(device="cpu", model_name=str(model_path))
+        assert isinstance(transcriber.model, EncDecRNNTBPEModelWithPrompt)
+        return transcriber
+
+    @staticmethod
+    def _write_wavs(tmp_path, num_samples=(8000, 5000)):
+        import soundfile as sf
+
+        paths = []
+        for i, n in enumerate(num_samples):
+            path = tmp_path / f"audio_{i}.wav"
+            sf.write(path, np.random.default_rng(i).uniform(-0.1, 0.1, n).astype(np.float32), 16000)
+            paths.append(str(path))
+        return paths
+
+    @pytest.mark.unit
+    @_requires_rnnt_numba
+    @pytest.mark.parametrize(
+        ("prompt_dictionary", "language", "expected_target_lang", "expected_prompt"),
+        [
+            (None, "de", "de-DE", "de-DE"),
+            (None, "en", "en-US", "en-US"),  # "en" alone is ambiguous between en-US and en-GB
+            (None, "fr", "fr", "fr"),  # the model has "fr" but not the default locale "fr-FR"
+            ({"pt-BR": 0, "auto": 1}, "pt", "pt", "pt-BR"),  # language missing from the default locale map
+            (None, None, None, "auto"),
+        ],
+    )
+    def test_rnnt_prompt_model_transcribes_with_language(
+        self, test_data_dir, monkeypatch, tmp_path, prompt_dictionary, language, expected_target_lang, expected_prompt
+    ):
+        from nemo.collections.asr.models.rnnt_bpe_models_prompt import RNNTPromptTranscribeConfig
+
+        transcriber = self._restore_rnnt_prompt_transcriber(test_data_dir, tmp_path, prompt_dictionary)
+        model = transcriber.model
+
+        seen_configs, seen_forwards = [], []
+        original_transcribe_forward, original_forward = model._transcribe_forward, model.forward
+
+        def spy_transcribe_forward(batch, trcfg):
+            seen_configs.append(trcfg)
+            return original_transcribe_forward(batch, trcfg)
+
+        def spy_forward(**kwargs):
+            seen_forwards.append(kwargs)
+            return original_forward(**kwargs)
+
+        monkeypatch.setattr(model, "_transcribe_forward", spy_transcribe_forward)
+        monkeypatch.setattr(model, "forward", spy_forward)
+
+        transcripts = transcriber.transcribe(self._write_wavs(tmp_path), batch_size=2, language=language)
+
+        assert len(transcripts) == 2 and all(isinstance(t, str) for t in transcripts)
+        assert len(seen_forwards) == 1  # both utterances were padded into one batch
+        assert seen_forwards[0]["input_signal_length"].tolist() == [8000, 5000]
+        prompt_dictionary = model.cfg.model_defaults.prompt_dictionary
+        assert seen_forwards[0]["language_prompt_indices"].tolist() == [prompt_dictionary[expected_prompt]] * 2
+        trcfg = seen_configs[0]
+        assert isinstance(trcfg, RNNTPromptTranscribeConfig)
+        assert trcfg.batch_size == 2 and trcfg.use_lhotse is False
+        assert trcfg.target_lang == expected_target_lang
+
+    @pytest.mark.unit
+    @_requires_rnnt_numba
+    def test_unsupported_language_raises(self, test_data_dir, tmp_path):
+        transcriber = self._restore_rnnt_prompt_transcriber(test_data_dir, tmp_path)
+        with pytest.raises(ValueError, match="xx"):
+            transcriber.transcribe(self._write_wavs(tmp_path), batch_size=2, language="xx")
+
+    @pytest.mark.unit
+    def test_hybrid_prompt_model_gets_its_own_config_and_tags_are_stripped(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from nemo.collections.asr.models import EncDecHybridRNNTCTCBPEModelWithPrompt
+        from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models_prompt import HybridRNNTCTCPromptTranscribeConfig
+
+        seen_configs = []
+        model = SimpleNamespace(
+            cfg=SimpleNamespace(model_defaults={"prompt_dictionary": {"ja-JP": 0}}),
+            get_transcribe_config=EncDecHybridRNNTCTCBPEModelWithPrompt.get_transcribe_config,
+            transcribe=lambda audio, override_config: seen_configs.append(override_config)
+            or [SimpleNamespace(text="Hello. <ja-JP>")],
+        )
+        model.to = lambda device: model
+        model.eval = lambda: model
+        transcriber = self._make_transcriber(monkeypatch, model)
+
+        # The language tag that prompt-conditioned models append is not part of the transcript.
+        assert transcriber.transcribe(["a.wav"], batch_size=2, language="ja") == ["Hello."]
+        assert isinstance(seen_configs[0], HybridRNNTCTCPromptTranscribeConfig)
+        assert seen_configs[0].target_lang == "ja-JP"
+        assert seen_configs[0].batch_size == 2
+
+    @pytest.mark.unit
+    @_requires_rnnt_numba
+    def test_model_without_prompt_support_raises(self, test_data_dir, monkeypatch):
+        from nemo.collections.asr.models import EncDecRNNTBPEModel
+        from tests.collections.asr.test_asr_rnnt_prompt_language import build_config
+
+        model = EncDecRNNTBPEModel(cfg=build_config(test_data_dir, prompt_enabled=False))
+        with pytest.raises(ValueError, match="does not support prompting"):
+            self._make_transcriber(monkeypatch, model)

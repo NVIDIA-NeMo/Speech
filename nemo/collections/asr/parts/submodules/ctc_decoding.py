@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,6 +31,7 @@ from nemo.collections.asr.parts.utils.tokenizer_utils import define_spe_tokenize
 from nemo.collections.common.tokenizers.aggregate_tokenizer import DummyTokenizer
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.utils import logging, logging_mode
+from nemo.utils.serialization import register_checkpoint_schema_types
 
 
 def move_dimension_to_the_front(tensor, dim_index):
@@ -1303,8 +1305,11 @@ class CTCBPEDecoding(AbstractCTCDecoding):
         Returns:
             A list of word-level confidence scores.
         """
+        # The hypothesis text strips the space before punctuation, so words and boundaries must too.
+        token_ids = hypothesis.text[0]
+        decode = self.decode_tokens_to_str_with_strip_punctuation
         return self._aggregate_token_confidence_subwords_sentencepiece(
-            self.decode_tokens_to_str(hypothesis.text[0]).split(), hypothesis.token_confidence, hypothesis.text[0]
+            decode(token_ids).split(), hypothesis.token_confidence, token_ids, decode
         )
 
     def decode_tokens_to_str(self, tokens: List[str]) -> str:
@@ -1385,3 +1390,6 @@ class CTCDecodingConfig:
 @dataclass
 class CTCBPEDecodingConfig(CTCDecodingConfig):
     pass
+
+
+register_checkpoint_schema_types(CTCDecodingConfig, CTCBPEDecodingConfig)

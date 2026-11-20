@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -42,13 +43,15 @@ def make_abs_path(path: str) -> str:
 
 
 def prepare_audio_data(
-    audio_file: str, sort_by_duration: bool = True
+    audio_file: str, per_stream_biasing_defaults: BiasingRequestItemConfig | None = None, sort_by_duration: bool = True
 ) -> tuple[list[str], list[dict] | None, list[ASRRequestOptions] | None, dict[str, int]]:
     """
     Get audio filepaths from a folder or a single audio file
     Args:
         audio_file: (str) Path to the audio file, folder or manifest file
-        sort_by_duration: (bool) If True, sort the audio files by duration from shortest to longest
+        per_stream_biasing_defaults: default params for per-stream biasing
+        sort_by_duration: (bool) If True, sort the audio files by duration from longest to shortest, so the
+            continuous-batching tail (when no files are left to refill the batch) is made of short streams
     Returns:
         (list[str], list[dict] | None, list[ASRRequestOptions] | None, dict[str, int])
         List of audio filepaths, manifest, options and filepath order
@@ -67,17 +70,24 @@ def prepare_audio_data(
         filepaths = [get_full_path(entry["audio_filepath"], audio_file) for entry in manifest]
         for record, filepath in zip(manifest, filepaths):
             record["audio_filepath"] = filepath
+        if per_stream_biasing_defaults is not None:
+            default_biasing_request_cfg = OmegaConf.merge(
+                OmegaConf.structured(BiasingRequestItemConfig), per_stream_biasing_defaults
+            )
+        else:
+            default_biasing_request_cfg = OmegaConf.structured(BiasingRequestItemConfig)
         options = [
             ASRRequestOptions(
+                language_code=record.get("lang", None),
                 biasing_cfg=(
                     BiasingRequestItemConfig(
                         **OmegaConf.to_container(
-                            OmegaConf.merge(OmegaConf.structured(BiasingRequestItemConfig), record["biasing_request"])
+                            OmegaConf.merge(default_biasing_request_cfg, record["biasing_request"])
                         )
                     )
                     if "biasing_request" in record
                     else None
-                )
+                ),
             )
             for record in manifest
         ]
@@ -89,7 +99,7 @@ def prepare_audio_data(
         indices = list(range(len(filepaths)))
         durations = [librosa.get_duration(path=filepaths[i]) for i in indices]
         indices_with_durations = list(zip(indices, durations))
-        indices_with_durations.sort(key=lambda x: x[1])
+        indices_with_durations.sort(key=lambda x: x[1], reverse=True)
         filepaths = [filepaths[i] for i, duration in indices_with_durations]
         if manifest is not None:
             # keep manifest in the same order as filepaths for consistency

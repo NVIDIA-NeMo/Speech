@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -50,6 +51,8 @@ class BoxPlotsConfig:
     outlier_markersize: float = 3.0
     outlier_alpha: float = 0.5
 
+    unavailable_text_color: str = "#CD5C5C"
+
 
 def _style_boxplot(
     bp: dict[str, PathPatch],
@@ -98,6 +101,42 @@ def _add_mean_ci_labels(
         ax.text(x + x_offset, mean + y_offset, label, ha="left", va="center", fontsize=cfg.fontsize)
 
 
+def _mean_exceeds_plot_range(
+    baseline: np.ndarray,
+    candidate: np.ndarray,
+    metric: DistributionMetricSpec,
+) -> bool:
+    if metric.plot_range is None:
+        return False
+
+    upper_limit = metric.plot_range[1]
+    return bool(baseline.mean() > upper_limit or candidate.mean() > upper_limit)
+
+
+def _render_plot_not_shown(
+    ax: Axes,
+    metric: DistributionMetricSpec,
+    cfg: BoxPlotsConfig,
+) -> None:
+    if metric.plot_range is None:
+        raise ValueError(f"Metric '{metric.report_name}' does not define a plot range.")
+
+    upper_limit = metric.plot_range[1]
+
+    ax.set_title(metric.report_name, fontsize=cfg.fontsize_title)
+    ax.set_axis_off()
+    ax.text(
+        0.5,
+        0.5,
+        f"Plot not shown.\nMean {metric.report_name} exceeds {upper_limit:.0%} display limit.",
+        ha="center",
+        va="center",
+        color=cfg.unavailable_text_color,
+        fontsize=cfg.fontsize_title,
+        transform=ax.transAxes,
+    )
+
+
 def _configure_boxplot_axis(
     ax: Axes,
     metric: DistributionMetricSpec,
@@ -144,7 +183,12 @@ def prepare_boxplots(
     baseline_name = bucket_baseline.name
     candidate_name = bucket_candidate.name
     winner_lookup = {res.metric_name: res.winner for res in stat_test_results}
-    num_rows = sum(m.add_to_box_plot for m in DistributionMetricsRegistry)
+    plotted_metrics = [
+        metric
+        for metric in DistributionMetricsRegistry
+        if metric.add_to_box_plot and metric.report_name in winner_lookup
+    ]
+    num_rows = len(plotted_metrics)
     fig_height = max(2.0 * num_rows, 4.5)
 
     with plt.rc_context({"font.family": cfg.font_family, "font.sans-serif": cfg.font_list}):
@@ -152,10 +196,7 @@ def prepare_boxplots(
         axs = axs.flatten()
         plot_idx = 0
 
-        for metric in DistributionMetricsRegistry:
-            if not metric.add_to_box_plot:
-                continue
-
+        for metric in plotted_metrics:
             baseline = bucket_baseline.get_metric_samples(
                 metric_name=metric.key,
                 benchmark_name=benchmark_name,
@@ -169,6 +210,10 @@ def prepare_boxplots(
 
             ax = axs[plot_idx]
             plot_idx += 1
+
+            if _mean_exceeds_plot_range(baseline, candidate, metric):
+                _render_plot_not_shown(ax, metric, cfg)
+                continue
 
             bp = ax.boxplot(
                 [baseline, candidate],

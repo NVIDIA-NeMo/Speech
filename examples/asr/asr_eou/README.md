@@ -96,7 +96,7 @@ Your original input manifest should contain the fields `audio_filepath`, `text`,
 
 ### 2.2 Getting timestamps for end-of-utterance (EOU)
 
-We recommend using forced alignment to get the timestamps for EOU. One way to do this is to use the [Nemo Forced Aligner](https://github.com/NVIDIA/NeMo/tree/main/tools/nemo_forced_aligner) tool.
+We recommend using forced alignment to get the timestamps for EOU. One way to do this is to use the [Nemo Forced Aligner](https://github.com/NVIDIA-NeMo/Speech/tree/main/tools/nemo_forced_aligner) tool.
 
 ```bash
 python <NeMo Root>/tools/nemo_forced_aligner/align_eou.py \
@@ -297,8 +297,22 @@ python speech_to_text_eou_eval.py \
 
 The script will show the WER metrics along with EOU metrics like latency, early cutoff rate, miss detection rate, etc.
 
+### 4.1 Inference on audio with multiple utterances
+
+The model is trained on single-utterance samples, so by default it stops emitting tokens after the first `<EOU>`. To transcribe audio with multiple utterances, set `decoding.restart_after_tokens`; the encoder and decoder then restart from a fresh state after each of these tokens:
+```python
+from omegaconf import open_dict
+
+decoding_cfg = model.cfg.decoding
+with open_dict(decoding_cfg):
+    decoding_cfg.restart_after_tokens = ["<EOU>", "<EOB>"]
+model.change_decoding_strategy(decoding_cfg)
+model.transcribe(["long_audio.wav"])
+```
+With this option, `transcribe()` runs batched cache-aware streaming over the audio, so its cost stays linear in the audio length. For streaming inference, use `rnnt_decoding.restart_after_tokens='["<EOU>","<EOB>"]'` with `speech_to_text_cache_aware_streaming_infer.py`. The option requires a cache-aware streaming model and `greedy_batch` decoding; other decoding strategies, buffered (no-cache) streaming, and `partial_hypothesis` are not supported. With this option, `Hypothesis.length` is the total number of encoder frames decoded for the audio (also in streaming).
+
 
 ## 5. Model deployment with voice agent
 
-Please refer to the [NeMo Voice Agent](https://github.com/NVIDIA-NeMo/NeMo/tree/main/examples/voice_agent/README.md) example for more details on how to deploy the ASR-EOU model with voice agent.
+Please refer to the [NeMo Voice Agent](https://github.com/NVIDIA-NeMo/Speech/tree/main/examples/voice_agent/README.md) example for more details on how to deploy the ASR-EOU model with voice agent.
 

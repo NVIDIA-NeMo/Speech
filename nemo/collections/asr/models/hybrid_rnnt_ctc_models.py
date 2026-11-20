@@ -1,4 +1,5 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -83,6 +84,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin, ASRT
             use_cer=self.cfg.aux_ctc.get('use_cer', False),
             dist_sync_on_step=True,
             log_prediction=self.cfg.get("log_prediction", False),
+            wer_text_normalize=self.cfg.get('wer_text_normalize', False),
         )
 
         # setting the RNNT decoder as the default one
@@ -304,6 +306,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin, ASRT
                     use_cer=self.ctc_wer.use_cer,
                     log_prediction=self.ctc_wer.log_prediction,
                     dist_sync_on_step=True,
+                    wer_text_normalize=self.ctc_wer.wer_text_normalize,
                 )
 
                 # Update config
@@ -339,7 +342,11 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin, ASRT
             self.cur_decoder = "rnnt"
             return super().change_decoding_strategy(decoding_cfg=decoding_cfg, verbose=verbose)
 
-        assert decoder_type == 'ctc' and hasattr(self, 'ctc_decoder')
+        if decoder_type != 'ctc' or not hasattr(self, 'ctc_decoder'):
+            raise ValueError(
+                f"Unsupported decoder_type '{decoder_type}'. "
+                f"Expected 'ctc' with a 'ctc_decoder' attribute on the model."
+            )
         if decoding_cfg is None:
             # Assume same decoding config as before
             logging.info("No `decoding_cfg` passed when changing decoding strategy, using internal config")
@@ -357,6 +364,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin, ASRT
             use_cer=self.ctc_wer.use_cer,
             log_prediction=self.ctc_wer.log_prediction,
             dist_sync_on_step=True,
+            wer_text_normalize=self.ctc_wer.wer_text_normalize,
         )
 
         self.ctc_decoder.temperature = decoding_cfg.get('temperature', 1.0)

@@ -1,4 +1,5 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,6 +22,7 @@ from torch import nn as nn
 from nemo.collections.common.parts.utils import activation_registry
 from nemo.core.classes.common import safe_instantiate
 from nemo.core.classes.mixins import access_mixins, adapter_mixin_strategies
+from nemo.utils.serialization import register_checkpoint_schema_types
 
 
 class AdapterModuleUtil(access_mixins.AccessMixin):
@@ -169,3 +171,6 @@ class LinearAdapterConfig:
         default_factory=lambda: adapter_mixin_strategies.ResidualAddAdapterStrategyConfig()
     )
     _target_: str = "{0}.{1}".format(LinearAdapter.__module__, LinearAdapter.__name__)
+
+
+register_checkpoint_schema_types(LinearAdapterConfig)

@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,12 +17,27 @@ set -e
 
 SMOKE_TEST=tests/functional_tests/speechlm_automodel_compiled_deps_smoke.py
 export SMOKE_TEST
+# Override this for runners with more than two NVLink-connected GPUs.
+NPROC_PER_NODE="${SPEECHLM_AUTOMODEL_SMOKE_NPROC_PER_NODE:-2}"
 
-timeout 300s torchrun --nproc-per-node 2 --no-python python -c \
+# Fetch the unit-test data archive (see tests/conftest.py) in a single process. Otherwise every rank downloads and
+# extracts it at once, and one rank can read the archive while another is still writing it.
+python -m pytest --collect-only -q "${SMOKE_TEST}" > /dev/null
+
+# Each rank saves its own coverage data file (data_suffix) before os._exit, which skips coverage's exit hook; the CI
+# test template combines them and fails when there is no coverage data.
+timeout 300s torchrun --nproc-per-node "${NPROC_PER_NODE}" --no-python python -c \
   '
 import os
+
+import coverage
 import pytest
 
+cov = coverage.Coverage(data_file="/workspace/.coverage", source=["/workspace/nemo"], data_suffix=True)
+cov.start()
 args = [os.environ["SMOKE_TEST"], "-m", "integration and not pleasefixme", "--with_downloads"]
-os._exit(pytest.main(args))
+code = pytest.main(args)
+cov.stop()
+cov.save()
+os._exit(code)
 '

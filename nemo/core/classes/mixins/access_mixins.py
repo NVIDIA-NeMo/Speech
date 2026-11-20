@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,7 +26,7 @@ _ACCESS_ENABLED = {_DEFAULT_ACCESS_GUID: False}
 
 def set_access_cfg(cfg: DictConfig, guid: Optional[str] = None):
     if cfg is None or not isinstance(cfg, DictConfig):
-        raise TypeError(f"cfg must be a DictConfig")
+        raise TypeError("cfg must be a DictConfig")
     global _ACCESS_CFG
     global _DEFAULT_ACCESS_GUID
     if guid is not None:

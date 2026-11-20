@@ -1,4 +1,5 @@
-# Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2021, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,6 +20,7 @@ import os
 import pathlib
 import uuid
 from abc import abstractmethod
+from contextlib import nullcontext
 from os import path
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
@@ -34,7 +36,13 @@ from nemo.core.classes.common import Model, safe_instantiate
 from nemo.core.classes.module import NeuralModule
 from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.core.optim import prepare_lr_scheduler
-from nemo.lightning.callback_group import CallbackGroup
+from nemo.core.optim.param_groups import apply_param_group_rules
+from nemo.lightning.callback_group import (
+    CallbackGroup,
+    callback_context,
+    with_callback_context,
+    with_model_init_callbacks,
+)
 from nemo.utils import logging, model_utils
 from nemo.utils.app_state import AppState
 from nemo.utils.debug_hook import register_debug_hooks
@@ -74,9 +82,6 @@ class ModelPT(LightningModule, Model):
                 f"trainer constructor argument must be either None or lightning.pytorch.Trainer. "
                 f"But got {type(trainer)} instead."
             )
-
-        # Track model init start
-        CallbackGroup.get_instance().on_model_init_start()
 
         super().__init__()
 
@@ -144,55 +149,65 @@ class ModelPT(LightningModule, Model):
         if torch.cuda.is_available() and torch.cuda.current_device() is not None:
             app_state.device_id = torch.cuda.current_device()
 
-        CallbackGroup.get_instance().on_model_init_end()
-        CallbackGroup.get_instance().on_dataloader_init_start()
-        if self._cfg is not None and not self._is_model_being_restored():
-            # Setup data loaders now (default) or defer setup to `self.setup()`
-            # if `defer_setup` is set in the config of the corresponding dataloader.
-            if (
-                'train_ds' in self._cfg
-                and self._cfg.train_ds is not None
-                and not self._cfg.train_ds.get('defer_setup', False)
-            ):
-                self.setup_training_data(self._cfg.train_ds)
+        eager_dataloader_setup = (
+            self._cfg is not None
+            and not self._is_model_being_restored()
+            and any(
+                name in self._cfg and self._cfg[name] is not None and not self._cfg[name].get('defer_setup', False)
+                for name in ('train_ds', 'validation_ds', 'test_ds')
+            )
+        )
+        dataloader_context = (
+            callback_context('on_dataloader_init_start', 'on_dataloader_init_end')
+            if eager_dataloader_setup
+            else nullcontext()
+        )
+        with dataloader_context:
+            if self._cfg is not None and not self._is_model_being_restored():
+                # Setup data loaders now (default) or defer setup to `self.setup()`
+                # if `defer_setup` is set in the config of the corresponding dataloader.
+                if (
+                    'train_ds' in self._cfg
+                    and self._cfg.train_ds is not None
+                    and not self._cfg.train_ds.get('defer_setup', False)
+                ):
+                    self.setup_training_data(self._cfg.train_ds)
 
-            if (
-                'validation_ds' in self._cfg
-                and self._cfg.validation_ds is not None
-                and not self._cfg.validation_ds.get('defer_setup', False)
-            ):
-                self.setup_multiple_validation_data(val_data_config=cfg.validation_ds)
+                if (
+                    'validation_ds' in self._cfg
+                    and self._cfg.validation_ds is not None
+                    and not self._cfg.validation_ds.get('defer_setup', False)
+                ):
+                    self.setup_multiple_validation_data(val_data_config=cfg.validation_ds)
 
-            if (
-                'test_ds' in self._cfg
-                and self._cfg.test_ds is not None
-                and not self._cfg.test_ds.get('defer_setup', False)
-            ):
-                self.setup_multiple_test_data(test_data_config=cfg.test_ds)
+                if (
+                    'test_ds' in self._cfg
+                    and self._cfg.test_ds is not None
+                    and not self._cfg.test_ds.get('defer_setup', False)
+                ):
+                    self.setup_multiple_test_data(test_data_config=cfg.test_ds)
 
-        else:
-            if 'train_ds' in self._cfg and self._cfg.train_ds is not None:
-                logging.warning(
-                    f"If you intend to do training or fine-tuning, please call the ModelPT.setup_training_data() "
-                    f"method and provide a valid configuration file to setup the train data loader.\n"
-                    f"Train config : \n{OmegaConf.to_yaml(self._cfg.train_ds)}"
-                )
+            else:
+                if 'train_ds' in self._cfg and self._cfg.train_ds is not None:
+                    logging.warning(
+                        f"If you intend to do training or fine-tuning, please call the ModelPT.setup_training_data() "
+                        f"method and provide a valid configuration file to setup the train data loader.\n"
+                        f"Train config : \n{OmegaConf.to_yaml(self._cfg.train_ds)}"
+                    )
 
-            if 'validation_ds' in self._cfg and self._cfg.validation_ds is not None:
-                logging.warning(
-                    f"If you intend to do validation, please call the ModelPT.setup_validation_data() or "
-                    f"ModelPT.setup_multiple_validation_data() method "
-                    f"and provide a valid configuration file to setup the validation data loader(s). \n"
-                    f"Validation config : \n{OmegaConf.to_yaml(self._cfg.validation_ds)}"
-                )
-            if 'test_ds' in self._cfg and self._cfg.test_ds is not None:
-                logging.warning(
-                    f"Please call the ModelPT.setup_test_data() or ModelPT.setup_multiple_test_data() method "
-                    f"and provide a valid configuration file to setup the test data loader(s).\n"
-                    f"Test config : \n{OmegaConf.to_yaml(self._cfg.test_ds)}"
-                )
-
-        CallbackGroup.get_instance().on_dataloader_init_end()
+                if 'validation_ds' in self._cfg and self._cfg.validation_ds is not None:
+                    logging.warning(
+                        f"If you intend to do validation, please call the ModelPT.setup_validation_data() or "
+                        f"ModelPT.setup_multiple_validation_data() method "
+                        f"and provide a valid configuration file to setup the validation data loader(s). \n"
+                        f"Validation config : \n{OmegaConf.to_yaml(self._cfg.validation_ds)}"
+                    )
+                if 'test_ds' in self._cfg and self._cfg.test_ds is not None:
+                    logging.warning(
+                        f"Please call the ModelPT.setup_test_data() or ModelPT.setup_multiple_test_data() method "
+                        f"and provide a valid configuration file to setup the test data loader(s).\n"
+                        f"Test config : \n{OmegaConf.to_yaml(self._cfg.test_ds)}"
+                    )
 
         # Create list of lists for val and test outputs to support multiple dataloaders
         # Initialize an empty list as sometimes self._validation_dl can be None at this stage
@@ -221,6 +236,7 @@ class ModelPT(LightningModule, Model):
 
     def __init_subclass__(cls) -> None:
         cls._save_restore_connector = SaveRestoreConnector()
+        with_model_init_callbacks(cls)
 
     def on_fit_start(self) -> None:
         """
@@ -247,12 +263,18 @@ class ModelPT(LightningModule, Model):
 
             .. code-block::
 
-                If "src" is local existing path:
-                    then it will be returned in absolute path form.
-                elif "src" starts with "nemo_file:unique_artifact_name":
-                    .nemo will be untarred to a temporary folder location and an actual existing path will be returned
+                If "src" starts with "nemo:":
+                    resolve its relative suffix within the current extracted model directory;
+                    this takes precedence over a local filename with the same spelling.
+                elif restoring an archive without external-artifact permission:
+                    resolve the bundled relative path or its legacy bundled basename.
+                elif "src" is a local existing path:
+                    return its absolute path.
                 else:
-                    an error will be raised.
+                    try legacy bundled-basename resolution, then apply missing-source handling.
+
+        Archive references must resolve within the extracted model directory. During restoration,
+        local names also refer to bundled files unless the runtime ``SaveRestoreConnector`` allows external artifacts.
 
         WARNING: use .register_artifact calls in your models' constructors.
         The returned path is not guaranteed to exist after you have exited your model's constructor.
@@ -515,29 +537,19 @@ class ModelPT(LightningModule, Model):
         Loads ModelPT from checkpoint, with some maintenance of restoration.
         For documentation, please refer to LightningModule.load_from_checkpoint() documentation.
         """
-        # Notify OneLogger of checkpoint loading start for telemetry tracking
-        CallbackGroup.get_instance().on_load_checkpoint_start()
-
-        checkpoint = None
-        try:
-            cls._set_model_restore_state(is_being_restored=True)
-
-            checkpoint = super().load_from_checkpoint(
-                checkpoint_path=checkpoint_path,
-                *args,
-                map_location=map_location,
-                hparams_file=hparams_file,
-                strict=strict,
-                **kwargs,
-            )
-
-        finally:
-            cls._set_model_restore_state(is_being_restored=False)
-
-        # Notify OneLogger of checkpoint loading completion for telemetry tracking
-        CallbackGroup.get_instance().on_load_checkpoint_end()
-
-        return checkpoint
+        with callback_context('on_load_checkpoint_start', 'on_load_checkpoint_end'):
+            try:
+                cls._set_model_restore_state(is_being_restored=True)
+                return super().load_from_checkpoint(
+                    checkpoint_path=checkpoint_path,
+                    *args,
+                    map_location=map_location,
+                    hparams_file=hparams_file,
+                    strict=strict,
+                    **kwargs,
+                )
+            finally:
+                cls._set_model_restore_state(is_being_restored=False)
 
     @abstractmethod
     def setup_training_data(self, train_data_config: Union[DictConfig, Dict]):
@@ -631,6 +643,25 @@ class ModelPT(LightningModule, Model):
     ):
         """Prepares an optimizer from a string name and its optional config parameters.
 
+        The parameter groups come from :meth:`setup_optimizer_param_groups`.
+        With 'optim_param_group_rules' in the model config,
+        parameters are further selected by the type of the module that owns them or by name patterns,
+        and the groups are split with options set on the selected parameters,
+        such as no weight decay for embeddings, norms and biases;
+        see :func:`nemo.core.optim.param_groups.apply_param_group_rules`.
+        The rules apply to the groups of an overridden :meth:`setup_optimizer_param_groups` as well,
+        and a changed rule set changes the optimizer's parameter groups,
+        so an optimizer state saved under other rules fails to load,
+        or loads onto other parameters when the group counts and sizes still match;
+        keep the rules unchanged when resuming::
+
+            model:
+                optim_param_group_rules:
+                    no_weight_decay:
+                        module_types: [torch.nn.Embedding, torch.nn.LayerNorm]
+                        param_names: ["*.bias"]
+                        weight_decay: 0.0
+
         Args:
             optim_config: A dictionary containing the following keys:
 
@@ -648,6 +679,11 @@ class ModelPT(LightningModule, Model):
         """
         # Setup the optimizer parameter groups (by default use all parameters that are trainable)
         self.setup_optimizer_param_groups()
+
+        # Split the groups by the rules of `optim_param_group_rules`, also when a subclass overrides the grouping
+        if self._optimizer_param_groups is not None and self.cfg.get("optim_param_group_rules"):
+            rules = OmegaConf.to_container(self.cfg.optim_param_group_rules, resolve=True)
+            self._optimizer_param_groups = apply_param_group_rules(self, self._optimizer_param_groups, rules)
 
         # Make copy of the config so it can be modified later
         optim_config = self._optim_config_copy(optim_config)
@@ -817,6 +853,9 @@ class ModelPT(LightningModule, Model):
             optim:
                 lr: 3e-3
                 momentum: 0.9
+
+        The rules of 'optim_param_group_rules' are not applied here but by :meth:`setup_optimization`
+        on the groups this method sets, so an override keeps its grouping and still gets the rules.
         """
         if not hasattr(self, "parameters"):
             self._optimizer_param_groups = None
@@ -859,11 +898,8 @@ class ModelPT(LightningModule, Model):
         """
         Configure the optimizer and scheduler.
         """
-        # Track optimizer init start
-        CallbackGroup.get_instance().on_optimizer_init_start()
-        self.setup_optimization()
-
-        CallbackGroup.get_instance().on_optimizer_init_end()
+        with callback_context('on_optimizer_init_start', 'on_optimizer_init_end'):
+            self.setup_optimization()
 
         if self._scheduler is None:
             return self._optimizer
@@ -902,7 +938,8 @@ class ModelPT(LightningModule, Model):
                 isinstance(self.train_dataloader(), list) and len(self.train_dataloader()) == 0
             )
             if no_train_dataloader and train_deferred_setup:
-                self.setup_training_data(self._cfg.train_ds)
+                with callback_context('on_dataloader_init_start', 'on_dataloader_init_end'):
+                    self.setup_training_data(self._cfg.train_ds)
 
         if stage in ('fit', 'validate'):
             val_deferred_setup = (
@@ -914,7 +951,8 @@ class ModelPT(LightningModule, Model):
                 isinstance(self.val_dataloader(), list) and len(self.val_dataloader()) == 0
             )
             if no_val_dataloader and val_deferred_setup:
-                self.setup_multiple_validation_data(val_data_config=self._cfg.validation_ds)
+                with callback_context('on_dataloader_init_start', 'on_dataloader_init_end'):
+                    self.setup_multiple_validation_data(val_data_config=self._cfg.validation_ds)
 
         if stage == 'test':
             test_deferred_setup = (
@@ -926,7 +964,8 @@ class ModelPT(LightningModule, Model):
                 isinstance(self.test_dataloader(), list) and len(self.test_dataloader()) == 0
             )
             if no_test_dataloader and test_deferred_setup:
-                self.setup_multiple_test_data(test_data_config=self._cfg.test_ds)
+                with callback_context('on_dataloader_init_start', 'on_dataloader_init_end'):
+                    self.setup_multiple_test_data(test_data_config=self._cfg.test_ds)
 
         if stage == 'fit':
             CallbackGroup.get_instance().update_config(nemo_version='v1', trainer=self._trainer)
@@ -1259,6 +1298,7 @@ class ModelPT(LightningModule, Model):
                 )
 
     @rank_zero_only
+    @with_callback_context('on_load_checkpoint_start', 'on_load_checkpoint_end')
     def maybe_init_from_pretrained_checkpoint(self, cfg: OmegaConf, map_location: str = 'cpu'):
         """
         Initializes a given model with the parameters obtained via specific config arguments.
@@ -1319,8 +1359,6 @@ class ModelPT(LightningModule, Model):
                 f"Cannot pass more than one model initialization arguments to config!\n"
                 f"Found : {[args[idx] for idx, arg_present in enumerate(arg_matches) if arg_present]}"
             )
-
-        CallbackGroup.get_instance().on_load_checkpoint_start()
 
         if 'init_from_nemo_model' in cfg and cfg.init_from_nemo_model is not None:
             with open_dict(cfg):
@@ -1437,9 +1475,6 @@ class ModelPT(LightningModule, Model):
                         del ckpt
                 else:
                     raise TypeError("Invalid type: init_from_ptl_ckpt is not a string or a dict!")
-
-        # Track load checkpoint end
-        CallbackGroup.get_instance().on_load_checkpoint_end()
 
     def teardown(self, stage: str):
         """
@@ -1688,6 +1723,16 @@ class ModelPT(LightningModule, Model):
             self._hparams_initial['cfg'] = OmegaConf.to_object(self._hparams_initial['cfg'])
 
         return super().hparams
+
+    def on_save_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
+        """Store a plain configuration snapshot without changing live hparams metadata."""
+        super().on_save_checkpoint(checkpoint)
+        key = self.CHECKPOINT_HYPER_PARAMS_KEY
+        hyper_parameters = checkpoint.get(key)
+        if isinstance(hyper_parameters, (dict, DictConfig)) and 'cfg' in hyper_parameters:
+            hyper_parameters = copy.deepcopy(hyper_parameters)
+            hyper_parameters['cfg'] = OmegaConf.create(OmegaConf.to_container(self.cfg, resolve=True))
+            checkpoint[key] = hyper_parameters
 
     @property
     def validation_step_outputs(self):
@@ -1939,7 +1984,7 @@ class ModelPT(LightningModule, Model):
 
     def on_train_start(self):
         """PyTorch Lightning hook:
-        https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-train-start
+        https://lightning.ai/docs/pytorch/stable/common/hooks.html
         We use it here to copy the relevant config for dynamic freezing.
         """
 
@@ -1958,7 +2003,7 @@ class ModelPT(LightningModule, Model):
 
     def on_train_batch_start(self, batch: Any, batch_idx: int, unused: int = 0) -> Optional[int]:
         """PyTorch Lightning hook:
-        https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-train-batch-start
+        https://lightning.ai/docs/pytorch/stable/common/hooks.html
         We use it here to enable profiling and dynamic freezing.
         """
         if self.device.type == 'cuda':
@@ -2015,7 +2060,7 @@ class ModelPT(LightningModule, Model):
 
     def on_train_batch_end(self, outputs, batch: Any, batch_idx: int, unused: int = 0) -> None:
         """PyTorch Lightning hook:
-        https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-train-batch-end
+        https://lightning.ai/docs/pytorch/stable/common/hooks.html
         We use it here to enable nsys profiling.
         """
 
@@ -2064,7 +2109,7 @@ class ModelPT(LightningModule, Model):
 
     def on_train_end(self):
         """PyTorch Lightning hook:
-        https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-train-end
+        https://lightning.ai/docs/pytorch/stable/common/hooks.html
         We use it here to cleanup the dynamic freezing config.
         """
 
@@ -2072,14 +2117,14 @@ class ModelPT(LightningModule, Model):
 
     def on_test_end(self):
         """PyTorch Lightning hook:
-        https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-test-end
+        https://lightning.ai/docs/pytorch/stable/common/hooks.html
         """
 
         self._cleanup_on_execution_end()
 
     def on_predict_end(self):
         """PyTorch Lightning hook:
-        https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-test-end
+        https://lightning.ai/docs/pytorch/stable/common/hooks.html
         """
 
         self._cleanup_on_execution_end()

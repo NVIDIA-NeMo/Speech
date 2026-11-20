@@ -20,7 +20,7 @@ While it is common that AM is the focus of SSL in ASR, it can also be utilized i
 ASR models (e.g., predictor module in transducer based ASR models).
 
 In NeMo, we provide two types of SSL models, `Wav2Vec-BERT <https://arxiv.org/abs/2108.06209>`_ and `NEST <https://arxiv.org/abs/2408.13106>`_. 
-The training script for them can be found in `https://github.com/NVIDIA/NeMo/tree/main/examples/asr/speech_pretraining`.
+The training script for them can be found in `https://github.com/NVIDIA-NeMo/Speech/tree/main/examples/asr/speech_pretraining`.
 
 
 The full documentation tree is as follows:

@@ -1,4 +1,5 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,6 +30,8 @@ ADAPTER_REGISTRY = {}
 
 @dataclass
 class AdapterRegistryInfo:
+    """Registration metadata for an adapter module."""
+
     base_class: type
     adapter_class: type
 

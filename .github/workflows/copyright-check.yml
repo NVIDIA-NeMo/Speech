@@ -1,4 +1,5 @@
-# Copyright (c) 2020-2021, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2020-2021, NVIDIA CORPORATION & AFFILIATES.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,4 +20,4 @@ on:
 
 jobs:
   copyright-check:
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_copyright_check.yml@v0.2.0
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_copyright_check.yml@fb76deb5479e54f22fb02a3b6619a8c33ab1184c # v0.2.0

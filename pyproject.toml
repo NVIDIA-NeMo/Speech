@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,10 +23,9 @@ dynamic = ["version"]
 description = "NeMo - a toolkit for Conversational AI"
 readme = "README.md"
 license = {file = "LICENSE"}
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "aistore",
-    "fsspec>=2024.12.0",
     "huggingface_hub>=0.24",
     "numba ; platform_system == 'Darwin'",
     "cuda-bindings ; platform_system != 'Darwin'",
@@ -36,7 +36,7 @@ dependencies = [
     "smart-open",
     "tensorboard",
     "text-unidecode",
-    "torch>=2.6.0",
+    "torch>=2.7.0",
     "tqdm>=4.41.0",
     "wrapt",
 ]
@@ -67,7 +67,7 @@ classifiers = [
     "Natural Language :: English",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Scientific/Engineering :: Image Recognition",
     "Topic :: Scientific/Engineering :: Mathematics",
@@ -79,29 +79,29 @@ classifiers = [
 
 [project.optional-dependencies]
 core = [
-    "hydra-core>1.3,<=1.3.2",
-    "lightning>2.2.1,<=2.4.0",
-    "omegaconf<=2.3",
+    "hydra-core>=1.3.8,<1.4",
+    "lightning>=2.6.6,<2.7",
+    "pytorch-lightning>=2.6.6,<2.7",
+    "omegaconf>=2.3,<2.4",
     "torchmetrics>=0.11.0",
     "transformers",
     "wandb",
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
-    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
 ]
 
 lightning = [
-    "hydra-core>1.3,<=1.3.2",
-    "lightning>2.2.1,<=2.4.0",
-    "omegaconf<=2.3",
+    "hydra-core>=1.3.8,<1.4",
+    "lightning>=2.6.6,<2.7",
+    "pytorch-lightning>=2.6.6,<2.7",
+    "omegaconf>=2.3,<2.4",
     "torchmetrics>=0.11.0",
     "transformers",
     "wandb",
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
-    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
 ]
 
 common-only = [
@@ -115,7 +115,7 @@ asr-only = [
     "braceexpand",
     "einops",
     "kaldialign",
-    "lhotse>=1.33.0",
+    "lhotse==2.0.0a6",
     "librosa>=0.10.1",
     "packaging",
     "sacrebleu",
@@ -138,7 +138,7 @@ tts = [
     "pyopenjtalk",
     "braceexpand",
     "kaldialign",
-    "lhotse>=1.33.0",
+    "lhotse==2.0.0a6",
     "librosa>=0.10.1",
     "packaging",
     "sacrebleu",
@@ -147,21 +147,21 @@ tts = [
     "whisper_normalizer",
     "datasets>=3.2.0",
     "sentencepiece<1.0.0",
-    "hydra-core>1.3,<=1.3.2",
-    "lightning>2.2.1,<=2.4.0",
-    "omegaconf<=2.3",
+    "hydra-core>=1.3.8,<1.4",
+    "lightning>=2.6.6,<2.7",
+    "pytorch-lightning>=2.6.6,<2.7",
+    "omegaconf>=2.3,<2.4",
     "torchmetrics>=0.11.0",
     "transformers",
     "wandb",
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
-    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
 ]
 
 audio = [
     "einops",
-    "lhotse>=1.33.0",
+    "lhotse==2.0.0a6",
     "librosa>=0.10.0",
     "matplotlib",
     "pesq; (platform_machine != 'x86_64' or platform_system != 'Darwin')",
@@ -171,42 +171,49 @@ audio = [
     "datasets>=3.2.0",
     "pandas",
     "sentencepiece<1.0.0",
-    "hydra-core>1.3,<=1.3.2",
-    "lightning>2.2.1,<=2.4.0",
-    "omegaconf<=2.3",
+    "hydra-core>=1.3.8,<1.4",
+    "lightning>=2.6.6,<2.7",
+    "pytorch-lightning>=2.6.6,<2.7",
+    "omegaconf>=2.3,<2.4",
     "torchmetrics>=0.11.0",
     "transformers",
     "wandb",
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
-    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
 ]
 
 speechlm2-only = [
     "nemo_automodel",
     "flashoptim",
-    "peft<=0.18.0",
+    "peft>=0.18.1",
+]
+
+# vLLM owns its exact Torch and CUDA-kernel stack.
+# Install this serving extra separately from the cu*/compiled* extras below.
+vllm = [
+    "peft>=0.18.1",
+    "vllm==0.32.0; sys_platform == 'linux' and python_version >= '3.11'",
 ]
 
 all = [
-    "hydra-core>1.3,<=1.3.2",
-    "lightning>2.2.1,<=2.4.0",
-    "omegaconf<=2.3",
+    "hydra-core>=1.3.8,<1.4",
+    "lightning>=2.6.6,<2.7",
+    "pytorch-lightning>=2.6.6,<2.7",
+    "omegaconf>=2.3,<2.4",
     "torchmetrics>=0.11.0",
     "transformers",
     "wandb",
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
-    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
     "datasets>=3.2.0",
     "einops",
     "pandas",
     "sentencepiece<1.0.0",
     "braceexpand",
     "kaldialign",
-    "lhotse>=1.33.0",
+    "lhotse==2.0.0a6",
     "librosa>=0.10.1",
     "packaging",
     "sacrebleu",
@@ -227,11 +234,11 @@ all = [
     "pystoi",
     "nemo_automodel",
     "flashoptim",
-    "peft<=0.18.0",
+    "peft>=0.18.1",
 ]
 
 cu12 = [
-    "torch==2.12.0+cu126 ; sys_platform == 'linux'",
+    "torch==2.11.0+cu129 ; sys_platform == 'linux'",
     "numba-cuda[cu12] ; platform_system != 'Darwin'",
     "cuda-python>=12,<13 ; platform_system != 'Darwin'"
 ]
@@ -245,6 +252,7 @@ cu13 = [
 compiled = [
     "onnx-ir==0.2.1",
     "onnxscript==0.7.0",
+    "cut-cross-entropy==25.3.2",
     "deep_ep==1.2.1",
     "nv-grouped-gemm==1.1.4.post8",
     "causal-conv1d==1.6.2.post1",
@@ -258,6 +266,7 @@ compiled = [
 compiled-a100 = [
     "onnx-ir==0.2.1",
     "onnxscript==0.7.0",
+    "cut-cross-entropy==25.3.2",
     "nv-grouped-gemm==1.1.4.post8",
     "causal-conv1d==1.6.2.post1",
     "mamba-ssm==2.3.2.post1",
@@ -272,23 +281,23 @@ common = [
     "einops",
     "pandas",
     "sentencepiece<1.0.0",
-    "hydra-core>1.3,<=1.3.2",
-    "lightning>2.2.1,<=2.4.0",
-    "omegaconf<=2.3",
+    "hydra-core>=1.3.8,<1.4",
+    "lightning>=2.6.6,<2.7",
+    "pytorch-lightning>=2.6.6,<2.7",
+    "omegaconf>=2.3,<2.4",
     "torchmetrics>=0.11.0",
     "transformers",
     "wandb",
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
-    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
 ]
 
 asr = [
     "braceexpand",
     "einops",
     "kaldialign",
-    "lhotse>=1.33.0",
+    "lhotse==2.0.0a6",
     "librosa>=0.10.1",
     "packaging",
     "sacrebleu",
@@ -298,26 +307,26 @@ asr = [
     "datasets>=3.2.0",
     "pandas",
     "sentencepiece<1.0.0",
-    "hydra-core>1.3,<=1.3.2",
-    "lightning>2.2.1,<=2.4.0",
-    "omegaconf<=2.3",
+    "hydra-core>=1.3.8,<1.4",
+    "lightning>=2.6.6,<2.7",
+    "pytorch-lightning>=2.6.6,<2.7",
+    "omegaconf>=2.3,<2.4",
     "torchmetrics>=0.11.0",
     "transformers",
     "wandb",
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
-    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
 ]
 
 speechlm2 = [
     "nemo_automodel",
     "flashoptim",
-    "peft<=0.18.0",
+    "peft>=0.18.1",
     "braceexpand",
     "einops",
     "kaldialign",
-    "lhotse>=1.33.0",
+    "lhotse==2.0.0a6",
     "librosa>=0.10.1",
     "packaging",
     "sacrebleu",
@@ -327,16 +336,16 @@ speechlm2 = [
     "datasets>=3.2.0",
     "pandas",
     "sentencepiece<1.0.0",
-    "hydra-core>1.3,<=1.3.2",
-    "lightning>2.2.1,<=2.4.0",
-    "omegaconf<=2.3",
+    "hydra-core>=1.3.8,<1.4",
+    "lightning>=2.6.6,<2.7",
+    "pytorch-lightning>=2.6.6,<2.7",
+    "omegaconf>=2.3,<2.4",
     "torchmetrics>=0.11.0",
     "transformers",
     "wandb",
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
-    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
     "janome",
     "jieba",
     "librosa",
@@ -355,8 +364,8 @@ py-modules = ["nemo"]
 nemo_speechlm = "nemo.collections.speechlm2.vllm.salm:register"
 
 [project.urls]
-Download = "https://github.com/NVIDIA-NeMo/NeMo/releases"
-Homepage = "https://github.com/NVIDIA-NeMo/NeMo"
+Download = "https://github.com/NVIDIA-NeMo/Speech/releases"
+Homepage = "https://github.com/NVIDIA-NeMo/Speech"
 
 [tool.isort]
 profile = "black"  # black-compatible
@@ -393,6 +402,8 @@ extend-exclude = '''
 addopts = "--verbose --pyargs --durations=0 --strict-markers"  # always add these arguments to pytest
 testpaths = ["tests"]
 pythonpath = ["tests/e2e_nightly"]
+# Fail a hung test instead of letting it consume the whole CI job timeout (requires pytest-timeout).
+timeout = 300
 # directories to ignore when discovering tests
 norecursedirs = [
     "nemo",
@@ -432,24 +443,42 @@ conflicts = [
     [
         { extra = "cu12" },
         { extra = "cu13" },
+        { extra = "vllm" },
     ],
     [
         { extra = "compiled" },
         { extra = "compiled-a100" },
+        { extra = "vllm" },
+    ],
+    [
+        { extra = "speechlm2-only" },
+        { extra = "vllm" },
+    ],
+    [
+        { extra = "speechlm2" },
+        { extra = "vllm" },
+    ],
+    [
+        { extra = "all" },
+        { extra = "vllm" },
     ],
 ]
 override-dependencies = [
-    "mlflow>=3.9.0rc0",
+    "nltk>=3.10.4",
+    "accelerate>=1.14.0",
+    "msgpack>=1.2.3",
+    "fsspec>=2026.6.0",
+    "mlflow>=3.11.1",
     "cryptography>=46.0.5",
-    "wandb>=0.27.1",
-    "urllib3>=2.6.0",
+    "wandb>=0.31.0",
+    "urllib3>=2.8.0",
     "opencv-python-headless; sys_platform == 'never'",
     "lxml>=6.1.0",
     "gitpython>=3.1.50",
     "mako>=1.3.12",
     "pyarrow>=23.0.1",
-    "aiohttp>=3.14.0",
-    "pillow>=12.3.0"
+    "aiohttp>=3.14.4",
+    "pillow>=13.0.0"
 ]
 no-binary-package = [
     "causal-conv1d",
@@ -467,20 +496,24 @@ no-build-isolation-package = [
     "transformer-engine-torch"
 ]
 
+[tool.uv.extra-build-dependencies]
+deep-ep = ["setuptools"]
+
 # --- uv configuration ---
-# Keep Torch wheel indexes explicit per CUDA extra. The pinned Automodel git
-# dependency also carries Torch source metadata; see the static metadata below.
+# Keep Torch wheel indexes explicit per CUDA extra. Automodel's upstream source
+# metadata is mirrored below so this repository controls the CUDA wheel index.
 [tool.uv.sources]
-nemo_automodel = { git = "https://github.com/NVIDIA-NeMo/Automodel.git", rev = "9eccbb6102a260efd7cbdffa890fc57b94f94528" }
-deep_ep = { git = "https://github.com/deepseek-ai/DeepEP.git", tag = "v1.2.1" }
+nemo_automodel = { git = "https://github.com/NVIDIA-NeMo/Automodel.git", rev = "309a10098e3ea3d9b79d4b96fa397db40908b751" }
+cut-cross-entropy = { git = "https://github.com/apple/ml-cross-entropy.git", rev = "87a86aba72cfd2f0d8abecaf81c13c4528ea07d8" }
+megatron-fsdp = { git = "https://github.com/yuhezhang-ai/Megatron-LM.git", rev = "455389c480af6b3acdca74c7830c68b3274eb083", subdirectory = "megatron/core/distributed/fsdp/src" }
+deep_ep = { git = "https://github.com/deepseek-ai/DeepEP.git", rev = "7febc6e25660af0f54d95dd781ecdcd62265ecca" }
 torch = [
   { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'darwin'" },
-  { index = "pytorch-cu126", extra = "cu12", marker = "sys_platform == 'linux'" },
+  { index = "pytorch-cu129", extra = "cu12", marker = "sys_platform == 'linux'" },
   { index = "pytorch-cu132", extra = "cu13", marker = "sys_platform == 'linux'" },
   { index = "pypi", marker = "sys_platform == 'darwin'" },
 ]
 transformer-engine = { git = "https://github.com/NVIDIA/TransformerEngine.git", tag = "v2.15" }
-nltk = { git = "https://github.com/nltk/nltk.git", tag = "v3.10.0-rc1" }
 
 [[tool.uv.index]]
 name = "pypi"
@@ -493,8 +526,8 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [[tool.uv.index]]
-name = "pytorch-cu126"
-url = "https://download.pytorch.org/whl/cu126"
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
 explicit = true
 
 [[tool.uv.index]]
@@ -504,25 +537,23 @@ explicit = true
 
 [[tool.uv.dependency-metadata]]
 name = "nemo-automodel"
-version = "0.4.0+9eccbb61"
+version = "0.8.0+309a10098"
 requires-python = ">=3.10"
-# The pinned Automodel git revision carries its own Torch source table. Keep
-# its core dependency metadata static here so this repo controls the CUDA wheel index.
+# Mirror the pinned Automodel core dependencies so this repository controls
+# the CUDA wheel index. Refresh this metadata together with the source pin.
 requires-dist = [
     "datasets>=4.0.0",
-    "megatron-fsdp>=0.2.3",
-    "mistral-common[audio,hf-hub,image,sentencepiece]",
-    "opencv-python-headless==4.10.0.84",
-    "pybind11",
+    "megatron-fsdp==0.5.0",
+    "mistral-common[audio,hf-hub,sentencepiece]",
+    "ninja",
     "pyyaml",
     "tiktoken",
     "torch>=2.6.0",
     "torchdata",
-    "transformers==5.5.0",
-    "wandb",
-    "torchao",
-    "mlflow",
+    "transformers==5.18.0",
+    "torchao>=0.16.0",
     "flashoptim>=0.1.3",
+    "quack-kernels==0.6.4; sys_platform == 'linux'",
 ]
 
 [dependency-groups]
@@ -536,7 +567,9 @@ test = [
     "pytest-httpserver",
     "pytest-shard",
     "pytest-mock",
+    "pytest-timeout",
     "pytest-runner",
+    "starlette",
     "wandb",
     "wrapt",
 ]

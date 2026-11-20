@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,15 +18,54 @@ from pathlib import Path
 _ROOT: Path = Path(__file__).parent.parent
 
 # Benchmark names supported by the comparison report pipeline.
-SUPPORTED_BENCHMARK_NAMES: list[str] = [
-    "libritts_seen",
-    "libritts_test_clean",
-    "riva_hard_digits",
-    "riva_hard_letters",
-    "riva_hard_money",
-    "riva_hard_short",
-    "vctk",
-]
+BENCHMARK_META: dict[str, str] = {
+    'libritts': 'en',
+    'riva_en': 'en',
+    'riva_en_hard_sentences': 'en',
+    'riva_en_short_sentences': 'en',
+    'riva_en_qa': 'en',
+    'riva_en_qa_longform': 'en',
+    'King_ASR_sa_diacritics': 'ar',
+    'King_ASR_sa_no_diacritics': 'ar',
+    'King_ASR_uae_diacritics': 'ar',
+    'King_ASR_uae_no_diacritics': 'ar',
+    'cmltts_de': 'de',
+    'cmltts_es': 'es',
+    'cmltts_fr': 'fr',
+    'AI4bharat': 'hi',
+    'cmltts_it': 'it',
+    'jvs_jsut': 'ja',
+    'F5I9N7A1': 'ko',
+    'cmltts_pt': 'pt',
+    'vivos': 'vi',
+    'mscenespeech': 'zh',
+    'ar_MSA_qa_ct_text': 'ar',
+    'ar_MSA_qa': 'ar',
+    'de_qa_ct_text': 'de',
+    'de_qa': 'de',
+    'es_qa_ct_text': 'es',
+    'es_qa': 'es',
+    'fr_qa_ct_text': 'fr',
+    'fr_qa': 'fr',
+    'it_qa_ct_text': 'it',
+    'it_qa': 'it',
+    'ja_qa_ct_text': 'ja',
+    'ja_qa': 'ja',
+    'ko_qa_ct_text': 'ko',
+    'ko_qa': 'ko',
+    'pt_qa_ct_text': 'pt',
+    'pt_qa': 'pt',
+    'vi_qa_ct_text': 'vi',
+    'vi_qa': 'vi',
+    'zh_qa_ct_text': 'zh',
+    'zh_qa': 'zh',
+    'hi_qa_ct_text': 'hi',
+    'hi_qa': 'hi',
+    'hi_qa_expanded_pronunciation_ct_text': 'hi',
+    'hi_qa_expanded_pronunciation': 'hi',
+}
+
+SUPPORTED_BENCHMARK_NAMES: list[str] = list(BENCHMARK_META.keys())
 
 # Default width of tqdm progress bars in terminal columns.
 TQDM_NCOLS: int = 80
@@ -35,6 +75,9 @@ SEED: int = 42
 
 # Number of decimal digits used when formatting p-values in statistical tests.
 P_VAL_ROUND_DIGITS: int = 4
+
+# Default signature version used to sign S3 client requests.
+S3_SIGNATURE_VERSION: str = "s3"
 
 # Default lifetime of generated S3 presigned links in seconds (one year).
 S3_LINK_EXPIRES_IN: int = 31536000

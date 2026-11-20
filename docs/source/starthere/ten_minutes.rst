@@ -3,17 +3,17 @@
 NeMo Speech Inference in 5 Minutes
 ===================================
 
-This guide gives you a quick, hands-on tour of NeMo's core speech capabilities. By the end, you'll have transcribed audio, synthesized speech, identified speakers, and used a speech language model — all in about 50 lines of code.
+This guide gives you a quick, hands-on tour of NeMo Speech's core capabilities. By the end, you'll have transcribed audio, synthesized speech, identified speakers, and used a speech language model — all in about 50 lines of code.
 
 .. note::
 
-   Make sure you have :doc:`installed NeMo <install>` before starting.
+   Make sure you have :doc:`installed NeMo Speech <install>` before starting.
 
 
 1. Transcribe Speech (ASR)
 --------------------------
 
-Automatic Speech Recognition converts audio to text. NeMo's Parakeet model sits at the top of the `HuggingFace OpenASR Leaderboard <https://huggingface.co/spaces/hf-audio/open_asr_leaderboard>`_.
+Automatic Speech Recognition converts audio to text. NeMo Speech's Parakeet model sits at the top of the `HuggingFace OpenASR Leaderboard <https://huggingface.co/spaces/hf-audio/open_asr_leaderboard>`_.
 
 **Basic transcription** — 3 lines of code:
 
@@ -45,7 +45,7 @@ Automatic Speech Recognition converts audio to text. NeMo's Parakeet model sits 
 2. Synthesize Speech (TTS)
 --------------------------
 
-Text-to-Speech generates natural audio from text. NeMo's **Magpie TTS** is a multilingual, codec-based model that supports multiple speakers and languages:
+Text-to-Speech generates natural audio from text. NeMo Speech's **Magpie TTS** is a multilingual, codec-based model that supports multiple speakers and languages:
 
 .. code-block:: python
 
@@ -58,7 +58,7 @@ Text-to-Speech generates natural audio from text. NeMo's **Magpie TTS** is a mul
 
    # Generate speech
    audio, audio_len = model.do_tts(
-       transcript="Hello! Welcome to NeMo speech AI.",
+       transcript="Hello! Welcome to NeMo Speech AI.",
        language="en",
    )
 
@@ -87,23 +87,14 @@ Speaker diarization answers "who spoke when?" in multi-speaker audio.
 4. Speech Language Models (SpeechLM2)
 -------------------------------------
 
-SpeechLM2 augments large language models with speech understanding. Canary-Qwen combines an ASR encoder with a Qwen LLM:
+SpeechLM2 augments large language models with speech understanding.
+For multilingual offline transcription with instructions, vocabulary context, speaker attribution, and word
+timestamps, follow the :doc:`Nemotron 3.5 Transcribe quickstart </speechlm2/nemotron_transcribe>`.
+It uses a separate vLLM serving environment; the BF16 example targets one H100 80 GB.
 
-.. code-block:: python
-
-   from nemo.collections.speechlm2.models import SALM
-
-   model = SALM.from_pretrained('nvidia/canary-qwen-2.5b')
-
-   answer_ids = model.generate(
-       prompts=[[{
-           "role": "user",
-           "content": f"Transcribe the following: {model.audio_locator_tag}",
-           "audio": ["speech.wav"],
-       }]],
-       max_new_tokens=128,
-   )
-   print(model.tokenizer.ids_to_text(answer_ids[0].cpu()))
+The quickstart includes Python examples for plain transcription and speaker-attributed word timestamps,
+using the model card's recommended prompts. It also links to audio question-answering settings and
+fine-tuning tutorials.
 
 
 What's Next?
@@ -117,4 +108,3 @@ Now that you've seen the basics, dive deeper:
 - :doc:`../tts/intro` — Full TTS documentation
 - :doc:`../asr/speaker_diarization/intro` — Speaker diarization and recognition
 - :doc:`../starthere/tutorials` — Tutorial notebooks
-

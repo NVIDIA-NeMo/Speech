@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -54,7 +55,7 @@ TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.cover
     +model.inference_cfg_scale=2.5 \
     +model.gt_phoneme_input_prob=1.0 \
     +model.inference_temperature=0.7 \
-    +model.inference_topk=80 \
+    +model.inference_topk=0 \
     +model.inference_phoneme_sampling_method=argmax \
     +model.use_local_transformer_prob=1.0 \
     +model.cer_reward_weight=0.5 \

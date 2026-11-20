@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -98,6 +99,20 @@ def test_safe_instantiate_allows_exact_exception_targets(target, target_type):
 
     assert obj is sentinel
     instantiate_mock.assert_called_once_with(config)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "target_type,allowed",
+    [
+        (type("FlashAdamW", (torch.optim.AdamW,), {}), True),
+        (type("NotAnOptimizer", (), {}), False),
+    ],
+)
+def test_safe_instantiate_allows_only_flashoptim_optimizers(target_type, allowed):
+    # The speechlm2 Automodel recipes (e.g. examples/speechlm2/conf/salm_automodel.yaml) use flashoptim.FlashAdamW.
+    with patch("hydra.utils.get_class", return_value=target_type):
+        assert _is_target_allowed("flashoptim.FlashAdamW") is allowed
 
 
 @pytest.mark.unit

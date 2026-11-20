@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -77,6 +78,10 @@ class BaseCallback(PTLCallback):
 
     def on_save_checkpoint_success(self, *args, **kwargs) -> None:
         """Called when checkpoint saving succeeds."""
+        pass
+
+    def on_save_checkpoint_failure(self, *args, **kwargs) -> None:
+        """Called when checkpoint saving fails."""
         pass
 
     # Configuration update

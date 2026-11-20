@@ -1,4 +1,5 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,14 +15,20 @@
 
 from abc import ABC
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Tuple, Union
 
 import torch
 
 from nemo.core.classes.mixins import AccessMixin
+from nemo.utils.serialization import register_checkpoint_schema_types
+
+if TYPE_CHECKING:
+    from nemo.core.classes.mixins.adapter_mixins import AdapterModuleMixin
 
 
 class AbstractAdapterStrategy(ABC):
+    """Base strategy for combining adapter and module outputs."""
+
     def forward(self, input: torch.Tensor, adapter: torch.nn.Module, *, module: 'AdapterModuleMixin'):
         """
         Forward method that defines how the output of the adapter should be merged with the input, or if it
@@ -257,3 +264,6 @@ class ResidualAddAdapterStrategyConfig:
     _target_: str = "{0}.{1}".format(
         ResidualAddAdapterStrategy.__module__, ResidualAddAdapterStrategy.__name__
     )  # mandatory field
+
+
+register_checkpoint_schema_types(ResidualAddAdapterStrategyConfig)

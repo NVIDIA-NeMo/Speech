@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,6 +22,8 @@ The script performs the following steps:
     (2) Creates a pipeline object to perform inference.
     (3) Runs inference on the input audio files.
     (4) Writes the transcriptions to an output json/jsonl file. Word/Segment level output is written to a separate JSON file.
+
+For cache-aware streaming, pass ``asr.use_cuda_graphs=true`` to enable encoder CUDA graphs.
 
 Example usage:
 python asr_streaming_infer.py \
@@ -45,6 +48,7 @@ import hydra
 
 from nemo.collections.asr.inference.factory.pipeline_builder import PipelineBuilder
 
+from nemo.collections.asr.inference.utils.audio_io import read_audio
 from nemo.collections.asr.inference.utils.manifest_io import calculate_duration, dump_output, prepare_audio_data
 from nemo.collections.asr.inference.utils.pipeline_eval import (
     calculate_asr_laal,
@@ -76,7 +80,11 @@ def main(cfg):
         raise ValueError("run_steps must be at least 1")
 
     # Reading audio filepaths
-    audio_filepaths, manifest, options, filepath_order = prepare_audio_data(cfg.audio_file, sort_by_duration=True)
+    audio_filepaths, manifest, options, filepath_order = prepare_audio_data(
+        cfg.audio_file,
+        per_stream_biasing_defaults=cfg.asr.get("per_stream_biasing_defaults", None),
+        sort_by_duration=True,
+    )
     logging.info(f"Found {len(audio_filepaths)} audio files")
     if manifest:
         keys = list(manifest[0].keys())
@@ -84,6 +92,19 @@ def main(cfg):
 
     # Build the pipeline
     pipeline = PipelineBuilder.build_pipeline(cfg)
+
+    # With preload_audio=true every file stays in host memory for the whole run, so RTFx excludes disk I/O.
+    data_dur, durations = calculate_duration(audio_filepaths)
+    audio_samples = None
+    if cfg.get("preload_audio", False):
+        needed_gib = data_dur * cfg.streaming.sample_rate * 4 / 1024**3  # mono float32 samples
+        logging.info(f"Preloading {len(audio_filepaths)} audio files into host memory, about {needed_gib:.1f} GiB")
+        audio_samples = [read_audio(path, target_sr=cfg.streaming.sample_rate, mono=True) for path in audio_filepaths]
+    else:
+        logging.warning(
+            "RTFx measurement enabled, but preload_audio=false. RTFx includes disk I/O; "
+            "set preload_audio=true to exclude it."
+        )
 
     # Warmup and run the pipeline
     timer = SimpleTimer()
@@ -96,7 +117,7 @@ def main(cfg):
         progress_bar = TQDMProgressBar()
         timer.reset()
         timer.start(device=pipeline.device)
-        output = pipeline.run(audio_filepaths, progress_bar=progress_bar, options=options)
+        output = pipeline.run(audio_filepaths, progress_bar=progress_bar, options=options, audio_samples=audio_samples)
         timer.stop(pipeline.device)
         if run_step >= cfg.warmup_steps:
             measurements.append(timer.total_sec())
@@ -106,7 +127,6 @@ def main(cfg):
         logging.warning(
             "RTFx measurement enabled, but warmup_steps=0. At least one warmup step is recommended to measure RTFx."
         )
-    data_dur, durations = calculate_duration(audio_filepaths)
     exec_dur = sum(measurements) / len(measurements)
     rtfx = data_dur / exec_dur if exec_dur > 0 else float('inf')
     logging.info(f"RTFx: {rtfx:.2f} ({data_dur:.2f}s / {exec_dur:.2f}s)")

@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,9 +15,33 @@
 
 from abc import ABC, abstractmethod
 from collections import OrderedDict
-from typing import List
+from typing import List, NamedTuple
 
 __all__ = ['TokenizerSpec']
+
+
+class TokenWithLength(NamedTuple):
+    """
+    Token with length for Variative BPE Representation.
+    length > 1 means that the token produced by merge of other tokens
+    """
+
+    token_id: int
+    length: int = 1
+
+
+class VarBPERepresentation(NamedTuple):
+    """
+    Variative BPE representation.
+    - list of length of tokens from canonical representation;
+    - token ids with merges:
+        token_ids_with_merges[i][0] - token of minimal length (length=1)
+        token_ids_with_merges[i][1...t] - alternative tokens (length=1, e.g. mapped tokens in other case)
+        token_ids_with_merges[i][t+1...k] - merged tokens ending at the position of the current (minimal) token
+    """
+
+    canonical_lengths: list[int]
+    token_ids_with_merges: list[list[TokenWithLength]]
 
 
 class TokenizerSpec(ABC):
@@ -53,6 +78,10 @@ class TokenizerSpec(ABC):
     def ids_to_text(self, ids):
         """Converts token IDs back to text."""
         pass
+
+    def text_to_ids_var_bpe(self, text: str, *args, **kwargs):
+        """Converts text to token ids using var-BPE approach"""
+        raise NotImplementedError("Not yet implemented by tokenizer")
 
     def add_special_tokens(self, special_tokens: List[str]):
         """Adds special tokens (eos, pad, cls...) to vocab."""

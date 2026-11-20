@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -1743,6 +1744,8 @@ class BeamRNNTInferConfig:
     beam_size: int
     search_type: str = 'default'
     score_norm: bool = True
+    # Streaming only: GNMT length-norm exponent for beam ranking at EOU; None = offline-style score / (length + 1).
+    length_norm_power: Optional[float] = None
     return_best_hypothesis: bool = True
     tsd_max_sym_exp_per_step: Optional[int] = 50
     alsd_max_target_len: float = 1.0

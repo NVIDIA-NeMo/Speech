@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -68,6 +69,8 @@ class NemoConfig:
 
 
 class ModelConfigBuilder:
+    """Fluent builder for model configuration objects."""
+
     def __init__(self, model_cfg: ModelConfig):
         """
         Base class for any Model Config Builder.
@@ -151,9 +154,16 @@ class ModelConfigBuilder:
         self.model_cfg.test_ds = cfg
 
     def set_optim(self, cfg: config.OptimizerParams, sched_cfg: Optional[config.SchedulerParams] = None):
+        """Set optimizer and scheduler configuration."""
+
+        # the scheduler config is the scheduler's parameter config with its name, not a `SchedConfig`,
+        # whose `min_lr` not every scheduler accepts; the field is typed with the supplied parameter class,
+        # since not every registered one derives from `SchedulerParams` (`ReduceLROnPlateauParams`)
+        sched_type = type(sched_cfg) if sched_cfg is not None else config.SchedulerParams
+
         @dataclass
         class WrappedOptimConfig(OptimConfig, cfg.__class__):
-            pass
+            sched: Optional[sched_type] = None
 
         # Setup optim
         optim_name = cfg.__class__.__name__.replace("Params", "").lower()
@@ -162,8 +172,8 @@ class ModelConfigBuilder:
         if sched_cfg is not None:
 
             @dataclass
-            class WrappedSchedConfig(SchedConfig, sched_cfg.__class__):
-                pass
+            class WrappedSchedConfig(sched_cfg.__class__):
+                name: str = MISSING
 
             # Setup scheduler
             sched_name = sched_cfg.__class__.__name__.replace("Params", "")

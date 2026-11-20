@@ -16,18 +16,19 @@ GPU-PB is applied only at the decoding step in shallow fusion mode. You do not n
 During greedy or beam search decoding, GPU-PB rescales ASR model scores with a boosting tree at the token level.
 The boosting tree is built from a context phrases list, which is provided by the user.
 
-**NOTE**: for ASR models that support capitalization by default (e.g., Canary or parakeet-tdt-0.6b-v2), you need to capitalize all the key phrases in advance (and capitalize the full word for abbreviations).
-You can use LLM for this task.
+**NOTE**: for ASR models that support capitalization by default (e.g., Canary or parakeet-tdt-0.6b-v2), previously you
+needed to capitalize (manually or by using LLM) all the key phrases in advance (and capitalize the full word for abbreviations). With ``boosting_tree.bpe_mode="case_insensitive"`` you no longer need to do this.
 
 More details about GPU-PB method can be found in the `original paper <https://arxiv.org/abs/2508.07014>`__.
 
 Usage
 -----
-We support three ways to pass the context phrases into the decoding script:
+We support the following ways to pass the context phrases into the decoding script:
 
 1. Build a boosting tree for a specific ASR model (step 0.0) and use it for all the decoding evaluation by ``boosting_tree.model_path`` (step 1.1-3.1).
 2. Provide a file with context phrases ``boosting_tree.key_phrases_file`` - one phrase per line  (step 1.1-3.1).
 3. Provide a python list of context phrases ``boosting_tree.key_phrases_list`` (step 1.1-3.1).
+4. Provide a list of phrases with annotations (e.g., language marks) ``boosting_tree.key_phrase_items_list``
 
 The use of the Phrase-Boosting tree is controlled by ``boosting_tree`` config (``BoostingTreeModelConfig``) for all the models.
 For prepared boosting tree use ``boosting_tree.model_path=${PATH_TO_BTREE}``.
@@ -36,10 +37,32 @@ We recommend to provide the list of context phrases directly into ``speech_to_te
 List of the most important parameters:
 
 *  ``strategy`` - The strategy to use for decoding depending on the model type (CTC - greedy_batch or beam_batch; RNN-T/TDT - greedy_batch or malsd_batch; AED - beam).
-*  ``model_path``, ``key_phrases_file``, ``key_phrases_list`` - The way to pass the context phrases into the decoding script.
+*  ``model_path``, ``key_phrases_file``, ``key_phrases_list``, ``key_phrase_items_list`` - The way to pass the context phrases into the decoding script.
 *  ``context_score`` - The score for each arc transition in the context graph (1.0 is recommended).
 *  ``depth_scaling`` - The scaling factor for the depth of the context graph (2.0 is recommended for CTC, RNN-T and TDT, 1.0 for Canary).
 *  ``boosting_tree_alpha`` - Weight of the GPU-PB boosting tree during shallow fusion decoding (tune it according to your data).
+* ``bpe_mode`` - ``default`` (case-sensitive), ``case_insensitive``, and 2 experimental modes - ``bpe_dropout`` and ``var_bpe``. ``case_insensitive`` allows to provide phrases in arbitrary case with models that produce output with capitalization. The boosted phrases automatically will include all potential spellings (in different cases). E.g., to boost both "Hello" and "hello" you need to provide any spelling (e.g., "Hello", "hello" or "HELLO" - the case does not matter).
+* ``var_bpe_scoring_temp`` - works with ``case_insensitive`` and ``var_bpe`` modes; default value of 10.0 is conservatively safe, but values ``0.1 ... 2.0`` can provide better results with beam search and small lists or words.
+
+Per-phrase boosting parameters
+------------------------------
+
+``context_score`` is a global parameter shared by all phrases. To boost individual phrases by different amounts,
+use ``boosting_tree.key_phrase_items_list``, where each item can carry a per-phrase ``alpha``:
+
+.. code-block::
+
+    boosting_tree.key_phrase_items_list='[{phrase:"nvlink",alpha:2.0},{phrase:"omniverse cloud",alpha:1.5},{phrase:"gtc"}]'
+
+*  ``alpha`` (per phrase) - A relative boosting weight multiplier for this phrase, baked into the tree weights at build
+   time. It scales the phrase's whole contribution (arcs, backoff, and EOS) proportionally, mirroring the runtime
+   ``boosting_tree_alpha`` at per-phrase granularity. The effective boost for a phrase is
+   ``boosting_tree_alpha (decoding config) * alpha (per phrase)``; the decode-time ``boosting_tree_alpha=0.0`` disables
+   all boosting regardless of per-phrase values.
+*  ``lang`` (per phrase) - Language for the aggregate tokenizer; falls back to ``source_lang`` if omitted.
+
+Omitted fields fall back to the global values, and per-phrase ``alpha`` works in all ``bpe_mode`` variants (including
+``case_insensitive`` / ``var_bpe``) and with ``build_gpu_boosting_tree.py`` (baked into the saved boosting tree).
 
 **0.0. [Optional] Build the boosting tree for a specific ASR model:**
 
@@ -297,19 +320,19 @@ Context-biasing candidates obtained by CTC-WS are also filtered by the scores wi
 
 Scheme of the CTC-WS method:
 
-.. image:: https://github.com/NVIDIA/NeMo/releases/download/v1.22.0/asset-post-v1.22.0-ctcws_scheme_1.png
+.. image:: https://github.com/NVIDIA-NeMo/Speech/releases/download/v1.22.0/asset-post-v1.22.0-ctcws_scheme_1.png
     :align: center
     :alt: CTC-WS scheme
     :width: 80%
 
 High-level overview of the context-biasing words replacement with CTC-WS method:
 
-.. image:: https://github.com/NVIDIA/NeMo/releases/download/v1.22.0/asset-post-v1.22.0-ctcws_scheme_2.png
+.. image:: https://github.com/NVIDIA-NeMo/Speech/releases/download/v1.22.0/asset-post-v1.22.0-ctcws_scheme_2.png
     :align: center
     :alt: CTC-WS high level overview
     :width: 80%
 
-More details about CTC-WS context-biasing can be found in the `tutorial <https://github.com/NVIDIA/NeMo/tree/main/tutorials/asr/ASR_Context_Biasing.ipynb>`__.
+More details about CTC-WS context-biasing can be found in the `tutorial <https://github.com/NVIDIA-NeMo/Speech/tree/main/tutorials/asr/ASR_Context_Biasing.ipynb>`__.
 
 To use CTC-WS context-biasing, you need to create a context-biasing text file that contains words/phrases to be boosted, with its transcriptions (spellings) separated by underscore.
 Multiple transcriptions can be useful for abbreviations ("gpu" -> "g p u"), compound words ("nvlink" -> "nv link"), 

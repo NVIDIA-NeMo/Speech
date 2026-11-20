@@ -1,6 +1,7 @@
 [MAIN]
 ignore-paths=tests
 max-line-length=119
+docstring-min-length=10
 
 [MESSAGES CONTROL]
 disable=all

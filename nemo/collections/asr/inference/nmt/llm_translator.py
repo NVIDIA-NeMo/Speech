@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,11 +16,20 @@
 
 import os
 import string
+from typing import Final
 
 import torch
+from huggingface_hub import snapshot_download
+from huggingface_hub.utils import LocalEntryNotFoundError
 from omegaconf import DictConfig, OmegaConf
 
-from nemo.collections.asr.inference.nmt.prompts import EuroLLMTranslatorPromptTemplate, PromptTemplate
+from nemo.collections.asr.inference.nmt.prompts import (
+    EuroLLMTranslatorPromptTemplate,
+    PromptTemplate,
+    QwenReasoningTranslatorPromptTemplate,
+    RivaTranslatorPromptTemplate,
+    RivaV2TranslatorPromptTemplate,
+)
 
 try:
     from vllm import LLM, SamplingParams
@@ -28,9 +38,41 @@ except ImportError as e:
 
 from nemo.utils import logging
 
-EURO_LLM_INSTRUCT_SMALL = "utter-project/EuroLLM-1.7B-Instruct"
-EURO_LLM_INSTRUCT_LARGE = "utter-project/EuroLLM-9B-Instruct"
-SUPPORTED_TRANSLATION_MODELS = [EURO_LLM_INSTRUCT_SMALL, EURO_LLM_INSTRUCT_LARGE]
+RIVA_V2_MODEL_NAME: Final[str] = "nvidia/Riva-Translate-4B-Instruct-v2"
+CHINESE_LANGUAGE_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "chinese",
+        "simplified chinese",
+        "traditional chinese",
+        "zh",
+        "zh-cn",
+        "zh-tw",
+    }
+)
+
+TRANSLATION_MODELS_BY_SERIES: Final[dict[str, tuple[str, ...]]] = {
+    "eurollm": (
+        "utter-project/EuroLLM-1.7B-Instruct",
+        "utter-project/EuroLLM-9B-Instruct",
+    ),
+    "qwen3": (
+        "Qwen/Qwen3-4B-Instruct-2507",
+        "Qwen/Qwen3-8B",
+    ),
+    "qwen3.5": (
+        "Qwen/Qwen3.5-4B",
+        "Qwen/Qwen3.5-9B",
+        "Qwen/Qwen3.5-27B",
+        "Qwen/Qwen3.5-35B-A3B",
+    ),
+    "riva": (
+        "nvidia/Riva-Translate-4B-Instruct",
+        RIVA_V2_MODEL_NAME,
+    ),
+}
+SUPPORTED_TRANSLATION_MODELS: Final[tuple[str, ...]] = tuple(
+    model for series_models in TRANSLATION_MODELS_BY_SERIES.values() for model in series_models
+)
 
 
 class LLMTranslator:
@@ -83,11 +125,14 @@ class LLMTranslator:
         self.split_batch = self.batch_size > 0
 
         self.nmt_model = self.load_model(llm_params)
+        self.is_riva_v2 = model_name == RIVA_V2_MODEL_NAME
+        self.prefix_tokenizer = self.nmt_model.get_tokenizer() if self.is_riva_v2 else None
         self.sampling_params = SamplingParams(**sampling_params)
 
         self.source_language = source_language
         self.target_language = target_language
         self.prompt_template = self.get_prompt_template(model_name)
+        self.use_token_prefix_boundaries = self.is_riva_v2 and self._is_chinese(target_language)
         self.waitk = waitk
 
     @staticmethod
@@ -104,6 +149,10 @@ class LLMTranslator:
         if isinstance(params, DictConfig):
             return OmegaConf.to_container(params)
         return params
+
+    @staticmethod
+    def _is_chinese(language: str) -> bool:
+        return language.lower() in CHINESE_LANGUAGE_NAMES
 
     @staticmethod
     def setup_device(device: str, device_id: int) -> tuple[str, int]:
@@ -145,16 +194,34 @@ class LLMTranslator:
         Raises:
             ValueError: if model is not supported for translation
         """
-        if model_name in [EURO_LLM_INSTRUCT_SMALL, EURO_LLM_INSTRUCT_LARGE]:
+        if model_name not in SUPPORTED_TRANSLATION_MODELS:
+            raise ValueError(
+                f"Model {model_name} is not supported for translation. Supported models are: {SUPPORTED_TRANSLATION_MODELS}"
+            )
+
+        if model_name in TRANSLATION_MODELS_BY_SERIES["eurollm"]:
             return EuroLLMTranslatorPromptTemplate
 
-        raise ValueError(
-            f"Model {model_name} is not supported for translation. Supported models are: {SUPPORTED_TRANSLATION_MODELS}"
-        )
+        # Instruct qwen model template is similar to EuroLLM, so we use the same prompt template
+        if model_name == "Qwen/Qwen3-4B-Instruct-2507":
+            return EuroLLMTranslatorPromptTemplate
+
+        if (
+            model_name in TRANSLATION_MODELS_BY_SERIES["qwen3.5"]
+            or model_name in TRANSLATION_MODELS_BY_SERIES["qwen3"]
+        ):
+            return QwenReasoningTranslatorPromptTemplate
+
+        if model_name == RIVA_V2_MODEL_NAME:
+            return RivaV2TranslatorPromptTemplate
+
+        if model_name in TRANSLATION_MODELS_BY_SERIES["riva"]:
+            return RivaTranslatorPromptTemplate
 
     def load_model(self, llm_params: dict) -> LLM:
         """
         Load NMT model in vLLM format.
+        If the model is not found in the local cache, it will be downloaded from the HuggingFace model hub.
         Args:
             llm_params: (dict) parameters for the LLM model
         Returns:
@@ -163,11 +230,43 @@ class LLMTranslator:
             RuntimeError: If model loading fails.
         """
         try:
-            os.environ["CUDA_VISIBLE_DEVICES"] = str(self.device_id)
-            model = LLM(model=self.model_name, **llm_params)
+            # Respect process-level GPU isolation. Overwriting this after ASR initializes
+            # CUDA can move the vLLM worker onto a different physical device.
+            os.environ.setdefault("CUDA_VISIBLE_DEVICES", str(self.device_id))
+            local_path = self._get_local_model_path(self.model_name, revision=llm_params.get("revision"))
+            if local_path is not None and os.path.exists(local_path):
+                logging.info(f"Loading LLM from local cache path: {local_path}")
+                model_name = local_path
+            else:
+                logging.info(f"Loading LLM from model name: {self.model_name}")
+                model_name = self.model_name
+            model = LLM(model=model_name, **llm_params)
             return model
         except Exception as e:
             raise RuntimeError(f"Model loading failed: {str(e)}") from e
+
+    def _get_local_model_path(self, repo_id: str, revision: str | None = None):
+        """
+        Get local model path from HuggingFace model hub.
+        Args:
+            repo_id: (str) repository ID of the model
+            revision: (str | None) model revision to resolve in the local cache
+        Returns:
+            local_path: (str) local path of the model
+        Raises:
+            LocalEntryNotFoundError: If model is not found in the local cache
+        """
+        try:
+            return snapshot_download(
+                repo_id=repo_id,
+                revision=revision,
+                local_files_only=True,
+            )
+        except LocalEntryNotFoundError:
+            logging.warning(
+                f"Model {repo_id} is not found in the local cache. Downloading from HuggingFace model hub."
+            )
+            return None
 
     def translate_batch(
         self,
@@ -194,15 +293,46 @@ class LLMTranslator:
         for src_lang, tgt_lang, src_prefix, tgt_prefix, src_context, tgt_context in zip(
             src_langs, tgt_langs, asr_transcripts, prefixes, src_contexts, tgt_contexts
         ):
-            text = self.prompt_template.format(src_lang, tgt_lang, src_prefix, tgt_prefix, src_context, tgt_context)
+            if self.is_riva_v2:
+                messages = self.prompt_template.messages(
+                    src_lang, tgt_lang, src_prefix, tgt_prefix, src_context, tgt_context
+                )
+                has_target_prefix = bool(tgt_prefix.strip())
+                text = self.prefix_tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=not has_target_prefix,
+                    continue_final_message=has_target_prefix,
+                )
+            else:
+                text = self.prompt_template.format(
+                    src_lang, tgt_lang, src_prefix, tgt_prefix, src_context, tgt_context
+                )
             input_texts.append(text)
 
         outputs = self.nmt_model.generate(input_texts, self.sampling_params, use_tqdm=False)
         translations = []
-        for tgt_prefix, output in zip(prefixes, outputs):
+        for tgt_prefix, tgt_lang, output in zip(prefixes, tgt_langs, outputs):
             output_text = output.outputs[0].text
             output_text = self.prompt_template.extract(output_text)
-            translations.append(f"{tgt_prefix}{output_text}")
+            if tgt_prefix:
+                if self.is_riva_v2:
+                    if self._is_chinese(tgt_lang):
+                        separator = ""
+                    else:
+                        output_text = output_text.strip()
+                        separator = ""
+                        if (
+                            output_text
+                            and output_text[0] not in string.punctuation
+                            and tgt_prefix[-1] not in "([{'\"«„“"
+                        ):
+                            separator = " "
+                    translations.append(f"{tgt_prefix}{separator}{output_text}")
+                else:
+                    translations.append(f"{tgt_prefix} {output_text.strip()}")
+            else:
+                translations.append(output_text.strip())
         return translations
 
     def translate(
@@ -242,6 +372,26 @@ class LLMTranslator:
             )
         return all_translations
 
+    @staticmethod
+    def _token_boundaries(tokenizer, text: str) -> tuple[set[int], list[int]]:
+        encoded = tokenizer(text, add_special_tokens=False, return_offsets_mapping=True)
+        return {end for _, end in encoded["offset_mapping"]}, encoded["input_ids"]
+
+    def _trim_lcp_to_token_boundary(self, previous: str, current: str, lcp: str) -> str:
+        """Retreat an LCP to a boundary shared by both model tokenizations."""
+
+        if not lcp:
+            return ""
+        previous_boundaries, previous_ids = self._token_boundaries(self.prefix_tokenizer, previous)
+        current_boundaries, current_ids = self._token_boundaries(self.prefix_tokenizer, current)
+        shared_boundaries = previous_boundaries & current_boundaries
+        for boundary in sorted((offset for offset in shared_boundaries if offset <= len(lcp)), reverse=True):
+            prefix = lcp[:boundary]
+            prefix_ids = self.prefix_tokenizer.encode(prefix, add_special_tokens=False)
+            if previous_ids[: len(prefix_ids)] == prefix_ids and current_ids[: len(prefix_ids)] == prefix_ids:
+                return prefix
+        return ""
+
     def get_prefixes(
         self,
         asr_transcripts: list[str],
@@ -265,8 +415,10 @@ class LLMTranslator:
             lcp = os.path.commonprefix([prev_trans, trans])
             had_leading_space = lcp.startswith(" ")
 
+            if self.use_token_prefix_boundaries:
+                lcp = self._trim_lcp_to_token_boundary(prev_trans, trans, lcp)
             # If lcp happens mid-word, remove generated ending up to the first full word
-            if (len(lcp) > 0) and (lcp[-1] not in f"{string.punctuation} "):
+            elif (len(lcp) > 0) and (lcp[-1] not in f"{string.punctuation} "):
                 lcp = " ".join(lcp.split()[:-1])
 
             # Remove trailing whitespaces

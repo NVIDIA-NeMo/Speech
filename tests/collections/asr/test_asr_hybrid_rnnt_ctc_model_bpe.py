@@ -1,4 +1,5 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -188,6 +189,7 @@ class TestEncDecHybridRNNTCTCBPEModel:
         reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_save_restore_artifact(self, hybrid_asr_model):
         hybrid_asr_model.train()
 
@@ -207,6 +209,7 @@ class TestEncDecHybridRNNTCTCBPEModel:
         reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_save_restore_artifact_spe(self, hybrid_asr_model, test_data_dir):
         hybrid_asr_model.train()
 
@@ -227,6 +230,7 @@ class TestEncDecHybridRNNTCTCBPEModel:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_save_restore_artifact_agg(self, hybrid_asr_model, test_data_dir):
         tokenizer_dir = os.path.join(test_data_dir, "asr", "tokenizers", "an4_spe_128")
         tok_en = {"dir": tokenizer_dir, "type": "wpe"}

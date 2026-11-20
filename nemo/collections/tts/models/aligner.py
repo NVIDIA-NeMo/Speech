@@ -1,4 +1,5 @@
-# Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,6 +25,7 @@ from torch import nn
 
 from nemo.collections.tts.losses.aligner_loss import BinLoss, ForwardSumLoss
 from nemo.collections.tts.models.base import NeedsNormalizer
+from nemo.collections.tts.one_logger import TTSThroughputPolicy
 from nemo.collections.tts.parts.utils.helpers import (
     binarize_attention,
     g2p_backward_compatible_support,
@@ -32,6 +34,7 @@ from nemo.collections.tts.parts.utils.helpers import (
 )
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
+from nemo.lightning.speech_throughput import register_throughput_policy
 from nemo.utils import logging, model_utils
 
 HAVE_WANDB = True
@@ -41,6 +44,7 @@ except ModuleNotFoundError:
     HAVE_WANDB = False
 
 
+@register_throughput_policy(TTSThroughputPolicy)
 class AlignerModel(NeedsNormalizer, ModelPT):
     """Speech-to-text alignment model (https://arxiv.org/pdf/2108.10447.pdf) that is used to learn alignments between mel spectrogram and text."""
 
@@ -73,9 +77,7 @@ class AlignerModel(NeedsNormalizer, ModelPT):
         self.forward_sum_loss = ForwardSumLoss()
         self.bin_loss = BinLoss()
         self.add_bin_loss = False
-        self.bin_loss_scale = 0.0
         self.bin_loss_start_ratio = cfg.bin_loss_start_ratio
-        self.bin_loss_warmup_epochs = cfg.bin_loss_warmup_epochs
 
     def _setup_tokenizer(self, cfg):
         text_tokenizer_kwargs = {}
@@ -140,9 +142,6 @@ class AlignerModel(NeedsNormalizer, ModelPT):
             logging.info(f"Using hard attentions after epoch: {self.current_epoch}")
             self.add_bin_loss = True
 
-        if self.add_bin_loss:
-            self.bin_loss_scale = min((self.current_epoch - bin_loss_start_epoch) / self.bin_loss_warmup_epochs, 1.0)
-
     def training_step(self, batch, batch_idx):
         audio, audio_len, text, text_len, attn_prior = batch
         spec, spec_len = self.preprocessor(input_signal=audio, length=audio_len)
@@ -179,7 +178,7 @@ class AlignerModel(NeedsNormalizer, ModelPT):
                         plot_alignment_to_numpy(
                             np.fliplr(np.rot90(attn_soft[i, 0, : spec_len[i], : text_len[i]].data.cpu().numpy()))
                         ),
-                        caption=f"attn soft",
+                        caption="attn soft",
                     ),
                 )
 
@@ -188,7 +187,7 @@ class AlignerModel(NeedsNormalizer, ModelPT):
                         plot_alignment_to_numpy(
                             np.fliplr(np.rot90(attn_hard[i, 0, : spec_len[i], : text_len[i]].data.cpu().numpy()))
                         ),
-                        caption=f"attn hard",
+                        caption="attn hard",
                     )
                 )
 

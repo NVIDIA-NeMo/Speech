@@ -3,6 +3,8 @@ Training and Scaling
 
 This page provides detailed information on training speechlm2 models, including setup requirements, running experiments at scale, debugging, and parallelism strategies.
 
+For reward-based transcription fine-tuning, see :ref:`speechlm-gspo`.
+
 Running Experiments
 -------------------
 
@@ -67,6 +69,101 @@ Configuration Files
 
 The main configuration file (``s2s_training.yaml``) contains all model, training, and data parameters. See :doc:`configs` for more details. It's recommended to copy and modify this file rather than overriding options in the SLURM script to maintain versioning and configuration clarity.
 
+Short-Recording SpecAugment
+---------------------------
+
+SpeechLM perception modules automatically cap aggregate time masking at 10% of
+valid frames for recordings shorter than one second. The threshold uses the
+frontend's frame duration. This policy supports dense and packed PyTorch
+SpecAugment; long recordings retain their existing masks and RNG behavior.
+
+The Numba backend does not support this cap. Enabling the policy overrides
+``use_numba_spec_augment: true`` with PyTorch SpecAugment and logs a warning,
+including when restoring a checkpoint. The vectorized PyTorch implementation
+is independent of Numba and remains available through
+``use_vectorized_spec_augment: true``. Set ``use_numba_spec_augment: false``
+explicitly in the model's ``spec_augment`` configuration to select this backend
+without the override warning.
+
+For a restored Numba experiment, the backend switch may change RNG behavior,
+outputs and throughput, including for batches containing only long recordings.
+The long-recording preservation guarantee applies relative to the selected
+PyTorch implementation. Outside SpeechLM, enabling the cap through
+``SpectrogramAugmentation.configure_short_recording_time_mask_cap`` has the
+same behavior; Numba augmentation without the cap remains supported.
+
+Zero-Weight Dataset Sources
+---------------------------
+
+Zero-weight sources remain disabled at every reweighting temperature, including
+zero. Infinite training mixtures retain disabled source slots for restored
+packing-buffer origins. Finite mixtures (``force_finite: true`` or
+``metadata_only: true``) omit disabled slots and stop when all positive-weight
+sources are exhausted. Retain the infinite mixture's source layout when
+resuming its saved data state.
+
+.. _speechlm-lr-only-continuation:
+
+Reducing LR After a Full-State Resume
+-------------------------------------
+
+``ScaleRestoredLearningRate`` applies a one-time reduction to a restored NeMo
+``CosineAnnealing`` schedule. It preserves optimizer moments, scheduler position,
+model weights and the global step. Use it when continuing a checkpoint with a
+smaller learning rate while retaining the original cosine schedule horizon.
+It requires exactly one optimizer and one ``CosineAnnealing`` scheduler; all
+restored parameter groups must have the specified original base LR and the
+scheduler must have the specified original minimum LR.
+
+Add the callback to the training YAML and resume the **full** checkpoint:
+
+.. code-block:: yaml
+
+    model:
+      init_from_checkpoint: null
+
+    trainer:
+      callbacks:
+        - _target_: nemo.collections.speechlm2.parts.lr_only_resume.ScaleRestoredLearningRate
+          factor: 0.75
+          source_step: 16500
+          original_base_lr: 0.0001
+          original_min_lr: 0.00001
+
+    exp_manager:
+      resume_if_exists: true
+      resume_from_checkpoint: /path/to/source/checkpoints/step=16500.ckpt
+
+Keep the existing model, optimizer, scheduler and other callback configuration
+from the source experiment. The example's rates must match the source scheduler's
+``base_lrs`` and ``min_lr`` exactly; its current decayed LR is scaled by the same
+factor. ``factor`` must be greater than zero and less than one. The SpeechLM
+training entrypoint resolves ``trainer.callbacks`` from this configuration.
+``model.init_from_checkpoint`` loads weights only and cannot supply this callback's
+required optimizer, scheduler and global-step state.
+
+The first resume must use the canonical source path ending in
+``/step=<source_step>.ckpt``. For this example, the required basename is
+``step=16500.ckpt`` and the restored global step must be 16500. Both a single-file
+checkpoint and a distributed checkpoint directory can use this basename. Pass
+an absolute path to that checkpoint; ``step=16500-last.ckpt``, ``last.ckpt`` and
+other aliases do not satisfy the callback's source check.
+
+After applying the reduction, advance training by at least one optimizer step
+before saving a continuation checkpoint. For every later resume, **retain the
+same callback configuration and all four original arguments**. Change only
+``exp_manager.resume_from_checkpoint`` to the new continuation checkpoint, for
+example ``/path/to/continuation/checkpoints/step=17000.ckpt``. Do not change
+``source_step`` to 17000 or apply ``factor`` again. Lightning restores the
+callback's checkpointed ``applied`` state, keyed by its factor and original
+source step, so it skips rescaling and continues the already reduced schedule.
+Removing the callback drops that restore contract; changing its configuration
+can prevent its saved state from being matched.
+
+The callback does not migrate dataloader state or checkpoint formats. Retain the
+source experiment's sampler, packing-buffer and data configuration when exact
+data continuation is required.
+
 Debugging
 ---------
 
@@ -101,8 +198,10 @@ AutomodelParallelStrategy (SALMAutomodel)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 For ``SALMAutomodel``, the collection provides ``AutomodelParallelStrategy`` which
-delegates device mesh creation and parallelism to NeMo Automodel. This strategy
-supports FSDP2, TP, PP, CP, EP (MoE), and HSDP.
+delegates topology resolution and parallelism to NeMo Automodel. The strategy can
+construct topologies for FSDP2, TP, PP, CP, EP (MoE), and HSDP, but actual
+support depends on the selected LLM architecture, backend, and combination of
+parallelism axes.
 
 .. code-block:: yaml
 
@@ -120,9 +219,11 @@ supports FSDP2, TP, PP, CP, EP (MoE), and HSDP.
         activation_checkpointing_llm: false         # LLM transformer blocks
         activation_checkpointing_perception: false  # speech encoder layers
 
-The model's ``configure_model()`` receives the device mesh and passes it to
-Automodel's ``from_pretrained`` for memory-efficient loading (each GPU only
-loads its own shard).
+The model's ``configure_model()`` receives a resolved ``distributed_setup`` and
+passes it to Automodel's ``from_pretrained`` for memory-efficient loading
+(each GPU only loads its own shard). ``SALMAutomodel`` currently rejects
+``pp_size > 1``; use pipeline parallelism only after model integration adds
+pipeline execution support.
 
 The speech encoder / perception module currently only supports FSDP2 (controlled via ``dp_size``).
 
@@ -164,6 +265,16 @@ optimizations:
 * **DeepEP** (Deep Expert Parallelism): An efficient all-to-all communication
   primitive for routing tokens to experts across GPUs, significantly reducing the
   communication overhead of Expert Parallelism.
+
+.. important::
+   For the native Nemotron-V3 backbone, the validated ``SALMAutomodel``
+   parallelism axes are FSDP2, EP, and CP. CP requires packed sequences and
+   Transformer Engine attention, as described in the Context Parallelism
+   section below.
+
+   Nemotron-V3 does not provide a TP plan, so set ``tp_size: 1``. HSDP is not
+   supported in this path, so set ``dp_replicate_size: 1``. PP has not been
+   validated for this SpeechLM2 configuration, so set ``pp_size: 1``.
 
 Example: training SALMAutomodel with Nemotron Nano V3 on 8 GPUs with EP=8:
 
@@ -299,6 +410,10 @@ For Fully Sharded Data Parallel training:
 FSDP2 shards the model parameters across GPUs, all-gathers them for forward/backward passes, and then de-allocates after computation. This allows training of larger models with limited GPU memory.
 See `PyTorch FSDP2 <https://pytorch.org/docs/stable/distributed.fsdp.fully_shard.html>`_ for more details.
 
+Sharded DCP checkpoints restore FusedAdam BF16 moments directly into existing GPU
+buffers when master-weight remainders are enabled. Other optimizer configurations
+use the standard restore path.
+
 Tensor Parallelism Configuration (HF Automodel)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -330,3 +445,11 @@ When customizing the training scripts, keep these points in mind:
 1. **Path Overrides**: Override paths in the YAML configuration files with your own, as needed
 2. **W&B Keys**: Update Weights & Biases API keys in configuration files
 3. **Batch Size Tuning**: Adjust batch size based on your GPU memory and model size
+
+.. _speechlm-gspo:
+
+Post-training
+------------------
+
+See
+`SpeechLM GSPO guide <https://github.com/NVIDIA-NeMo/RL/blob/main/docs/guides/gspo-speechlm.md>`_

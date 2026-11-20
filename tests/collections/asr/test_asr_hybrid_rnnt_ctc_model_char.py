@@ -1,4 +1,5 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -346,6 +347,7 @@ class TestEncDecHybridRNNTCTCModel:
             'preserve_frame_confidence',
             'tdt_include_duration_confidence',
             'confidence_method_cfg',
+            'length_norm_power',  # cache-aware streaming only
         ]
 
         result = assert_dataclass_signature_match(

@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,6 +21,7 @@ from typing import Dict, Iterable, List, Tuple
 import torch
 import torch.nn.functional as F
 from einops import rearrange
+from huggingface_hub import hf_hub_download
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf
 
@@ -41,6 +43,7 @@ from nemo.collections.tts.losses.audio_codec_loss import (
 )
 from nemo.collections.tts.modules.audio_codec_modules import ResNetSpeakerEncoder, default_precision
 from nemo.collections.tts.modules.common import GaussianDropout
+from nemo.collections.tts.one_logger import AudioCodecThroughputPolicy
 from nemo.collections.tts.parts.utils.callbacks import LoggingCallback
 from nemo.collections.tts.parts.utils.helpers import get_batch_size, get_num_workers
 from nemo.collections.tts.parts.utils.tts_dataset_utils import resample_batch
@@ -56,9 +59,11 @@ from nemo.core.neural_types.elements import (
 )
 from nemo.core.neural_types.neural_type import NeuralType
 from nemo.core.optim.lr_scheduler import compute_max_steps, prepare_lr_scheduler
+from nemo.lightning.speech_throughput import register_throughput_policy
 from nemo.utils import logging, model_utils
 
 
+@register_throughput_policy(AudioCodecThroughputPolicy)
 class AudioCodecModel(ModelPT):
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         # Convert to Hydra 1.0 compatible DictConfig
@@ -87,6 +92,9 @@ class AudioCodecModel(ModelPT):
 
         # Encoder setup
         self.audio_encoder = safe_instantiate(cfg.audio_encoder)
+        self.freeze_encoder = cfg.get("freeze_encoder", False)
+        if self.freeze_encoder:
+            self._freeze_encoder()
 
         # Optionally, add gaussian noise to encoder output as an information bottleneck
         encoder_noise_stdev = cfg.get("encoder_noise_stdev", 0.0)
@@ -97,6 +105,8 @@ class AudioCodecModel(ModelPT):
 
         if "vector_quantizer" in cfg:
             self.vector_quantizer = safe_instantiate(cfg.vector_quantizer)
+            self.codebook_dropout_rate = cfg.get("codebook_dropout_rate", 0.0)
+            logging.info(f"Codebook dropout rate: {self.codebook_dropout_rate}")
 
             vq_output_types = list(self.vector_quantizer.output_types.keys())
 
@@ -106,10 +116,10 @@ class AudioCodecModel(ModelPT):
             else:
                 self.vector_quantizer_has_commit_loss = False
                 logging.info('Vector quantizer does not support commit loss.')
-
         else:
             logging.warning('Vector quantizer will not be used.')
             self.vector_quantizer = None
+            self.codebook_dropout_rate = 0.0
 
         # Decoder setup
         self.audio_decoder = safe_instantiate(cfg.audio_decoder)
@@ -223,11 +233,11 @@ class AudioCodecModel(ModelPT):
         self.scl_loss_scale = cfg.get("scl_loss_scale", False)
         if self.use_scl_loss:
             self.speaker_encoder = ResNetSpeakerEncoder()
-            # load pretrained model
-            # self.speaker_encoder.load_checkpoint("https://github.com/coqui-ai/TTS/releases/download/speaker_encoder_model/model_se.pth.tar")
-            self.speaker_encoder.load_checkpoint(
-                "https://huggingface.co/Edresson/Speaker_Encoder_H_ASP/resolve/main/pytorch_model.bin", strict=False
+            speaker_encoder_checkpoint = hf_hub_download(
+                repo_id="Edresson/Speaker_Encoder_H_ASP",
+                filename="pytorch_model.bin",
             )
+            self.speaker_encoder.load_checkpoint(speaker_encoder_checkpoint, strict=False)
             # freeze the pretrained speaker encoder
             self.speaker_encoder.freeze()
             logging.info("Speaker encoder loaded and frozen !!")
@@ -246,6 +256,19 @@ class AudioCodecModel(ModelPT):
 
         self.clip_grad_norm = cfg.get("clip_grad_norm", None)
         self.skip_nan_gradients = cfg.get("skip_nan_gradients", False)
+
+    def train(self, mode: bool = True):
+        # Override the train method to keep a frozen encoder in evaluation mode after validation.
+        super().train(mode)
+        if getattr(self, "freeze_encoder", False):
+            self.audio_encoder.eval()
+        return self
+
+    def _freeze_encoder(self):
+        for p in self.audio_encoder.parameters():
+            p.requires_grad = False
+        self.audio_encoder.eval()
+        logging.info("Encoder frozen: excluded from generator optimizer.")
 
     @property
     def dtype(self):
@@ -428,6 +451,7 @@ class AudioCodecModel(ModelPT):
             "audio": NeuralType(('B', 'T_audio'), AudioSignal()),
             "audio_len": NeuralType(tuple('B'), LengthsType()),
             "sample_rate": NeuralType(tuple(), IntType(), optional=True),
+            "num_codebooks": NeuralType(tuple(), IntType(), optional=True),
         },
         output_types={
             "tokens": NeuralType(('B', 'C', 'T_encoded'), TokenIndex()),
@@ -435,7 +459,11 @@ class AudioCodecModel(ModelPT):
         },
     )
     def encode(
-        self, audio: torch.Tensor, audio_len: torch.Tensor, sample_rate: Optional[int] = None
+        self,
+        audio: torch.Tensor,
+        audio_len: torch.Tensor,
+        sample_rate: Optional[int] = None,
+        num_codebooks: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Convert input time-domain audio signal into a discrete representation (tokens).
 
@@ -443,6 +471,8 @@ class AudioCodecModel(ModelPT):
             audio: input time-domain signal, shape `(batch, number of samples)`
             audio_len: valid length for each example in the batch, shape `(batch size,)`
             sample_rate: sample rate of input audio (int)
+            num_codebooks: number of codebooks to use for reconstructing audio.
+                Using fewer codebooks will only be accurate for codecs trained with codebook dropout.
 
         Returns:
             Tokens for each codebook for each frame, shape `(batch, number of codebooks, number of frames)`,
@@ -450,6 +480,12 @@ class AudioCodecModel(ModelPT):
         """
         # Apply encoder to obtain a continuous vector for each frame
         encoded, encoded_len = self.encode_audio(audio=audio, audio_len=audio_len, sample_rate=sample_rate)
+
+        if num_codebooks:
+            assert self.vector_quantizer is not None
+            num_codebooks_batch = num_codebooks * torch.ones([encoded.shape[0]])
+            encoded = self.vector_quantizer.dropout_codebooks(encoded=encoded, num_codebooks=num_codebooks_batch)
+
         # Apply quantizer to obtain discrete representation per frame
         tokens = self.quantize(encoded=encoded, encoded_len=encoded_len)
         return tokens, encoded_len
@@ -550,6 +586,17 @@ class AudioCodecModel(ModelPT):
         audio, audio_len = self.pad_audio(audio=audio, audio_len=audio_len, samples_per_frame=self.samples_per_frame)
         return audio, audio_len
 
+    def _dropout_random_codebooks(self, encoded):
+        """Dropout a random number of codebooks for each batch element"""
+        batch_size = encoded.shape[0]
+        # [B]
+        apply_dropout = torch.rand(size=[batch_size], device=encoded.device) < self.codebook_dropout_rate
+        # Select random integers in range (1, num_codebooks - 1)
+        num_codebooks = torch.randint(low=1, high=self.num_codebooks, size=[batch_size], device=encoded.device)
+        num_codebooks = torch.where(apply_dropout, num_codebooks, self.num_codebooks)
+        out = self.vector_quantizer.dropout_codebooks(encoded=encoded, num_codebooks=num_codebooks)
+        return out
+
     def _process_batch(self, batch):
         # [B, T_audio]
         audio = batch.get("audio")
@@ -578,17 +625,28 @@ class AudioCodecModel(ModelPT):
         else:
             commit_loss = 0.0
 
+        mmd_inputs = encoded
+        decoder_inputs = encoded
+        if self.training and self.codebook_dropout_rate:
+            decoder_inputs = self._dropout_random_codebooks(encoded)
+            # For MMD, the forward pass includes all pre-codebook-dropout codes, while
+            # the backward pass excludes the dropped codes. This avoids putting MMD
+            # pressure on dropped codes which would not be balanced by reconstruction
+            # losses and could therefore push the dropped dimensions in a degenerate
+            # direction, e.g. constants.
+            mmd_inputs = encoded.detach() + decoder_inputs - decoder_inputs.detach()
+
         # [B, T]
-        audio_gen, _ = self.audio_decoder(inputs=encoded, input_len=encoded_len)
+        audio_gen, _ = self.audio_decoder(inputs=decoder_inputs, input_len=encoded_len)
 
         if self.training and self.use_slm_loss:
             slm_emb = self.slm_encoder(audio=audio)
-            slm_emb_pred = self.slm_predictor(inputs=encoded)
+            slm_emb_pred = self.slm_predictor(inputs=decoder_inputs)
         else:
             slm_emb = None
             slm_emb_pred = None
 
-        return audio, audio_len, audio_gen, commit_loss, encoded, slm_emb, slm_emb_pred
+        return audio, audio_len, audio_gen, commit_loss, mmd_inputs, slm_emb, slm_emb_pred
 
     @property
     def disc_update_prob(self) -> float:
@@ -645,7 +703,7 @@ class AudioCodecModel(ModelPT):
         else:
             optim_gen, optim_disc = self.optimizers()
 
-        audio, audio_len, audio_gen, commit_loss, codes, slm_emb, slm_emb_pred = self._process_batch(batch)
+        audio, audio_len, audio_gen, commit_loss, mmd_inputs, slm_emb, slm_emb_pred = self._process_batch(batch)
 
         metrics = {
             "global_step": self.global_step,
@@ -714,13 +772,13 @@ class AudioCodecModel(ModelPT):
             generator_losses.append(self.commit_loss_scale * commit_loss)
 
         if self.mmd_loss_scale:
-            loss_mmd = self.mmd_loss_fn(inputs=codes)
+            loss_mmd = self.mmd_loss_fn(inputs=mmd_inputs)
             metrics["g_loss_mmd"] = loss_mmd
             if self.current_epoch >= self.mmd_loss_start_epoch:
                 generator_losses.append(self.mmd_loss_scale * loss_mmd)
 
         if self.mmd_time_loss_scale:
-            loss_mmd_time = self.mmd_time_loss_fn(inputs=codes)
+            loss_mmd_time = self.mmd_time_loss_fn(inputs=mmd_inputs)
             metrics["g_loss_mmd_time"] = loss_mmd_time
             if self.current_epoch >= self.mmd_loss_start_epoch:
                 generator_losses.append(self.mmd_time_loss_scale * loss_mmd_time)
@@ -936,11 +994,14 @@ class AudioCodecModel(ModelPT):
         sched_config = optim_config.pop("sched", None)
         OmegaConf.set_struct(optim_config, True)
 
+        if self.freeze_encoder:
+            encoder_params = []
+        else:
+            encoder_params = list(self.audio_encoder.parameters())
+
         se_params = self.speaker_encoder.parameters() if self.use_scl_loss else []
         vq_params = self.vector_quantizer.parameters() if self.vector_quantizer else []
-        self.gen_params = list(
-            itertools.chain(self.audio_encoder.parameters(), self.audio_decoder.parameters(), vq_params, se_params)
-        )
+        self.gen_params = list(itertools.chain(encoder_params, self.audio_decoder.parameters(), vq_params, se_params))
         optim_g = safe_instantiate(optim_config, params=self.gen_params)
 
         if self.discriminator is None:

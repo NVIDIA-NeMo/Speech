@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -95,7 +96,7 @@ def get_tokenizer(
         except (ImportError, ModuleNotFoundError):
             raise ImportError(
                 "Megatron-core was not found. Please see the NeMo README for installation instructions: "
-                " https://github.com/NVIDIA/NeMo#megatron-gpt."
+                " https://github.com/NVIDIA-NeMo/Speech#megatron-gpt."
             )
         if vocab_file is None:
             vocab_file = get_megatron_vocab_file(tokenizer_name)

@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -35,8 +36,23 @@
 import os
 import shutil
 from collections import deque
-from typing import Dict, List, Optional
+from typing import Optional
+
 import numpy as np
+
+from nemo.collections.common.tokenizers.tokenizer_spec import VarBPERepresentation
+from nemo.core.utils.optional_libs import GRAPHVIZ_AVAILABLE, graphviz_required
+
+if GRAPHVIZ_AVAILABLE:
+    import graphviz
+
+
+def _softmax(x: np.ndarray):
+    """Compute softmax values for each sets of scores in x (numpy array)."""
+    x_max = np.max(x, axis=-1, keepdims=True)
+    exp_x = np.exp(x - x_max)
+    sum_exp_x = np.sum(exp_x, axis=-1, keepdims=True)
+    return exp_x / sum_exp_x
 
 
 class ContextState:
@@ -53,6 +69,8 @@ class ContextState:
         level: int,
         phrase: str = "",
         ac_threshold: float = 1.0,
+        is_primary: bool = True,
+        phrase_alpha: float = 1.0,
     ):
         """Create a ContextState.
 
@@ -82,6 +100,9 @@ class ContextState:
             The acoustic threshold (probability) of current context phrase, the
             value is valid only when current state is end state (is_end == True).
             Note: ac_threshold only used in keywords spotting.
+          phrase_alpha:
+            The per-phrase boosting weight multiplier of current context phrase, the
+            value is valid only when current state is end state (is_end == True).
         """
         self.id = id
         self.token = token
@@ -90,11 +111,14 @@ class ContextState:
         self.output_score = output_score
         self.is_end = is_end
         self.level = level
-        self.next = {}
+        self.next: dict[int, "ContextState"] = {}
+        self.primary_next: dict[int, "ContextState"] = {}
         self.phrase = phrase
         self.ac_threshold = ac_threshold
-        self.fail = None
-        self.output = None
+        self.is_primary = is_primary
+        self.phrase_alpha = phrase_alpha
+        self.fail: "ContextState | None" = None
+        self.output: "ContextState | None" = None
 
 
 class ContextGraph:
@@ -149,23 +173,29 @@ class ContextGraph:
         details of the algorithm.
         """
         queue = deque()
-        for token, node in self.root.next.items():
+        for token, node in self.root.primary_next.items():
             node.fail = self.root
             queue.append(node)
+        visited_ids = set()
+        visited_ids.add(self.root.id)
         while queue:
             current_node = queue.popleft()
-            for token, node in current_node.next.items():
+            if current_node.id in visited_ids:
+                continue
+            for token, node in current_node.primary_next.items():
+                if node.id in visited_ids or node.fail is not None:
+                    continue
                 fail = current_node.fail
-                if token in fail.next:
-                    fail = fail.next[token]
+                if token in fail.primary_next:
+                    fail = fail.primary_next[token]
                 else:
                     fail = fail.fail
-                    while token not in fail.next:
+                    while token not in fail.primary_next:
                         fail = fail.fail
                         if fail.token == -1:  # root
                             break
-                    if token in fail.next:
-                        fail = fail.next[token]
+                    if token in fail.primary_next:
+                        fail = fail.primary_next[token]
                 node.fail = fail
                 # fill the output arc
                 output = node.fail
@@ -177,14 +207,25 @@ class ContextGraph:
                 node.output = output
                 node.output_score += 0 if output is None else output.output_score
                 queue.append(node)
+            visited_ids.add(current_node.id)
+
+    def _get_token_score(self, depth: int, uniform_weights: Optional[bool], context_score: float):
+        if depth > 0 and not uniform_weights:
+            token_score = context_score * self.depth_scaling + np.log(
+                depth + 1
+            )  # depth scaling is used to give a larger score for all tokens after the first one
+        else:
+            token_score = context_score
+        return token_score
 
     def build(
         self,
-        token_ids: List[List[int]],
-        phrases: Optional[List[str]] = None,
-        scores: Optional[List[float]] = None,
-        ac_thresholds: Optional[List[float]] = None,
+        token_ids: list[list[int]],
+        phrases: Optional[list[str]] = None,
+        scores: Optional[list[float]] = None,
+        ac_thresholds: Optional[list[float]] = None,
         uniform_weights: Optional[bool] = False,
+        alphas: Optional[list[float]] = None,
     ):
         """Build the ContextGraph from a list of token list.
         It first build a trie from the given token lists, then fill the fail arc
@@ -214,9 +255,17 @@ class ContextGraph:
             The length of `ac_threshold` MUST be equal to the length of `token_ids`.
           uniform_weights:
             If True, the weights will be distributed uniformly for all tokens as in Icefall.
+          alphas:
+            The customize boosting weight multiplier for each word/phrase, None (or a None
+            entry) means the default value 1.0. The multiplier scales the whole token_score
+            of the phrase (including depth scaling terms), acting as a per-phrase counterpart
+            of the decode-time boosting_tree_alpha (the effective boost is
+            decode-time alpha * per-phrase alpha * base score). The length of `alphas` MUST
+            be equal to the length of `token_ids`.
 
         Note: The phrases would have shared states, the score of the shared states is
-              the MAXIMUM value among all the tokens sharing this state.
+              the MAXIMUM value among all the tokens sharing this state (effective,
+              i.e. alpha-scaled, scores are compared).
         """
         num_phrases = len(token_ids)
         if phrases is not None:
@@ -225,11 +274,14 @@ class ContextGraph:
             assert len(scores) == num_phrases, (len(scores), num_phrases)
         if ac_thresholds is not None:
             assert len(ac_thresholds) == num_phrases, (len(ac_thresholds), num_phrases)
+        if alphas is not None:
+            assert len(alphas) == num_phrases, (len(alphas), num_phrases)
 
         for index, tokens in enumerate(token_ids):
             phrase = "" if phrases is None else phrases[index]
             score = 0.0 if scores is None else scores[index]
             ac_threshold = 0.0 if ac_thresholds is None else ac_thresholds[index]
+            alpha = 1.0 if alphas is None or alphas[index] is None else alphas[index]
             node = self.root
             # If has customized score using the customized token score, otherwise
             # using the default score
@@ -237,12 +289,10 @@ class ContextGraph:
             threshold = self.ac_threshold if ac_threshold == 0.0 else ac_threshold
             for i, token in enumerate(tokens):
                 if token not in node.next:
-                    if i > 0 and not uniform_weights:
-                        token_score = context_score * self.depth_scaling + np.log(
-                            i + 1
-                        )  # depth scaling is used to give a larger score for all tokens after the first one
-                    else:
-                        token_score = context_score
+                    token_score = self._get_token_score(
+                        depth=i, uniform_weights=uniform_weights, context_score=context_score
+                    )
+                    token_score *= alpha
                     self.num_nodes += 1
                     is_end = i == len(tokens) - 1
                     node_score = node.node_score + token_score
@@ -256,10 +306,11 @@ class ContextGraph:
                         level=i + 1,
                         phrase=phrase if is_end else "",
                         ac_threshold=threshold if is_end else 0.0,
+                        phrase_alpha=alpha if is_end else 1.0,
                     )
                 else:
                     # node exists, get the score of shared state.
-                    token_score = max(context_score, node.next[token].token_score)
+                    token_score = max(alpha * context_score, node.next[token].token_score)
                     node.next[token].token_score = token_score
                     node_score = node.node_score + token_score
                     node.next[token].node_score = node_score
@@ -269,15 +320,192 @@ class ContextGraph:
                     if i == len(tokens) - 1:
                         node.next[token].phrase = phrase
                         node.next[token].ac_threshold = threshold
+                        node.next[token].phrase_alpha = max(alpha, node.next[token].phrase_alpha)
+                node.primary_next[token] = node.next[token]
                 node = node.next[token]
         self._fill_fail_output()
 
+    def build_from_var_bpe(
+        self,
+        token_ids: list[VarBPERepresentation],
+        phrases: Optional[list[str]] = None,
+        scores: Optional[list[float]] = None,
+        ac_thresholds: Optional[list[float]] = None,
+        uniform_weights: Optional[bool] = False,
+        alphas: Optional[list[float]] = None,
+        var_bpe_scoring_temp: float = 10.0,
+        var_bpe_penalize_subsplits: bool = True,
+    ):
+        """Build the ContextGraph from a list of token list.
+        It first builds a graph based on trie from the given token lists,
+        then fills the fail arc for each trie node.
+        Graph is based on trie from tokens similar to one created in `build` method, but we can have different paths
+        representing different BPE representations ending at the same state with the same path weight.
+
+        NB: unlike trie structure created in `build` method, which stores
+        both token (arc) score and node_score = prev.node_score + token_score
+        here we do not use token_score (0 weight) and treat `token_score = node_score - prev.node_score`
+        (does not matter for pure trie, but for this data structure it is an important difference)
+
+        See https://en.wikipedia.org/wiki/Trie for how to build a trie.
+
+        Args:
+          token_ids:
+            The given token lists to build the ContextGraph, it is a list of
+            token list, the token list contains the token ids
+            for a word/phrase. The token id could be an id of a char
+            (modeling with single Chinese char) or an id of a BPE
+            (modeling with BPEs).
+          phrases:
+            The given phrases, they are the original text of the token_ids, the
+            length of `phrases` MUST be equal to the length of `token_ids`.
+          scores:
+            The customize boosting score(token level) for each word/phrase,
+            0 means using the default value (i.e. self.context_score).
+            It is a list of floats, and the length of `scores` MUST be equal to
+            the length of `token_ids`.
+          ac_thresholds:
+            The customize trigger acoustic threshold (probability) for each phrase,
+            0 means using the default value (i.e. self.ac_threshold). It is
+            used only when this graph applied for the keywords spotting system.
+            The length of `ac_threshold` MUST be equal to the length of `token_ids`.
+          uniform_weights:
+            If True, the weights will be distributed uniformly for all tokens as in Icefall.
+          alphas:
+            The customize boosting weight multiplier for each word/phrase, None (or a None
+            entry) means the default value 1.0. The multiplier scales the whole per-token
+            score of the phrase, acting as a per-phrase counterpart of the decode-time
+            boosting_tree_alpha. The length of `alphas` MUST be equal to the length of `token_ids`.
+          var_bpe_scoring_temp:
+            scoring temperature to adjust weight assignment for "intermediate sub-tokens" (chars)
+            10.0 - conservative default, assign ~100% to the last (intermediate) transition;
+            0.0 - assign weight divided equally between all chars
+            (low values 0.1 ... 2.0 can work better with beam search with small phrase lists)
+          var_bpe_penalize_subsplits:
+            penalize sub-splits for var-BPE; `True` is recommended value
+
+        Note: The phrases would have shared states, the score of the shared states is
+              the MAXIMUM value among all the tokens sharing this state.
+        """
+
+        num_phrases = len(token_ids)
+        if phrases is not None:
+            assert len(phrases) == num_phrases, (len(phrases), num_phrases)
+        if scores is not None:
+            assert len(scores) == num_phrases, (len(scores), num_phrases)
+        if ac_thresholds is not None:
+            assert len(ac_thresholds) == num_phrases, (len(ac_thresholds), num_phrases)
+        if alphas is not None:
+            assert len(alphas) == num_phrases, (len(alphas), num_phrases)
+
+        var_bpe_representation: VarBPERepresentation
+        for index, var_bpe_representation in enumerate(token_ids):
+            phrase = "" if phrases is None else phrases[index]
+            score = 0.0 if scores is None else scores[index]
+            ac_threshold = 0.0 if ac_thresholds is None else ac_thresholds[index]
+            alpha = 1.0 if alphas is None or alphas[index] is None else alphas[index]
+            node = self.root
+            # If has customized score using the customized token score, otherwise
+            # using the default score
+            context_score = self.context_score if score == 0.0 else score
+            threshold = self.ac_threshold if ac_threshold == 0.0 else ac_threshold
+
+            canonical_lengths, tokens_with_merges = var_bpe_representation
+            token_scores = [0.0 for _ in range(len(tokens_with_merges))]
+            node_is_on_primary_path = [False for _ in range(len(tokens_with_merges))]
+            primary_context_scores = [0.0 for _ in range(len(tokens_with_merges))]
+            primary_path_back_jumps = [0 for _ in range(len(tokens_with_merges))]
+
+            k = 0
+            for depth, cur_token_len in enumerate(canonical_lengths):
+                node_is_on_primary_path[k + cur_token_len - 1] = True
+                token_score = self._get_token_score(
+                    depth=depth, uniform_weights=uniform_weights, context_score=context_score
+                )
+                token_score *= alpha  # bake per-phrase alpha into the whole per-token score
+                # distribute weight between sub-chains (chars)
+                # cur_len is (canonical) BPE token length (num elementary tokens/chars)
+                probs = _softmax(np.asarray([(p + 1) ** var_bpe_scoring_temp for p in range(cur_token_len)]))
+                for t in range(k, k + cur_token_len):
+                    token_scores[t] = token_score * probs[t - k]
+                primary_context_scores[k + cur_token_len - 1] = token_score
+                primary_path_back_jumps[k + cur_token_len - 1] = cur_token_len
+                k += cur_token_len
+
+            cur_nodes = [self.root]
+            acc_score = 0.0
+            for i, token_group in enumerate(tokens_with_merges):
+                token = token_group[0].token_id
+                token_score = token_scores[i]
+                acc_score += token_score
+                if token not in node.next:
+                    self.num_nodes += 1
+                    is_end = i == len(tokens_with_merges) - 1
+                    if var_bpe_penalize_subsplits:
+                        if node_is_on_primary_path[i]:
+                            node_score = acc_score
+                        else:
+                            # penalize sub-splits, but the full path will still be equal to original score
+                            node_score = max(0.0, acc_score - node.node_score)
+                    else:
+                        node_score = acc_score
+                    next_node = ContextState(
+                        id=self.num_nodes,
+                        token=token,
+                        token_score=0.0,  # see note above: we do not store arc scores directly
+                        node_score=node_score,
+                        output_score=node_score if is_end else 0,
+                        is_end=is_end,
+                        level=i + 1,
+                        phrase=phrase if is_end else "",
+                        ac_threshold=threshold if is_end else 0.0,
+                        is_primary=node_is_on_primary_path[i],
+                        phrase_alpha=alpha if is_end else 1.0,
+                    )
+                    node.next[token] = next_node
+                    node.primary_next[token] = next_node
+
+                    for alt_token in token_group[1:]:
+                        # NB: alternative tokens are not added to primary_next
+                        # primary_next holds arcs of a trie over elementary-token (char) alphabet,
+                        # and used to build fail links at the last stage
+                        if alt_token.length == 1:
+                            node.next[alt_token.token_id] = next_node
+                        else:
+                            # continue
+                            cur_nodes[-alt_token.length].next[alt_token.token_id] = next_node
+                else:
+                    # node exists, get the score of shared state.
+                    next_node = node.next[token]
+                    node_score = next_node.node_score
+                    is_end = i == len(tokens_with_merges) - 1 or next_node.is_end
+                    if is_end:
+                        next_node.output_score = node_score
+                        next_node.is_end = is_end
+                    next_node.is_primary |= node_is_on_primary_path[i]
+                    node.primary_next[token] = next_node
+                    if i == len(tokens_with_merges) - 1:
+                        next_node.phrase = phrase
+                        next_node.ac_threshold = threshold
+                        next_node.phrase_alpha = max(alpha, next_node.phrase_alpha)
+                if node_is_on_primary_path[i]:
+                    # fix node score if necessary
+                    ctx_node_score = cur_nodes[-primary_path_back_jumps[i]].node_score + primary_context_scores[i]
+                    if ctx_node_score > next_node.node_score:
+                        next_node.node_score = ctx_node_score
+                        if is_end:
+                            next_node.output_score = ctx_node_score
+                cur_nodes.append(next_node)
+                node = next_node
+        self._fill_fail_output()
+
+    @graphviz_required
     def draw(
         self,
         title: Optional[str] = None,
         filename: Optional[str] = "",
-        symbol_table: Optional[Dict[int, str]] = None,
-    ) -> "Digraph":  # noqa
+        symbol_table: Optional[dict[int, str]] = None,
+    ) -> "graphviz.Digraph":  # noqa
         """Visualize a ContextGraph via graphviz.
 
         Render ContextGraph as an image via graphviz, and return the Digraph object;
@@ -301,13 +529,6 @@ class ContextGraph:
         Returns:
           A Diagraph from grahpviz.
         """
-
-        try:
-            import graphviz
-        except Exception:
-            print("You cannot use `to_dot` unless the graphviz package is installed.")
-            raise
-
         graph_attr = {
             "rankdir": "LR",
             "size": "8.5,11",
@@ -325,6 +546,12 @@ class ContextGraph:
             "fontsize": "14",
         }
 
+        default_non_primary_node_attr = {
+            "shape": "circle",
+            "style": "dashed",
+            "fontsize": "13",
+        }
+
         final_state_attr = {
             "shape": "doublecircle",
             "style": "bold",
@@ -334,40 +561,57 @@ class ContextGraph:
         dot = graphviz.Digraph(name="Context Graph", graph_attr=graph_attr)
 
         seen = set()
+        drawn = set()
         queue = deque()
         queue.append(self.root)
         # root id is always 0
         dot.node("0", label="0", **default_node_attr)
         dot.edge("0", "0", color="red")
-        seen.add(0)
+        drawn.add(self.root.id)
 
         while len(queue):
             current_node = queue.popleft()
+            if current_node.id in seen:
+                continue
+            node: ContextState
             for token, node in current_node.next.items():
-                if node.id not in seen:
+                if node.id not in drawn:
                     node_score = f"{node.node_score:.2f}".rstrip("0").rstrip(".")
                     output_score = f"{node.output_score:.2f}".rstrip("0").rstrip(".")
                     label = f"{node.id}/({node_score}, {output_score})"
                     if node.is_end:
                         dot.node(str(node.id), label=label, **final_state_attr)
                     else:
-                        dot.node(str(node.id), label=label, **default_node_attr)
-                    seen.add(node.id)
-                weight = f"{node.token_score:.2f}".rstrip("0").rstrip(".")
-                label = str(token) if symbol_table is None else symbol_table[token]
-                dot.edge(str(current_node.id), str(node.id), label=f"{label}/{weight}")
-                dot.edge(
-                    str(node.id),
-                    str(node.fail.id),
-                    color="red",
-                )
-                if node.output is not None:
+                        dot.node(
+                            str(node.id),
+                            label=label,
+                            **(default_node_attr if node.is_primary else default_non_primary_node_attr),
+                        )
+
+                    # backoff
+                    if node.is_end:
+                        weight = 0.0
+                    else:
+                        weight = -(node.node_score - node.fail.node_score)
+                    label = f"<boff>/{weight:.2f}"
                     dot.edge(
                         str(node.id),
-                        str(node.output.id),
-                        color="green",
+                        str(node.fail.id),
+                        label=label,
+                        color="red",
                     )
+                    if node.output is not None:
+                        dot.edge(
+                            str(node.id),
+                            str(node.output.id),
+                            color="green",
+                        )
+                    drawn.add(node.id)
+                weight = f"{node.node_score - current_node.node_score:.2f}".rstrip("0").rstrip(".")
+                label = str(token) if symbol_table is None else symbol_table[token]
+                dot.edge(str(current_node.id), str(node.id), label=f"{label}/{weight}")
                 queue.append(node)
+            seen.add(current_node.id)
 
         if filename:
             _, extension = os.path.splitext(filename)

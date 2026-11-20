@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +16,7 @@
 from nemo.collections.common.losses.aggregator import AggregatorLoss
 from nemo.collections.common.losses.bce_logits_loss import BCEWithLogitsLoss
 from nemo.collections.common.losses.cross_entropy import CrossEntropyLoss, NLLLoss
+from nemo.collections.common.losses.label_smoothing import label_smoothed_log_prob_gradient
 from nemo.collections.common.losses.mse_loss import MSELoss
 from nemo.collections.common.losses.multi_similarity_loss import MultiSimilarityLoss
 from nemo.collections.common.losses.smoothed_cross_entropy import SmoothedCrossEntropyLoss, SmoothedNLLLoss

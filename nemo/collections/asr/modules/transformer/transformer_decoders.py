@@ -80,6 +80,7 @@ class TransformerDecoderBlock(nn.Module, AttentionAdapterModuleMixin):
     ):
         super().__init__()
         self.pre_ln = pre_ln
+        self.dropout_broadcast = dropout_broadcast
         norm = norm or nn.LayerNorm
         # the two options are only named when set, so that blocks without them keep working with the defaults
         broadcast_defaults = dict(dropout_broadcast=True) if dropout_broadcast else {}
@@ -224,6 +225,9 @@ class TransformerDecoderBlock(nn.Module, AttentionAdapterModuleMixin):
         """
         if self.get_enabled_adapters():
             raise NotImplementedError("Enabled adapters are not supported in the sequence-packed decoder block.")
+        # the mask per sequence of `dropout_broadcast` needs the packing; only named when set,
+        # so that feed-forward blocks without the argument keep working
+        packing = dict(context=decoder_context) if self.dropout_broadcast else {}
         # the residual adds are in place like in the padded blocks, which keeps the residual stream in the
         # autocast dtype from the first block on
         if self.pre_ln:
@@ -239,7 +243,7 @@ class TransformerDecoderBlock(nn.Module, AttentionAdapterModuleMixin):
                 normed, encoder_states, encoder_states, decoder_context, encoder_context
             )
             attended += residual
-            output_states = self.third_sub_layer(self.layer_norm_3(attended))
+            output_states = self.third_sub_layer(self.layer_norm_3(attended), **packing)
             output_states += attended
             return output_states
 
@@ -253,7 +257,7 @@ class TransformerDecoderBlock(nn.Module, AttentionAdapterModuleMixin):
         )
         attended += decoder_states
         decoder_states = self.layer_norm_2(attended)
-        output_states = self.third_sub_layer(decoder_states)
+        output_states = self.third_sub_layer(decoder_states, **packing)
         output_states += decoder_states
         return self.layer_norm_3(output_states)
 

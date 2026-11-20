@@ -367,7 +367,7 @@ class MultiHeadAttention(nn.Module):
             dropout_p=self.attn_dropout.p if self.training else 0.0,
         )
         output_states = self.out_projection(context.reshape(-1, heads * head_size))
-        return self.layer_dropout(output_states), {}
+        return _apply_dropout(self.layer_dropout, output_states, query_context), {}
 
 
 class PositionWiseFF(nn.Module):
@@ -404,12 +404,21 @@ class PositionWiseFF(nn.Module):
         self.layer_dropout = _dropout(ffn_dropout, dropout_broadcast)
         self.act_fn = build_activation(hidden_act)
 
-    def forward(self, hidden_states):
+    def forward(self, hidden_states: torch.Tensor, context: PackedAttentionContext | None = None) -> torch.Tensor:
+        """
+        Args:
+            hidden_states: padded states of shape ``(..., T, hidden_size)``,
+                or with ``context`` sequence-packed states of shape ``(T_total, hidden_size)``
+            context: the packing of token-flat states, which ``dropout_broadcast`` needs for its mask per sequence
+
+        Returns:
+            The output states, same shape as ``hidden_states``.
+        """
         output_states = self.dense_in(hidden_states)
         output_states = self.act_fn(output_states)
-        output_states = self.hidden_dropout(output_states)
+        output_states = _apply_dropout(self.hidden_dropout, output_states, context)
         output_states = self.dense_out(output_states)
-        output_states = self.layer_dropout(output_states)
+        output_states = _apply_dropout(self.layer_dropout, output_states, context)
         return output_states
 
 
@@ -455,12 +464,21 @@ class GatedPositionWiseFF(nn.Module):
         self.act_fn = build_activation(hidden_act)
         self.gate_act_fn = build_activation(gate_act)
 
-    def forward(self, hidden_states):
+    def forward(self, hidden_states: torch.Tensor, context: PackedAttentionContext | None = None) -> torch.Tensor:
+        """
+        Args:
+            hidden_states: padded states of shape ``(..., T, hidden_size)``,
+                or with ``context`` sequence-packed states of shape ``(T_total, hidden_size)``
+            context: the packing of token-flat states, which ``dropout_broadcast`` needs for its mask per sequence
+
+        Returns:
+            The output states, same shape as ``hidden_states``.
+        """
         activated, gate = self.dense_in(hidden_states).chunk(2, dim=-1)
         output_states = self.act_fn(activated) * self.gate_act_fn(gate)
-        output_states = self.hidden_dropout(output_states)
+        output_states = _apply_dropout(self.hidden_dropout, output_states, context)
         output_states = self.dense_out(output_states)
-        output_states = self.layer_dropout(output_states)
+        output_states = _apply_dropout(self.layer_dropout, output_states, context)
         return output_states
 
 
@@ -520,3 +538,8 @@ class AttentionBridge(torch.nn.Module):
 
 def _dropout(p: float, broadcast: bool) -> nn.Module:
     return BroadcastDropout(p) if broadcast else nn.Dropout(p)
+
+
+def _apply_dropout(dropout: nn.Module, x: torch.Tensor, context: PackedAttentionContext | None) -> torch.Tensor:
+    # only the mask per sequence needs the packing of token-flat states
+    return dropout(x, context) if isinstance(dropout, BroadcastDropout) else dropout(x)

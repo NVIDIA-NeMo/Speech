@@ -30,6 +30,7 @@ from nemo.collections.asr.modules.transformer.transformer_modules import (
     TransformerEmbedding,
 )
 from nemo.collections.asr.modules.transformer.transformer_utils import get_nemo_transformer
+from nemo.collections.asr.parts.packed_sequence import pack_encoder_output
 from nemo.collections.asr.parts.submodules.broadcast_dropout import BroadcastDropout
 from nemo.collections.asr.parts.submodules.packed_attention import PackedAttentionContext
 
@@ -77,6 +78,21 @@ def _inputs(batch_size=3):
     )
 
 
+def _packed_inputs(batch_size=3):
+    """The batch of ``_inputs`` in the sequence-packed form, and the decoder lengths."""
+    inputs = _inputs(batch_size)
+    valid = inputs["decoder_mask"].bool()
+    lengths = valid.sum(dim=1)
+    packed_encoder = pack_encoder_output(inputs["encoder_embeddings"], inputs["encoder_mask"].sum(dim=1))
+    packed = (
+        inputs["input_ids"][valid],
+        PackedAttentionContext.from_lengths(lengths),
+        packed_encoder.data,
+        PackedAttentionContext(packed_encoder),
+    )
+    return packed, lengths
+
+
 def _record_dropouts(decoder):
     """Hooks on every dropout of the first block and of the embedding; returns name -> (input, output).
 
@@ -102,17 +118,22 @@ def _record_dropouts(decoder):
     return records
 
 
-def _kept(record):
+def _kept(record, lengths=None):
     """The keep masks of a recorded dropout call, one tensor of shape (positions, features) per sequence.
+
+    ``lengths`` gives the sequences of a sequence-packed call, whose states are token-flat.
 
     Positions with an exact zero in the input are left out, since the mask is not visible there:
     a query whose attention weights were all dropped has a zero attention output.
     """
     dropped_input, output = record
-    if dropped_input.dim() == 2:
+    if lengths is not None:
+        dropped_input, output = dropped_input.split(lengths.tolist()), output.split(lengths.tolist())
+    elif dropped_input.dim() == 2:
         dropped_input, output = dropped_input[None], output[None]
     masks = []
-    for sequence_input, sequence_output in zip(dropped_input.float(), output.float()):
+    for sequence_input, sequence_output in zip(dropped_input, output):
+        sequence_input, sequence_output = sequence_input.float(), sequence_output.float()
         positions = (sequence_input != 0).all(dim=-1)
         assert positions.sum() >= 2
         sequence_input, sequence_output = sequence_input[positions], sequence_output[positions]
@@ -249,6 +270,48 @@ class TestTransformerDecoderDropout:
             _, output = records[site]
             kept = (output != 0).flatten(0, -2)
             assert not (kept == kept[0]).all(), site
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("pre_ln", [True, False])
+    @pytest.mark.parametrize("feed_forward", [GatedPositionWiseFF, PositionWiseFF])
+    def test_packed_forward_draws_the_masks_of_the_padded_form(self, pre_ln, feed_forward):
+        torch.manual_seed(0)
+        # no dropout on the attention weights: the fused kernels draw it inside, and a query that lost all
+        # its weights would hide the mask of the attention output
+        decoder = _decoder(
+            feed_forward=feed_forward, pre_ln=pre_ln, dropout_broadcast=True, attn_score_dropout=0.0
+        ).train()
+        records = _record_dropouts(decoder)
+        packed, lengths = _packed_inputs()
+        output = decoder.forward_packed(*packed)
+        assert output.shape == (int(lengths.sum()), HIDDEN)
+        for site in BRANCH_SITES:
+            masks = _kept(records[site], lengths)
+            assert _is_shared_over_time(masks) and not _is_shared_over_batch(masks), site
+            assert 0 < masks[0][0].sum() < masks[0].shape[1], site
+        assert not _is_shared_over_time(_kept(records["embedding"], lengths))
+        output.square().sum().backward()
+
+    @pytest.mark.unit
+    def test_packed_forward_without_the_option(self):
+        class OwnFeedForward(torch.nn.Module):
+            def __init__(self, hidden_size, inner_size, ffn_dropout, hidden_act):
+                super().__init__()
+                self.dense = torch.nn.Linear(hidden_size, hidden_size)
+
+            def forward(self, hidden_states):
+                return self.dense(hidden_states)
+
+        torch.manual_seed(0)
+        packed, lengths = _packed_inputs()
+        # the packing is only passed on with the option, so a block without the argument keeps working
+        decoder = _decoder(feed_forward=OwnFeedForward, ffn_hidden_dropout=0.0).train()
+        assert decoder.forward_packed(*packed).shape == (int(lengths.sum()), HIDDEN)
+        decoder = _decoder(attn_score_dropout=0.0).train()
+        records = _record_dropouts(decoder)
+        decoder.forward_packed(*packed)
+        for site in BRANCH_SITES:
+            assert not _is_shared_over_time(_kept(records[site], lengths)), site
 
     @pytest.mark.unit
     def test_masks_per_element_by_default(self):

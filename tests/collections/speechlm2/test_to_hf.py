@@ -567,7 +567,8 @@ def test_hf_export_config_embeds_portable_phpee_architecture():
     assert exported["pe_encoder_config"]["chunk_size_seconds"] == 30.0
 
 
-def test_hf_export_config_embeds_portable_independent_dual_architecture():
+@pytest.mark.parametrize("allowed", [False, True])
+def test_hf_export_config_embeds_portable_independent_dual_architecture(allowed):
     original_cfg = {
         "speaker_encoder": {"path": "/models/speaker-transformer", "frozen": True},
     }
@@ -576,6 +577,7 @@ def test_hf_export_config_embeds_portable_independent_dual_architecture():
         freeze_auxiliary=True,
         auxiliary_chunk_size_seconds=120.0,
         asr_chunk_size_seconds=None,
+        allow_padded_fallback=allowed,
     )
     model = SimpleNamespace(cfg=original_cfg, perception=SimpleNamespace(encoder=dual))
 
@@ -586,7 +588,7 @@ def test_hf_export_config_embeds_portable_independent_dual_architecture():
         "frozen": True,
         "chunk_size_seconds": 120.0,
         "asr_chunk_size_seconds": None,
-        "allow_padded_fallback": False,
+        "allow_padded_fallback": allowed,
     }
     assert "path" not in exported["speaker_encoder"]
     assert original_cfg == {"speaker_encoder": {"path": "/models/speaker-transformer", "frozen": True}}

@@ -2196,7 +2196,7 @@ def test_padded_fallback_raises_with_the_reason_by_default(monkeypatch):
 
 
 @pytest.mark.unit
-def test_allow_padded_fallback_is_read_from_the_bundle_config_and_its_overrides(tmp_path):
+def test_allow_padded_fallback_is_read_from_the_bundle_config_and_its_overrides(tmp_path, monkeypatch):
     default = ParallelExpertEncoderPT(bundle_config()).encoder
     assert default.allow_padded_fallback is False and default._bundle_config.allow_padded_fallback is False
     assert ParallelExpertEncoderPT(bundle_config(allow_padded_fallback=True)).encoder.allow_padded_fallback is True
@@ -2212,8 +2212,14 @@ def test_allow_padded_fallback_is_read_from_the_bundle_config_and_its_overrides(
     saved = tmp_path / "saved.nemo"
     ParallelExpertEncoderPT.save_to_nemo(restored, str(saved), template_bundle_path=str(archive))
     assert ParallelExpertEncoderPT.load_from_nemo(str(saved), strict=True).allow_padded_fallback is True
+    # a bad value is refused before either expert is built
+    built = []
+    monkeypatch.setattr(
+        "nemo.core.classes.common.Serialization.from_config_dict", lambda *args, **kwargs: built.append(1)
+    )
     with pytest.raises(TypeError, match="allow_padded_fallback must be a bool"):
         build_toy_pe_encoder(allow_padded_fallback="false")
+    assert built == []
 
 
 @pytest.mark.unit

@@ -358,15 +358,15 @@ class IndependentDualEncoder(nn.Module):
         allow_padded_fallback: bool = False,
     ) -> None:
         super().__init__()
+        if not isinstance(allow_padded_fallback, bool):
+            raise TypeError(f"allow_padded_fallback must be a bool, got {allow_padded_fallback!r}.")
+        self.allow_padded_fallback = allow_padded_fallback
         self.asr_encoder = asr_encoder
         self.auxiliary_encoder = auxiliary_encoder
         self.frame_shift_seconds = float(frame_shift_seconds)
         self.asr_chunk_size_seconds = asr_chunk_size_seconds
         self.auxiliary_chunk_size_seconds = auxiliary_chunk_size_seconds
         self.freeze_auxiliary = bool(freeze_auxiliary)
-        if not isinstance(allow_padded_fallback, bool):
-            raise TypeError(f"allow_padded_fallback must be a bool, got {allow_padded_fallback!r}.")
-        self.allow_padded_fallback = allow_padded_fallback
         self.auxiliary_encoder_config = None
 
         if self.frame_shift_seconds <= 0:

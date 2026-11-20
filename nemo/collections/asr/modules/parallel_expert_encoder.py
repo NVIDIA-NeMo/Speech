@@ -747,6 +747,9 @@ class ParallelExpertEncoder(nn.Module):
                 The Sortformer modules after the diarization encoder always run padded.
         """
         super().__init__()
+        if not isinstance(allow_padded_fallback, bool):
+            raise TypeError(f"allow_padded_fallback must be a bool, got {allow_padded_fallback!r}.")
+        self.allow_padded_fallback = allow_padded_fallback
 
         # Lazy import: SortformerEncLabelModel imports from asr.modules.
         from nemo.collections.asr.models.sortformer_diar_models import SortformerEncLabelModel
@@ -824,9 +827,6 @@ class ParallelExpertEncoder(nn.Module):
         self.ctc_timestamp_alignment = dict(ctc_timestamp_alignment or {})
         self.n_spk = int(self.diarization_model.sortformer_modules.n_spk)
         self.max_speaker_count = int(max_speaker_count)
-        if not isinstance(allow_padded_fallback, bool):
-            raise TypeError(f"allow_padded_fallback must be a bool, got {allow_padded_fallback!r}.")
-        self.allow_padded_fallback = allow_padded_fallback
         if self.max_speaker_count < self.n_spk:
             raise ValueError(
                 f"max_speaker_count={self.max_speaker_count} must be at least the diarization model's "

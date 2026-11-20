@@ -158,8 +158,12 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         self_attn: block of the self-attention, default the attention class of `self_attention_model`
         norm: block of every layer norm, default `torch.nn.LayerNorm`
         autocast_residual: under autocast, keep the residual stream and the layer norm inputs in the autocast dtype
-            (bfloat16 or float16) instead of float32, which halves what the norms save for the backward;
-            default False, the float32 stream. Without autocast the option has no effect.
+            instead of float32, which halves what the norms save for the backward; default False, the float32 stream.
+            With it the layer returns the autocast dtype instead of float32 (so do the encoder's output, its InterCTC
+            captures and the ``save_encoder_tensors`` capture), the residual additions and the norm inputs are rounded
+            to that dtype, and a branch output or adapter output of another dtype is cast back to it; streaming caches
+            keep the dtype of the cache they came in with. Meant for bfloat16: float16's range may overflow a stream
+            that float32 carries. Without autocast the option has no effect.
     """
 
     def __init__(
@@ -296,7 +300,7 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
                 'pos_emb': pos_emb,
             }
             pack_input = self.forward_enabled_adapters(pack_input)
-            residual = pack_input['x']
+            residual = self._stream(pack_input['x'], dtype)
 
         x = self._norm(self.norm_conv, residual, dtype)
         x = self.conv(x, pad_mask=pad_mask, cache=cache_last_time)
@@ -317,7 +321,7 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
                 'loc': 'post',
             }
             pack_input = self.forward_enabled_adapters(pack_input)
-            x = pack_input['x']
+            x = self._stream(pack_input['x'], dtype)
 
         if self.is_access_enabled(getattr(self, "model_guid", None)) and self.access_cfg.get(
             'save_encoder_tensors', False
@@ -380,40 +384,47 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
 
     def _residual_dtype(self, x: torch.Tensor) -> torch.dtype | None:
         """The autocast dtype the residual stream follows with ``autocast_residual``, else None for the float32 stream."""
-        if self.autocast_residual and torch.is_autocast_enabled(x.device.type):
+        if not self.autocast_residual or not torch.amp.is_autocast_available(x.device.type):
+            return None
+        if torch.is_autocast_enabled(x.device.type):
             return torch.get_autocast_dtype(x.device.type)
         return None
 
-    def _dropout(self, x: torch.Tensor, dtype: torch.dtype | None) -> torch.Tensor:
-        """Dropout of a branch output, in the dtype of the residual stream.
+    @staticmethod
+    def _stream(x: torch.Tensor, dtype: torch.dtype | None) -> torch.Tensor:
+        """A tensor that joins the residual stream, in the stream's dtype.
 
-        A branch may return another dtype than the stream's (the attention avoids float16 autocast
-        and returns bfloat16 or float32), which would promote the stream.
+        A branch or an adapter may return another dtype than the stream's (the attention avoids float16 autocast
+        and returns bfloat16 or float32, an adapter's own norm returns float32), which would promote the stream.
         """
-        if dtype is not None:
-            x = x.to(dtype)
-        return self.dropout(x)
+        return x if dtype is None else x.to(dtype)
+
+    def _dropout(self, x: torch.Tensor, dtype: torch.dtype | None) -> torch.Tensor:
+        """Dropout of a branch output, in the dtype of the residual stream."""
+        return self.dropout(self._stream(x, dtype))
 
     def _norm(self, norm: nn.Module, x: torch.Tensor, dtype: torch.dtype | None) -> torch.Tensor:
-        """A layer norm of the residual stream; on the autocast-dtype stream it runs outside autocast on that dtype.
+        """A layer norm of the residual stream; on the autocast-dtype stream the plain norms run on that dtype.
 
-        ``torch.nn.LayerNorm`` and ``torch.nn.RMSNorm`` run through their functional forms with the parameters
-        cast to the stream's dtype, since their fused kernels take no float32 parameters with a half-precision
-        input (the composite fallback would upcast and save float32 copies);
-        another norm block receives the half-precision input as it is.
+        ``torch.nn.LayerNorm`` and ``torch.nn.RMSNorm`` themselves run outside autocast through their functional
+        forms with the parameters cast to the stream's dtype, since their fused kernels take no float32 parameters
+        with a half-precision input (the composite fallback would upcast and save float32 copies).
+        Another norm block, a subclass with its own ``forward`` included, runs under autocast as on the float32
+        stream, so its own kernels decide what it saves, and its output returns to the stream's dtype.
         """
         if dtype is None:
             return norm(x)
         # the keyword form: Dynamo binds autocast's arguments by name when it traces the context manager
-        with torch.autocast(device_type=x.device.type, enabled=False):
-            if isinstance(norm, LayerNorm):
+        if type(norm) is LayerNorm:
+            with torch.autocast(device_type=x.device.type, enabled=False):
                 weight = norm.weight.to(dtype) if norm.weight is not None else None
                 bias = norm.bias.to(dtype) if norm.bias is not None else None
                 return nn.functional.layer_norm(x, norm.normalized_shape, weight, bias, norm.eps)
-            if isinstance(norm, nn.RMSNorm):
+        if type(norm) is nn.RMSNorm:
+            with torch.autocast(device_type=x.device.type, enabled=False):
                 weight = norm.weight.to(dtype) if norm.weight is not None else None
                 return nn.functional.rms_norm(x, norm.normalized_shape, weight, norm.eps)
-            return norm(x)
+        return norm(x).to(dtype)
 
 
 class ConformerConvolution(nn.Module):

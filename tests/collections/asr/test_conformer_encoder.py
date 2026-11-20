@@ -22,7 +22,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.modules import transformer_encoder_utils
-from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
+from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder, ConformerEncoderAdapter
 from nemo.collections.asr.parts.packed_sequence import (
     PackedEncoderActivations,
     pack_encoder_output,
@@ -30,6 +30,7 @@ from nemo.collections.asr.parts.packed_sequence import (
     unpack_encoder_output,
 )
 from nemo.collections.asr.parts.submodules import packed_attention as packed_attention_module
+from nemo.collections.asr.parts.submodules.adapters import multi_head_attention_adapter_module
 from nemo.collections.asr.parts.submodules.conformer_modules import (
     ConformerConvolution,
     ConformerFeedForward,
@@ -40,6 +41,7 @@ from nemo.collections.asr.parts.submodules.multi_head_attention import (
     RelPositionMultiHeadAttention,
 )
 from nemo.collections.asr.parts.submodules.subsampling import ConvSubsampling
+from nemo.collections.common.parts import adapter_modules
 
 
 class TestStochasticDepth:
@@ -1257,3 +1259,89 @@ class TestConformerLayerAutocastResidual:
         self._assert_gradients_close(encoder, reference, tolerance=0.1)
         self._readout_loss(packed).backward()
         assert all(torch.isfinite(p.grad).all() for p in encoder.parameters())
+
+    @pytest.mark.unit
+    def test_a_norm_subclass_with_its_own_forward_runs_as_itself(self):
+        class DoubledLayerNorm(torch.nn.LayerNorm):
+            def forward(self, x):
+                return 2 * super().forward(x)
+
+        reference, encoder = self._encoders(norm=functools.partial(DoubledLayerNorm, eps=1e-6))
+        plain = _composed_encoder(dropout=0.0, autocast_residual=True).train()
+        plain.load_state_dict(encoder.state_dict())
+        features, lengths = torch.randn(2, 8, 40), torch.tensor([40, 25])
+        expected, _ = self._run(reference, features, lengths, "cpu")
+        out, _ = self._run(encoder, features, lengths, "cpu")
+        plain_out, _ = self._run(plain, features, lengths, "cpu")
+        # the subclass's forward ran on the autocast-dtype stream as on the float32 one, not the plain layer norm
+        torch.testing.assert_close(out.float(), expected.float(), atol=0.1, rtol=0.1)
+        assert not torch.allclose(out.float(), plain_out.float(), atol=0.1, rtol=0.1)
+
+    @pytest.mark.run_only_on('GPU')
+    @pytest.mark.unit
+    @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+    def test_a_norm_block_around_a_layer_norm_runs_under_autocast(self, dtype):
+        class WrappedLayerNorm(torch.nn.Module):
+            def __init__(self, normalized_shape, eps=1e-6):
+                super().__init__()
+                self.norm = torch.nn.LayerNorm(normalized_shape, eps=eps)
+                self.scale = torch.nn.Parameter(torch.ones(()))
+
+            def forward(self, x):
+                return self.norm(x) * self.scale
+
+        reference, encoder = self._encoders(norm=WrappedLayerNorm)
+        reference.cuda()
+        encoder.cuda()
+        features, lengths = torch.randn(2, 8, 40, device="cuda"), torch.tensor([40, 25], device="cuda")
+        expected, _ = self._run(reference, features, lengths, "cuda", dtype)
+        out, _ = self._run(encoder, features, lengths, "cuda", dtype)
+        packed, _ = self._run(encoder, features, lengths, "cuda", dtype, packed=True)
+        # the inner layer norm keeps float32 parameters: the block runs under autocast and returns to the stream
+        assert out.dtype == dtype and packed.dtype == dtype
+        valid = (torch.arange(10, device="cuda")[None, None, :] < (lengths // 4)[:, None, None]).float()
+        torch.testing.assert_close(out.float() * valid, expected * valid, atol=0.1, rtol=0.1)
+        # in training mode the packed form's batch norms see the valid frames only, so its values are checked
+        # for finiteness here and against the padded form in evaluation by TestPackedConformerEncoder
+        assert torch.isfinite(packed).all()
+
+    @pytest.mark.run_only_on('GPU')
+    @pytest.mark.unit
+    @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+    @pytest.mark.parametrize("adapter", ["linear_pre", "linear_post", "mha"])
+    def test_adapters_keep_the_stream_in_the_autocast_dtype(self, dtype, adapter):
+        """An adapter returns float32; the stream takes it back, so the option neither stops nor fails after it."""
+        options = dict(
+            feat_in=8,
+            n_layers=2,
+            d_model=16,
+            n_heads=2,
+            subsampling_factor=4,
+            xscaling=False,
+            dropout=0.0,
+            dropout_pre_encoder=0.0,
+            dropout_emb=0.0,
+        )
+        encoders = []
+        for autocast_residual in (False, True):
+            torch.manual_seed(0)
+            encoder = ConformerEncoderAdapter(autocast_residual=autocast_residual, **options)
+            if adapter == "mha":
+                cfg = multi_head_attention_adapter_module.RelPositionMultiHeadAttentionAdapterConfig(
+                    n_head=2, n_feat=16
+                )
+            else:
+                cfg = adapter_modules.LinearAdapterConfig(in_features=16, dim=8, norm_position=adapter.split("_")[1])
+            encoder.add_adapter("a", cfg=cfg)
+            encoder.set_enabled_adapters(enabled=True)
+            encoders.append(encoder.cuda().train())
+        reference, encoder = encoders
+        encoder.load_state_dict(reference.state_dict())
+        features, lengths = torch.randn(2, 8, 40, device="cuda"), torch.tensor([40, 25], device="cuda")
+        expected, _ = self._run(reference, features, lengths, "cuda", dtype)
+        out, _ = self._run(encoder, features, lengths, "cuda", dtype)
+        assert expected.dtype == torch.float32 and out.dtype == dtype
+        valid = (torch.arange(10, device="cuda")[None, None, :] < (lengths // 4)[:, None, None]).float()
+        torch.testing.assert_close(out.float() * valid, expected * valid, atol=0.1, rtol=0.1)
+        self._readout_loss(out * valid).backward()
+        assert all(torch.isfinite(p.grad).all() for p in encoder.parameters() if p.grad is not None)

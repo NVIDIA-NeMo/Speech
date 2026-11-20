@@ -859,9 +859,9 @@ Requirements and limits of the packed form:
 * ``CTCLoss.forward_packed`` runs its token-flat kernel on CUDA with Triton installed,
   for float32, bfloat16 and float16 log probabilities; elsewhere it pads the log probabilities for the loss.
 * With ``compute_wer=True`` the WER of an intermediate layer is decoded from its best label per frame.
-  The ``greedy`` and ``greedy_batch`` decoding strategies accept that, unless they preserve alignments or confidences;
+  The ``greedy`` and ``greedy_batch`` decoding strategies accept that, unless they preserve alignments or confidences
+  or score with a fusion model (n-gram LM, boosting tree);
   those options and the beam search strategies raise ``NotImplementedError``.
-* Enabled adapters on the CTC decoder are not supported.
 
 
 Stochastic Depth Config

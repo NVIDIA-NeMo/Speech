@@ -475,6 +475,8 @@ class ConvASRDecoder(NeuralModule, Exportable, adapter_mixins.AdapterModuleMixin
         The kernel-1 convolution runs as a linear layer over the token axis,
         so no padded ``(B, D, T)`` tensor is formed;
         ``CTCLoss.forward_packed`` takes the result.
+        Enabled adapters run on the token-flat states.
+        A subclass that overrides ``forward`` overrides this method as well, or raises in it.
 
         Args:
             encoder_output: encoder states of all utterances, data of shape ``(sum(T_i), feat_in)``.
@@ -492,10 +494,12 @@ class ConvASRDecoder(NeuralModule, Exportable, adapter_mixins.AdapterModuleMixin
             raise ValueError(
                 f"Packed encoder_output must have feature width {self._feat_in}, got {encoder_output.data.shape[-1]}."
             )
-        if self.get_enabled_adapters():
-            raise NotImplementedError("Adapters of ConvASRDecoder have no sequence-packed form.")
+        data = encoder_output.data
+        if self.is_adapter_available():
+            # adapters act on the last axis, so they take the token-flat states as they are
+            data = self.forward_enabled_adapters(data)
         conv = self.decoder_layers[0]
-        logits = F.linear(encoder_output.data, conv.weight.squeeze(-1), conv.bias)
+        logits = F.linear(data, conv.weight.squeeze(-1), conv.bias)
         if self.temperature != 1.0:
             logits = logits / self.temperature
         return PackedEncoderActivations.from_validated(

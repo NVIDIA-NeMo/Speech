@@ -651,6 +651,34 @@ class TestSequencePackedInterCTC:
         assert torch.isfinite(packed_loss) and "inter_wer_l0" not in packed_metrics
 
     @pytest.mark.unit
+    def test_wer_decoding_with_a_fusion_model_is_refused(self):
+        _, packed_model = _padded_and_packed_models()
+        # the check reads the attribute only, so a placeholder stands for the n-gram LM file
+        packed_model.get_interctc_param('wer').decoding.decoding.fusion_models = [object()]
+        with pytest.raises(NotImplementedError, match="fusion model .* needs the log probabilities"):
+            _interctc_step(packed_model, *_interctc_batch((64, 9, 40)), packed=True)
+
+    @pytest.mark.unit
+    def test_wer_errors_of_the_references_are_not_relabelled(self):
+        """An error of the reference side is the same on a packed capture as on a padded one."""
+        padded_model, packed_model = _padded_and_packed_models()
+        features, lengths, transcript, transcript_len = _interctc_batch((64, 9, 40))
+        for model, packed in ((padded_model, False), (packed_model, True)):
+            AccessMixin.set_access_enabled(access_enabled=True, guid=model.model_guid)
+            try:
+                if packed:
+                    model.encoder.forward_sequence_packed(features, lengths)
+                else:
+                    model.encoder(audio_signal=features, length=lengths)
+                with pytest.raises(TypeError, match="unhashable"):
+                    model.add_interctc_losses(
+                        None, transcript[:, :, None], transcript_len, compute_wer=True, compute_loss=False
+                    )
+            finally:
+                AccessMixin.reset_registry(model)
+                AccessMixin.set_access_enabled(access_enabled=False, guid=model.model_guid)
+
+    @pytest.mark.unit
     def test_metrics_without_loss_match_padded(self):
         """Validation without the loss: the WER metrics alone, with their prefix."""
         padded_model, packed_model = _padded_and_packed_models()
@@ -695,12 +723,37 @@ class TestSequencePackedInterCTC:
             decoder.forward_packed(pack_encoder_output(states[..., :7], lengths))
         empty = decoder.forward_packed(pack_encoder_output(states[:0], lengths[:0]))
         assert empty.data.shape == (0, len(PACKED_VOCABULARY) + 1) and empty.lengths.tolist() == []
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_decoder_forward_packed_applies_adapters(self, enabled):
+        """Adapters act on the last axis: the packed head applies the enabled ones as the padded forward does."""
+        decoder = _packed_interctc_model().decoder
         decoder.add_adapter(name='adapter', cfg=LinearAdapterConfig(in_features=32, dim=4))
-        with pytest.raises(NotImplementedError, match="Adapters"):
-            decoder.forward_packed(pack_encoder_output(states, lengths))
-        # a disabled adapter is not applied by forward either
-        decoder.set_enabled_adapters(enabled=False)
-        assert decoder.forward_packed(pack_encoder_output(states, lengths)).data.shape == (7, 7)
+        decoder.double().train()
+        torch.manual_seed(3)
+        for parameter in decoder.parameters():
+            # the adapter's output layer starts at zero, which would hide it
+            torch.nn.init.normal_(parameter, std=0.5)
+        ones = torch.ones(1, 32, 1, dtype=torch.float64)
+        without_adapter = torch.log_softmax(decoder.decoder_layers(ones).transpose(1, 2), dim=-1)
+        decoder.set_enabled_adapters(enabled=enabled)
+        # the enabled adapter changes the output, the disabled one does not
+        assert torch.allclose(decoder(encoder_output=ones), without_adapter) == (not enabled)
+        lengths = torch.tensor([5, 0, 2])
+        states = torch.randn(3, 5, 32, dtype=torch.float64)
+        valid = torch.arange(5)[None, :] < lengths[:, None]
+        padded = decoder(encoder_output=states.transpose(1, 2))
+        packed = decoder.forward_packed(pack_encoder_output(states, lengths))
+        torch.testing.assert_close(packed.data, padded[valid])
+        names, parameters = zip(*decoder.named_parameters())
+        padded_grads = torch.autograd.grad(padded[valid].square().sum(), parameters, allow_unused=True)
+        packed_grads = torch.autograd.grad(packed.data.square().sum(), parameters, allow_unused=True)
+        for name, padded_grad, packed_grad in zip(names, padded_grads, packed_grads):
+            # the parameters of a disabled adapter are in neither graph
+            assert (padded_grad is None) == (packed_grad is None) == ("adapter" in name and not enabled), name
+            if padded_grad is not None:
+                torch.testing.assert_close(packed_grad, padded_grad, msg=name)
 
 
 @pytest.mark.gpu

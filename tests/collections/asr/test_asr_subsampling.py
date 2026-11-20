@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import copy
 import os
 import tempfile
 
@@ -227,6 +228,74 @@ class TestSubsamplingReductionModulePooling:
         assert out_lengths[0].item() == out.shape[1]
         expected = torch.div(lengths - reduction_factor, reduction_factor, rounding_mode='floor') + 1
         assert out_lengths.tolist() == expected.tolist()
+
+
+class TestPackedSubsamplingReductionModule:
+    """forward_packed against forward at the valid frames."""
+
+    LENGTHS = [9, 2, 6, 3, 1, 0, 8]
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("reduction", ["pooling", "striding"])
+    @pytest.mark.parametrize("reduction_factor", [2, 4])
+    def test_matches_padded_outputs_lengths_and_gradients(self, reduction, reduction_factor):
+        torch.manual_seed(0)
+        padded_module = SubsamplingReductionModule(reduction=reduction, d_model=8, reduction_factor=reduction_factor)
+        padded_module = padded_module.double().eval()
+        packed_module = copy.deepcopy(padded_module)
+        lengths = torch.tensor(self.LENGTHS)
+        valid = torch.arange(9)[None, :] < lengths[:, None]
+        padded_in = torch.randn(len(lengths), 9, 8, dtype=torch.float64, requires_grad=True)
+        packed_in = padded_in.detach().clone().requires_grad_()
+        padded_out, padded_lengths = padded_module(padded_in, lengths)
+        packed_out = packed_module.forward_packed(pack_encoder_output(packed_in, lengths))
+        assert packed_out.lengths.tolist() == padded_lengths.tolist()
+        assert packed_out.lengths.dtype == torch.int64 and packed_out.max_seqlen == int(padded_lengths.max())
+        assert packed_out.cu_seqlens.tolist() == [0] + torch.cumsum(padded_lengths, dim=0).tolist()
+        out_valid = torch.arange(padded_out.shape[1])[None, :] < padded_lengths[:, None]
+        torch.testing.assert_close(packed_out.data, padded_out[out_valid])
+        padded_out[out_valid].square().sum().backward()
+        packed_out.data.square().sum().backward()
+        torch.testing.assert_close(packed_in.grad[valid], padded_in.grad[valid])
+        padded_parameters = dict(padded_module.named_parameters())
+        for name, parameter in packed_module.named_parameters():
+            torch.testing.assert_close(parameter.grad, padded_parameters[name].grad, msg=name)
+
+    @pytest.mark.unit
+    def test_pooling_drops_the_incomplete_window_and_routes_ties_as_max_pool(self):
+        """Lengths that the factor does not divide lose their last frames; equal values send the gradient to the first."""
+        module = SubsamplingReductionModule(reduction='pooling', d_model=2, reduction_factor=3)
+        lengths = torch.tensor([7, 2, 3])
+        padded_in = torch.zeros(3, 7, 2, requires_grad=True)
+        packed_in = torch.zeros(3, 7, 2, requires_grad=True)
+        padded_out, padded_lengths = module(padded_in, lengths)
+        packed_out = module.forward_packed(pack_encoder_output(packed_in, lengths))
+        assert packed_out.lengths.tolist() == padded_lengths.tolist() == [2, 0, 1]
+        assert packed_out.data.shape == (3, 2)
+        out_valid = torch.arange(padded_out.shape[1])[None, :] < padded_lengths[:, None]
+        padded_out[out_valid].sum().backward()
+        packed_out.data.sum().backward()
+        assert torch.equal(packed_in.grad, padded_in.grad)
+        assert packed_in.grad[0, :, 0].tolist() == [1, 0, 0, 1, 0, 0, 0] and not packed_in.grad[1].any()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("reduction", ["pooling", "striding"])
+    def test_empty_batches_and_utterances(self, reduction):
+        module = SubsamplingReductionModule(reduction=reduction, d_model=8, reduction_factor=2).double().eval()
+        for lengths in ([], [0, 0, 0]):
+            module.zero_grad()
+            states = torch.randn(3, 9, 8, dtype=torch.float64, requires_grad=True)
+            lengths = torch.tensor(lengths, dtype=torch.long)
+            out = module.forward_packed(pack_encoder_output(states[: len(lengths)], lengths))
+            assert out.data.shape == (0, 8) and out.max_seqlen == 0
+            assert out.lengths.tolist() == [0] * len(lengths) and out.cu_seqlens.tolist() == [0] * (len(lengths) + 1)
+            out.data.sum().backward()
+            assert states.grad is not None and not states.grad.any()
+            # the strided convolutions stay in the graph of a batch without frames
+            for name, parameter in module.named_parameters():
+                assert parameter.grad is not None and not parameter.grad.any(), name
+        with pytest.raises(TypeError, match="PackedEncoderActivations"):
+            module.forward_packed(states)
 
 
 def _build_strided_conv_subsampling(**overrides):

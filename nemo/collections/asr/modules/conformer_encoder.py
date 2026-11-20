@@ -880,12 +880,16 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         the fusion (see the smoke test).
 
         Configurations without a sequence-packed form (streaming caches, limited or chunked attention context,
-        ``rel_pos_local_attn``, reduction layers, adapters, causal or VGGNet subsampling,
+        ``rel_pos_local_attn``, adapters, causal or VGGNet subsampling,
         the ``save_encoder_tensors`` capture,
         and in training mode attention dropout where FlexAttention would have to apply it)
         are named by ``sequence_packed_unsupported_reason`` and refused here with ``NotImplementedError``;
         the parallel expert encoder and the independent dual encoder consult ``supports_sequence_packed_output``
         at dispatch time and keep their padded path for them, the plain perception module reports the reason.
+
+        A reduction layer (``reduction_position``) pools or strides within every utterance,
+        see ``SubsamplingReductionModule.forward_packed``,
+        and the layers after it run on the reduced utterances with their own boundaries and positions.
 
         InterCTC captures are registered token-flat:
         ``interctc/layer_output_X`` is a ``PackedEncoderActivations`` with data ``(sum(T'_i), feat_out)``
@@ -936,12 +940,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             if self.pos_enc.xscale:
                 x = x * self.pos_enc.xscale
             x = self.pos_enc.dropout(x)
-            # the relative positions L - 1 down to -(L - 1) for the padded length L, as RelPositionalEncoding.forward
-            center_pos = self.pos_enc.pe.size(1) // 2 + 1
-            padded_len = attention_context.padded_max_seqlen
-            pos_emb = self.pos_enc.pe[:, center_pos - padded_len : center_pos + padded_len - 1]
-            if self.pos_enc.dropout_emb:
-                pos_emb = self.pos_enc.dropout_emb(pos_emb)
+            pos_emb = self._packed_rel_pos_emb(attention_context)
 
         # one gapped layout for all depthwise convolutions, wide enough for the largest kernel
         conv_gap = max(layer.conv.kernel_size for layer in self.layers) - 1
@@ -959,6 +958,16 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                     x = x * 0.0 + original_signal
                 else:
                     x = (x - original_signal) / (1.0 - drop_prob) + original_signal
+            if self.reduction_position == lth:
+                packed = self.reduction_subsampling.forward_packed(
+                    PackedEncoderActivations.from_validated(x, packed.lengths, packed.cu_seqlens, packed.max_seqlen)
+                )
+                x = packed.data
+                # the following layers see the reduced utterances: boundaries, positions and the conv layout
+                attention_context = PackedAttentionContext(packed)
+                conv_layout = packed_slot_layout(packed, gap=conv_gap)
+                if pos_emb is not None:
+                    pos_emb = self._packed_rel_pos_emb(attention_context)
             if self.is_access_enabled(getattr(self, "model_guid", None)):
                 if self.interctc_capture_at_layers is None:
                     self.interctc_capture_at_layers = self.access_cfg.get('interctc', {}).get('capture_layers', [])
@@ -976,7 +985,10 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         if self.out_proj is not None:
             x = self.out_proj(x)
         # encoder outputs pad with zeros, whatever padding metadata the input carried
-        return PackedEncoderActivations.from_validated(x, packed.lengths, packed.cu_seqlens, packed.max_seqlen)
+        packed = PackedEncoderActivations.from_validated(x, packed.lengths, packed.cu_seqlens, packed.max_seqlen)
+        if self.reduction_position == -1:
+            packed = self.reduction_subsampling.forward_packed(packed)
+        return packed
 
     @property
     def supports_sequence_packed_output(self) -> bool:
@@ -993,7 +1005,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         """Why ``forward_sequence_packed`` cannot run this encoder as configured, or None when it can.
 
         Without a sequence-packed form: limited or chunked attention context, ``rel_pos_local_attn``,
-        the sampling of attention context sizes in training, reduction layers, adapters,
+        the sampling of attention context sizes in training, adapters,
         the ``save_encoder_tensors`` capture (its consumers expect padded tensors),
         frontends other than a linear layer or a non-causal ``striding`` or ``dw_striding`` ``ConvSubsampling``,
         and instance or group normalization in the convolution modules.
@@ -1009,8 +1021,6 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             return "Sequence-packed execution supports the full attention context only."
         if self.training and len(self.att_context_size_all) > 1:
             return "Sequence-packed execution does not sample attention context sizes."
-        if self.reduction_position is not None:
-            return "Reduction layers have no sequence-packed form."
         if isinstance(self, adapter_mixins.AdapterModuleMixin) and self.is_adapter_available():
             return "Adapters have no sequence-packed form."
         if self.is_access_enabled(getattr(self, "model_guid", None)) and self.access_cfg.get(
@@ -1089,6 +1099,15 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 f"Packed audio_signal must have feature width {expected_width}, got {packed.data.shape[-1]}."
             )
         return packed
+
+    def _packed_rel_pos_emb(self, attention_context: PackedAttentionContext) -> torch.Tensor:
+        """The relative positions L - 1 down to -(L - 1) for the padded length L, as RelPositionalEncoding.forward."""
+        center_pos = self.pos_enc.pe.size(1) // 2 + 1
+        padded_len = attention_context.padded_max_seqlen
+        pos_emb = self.pos_enc.pe[:, center_pos - padded_len : center_pos + padded_len - 1]
+        if self.pos_enc.dropout_emb:
+            pos_emb = self.pos_enc.dropout_emb(pos_emb)
+        return pos_emb
 
     def update_max_seq_length(self, seq_length: int, device):
         """

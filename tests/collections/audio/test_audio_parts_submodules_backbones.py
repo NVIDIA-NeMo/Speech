@@ -18,6 +18,7 @@ import pytest
 import torch
 
 from nemo.collections.audio.parts.submodules.conformer import SpectrogramConformer
+from nemo.collections.audio.parts.submodules.conformer_unet import ConformerEncoderUNet
 from nemo.collections.audio.parts.submodules.ncsnpp import (
     NoiseConditionalScoreNetworkPlusPlus,
     SpectrogramNoiseConditionalScoreNetworkPlusPlus,
@@ -172,3 +173,22 @@ def test_spectrogram_conformer_forward(spectrogram_conformer, mock_input_4d):
     assert output.shape[2] == input_dim
     assert output.shape[3] == time_steps
     assert torch.all(output_length == input_length)
+
+
+@pytest.mark.parametrize("reduction", [None, "pooling"])
+def test_conformer_unet_has_no_sequence_packed_form(reduction):
+    """The skip connections have no packed form: dispatchers read False and the packed forward names the reason."""
+    encoder = ConformerEncoderUNet(
+        feat_in=8,
+        n_layers=2,
+        d_model=16,
+        n_heads=2,
+        subsampling="striding",
+        subsampling_factor=2,
+        reduction=reduction,
+        reduction_position=None if reduction is None else -1,
+        reduction_factor=2,
+    )
+    assert not encoder.supports_sequence_packed_output
+    with pytest.raises(NotImplementedError, match="U-Net skip connections"):
+        encoder.forward_sequence_packed(torch.randn(2, 8, 12), torch.tensor([12, 7]))

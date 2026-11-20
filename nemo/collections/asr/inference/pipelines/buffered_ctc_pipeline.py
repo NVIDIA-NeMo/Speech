@@ -357,7 +357,7 @@ class BufferedCTCPipeline(BasePipeline):
 
         self.update_partial_transcript(requests, self.tokenizer, self.leading_regex_pattern)
 
-    def transcribe_frames(self, frames: list[Frame]) -> None:
+    def transcribe_step_for_frames(self, frames: list[Frame]) -> None:
         """
         Transcribe step for frames.
         Args:

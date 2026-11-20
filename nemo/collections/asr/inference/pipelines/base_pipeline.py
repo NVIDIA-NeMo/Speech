@@ -167,7 +167,7 @@ class BasePipeline(PipelineInterface):
         self.reset_session()
 
     @abstractmethod
-    def transcribe_frames(self, frames: list[Frame]) -> None:
+    def transcribe_step_for_frames(self, frames: list[Frame]) -> None:
         """Transcribe a step for frames"""
         pass
 
@@ -268,7 +268,7 @@ class BasePipeline(PipelineInterface):
             states.append(self.get_state(request.stream_id))
 
         # Perform the transcribe step for the frames
-        self.transcribe_frames(frames=requests)
+        self.transcribe_step_for_frames(frames=requests)
 
         # Create current step output for each request
         outputs = []

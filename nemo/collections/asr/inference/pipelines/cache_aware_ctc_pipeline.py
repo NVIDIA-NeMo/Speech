@@ -319,7 +319,7 @@ class CacheAwareCTCPipeline(BasePipeline):
         self.context_manager.reset_slots(stream_ids, eos_flags)
         self.decode_log_probs(requests, log_probs, tail_log_probs, ready_state_ids)
 
-    def transcribe_frames(self, frames: list[Frame]) -> None:
+    def transcribe_step_for_frames(self, frames: list[Frame]) -> None:
         """
         Transcribes the frames in a streaming manner.
         After detecting EOU, it updates the state and run text processor.

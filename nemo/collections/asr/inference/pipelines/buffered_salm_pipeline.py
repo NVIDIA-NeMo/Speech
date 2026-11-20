@@ -161,7 +161,7 @@ class BufferedSALMPipeline(BasePipeline):
         )
         state.tokens.extend(data[delay:])
 
-    def transcribe_frames(self, frames: list[Frame]) -> None:
+    def transcribe_step_for_frames(self, frames: list[Frame]) -> None:
         """
         Perform the transcribe step for frames.
         Args:

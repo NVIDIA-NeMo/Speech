@@ -544,7 +544,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             return {"keep_all_outputs": all(is_last)}
         return {"keep_all_outputs_mask": torch.tensor(is_last, device=self.device, dtype=torch.bool)}
 
-    def transcribe_frames(self, frames: list[Frame]) -> None:
+    def transcribe_step_for_frames(self, frames: list[Frame]) -> None:
         """
         Transcribes the frames in a streaming manner.
         After detecting EOU, it updates the state and run text processor.

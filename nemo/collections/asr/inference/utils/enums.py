@@ -67,6 +67,10 @@ class PaddingMode(StrEnumMixin, Enum):
     RIGHT = auto()
 
 
+# Deprecated alias, kept so that existing imports keep working
+FeatureBufferPaddingMode = PaddingMode
+
+
 class MergingStrategy(StrEnumMixin, Enum):
     """
     Enumeration of the tokens merging strategies for the buffered inference.

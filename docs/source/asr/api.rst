@@ -130,6 +130,10 @@ Mixins
     :show-inheritance:
     :members:
 
+.. autoclass:: nemo.collections.asr.parts.mixins.rnnt_restart_mixin.RNNTRestartMixin
+    :show-inheritance:
+    :members:
+
 .. autoclass:: nemo.collections.asr.parts.mixins.transcription.TranscriptionMixin
     :show-inheritance:
     :members:

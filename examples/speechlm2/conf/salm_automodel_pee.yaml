@@ -53,9 +53,8 @@ model:
   # multi-speaker (SOT) transcripts. The three blocks below define the PEE recipe;
   # remove them (and data.multispeaker_cfg) to fall back to plain single-speaker SALM.
 
-  # Path to a ParallelExpertEncoderPT .nemo bundle, mounted onto perception.encoder
-  # at init. The bundle is not yet published to HuggingFace, so point this at a
-  # locally exported .nemo to enable PEE; null keeps the pretrained_asr encoder.
+  # Path to a user-provided local .nemo bundle, mounted onto perception.encoder
+  # at init. Set to null to keep the pretrained_asr encoder.
   pe_encoder_path: null  # Plug-in PEE nemo checkpoint.
 
   # Resolve the native <spk:N> speaker-token ids from the LLM tokenizer. Requires

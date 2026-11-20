@@ -240,12 +240,18 @@ all = [
 cu12 = [
     "torch==2.11.0+cu129 ; sys_platform == 'linux'",
     "numba-cuda[cu12] ; platform_system != 'Darwin'",
+    # numba-cuda registers np.row_stack, which NumPy 2.5 removed, so importing it fails there;
+    # numba-cuda is in maintenance mode and will not fix this (NVIDIA/numba-cuda#907).
+    "numpy<2.5 ; platform_system != 'Darwin'",
     "cuda-python>=12,<13 ; platform_system != 'Darwin'"
 ]
 
 cu13 = [
     "torch==2.12.0+cu132 ; sys_platform == 'linux'",
     "numba-cuda[cu13] ; platform_system != 'Darwin'",
+    # numba-cuda registers np.row_stack, which NumPy 2.5 removed, so importing it fails there;
+    # numba-cuda is in maintenance mode and will not fix this (NVIDIA/numba-cuda#907).
+    "numpy<2.5 ; platform_system != 'Darwin'",
     "cuda-python>=13,<14 ; platform_system != 'Darwin'"
 ]
 

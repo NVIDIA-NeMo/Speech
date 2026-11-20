@@ -562,6 +562,74 @@ class TestMuonCapturable:
                 Muon(parameters.parameters(), lr=torch.tensor(1, dtype=dtype))
 
     @pytest.mark.unit
+    def test_parameter_group_learning_rates_are_validated(self):
+        parameters = _parameters()
+
+        def with_group_rate(learning_rate):
+            return Muon([{'params': list(parameters.parameters()), 'lr': learning_rate}], lr=LR)
+
+        for dtype in (torch.bfloat16, torch.float16, torch.int64):
+            with pytest.raises(ValueError, match="float32 or float64"):
+                with_group_rate(torch.tensor(1, dtype=dtype))
+        with pytest.raises(ValueError, match="one element"):
+            with_group_rate(torch.tensor([0.1, 0.2]))
+        with pytest.raises(ValueError, match="Invalid learning rate"):
+            with_group_rate(-LR)
+        for learning_rate in (torch.tensor(LR), torch.tensor(LR, dtype=torch.float64), torch.tensor(0.0), 0.0):
+            assert with_group_rate(learning_rate).param_groups[0]['lr'] is learning_rate
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('foreach', [False, True])
+    @pytest.mark.parametrize('capturable', [False, True])
+    def test_zero_tensor_learning_rate_keeps_the_parameters(self, foreach, capturable):
+        # an entry without a gradient so far has a zero second moment: no 0 / 0 at a zero learning rate
+        def run(learning_rate):
+            param = torch.nn.Parameter(torch.ones(2))
+            optimizer = Muon([param], lr=learning_rate, foreach=foreach, capturable=capturable)
+            param.grad = torch.tensor([0.0, 1.0])
+            optimizer.step()
+            assert torch.equal(param, torch.ones(2))
+            assert float(optimizer.state[param]['step']) == 1.0
+            assert torch.equal(optimizer.state[param]['exp_avg'], torch.tensor([0.0, 0.1]))
+            # the moments and the count advanced, so the next step at a positive rate is the regular one
+            if isinstance(learning_rate, torch.Tensor):
+                learning_rate.fill_(LR)
+            else:
+                optimizer.param_groups[0]['lr'] = LR
+            param.grad = torch.tensor([0.5, 1.0])
+            optimizer.step()
+            return param
+
+        torch.testing.assert_close(run(torch.tensor(0.0)), run(0.0), **CAPTURABLE_TOLERANCE)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('foreach', [False, True])
+    def test_device_step_count_is_float32_under_a_reduced_default_dtype(self, foreach):
+        # a bfloat16 count would stay at 256 when one is added
+        previous = torch.get_default_dtype()
+        torch.set_default_dtype(torch.bfloat16)
+        try:
+            param = torch.nn.Parameter(torch.ones(4, dtype=torch.float32))
+            learning_rate = torch.tensor(LR, dtype=torch.float32)
+            optimizer = Muon([param], lr=learning_rate, foreach=foreach, capturable=True)
+            param.grad = torch.ones(4, dtype=torch.float32)
+            optimizer.step()
+            step = optimizer.state[param]['step']
+            assert step.dtype == torch.float32
+            step.fill_(256)
+            optimizer.step()
+            assert float(optimizer.state[param]['step']) == 257.0
+            # a loaded count keeps its value, from a Python integer and from a tensor of another dtype
+            state_dict = optimizer.state_dict()
+            for count in (257, torch.tensor(257.0, dtype=torch.float64)):
+                state_dict['state'][0]['step'] = count
+                optimizer.load_state_dict(copy.deepcopy(state_dict))
+                loaded = optimizer.state[param]['step']
+                assert loaded.dtype == torch.float32 and float(loaded) == 257.0
+        finally:
+            torch.set_default_dtype(previous)
+
+    @pytest.mark.unit
     @pytest.mark.parametrize('foreach', [False, True])
     def test_one_element_learning_rate_tensor_of_any_shape(self, foreach):
         # a `(1,)` tensor, as a scheduler or a configuration may hand it over, is read as a scalar
@@ -696,7 +764,7 @@ class TestMuonCapturable:
     def test_compiled_multi_tensor_step_needs_device_step_counts(self):
         # Dynamo runs the capturable form: Python step counts from eager steps without `capturable` are rejected
         parameters = _layered_parameters()
-        optimizer = _layered_optimizer(parameters)
+        optimizer = _layered_optimizer(parameters, foreach=True)
         _run_with_learning_rates(optimizer, parameters, [LR])
         assert optimizer.state[parameters['bias_0']]['step'] == 1
         torch._dynamo.reset()
@@ -706,6 +774,7 @@ class TestMuonCapturable:
             step()
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph capture needs a GPU")
     def test_captured_step_replays_with_new_gradients_and_learning_rate(self):
         eager_params, eager = _optimizer_with_tensor_learning_rate('cuda')
@@ -733,6 +802,7 @@ class TestMuonCapturable:
         assert float(captured.state[captured_params['bias_0']]['step']) == len(schedule)
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph capture needs a GPU")
     @pytest.mark.parametrize('foreach', [False, True])
     def test_capture_needs_capturable_and_a_device_learning_rate(self, foreach):

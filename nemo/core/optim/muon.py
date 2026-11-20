@@ -94,7 +94,7 @@ class Muon(Optimizer):
     pass ``lr`` as a one-element float32 or float64 tensor on the parameters' device,
     which the step reads from ``param_groups[i]['lr']`` every time
     (a scheduler writes the new value into that tensor in place, as ``torch.optim.lr_scheduler`` does),
-    and set ``capturable=True``, which keeps each parameter's AdamW step count as a float tensor on its device
+    and set ``capturable=True``, which keeps each parameter's AdamW step count as a float32 tensor on its device
     and computes the bias corrections there.
     A capture of the step without both raises.
     Under ``torch.compile`` the step traces as one graph and runs the capturable form
@@ -149,14 +149,7 @@ class Muon(Optimizer):
         foreach: bool = True,
         capturable: bool = False,
     ) -> None:
-        if isinstance(lr, torch.Tensor):
-            if lr.numel() != 1:
-                raise ValueError(f"A tensor learning rate needs one element, got shape {tuple(lr.shape)}")
-            if not lr.dtype.is_floating_point or torch.finfo(lr.dtype).bits < 32:
-                # a half-precision learning rate rounds the decay factor 1 - lr * weight_decay to 1
-                raise ValueError(f"A tensor learning rate needs a float32 or float64 tensor, got {lr.dtype}")
-        if lr < 0.0:
-            raise ValueError(f"Invalid learning rate: {lr}")
+        _validate_lr(lr)
         if not 0.0 <= momentum < 1.0:
             raise ValueError(f"Invalid momentum: {momentum}")
         if ns_steps < 1:
@@ -190,6 +183,7 @@ class Muon(Optimizer):
         )
         super().__init__(params, defaults)
         for group in self.param_groups:
+            _validate_lr(group['lr'])
             if group['scale_mode'] not in SCALE_MODES:
                 raise ValueError(f"Unknown scale_mode {group['scale_mode']!r}, expected one of {SCALE_MODES}")
             if group['use_muon']:
@@ -223,15 +217,17 @@ class Muon(Optimizer):
         self._convert_step_counts()
 
     def _convert_step_counts(self) -> None:
-        # the AdamW step count follows the group's `capturable`: a float tensor on the device, or an int
+        # the AdamW step count follows the group's `capturable`: a float32 tensor on the device, or an int
         for group in self.param_groups:
             for param in group['params']:
                 param_state = self.state.get(param)
                 if param_state is None or 'step' not in param_state:
                     continue
-                if group['capturable'] and not isinstance(param_state['step'], torch.Tensor):
-                    param_state['step'] = torch.tensor(float(param_state['step']), device=param.device)
-                elif not group['capturable'] and isinstance(param_state['step'], torch.Tensor):
+                if group['capturable']:
+                    param_state['step'] = torch.as_tensor(
+                        param_state['step'], device=param.device, dtype=torch.float32
+                    )
+                elif isinstance(param_state['step'], torch.Tensor):
                     param_state['step'] = int(param_state['step'])
 
     @staticmethod
@@ -492,12 +488,12 @@ def _adamw_update(
     if weight_decay != 0:
         param.mul_(1 - lr * weight_decay)
     step_size = lr / bias_correction1
+    denom = (exp_avg_sq.sqrt() / (bias_correction2**0.5)).add_(eps)
     if isinstance(step_size, torch.Tensor):
-        # a tensor learning rate or step count: the step size folds into the denominator, since `value` takes no tensor
-        denom = (exp_avg_sq.sqrt() / (bias_correction2**0.5 * step_size)).add_(eps / step_size)
-        param.addcdiv_(exp_avg, denom, value=-1.0)
+        # a tensor learning rate or step count scales the quotient, since `value` takes no tensor;
+        # dividing the denominator by it would give 0 / 0 at a zero learning rate
+        param.addcmul_(exp_avg / denom, step_size, value=-1.0)
     else:
-        denom = (exp_avg_sq.sqrt() / (bias_correction2**0.5)).add_(eps)
         param.addcdiv_(exp_avg, denom, value=-step_size)
 
 
@@ -581,5 +577,16 @@ def _adamw_update_foreach(
 
 
 def _initial_step(param: torch.Tensor, capturable: bool) -> Union[int, torch.Tensor]:
-    # the device step count is a float tensor of the default dtype, as torch's capturable optimizers keep it
-    return torch.zeros((), device=param.device) if capturable else 0
+    # float32 whatever the default dtype is: a half-precision count stops advancing at 256 or 2048
+    return torch.zeros((), device=param.device, dtype=torch.float32) if capturable else 0
+
+
+def _validate_lr(lr: Union[float, torch.Tensor]) -> None:
+    if isinstance(lr, torch.Tensor):
+        if lr.numel() != 1:
+            raise ValueError(f"A tensor learning rate needs one element, got shape {tuple(lr.shape)}")
+        if not lr.dtype.is_floating_point or torch.finfo(lr.dtype).bits < 32:
+            # a half-precision learning rate rounds the decay factor 1 - lr * weight_decay to 1
+            raise ValueError(f"A tensor learning rate needs a float32 or float64 tensor, got {lr.dtype}")
+    if lr < 0.0:
+        raise ValueError(f"Invalid learning rate: {lr}")

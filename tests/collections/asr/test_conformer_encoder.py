@@ -31,7 +31,6 @@ from nemo.collections.asr.parts.packed_sequence import (
 )
 from nemo.collections.asr.parts.submodules import conformer_modules
 from nemo.collections.asr.parts.submodules import packed_attention as packed_attention_module
-from nemo.collections.asr.parts.submodules.packed_attention import PackedAttentionContext
 from nemo.collections.asr.parts.submodules.broadcast_dropout import BroadcastDropout
 from nemo.collections.asr.parts.submodules.conformer_modules import (
     ConformerConvolution,
@@ -44,6 +43,7 @@ from nemo.collections.asr.parts.submodules.multi_head_attention import (
     RelPositionalEncoding,
     RelPositionMultiHeadAttention,
 )
+from nemo.collections.asr.parts.submodules.packed_attention import PackedAttentionContext
 from nemo.collections.asr.parts.submodules.subsampling import ConvSubsampling
 from nemo.collections.common.parts.utils import SquaredReLU
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE

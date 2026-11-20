@@ -988,6 +988,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         and ``abs_pos`` and ``rope`` attention keep their dropout only where variable-length FlashAttention runs,
         in float16 or bfloat16 (autocast counts) with a head width that is a multiple of 8 up to 256;
         see ``packed_attention_supports_dropout``. Off CUDA the dense reference attention applies the dropout.
+        The rule reads every attention module that is in training mode, by its own mode, class and head width:
+        the self-attention of every layer and the enabled attention adapters with their ``dropout_rate``.
         """
         if self.self_attention_model == 'rel_pos_local_attn':
             return "rel_pos_local_attn has no sequence-packed form."

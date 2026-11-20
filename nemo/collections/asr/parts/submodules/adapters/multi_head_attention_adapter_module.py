@@ -51,6 +51,8 @@ class MHAResidualAddAdapterStrategy(adapter_mixin_strategies.ResidualAddAdapterS
 
                  `pos_emb`: Optional positional embedding for relative encoding.
 
+                 `attention_context`: Optional packing metadata of token-flat tensors, for the adapter.
+
             adapter: The adapter module that is currently required to perform the forward pass.
             module: The calling module, in its entirety. It is a module that implements `AdapterModuleMixin`,
                 therefore the strategy can access all other adapters in this module via `module.adapter_layer`.
@@ -195,13 +197,15 @@ class MultiHeadAttentionAdapter(mha.MultiHeadAttention, adapter_modules.AdapterM
             value(torch.Tensor): (batch, time2, size)
             mask (torch.Tensor): (batch, time1, time2)
             cache (torch.Tensor) : (batch, time_cache, size)
-            attention_context: packing metadata of token-flat `value` (T_total, size), which then runs `forward_packed`
+            attention_context: packing metadata of token-flat `value` (T_total, size): `forward_packed` on `value` alone
 
         returns:
             output (torch.Tensor): transformed `value` (batch, time1, d_model) weighted by the query dot key attention
             cache  (torch.Tensor) : (batch, time_cache_next, size)
         """
         if attention_context is not None:
+            if mask is not None or cache is not None:
+                raise ValueError("mask and cache cannot be combined with attention_context, which reads value alone.")
             return self.forward_packed(value, attention_context, pos_emb=pos_emb)
 
         # Need to perform duplicate computations as at this point the tensors have been
@@ -315,12 +319,14 @@ class RelPositionMultiHeadAttentionAdapter(mha.RelPositionMultiHeadAttention, ad
             mask (torch.Tensor): (batch, time1, time2)
             pos_emb (torch.Tensor) : (batch, time1, size)
             cache (torch.Tensor) : (batch, time_cache, size)
-            attention_context: packing metadata of token-flat `value` (T_total, size), which then runs `forward_packed`
+            attention_context: packing metadata of token-flat `value` (T_total, size): `forward_packed` on `value` alone
         Returns:
             output (torch.Tensor): transformed `value` (batch, time1, d_model) weighted by the query dot key attention
             cache_next (torch.Tensor) : (batch, time_cache_next, size)
         """
         if attention_context is not None:
+            if mask is not None or cache is not None:
+                raise ValueError("mask and cache cannot be combined with attention_context, which reads value alone.")
             return self.forward_packed(value, attention_context, pos_emb=pos_emb)
 
         # Need to perform duplicate computations as at this point the tensors have been

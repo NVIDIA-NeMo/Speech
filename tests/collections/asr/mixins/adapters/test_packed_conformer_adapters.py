@@ -266,6 +266,23 @@ class TestPackedConformerAdapters:
         torch.testing.assert_close(packed, _padded_forward(encoder, features, lengths))
 
     @pytest.mark.unit
+    def test_reason_reads_every_enabled_adapter(self):
+        """A refused adapter behind one that runs is found; mask and cache have no packed meaning for an adapter."""
+        encoder = _encoder("rel_pos").double().train()
+        _add_adapter(encoder, "linear_0", "linear")
+        _add_adapter(encoder, "attention_0", "relmha")
+        assert encoder.supports_sequence_packed_output
+        for layer in encoder.layers:
+            layer.adapter_layer["attention_0"].adapter_strategy.l2_lambda = 0.1
+        assert "'attention_0'" in encoder.sequence_packed_unsupported_reason()
+
+        adapter = encoder.layers[0].adapter_layer["attention_0"].double()
+        states = torch.randn(7, D_MODEL, dtype=torch.float64)
+        context = PackedAttentionContext(pack_encoder_output(states.unsqueeze(0), torch.tensor([7])))
+        with pytest.raises(ValueError, match="mask and cache"):
+            adapter(states, states, states, None, None, cache=states.unsqueeze(0), attention_context=context)
+
+    @pytest.mark.unit
     def test_transformer_attention_adapter_is_refused(self):
         layer = ConformerLayer(d_model=D_MODEL, d_ff=32, n_heads=2, conv_kernel_size=3).double()
         cfg = transformer_mha_adapters.TransformerMultiHeadAttentionAdapterConfig(
@@ -397,3 +414,9 @@ class TestPackedConformerAdaptersCuda:
             assert "head width" in narrow.sequence_packed_unsupported_reason()
             with pytest.raises(NotImplementedError):
                 narrow.forward_sequence_packed(features, lengths)
+            # one module that cannot apply its dropout is enough, whatever the others can
+            options = dict(dropout_rate=0.1, proj_dim=4)
+            mixed_width = self._cuda_encoder("mha", "abs_pos", options, dropout_att=0.1).train()
+            assert "head width" in mixed_width.sequence_packed_unsupported_reason()
+            mixed_bias = self._cuda_encoder("mha", "rel_pos", dict(dropout_rate=0.1), dropout_att=0.1).train()
+            assert "FlexAttention has no dropout" in mixed_bias.sequence_packed_unsupported_reason()

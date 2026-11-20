@@ -230,6 +230,28 @@ class EasyMagpieInputStream:
 class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
     """Use resumable EasyMagpie requests while preserving the generic handler."""
 
+    async def _receive_session_config(self, websocket: WebSocket):
+        """Read and validate the first ``session.config`` message.
+
+        Older vLLM-Omni handlers expose ``_receive_config``; newer ones split it
+        into ``_parse_message`` and ``_build_config``.
+        """
+        receive = getattr(super(), "_receive_config", None)
+        if receive is not None:
+            return await receive(websocket)
+        try:
+            raw = await asyncio.wait_for(websocket.receive_text(), timeout=self._config_timeout)
+        except asyncio.TimeoutError:
+            await self._send_error(websocket, "Timeout waiting for session.config")
+            return None
+        message = await self._parse_message(websocket, raw)
+        if message is None:
+            return None
+        if message.get("type") != "session.config":
+            await self._send_error(websocket, "The first message must be session.config")
+            return None
+        return await self._build_config(websocket, message)
+
     async def handle_session(self, websocket: WebSocket) -> None:
         if getattr(self._speech_service, "_tts_model_type", None) != _MODEL_TYPE:
             await super().handle_session(websocket)
@@ -241,7 +263,7 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
         input_stream: EasyMagpieInputStream | None = None
         completed = False
         try:
-            config = await self._receive_config(websocket)
+            config = await self._receive_session_config(websocket)
             if config is None:
                 return
             if not config.stream_audio or config.response_format != "pcm":

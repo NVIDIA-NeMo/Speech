@@ -451,8 +451,9 @@ frame and every utterance its own; the positional-embedding and attention dropou
       dropout_broadcast: true
 
 The option changes the training (another dropout pattern, not a speedup of the same one) and is off by default.
-In training on CUDA with Triton installed, the masks run through the fused activation-dropout kernels of the
-feed-forward blocks, which also save one tensor of the hidden width per block instead of three.
+In training on CUDA with Triton installed and float32, bfloat16 or float16 states, the masks of the feed-forward
+blocks run through their fused activation-dropout kernels, which also save one tensor of the hidden width per block
+instead of three, and the residual dropouts of the layers run as a kernel that saves the mask alone.
 The sequence-packed forward (``forward_sequence_packed``) gives every token the mask of its utterance through the
 packing metadata; a custom feed-forward block used with the option must accept the ``dropout_broadcast`` argument
 and, on the packed path, the ``context`` argument of ``ConformerFeedForward.forward``.

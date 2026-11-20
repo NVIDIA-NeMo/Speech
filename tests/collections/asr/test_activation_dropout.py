@@ -479,6 +479,36 @@ class TestBroadcastActivationDropout:
             activation_dropout(torch.randn(2, 5, 7, device="cuda"), "relu", 0.1, broadcast=True, num_sequences=2)
         with pytest.raises(TypeError, match="int32 or int64"):
             activation_dropout(flat, "relu", 0.1, broadcast=True, sequence_ids=ids.float(), num_sequences=1)
+        with pytest.raises(TypeError, match="Python int"):
+            activation_dropout(flat, "relu", 0.1, broadcast=True, sequence_ids=ids, num_sequences=2.0)
+        with pytest.raises(ValueError, match="not be negative"):
+            activation_dropout(flat, "relu", 0.1, broadcast=True, sequence_ids=ids, num_sequences=-1)
+        with pytest.raises(ValueError, match="cannot belong to zero sequences"):
+            activation_dropout(flat, "relu", 0.1, broadcast=True, sequence_ids=ids, num_sequences=0)
+        with pytest.raises(ValueError, match="device of x"):
+            activation_dropout(flat, "relu", 0.1, broadcast=True, sequence_ids=ids.cpu(), num_sequences=1)
+        # non-contiguous ids give the contiguous result
+        strided = torch.tensor([0, 7, 1, 7, 0, 7, 1, 7, 0, 7], device="cuda")[::2]
+        same = activation_dropout(
+            flat, "relu", 0.1, broadcast=True, sequence_ids=strided, num_sequences=2, seed=_seed(4)
+        )
+        torch.testing.assert_close(
+            same,
+            activation_dropout(
+                flat, "relu", 0.1, broadcast=True, sequence_ids=strided.contiguous(), num_sequences=2, seed=_seed(4)
+            ),
+            rtol=0.0,
+            atol=0.0,
+        )
+        # an id outside the mask matrix drops its row whole instead of reading past the matrix, forward and backward
+        wild = torch.tensor([0, -1, 1, 2, 2**62], device="cuda")
+        x = torch.randn(5, 7, device="cuda", requires_grad=True)
+        out = activation_dropout(x, "identity", 0.3, broadcast=True, sequence_ids=wild, num_sequences=2, seed=_seed(9))
+        out.sum().backward()
+        keep = activation_dropout_mask((2, 7), 0.3, _seed(9), x.device)
+        torch.testing.assert_close(out[[0, 2]], torch.where(keep, x.detach()[[0, 2]] / 0.7, 0.0))
+        assert torch.equal(out[[1, 3, 4]], torch.zeros(3, 7, device="cuda"))
+        assert torch.equal(x.grad[[1, 3, 4]], torch.zeros(3, 7, device="cuda"))
         # empty batches, empty sequences and dropout zero
         assert activation_dropout(torch.randn(0, 5, 7, device="cuda"), "relu", 0.1, broadcast=True).shape == (0, 5, 7)
         assert activation_dropout(torch.randn(3, 0, 7, device="cuda"), "relu", 0.1, broadcast=True).shape == (3, 0, 7)

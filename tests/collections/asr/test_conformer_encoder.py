@@ -533,6 +533,8 @@ class TestDropoutBroadcast:
     @pytest.mark.unit
     @pytest.mark.skipif(not TRITON_AVAILABLE, reason="requires Triton")
     def test_feed_forward_fuses_with_the_broadcast_mask(self, monkeypatch):
+        from nemo.collections.asr.parts.triton.activation_dropout import activation_dropout_mask
+
         torch.manual_seed(0)
         module = ConformerFeedForward(16, 64, 0.5, activation="squared_relu", dropout_broadcast=True).cuda().train()
         x = torch.randn(4, 50, 16, device="cuda")
@@ -555,12 +557,23 @@ class TestDropoutBroadcast:
             module(torch.randn(11, 16, device="cuda"))
         # the training form: packed states under bfloat16 autocast, forward and backward through the fused path
         packed = torch.randn(11, 16, device="cuda", requires_grad=True)
+        seed = torch.tensor([21], dtype=torch.int32, device="cuda")
+        monkeypatch.setattr(conformer_modules, "activation_dropout_linear", functools.partial(fused, seed=seed))
         with torch.autocast("cuda", dtype=torch.bfloat16):
             packed_out = module(packed, context=context)
-        assert packed_out.dtype == torch.bfloat16 and calls[-1]["num_sequences"] == 2
+            hidden = module.linear1(packed)
+        assert packed_out.dtype == torch.bfloat16
+        # the value: the modules under the kernel's mask of the rows' sequences
+        keep = activation_dropout_mask((2, 64), 0.5, seed, packed.device)[context.sequence_ids]
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            expected = module.linear2(
+                torch.where(keep, module.activation(hidden.float()) / 0.5, 0.0).to(torch.bfloat16)
+            )
+        torch.testing.assert_close(packed_out.float(), expected.float(), rtol=2e-2, atol=2e-2)
         packed_out.float().sum().backward()
         assert packed.grad.dtype == torch.float32 and torch.isfinite(packed.grad).all()
         assert all(torch.isfinite(p.grad).all() for p in module.parameters())
+        monkeypatch.setattr(conformer_modules, "activation_dropout_linear", fused)
         # the expectation over draws is the evaluation output, as with the per-element mask
         module.eval()
         with torch.no_grad():

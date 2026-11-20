@@ -730,8 +730,7 @@ class FusedBroadcastDropout(BroadcastDropout):
     mask alone instead of a mask of their own size, and padded states save their ``(..., 1, D)`` mask;
     the masks come from the kernels' own random stream.
     Elsewhere (evaluation, CPU, other dtypes, Triton missing, ``p`` of 1) the module behaves as `BroadcastDropout`.
-    The shape checks repeat the base class's with its words, so both paths refuse the same inputs alike;
-    the subclass folds into `BroadcastDropout` once #16699, which adds that module as well, has merged.
+    The shape checks repeat the base class's with its words, so both paths refuse the same inputs alike.
     """
 
     def forward(self, x: torch.Tensor, context: PackedAttentionContext | None = None) -> torch.Tensor:

@@ -110,8 +110,8 @@ def activation_dropout(
             instead of a mask per element.
         sequence_ids: the sequence of every row of sequence-packed states, an integer tensor of ``T_total``
             on the device of ``x``; needs ``broadcast`` and ``num_sequences``.
-            The ids are not range-checked (that would cost a device sync): a row whose id is outside
-            ``[0, num_sequences)`` is dropped whole.
+            The ids are not range-checked (that would cost a device sync): with ``p > 0`` a row whose id is outside
+            ``[0, num_sequences)`` is dropped whole; with ``p == 0`` nothing is dropped and the kernel does not read them.
         num_sequences: the number of sequences the ids index.
         seed: one-element integer tensor with the Philox seed of the mask, taken modulo ``2**31``;
             drawn on the device of ``x`` by default, which gives a fresh mask on every CUDA-graph replay.
@@ -224,10 +224,12 @@ def _broadcast_mask(
                 f"sequence_ids give the sequence of every row of (T_total, D) states, got ids of shape"
                 f" {tuple(sequence_ids.shape)} for states of shape {tuple(x.shape)}."
             )
-        if not isinstance(num_sequences, int) or isinstance(num_sequences, bool) or num_sequences < 0:
-            raise ValueError(
-                f"num_sequences, the number of sequences the ids index, is needed with sequence_ids, got {num_sequences!r}."
-            )
+        if num_sequences is None:
+            raise ValueError("num_sequences, the number of sequences the ids index, is needed with sequence_ids.")
+        if not isinstance(num_sequences, int) or isinstance(num_sequences, bool):
+            raise TypeError(f"num_sequences must be a Python int, got {num_sequences!r}.")
+        if num_sequences < 0:
+            raise ValueError(f"num_sequences must not be negative, got {num_sequences}.")
         if sequence_ids.dtype not in (torch.int32, torch.int64):
             raise TypeError(f"sequence_ids must be int32 or int64, got {sequence_ids.dtype}.")
         if sequence_ids.device != x.device:

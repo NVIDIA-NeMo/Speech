@@ -1140,8 +1140,8 @@ class PositionalEncoding(torch.nn.Module):
         max_len (int): maximum input length
         xscale (bool): whether to scale the input by sqrt(d_model)
         dropout_rate_emb (float): dropout rate for the positional embeddings
-        dropout_broadcast (bool): one input dropout mask per sequence over the feature axis (`BroadcastDropout`),
-        instead of a mask per element; the embedding dropout stays per element. Defaults to False.
+        dropout_broadcast (bool): one input dropout mask per sequence over the feature axis (`BroadcastDropout`)
+            instead of a mask per element; the embedding dropout stays per element. Defaults to False.
     """
 
     def __init__(

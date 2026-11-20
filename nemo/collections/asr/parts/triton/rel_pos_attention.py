@@ -113,10 +113,11 @@ def packed_rel_pos_attention(
         scale: factor of both score terms, ``1 / sqrt(D)`` by default.
         check_lengths: read the lengths from the device once and reject one beyond ``max_seqlen``,
             which would otherwise leave the query rows past the launched tiles zero
-            and send the position lookups past the table; the read is impossible under CUDA-graph capture
-            and in compiled code, where the check is skipped.
-            ``False`` for metadata whose bound holds by construction, as the ``PackedAttentionContext`` of the
-            encoders passes, which keeps the launch free of device reads.
+            and send the position lookups past the table. The read is impossible in compiled code and under
+            CUDA-graph capture, so a compiled or captured call with the check on is refused:
+            such a caller validates the lengths against ``max_seqlen`` itself, outside the compiled region,
+            and passes ``False``, as the ``PackedAttentionContext`` of the encoders does for metadata whose
+            bound holds by construction, which keeps the launch free of device reads.
 
     Returns:
         Context vectors of shape ``(T_total, H, D)`` and the dtype of ``q``; rows outside every utterance are zero.
@@ -387,18 +388,26 @@ def _utterance_rows(seq_starts: Tensor, seq_lens: Tensor, total: int) -> Tensor:
 
 
 def _check_lengths(seq_lens: Tensor, max_seqlen: int) -> None:
-    """Reject a length beyond ``max_seqlen`` with one device read, where a read is possible."""
-    if seq_lens.numel() == 0 or torch.compiler.is_compiling():
+    """Reject a length beyond ``max_seqlen`` with one device read; refuse the call where no read is possible."""
+    if seq_lens.numel() == 0:
         return
+    if torch.compiler.is_compiling():
+        raise RuntimeError(_NO_DEVICE_READ.format(where="in compiled code"))
     with torch.cuda.device(seq_lens.device):
         if torch.cuda.is_current_stream_capturing():
-            return
+            raise RuntimeError(_NO_DEVICE_READ.format(where="during CUDA-graph capture"))
         longest = int(seq_lens.max())
     if longest > max_seqlen:
         raise ValueError(
             f"max_seqlen {max_seqlen} is below the longest utterance of {longest} rows: "
             "its rows past the launched tiles would stay zero and its position lookups would pass the table."
         )
+
+
+_NO_DEVICE_READ = (
+    "packed_rel_pos_attention(check_lengths=True) reads the lengths from the device, which is impossible {where}: "
+    "validate the lengths against max_seqlen outside the compiled or captured region and pass check_lengths=False."
+)
 
 
 def _zeros_with_gradient_edges(q: Tensor, *inputs: Tensor) -> Tensor:

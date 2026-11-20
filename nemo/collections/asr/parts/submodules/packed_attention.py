@@ -336,21 +336,22 @@ def packed_attention(
 
 
 def packed_attention_supports_dropout(
-    device: torch.device, dtype: torch.dtype, head_dim: int, *, rel_pos: bool = False
+    device: torch.device, dtype: torch.dtype, head_dim: int, *, rel_pos: bool = False, rel_pos_kernel: bool = True
 ) -> bool:
-    """Whether ``packed_attention`` applies dropout on this device, dtype and head width.
+    """Whether ``packed_attention`` applies dropout on this device, dtype and head width: the dispatch rule.
 
     Off CUDA, and on CUDA in float64, it always does (the dense reference path).
     On CUDA without a position term, only where variable-length FlashAttention runs:
     float16 or bfloat16, a head width that is a multiple of 8 up to 256, compute capability 8 or newer.
     With the Transformer-XL position term (``rel_pos``), only where its Triton kernel runs:
-    Triton installed, in float32, bfloat16 or float16.
+    selected (``rel_pos_kernel``, the switch of the ``PackedAttentionContext``), Triton installed,
+    in float32, bfloat16 or float16.
     FlexAttention, the path otherwise, has no dropout.
     """
     if device.type != 'cuda' or dtype == torch.float64:
         return True
     if rel_pos:
-        return TRITON_AVAILABLE and dtype in PACKED_REL_POS_ATTENTION_DTYPES
+        return rel_pos_kernel and TRITON_AVAILABLE and dtype in PACKED_REL_POS_ATTENTION_DTYPES
     if dtype not in (torch.float16, torch.bfloat16) or head_dim > 256 or head_dim % 8 != 0:
         return False
     # a function-level import: the modules package initializes the encoders, which import this module

@@ -623,8 +623,18 @@ class TestPackedRelPosAttentionKernel:
         with pytest.raises(ValueError, match="longest utterance of 65 rows"):
             attend(q, k, v, pos_query, torch.zeros(1, heads, head_dim, device="cuda"), starts, lens, 1)
         # the correct bound attends every row: uniform weights over the ones of v
-        out = attend(q, k, v, pos_query, torch.zeros(2 * 65 - 1, heads, head_dim, device="cuda"), starts, lens, 65)
+        table = torch.zeros(2 * 65 - 1, heads, head_dim, device="cuda")
+        out = attend(q, k, v, pos_query, table, starts, lens, 65)
         torch.testing.assert_close(out, torch.ones_like(out))
+        # a compiled call cannot read the lengths: with the check on it is refused, never skipped
+        compiled = torch.compile(attend, fullgraph=True)
+        with pytest.raises(Exception, match="pass check_lengths=False"):
+            compiled(q, k, v, pos_query, table, starts, lens, 1)
+        with pytest.raises(Exception, match="pass check_lengths=False"):
+            compiled(q, k, v, pos_query, table, starts, lens, 65)
+        out = compiled(q, k, v, pos_query, table, starts, lens, 65, check_lengths=False)
+        torch.testing.assert_close(out, torch.ones_like(out))
+        torch._dynamo.reset()
 
     @pytest.mark.unit
     @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="requires two CUDA devices")
@@ -808,7 +818,9 @@ class TestPackedRelPosAttentionKernel:
 
     @pytest.mark.unit
     def test_cuda_graph_replay_follows_new_contents_and_lengths(self):
-        """Forward and backward captured once; replays see new tensors, new lengths within the bound, the seed."""
+        """Forward and backward captured once; replays see new tensors, new lengths within the bound, the seed.
+        The capture cannot read the lengths, so the call passes ``check_lengths=False`` and the bound is the
+        caller's: every replay stays within it."""
         torch.manual_seed(6)
         heads, head_dim, capacity, bound = 2, 32, 160, 64
         static = {
@@ -824,7 +836,14 @@ class TestPackedRelPosAttentionKernel:
 
         def step():
             out = kernel_module.packed_rel_pos_attention(
-                *leaves, starts, lens, bound, dropout_p=0.2, dropout_seed=seed, scale=head_dim**-0.5
+                *leaves,
+                starts,
+                lens,
+                bound,
+                dropout_p=0.2,
+                dropout_seed=seed,
+                scale=head_dim**-0.5,
+                check_lengths=False,
             )
             return (out, *torch.autograd.grad(out, leaves, d_out))
 
@@ -866,7 +885,8 @@ class TestPackedRelPosAttentionKernel:
         torch.cuda.current_stream().wait_stream(stream)
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph):
-            out = kernel_module.packed_rel_pos_attention(*args, dropout_p=0.5)
+            # the capture cannot read the lengths: the context's bound holds by construction
+            out = kernel_module.packed_rel_pos_attention(*args, dropout_p=0.5, check_lengths=False)
         graph.replay()
         first = out.clone()
         graph.replay()

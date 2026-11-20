@@ -1103,6 +1103,52 @@ class TestPackedFastConformerSmoke:
 class TestCacheAwareTraining:
     """Testing that training matches cache-aware streaming."""
 
+    @pytest.mark.unit
+    @pytest.mark.parametrize("subsampling", ["vggnet", "dw_striding_conv1d", "striding_conv1d"])
+    def test_training_prefix_requires_causal_convolution(self, cache_aware_model_cfg, subsampling):
+        encoder_cfg = cache_aware_model_cfg.encoder
+        encoder_cfg.subsampling = subsampling
+        encoder = ConformerEncoder.from_config_dict(encoder_cfg).cpu().train()
+        features = torch.randn(1, encoder_cfg.feat_in, 16)
+        expected_frames = features.size(-1)
+        if subsampling == "striding_conv1d":
+            expected_frames += encoder.streaming_cfg.pre_encode_cache_size[1]
+
+        class ReachedFrontend(Exception):
+            pass
+
+        def check_input(module, args, kwargs):
+            assert kwargs["x"].size(1) == kwargs["lengths"].item() == expected_frames
+            raise ReachedFrontend
+
+        with (
+            encoder.pre_encode.register_forward_pre_hook(check_input, with_kwargs=True),
+            pytest.raises(ReachedFrontend),
+        ):
+            encoder(audio_signal=features, length=torch.tensor([features.size(-1)]))
+
+    @pytest.mark.unit
+    def test_activation_checkpointing_preserves_pad_and_drop(self, cache_aware_model_cfg):
+        from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
+
+        torch.manual_seed(0)
+        encoder = ConformerEncoder.from_config_dict(cache_aware_model_cfg.encoder).cpu().train()
+        wrapped = copy.deepcopy(encoder)
+        wrapped.pre_encode = checkpoint_wrapper(wrapped.pre_encode)
+        features = torch.randn(1, cache_aware_model_cfg.encoder.feat_in, 128)
+        lengths = torch.tensor([features.size(-1)])
+
+        reference, reference_len = encoder(audio_signal=features, length=lengths)
+        output, output_len = wrapped(audio_signal=features, length=lengths)
+        assert output_len.tolist() == reference_len.tolist() == [16]
+        torch.testing.assert_close(output, reference)
+
+        grad = torch.randn_like(reference)
+        reference.backward(grad)
+        output.backward(grad)
+        for parameter, wrapped_parameter in zip(encoder.parameters(), wrapped.parameters()):
+            torch.testing.assert_close(wrapped_parameter.grad, parameter.grad)
+
     @pytest.mark.parametrize("n_frames", [7, 32])
     @pytest.mark.parametrize("subsampling", ["striding", "dw_striding"])
     def test_noncausal_train_matches_eval(self, cache_aware_model_cfg, n_frames, subsampling):
@@ -1125,12 +1171,17 @@ class TestCacheAwareTraining:
         assert train_len.tolist() == eval_len.tolist() == [(n_frames + factor - 1) // factor]
         torch.testing.assert_close(train_out, eval_out)
 
-    @pytest.mark.parametrize("lengths", [(128,), (127,), (127, 73)])
+    @pytest.mark.parametrize(
+        "lengths,stream_in_train_mode",
+        [((128,), False), ((127,), False), ((127, 73), False), pytest.param((128,), True, id="cached-training")],
+    )
     @pytest.mark.parametrize(
         "att_context_size,context_index",
         [([16, 3], 0), ([[16, 3], [16, 1]], 0), ([[16, 3], [16, 1]], 1)],
     )
-    def test_train_matches_streaming(self, cache_aware_model_cfg, lengths, att_context_size, context_index):
+    def test_train_matches_streaming(
+        self, cache_aware_model_cfg, lengths, stream_in_train_mode, att_context_size, context_index
+    ):
         """Training matches real buffered streaming for partial chunks and ragged batches."""
         torch.manual_seed(0)
         encoder_cfg = cache_aware_model_cfg.encoder
@@ -1150,7 +1201,7 @@ class TestCacheAwareTraining:
         with torch.no_grad():
             train_out, train_len = encoder(audio_signal=feats, length=input_lengths)
 
-        model.eval()
+        model.train(stream_in_train_mode)
         cache_channel, cache_time, cache_len = encoder.get_initial_cache_state(batch_size=len(lengths))
         stream_out = [[] for _ in lengths]
         with torch.no_grad():

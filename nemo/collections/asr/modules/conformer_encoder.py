@@ -725,12 +725,14 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             if isinstance(self.pre_encode, nn.Linear):
                 audio_signal = self.pre_encode(audio_signal)
             else:
+                pre_encode = _unwrap_checkpoint(self.pre_encode)
                 pad_for_streaming = (
                     self.training
                     and cache_last_channel is None
                     and self.att_context_style == "chunked_limited"
-                    and isinstance(self.pre_encode, ConvSubsampling)
-                    and self.pre_encode.is_causal
+                    and isinstance(pre_encode, ConvSubsampling)
+                    and pre_encode.is_causal
+                    and pre_encode._subsampling in ("striding", "dw_striding", "striding_conv1d")
                 )
                 # Later chunks carry pre_encode_cache_size frames over from the previous chunk.
                 # The first one has nothing to carry over, so pad it with silence and let the drop

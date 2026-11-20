@@ -1060,8 +1060,8 @@ class SubsamplingReductionModule(nn.Module):
         so a window never spans two utterances and the incomplete window at the end of an utterance is dropped,
         as the floor-mode length of the padded forward drops it.
         Striding runs the packed form of its ``ConvSubsampling``.
-        An empty batch and a batch whose utterances all lose every frame give an empty result with zero lengths,
-        where ``forward`` raises.
+        An empty batch and a batch whose utterances all lose every frame give an empty result with zero lengths;
+        ``forward`` raises for these when its padded width is below one window.
 
         Args:
             packed: states of all utterances, data of shape ``(sum(T_i), C)``;

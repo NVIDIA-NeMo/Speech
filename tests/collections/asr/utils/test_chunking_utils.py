@@ -150,8 +150,9 @@ def test_join_char_level_timestamps_with_filter():
 def test_merge_hypotheses_of_same_audio():
     # Different segments of the same audio file are correctly combined
     subsampling_factor = 8
+    window_stride = 0.01
     chunk_duration_seconds = 10
-    frame_offset = int(chunk_duration_seconds * 1000 / subsampling_factor)
+    frame_offset = 125  # 10 s / (0.01 s * 8) encoder frames
 
     h0 = Hypothesis(
         score=0.0,
@@ -183,6 +184,7 @@ def test_merge_hypotheses_of_same_audio():
         timestamps=True,
         subsampling_factor=subsampling_factor,
         chunk_duration_seconds=chunk_duration_seconds,
+        window_stride=window_stride,
     )
 
     words = merged.timestamp["word"]
@@ -197,6 +199,51 @@ def test_merge_hypotheses_of_same_audio():
     assert [s["segment"] for s in segs] == ["a", "b"]
     assert segs[1]["end"] == pytest.approx(0.3 + chunk_duration_seconds)
     assert segs[1]["end_offset"] == 3 + frame_offset
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "subsampling_factor, window_stride, expected_frame_offset",
+    [(8, 0.01, 45000), (4, 0.01, 90000), (8, 0.02, 22500)],
+)
+def test_merge_hypotheses_of_same_audio_frame_offsets_match_times(
+    subsampling_factor, window_stride, expected_frame_offset
+):
+    # Hour-long chunks: the shifted frame offsets must stay consistent with the shifted times,
+    # i.e. time == offset * window_stride * subsampling_factor (https://github.com/NVIDIA-NeMo/Speech/issues/16099).
+    chunk_duration_seconds = 3600
+    frame_duration = window_stride * subsampling_factor
+
+    def make_hyp(hyp_id, start_offset, end_offset):
+        ts = {
+            "start": start_offset * frame_duration,
+            "end": end_offset * frame_duration,
+            "start_offset": start_offset,
+            "end_offset": end_offset,
+        }
+        hyp = Hypothesis(
+            score=0.0,
+            y_sequence=torch.tensor([1]),
+            timestamp={"word": [{"word": "w", **ts}], "segment": [{"segment": "w", **ts}]},
+        )
+        hyp.id = hyp_id
+        return hyp
+
+    merged = merge_all_hypotheses(
+        hypotheses_list=[make_hyp("audio-0", 10, 12), make_hyp("audio-1_cut_segmented", 10, 12)],
+        timestamps=True,
+        subsampling_factor=subsampling_factor,
+        chunk_duration_seconds=chunk_duration_seconds,
+        window_stride=window_stride,
+    )[0]
+
+    for key in ("word", "segment"):
+        second_chunk = merged.timestamp[key][1]
+        assert second_chunk["start"] == pytest.approx(chunk_duration_seconds + 10 * frame_duration)
+        assert second_chunk["start_offset"] == expected_frame_offset + 10
+        assert second_chunk["end_offset"] == expected_frame_offset + 12
+        for side in ("start", "end"):
+            assert second_chunk[f"{side}_offset"] * frame_duration == pytest.approx(second_chunk[side])
 
 
 @pytest.mark.unit

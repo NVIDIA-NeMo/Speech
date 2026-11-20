@@ -36,7 +36,7 @@ MatchboxNet models can be instantiated using the :class:`~nemo.collections.asr.m
 
 .. note::
   For model details and deep understanding about Speech Command Detedction training, inference, finetuning and etc.,
-  please refer to  ``<NeMo_git_root>/tutorials/asr/Speech_Commands.ipynb`` and ``<NeMo_git_root>/tutorials/asr/Online_Offline_Speech_Commands_Demo.ipynb``.
+  please refer to ``<NeMo_git_root>/examples/asr/speech_classification/speech_to_label.py``.
 
 
 
@@ -59,7 +59,7 @@ MarbleNet models can be instantiated using the :class:`~nemo.collections.asr.mod
 
 .. note::
   For model details and deep understanding about VAD training, inference, postprocessing, threshold tuning and etc.,
-  please refer to  ``<NeMo_git_root>/tutorials/asr/06_Voice_Activiy_Detection.ipynb`` and ``<NeMo_git_root>/tutorials/asr/Online_Offline_Microphone_VAD_Demo.ipynb``.
+  please refer to ``<NeMo_git_root>/tutorials/asr/Voice_Activity_Detection.ipynb`` and ``<NeMo_git_root>/tutorials/asr/Online_Offline_Microphone_VAD_Demo.ipynb``.
 
 
 
@@ -70,7 +70,7 @@ AmberNet (Lang ID)
 
 AmberNet is an end-to-end neural network for language identification model based on :ref:`TitaNet <TitaNet_model>`.
 
-It can reach state-of-the art performance on the `Voxlingua107 dataset <https://cs.taltech.ee/staff/tanel.alumae/data/voxlingua107/>`__ while having significantly fewer parameters than similar models.
+It can reach state-of-the art performance on the Voxlingua107 dataset while having significantly fewer parameters than similar models.
 AmberNet models can be instantiated using the :class:`~nemo.collections.asr.models.EncDecSpeakerLabelModel` class.
 
 

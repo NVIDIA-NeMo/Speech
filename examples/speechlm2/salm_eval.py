@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -110,10 +111,7 @@ def main(cfg: SalmEvalConfig):
         )
         model = model_cls.from_pretrained(
             cfg.pretrained_name,
-            device_mesh=strategy.device_mesh,
-            distributed_config=strategy.distributed_config,
-            moe_config=strategy.moe_config,
-            moe_mesh=strategy.moe_mesh,
+            distributed_setup=strategy.distributed_setup,
             torch_dtype=cfg.dtype,
         )
     else:

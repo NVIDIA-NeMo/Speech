@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -102,6 +103,7 @@ class ContinuousBatchedFrameStreamer:
         batch_size: int,
         n_frames_per_stream: int,
         pad_last_frame: bool = False,
+        flush_size_in_secs: float = 0.0,
     ):
         """
         Args:
@@ -110,12 +112,14 @@ class ContinuousBatchedFrameStreamer:
             batch_size (int): The batch size
             n_frames_per_stream (int): The number of frames per stream
             pad_last_frame (bool): Whether to pad the last frame
+            flush_size_in_secs (float): Seconds of silence appended to every stream, 0.0 for none
         """
 
         self.sample_rate = sample_rate
         self.frame_size_in_secs = frame_size_in_secs
         self.batch_size = batch_size
         self.pad_last_frame = pad_last_frame
+        self.flush_size_in_secs = flush_size_in_secs
 
         self.multi_streamer = MultiStream(n_frames_per_stream=n_frames_per_stream)
         self.stream_id = 0
@@ -123,18 +127,28 @@ class ContinuousBatchedFrameStreamer:
         self._progress_bar = None
         self.processed_streams = set()
 
-    def set_audio_filepaths(self, audio_filepaths: list[str], options: list[RequestOptions]) -> None:
+    def set_audio_filepaths(
+        self,
+        audio_filepaths: list[str],
+        options: list[RequestOptions],
+        audio_samples: list[torch.Tensor] | None = None,
+    ) -> None:
         """
         Set the audio filepaths
         Args:
             audio_filepaths (list[str]): The list of audio filepaths
             options (list[RequestOptions]): The list of options
+            audio_samples (list[torch.Tensor] | None): Preloaded audio samples, one tensor per filepath.
+                When given, streams are fed from these tensors and no audio file is read from disk.
         """
         if len(audio_filepaths) != len(options):
             raise ValueError("audio_filepaths and options must have the same length")
+        if audio_samples is not None and len(audio_samples) != len(audio_filepaths):
+            raise ValueError("audio_filepaths and audio_samples must have the same length")
 
         self.audio_filepaths = audio_filepaths
         self.options = options
+        self.audio_samples = audio_samples
         self.n_audio_files = len(audio_filepaths)
         self.total_progress_steps = self.n_audio_files * 2  # One step for adding, one for processing
         self.sid2filepath = {}
@@ -175,14 +189,21 @@ class ContinuousBatchedFrameStreamer:
 
         # Create a new stream
         stream = MonoStream(
-            self.sample_rate, self.frame_size_in_secs, stream_id=self.stream_id, pad_last_frame=self.pad_last_frame
+            self.sample_rate,
+            self.frame_size_in_secs,
+            stream_id=self.stream_id,
+            pad_last_frame=self.pad_last_frame,
+            flush_size_in_secs=self.flush_size_in_secs,
         )
         # Load the next audio file
         audio_filepath = self.audio_filepaths[self.stream_id]
         options = self.options[self.stream_id]
         self.sid2filepath[self.stream_id] = audio_filepath
         self.elapsed_durations[self.stream_id] = 0.0
-        stream.load_audio(audio_filepath, options)
+        if self.audio_samples is not None:
+            stream.load_audio(self.audio_samples[self.stream_id], options)
+        else:
+            stream.load_audio(audio_filepath, options)
 
         # Add the stream to the multi streamer
         self.multi_streamer.add_stream(stream, stream_id=self.stream_id)
@@ -243,6 +264,7 @@ class ContinuousBatchedRequestStreamer:
         device: torch.device = None,
         pad_last_frame: bool = False,
         right_pad_features: bool = False,
+        flush_size_in_secs: float = 0.0,
     ):
         """
         Args:
@@ -273,6 +295,7 @@ class ContinuousBatchedRequestStreamer:
             batch_size=batch_size,
             n_frames_per_stream=n_frames_per_stream,
             pad_last_frame=pad_last_frame,
+            flush_size_in_secs=flush_size_in_secs,
         )
 
         if self.request_type is RequestType.FEATURE_BUFFER:
@@ -283,14 +306,20 @@ class ContinuousBatchedRequestStreamer:
             )
             self.right_pad_features = right_pad_features
 
-    def set_audio_filepaths(self, audio_filepaths: list[str], options: list[RequestOptions]) -> None:
+    def set_audio_filepaths(
+        self,
+        audio_filepaths: list[str],
+        options: list[RequestOptions],
+        audio_samples: list[torch.Tensor] | None = None,
+    ) -> None:
         """
         Set the audio filepaths
         Args:
             audio_filepaths (list[str]): The list of audio filepaths
             options (list[RequestOptions]): The list of options
+            audio_samples (list[torch.Tensor] | None): Preloaded audio samples, one tensor per filepath.
         """
-        self.multi_streamer.set_audio_filepaths(audio_filepaths, options)
+        self.multi_streamer.set_audio_filepaths(audio_filepaths, options, audio_samples=audio_samples)
 
     def set_progress_bar(self, progress_bar: ProgressBar) -> None:
         """

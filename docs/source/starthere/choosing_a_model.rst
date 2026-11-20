@@ -3,7 +3,7 @@
 Choosing a Model
 ================
 
-NeMo offers many pretrained speech models. This guide helps you pick the right one for your use case.
+NeMo Speech offers many pretrained speech models. This guide helps you pick the right one for your use case.
 
 ASR: Which Model Should I Use?
 ------------------------------
@@ -15,10 +15,11 @@ ASR: Which Model Should I Use?
    * - I want to...
      - Recommended Model
      - Why
-   * - Get the best accuracy on English
-     - `Canary-Qwen 2.5B <https://huggingface.co/nvidia/canary-qwen-2.5b>`_
-     - State-of-the-art English ASR. For very fast offline alternatives with almost SOTA accuracy, use `Parakeet-TDT V2 <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2>`_ or `Parakeet-TDT V3 <https://huggingface.co/nvidia/parakeet-tdt-1.1b>`_.
-   * - Transcribe multiple languages
+   * - Prioritize offline transcription accuracy and instruction control
+     - :doc:`Nemotron 3.5 Transcribe </speechlm2/nemotron_transcribe>`
+     - Transcription in 40 languages, vocabulary context, and recordings up to one hour.
+       The BF16 serving example targets one H100 80 GB; quantized variants are available.
+   * - Transcribe and translate with a smaller multilingual model
      - `Canary-1B V2 <https://huggingface.co/nvidia/canary-1b-v2>`_
      - Supports 25 EU languages + translation between them. AED decoder.
    * - Transcribe European languages (ASR only, auto language detection)
@@ -36,7 +37,11 @@ ASR: Which Model Should I Use?
    * - Integrate with an external LM
      - Any Parakeet model + NGPU-LM
      - GPU-accelerated n-gram LM fusion for CTC, RNNT, and TDT models.
-   * - Transcribe multi-speaker meetings
+   * - Transcribe recorded multi-speaker meetings with word timestamps
+     - :doc:`Nemotron 3.5 Transcribe </speechlm2/nemotron_transcribe>`
+     - Generates speaker-attributed transcripts and aligns words to the recording.
+       Check the model card for supported languages for multi-speaker transcription.
+   * - Transcribe multi-speaker meetings in real time
      - `Multitalker Parakeet Streaming <https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1>`_
      - Handles overlapping speech in real-time with speaker-adapted decoding.
 
@@ -91,8 +96,9 @@ Speech Language Models: Which Model Should I Use?
      - Recommended Model
      - Why
    * - Ask questions about audio content
-     - `Canary-Qwen 2.5B <https://huggingface.co/nvidia/canary-qwen-2.5b>`_ (SALM)
-     - LLM augmented with speech understanding. Can transcribe, translate, and answer questions about audio.
+     - :doc:`Nemotron 3.5 Transcribe </speechlm2/nemotron_transcribe>` (SALM)
+     - Prompt the model with a question about a recording and enable reasoning.
+       Audio understanding was evaluated in English.
    * - Build a speech-to-speech system
      - DuplexS2SModel
      - Full-duplex model that both understands and generates speech.
@@ -101,11 +107,10 @@ Speech Language Models: Which Model Should I Use?
 Where to Find Models
 --------------------
 
-All pretrained NeMo models are available on:
+All pretrained NeMo Speech models are available on:
 
 - `HuggingFace Hub (nvidia) <https://huggingface.co/nvidia>`_ — search for "nemo" or specific model names
 - `NGC Model Catalog <https://catalog.ngc.nvidia.com/models?query=nemo&orderBy=weightPopularDESC>`_ — NVIDIA's model registry
 - :doc:`Featured Community Checkpoints </asr/featured_community_checkpoints>` — fine-tunes from external users
 
 See :doc:`../checkpoints/intro` for instructions on loading pretrained models.
-

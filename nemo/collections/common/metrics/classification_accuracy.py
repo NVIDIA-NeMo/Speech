@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -31,14 +32,18 @@ class TopKClassificationAccuracy(Metric):
     will be all-reduced between all workers using SUM operations.
     Here contains two numbers res=[correctly_predicted, total_samples]. Accuracy=correctly_predicted/total_samples.
 
-    If used with PytorchLightning LightningModule, include correct_count and total_count inside validation_step results.
-    Then aggregate (sum) then at the end of validation epoch to correctly compute validation WER.
+    If used with PytorchLightning LightningModule, include correct_count and total_count inside validation_step
+    results. Then aggregate (sum) them at the end of the validation epoch to correctly compute validation WER.
 
     Example:
         def validation_step(self, batch, batch_idx):
             ...
             correct_count, total_count = self._accuracy(logits, labels)
-            self.val_outputs = {'val_loss': loss_value, 'val_correct_count': correct_count, 'val_total_count': total_count}
+            self.val_outputs = {
+                'val_loss': loss_value,
+                'val_correct_count': correct_count,
+                'val_total_count': total_count,
+            }
             return self.val_outputs
 
         def on_validation_epoch_end(self):
@@ -161,6 +166,8 @@ def compute_topk_accuracy(correct_counts_k, total_counts_k):
 
 
 class ExactStringPerCategoryMatchMetric(Metric):
+    """Track exact string matches independently for each category."""
+
     def __init__(self, categories=[], dist_sync_on_step=False, *args, **kwargs):
         super().__init__(dist_sync_on_step=dist_sync_on_step)
         self.categories = set(categories)
@@ -197,6 +204,8 @@ class ExactStringPerCategoryMatchMetric(Metric):
 
 
 class ExactStringMatchMetric(Metric):
+    """Track exact string match accuracy."""
+
     def __init__(self, dist_sync_on_step=False, *args, **kwargs):
         super().__init__(dist_sync_on_step=dist_sync_on_step)
 
@@ -232,6 +241,7 @@ class TokenF1Score(Metric):
         return self.correct.float() / self.total
 
     def f1_score(self, prediction, ground_truth):
+        """Compute the token-level F1 score for a prediction."""
         prediction_tokens = self.normalize(prediction).split()
         ground_truth_tokens = self.normalize(ground_truth).split()
         common = Counter(prediction_tokens) & Counter(ground_truth_tokens)

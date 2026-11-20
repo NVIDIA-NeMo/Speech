@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -162,6 +163,7 @@ class EncDecSpeechLabelModelTest(TestCase):
         self.assertTrue(isinstance(instance2, EncDecSpeakerLabelModel))
 
 
+@pytest.mark.gpu
 class TestEncDecSpeechLabelModel:
     @pytest.mark.unit
     def test_pretrained_titanet_embeddings(self, test_data_dir):

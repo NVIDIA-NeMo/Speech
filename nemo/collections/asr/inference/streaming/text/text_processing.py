@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,6 +31,16 @@ from nemo.collections.asr.inference.utils.text_segment import Word
 if TYPE_CHECKING:
     from nemo.collections.asr.inference.itn.inverse_normalizer import AlignmentPreservingInverseNormalizer
 
+# Multilingual models close an utterance with a language tag such as "<en-US>". Most tags are a
+# single vocabulary token and are removed at token level, but a few locales have no token of their
+# own (e.g. mt-MT, and sl-SI whose vocabulary entry is misspelled "<sl-SL>"). For those the model
+# spells the tag out from ordinary sub-word pieces - "<", "m", "t", "-", "M", "T", ">" - which takes
+# several decoding steps, so a stream can end part-way through and leave a fragment like "<mt-MT" or
+# "<sl-" in the transcript. A fragment is not a complete token sequence and cannot be matched by
+# token-level filtering, so it is removed from the text here instead. The pattern is anchored at the
+# end of the string because a tag is only ever truncated where the stream stops.
+INCOMPLETE_LANG_TAG = re.compile(r"\s*<[^\s<>]{0,10}\s*$")
+
 
 class StreamingTextProcessor:
     """
@@ -45,6 +56,7 @@ class StreamingTextProcessor:
         confidence_aggregator: Callable,
         sep: str,
         enable_itn: bool = False,
+        prompt_enabled: bool = False,
     ):
         """
         Initialize the streaming text processor.
@@ -57,9 +69,12 @@ class StreamingTextProcessor:
             confidence_aggregator (Callable): Function for aggregating confidence scores.
             sep (str): String separator used in ASR output processing.
             enable_itn (bool): Boolean to enable ITN. Default is False.
+            prompt_enabled (bool): Whether the ASR model is prompt-conditioned, i.e. can emit
+                language tags. Only such models need incomplete-tag removal. Default is False.
         """
 
         self.supports_punctuation = asr_supports_punctuation
+        self.prompt_enabled = prompt_enabled
 
         self.itn_model = itn_model
         self.itn_enabled = False
@@ -285,6 +300,8 @@ class StreamingTextProcessor:
             attr_name = "itn_words" if state.options.enable_itn else "pnc_words"
             words = getattr(state, attr_name)
             for word in words:
+                if self.prompt_enabled and INCOMPLETE_LANG_TAG.fullmatch(word.text.strip()):
+                    continue  # the whole word is an unterminated language tag
                 state.final_segments.append(word.copy())
                 state.final_transcript += word.text + self.sep
             state.final_transcript = state.final_transcript.rstrip(self.sep)
@@ -292,6 +309,9 @@ class StreamingTextProcessor:
         # Generate final transcript for segment boundary states
         for state in segment_boundary_states:
             for segment in state.segments:
-                state.final_segments.append(segment.copy())
+                segment = segment.copy()
+                if self.prompt_enabled:
+                    segment.text = INCOMPLETE_LANG_TAG.sub("", segment.text)
+                state.final_segments.append(segment)
                 state.final_transcript += segment.text + self.sep
             state.final_transcript = state.final_transcript.rstrip(self.sep)

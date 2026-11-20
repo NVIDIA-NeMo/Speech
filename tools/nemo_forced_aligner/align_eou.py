@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -55,7 +56,7 @@ except ImportError:
         "Install NeMo with NFA utilities support:\n"
         "  pip install 'nemo-toolkit[all]>=2.5.0'\n"
         "Or install the latest development version:\n"
-        "  pip install git+https://github.com/NVIDIA-NeMo/NeMo.git"
+        "  pip install git+https://github.com/NVIDIA-NeMo/Speech.git"
     )
 
 """
@@ -485,6 +486,12 @@ def process_single_manifest(cfg: AlignmentConfig, model, buffered_chunk_params, 
 
         if cfg.clean_text:
             manifest_lines_batch = clean_text(manifest_lines_batch)
+
+        if not cfg.align_using_pred_text:
+            gt_text_batch = [line.get('text', '') for line in manifest_lines_batch]
+        else:
+            gt_text_batch = None
+
         (
             log_probs_batch,
             y_batch,
@@ -493,15 +500,16 @@ def process_single_manifest(cfg: AlignmentConfig, model, buffered_chunk_params, 
             utt_obj_batch,
             output_timestep_duration,
         ) = get_batch_variables(
-            manifest_lines_batch,
-            model,
-            cfg.additional_segment_grouping_separator,
-            cfg.align_using_pred_text,
-            cfg.audio_filepath_parts_in_utt_id,
-            output_timestep_duration,
-            cfg.simulate_cache_aware_streaming,
-            cfg.use_buffered_chunked_streaming,
-            buffered_chunk_params,
+            audio=[line["audio_filepath"] for line in manifest_lines_batch],
+            model=model,
+            segment_separators=cfg.additional_segment_grouping_separator,
+            align_using_pred_text=cfg.align_using_pred_text,
+            audio_filepath_parts_in_utt_id=cfg.audio_filepath_parts_in_utt_id,
+            gt_text_batch=gt_text_batch,
+            output_timestep_duration=output_timestep_duration,
+            simulate_cache_aware_streaming=cfg.simulate_cache_aware_streaming,
+            use_buffered_chunked_streaming=cfg.use_buffered_chunked_streaming,
+            buffered_chunk_params=buffered_chunk_params,
         )
 
         alignments_batch = viterbi_decoding(log_probs_batch, y_batch, T_batch, U_batch, viterbi_device)

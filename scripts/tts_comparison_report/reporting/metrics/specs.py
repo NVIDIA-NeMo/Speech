@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -51,3 +52,5 @@ class DistributionMetricSpec:
     add_to_box_plot: bool = True
     # Optional y-axis range applied to the metric plot as (min, max).
     plot_range: Optional[tuple[float, float]] = None
+    # Whether this metric may be absent from filewise metrics.
+    optional: bool = False

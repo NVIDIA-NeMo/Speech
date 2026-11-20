@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -33,6 +34,7 @@ from nemo.collections.common.tokenizers.aggregate_tokenizer import AggregateToke
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.utils import logging
 from nemo.utils.enum import PrettyStrEnum
+from nemo.utils.serialization import register_checkpoint_schema_types
 
 try:
     import kenlm
@@ -643,6 +645,8 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                     allow_cuda_graphs=self.cfg.beam.get('allow_cuda_graphs', True),
                     return_best_hypothesis=self.cfg.beam.get('return_best_hypothesis', True),
                     enable_per_stream_biasing=self.cfg.beam.get('enable_per_stream_biasing', False),
+                    preserve_step_confidence=self.preserve_frame_confidence,
+                    confidence_method_cfg=self.confidence_method_cfg,
                 )
             case TransducerDecodingStrategyType.MALSD_BATCH, TransducerModelType.TDT:
                 self.decoding = tdt_beam_decoding.BeamBatchedTDTInfer(
@@ -662,6 +666,9 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                     allow_cuda_graphs=self.cfg.beam.get('allow_cuda_graphs', True),
                     return_best_hypothesis=self.cfg.beam.get('return_best_hypothesis', True),
                     enable_per_stream_biasing=self.cfg.beam.get('enable_per_stream_biasing', False),
+                    preserve_step_confidence=self.preserve_frame_confidence,
+                    include_duration_confidence=self.tdt_include_duration_confidence,
+                    confidence_method_cfg=self.confidence_method_cfg,
                 )
             case TransducerDecodingStrategyType.MAES_BATCH, TransducerModelType.RNNT:
                 self.decoding = rnnt_beam_decoding.BeamBatchedRNNTInfer(
@@ -691,6 +698,9 @@ class AbstractRNNTDecoding(ConfidenceMixin):
 
         # Update the joint fused batch size or disable it entirely if needed.
         self.update_joint_fused_batch_size()
+
+        # ids of `restart_after_tokens`, resolved once (empty when not configured)
+        self.restart_token_ids = self._resolve_restart_token_ids()
 
     def set_strip_lang_tags(self, strip_lang_tags: bool, lang_tag_pattern: Optional[str] = None):
         """
@@ -750,6 +760,12 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             # extract the hypotheses
             hypotheses_list = hypotheses_list[0]  # type: List[Hypothesis]
 
+        return self.postprocess_hypotheses(hypotheses_list, return_hypotheses=return_hypotheses)
+
+    def postprocess_hypotheses(
+        self, hypotheses_list: List[Union[Hypothesis, NBestHypotheses]], return_hypotheses: bool = False
+    ) -> Union[List[Hypothesis], List[List[Hypothesis]]]:
+        """Decode text and compute timestamps/confidence for raw hypotheses (see ``rnnt_decoder_predictions_tensor``)."""
         prediction_list = hypotheses_list
 
         if isinstance(prediction_list[0], NBestHypotheses):
@@ -1246,6 +1262,32 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             raise ImportError(
                 "KenLM package (https://github.com/kpu/kenlm) is not installed. " "Use ngram_lm_model=None."
             )
+
+    def _resolve_restart_token_ids(self) -> List[int]:
+        """Validate ``restart_after_tokens`` against the decoding setup and return the ids of these tokens."""
+        tokens = self.cfg.get('restart_after_tokens', None)
+        if not tokens:
+            return []
+        if getattr(self.decoding, 'decoding_computer', None) is None:
+            raise NotImplementedError(
+                "`restart_after_tokens` is only supported with `greedy_batch` decoding using label looping, "
+                f"got strategy={self.cfg.strategy}"
+            )
+        tokenizer = getattr(self, 'tokenizer', None)
+        if tokenizer is None:  # character vocabulary
+            vocabulary = {label: idx for idx, label in self.labels_map.items()}
+        token_ids = []
+        for token in tokens:
+            if tokenizer is not None:
+                token_id = tokenizer.token_to_id(token)
+                is_token = tokenizer.ids_to_tokens([token_id]) == [token]
+            else:
+                token_id = vocabulary.get(token)
+                is_token = token_id is not None
+            if not is_token:
+                raise ValueError(f"`restart_after_tokens`: {token} is not a single token in the model vocabulary.")
+            token_ids.append(int(token_id))
+        return token_ids
 
 
 class RNNTDecoding(AbstractRNNTDecoding):
@@ -1747,8 +1789,13 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
         Returns:
             A list of word-level confidence scores.
         """
+        # ``words`` comes from ``hypothesis.text``, which strips the space before punctuation, so
+        # the boundary oracle has to apply the same transform or a token lands on the wrong word.
         return self._aggregate_token_confidence_subwords_sentencepiece(
-            hypothesis.words, hypothesis.token_confidence, hypothesis.y_sequence
+            hypothesis.words,
+            hypothesis.token_confidence,
+            hypothesis.y_sequence,
+            self.decode_tokens_to_str_with_strip_punctuation,
         )
 
     def decode_tokens_to_str(self, tokens: List[str]) -> str:
@@ -1881,6 +1928,10 @@ class RNNTDecodingConfig:
     # type of timestamps to calculate
     rnnt_timestamp_type: str = "all"  # can be char, word or all for both
 
+    # Tokens (e.g. ['<EOU>', '<EOB>'] for end-of-utterance models) after which `transcribe()` and cache-aware
+    # streaming restart the encoder and decoder from a fresh state. Requires `greedy_batch` decoding (label looping).
+    restart_after_tokens: Optional[List[str]] = None
+
     # greedy decoding config
     greedy: rnnt_greedy_decoding.GreedyBatchedRNNTInferConfig = field(
         default_factory=rnnt_greedy_decoding.GreedyBatchedRNNTInferConfig
@@ -1916,3 +1967,6 @@ class RNNTBPEDecodingConfig(RNNTDecodingConfig):
     """
 
     pass
+
+
+register_checkpoint_schema_types(RNNTDecodingConfig, RNNTBPEDecodingConfig)

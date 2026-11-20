@@ -91,7 +91,7 @@ Most of these tutorials explain how to fine-tune on some dataset as a demonstrat
 Inference Execution Flow Diagram
 --------------------------------
 
-When preparing your own inference scripts after downstream fine-tuning, please follow the execution flow diagram order for correct inference, found at the `examples directory for ASR collection <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/README.md>`_.
+When preparing your own inference scripts after downstream fine-tuning, please follow the execution flow diagram order for correct inference, found at the `examples directory for ASR collection <https://github.com/NVIDIA-NeMo/Speech/blob/stable/examples/asr/README.md>`_.
 
 SSL Models
 -----------------------------------

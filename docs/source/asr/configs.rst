@@ -10,7 +10,7 @@ for audio files, parameters for any augmentation being performed, as well as the
 this page cover each of these in more detail.
 
 Example configuration files for all of the NeMo ASR scripts can be found in the
-`config directory of the examples <https://github.com/NVIDIA/NeMo/tree/stable/examples/asr/conf>`_.
+`config directory of the examples <https://github.com/NVIDIA-NeMo/Speech/tree/stable/examples/asr/conf>`_.
 
 .. _asr-configs-dataset-configuration:
 
@@ -201,6 +201,17 @@ WER is the default metric for all ASR models and measures transcription accuracy
     use_cer: false                  # Set to true for Character Error Rate instead (default: false)
     log_prediction: true            # Whether to log a sample prediction during training (default: true)
     batch_dim_index: 0              # Index of batch dimension in prediction tensors output. Set to 1 for RNNT models.
+    wer_text_normalize: false       # Normalize references and predictions before computing WER/CER (default: false)
+
+Models trained with punctuation and capitalization produce WER that is dominated by casing and punctuation errors.
+For CTC, RNN-T and hybrid RNN-T/CTC models (``EncDecCTCModel``, ``EncDecCTCModelBPE``, ``EncDecRNNTModel``,
+``EncDecRNNTBPEModel``, ``EncDecRNNTBPEModelWithPrompt``, ``EncDecHybridRNNTCTCModel``,
+``EncDecHybridRNNTCTCBPEModel``, ``EncDecHybridRNNTCTCBPEModelWithPrompt``), set ``wer_text_normalize: true`` to
+lowercase the text, remove punctuation and collapse whitespace in both references and predictions before scoring
+(see ``nemo.collections.asr.parts.utils.eval_utils.clean_label``). Typographic apostrophes inside words are treated
+as ASCII apostrophes (``It’s`` matches ``it's``), while contractions stay distinct from other words (``it's`` does not
+match ``its``). For hybrid models the flag also applies to the auxiliary CTC WER. Logged sample predictions and
+returned hypotheses keep the original text.
 
 BLEU Score
 ~~~~~~~~~~
@@ -234,7 +245,7 @@ BLEU score relies on TorchMetrics' SacreBLEU implementation and supports all Sac
 
 **Dynamic Tokenizer Selection**
 
-In multilingual training scenarios, it is somtimes desireable to configure the BLEU tokenizer per sample to avoid sub-optimal parsing (e.g. tokenizing Chinese characters as English words). This can be toggled with ``check_cuts_for_bleu_tokenizers: true``. When enabled with Lhotse dataloading, BLEU will check individual ``cuts`` in a batch's Lhotse ``CutSet`` for the ``bleu_tokenizer`` attribute. If found, the tokenizer will be used for that sample. If not, the default ``bleu_tokenizer`` from config will be used.
+In multilingual training scenarios, it is sometimes desirable to configure the BLEU tokenizer per sample to avoid sub-optimal parsing (e.g. tokenizing Chinese characters as English words). This can be toggled with ``check_cuts_for_bleu_tokenizers: true``. When enabled with Lhotse dataloading, BLEU will check individual ``cuts`` in a batch's Lhotse ``CutSet`` for the ``bleu_tokenizer`` attribute. If found, the tokenizer will be used for that sample. If not, the default ``bleu_tokenizer`` from config will be used.
 
 MultiTask Metrics
 ~~~~~~~~~~~~~~~~~
@@ -412,7 +423,7 @@ The config files for Conformer-CTC model contain character-based encoding and su
 respectively. Some components of the configs of :ref:`Conformer-CTC <Conformer-CTC_model>` include the following datasets:
 
 * ``train_ds``, ``validation_ds``, and ``test_ds``
-* opimizer (``optim``)
+* optimizer (``optim``)
 * augmentation (``spec_augment``)
 * ``decoder``
 * ``trainer``
@@ -430,6 +441,61 @@ Conformer-Transducer
 ~~~~~~~~~~~~~~~~~~~~
 
 Please refer to the model page of :ref:`Conformer-Transducer <Conformer-Transducer_model>` for more information on this model.
+
+
+Streaming Transformer
+~~~~~~~~~~~~~~~~~~~~~
+
+:ref:`nemo.collections.asr.modules.StreamingTransformerEncoder <streaming-transformer-encoder-api>`
+is a convolution-free Transformer encoder for streaming ASR. It extends
+:ref:`TransformerEncoder <transformer-encoder-api>` with local attention and a rolling KV cache,
+and implements the same cache-aware streaming interface as ``ConformerEncoder``, so it can be
+driven by the shared streaming tooling unchanged.
+
+Attention is bounded by ``att_context_size: [left, right]``, in encoder frames, under one of two
+``att_context_style`` values:
+
+* ``chunked_limited`` — frames are grouped into chunks of ``right + 1``, and a query attends to
+  its whole chunk plus the ``left // (right + 1)`` preceding chunks. The look-ahead does **not**
+  compound across layers, so streaming stays exact at any depth. Use this for in-chunk look-ahead.
+* ``sliding_window`` (default) — a query attends to ``[t - left, t + right]``. Exact for
+  streaming only when ``right == 0``, since a sliding right context compounds across layers.
+
+The read-only ``cache_size`` property reports how many encoder frames the rolling KV cache retains.
+For ``sliding_window`` it equals ``left``. For ``chunked_limited`` it is rounded down to the visible
+whole chunks when ``right`` is finite: ``(left // (right + 1)) * (right + 1)``. An unlimited right
+context uses ``left`` directly. A negative cache size means unbounded left context;
+``setup_streaming_params`` maps it to ``max_context`` (10,000 frames by default) for the allocated
+streaming cache. This is separate from ``pre_encode_cache_size``, which retains input-feature frames
+needed before subsampling.
+
+Passing a list of pairs trains one model across several latencies; one entry is sampled per
+training batch, and evaluation and streaming use the first entry (or whatever
+``set_default_att_context_size`` pins). Select the operating point at inference with
+``transcribe_speech.py att_context_size=[70,13]``.
+
+.. code-block:: yaml
+
+  model:
+    encoder:
+      _target_: nemo.collections.asr.modules.transformer_encoder.StreamingTransformerEncoder
+      d_model: 1024
+      n_heads: 8
+      n_layers: 48
+      subsampling: feature_stacking
+      subsampling_factor: 8
+      self_attention_model: rope     # rel_pos | abs_pos | rope | no_pos
+      qk_norm: true
+      att_context_style: chunked_limited
+      att_context_size: [[70, 13], [70, 6], [70, 1], [70, 0]]
+      # Input-frame look-back prepended to each streaming chunk so the mel front-end's STFT
+      # window has its context. Must be a multiple of ``subsampling_factor``. ``FeatureStacking``
+      # is non-overlapping and needs none of this offline, but a streaming front-end that
+      # recomputes the spectrogram per chunk does.
+      pre_encode_cache_size: ${model.encoder.subsampling_factor}
+
+A ready-to-train RNN-T recipe ships at
+``examples/asr/conf/transformer/transformer_stacking_rnnt_bpe_streaming.yaml``.
 
 
 Transducer Configurations
@@ -684,10 +750,55 @@ The loss config is based on a resolver pattern and can be used as follows:
     warprnnt_numba_kwargs:
       fastemit_lambda: 0.0
 
+Turbo-RNNT Loss
+^^^^^^^^^^^^^^^
+
+``turbo_rnnt`` is a memory-efficient RNN-T loss implemented in Triton (requires a CUDA GPU and Triton).
+It first reduces the Joint output to the log-probabilities of the target and blank labels with a fused log-softmax kernel,
+then computes the loss from these small tensors. Computations are performed in ``float32``, but the gradient for the Joint output
+is stored in the dtype of the Joint output, so ``bfloat16`` training does not require upcasting the Joint output to ``float32``.
+This makes the loss significantly faster than ``warprnnt_numba`` and reduces memory usage for ``bfloat16`` training.
+
+.. code-block:: yaml
+
+  loss:
+    loss_name: "turbo_rnnt"
+    turbo_rnnt_kwargs:
+      fastemit_lambda: 0.0
+
+Since the loss does not materialize additional full-size tensors, fused Joint and loss computation (``fuse_loss_wer``) is not
+required to limit the memory used by the loss itself. Fused computation can still reduce the memory used by the Joint output
+and its gradient (they are computed in sub-batches with the padding trimmed), so disable it for faster training when
+the full Joint output fits in memory.
+
+Gradient clamping is supported with the ``clamp`` argument (as for ``warprnnt_numba``): when set to a positive value,
+the gradient of each per-utterance loss for the Joint output is clamped to ``[-clamp, clamp]`` before the reduction of the loss
+is applied, so the result does not depend on the batch size. Clamping is computed in the same kernel as the gradient
+and does not affect the speed or memory usage of the loss.
+
+.. code-block:: yaml
+
+  loss:
+    loss_name: "turbo_rnnt"
+    turbo_rnnt_kwargs:
+      clamp: 1.0
+
+The loss is infinite for an utterance without a valid alignment (e.g., ``-inf`` logits for a target label), and NaN for invalid
+targets (labels outside the vocabulary). Set ``mask_non_finite: true`` in ``turbo_rnnt_kwargs`` to exclude such utterances
+from the loss (zero loss and gradient), and ``warn_non_finite: true`` to log them.
+
+Numba Transducer Warmup
+^^^^^^^^^^^^^^^^^^^^^^^
+
+RNNT models automatically warm up Numba loss kernels on CUDA before training, including supported FP16 RNNT kernels and both FP32 branches for TDT models.
+This reduces memory retained during compilation without changing random states.
+
+Custom training loops can call ``RNNTLoss.warmup(device)`` before allocating batch activations.
+
 FastEmit Regularization
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-FastEmit Regularization is supported for the default Numba based WarpRNNT loss. Recently proposed regularization approach - `FastEmit: Low-latency Streaming ASR with Sequence-level Emission Regularization <https://arxiv.org/abs/2010.11148>`_ allows us near-direct control over the latency of transducer models.
+FastEmit Regularization is supported for the default Numba based WarpRNNT loss and for the ``turbo_rnnt`` loss. Recently proposed regularization approach - `FastEmit: Low-latency Streaming ASR with Sequence-level Emission Regularization <https://arxiv.org/abs/2010.11148>`_ allows us near-direct control over the latency of transducer models.
 
 Refer to the above paper for results and recommendations of ``fastemit_lambda``.
 
@@ -746,6 +857,59 @@ is supported for both CTC and Transducer model variations (or any other kind of 
 conformer as encoder).
 
 
+Fused Subsampling Kernels Config
+--------------------------------
+
+With `Triton <https://triton-lang.org>`_ installed, the ``dw_striding`` pre-encoder of
+:ref:`nemo.collections.asr.modules.ConformerEncoder <conformer-encoder-api>` runs as fused Triton kernels rather than
+separate PyTorch convolutions. Weights and checkpoints are identical either way, so only speed and peak memory change.
+
+The kernels need ``dw_striding``, a ``subsampling_factor`` of 4 or more, a ReLU activation and CUDA inputs. Anything
+else uses the PyTorch path, as do tracing and export. Use ``use_triton`` to control this:
+
+.. code-block:: yaml
+
+   model:
+      # ...
+      encoder:
+        # ...
+        use_triton: false  # null, the default, uses the kernels when Triton is installed
+
+Asking for ``use_triton: true`` on a configuration the kernels do not cover logs a warning and falls back to PyTorch.
+Asking for it without Triton installed raises on the first forward pass that would have used the kernels.
+
+
+Per-Stage Time Strides in Convolutional Subsampling
+---------------------------------------------------
+
+``ConvSubsampling`` with ``subsampling: striding`` halves time and frequency in every 3x3 stage,
+so its ``subsampling_factor`` is a power of two.
+``conv_strides`` gives each stage its own time stride instead, with the product of the strides as the factor,
+and the stages then keep the frequency axis;
+``freq_pools`` adds an optional max-pool over the frequency axis after each stage (1 for none).
+``conv_channels`` may name the channels per stage, and ``out_bias`` controls the bias of the output projection.
+A factor of 6 reads:
+
+.. code-block:: python
+
+   from nemo.collections.asr.parts.submodules.subsampling import ConvSubsampling
+
+   subsampling = ConvSubsampling(
+       subsampling="striding",
+       subsampling_factor=6,
+       feat_in=80,
+       feat_out=512,
+       conv_channels=[32, 64, 64],
+       conv_strides=[1, 3, 2],
+       freq_pools=[2, 1, 1],
+       out_bias=False,
+   )
+
+The output lengths follow the stages one by one,
+batch chunking (``subsampling_conv_chunking_factor``) applies as for the stride-2 form,
+and the module exports to ONNX.
+
+
 .. _Hybrid-Transducer-CTC-Prompt_model__Config:
 
 Hybrid-Transducer-CTC with Prompt Conditioning Configuration
@@ -778,7 +942,7 @@ The model introduces several prompt-specific configuration parameters in the ``m
 
 **Dataset Configuration:**
 
-The model requires training data with prompt annotations when using Lhotse datasets:
+The model requires training data with language annotations when using Lhotse datasets:
 
 .. code-block:: yaml
 
@@ -786,20 +950,35 @@ The model requires training data with prompt annotations when using Lhotse datas
     train_ds:
       use_lhotse: true
       initialize_prompt_feature: true
-      prompt_field: "target_lang"     # Field name for prompt extraction
+      lang_field: target_lang         # Manifest key holding the utterance language
       prompt_dictionary: ${model.model_defaults.prompt_dictionary}
       num_prompts: ${model.model_defaults.num_prompts}
-      
+      default_prompt_mode: unified    # langID | auto | unified
+      unified_auto_ratio: 0.5         # Probability of the "auto" prompt in unified mode
+
     validation_ds:
       use_lhotse: true
       initialize_prompt_feature: true
-      prompt_field: "target_lang"
+      lang_field: target_lang
       prompt_dictionary: ${model.model_defaults.prompt_dictionary}
       num_prompts: ${model.model_defaults.num_prompts}
+      default_prompt_mode: langID
+
+The prompt index for each utterance is chosen by its prompt mode:
+
+- ``langID``: the utterance's language.
+- ``auto``: the language-agnostic ``auto`` prompt.
+- ``unified``: ``auto`` with probability ``unified_auto_ratio``, otherwise the utterance's language.
+  This is the default; it trains one model for both prompted and language-agnostic decoding.
+
+A Lhotse input config can set the mode per dataset with ``tags: {prompt_mode: langID}``; otherwise
+``default_prompt_mode`` applies. Transcription always uses ``langID``.
 
 **Manifest Format:**
 
-Training manifests should include prompt information:
+The language is read from the manifest key named by ``lang_field`` (``lang`` by default; the example
+configs use ``target_lang``). It must be a key of ``prompt_dictionary``, or a bare code such as ``en``
+that matches exactly one locale key; unsupported languages raise an error.
 
 .. code-block:: json
 
@@ -856,7 +1035,7 @@ variant:
         'fr-FR': 2,
         'es-ES': 3,
         # ... additional language codes ...
-        'auto': 127,                   # Per-sample dynamic language (read from manifest)
+        'auto': 127,                   # Language-agnostic prompt
       }
 
 **Dataset Configuration:**
@@ -870,16 +1049,21 @@ The model uses the same index-based Lhotse dataset
     train_ds:
       use_lhotse: true
       initialize_prompt_feature: true
-      prompt_field: "target_lang"     # Field name for per-sample prompt extraction
+      lang_field: target_lang
       prompt_dictionary: ${model.model_defaults.prompt_dictionary}
       num_prompts: ${model.model_defaults.num_prompts}
+      default_prompt_mode: unified    # langID | auto | unified
+      unified_auto_ratio: 0.5
 
     validation_ds:
       use_lhotse: true
       initialize_prompt_feature: true
-      prompt_field: "target_lang"
+      lang_field: target_lang
       prompt_dictionary: ${model.model_defaults.prompt_dictionary}
       num_prompts: ${model.model_defaults.num_prompts}
+      default_prompt_mode: langID
+
+Prompt modes behave as described for the hybrid model.
 
 **Manifest Format:**
 

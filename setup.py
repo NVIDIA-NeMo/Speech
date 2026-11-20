@@ -1,7 +1,8 @@
 # ! /usr/bin/python
 # -*- coding: utf-8 -*-
 
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -165,14 +166,14 @@ setuptools.setup(
         'License :: OSI Approved :: Apache Software License',
         # Supported python versions
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.10',
+        'Programming Language :: Python :: 3.12',
         # Additional Setting
         'Environment :: Console',
         'Natural Language :: English',
         'Operating System :: OS Independent',
     ],
     packages=setuptools.find_packages(),
-    python_requires='>=3.10',
+    python_requires='>=3.12',
     # Add in any packaged data.
     include_package_data=True,
     exclude=['tools', 'tests'],

@@ -280,5 +280,5 @@ See Also
 ########
 
 - :doc:`magpietts`: Main Magpie-TTS documentation
-- `Preference Optimization Source Code <https://github.com/NVIDIA-NeMo/NeMo/blob/main/nemo/collections/tts/models/magpietts_preference_optimization.py>`__
+- `Preference Optimization Source Code <https://github.com/NVIDIA-NeMo/Speech/blob/main/nemo/collections/tts/models/magpietts_preference_optimization.py>`__
 

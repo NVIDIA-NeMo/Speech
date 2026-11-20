@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,13 +27,13 @@ class PlainPromptFormatter(PromptFormatter):
     OUTPUT_ROLE = "assistant"
     TEMPLATE = {
         "user": {
-            "template": f"|message|",
+            "template": "|message|",
             "slots": {
                 "message": Modality.Text,
             },
         },
         OUTPUT_ROLE: {
-            "template": f"|message|",
+            "template": "|message|",
             "slots": {
                 "message": Modality.Text,
             },
@@ -42,6 +43,7 @@ class PlainPromptFormatter(PromptFormatter):
 
 @registered_prompt_format_fn(Cut, PlainPromptFormatter)
 def plain(cut: Cut, prompt: PlainPromptFormatter):
+    """Format a prompted cut as plain text."""
     if isinstance(cut, MixedCut):
         cut = cut.first_non_padding_cut
     if cut.has_custom("context"):

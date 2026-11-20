@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,14 +23,14 @@ prior_weights offsets exceed max_text_len (e.g. during Japanese longform TTS).
 import pytest
 import torch
 
-from nemo.collections.tts.models.magpietts import ChunkedInferenceConfig, ChunkState
+from nemo.collections.tts.models.magpietts import ChunkState, ModelInferenceParameters
 
 
 class _StubModel:
     """Minimal stub that exposes only what _initialize_chunked_attn_prior needs."""
 
     def __init__(self):
-        self.chunked_inference_config = ChunkedInferenceConfig()
+        self.inference_parameters = ModelInferenceParameters()
 
     @staticmethod
     def _to_int(x):
@@ -39,6 +40,7 @@ class _StubModel:
     from nemo.collections.tts.models.magpietts import MagpieTTSModel
 
     _initialize_chunked_attn_prior = MagpieTTSModel._initialize_chunked_attn_prior
+    get_most_attended_text_timestep = MagpieTTSModel.get_most_attended_text_timestep
 
 
 def _make_chunk_state(batch_size, previous_attn_len, left_offset=None):
@@ -53,7 +55,7 @@ class TestInitializeChunkedAttnPrior:
     """Tests for the bounds-check in _initialize_chunked_attn_prior."""
 
     prior_epsilon = 1e-8
-    prior_weights = ChunkedInferenceConfig().prior_weights_init  # (0.5, 1.0, 0.8, 0.2, 0.2)
+    prior_weights = ModelInferenceParameters().prior_weights_init
 
     def _call(self, chunk_state, current_chunk_len, batch_text_lens, max_text_len, batch_size, use_cfg=False):
         model = _StubModel()
@@ -135,3 +137,39 @@ class TestInitializeChunkedAttnPrior:
 
         # Item 1: only first weight at index 9; offsets 1..4 were out of bounds
         assert result[1, 0, 9].item() == pytest.approx(self.prior_weights[0])
+
+
+class TestModelInferenceParameters:
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_from_dict_loads_chunked_inference_parameters(self):
+        params = ModelInferenceParameters.from_dict(
+            {
+                "history_len_heuristic": 2,
+                "prior_weights_init": [0.5, 1.0],
+                "finished_limit_first_chunk": 7,
+                "chunked_attention_sink_threshold": 6,
+            }
+        )
+
+        assert params.history_len_heuristic == 2
+        assert params.prior_weights_init == (0.5, 1.0)
+        assert params.finished_limit_first_chunk == 7
+        assert params.chunked_attention_sink_threshold == 6
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_attention_sink_threshold_controls_attended_position_advance(self):
+        model = _StubModel()
+        model.inference_parameters.attention_sink_threshold = 2
+
+        attended, _ = model.get_most_attended_text_timestep(
+            alignment_attention_scores=torch.tensor([[0.0, 1.0, 0.5, 0.0, 0.0, 0.0]]),
+            last_attended_timesteps=[[1]],
+            text_lens=torch.tensor([6]),
+            lookahead_window_size=3,
+            attended_timestep_counter=[{1: 2}],
+            batch_size=1,
+        )
+
+        assert attended == [2]

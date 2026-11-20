@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,8 +22,10 @@ import torch
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.core.utils.cuda_python_utils import (
     check_cuda_python_cuda_graphs_conditional_nodes_supported,
+    create_conditional_node_mempool,
     cu_call,
     run_nvrtc,
+    use_conditional_node_mempool,
     with_conditional_node,
 )
 from nemo.core.utils.optional_libs import CUDA_PYTHON_AVAILABLE, cuda_python_required
@@ -107,6 +110,7 @@ class RNNTGreedyDecodeCudaGraph:
         self.scores_cpu = None
         self.labels_cpu = None
         self.graph = None
+        self.graph_mempool = None
 
         self.first_call = True
 
@@ -167,6 +171,7 @@ class RNNTGreedyDecodeCudaGraph:
         self.graph = None
 
         self.graph = torch.cuda.CUDAGraph()
+        self.graph_mempool = create_conditional_node_mempool(self.device)
 
         # Always create a new stream, because the per-thread default stream disallows stream capture to a graph.
         stream_for_graph = torch.cuda.Stream(self.device)
@@ -174,6 +179,7 @@ class RNNTGreedyDecodeCudaGraph:
             torch.cuda.stream(stream_for_graph),
             torch.inference_mode(),
             torch.cuda.graph(self.graph, stream=stream_for_graph, capture_error_mode="thread_local"),
+            use_conditional_node_mempool(self.graph_mempool, self.device),
         ):
             # This is failing...
             self.f = torch.zeros(

@@ -1,4 +1,5 @@
-# Copyright (c) 2021, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2021, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -229,7 +230,7 @@ class Wav2VecTransformerEncoder(TransformerEncoder):
     Takes convolutional encodings of all time steps and adds to features before applying series
     of self-attention layers.
 
-    Example configs may be found at: https://github.com/NVIDIA/NeMo/tree/main/examples/asr/conf/wav2vec
+    Example configs may be found at: https://github.com/NVIDIA-NeMo/Speech/tree/main/examples/asr/conf/wav2vec
 
     Args:
             layer_drop: Floating point value specifying proportion of module for layer dropout (See Fan et al. https://arxiv.org/pdf/1909.11556.pdf).

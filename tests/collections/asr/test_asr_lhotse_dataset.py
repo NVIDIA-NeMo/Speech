@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +17,8 @@ from unittest.mock import patch
 
 import pytest
 import torch
-from lhotse import CutSet, SupervisionSegment
+from lhotse import AudioSource, CutSet, SupervisionSegment
+from lhotse.audio import AudioLoadingError
 from lhotse.dataset import AudioSamples
 from lhotse.testing.dummies import DummyManifest
 
@@ -102,32 +104,64 @@ def test_lhotse_asr_dataset_metadata(tokenizer):
     assert cuts_metadata[1].supervisions[0].start == 0.0
 
 
+def test_lhotse_asr_dataset_audio_failure_policy_is_configurable(tokenizer, tmp_path):
+    cuts = DummyManifest(CutSet, begin_id=0, end_id=2, with_data=True)
+    cuts[1].recording.sources = [AudioSource(type="file", channels=[0], source=str(tmp_path / "missing.wav"))]
+    dataset = LhotseSpeechToTextBpeDataset(tokenizer=tokenizer)
+
+    tolerant = dataset.with_fault_tolerant_audio_loading(True)
+    batch = tolerant[cuts]
+    assert batch[0].shape[0] == 1
+    assert tolerant.load_audio.fault_tolerant is True
+
+    strict = dataset.with_fault_tolerant_audio_loading(False)
+    assert strict.load_audio.fault_tolerant is False
+    with pytest.raises(AudioLoadingError):
+        strict[cuts]
+
+
 def test_lhotse_asr_dataset_ais_batch_loading_enabled(tokenizer, monkeypatch):
     """Test that USE_AIS_GET_BATCH=true passes use_batch_loader=True to AudioSamples."""
     monkeypatch.setenv("USE_AIS_GET_BATCH", "true")
+    monkeypatch.delenv("USE_AIS_INDIVIDUAL_GETS", raising=False)
 
     with patch.object(AudioSamples, "__init__", return_value=None) as mock_init:
         mock_init.side_effect = lambda *args, **kwargs: None
         try:
-            dataset = LhotseSpeechToTextBpeDataset(tokenizer=tokenizer)
+            LhotseSpeechToTextBpeDataset(tokenizer=tokenizer)
         except Exception:
             pass
         # Check that AudioSamples was called with use_batch_loader=True
-        mock_init.assert_called_with(fault_tolerant=True, use_batch_loader=True)
+        mock_init.assert_called_with(fault_tolerant=True, use_batch_loader=True, ais_force_individual=False)
+
+
+def test_lhotse_asr_dataset_ais_batch_loading_force_individual(tokenizer, monkeypatch):
+    """Test that USE_AIS_INDIVIDUAL_GETS=true is passed to AudioSamples."""
+    monkeypatch.setenv("USE_AIS_GET_BATCH", "true")
+    monkeypatch.setenv("USE_AIS_INDIVIDUAL_GETS", "true")
+
+    with patch.object(AudioSamples, "__init__", return_value=None) as mock_init:
+        mock_init.side_effect = lambda *args, **kwargs: None
+        try:
+            LhotseSpeechToTextBpeDataset(tokenizer=tokenizer)
+        except Exception:
+            pass
+        mock_init.assert_called_with(fault_tolerant=True, use_batch_loader=True, ais_force_individual=True)
 
 
 def test_lhotse_asr_dataset_ais_batch_loading_disabled(tokenizer, monkeypatch):
     """Test that without USE_AIS_GET_BATCH, use_batch_loader=False is passed to AudioSamples."""
     monkeypatch.delenv("USE_AIS_GET_BATCH", raising=False)
+    monkeypatch.delenv("USE_AIS_INDIVIDUAL_GETS", raising=False)
 
     with patch.object(AudioSamples, "__init__", return_value=None) as mock_init:
         mock_init.side_effect = lambda *args, **kwargs: None
         try:
-            dataset = LhotseSpeechToTextBpeDataset(tokenizer=tokenizer)
+            LhotseSpeechToTextBpeDataset(tokenizer=tokenizer)
         except Exception:
             pass
         # Check that AudioSamples was called with use_batch_loader=False
-        mock_init.assert_called_with(fault_tolerant=True, use_batch_loader=False)
+        mock_init.assert_called_with(fault_tolerant=True, use_batch_loader=False, ais_force_individual=False)
 
 
 def test_lhotse_asr_dataset_ais_batch_loading_fallback(tokenizer, monkeypatch):
@@ -145,8 +179,30 @@ def test_lhotse_asr_dataset_ais_batch_loading_fallback(tokenizer, monkeypatch):
         return original_init(self, *args, **kwargs)
 
     with patch.object(AudioSamples, "__init__", mock_init):
-        dataset = LhotseSpeechToTextBpeDataset(tokenizer=tokenizer)
+        LhotseSpeechToTextBpeDataset(tokenizer=tokenizer)
 
-    # First call should have use_batch_loader=True, second call should not
-    assert call_args[0] == {"fault_tolerant": True, "use_batch_loader": True}
+    # First call should use AIS batch options, second call should not.
+    assert call_args[0] == {"fault_tolerant": True, "use_batch_loader": True, "ais_force_individual": False}
     assert call_args[1] == {"fault_tolerant": True}
+
+
+def test_lhotse_asr_dataset_ais_force_individual_fallback(tokenizer, monkeypatch):
+    """Test fallback when Lhotse supports use_batch_loader but not ais_force_individual."""
+    monkeypatch.setenv("USE_AIS_GET_BATCH", "true")
+    monkeypatch.setenv("USE_AIS_INDIVIDUAL_GETS", "true")
+
+    call_args = []
+
+    original_init = AudioSamples.__init__
+
+    def mock_init(self, *args, **kwargs):
+        call_args.append(kwargs.copy())
+        if "ais_force_individual" in kwargs:
+            raise TypeError("unexpected keyword argument 'ais_force_individual'")
+        return original_init(self, *args, **kwargs)
+
+    with patch.object(AudioSamples, "__init__", mock_init):
+        LhotseSpeechToTextBpeDataset(tokenizer=tokenizer)
+
+    assert call_args[0] == {"fault_tolerant": True, "use_batch_loader": True, "ais_force_individual": True}
+    assert call_args[1] == {"fault_tolerant": True, "use_batch_loader": True}

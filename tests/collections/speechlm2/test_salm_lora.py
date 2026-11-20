@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -61,6 +62,7 @@ def _import_peft_lora_dependencies():
     return PeftModel, maybe_install_lora
 
 
+@pytest.mark.gpu
 def test_maybe_install_lora_restores_qwen3_input_embeddings_temporarily():
     PeftModel, maybe_install_lora = _import_peft_lora_dependencies()
     model = _make_qwen3_stub()

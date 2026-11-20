@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,16 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import hashlib
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Optional, Self
 
-from scripts.tts_comparison_report.reporting.constants import TQDM_NCOLS
+from scripts.tts_comparison_report.reporting.constants import BENCHMARK_META, TQDM_NCOLS
 from scripts.tts_comparison_report.reporting.storage import BaseStorage
 from tqdm import tqdm
-
 
 _REQUIRED_SAMPLE_ID_KEYS: list[str] = [
     "pred_audio_filepath",
@@ -152,7 +153,7 @@ class BenchmarkData:
     generated_audio_paths: dict[str, Path] = field(default_factory=dict)
     context_audio_paths: dict[str, Path] = field(default_factory=dict)
 
-    metrics: Optional[dict[str, float]] = None
+    metrics: Optional[dict[str, float | None]] = None
     filewise_metrics: Optional[list[dict[str, Any]]] = None
 
     @classmethod
@@ -309,6 +310,8 @@ class BucketData:
 
         Raises:
             FileNotFoundError: If the expected results directory is missing.
+            ValueError: If a recognized benchmark directory does not use the required
+                '<configuration>_<language>_<benchmark>' naming format.
         """
         obj = cls(name=bucket_name, path=bucket_path)
         results_path = bucket_path / bucket_structure.eval_output_subdir
@@ -334,8 +337,23 @@ class BucketData:
                 storage=storage,
             )
             if obj.configuration_str is None:
-                suffix = f"_{name}"
-                obj.configuration_str = dir_name[: -len(suffix)]
+                lang = BENCHMARK_META[name]
+                suffix = f"_{lang}_{name}"
+
+                if not dir_name.endswith(suffix):
+                    raise ValueError(
+                        f"Unsupported results directory name '{dir_name}' for benchmark '{name}': "
+                        f"expected '<configuration>{suffix}'."
+                    )
+
+                configuration_str = dir_name[: -len(suffix)]
+
+                if not configuration_str:
+                    raise ValueError(
+                        f"Missing configuration prefix in results directory '{dir_name}' for benchmark '{name}': "
+                        f"expected '<configuration>{suffix}'."
+                    )
+                obj.configuration_str = configuration_str
 
         return obj
 
@@ -391,11 +409,19 @@ class BucketData:
         if metric_name not in metrics:
             return None
 
+        value = metrics[metric_name]
+
+        if value is None:
+            return None
+
         value = _validate_numeric_metric_value(
-            value=metrics[metric_name],
+            value=value,
             metric_name=metric_name,
             context=f"averaged metrics for benchmark '{benchmark_name}'",
         )
+        if math.isnan(value):
+            return None
+
         return value
 
     def _get_metric_stats(
@@ -423,6 +449,11 @@ class BucketData:
                 metric_name=metric_name,
                 context=validation_context,
             )
+            if math.isnan(value):
+                raise ValueError(
+                    f"Metric '{metric_name}' in {validation_context} contains NaN; "
+                    "statistical tests and box plots require non-NaN samples."
+                )
             output.append(value)
 
         if not output:
@@ -464,6 +495,43 @@ class BucketData:
         if benchmark_name is None:
             return self._aggregate_metric_stats(metric_name)
         return self._get_metric_stats(metric_name, benchmark_name)
+
+    def has_metric_samples(
+        self,
+        metric_name: str,
+        benchmark_name: Optional[str] = None,
+    ) -> bool:
+        """Return whether filewise samples contain a metric for the requested benchmark scope.
+
+        Args:
+            metric_name: Name of the metric to check.
+            benchmark_name: Benchmark to check. If omitted, each discovered
+                benchmark is checked independently.
+
+        Returns:
+            True if every selected benchmark has at least one value for the metric
+            that is not a numeric NaN; otherwise False. Returns True when no
+            benchmarks are selected.
+
+        Raises:
+            ValueError: If the benchmark is unknown or filewise metrics are not loaded.
+        """
+        benchmark_names = self.benchmarks if benchmark_name is None else [benchmark_name]
+
+        for name in benchmark_names:
+            if name not in self.benchmarks:
+                raise ValueError(f"Unknown benchmark: '{name}'.")
+
+            items = self.benchmarks[name].filewise_metrics
+            if items is None or not items:
+                raise ValueError(f"Filewise metrics not loaded for benchmark: '{name}'.")
+            values = [item[metric_name] for item in items if metric_name in item]
+            if not values:
+                return False
+            if all(isinstance(value, (int, float)) and math.isnan(value) for value in values):
+                return False
+
+        return True
 
     def get_benchmark_audio_paths(self, benchmark_name: str) -> dict[str, Path]:
         """Return generated audio file paths for a benchmark.

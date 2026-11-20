@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,7 +30,7 @@ class ManifestBase:
 
     def __init__(self, *args, **kwargs):
         raise ValueError(
-            "This class is deprecated, look at https://github.com/NVIDIA/NeMo/pull/284 for correct behaviour."
+            "This class is deprecated, look at https://github.com/NVIDIA-NeMo/Speech/pull/284 for correct behaviour."
         )
 
 
@@ -38,7 +39,7 @@ class ManifestEN:
 
     def __init__(self, *args, **kwargs):
         raise ValueError(
-            "This class is deprecated, look at https://github.com/NVIDIA/NeMo/pull/284 for correct behaviour."
+            "This class is deprecated, look at https://github.com/NVIDIA-NeMo/Speech/pull/284 for correct behaviour."
         )
 
 

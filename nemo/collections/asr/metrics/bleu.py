@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -182,16 +183,34 @@ class BLEU(SacreBLEUScore):
                 targets = _move_dimension_to_the_front(targets, self.batch_dim_index)
             targets_cpu_tensor = targets.long().cpu()
             tgt_lenths_cpu_tensor = targets_lengths.long().cpu()
+
+            # Group predictions by tokenizer to minimize CPU-GPU syncs during metric update
+            grouped_preds = {}
+            grouped_refs = {}
+
             for idx, tgt_len in enumerate(tgt_lenths_cpu_tensor):
                 target = targets_cpu_tensor[idx][:tgt_len].tolist()
                 reference = self.decoding.decode_ids_to_str(target)
-                tok = tokenizers[idx] if tokenizers else None  # `None` arg uses default tokenizer
+                tok = tokenizers[idx] if tokenizers else None
 
-                # TODO: the backend implementation of this has a lot of cpu to gpu operations. Should reimplement
-                # for speedup.
+                if tok not in grouped_preds:
+                    grouped_preds[tok] = []
+                    grouped_refs[tok] = []
+
+                grouped_preds[tok].append(hypotheses[idx].text)
+                grouped_refs[tok].append([reference])
+
+                if hypotheses and self.log_prediction and idx == 0:
+                    logging.info("\n")
+                    logging.info(f"BLEU reference:{reference}")
+                    logging.info(f"BLEU predicted:{hypotheses[idx].text}")
+
+            # Execute metric update once per tokenizer group
+            for tok, preds in grouped_preds.items():
+                refs = grouped_refs[tok]
                 self.preds_len, self.target_len = _bleu_score_update(
-                    [hypotheses[idx].text],
-                    [[reference]],  # Nested list as BLEU permits multiple references per prediction.
+                    preds,
+                    refs,
                     self.numerator,
                     self.denominator,
                     self.preds_len,
@@ -199,10 +218,6 @@ class BLEU(SacreBLEUScore):
                     self.n_gram,
                     self._get_tokenizer(tok),
                 )
-                if hypotheses and self.log_prediction and idx == 0:
-                    logging.info("\n")
-                    logging.info(f"BLEU reference:{reference}")
-                    logging.info(f"BLEU predicted:{hypotheses[idx].text}")
 
     def compute(self, return_all_metrics=True, prefix=""):
         """

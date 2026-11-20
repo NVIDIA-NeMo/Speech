@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -64,6 +65,7 @@ class SBNoiseSchedule(NeuralModule, ABC):
             raise ValueError(f'Expected eps > 0, got {eps}')
 
         self.eps = eps
+        self.register_buffer('device_sentinel_tensor', torch.empty(0), persistent=False)
 
         logging.debug('Initialized %s with', self.__class__.__name__)
         logging.debug('\ttime_min:  %s', self.time_min)
@@ -89,14 +91,12 @@ class SBNoiseSchedule(NeuralModule, ABC):
     @property
     def alpha_t_max(self):
         """Return alpha_t at t_max."""
-        t_max = torch.tensor([self.time_max], device=alpha.device)
-        return self.alpha(t_max)
+        return self.alpha(torch.tensor([self.time_max], device=self.device_sentinel_tensor.device))
 
     @property
     def sigma_t_max(self):
         """Return sigma_t at t_max."""
-        t_max = torch.tensor([self.time_max], device=alpha.device)
-        return self.sigma(t_max)
+        return self.sigma(torch.tensor([self.time_max], device=self.device_sentinel_tensor.device))
 
     @abstractmethod
     def f(self, time: torch.Tensor) -> torch.Tensor:

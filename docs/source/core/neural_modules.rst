@@ -3,7 +3,7 @@ Neural Modules
 
 NeMo is built around Neural Modules, conceptual blocks of neural networks that take typed inputs and produce typed outputs. Such 
 modules typically represent data layers, encoders, decoders, language models, loss functions, or methods of combining activations.
-NeMo makes it easy to combine and re-use these building blocks while providing a level of semantic correctness checking via its neural 
+NeMo makes it easy to combine and reuse these building blocks while providing a level of semantic correctness checking via its neural 
 type system.
 
 .. note:: *All Neural Modules inherit from ``torch.nn.Module`` and are therefore compatible with the PyTorch ecosystem.*
@@ -65,7 +65,7 @@ Dynamic Layer Freezing
 ----------------------
 
 You can selectively freeze any modules inside a Nemo model by specifying a freezing schedule in the config yaml. Freezing stops any gradient updates
-to that module, so that its weights are not changed for that step. This can be useful for combatting catastrophic forgetting, for example
+to that module, so that its weights are not changed for that step. This can be useful for combating catastrophic forgetting, for example
 when finetuning a large pretrained model on a small dataset.
 
 The default approach is to freeze a module for the first N training steps, but you can also enable freezing for a specific range of steps,

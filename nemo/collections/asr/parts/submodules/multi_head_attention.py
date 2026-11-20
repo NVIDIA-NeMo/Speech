@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -28,6 +29,11 @@
 # limitations under the License.
 #
 
+# Longformer portions:
+# Copyright 2020 The Allen Institute for AI team and The HuggingFace Inc. team.
+# Licensed under the Apache License, Version 2.0.
+# Sources: https://github.com/allenai/longformer and https://github.com/huggingface/transformers
+
 """
 Part of this code is adopted from https://github.com/espnet/espnet
 """
@@ -41,12 +47,15 @@ import torch.nn as nn
 import torch.nn.attention
 import torch.nn.functional as F
 
+from nemo.collections.asr.parts.submodules.packed_attention import PackedAttentionContext, packed_attention
 from nemo.utils import avoid_float16_autocast_context
 
 __all__ = [
     'RelPositionMultiHeadAttention',
     'RelPositionalEncoding',
     'PositionalEncoding',
+    'RoPEMultiHeadAttention',
+    'RotaryPositionalEncoding',
 ]
 
 INF_VAL = 10000.0
@@ -166,6 +175,7 @@ class MultiHeadAttention(nn.Module):
         # temporary until we solve this more gracefully
         with avoid_float16_autocast_context():
             q, k, v = self.forward_qkv(query, key, value)
+            q, k = self._apply_pos_emb(q, k)
 
             if self.use_pytorch_sdpa:
                 n_batch = value.size(0)
@@ -201,12 +211,65 @@ class MultiHeadAttention(nn.Module):
         else:
             return out, cache
 
+    def forward_packed(
+        self, x: torch.Tensor, context: PackedAttentionContext, pos_emb: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """Self-attention over token-flat input with explicit utterance boundaries.
+
+        Streaming caches are not supported in this form.
+        The dtype handling is that of ``forward``:
+        the projections run under the autocast context and float16 autocast is avoided.
+
+        Args:
+            x: layer input of all utterances, shape ``(T_total, n_feat)``.
+            context: packing metadata of the batch.
+            pos_emb: relative positional embedding ``(1, 2 * max_seqlen - 1, n_feat)``,
+                used by the Transformer-XL subclass only.
+
+        Returns:
+            The attention output, shape ``(T_total, n_feat)``.
+        """
+        if torch.is_autocast_enabled():
+            x = x.to(torch.float32)
+
+        with avoid_float16_autocast_context():
+            q = self.linear_q(x).view(-1, self.h, self.d_k)
+            k = self.linear_k(x).view(-1, self.h, self.d_k)
+            v = self.linear_v(x).view(-1, self.h, self.d_k)
+            q, k = self._apply_packed_pos_emb(q, k, context)
+            q, rel_pos_bias = self._packed_rel_pos_terms(q, pos_emb)
+            out = packed_attention(
+                q,
+                k,
+                v,
+                context,
+                rel_pos_bias=rel_pos_bias,
+                dropout_p=self.dropout_rate if self.training else 0.0,
+            )
+            return self.linear_out(out.reshape(-1, self.h * self.d_k))
+
+    def _apply_packed_pos_emb(
+        self, q: torch.Tensor, k: torch.Tensor, context: PackedAttentionContext
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Hook for the rotary subclass; q and k have shape (T_total, head, d_k). No-op by default."""
+        return q, k
+
+    def _packed_rel_pos_terms(
+        self, q: torch.Tensor, pos_emb: torch.Tensor | None
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Hook for the Transformer-XL subclass: the query with its content bias and the position bias, or None."""
+        return q, None
+
     def update_cache(self, key, value, query, cache):
         if cache is not None:
             key = value = torch.cat([cache, key], dim=1)
             q_keep_size = query.shape[1] - self.cache_drop_size
             cache = torch.cat([cache[:, q_keep_size:, :], query[:, :q_keep_size, :]], dim=1)
         return key, value, query, cache
+
+    def _apply_pos_emb(self, q, k):
+        """Hook for subclasses to apply a positional transformation to Q/K. No-op by default."""
+        return q, k
 
 
 class RelPositionMultiHeadAttention(MultiHeadAttention):
@@ -246,8 +309,8 @@ class RelPositionMultiHeadAttention(MultiHeadAttention):
         # these two learnable biases are used in matrix c and matrix d
         # as described in https://arxiv.org/abs/1901.02860 Section 3.3
         if pos_bias_u is None or pos_bias_v is None:
-            self.pos_bias_u = nn.Parameter(torch.FloatTensor(self.h, self.d_k))
-            self.pos_bias_v = nn.Parameter(torch.FloatTensor(self.h, self.d_k))
+            self.pos_bias_u = nn.Parameter(torch.empty(self.h, self.d_k))
+            self.pos_bias_v = nn.Parameter(torch.empty(self.h, self.d_k))
             # nn.init.normal_(self.pos_bias_u, 0.0, 0.02)
             # nn.init.normal_(self.pos_bias_v, 0.0, 0.02)
             nn.init.zeros_(self.pos_bias_u)
@@ -353,6 +416,23 @@ class RelPositionMultiHeadAttention(MultiHeadAttention):
         else:
             return out, cache
 
+    def _packed_rel_pos_terms(
+        self, q: torch.Tensor, pos_emb: torch.Tensor | None
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Matrix (c) folded into the query and matrices (b) + (d) as a bias over relative positions.
+
+        The bias has shape (T_total, head, 2 * max_seqlen - 1);
+        entry ``max_seqlen - 1 - (i - j)`` of the last axis is the term of query position i and key position j,
+        which is what ``rel_shift`` selects in the padded forward.
+        """
+        if pos_emb is None:
+            raise ValueError("Transformer-XL attention over packed sequences needs pos_emb.")
+        p = self.linear_pos(pos_emb).view(-1, self.h, self.d_k)  # (2 * max_seqlen - 1, head, d_k)
+        bias_u = self.pos_bias_u.to(q.dtype)
+        bias_v = self.pos_bias_v.to(q.dtype)
+        rel_pos_bias = torch.einsum('thd,phd->thp', q + bias_v, p)
+        return q + bias_u, rel_pos_bias
+
 
 class RelPositionMultiHeadAttentionLongformer(RelPositionMultiHeadAttention):
     """Multi-Head Attention layer of Transformer-XL with sliding window local+global attention from Longformer.
@@ -415,6 +495,11 @@ class RelPositionMultiHeadAttentionLongformer(RelPositionMultiHeadAttention):
             self.global_q = nn.Linear(n_feat, n_feat, bias=use_bias)
             self.global_k = nn.Linear(n_feat, n_feat, bias=use_bias)
             self.global_v = nn.Linear(n_feat, n_feat, bias=use_bias)
+
+    def forward_packed(
+        self, x: torch.Tensor, context: PackedAttentionContext, pos_emb: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        raise NotImplementedError("Local attention with overlapping chunks has no sequence-packed form.")
 
     def forward(self, query, key, value, pad_mask, pos_emb, cache=None):
         """Compute Scaled Dot Product Local Attention with rel. positional encoding. using overlapping chunks
@@ -688,7 +773,7 @@ class RelPositionMultiHeadAttentionLongformer(RelPositionMultiHeadAttention):
         Returns:
             torch.Tensor: (batch, time, head x head_dim) The attention output of all tokens attending to global.
         """
-        batch_size, time = attn_probs.shape[0], attn_probs.shape[2]
+        batch_size = attn_probs.shape[0]
 
         value = value.transpose(1, 2)
 
@@ -990,6 +1075,62 @@ class RelPositionMultiHeadAttentionLongformer(RelPositionMultiHeadAttention):
         return context.view(bsz, num_heads, seqlen, head_dim).transpose(1, 2)
 
 
+class RoPEMultiHeadAttention(MultiHeadAttention):
+    """Multi-Head Attention with rotary position embedding applied to Q and K.
+
+    Args:
+        n_head (int): number of heads
+        n_feat (int): size of the features
+        dropout_rate (float): dropout rate
+        pos_enc (RotaryPositionalEncoding): rotary position encoding shared across layers
+        use_bias (bool): whether to apply bias in linear and conv layers
+        use_pytorch_sdpa (bool): use torch sdpa instead of manual attention
+        use_pytorch_sdpa_backends list[str]: list of backend names to use in sdpa.
+    """
+
+    def __init__(
+        self,
+        n_head,
+        n_feat,
+        dropout_rate,
+        pos_enc,
+        max_cache_len=0,
+        use_bias=True,
+        use_pytorch_sdpa=False,
+        use_pytorch_sdpa_backends=None,
+    ):
+        """Construct a RoPEMultiHeadAttention object."""
+        super(RoPEMultiHeadAttention, self).__init__(
+            n_head=n_head,
+            n_feat=n_feat,
+            dropout_rate=dropout_rate,
+            max_cache_len=max_cache_len,
+            use_bias=use_bias,
+            use_pytorch_sdpa=use_pytorch_sdpa,
+            use_pytorch_sdpa_backends=use_pytorch_sdpa_backends,
+        )
+        if pos_enc.d_k != self.d_k:
+            raise ValueError(
+                f"RotaryPositionalEncoding d_k ({pos_enc.d_k}) does not match attention "
+                f"head dim n_feat/n_head ({self.d_k})"
+            )
+        self.pos_enc = pos_enc
+
+    def _apply_pos_emb(self, q, k):
+        """Rotate Q and K via the attached RotaryPositionalEncoding."""
+        return self.pos_enc(q, k)
+
+    def _apply_packed_pos_emb(
+        self, q: torch.Tensor, k: torch.Tensor, context: PackedAttentionContext
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Rotate token-flat Q and K by their positions within their utterances."""
+        # a function-level import: the modules package initializes the encoders, which import this module
+        from nemo.collections.asr.modules.transformer_encoder_utils import _apply_packed_rope
+
+        self.pos_enc.extend_pe(context.max_seqlen, q.device, q.dtype)
+        return _apply_packed_rope(self.pos_enc, q, k, context.position_ids)
+
+
 class PositionalEncoding(torch.nn.Module):
     """Fixed sinusoidal positional encoding.
     Args:
@@ -1145,3 +1286,106 @@ class LocalAttRelPositionalEncoding(PositionalEncoding):
         if self.dropout_emb:
             pos_emb = self.dropout_emb(pos_emb)
         return self.dropout(x), pos_emb
+
+
+class RotaryPositionalEncoding(torch.nn.Module):
+    """Rotary position embedding.
+
+    Args:
+        d_k (int): per-head feature dim
+        rotary_fraction (float): fraction of d_k to rotate
+        rope_base (float): theta base
+        max_len (int): maximum input length
+    """
+
+    def __init__(self, d_k, rotary_fraction=1.0, rope_base=10000.0, max_len=5000):
+        """Construct a RotaryPositionalEncoding object."""
+        super(RotaryPositionalEncoding, self).__init__()
+        if not 0 < rotary_fraction <= 1.0:
+            raise ValueError(f"rotary_fraction must be in (0, 1], got {rotary_fraction}")
+        d_k_rot = int(d_k * rotary_fraction)
+        if d_k_rot < 2 or d_k_rot % 2 != 0:
+            raise ValueError(
+                f"Effective rotary dim (d_k * rotary_fraction) must be a positive even number, "
+                f"got {d_k_rot} from d_k={d_k} and rotary_fraction={rotary_fraction}"
+            )
+        self.d_k = d_k
+        self.d_k_rot = d_k_rot
+        self.rope_base = rope_base
+        self.max_len = max_len
+
+        inv_freq = 1.0 / (rope_base ** (torch.arange(0, d_k_rot, 2, dtype=torch.float32, device="cpu") / d_k_rot))
+        self.register_buffer('inv_freq', inv_freq, persistent=False)
+
+    def _rotate_half(self, x):
+        """Split the last dim of x in half and rotate: (x1, x2) -> (-x2, x1)."""
+        half = x.shape[-1] // 2
+        return torch.cat((-x[..., half:], x[..., :half]), dim=-1)
+
+    def _apply_rotary(self, t, cos, sin):
+        """Apply RoPE to the first d_k_rot dims of the last axis of t."""
+        if self.d_k_rot == t.shape[-1]:
+            return t * cos + self._rotate_half(t) * sin
+        t_rot = t[..., : self.d_k_rot]
+        t_pass = t[..., self.d_k_rot :]
+        t_rot = t_rot * cos + self._rotate_half(t_rot) * sin
+        return torch.cat((t_rot, t_pass), dim=-1)
+
+    def create_pe(self, positions, dtype):
+        """Build cos/sin buffers covering ``positions`` (1D fp32 tensor).
+
+        Frequencies are computed in fp32 for numerical stability and cast to
+        ``dtype`` for storage. The final cast to Q/K runtime dtype happens in
+        ``forward``.
+        """
+        # Build this non-persistent cache with one device-independent fp32
+        # reference. CPU and CUDA transcendental kernels can round differently
+        # before the model-dtype cast, making identical weights produce different
+        # rotations solely because the model was constructed on another device.
+        target_device = positions.device
+        positions_cpu = positions.detach().to(device="cpu", dtype=torch.float32)
+        inv_freq_cpu = self.inv_freq.detach().to(device="cpu", dtype=torch.float32)
+        freqs = torch.outer(positions_cpu, inv_freq_cpu)
+        # Duplicate to align with `_rotate_half`: tail half mirrors the head half.
+        emb = torch.cat((freqs, freqs), dim=-1)
+        cos = emb.cos().to(device=target_device, dtype=dtype)
+        sin = emb.sin().to(device=target_device, dtype=dtype)
+        if hasattr(self, 'cos'):
+            self.cos = cos
+            self.sin = sin
+        else:
+            self.register_buffer('cos', cos, persistent=False)
+            self.register_buffer('sin', sin, persistent=False)
+
+    def extend_pe(self, length, device, dtype):
+        """Reset and extend the cos/sin buffers if needed."""
+        if hasattr(self, 'cos') and self.cos.size(0) >= length:
+            return
+        positions = torch.arange(0, length, dtype=torch.float32, device=device)
+        self.create_pe(positions=positions, dtype=dtype)
+
+    def forward(self, q, k):
+        """Rotate Q and K.
+
+        Args:
+            q (torch.Tensor): (batch, head, time1, d_k)
+            k (torch.Tensor): (batch, head, time2, d_k); time2 >= time1.
+
+        When time2 > time1 (streaming with KV cache), Q is rotated starting at
+        ``offset = time2 - time1`` and K from offset 0, so the position difference
+        seen inside attention scores remains correct.
+        """
+        t_q = q.size(2)
+        t_k = k.size(2)
+        cache_len = t_k - t_q
+
+        cos_k = self.cos[:t_k].view(1, 1, t_k, self.d_k_rot)
+        sin_k = self.sin[:t_k].view(1, 1, t_k, self.d_k_rot)
+        cos_q = self.cos[cache_len:t_k].view(1, 1, t_q, self.d_k_rot)
+        sin_q = self.sin[cache_len:t_k].view(1, 1, t_q, self.d_k_rot)
+
+        # Buffers are stored in model dtype; cast to Q/K runtime dtype (which may have
+        # been upgraded to fp32 by autocast handling in MultiHeadAttention.forward).
+        q = self._apply_rotary(q, cos_q.to(q.dtype), sin_q.to(q.dtype))
+        k = self._apply_rotary(k, cos_k.to(k.dtype), sin_k.to(k.dtype))
+        return q, k

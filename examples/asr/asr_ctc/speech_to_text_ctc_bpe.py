@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -82,8 +83,12 @@ def main(cfg):
     exp_manager(trainer, cfg.get("exp_manager", None))
     asr_model = EncDecCTCModelBPE(cfg=cfg.model, trainer=trainer)
 
-    # Initialize the weights of the model from another model, if provided via config
+    # Initialize the weights of the model from another model, if provided via config.
     asr_model.maybe_init_from_pretrained_checkpoint(cfg)
+
+    if cfg.model.get("freeze_encoder", False):
+        asr_model.freeze_encoder()
+        logging.info("Froze encoder parameters and will keep the encoder in eval mode during training.")
 
     trainer.fit(asr_model)
 

@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -45,6 +46,7 @@ from nemo.collections.asr.inference.utils.pipeline_utils import (
 )
 from nemo.collections.asr.inference.utils.progressbar import ProgressBar
 from nemo.collections.asr.inference.utils.text_segment import TextSegment
+from nemo.collections.asr.parts.utils.prompt_language_utils import resolve_prompt_index
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 
 if TYPE_CHECKING:
@@ -211,6 +213,8 @@ class BasePipeline(PipelineInterface):
             final = step_output.final_transcript
             partial = step_output.partial_transcript
             if not (final.strip() or partial.strip()):
+                # No new transcript to translate this step: keep the previous partial translation
+                step_output.partial_translation = state.previous_translation_info[0]
                 continue
 
             transcript = final or partial
@@ -404,6 +408,7 @@ class BasePipeline(PipelineInterface):
             confidence_aggregator=self.confidence_aggregator,
             sep=self.sep,
             enable_itn=cfg.enable_itn,
+            prompt_enabled=getattr(self, "prompt_enabled", False),
         )
 
     def init_nmt_model(self, nmt_model: LLMTranslator | None) -> None:
@@ -517,27 +522,21 @@ class BasePipeline(PipelineInterface):
 
         return {}
 
-    def _resolve_prompt_index(self, language_code: str) -> int:
+    def _resolve_prompt_index(self, language_code: str | None) -> int:
         """
-        Resolve language_code to a strict prompt index; raise if invalid.
+        Resolve language_code to a prompt index, with the rules shared by the prompt-conditioned models.
         Args:
-            language_code: (str) Language code to resolve (e.g., "en-US", "es-ES").
+            language_code: (str | None) Language code to resolve (e.g., "en", "es-ES"), or None for
+                the language-agnostic "auto" prompt.
         Returns:
             (int) Prompt index corresponding to the language code.
         Raises:
             RuntimeError: If prompt configuration is missing.
-            ValueError: If language_code is not found in prompt dictionary.
+            ValueError: If the language is not supported by the model, or is ambiguous.
         """
         if not hasattr(self, '_prompt_config') or not self._prompt_config:
             raise RuntimeError("Prompt configuration is missing for a prompt-enabled model.")
-        prompt_dict = self._prompt_config['prompt_dict']
-        lang_index = prompt_dict.get(language_code, None)
-        if lang_index is None:
-            raise ValueError(
-                f"Language code '{language_code}' not found in prompt dictionary. "
-                f"Available languages: {list(prompt_dict.keys())}"
-            )
-        return lang_index
+        return resolve_prompt_index(language_code or None, self._prompt_config['prompt_dict'])
 
     def _create_one_hot_prompts(self, indices: Tensor) -> Tensor:
         """
@@ -550,6 +549,22 @@ class BasePipeline(PipelineInterface):
         num_prompts = self._prompt_config['num_prompts']
         return torch.nn.functional.one_hot(indices, num_classes=num_prompts).to(self._prompt_config['compute_dtype'])
 
+    def _build_prompt_indices(self, states: list) -> Tensor:
+        """
+        Collect the per-stream prompt indices for a batch of states.
+        Args:
+            states: (list) List of streaming states.
+        Returns:
+            (Tensor) Prompt indices of shape [B].
+        Raises:
+            ValueError: If any prompt index is out of range.
+        """
+        indices = torch.tensor([getattr(s, 'prompt_idx', 0) for s in states], device=self.device, dtype=torch.long)
+        num_prompts = self._prompt_config['num_prompts']
+        if torch.any((indices < 0) | (indices >= num_prompts)):
+            raise ValueError("Found out-of-range prompt index in batch.")
+        return indices
+
     def _build_prompt_vectors(self, states: list) -> Tensor:
         """
         Build prompt vectors for a batch of states using one-hot encoding.
@@ -560,17 +575,14 @@ class BasePipeline(PipelineInterface):
         Raises:
             ValueError: If any prompt index is out of range.
         """
-        indices = torch.tensor([getattr(s, 'prompt_idx', 0) for s in states], device=self.device, dtype=torch.long)
-        num_prompts = self._prompt_config['num_prompts']
-        if torch.any((indices < 0) | (indices >= num_prompts)):
-            raise ValueError("Found out-of-range prompt index in batch.")
-        return self._create_one_hot_prompts(indices)
+        return self._create_one_hot_prompts(self._build_prompt_indices(states))
 
     def run(
         self,
         audio_filepaths: list[str],
         options: list[ASRRequestOptions] | None = None,
         progress_bar: ProgressBar | None = None,
+        audio_samples: list[Tensor] | None = None,
     ) -> dict:
         """
         Orchestrates reading from audio_filepaths in a streaming manner,
@@ -579,6 +591,8 @@ class BasePipeline(PipelineInterface):
             audio_filepaths (list[str]): List of audio filepaths to transcribe.
             options (list[ASRRequestOptions] | None): List of RequestOptions for each stream.
             progress_bar (ProgressBar | None): Progress bar to show the progress. Default is None.
+            audio_samples (list[Tensor] | None): Preloaded audio samples, one tensor per filepath, already at
+                the pipeline's sample rate. When given, no audio file is read from disk during the run.
         Returns:
             dict: A dictionary containing transcriptions and segments for each stream.
         """
@@ -593,7 +607,7 @@ class BasePipeline(PipelineInterface):
             raise ValueError("options must be the same length as audio_filepaths")
 
         request_generator = self.get_request_generator()
-        request_generator.set_audio_filepaths(audio_filepaths, options)
+        request_generator.set_audio_filepaths(audio_filepaths, options, audio_samples=audio_samples)
         request_generator.set_progress_bar(progress_bar)
 
         pipeline_output = {}
@@ -610,6 +624,7 @@ class BasePipeline(PipelineInterface):
                         "segments": [],
                         "audio_filepath": request_generator.get_audio_filepath(stream_id),
                         "translation_segments": [],
+                        "asr_segments": [],
                     }
 
                 accumulated_text = pipeline_output[stream_id]["text"]
@@ -631,6 +646,11 @@ class BasePipeline(PipelineInterface):
                 pipeline_output[stream_id]["text"] = accumulated_text
                 pipeline_output[stream_id]["translation"] = accumulated_translation
                 pipeline_output[stream_id]["segments"].extend(final_segments)
+
+                # Record the text finalized in this step with the audio elapsed at finalization.
+                if final_transcript:
+                    delay = request_generator.get_elapsed_duration(stream_id)
+                    pipeline_output[stream_id]["asr_segments"].append((final_transcript, delay))
 
                 if self.nmt_enabled:
                     step_translation = step_output.current_step_translation

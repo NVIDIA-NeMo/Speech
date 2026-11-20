@@ -3,6 +3,12 @@ Datasets
 
 The `audio` collection expect the training, validation and tests datasets in either NeMo format or Lhotse format.
 
+.. seealso::
+
+   For the Lhotse dataloader's full surface — supported ``input_cfg``
+   types, bucketing, indexed manifests + resumable dataloading, and the
+   ``LhotseDataLoadingConfig`` field reference — see :doc:`/dataloaders`.
+
 NeMo Format
 -----------
 
@@ -54,7 +60,7 @@ Lhotse dataloading supports the following types of inputs:
 Converting NeMo manifest to Lhotse
 ----------------------------------
 
-A dataset with a manifest in NeMo format can be converted to Lhotse format using the provided `conversion script <https://github.com/NVIDIA/NeMo/blob/main/scripts/audio_to_audio/convert_nemo_to_lhotse.py>`_.
+A dataset with a manifest in NeMo format can be converted to Lhotse format using the provided `conversion script <https://github.com/NVIDIA-NeMo/Speech/blob/main/scripts/audio_to_audio/convert_nemo_to_lhotse.py>`_.
 
 .. code:: shell
 

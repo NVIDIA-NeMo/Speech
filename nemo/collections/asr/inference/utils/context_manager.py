@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -88,6 +89,9 @@ class CacheAwareContextManager:
             self.cache_last_channel_len,  # B
         ) = self.cache_aware_model.get_initial_cache_state(self.num_slots)
         self.device = self.cache_last_channel.device
+        # slot ids of the last get_context call, so update_cache does not build them again
+        self._active_slot_ids: list[int] = []
+        self._active_slot_ids_dev: Tensor | None = None
 
     def _reset_slots(self, slot_ids: list[int]) -> None:
         """
@@ -95,10 +99,10 @@ class CacheAwareContextManager:
         Args:
             slot_ids: list of slot indices to reset
         """
-        if self.cache_disabled:
+        if self.cache_disabled or len(slot_ids) == 0:
             return
 
-        slot_ids_tensor = torch.tensor(slot_ids, device=self.device, dtype=torch.long)
+        slot_ids_tensor = self._to_device(slot_ids)
         self.cache_last_channel.index_fill_(1, slot_ids_tensor, 0.0)
         self.cache_last_time.index_fill_(1, slot_ids_tensor, 0.0)
         self.cache_last_channel_len.index_fill_(0, slot_ids_tensor, 0)
@@ -111,31 +115,26 @@ class CacheAwareContextManager:
             del self.slotidx2streamidx[slot_id]
             del self.streamidx2slotidx[stream_id]
 
-    def update_cache(self, stream_ids: list[int], new_context: CacheAwareContext, mapping: dict) -> None:
+    def update_cache(self, stream_ids: list[int], new_context: CacheAwareContext) -> None:
         """
         Updates the cache for the given stream_ids with the new_context
         Args:
             stream_ids (list[int]): list of stream ids
-            new_context (CacheAwareContext): new context to update corresponding to the stream_ids
-            mapping (dict): mapping between the old and new slots
+            new_context (CacheAwareContext): new context to update corresponding to the stream_ids, in batch order
         """
         if self.cache_disabled:
             return
 
         slot_ids_list = [self.streamidx2slotidx[sid] for sid in stream_ids]
-        slot_ids = torch.tensor(slot_ids_list, device=self.device, dtype=torch.long)
-        tgt_slot_ids = torch.tensor(
-            [mapping[sid] for sid in slot_ids_list],
-            device=self.device,
-            dtype=torch.long,
-        )
+        if slot_ids_list == self._active_slot_ids:
+            slot_ids = self._active_slot_ids_dev
+        else:
+            slot_ids = self._to_device(slot_ids_list)
 
         # In-place copy along batch/slot dimension
-        self.cache_last_channel.index_copy_(1, slot_ids, new_context.cache_last_channel.index_select(1, tgt_slot_ids))
-        self.cache_last_time.index_copy_(1, slot_ids, new_context.cache_last_time.index_select(1, tgt_slot_ids))
-        self.cache_last_channel_len.index_copy_(
-            0, slot_ids, new_context.cache_last_channel_len.index_select(0, tgt_slot_ids)
-        )
+        self.cache_last_channel.index_copy_(1, slot_ids, new_context.cache_last_channel)
+        self.cache_last_time.index_copy_(1, slot_ids, new_context.cache_last_time)
+        self.cache_last_channel_len.index_copy_(0, slot_ids, new_context.cache_last_channel_len)
 
     def reset_slots(self, stream_ids: list[int], eos_flags: list[bool]) -> None:
         """
@@ -156,19 +155,18 @@ class CacheAwareContextManager:
         # reset the slots for finished streams
         self._reset_slots([self.streamidx2slotidx[sid] for sid, eos in zip(stream_ids, eos_flags) if eos])
 
-    def get_context(self, stream_ids: list[int]) -> tuple[CacheAwareContext, dict]:
+    def get_context(self, stream_ids: list[int]) -> CacheAwareContext:
         """
         Retrieves the context from the cache for the given stream_ids
         Args:
             stream_ids (list[int]): list of stream ids
         Returns:
-            context (CacheAwareContext): context for the given stream_ids
-            mapping (dict): mapping between the cache and retrieved context
+            context (CacheAwareContext): context for the given stream_ids, in batch order
         """
 
         if len(stream_ids) == 0 or self.cache_disabled:
             # Create a dummy context with None values
-            return CacheAwareContext(), {}
+            return CacheAwareContext()
 
         # if the stream_id is new, we need to assign a slot to it
         for stream_id in stream_ids:
@@ -181,17 +179,20 @@ class CacheAwareContextManager:
 
         # get the cache for the particular stream_ids
         slot_ids = [self.streamidx2slotidx[stream_id] for stream_id in stream_ids]
-        cache_last_channel = self.cache_last_channel[:, slot_ids, :, :]
-        cache_last_time = self.cache_last_time[:, slot_ids, :, :]
-        cache_last_channel_len = self.cache_last_channel_len[slot_ids]
+        slot_ids_dev = self._to_device(slot_ids)
+        self._active_slot_ids = slot_ids
+        self._active_slot_ids_dev = slot_ids_dev
+        # a gather, not a view of the slot prefix: the encoder is sensitive to the layout of the cache
+        # it reads, and a strided view changes which bf16 kernels it picks
+        cache_last_channel = self.cache_last_channel.index_select(1, slot_ids_dev)
+        cache_last_time = self.cache_last_time.index_select(1, slot_ids_dev)
+        cache_last_channel_len = self.cache_last_channel_len.index_select(0, slot_ids_dev)
 
-        # create a context object
-        context = CacheAwareContext(
+        return CacheAwareContext(
             cache_last_channel=cache_last_channel,
             cache_last_time=cache_last_time,
             cache_last_channel_len=cache_last_channel_len,
         )
 
-        # mapping between cache and context
-        mapping = dict(zip(slot_ids, range(len(slot_ids))))
-        return context, mapping
+    def _to_device(self, slot_ids: list[int]) -> Tensor:
+        return torch.tensor(slot_ids, dtype=torch.long, device=self.device)

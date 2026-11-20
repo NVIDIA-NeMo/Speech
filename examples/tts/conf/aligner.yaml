@@ -25,7 +25,6 @@ heteronyms_path: "scripts/tts_dataset_files/heteronyms-052722"
 model:
   symbols_embedding_dim: 384
   bin_loss_start_ratio: 0.2
-  bin_loss_warmup_epochs: 100
 
   sample_rate: ${sample_rate}
   n_mel_channels: ${n_mel_channels}

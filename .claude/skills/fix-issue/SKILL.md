@@ -1,6 +1,6 @@
 ---
 name: fix-issue
-description: Fix a GitHub issue in NeMo Speech (NVIDIA-NeMo/NeMo). Read the issue, reproduce the bug with a failing test, implement the fix, and verify tests pass. Only opens a PR if the user explicitly asks for it.
+description: Fix a GitHub issue in NeMo Speech (NVIDIA-NeMo/Speech). Read the issue, reproduce the bug with a failing test, implement the fix, and verify tests pass. Only opens a PR if the user explicitly asks for it.
 ---
 
 # fix-issue
@@ -28,7 +28,7 @@ Read the issue description carefully. Identify:
 
 ## Workflow
 
-1. Read the issue: `gh issue view <ISSUE_NUMBER> --repo NVIDIA-NeMo/NeMo`
+1. Read the issue: `gh issue view <ISSUE_NUMBER> --repo NVIDIA-NeMo/Speech`
 2. Understand the bug — identify the relevant code
 3. Write a minimal reproduction test in `tests/` that demonstrates the failure
 4. Run the test to confirm it fails: `pytest <your_test_file> -v`
@@ -49,7 +49,7 @@ git checkout -b fix/<ISSUE_NUMBER>-<short-description>
 git add <changed files>
 git commit -s -m "Fix <short-description> (closes #<ISSUE_NUMBER>)"
 git push origin fix/<ISSUE_NUMBER>-<short-description>
-gh pr create --repo NVIDIA-NeMo/NeMo \
+gh pr create --repo NVIDIA-NeMo/Speech \
   --title "Fix <short-description>" \
   --body "$(cat <<'EOF'
 # What does this PR do ?

@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -338,6 +339,9 @@ class TestSaveRestore:
                 strict=strict,
                 return_config=return_config,
                 override_config_path=override_config_path,
+                save_restore_connector=save_restore_connector.SaveRestoreConnector(
+                    allow_external_artifacts=override_config_path is not None
+                ),
             )
 
             if return_config:
@@ -352,6 +356,7 @@ class TestSaveRestore:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_EncDecCTCModelBPE_v2(self):
         # TODO: Switch to using named configs because here we don't really care about weights
         cn = EncDecCTCModelBPE.from_pretrained(model_name="stt_en_conformer_ctc_small")
@@ -580,6 +585,7 @@ class TestSaveRestore:
         assert model2_copy.temp_data == ["+++++\n"]
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_mock_save_to_restore_chained(self):
         with tempfile.NamedTemporaryFile('w') as empty_file, tempfile.NamedTemporaryFile('w') as empty_file2:
             # Write some data
@@ -671,6 +677,7 @@ class TestSaveRestore:
             assert type(MockModel._save_restore_connector) == save_restore_connector.SaveRestoreConnector
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_restore_from_save_restore_connector(self):
         class MySaveRestoreConnector(save_restore_connector.SaveRestoreConnector):
             def save_to(self, model, save_path: str):
@@ -765,6 +772,7 @@ class TestSaveRestore:
                 assert config_filepath.endswith(".yaml")
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_restore_from_save_restore_connector_unpacked_file(self):
         class MySaveRestoreConnector(save_restore_connector.SaveRestoreConnector):
             def __init__(self):
@@ -821,6 +829,7 @@ class TestSaveRestore:
     @pytest.mark.unit
     @pytest.mark.parametrize("change_child_number", [False, True])
     @pytest.mark.parametrize("child2_model_from_path", [False, True])
+    @pytest.mark.gpu
     def test_mock_model_nested(self, change_child_number: bool, child2_model_from_path: bool):
         """
         Test model with 2 children
@@ -882,6 +891,7 @@ class TestSaveRestore:
     @pytest.mark.unit
     @pytest.mark.parametrize("change_child_resource", [False, True])
     @pytest.mark.parametrize("child2_model_from_path", [False, True])
+    @pytest.mark.gpu
     def test_mock_model_nested_with_resources(self, change_child_resource: bool, child2_model_from_path: bool):
         """
         Test nested model with 2 children: model and each child can be saved/restored separately
@@ -977,6 +987,7 @@ class TestSaveRestore:
                     assert parent.child2_model.temp_data == child2_data
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_mock_model_nested_with_resources_multiple_passes(self):
         """
         Test nested model with 2 children: multiple save-restore passes
@@ -1069,6 +1080,7 @@ class TestSaveRestore:
                     assert parent.child2_model.temp_data == child2_data
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_mock_model_nested_double_with_resources(self):
         """
         test nested model: parent -> child_with_child -> child; model and each child can be saved/restored separately
@@ -1155,6 +1167,7 @@ class TestSaveRestore:
 
     @pytest.mark.unit
     @pytest.mark.with_downloads
+    @pytest.mark.gpu
     def test_mock_model_nested_child_from_pretrained(self):
         """
         Test nested model with child initialized from pretrained model
@@ -1177,6 +1190,7 @@ class TestSaveRestore:
             assert _is_json_serializable(parent.ctc_model.hparams_initial)
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_mock_model_nested_custom_config_field(self):
         """
         Test nested model with custom config field not equal to attribute name
@@ -1240,6 +1254,7 @@ class TestSaveRestore:
                 _ = MockModelIncorrectWithNemoArtifact(cfg=cfg_parent.model, trainer=None)
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_restore_from_save_restore_connector_extracted_dir(self):
         class MySaveRestoreConnector(save_restore_connector.SaveRestoreConnector):
             def save_to(self, model, save_path: str):
@@ -1417,3 +1432,23 @@ class TestSaveRestore:
                 assert expected_paths == observed_paths
         finally:
             os.chdir(cwd)
+
+
+class _NonTensorPayload:
+    """A non-tensor, picklable object that torch's weights_only unpickler rejects."""
+
+    def __init__(self, value):
+        self.value = value
+
+
+@pytest.mark.unit
+def test_load_state_dict_honors_force_no_weights_only(tmp_path, monkeypatch):
+    """TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD must let a checkpoint with non-tensor objects load."""
+    ckpt = tmp_path / "weights.ckpt"
+    torch.save({"w": torch.zeros(2), "meta": _NonTensorPayload(11)}, ckpt)
+    monkeypatch.setenv("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
+
+    state = save_restore_connector.SaveRestoreConnector._load_state_dict_from_disk(str(ckpt))
+
+    assert torch.equal(state["w"], torch.zeros(2))
+    assert state["meta"].value == 11

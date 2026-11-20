@@ -1,4 +1,5 @@
-# Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2021, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +15,7 @@
 
 import copy
 import math
-from typing import Dict, List, Tuple, Type, Union
+from typing import Dict, List, Tuple, Type
 
 import numpy as np
 import torch
@@ -36,13 +37,6 @@ from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.utils import logging
 
 __all__ = ['ASRDecoderTimeStamps']
-
-try:
-    from pyctcdecode import build_ctcdecoder
-
-    PYCTCDECODE = True
-except ImportError:
-    PYCTCDECODE = False
 
 
 def if_none_get_default(param, default_value):
@@ -316,7 +310,6 @@ class ASRDecoderTimeStamps:
     def __init__(self, cfg_diarizer):
         self.manifest_filepath = cfg_diarizer.manifest_filepath
         self.params = cfg_diarizer.asr.parameters
-        self.ctc_decoder_params = cfg_diarizer.asr.ctc_decoder_parameters
         self.ASR_model_name = cfg_diarizer.asr.model_path
         self.nonspeech_threshold = self.params.asr_based_vad_threshold
         self.root_path = None
@@ -390,39 +383,8 @@ class ASRDecoderTimeStamps:
         else:
             asr_model = self.encdec_class.from_pretrained(model_name=self.ASR_model_name, strict=False)
 
-        if self.ctc_decoder_params['pretrained_language_model']:
-            if not PYCTCDECODE:
-                raise ImportError(
-                    'LM for beam search decoding is provided but pyctcdecode is not installed. Install pyctcdecode using PyPI: pip install pyctcdecode'
-                )
-            self.beam_search_decoder = self.load_LM_for_CTC_decoder(asr_model)
-        else:
-            self.beam_search_decoder = None
-
         asr_model.eval()
         return asr_model
-
-    def load_LM_for_CTC_decoder(self, asr_model: Type[Union[EncDecCTCModel, EncDecCTCModelBPE]]):
-        """
-        Load a language model for CTC decoder (pyctcdecode).
-        Note that only EncDecCTCModel and EncDecCTCModelBPE models can use pyctcdecode.
-        """
-        kenlm_model = self.ctc_decoder_params['pretrained_language_model']
-        logging.info(f"Loading language model : {self.ctc_decoder_params['pretrained_language_model']}")
-
-        if 'EncDecCTCModelBPE' in str(type(asr_model)):
-            vocab = asr_model.tokenizer.tokenizer.get_vocab()
-            labels = list(vocab.keys())
-            labels[0] = "<unk>"
-        elif 'EncDecCTCModel' in str(type(asr_model)):
-            labels = asr_model.decoder.vocabulary
-        else:
-            raise ValueError(f"Cannot find a vocabulary or tokenizer for: {self.params['self.ASR_model_name']}")
-
-        decoder = build_ctcdecoder(
-            labels, kenlm_model, alpha=self.ctc_decoder_params['alpha'], beta=self.ctc_decoder_params['beta']
-        )
-        return decoder
 
     def run_ASR_QuartzNet_CTC(self, asr_model: Type[EncDecCTCModel]) -> Tuple[Dict, Dict]:
         """
@@ -457,25 +419,19 @@ class ASRDecoderTimeStamps:
             for idx, logit_np in enumerate(transcript_logits_list):
                 logit_np = logit_np.cpu().numpy()
                 uniq_id = get_uniqname_from_filepath(self.audio_file_list[idx])
-                if self.beam_search_decoder:
-                    logging.info(
-                        f"Running beam-search decoder on {uniq_id} with LM {self.ctc_decoder_params['pretrained_language_model']}"
-                    )
-                    hyp_words, word_ts = self.run_pyctcdecode(logit_np)
-                else:
-                    log_prob = torch.from_numpy(logit_np)
-                    logits_len = torch.from_numpy(np.array([log_prob.shape[0]]))
-                    greedy_predictions = log_prob.argmax(dim=-1, keepdim=False).unsqueeze(0)
-                    text, char_ts = wer_ts.ctc_decoder_predictions_tensor_with_ts(
-                        greedy_predictions, predictions_len=logits_len
-                    )
-                    trans, char_ts_in_feature_frame_idx = self.clean_trans_and_TS(text[0], char_ts[0])
-                    spaces_in_sec, hyp_words = self._get_spaces(
-                        trans, char_ts_in_feature_frame_idx, self.model_stride_in_secs
-                    )
-                    word_ts = self.get_word_ts_from_spaces(
-                        char_ts_in_feature_frame_idx, spaces_in_sec, end_stamp=logit_np.shape[0]
-                    )
+                log_prob = torch.from_numpy(logit_np)
+                logits_len = torch.from_numpy(np.array([log_prob.shape[0]]))
+                greedy_predictions = log_prob.argmax(dim=-1, keepdim=False).unsqueeze(0)
+                text, char_ts = wer_ts.ctc_decoder_predictions_tensor_with_ts(
+                    greedy_predictions, predictions_len=logits_len
+                )
+                trans, char_ts_in_feature_frame_idx = self.clean_trans_and_TS(text[0], char_ts[0])
+                spaces_in_sec, hyp_words = self._get_spaces(
+                    trans, char_ts_in_feature_frame_idx, self.model_stride_in_secs
+                )
+                word_ts = self.get_word_ts_from_spaces(
+                    char_ts_in_feature_frame_idx, spaces_in_sec, end_stamp=logit_np.shape[0]
+                )
                 word_ts = self.align_decoder_delay(word_ts, self.decoder_delay_in_sec)
                 assert len(hyp_words) == len(word_ts), "Words and word timestamp list length does not match."
                 words_dict[uniq_id] = hyp_words
@@ -585,19 +541,13 @@ class ASRDecoderTimeStamps:
             for idx, logit_np in enumerate(transcript_logits_list):
                 log_prob = logit_np.cpu().numpy()
                 uniq_id = get_uniqname_from_filepath(self.audio_file_list[idx])
-                if self.beam_search_decoder:
-                    logging.info(
-                        f"Running beam-search decoder with LM {self.ctc_decoder_params['pretrained_language_model']}"
-                    )
-                    hyp_words, word_ts = self.run_pyctcdecode(logit_np)
-                else:
-                    log_prob = torch.from_numpy(logit_np)
-                    greedy_predictions = log_prob.argmax(dim=-1, keepdim=False).unsqueeze(0)
-                    logits_len = torch.from_numpy(np.array([log_prob.shape[0]]))
-                    text, char_ts, word_ts = werbpe_ts.ctc_decoder_predictions_tensor_with_ts(
-                        self.model_stride_in_secs, greedy_predictions, predictions_len=logits_len
-                    )
-                    hyp_words, word_ts = text[0].split(), word_ts[0]
+                log_prob = torch.from_numpy(logit_np)
+                greedy_predictions = log_prob.argmax(dim=-1, keepdim=False).unsqueeze(0)
+                logits_len = torch.from_numpy(np.array([log_prob.shape[0]]))
+                text, char_ts, word_ts = werbpe_ts.ctc_decoder_predictions_tensor_with_ts(
+                    self.model_stride_in_secs, greedy_predictions, predictions_len=logits_len
+                )
+                hyp_words, word_ts = text[0].split(), word_ts[0]
                 word_ts = self.align_decoder_delay(word_ts, self.decoder_delay_in_sec)
                 assert len(hyp_words) == len(word_ts), "Words and word timestamp list length does not match."
                 words_dict[uniq_id] = hyp_words
@@ -669,7 +619,6 @@ class ASRDecoderTimeStamps:
         )
 
         onset_delay, mid_delay, tokens_per_chunk = self.set_buffered_infer_params(asr_model)
-        onset_delay_in_sec = round(onset_delay * self.model_stride_in_secs, 2)
 
         with torch.amp.autocast(asr_model.device.type):
             logging.info(f"Running ASR model {self.ASR_model_name}")
@@ -687,20 +636,13 @@ class ASRDecoderTimeStamps:
                     mid_delay,
                     self.model_stride_in_secs,
                 )
-                if self.beam_search_decoder:
-                    logging.info(
-                        f"Running beam-search decoder with LM {self.ctc_decoder_params['pretrained_language_model']}"
-                    )
-                    log_prob = log_prob.unsqueeze(0).cpu().numpy()[0]
-                    hyp_words, word_ts = self.run_pyctcdecode(log_prob, onset_delay_in_sec=onset_delay_in_sec)
-                else:
-                    logits_len = torch.from_numpy(np.array([len(greedy_predictions_list)]))
-                    greedy_predictions_list = greedy_predictions_list[onset_delay:]
-                    greedy_predictions = torch.from_numpy(np.array(greedy_predictions_list)).unsqueeze(0)
-                    text, char_ts, word_ts = werbpe_ts.ctc_decoder_predictions_tensor_with_ts(
-                        self.model_stride_in_secs, greedy_predictions, predictions_len=logits_len
-                    )
-                    hyp_words, word_ts = text[0].split(), word_ts[0]
+                logits_len = torch.from_numpy(np.array([len(greedy_predictions_list)]))
+                greedy_predictions_list = greedy_predictions_list[onset_delay:]
+                greedy_predictions = torch.from_numpy(np.array(greedy_predictions_list)).unsqueeze(0)
+                text, char_ts, word_ts = werbpe_ts.ctc_decoder_predictions_tensor_with_ts(
+                    self.model_stride_in_secs, greedy_predictions, predictions_len=logits_len
+                )
+                hyp_words, word_ts = text[0].split(), word_ts[0]
 
                 word_ts = self.align_decoder_delay(word_ts, self.decoder_delay_in_sec)
                 assert len(hyp_words) == len(word_ts), "Words and word timestamp list length does not match."
@@ -747,51 +689,6 @@ class ASRDecoderTimeStamps:
                 + [[round(spaces_in_sec[-1][1], 2), end_stamp_in_sec]]
             )
         return word_timestamps
-
-    def run_pyctcdecode(
-        self, logprob: np.ndarray, onset_delay_in_sec: float = 0, beam_width: int = 32
-    ) -> Tuple[List[str], List[str]]:
-        """
-        Launch pyctcdecode with the loaded pretrained language model.
-
-        Args:
-            logprob (np.ndarray):
-                The log probability from the ASR model inference in numpy array format.
-            onset_delay_in_sec (float):
-                The amount of delay that needs to be compensated for the timestamp outputs froM pyctcdecode.
-            beam_width (int):
-                The beam width parameter for beam search decodring.
-        Returns:
-            hyp_words (list):
-                List containing the words in the hypothesis.
-            word_ts (list):
-                List containing the word timestamps from the decoder.
-        """
-        beams = self.beam_search_decoder.decode_beams(logprob, beam_width=self.ctc_decoder_params['beam_width'])
-        word_ts_beam, words_beam = [], []
-        for idx, (word, _) in enumerate(beams[0][2]):
-            ts = self.get_word_ts_from_wordframes(idx, beams[0][2], self.model_stride_in_secs, onset_delay_in_sec)
-            word_ts_beam.append(ts)
-            words_beam.append(word)
-        hyp_words, word_ts = words_beam, word_ts_beam
-        return hyp_words, word_ts
-
-    @staticmethod
-    def get_word_ts_from_wordframes(
-        idx, word_frames: List[List[float]], frame_duration: float, onset_delay: float, word_block_delay: float = 2.25
-    ):
-        """
-        Extract word timestamps from word frames generated from pyctcdecode.
-        """
-        offset = -1 * word_block_delay * frame_duration - onset_delay
-        frame_begin = word_frames[idx][1][0]
-        if frame_begin == -1:
-            frame_begin = word_frames[idx - 1][1][1] if idx != 0 else 0
-        frame_end = word_frames[idx][1][1]
-        return [
-            round(max(frame_begin * frame_duration + offset, 0), 2),
-            round(max(frame_end * frame_duration + offset, 0), 2),
-        ]
 
     @staticmethod
     def align_decoder_delay(word_ts, decoder_delay_in_sec: float):

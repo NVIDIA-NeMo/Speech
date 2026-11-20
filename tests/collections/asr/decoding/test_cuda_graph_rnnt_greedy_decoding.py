@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,8 +12,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import contextlib
 import copy
+import gc
 import glob
+import types
+from pathlib import Path
+from typing import Callable
 
 import lightning.pytorch as ptl
 import pytest
@@ -22,6 +28,7 @@ from omegaconf import DictConfig, open_dict
 
 from nemo.core.config.pytorch_lightning import TrainerConfig
 from nemo.core.utils.cuda_python_utils import skip_cuda_python_test_if_cuda_graphs_conditional_nodes_not_supported
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
 
 # These tests move the model to CUDA before calling transcribe(), so avoid forking DataLoader workers afterwards.
@@ -41,6 +48,277 @@ def test_forced_full_graph_compile_does_not_fallback():
         computer._raise_or_warn_no_while_loop_cuda_graphs(accelerator_error("CUDA error: invalid argument"))
 
 
+def test_conditional_node_restores_previous_stream_on_body_error(monkeypatch):
+    from nemo.core.utils import cuda_python_utils
+
+    if not cuda_python_utils.CUDA_PYTHON_AVAILABLE:
+        pytest.skip("cuda-python is required to test with_conditional_node")
+
+    class FakeStream:
+        def __init__(self, name):
+            self.name = name
+            self.cuda_stream = name
+
+    class FakeTorchCuda:
+        def __init__(self):
+            self.parent_stream = FakeStream("parent")
+            self.body_stream = FakeStream("body")
+            self.current = self.parent_stream
+            self.set_calls = []
+
+        def current_stream(self, device=None):
+            return self.current
+
+        def Stream(self, device=None):
+            return self.body_stream
+
+        def set_stream(self, stream):
+            self.current = stream
+            self.set_calls.append(stream)
+
+    class FakeCudart:
+        cudaStreamCaptureStatus = types.SimpleNamespace(cudaStreamCaptureStatusActive="active")
+        cudaStreamUpdateCaptureDependenciesFlags = types.SimpleNamespace(cudaStreamSetCaptureDependencies="set")
+        cudaStreamCaptureMode = types.SimpleNamespace(cudaStreamCaptureModeThreadLocal="thread_local")
+
+        def __init__(self):
+            self.ended_streams = []
+
+        def cudaStreamGetCaptureInfo(self, stream):
+            return ("active", None, "graph", ["dependency"])
+
+        def cudaStreamUpdateCaptureDependencies(self, *args):
+            return ()
+
+        def cudaStreamBeginCaptureToGraph(self, *args):
+            return ()
+
+        def cudaStreamEndCapture(self, stream):
+            self.ended_streams.append(stream)
+            return ()
+
+    class FakeCuda:
+        CUgraphNodeType = types.SimpleNamespace(CU_GRAPH_NODE_TYPE_CONDITIONAL="conditional")
+        CUgraphConditionalNodeType = types.SimpleNamespace(CU_GRAPH_COND_TYPE_WHILE="while")
+
+        class CUgraphNodeParams:
+            def __init__(self):
+                self.conditional = types.SimpleNamespace(phGraph_out=["body_graph"])
+
+        def cuGraphAddNode(self, *args):
+            return ("node",)
+
+        def cuCtxGetCurrent(self):
+            return ("ctx",)
+
+        def cuLaunchKernel(self, *args):
+            return ()
+
+    fake_torch_cuda = FakeTorchCuda()
+    fake_cudart = FakeCudart()
+    fake_args = types.SimpleNamespace(ctypes=types.SimpleNamespace(data=1234))
+    fake_handle = types.SimpleNamespace(getPtr=lambda: 5678)
+
+    monkeypatch.setattr(cuda_python_utils, "cu_call", lambda result: result)
+    monkeypatch.setattr(cuda_python_utils, "cuda", FakeCuda())
+    monkeypatch.setattr(cuda_python_utils, "cudart", fake_cudart)
+    monkeypatch.setattr(cuda_python_utils, "cuda_python_version", "13.0.0")
+    monkeypatch.setattr(cuda_python_utils.torch, "cuda", fake_torch_cuda)
+
+    with pytest.raises(RuntimeError, match="body failed"):
+        with cuda_python_utils.with_conditional_node("kernel", fake_args, fake_handle, device="cuda"):
+            assert fake_torch_cuda.current_stream(device="cuda") is fake_torch_cuda.body_stream
+            raise RuntimeError("body failed")
+
+    assert fake_torch_cuda.current_stream(device="cuda") is fake_torch_cuda.parent_stream
+    assert fake_torch_cuda.set_calls == [fake_torch_cuda.body_stream, fake_torch_cuda.parent_stream]
+    assert fake_cudart.ended_streams == ["body"]
+
+
+EXPANDABLE_SEGMENTS_ALLOCATOR_SETTINGS: dict[str, object] = {
+    "expandable_segments": True,
+    "PYTORCH_CUDA_ALLOC_CONF": "max_split_size_mb:256,garbage_collection_threshold:0.6,expandable_segments:True",
+}
+
+
+def _record_mempool_events(
+    monkeypatch: pytest.MonkeyPatch, allocator_settings: dict[str, object], rejects_expandable_segments: bool
+) -> list[tuple]:
+    """Replace the allocator and the memory pool with fakes that append what happens to the returned list."""
+    from nemo.core.utils import cuda_python_utils
+
+    events: list[tuple] = []
+
+    @contextlib.contextmanager
+    def fake_use_mem_pool(pool, device=None):
+        events.append(("enter_pool", pool, device))
+        try:
+            yield
+        finally:
+            events.append(("exit_pool",))
+
+    def fake_snapshot() -> dict[str, object]:
+        events.append(("snapshot",))
+        return {"allocator_settings": allocator_settings}
+
+    monkeypatch.setattr(cuda_python_utils, "_MEMPOOL_REJECTS_EXPANDABLE_SEGMENTS", rejects_expandable_segments)
+    monkeypatch.setattr(torch.cuda, "use_mem_pool", fake_use_mem_pool)
+    monkeypatch.setattr(torch.cuda.memory, "_snapshot", fake_snapshot)
+    monkeypatch.setattr(torch.cuda.memory, "_set_allocator_settings", lambda s: events.append(("set_settings", s)))
+    return events
+
+
+@pytest.mark.parametrize(
+    "torch_version, rejects_expandable_segments",
+    [("2.7.0", True), ("2.7.1+cu126", True), ("2.8.0", False), ("2.8.0a0+git0123456", False), ("2.13.0+cu130", False)],
+)
+def test_torch_mempool_expandable_segments_gate(torch_version: str, rejects_expandable_segments: bool) -> None:
+    from nemo.core.utils import cuda_python_utils
+
+    assert cuda_python_utils._torch_mempool_rejects_expandable_segments(torch_version) is rejects_expandable_segments
+
+
+def test_conditional_node_mempool_turns_expandable_segments_off_on_torch_2_7(monkeypatch: pytest.MonkeyPatch) -> None:
+    from nemo.core.utils import cuda_python_utils
+
+    events = _record_mempool_events(
+        monkeypatch, EXPANDABLE_SEGMENTS_ALLOCATOR_SETTINGS, rejects_expandable_segments=True
+    )
+    configured = EXPANDABLE_SEGMENTS_ALLOCATOR_SETTINGS["PYTORCH_CUDA_ALLOC_CONF"]
+
+    with cuda_python_utils.use_conditional_node_mempool("pool", "cuda:0"):
+        events.append(("body",))
+
+    # Expandable segments are off before the pool is active and on again after it. The other options keep their values
+    # because the settings are appended to and restored verbatim, not rebuilt from the one option.
+    assert events == [
+        ("snapshot",),
+        ("set_settings", f"{configured},expandable_segments:False"),
+        ("enter_pool", "pool", "cuda:0"),
+        ("body",),
+        ("exit_pool",),
+        ("set_settings", configured),
+    ]
+
+
+def test_conditional_node_mempool_restores_expandable_segments_when_the_body_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nemo.core.utils import cuda_python_utils
+
+    events = _record_mempool_events(
+        monkeypatch, EXPANDABLE_SEGMENTS_ALLOCATOR_SETTINGS, rejects_expandable_segments=True
+    )
+
+    with pytest.raises(RuntimeError, match="capture failed"):
+        with cuda_python_utils.use_conditional_node_mempool("pool", "cuda:0"):
+            raise RuntimeError("capture failed")
+
+    assert events[-2:] == [
+        ("exit_pool",),
+        ("set_settings", EXPANDABLE_SEGMENTS_ALLOCATOR_SETTINGS["PYTORCH_CUDA_ALLOC_CONF"]),
+    ]
+
+
+def test_conditional_node_mempool_keeps_regular_segments_on_torch_2_7(monkeypatch: pytest.MonkeyPatch) -> None:
+    from nemo.core.utils import cuda_python_utils
+
+    settings = {"expandable_segments": False, "PYTORCH_CUDA_ALLOC_CONF": "max_split_size_mb:256"}
+    events = _record_mempool_events(monkeypatch, settings, rejects_expandable_segments=True)
+
+    with cuda_python_utils.use_conditional_node_mempool("pool", "cuda:0"):
+        pass
+
+    assert events == [("snapshot",), ("enter_pool", "pool", "cuda:0"), ("exit_pool",)]
+
+
+def test_conditional_node_mempool_does_not_touch_the_allocator_on_torch_2_8(monkeypatch: pytest.MonkeyPatch) -> None:
+    from nemo.core.utils import cuda_python_utils
+
+    events = _record_mempool_events(
+        monkeypatch, EXPANDABLE_SEGMENTS_ALLOCATOR_SETTINGS, rejects_expandable_segments=False
+    )
+
+    with cuda_python_utils.use_conditional_node_mempool("pool", "cuda:0"):
+        pass
+
+    assert events == [("enter_pool", "pool", "cuda:0"), ("exit_pool",)]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA decoder can run only on CUDA")
+@pytest.mark.parametrize(
+    "decoder_kind",
+    [
+        "rnnt_label_looping",
+        "tdt_label_looping",
+        "rnnt_frame_looping",
+        "rnnt_malsd",
+        "tdt_malsd",
+        "ctc_greedy_ngram_lm",
+        "ctc_beam",
+    ],
+)
+@pytest.mark.gpu
+def test_full_graph_memory_survives_empty_cache(
+    decoder_kind: str, test_data_dir: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Memory allocated while capturing a full graph must stay mapped as long as the graph can be replayed."""
+    skip_cuda_python_test_if_cuda_graphs_conditional_nodes_not_supported()
+    decode = _full_graph_decode_fn(decoder_kind, test_data_dir)
+
+    def trace_length() -> int:
+        return len(torch.cuda.memory._snapshot()["device_traces"][torch.cuda.current_device()])
+
+    capture_bounds = []
+    capture_begin, capture_end = torch.cuda.CUDAGraph.capture_begin, torch.cuda.CUDAGraph.capture_end
+
+    def recording_capture_begin(graph: torch.cuda.CUDAGraph, *args, **kwargs) -> None:
+        capture_bounds.append(trace_length())
+        capture_begin(graph, *args, **kwargs)
+
+    def recording_capture_end(graph: torch.cuda.CUDAGraph) -> None:
+        capture_end(graph)
+        capture_bounds.append(trace_length())
+
+    monkeypatch.setattr(torch.cuda.CUDAGraph, "capture_begin", recording_capture_begin)
+    monkeypatch.setattr(torch.cuda.CUDAGraph, "capture_end", recording_capture_end)
+
+    torch.cuda.memory._record_memory_history(max_entries=100_000)
+    try:
+        with torch.inference_mode():
+            expected = decode()
+        torch.cuda.synchronize()
+        traces = torch.cuda.memory._snapshot()["device_traces"][torch.cuda.current_device()]
+    finally:
+        torch.cuda.memory._record_memory_history(enabled=None)
+    captured = [
+        entry["addr"]
+        for begin, end in zip(capture_bounds[::2], capture_bounds[1::2])
+        for entry in traces[begin:end]
+        if entry["action"] == "alloc"
+    ]
+    assert captured, "decoding did not capture a CUDA graph"
+
+    torch.cuda.empty_cache()
+    segments = torch.cuda.memory._snapshot()["segments"]
+    released = [
+        address
+        for address in captured
+        if not any(segment["address"] <= address < segment["address"] + segment["total_size"] for segment in segments)
+    ]
+    if released:
+        # A graph left alive over released memory can crash CUDA graph captures in later tests.
+        del decode
+        gc.collect()
+    assert not released, f"empty_cache() released {len(released)} of {len(captured)} allocations the graph uses"
+
+    with torch.inference_mode():
+        actual = decode()
+    assert len(actual) == len(expected)
+    assert all(torch.equal(output, expected_output) for output, expected_output in zip(actual, expected))
+
+
 @pytest.mark.with_downloads
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA decoder can run only on CUDA")
 @pytest.mark.parametrize(
@@ -51,6 +329,7 @@ def test_forced_full_graph_compile_does_not_fallback():
     ],
 )
 @pytest.mark.parametrize("loop_labels", [False, True])
+@pytest.mark.gpu
 def test_cuda_graph_rnnt_greedy_decoder(model_name, batch_size, enable_bfloat16, loop_labels: bool, request):
     if not loop_labels:
         skip_cuda_python_test_if_cuda_graphs_conditional_nodes_not_supported()
@@ -110,6 +389,7 @@ def test_cuda_graph_rnnt_greedy_decoder(model_name, batch_size, enable_bfloat16,
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA decoder can run only on CUDA")
 @pytest.mark.parametrize("force_mode", ["no_graphs", "no_while_loops", "full_graph"])
 @pytest.mark.parametrize("enable_bfloat16", [False, True])
+@pytest.mark.gpu
 def test_loop_labels_cuda_graph_rnnt_greedy_decoder_forced_mode(
     stt_en_fastconformer_transducer_large, force_mode: str, enable_bfloat16: bool
 ):
@@ -183,6 +463,7 @@ def test_loop_labels_cuda_graph_rnnt_greedy_decoder_forced_mode(
     reason="Test requires CUDA device with bf16 support",
 )
 @pytest.mark.parametrize("is_tdt", [False, True])
+@pytest.mark.gpu
 def test_loop_labels_cuda_graph_ddp_mixed_precision(
     tmp_path_factory,
     an4_train_manifest_corrected,
@@ -233,6 +514,7 @@ def test_loop_labels_cuda_graph_ddp_mixed_precision(
 @pytest.mark.with_downloads
 @pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.device_count() < 2, reason="Test requires 2 GPUs")
 @pytest.mark.parametrize("loop_labels", [False, True])
+@pytest.mark.gpu
 def test_change_devices(loop_labels: bool, stt_en_fastconformer_transducer_large):
     if not loop_labels:
         skip_cuda_python_test_if_cuda_graphs_conditional_nodes_not_supported()
@@ -278,3 +560,102 @@ def test_change_devices(loop_labels: bool, stt_en_fastconformer_transducer_large
     # Sanity check: The device we run on should not change execution
     # output.
     assert first_device_transcripts == second_device_transcripts
+
+
+def _full_graph_decode_fn(decoder_kind: str, test_data_dir: str) -> Callable[[], list[torch.Tensor]]:
+    """Build a decoder in full-graph mode and return a function that decodes the same random inputs on every call."""
+    from nemo.collections.asr.modules import RNNTDecoder, RNNTJoint
+    from nemo.collections.asr.parts.submodules.ctc_batched_beam_decoding import BatchedBeamCTCComputer
+    from nemo.collections.asr.parts.submodules.ctc_greedy_decoding import GreedyBatchedCTCInfer
+    from nemo.collections.asr.parts.submodules.cuda_graph_rnnt_greedy_decoding import RNNTGreedyDecodeCudaGraph
+    from nemo.collections.asr.parts.submodules.rnnt_greedy_decoding import GreedyBatchedRNNTInfer
+    from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import ModifiedALSDBatchedRNNTComputer
+    from nemo.collections.asr.parts.submodules.tdt_malsd_batched_computer import ModifiedALSDBatchedTDTComputer
+    from nemo.collections.asr.parts.submodules.transducer_decoding.rnnt_label_looping import (
+        GreedyBatchedRNNTLabelLoopingComputer,
+    )
+    from nemo.collections.asr.parts.submodules.transducer_decoding.tdt_label_looping import (
+        GreedyBatchedTDTLabelLoopingComputer,
+    )
+
+    torch.manual_seed(0)
+    lengths = torch.tensor([16, 5, 11, 8], device="cuda")
+
+    if decoder_kind == "ctc_greedy_ngram_lm":
+        if not TRITON_AVAILABLE:
+            pytest.skip("Triton is required for CUDA-graph N-gram LM decoding")
+        lm_vocab_size = 1024
+        lm_path = Path(test_data_dir) / "asr/kenlm_ngram_lm/parakeet-tdt_ctc-110m-libri-1024.kenlm.tmp.arpa"
+        ctc_greedy = GreedyBatchedCTCInfer(
+            blank_id=lm_vocab_size, ngram_lm_model=str(lm_path), ngram_lm_alpha=0.2, allow_cuda_graphs=True
+        )
+        ctc_greedy.force_cuda_graphs_mode(mode="full_graph")
+        log_probs = torch.randn(4, 16, lm_vocab_size + 1, device="cuda").log_softmax(dim=-1)
+
+        def decode_ctc_greedy() -> list[torch.Tensor]:
+            (hyps,) = ctc_greedy(decoder_output=log_probs, decoder_lengths=lengths)
+            return [torch.as_tensor(hyp.y_sequence).clone() for hyp in hyps]
+
+        return decode_ctc_greedy
+
+    vocab_size, hidden_size, durations = 5, 8, [0, 1, 2, 4]
+    if decoder_kind == "ctc_beam":
+        ctc_beam = BatchedBeamCTCComputer(blank_index=vocab_size, beam_size=4, allow_cuda_graphs=True)
+        ctc_beam.force_cuda_graphs_mode(mode="full_graph")
+        log_probs = torch.randn(4, 16, vocab_size + 1, device="cuda").log_softmax(dim=-1)
+
+        def decode_ctc_beam() -> list[torch.Tensor]:
+            hyps = ctc_beam(log_probs, lengths)
+            return [hyps.scores.clone(), hyps.transcript_wb.clone()]
+
+        return decode_ctc_beam
+
+    decoder = RNNTDecoder(prednet={"pred_hidden": hidden_size, "pred_rnn_layers": 1}, vocab_size=vocab_size)
+    joint = RNNTJoint(
+        jointnet={
+            "encoder_hidden": hidden_size,
+            "pred_hidden": hidden_size,
+            "joint_hidden": hidden_size,
+            "activation": "relu",
+        },
+        num_classes=vocab_size,
+        num_extra_outputs=len(durations) if decoder_kind.startswith("tdt") else 0,
+    )
+    decoder, joint = decoder.cuda().eval(), joint.cuda().eval()
+    encoder_output = torch.randn(4, 16, hidden_size, device="cuda")
+
+    if decoder_kind == "rnnt_frame_looping":
+        frame_looping = GreedyBatchedRNNTInfer(
+            decoder_model=decoder,
+            joint_model=joint,
+            blank_index=vocab_size,
+            max_symbols_per_step=10,
+            loop_labels=False,
+            use_cuda_graph_decoder=True,
+        )
+        assert isinstance(frame_looping._greedy_decode, RNNTGreedyDecodeCudaGraph)
+
+        def decode_frame_looping() -> list[torch.Tensor]:
+            (hyps,) = frame_looping(encoder_output=encoder_output.transpose(1, 2), encoded_lengths=lengths)
+            return [torch.as_tensor(hyp.y_sequence).clone() for hyp in hyps]
+
+        return decode_frame_looping
+
+    common = dict(decoder=decoder, joint=joint, blank_index=vocab_size, max_symbols_per_step=10)
+    if decoder_kind == "rnnt_label_looping":
+        computer = GreedyBatchedRNNTLabelLoopingComputer(**common)
+    elif decoder_kind == "tdt_label_looping":
+        computer = GreedyBatchedTDTLabelLoopingComputer(durations=durations, **common)
+    elif decoder_kind == "rnnt_malsd":
+        computer = ModifiedALSDBatchedRNNTComputer(beam_size=4, allow_cuda_graphs=True, **common)
+    else:
+        computer = ModifiedALSDBatchedTDTComputer(durations=durations, beam_size=4, allow_cuda_graphs=True, **common)
+    computer.force_cuda_graphs_mode(mode="full_graph")
+
+    def decode_transducer() -> list[torch.Tensor]:
+        hyps, _ = computer(encoder_output, lengths)
+        if decoder_kind.endswith("malsd"):
+            return [hyps.scores.clone(), hyps.transcript_wb.clone()]
+        return [hyps.transcript.clone(), hyps.current_lengths.clone()]
+
+    return decode_transducer

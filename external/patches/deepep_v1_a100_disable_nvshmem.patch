@@ -1,11 +1,11 @@
 diff --git a/setup.py b/setup.py
-index 6a7f6d4..e2a92f1 100644
+index d30d25e4dad745c70592da3141aad819359cb934..9e2f4d37f1dadad06374ee61dbbe9f7271b136e1 100644
 --- a/setup.py
 +++ b/setup.py
-@@ -16,7 +16,7 @@ def get_nvshmem_host_lib_name(base_dir):
+@@ -170,7 +170,7 @@ def get_extension_hybrid_ep_cpp():
+     return extension_hybrid_ep_cpp
  
- 
- if __name__ == '__main__':
+ def get_extension_deep_ep_cpp():
 -    disable_nvshmem = False
 +    disable_nvshmem = True
      nvshmem_dir = os.getenv('NVSHMEM_DIR', None)

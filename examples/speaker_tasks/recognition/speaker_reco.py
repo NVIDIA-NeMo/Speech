@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -37,7 +38,7 @@ python ./speaker_reco.py --config-path='conf' --config-name='SpeakerNet_recognit
     exp_manager.name=$EXP_NAME +exp_manager.use_datetime_version=False \
     exp_manager.exp_dir='./speaker_exps'
 
-See https://github.com/NVIDIA/NeMo/blob/main/tutorials/speaker_tasks/Speaker_Identification_Verification.ipynb for notebook tutorial
+See https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/speaker_tasks/Speaker_Identification_Verification.ipynb for notebook tutorial
 
 Optional: Use tarred dataset to speech up data loading.
    Prepare ONE manifest that contains all training data you would like to include. Validation should use non-tarred dataset.

@@ -1,6 +1,7 @@
 #!/bin/bash
 
-# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,7 +27,7 @@ fi
 cd $DECODERS_PATH
 
 # Install OpenGrm OpenFST
-wget https://www.openfst.org/twiki/pub/FST/FstDownload/openfst-1.8.2.tar.gz --no-check-certificate && tar xvzf openfst-1.8.2.tar.gz && cd openfst-1.8.2 && ./configure --enable-grm && make -j4 && make -j4 install && cd ..
+wget https://www.openfst.org/twiki/pub/FST/FstDownload/openfst-1.8.2.tar.gz && tar xvzf openfst-1.8.2.tar.gz && cd openfst-1.8.2 && ./configure --enable-grm && make -j4 && make -j4 install && cd ..
 
 # Install OpenGrm Ngram
-OPENFSTPREFIX=$DECODERS_PATH/openfst-1.8.2/src &&  wget https://www.opengrm.org/twiki/pub/GRM/NGramDownload/ngram-1.3.14.tar.gz --no-check-certificate && tar xvzf ngram-1.3.14.tar.gz && cd ngram-1.3.14 && LDFLAGS="-L${OPENFSTPREFIX}/lib" CXXFLAGS="-I${OPENFSTPREFIX}/include" ./configure --prefix ${OPENFSTPREFIX} && make -j4 && make -j4 install && cd ..
+OPENFSTPREFIX=$DECODERS_PATH/openfst-1.8.2/src &&  wget https://www.opengrm.org/twiki/pub/GRM/NGramDownload/ngram-1.3.14.tar.gz && tar xvzf ngram-1.3.14.tar.gz && cd ngram-1.3.14 && LDFLAGS="-L${OPENFSTPREFIX}/lib" CXXFLAGS="-I${OPENFSTPREFIX}/include" ./configure --prefix ${OPENFSTPREFIX} && make -j4 && make -j4 install && cd ..

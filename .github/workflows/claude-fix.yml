@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check team membership
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           github-token: ${{ secrets.ORG_TEAM_READ_TOKEN }}
           script: |
@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Add eyes reaction to comment
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             await github.rest.reactions.createForIssueComment({
@@ -55,9 +55,13 @@ jobs:
     needs: acknowledge
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: anthropics/claude-code-action@v1
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1
         id: claude
+        env:
+          ANTHROPIC_BASE_URL: ${{ secrets.NVIDIA_INFERENCE_URL }}
+          CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1"
+          DISABLE_PROMPT_CACHING: "1"
         with:
           prompt: |
             You are a developer working on the NeMo repository.
@@ -89,11 +93,12 @@ jobs:
               ```
 
             
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          anthropic_api_key: ${{ secrets.NVIDIA_INFERENCE_KEY }}
+          claude_args: --model "${{ vars.CLAUDE_MODEL }}"
 
       - name: Label PR with agent-contribution
         if: steps.claude.outputs.branch_name
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             const prs = await github.rest.pulls.list({

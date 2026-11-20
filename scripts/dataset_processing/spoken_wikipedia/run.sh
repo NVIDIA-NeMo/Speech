@@ -1,6 +1,7 @@
 #!/bin/bash
 
-# Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -92,7 +93,7 @@ python ${NEMO_PATH}/scripts/dataset_processing/spoken_wikipedia/preprocess.py --
 ##      ├── 2.txt     
 ##      ...
 
-MODEL_FOR_SEGMENTATION="QuartzNet15x5Base-En" 
+MODEL_FOR_SEGMENTATION="stt_en_fastconformer_ctc_large"
 MODEL_FOR_RECOGNITION="stt_en_conformer_ctc_large"
 ## We set this threshold as very permissive, later we will use other metrics for filtering
 THRESHOLD=-10

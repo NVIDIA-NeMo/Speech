@@ -1,4 +1,5 @@
-# Copyright (c) 2020-2025, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2020-2025, NVIDIA CORPORATION & AFFILIATES.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,4 +31,4 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     spk_supervision=diar \
     binary_diar_preds=False \
     output_path=/tmp/mt_parakeet.seglst.json \
-    log=False generate_realtime_scripts=False 
+    log=False generate_realtime_scripts=False

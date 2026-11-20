@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -67,6 +68,8 @@ ALLOWED_TARGET_PREFIXES = [
     "torch.nn.",
     "torch.distributed.fsdp.",
     "torch.optim.",
+    "flashoptim.",
+    "transformer_engine.pytorch.optimizers.fused_adam.FusedAdam",
     "torch.utils.data.",
     "torchmetrics.",
     "lightning.pytorch.callbacks.",
@@ -104,6 +107,7 @@ ALLOWED_CLASS_PREFIXES_WITH_OPTIONAL_DEPENDENCIES = [
 
 ALLOWED_EXACT_CLASS_TARGETS = {
     "nemo_text_processing.text_normalization.normalize.Normalizer",
+    "transformer_engine.pytorch.optimizers.fused_adam.FusedAdam",
 }
 
 ALLOWED_LEGACY_FALLBACK_TARGETS = {
@@ -155,6 +159,11 @@ def _is_target_allowed(target: str) -> bool:
                             return True
             return False
 
+    # @experimental / @deprecated wrap the class in a wrapt proxy that passes
+    # isinstance(.., type) but breaks issubclass(); unwrap to the real class.
+    while hasattr(obj, "__wrapped__"):
+        obj = obj.__wrapped__
+
     # If it's a class: allow only subclasses of safe bases
     if isinstance(obj, type):
         if target.startswith("nemo.core.config.") and is_dataclass(obj):
@@ -186,7 +195,7 @@ def _is_target_allowed(target: str) -> bool:
         except TypeError:
             return False
 
-        if target.startswith("torch.optim."):
+        if target.startswith(("torch.optim.", "flashoptim.")):
             try:
                 return issubclass(obj, torch.optim.Optimizer)
             except TypeError:
@@ -231,6 +240,22 @@ def _is_target_allowed(target: str) -> bool:
             except (ImportError, TypeError):
                 return False
 
+        if target.startswith("nemo.collections.tts.parts.preprocessing."):
+            try:
+                from nemo.collections.tts.parts.preprocessing.audio_trimming import AudioTrimmer
+
+                return issubclass(obj, AudioTrimmer)
+            except (ImportError, TypeError):
+                return False
+
+        if target.startswith("nemo.collections.tts.parts.utils.callbacks"):
+            try:
+                from nemo.collections.tts.parts.utils.callbacks import ArtifactGenerator
+
+                return issubclass(obj, ArtifactGenerator)
+            except (ImportError, TypeError):
+                return False
+
         if target.startswith("nemo.collections.audio.parts.submodules.flow."):
             try:
                 from nemo.collections.audio.parts.submodules.flow import (
@@ -247,6 +272,14 @@ def _is_target_allowed(target: str) -> bool:
                 from torch.optim.lr_scheduler import _LRScheduler
 
                 return issubclass(obj, _LRScheduler)
+            except (ImportError, TypeError):
+                return False
+
+        if target == "nemo.collections.speechlm2.parts.lr_only_resume.ScaleRestoredLearningRate":
+            try:
+                from lightning.pytorch.callbacks import Callback
+
+                return issubclass(obj, Callback)
             except (ImportError, TypeError):
                 return False
 

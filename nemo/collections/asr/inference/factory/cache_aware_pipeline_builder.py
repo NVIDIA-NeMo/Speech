@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -41,11 +42,14 @@ class CacheAwarePipelineBuilder(BaseBuilder):
         asr_decoding_type = ASRDecodingType.from_str(cfg.asr_decoding_type)
 
         if asr_decoding_type is ASRDecodingType.RNNT:
-            return cls.build_cache_aware_rnnt_pipeline(cfg)
+            pipeline = cls.build_cache_aware_rnnt_pipeline(cfg)
         elif asr_decoding_type is ASRDecodingType.CTC:
-            return cls.build_cache_aware_ctc_pipeline(cfg)
+            pipeline = cls.build_cache_aware_ctc_pipeline(cfg)
+        else:
+            raise ValueError("Invalid asr decoding type for cache aware streaming. Need to be one of ['CTC', 'RNNT']")
 
-        raise ValueError("Invalid asr decoding type for cache aware streaming. Need to be one of ['CTC', 'RNNT']")
+        pipeline.asr_model.set_streaming_cuda_graphs(enabled=cfg.asr.get("use_cuda_graphs", False))
+        return pipeline
 
     @classmethod
     def get_rnnt_decoding_cfg(cls, cfg: DictConfig) -> RNNTDecodingConfig:

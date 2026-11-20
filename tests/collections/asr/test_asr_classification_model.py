@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -336,6 +337,7 @@ class TestEncDecFrameClassificationModel(TestEncDecClassificationModel):
         assert dataclass_subset is None
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_frame_classification_model(self, frame_classification_model: EncDecFrameClassificationModel):
         with tempfile.TemporaryDirectory() as temp_dir:
             # generate random audio

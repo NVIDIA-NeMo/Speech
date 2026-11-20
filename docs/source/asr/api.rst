@@ -27,7 +27,7 @@ Model Classes
 
 .. autoclass:: nemo.collections.asr.models.EncDecRNNTBPEModelWithPrompt
     :show-inheritance:
-    :members: transcribe, set_inference_prompt, initialize_prompt_feature, change_vocabulary, setup_training_data, setup_optimization, setup_validation_data, setup_test_data, register_artifact
+    :members: transcribe, forward, resolve_prompt_language, set_inference_prompt, initialize_prompt_feature, change_vocabulary, setup_training_data, setup_optimization, setup_validation_data, setup_test_data, register_artifact
 
 
 .. autoclass:: nemo.collections.asr.models.EncDecHybridRNNTCTCBPEModelWithPrompt
@@ -78,6 +78,20 @@ Modules
     :members:
 
 
+.. _transformer-encoder-api:
+
+.. autoclass:: nemo.collections.asr.modules.TransformerEncoder
+    :show-inheritance:
+    :members:
+
+
+.. _streaming-transformer-encoder-api:
+
+.. autoclass:: nemo.collections.asr.modules.StreamingTransformerEncoder
+    :show-inheritance:
+    :members:
+
+
 .. _rnn-encoder-api:
 
 .. autoclass:: nemo.collections.asr.modules.RNNEncoder
@@ -113,6 +127,10 @@ Mixins
     :members:
 
 .. autoclass:: nemo.collections.asr.parts.mixins.mixins.ASRModuleMixin
+    :show-inheritance:
+    :members:
+
+.. autoclass:: nemo.collections.asr.parts.mixins.rnnt_restart_mixin.RNNTRestartMixin
     :show-inheritance:
     :members:
 

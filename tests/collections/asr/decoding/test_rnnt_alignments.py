@@ -1,4 +1,5 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -97,6 +98,7 @@ def cleanup_local_folder():
 @pytest.mark.parametrize("loop_labels", [True, False])
 @pytest.mark.parametrize("use_cuda_graph_decoder", [True, False])
 @pytest.mark.with_downloads
+@pytest.mark.gpu
 def test_rnnt_alignments(
     loop_labels: bool,
     use_cuda_graph_decoder: bool,

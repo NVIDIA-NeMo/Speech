@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -112,7 +113,18 @@ def _merge_lora_weights(
 
     if not lora_cfg:
         lora_cfg = {"r": 128, "lora_alpha": 256}
-    scaling = lora_cfg.get("lora_alpha", 1) / lora_cfg.get("r", 1)
+    # NeMo Automodel serializes the adapter shape as ``dim``/``alpha``; PEFT uses
+    # ``r``/``lora_alpha``. Reading only the PEFT spelling silently falls back to
+    # scaling=1.0 on a NeMo-trained checkpoint, which applies the adapter at the
+    # wrong magnitude instead of failing.
+    rank = lora_cfg.get("r", lora_cfg.get("dim"))
+    alpha = lora_cfg.get("lora_alpha", lora_cfg.get("alpha"))
+    if rank is None or alpha is None:
+        raise ValueError(
+            "LoRA weights are present but the checkpoint's lora config has no recognizable "
+            f"rank/alpha (expected 'r'/'lora_alpha' or 'dim'/'alpha'); got keys {sorted(lora_cfg)}."
+        )
+    scaling = alpha / rank
 
     base: dict[str, torch.Tensor] = {}
     lora_a: dict[str, torch.Tensor] = {}
@@ -216,6 +228,21 @@ class TransformerBackend(_BaseBackend):
 # ── Hybrid backend (NemotronH / Mamba+MoE) ──────────────────────────
 
 
+_FP32_PARAM_HOLDER_RENAMES = {
+    ".mixer._fp32_params.A_log": ".mixer.A",
+    ".mixer._fp32_params.dt_bias": ".mixer.dt_bias",
+    ".mixer._fp32_params.D": ".mixer.D",
+}
+
+
+def _canonicalize_fp32_param_holder_name(name: str) -> str:
+    """Map Automodel's Mamba/GDN FP32 holder names to vLLM parameter names."""
+    for holder_suffix, vllm_suffix in _FP32_PARAM_HOLDER_RENAMES.items():
+        if name.endswith(holder_suffix):
+            return name[: -len(holder_suffix)] + vllm_suffix
+    return name
+
+
 class HybridBackend(_BaseBackend):
     """Hybrid Mamba+MoE backbones (e.g. NemotronH).
 
@@ -234,19 +261,37 @@ class HybridBackend(_BaseBackend):
         # correctly inside vLLM's hybrid registry).
         return ["NemotronHForCausalLM"]
 
+    def preprocess_llm_weights(
+        self, weights: Iterable[tuple[str, torch.Tensor]]
+    ) -> Iterable[tuple[str, torch.Tensor]]:
+        """Merge LoRA adapters before the NeMo -> HuggingFace rename.
+
+        Without this the base class's identity default lets ``lora_A``/``lora_B``
+        tensors reach ``AutoWeightsLoader``, which has no destination for them:
+        a LoRA fine-tune of a hybrid backbone would then serve at base-model
+        quality with no error. Merging here mirrors ``TransformerBackend`` and
+        must run before ``nemo_to_hf_llm_weights`` so both the base tensor and
+        its adapters still carry their original NeMo names.
+        """
+        lora_cfg = getattr(self.config, "lora", None)
+        return list(_merge_lora_weights(list(weights), lora_cfg))
+
     def nemo_to_hf_llm_weights(
         self, weights: Iterable[tuple[str, torch.Tensor]]
     ) -> Iterable[tuple[str, torch.Tensor]]:
         """NeMo -> HuggingFace NemotronH weight name mapping.
 
         Handles the MoE expert weight layout (NeMo packs experts into a single
-        tensor; HF expects per-expert ``experts.{i}.{up,down}_proj.weight``)
-        and the ``backbone.norm`` -> ``backbone.norm_f`` rename.
+        tensor; HF expects per-expert ``experts.{i}.{up,down}_proj.weight``),
+        Automodel's Mamba/GDN FP32 parameter holders, and the
+        ``backbone.norm`` -> ``backbone.norm_f`` rename. Only names are changed
+        for FP32 holders; vLLM's weight loaders own any numerical transforms.
         """
         target_vocab = getattr(self.config.text_config, "vocab_size", None)
         for name, tensor in weights:
             hf_name = name.replace("llm.model.", "backbone.")
             hf_name = hf_name.replace("llm.lm_head", "lm_head")
+            hf_name = _canonicalize_fp32_param_holder_name(hf_name)
             if hf_name == "backbone.norm.weight":
                 hf_name = "backbone.norm_f.weight"
 
@@ -266,6 +311,12 @@ class HybridBackend(_BaseBackend):
                     )
             elif hf_name in (
                 "backbone.embed_tokens.weight",
+                # NemotronH's embedding is `embeddings`, and a ModelOpt export
+                # already carries that HF name, so it never hits the
+                # `embed_tokens` rename above. Omitting it here leaves the
+                # embedding unpadded and every quantized checkpoint dies on
+                # vLLM's `loaded_weight.shape[output_dim] == org_vocab_size`.
+                "backbone.embeddings.weight",
                 "lm_head.weight",
             ):
                 if target_vocab:

@@ -1,4 +1,5 @@
-# Copyright (c) 2020-2025, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2020-2025, NVIDIA CORPORATION & AFFILIATES.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -28,4 +29,15 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     output_filename="/tmp/stt_transcribe_boost_gt_res_tdt.json" \
     model_path="/home/TestData/asr/stt_en_fastconformer_tdt_large.nemo" \
     batch_size=5 \
+    device='cuda:0'
+
+# Test TDT model with Punctuation and Capitalization with case-insensitive boosting
+# no boosting: 6.59% WER, case-sensitive boosting: 5.43% WER, case-insensitive boosting: 2.33%
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
+    tests/functional_tests/asr_transcribe_boost_ground_truth.py \
+    dataset_manifest="/home/TestData/asr/canary/dev-other-wav-10.json" \
+    output_filename="/tmp/stt_transcribe_boost_gt_res_tdt_case_insensitive.json" \
+    model_path="/home/TestData/nemo-speech-ci-models/nvidia__parakeet-tdt_ctc-110m.nemo" \
+    batch_size=5 \
+    case_insensitive=true \
     device='cuda:0'

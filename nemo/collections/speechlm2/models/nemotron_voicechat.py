@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -120,8 +121,6 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         # Load Duplex TTS model
         self.tts_model = DuplexEARTTS(OmegaConf.to_container(self.cfg.speech_generation, resolve=True))
 
-        # reset silence tokens to avoid inference issues
-        self.tts_model.codec_silence_tokens = self.tts_model.get_codec_silence_frame()
         self.target_fps = self.tts_model.target_fps
         # compute source fps
         self.source_fps = self.source_sample_rate / (
@@ -147,8 +146,6 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         revision: Optional[str],
         cache_dir: Optional[Union[str, Path]],
         force_download: bool,
-        proxies: Optional[dict],
-        resume_download: Optional[bool],
         local_files_only: bool,
         token: Union[str, bool, None],
         map_location: str = "cpu",
@@ -166,8 +163,6 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
             CONFIG_NAME,  # Ensure CONFIG_NAME is defined in your file (e.g., "config.yaml" or "config.json")
             cache_dir=cache_dir,
             force_download=force_download,
-            resume_download=resume_download,
-            proxies=proxies,
             local_files_only=local_files_only,
             token=token,
             revision=revision,
@@ -192,8 +187,6 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
             "model.safetensors",
             cache_dir=cache_dir,
             force_download=force_download,
-            resume_download=resume_download,
-            proxies=proxies,
             local_files_only=local_files_only,
             token=token,
             revision=revision,
@@ -217,6 +210,9 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
 
         Safe for large models and distributed training (if called before DDP/FSDP wrap).
         """
+
+        # This loader bypasses load_state_dict hooks; re-validate the TTS codec silence tokens on next use.
+        self.tts_model._codec_silence_tokens_checked = False
 
         loaded_keys = []
         missing_keys = []

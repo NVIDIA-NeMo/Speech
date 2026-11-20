@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -86,8 +87,10 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
         self.hyp_decoding_state: MALSDStateItem | None = None
         self.cumulative_tokens: list[int] = []
         self.cumulative_timestamps: list[int] = []
+        self.cumulative_confidences: list[float] = []
         self.partial_tokens: list[list[int]] | None = None
         self.partial_timestamps: list[list[int]] | None = None
+        self.partial_confidences: list[list[float]] | None = None
         self._cumulative_tokens_len: int = 0
         self.best_hyp_idx: int | None = None
 
@@ -96,8 +99,10 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
         self.hyp_decoding_state = None
         self.cumulative_tokens = []
         self.cumulative_timestamps = []
+        self.cumulative_confidences = []
         self.partial_tokens = None
         self.partial_timestamps = None
+        self.partial_confidences = None
         self._cumulative_tokens_len = 0
         self.best_hyp_idx = None
 
@@ -108,35 +113,85 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
         root_ptrs: list[int],
         beam_size: int,
         best_hyp_idx: int,
+        chunk_confidences: list[list[float]] | None = None,
     ) -> None:
         """Append chunk-local beam exports into state."""
         prev_t = self.partial_tokens or [[] for _ in range(beam_size)]
         prev_ts = self.partial_timestamps or [[] for _ in range(beam_size)]
+        prev_conf = self.partial_confidences or [[] for _ in range(beam_size)]
         next_tokens: list[list[int]] = []
         next_timestamps: list[list[int]] = []
+        next_confidences: list[list[float]] = []
         for k in range(beam_size):
             lineage = int(root_ptrs[k])
             next_tokens.append(prev_t[lineage] + list(chunk_tokens[k]))
             next_timestamps.append(prev_ts[lineage] + list(chunk_timestamps[k]))
+            if chunk_confidences is not None:
+                next_confidences.append(prev_conf[lineage] + list(chunk_confidences[k]))
+            else:
+                next_confidences.append(prev_conf[lineage] + [0.0] * len(chunk_tokens[k]))
         self.partial_tokens = next_tokens
         self.partial_timestamps = next_timestamps
+        self.partial_confidences = next_confidences
         self.best_hyp_idx = best_hyp_idx
 
-    def select_best_beam_idx_(self, *, score_norm: bool = False) -> int:
+    def select_best_beam_idx_(self, *, score_norm: bool = False, length_norm_power: float | None = None) -> int:
         """Pick beam index into ``partial_*``; updates ``best_hyp_idx``.
 
-        Per-chunk publish uses raw ``scores.argmax`` (via ``append_chunk_beam_``). At EOU,
-        use ``score_norm=True`` to match offline :meth:`BatchedBeamHyps.flatten_sort_`.
+        Per-chunk publish uses raw ``scores.argmax`` (via ``append_chunk_beam_``). At EOU, use
+        ``score_norm=True`` to rank by length-normalized score; with ``length_norm_power=None`` this
+        matches offline :meth:`BatchedBeamHyps.flatten_sort_` exactly.
+
+        ``score``/``current_lengths_nb`` on ``hyp_decoding_state`` are zeroed for the winning beam
+        right after every EOU collapse (see ``reset_beam_score_``), so both this ranking and the raw
+        per-chunk publish between EOUs already read values scoped to the current utterance -- no
+        baseline needs subtracting here.
+
+        ``length_norm_power`` selects the normalization:
+
+        * ``None``: ``score / (length + 1)``, the plain average used by offline
+          :meth:`BatchedBeamHyps.flatten_sort_`; use it for a direct streaming/offline comparison.
+        * a float: ``score / ((5 + length) / 6) ** length_norm_power``, the GNMT-style length penalty
+          (https://arxiv.org/abs/1609.08144). The ``5``/``6`` constants keep the penalty close to
+          ``1.0`` for short hypotheses (where ``length + 1`` over-normalizes) while still approaching
+          a plain length average as ``length`` grows. ``0.0`` disables length normalization entirely
+          (raw score) -- this is unsafe with LM fusion, since an unnormalized RNNT+LM score can favor
+          near-empty hypotheses.
         """
         if self.hyp_decoding_state is None:
             raise RuntimeError("Cannot select beam without decoding carry.")
 
         scores = self.hyp_decoding_state.score
         lengths_nb = self.hyp_decoding_state.current_lengths_nb
-        ranking = scores / (lengths_nb.to(dtype=scores.dtype) + 1) if score_norm else scores
+        if not score_norm:
+            ranking = scores
+        elif length_norm_power is None:
+            ranking = scores / (lengths_nb.to(dtype=scores.dtype) + 1)
+        else:
+            denom = ((5 + lengths_nb.to(dtype=scores.dtype)) / 6) ** length_norm_power
+            ranking = scores / denom
 
         self.best_hyp_idx = int(ranking.argmax().item())
         return self.best_hyp_idx
+
+    def reset_beam_score_(self) -> None:
+        """
+        Zero the winning beam's cumulative score/length right after an EOU beam collapse.
+
+        Resetting the actual ``hyp_decoding_state.score``/``current_lengths_nb`` carry here, instead
+        of only snapshotting a baseline for the next ``select_best_beam_idx_(score_norm=True)`` call,
+        means every reader of that carry -- EOU ranking *and* the raw per-chunk publish that runs
+        between EOUs -- sees values scoped to the current utterance, not a session-long accumulator.
+        """
+        if self.hyp_decoding_state is None:
+            return
+        # `select_beam_in_state_item_` builds these tensors inside `torch.inference_mode()`, so an
+        # in-place write here (outside that context) needs a clone first.
+        self.hyp_decoding_state.score = self.hyp_decoding_state.score.clone()
+        self.hyp_decoding_state.score[0] = 0.0
+        if self.hyp_decoding_state.current_lengths_nb is not None:
+            self.hyp_decoding_state.current_lengths_nb = self.hyp_decoding_state.current_lengths_nb.clone()
+            self.hyp_decoding_state.current_lengths_nb[0] = 0
 
     def get_best_hyp_idx(self) -> int:
         """Index into ``partial_*`` for publish (chunk argmax, or score argmax from carry)."""
@@ -146,36 +201,45 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
             raise RuntimeError("Cannot resolve top-1 beam index without decoding carry.")
         return int(self.hyp_decoding_state.score.argmax().item())
 
-    def _get_tokens(self) -> tuple[list[int], list[int]]:
+    def _get_tokens(self) -> tuple[list[int], list[int], list[float]]:
         """``cumulative_*`` plus the current top-1 ``partial_*`` suffix."""
         if self.partial_tokens is None or self.hyp_decoding_state is None:
-            return [], []
+            return [], [], []
         best_hyp_idx = self.get_best_hyp_idx()
+        partial_tokens = list(self.partial_tokens[best_hyp_idx])
+        partial_conf = (
+            list(self.partial_confidences[best_hyp_idx])
+            if self.partial_confidences is not None
+            else [0.0] * len(partial_tokens)
+        )
         return (
-            self.cumulative_tokens + list(self.partial_tokens[best_hyp_idx]),
+            self.cumulative_tokens + partial_tokens,
             self.cumulative_timestamps + list(self.partial_timestamps[best_hyp_idx]),
+            self.cumulative_confidences + partial_conf,
         )
 
     def get_hypothesis(self, score: float) -> Hypothesis:
         """Build the publishable cumulative hypothesis for the current top-1 beam."""
-        cum_tokens, cum_ts = self._get_tokens()
+        cum_tokens, cum_ts, cum_conf = self._get_tokens()
         return Hypothesis(
             score=score,
             y_sequence=cum_tokens,
             timestamp=cum_ts,
             length=len(cum_tokens),
+            non_blank_step_confidence_precomputed=cum_conf if cum_conf else None,
         )
 
     def update_(self, eou_detected: bool) -> None:
         """Refresh publish tokens; on EOU fold utterance into ``cumulative_*`` and clear ``partial_*``."""
-        cum_tokens, cum_ts = self._get_tokens()
+        cum_tokens, cum_ts, cum_conf = self._get_tokens()
         if cum_tokens:
             start = max(0, min(int(self._cumulative_tokens_len), len(cum_tokens)))
             tokens = list(cum_tokens[start:])
             timesteps = list(cum_ts[start:])
+            confidences = list(cum_conf[start:]) if cum_conf else [0.0] * len(tokens)
             self.tokens = tokens
             self.timesteps = timesteps
-            self.confidences = [0.0] * len(tokens)
+            self.confidences = confidences
             if tokens:
                 self.last_token = tokens[-1]
                 self.last_token_idx = timesteps[-1] if timesteps else None
@@ -187,6 +251,8 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
             self._cumulative_tokens_len = len(cum_tokens)
             self.cumulative_tokens = list(cum_tokens)
             self.cumulative_timestamps = list(cum_ts)
+            self.cumulative_confidences = list(cum_conf)
         self.partial_tokens = None
         self.partial_timestamps = None
+        self.partial_confidences = None
         self.best_hyp_idx = None

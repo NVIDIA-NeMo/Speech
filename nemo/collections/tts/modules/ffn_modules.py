@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -89,6 +90,7 @@ class ConvolutionLayer(torch.nn.Module):
         # signal: (B, C, T)
         # signal_mask: (B, T) or None (if None, assumes all positions are valid)
         if signal_mask is not None:
+            signal_mask = signal_mask.to(device=signal.device, dtype=signal.dtype)
             signal = signal * signal_mask.unsqueeze(1)
         if self.is_causal:  # TODO: maybe replace with identify rather than keep conditional if in forward
             signal = F.pad(signal, self.causal_padding)

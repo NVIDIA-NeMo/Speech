@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,7 +31,14 @@ from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_bas
     SeparateGraphsLabelLooping,
 )
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
-from nemo.core.utils.cuda_python_utils import CUDA_GRAPH_COMPILE_ERROR_TYPES, cu_call, run_nvrtc, with_conditional_node
+from nemo.core.utils.cuda_python_utils import (
+    CUDA_GRAPH_COMPILE_ERROR_TYPES,
+    create_conditional_node_mempool,
+    cu_call,
+    run_nvrtc,
+    use_conditional_node_mempool,
+    with_conditional_node,
+)
 from nemo.core.utils.optional_libs import CUDA_PYTHON_AVAILABLE, cuda_python_required
 from nemo.utils import logging
 
@@ -203,6 +211,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
 
     separate_graphs: Optional[SeparateGraphsLabelLooping]
     full_graph: Optional[torch.cuda.CUDAGraph]
+    full_graph_mempool: Optional[torch.cuda.MemPool]
     state: Optional[LabelLoopingState]
 
     def __init__(
@@ -290,6 +299,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
 
         self.state = None
         self.full_graph = None
+        self.full_graph_mempool = None
         self.separate_graphs = None
 
         self.cuda_graphs_mode = None
@@ -300,6 +310,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         """Reset state to release memory (for CUDA graphs implementations)"""
         self.state = None
         self.full_graph = None
+        self.full_graph_mempool = None
         self.separate_graphs = None
 
     def _get_step_confidence(self, logits: torch.Tensor, num_durations: int) -> Optional[torch.Tensor]:
@@ -533,7 +544,10 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
                 # same as: scores[advance_mask] = more_scores[advance_mask], but non-blocking
                 torch.where(advance_mask, more_scores, scores, out=scores)
                 jump_durations_indices = logits[:, -num_durations:].argmax(dim=-1)
-                durations = model_durations[jump_durations_indices]
+                more_durations = model_durations[jump_durations_indices]
+                # same as: durations[advance_mask] = more_durations[advance_mask], but non-blocking;
+                # elements that already found a non-blank label must keep the duration predicted with it
+                torch.where(advance_mask, more_durations, durations, out=durations)
 
                 if self.record_all_steps:
                     batched_hyps.add_results_masked_(
@@ -1069,10 +1083,12 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         stream_for_graph = torch.cuda.Stream(self.state.device)
         stream_for_graph.wait_stream(torch.cuda.default_stream(self.state.device))
         self.full_graph = torch.cuda.CUDAGraph()
+        self.full_graph_mempool = create_conditional_node_mempool(self.state.device)
         with (
             torch.cuda.stream(stream_for_graph),
             torch.inference_mode(),
             torch.cuda.graph(self.full_graph, stream=stream_for_graph, capture_error_mode="thread_local"),
+            use_conditional_node_mempool(self.full_graph_mempool, self.state.device),
         ):
             self._before_outer_loop()
 

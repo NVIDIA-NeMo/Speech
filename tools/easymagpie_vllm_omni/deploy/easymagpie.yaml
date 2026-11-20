@@ -1,0 +1,65 @@
+# Stage 0 produces stacked acoustic codes; stage 1 decodes them to audio.
+# Explicit routing is required because EasyMagpie LM reports model_type "nemotron_h".
+pipeline: easymagpie
+
+# Required for streaming code transfer between the two stages.
+async_chunk: true
+
+trust_remote_code: true
+dtype: float16
+
+connectors:
+  connector_of_shared_memory:
+    name: SharedMemoryConnector
+    extra:
+      shm_threshold_bytes: 65536
+      connector_get_sleep_s: 0.01
+      connector_get_max_wait_first_chunk: 3000
+      connector_get_max_wait: 300
+      # Native vLLM state pages retain the decoder's exact causal history.
+      # Two startup chunks provide playback headroom before steady-state streaming.
+      codec_chunk_frames: 8
+      codec_startup_chunk_frames: [6, 6]
+
+stages:
+  # Keep engine settings flat at the stage level; nested settings are not parsed.
+  - stage_id: 0
+    max_num_seqs: 32
+    gpu_memory_utilization: 0.5
+    enforce_eager: false
+    async_scheduling: true
+    enable_prefix_caching: false
+    enable_chunked_prefill: true
+    max_num_batched_tokens: 4096
+    max_model_len: 4096
+    devices: "0"
+    output_connectors:
+      to_stage_1: connector_of_shared_memory
+    mamba_ssm_cache_dtype: float32
+    # vLLM multimodal profiling uses the tokenizer to locate expanded audio placeholders.
+    skip_tokenizer_init: false
+    engine_extras:
+      worker_cls: easymagpie_vllm_omni.runner.EasyMagpieGPUARWorker
+    default_sampling_params:
+      temperature: 0.0
+      detokenize: false
+      max_tokens: 2048
+
+  - stage_id: 1
+    max_num_seqs: 32
+    gpu_memory_utilization: 0.35
+    # FP16 is faster, but introduces audible codec artifacts.
+    dtype: float32
+    enforce_eager: true
+    async_scheduling: false
+    enable_prefix_caching: false
+    # Codec chunks are atomic: never split one request's state update across steps.
+    enable_chunked_prefill: false
+    max_num_batched_tokens: 512
+    max_model_len: 512
+    devices: "0"
+    input_connectors:
+      from_stage_0: connector_of_shared_memory
+    default_sampling_params:
+      temperature: 0.0
+      max_tokens: 65536

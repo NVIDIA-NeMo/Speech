@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -292,3 +293,65 @@ def test_data_input_cfg_reverse_role(regular_duplex_s2s_format):
         # Ensure the recording streams were swapped
         assert cut.recording.id.startswith("rr_target")
         assert cut.target_audio.id.startswith("rr_main")
+
+
+def test_data_input_cfg_reverse_role_multi_config_with_workers(regular_duplex_s2s_format):
+    config = OmegaConf.create(
+        {
+            "multi_config": True,
+            "sampler_fusion": "randomized_round_robin",
+            "sampler_weights": {"reverse_a": 0.5, "reverse_b": 0.5},
+            "seed": 0,
+            "shard_seed": 0,
+            "shuffle": True,
+            "num_workers": 2,
+            "reverse_a": {
+                "input_cfg": [
+                    {
+                        "type": "s2s_duplex_reverse_role",
+                        "shar_path": str(regular_duplex_s2s_format),
+                        "weight": 1.0,
+                        "target_agent_name": "swapped_agent",
+                        "target_user_name": "swapped_user",
+                        "tags": {
+                            "dataset_name": "ReverseRoleDataA",
+                        },
+                    },
+                ],
+                "batch_size": 2,
+            },
+            "reverse_b": {
+                "input_cfg": [
+                    {
+                        "type": "s2s_duplex_reverse_role",
+                        "shar_path": str(regular_duplex_s2s_format),
+                        "weight": 1.0,
+                        "target_agent_name": "swapped_agent",
+                        "target_user_name": "swapped_user",
+                        "tags": {
+                            "dataset_name": "ReverseRoleDataB",
+                        },
+                    },
+                ],
+                "batch_size": 2,
+            },
+        }
+    )
+
+    dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity())
+    iterator = iter(dl)
+    try:
+        batch = next(iterator)
+    finally:
+        if hasattr(iterator, "_shutdown_workers"):
+            iterator._shutdown_workers()
+
+    assert isinstance(batch, lhotse.CutSet)
+    assert len(batch) > 0
+
+    for cut in batch:
+        assert cut.task == "s2s_duplex_reverse_role"
+
+        sups = sorted(cut.supervisions, key=lambda s: s.start)
+        assert sups[0].speaker == "swapped_agent"
+        assert sups[1].speaker == "swapped_user"

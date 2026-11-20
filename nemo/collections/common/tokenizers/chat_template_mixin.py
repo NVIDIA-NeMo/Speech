@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -115,6 +116,7 @@ def encode_string_with_special_token(tokenizer, inputs, special_token):
 
 
 def tokenize_with_chat_template(tokenizer, messages, template):
+    """Apply a chat template and tokenize the rendered messages."""
     assert is_chat_input(messages), "Expected input to be chat-template"
     assert len(messages) > 0, "Expected non-empty messages"
     assert 'roles' in template, "Expected template to have key `roles`."
@@ -145,7 +147,10 @@ def extract_turns(messages, axis):
 
     messages = [
         {'role': ['user', 'user'], 'content': ['What is your favourite condiment?', 'What is your favourite fruit?']},
-        {'role': ['assistant', 'assistant'], 'content': ["Well, I'm quite partial to a ", "good squeeze of fresh lemon"]},
+        {
+            'role': ['assistant', 'assistant'],
+            'content': ["Well, I'm quite partial to a ", "good squeeze of fresh lemon"],
+        },
         {'role': ['user', 'user'], 'content': ['Do you have mayonnaise recipes?', 'Do you have tomato salad recipes?']}
     ]
     ans = extract_turns(messages, axis=1)
@@ -167,7 +172,10 @@ def explode_chat_template_input(messages):
     Example input
     [
        {'role': ['user', 'user'], 'content': ['What is your favourite condiment?', 'What is your favourite fruit?']},
-       {'role': ['assistant', 'assistant'], 'content': ["Well, I'm quite partial to a ", "good squeeze of fresh lemon"]},
+       {
+           'role': ['assistant', 'assistant'],
+           'content': ["Well, I'm quite partial to a ", "good squeeze of fresh lemon"],
+       },
        {'role': ['user', 'user'], 'content': ['Do you have mayonnaise recipes?', 'Do you have tomato salad recipes?']}
     ]
 

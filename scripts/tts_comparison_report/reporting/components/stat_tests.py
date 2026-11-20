@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -106,9 +107,17 @@ def run_stat_tests(
     results = []
 
     for metric in DistributionMetricsRegistry:
+        if metric.optional:
+            baseline_has_metric = bucket_baseline.has_metric_samples(metric.key, benchmark_name)
+            candidate_has_metric = bucket_candidate.has_metric_samples(metric.key, benchmark_name)
+            if not baseline_has_metric or not candidate_has_metric:
+                continue
+
+        baseline = bucket_baseline.get_metric_samples(metric.key, benchmark_name)
+        candidate = bucket_candidate.get_metric_samples(metric.key, benchmark_name)
         winner, alternative, p_value = _run_single_stat_test(
-            baseline=bucket_baseline.get_metric_samples(metric.key, benchmark_name),
-            candidate=bucket_candidate.get_metric_samples(metric.key, benchmark_name),
+            baseline=baseline,
+            candidate=candidate,
             lower_is_better=metric.lower_is_better,
         )
         result = StatTestResult(

@@ -229,15 +229,3 @@ The following configuration needs to be appended under ``diarizer`` to run ASR w
       colored_text: False # If True, use colored text to distinguish speakers in the output transcript.
       print_time: True # If True, the start of the end time of each speaker turn is printed in the output transcript.
       break_lines: False # If True, the output transcript breaks the line to fix the line width (default is 90 chars)
-    
-    ctc_decoder_parameters: # Optional beam search decoder (pyctcdecode)
-      pretrained_language_model: null # KenLM model file: .arpa model file or .bin binary file.
-      beam_width: 32
-      alpha: 0.5
-      beta: 2.5
-
-    realigning_lm_parameters: # Experimental feature
-      arpa_language_model: null # Provide a KenLM language model in .arpa format.
-      min_number_of_words: 3 # Min number of words for the left context.
-      max_number_of_words: 10 # Max number of words for the right context.
-      logprob_diff_threshold: 1.2  # The threshold for the difference between two log probability values from two hypotheses.

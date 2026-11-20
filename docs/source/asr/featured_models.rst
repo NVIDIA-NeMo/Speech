@@ -1,9 +1,25 @@
 Featured Models
 ===============
 
-NeMo's ASR collection supports several model architectures. This page covers the key model families and their capabilities.
+NeMo Speech supports several speech recognition architectures across the ASR and SpeechLM2 collections.
+This page covers the key model families and their capabilities.
 For pretrained checkpoints, see :doc:`All Checkpoints <./asr_checkpoints>`.
 For config file details, see :doc:`Configuration Files <./configs>`.
+
+Nemotron 3.5 Transcribe
+~~~~~~~~~~~~~~~~~~~~~~~
+
+:doc:`Nemotron 3.5 Transcribe </speechlm2/nemotron_transcribe>` is an offline speech-augmented language model
+for multilingual transcription, speech translation, and audio understanding. Instructions control transcript
+style and vocabulary context; speaker attribution and word timestamps support meeting and media workflows.
+
+* `NVIDIA-Nemotron-3.5-Transcribe-30B-A4B <https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B>`__
+  — 40 languages, recordings up to one hour, BF16 reference checkpoint
+* Published FP8 and NVFP4 variants are linked in the :doc:`model guide </speechlm2/nemotron_transcribe>`.
+
+Serve this model with the SpeechLM2 vLLM plugin using the model guide. For real-time speech recognition,
+see Nemotron-3.5-ASR-Streaming below.
+
 
 Parakeet
 ~~~~~~~~
@@ -24,10 +40,9 @@ Canary models are encoder-decoder models with a :ref:`FastConformer Encoder <Fas
 They support ASR in 25 EU languages, speech translation (AST), and punctuation/capitalization (PnC).
 
 * `Canary-1B V2 <https://huggingface.co/nvidia/canary-1b-v2>`__ — Flagship: 25 languages, PnC, timestamps
-* `Canary-Qwen-2.5B <https://huggingface.co/nvidia/canary-qwen-2.5b>`__ — English only, PnC, highest accuracy
 * `Canary-1B Flash <https://huggingface.co/nvidia/canary-1b-flash>`__ / `180M Flash <https://huggingface.co/nvidia/canary-180m-flash>`__ — Optimized for speed
 
-Canary supports chunked and `streaming inference <https://github.com/NVIDIA-NeMo/NeMo/blob/main/tutorials/asr/Streaming_ASR_Pipelines.ipynb>`__.
+Canary supports chunked and `streaming inference <https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Streaming_ASR_Pipelines.ipynb>`__.
 
 
 .. _Conformer_model:
@@ -64,9 +79,19 @@ Cache-aware Streaming Conformer
 
 Streaming models trained with limited right context for real-time inference with caching to avoid duplicate computation. Supports three modes: fully causal, regular look-ahead, and chunk-aware look-ahead (recommended).
 
-* `Tutorial notebook <https://github.com/NVIDIA/NeMo/blob/main/tutorials/asr/Online_ASR_Microphone_Demo_Cache_Aware_Streaming.ipynb>`_
+* `Tutorial notebook <https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Online_ASR_Microphone_Demo_Cache_Aware_Streaming.ipynb>`_
 * Simulation script: ``examples/asr/asr_cache_aware_streaming/speech_to_text_cache_aware_streaming_infer.py``
 * Supports multiple look-aheads with ``att_context_size`` lists
+
+**CUDA graphs for the streaming encoder step (inference):** the steady-state streaming step has
+static shapes, so it can be captured once into a CUDA graph and replayed with a single kernel
+launch per chunk instead of ~10^3 launches, which substantially reduces per-step latency for
+low-latency streaming. For the covered non-autocast configurations the graph path is expected to
+preserve eager execution semantics (unit tests assert exact equality against eager); non-uniform
+steps (first/last chunk) automatically fall back to eager. Enable with
+``asr_model.encoder.set_streaming_cuda_graphs(True)`` or ``use_cuda_graphs=true`` in the
+simulation script above (see
+:class:`~nemo.collections.asr.parts.submodules.streaming_encoder_cuda_graphs.CudaGraphsStreamingEncoderStep`).
 
 Configs: ``examples/asr/conf/fastconformer/cache_aware_streaming/``
 
@@ -85,7 +110,7 @@ Multitalker Streaming
 Streaming multi-speaker ASR based on cache-aware FastConformer with speaker kernel injection :cite:`asr-models-wang25y_interspeech`. Deploys one model instance per speaker for robust transcription of overlapped speech.
 
 * `Model card <https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1>`__
-* `Tutorial <https://github.com/NVIDIA/NeMo/blob/main/tutorials/asr/Streaming_Multitalker_ASR.ipynb>`_
+* `Tutorial <https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Streaming_Multitalker_ASR.ipynb>`_
 
 .. _Hybrid-Transducer_CTC_model:
 

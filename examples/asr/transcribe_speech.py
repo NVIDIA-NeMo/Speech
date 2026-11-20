@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -36,6 +37,7 @@ from nemo.collections.asr.parts.utils.transcribe_utils import (
     prepare_audio_data,
     restore_transcription_order,
     setup_model,
+    wire_confidence_cfg,
     write_transcription,
 )
 from nemo.core.config import hydra_runner
@@ -187,6 +189,13 @@ class TranscriptionConfig:
     # att_context_size can be set for cache-aware streaming models with multiple look-aheads
     att_context_size: Optional[list] = None
 
+    # Language-ID prompt for prompt-conditioned ASR RNNT models: the language spoken in the audio
+    # (e.g. "en", "de-DE", or the language-agnostic "auto"), applied to every utterance. By default
+    # (null) each utterance uses its own manifest language, read from `gt_lang_attr_name`, and "auto"
+    # when it names none. A language the model does not support raises an error. Ignored by models
+    # without prompt conditioning.
+    target_lang: Optional[str] = None
+
     # Use this for model-specific changes before transcription
     model_change: ModelChangeConfig = field(default_factory=ModelChangeConfig)
 
@@ -205,6 +214,8 @@ class TranscriptionConfig:
     gt_lang_attr_name: str = "lang"
 
     extract_nbest: bool = False  # Extract n-best hypotheses from the model
+
+    confidence: bool = False  # output token and word confidence in the manifest
 
     calculate_rtfx: bool = False
     warmup_steps: int = 0  # by default - no warmup
@@ -290,6 +301,11 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
 
     if cfg.timestamps:
         cfg.return_hypotheses = True
+
+    if cfg.confidence:
+        cfg.return_hypotheses = True
+        wire_confidence_cfg(cfg.rnnt_decoding, enabled=True)
+        wire_confidence_cfg(cfg.ctc_decoding, enabled=True)
 
     # Check whether model and decoder type match
     if isinstance(asr_model, EncDecCTCModel):
@@ -411,6 +427,10 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
             override_cfg.timestamps = cfg.timestamps
             if hasattr(override_cfg, "prompt"):
                 override_cfg.prompt = parse_multitask_prompt(OmegaConf.to_container(cfg.prompt))
+            # Prompt-conditioned RNNT models: forward the language-ID prompt. None is forwarded too,
+            # since it asks for each utterance's own manifest language.
+            if hasattr(override_cfg, "target_lang"):
+                override_cfg.target_lang = cfg.target_lang
 
             device = next(asr_model.parameters()).device
             for run_step in range(cfg.warmup_steps + cfg.run_steps):
@@ -465,6 +485,7 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
         filepaths=filepaths,
         compute_langs=compute_langs,
         timestamps=cfg.timestamps,
+        confidence=cfg.confidence,
     )
     logging.info(f"Finished writing predictions to {output_filename}!")
 

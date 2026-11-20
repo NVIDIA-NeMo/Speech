@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +17,6 @@ import os
 import re
 import shutil
 import time
-from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Union
 
@@ -28,6 +28,7 @@ from lightning.pytorch.trainer import call
 from lightning.pytorch.utilities import rank_zero_info
 
 from nemo.collections.common.callbacks import EMA
+from nemo.lightning.callback_group import CallbackGroup
 from nemo.utils import logging
 from nemo.utils.app_state import AppState
 from nemo.utils.callbacks.dist_ckpt_io import AsyncFinalizableCheckpointIO
@@ -236,18 +237,11 @@ class NeMoModelCheckpoint(ModelCheckpoint):
                 return output
 
             self.previous_best_path = self.best_model_path
-            old_state_dict = deepcopy(pl_module.state_dict())
-            checkpoint = torch.load(maybe_injected_best_model_path, map_location='cpu')
-            if 'state_dict' in checkpoint:
-                checkpoint = checkpoint['state_dict']
-            # get a new instanace of the model
-            pl_module.load_state_dict(checkpoint, strict=True)
             if torch.distributed.is_initialized():
                 torch.distributed.barrier()
             backup_path = self._backup_existing_nemo_ckpt(trainer)
             pl_module.save_to(save_path=app_state.model_restore_path)
             logging.info(f"New best .nemo model saved to: {app_state.model_restore_path}")
-            pl_module.load_state_dict(old_state_dict, strict=True)
         else:
             if torch.distributed.is_initialized():
                 torch.distributed.barrier()
@@ -258,6 +252,28 @@ class NeMoModelCheckpoint(ModelCheckpoint):
             logging.info(f'Removing old .nemo backup {backup_path}')
             get_filesystem(backup_path).rm(backup_path)
         return output
+
+    def on_validation_end(self, trainer, pl_module):
+        # Lightning 2.6.0 stopped refreshing last when top-k does not improve; preserve NeMo's prior behavior.
+        refresh_last = (
+            self.save_last is True
+            and not self._should_skip_saving_checkpoint(trainer)
+            and not self._should_save_on_train_epoch_end(trainer)
+        )
+        super().on_validation_end(trainer, pl_module)
+        if refresh_last and self._last_global_step_saved != trainer.global_step:
+            self._save_last_checkpoint(trainer, self._monitor_candidates(trainer))
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        # Lightning 2.6.0 stopped refreshing last when top-k does not improve; preserve NeMo's prior behavior.
+        refresh_last = (
+            self.save_last is True
+            and not self._should_skip_saving_checkpoint(trainer)
+            and self._should_save_on_train_epoch_end(trainer)
+        )
+        super().on_train_epoch_end(trainer, pl_module)
+        if refresh_last and self._last_global_step_saved != trainer.global_step:
+            self._save_last_checkpoint(trainer, self._monitor_candidates(trainer))
 
     def on_train_end(self, trainer, pl_module):
         """
@@ -548,6 +564,19 @@ class NeMoModelCheckpoint(ModelCheckpoint):
         return trainer.strategy.broadcast(exists)
 
     def _save_checkpoint(self, trainer: 'lightning.pytorch.Trainer', filepath: str) -> None:  # noqa: F821
+        group = CallbackGroup.get_instance()
+        group.on_save_checkpoint_start(trainer.global_step, async_save=self.async_save)
+        try:
+            self._save_checkpoint_with_lifecycle(trainer, filepath)
+        except Exception:
+            group.on_save_checkpoint_failure(trainer.global_step)
+            raise
+        finally:
+            group.on_save_checkpoint_end()
+
+    def _save_checkpoint_with_lifecycle(
+        self, trainer: 'lightning.pytorch.Trainer', filepath: str  # noqa: F821
+    ) -> None:
         # barrier_after=True, so all ranks continue after the unfinished checkpoint marker is placed.
         # if anything goes wrong during checkpointing, we should be able to detect that data is incomplete.
         self.set_checkpoint_unfinished_marker(filepath, barrier_after=True)
@@ -565,6 +594,7 @@ class NeMoModelCheckpoint(ModelCheckpoint):
                     rank_zero_info(f"Saving EMA weights to separate checkpoint {filepath}")
                 super()._save_checkpoint(trainer, filepath)
             self.remove_checkpoint_unfinished_marker(filepath, barrier_before=True)
+            CallbackGroup.get_instance().on_save_checkpoint_success(trainer.global_step)
         else:
             # Async save passed the finalization function to checkpoint_io,
             # sync save calls the finalization function immediately after save.
@@ -580,6 +610,10 @@ class NeMoModelCheckpoint(ModelCheckpoint):
                 storage_options = None
             logging.info(f'Checkpoint save for step {trainer.global_step} started at {time.time()}.')
             trainer.save_checkpoint(filepath, self.save_weights_only, storage_options=storage_options)
+            # Lightning uses these to schedule subsequent saves in this hook.
+            # Async completion may happen several steps later and must not rewind them.
+            self._last_global_step_saved = trainer.global_step
+            self._last_checkpoint_saved = filepath
             if self.async_save:
                 logging.info(f'Scheduled async checkpoint save for {filepath}')
             else:
@@ -595,9 +629,6 @@ class NeMoModelCheckpoint(ModelCheckpoint):
 
         def _cb():
             logging.debug(f'Finalize callback called for step {global_step}, filepath {filepath}')
-            self._last_global_step_saved = global_step
-            self._last_checkpoint_saved = filepath
-
             # notify loggers
             if trainer.is_global_zero:
                 for logger in trainer.loggers:
@@ -606,6 +637,7 @@ class NeMoModelCheckpoint(ModelCheckpoint):
             # barrier_before=True, so all ranks synchronize before removing the unfinished checkpoint marker
             # we don't want to remove the marker until all checkpointing is done.
             self.remove_checkpoint_unfinished_marker(filepath, barrier_before=True)
+            CallbackGroup.get_instance().on_save_checkpoint_success(global_step)
 
             if not self.async_save:
                 return

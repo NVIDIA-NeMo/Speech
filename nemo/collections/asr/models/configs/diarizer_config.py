@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,26 +33,6 @@ class DiarizerComponentConfig:
 
 
 @dataclass
-class ASRDiarizerCTCDecoderParams:
-    pretrained_language_model: Optional[str] = None  # KenLM model file: .arpa model file or .bin binary file.
-    beam_width: int = 32
-    alpha: float = 0.5
-    beta: float = 2.5
-
-
-@dataclass
-class ASRRealigningLMParams:
-    # Provide a KenLM language model in .arpa format.
-    arpa_language_model: Optional[str] = None
-    # Min number of words for the left context.
-    min_number_of_words: int = 3
-    # Max number of words for the right context.
-    max_number_of_words: int = 10
-    # The threshold for the difference between two log probability values from two hypotheses.
-    logprob_diff_threshold: float = 1.2
-
-
-@dataclass
 class ASRDiarizerParams(DiarizerComponentConfig):
     # if True, speech segmentation for diarization is based on word-timestamps from ASR inference.
     asr_based_vad: bool = False
@@ -79,8 +60,6 @@ class ASRDiarizerParams(DiarizerComponentConfig):
 class ASRDiarizerConfig(DiarizerComponentConfig):
     model_path: Optional[str] = "stt_en_conformer_ctc_large"
     parameters: ASRDiarizerParams = field(default_factory=lambda: ASRDiarizerParams())
-    ctc_decoder_parameters: ASRDiarizerCTCDecoderParams = field(default_factory=lambda: ASRDiarizerCTCDecoderParams())
-    realigning_lm_parameters: ASRRealigningLMParams = field(default_factory=lambda: ASRRealigningLMParams())
 
 
 @dataclass

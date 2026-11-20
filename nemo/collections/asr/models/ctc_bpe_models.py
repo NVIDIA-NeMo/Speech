@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -91,6 +92,7 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
             use_cer=self._cfg.get('use_cer', False),
             dist_sync_on_step=True,
             log_prediction=self._cfg.get("log_prediction", False),
+            wer_text_normalize=self._cfg.get('wer_text_normalize', False),
         )
 
     def _setup_dataloader_from_config(self, config: Optional[Dict]):
@@ -305,6 +307,7 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
             use_cer=self._cfg.get('use_cer', False),
             log_prediction=self._cfg.get("log_prediction", False),
             dist_sync_on_step=True,
+            wer_text_normalize=self._cfg.get('wer_text_normalize', False),
         )
 
         # Update config
@@ -345,6 +348,7 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
             use_cer=self.wer.use_cer,
             log_prediction=self.wer.log_prediction,
             dist_sync_on_step=True,
+            wer_text_normalize=self.wer.wer_text_normalize,
         )
 
         self.decoder.temperature = decoding_cfg.get('temperature', 1.0)

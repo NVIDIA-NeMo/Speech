@@ -9,7 +9,7 @@ Resource and Documentation Guide
    * - Resource
      - Link
    * - Tutorials
-     - `Speaker Tasks Notebooks <https://github.com/NVIDIA/NeMo/tree/main/tutorials/speaker_tasks>`__
+     - `Speaker Tasks Notebooks <https://github.com/NVIDIA-NeMo/Speech/tree/main/tutorials/speaker_tasks>`__
    * - Models
      - :doc:`Model Architectures <./models>`
    * - Datasets

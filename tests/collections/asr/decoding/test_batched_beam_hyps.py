@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,6 +23,7 @@ from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import (
     INIT_POINTER_VALUE,
     NON_EXISTENT_LABEL_VALUE,
     BatchedBeamHyps,
+    export_batched_beam_hyps_to_cpu_lists,
 )
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis, NBestHypotheses
 
@@ -84,7 +86,8 @@ def assert_hyps_durations_equal(
 DEVICES: List[torch.device] = [torch.device("cpu")]
 
 if torch.cuda.is_available():
-    DEVICES.append(torch.device("cuda"))
+    # The `gpu` marker puts the CUDA cases in the GPU CI jobs (see tests/functional_tests/_gpu_unit_test_selection.sh).
+    DEVICES.append(pytest.param(torch.device("cuda"), marks=pytest.mark.gpu))
 
 if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
     DEVICES.append(torch.device("mps"))
@@ -504,7 +507,7 @@ class TestBatchedBeamHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
-    def test_rnnt_add_multiple_results(self, device: torch.device):
+    def test_ctc_add_multiple_results(self, device: torch.device):
         hyps = BatchedBeamHyps(
             batch_size=2, beam_size=3, init_length=1, device=device, blank_index=1024, model_type='ctc'
         )
@@ -566,7 +569,7 @@ class TestBatchedBeamHyps:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
-    def test_rnnt_add_with_invalid_results(self, device: torch.device):
+    def test_ctc_add_with_invalid_results(self, device: torch.device):
         hyps = BatchedBeamHyps(
             batch_size=2, beam_size=3, init_length=1, device=device, blank_index=1024, model_type='ctc'
         )
@@ -1229,3 +1232,72 @@ class TestConvertToHypotheses:
         assert hypotheses[1].n_best_hypotheses[0].score == pytest.approx(0.6)
         assert hypotheses[1].n_best_hypotheses[1].score == pytest.approx(0.55)
         assert hypotheses[1].n_best_hypotheses[2].score == pytest.approx(0.4)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", DEVICES)
+    def test_to_hyps_list_with_step_confidence(self, device: torch.device):
+        blank_index = 1024
+        hyps = BatchedBeamHyps(
+            batch_size=1,
+            beam_size=1,
+            init_length=4,
+            device=device,
+            blank_index=blank_index,
+            with_step_confidence=True,
+        )
+        hyps.add_results_(
+            next_indices=torch.tensor([[0]], device=device),
+            next_labels=torch.tensor([[5]], device=device),
+            next_hyps_prob=torch.tensor([[0.0]], device=device),
+            next_step_confidence=torch.tensor([[0.9]], device=device),
+        )
+        hyps.add_results_(
+            next_indices=torch.tensor([[0]], device=device),
+            next_labels=torch.tensor([[blank_index]], device=device),
+            next_hyps_prob=torch.tensor([[0.0]], device=device),
+            next_step_confidence=torch.tensor([[0.5]], device=device),
+        )
+        hyps.add_results_(
+            next_indices=torch.tensor([[0]], device=device),
+            next_labels=torch.tensor([[2]], device=device),
+            next_hyps_prob=torch.tensor([[0.0]], device=device),
+            next_step_confidence=torch.tensor([[0.8]], device=device),
+        )
+        hypotheses = hyps.to_hyps_list(score_norm=False)
+        assert hypotheses[0].non_blank_step_confidence_precomputed == pytest.approx([0.9, 0.8])
+        assert hypotheses[0].y_sequence.tolist() == [5, 2]
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", DEVICES)
+    def test_export_batched_beam_hyps_to_cpu_lists_with_step_confidence(self, device: torch.device):
+        blank_index = 1024
+        hyps = BatchedBeamHyps(
+            batch_size=1,
+            beam_size=1,
+            init_length=4,
+            device=device,
+            blank_index=blank_index,
+            with_step_confidence=True,
+        )
+        hyps.add_results_(
+            next_indices=torch.tensor([[0]], device=device),
+            next_labels=torch.tensor([[5]], device=device),
+            next_hyps_prob=torch.tensor([[0.0]], device=device),
+            next_step_confidence=torch.tensor([[0.9]], device=device),
+        )
+        hyps.add_results_(
+            next_indices=torch.tensor([[0]], device=device),
+            next_labels=torch.tensor([[blank_index]], device=device),
+            next_hyps_prob=torch.tensor([[0.0]], device=device),
+            next_step_confidence=torch.tensor([[0.5]], device=device),
+        )
+        hyps.add_results_(
+            next_indices=torch.tensor([[0]], device=device),
+            next_labels=torch.tensor([[2]], device=device),
+            next_hyps_prob=torch.tensor([[0.0]], device=device),
+            next_step_confidence=torch.tensor([[0.8]], device=device),
+        )
+        tokens, timestamps, confidences, root_ptrs = export_batched_beam_hyps_to_cpu_lists(hyps)
+        assert tokens == [[[5, 2]]]
+        assert confidences[0][0] == pytest.approx([0.9, 0.8])
+        assert root_ptrs == [[0]]

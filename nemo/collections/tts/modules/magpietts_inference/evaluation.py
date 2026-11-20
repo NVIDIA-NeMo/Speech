@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,7 +20,6 @@ wrapping the existing `examples.tts.magpietts.evaluate_generated_audio` module.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
 import numpy as np
@@ -27,33 +27,19 @@ import scipy.stats as stats
 
 # Import the existing evaluation module
 import nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio as evaluate_generated_audio
+from nemo.collections.tts.modules.magpietts_inference.evaluation_config import (
+    EvaluationConfig,
+    resolve_evaluation_config_for_dataset,
+)
 from nemo.utils import logging
 
-
-@dataclass
-class EvaluationConfig:
-    """Configuration for audio quality evaluation.
-
-    Attributes:
-        sv_model: Speaker verification model type ("titanet" or "wavlm").
-        asr_model_name: ASR model for transcription (e.g., "nvidia/parakeet-tdt-1.1b").
-       asr_model_name: ASR model for transcription (e.g., "nvidia/parakeet-tdt-1.1b").
-       eou_model_name: Hugging Face model id or local path to the EoU model.
-       language: Language code for transcription (e.g., "en").
-        with_utmosv2: Whether to compute UTMOSv2 (Mean Opinion Score) metrics.
-        with_fcd: Whether to compute Frechet Codec Distance metric.
-        codec_model_path: Path to the audio codec model. If None, will skip computing Frechet Codec Distance metric.
-        device: Device to use for running models used during evaluation.
-    """
-
-    sv_model: str = "titanet"
-    asr_model_name: str = "nvidia/parakeet-tdt-1.1b"
-    eou_model_name: str = "facebook/wav2vec2-base-960h"
-    language: str = "en"
-    with_utmosv2: bool = True
-    with_fcd: bool = True
-    codec_model_path: str = None
-    device: str = "cuda"
+__all__ = [
+    "DEFAULT_VIOLIN_METRICS",
+    "EvaluationConfig",
+    "compute_mean_with_confidence_interval",
+    "evaluate_generated_audio_dir",
+    "resolve_evaluation_config_for_dataset",
+]
 
 
 def evaluate_generated_audio_dir(
@@ -83,21 +69,12 @@ def evaluate_generated_audio_dir(
     """
     logging.info(f"Evaluating generated audio from {generated_audio_dir} " f"against manifest {manifest_path}")
 
-    avg_metrics, filewise_metrics = evaluate_generated_audio.evaluate(
+    return evaluate_generated_audio.evaluate_with_config(
         manifest_path=manifest_path,
         audio_dir=audio_dir,
         generated_audio_dir=generated_audio_dir,
-        language=config.language,
-        sv_model_type=config.sv_model,
-        asr_model_name=config.asr_model_name,
-        with_utmosv2=config.with_utmosv2,
-        with_fcd=config.with_fcd,
-        codec_model_path=config.codec_model_path,
-        device=config.device,
-        eou_model_name=config.eou_model_name,
+        config=config,
     )
-
-    return avg_metrics, filewise_metrics
 
 
 def compute_mean_with_confidence_interval(

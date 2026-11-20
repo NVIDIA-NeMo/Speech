@@ -7,7 +7,7 @@ There are two main types of supported self-supervised learning methods:
 - [NEST](https://arxiv.org/abs/2408.13106): `masked_token_pred_pretrain.py`
     - For downstream tasks that use NEST as multi-layer feature extractor, please refer to `./downstream/speech_classification_mfa_train.py`
     - For extracting multi-layer features from NEST, please refer to `<NEMO ROOT>/scripts/ssl/extract_features.py`
-    - For using NEST as weight initialization for downstream tasks, please refer to the usage of [maybe_init_from_pretrained_checkpoint](https://github.com/NVIDIA/NeMo/blob/main/nemo/core/classes/modelPT.py#L1242).
+    - For using NEST as weight initialization for downstream tasks, please refer to the usage of [maybe_init_from_pretrained_checkpoint](https://github.com/NVIDIA-NeMo/Speech/blob/main/nemo/core/classes/modelPT.py#L1242).
 
 
 For their corresponding usage, please refer to the example yaml config:

@@ -57,7 +57,7 @@ model:
       pad_with_space: false
       g2p:
         _target_: nemo.collections.tts.g2p.models.i18n_ipa.IpaG2p
-        phoneme_dict: "scripts/tts_dataset_files/ipa_cmudict-0.7b_nv23.01.txt"
+        phoneme_dict: "scripts/tts_dataset_files/ipa_cmudict-0.7b_nv26.07.txt"
         heteronyms: "scripts/tts_dataset_files/heteronyms-052722"
         phoneme_probability: 0.8
         ignore_ambiguous_words: false

@@ -1,7 +1,13 @@
 NVIDIA NeMo Speech Developer Docs
 =================================
 
-`NVIDIA NeMo Speech <https://github.com/NVIDIA/NeMo>`_ is an open-source toolkit for speech, audio, and multimodal language model research, with a clear path from experimentation to production deployment.
+`NVIDIA NeMo Speech <https://github.com/NVIDIA-NeMo/Speech>`_ is an open-source toolkit for speech, audio, and multimodal language model research, with a clear path from experimentation to production deployment.
+
+.. important::
+
+   **New: Nemotron 3.5 Transcribe** — offline transcription in 40 languages, with instruction control,
+   vocabulary context, speaker attribution, word timestamps, speech translation, and audio question answering.
+   See the :doc:`quickstart <speechlm2/nemotron_transcribe>` for installation and your first transcription.
 
 .. raw:: html
 
@@ -16,7 +22,7 @@ NVIDIA NeMo Speech Developer Docs
    <div class="task-card-grid">
      <a class="task-card" href="asr/intro.html">
        <h3>🎙️ Transcribe Speech (ASR)</h3>
-       <p>Convert audio to text with state-of-the-art accuracy. Supports 14+ languages, streaming, and timestamps.</p>
+       <p>Convert audio to text across 40 languages. Choose offline or streaming models, with timestamps.</p>
        <strong>Quick Start →</strong>
      </a>
      <a class="task-card" href="tts/intro.html">
@@ -47,10 +53,10 @@ NVIDIA NeMo Speech Developer Docs
    </div>
 
 
-What is NeMo?
---------------
+What is NeMo Speech?
+--------------------
 
-`NVIDIA NeMo <https://github.com/NVIDIA/NeMo>`_ is an open-source toolkit for building, customizing, and deploying speech, audio, and multimodal language models. It provides:
+`NVIDIA NeMo Speech <https://github.com/NVIDIA-NeMo/Speech>`_ is an open-source toolkit for building, customizing, and deploying speech, audio, and multimodal language models. It provides:
 
 - **Pretrained models** — production-ready checkpoints on `NGC <https://catalog.ngc.nvidia.com/models?query=nemo&orderBy=weightPopularDESC>`__ and `HuggingFace Hub <https://huggingface.co/nvidia>`__
 - **Modular architecture** — neural modules you can mix, match, and extend
@@ -73,7 +79,7 @@ Get started (install the PyTorch build for your platform first):
 Trying to finetune a model?
 ---------------------------
 
-Check out our latest ``/nemo-speech-finetune-asr`` `agent skill <https://github.com/NVIDIA-NeMo/NeMo/tree/main/.claude/skills/nemo-speech-asr-finetune>`_.
+Check out our latest ``/nemo-speech-finetune-asr`` `agent skill <https://github.com/NVIDIA-NeMo/Speech/tree/main/.claude/skills/nemo-speech-asr-finetune>`_.
 
 
 .. toctree::
@@ -135,6 +141,7 @@ Check out our latest ``/nemo-speech-finetune-asr`` `agent skill <https://github.
    core/core
    core/neural_modules
    core/exp_manager
+   core/one_logger
    core/neural_types
    core/adapters/intro
    core/api

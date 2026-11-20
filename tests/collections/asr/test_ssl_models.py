@@ -1,4 +1,5 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,6 +17,7 @@ import pytest
 import torch
 from omegaconf import DictConfig
 
+from nemo.collections.asr.losses import ContrastiveLoss
 from nemo.collections.asr.models import EncDecDenoiseMaskedTokenPredModel, SpeechEncDecSelfSupervisedModel
 from nemo.core.classes.common import typecheck
 
@@ -371,6 +373,23 @@ class TestSSLModel:
             loss_value, loss_val_dict = ssl_model.decoder_loss_step(spectrograms, spec_masks, encoded, encoded_len)
 
         assert len(loss_val_dict) == 4
+
+
+class TestContrastiveLoss:
+    @pytest.mark.unit
+    def test_sample_negatives_fewer_frames_than_num_negatives(self):
+        num_negatives = 40
+        num_frames = 5
+        num = num_frames
+        feat_dim = 128
+
+        loss = ContrastiveLoss(in_dim=64, proj_dim=feat_dim, num_negatives=num_negatives, quantized_targets=False)
+        y = torch.randn(num_frames, feat_dim)
+
+        negs, neg_idxs = loss.sample_negatives(y, num)
+
+        assert neg_idxs.shape == (num, num_negatives)
+        assert negs.shape == (num_negatives, num, feat_dim)
 
 
 class TestDenoiseMLMSSLModel:

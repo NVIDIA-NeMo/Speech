@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import os
 import shutil
 import tempfile
@@ -20,7 +22,7 @@ import pytest
 import torch
 from lhotse import CutSet, MonoCut
 from lhotse.testing.dummies import DummyManifest
-from omegaconf import DictConfig
+from omegaconf import DictConfig, open_dict
 
 from nemo.collections.asr.data.audio_to_text_lhotse import LhotseSpeechToTextBpeDataset
 from nemo.collections.asr.models import ASRModel
@@ -194,12 +196,38 @@ class TestEncDecRNNTBPEModel:
         assert isinstance(outputs[0][0], MonoCut)
         assert isinstance(outputs[0][1], Hypothesis)
 
+    @pytest.mark.unit
+    def test_transcribe_dataloader_allows_missing_validation_ds(self, asr_model, monkeypatch):
+        """Some pretrained RNNT BPE checkpoints are shipped without validation_ds."""
+        with open_dict(asr_model.cfg):
+            asr_model.cfg.validation_ds = None
+        captured = {}
+
+        def capture_dataloader_config(config):
+            captured["config"] = config
+            return object()
+
+        monkeypatch.setattr(asr_model, "_setup_dataloader_from_config", capture_dataloader_config)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dataloader = asr_model._setup_transcribe_dataloader(
+                {
+                    "paths2audio_files": ["audio.wav"],
+                    "batch_size": 1,
+                    "temp_dir": tmpdir,
+                }
+            )
+
+        assert dataloader is not None
+        assert captured["config"]["use_start_end_token"] is False
+
     @pytest.mark.with_downloads()
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE,
         reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_save_restore_artifact(self, asr_model):
         asr_model.train()
 
@@ -219,6 +247,7 @@ class TestEncDecRNNTBPEModel:
         reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_save_restore_artifact_spe(self, asr_model, test_data_dir):
         asr_model.train()
 
@@ -239,6 +268,7 @@ class TestEncDecRNNTBPEModel:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_save_restore_artifact_agg(self, asr_model, test_data_dir):
         tokenizer_dir = os.path.join(test_data_dir, "asr", "tokenizers", "an4_spe_128")
         tok_en = {"dir": tokenizer_dir, "type": "wpe"}
@@ -290,6 +320,33 @@ class TestEncDecRNNTBPEModel:
             pred_embedding = 3 * (asr_model.decoder.pred_hidden)
             joint_joint = 3 * (asr_model.joint.joint_hidden + 1)
             assert asr_model.num_weights == (nw1 + (pred_embedding + joint_joint))
+
+    @pytest.mark.skipif(
+        not NUMBA_RNNT_LOSS_AVAILABLE,
+        reason='RNNTLoss has not been compiled with appropriate numba version.',
+    )
+    @pytest.mark.unit
+    def test_wer_text_normalize(self, test_data_dir, asr_model):
+        assert asr_model.wer.wer_text_normalize is False
+
+        cfg = copy.deepcopy(asr_model.cfg)
+        with open_dict(cfg):
+            cfg.wer_text_normalize = True
+        model = EncDecRNNTBPEModel(cfg=cfg)
+        assert model.wer.wer_text_normalize is True
+
+        # flag is preserved when WER is re-created
+        model.change_decoding_strategy(decoding_cfg=DictConfig({'strategy': 'greedy', 'greedy': {'max_symbols': 10}}))
+        assert model.wer.wer_text_normalize is True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            new_tokenizer_dir = os.path.join(tmpdir, 'tokenizer')
+            os.makedirs(new_tokenizer_dir, exist_ok=True)
+            shutil.copy2(
+                os.path.join(test_data_dir, "asr", "tokenizers", "an4_wpe_128", 'vocab.txt'), new_tokenizer_dir
+            )
+            model.change_vocabulary(new_tokenizer_dir=new_tokenizer_dir, new_tokenizer_type='wpe')
+        assert model.wer.wer_text_normalize is True
 
     @pytest.mark.with_downloads()
     @pytest.mark.skipif(

@@ -1011,7 +1011,7 @@ error before audio loading.
 Building ``.idx`` sidecars
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Two equivalent ways:
+Two ways, which differ for tar files:
 
 1. Lhotse's CLI per file::
 
@@ -1019,16 +1019,26 @@ Two equivalent ways:
        lhotse index tar  path/to/shard.tar
        lhotse index shar path/to/shar_dir/
 
+   ``lhotse index tar`` writes the Lhotse Shar/WebDataset paired layout (one
+   entry per JSON + payload member pair). Use it only for ``lhotse_shar`` tars.
+   Do **not** use it for ``nemo``/``nemo_tarred`` audio tars (or other tars
+   with one member per sample): there it lists only half of the samples.
+   Indexed ``nemo_tarred`` loading rejects such an index at startup when an
+   active manifest row lies past the tar index's last entry (rows marked with
+   ``_skipme`` never touch the tar and are allowed there).
+
 2. NeMo's batch helper that takes a config and indexes everything it
-   references in one shot::
+   references in one shot. **Use this for** ``nemo_tarred`` **tars**::
 
        python scripts/dataloading/build_indexes.py path/to/input_cfg.yaml
 
    The script walks ``input_cfg`` (including nested ``group`` entries and
    per-entry YAML references), dispatches the right tar layout for each
    adapter (NeMo one-member-per-sample vs. WebDataset/Shar pair format), and
-   skips files that already have an up-to-date ``.idx``. Use ``--force`` to
-   rebuild, ``--workers N`` for parallelism, ``--dry-run`` to preview.
+   skips files that already have an up-to-date ``.idx``. An existing NeMo tar
+   ``.idx`` in the paired layout (e.g. written by ``lhotse index tar``) is not
+   up to date and is rebuilt. Use ``--force`` to rebuild everything,
+   ``--workers N`` for parallelism, ``--dry-run`` to preview.
 
    Pass ``--indexes-root /path/to/mirror`` to write the sidecars to a
    separate directory tree that mirrors the data files' layout instead of
@@ -1457,6 +1467,8 @@ Case 2: ``seed=<int>`` and ``shard_seed="randomized"``:
 Other, more exotic configurations:
 
 * With ``shard_seed=<int>``, all dataloading workers will yield the same results. This is only useful for unit testing and maybe debugging.
+
+* Indexed ``nemo`` manifest sources (``indexed: true``) ignore ``shard_seed="trng"`` and ``shard_seed="randomized"`` and shuffle shards with a fixed seed of 0, so every rank and worker uses the same order and reads its own disjoint slice. NeMo logs a warning about this once per process. Set an integer ``shard_seed`` to choose a different order.
 
 * With ``seed="trng"``, the base random seed itself will be drawn using a TRNG. It will be different on each GPU training process. This setting is not recommended.
 

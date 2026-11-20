@@ -62,6 +62,7 @@ def classifier(request):
     [(t, a, tx) for _, t, a, tx in _CLASSIFICATION_CASES],
     ids=[p for p, _, _, _ in _CLASSIFICATION_CASES],
 )
+@pytest.mark.gpu
 def test_classification_matches_expected_class(classifier, eou_type, audio_path, text):
     """Each sample should be classified as its expected EoU type."""
     result = classifier.classify(audio_path, text)
@@ -78,6 +79,7 @@ def test_classification_matches_expected_class(classifier, eou_type, audio_path,
 
 
 @pytest.mark.unit
+@pytest.mark.gpu
 def test_classify_accepts_numpy_array(classifier):
     """Classifier should accept a pre-loaded numpy array instead of a path."""
     _, _, audio_path, text = next(c for c in _CLASSIFICATION_CASES if c[1] == EoUType.GOOD)
@@ -91,6 +93,7 @@ def test_classify_accepts_numpy_array(classifier):
 
 
 @pytest.mark.unit
+@pytest.mark.gpu
 def test_classify_resamples_numpy_array(classifier):
     """Passing a numpy array at a non-16 kHz rate should produce the same result after resampling."""
     _, _, audio_path, text = next(c for c in _CLASSIFICATION_CASES if c[1] == EoUType.GOOD)
@@ -103,6 +106,7 @@ def test_classify_resamples_numpy_array(classifier):
 
 
 @pytest.mark.unit
+@pytest.mark.gpu
 def test_classify_numpy_without_sample_rate_raises(classifier):
     """Passing a numpy array without sample_rate must raise ValueError."""
     _, _, audio_path, text = next(c for c in _CLASSIFICATION_CASES if c[1] == EoUType.GOOD)
@@ -116,6 +120,7 @@ def test_classify_numpy_without_sample_rate_raises(classifier):
 
 
 @pytest.mark.unit
+@pytest.mark.gpu
 def test_classification_result_structure(classifier):
     """Verify the returned dataclass fields have correct types and reasonable ranges."""
     _, _, audio_path, text = next(c for c in _CLASSIFICATION_CASES if c[1] == EoUType.GOOD)
@@ -146,6 +151,7 @@ def test_classification_result_structure(classifier):
 
 
 @pytest.mark.unit
+@pytest.mark.gpu
 def test_batch_matches_unbatched(classifier):
     """Batched inference must produce identical classifications to single-sample."""
     items = [(a, tx) for _, _, a, tx in _CLASSIFICATION_CASES]
@@ -169,6 +175,7 @@ def test_batch_matches_unbatched(classifier):
 
 
 @pytest.mark.unit
+@pytest.mark.gpu
 def test_batch_basic(classifier):
     """Smoke-test that classify_batch returns the right number of results."""
     items = [(a, tx) for _, _, a, tx in _CLASSIFICATION_CASES[:2]]

@@ -38,6 +38,7 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 
 import torch
 import torch.distributed as dist
+import yaml
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf
 from torch import nn
@@ -88,6 +89,15 @@ _ASR_ENCODER_TYPES = {
     "fastconformer": ConformerEncoder,
     "transformer": TransformerEncoder,
 }
+_MAX_PROBE_CONFIG_BYTES = 1024 * 1024
+# Sections of the obsolete three-expert bundle schema, which cannot be mapped onto the current one.
+_LEGACY_THREE_EXPERT_BUNDLE_KEYS = (
+    "speech_expert_cfg",
+    "speaker_expert_cfg",
+    "sound_expert_cfg",
+    "sortformer_modules_cfg",
+    "sound_ctc_head_cfg",
+)
 _SPEAKER_FEATURE_CONFIG_VERSION = 1
 _SPEAKER_FEATURE_MODE_CONTINUOUS = "continuous"
 _SPEAKER_FEATURE_MODE_THRESHOLD = "thresholded"
@@ -434,6 +444,14 @@ class ParallelExpertEncoderPT(ModelPT):
         """
         missing = [key for key in ("asr_encoder_cfg", "diarization_model_cfg") if cfg.get(key, None) in (None, {}, "")]
         if missing:
+            legacy = [key for key in _LEGACY_THREE_EXPERT_BUNDLE_KEYS if key in cfg]
+            if legacy:
+                raise ValueError(
+                    f"ParallelExpertEncoder bundle uses the obsolete three-expert schema {legacy} "
+                    f"(NeMo {cfg.get('nemo_version', 'unknown')}), which is unsupported and cannot be converted. "
+                    "Use a bundle saved in the current schema (ParallelExpertEncoderPT.save_to_nemo), or a SALM "
+                    "checkpoint with an embedded encoder (model.pe_encoder_config + model.init_from_checkpoint)."
+                )
             raise ValueError(f"ParallelExpertEncoder bundle is missing required config sections {missing}.")
         _normalize_asr_encoder_type(cfg.get("asr_encoder_type", "fastconformer"))
 
@@ -441,7 +459,8 @@ class ParallelExpertEncoderPT(ModelPT):
     def is_pe_nemo(cls, nemo_path: str) -> bool:
         """
         Return whether a local archive declares a ParallelExpertEncoderPT target.
-        Only the ``target`` field of ``model_config.yaml`` is inspected; unreadable archives return ``False``.
+        Only a literal ``target`` field of ``model_config.yaml`` is inspected.
+        Unreadable archives, malformed configs, links, and configs over 1 MiB return ``False``.
 
         Args:
             nemo_path (str): Path to a candidate local ``.nemo`` file.
@@ -456,16 +475,30 @@ class ParallelExpertEncoderPT(ModelPT):
                 for member in archive.getmembers():
                     if os.path.basename(member.name) != "model_config.yaml":
                         continue
+                    if not member.isreg() or not 0 < member.size <= _MAX_PROBE_CONFIG_BYTES:
+                        return False
                     stream = archive.extractfile(member)
                     if stream is None:
                         return False
-                    cfg = OmegaConf.create(stream.read().decode("utf-8"))
-                    if not str(cfg.get("target", "")).endswith("ParallelExpertEncoderPT"):
+                    with stream:
+                        cfg = yaml.safe_load(stream.read(_MAX_PROBE_CONFIG_BYTES + 1).decode("utf-8"))
+                    if not isinstance(cfg, dict):
                         return False
-                    # Keep the released public probe target-based. Runtime loading
-                    # uses the schema resolver and remains strict.
-                    return True
-        except (tarfile.TarError, OSError) as error:
+                    target = cfg.get("target", "")
+                    return (
+                        isinstance(target, str) and "${" not in target and target.endswith("ParallelExpertEncoderPT")
+                    )
+        except (
+            tarfile.TarError,
+            OSError,
+            UnicodeError,
+            ValueError,
+            RecursionError,
+            yaml.YAMLError,
+            KeyError,
+            IndexError,
+            AttributeError,
+        ) as error:
             logging.warning("[ParallelExpertEncoder] Could not inspect %s: %s", nemo_path, error)
             return False
         return False
@@ -984,8 +1017,10 @@ class ParallelExpertEncoder(nn.Module):
     ) -> PackedEncoderActivations:
         """
         Run an encoder token-flat, optionally splitting after feature stacking.
-        Encoders without ``forward_sequence_packed`` fall back to a padded forward and are
-        re-packed. When a chunk size is set and an utterance exceeds it, feature stacking runs
+        Encoders without ``forward_sequence_packed``, or whose ``supports_sequence_packed_output``
+        denies it for their configuration (a ``ConformerEncoder`` training with attention dropout
+        over ``rel_pos`` attention, for one), fall back to a padded forward and are re-packed.
+        When a chunk size is set and an utterance exceeds it, feature stacking runs
         once over each full utterance, and the encoder layers then see each chunk as an
         independent sequence. Chunking requires ``subsampling='feature_stacking'``.
 
@@ -999,9 +1034,14 @@ class ParallelExpertEncoder(nn.Module):
         """
         max_tokens = self._chunk_size_tokens(chunk_size_seconds)
         packed_forward = getattr(encoder, "forward_sequence_packed", None)
-        if not callable(packed_forward):
+        if not callable(packed_forward) or not getattr(encoder, "supports_sequence_packed_output", True):
             if max_tokens is not None and features.max_seqlen > max_tokens:
-                raise TypeError(f"{type(encoder).__name__} does not support packed independent chunking.")
+                reason = getattr(encoder, "sequence_packed_unsupported_reason", None)
+                reason = reason() if callable(reason) else None
+                raise TypeError(
+                    f"{type(encoder).__name__} does not support packed independent chunking"
+                    + (f" in this configuration: {reason}" if reason else ".")
+                )
             padded = unpack_encoder_output(features, total_length=features.padded_length).transpose(1, 2)
             encoded, encoded_lengths = encoder(audio_signal=padded, length=features.lengths)
             return pack_encoder_output(encoded.transpose(1, 2), encoded_lengths)
@@ -1670,7 +1710,8 @@ class ParallelExpertEncoder(nn.Module):
         """
         Detach reduced-precision request-owned inputs needed after text decoding.
         ASR states are stored in BF16 unless already BF16 or FP16. Native diarization probabilities
-        are thresholded at 0.5 into boolean labels padded to ``max_speaker_count`` speakers.
+        use the checkpoint aligner's ``vad_threshold`` (or constructor/explicit options without an artifact)
+        to produce boolean labels padded to ``max_speaker_count`` speakers.
 
         Args:
             asr_encoded (torch.Tensor): ASR states shaped ``(B, D, T)``.
@@ -1696,7 +1737,21 @@ class ParallelExpertEncoder(nn.Module):
             dtype=torch.bool,
             device=diarization_probs.device,
         )
-        diarization_labels[:, : diarization_probs.shape[-1]] = (diarization_probs > 0.5).transpose(1, 2)
+        from nemo.collections.speechlm2.parts.ctc_timestamp_utils import (
+            get_ctc_timestamp_aligner,
+            load_word_alignment_parameters,
+        )
+
+        options = dict(getattr(self, 'ctc_timestamp_alignment', {}) or {})
+        threshold = options.get('vad_threshold')
+        artifact_path = getattr(self, 'ctc_timestamp_model_path', None)
+        if artifact_path:
+            threshold = get_ctc_timestamp_aligner(self, artifact_path, asr_encoded.device).vad_threshold
+        elif threshold is None:
+            threshold = load_word_alignment_parameters(options.get('word_alignment_parameters'))['vad_threshold']
+        if not 0 <= threshold <= 1:
+            raise ValueError('vad_threshold must be between zero and one.')
+        diarization_labels[:, : diarization_probs.shape[-1]] = (diarization_probs > threshold).transpose(1, 2)
         return CTCTimestampInputs(
             asr_encoded=asr_encoded.detach().to(dtype=storage_dtype),
             asr_encoded_lengths=asr_encoded_lengths.detach(),

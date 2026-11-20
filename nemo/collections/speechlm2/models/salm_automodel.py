@@ -32,6 +32,7 @@ from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.salm_dataset import left_collate_vectors
 from nemo.collections.speechlm2.models.salm import _resolve_audios_in_prompt, replace_placeholders_and_build_targets
+from nemo.collections.speechlm2.one_logger import SALMThroughputPolicy
 from nemo.collections.speechlm2.parts.automodel_lora import ensure_lora_trainable, make_peft_config, maybe_install_lora
 from nemo.collections.speechlm2.parts.encoder_chunking import encode_audio_with_optional_chunking
 from nemo.collections.speechlm2.parts.gc import GarbageCollectionManager
@@ -54,9 +55,13 @@ from nemo.collections.speechlm2.parts.pretrained import (
 )
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
 from nemo.core.utils.lightning_utils import read_batch
+from nemo.lightning.callback_group import with_model_init_callbacks
+from nemo.lightning.speech_throughput import register_throughput_policy
 from nemo.utils import logging, logging_mode
 
 
+@register_throughput_policy(SALMThroughputPolicy)
+@with_model_init_callbacks
 class SALMAutomodel(LightningModule, HFHubMixin):
     def __init__(self, cfg) -> None:
         assert isinstance(cfg, dict), (
@@ -786,7 +791,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         )
 
     def _record_training_stats(self, batch: dict, inputs: dict) -> None:
-        # Counters consumed by TrainingStatsCallback. In BSHD, the attention mask
+        # Exact work counters consumed by training telemetry callbacks. In BSHD, the attention mask
         # counts every real LLM input position. In THD, packed input metadata must
         # come from pre-CP sequence lengths so CP/TP-local tensor shapes do not
         # over- or under-count the global batch.
@@ -794,12 +799,9 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             num_tokens = inputs["attention_mask"].long().sum()
         else:
             num_tokens = inputs["num_tokens"]
-        num_examples = inputs.get("num_examples", batch["input_ids"].shape[0])
-        if torch.is_tensor(num_tokens):
-            num_tokens = num_tokens.detach().cpu().item()
-        if torch.is_tensor(num_examples):
-            num_examples = num_examples.detach().cpu().item()
-        self._last_batch_num_tokens = int(num_tokens)
+        text_cu_seqlens = batch.get("text_cu_seqlens")
+        num_examples = batch["input_ids"].shape[0] if text_cu_seqlens is None else text_cu_seqlens.numel() - 1
+        self._last_batch_num_tokens = num_tokens.detach() if torch.is_tensor(num_tokens) else int(num_tokens)
         self._last_batch_num_examples = int(num_examples)
 
     def on_validation_epoch_start(self) -> None:
@@ -1035,7 +1037,16 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         if audios.shape[0] != answer_tokens.shape[0] or audio_lens.shape[0] != answer_tokens.shape[0]:
             raise ValueError("audios, audio_lens, and answer_tokens must have the same batch size.")
 
-        transcripts = [_decode_timestamp_transcript(self.tokenizer, tokens) for tokens in answer_tokens]
+        alignment = getattr(self.perception.encoder, 'ctc_timestamp_alignment', None) or {}
+        transcripts = [
+            _decode_timestamp_transcript(
+                self.tokenizer,
+                tokens,
+                special_token_ignored=alignment.get('special_token_ignored'),
+                special_token_added=alignment.get('special_token_added'),
+            )
+            for tokens in answer_tokens
+        ]
         audio_durations = [float(length) / self.sampling_rate for length in audio_lens.detach().cpu()]
         return self.perception.encoder.generate_ctc_timestamps(
             timestamp_inputs=timestamp_inputs,
@@ -1707,13 +1718,32 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         }
 
 
-def _decode_timestamp_transcript(tokenizer: Any, answer_tokens: torch.Tensor) -> str:
+def _decode_timestamp_transcript(
+    tokenizer: Any,
+    answer_tokens: torch.Tensor,
+    *,
+    special_token_ignored: list[str] | None = None,
+    special_token_added: list[str] | None = None,
+) -> str:
+    """Decode generated text while retaining speaker routing and configured acoustic tags.
+
+    Args:
+        tokenizer (Any): SALM decoding tokenizer.
+        answer_tokens (torch.Tensor): Generated token IDs for one sample.
+        special_token_ignored (list[str] | None): Excluded tag patterns; None selects aligner defaults.
+        special_token_added (list[str] | None): Acoustic tag patterns; None selects aligner defaults.
+
+    Returns:
+        str: Cleaned text for CTC word alignment.
+    """
     from nemo.collections.speechlm2.parts.ctc_timestamp_utils import MultiSpeakerSOTWordTimestampAligner
 
     token_ids = answer_tokens.detach().cpu().tolist()
     text = tokenizer.ids_to_text(token_ids, remove_special_tokens=False)
     special_tokens = getattr(getattr(tokenizer, "tokenizer", None), "all_special_tokens", ())
-    text = MultiSpeakerSOTWordTimestampAligner.clean_sot_transcript(text, special_tokens)
+    text = MultiSpeakerSOTWordTimestampAligner.clean_sot_transcript(
+        text, special_tokens, special_token_ignored=special_token_ignored, special_token_added=special_token_added
+    )
     if not text:
         raise ValueError("The generated ASR answer is empty after removing non-speaker special tokens.")
     return text

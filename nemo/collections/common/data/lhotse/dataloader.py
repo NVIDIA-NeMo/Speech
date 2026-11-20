@@ -74,6 +74,10 @@ from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.common.tokenizers.aggregate_tokenizer import TokenizerWrapper
 from nemo.utils import logging
 
+# Candidates considered by packed best-fit batching when packing_buffer_size is unset.
+# Smaller buffers find fewer exact fits and leave more of each token budget empty.
+DEFAULT_PACKING_BUFFER_SIZE = 1024
+
 
 @dataclass
 class LhotseDataLoadingConfig:
@@ -115,7 +119,7 @@ class LhotseDataLoadingConfig:
     # without bucketing. This is independent of bucket_buffer_size, which caps
     # total occupancy across all buckets.
     # Explicit legacy shuffle_buffer_size values are copied here during schema
-    # merge; otherwise packed sampling uses a safe 128-candidate default.
+    # merge; otherwise packed sampling uses DEFAULT_PACKING_BUFFER_SIZE candidates.
     packing_buffer_size: int | None = None
     concurrent_bucketing: bool = True  # fetches data in a background thread
     bucketing_2d_strict_mode: bool = True  # reduces padding by discarding significant outliers
@@ -1006,7 +1010,7 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
         if use_exact_packed_sampler:
             packing_buffer_size = config.packing_buffer_size
             if packing_buffer_size is None:
-                packing_buffer_size = 128
+                packing_buffer_size = DEFAULT_PACKING_BUFFER_SIZE
             sampler_kwargs["packing_buffer_size"] = packing_buffer_size
         else:
             sampler_kwargs["shuffle_buffer_size"] = config.shuffle_buffer_size
@@ -1039,7 +1043,7 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
         if config.use_packed_sequence_sampling:
             packing_buffer_size = config.packing_buffer_size
             if packing_buffer_size is None:
-                packing_buffer_size = 128
+                packing_buffer_size = DEFAULT_PACKING_BUFFER_SIZE
             sampler_kwargs["packing_buffer_size"] = packing_buffer_size
         else:
             sampler_kwargs["shuffle_buffer_size"] = config.shuffle_buffer_size

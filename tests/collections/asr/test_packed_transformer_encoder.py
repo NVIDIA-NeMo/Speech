@@ -474,6 +474,7 @@ def test_sequence_packed_adds_no_state_dict_keys_and_loads_strictly():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="FlexAttention backward requires CUDA")
+@pytest.mark.gpu
 def test_sequence_packed_supports_activation_checkpoint_wrapped_layers():
     encoder = _make_encoder(position="rope").to(device="cuda", dtype=torch.bfloat16).train()
     state_keys = set(encoder.state_dict())
@@ -490,6 +491,7 @@ def test_sequence_packed_supports_activation_checkpoint_wrapped_layers():
 
 
 @requires_cuda_varlen_flash_attention
+@pytest.mark.gpu
 def test_sequence_packed_thd_cuda_matches_padded_outputs_and_gradients():
     torch.manual_seed(0)
     padded_encoder = _make_encoder(position="rope", qk_norm=True).to(device="cuda", dtype=torch.bfloat16).train()
@@ -536,6 +538,7 @@ def test_sequence_packed_thd_cuda_matches_padded_outputs_and_gradients():
         (torch.float16, "no_pos", "full", True, 1.0),
     ],
 )
+@pytest.mark.gpu
 def test_sequence_packed_cuda_fast_path_matrix(dtype, position, attention, qk_norm, rotary_fraction):
     torch.manual_seed(0)
     encoder = _make_encoder(
@@ -559,6 +562,7 @@ def test_sequence_packed_cuda_fast_path_matrix(dtype, position, attention, qk_no
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA FlexAttention")
+@pytest.mark.gpu
 def test_sequence_packed_cuda_fp32_relative_position_fallback_gradients():
     torch.manual_seed(0)
     padded_encoder = _make_encoder(position="rel_pos").cuda().train()
@@ -582,6 +586,7 @@ def test_sequence_packed_cuda_fp32_relative_position_fallback_gradients():
 
 
 @requires_cuda_varlen_flash_attention
+@pytest.mark.gpu
 def test_sequence_packed_reduces_forward_backward_peak_memory_for_uneven_batch():
     torch.manual_seed(0)
     encoder = TransformerEncoder(

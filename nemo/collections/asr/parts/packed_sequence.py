@@ -23,6 +23,7 @@ from torch.utils._pytree import GetAttrKey, register_pytree_node
 __all__ = [
     "PackedEncoderActivations",
     "PackedSlotLayout",
+    "lengths_to_cu_seqlens",
     "pack_encoder_output",
     "packed_encoder_position_ids",
     "packed_sequence_ids",
@@ -64,6 +65,24 @@ class PackedEncoderActivations:
 
     def __post_init__(self) -> None:
         _validate_packed_encoder_activations(self)
+
+    @classmethod
+    def from_validated(
+        cls,
+        data: Tensor,
+        lengths: Tensor,
+        cu_seqlens: Tensor,
+        max_seqlen: int,
+        padding_value: float | Tensor = 0.0,
+        padded_length: int | None = None,
+    ) -> "PackedEncoderActivations":
+        """Construct without validation from metadata that a validating constructor already checked.
+
+        The encoder stages build their outputs with it:
+        the validation of the public constructor compares ``cu_seqlens`` with ``lengths`` on the device
+        and reads the token count back, host synchronizations the hot path and a CUDA-graph capture cannot afford.
+        """
+        return _new_packed_encoder_activations(data, lengths, cu_seqlens, max_seqlen, padding_value, padded_length)
 
     @property
     def batch_size(self) -> int:
@@ -215,7 +234,7 @@ def pack_encoder_output(padded: Tensor, lengths: Tensor) -> PackedEncoderActivat
     )
     mask = _length_mask(lengths, padded.shape[1])
     data = padded[mask]
-    cu_seqlens = _lengths_to_cu_seqlens(lengths)
+    cu_seqlens = lengths_to_cu_seqlens(lengths)
     return _new_packed_encoder_activations(data, lengths, cu_seqlens, max_seqlen, padded_length=padded.shape[1])
 
 
@@ -328,7 +347,8 @@ def _length_mask(lengths: Tensor, total_length: int) -> Tensor:
     return positions.unsqueeze(0) < lengths.unsqueeze(1)
 
 
-def _lengths_to_cu_seqlens(lengths: Tensor) -> Tensor:
+def lengths_to_cu_seqlens(lengths: Tensor) -> Tensor:
+    """The cumulative token counts ``(B + 1,)`` in int32 that the variable-length kernels take, from ``lengths``."""
     return torch.cat(
         [
             torch.zeros(1, dtype=torch.int32, device=lengths.device),
@@ -369,7 +389,7 @@ def _validate_packed_encoder_activations(packed: PackedEncoderActivations) -> No
         raise ValueError("data, lengths, and cu_seqlens must be on the same device.")
     if packed.cu_seqlens.numel() != packed.lengths.numel() + 1:
         raise ValueError("cu_seqlens must have exactly batch_size + 1 entries.")
-    expected = _lengths_to_cu_seqlens(packed.lengths)
+    expected = lengths_to_cu_seqlens(packed.lengths)
     if not torch.equal(packed.cu_seqlens, expected):
         raise ValueError("cu_seqlens must start at zero and have differences equal to lengths.")
     if packed.data.shape[0] != int(expected[-1].item()):

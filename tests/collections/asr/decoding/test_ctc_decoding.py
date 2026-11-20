@@ -120,6 +120,7 @@ class TestCTCDecoding:
     @pytest.mark.parametrize('alignments', [False, True])
     @pytest.mark.parametrize('timestamps', [False, True])
     def test_char_decoding_greedy_forward_hypotheses(self, alignments, timestamps):
+        torch.manual_seed(0)
         cfg = CTCDecodingConfig(strategy='greedy', preserve_alignments=alignments, compute_timestamps=timestamps)
         vocab = char_vocabulary()
         decoding = CTCDecoding(decoding_cfg=cfg, vocabulary=vocab)
@@ -149,6 +150,20 @@ class TestCTCDecoding:
                 # timestamps check
                 if timestamps:
                     BaseTimestampsTest.check_char_timestamps(hyp, decoding)
+
+    @pytest.mark.unit
+    def test_char_timestamps_keep_spaced_punctuation_in_previous_word(self):
+        vocab = char_vocabulary()
+        decoding = CTCDecoding(CTCDecodingConfig(strategy='greedy', compute_timestamps=True), vocabulary=vocab)
+        # A blank frame between two spaces keeps both; decoding then strips one space before the period.
+        blank = len(vocab)
+        ids = torch.tensor([vocab.index(char) for char in 'b.e '] + [blank] + [vocab.index(char) for char in ' .'])
+        logits = torch.nn.functional.one_hot(ids, len(vocab) + 1).float().unsqueeze(0)
+
+        hyp = decoding.ctc_decoder_predictions_tensor(logits, torch.tensor([len(ids)]), return_hypotheses=True)[0]
+
+        assert [word['word'] for word in hyp.timestamp['word']] == ['b.e .']
+        BaseTimestampsTest.check_char_timestamps(hyp, decoding)
 
     @pytest.mark.unit
     def test_subword_decoding_greedy_forward(self, tmp_tokenizer):
@@ -214,10 +229,13 @@ class TestCTCDecoding:
             torch.device("cpu"),
             pytest.param(
                 torch.device("cuda"),
-                marks=pytest.mark.skipif(
-                    not torch.cuda.is_available(),
-                    reason='CUDA required for test.',
-                ),
+                marks=[
+                    pytest.mark.gpu,
+                    pytest.mark.skipif(
+                        not torch.cuda.is_available(),
+                        reason='CUDA required for test.',
+                    ),
+                ],
             ),
         ],
     )
@@ -227,10 +245,13 @@ class TestCTCDecoding:
             torch.device("cpu"),
             pytest.param(
                 torch.device("cuda"),
-                marks=pytest.mark.skipif(
-                    not torch.cuda.is_available(),
-                    reason='CUDA required for test.',
-                ),
+                marks=[
+                    pytest.mark.gpu,
+                    pytest.mark.skipif(
+                        not torch.cuda.is_available(),
+                        reason='CUDA required for test.',
+                    ),
+                ],
             ),
         ],
     )
@@ -296,10 +317,13 @@ class TestCTCDecoding:
             torch.device("cpu"),
             pytest.param(
                 torch.device("cuda"),
-                marks=pytest.mark.skipif(
-                    not torch.cuda.is_available(),
-                    reason='CUDA required for test.',
-                ),
+                marks=[
+                    pytest.mark.gpu,
+                    pytest.mark.skipif(
+                        not torch.cuda.is_available(),
+                        reason='CUDA required for test.',
+                    ),
+                ],
             ),
         ],
     )
@@ -309,10 +333,13 @@ class TestCTCDecoding:
             torch.device("cpu"),
             pytest.param(
                 torch.device("cuda"),
-                marks=pytest.mark.skipif(
-                    not torch.cuda.is_available(),
-                    reason='CUDA required for test.',
-                ),
+                marks=[
+                    pytest.mark.gpu,
+                    pytest.mark.skipif(
+                        not torch.cuda.is_available(),
+                        reason='CUDA required for test.',
+                    ),
+                ],
             ),
         ],
     )
@@ -385,6 +412,7 @@ class TestCTCTimestamps(BaseTimestampsTest):
         super().test_word_offsets_subword_wpe_other_delimiter()
 
 
+@pytest.mark.gpu
 class TestCTCGreedyDecodingWithNGPU_LM:
     @pytest.mark.with_downloads
     @pytest.mark.unit
@@ -421,6 +449,7 @@ class TestCTCGreedyDecodingWithNGPU_LM:
         model.change_decoding_strategy(decoding_config)
 
 
+@pytest.mark.gpu
 class TestCTCGreedyDecodingCudaGrpahs:
     """
     Tests CudaGraphs implementations from CTC models greedy decoding

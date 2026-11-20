@@ -520,7 +520,8 @@ class ConformerConvolution(nn.Module):
         # kernel_size=1 convs are pointwise, i.e. linear, but nn.Conv1d dispatches to much slower
         # cuBLAS kernels. squeeze(-1) on the (O, I, 1) weight is a free view, so
         # the module stays an nn.Conv1d and checkpoints are unchanged.
-        return nn.functional.linear(x, conv.weight.squeeze(-1), conv.bias)
+        # contiguous() avoids a strided-batched fp16 GEMM that hits illegal memory access on sm_120.
+        return nn.functional.linear(x.contiguous(), conv.weight.squeeze(-1), conv.bias)
 
     def forward(self, x, pad_mask=None, cache=None):
         x = self._apply_pointwise(x, self.pointwise_conv1)
@@ -563,7 +564,9 @@ class ConformerConvolution(nn.Module):
         so the two forms differ in training mode by the share of padding in the batch and agree in evaluation mode.
         Instance and group normalization need per-utterance statistics and are not supported here.
         Without any frame (a rank whose share of a batch is empty) the convolution is skipped
-        and its parameters keep a zero gradient edge.
+        and its parameters keep a zero gradient edge;
+        a single valid frame, which ``BatchNorm1d`` refuses to normalize in training mode,
+        is normalized to the bias (see ``_batch_norm_one_frame``).
 
         Args:
             x: input signals, shape ``(T_total, d_model)``.
@@ -574,8 +577,9 @@ class ConformerConvolution(nn.Module):
         Returns:
             The module output, shape ``(T_total, d_model)``.
         """
-        if self.norm_type == 'instance_norm' or self.norm_type.startswith('group_norm'):
-            raise NotImplementedError(f"conv_norm_type={self.norm_type} has no sequence-packed form.")
+        reason = self.sequence_packed_unsupported_reason()
+        if reason is not None:
+            raise NotImplementedError(reason)
         x = self._apply_pointwise(x, self.pointwise_conv1)
         if self.pointwise_activation == 'glu_':
             x = nn.functional.glu(x, dim=-1)
@@ -596,9 +600,38 @@ class ConformerConvolution(nn.Module):
             slots = self.depthwise_conv(slots)
             x = layout.gather(slots.squeeze(0).transpose(0, 1))
 
-        x = self.batch_norm(x)
+        if self.norm_type == 'batch_norm' and self.batch_norm.training and x.shape[0] == 1:
+            x = self._batch_norm_one_frame(x)
+        else:
+            x = self.batch_norm(x)
         x = self.activation(x)
         return self._apply_pointwise(x, self.pointwise_conv2)
+
+    def sequence_packed_unsupported_reason(self) -> str | None:
+        """Why ``forward_packed`` cannot run this module, or None when it can."""
+        if self.norm_type == 'instance_norm' or self.norm_type.startswith('group_norm'):
+            return f"conv_norm_type={self.norm_type} has no sequence-packed form."
+        return None
+
+    def _batch_norm_one_frame(self, x: torch.Tensor) -> torch.Tensor:
+        """Training-mode batch normalization of a batch that holds one valid frame, which ``BatchNorm1d`` refuses.
+
+        The frame is its own batch mean, so its normalized value is zero and the output is the bias,
+        the limit of the training formula for a vanishing batch variance.
+        The running mean moves towards the frame as it does for any batch,
+        and the running variance keeps its value, since one frame has no unbiased variance.
+        The frame and the weight keep their (zero) gradient edges.
+        """
+        batch_norm = self.batch_norm
+        if batch_norm.track_running_stats and batch_norm.running_mean is not None:
+            with torch.no_grad():
+                batch_norm.num_batches_tracked += 1
+                momentum = batch_norm.momentum
+                if momentum is None:  # cumulative moving average
+                    momentum = 1.0 / float(batch_norm.num_batches_tracked)
+                frame = x[0].to(batch_norm.running_mean.dtype)
+                batch_norm.running_mean.mul_(1.0 - momentum).add_(frame, alpha=momentum)
+        return x * 0.0 + batch_norm.weight.to(x.dtype) * 0.0 + batch_norm.bias.to(x.dtype)
 
     def reset_parameters_conv(self):
         pw1_max = pw2_max = self.d_model**-0.5

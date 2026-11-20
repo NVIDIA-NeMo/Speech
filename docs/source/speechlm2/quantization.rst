@@ -150,7 +150,7 @@ Run the scripts from ``scripts/speechlm2/quantization/``:
 
    .. code-block:: bash
 
-      VLLM_PLUGINS=nemo_speechlm VLLM_WORKER_MULTIPROC_METHOD=spawn \
+      VLLM_PLUGINS=nemo_speechlm \
       python calibrate_activations.py \
          --checkpoint $WORK/ckpt_bf16_heads \
          --manifest calib.jsonl --output $WORK/ranges.json
@@ -176,7 +176,7 @@ Serving
 
 .. code-block:: bash
 
-   VLLM_PLUGINS=nemo_speechlm VLLM_WORKER_MULTIPROC_METHOD=spawn \
+   VLLM_PLUGINS=nemo_speechlm \
    vllm serve $OUT --trust-remote-code --dtype bfloat16 \
       --kv-cache-dtype fp8 \
       --speculative-config '{"method":"mtp","num_speculative_tokens":2}'
@@ -186,8 +186,15 @@ Serving
    declares no KV cache scheme, so ``auto`` would keep the KV cache in BF16. FP8
    checkpoints carry calibrated KV cache scales and serve with ``auto``.
 
-* For word timestamps from the CTC timestamp head, add
-  ``--middleware nemo.collections.speechlm2.vllm.salm.ctc_serving.ctc_timestamp_middleware``.
+* For word timestamps from the CTC timestamp head, add:
+
+  .. code-block:: bash
+
+     --middleware nemo.collections.speechlm2.vllm.salm.ctc_serving.ctc_timestamp_middleware \
+     --trust-request-mm-kwargs
+
+  Requests opt in through ``mm_processor_kwargs``, which vLLM rejects without
+  ``--trust-request-mm-kwargs``; set it only when clients are trusted.
 * On SM12x GPUs with cuDNN older than 9.23.1, set
   ``VLLM_DISABLED_KERNELS=FlashInferFP8ScaledMMLinearKernel``. The FlashInfer
   FP8 GEMM can crash partway through a run there.

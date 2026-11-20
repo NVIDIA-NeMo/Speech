@@ -23,8 +23,7 @@ from torch.nn import LayerNorm
 from nemo.collections.asr.parts.packed_sequence import (
     PackedEncoderActivations,
     PackedSlotLayout,
-    _lengths_to_cu_seqlens,
-    _new_packed_encoder_activations,
+    lengths_to_cu_seqlens,
     packed_slot_layout,
 )
 from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D, CausalConv2D
@@ -83,10 +82,11 @@ class FeatureStacking(nn.Module):
             raise ValueError("lengths are required for padded FeatureStacking input.")
         x = x.transpose(1, 2)  # (B, C, T) -> (B, T, C)
         b, t, c = x.size()
-        pad_size = (self.subsampling_factor - (t % self.subsampling_factor)) % self.subsampling_factor
-        if pad_size > 0:
+        t_new = self.compute_num_out_frames(t)
+        pad_size = t_new * self.subsampling_factor - t
+        # Keep padding in the exported graph even when the example length is divisible.
+        if torch.jit.is_tracing() or torch.compiler.is_compiling() or pad_size > 0:
             x = nn.functional.pad(x, (0, 0, 0, pad_size))
-        t_new = (t + pad_size) // self.subsampling_factor
         x = x.reshape(b, t_new, c * self.subsampling_factor)
         x = self.proj(x)
         lengths = self.compute_num_out_frames(lengths)
@@ -128,7 +128,7 @@ class FeatureStacking(nn.Module):
             slots[slot_positions + local_positions] = packed.data
         stacked = slots.reshape(-1, self.proj.in_features)
         max_seqlen = self.compute_num_out_frames(packed.max_seqlen)
-        return _new_packed_encoder_activations(stacked, output_lengths, output_cu_seqlens, max_seqlen)
+        return PackedEncoderActivations.from_validated(stacked, output_lengths, output_cu_seqlens, max_seqlen)
 
 
 class StackingSubsampling(torch.nn.Module):
@@ -157,12 +157,12 @@ class StackingSubsampling(torch.nn.Module):
 
     def forward(self, x, lengths):
         b, t, h = x.size()
-        pad_size = (self.subsampling_factor - (t % self.subsampling_factor)) % self.subsampling_factor
+        t_new = (t + self.subsampling_factor - 1) // self.subsampling_factor
+        pad_size = t_new * self.subsampling_factor - t
         x = torch.nn.functional.pad(x, (0, 0, 0, pad_size))
         if self.pre_norm is not None:
             x = self.pre_norm(x)
-        _, t, _ = x.size()
-        x = torch.reshape(x, (b, t // self.subsampling_factor, h * self.subsampling_factor))
+        x = torch.reshape(x, (b, t_new, h * self.subsampling_factor))
         x = self.proj_out(x)
         lengths = torch.div(lengths + pad_size, self.subsampling_factor, rounding_mode='floor')
         return x, lengths
@@ -635,10 +635,9 @@ class ConvSubsampling(torch.nn.Module):
         Returns:
             The subsampled features, data of shape ``(sum(T'_i), feat_out)``.
         """
-        if not self.conv2d_subsampling or self._subsampling == 'vggnet':
-            raise NotImplementedError(f"subsampling={self._subsampling!r} has no sequence-packed form.")
-        if self.is_causal:
-            raise NotImplementedError("Causal subsampling has no sequence-packed form.")
+        reason = self.sequence_packed_unsupported_reason()
+        if reason is not None:
+            raise NotImplementedError(reason)
         if packed.data.shape[1] != self._feat_in:
             raise ValueError(f"Packed features must have width {self._feat_in}, got {packed.data.shape[1]}.")
         self._check_packed_stack_gaps()
@@ -648,7 +647,7 @@ class ConvSubsampling(torch.nn.Module):
             for parameter in self.conv.parameters():
                 anchor = anchor + parameter.sum().to(anchor.dtype) * 0.0
             empty = self.out(packed.data.new_zeros((0, self.out.in_features))) + anchor
-            return _new_packed_encoder_activations(empty, packed.lengths, packed.cu_seqlens, 0)
+            return PackedEncoderActivations.from_validated(empty, packed.lengths, packed.cu_seqlens, 0)
         layout = packed_slot_layout(packed, alignment=self.subsampling_factor, gap=self.subsampling_factor)
         outputs = []
         lengths = []
@@ -668,9 +667,21 @@ class ConvSubsampling(torch.nn.Module):
             lengths.append(out_lengths)
         out_lengths = torch.cat(lengths).to(torch.int64)
         max_seqlen = int(out_lengths.max().item()) if out_lengths.numel() else 0
-        return _new_packed_encoder_activations(
-            torch.cat(outputs), out_lengths, _lengths_to_cu_seqlens(out_lengths), max_seqlen
+        return PackedEncoderActivations.from_validated(
+            torch.cat(outputs), out_lengths, lengths_to_cu_seqlens(out_lengths), max_seqlen
         )
+
+    def sequence_packed_unsupported_reason(self) -> str | None:
+        """Why ``forward_packed`` cannot run this stack, or None when it can.
+
+        Only the non-causal ``striding`` and ``dw_striding`` stacks have a sequence-packed form;
+        VGGNet pools with ``ceil_mode``, which the floor-mode lengths of the gapped layout do not model.
+        """
+        if not self.conv2d_subsampling or self._subsampling == 'vggnet':
+            return f"subsampling={self._subsampling!r} has no sequence-packed form."
+        if self.is_causal:
+            return "Causal subsampling has no sequence-packed form."
+        return None
 
     def _check_packed_stack_gaps(self):
         """Verify that no layer of the stack reads across utterances on the gapped time axis.

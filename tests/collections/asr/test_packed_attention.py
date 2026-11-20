@@ -124,13 +124,17 @@ class TestPackedAttentionKernelShapes:
             shapes.add((context.padded_total_tokens, context.padded_max_seqlen))
         assert len(shapes) < packed_attention_module.RECOMPILE_LIMIT // 2
 
+    # Dynamo settings are changed through the config module's own `patch`, not through monkeypatch:
+    # pytest's undo deletes the entry from torch's config module (torch 2.12 and 2.14),
+    # and every later lookup of `recompile_limit` in the process fails.
+
     @pytest.mark.unit
+    @pytest.mark.gpu
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA FlexAttention")
     def test_recompile_limit_miss_raises_instead_of_running_eagerly(self, monkeypatch):
         """Past its recompile limit Dynamo would run flex_attention eagerly over dense scores; the miss must fail."""
         monkeypatch.setattr(packed_attention_module, "RECOMPILE_LIMIT", 1)
         limit_name = "recompile_limit" if hasattr(torch._dynamo.config, "recompile_limit") else "cache_size_limit"
-        monkeypatch.setattr(torch._dynamo.config, limit_name, 1)
         torch._dynamo.reset()
 
         def attend(lengths):
@@ -139,13 +143,15 @@ class TestPackedAttentionKernelShapes:
             bias = torch.randn(context.total_tokens, 2, 2 * context.padded_max_seqlen - 1, device="cuda")
             return packed_attention(q, k, v, context, rel_pos_bias=bias)
 
-        attend([40, 30])
-        with pytest.raises(torch._dynamo.exc.FailOnRecompileLimitHit):
-            attend([5000, 30])
+        with torch._dynamo.config.patch(**{limit_name: 1}):
+            attend([40, 30])
+            with pytest.raises(torch._dynamo.exc.FailOnRecompileLimitHit):
+                attend([5000, 30])
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA FlexAttention")
-    def test_token_total_does_not_recompile(self, monkeypatch):
+    def test_token_total_does_not_recompile(self):
         """Batches with equal padded shapes but different token totals share one kernel.
 
         The relative-position bias enters the kernel with its unpadded token axis;
@@ -160,13 +166,14 @@ class TestPackedAttentionKernelShapes:
             return packed_attention(q, k, v, context, rel_pos_bias=bias)
 
         attend([40, 30])
-        monkeypatch.setattr(torch._dynamo.config, "error_on_recompile", True)
-        attend([40, 35])
-        attend([45, 35, 20])
+        with torch._dynamo.config.patch(error_on_recompile=True):
+            attend([40, 35])
+            attend([45, 35, 20])
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA FlexAttention")
-    def test_kernels_have_a_dynamo_cache_of_their_own(self, monkeypatch):
+    def test_kernels_have_a_dynamo_cache_of_their_own(self):
         """The packed kernels leave the code object of flex_attention itself alone.
 
         The Transformer encoders compile flex_attention itself with dynamic shapes;
@@ -183,12 +190,11 @@ class TestPackedAttentionKernelShapes:
         attend([40, 30])
         attend([5000, 30])  # a second kernel shape, a second cache entry
         limit_name = "recompile_limit" if hasattr(torch._dynamo.config, "recompile_limit") else "cache_size_limit"
-        monkeypatch.setattr(torch._dynamo.config, limit_name, 1)
-        monkeypatch.setattr(torch._dynamo.config, "fail_on_recompile_limit_hit", True)
         # with a shared cache the two entries above would already be over the limit of this compile
-        compiled_itself = torch.compile(flex_attention, dynamic=True)
-        q = torch.randn(1, 2, 64, 16, device="cuda")
-        assert compiled_itself(q, q, q).shape == q.shape
+        with torch._dynamo.config.patch(**{limit_name: 1, "fail_on_recompile_limit_hit": True}):
+            compiled_itself = torch.compile(flex_attention, dynamic=True)
+            q = torch.randn(1, 2, 64, 16, device="cuda")
+            assert compiled_itself(q, q, q).shape == q.shape
 
 
 class TestPackedRelPositionAttention:
@@ -233,6 +239,7 @@ class TestPackedRelPositionAttention:
         assert out.shape == (0, 2, 4) and q.grad is not None and bias.grad is not None
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA FlexAttention")
     @pytest.mark.parametrize(
         "lengths, head_dim",
@@ -240,7 +247,11 @@ class TestPackedRelPositionAttention:
         ids=["five_utterances", "long_utterances", "head_dim_8", "head_dim_44"],
     )
     def test_flex_attention_matches_reference_on_cuda(self, lengths, head_dim):
-        """Also a head width below the kernel minimum of 16 (zero-padded) and a non-power-of-two width."""
+        """Also a head width below the kernel minimum of 16 and a non-power-of-two width, both zero-padded.
+
+        Width 44 is the head of the released FastConformer Small; without the padding to a power of two
+        it fell to a generic kernel configuration whose shared memory exceeds consumer Blackwell's (torch 2.12).
+        """
         torch.manual_seed(0)
         lengths = torch.tensor(lengths, device="cuda")
         heads = 4
@@ -264,3 +275,74 @@ class TestPackedRelPositionAttention:
         torch.testing.assert_close(out, reference, atol=1e-4, rtol=1e-4)
         for grad, t in zip(grads, (q, k, v, bias)):
             torch.testing.assert_close(grad, t.grad, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+class TestPackedAttentionBackends:
+    """Bias-free attention through variable-length FlashAttention and through FlexAttention, against a float32 reference.
+
+    The two CUDA backends see the same half-precision queries, keys and values and the same nonuniform upstream
+    gradient; the dispatch is asserted, and outputs and input gradients are compared with the dense per-utterance
+    reference in float32 and with each other.
+    The lengths hold an empty utterance and utterances around the 128-token block boundary.
+    """
+
+    @staticmethod
+    def _flash_attention_available():
+        from nemo.collections.asr.modules import transformer_encoder_utils
+
+        return transformer_encoder_utils._get_flash_attention_varlen_for_device(torch.device("cuda")) is not None
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "dtype, tolerance",
+        [(torch.float16, 4e-3), (torch.bfloat16, 2e-2)],
+        ids=["fp16", "bf16"],
+    )
+    def test_flash_and_flex_match_the_dense_reference(self, dtype, tolerance, monkeypatch):
+        if not self._flash_attention_available():
+            pytest.skip("requires a variable-length FlashAttention provider")
+        torch.manual_seed(0)
+        lengths = torch.tensor([127, 0, 128, 129, 300, 1], device="cuda")
+        context = PackedAttentionContext.from_lengths(lengths)
+        heads, head_dim = 2, 64
+        q, k, v = (torch.randn(context.total_tokens, heads, head_dim, device="cuda", dtype=dtype) for _ in range(3))
+        ramp = torch.linspace(0.1, 2.0, context.total_tokens, device="cuda", dtype=dtype)
+        upstream = torch.randn(context.total_tokens, heads, head_dim, device="cuda", dtype=dtype) * ramp[:, None, None]
+        flash_provider = packed_attention_module._flash_attention_varlen
+
+        def run(backend):
+            dispatched = []
+
+            def select_provider(queries):
+                provider = None if backend == "flex" else flash_provider(queries)
+                dispatched.append("flex" if provider is None else "flash")
+                return provider
+
+            inputs = [t.detach().clone().requires_grad_() for t in (q, k, v)]
+            with pytest.MonkeyPatch.context() as patch:
+                patch.setattr(packed_attention_module, "_flash_attention_varlen", select_provider)
+                out = packed_attention(*inputs, context)
+            out.backward(upstream)
+            assert dispatched == [backend]
+            return out.float(), [t.grad.float() for t in inputs]
+
+        flash_out, flash_grads = run("flash")
+        flex_out, flex_grads = run("flex")
+        inputs = [t.detach().float().requires_grad_() for t in (q, k, v)]
+        reference = packed_attention_module._reference_packed_attention(
+            *inputs, context, rel_pos_bias=None, dropout_p=0.0, scale=head_dim**-0.5
+        )
+        reference.backward(upstream.float())
+        reference_grads = [t.grad for t in inputs]
+
+        for name, flash_value, flex_value, reference_value in zip(
+            ("output", "dq", "dk", "dv"),
+            [flash_out, *flash_grads],
+            [flex_out, *flex_grads],
+            [reference, *reference_grads],
+        ):
+            torch.testing.assert_close(flash_value, reference_value, atol=tolerance, rtol=tolerance, msg=name)
+            torch.testing.assert_close(flex_value, reference_value, atol=tolerance, rtol=tolerance, msg=name)
+            torch.testing.assert_close(flash_value, flex_value, atol=tolerance, rtol=tolerance, msg=name)

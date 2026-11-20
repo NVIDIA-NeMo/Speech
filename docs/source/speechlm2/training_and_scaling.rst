@@ -3,6 +3,8 @@ Training and Scaling
 
 This page provides detailed information on training speechlm2 models, including setup requirements, running experiments at scale, debugging, and parallelism strategies.
 
+For reward-based transcription fine-tuning, see :ref:`speechlm-gspo`.
+
 Running Experiments
 -------------------
 
@@ -408,6 +410,10 @@ For Fully Sharded Data Parallel training:
 FSDP2 shards the model parameters across GPUs, all-gathers them for forward/backward passes, and then de-allocates after computation. This allows training of larger models with limited GPU memory.
 See `PyTorch FSDP2 <https://pytorch.org/docs/stable/distributed.fsdp.fully_shard.html>`_ for more details.
 
+Sharded DCP checkpoints restore FusedAdam BF16 moments directly into existing GPU
+buffers when master-weight remainders are enabled. Other optimizer configurations
+use the standard restore path.
+
 Tensor Parallelism Configuration (HF Automodel)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -439,3 +445,11 @@ When customizing the training scripts, keep these points in mind:
 1. **Path Overrides**: Override paths in the YAML configuration files with your own, as needed
 2. **W&B Keys**: Update Weights & Biases API keys in configuration files
 3. **Batch Size Tuning**: Adjust batch size based on your GPU memory and model size
+
+.. _speechlm-gspo:
+
+Post-training
+------------------
+
+See
+`SpeechLM GSPO guide <https://github.com/NVIDIA-NeMo/RL/blob/main/docs/guides/gspo-speechlm.md>`_

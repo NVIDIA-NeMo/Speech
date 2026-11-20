@@ -132,3 +132,96 @@ def test_incremental_finish_rejects_open_phoneme_span():
 
     with pytest.raises(ValueError, match="without a matching"):
         encoder.finish()
+
+
+@pytest.fixture(scope="module")
+def byte_bpe_base():
+    from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
+
+    tokenizer = Tokenizer(models.BPE(unk_token="[UNK]"))
+    tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    tokenizer.decoder = decoders.ByteLevel()
+    tokenizer.train_from_iterator(
+        [
+            "Thanks for calling, we'll get back to you shortly.",
+            "I don't think we're calling twice. I'd call again.",
+            "Hello.\nNext line!\r\nOne  two\tthree.",
+            "Café, déjà vu — good morning!",
+            "The amount is 1,234.56 dollars. Hi <bop>ab<eop> there.",
+        ],
+        trainers.BpeTrainer(
+            vocab_size=600, initial_alphabet=pre_tokenizers.ByteLevel.alphabet(), special_tokens=["[UNK]"]
+        ),
+    )
+
+    class BaseTokenizer:
+        def encode(self, text, add_special_tokens=False):
+            assert not add_special_tokens
+            return tokenizer.encode(text, add_special_tokens=False).ids
+
+        def get_vocab(self):
+            return tokenizer.get_vocab()
+
+    return BaseTokenizer()
+
+
+@pytest.mark.parametrize("pronunciation_control", [False, True])
+@pytest.mark.parametrize("chunking", ["characters", "trailing_words", "subwords"])
+def test_incremental_bpe_is_independent_of_text_chunk_boundaries(byte_bpe_base, pronunciation_control, chunking):
+    import re
+
+    tokenizer = _byte_bpe_text_tokenizer(byte_bpe_base, pronunciation_control)
+    text = "Thanks for calling, we'll get back to you shortly."
+    chunks = {
+        "characters": list(text),
+        "trailing_words": re.findall(r"\S+\s*", text),
+        "subwords": ["Thanks for call", "ing, we'", "ll get back to you short", "ly."],
+    }[chunking]
+    encoder = tokenizer.incremental_encoder()
+    actual = [token for chunk in chunks for token in encoder.push(chunk)] + encoder.finish()
+
+    assert actual == tokenizer.encode(text)
+
+
+@pytest.mark.parametrize("pronunciation_control", [False, True])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Thanks for calling, we'll get back to you shortly.",
+        "I don't think we're calling twice. I'd call again.",
+        "Hello.\nNext line!\r\nOne  two\tthree.",
+        "Café, déjà vu — good morning!",
+        "The amount is 1,234.56 dollars.",
+        "Hi <bop>ab<eop> there.",
+    ],
+)
+def test_incremental_bpe_matches_every_two_way_split(byte_bpe_base, pronunciation_control, text):
+    tokenizer = _byte_bpe_text_tokenizer(byte_bpe_base, pronunciation_control)
+    expected = tokenizer.encode(text)
+    for offset in range(1, len(text)):
+        encoder = tokenizer.incremental_encoder()
+        actual = encoder.push(text[:offset]) + encoder.push(text[offset:]) + encoder.finish()
+        assert actual == expected, (text, offset)
+
+
+@pytest.mark.parametrize("pronunciation_control", [False, True])
+def test_incremental_bpe_emits_complete_words_before_finish(byte_bpe_base, pronunciation_control):
+    tokenizer = _byte_bpe_text_tokenizer(byte_bpe_base, pronunciation_control)
+    encoder = tokenizer.incremental_encoder()
+
+    assert encoder.push("Thank") == []
+    assert encoder.push("s ") == byte_bpe_base.encode("Thanks")
+    assert encoder.push("for ") == byte_bpe_base.encode(" for")
+    assert encoder.clean
+    assert encoder.finish() == byte_bpe_base.encode(" ")
+
+
+def _byte_bpe_text_tokenizer(base, pronunciation_control):
+    offset = len(base.get_vocab())
+    return EasyMagpieTextTokenizer(
+        base,
+        text_vocab_size=offset + 8,
+        phoneme_tokenizer=_FakePhonemeTokenizer() if pronunciation_control else None,
+        text_phoneme_token_offset=offset if pronunciation_control else None,
+        text_phoneme_vocab_size=8 if pronunciation_control else 0,
+    )

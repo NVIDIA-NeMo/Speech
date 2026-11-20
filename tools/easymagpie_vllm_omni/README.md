@@ -169,6 +169,18 @@ cross `input.text` messages. An unclosed IPA span is rejected at `input.done`;
 `input.tokens` remains an exact tokenization bypass and is accepted only when
 there is no incomplete text marker or IPA span.
 
+Each `input.text` message must contain only the new text fragment, not the
+cumulative text received so far. Fragments may end inside a word: the adapter
+buffers unfinished words and retains leading whitespace so BPE tokenization
+does not depend on network chunk boundaries. Completed words are released as
+their boundaries become known; `input.done` flushes the final fragment. Raw
+`input.tokens` updates bypass this text buffering and flush preceding ordinary
+text before their ids are appended. Deliberate repeated words are preserved.
+
+For example, send `Thanks for `, then `calling, `, then `we'll get back to you
+shortly.`, followed by `input.done`. Append each binary PCM audio message once;
+do not replay the accumulated audio buffer on every update.
+
 Query the HTTP endpoint from any OpenAI-compatible client:
 
 ```bash

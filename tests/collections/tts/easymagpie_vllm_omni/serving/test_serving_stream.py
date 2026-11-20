@@ -512,3 +512,83 @@ async def test_input_stream_finalizes_short_prefill_without_losing_text(token_co
     assert chunks[1].prompt["additional_information"] == {"text_token": []}
     assert prompt["additional_information"] == {"speaker_id": "eng", "text_prefill_num": 4}
     assert tokens == list(range(10, 10 + token_count))
+
+
+@pytest.mark.asyncio
+async def test_handler_flushes_pending_text_before_raw_tokens():
+    class BufferedEncoder:
+        clean = True
+
+        def __init__(self):
+            self.pending = []
+
+        def push(self, text):
+            assert text == "hello"
+            self.pending = [10, 11]
+            return []
+
+        def finish(self):
+            result, self.pending = self.pending, []
+            return result
+
+    class WebSocket:
+        def __init__(self):
+            self.received = iter(
+                [
+                    {"type": "session.config", "voice": "eng", "stream_audio": True, "response_format": "pcm"},
+                    {"type": "input.text", "text": "hello"},
+                    {"type": "input.tokens", "tokens": [12, 13]},
+                    {"type": "input.done"},
+                ]
+            )
+            self.messages = []
+
+        async def accept(self):
+            pass
+
+        async def receive_text(self):
+            return json.dumps(next(self.received))
+
+        async def send_json(self, value):
+            self.messages.append(value)
+
+        async def send_bytes(self, value):
+            assert value
+
+    class Engine:
+        default_sampling_params_list = [SamplingParams(max_tokens=20), SamplingParams(max_tokens=20)]
+
+        def __init__(self):
+            self.text_ids = []
+
+        def generate(self, *, prompt, **kwargs):
+            async def output():
+                async for chunk in prompt:
+                    self.text_ids.extend(chunk.prompt["additional_information"].get("text_token", []))
+                    yield SimpleNamespace(
+                        stage_id=0,
+                        outputs=[
+                            SimpleNamespace(token_ids=[1] * chunk.sampling_params.max_tokens, finish_reason="length")
+                        ],
+                    )
+                    yield SimpleNamespace(stage_id=1, multimodal_output={"audio": [torch.ones(8) * 0.1], "sr": 22050})
+
+            return output()
+
+        async def abort(self, request_id):
+            pytest.fail("A completed stream must not be aborted")
+
+    engine = Engine()
+    spec = SimpleNamespace(
+        prefill_prompt={"prompt_token_ids": [0]},
+        tokenizer=SimpleNamespace(incremental_encoder=BufferedEncoder, text_vocab_size=100),
+        text_eos_id=99,
+        sample_rate=22050,
+    )
+    adapter = SimpleNamespace(build_streaming_spec=lambda request: spec)
+    service = SimpleNamespace(_tts_model_type="easymagpie", engine_client=engine, _get_tts_adapter=lambda: adapter)
+    websocket = WebSocket()
+    await EasyMagpieStreamingSpeechHandler(service).handle_session(websocket)
+
+    assert engine.text_ids == [10, 11, 12, 13, 99]
+    assert websocket.messages[-1]["type"] == "session.done"

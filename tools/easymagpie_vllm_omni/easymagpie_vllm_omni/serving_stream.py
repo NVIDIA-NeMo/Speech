@@ -374,6 +374,12 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
                             "input.tokens cannot be used while an input.text marker or IPA span is incomplete.",
                         )
                         continue
+                    # Raw ids establish an explicit tokenization boundary.
+                    # Flush any buffered ordinary text first to preserve order.
+                    buffered_tokens = text_encoder.finish()
+                    if buffered_tokens:
+                        await input_stream.put_tokens(buffered_tokens)
+                        input_token_count += len(buffered_tokens)
                     await input_stream.put_tokens(tokens)
                     input_token_count += len(tokens)
                 elif msg_type == "input.text":

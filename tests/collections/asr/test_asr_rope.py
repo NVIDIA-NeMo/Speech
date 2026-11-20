@@ -107,6 +107,23 @@ class TestRotaryPositionalEncoding:
         assert [tuple(b.shape) for _, b in short.named_buffers()] == [tuple(b.shape) for _, b in long.named_buffers()]
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+    def test_growth_after_a_dtype_conversion_keeps_the_covered_rows(self, dtype):
+        # the tables come from the module's scalars, not from the converted inv_freq buffer
+        pe = RotaryPositionalEncoding(d_k=16, max_len=128).to(dtype)
+        pe.extend_pe(128, torch.device('cpu'), dtype)
+        before = pe.cos.clone(), pe.sin.clone()
+        q = torch.randn(1, 2, 100, 16)
+        rotated_before = pe(q, q)[0]
+        pe.extend_pe(129, torch.device('cpu'), dtype)
+        assert pe.cos.shape == (129, 16) and pe.cos.dtype == torch.float32 and pe.inv_freq.dtype == dtype
+        assert torch.equal(pe.cos[:128], before[0]) and torch.equal(pe.sin[:128], before[1])
+        assert torch.equal(pe(q, q)[0], rotated_before)
+        # a rebuild for a device change keeps them as well
+        fresh = RotaryPositionalEncoding(d_k=16, max_len=128)
+        assert torch.equal(pe.cos[:128], fresh.cos)
+
+    @pytest.mark.unit
     def test_growth_keeps_the_precision_and_the_covered_rows(self):
         # the requested dtype never reaches the tables, so growth does not move the rows already covered
         pe = RotaryPositionalEncoding(d_k=16, max_len=128)

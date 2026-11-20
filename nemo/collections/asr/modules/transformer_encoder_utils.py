@@ -36,6 +36,9 @@ def _causal_mask(b, h, q_idx, kv_idx):
 
 def _apply_packed_rope(rope, q, k, position_ids):
     """Apply rotary embeddings to token-flat query and key tensors."""
+    # the tables are plain tensors read here without the module's forward: bring them to the queries' device
+    # (a wrapper that moved the parameters and buffers alone leaves them behind), at their provisioned length
+    rope.extend_pe(rope.cos.size(0), q.device)
     cos = rope.cos.index_select(0, position_ids).unsqueeze(1).to(q.dtype)
     sin = rope.sin.index_select(0, position_ids).unsqueeze(1).to(q.dtype)
     return rope._apply_rotary(q, cos, sin), rope._apply_rotary(k, cos.to(k.dtype), sin.to(k.dtype))

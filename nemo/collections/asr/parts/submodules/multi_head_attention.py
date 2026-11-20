@@ -1241,8 +1241,7 @@ class RotaryPositionalEncoding(torch.nn.Module):
         self.rope_base = rope_base
         self.max_len = max_len
 
-        inv_freq = 1.0 / (rope_base ** (torch.arange(0, d_k_rot, 2, dtype=torch.float32, device="cpu") / d_k_rot))
-        self.register_buffer('inv_freq', inv_freq, persistent=False)
+        self.register_buffer('inv_freq', self._frequencies(), persistent=False)
         # plain tensors, see the class docstring; they follow the module's device through _apply
         self.cos, self.sin = self._tables(torch.arange(0, max_len, dtype=torch.float32, device="cpu"))
 
@@ -1267,11 +1266,18 @@ class RotaryPositionalEncoding(torch.nn.Module):
         t_rot = t_rot * cos + self._rotate_half(t_rot) * sin
         return torch.cat((t_rot, t_pass), dim=-1)
 
+    def _frequencies(self) -> torch.Tensor:
+        """The inverse frequencies in float32 on the CPU, from the module's scalars: the one source of every table."""
+        exponents = torch.arange(0, self.d_k_rot, 2, dtype=torch.float32, device="cpu") / self.d_k_rot
+        return 1.0 / (self.rope_base**exponents)
+
     def _tables(self, positions):
         """The cos and sin tables of ``positions`` (1D fp32 tensor), in float32 on the positions' device.
 
-        The tables stay float32 whatever the model's dtype, so their precision does not depend on
-        which call built them; the cast to the Q/K runtime dtype happens in ``forward``.
+        The tables stay float32 whatever the model's dtype, and they come from the float32 frequencies of the
+        module's scalars, not from the ``inv_freq`` buffer, which a dtype conversion of the module rounds:
+        a rebuild after such a conversion, for growth or a device change, keeps the rows it already covered.
+        The cast to the Q/K runtime dtype happens in ``forward``.
         """
         # Build the tables with one device-independent fp32 reference.
         # CPU and CUDA transcendental kernels can round differently
@@ -1279,8 +1285,7 @@ class RotaryPositionalEncoding(torch.nn.Module):
         # rotations solely because the model was constructed on another device.
         target_device = positions.device
         positions_cpu = positions.detach().to(device="cpu", dtype=torch.float32)
-        inv_freq_cpu = self.inv_freq.detach().to(device="cpu", dtype=torch.float32)
-        freqs = torch.outer(positions_cpu, inv_freq_cpu)
+        freqs = torch.outer(positions_cpu, self._frequencies())
         # Duplicate to align with `_rotate_half`: tail half mirrors the head half.
         emb = torch.cat((freqs, freqs), dim=-1)
         return emb.cos().to(device=target_device), emb.sin().to(device=target_device)

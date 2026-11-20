@@ -147,6 +147,7 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
         boosting_tree: BoostingTreeModelConfig | None = None,
         boosting_tree_alpha: float = 0.0,
         return_xattn_scores: bool = False,
+        use_kv_cache: bool = False,
     ):
         super().__init__(
             transformer_decoder=transformer_decoder,
@@ -190,6 +191,7 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
                 len_pen=length_penalty,
                 max_delta_length=max_generation_delta,
                 return_xattn_scores=return_xattn_scores,
+                use_kv_cache=use_kv_cache,
             )
         else:
             self.beam_search = BeamSearchSequenceGeneratorWithFusionModels(
@@ -206,6 +208,7 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
                 fusion_models=fusion_models,
                 fusion_models_alpha=fusion_models_alpha,
                 return_xattn_scores=return_xattn_scores,
+                use_kv_cache=use_kv_cache,
             )
 
         self.preserve_alignments = preserve_alignments
@@ -326,3 +329,5 @@ class AEDBeamInferConfig:
     ngram_lm_alpha: float = 0.0
     boosting_tree: BoostingTreeModelConfig = field(default_factory=lambda: BoostingTreeModelConfig(depth_scaling=1.0))
     boosting_tree_alpha: float = 0.0
+    # decode over the decoder's key-value cache instead of recomputing the attention over cached layer inputs
+    use_kv_cache: bool = False

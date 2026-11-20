@@ -479,19 +479,32 @@ def test_process_batch_with_multiturn_dataset_enabled():
 
 
 @pytest.mark.gpu
-def test_process_batch_with_autoregressive_local_transformer():
+@pytest.mark.parametrize(
+    "frame_stacking_factor, local_transformer_order",
+    [(1, None), (2, "codebook_major"), (2, "frame_major")],
+)
+def test_process_batch_with_autoregressive_local_transformer(frame_stacking_factor, local_transformer_order):
     _seed_everything()
-    model = _make_easy_magpie_model(
-        tiny_easy_magpie_cfg(
-            {
-                "local_transformer_type": "autoregressive",
-                "local_transformer_hidden_dim": 32,
-                "local_transformer_n_layers": 1,
-                "local_transformer_n_heads": 4,
-                "local_transformer_loss_scale": 0.5,
-            }
-        )
-    )
+    overrides = {
+        "local_transformer_type": "autoregressive",
+        "local_transformer_hidden_dim": 32,
+        "local_transformer_n_layers": 1,
+        "local_transformer_n_heads": 4,
+        "local_transformer_loss_scale": 0.5,
+        "frame_stacking_factor": frame_stacking_factor,
+    }
+    if local_transformer_order is not None:
+        overrides["local_transformer_order"] = local_transformer_order
+    model = _make_easy_magpie_model(tiny_easy_magpie_cfg(overrides))
+    num_channels = model.num_audio_codebooks * frame_stacking_factor
+    if local_transformer_order == "frame_major":
+        expected_order = [
+            c * frame_stacking_factor + f for f in range(frame_stacking_factor) for c in range(model.num_audio_codebooks)
+        ]
+        assert expected_order != list(range(num_channels))
+    else:
+        expected_order = list(range(num_channels))
+    assert list(model._lt_helper.channel_order) == expected_order
     batch = _toy_batch(model)
 
     output = model.process_batch(
@@ -583,6 +596,23 @@ def test_process_batch_with_feature_masking():
                 assert masked.any(dim=1).all(), "every item should have at least one masked timestep"
             else:
                 assert torch.equal(outputs, inputs)
+
+
+@pytest.mark.gpu
+def test_local_transformer_order_rejects_unknown_value():
+    with pytest.raises(ValueError, match="Unsupported local_transformer_order"):
+        _make_easy_magpie_model(
+            tiny_easy_magpie_cfg(
+                {
+                    "local_transformer_type": "autoregressive",
+                    "local_transformer_hidden_dim": 32,
+                    "local_transformer_n_layers": 1,
+                    "local_transformer_n_heads": 4,
+                    "frame_stacking_factor": 2,
+                    "local_transformer_order": "interleaved",
+                }
+            )
+        )
 
 
 @pytest.mark.gpu

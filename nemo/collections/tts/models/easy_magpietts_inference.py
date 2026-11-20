@@ -44,6 +44,7 @@ from nemo.collections.tts.modules.magpietts_modules import (
     LocalTransformerType,
     SpecialAudioToken,
     add_special_tokens,
+    stacked_channel_order,
 )
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
 from nemo.collections.tts.parts.utils.tts_dataset_utils import tokenize_text_with_phoneme_spans
@@ -650,6 +651,13 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             # via stack_codes, unlike Magpie which keeps them interleaved in time (B, C, T_full).
             # We pass num_audio_codebooks=C*S and frame_stacking_factor=1 so the helper
             # treats each stacked channel as an independent codebook without time-domain striding.
+            self.local_transformer_order = cfg.get('local_transformer_order', 'codebook_major')
+            lt_channel_order = stacked_channel_order(
+                self.num_audio_codebooks, self.frame_stacking_factor, self.local_transformer_order
+            )
+            logging.info(
+                f"Local transformer order: {self.local_transformer_order}, channel order: {list(lt_channel_order)}"
+            )
             self._lt_helper = LocalTransformerHelper(
                 local_transformer=self.local_transformer,
                 audio_embeddings=self.audio_embeddings,
@@ -662,6 +670,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 audio_eos_id=self.audio_eos_id,
                 mask_token_id=self.mask_token_id,
                 codebook_size=self.codebook_size,
+                channel_order=lt_channel_order,
             )
 
     @property

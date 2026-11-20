@@ -222,7 +222,7 @@ class RegExTokenizer(TokenizerSpec):
         logging.info(f"Saving vocabulary to file = {vocab_file}")
         with open(vocab_file, 'w') as fp:
             for token in self.vocab:
-                fp.write(f"{token[0]}\n")
+                fp.write(f"{token}\n")
 
         logging.info(f"Saving regex to file = {regex_file}")
         with open(regex_file, 'w') as f:

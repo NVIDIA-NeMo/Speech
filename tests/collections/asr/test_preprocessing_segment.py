@@ -488,6 +488,27 @@ class TestAudioSegment:
                 assert audio_segment_1 == audio_segment_2, f'trim setup {trim_setup}, loaded segments not matching'
 
 
+class TestAudioSegmentNormalizeSilence:
+    @pytest.mark.unit
+    @pytest.mark.parametrize("shape", [(1600,), (1600, 2)])
+    def test_normalize_db_keeps_silence(self, shape):
+        """Normalizing an all-zero segment must not turn it into NaN."""
+        segment = AudioSegment(np.zeros(shape, dtype=np.float32), 16000, normalize_db=-25.0)
+        np.testing.assert_array_equal(segment.samples, np.zeros(shape, dtype=np.float32))
+
+    @pytest.mark.unit
+    def test_normalize_db_silent_reference_channel(self):
+        """A silent reference channel leaves every channel untouched instead of producing NaN."""
+        samples = np.stack([np.zeros(1600), 0.1 * np.ones(1600)], axis=-1).astype(np.float32)
+        segment = AudioSegment(samples, 16000, normalize_db=-25.0, ref_channel=0)
+        np.testing.assert_array_equal(segment.samples, samples)
+
+    @pytest.mark.unit
+    def test_normalize_db_still_scales_audio(self):
+        segment = AudioSegment(0.5 * np.ones(1600, dtype=np.float32), 16000, normalize_db=-20.0)
+        assert segment.rms_db == pytest.approx(-20.0, abs=1e-3)
+
+
 class TestShiftPerturbation:
     sample_rate = 16000
 

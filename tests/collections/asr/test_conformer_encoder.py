@@ -1165,8 +1165,8 @@ class TestPackedConformerReduction:
         """Layer normalization in the convolution modules, since batch normalization differs by the padded frames.
 
         Stochastic depth draws once per layer in both forms, so the same seed drops the same layers;
-        the seed drops the layer before the reduction at position 1 and keeps the layer after it,
-        which then runs on the reduced utterances with the rescaled residual.
+        the seed drops the second layer and keeps the third with the rescaled residual,
+        which runs on the reduced utterances when the reduction is at position 1.
         """
         padded_encoder, packed_encoder = self._encoders(
             reduction=reduction,

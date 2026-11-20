@@ -247,6 +247,16 @@ class BufferedRNNTPipeline(BasePipeline):
 
         return state
 
+    def delete_state(self, stream_id: int) -> None:
+        """Delete the state and the stream's bufferer, if an is_last request has not already removed it."""
+        super().delete_state(stream_id)
+        self.bufferer.rm_bufferer(stream_id)
+
+    def reset_session(self) -> None:
+        """Reset the state pool and all per-stream bufferers"""
+        super().reset_session()
+        self.bufferer.reset()
+
     def get_sep(self) -> str:
         """Return the separator for the text processor."""
         return self.sep

@@ -102,7 +102,7 @@ class BufferedSALMPipeline(BasePipeline):
         self.extra_overlap_tokens = 2  # extra tokens for better overlap detection
         self.merging_strategy = MergingStrategy.from_str(cfg.streaming.merging_strategy)
 
-        self.audio_bufferer = BatchedIncrementalAudioBufferer(
+        self.bufferer = BatchedIncrementalAudioBufferer(
             self.sample_rate,
             self.buffer_size_in_secs,
             self.chunk_size_in_secs,
@@ -138,6 +138,16 @@ class BufferedSALMPipeline(BasePipeline):
         state.set_options(new_options)
         return state
 
+    def delete_state(self, stream_id: int) -> None:
+        """Delete the state and the stream's bufferer, if an is_last request has not already removed it."""
+        super().delete_state(stream_id)
+        self.bufferer.rm_bufferer(stream_id)
+
+    def reset_session(self) -> None:
+        """Reset the state pool and all per-stream bufferers"""
+        super().reset_session()
+        self.bufferer.reset()
+
     def get_sep(self) -> str:
         """Return the separator for the text processor."""
         return self.asr_model.word_separator
@@ -171,7 +181,7 @@ class BufferedSALMPipeline(BasePipeline):
         Args:
             frames: (list[Frame]) List of frames to transcribe.
         """
-        buffers, paddings = self.audio_bufferer.update(frames)
+        buffers, paddings = self.bufferer.update(frames)
         paddings = torch.tensor(paddings, dtype=torch.int64, device=self.device)
 
         # Right paddings for the final frames
@@ -196,7 +206,7 @@ class BufferedSALMPipeline(BasePipeline):
             state = self.get_state(frame.stream_id)
             new_tokens = parse_hyp(answer_ids[i], self.asr_model.eos_token_ids).tolist()
             state.incomplete_segment_tokens.clear()
-            if self.audio_bufferer.is_full(frame.stream_id) or frame.is_last:
+            if self.bufferer.is_full(frame.stream_id) or frame.is_last:
                 self.lcs_merge(state, new_tokens)
             else:
                 state.incomplete_segment_tokens.extend(new_tokens)

@@ -1579,6 +1579,7 @@ def test_pe_encoder_online_forward_matches_conformer_io_with_real_encoders():
 @pytest.mark.run_only_on("GPU")
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="PEE GPU test requires CUDA")
 @pytest.mark.parametrize("batch_size, n_frames", [(1, 160), (2, 200)])
+@pytest.mark.gpu
 def test_pe_encoder_offline_forward_on_gpu(batch_size, n_frames):
     enc = build_toy_pe_encoder().eval().cuda()
     # Mels arrive un-normalised in fp32 (the SALM perception contract).
@@ -1602,6 +1603,7 @@ def test_pe_encoder_offline_forward_on_gpu(batch_size, n_frames):
     not (torch.cuda.is_available() and torch.cuda.is_bf16_supported()),
     reason="PEE bf16 GPU test requires CUDA with bf16 support",
 )
+@pytest.mark.gpu
 def test_pe_encoder_offline_forward_bf16_experts_on_gpu():
     # Experts run in bf16 while mels stay fp32 -> exercises `_match_module_io`
     # device/dtype bridging on both branches before their conv subsampling.
@@ -1623,6 +1625,7 @@ def test_pe_encoder_offline_forward_bf16_experts_on_gpu():
 @pytest.mark.unit
 @pytest.mark.run_only_on("GPU")
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="PEE GPU test requires CUDA")
+@pytest.mark.gpu
 def test_pe_encoder_offline_forward_accepts_diar_override_on_gpu():
     enc = build_toy_pe_encoder().eval().cuda()
     batch_size, n_frames = 2, 160
@@ -1648,6 +1651,7 @@ def test_pe_encoder_offline_forward_accepts_diar_override_on_gpu():
 @pytest.mark.unit
 @pytest.mark.run_only_on("GPU")
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="PEE GPU test requires CUDA")
+@pytest.mark.gpu
 def test_pe_encoder_online_forward_on_gpu():
     enc = (
         build_toy_pe_encoder(
@@ -1977,6 +1981,69 @@ def test_packed_fallback_matches_padded_forward_for_dense_and_packed_inputs():
 
 
 @pytest.mark.unit
+def test_fastconformer_asr_branch_runs_packed_in_training_mode(monkeypatch):
+    """The FastConformer branch runs ``forward_sequence_packed`` itself (no padded fallback), in training mode too;
+    its BatchNorm then sees the valid frames only, so with equal lengths the result equals the padded forward."""
+    torch.manual_seed(0)
+    encoder = build_toy_pe_encoder().train()
+    assert isinstance(encoder.asr_encoder, ConformerEncoder) and encoder.asr_encoder.training
+    packed_calls = []
+    packed_forward = encoder.asr_encoder.forward_sequence_packed
+
+    def tracked_packed_forward(*args, **kwargs):
+        packed_calls.append(1)
+        return packed_forward(*args, **kwargs)
+
+    monkeypatch.setattr(encoder.asr_encoder, "forward_sequence_packed", tracked_packed_forward)
+    lengths = torch.tensor([80, 80])
+    mels = torch.randn(2, _MEL_FEATURES, 80)
+    padded, padded_lengths = encoder(mels, lengths)
+    packed = encoder.forward_sequence_packed(mels, lengths)
+    assert packed_calls == [1]
+    assert torch.equal(packed.lengths, padded_lengths)
+    restored = unpack_encoder_output(packed, total_length=padded.shape[-1])
+    torch.testing.assert_close(restored, padded.transpose(1, 2), rtol=1e-4, atol=1e-5)
+
+
+@pytest.mark.unit
+@pytest.mark.run_only_on("GPU")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="PEE GPU test requires CUDA")
+def test_fastconformer_asr_branch_with_attention_dropout_keeps_the_padded_fallback_in_packed_training(monkeypatch):
+    """rel_pos attention over packed sequences runs FlexAttention on CUDA, which has no dropout.
+
+    A FastConformer branch with ``dropout_att > 0`` therefore has no native packed form in training mode:
+    its ``supports_sequence_packed_output`` says so, the PEE keeps the padded fallback it ran before the native path
+    existed, and the step completes forward and backward; in evaluation mode the native path is available again.
+    """
+    asr_encoder_cfg = toy_asr_encoder_cfg()
+    asr_encoder_cfg.n_heads = 2
+    asr_encoder_cfg.dropout_att = 0.1
+    diarization_model_cfg = toy_diarization_model_cfg()
+    diarization_model_cfg.encoder.n_heads = 2
+    encoder = build_toy_pe_encoder(asr_encoder_cfg=asr_encoder_cfg, diarization_model_cfg=diarization_model_cfg)
+    encoder = encoder.train().cuda()
+    assert not encoder.asr_encoder.supports_sequence_packed_output
+    native_calls = []
+    native_forward = encoder.asr_encoder.forward_sequence_packed
+
+    def tracked_native_forward(*args, **kwargs):
+        native_calls.append(1)
+        return native_forward(*args, **kwargs)
+
+    monkeypatch.setattr(encoder.asr_encoder, "forward_sequence_packed", tracked_native_forward)
+    lengths = torch.tensor([80, 53], device="cuda")
+    mels = torch.randn(2, _MEL_FEATURES, 80, device="cuda", requires_grad=True)
+    targets = torch.ones(2, 10, _N_SPK, device="cuda")  # external speaker targets: Sortformer is skipped
+    packed = encoder.forward_sequence_packed(mels, lengths, spk_targets=targets)
+    assert native_calls == [] and torch.isfinite(packed.data).all()
+    packed.data.square().mean().backward()
+    assert mels.grad is not None and torch.isfinite(mels.grad).all()
+    assert encoder.asr_encoder.layers[0].self_attn.linear_q.weight.grad is not None
+    encoder.eval()
+    assert encoder.asr_encoder.supports_sequence_packed_output
+
+
+@pytest.mark.unit
 def test_native_packed_path_normalizes_diar_and_asr_independently_without_unpack(
     monkeypatch,
 ):
@@ -2156,6 +2223,7 @@ def test_online_inference_passes_normalized_time_major_mels_to_sortformer(monkey
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Test requires CUDA")
+@pytest.mark.gpu
 def test_online_inference_uses_activation_device_after_nested_parent_move():
     """A nested Lightning Sortformer must not retain its construction device."""
     parent = nn.Module()
@@ -2235,6 +2303,7 @@ def test_asr_output_frame_boundary_on_tensors_matches_ints(asr_encoder_type):
         ("transformer", toy_transformer_asr_encoder_cfg),
     ],
 )
+@pytest.mark.gpu
 def test_single_window_online_inference_can_be_captured_in_a_cuda_graph(asr_encoder_type, asr_encoder_cfg):
     """A graph-captured single-window online forward over padded frames matches eager on the valid frames."""
     encoder = (
@@ -2361,6 +2430,7 @@ def test_online_inference_batches_asr_windows_like_one_window_per_forward(asr_en
     "asr_encoder_type,asr_encoder_cfg",
     [("fastconformer", toy_asr_encoder_cfg), ("transformer", toy_transformer_asr_encoder_cfg)],
 )
+@pytest.mark.gpu
 def test_online_cuda_graphs_replay_streaming_diarization_steps(asr_encoder_type, asr_encoder_cfg):
     """Steady-state streaming Sortformer steps replayed from CUDA graphs give the eager outputs."""
     if not torch.cuda.is_available():
@@ -2627,7 +2697,7 @@ def test_current_pee_loader_rejects_obsolete_three_expert_inline_schema():
             "sortformer_modules_cfg": {"_target_": "example.Sortformer"},
         }
     )
-    with pytest.raises(ValueError, match="missing required config sections"):
+    with pytest.raises(ValueError, match="obsolete three-expert"):
         CurrentParallelExpertEncoderPT.from_inline_config(config)
 
 
@@ -2677,10 +2747,12 @@ def test_legacy_three_expert_bundle_is_rejected(tmp_path):
             "speaker_expert_cfg": {"_target_": "legacy.Speaker"},
             "sound_expert_cfg": {"_target_": "legacy.Sound"},
             "sortformer_modules_cfg": {"_target_": "legacy.Sortformer"},
+            "sound_ctc_head_cfg": {"_target_": "legacy.CTCHead"},
+            "nemo_version": "2.8.0rc0",
         }
     )
     write_bundle(archive, legacy)
-    with pytest.raises(ValueError, match="missing required config sections"):
+    with pytest.raises(ValueError, match=r"obsolete three-expert.*2\.8\.0rc0.*save_to_nemo.*pe_encoder_config"):
         ParallelExpertEncoderPT.load_from_nemo(str(archive), strict=True)
 
 
@@ -2733,6 +2805,7 @@ class _FlatMelPerception(nn.Module):
 
 
 @pytest.mark.unit
+@pytest.mark.gpu
 def test_encoder_graphs_return_eager_ctc_timestamp_inputs():
     """Graphs captured with CTC timestamp inputs replay the eager embeddings and alignment inputs of every row."""
     if not torch.cuda.is_available():
@@ -2808,6 +2881,7 @@ def _eager_window_pieces(encoder):
 
 
 @pytest.mark.unit
+@pytest.mark.gpu
 def test_encoder_graphs_serve_audio_of_any_length_window_by_window():
     """Audio past the whole-forward graphs replays window graphs captured at start-up and matches eager inference."""
     if not torch.cuda.is_available():
@@ -2875,6 +2949,7 @@ def test_timestamp_state_comparison_respects_storage_precision(dtype, delta, mat
 
 
 @pytest.mark.unit
+@pytest.mark.gpu
 def test_capture_survives_garbage_collection_of_leaked_graphs():
     """Cyclic garbage holding an old CUDAGraph must not be destroyed, and so invalidate the capture, mid-capture."""
     if not torch.cuda.is_available():
@@ -2900,6 +2975,7 @@ def test_capture_survives_garbage_collection_of_leaked_graphs():
 
 
 @pytest.mark.unit
+@pytest.mark.gpu
 def test_graphs_share_their_pool_under_an_allocator_split_limit():
     """vLLM 0.32 profiles, and so captures, under max_split_size_mb:20; graphs must still reuse their shared pool."""
     if not torch.cuda.is_available():
@@ -2996,6 +3072,7 @@ def test_online_graphs_switches_restore_their_previous_value_and_clear_drops_gra
 
 
 @pytest.mark.unit
+@pytest.mark.gpu
 def test_encoder_graphs_route_each_row_by_its_own_length():
     """Short rows replay the whole-forward graphs and long rows run in groups of similar length, in request order."""
     if not torch.cuda.is_available():
@@ -3027,6 +3104,7 @@ def test_encoder_graphs_route_each_row_by_its_own_length():
 
 
 @pytest.mark.unit
+@pytest.mark.gpu
 def test_encoder_graphs_keep_request_order_within_one_long_group():
     """Rows of one group run longest first; each embedding must still go back to its own row."""
     if not torch.cuda.is_available():
@@ -3045,6 +3123,7 @@ def test_encoder_graphs_keep_request_order_within_one_long_group():
 
 
 @pytest.mark.unit
+@pytest.mark.gpu
 def test_encoder_graphs_leave_long_rows_to_the_eager_path_without_long_audio():
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
@@ -3055,6 +3134,7 @@ def test_encoder_graphs_leave_long_rows_to_the_eager_path_without_long_audio():
 
 
 @pytest.mark.unit
+@pytest.mark.gpu
 def test_encoder_graphs_return_ctc_timestamp_inputs_for_long_audio():
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
@@ -3072,6 +3152,7 @@ def test_encoder_graphs_return_ctc_timestamp_inputs_for_long_audio():
 
 
 @pytest.mark.unit
+@pytest.mark.gpu
 def test_asr_window_graphs_pad_rows_to_graph_sizes_and_match_eager():
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
@@ -3098,6 +3179,7 @@ def test_asr_window_graphs_pad_rows_to_graph_sizes_and_match_eager():
 
 
 @pytest.mark.unit
+@pytest.mark.gpu
 def test_streaming_step_graphs_pad_rows_to_the_bucket_and_match_eager():
     """Diarization steps of 3 rows replay graphs captured for 4 rows and return the eager outputs of the 3."""
     if not torch.cuda.is_available():
@@ -3140,6 +3222,7 @@ def test_streaming_step_graphs_pad_rows_to_the_bucket_and_match_eager():
 
 
 @pytest.mark.unit
+@pytest.mark.gpu
 def test_failed_long_audio_capture_keeps_the_whole_forward_graphs(monkeypatch):
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
@@ -3159,6 +3242,7 @@ def test_failed_long_audio_capture_keeps_the_whole_forward_graphs(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("cause", ["long_audio_off", "capture_failed"])
+@pytest.mark.gpu
 def test_eager_long_audio_never_captures_window_graphs(monkeypatch, cause):
     """Without long-audio graphs, the eager fallback must not capture window graphs lazily while serving."""
     if not torch.cuda.is_available():

@@ -168,7 +168,8 @@ def _make_strategy(*, world_size: int, ep_size: int) -> AutomodelParallelStrateg
         cp_size=1,
         ep_size=ep_size,
         distributed_config=FSDP2Config(),
-        moe_config=MoEParallelizerConfig(wrap_outer_model=False),
+        # Automodel rejects a MoE parallelizer config without expert parallelism.
+        moe_config=MoEParallelizerConfig(wrap_outer_model=False) if ep_size > 1 else None,
     )
     strategy.create_device_mesh()
     return strategy

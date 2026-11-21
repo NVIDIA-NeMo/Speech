@@ -72,7 +72,7 @@ def t5nmt(cut: Cut, prompt: T5NMTPromptFormatter) -> dict[str, torch.Tensor]:
     elif hasattr(cut, "default_context"):
         context = cut.default_context
     else:
-        raise RuntimeError("Missing context/default_context custom field in cut: {cut}")
+        raise RuntimeError(f"Missing context/default_context custom field in cut: {cut}")
 
     turns = [
         dict(

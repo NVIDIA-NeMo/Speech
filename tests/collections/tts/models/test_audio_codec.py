@@ -18,7 +18,7 @@ from unittest.mock import Mock
 
 import pytest
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, open_dict
 
 import nemo.collections.tts.models.audio_codec as audio_codec_module
 from nemo.collections.tts.models import AudioCodecModel
@@ -342,3 +342,40 @@ class TestAudioCodecModel:
         dropout_codebooks.assert_not_called()
         mmd_inputs.sum().backward()
         torch.testing.assert_close(full_codes.grad, torch.ones_like(full_codes))
+
+
+class _UnsizedIterableDataset(torch.utils.data.IterableDataset):
+    def __iter__(self):
+        return iter(range(4))
+
+
+class _SizedIterableDataset(_UnsizedIterableDataset):
+    def __len__(self):
+        return 4
+
+
+def _attach_trainer_and_train_dl(model, dataset, **cfg_overrides):
+    with open_dict(model._cfg):
+        model._cfg.update(cfg_overrides)
+    model._trainer = Mock(accumulate_grad_batches=1, limit_train_batches=1.0, num_devices=1, num_nodes=1)
+    model._train_dl = torch.utils.data.DataLoader(dataset, batch_size=2)
+
+
+@pytest.mark.unit
+def test_max_steps_from_max_epochs_with_unsized_dataset_raises_actionable_error(codec_model):
+    # Lhotse iterable datasets have no length; max_steps used to fail with a bare "has no len()" TypeError.
+    _attach_trainer_and_train_dl(codec_model, _UnsizedIterableDataset(), max_epochs=3)
+    with pytest.raises(ValueError, match="max_steps.*steps_per_epoch"):
+        codec_model.max_steps
+
+
+@pytest.mark.unit
+def test_max_steps_from_max_epochs_with_sized_dataset(codec_model):
+    _attach_trainer_and_train_dl(codec_model, _SizedIterableDataset(), max_epochs=3)
+    assert codec_model.max_steps == 6  # 3 epochs * ceil(4 samples / batch_size 2)
+
+
+@pytest.mark.unit
+def test_max_steps_from_steps_per_epoch_with_unsized_dataset(codec_model):
+    _attach_trainer_and_train_dl(codec_model, _UnsizedIterableDataset(), max_epochs=3, steps_per_epoch=5)
+    assert codec_model.max_steps == 15

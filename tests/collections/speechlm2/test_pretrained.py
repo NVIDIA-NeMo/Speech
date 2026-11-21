@@ -21,6 +21,7 @@ from omegaconf import DictConfig, OmegaConf
 from safetensors.torch import save_file
 
 from nemo.collections.speechlm2.parts import pretrained
+from nemo.core.classes.common import UnsafeTargetError
 
 
 def test_setup_speech_encoder_hydrates_missing_config_without_weights():
@@ -44,9 +45,10 @@ def test_setup_speech_encoder_hydrates_missing_config_without_weights():
         }
     )
 
+    perception = MagicMock()
     with (
         patch.object(pretrained, "load_pretrained_nemo_config", return_value=asr_cfg) as load_config,
-        patch.object(pretrained, "AudioPerceptionModule") as perception,
+        patch.object(pretrained, "resolve_target_class", return_value=perception),
     ):
         pretrained.setup_speech_encoder(model, pretrained_weights=False)
 
@@ -56,6 +58,57 @@ def test_setup_speech_encoder_hydrates_missing_config_without_weights():
     assert model.cfg.perception.encoder.n_layers == 2
     assert model.cfg.perception.output_dim == 8
     assert model.cfg.perception.modality_adapter.output_dim == 8
+
+
+class _MarkedPerception(pretrained.AudioPerceptionModule):
+    """A perception class of the test's own, to see which class `perception.target` instantiates."""
+
+
+@pytest.mark.parametrize("target", [None, f"{__name__}._MarkedPerception"])
+def test_setup_speech_encoder_instantiates_the_configured_target(target):
+    perception_cfg = {
+        "preprocessor": {
+            "_target_": "nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor",
+            "features": 80,
+        },
+        "encoder": {
+            "_target_": "nemo.collections.asr.modules.ConformerEncoder",
+            "feat_in": 80,
+            "d_model": 16,
+            "n_heads": 2,
+            "n_layers": 1,
+            "subsampling_factor": 4,
+            "ff_expansion_factor": 2,
+            "conv_kernel_size": 5,
+        },
+        "modality_adapter": {
+            "_target_": "nemo.collections.speechlm2.modules.perception.IdentityConnector",
+            "d_model": 16,
+        },
+        "output_dim": 8,
+    }
+    if target is not None:
+        perception_cfg["target"] = target
+    model = SimpleNamespace(cfg=DictConfig({"pretrained_asr": "unused", "perception": perception_cfg}), llm=None)
+
+    pretrained.setup_speech_encoder(model, pretrained_weights=False)
+
+    expected = pretrained.AudioPerceptionModule if target is None else _MarkedPerception
+    assert type(model.perception) is expected
+
+
+def test_resolve_target_class_rejects_unlisted_and_foreign_targets():
+    """The key goes through the target allowlist, and the class must derive from the model's base."""
+    from nemo.collections.speechlm2.parts.model_loading import resolve_target_class
+
+    with pytest.raises(UnsafeTargetError):
+        resolve_target_class("os.path.join", pretrained.AudioPerceptionModule, "perception.target")
+    with pytest.raises(TypeError, match="perception.target"):
+        resolve_target_class(
+            "nemo.collections.speechlm2.modules.perception.IdentityConnector",
+            pretrained.AudioPerceptionModule,
+            "perception.target",
+        )
 
 
 @pytest.mark.parametrize(

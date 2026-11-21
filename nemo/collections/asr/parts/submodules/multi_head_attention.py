@@ -499,7 +499,50 @@ class RelPositionMultiHeadAttentionLongformer(RelPositionMultiHeadAttention):
     def forward_packed(
         self, x: torch.Tensor, context: PackedAttentionContext, pos_emb: torch.Tensor | None = None
     ) -> torch.Tensor:
-        raise NotImplementedError("Local attention with overlapping chunks has no sequence-packed form.")
+        """Local attention over token-flat input, as Transformer-XL attention inside the context's key window.
+
+        Without global tokens and with the same context on both sides, the sliding-window attention of ``forward``
+        is Transformer-XL attention restricted to the keys ``att_context_size`` around the query,
+        so no overlapping chunks are formed here.
+
+        Args:
+            x: layer input of all utterances, shape ``(T_total, n_feat)``.
+            context: packing metadata of the batch, whose ``key_window`` must hold the keys
+                ``att_context_size`` around every query (the positions ``i - w`` to ``i + w`` for query ``i``);
+                the caller's contract, since comparing it would take a device read.
+            pos_emb: relative positional embedding of the window, shape ``(1, 2 * w + 1, n_feat)``
+                for the context ``[w, w]``.
+
+        Returns:
+            The attention output, shape ``(T_total, n_feat)``.
+        """
+        reason = self.sequence_packed_unsupported_reason()
+        if reason is not None:
+            raise NotImplementedError(reason)
+        if not context.key_window_is_bounded:
+            raise ValueError("Local attention over packed sequences needs the key window of att_context_size.")
+        window = 2 * self.att_context_size[0] + 1
+        if pos_emb is None or pos_emb.size(1) != window:
+            raise ValueError(
+                f"Local attention with att_context_size={list(self.att_context_size)} needs pos_emb of "
+                f"{window} relative positions, got {None if pos_emb is None else pos_emb.size(1)}."
+            )
+        return super().forward_packed(x, context, pos_emb=pos_emb)
+
+    def sequence_packed_unsupported_reason(self) -> str | None:
+        """Why ``forward_packed`` cannot run this module, or None when it can."""
+        if self.global_tokens > 0:
+            return (
+                "rel_pos_local_attn with global tokens has no sequence-packed form: the global tokens enter "
+                "the softmax of every query a second time and attend with projections of their own."
+            )
+        if self.att_context_size[0] != self.att_context_size[1]:
+            return (
+                "rel_pos_local_attn has a sequence-packed form for the same context on both sides only, "
+                f"got att_context_size={list(self.att_context_size)}: with different sides the padded forward "
+                "adds the position term to other relative positions than the ones it attends to."
+            )
+        return None
 
     def forward(self, query, key, value, pad_mask, pos_emb, cache=None):
         """Compute Scaled Dot Product Local Attention with rel. positional encoding. using overlapping chunks

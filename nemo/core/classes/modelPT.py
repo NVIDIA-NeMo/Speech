@@ -18,6 +18,7 @@ import copy
 import inspect
 import os
 import pathlib
+import types
 import uuid
 from abc import abstractmethod
 from contextlib import nullcontext
@@ -26,8 +27,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 import torch
-from lightning.pytorch import LightningModule, Trainer
-from lightning.pytorch.utilities import model_summary, rank_zero_only
+from lightning.pytorch import LightningDataModule, LightningModule, Trainer
+from lightning.pytorch.utilities import CombinedLoader, model_summary, rank_zero_only
+from lightning.pytorch.utilities.data import extract_batch_size
+from lightning.pytorch.utilities.exceptions import MisconfigurationException
+from lightning.pytorch.utilities.signature_utils import is_param_in_hook_signature
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo import package_info
@@ -37,6 +41,7 @@ from nemo.core.classes.module import NeuralModule
 from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.core.optim import prepare_lr_scheduler
 from nemo.core.optim.param_groups import apply_param_group_rules
+from nemo.core.utils.lightning_utils import read_batch
 from nemo.lightning.callback_group import (
     CallbackGroup,
     callback_context,
@@ -968,7 +973,26 @@ class ModelPT(LightningModule, Model):
                     self.setup_multiple_test_data(test_data_config=self._cfg.test_ds)
 
         if stage == 'fit':
+            self._select_training_step_flavor()
             CallbackGroup.get_instance().update_config(nemo_version='v1', trainer=self._trainer)
+
+    def log(self, *args, **kwargs) -> None:
+        """Lightning's ``LightningModule.log``; also called by ``log_dict``.
+
+        When ``training_step`` reads its own batches from a stateful train dataloader (see
+        :meth:`_select_training_step_flavor`), Lightning can't infer ``batch_size`` and raises if it's missing.
+        In that case, a missing ``batch_size`` is filled in the way Lightning's default fetcher would infer it.
+        See :meth:`_inferred_log_batch_size`.
+        """
+        log = super().log
+        trainer = self._trainer
+        if not (self._reads_own_train_batches() and trainer is not None and trainer.training):
+            return log(*args, **kwargs)
+        call = _LIGHTNING_LOG_SIGNATURE.bind(self, *args, **kwargs)
+        call.apply_defaults()
+        if call.arguments['batch_size'] is None:
+            call.arguments['batch_size'] = self._inferred_log_batch_size(call.arguments)
+        return log(*call.args[1:], **call.kwargs)
 
     def train_dataloader(self):
         """
@@ -1903,8 +1927,8 @@ class ModelPT(LightningModule, Model):
         To use, add the following optoins to the model config:
         ## Nsys profiling options
         nsys_profile: False
-            start_step: 10  # Global batch to start profiling
-            end_step: 10 # Global batch to end profiling
+            start_step: 10  # Training batch to start profiling at (counted from the start of training, across epochs)
+            end_step: 10 # Training batch to end profiling after (inclusive)
             ranks: [0] # Global rank IDs to profile
             gen_shape: False # Generate model and kernel details including input shapes
         And then wrap the model training script with:
@@ -1917,8 +1941,8 @@ class ModelPT(LightningModule, Model):
         ## CUDA memory profiling options
         memory_profile:
             enabled: True
-            start_step: 10  # Global batch to start profiling
-            end_step: 10 # Global batch to end profiling
+            start_step: 10  # Training batch to start profiling at (counted from the start of training, across epochs)
+            end_step: 10 # Training batch to end profiling after (inclusive)
             rank: 0 # Global rank ID to profile
             output_path: None # Path to store the profile output file
         """
@@ -2022,7 +2046,10 @@ class ModelPT(LightningModule, Model):
 
             if hasattr(self, '_nsys_profile_enabled'):
                 if self._nsys_profile_enabled and not self._nsys_profile_started:
-                    if batch_idx >= self._nsys_profile_start_step and get_rank() in self._nsys_profile_ranks:
+                    if (
+                        self._nsys_profile_start_step <= self._train_batch_counter() - 1 <= self._nsys_profile_end_step
+                        and get_rank() in self._nsys_profile_ranks
+                    ):
                         logging.info("====== Start nsys profiling ======")
                         torch.cuda.cudart().cudaProfilerStart()
                         if self._nsys_profile_gen_shape:
@@ -2031,7 +2058,12 @@ class ModelPT(LightningModule, Model):
 
             if hasattr(self, '_memory_profile_enabled'):
                 if self._memory_profile_enabled and not self._memory_profile_started:
-                    if batch_idx >= self._memory_profile_start_step and get_rank() == self._memory_profile_rank:
+                    if (
+                        self._memory_profile_start_step
+                        <= self._train_batch_counter() - 1
+                        <= self._memory_profile_end_step
+                        and get_rank() == self._memory_profile_rank
+                    ):
                         logging.info("====== Start CUDA memory profiling ======")
                         torch.cuda.memory._record_memory_history(max_entries=100000)
                         self._memory_profile_started = True
@@ -2078,15 +2110,15 @@ class ModelPT(LightningModule, Model):
                         self._prof.step()
 
             if hasattr(self, '_nsys_profile_enabled'):
-                if self._nsys_profile_enabled and not self._nsys_profile_complete:
-                    if batch_idx >= self._nsys_profile_end_step and get_rank() in self._nsys_profile_ranks:
+                if self._nsys_profile_enabled and self._nsys_profile_started and not self._nsys_profile_complete:
+                    if self._train_batch_counter() - 1 >= self._nsys_profile_end_step:
                         logging.info("====== End nsys profiling ======")
                         torch.cuda.cudart().cudaProfilerStop()
                         self._nsys_profile_complete = True
 
             if hasattr(self, '_memory_profile_enabled'):
-                if self._memory_profile_enabled and not self._memory_profile_complete:
-                    if batch_idx >= self._memory_profile_end_step and get_rank() == self._memory_profile_rank:
+                if self._memory_profile_enabled and self._memory_profile_started and not self._memory_profile_complete:
+                    if self._train_batch_counter() - 1 >= self._memory_profile_end_step:
                         logging.info("====== End CUDA memory profiling ======")
                         torch.cuda.memory._dump_snapshot(
                             f'{self._memory_profile_output_path}/memory_profile_rank{self._memory_profile_rank}.pickle'
@@ -2145,3 +2177,132 @@ class ModelPT(LightningModule, Model):
             return copy.deepcopy(optim_config)
         else:
             return OmegaConf.create(optim_config)
+
+    def _select_training_step_flavor(self) -> None:
+        """Make Lightning fetch training batches without prefetching when the train dataloader is stateful.
+
+        For the default ``training_step(batch, batch_idx)`` signature, Lightning's ``_PrefetchDataFetcher`` reads
+        one batch ahead of the step being run. A stateful dataloader then checkpoints a state that already includes
+        the prefetched batch, and resuming from a mid-epoch checkpoint skips that batch.
+
+        Lightning selects ``_DataLoaderIterDataFetcher``, which doesn't prefetch, when ``training_step`` has the
+        ``training_step(dataloader_iter)`` signature. When the dataloader that this fit trains on is stateful, we
+        shadow this instance's ``training_step`` with such an adapter. It reads one batch per Lightning training
+        batch with :func:`nemo.core.utils.lightning_utils.read_batch` and runs the model's own
+        ``training_step(batch[, batch_idx])``. Models whose ``training_step`` already takes ``dataloader_iter`` and
+        non-stateful dataloaders are unchanged. This runs in ``setup(stage='fit')``, before Lightning selects the
+        data fetcher.
+        """
+        self._dataloader_iter_train_batch = None
+        self._dataloader_iter_train_batch_size = None
+        stateful = _has_stateful_dataloader(self._active_fit_train_dataloaders())
+        if stateful == self._reads_own_train_batches():
+            return
+        if stateful:
+            if is_param_in_hook_signature(self.training_step, "dataloader_iter", explicit=True):
+                return
+            logging.info(
+                "The train dataloader is stateful: training_step will read its own batches (no prefetch) "
+                "so that a mid-epoch checkpoint resumes at exactly the next batch."
+            )
+            self._batch_training_step = self.training_step
+            # Same check Lightning uses to decide whether to pass ``batch_idx`` to ``training_step``.
+            self._batch_training_step_takes_idx = is_param_in_hook_signature(
+                self._batch_training_step, "batch_idx", min_args=2
+            )
+            self.training_step = types.MethodType(_training_step_from_dataloader_iter, self)
+        else:
+            self.training_step = self.__dict__.pop('_batch_training_step')
+            del self._batch_training_step_takes_idx
+
+    def _active_fit_train_dataloaders(self) -> Any:
+        """The train dataloader(s) that the current ``trainer.fit`` iterates and checkpoints.
+
+        That's the model's own ``train_dataloader()``, unless ``train_dataloaders=`` or a datamodule was passed to
+        ``trainer.fit``.
+        """
+        source = getattr(self.trainer.fit_loop, '_data_source', None)
+        instance = getattr(source, 'instance', None)
+        if instance is None or instance is self:
+            return self.train_dataloader()
+        if isinstance(instance, LightningDataModule):
+            # Lightning calls this hook again when it sets up the fit loop; only the loader's type is inspected here.
+            return instance.train_dataloader()
+        return instance
+
+    def _reads_own_train_batches(self) -> bool:
+        """Whether ``training_step`` is the adapter installed by :meth:`_select_training_step_flavor`."""
+        return '_batch_training_step' in self.__dict__
+
+    def _train_batch_counter(self) -> int:
+        """Lightning's running count of training batches; it is incremented once per training batch."""
+        return self.trainer.fit_loop.epoch_loop.batch_progress.total.ready
+
+    def _inferred_log_batch_size(self, log_args: dict) -> int:
+        """``batch_size`` for a ``self.log`` call during training when ``training_step`` reads its own batches.
+
+        Lightning's default fetcher infers the size from the current batch only when the logged value is
+        aggregated as an epoch mean; otherwise the size is unused and Lightning uses 1. We do the same. If the
+        value is aggregated as an epoch mean but the current batch hasn't been read yet (e.g. in
+        ``on_train_batch_start``), its size is unknown, so we raise and ask for an explicit ``batch_size``.
+        """
+        from lightning.pytorch.trainer.connectors.logger_connector.fx_validator import _FxValidator
+        from torchmetrics import Metric
+
+        if self._current_fx_name is None or isinstance(log_args['value'], Metric):
+            return 1
+        _, on_epoch = _FxValidator.check_logging_and_get_default_levels(
+            self._current_fx_name, on_step=log_args['on_step'], on_epoch=log_args['on_epoch']
+        )
+        reduce_fx = log_args['reduce_fx']
+        is_mean = reduce_fx is torch.mean or (isinstance(reduce_fx, str) and reduce_fx.lower() in ('mean', 'avg'))
+        progress = self.trainer.fit_loop.epoch_loop.batch_progress.total
+        within_batch = progress.ready > progress.completed
+        if not (on_epoch and is_mean and within_batch):
+            return 1
+        if self._dataloader_iter_train_batch is None or self._dataloader_iter_train_batch[0] != progress.ready:
+            raise MisconfigurationException(
+                f"self.log({log_args['name']!r}, ...) aggregates an epoch mean, which needs the current batch size, "
+                f"but training_step hasn't read the current batch yet (in {self._current_fx_name}). "
+                "Pass batch_size= explicitly."
+            )
+        if self._dataloader_iter_train_batch_size is None:
+            self._dataloader_iter_train_batch_size = extract_batch_size(self._dataloader_iter_train_batch[1])
+        return self._dataloader_iter_train_batch_size
+
+
+_LIGHTNING_LOG_SIGNATURE = inspect.signature(LightningModule.log)
+
+
+def _training_step_from_dataloader_iter(self: ModelPT, dataloader_iter: Iterator) -> Any:
+    """``training_step(dataloader_iter)`` adapter installed by ``ModelPT._select_training_step_flavor``.
+
+    Reads one batch per Lightning training batch. Optimizers such as LBFGS can run the training closure, and so
+    this step, several times for one training batch; those calls reuse the batch that was already read.
+    """
+    counter = self._train_batch_counter()
+    if self._dataloader_iter_train_batch is not None and self._dataloader_iter_train_batch[0] == counter:
+        _, batch, batch_idx = self._dataloader_iter_train_batch
+    else:
+        batch, batch_idx = read_batch(dataloader_iter, self)
+        self._dataloader_iter_train_batch = (counter, batch, batch_idx)
+        self._dataloader_iter_train_batch_size = None  # inferred lazily by ModelPT.log
+    if self._batch_training_step_takes_idx:
+        return self._batch_training_step(batch, batch_idx)
+    return self._batch_training_step(batch)
+
+
+def _has_stateful_dataloader(dataloaders: Any) -> bool:
+    """Whether any of ``dataloaders`` has ``state_dict``/``load_state_dict``.
+
+    That is the criterion Lightning uses to save a dataloader's state in checkpoints; it covers torchdata's
+    ``StatefulDataLoader`` and NeMo's ``_PerRankStatefulDataLoader``.
+    """
+    if dataloaders is None:
+        return False
+    if not isinstance(dataloaders, CombinedLoader):
+        dataloaders = CombinedLoader(dataloaders)
+    return any(
+        callable(getattr(dl, 'state_dict', None)) and callable(getattr(dl, 'load_state_dict', None))
+        for dl in dataloaders.flattened
+    )

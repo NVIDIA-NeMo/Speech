@@ -376,15 +376,19 @@ Some other Lhotse related arguments we support:
     When ``batch_duration`` is not set, it acts as a static batch size.
 * ``seed`` sets a random seed for the shuffle buffer.
 
-* ``indexed`` (default ``False``) opts the dataloader into Lhotse's indexed-manifest
+* ``indexed`` (default unset) opts the dataloader into Lhotse's indexed-manifest
   path, giving every adapter O(1) random access and graph-token-based exact restore.
-  Requires ``.idx`` sidecars next to every JSONL/tar file. See
-  :ref:`indexed-resumable-dataloading` below.
+  Requires ``.idx`` sidecars next to every JSONL/tar file (or under
+  ``indexes_root``), built before training; NeMo checks for them at startup
+  instead of building them (see the remote-Shar caveat below). When unset, it's
+  ``true`` with ``use_stateful_dataloader: true`` and auto-detected per source
+  otherwise. See :ref:`indexed-resumable-dataloading` below.
 
 * ``use_stateful_dataloader`` (default ``False``) swaps PyTorch's
   ``DataLoader`` for ``torchdata.stateful_dataloader.StatefulDataLoader`` so
   that per-worker iterator state is captured in checkpoints and restored
-  exactly on resume. Pair with ``indexed: true`` for full O(1) restore.
+  exactly on resume. It also makes an unset ``indexed`` mean ``true``, for full
+  O(1) restore.
 
 The full and always up-to-date list of supported options can be found in ``LhotseDataLoadingConfig`` class.
 
@@ -968,11 +972,44 @@ When set at the top level, ``indexed: true`` is propagated by
 top-level flag covers every nested ``input_cfg`` group. You can still override
 it per-source if needed.
 
+With ``use_stateful_dataloader: true``, leaving ``indexed`` unset (or ``null``)
+means ``indexed: true`` for every source, including nested ``input_cfg`` groups
+and ``multi_config`` sub-configs. A source type that only supports streaming
+(such as ``txt`` or ``txt_pair``) then raises at startup; set ``indexed: false``
+on it. Without ``use_stateful_dataloader``, an unset ``indexed``
+is auto-detected per source: a ``lhotse`` ``cuts_path`` uses its ``.idx`` file
+if one exists, while other source types stream. If a blend ends up only partly
+indexed this way, the dataloader logs a warning; set ``indexed`` explicitly to
+silence it.
+
+Pre-build indexes before training, whether ``indexed: true`` is set explicitly
+or implied by ``use_stateful_dataloader``: building an index at startup reads
+the whole data file and writes the sidecar next to the data, from every rank at
+once. Build them with ``python scripts/dataloading/build_indexes.py
+<input_cfg>`` (pass ``--indexes-root`` if you train with ``indexes_root``), or
+set ``indexed: false`` to stream the data instead.
+
+NeMo checks the index files of every source it can enumerate before opening it:
+JSONL ``.idx`` files (mirrored under ``indexes_root`` when set), NeMo tarred
+audio ``.idx`` files, and the ``.idx`` files of every field of a local Shar
+directory or of an explicit Shar ``fields`` list. A missing one raises NeMo's
+``MissingIndexError`` at startup, listing the missing files. Other startup
+errors come from elsewhere: a declared ``index_pack`` that doesn't exist raises
+a ``FileNotFoundError`` naming the pack, and Lhotse's readers raise their own
+errors for indexes they find invalid.
+
+NeMo can't list a remote Shar directory (``s3://``, ``ais://``) before
+opening it. Strictly preventing index creation for remote Shar directories
+requires a Lhotse version whose ``CutSet.from_shar`` exposes
+``auto_create_index``; NeMo passes ``auto_create_index=False`` when it's
+available. With older Lhotse versions, a missing index in a remote Shar
+directory is still built by Lhotse's reader at startup.
+
 Per-adapter support
 ^^^^^^^^^^^^^^^^^^^
 
-The following ``input_cfg`` types accept ``indexed: true`` today and require an
-``.idx`` sidecar next to each data file:
+The following ``input_cfg`` types accept ``indexed: true`` today and require a
+pre-built ``.idx`` sidecar next to each data file (or under ``indexes_root``):
 
 * ``nemo`` / ``nemo_tarred`` — JSONL manifest gets ``manifest.json.idx``;
   every audio tar in ``tarred_audio_filepaths`` gets ``shard.tar.idx``.
@@ -1266,6 +1303,29 @@ be consistent for replay-based restore — not exact restore.
 
 For the iterator graph contract itself, see Lhotse's
 `indexed manifests guide <https://lhotse.readthedocs.io/en/latest/indexed-manifests.html>`_.
+
+Blends
+^^^^^^
+
+A weighted blend (``input_cfg`` with ``weight`` entries or nested groups, or a
+weighted ``manifest_filepath`` / ``shar_path`` list) multiplexes its sources.
+The dataloader checks two blend rules when it's built and raises a
+``ValueError`` before training starts if a rule is broken:
+
+* With ``use_stateful_dataloader: true`` and ``use_bucketing: true``, either
+  every source in the blend is indexed or none is. A blend of indexed and
+  streamed sources can't be checkpointed by the bucketing sampler. Such a blend
+  usually comes from setting ``indexed: false`` on only some ``input_cfg`` entries. Index
+  every source (leave ``indexed`` unset or set it to ``true``, and build the
+  indexes; recommended), set ``indexed: false`` for every source, or disable
+  bucketing (also remove ``bucket_duration_bins`` and ``bucket_batch_size``,
+  which turn it back on).
+* An iterable blend of indexed sources that's split into more than one shard
+  (``num_workers > 1``, or more than one data-parallel rank) can't use
+  ``shard_seed: randomized``, because each shard would pick sources with its
+  own RNG and skew the blend weights. Set an integer ``shard_seed``. Each shard
+  reads a disjoint slice of every indexed source, so an integer seed doesn't
+  duplicate data across workers or ranks.
 
 Pre-computing bucket duration bins
 ------------------------------------

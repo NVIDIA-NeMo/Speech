@@ -40,7 +40,7 @@ from lhotse.dataset import (
 )
 from lhotse.dataset.dataloading import resolve_seed
 from lhotse.dataset.sampling.base import CutSampler, SamplingConstraint, TimeConstraint
-from lhotse.lazy import LazyFlattener
+from lhotse.lazy import IteratorNode, LazyFlattener, LazyIteratorMultiplexer
 from lhotse.utils import fix_random_seed
 from omegaconf import DictConfig, OmegaConf
 
@@ -293,10 +293,14 @@ class LhotseDataLoadingConfig:
     # The first K examples will actually be read and then discarded, incurring the IO cost, due to
     # our support of object stores and gzipped files that generally don't have indexes of byte offsets per line.
     slice_length: Optional[int] = None
-    # Forwarded to ``CutSet.from_file(path, indexed=...)`` for plain JSONL ``cuts_path`` inputs.
-    # ``None`` = lhotse auto-detect (uses .idx if present, falls back to streaming).
-    # ``True`` = require indexed reads (errors if .idx is missing).
+    # Read data sources through their ``.idx`` index sidecars (O(1) random access and exact resume).
+    # Cascades through ``read_dataset_config`` to every nested ``input_cfg`` entry.
+    # ``True`` = read every source through its index.
     # ``False`` = streaming reads only.
+    # ``None`` (unset) = with ``use_stateful_dataloader=True``, same as ``True`` but every index must
+    #   already exist (build them with ``scripts/dataloading/build_indexes.py``) and every source type must
+    #   support indexing; otherwise startup fails. Without the stateful dataloader, ``None`` keeps the
+    #   per-source auto-detection (``lhotse`` ``cuts_path`` uses its .idx if present, other types stream).
     indexed: Optional[bool] = None
     # When set, ``.idx`` sidecars are read from a mirror under this root that
     # preserves the data files' directory structure (URL schemes are stripped,
@@ -744,6 +748,10 @@ def get_lhotse_dataloader_from_multi_config(
         try:
             expanded_config = make_structured_with_schema_warnings(config)
             for k, v in shared_opts.items():
+                if k == "indexed" and v is None:
+                    # Unset at the top level: keep the sub-config's own value. With use_stateful_dataloader,
+                    # an unset value is resolved to True when the sub-config's CutSet is read.
+                    continue
                 expanded_config[k] = v
             s, t = get_lhotse_sampler_from_config(
                 config=expanded_config, global_rank=global_rank, world_size=world_size, tokenizer=tokenizer
@@ -1127,6 +1135,8 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
             )
         )
 
+    _validate_blend_sampling_graph(config, sampler, use_iterable_dataset=use_iterable_dataset, world_size=world_size)
+
     return sampler, use_iterable_dataset
 
 
@@ -1465,3 +1475,94 @@ def _cut_text_into_windows(cut, num_tokens: int, tokenizer) -> list:
         )
         ans.append(new_cut)
     return ans
+
+
+def _validate_blend_sampling_graph(config, sampler, *, use_iterable_dataset: bool, world_size: int) -> None:
+    """Reject sampling graphs that Lhotse can't iterate or checkpoint, before training starts.
+
+    Both checks inspect the CutSet graph the sampler was built from, so they cover every way of
+    creating a weighted blend (``input_cfg`` weights and nested groups, weighted ``manifest_filepath``
+    or ``shar_path`` lists), all of which end in a Lhotse multiplexer.
+    """
+    sources = list(getattr(sampler, "cuts", ()))
+    nodes, leaves = _walk_cut_graph(sources)
+
+    # Iterable path: each (DP rank x DataLoader worker) shard reads a disjoint slice of every indexed source.
+    # Lhotse refuses seed='randomized' for a multiplexer of indexed sources under multi-shard iteration
+    # (every shard would route to sources with a different RNG); raise here with the NeMo config key instead.
+    num_shards = world_size * max(config.num_workers, 1) if use_iterable_dataset else 1
+    if num_shards > 1 and any(
+        isinstance(n, LazyIteratorMultiplexer) and n.seed == "randomized" and n.is_indexed for n in nodes
+    ):
+        raise ValueError(
+            f"shard_seed='randomized' is not supported for a weighted blend of indexed sources when the "
+            f"iterable dataloader is split into {num_shards} shards (world_size={world_size} x "
+            f"num_workers={config.num_workers}): every shard would pick blend sources with a different RNG, "
+            f"which skews the global blend weights. Set an integer shard_seed "
+            f"(e.g. 'shard_seed: {config.seed}'). With indexed sources an integer shard_seed doesn't "
+            "duplicate data across workers or ranks, because each shard reads a disjoint slice of every "
+            "source's index."
+        )
+
+    # DynamicBucketingSampler.state_dict() saves its bucket buffers as graph-restore tokens. That works
+    # when every source is graph-restorable (indexed), and falls back to O(N) replay when none is.
+    # A graph with only some indexed sources fails in state_dict(), i.e. at the first checkpoint save.
+    restorable = [bool(getattr(leaf, "has_constant_time_access", False)) for leaf in leaves]
+    partly_indexed = any(restorable) and not all(bool(getattr(s, "has_constant_time_access", False)) for s in sources)
+    indexed_names = sorted({type(leaf).__name__ for leaf, r in zip(leaves, restorable) if r})
+    streaming_names = sorted({type(leaf).__name__ for leaf, r in zip(leaves, restorable) if not r})
+    if partly_indexed and not config.use_stateful_dataloader and config.get("indexed") is None:
+        # Allowed without the stateful dataloader, but usually unintended: an unset 'indexed' lets each
+        # source type decide for itself, and turning use_stateful_dataloader on later indexes all of them.
+        logging.warning(
+            "This data blend is only partly indexed: some sources are read through an index "
+            f"({', '.join(indexed_names)}) and others are streamed ({', '.join(streaming_names)}), because "
+            "'indexed' is unset and each source type auto-detects it (Lhotse 'cuts_path' manifests use their "
+            ".idx file if one exists, other source types stream). Set 'indexed: true' (build the indexes with "
+            "scripts/dataloading/build_indexes.py) or 'indexed: false' to make the choice explicit."
+        )
+    if not config.use_stateful_dataloader or not isinstance(sampler, DynamicBucketingSampler):
+        return
+    if partly_indexed:
+        raise ValueError(
+            "use_stateful_dataloader=True with use_bucketing=True can't checkpoint this data blend: some "
+            f"sources are read through an index ({', '.join(indexed_names)}) and others are streamed "
+            f"({', '.join(streaming_names)}), so the bucketing sampler would fail at the first checkpoint save. "
+            "This happens when 'indexed: false' is set on some input_cfg entries but not on others, or when "
+            "'indexed: true' is set explicitly and a source type only supports streaming. Fix it in one of these "
+            "ways: (1) index every source: leave 'indexed' unset or set it to true, and build the indexes with "
+            "scripts/dataloading/build_indexes.py (exact O(1) resume; recommended); (2) set 'indexed: false' "
+            "for every source (resume replays the epoch up to the checkpoint); or (3) disable bucketing with "
+            "'use_bucketing: false' and no 'bucket_duration_bins' or 'bucket_batch_size' (either one turns "
+            "bucketing back on)."
+        )
+
+
+def _walk_cut_graph(sources: list) -> tuple[list, list]:
+    """Return ``(nodes, leaves)`` of the Lhotse lazy-iterator graph rooted at ``sources``.
+
+    Mirrors how Lhotse's DynamicBucketingSampler finds leaf sources when it checkpoints: unwrap
+    ``CutSet.data``, then descend through ``sources`` (multiplexers, chains) or ``source`` (filters,
+    mappers, repeaters). A node with neither is a leaf data reader.
+    """
+    nodes, leaves = [], []
+    stack = list(reversed(sources))
+    while stack:
+        node = stack.pop()
+        if hasattr(node, "data") and not callable(getattr(node, "data")):
+            node = node.data
+        nodes.append(node)
+        children = None
+        if isinstance(node, IteratorNode):
+            srcs = getattr(node, "sources", None)
+            if isinstance(srcs, (list, tuple)) and srcs:
+                children = list(srcs)
+            else:
+                src = getattr(node, "source", None)
+                if src is not None and not callable(src):
+                    children = [src]
+        if children:
+            stack.extend(reversed(children))
+        else:
+            leaves.append(node)
+    return nodes, leaves

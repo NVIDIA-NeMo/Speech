@@ -419,6 +419,50 @@ def test_pre_validation_constant_time_leaves_fail_for_map_style_too():
 
 
 @pytest.mark.unit
+def test_pre_validation_unset_indexed_with_stateful_counts_as_indexed():
+    # The dataloader resolves an unset 'indexed' to True when use_stateful_dataloader is on.
+    cfg = _base_cfg()
+    del cfg["indexed"]
+    cfg["input_cfg"][0]["input_cfg"][0]["slice_length"] = 50
+    checks = {c.check_id: c.status for c in pv.run_pre_validation(cfg).checks}
+    assert checks["constant-time-leaves"] == pv.PASS
+    assert checks["indexed-implies-root"] == pv.PASS
+    assert checks["slice-length-vs-indexed"] == pv.FAIL
+
+
+@pytest.mark.unit
+def test_pre_validation_carries_inherited_indexed_into_leaves():
+    # A group's 'indexed: false' reaches children whose own value is absent or null (as the dataloader propagates
+    # it), even though the stateful default makes the unset root 'true'.
+    cfg = _base_cfg()
+    del cfg["indexed"]
+    group = cfg["input_cfg"][0]
+    group["indexed"] = False
+    group["input_cfg"][1]["indexed"] = None
+    checks = {c.check_id: c for c in pv.run_pre_validation(cfg).checks}
+    assert checks["constant-time-leaves"].status == pv.FAIL
+    assert len(checks["constant-time-leaves"].extra["streaming"]) == 2
+
+    # Streaming leaves aren't subject to indexed-only incompatibilities.
+    group["input_cfg"][0]["slice_length"] = 50
+    group["input_cfg"][1]["cut_map_fns"] = ["some.module:fn"]
+    checks = {c.check_id: c.status for c in pv.run_pre_validation(cfg).checks}
+    assert checks["slice-length-vs-indexed"] != pv.FAIL
+    assert checks["cut-map-fns-vs-indexed"] != pv.FAIL
+
+    # Children explicitly selecting True beneath a false group are indexed; inherited stateful indexing passes.
+    for leaf in group["input_cfg"]:
+        leaf["indexed"] = True
+        leaf.pop("slice_length", None)
+        leaf.pop("cut_map_fns", None)
+    assert {c.check_id: c.status for c in pv.run_pre_validation(cfg).checks}["constant-time-leaves"] == pv.PASS
+    del group["indexed"]
+    for leaf in group["input_cfg"]:
+        del leaf["indexed"]
+    assert {c.check_id: c.status for c in pv.run_pre_validation(cfg).checks}["constant-time-leaves"] == pv.PASS
+
+
+@pytest.mark.unit
 def test_pre_validation_slice_length_with_indexed_fail():
     cfg = _base_cfg()
     cfg["input_cfg"][0]["input_cfg"][0]["slice_length"] = 50

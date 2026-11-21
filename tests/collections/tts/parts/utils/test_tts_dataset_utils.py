@@ -1165,7 +1165,9 @@ class TestNemoTranscriberWithPrompt:
             (None, "de", "de-DE", "de-DE"),
             (None, "en", "en-US", "en-US"),  # "en" alone is ambiguous between en-US and en-GB
             (None, "fr", "fr", "fr"),  # the model has "fr" but not the default locale "fr-FR"
-            ({"pt-BR": 0, "auto": 1}, "pt", "pt", "pt-BR"),  # language missing from the default locale map
+            ({"pt-BR": 0, "auto": 1}, "pt", "pt-BR", "pt-BR"),
+            ({"vi-VN": 0, "auto": 1}, "vi", "vi-VN", "vi-VN"),
+            ({"nl-NL": 0, "auto": 1}, "nl", "nl", "nl-NL"),  # language missing from the default locale map
             (None, None, None, "auto"),
         ],
     )

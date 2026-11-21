@@ -21,6 +21,7 @@ from torch.nn import LayerNorm
 from nemo.collections.asr.parts.packed_sequence import PackedSlotLayout
 from nemo.collections.asr.parts.submodules.adapters.attention_adapter_mixin import AttentionAdapterModuleMixin
 from nemo.collections.asr.parts.submodules.batchnorm import FusedBatchNorm1d
+from nemo.collections.asr.parts.submodules.broadcast_dropout import BroadcastDropout
 from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D
 from nemo.collections.asr.parts.submodules.multi_head_attention import (
     MultiHeadAttention,
@@ -32,8 +33,24 @@ from nemo.collections.asr.parts.submodules.packed_attention import PackedAttenti
 from nemo.collections.asr.parts.utils.activations import Swish
 from nemo.collections.common.parts.utils import ModuleBlock, activation_registry, block_binds, build_module
 from nemo.core.classes.mixins import AccessMixin
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
-__all__ = ['ConformerConvolution', 'ConformerFeedForward', 'ConformerLayer', 'build_self_attention']
+if TRITON_AVAILABLE:
+    from nemo.collections.asr.parts.triton.activation_dropout import (
+        ACTIVATION_DROPOUT_DTYPES,
+        activation_dropout,
+        activation_dropout_linear,
+        fused_activation_name,
+    )
+
+__all__ = [
+    'ConformerConvolution',
+    'ConformerFeedForward',
+    'ConformerLayer',
+    'FusedBroadcastDropout',
+    'apply_dropout',
+    'build_self_attention',
+]
 
 
 def build_self_attention(
@@ -149,6 +166,10 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         conv_kernel_size (int): kernel size for depthwise convolution in convolution module
         dropout (float): dropout probabilities for linear layers
         dropout_att (float): dropout probabilities for attention distributions
+        dropout_broadcast (bool): draw the masks of the feed-forward and residual dropouts once per sequence
+            over the feature axis and share them over the sequence's positions (`BroadcastDropout`),
+            instead of a mask per element; the attention dropout stays per element.
+            Defaults to False.
         use_bias (bool): Apply bias to all Linear and Conv1d layers from each ConformerLayer to improve activation flow and stabilize training of huge models.
             Defaults to True.
         feed_forward: block of both feed-forward modules, default `ConformerFeedForward`;
@@ -173,6 +194,7 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         conv_context_size=None,
         dropout=0.1,
         dropout_att=0.1,
+        dropout_broadcast=False,
         pos_bias_u=None,
         pos_bias_v=None,
         att_context_size=[-1, -1],
@@ -197,10 +219,15 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
 
         norm = norm or LayerNorm
         feed_forward = feed_forward or ConformerFeedForward
+        self.dropout_broadcast = dropout_broadcast
+        ff_defaults = dict(d_model=d_model, d_ff=d_ff, dropout=dropout, use_bias=use_bias)
+        if dropout_broadcast:
+            # passed only when set, so a feed-forward block without the argument keeps working with the default
+            ff_defaults['dropout_broadcast'] = True
 
         # first feed forward module
         self.norm_feed_forward1 = build_module(norm, normalized_shape=d_model)
-        self.feed_forward1 = build_module(feed_forward, d_model=d_model, d_ff=d_ff, dropout=dropout, use_bias=use_bias)
+        self.feed_forward1 = build_module(feed_forward, **ff_defaults)
 
         # convolution module
         self.norm_conv = build_module(norm, normalized_shape=d_model)
@@ -238,9 +265,9 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
 
         # second feed forward module
         self.norm_feed_forward2 = build_module(norm, normalized_shape=d_model)
-        self.feed_forward2 = build_module(feed_forward, d_model=d_model, d_ff=d_ff, dropout=dropout, use_bias=use_bias)
+        self.feed_forward2 = build_module(feed_forward, **ff_defaults)
 
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = FusedBroadcastDropout(dropout) if dropout_broadcast else nn.Dropout(dropout)
         self.norm_out = build_module(norm, normalized_shape=d_model)
 
     def forward(self, x, att_mask=None, pos_emb=None, pad_mask=None, cache_last_channel=None, cache_last_time=None):
@@ -348,22 +375,26 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         if self.self_attention_model == 'rel_pos_local_attn':
             raise NotImplementedError("rel_pos_local_attn has no sequence-packed form.")
 
+        # the broadcast dropouts take the packing to give every row the mask of its sequence;
+        # a feed-forward block receives it only with the option, so a block without the argument keeps working
+        ff_kwargs = dict(context=attention_context) if self.dropout_broadcast else {}
+
         residual = x
         x = self.norm_feed_forward1(x)
-        x = self.feed_forward1(x)
-        residual = residual + self.dropout(x) * self.fc_factor
+        x = self.feed_forward1(x, **ff_kwargs)
+        residual = residual + apply_dropout(self.dropout, x, attention_context) * self.fc_factor
 
         x = self.norm_self_att(residual)
         x = self.self_attn.forward_packed(x, attention_context, pos_emb=pos_emb)
-        residual = residual + self.dropout(x)
+        residual = residual + apply_dropout(self.dropout, x, attention_context)
 
         x = self.norm_conv(residual)
         x = self.conv.forward_packed(x, conv_layout)
-        residual = residual + self.dropout(x)
+        residual = residual + apply_dropout(self.dropout, x, attention_context)
 
         x = self.norm_feed_forward2(residual)
-        x = self.feed_forward2(x)
-        residual = residual + self.dropout(x) * self.fc_factor
+        x = self.feed_forward2(x, **ff_kwargs)
+        residual = residual + apply_dropout(self.dropout, x, attention_context) * self.fc_factor
 
         return self.norm_out(residual)
 
@@ -609,9 +640,27 @@ class ConformerFeedForward(nn.Module):
         activation: the activation module, or its name in the activation registry
             (`swish`, `relu`, `gelu`, `squared_relu`, ...); default `Swish`
         use_bias: bias in both linear layers
+        dropout_broadcast: one dropout mask of width ``d_ff`` per sequence, shared by its positions
+            (`BroadcastDropout`), instead of a mask per element; default False.
+            Sequence-packed states ``(T_total, d_model)`` then need the packing ``context`` in ``forward``.
+
+    In training with dropout on CUDA, the activation, the dropout and the second linear layer run fused
+    (:mod:`nemo.collections.asr.parts.triton.activation_dropout`) for the activations the kernel implements:
+    the pre-activation is the one tensor of width ``d_ff`` saved for the backward,
+    instead of the activation output, the mask and the second linear layer's input.
+    The other activations, a replaced ``dropout`` or ``linear2`` module, evaluation and other devices
+    run the modules one after the other.
     """
 
-    def __init__(self, d_model, d_ff, dropout, activation: nn.Module | str = Swish(), use_bias=True):
+    def __init__(
+        self,
+        d_model,
+        d_ff,
+        dropout,
+        activation: nn.Module | str = Swish(),
+        use_bias=True,
+        dropout_broadcast: bool = False,
+    ):
         super(ConformerFeedForward, self).__init__()
         self.d_model = d_model
         self.d_ff = d_ff
@@ -620,15 +669,48 @@ class ConformerFeedForward(nn.Module):
         if isinstance(activation, str):
             activation = activation_registry[activation]()
         self.activation = activation
-        self.dropout = nn.Dropout(p=dropout)
+        self.dropout = FusedBroadcastDropout(dropout) if dropout_broadcast else nn.Dropout(p=dropout)
         self.linear2 = nn.Linear(d_ff, d_model, bias=self.use_bias)
 
-    def forward(self, x):
+    def forward(self, x, context: PackedAttentionContext | None = None):
+        """
+        Args:
+            x: states ``(..., d_model)``; with ``dropout_broadcast`` padded states ``(..., T, d_model)``
+                or sequence-packed states ``(T_total, d_model)`` with their ``context``
+            context: the packing of sequence-packed states, read by the broadcast dropout only
+        """
         x = self.linear1(x)
+        fused_activation = self._fused_activation(x)
+        if fused_activation is not None:
+            broadcast = isinstance(self.dropout, BroadcastDropout)
+            packed = broadcast and context is not None
+            return activation_dropout_linear(
+                x,
+                fused_activation,
+                self.dropout.p,
+                self.linear2.weight,
+                self.linear2.bias,
+                broadcast=broadcast,
+                sequence_ids=context.sequence_ids if packed else None,
+                num_sequences=context.lengths.numel() if packed else None,
+            )
         x = self.activation(x)
-        x = self.dropout(x)
+        x = apply_dropout(self.dropout, x, context)
         x = self.linear2(x)
         return x
+
+    def _fused_activation(self, hidden: torch.Tensor) -> str | None:
+        """The kernel's name of the activation when the fused path applies to this hidden, else None."""
+        if not (TRITON_AVAILABLE and self.training and hidden.is_cuda and hidden.dtype in ACTIVATION_DROPOUT_DTYPES):
+            return None
+        # the fused path stands in for the plain modules only, not for a replaced dropout or linear layer
+        if type(self.dropout) not in (nn.Dropout, BroadcastDropout, FusedBroadcastDropout):
+            return None
+        if not 0.0 < self.dropout.p < 1.0:
+            return None
+        if type(self.linear2) is not nn.Linear:
+            return None
+        return fused_activation_name(self.activation)
 
     def reset_parameters_ff(self):
         ffn1_max = self.d_model**-0.5
@@ -639,3 +721,49 @@ class ConformerFeedForward(nn.Module):
             if self.use_bias:
                 nn.init.uniform_(self.linear1.bias, -ffn1_max, ffn1_max)
                 nn.init.uniform_(self.linear2.bias, -ffn2_max, ffn2_max)
+
+
+class FusedBroadcastDropout(BroadcastDropout):
+    """`BroadcastDropout` through the fused kernels in training on CUDA.
+
+    The kernel reads every row's mask at its sequence, so sequence-packed states save the ``(sequences, D)``
+    mask alone instead of a mask of their own size, and padded states save their ``(..., 1, D)`` mask;
+    the masks come from the kernels' own random stream.
+    Elsewhere (evaluation, CPU, other dtypes, Triton missing, ``p`` of 1) the module behaves as `BroadcastDropout`.
+    The shape checks repeat the base class's with its words, so both paths refuse the same inputs alike.
+    """
+
+    def forward(self, x: torch.Tensor, context: PackedAttentionContext | None = None) -> torch.Tensor:
+        fused = TRITON_AVAILABLE and self.training and x.is_cuda and x.dtype in ACTIVATION_DROPOUT_DTYPES
+        if not fused or not 0.0 < self.p < 1.0:
+            return super().forward(x, context)
+        if context is not None:
+            if x.dim() != 2 or x.shape[0] != context.total_tokens:
+                raise ValueError(
+                    f"BroadcastDropout with a packing context of {context.total_tokens} tokens needs states"
+                    f" of shape (T_total, D), got {tuple(x.shape)}"
+                )
+            return activation_dropout(
+                x,
+                "identity",
+                self.p,
+                broadcast=True,
+                sequence_ids=context.sequence_ids,
+                num_sequences=context.lengths.numel(),
+            )
+        if x.dim() < 3:
+            raise ValueError(
+                f"BroadcastDropout needs padded states of shape (..., T, D) with a batch axis, got {tuple(x.shape)};"
+                " sequence-packed states (T_total, D) need their packing context"
+            )
+        return activation_dropout(x, "identity", self.p, broadcast=True)
+
+
+def apply_dropout(dropout: nn.Module, x: torch.Tensor, context: PackedAttentionContext | None) -> torch.Tensor:
+    """Apply a dropout module to states, passing the packing of sequence-packed states to a `BroadcastDropout`.
+
+    ``torch.nn.Dropout`` and other modules take the states alone.
+    """
+    if isinstance(dropout, BroadcastDropout):
+        return dropout(x, context)
+    return dropout(x)

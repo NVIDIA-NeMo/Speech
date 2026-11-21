@@ -852,6 +852,7 @@ class BeamBatchedTDTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs)
         fusion_models_alpha: Optional[List[float]] = None,
         blank_lm_score_mode: Optional[str | BlankLMScoreMode] = BlankLMScoreMode.NO_SCORE,
         pruning_mode: Optional[str | PruningMode] = PruningMode.EARLY,
+        beam_beta: float = 0.0,
         allow_cuda_graphs: Optional[bool] = True,
         return_best_hypothesis: Optional[str] = True,
         enable_per_stream_biasing: bool = False,
@@ -873,6 +874,7 @@ class BeamBatchedTDTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs)
             fusion_models_alpha: list of alpha values for fusion models
             blank_lm_score_mode: mode for scoring blank symbol with LM
             pruning_mode: mode for pruning hypotheses with LM
+            beam_beta: score added for every non-blank label (length reward); positive values counter deletions
             allow_cuda_graphs: whether to allow CUDA graphs
             score_norm: whether to normalize scores before best hypothesis extraction
             enable_per_stream_biasing: whether to enable per-stream biasing via multi-boosting tree
@@ -911,6 +913,7 @@ class BeamBatchedTDTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs)
                 fusion_models_alpha=fusion_models_alpha,
                 blank_lm_score_mode=blank_lm_score_mode,
                 pruning_mode=pruning_mode,
+                beam_beta=beam_beta,
                 allow_cuda_graphs=allow_cuda_graphs,
                 enable_per_stream_biasing=enable_per_stream_biasing,
                 preserve_step_confidence=preserve_step_confidence,

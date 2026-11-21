@@ -10,12 +10,13 @@ import re
 import struct
 from collections.abc import Mapping
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import dataclass
 from multiprocessing import get_context
 from pathlib import Path
 
 from lhotse.indexing import read_index
-from lhotse.serialization import decode_json_line
+from lhotse.serialization import decode_json_line, open_best
 
 from nemo.collections.common.data.lhotse.indexed_adapters import (
     IndexedTarMemberReader,
@@ -621,6 +622,21 @@ def _write_nemo_tar_ordinal_map_shard_task(
     )
 
 
+@contextmanager
+def _open_indexed_manifest_path(path: str, index_path: str | Path):
+    if path.endswith((".jsonl.gz", ".json.gz")):
+        from lhotse.indexing import _require_indexed_gzip, gzip_index_file_path
+
+        with _open_data_path(path) as source:
+            with _require_indexed_gzip().IndexedGzipFile(fileobj=source) as reader:
+                with open_best(gzip_index_file_path(path, index_path=index_path), "rb") as seek_index:
+                    reader.import_index(fileobj=seek_index)
+                yield reader
+    else:
+        with _open_data_path(path) as source:
+            yield source
+
+
 def _iter_indexed_manifest_rows(path: str, index_path: str | Path):
     offsets = read_index(index_path)
     if len(offsets) < 1 or int(offsets[0]) != 0:
@@ -630,7 +646,7 @@ def _iter_indexed_manifest_rows(path: str, index_path: str | Path):
 
     row_index = 0
     row_count = len(offsets) - 1
-    with _open_data_path(path) as source:
+    with _open_indexed_manifest_path(path, index_path) as source:
         while row_index < row_count:
             batch_start = int(offsets[row_index])
             batch_end_index = row_index + 1

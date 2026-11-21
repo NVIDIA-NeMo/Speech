@@ -13,11 +13,15 @@ storage backend, and resume topology all interact.
 ## Core concepts
 
 - Indexed sources need `.idx` sidecars for random access into JSONL, tar, and
-  supported Shar-style data. Build these once per blend/source set.
+  supported Shar-style data. Gzip JSONL (`.jsonl.gz` or line-delimited `.json.gz`)
+  additionally needs `<source>.gzidx` and Lhotse's optional `indexed_gzip`
+  dependency in both the index-build and training environments. Build these
+  once per blend/source set.
 - For datasets with very many shards, an optional dataset-level `.idxpack`
   combines existing sidecars into one memory-mapped catalog. Prefer one pack
   per independently configured outer `input_cfg`; do not create one global
-  pack for an entire mixture.
+  pack for an entire mixture. Gzip JSONL selects pack version 4, which embeds
+  the `.gzidx` contents; packed reads need no loose sidecars.
 - `use_stateful_dataloader: true` lets Lightning checkpoint the dataloader
   iterator state, but only if seeds, worker counts, and distributed topology are
   stable across chunks.
@@ -37,7 +41,7 @@ storage backend, and resume topology all interact.
 |---|---|---|---|
 | Training YAML | yes | argument or `--config=` | Inspect `data.train_ds`, `data.validation_ds`, `trainer`, `exp_manager`, and any model fields that affect resume. |
 | Launcher script | no | argument or auto-detect from project conventions | Check per-chunk seed policy, resume topology invariance, Python path setup, AIStore env vars, and optional index staging. |
-| Data-blend YAML | no | resolved from `data.train_ds.input_cfg` when possible | Check indexability: compressed paths, non-seekable paths, unsupported `extra_fields`, `slice_length`, and mixed indexed/non-indexed chains. |
+| Data-blend YAML | no | resolved from `data.train_ds.input_cfg` when possible | Check indexability: unsupported compression, non-seekable paths, unsupported `extra_fields`, `slice_length`, and mixed indexed/non-indexed chains. |
 | Runtime context | no | argument, config file, or user-provided notes | Detect storage backend, AIStore endpoint availability, container constraints, and index mirror destination. |
 
 ## Outputs
@@ -80,6 +84,20 @@ Run every relevant check in:
 Each finding should include severity, field/path, current value, recommended
 value, and a short rationale.
 
+For gzip JSONL migration, preserve existing `.jsonl.gz` paths, enable `indexed`,
+and prepare both `.idx` and `.gzidx` with `build_indexes.py`. Install
+`lhotse[gzip]` in the build and training environments and verify their Lhotse
+versions support gzip indexing. Shar writers with `create_index=True` create
+both sidecars automatically when that dependency is available. Keep tar shards
+uncompressed and verify a seekable backend for remote gzip sources.
+
+NeMo's `lhotse_shar` adapter currently uses loose sidecars; the idxpack converter
+does not support that adapter. For supported pack adapters, convert after
+building both sidecars and validate the resulting v4 pack. Gzip pack sources
+must be local and keep their recorded paths; moving them requires rebuilding
+the pack. Keep unsupported pack adapters
+on loose sidecars, using the converter's supported-type checks.
+
 Severities:
 
 - **fatal**: automatic patching is not possible; user must preprocess data or
@@ -111,12 +129,15 @@ Use `templates/migration-report.md`. Include:
 
 Use `templates/pre-flight-checklist.md` when present. Required steps:
 
-- Build `.idx` sidecars for every training/validation/test blend involved.
+- Build `.idx` sidecars for every training/validation/test blend involved,
+  including `.gzidx` companions for gzip JSONL.
 - When startup would open many loose sidecars, build and validate one `.idxpack`
   per supported outer dataset after the sidecars exist. Record the owning
   `input_cfg` entry and output filename explicitly.
 - Verify `indexes_root` points at the same stable mirror used by the runtime, or
   that explicit node-local index staging populates it before training starts.
+  Stage both sidecars for loose gzip reads; packed reads need only the pack
+  and source files, with `indexed_gzip` available at runtime.
 - If AIStore is in play: verify `aistore` SDK availability, `AIS_ENDPOINT`, and
   whether `USE_AIS_GET_BATCH` or `USE_AIS_INDIVIDUAL_GETS` is required.
 - Verify one invariant seed across resumable chunks.

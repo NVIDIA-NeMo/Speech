@@ -492,3 +492,11 @@ Model Configuration
 All models in this collection use a configuration-based approach, where a YAML configuration file specifies the model architecture, components, and training parameters. See the :doc:`configurations documentation <configs>` for details on these configuration files.
 
 For information about scaling and training these models at scale, see the :doc:`training and scaling documentation <training_and_scaling>`.
+
+Backbone configuration loading
+------------------------------
+
+The vLLM SpeechLM configuration loader defaults to ``trust_remote_code=False``
+when reading a backbone config. Set ``NEMO_TRUST_REMOTE_CODE=true`` in the launching
+environment to allow a vetted custom config. The opt-in is read from the process
+environment, not from the model configuration.

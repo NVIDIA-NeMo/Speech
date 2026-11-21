@@ -15,7 +15,6 @@
 
 import json
 import os
-import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -25,6 +24,7 @@ import numpy as np
 import torch.utils.data
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
+from nemo.collections.common.data.lhotse.stateful_rng import StatefulRandomMixin
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import BaseTokenizer, IPABPETokenizer
 from nemo.collections.tts.parts.preprocessing.feature_processors import FeatureProcessor
 from nemo.collections.tts.parts.preprocessing.features import Featurizer
@@ -38,6 +38,7 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     get_tokenizer_for_language,
     get_weighted_sampler,
     load_audio,
+    set_g2p_rng,
     stack_tensors,
     tokenize_text_with_phoneme_spans,
 )
@@ -339,7 +340,7 @@ class TextToSpeechDataset(Dataset):
         return batch_dict
 
 
-class MagpieTTSDataset(TextToSpeechDataset):
+class MagpieTTSDataset(StatefulRandomMixin, TextToSpeechDataset):
     """
     Class for processing and loading text to speech training examples for Magpie-TTS model.
     In addition to the manifest structure for TextToSpeechDataset, we can have the following keys:
@@ -347,6 +348,12 @@ class MagpieTTSDataset(TextToSpeechDataset):
     Note: target_audio_codes_path, context_audio_codes_path are absolute paths to the cached audio codes.
     If they are not present in the manifest or if load_cached_codes_if_available=False, then the audio will be loaded
     and codes will be computed on the fly in the model class.
+
+    All random choices (context slicing, text context remapping, tokenizer choice) draw from ``self.rng``
+    (see :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`). By default this is the
+    global ``random`` module, as before. After ``enable_checkpointed_rng()`` it is a generator seeded per
+    dataloading process whose state ``StatefulDataLoader`` saves and restores, and G2P ``phoneme_probability``
+    decisions draw from it too.
 
     Args:
         dataset_meta: Dict of dataset names (string) to dataset metadata.
@@ -459,15 +466,19 @@ class MagpieTTSDataset(TextToSpeechDataset):
 
     def __getitem__(self, index):
         data = self.data_samples[index]
+        # With checkpointed randomness, G2P draws (e.g. phoneme_probability) come from the dataset generator.
+        if self.checkpointed_rng_enabled:
+            set_g2p_rng(self.text_tokenizer, self.rng)
+            set_g2p_rng(self.phoneme_tokenizer, self.rng)
 
         def _sample_context_duration_with_available_limit(available_duration_sec: float) -> float:
             effective_duration_max = min(self.context_duration_max, available_duration_sec)
             effective_duration_max = max(self.context_duration_min, effective_duration_max)
-            return random.uniform(self.context_duration_min, effective_duration_max)
+            return self.rng.uniform(self.context_duration_min, effective_duration_max)
 
         if data.tokenizer_names is not None:
             # Pick a random tokenizer from the list of tokenizers
-            tokenizer_name = random.choice(data.tokenizer_names)
+            tokenizer_name = self.rng.choice(data.tokenizer_names)
         else:
             tokenizer_name = self.default_tokenizer_name
 
@@ -568,7 +579,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
                 _context_duration_to_slice * self.sample_rate / self.codec_model_samples_per_frame
             )
             if _num_frames_to_slice < context_audio_codes.shape[1]:
-                start_idx = random.randint(0, context_audio_codes.shape[1] - _num_frames_to_slice)
+                start_idx = self.rng.randint(0, context_audio_codes.shape[1] - _num_frames_to_slice)
                 context_audio_codes = context_audio_codes[:, start_idx : start_idx + _num_frames_to_slice]
             else:
                 # Repeaet the audio if it is shorter than the desired duration
@@ -594,7 +605,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
             _context_duration_to_slice = _sample_context_duration_with_available_limit(_available_context_duration)
             _num_samples_to_slice = self.get_num_audio_samples_to_slice(_context_duration_to_slice, self.sample_rate)
             if _num_samples_to_slice < len(context_audio_array):
-                start_idx = random.randint(0, len(context_audio_array) - _num_samples_to_slice)
+                start_idx = self.rng.randint(0, len(context_audio_array) - _num_samples_to_slice)
                 context_audio_array = context_audio_array[start_idx : start_idx + _num_samples_to_slice]
             else:
                 # Repeaet the audio if it is shorter than the desired duration
@@ -644,7 +655,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
             _context_duration_to_slice = _sample_context_duration_with_available_limit(_available_context_duration)
             _num_samples_to_slice = int(_context_duration_to_slice * 16000)
             if _num_samples_to_slice < len(audio_array_16khz):
-                start_idx = random.randint(0, len(audio_array_16khz) - _num_samples_to_slice)
+                start_idx = self.rng.randint(0, len(audio_array_16khz) - _num_samples_to_slice)
                 audio_array_16khz = audio_array_16khz[start_idx : start_idx + _num_samples_to_slice]
             audio_16khz = torch.tensor(audio_array_16khz, dtype=torch.float32)
             audio_len_16khz = audio_16khz.shape[0]
@@ -655,7 +666,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
             if 'context_text' in data.manifest_entry:
                 context_text = data.manifest_entry['context_text']
                 if self.text_context_remapping is not None and context_text in self.text_context_remapping:
-                    if self.dataset_type == 'train' and random.random() < self.text_context_remapping_prob:
+                    if self.dataset_type == 'train' and self.rng.random() < self.text_context_remapping_prob:
                         # Only remap during training. Give the exact text context during inference.
                         context_text = self.text_context_remapping[context_text]
                 context_tokens = self.text_tokenizer.encode(context_text, self.text_conditioning_tokenizer_name)

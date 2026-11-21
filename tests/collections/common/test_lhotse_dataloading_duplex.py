@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import random
 from itertools import islice
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from lhotse import CutSet, SupervisionSegment
 from omegaconf import OmegaConf
 
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
+from nemo.collections.common.data.lhotse.cutset import read_cutset_from_config
 
 
 class Identity(torch.utils.data.Dataset):
@@ -355,3 +357,69 @@ def test_data_input_cfg_reverse_role_multi_config_with_workers(regular_duplex_s2
         sups = sorted(cut.supervisions, key=lambda s: s.start)
         assert sups[0].speaker == "swapped_agent"
         assert sups[1].speaker == "swapped_user"
+
+
+def _extra_silence_config(shar_path, extra_end_silence_seed=None, add_extra_end_silence=True):
+    item = {
+        "type": "lhotse_magpietts_data_as_continuation",
+        "shar_path": str(shar_path),
+        "sample_rate": 22050,
+        "add_extra_end_silence": add_extra_end_silence,
+        "extra_end_silence_range": [0.5, 3.0],
+    }
+    if extra_end_silence_seed is not None:
+        item["extra_end_silence_seed"] = extra_end_silence_seed
+    return OmegaConf.create(
+        {
+            "input_cfg": [item],
+            "sample_rate": 22050,
+            "force_finite": True,
+            "shuffle": False,
+            "seed": 0,
+            "shard_seed": 0,
+        }
+    )
+
+
+def _read_cuts(config):
+    # Cut IDs of padded cuts are random, so compare in (unshuffled) input order.
+    cuts, _ = read_cutset_from_config(config)
+    return list(cuts)
+
+
+def test_magpietts_extra_end_silence_with_seed_is_a_function_of_the_cut(cutset_shar_magpietts_path):
+    config = _extra_silence_config(cutset_shar_magpietts_path, extra_end_silence_seed=0)
+
+    # A resumed run re-creates the cuts in a process whose global RNG state differs from the original run.
+    random.seed(0)
+    first = [cut.duration for cut in _read_cuts(config)]
+    random.seed(1)
+    second = [cut.duration for cut in _read_cuts(config)]
+
+    assert len(first) == 5
+    assert first == second
+    # The extra silence is drawn per cut, not shared by all cuts.
+    assert len(set(first)) > 1
+
+
+def test_magpietts_extra_end_silence_without_seed_uses_the_global_rng(cutset_shar_magpietts_path, monkeypatch):
+    draws = iter([0.5, 1.5] * 5)
+    monkeypatch.setattr(random, "uniform", lambda a, b: next(draws))
+    config = _extra_silence_config(cutset_shar_magpietts_path)
+
+    cuts = _read_cuts(config)
+
+    # The source cuts are 2 s long; each read draws the next global value.
+    assert [cut.duration for cut in cuts] == [2.5, 3.5, 2.5, 3.5, 2.5]
+    for cut in cuts:
+        user_sup, agent_sup = cut.supervisions
+        silence = cut.duration - 2.0
+        assert user_sup.duration == pytest.approx(0.08 + silence)
+        assert agent_sup.duration == pytest.approx(2.0 - 0.08 + silence + 1.0)
+
+
+def test_magpietts_without_extra_end_silence_keeps_durations(cutset_shar_magpietts_path):
+    cuts = _read_cuts(_extra_silence_config(cutset_shar_magpietts_path, add_extra_end_silence=False))
+
+    assert [cut.duration for cut in cuts] == [2.0] * 5
+    assert all(cut.supervisions[0].duration == pytest.approx(0.08) for cut in cuts)

@@ -442,6 +442,25 @@ Conformer-Transducer
 
 Please refer to the model page of :ref:`Conformer-Transducer <Conformer-Transducer_model>` for more information on this model.
 
+Residual stream precision under autocast
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Under mixed precision (``trainer.precision: bf16-mixed``) the layers of every Conformer encoder keep their residual
+stream and the inputs of their layer norms in float32, and every norm saves a float32 copy of its input for the backward.
+With ``autocast_residual: true`` in the encoder section the stream and the norm inputs stay in the autocast dtype,
+which halves what the plain layer norms (``torch.nn.LayerNorm``, ``torch.nn.RMSNorm``) save, five tensors of the
+stream's shape per layer (another norm block saves what it saved before), at a numerics change: the residual
+additions and the norm inputs are rounded to the autocast dtype, the encoder output, the InterCTC captures and the
+``save_encoder_tensors`` capture come in that dtype instead of float32, and the gradients of the norm parameters
+are rounded to it once per step. A training with the option is a different run from one without it, so the
+default is off. The option is meant for bfloat16: float16's range may overflow a stream that float32 carries.
+
+.. code-block:: yaml
+
+    encoder:
+      _target_: nemo.collections.asr.modules.ConformerEncoder
+      autocast_residual: true
+
 
 Streaming Transformer
 ~~~~~~~~~~~~~~~~~~~~~

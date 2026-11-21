@@ -157,6 +157,14 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         conv: block of the convolution module, default `ConformerConvolution`
         self_attn: block of the self-attention, default the attention class of `self_attention_model`
         norm: block of every layer norm, default `torch.nn.LayerNorm`
+        autocast_residual: under autocast, keep the residual stream and the layer norm inputs in the autocast dtype
+            instead of float32, which halves what the plain layer norms save for the backward (another norm block
+            saves what it saved before); default False, the float32 stream.
+            With it the layer returns the autocast dtype instead of float32 (so do the encoder's output, its InterCTC
+            captures and the ``save_encoder_tensors`` capture), the residual additions and the norm inputs are rounded
+            to that dtype, and a branch output or adapter output of another dtype is cast back to it; streaming caches
+            keep the dtype of the cache they came in with. Meant for bfloat16: float16's range may overflow a stream
+            that float32 carries. Without autocast the option has no effect.
     """
 
     def __init__(
@@ -184,9 +192,11 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         conv: ModuleBlock | None = None,
         self_attn: ModuleBlock | None = None,
         norm: ModuleBlock | None = None,
+        autocast_residual: bool = False,
     ):
         super(ConformerLayer, self).__init__()
 
+        self.autocast_residual = autocast_residual
         self.use_pytorch_sdpa = use_pytorch_sdpa
         if use_pytorch_sdpa_backends is None:
             use_pytorch_sdpa_backends = []
@@ -257,12 +267,15 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
             cache_last_channel (torch.tensor) : next cache for MHA layers (B, T_cache, d_model)
             cache_last_time (torch.tensor) : next cache for convolutional layers (B, d_model, T_cache)
         """
+        dtype = self._residual_dtype(x)
+        if dtype is not None:
+            x = x.to(dtype)
         residual = x
-        x = self.norm_feed_forward1(x)
+        x = self._norm(self.norm_feed_forward1, x, dtype)
         x = self.feed_forward1(x)
-        residual = residual + self.dropout(x) * self.fc_factor
+        residual = residual + self._dropout(x, dtype) * self.fc_factor
 
-        x = self.norm_self_att(residual)
+        x = self._norm(self.norm_self_att, residual, dtype)
         if self.self_attention_model == 'rel_pos':
             x = self.self_attn(query=x, key=x, value=x, mask=att_mask, pos_emb=pos_emb, cache=cache_last_channel)
         elif self.self_attention_model == 'rel_pos_local_attn':
@@ -277,7 +290,7 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         if x is not None and cache_last_channel is not None:
             (x, cache_last_channel) = x
 
-        residual = residual + self.dropout(x)
+        residual = residual + self._dropout(x, dtype)
 
         if self.is_adapter_available():
             # Call the MHA adapters
@@ -288,19 +301,19 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
                 'pos_emb': pos_emb,
             }
             pack_input = self.forward_enabled_adapters(pack_input)
-            residual = pack_input['x']
+            residual = self._stream(pack_input['x'], dtype)
 
-        x = self.norm_conv(residual)
+        x = self._norm(self.norm_conv, residual, dtype)
         x = self.conv(x, pad_mask=pad_mask, cache=cache_last_time)
         if cache_last_time is not None:
             (x, cache_last_time) = x
-        residual = residual + self.dropout(x)
+        residual = residual + self._dropout(x, dtype)
 
-        x = self.norm_feed_forward2(residual)
+        x = self._norm(self.norm_feed_forward2, residual, dtype)
         x = self.feed_forward2(x)
-        residual = residual + self.dropout(x) * self.fc_factor
+        residual = residual + self._dropout(x, dtype) * self.fc_factor
 
-        x = self.norm_out(residual)
+        x = self._norm(self.norm_out, residual, dtype)
 
         if self.is_adapter_available():
             # Call the adapters
@@ -309,7 +322,7 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
                 'loc': 'post',
             }
             pack_input = self.forward_enabled_adapters(pack_input)
-            x = pack_input['x']
+            x = self._stream(pack_input['x'], dtype)
 
         if self.is_access_enabled(getattr(self, "model_guid", None)) and self.access_cfg.get(
             'save_encoder_tensors', False
@@ -348,24 +361,73 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         if self.self_attention_model == 'rel_pos_local_attn':
             raise NotImplementedError("rel_pos_local_attn has no sequence-packed form.")
 
+        dtype = self._residual_dtype(x)
+        if dtype is not None:
+            x = x.to(dtype)
         residual = x
-        x = self.norm_feed_forward1(x)
+        x = self._norm(self.norm_feed_forward1, x, dtype)
         x = self.feed_forward1(x)
-        residual = residual + self.dropout(x) * self.fc_factor
+        residual = residual + self._dropout(x, dtype) * self.fc_factor
 
-        x = self.norm_self_att(residual)
+        x = self._norm(self.norm_self_att, residual, dtype)
         x = self.self_attn.forward_packed(x, attention_context, pos_emb=pos_emb)
-        residual = residual + self.dropout(x)
+        residual = residual + self._dropout(x, dtype)
 
-        x = self.norm_conv(residual)
+        x = self._norm(self.norm_conv, residual, dtype)
         x = self.conv.forward_packed(x, conv_layout)
-        residual = residual + self.dropout(x)
+        residual = residual + self._dropout(x, dtype)
 
-        x = self.norm_feed_forward2(residual)
+        x = self._norm(self.norm_feed_forward2, residual, dtype)
         x = self.feed_forward2(x)
-        residual = residual + self.dropout(x) * self.fc_factor
+        residual = residual + self._dropout(x, dtype) * self.fc_factor
 
-        return self.norm_out(residual)
+        return self._norm(self.norm_out, residual, dtype)
+
+    def _residual_dtype(self, x: torch.Tensor) -> torch.dtype | None:
+        """The autocast dtype the residual stream follows with ``autocast_residual``, else None for the float32 stream."""
+        if not self.autocast_residual or not torch.amp.is_autocast_available(x.device.type):
+            return None
+        if torch.is_autocast_enabled(x.device.type):
+            return torch.get_autocast_dtype(x.device.type)
+        return None
+
+    @staticmethod
+    def _stream(x: torch.Tensor, dtype: torch.dtype | None) -> torch.Tensor:
+        """A tensor that joins the residual stream, in the stream's dtype.
+
+        A branch or an adapter may return another dtype than the stream's (the attention avoids float16 autocast
+        and returns bfloat16 or float32, an adapter's own norm returns float32), which would promote the stream.
+        """
+        return x if dtype is None else x.to(dtype)
+
+    def _dropout(self, x: torch.Tensor, dtype: torch.dtype | None) -> torch.Tensor:
+        """Dropout of a branch output, in the dtype of the residual stream."""
+        return self.dropout(self._stream(x, dtype))
+
+    def _norm(self, norm: nn.Module, x: torch.Tensor, dtype: torch.dtype | None) -> torch.Tensor:
+        """A layer norm of the residual stream; on the autocast-dtype stream the plain norms run on that dtype.
+
+        ``torch.nn.LayerNorm`` and ``torch.nn.RMSNorm`` themselves run outside autocast through their functional
+        forms with the parameters cast to the stream's dtype, since their fused kernels take no float32 parameters
+        with a half-precision input (the composite fallback would upcast and save float32 copies).
+        Another norm block, a subclass with its own ``forward`` included, runs under autocast as on the float32
+        stream, so its own kernels decide what it saves (a block around a plain norm saves what it saved before),
+        and its output returns to the stream's dtype.
+        """
+        if dtype is None:
+            return norm(x)
+        # the keyword form: Dynamo binds autocast's arguments by name when it traces the context manager;
+        # a subclass that keeps the plain forward takes the plain path
+        if isinstance(norm, LayerNorm) and type(norm).forward is LayerNorm.forward:
+            with torch.autocast(device_type=x.device.type, enabled=False):
+                weight = norm.weight.to(dtype) if norm.weight is not None else None
+                bias = norm.bias.to(dtype) if norm.bias is not None else None
+                return nn.functional.layer_norm(x, norm.normalized_shape, weight, bias, norm.eps)
+        if isinstance(norm, nn.RMSNorm) and type(norm).forward is nn.RMSNorm.forward:
+            with torch.autocast(device_type=x.device.type, enabled=False):
+                weight = norm.weight.to(dtype) if norm.weight is not None else None
+                return nn.functional.rms_norm(x, norm.normalized_shape, weight, norm.eps)
+        return norm(x).to(dtype)
 
 
 class ConformerConvolution(nn.Module):

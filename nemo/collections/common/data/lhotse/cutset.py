@@ -555,9 +555,21 @@ def read_share_gpt_webdataset_as_conversation(config) -> tuple[CutSet, bool]:
     return cuts, True
 
 
+def _require_shar_index_pack_support() -> None:
+    try:
+        import lhotse.shar.index_pack  # noqa: F401
+    except ImportError as e:
+        raise RuntimeError(
+            "index_pack for lhotse_shar requires a Lhotse version with Shar index-pack support "
+            "(lhotse.shar.index_pack)."
+        ) from e
+
+
 def _resolve_shar_inputs(path: Union[str, Path], only_metadata: bool) -> dict:
     if only_metadata:
-        return dict(fields={"cuts": sorted(Path(path).glob("cuts.*"))})
+        # Skip index files (.idx sidecars, .gzidx seek indexes, .idxpack) that sit next to the shards.
+        cuts = [p for p in Path(path).glob("cuts.*") if not p.name.endswith((".idx", ".gzidx", ".idxpack"))]
+        return dict(fields={"cuts": sorted(cuts)})
     else:
         return dict(in_dir=path)
 
@@ -779,6 +791,17 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
         indexes_root = config.get("indexes_root", None)
         if config.get("cuts_path") is not None:
             warnings.warn("Note: lhotse.cuts_path will be ignored because lhotse.shar_path was provided.")
+        # Index pack (one per outer entry; it may hold several Shar sources). Metadata-only reads need no offsets.
+        index_pack = None if metadata_only else _resolve_index_pack(config)
+        pack_kwargs = {}
+        if index_pack is not None:
+            _require_shar_index_pack_support()
+            pack_kwargs = dict(
+                index_pack=index_pack,
+                index_pack_max_open_files=config.get("index_pack_max_open_files", 32),
+            )
+            # The pack holds the offsets; a loader-level indexes_root is meant for the non-packed adapters.
+            indexes_root = None
         if isinstance(config.shar_path, (str, Path)):
             cuts = CutSet.from_shar(
                 **_resolve_shar_inputs(config.shar_path, metadata_only),
@@ -787,6 +810,7 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                 slice_length=config.get("slice_length", None),
                 indexed=indexed,
                 indexes_root=indexes_root,
+                **pack_kwargs,
             )
             if not metadata_only and not force_finite:
                 cuts = cuts.repeat(preserve_id=True)
@@ -805,6 +829,7 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                         slice_length=config.get("slice_length", None),
                         indexed=indexed,
                         indexes_root=indexes_root,
+                        **pack_kwargs,
                     )
                     weight = len(cs)
                 else:
@@ -822,6 +847,7 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                         slice_length=config.get("slice_length", None),
                         indexed=indexed,
                         indexes_root=indexes_root,
+                        **pack_kwargs,
                     )
                 cutsets.append(cs)
                 weights.append(weight)
@@ -848,6 +874,7 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                 slice_length=config.get("slice_length", None),
                 indexed=indexed,
                 indexes_root=indexes_root,
+                **pack_kwargs,
             )
             if not metadata_only and not force_finite:
                 cuts = cuts.repeat(preserve_id=True)

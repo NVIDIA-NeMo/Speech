@@ -458,3 +458,72 @@ class TestBuildModule:
         assert build_activation(module) is module
         with pytest.raises(ValueError, match="unknown activation 'tanh'"):
             build_activation("tanh")
+
+
+class TestSquaredReLU:
+    @pytest.mark.unit
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+    def test_matches_relu_squared_with_its_gradient(self, dtype):
+        torch.manual_seed(0)
+        x = torch.randn(64, 37, dtype=dtype, requires_grad=True)
+        grad_out = torch.randn(64, 37, dtype=dtype)
+        reference = torch.relu(x.detach().double()).requires_grad_()
+        (reference**2).backward(grad_out.double())
+        out = SquaredReLU()(x)
+        out.backward(grad_out)
+        tolerance = dict(rtol=1e-6, atol=1e-6) if dtype == torch.float32 else dict(rtol=2e-2, atol=2e-2)
+        assert out.dtype == dtype
+        torch.testing.assert_close(out.double(), torch.relu(x.detach().double()) ** 2, **tolerance)
+        torch.testing.assert_close(x.grad.double(), torch.where(x.detach() > 0, reference.grad, 0.0), **tolerance)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "device_type, dtype",
+        [
+            # CPU autocast leaves ``square`` in the input dtype, so this cell holds for either form: a control
+            pytest.param("cpu", torch.bfloat16, id="cpu-bfloat16-control"),
+            pytest.param("cuda", torch.bfloat16, marks=pytest.mark.run_only_on('GPU'), id="cuda-bfloat16"),
+            pytest.param("cuda", torch.float16, marks=pytest.mark.run_only_on('GPU'), id="cuda-float16"),
+        ],
+    )
+    def test_saves_one_tensor_of_the_input_dtype_under_autocast(self, device_type, dtype):
+        # the hidden of a feed-forward block arrives in the autocast dtype; the backward needs it once
+        x = torch.randn(8, 16, device=device_type, dtype=dtype, requires_grad=True)
+        saved = {}
+
+        def pack(tensor):
+            saved[tensor.untyped_storage().data_ptr()] = (tensor.dtype, tensor.numel())
+            return tensor
+
+        autocast = torch.autocast(device_type, dtype=dtype)
+        with autocast, torch.autograd.graph.saved_tensors_hooks(pack, lambda t: t):
+            out = SquaredReLU()(x)
+        assert out.dtype == dtype
+        assert list(saved.values()) == [(dtype, x.numel())]
+        out.sum().backward()
+        torch.testing.assert_close(x.grad.float(), 2 * torch.relu(x.detach().float()))
+
+    @pytest.mark.run_only_on('GPU')
+    @pytest.mark.unit
+    @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+    def test_feed_forward_under_autocast_matches_the_float32_square(self, dtype):
+        """Between two linear layers the product equals the float32 square followed by the cast to the half dtype."""
+        torch.manual_seed(0)
+        linear1, linear2 = torch.nn.Linear(32, 64).cuda(), torch.nn.Linear(64, 16).cuda()
+        x = torch.randn(4, 50, 32, device="cuda", requires_grad=True)
+        reference = x.detach().clone().requires_grad_()
+        with torch.autocast("cuda", dtype=dtype):
+            hidden = SquaredReLU()(linear1(x))
+            # the explicit float32 square, so the comparison does not depend on autocast's list of float32 ops
+            expected_hidden = torch.square(torch.relu(linear1(reference)).float()).to(dtype)
+            out, expected = linear2(hidden), linear2(expected_hidden)
+        assert hidden.dtype == dtype and torch.equal(hidden, expected_hidden) and torch.equal(out, expected)
+        out.float().sum().backward()
+        expected.float().sum().backward()
+        assert torch.equal(x.grad, reference.grad)
+        # the half-precision square and the cast float32 square agree where float16 overflows (from 256 on)
+        # and where bfloat16 only rounds; 255.875 is the largest float16 below 256 (bfloat16 rounds it to 256)
+        large = torch.tensor([200.0, 255.0, 255.875, 256.0, 1000.0], device="cuda", dtype=dtype)
+        torch.testing.assert_close(
+            SquaredReLU()(large), torch.square(torch.relu(large).float()).to(dtype), rtol=0, atol=0
+        )

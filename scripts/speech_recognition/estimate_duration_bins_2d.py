@@ -41,7 +41,8 @@ from nemo.collections.common.tokenizers import (
 from nemo.collections.common.tokenizers.aggregate_tokenizer import TokenizerWrapper
 
 
-def parse_args():
+def parse_args(args: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments for 2D duration and token bin estimation."""
     parser = argparse.ArgumentParser(
         description="Estimate duration bins for Lhotse dynamic bucketing using a sample of the input dataset. "
         "The dataset is read either from one or more manifest files and supports data weighting. "
@@ -121,7 +122,7 @@ def parse_args():
         "By default allow token counts at 4 sigma away from distribution mean, computed separately for every bucket.",
     )
     parser.add_argument(
-        "-q", "--quiet", type=bool, default=False, help="When specified, only print the estimated duration bins."
+        "-q", "--quiet", action="store_true", help="When specified, only print the estimated duration bins."
     )
     parser.add_argument(
         "-f",
@@ -138,7 +139,7 @@ def parse_args():
         help="Prompt slots provided as a Python list of dicts. It is used together with --prompt-format option."
         "For example, with Canary-1B you may use: [{'role':'user','slots':{'source_lang':'en','target_lang':'en','task':'asr','pnc':'yes'}]",
     )
-    return parser.parse_args()
+    return parser.parse_args(args)
 
 
 def sort_two_arrays(A, B):

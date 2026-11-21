@@ -59,7 +59,7 @@ def steady_chunks(encoder: ConformerEncoder, batch_size: int, num_steps: int, de
 
 def run_stream(encoder: ConformerEncoder, chunks, batch_size: int, device: str, keep_all_last: bool = True):
     """Run the cache-aware streaming loop over the chunks; returns per-step output tuples."""
-    cache_lc, cache_lt, cache_len = encoder.get_initial_cache_state(batch_size=batch_size)
+    cache_lc, cache_lt, cache_len = encoder.get_initial_cache_state(batch_size=batch_size, dtype=chunks[0].dtype)
     drop = encoder.streaming_cfg.drop_extra_pre_encoded
     chunk_len = torch.full((batch_size,), chunks[0].size(-1), dtype=torch.int64, device=device)
     outputs = []
@@ -92,12 +92,15 @@ def assert_stream_outputs_equal(reference, candidate):
 class TestStreamingEncoderCudaGraphsGPU:
     @pytest.mark.unit
     @pytest.mark.parametrize("batch_size", [1, 4])
-    def test_graphed_stream_step_matches_eager(self, batch_size: int):
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+    def test_graphed_stream_step_matches_eager(self, batch_size: int, dtype: torch.dtype):
         """Graphed steady-state steps must be exactly equal to eager (torch.equal), including the
         cache-fill phase and the final keep_all_outputs=True step (eager fallback)."""
         device = "cuda"
-        encoder = make_encoder(device)
-        chunks = steady_chunks(encoder, batch_size, num_steps=8, device=device)
+        if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported(including_emulation=False):
+            pytest.skip("Requires native CUDA bfloat16 support")
+        encoder = make_encoder(device).to(dtype)
+        chunks = [chunk.to(dtype) for chunk in steady_chunks(encoder, batch_size, num_steps=8, device=device)]
 
         reference = run_stream(encoder, chunks, batch_size, device)
 

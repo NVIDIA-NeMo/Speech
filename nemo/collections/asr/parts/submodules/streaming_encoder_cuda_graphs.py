@@ -170,7 +170,7 @@ class CudaGraphsStreamingEncoderStep(WithOptionalCudaGraphs):
 
         CUDA autocast runs eager. A captured graph fixes the dtype/kernel/workspace choices at
         capture time, so replaying a non-autocast graph under autocast (or the reverse) can
-        silently return wrong-precision outputs. Cache-aware streaming models run in float32 anyway.
+        silently return wrong-precision outputs.
         """
         return (
             self.cuda_graphs_mode is self.CudaGraphsMode.FULL_GRAPH

@@ -27,6 +27,7 @@ from lhotse.dataset.collation import collate_audio, collate_matrices, collate_ve
 from lhotse.utils import ifnone
 from omegaconf import DictConfig
 
+from nemo.collections.common.data.lhotse.stateful_rng import StatefulRandomMixin
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import IPABPETokenizer
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import setup_tokenizers
@@ -38,6 +39,7 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     has_phoneme_text_spans,
     normalize_volume,
     partially_phonemize_text,
+    set_g2p_rng,
     stack_tensors,
     tokenize_text_with_phoneme_spans,
 )
@@ -79,7 +81,7 @@ def _get_supervision_ipa_text(supervision) -> str:
     return ""
 
 
-class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
+class MagpieTTSLhotseMultiturnDataset(StatefulRandomMixin, torch.utils.data.Dataset):
     """
     A PyTorch Dataset for loading and processing Text-to-Speech data for
     MagpieTTS models using Lhotse CutSets, specifically designed for datasets
@@ -95,6 +97,12 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
 
     Tokenizers (for target text and optional context text) are initialized lazily
     within each dataloader worker process upon first access.
+
+    All random choices (context slicing, challenging text replacement, context shuffling, partial
+    phonemization, phoneme turn dropout, tokenizer choice, G2P ``phoneme_probability``, ...) use the dataset's
+    generator ``self.rng`` (see :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`). With
+    ``use_stateful_dataloader=True`` it is a checkpointed generator, so a run resumed from a ``StatefulDataLoader``
+    checkpoint produces the same batches as an uninterrupted run; otherwise it is the global ``random`` module.
 
     Args:
         sample_rate (int): Target sample rate for loading audio. Audio will be
@@ -310,12 +318,12 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         batch_tokenizer_names = []
         for cut in cuts:
             if cut.has_custom("tokenizer_names"):
-                batch_tokenizer_names.append(random.choice(cut.tokenizer_names))
+                batch_tokenizer_names.append(self.rng.choice(cut.tokenizer_names))
             else:
                 batch_tokenizer_names.append("english_phoneme")
 
         challenging_text_prob = self.get_challenging_text_replacement_prob()
-        if self.dataset_type == 'train' and random.random() < challenging_text_prob:
+        if self.dataset_type == 'train' and self.rng.random() < challenging_text_prob:
             candidates = [
                 (cut_idx, cut, supervision)
                 for cut_idx, cut in enumerate(cuts)
@@ -324,11 +332,11 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                 if supervision.speaker in self.output_roles
             ]
             if candidates:
-                cut_idx, cut, supervision = random.choice(candidates)
+                cut_idx, cut, supervision = self.rng.choice(candidates)
                 total_slots = compute_num_frames(cut.duration, self.frame_length, cut.sampling_rate)
                 start_slot = compute_num_frames(supervision.start, self.frame_length, cut.sampling_rate)
                 available_slots = total_slots - start_slot
-                for replacement_text in random.sample(self.challenging_texts, min(32, len(self.challenging_texts))):
+                for replacement_text in self.rng.sample(self.challenging_texts, min(32, len(self.challenging_texts))):
                     replacement_ids = tokenize_text_with_phoneme_spans(
                         text_tokenizer=self.text_tokenizer,
                         text_str=replacement_text,
@@ -446,6 +454,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             ignore_phoneme_languages=self.ignore_phoneme_languages,
             apply_partial_phoneme_text=self.dataset_type == 'train',
             load_normalized_text_percent=self.load_normalized_text_percent,
+            rng=self.rng,
         )
         source_tokens, source_token_lens = collate_token_channel(
             cuts,
@@ -459,6 +468,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             bos_id=self.bos_id,
             interruption_token_id=self.interruption_token_id,
             load_normalized_text_percent=self.load_normalized_text_percent,
+            rng=self.rng,
         )
 
         return {
@@ -483,6 +493,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                 phoneme_turn_dropout_turn_prob=self.phoneme_turn_dropout_turn_prob,
                 phoneme_turn_max_words_to_drop=self.phoneme_turn_max_words_to_drop,
                 apply_turn_dropout=self.dataset_type == 'train',
+                rng=self.rng,
             )
         else:
             target_phoneme_tokens, target_phoneme_lens, phoneme_turn_dropout = None, None, None
@@ -530,7 +541,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
     def _sample_context_duration_with_available_limit(self, available_duration_sec: float) -> float:
         effective_duration_max = min(self.context_duration_max, available_duration_sec)
         effective_duration_max = max(self.context_duration_min, effective_duration_max)
-        return random.uniform(self.context_duration_min, effective_duration_max)
+        return self.rng.uniform(self.context_duration_min, effective_duration_max)
 
     def _load_context_codes(self, cut: Cut) -> torch.Tensor:
         context_audio_codes_array = cut.context_codes.load().astype(np.int32)
@@ -542,7 +553,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         _num_frames_to_slice = int(_context_duration_to_slice * self.sample_rate / self.codec_model_samples_per_frame)
 
         if _num_frames_to_slice < context_audio_codes.shape[1]:
-            start_idx = random.randint(0, context_audio_codes.shape[1] - _num_frames_to_slice)
+            start_idx = self.rng.randint(0, context_audio_codes.shape[1] - _num_frames_to_slice)
             context_audio_codes = context_audio_codes[:, start_idx : start_idx + _num_frames_to_slice]
         else:
             _num_repeats = int(np.ceil(_num_frames_to_slice / context_audio_codes.shape[1]))
@@ -561,7 +572,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         _num_samples_to_slice = self.get_num_audio_samples_to_slice(_context_duration_to_slice, self.sample_rate)
 
         if _num_samples_to_slice < len(context_audio_array):
-            start_idx = random.randint(0, len(context_audio_array) - _num_samples_to_slice)
+            start_idx = self.rng.randint(0, len(context_audio_array) - _num_samples_to_slice)
             context_audio_array = context_audio_array[start_idx : start_idx + _num_samples_to_slice]
         else:
             _num_repeats = int(np.ceil(_num_samples_to_slice / len(context_audio_array)))
@@ -576,7 +587,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
 
         if self.load_cached_codes_if_available and cut.has_custom("target_codes"):
             if context_text is None and len(matching_supervisions) > 0:
-                sup = random.choice(matching_supervisions)
+                sup = self.rng.choice(matching_supervisions)
                 codes_array = cut.target_codes.load().astype(np.int32)
                 start_frame = int(max(0, sup.start) * self.sample_rate / self.codec_model_samples_per_frame)
                 num_frames = int(sup.duration * self.sample_rate / self.codec_model_samples_per_frame)
@@ -587,7 +598,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             return None, context_audio_codes
 
         if context_text is None and len(matching_supervisions) > 0:
-            sup = random.choice(matching_supervisions)
+            sup = self.rng.choice(matching_supervisions)
             with fp32_precision():
                 turn_cut = cut.resample(self.sample_rate, recording_field="target_audio").truncate(
                     offset=max(0, sup.start), duration=sup.duration
@@ -623,12 +634,12 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                 )
                 _num_samples_to_slice = int(_context_duration_to_slice * 16_000)
                 if _num_samples_to_slice < len(audio_array_16khz):
-                    start_idx = random.randint(0, len(audio_array_16khz) - _num_samples_to_slice)
+                    start_idx = self.rng.randint(0, len(audio_array_16khz) - _num_samples_to_slice)
                     audio_array_16khz = audio_array_16khz[start_idx : start_idx + _num_samples_to_slice]
             else:
                 matching_supervisions = [s for s in cut.supervisions if s.speaker in self.output_roles]
                 if len(matching_supervisions) > 0:
-                    sup = random.choice(matching_supervisions)
+                    sup = self.rng.choice(matching_supervisions)
                     turn_cut = cut.resample(16_000, recording_field="target_audio").truncate(
                         offset=max(0, sup.start), duration=sup.duration
                     )
@@ -644,7 +655,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
     def _encode_context_text(self, context_text: Union[str, None], language: str) -> tuple[torch.Tensor, bool]:
         if context_text is not None:
             if self.text_context_remapping is not None and context_text in self.text_context_remapping:
-                if self.dataset_type == 'train' and random.random() < self.text_context_remapping_prob:
+                if self.dataset_type == 'train' and self.rng.random() < self.text_context_remapping_prob:
                     context_text = self.text_context_remapping[context_text]
             context_text_tokens = self.text_tokenizer.encode(
                 context_text, tokenizer_name=self.text_conditioning_tokenizer_name
@@ -803,7 +814,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         if (
             self.dataset_type != 'train'
             or self.context_audio_shuffle_batch_prob <= 0.0
-            or random.random() >= self.context_audio_shuffle_batch_prob
+            or self.rng.random() >= self.context_audio_shuffle_batch_prob
         ):
             return
 
@@ -842,7 +853,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             ]
             if not candidates:
                 candidates = [donor_idx for donor_idx in eligible_indices if donor_idx != target_idx]
-            donor_indices[target_idx] = random.choice(candidates)
+            donor_indices[target_idx] = self.rng.choice(candidates)
 
         original_contexts = list(features[context_key])
         original_context_lens = list(context_lens)
@@ -976,6 +987,10 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, cuts: CutSet) -> Dict[str, Union[torch.Tensor, List]]:
         self._initialize_tokenizers()
+        # With checkpointed randomness, G2P draws (e.g. phoneme_probability) come from the dataset generator.
+        if self.checkpointed_rng_enabled:
+            set_g2p_rng(self.text_tokenizer, self.rng)
+            set_g2p_rng(self.phoneme_tokenizer, self.rng)
         cuts, batch_tokenizer_names = self._prepare_cuts(cuts)
 
         audio_data = self._collate_audio_channels(cuts)
@@ -1009,8 +1024,15 @@ def collate_token_channel(
     ignore_phoneme_languages: list[str] = None,
     apply_partial_phoneme_text: bool = False,
     load_normalized_text_percent: float = 1.0,
+    *,
+    rng: random.Random | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Build and collate token channels aligned to the audio frame grid."""
+    """Build and collate token channels aligned to the audio frame grid.
+
+    ``rng`` is the random generator for normalized-text selection and partial phonemization
+    (the global ``random`` module when omitted).
+    """
+    rng = random if rng is None else rng
     tokens = []
 
     for i, c in enumerate(cuts):
@@ -1038,6 +1060,7 @@ def collate_token_channel(
                 ignore_phoneme_languages,
                 apply_partial_phoneme_text,
                 load_normalized_text_percent=load_normalized_text_percent,
+                rng=rng,
             )
         )
     token_lens = torch.tensor([len(tt) for tt in tokens])
@@ -1094,8 +1117,10 @@ def build_token_channel(
     ignore_phoneme_languages: list[str] = None,
     apply_partial_phoneme_text: bool = False,
     load_normalized_text_percent: float = 1.0,
+    *,
+    rng: random.Random | None = None,
 ) -> torch.Tensor:
-
+    rng = random if rng is None else rng
     total = compute_num_frames(cut.duration, frame_length, cut.sampling_rate)
     tokens = torch.ones(total, dtype=torch.long) * pad_id
 
@@ -1105,6 +1130,7 @@ def build_token_channel(
                 text=supervision.text,
                 normalized_text=supervision.normalized_text if supervision.has_custom("normalized_text") else None,
                 load_normalized_text_percent=load_normalized_text_percent,
+                rng=rng,
             )
             text_for_tokens = text
             language = cut.lang if cut.has_custom("lang") else supervision.language
@@ -1120,12 +1146,13 @@ def build_token_channel(
                     bop_marker=phoneme_text_bop_marker,
                     eop_marker=phoneme_text_eop_marker,
                 )
-                and random.random() < partial_phoneme_text_prob
+                and rng.random() < partial_phoneme_text_prob
             ):
                 sampled_portion = _sample_probability_range(
                     "partial_phoneme_portion",
                     partial_phoneme_portion_min,
                     partial_phoneme_portion_max,
+                    rng=rng,
                 )
                 text_for_tokens = partially_phonemize_text(
                     text=text,
@@ -1134,6 +1161,7 @@ def build_token_channel(
                     full_ipa_text=_get_supervision_ipa_text(supervision),
                     bop_marker=phoneme_text_bop_marker,
                     eop_marker=phoneme_text_eop_marker,
+                    rng=rng,
                 )
             raw_ids = tokenize_text_with_phoneme_spans(
                 text_tokenizer=tokenizer,
@@ -1240,7 +1268,10 @@ def collate_phoneme_channel(
     phoneme_turn_dropout_turn_prob: float = 0.0,
     phoneme_turn_max_words_to_drop: int = 2,
     apply_turn_dropout: bool = False,
+    *,
+    rng: random.Random | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    rng = random if rng is None else rng
     tokens = []
     dropout_flags = []
     for i, c in enumerate(cuts):
@@ -1257,6 +1288,7 @@ def collate_phoneme_channel(
             phoneme_turn_dropout_turn_prob=phoneme_turn_dropout_turn_prob,
             phoneme_turn_max_words_to_drop=phoneme_turn_max_words_to_drop,
             apply_turn_dropout=apply_turn_dropout,
+            rng=rng,
         )
         tokens.append(token)
         dropout_flags.append(dropout_applied)
@@ -1277,7 +1309,10 @@ def build_phoneme_channel(
     phoneme_turn_dropout_turn_prob: float = 0.0,
     phoneme_turn_max_words_to_drop: int = 2,
     apply_turn_dropout: bool = False,
+    *,
+    rng: random.Random | None = None,
 ) -> tuple[torch.Tensor, bool]:
+    rng = random if rng is None else rng
     language = (
         cut.lang
         if cut.has_custom("lang")
@@ -1291,12 +1326,12 @@ def build_phoneme_channel(
         apply_turn_dropout
         and phoneme_turn_dropout_batch_prob > 0.0
         and phoneme_turn_dropout_turn_prob > 0.0
-        and random.random() < phoneme_turn_dropout_batch_prob
+        and rng.random() < phoneme_turn_dropout_batch_prob
     )
 
     for supervision in cut.supervisions:
         if supervision.speaker in roles:
-            if apply_dropout and random.random() < phoneme_turn_dropout_turn_prob:
+            if apply_dropout and rng.random() < phoneme_turn_dropout_turn_prob:
                 dropout_applied = True
                 continue
 

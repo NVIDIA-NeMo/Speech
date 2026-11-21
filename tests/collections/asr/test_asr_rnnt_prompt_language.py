@@ -20,6 +20,7 @@ pipelines, and the ``prompt`` / ``prompt_indices`` forward arguments.
 """
 
 import os
+import random
 from functools import partial
 from types import SimpleNamespace
 
@@ -647,3 +648,36 @@ class TestBaseClassesAreUntouched:
         assert not {'language_prompt_features', 'language_prompt_indices', 'prompt', 'prompt_indices'} & set(
             parameters
         )
+
+
+class TestPromptIndexDatasetRNG:
+    """The unified-mode auto prompt draw must be restored with the dataloader state."""
+
+    @pytest.mark.unit
+    def test_restored_rng_state_reproduces_unified_prompt_draws(self):
+        dataset = make_prompt_dataset(default_prompt_mode='unified')
+        dataset.enable_checkpointed_rng()
+        dataset.rng.seed(0)  # a fixed sequence that picks both prompts
+        cut = make_cut('de-DE')
+        state = dataset.state_dict()
+        expected = [dataset._get_prompt_index_for_cut(cut) for _ in range(32)]
+
+        restored = make_prompt_dataset(default_prompt_mode='unified')
+        restored.enable_checkpointed_rng()
+        restored.load_state_dict(state)
+
+        assert [restored._get_prompt_index_for_cut(cut) for _ in range(32)] == expected
+        assert set(expected) == {PROMPT_DICTIONARY['de-DE'], PROMPT_DICTIONARY['auto']}
+
+    @pytest.mark.unit
+    def test_unified_prompt_uses_global_rng_unless_checkpointed_rng_is_enabled(self):
+        # Legacy behaviour: without use_stateful_dataloader the choice follows the global ``random``.
+        dataset = make_prompt_dataset(default_prompt_mode='unified')
+        cut = make_cut('de-DE')
+        random.seed(0)
+        first = [dataset._get_prompt_index_for_cut(cut) for _ in range(16)]
+        random.seed(0)
+        second = [dataset._get_prompt_index_for_cut(cut) for _ in range(16)]
+
+        assert dataset.rng is random
+        assert first == second

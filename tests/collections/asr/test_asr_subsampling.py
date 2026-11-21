@@ -508,8 +508,6 @@ class TestPackedConvSubsampling:
         packed = pack_encoder_output(torch.randn(1, 10, 8), torch.tensor([10]))
         with pytest.raises(NotImplementedError):
             ConvSubsampling("striding_conv1d", 4, 8, 12, 4).forward_packed(packed)
-        with pytest.raises(NotImplementedError):
-            ConvSubsampling("striding", 4, 8, 12, 4, is_causal=True).forward_packed(packed)
         with pytest.raises(NotImplementedError, match="vggnet"):
             ConvSubsampling("vggnet", 4, 8, 12, 4).forward_packed(packed)
 

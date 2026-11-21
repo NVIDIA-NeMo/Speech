@@ -622,12 +622,12 @@ class ConvSubsampling(torch.nn.Module):
 
         The utterances are laid out on one gapped time axis (``PackedSlotLayout``):
         every slot starts at a multiple of the subsampling factor
-        and keeps at least one empty frame after the utterance at every stage,
+        and keeps at least as many empty frames after the utterance as a layer pads, at every stage,
         and the frames outside the utterances are zeroed before every layer as the padded forward masks them.
         The strided convolutions therefore keep their stride phase per utterance and read zeros beyond it,
+        on the left as well, where the padding of a causal stack is the gap after the utterance before,
         and the result equals ``forward`` on the padded batch at the valid frames.
-        Only the non-causal ``striding`` and ``dw_striding`` stacks are supported;
-        VGGNet pools with ``ceil_mode``, which the floor-mode lengths of the gapped layout do not model.
+        The ``striding`` and ``dw_striding`` stacks are supported, causal or not.
 
         Args:
             packed: features of all utterances, data of shape ``(sum(T_i), feat_in)``.
@@ -640,7 +640,7 @@ class ConvSubsampling(torch.nn.Module):
             raise NotImplementedError(reason)
         if packed.data.shape[1] != self._feat_in:
             raise ValueError(f"Packed features must have width {self._feat_in}, got {packed.data.shape[1]}.")
-        self._check_packed_stack_gaps()
+        gap = self._check_packed_stack_gaps()
         if packed.batch_size == 0:
             # a rank without utterances keeps every parameter in the graph, as the packed attention does
             anchor = packed.data.sum() * 0.0
@@ -648,7 +648,7 @@ class ConvSubsampling(torch.nn.Module):
                 anchor = anchor + parameter.sum().to(anchor.dtype) * 0.0
             empty = self.out(packed.data.new_zeros((0, self.out.in_features))) + anchor
             return PackedEncoderActivations.from_validated(empty, packed.lengths, packed.cu_seqlens, 0)
-        layout = packed_slot_layout(packed, alignment=self.subsampling_factor, gap=self.subsampling_factor)
+        layout = packed_slot_layout(packed, alignment=self.subsampling_factor, gap=gap)
         outputs = []
         lengths = []
         for first, last in self._packed_sequence_groups(layout):
@@ -674,25 +674,34 @@ class ConvSubsampling(torch.nn.Module):
     def sequence_packed_unsupported_reason(self) -> str | None:
         """Why ``forward_packed`` cannot run this stack, or None when it can.
 
-        Only the non-causal ``striding`` and ``dw_striding`` stacks have a sequence-packed form;
-        VGGNet pools with ``ceil_mode``, which the floor-mode lengths of the gapped layout do not model.
+        The ``striding`` and ``dw_striding`` stacks have one, causal or not;
+        VGGNet pools with ``ceil_mode``, which the floor-mode lengths of the gapped layout do not model,
+        and the Conv1d stacks are not laid out on the gapped axis.
+        A ``subsampling_factor`` that is no power of two builds a default stack that subsamples by less,
+        while the slots are aligned to the factor, so the utterances would lose their stride phase.
         """
+        # TODO(albertz): a packed form for these stacks once their padded forward runs again,
+        # https://github.com/NVIDIA-NeMo/Speech/issues/16223
         if not self.conv2d_subsampling or self._subsampling == 'vggnet':
             return f"subsampling={self._subsampling!r} has no sequence-packed form."
-        if self.is_causal:
-            return "Causal subsampling has no sequence-packed form."
+        if self._time_strides is None and 2**self._sampling_num != self.subsampling_factor:
+            return (
+                f"subsampling_factor={self.subsampling_factor} is not a power of two: the stack subsamples by "
+                f"{2**self._sampling_num}, which the sequence-packed form does not lay out."
+            )
         return None
 
-    def _check_packed_stack_gaps(self):
-        """Verify that no layer of the stack reads across utterances on the gapped time axis.
+    def _check_packed_stack_gaps(self) -> int:
+        """Verify that no layer of the stack reads across utterances on the gapped time axis; returns the input gap.
 
         At the input stage every slot starts at a multiple of the subsampling factor
-        and leaves at least that many empty frames after its utterance.
+        and leaves at least that many empty frames after its utterance for every frame a layer pads:
+        the causal stacks pad two frames on the left, which the gap before an utterance holds at every stage.
         A layer with time kernel k (dilation included), stride s and padding (left, right) reads at most
         max(left, right) frames beyond an utterance, which must stay inside the gap,
         and leaves at least ceil((gap + k - left - right - s) / s) empty frames behind it.
         """
-        gap = self.subsampling_factor
+        gap = input_gap = self.subsampling_factor * max(self._left_padding, self._right_padding)
         for layer in self.conv:
             if not isinstance(layer, (nn.Conv1d, nn.Conv2d, nn.MaxPool2d)):
                 continue  # activations
@@ -705,6 +714,7 @@ class ConvSubsampling(torch.nn.Module):
                     "between utterances; this convolution stack has no sequence-packed form."
                 )
             gap = -(-(gap + kernel - left - right - stride) // stride)
+        return input_gap
 
     def _packed_sequence_groups(self, layout: PackedSlotLayout) -> list[tuple[int, int]]:
         """Split the utterances into groups whose convolution activations stay below the indexing limit.

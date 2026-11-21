@@ -58,6 +58,7 @@ from nemo.collections.speechlm2.parts.pretrained import (
     load_pretrained_hf,
     set_model_dict_for_partial_init,
 )
+from nemo.core.utils.lightning_utils import read_batch
 from nemo.lightning.callback_group import with_model_init_callbacks
 from nemo.lightning.speech_throughput import register_throughput_policy
 from nemo.utils import logging
@@ -537,7 +538,13 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             "target_text_tokens": target_text_tokens,
         }
 
-    def training_step(self, batch: dict, batch_idx: int):
+    def training_step(self, dataloader_iter):
+        # ``dataloader_iter`` signature -> Lightning selects ``_DataLoaderIterDataFetcher`` (no prefetch), which is
+        # required for exact checkpoint resumption with a stateful dataloader. See ``read_batch`` docstring.
+        batch, batch_idx = read_batch(dataloader_iter, self)
+        return self._training_step_batch(batch, batch_idx)
+
+    def _training_step_batch(self, batch: dict, batch_idx: int):
         for m in (self.tts_model,):
             if is_frozen(m):
                 m.eval()
@@ -572,7 +579,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             **loss_dict,
         }
 
-        self.log_dict(ans, on_step=True)
+        # batch_size kwarg is required by Lightning when training_step uses
+        # the ``dataloader_iter`` signature (it can't auto-infer otherwise).
+        self.log_dict(ans, on_step=True, batch_size=B)
         return ans
 
     def ensures_codec_target_dtype(self) -> None:
@@ -637,10 +646,12 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         weight_mean = sum_w / total_w_params if total_w_params > 0 else 0.0
 
         # direct float logging avoids device sync penalty
-        self.log("weights/L2", weight_l2, on_epoch=True, sync_dist=True)
-        self.log("weights/RMS", weight_rms, on_epoch=True, sync_dist=True)
-        self.log("weights/max_abs", max_abs_w, on_epoch=True, sync_dist=True)
-        self.log("weights/mean", weight_mean, on_epoch=True, sync_dist=True)
+        # batch_size=1: each statistic is one model-level observation per epoch, and Lightning requires an
+        # explicit batch_size with the ``dataloader_iter`` training_step signature.
+        self.log("weights/L2", weight_l2, on_epoch=True, sync_dist=True, batch_size=1)
+        self.log("weights/RMS", weight_rms, on_epoch=True, sync_dist=True, batch_size=1)
+        self.log("weights/max_abs", max_abs_w, on_epoch=True, sync_dist=True, batch_size=1)
+        self.log("weights/mean", weight_mean, on_epoch=True, sync_dist=True, batch_size=1)
 
     def on_validation_epoch_start(self) -> None:
         if torch.distributed.is_initialized():

@@ -201,17 +201,69 @@ For decoding customization (confidence, CUDA graphs, language models, word boost
         print(f"{start:0.2f} - {end:0.2f} : {word}")
 
 
+.. _asr-long-audio-inference:
+
 Long Audio Inference
 --------------------
 
 For audio longer than what fits in memory (especially with Conformer's quadratic attention):
+
+**Planned chunking (recommended):**
+
+.. code-block:: python
+
+    from nemo.collections.asr.parts.mixins.transcription import ChunkingConfig
+
+    outputs = model.transcribe(
+        ["recording.wav"],
+        batch_size=4,
+        timestamps=True,  # optional
+        chunking=ChunkingConfig(chunk_size=30.0, context_size=2.0),
+    )
+    print(outputs[0].text)
+
+From the command line:
+
+.. code-block:: bash
+
+    python examples/asr/transcribe_speech.py \
+        pretrained_name=nvidia/parakeet-tdt-0.6b-v2 \
+        audio_dir=/path/to/audio \
+        '+chunking={chunk_size:30.0,context_size:2.0}'
+
+Each recording is split into chunks of ``chunk_size`` seconds. Each chunk is transcribed with
+``context_size`` seconds of extra audio on each side; the context improves recognition near
+chunk edges, and its output is kept from one chunk only, so joins are not duplicated. Memory
+depends on the chunk duration plus context and on the batch size, not on the recording length.
+The defaults (30 s and 2 s) suit Parakeet and Canary models.
+
+Planned chunking works with CTC, RNNT/TDT, hybrid and AED (Canary) models, and accepts files,
+manifests and waveforms at the model's sample rate. It is off unless ``chunking`` is set. With
+``override_config`` or ``transcribe_generator``, set ``config.chunking`` instead.
+
+Limitations:
+
+* Results contain text and word/segment timestamps. Token confidence, alignments and AED
+  cross-attention scores are not returned.
+* AED models transcribe only (no speech translation). Their timestamps require a CTC timestamp
+  model, as in ``canary-1b-v2``.
+* One best hypothesis per chunk. CTC supports ``greedy`` and ``greedy_batch`` without an n-gram LM.
+* These raise an error: RNNT/TDT models with an aggregate tokenizer, or with a character
+  vocabulary and TDT durations; ``decoding.restart_after_tokens``; augmentations; partial
+  hypotheses; external DataLoaders.
+* The encoder sees one chunk at a time, so results can differ from whole-recording inference.
+
+**Which method to use:** planned chunking for every model type. Local attention (below) is an
+alternative for Fast Conformer models; it keeps one encoder pass over the whole recording, so
+memory still grows with its length. Buffered inference scripts (below) are a streaming-style
+alternative.
 
 **Buffered / chunked inference:**
 
 Divide audio into overlapping chunks and merge outputs. Scripts are in
 `examples/asr/asr_chunked_inference <https://github.com/NVIDIA-NeMo/Speech/tree/main/examples/asr/asr_chunked_inference>`_.
 
-**Local attention (recommended for Fast Conformer):**
+**Local attention (alternative for Fast Conformer):**
 
 Switch to Longformer-style local+global attention for linear-cost inference on audio >1 hour:
 

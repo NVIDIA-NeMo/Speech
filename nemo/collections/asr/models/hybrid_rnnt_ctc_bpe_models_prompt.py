@@ -34,6 +34,7 @@ from nemo.collections.asr.parts.mixins.transcription import TranscriptionReturnT
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCBPEDecoding, CTCBPEDecodingConfig
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTBPEDecoding
+from nemo.collections.asr.parts.utils.longform_inference import ChunkingConfig
 from nemo.collections.asr.parts.utils.prompt_language_utils import (
     AUTO_PROMPT_LANGUAGE,
     resolve_deprecated_prompt_arguments,
@@ -382,6 +383,7 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
         verbose: bool = True,
         timestamps: Optional[bool] = None,
         override_config: Optional[HybridRNNTCTCPromptTranscribeConfig] = None,
+        chunking: Optional[ChunkingConfig] = None,
         **prompt,
     ) -> TranscriptionReturnType:
         """
@@ -405,6 +407,7 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
             verbose: (bool) whether to display tqdm progress bar
             timestamps: (Optional[bool]) timestamps will be returned if set to True as part of hypothesis object
             override_config: (Optional[HybridRNNTCTCPromptTranscribeConfig]) override transcription config pre-defined by the user.
+            chunking: Optional offline chunk plan. Retains each utterance's language prompt.
             **prompt: Optional input to construct the prompts for the model.
                 ``target_lang`` (str) is the language of every utterance (e.g., "en-US", "de", or the
                 language-agnostic "auto"); when omitted, each manifest entry's ``lang_field`` is used, or "auto"
@@ -421,7 +424,9 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
                 f"{self.cur_decoder} is not supported for cur_decoder. Supported values are ['ctc', 'rnnt']"
             )
 
-        if timestamps is not None:
+        # Planned chunking computes timestamps call-locally and leaves the model decoding unchanged.
+        planned_chunking = chunking is not None or getattr(override_config, 'chunking', None) is not None
+        if timestamps is not None and not planned_chunking:
             if self.cur_decoder not in ["ctc", "rnnt"]:
                 raise ValueError(
                     f"{self.cur_decoder} is not supported for cur_decoder. Supported values are ['ctc', 'rnnt']"
@@ -456,6 +461,7 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
                 timestamps=timestamps,
                 target_lang=prompt.get('target_lang', defaults.target_lang),
                 lang_field=prompt.get('lang_field', defaults.lang_field),
+                chunking=chunking,
             )
 
         else:

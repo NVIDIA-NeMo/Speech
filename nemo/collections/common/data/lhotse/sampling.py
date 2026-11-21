@@ -721,8 +721,9 @@ class TokenPerSecondFilter:
         if isinstance(tps_max, Sequence):
             tps_max = float("inf")  # filtering handled in bucketing filter
         self.tps_max = ifnone(tps_max, float("inf"))
-        assert tps_min <= tps_max, f"{tps_min=} {tps_max=}"
-        self.enabled = tps_min > 0 or tps_max < float("inf")
+        if not self.tps_min <= self.tps_max:
+            raise ValueError(f"Token-per-second minimum {self.tps_min} must not exceed maximum {self.tps_max}")
+        self.enabled = self.tps_min > 0 or self.tps_max < float("inf")
 
     def __call__(self, example) -> bool:
         if not isinstance(example, Cut) or not self.enabled:
@@ -743,8 +744,9 @@ class TokenPerTokenFilter:
         if isinstance(tpt_max, Sequence):
             tpt_max = float("inf")  # filtering handled in bucketing filter
         self.tpt_max = ifnone(tpt_max, float("inf"))
-        assert tpt_min <= tpt_max, f"{tpt_min=} {tpt_max=}"
-        self.enabled = tpt_min > 0 or tpt_max < float("inf")
+        if not self.tpt_min <= self.tpt_max:
+            raise ValueError(f"Token-per-token minimum {self.tpt_min} must not exceed maximum {self.tpt_max}")
+        self.enabled = self.tpt_min > 0 or self.tpt_max < float("inf")
 
     def __call__(self, example) -> bool:
         if isinstance(example, Cut) or not self.enabled:

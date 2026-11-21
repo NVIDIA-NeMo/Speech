@@ -195,22 +195,7 @@ class _EncDecBaseModel(ASRModel, ExportableEncDecModel, TranscriptionMixin):
 
         self._train_dl = self._setup_dataloader_from_config(config=DictConfig(train_data_config))
 
-        # Need to set this because if using an IterableDataset, the length of the dataloader is the total number
-        # of samples rather than the number of batches, and this messes up the tqdm progress bar.
-        # So we set the number of steps manually (to the correct number) to fix this.
-        if (
-            self._train_dl is not None
-            and hasattr(self._train_dl, 'dataset')
-            and isinstance(self._train_dl.dataset, torch.utils.data.IterableDataset)
-        ):
-            # We also need to check if limit_train_batches is already set.
-            # If it's an int, we assume that the user has set it to something sane, i.e. <= # training batches,
-            # and don't change it. Otherwise, adjust batches accordingly if it's a float (including 1.0).
-            if isinstance(self._trainer.limit_train_batches, float):
-                self._trainer.limit_train_batches = int(
-                    self._trainer.limit_train_batches
-                    * ceil((len(self._train_dl.dataset) / self.world_size) / train_data_config['batch_size'])
-                )
+        self._set_limit_batches_for_iterable_dataset(self._train_dl, train_data_config.get('batch_size'))
 
     def setup_validation_data(self, val_data_config: Optional[Union[DictConfig, Dict]]):
         if 'shuffle' not in val_data_config:

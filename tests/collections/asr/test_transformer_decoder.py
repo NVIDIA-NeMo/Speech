@@ -33,6 +33,7 @@ from nemo.collections.asr.modules.transformer.transformer_modules import (
 )
 from nemo.collections.asr.modules.transformer.transformer_utils import get_nemo_transformer
 from nemo.collections.asr.parts.packed_sequence import pack_encoder_output
+from nemo.collections.asr.parts.submodules.multi_head_attention import RotaryPositionalEncoding
 from nemo.collections.asr.parts.submodules.packed_attention import PackedAttentionContext
 
 
@@ -58,6 +59,33 @@ def _composed_decoder(**overrides):
     )
     options.update(overrides)
     return TransformerDecoderNM(**options).eval()
+
+
+class TestRotaryDecoderBuffers:
+    @pytest.mark.unit
+    def test_buffers_have_one_shape_whatever_the_target_lengths(self):
+        """Two ranks of a distributed training see different target lengths; their buffers must still match.
+
+        DDP broadcasts the buffers of every module before the forward; a buffer whose size depends on the batch
+        a rank has seen hangs the broadcast under NCCL and overwrites a rank's table under gloo.
+        The rotary tables are plain tensors of one size, built for the module's maximum length.
+        """
+        torch.manual_seed(0)
+        ranks = [_composed_decoder(), _composed_decoder()]
+        encoder_states, encoder_mask = torch.randn(1, 6, 16), torch.ones(1, 6)
+        for decoder, length in zip(ranks, (5, 29)):
+            input_ids = torch.randint(0, 8, (1, length))
+            with torch.no_grad():
+                decoder.decoder(decoder.embedding(input_ids), torch.ones_like(input_ids), encoder_states, encoder_mask)
+        shapes = [[(name, tuple(buffer.shape)) for name, buffer in decoder.named_buffers()] for decoder in ranks]
+        assert shapes[0] == shapes[1]
+        assert not any(name.endswith(('.cos', '.sin')) for name, _ in shapes[0])
+        tables = [
+            [tuple(module.cos.shape) for module in decoder.modules() if isinstance(module, RotaryPositionalEncoding)]
+            for decoder in ranks
+        ]
+        # the two self-attention blocks, at the module's default max_len and the per-head rotary width
+        assert tables[0] == tables[1] == [(5000, 8), (5000, 8)]
 
 
 class TestTransformerDecoderBlockComposition:

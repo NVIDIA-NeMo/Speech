@@ -658,3 +658,27 @@ def test_packed_encoder_output_detach_and_cpu_keep_metadata():
     packed = pack_encoder_output(data.unsqueeze(0), torch.tensor([3]))
     detached = packed.detach().cpu()
     assert not detached.data.requires_grad and detached.lengths.tolist() == [3] and detached.max_seqlen == 3
+
+
+@pytest.mark.run_only_on('GPU')
+def test_sequence_packed_rope_follows_a_move_of_parameters_and_buffers_alone():
+    """The packed path reads the rotary tables without the module's forward; a wrapper that moved the
+    parameters and buffers alone (what FSDP does) must still find them on the device."""
+    torch.manual_seed(0)
+    encoder = _make_encoder(position="rope")
+    reference = copy.deepcopy(encoder).cuda()
+    for parameter in encoder.parameters():
+        parameter.data = parameter.data.cuda()
+    for name, buffer in encoder.named_buffers():
+        module_name, _, buffer_name = name.rpartition('.')
+        setattr(encoder.get_submodule(module_name), buffer_name, buffer.cuda())
+    rope = encoder.layers[0].attn.rope
+    assert rope.cos.device.type == 'cpu'
+    audio, lengths = torch.randn(2, 8, 12, device='cuda'), torch.tensor([12, 7], device='cuda')
+    with torch.no_grad():
+        packed = encoder.forward_sequence_packed(audio, lengths)
+        expected = reference.forward_sequence_packed(audio, lengths)
+    assert rope.cos.device.type == 'cuda' and rope.cos.dtype == torch.float32
+    assert rope.cos.shape == reference.layers[0].attn.rope.cos.shape
+    assert not any(name.endswith(('.cos', '.sin')) for name, _ in encoder.named_buffers())
+    torch.testing.assert_close(packed.data, expected.data)

@@ -266,7 +266,7 @@ class SBNoiseScheduleVE(SBNoiseSchedule):
         return torch.zeros_like(time)
 
     def g(self, time: torch.Tensor) -> torch.Tensor:
-        return torch.sqrt(self.c) * self.k**self.time
+        return math.sqrt(self.c) * self.k**time
 
     def alpha(self, time: torch.Tensor) -> torch.Tensor:
         return torch.ones_like(time)

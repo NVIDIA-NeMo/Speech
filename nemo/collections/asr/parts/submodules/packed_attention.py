@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Self-attention over sequence-packed activations with explicit per-utterance boundaries."""
+"""Self- and cross-attention over sequence-packed activations with explicit per-sequence boundaries."""
 
 import functools
 import math
@@ -38,7 +38,13 @@ if TRITON_AVAILABLE:
         packed_rel_pos_attention,
     )
 
-__all__ = ["PackedAttentionContext", "document_block_mask", "packed_attention", "packed_attention_supports_dropout"]
+__all__ = [
+    "PackedAttentionContext",
+    "document_block_mask",
+    "packed_attention",
+    "packed_attention_supports_dropout",
+    "packed_cross_attention",
+]
 
 # the sparse block size of FlexAttention; the document block mask is built at this granularity
 BLOCK_SIZE = 128
@@ -360,6 +366,90 @@ def packed_attention_supports_dropout(
     return _get_flash_attention_varlen_for_device(device) is not None
 
 
+def packed_cross_attention(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    query_context: PackedAttentionContext,
+    key_context: PackedAttentionContext,
+    *,
+    causal: bool = False,
+    dropout_p: float = 0.0,
+    scale: float | None = None,
+) -> Tensor:
+    """Attend from token-flat queries to the token-flat keys of the same sequence, without a position bias.
+
+    On CUDA this runs variable-length FlashAttention and raises when that does not apply
+    (float32, a head width above 256 or not divisible by 8, a GPU before Ampere):
+    the dense attention below would be several times slower than the padded attention.
+    On the CPU the sequences are attended one at a time with dense attention,
+    which is also the reference of the unit tests.
+
+    Args:
+        q: queries, shape ``(Q_total, H, d_k)``.
+        k: keys, shape ``(K_total, H, d_k)``, packed in the same sequence order as the queries.
+        v: values, shape ``(K_total, H, d_k)``.
+        query_context: packing metadata of the queries.
+        key_context: packing metadata of the keys; the same object as ``query_context`` in self-attention.
+        causal: let every query see only the keys at its position or before; needs equal query and key lengths.
+        dropout_p: dropout on the attention weights, in ``[0, 1)``.
+        scale: positive score scale, ``1 / sqrt(d_k)`` by default.
+
+    Returns:
+        Context vectors of shape ``(Q_total, H, d_k)``.
+
+    Raises:
+        ValueError: for inputs that do not match their contexts and for scalars outside their ranges,
+            checked before the dispatch so that every backend rejects the same calls.
+        NotImplementedError: on CUDA when variable-length FlashAttention does not apply.
+    """
+    if scale is None:
+        scale = 1.0 / math.sqrt(q.shape[-1])
+    if not 0.0 <= dropout_p < 1.0:
+        raise ValueError(f"dropout_p must be in [0, 1), got {dropout_p}.")
+    if not (math.isfinite(scale) and scale > 0.0):
+        raise ValueError(f"scale must be positive, got {scale}.")
+    if query_context.lengths.numel() != key_context.lengths.numel():
+        raise ValueError("query_context and key_context must describe the same number of sequences.")
+    if q.shape[0] != query_context.total_tokens:
+        raise ValueError(f"q has {q.shape[0]} rows, query_context describes {query_context.total_tokens} tokens.")
+    if k.shape[0] != key_context.total_tokens or v.shape[0] != key_context.total_tokens:
+        raise ValueError(
+            f"k and v have {k.shape[0]} and {v.shape[0]} rows, key_context describes {key_context.total_tokens} tokens."
+        )
+    if causal and query_context is not key_context and not torch.equal(query_context.lengths, key_context.lengths):
+        raise ValueError("causal packed attention needs equal query and key lengths per sequence.")
+    if query_context.total_tokens == 0 or key_context.total_tokens == 0:
+        # empty-slice sums keep the gradient edges to q, k and v without summing the inputs,
+        # which overflows in float16 and turns the zero anchor into NaN
+        anchor = q[:0].sum() + k[:0].sum() + v[:0].sum()
+        return q.new_zeros(q.shape) + anchor.to(q.dtype)
+    if q.is_cuda:
+        flash = _flash_attention_varlen(q)
+        if flash is None:
+            raise NotImplementedError(
+                "packed cross attention on CUDA runs variable-length FlashAttention only, which needs float16 or "
+                "bfloat16 (train under autocast), a head width of at most 256 and divisible by 8, and a GPU of "
+                f"compute capability 8.0 or newer; got {q.dtype} with head width {q.shape[-1]} on "
+                f"{torch.cuda.get_device_name(q.device)}."
+            )
+        return flash(
+            q.contiguous(),
+            k.contiguous(),
+            v.contiguous(),
+            query_context.cu_seqlens,
+            key_context.cu_seqlens,
+            query_context.max_seqlen,
+            key_context.max_seqlen,
+            dropout_p=dropout_p,
+            softmax_scale=scale,
+            causal=causal,
+        )
+    return _reference_packed_cross_attention(
+        q, k, v, query_context, key_context, causal=causal, dropout_p=dropout_p, scale=scale
+    )
+
+
 def _padded_size(value: int, floor: int) -> int:
     """Round ``value`` up to a power of two, at least ``floor`` (a power of two itself)."""
     return max(floor, 1 << max(value - 1, 0).bit_length())
@@ -486,6 +576,43 @@ def _reference_packed_attention(
             # advanced indices around the head slice move the heads to the last axis
             bias = rel_pos_bias[start:end][rows, :, center - rows + cols]
             scores = scores + bias.permute(2, 0, 1) * scale
+        weights = torch.softmax(scores, dim=-1)
+        if dropout_p > 0.0:
+            weights = torch.nn.functional.dropout(weights, p=dropout_p, training=True)
+        outputs.append(torch.matmul(weights, vi).transpose(0, 1))
+    return torch.cat(outputs, dim=0)
+
+
+def _reference_packed_cross_attention(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    query_context: PackedAttentionContext,
+    key_context: PackedAttentionContext,
+    *,
+    causal: bool,
+    dropout_p: float,
+    scale: float,
+) -> Tensor:
+    """Dense attention one sequence at a time from its queries to its keys."""
+    outputs = []
+    for (q_start, q_end), (k_start, k_end) in zip(query_context.sequence_slices, key_context.sequence_slices):
+        if q_end == q_start:
+            continue
+        if k_end == k_start:
+            # a zero context that keeps the gradient edges to q, k and v, like the empty-batch case
+            anchor = q[:0].sum() + k[:0].sum() + v[:0].sum()
+            outputs.append(q.new_zeros((q_end - q_start,) + tuple(q.shape[1:])) + anchor)
+            continue
+        qi = q[q_start:q_end].transpose(0, 1)
+        ki = k[k_start:k_end].transpose(0, 1)
+        vi = v[k_start:k_end].transpose(0, 1)
+        # scaled before the product like the padded attention, so that half-precision scores stay finite
+        root = math.sqrt(scale)
+        scores = torch.matmul(qi * root, (ki * root).transpose(-2, -1))
+        if causal:
+            visible = torch.ones(q_end - q_start, k_end - k_start, dtype=torch.bool, device=q.device).tril()
+            scores = scores.masked_fill(~visible, float("-inf"))
         weights = torch.softmax(scores, dim=-1)
         if dropout_p > 0.0:
             weights = torch.nn.functional.dropout(weights, p=dropout_p, training=True)

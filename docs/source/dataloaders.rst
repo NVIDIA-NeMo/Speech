@@ -1834,7 +1834,37 @@ audio payload, configure:
 **Field-name overrides.** ``text_field``, ``lang_field``,
 ``channel_selector``, ``sample_rate``.
 
-**Filtering.** ``max_cer``, ``min_context_speaker_similarity``, ``keep``.
+**Filtering.** ``max_cer``, ``min_context_speaker_similarity``, ``keep``,
+``custom_field_filter``.
+
+``custom_field_filter`` selects examples by their custom fields (``cut.custom``).
+For NeMo manifests these are the additional keys of a row,
+that is, all keys except the ones the reader consumes, such as ``audio_filepath`` and ``duration``;
+the ``tags`` of an ``input_cfg`` entry are custom fields as well.
+The option maps a field name to the value to keep (a bool, a number or a string):
+
+.. code-block:: yaml
+
+   custom_field_filter:
+     verified: true
+
+A cut whose ``verified`` field has another value is dropped.
+A cut without the field is kept, as with ``keep`` and ``max_cer``,
+so a field name that no cut has filters nothing.
+With several fields, a cut is kept when no field has another value.
+
+* The values are compared as Python values: ``true`` matches ``true`` and ``1``
+  but not the string ``"true"``, and a ``null`` in the manifest is another value.
+* The filter looks at the fields of the cut, not of its supervisions.
+  Text and conversation examples are filtered by their custom fields the same way;
+  for text sources these are the ``tags`` only, since the reader keeps no other key of a row.
+* It is applied first, before tokenization and augmentation.
+* It is an option of the dataloader config.
+  Inside an ``input_cfg`` entry it is ignored, like the other dataloader options.
+  With ``multi_config: true`` it goes into the sub-configs;
+  at the top level it raises an error.
+* When no example passes, a dataloader over an infinite source yields nothing and does not stop,
+  as with the other filters.
 
 For exact types and defaults, see the dataclass definition in the source
 file — it is the single source of truth.

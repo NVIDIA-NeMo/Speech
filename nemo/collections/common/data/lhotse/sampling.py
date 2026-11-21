@@ -15,12 +15,14 @@
 # pylint: disable=C0116
 import math
 from bisect import bisect_left
+from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any, Sequence
 
 import numpy as np
-from lhotse.cut import Cut, MonoCut
+from lhotse.custom import CustomFieldMixin
+from lhotse.cut import Cut, MixedCut, MonoCut
 from lhotse.dataset import SamplingConstraint, TokenConstraint
 from lhotse.dataset.sampling.dynamic_bucketing import FixedBucketBatchSizeConstraint
 from lhotse.utils import ifnone
@@ -569,6 +571,56 @@ class ValidationStatusFilter:
             return False
         else:
             return True
+
+
+class CustomFieldFilter:
+    """
+    Callable, returns ``False`` if an example has one of the given custom fields with a value other than the given one,
+    and ``True`` otherwise. An example that does not have a field passes, as with the other metadata filters.
+    Applies to cuts and to the text and conversation examples, which carry custom fields the same way.
+
+    Args:
+        field_values: maps the name of a custom field (a key of ``example.custom``) to the value to keep,
+            a bool, a number or a string, compared with ``==``;
+            ``None`` or an empty mapping disables the filter.
+    """
+
+    def __init__(self, field_values: Mapping[str, bool | int | float | str] | None) -> None:
+        field_values = ifnone(field_values, {})
+        if not isinstance(field_values, Mapping):
+            raise ValueError(f"custom_field_filter must map field names to the values to keep, got {field_values!r}.")
+        self.field_values = dict(field_values)
+        for name, value in self.field_values.items():
+            if not isinstance(name, str) or not name:
+                raise ValueError(f"custom_field_filter: a field name must be a non-empty string, got {name!r}.")
+            # NaN equals nothing, so it would reject every cut that has the field.
+            if not isinstance(value, (bool, int, float, str)) or (isinstance(value, float) and math.isnan(value)):
+                raise ValueError(
+                    f"custom_field_filter: the value to keep for field {name!r} must be a bool, a number or a string, "
+                    f"got {value!r}."
+                )
+
+    def __call__(self, example) -> bool:
+        if isinstance(example, MixedCut):
+            # As Lhotse resolves a custom field of a mixed cut: the first unmuted data track that has the field.
+            customs = [
+                track.cut.custom
+                for track in example.tracks
+                if isinstance(track.cut, CustomFieldMixin) and not track.mute
+            ]
+        elif isinstance(example, CustomFieldMixin):
+            customs = [example.custom]
+        else:
+            return True
+        for name, value in self.field_values.items():
+            # Read the custom mapping itself: attribute access would return
+            # the attribute of the cut for a field named like one (``id``, ``channel``).
+            for custom in customs:
+                if custom is not None and name in custom:
+                    if custom[name] != value:
+                        return False
+                    break
+        return True
 
 
 class CERFilter:

@@ -195,26 +195,27 @@ class S3Utils:
         Returns a list of keys that have the specified suffix
         :param base_path: the root of search
         :param suffix: the suffix to match, case sensitive
-        :return: list of keys matching the suffix, relative to the base_path
+        :return: list of matching object keys or full S3 URLs
         """
-        s3 = S3Utils._get_s3_resource(profile, creds)
+        s3_client = S3Utils._get_s3_resource(profile, creds, get_client=True)
         bucket_name, prefix = S3Utils.parse_s3_url(base_path)
 
         start_time = time.perf_counter()
-        bucket = s3.Bucket(bucket_name)
-        objects_list = _scan_objects_with_retry(s3_bucket=bucket, s3_prefix=prefix)
+        # Some S3-compatible gateways, including Hugging Face, only support ListObjectsV2.
+        paginator = s3_client.get_paginator('list_objects_v2')
+        pages = paginator.paginate(Bucket=bucket_name, Prefix=prefix)
+        keys = [obj['Key'] for page in pages for obj in page.get('Contents', [])]
         logging.info(
             f'Time elapsed reading all objects under path {base_path}: '
             f'{(time.perf_counter() - start_time):.2f} seconds'
         )
 
         if suffix:
-            objects_list = list(filter(lambda o: o.key.endswith(suffix), objects_list))
+            keys = [key for key in keys if key.endswith(suffix)]
 
         if return_key_only:
-            return [o.key for o in objects_list]
-        else:
-            return [S3Utils.build_s3_url(o.bucket_name, o.key) for o in objects_list]
+            return keys
+        return [S3Utils.build_s3_url(bucket_name, key) for key in keys]
 
     @staticmethod
     def _get_s3_resource(
@@ -277,13 +278,6 @@ class S3Utils:
             return match.group(1)
 
         return path
-
-
-def _scan_objects_with_retry(s3_bucket, s3_prefix):
-    # this returns a collection https://boto3.amazonaws.com/v1/documentation/api/latest/guide/collections.html
-    # This iterable automatically makes additional requests to retrieve more objects from S3 as needed.
-    objects = s3_bucket.objects.filter(Prefix=s3_prefix)
-    return list(objects)
 
 
 def is_slow_down_error(exception):

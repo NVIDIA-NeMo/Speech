@@ -1184,6 +1184,11 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
         config: Dictionary containing parser options:
             - add_extra_end_silence (bool): Whether to add extra silence at the end.
             - extra_end_silence_range (List[float]): Range of extra silence duration.
+            - extra_end_silence_seed (int, optional): When set, the extra silence duration is drawn from an RNG
+              seeded with ``(extra_end_silence_seed, cut.id)``, so it is a pure function of the cut and is
+              reproduced exactly after resuming a ``StatefulDataLoader`` checkpoint (a given cut then gets the
+              same extra silence in every epoch). Set it for exact resume. When omitted (default), the duration
+              is drawn from the global ``random`` module as before, which is not restored on resume.
             - max_cer (float): Maximum allowed character error rate.
             - min_context_speaker_similarity (float): Minimum similarity score.
             - target_speaker (str, optional): Target speaker filter.
@@ -1196,6 +1201,7 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
 
     add_extra_end_sil = config.get("add_extra_end_silence", False)
     extra_end_silence_range = config.get("extra_end_silence_range", [0.5, 6.0])
+    extra_end_silence_seed = config.get("extra_end_silence_seed")
     sample_rate = config.get("sample_rate", 22050)
 
     max_cer = config.get("max_cer", 0.03)
@@ -1252,7 +1258,10 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
 
         # Optionally add extra silence
         if add_extra_end_sil:
-            sil_duration = random.uniform(*extra_end_silence_range)
+            silence_rng = (
+                random if extra_end_silence_seed is None else random.Random(f"{extra_end_silence_seed}:{cut.id}")
+            )
+            sil_duration = silence_rng.uniform(*extra_end_silence_range)
             cut_target = cut_target.pad(duration=total_duration + sil_duration, direction="right")
             cut_source = cut_source.pad(duration=total_duration + sil_duration, direction="right")
             cut_source = cut_source.to_mono().move_to_memory(audio_format='wav')
@@ -1952,7 +1961,10 @@ def mux(
     return cuts
 
 
-def guess_parse_cutset(inp: Union[str, dict, omegaconf.DictConfig]) -> CutSet:
+def guess_parse_cutset(
+    inp: Union[str, dict, omegaconf.DictConfig],
+    shard_seed: Union[int, str, None] = None,
+) -> CutSet:
     """
     Utility function that supports opening a CutSet from:
     * a string path to YAML input spec (see :func:`read_dataset_config` for details)
@@ -1962,12 +1974,18 @@ def guess_parse_cutset(inp: Union[str, dict, omegaconf.DictConfig]) -> CutSet:
         :class:`nemo.collections.common.data.lhotse.dataloader.LhotseDataLoadingConfig`
 
     It's intended to be used in a generic context where we are not sure which way the user will specify the inputs.
+
+    ``shard_seed``, when given, is used for shard shuffling unless ``inp`` sets its own ``shard_seed``
+    (the default is ``"trng"``, which makes the shard order differ between runs).
     """
     from nemo.collections.common.data.lhotse.dataloader import make_structured_with_schema_warnings
 
     if isinstance(inp, (dict, omegaconf.DictConfig)):
         try:
-            config = make_structured_with_schema_warnings(OmegaConf.from_dotlist([f"{k}={v}" for k, v in inp.items()]))
+            dotlist = [f"{k}={v}" for k, v in inp.items()]
+            if shard_seed is not None and "shard_seed" not in inp:
+                dotlist.append(f"shard_seed={shard_seed}")
+            config = make_structured_with_schema_warnings(OmegaConf.from_dotlist(dotlist))
             cuts, _ = read_cutset_from_config(config)
             return cuts
         except Exception as e:
@@ -1984,6 +2002,8 @@ def guess_parse_cutset(inp: Union[str, dict, omegaconf.DictConfig]) -> CutSet:
         else:
             # Assume anything else is a NeMo non-tarred manifest
             config = make_structured_with_schema_warnings(OmegaConf.from_dotlist([f"manifest_filepath={inp}"]))
+        if shard_seed is not None:
+            config.shard_seed = shard_seed
         cuts, _ = read_cutset_from_config(config)
         return cuts
     else:

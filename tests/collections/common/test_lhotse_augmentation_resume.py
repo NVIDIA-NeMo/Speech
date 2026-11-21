@@ -1,0 +1,179 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""Noise mixing and RIR reverb must give bit-identical audio after a mid-stream StatefulDataLoader resume."""
+
+import copy
+import hashlib
+
+import numpy as np
+import pytest
+import soundfile as sf
+from lhotse import CutSet, Recording, RecordingSet
+from lhotse.dataset.iterable_dataset import IdentityDataset
+from omegaconf import OmegaConf
+
+from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
+
+pytestmark = pytest.mark.unit
+
+
+def _wav_cuts(root, prefix, count, rng, duration=1.0):
+    cuts = []
+    for i in range(count):
+        path = root / f"{prefix}_{i}.wav"
+        sf.write(path, (0.1 * rng.standard_normal(int(16000 * duration))).astype(np.float32), 16000)
+        cuts.append(Recording.from_file(path, recording_id=f"{prefix}_{i}").to_cut())
+    return CutSet.from_cuts(cuts)
+
+
+@pytest.fixture(scope="module")
+def data_dir(tmp_path_factory):
+    """Speech and noise as Shar (tarred audio; noise also in an indexed variant), plus a RecordingSet of RIRs."""
+    root = tmp_path_factory.mktemp("aug_resume")
+    rng = np.random.default_rng(0)
+    for name, count, shard_size in [("speech", 24, 8), ("noise", 12, 4), ("noise_a", 8, 4), ("noise_b", 8, 4)]:
+        (root / name).mkdir()
+        _wav_cuts(root, name, count, rng).to_shar(root / name, fields={"recording": "wav"}, shard_size=shard_size)
+    (root / "noise_indexed").mkdir()
+    _wav_cuts(root, "noise_indexed", 12, rng).to_shar(
+        root / "noise_indexed", fields={"recording": "wav"}, shard_size=4, compress_jsonl=False, create_index=True
+    )
+    rir_recordings = []
+    for i in range(4):
+        path = root / f"rir_{i}.wav"
+        sf.write(path, (rng.standard_normal(1600) * np.exp(-np.arange(1600) / 200.0)).astype(np.float32), 16000)
+        rir_recordings.append(Recording.from_file(path))
+    RecordingSet.from_recordings(rir_recordings).to_file(root / "rirs.jsonl")
+    return root
+
+
+def _noise_path(data_dir, aug):
+    if aug == "noise_blend":
+        # A weighted blend of two equally sized sources.
+        return {"shar_path": [[str(data_dir / "noise_a"), 90], [str(data_dir / "noise_b"), 10]]}
+    if aug == "noise_bounded":
+        # A blend read with at most one open stream at a time.
+        return {"shar_path": [str(data_dir / "noise_a"), str(data_dir / "noise_b")], "max_open_streams": 1}
+    return {"shar_path": str(data_dir / aug)}
+
+
+def _loader(data_dir, mode, num_workers, aug):
+    """aug: "noise*" (noise mixing from Shar, see _noise_path) or "rir" (reverb with RIR recordings)."""
+    cfg = {
+        "shar_path": str(data_dir / "speech"),
+        "batch_size": 2,
+        "shuffle": True,
+        # The speech source repeats indefinitely; a small shuffle buffer avoids mixing 10k cuts before batch 1.
+        "shuffle_buffer_size": 32,
+        "num_workers": num_workers,
+        "seed": 1,
+        "shard_seed": 1,
+        "use_stateful_dataloader": True,
+        "force_map_dataset": mode == "map",
+        "force_iterable_dataset": mode == "iterable",
+        "sample_rate": 16000,
+    }
+    if aug.startswith("noise"):
+        cfg.update(noise_path=_noise_path(data_dir, aug), noise_mix_prob=1.0)
+    else:
+        cfg.update(rir_enabled=True, rir_prob=1.0, rir_path=str(data_dir / "rirs.jsonl"))
+    return get_lhotse_dataloader_from_config(
+        OmegaConf.create(cfg), global_rank=0, world_size=1, dataset=IdentityDataset()
+    )
+
+
+def _take(data_dir, mode, num_workers, aug, num_batches, state=None):
+    dloader = _loader(data_dir, mode, num_workers, aug)
+    if state is not None:
+        dloader.load_state_dict(state)
+    it = iter(dloader)
+    hashes = []
+    for _ in range(num_batches):
+        batch = next(it)
+        hashes.append([hashlib.md5(np.ascontiguousarray(c.load_audio()).tobytes()).hexdigest() for c in batch])
+    return hashes, copy.deepcopy(dloader.state_dict())
+
+
+@pytest.mark.parametrize(
+    "aug,num_workers",
+    [
+        ("noise", 0),
+        ("noise_indexed", 0),
+        ("noise_blend", 0),
+        ("noise_bounded", 0),
+        ("rir", 0),
+    ],
+)
+@pytest.mark.parametrize("mode", ["map", "iterable"])
+def test_augmented_audio_is_bit_identical_after_resume(data_dir, mode, num_workers, aug):
+    uninterrupted, _ = _take(data_dir, mode, num_workers, aug, num_batches=6)
+    _, state = _take(data_dir, mode, num_workers, aug, num_batches=2)
+    resumed, _ = _take(data_dir, mode, num_workers, aug, num_batches=4, state=state)
+
+    assert resumed == uninterrupted[2:]
+
+
+@pytest.mark.parametrize("mode", ["map", "iterable"])
+def test_weighted_noise_blend_keeps_its_source_weights(data_dir, mode):
+    it = iter(_loader(data_dir, mode, 0, "noise_blend"))
+    sources = []
+    for _ in range(30):
+        for cut in next(it):
+            noise_track = cut.tracks[1]
+            sources.append(noise_track.cut.recording_id.split("_")[1])
+
+    share_a = sources.count("a") / len(sources)
+    # 90:10 weights; an unweighted (or finite, exhausting) blend of equal sources would give about 0.5.
+    assert share_a > 0.75
+
+
+@pytest.mark.parametrize("use_stateful_dataloader", [False, True])
+def test_noise_shard_seed_follows_the_stateful_flag(data_dir, monkeypatch, use_stateful_dataloader):
+    from nemo.collections.common.data.lhotse import dataloader
+
+    calls = []
+
+    def fake_guess_parse_cutset(inp, shard_seed=None):
+        calls.append(shard_seed)
+        return _wav_cuts(data_dir, "flag_noise", 2, np.random.default_rng(0), duration=0.5)
+
+    monkeypatch.setattr(dataloader, "guess_parse_cutset", fake_guess_parse_cutset)
+    cfg = {
+        "shar_path": str(data_dir / "speech"),
+        "batch_size": 2,
+        "seed": 1,
+        "shard_seed": 1234,
+        "use_stateful_dataloader": use_stateful_dataloader,
+        "noise_path": "unused",
+        "sample_rate": 16000,
+    }
+    get_lhotse_dataloader_from_config(OmegaConf.create(cfg), global_rank=0, world_size=1, dataset=IdentityDataset())
+
+    # Without the flag the noise keeps its own default shard_seed, as before.
+    assert calls == [1234 if use_stateful_dataloader else None]
+
+
+def test_mixable_noise_only_changes_noise_that_cannot_be_mixed(data_dir):
+    from nemo.collections.common.data.lhotse.dataloader import _mixable_noise, _StreamingNoise
+
+    eager = _wav_cuts(data_dir, "eager_noise", 2, np.random.default_rng(0), duration=0.5)
+    streamed = CutSet.from_shar(in_dir=data_dir / "noise")
+    indexed_finite = CutSet.from_shar(in_dir=data_dir / "noise_indexed", indexed=True)
+    indexed_infinite = indexed_finite.repeat()
+
+    for noise in [eager, streamed, indexed_finite]:
+        assert _mixable_noise(noise) is noise
+    # Indexed noise without a length used to fail on the first mixed batch ("... is an infinite iterator").
+    assert isinstance(_mixable_noise(indexed_infinite).data, _StreamingNoise)

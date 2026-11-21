@@ -34,12 +34,16 @@
 # SOFTWARE.
 # This file contains code artifacts adapted from https://github.com/ryanleary/patter
 import copy
+import hashlib
 import inspect
 import io
 import os
 import random
 import subprocess
+import tarfile
+import tempfile
 from tempfile import NamedTemporaryFile
+from types import ModuleType
 from typing import List, Optional, Union
 
 import librosa
@@ -48,6 +52,7 @@ import soundfile as sf
 from scipy import signal
 
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
+from nemo.collections.asr.parts.utils.tarred_shards import expand_sharded_filepaths
 from nemo.collections.common.parts.preprocessing import collections, parsers
 from nemo.core.classes import IterableDataset
 from nemo.utils import logging
@@ -73,7 +78,16 @@ except (ImportError, ModuleNotFoundError):
     HAVE_NUMBA = False
 
 
-def read_one_audiosegment(manifest, target_sr, tarred_audio=False, audio_dataset=None):
+def read_one_audiosegment(
+    manifest, target_sr, tarred_audio=False, audio_dataset=None, rng=random, tar_random_access=None
+):
+    if tarred_audio and rng is not random:
+        # A generator was injected (e.g. a dataset's checkpointed generator): choose the file by index with it and
+        # read it by random access, so that the choice is reproduced exactly after a resume. The sequential tar
+        # iterator below has a position that is not checkpointed.
+        if tar_random_access is None:
+            raise ValueError("Tarred audio with an injected generator requires random access to the tar files.")
+        return tar_random_access.load(rng.sample(manifest.data, 1)[0], target_sr)
     if tarred_audio:
         if audio_dataset is None:
             raise TypeError("Expected augmentation dataset but got None")
@@ -83,7 +97,7 @@ def read_one_audiosegment(manifest, target_sr, tarred_audio=False, audio_dataset
         duration = 0 if manifest_entry.duration is None else manifest_entry.duration
 
     else:
-        audio_record = random.sample(manifest.data, 1)[0]
+        audio_record = rng.sample(manifest.data, 1)[0]
         audio_file = audio_record.audio_file
         offset = 0 if audio_record.offset is None else audio_record.offset
         duration = 0 if audio_record.duration is None else audio_record.duration
@@ -92,6 +106,26 @@ def read_one_audiosegment(manifest, target_sr, tarred_audio=False, audio_dataset
 
 
 class Perturbation(object):
+    @property
+    def rng(self) -> Union[random.Random, ModuleType]:
+        """
+        Random generator used by :meth:`perturb`.
+
+        Defaults to the global ``random`` module, as before. A dataset that owns a checkpointed generator
+        (see :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`) assigns it here,
+        usually through :attr:`AudioAugmentor.rng`, so that augmentation draws are restored on resume.
+        Assigning a generator also assigns it to nested perturbations (e.g. the noise perturbers of
+        :class:`RirAndNoisePerturbation`).
+        """
+        return self.__dict__.get("_injected_rng", random)
+
+    @rng.setter
+    def rng(self, value: Union[random.Random, ModuleType]) -> None:
+        _store_injected_rng(self, value)
+        for perturbation in _nested_perturbations(vars(self).values()):
+            if perturbation is not self:
+                perturbation.rng = value
+
     def max_augmentation_length(self, length):
         return length
 
@@ -154,9 +188,9 @@ class SpeedPerturbation(Perturbation):
     def perturb(self, data):
         # Select speed rate either from choice or random sample
         if self._num_rates < 0:
-            speed_rate = random.uniform(self._min_rate, self._max_rate)
+            speed_rate = self.rng.uniform(self._min_rate, self._max_rate)
         else:
-            speed_rate = random.choice(self._rates)
+            speed_rate = self.rng.choice(self._rates)
 
         # Skip perturbation in case of identity speed rate
         if speed_rate == 1.0:
@@ -236,9 +270,9 @@ class TimeStretchPerturbation(Perturbation):
     def perturb(self, data):
         # Select speed rate either from choice or random sample
         if self._num_rates < 0:
-            speed_rate = random.uniform(self._min_rate, self._max_rate)
+            speed_rate = self.rng.uniform(self._min_rate, self._max_rate)
         else:
-            speed_rate = random.choice(self._rates)
+            speed_rate = self.rng.choice(self._rates)
 
         # Skip perturbation in case of identity speed rate
         if speed_rate == 1.0:
@@ -312,8 +346,8 @@ class SilencePerturbation(Perturbation):
         self._value = value
 
     def perturb(self, data):
-        start_silence_len = random.uniform(self._min_start_silence_secs, self._max_start_silence_secs)
-        end_silence_len = random.uniform(self._min_end_silence_secs, self._max_end_silence_secs)
+        start_silence_len = self.rng.uniform(self._min_start_silence_secs, self._max_start_silence_secs)
+        end_silence_len = self.rng.uniform(self._min_end_silence_secs, self._max_end_silence_secs)
         start = np.full((int(start_silence_len * data.sample_rate),), self._value)
         end = np.full((int(end_silence_len * data.sample_rate),), self._value)
 
@@ -336,7 +370,7 @@ class GainPerturbation(Perturbation):
         random.seed(rng) if rng else None
 
     def perturb(self, data):
-        gain = random.uniform(self._min_gain_dbfs, self._max_gain_dbfs)
+        gain = self.rng.uniform(self._min_gain_dbfs, self._max_gain_dbfs)
         data._samples = data._samples * (10.0 ** (gain / 20.0))
 
 
@@ -369,10 +403,13 @@ class ImpulsePerturbation(Perturbation):
         self._shift_impulse = shift_impulse
         self._data_iterator = None
 
+        self._tar_random_access = None
+
         if audio_tar_filepaths:
             self._tarred_audio = True
             self._audiodataset = AugmentationDataset(manifest_path, audio_tar_filepaths, shuffle_n)
             self._data_iterator = iter(self._audiodataset)
+            self._tar_random_access = TarredAudioRandomAccess(audio_tar_filepaths)
 
         self._rng = rng
         random.seed(self._rng) if rng else None
@@ -383,6 +420,8 @@ class ImpulsePerturbation(Perturbation):
             data.sample_rate,
             tarred_audio=self._tarred_audio,
             audio_dataset=self._data_iterator,
+            rng=self.rng,
+            tar_random_access=self._tar_random_access,
         )
 
         # normalize if necessary
@@ -438,7 +477,7 @@ class ShiftPerturbation(Perturbation):
         random.seed(rng) if rng else None
 
     def perturb(self, data):
-        shift_ms = random.uniform(self._min_shift_ms, self._max_shift_ms)
+        shift_ms = self.rng.uniform(self._min_shift_ms, self._max_shift_ms)
         max_shift_ms = data.duration * 1000
         if abs(shift_ms) > max_shift_ms:
             shift_ms = max(-max_shift_ms, min(shift_ms, max_shift_ms))
@@ -486,10 +525,13 @@ class NoisePerturbation(Perturbation):
         self._orig_sr = orig_sr
         self._data_iterator = None
 
+        self._tar_random_access = None
+
         if audio_tar_filepaths:
             self._tarred_audio = True
             self._audiodataset = AugmentationDataset(manifest_path, audio_tar_filepaths, shuffle_n)
             self._data_iterator = iter(self._audiodataset)
+            self._tar_random_access = TarredAudioRandomAccess(audio_tar_filepaths)
 
         random.seed(rng) if rng else None
         self._rng = rng
@@ -504,7 +546,12 @@ class NoisePerturbation(Perturbation):
 
     def get_one_noise_sample(self, target_sr):
         return read_one_audiosegment(
-            self._manifest, target_sr, tarred_audio=self._tarred_audio, audio_dataset=self._data_iterator
+            self._manifest,
+            target_sr,
+            tarred_audio=self._tarred_audio,
+            audio_dataset=self._data_iterator,
+            rng=self.rng,
+            tar_random_access=self._tar_random_access,
         )
 
     def perturb(self, data, ref_mic=0):
@@ -518,6 +565,8 @@ class NoisePerturbation(Perturbation):
             data.sample_rate,
             tarred_audio=self._tarred_audio,
             audio_dataset=self._data_iterator,
+            rng=self.rng,
+            tar_random_access=self._tar_random_access,
         )
         self.perturb_with_input_noise(data, noise, ref_mic=ref_mic)
 
@@ -539,7 +588,7 @@ class NoisePerturbation(Perturbation):
                 f" reference mic ID must be an integer in [0, {data.num_channels}), got {ref_mic} instead."
             )
 
-        snr_db = random.uniform(self._min_snr_db, self._max_snr_db)
+        snr_db = self.rng.uniform(self._min_snr_db, self._max_snr_db)
 
         if data.is_empty():
             logging.warning(
@@ -568,7 +617,7 @@ class NoisePerturbation(Perturbation):
         noise_gain_db = min(noise_gain_db, self._max_gain_db)
 
         # calculate noise segment to use
-        start_time = random.uniform(0.0, noise.duration - data.duration)
+        start_time = self.rng.uniform(0.0, noise.duration - data.duration)
         if noise.duration > (start_time + data.duration):
             noise.subsegment(start_time=start_time, end_time=start_time + data.duration)
 
@@ -576,7 +625,7 @@ class NoisePerturbation(Perturbation):
         noise.gain_db(noise_gain_db)
 
         if noise._samples.shape[0] < data._samples.shape[0]:
-            noise_idx = random.randint(0, data._samples.shape[0] - noise._samples.shape[0])
+            noise_idx = self.rng.randint(0, data._samples.shape[0] - noise._samples.shape[0])
             data._samples[noise_idx : noise_idx + noise._samples.shape[0]] += noise._samples
 
         else:
@@ -602,7 +651,7 @@ class NoisePerturbation(Perturbation):
                 f" reference mic ID must be an integer in [0, {data.num_channels}), got {ref_mic} instead."
             )
 
-        snr_db = random.uniform(self._min_snr_db, self._max_snr_db)
+        snr_db = self.rng.uniform(self._min_snr_db, self._max_snr_db)
         if not data_rms:
             data_rms = data.rms_db
 
@@ -612,11 +661,11 @@ class NoisePerturbation(Perturbation):
             noise_gain_db = data_rms - noise.rms_db - snr_db
         noise_gain_db = min(noise_gain_db, self._max_gain_db)
 
-        n_additions = random.randint(1, max_additions)
+        n_additions = self.rng.randint(1, max_additions)
 
         for i in range(n_additions):
-            noise_dur = random.uniform(0.0, max_noise_dur)
-            start_time = random.uniform(0.0, noise.duration)
+            noise_dur = self.rng.uniform(0.0, max_noise_dur)
+            start_time = self.rng.uniform(0.0, noise.duration)
             start_sample = int(round(start_time * noise.sample_rate))
             end_sample = int(round(min(noise.duration, (start_time + noise_dur)) * noise.sample_rate))
             noise_samples = np.copy(noise._samples[start_sample:end_sample])
@@ -626,7 +675,7 @@ class NoisePerturbation(Perturbation):
             if noise_samples.shape[0] > data._samples.shape[0]:
                 noise_samples = noise_samples[0 : data._samples.shape[0]]
 
-            noise_idx = random.randint(0, data._samples.shape[0] - noise_samples.shape[0])
+            noise_idx = self.rng.randint(0, data._samples.shape[0] - noise_samples.shape[0])
             data._samples[noise_idx : noise_idx + noise_samples.shape[0]] += noise_samples
 
 
@@ -673,6 +722,12 @@ class NoisePerturbationWithNormalization(Perturbation):
         self._tarred_audio = False
         self._orig_sr = orig_sr
         self._data_iterator = None
+        # (source index, manifest entry) for the entries of every tarred source that this rank reads; built
+        # lazily on the first draw with an injected generator, see read_one_audiosegment().
+        self._tar_entries = None
+        self._tar_manifests = []
+        self._tar_random_access = []
+        self._tar_partitioned = shard_strategy == "scatter" and world_size > 1
 
         random.seed(rng) if rng else None
         self._rng = rng
@@ -683,6 +738,7 @@ class NoisePerturbationWithNormalization(Perturbation):
                 manifest_path = [manifest_path]
             if isinstance(audio_tar_filepaths, str):
                 audio_tar_filepaths = [audio_tar_filepaths]
+
             datasets = []
             for tarred_audio_filepath, manifest_filepath in zip(audio_tar_filepaths, manifest_path):
                 dataset = AugmentationDataset(
@@ -694,6 +750,16 @@ class NoisePerturbationWithNormalization(Perturbation):
                     shard_strategy=shard_strategy,
                 )
                 datasets.append(dataset)
+                # Each source keeps its own file-id namespace: its manifest entries are read from its own tars,
+                # restricted to this rank's shards under the 'scatter' strategy.
+                rank_tar_filepaths = expand_sharded_filepaths(
+                    tarred_audio_filepath,
+                    shard_strategy=shard_strategy,
+                    world_size=world_size,
+                    global_rank=global_rank,
+                )
+                self._tar_random_access.append(TarredAudioRandomAccess(rank_tar_filepaths))
+                self._tar_manifests.append(dataset._manifest)
             self._audiodataset = RandomizedChainDataset(
                 datasets, rnd_seed=(rng if rng else random.randint(0, 30000)) + global_rank
             )
@@ -714,6 +780,11 @@ class NoisePerturbationWithNormalization(Perturbation):
         return self._orig_sr
 
     def read_one_audiosegment(self, target_sr):
+        if self._tarred_audio and self.rng is not random:
+            # See the module-level read_one_audiosegment(): random access keeps the choice resumable. Entries are
+            # drawn uniformly over all sources' manifest entries and read from their own source's tars.
+            source_idx, entry = self.rng.sample(self._rank_tar_entries(), 1)[0]
+            return self._tar_random_access[source_idx].load(entry, target_sr)
         if self._tarred_audio:
             if self._data_iterator is None:
                 raise TypeError("Expected valid iterator but got None")
@@ -727,12 +798,32 @@ class NoisePerturbationWithNormalization(Perturbation):
             duration = 0 if manifest_entry.duration is None else manifest_entry.duration
 
         else:
-            audio_record = random.sample(self._manifest.data, 1)[0]
+            audio_record = self.rng.sample(self._manifest.data, 1)[0]
             audio_file = audio_record.audio_file
             offset = 0 if audio_record.offset is None else audio_record.offset
             duration = 0 if audio_record.duration is None else audio_record.duration
 
         return AudioSegment.from_file(audio_file, target_sr=target_sr, offset=offset, duration=duration)
+
+    def _rank_tar_entries(self) -> list:
+        """
+        ``(source index, manifest entry)`` pairs that this rank can read: with the 'scatter' strategy, the entries
+        stored in this rank's shards; otherwise every manifest entry, each of which must be in the source's tars.
+        """
+        if self._tar_entries is None:
+            entries = []
+            for source_idx, (manifest, access) in enumerate(zip(self._tar_manifests, self._tar_random_access)):
+                present = [entry for entry in manifest.data if access.contains(entry)]
+                if not self._tar_partitioned and len(present) != len(manifest.data):
+                    raise ValueError(
+                        f"{len(manifest.data) - len(present)} manifest entries of noise source {source_idx} are not "
+                        f"in its tar files {access.tar_filepaths}."
+                    )
+                entries.extend((source_idx, entry) for entry in present)
+            if not entries:
+                raise ValueError("None of the noise manifest entries are in this rank's tar shards.")
+            self._tar_entries = entries
+        return self._tar_entries
 
     def perturb(self, data, ref_mic=0):
         """
@@ -823,9 +914,9 @@ class NoisePerturbationWithNormalization(Perturbation):
             )
 
         if self._snr_samples:
-            snr_db = random.sample(self._snr_samples, 1)[0]
+            snr_db = self.rng.sample(self._snr_samples, 1)[0]
         else:
-            snr_db = random.uniform(self._min_snr_db, self._max_snr_db)
+            snr_db = self.rng.uniform(self._min_snr_db, self._max_snr_db)
         if data_rms is None:
             data_rms = data.rms_db[ref_mic] if isinstance(data.rms_db, (list, np.ndarray)) else data.rms_db
 
@@ -863,8 +954,14 @@ class WhiteNoisePerturbation(Perturbation):
         np.random.seed(rng) if rng else None
 
     def perturb(self, data):
-        noise_level_db = np.random.randint(self.min_level, self.max_level, dtype='int32')
-        noise_signal = np.random.randn(data._samples.shape[0]) * (10.0 ** (noise_level_db / 20.0))
+        if self.rng is random:
+            noise_level_db = np.random.randint(self.min_level, self.max_level, dtype='int32')
+            noise_signal = np.random.randn(data._samples.shape[0]) * (10.0 ** (noise_level_db / 20.0))
+        else:
+            # Draw from the injected generator; numpy is seeded from it so the noise is reproducible too.
+            noise_level_db = self.rng.randrange(self.min_level, self.max_level)
+            noise_rng = np.random.default_rng(self.rng.getrandbits(64))
+            noise_signal = noise_rng.standard_normal(data._samples.shape[0]) * (10.0 ** (noise_level_db / 20.0))
         data._samples += noise_signal
 
 
@@ -970,14 +1067,14 @@ class RirAndNoisePerturbation(Perturbation):
         self._apply_noise_rir = apply_noise_rir
 
     def perturb(self, data):
-        prob = random.uniform(0.0, 1.0)
+        prob = self.rng.uniform(0.0, 1.0)
 
         if prob < self._rir_prob:
             self._rir_perturber.perturb(data)
 
         data_rms = data.rms_db
 
-        if self._fg_noise_perturbers is not None and random.uniform(0.0, 1.0) < self._noise_prob:
+        if self._fg_noise_perturbers is not None and self.rng.uniform(0.0, 1.0) < self._noise_prob:
             orig_sr = data.orig_sr
             if orig_sr not in self._fg_noise_perturbers:
                 orig_sr = max(self._fg_noise_perturbers.keys())
@@ -989,7 +1086,7 @@ class RirAndNoisePerturbation(Perturbation):
                 data, noise, data_rms=data_rms, max_noise_dur=self._max_duration, max_additions=self._max_additions
             )
 
-        if self._bg_noise_perturbers is not None and random.uniform(0.0, 1.0) < self._bg_noise_prob:
+        if self._bg_noise_perturbers is not None and self.rng.uniform(0.0, 1.0) < self._bg_noise_prob:
             orig_sr = data.orig_sr
             if orig_sr not in self._bg_noise_perturbers:
                 orig_sr = max(self._bg_noise_perturbers.keys())
@@ -1030,11 +1127,11 @@ class TranscodePerturbation(Perturbation):
         orig_f = NamedTemporaryFile(suffix=".wav")
         sf.write(orig_f.name, norm_samples.transpose(), 16000)
 
-        codec_ind = random.randint(0, len(self._codecs) - 1)
+        codec_ind = self.rng.randint(0, len(self._codecs) - 1)
         if self._codecs[codec_ind] == "amr-nb":
             transcoded_f = NamedTemporaryFile(suffix="_amr.wav")
             rates = list(range(0, 4))
-            rate = rates[random.randint(0, len(rates) - 1)]
+            rate = rates[self.rng.randint(0, len(rates) - 1)]
             _ = subprocess.check_output(
                 f"sox {orig_f.name} -V0 -C {rate} -t amr-nb - | sox -t amr-nb - -V0 -b 16 -r 16000 {transcoded_f.name}",
                 shell=True,
@@ -1042,7 +1139,7 @@ class TranscodePerturbation(Perturbation):
         elif self._codecs[codec_ind] == "ogg":
             transcoded_f = NamedTemporaryFile(suffix="_ogg.wav")
             rates = list(range(-1, 8))
-            rate = rates[random.randint(0, len(rates) - 1)]
+            rate = rates[self.rng.randint(0, len(rates) - 1)]
             _ = subprocess.check_output(
                 f"sox {orig_f.name} -V0 -C {rate} -t ogg - | sox -t ogg - -V0 -b 16 -r 16000 {transcoded_f.name}",
                 shell=True,
@@ -1099,7 +1196,7 @@ class RandomSegmentPerturbation(Perturbation):
             pad_size = self._duration_sec * data.sample_rate - data.num_samples
             data.pad(pad_size=pad_size)
         else:
-            start_time = random.uniform(0.0, data.duration - self._duration_sec)
+            start_time = self.rng.uniform(0.0, data.duration - self._duration_sec)
 
         end_time = start_time + self._duration_sec
         new_data = copy.deepcopy(data)
@@ -1108,7 +1205,7 @@ class RandomSegmentPerturbation(Perturbation):
             rms_db = new_data.rms_db if new_data.num_channels == 1 else min(new_data.rms_db)
             trial = 0
             while rms_db < self._min_rms_db and trial < self._max_trials:
-                start_time = random.uniform(0.0, data.duration - self._duration_sec)
+                start_time = self.rng.uniform(0.0, data.duration - self._duration_sec)
                 end_time = start_time + self._duration_sec
                 new_data = copy.deepcopy(data)
                 new_data.subsegment(start_time=start_time, end_time=end_time)
@@ -1151,9 +1248,27 @@ class AudioAugmentor(object):
         random.seed(rng) if rng else None
         self._pipeline = perturbations if perturbations is not None else []
 
+    @property
+    def rng(self) -> Union[random.Random, ModuleType]:
+        """
+        Random generator used to decide which perturbations to apply and by the perturbations themselves.
+
+        Defaults to the global ``random`` module, as before. Assigning a generator (e.g. the checkpointed
+        ``self.rng`` of a :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin` dataset)
+        assigns it to every perturbation in the pipeline, so all augmentation draws come from it and are restored
+        on resume together with the dataset state.
+        """
+        return self.__dict__.get("_injected_rng", random)
+
+    @rng.setter
+    def rng(self, value: Union[random.Random, ModuleType]) -> None:
+        _store_injected_rng(self, value)
+        for perturbation in _nested_perturbations(p for _, p in self._pipeline):
+            perturbation.rng = value
+
     def perturb(self, segment):
         for prob, p in self._pipeline:
-            if random.random() < prob:
+            if self.rng.random() < prob:
                 p.perturb(segment)
         return
 
@@ -1301,6 +1416,90 @@ def process_augmentations(augmenter, global_rank=0, world_size=1) -> Optional[Au
     return augmenter
 
 
+class TarredAudioRandomAccess:
+    """
+    Random access to the audio files of tarred noise or RIR data (NeMo tarred format: one member per audio file),
+    keyed by the manifest entry's file id.
+
+    Perturbations use it instead of the sequential tar iterator when a generator is injected (see
+    :attr:`Perturbation.rng`): the file is chosen by index with that generator, so the choice is reproduced exactly
+    after resuming from the generator's saved state. Members are read with NeMo's indexed tar reader. A tar without
+    a ``.idx`` file next to it is indexed once into a cached temporary file (local tars only; build indexes for
+    remote tars with ``scripts/dataloading/build_indexes.py``).
+
+    File ids must be unique within the tar files of one instance (one noise source): every regular member of
+    every indexed range is checked, and a duplicate member name or file id raises ``ValueError``. Compressed
+    archives (e.g. ``.tar.gz``) can't be read by random access and raise ``ValueError``; use uncompressed tars for
+    resumable augmentation. Readers are closed after each use, so the number of tar files is not limited by the
+    open-file limit.
+
+    Args:
+        tar_filepaths: Tar file paths of one source, in any format accepted by ``AugmentationDataset``
+            (brace-expandable string or list).
+    """
+
+    def __init__(self, tar_filepaths: Union[str, List[str]]):
+        self._tar_filepaths = tar_filepaths
+        self._locations = None
+
+    @property
+    def tar_filepaths(self) -> Union[str, List[str]]:
+        return self._tar_filepaths
+
+    def contains(self, manifest_entry) -> bool:
+        """Whether the audio of ``manifest_entry`` is in these tar files."""
+        return _file_id(manifest_entry.audio_file) in self._member_locations()
+
+    def load(self, manifest_entry, target_sr: int) -> AudioSegment:
+        """Read the audio of ``manifest_entry`` (an ``ASRAudioText`` item), honouring its offset and duration."""
+        file_id = _file_id(manifest_entry.audio_file)
+        try:
+            reader, member_idx = self._member_locations()[file_id]
+        except KeyError as e:
+            raise KeyError(
+                f"Audio file '{manifest_entry.audio_file}' was not found in tar files {self._tar_filepaths}"
+            ) from e
+        try:
+            _, audio_bytes = reader[member_idx]
+        finally:
+            reader.close()
+        return AudioSegment.from_file(
+            io.BytesIO(audio_bytes),
+            target_sr=target_sr,
+            offset=0 if manifest_entry.offset is None else manifest_entry.offset,
+            duration=0 if manifest_entry.duration is None else manifest_entry.duration,
+        )
+
+    def _member_locations(self) -> dict:
+        if self._locations is None:
+            from nemo.collections.common.data.lhotse.indexed_adapters import IndexedTarMemberReader
+
+            locations = {}
+            for tar_path in self._expand_tar_filepaths():
+                _reject_compressed_tar(tar_path)
+                reader = _open_indexed_tar(IndexedTarMemberReader, tar_path)
+                try:
+                    # An index entry may span several members (the index groups consecutive members with the same
+                    # stem), so every regular member in its range is checked, not only the first one.
+                    for member_idx in range(len(reader)):
+                        for name in _regular_member_names(reader, member_idx):
+                            file_id = _file_id(name)
+                            if file_id in locations:
+                                raise ValueError(
+                                    f"Tar member '{name}' repeats audio file id '{file_id}' ({tar_path}); "
+                                    "random access by file id would be ambiguous."
+                                )
+                            locations[file_id] = (reader, member_idx)
+                finally:
+                    reader.close()
+            self._locations = locations
+        return self._locations
+
+    def _expand_tar_filepaths(self) -> List[str]:
+
+        return expand_sharded_filepaths(self._tar_filepaths, shard_strategy="replicate", world_size=1, global_rank=0)
+
+
 class AugmentationDataset(IterableDataset):
     """
     A class that loads tarred audio files and cycles over the files in the dataset.
@@ -1328,8 +1527,6 @@ class AugmentationDataset(IterableDataset):
         world_size: int = 1,
         shard_strategy: str = "replicate",
     ):
-        # import here to avoid circular import error
-        from nemo.collections.asr.data.audio_to_text import expand_sharded_filepaths
 
         self._manifest = collections.ASRAudioText(manifest_path, parser=parsers.make_parser([]), index_by_file_id=True)
 
@@ -1396,3 +1593,102 @@ class AugmentationDataset(IterableDataset):
                 yield audio_file, file_id, manifest_entry
             except StopIteration:
                 audio_iter = iter(self.audio_dataset)
+
+
+def _nested_perturbations(values):
+    """Yield the :class:`Perturbation` objects in ``values``, looking one level into dicts, lists and tuples."""
+    for value in values:
+        if isinstance(value, Perturbation):
+            yield value
+        elif isinstance(value, dict):
+            yield from (v for v in value.values() if isinstance(v, Perturbation))
+        elif isinstance(value, (list, tuple)):
+            yield from (v for v in value if isinstance(v, Perturbation))
+
+
+def _open_indexed_tar(reader_cls, tar_path: str):
+    """
+    Open ``tar_path`` with an indexed tar reader, using the ``.idx`` next to it. A local tar without one gets a
+    cached temporary index; a remote tar must have its index next to it (it is not scanned automatically).
+    """
+    idx_path = tar_path + ".idx"
+    if not _is_remote_tar(tar_path):
+        if not os.path.exists(idx_path):
+            idx_path = _cached_local_tar_index(tar_path)
+        return reader_cls(tar_path, idx_path=idx_path, auto_create_index=False)
+    try:
+        return reader_cls(tar_path, idx_path=idx_path, auto_create_index=False)
+    except Exception as e:
+        raise FileNotFoundError(
+            f"Random access to remote tar {tar_path} requires an index at {idx_path}, which could not be read. "
+            "Build it with scripts/dataloading/build_indexes.py."
+        ) from e
+
+
+def _is_remote_tar(tar_path: str) -> bool:
+    from nemo.collections.common.data.lhotse.indexed_adapters import _is_remote_path
+
+    return _is_remote_path(tar_path)
+
+
+def _cached_local_tar_index(tar_path: str) -> str:
+    """Create (once) and return a temporary ``.idx`` for a local tar that has no index next to it."""
+    from nemo.collections.common.data.lhotse.indexed_adapters import create_tar_index
+
+    stat = os.stat(tar_path)
+    key = hashlib.sha1(f"{os.path.abspath(tar_path)}:{stat.st_size}:{stat.st_mtime_ns}".encode()).hexdigest()
+    cache_dir = os.path.join(tempfile.gettempdir(), "nemo_perturb_tar_indexes")
+    os.makedirs(cache_dir, exist_ok=True)
+    idx_path = os.path.join(cache_dir, f"{key}.idx")
+    if not os.path.exists(idx_path):
+        # Write to a unique file first so that concurrent dataloader workers never read a partial index.
+        tmp_path = f"{idx_path}.{os.getpid()}.tmp"
+        create_tar_index(tar_path, tmp_path)
+        os.replace(tmp_path, idx_path)
+    return idx_path
+
+
+def _store_injected_rng(obj, value) -> None:
+    """Store an injected generator; the global ``random`` module is stored as absent, which keeps ``obj`` picklable."""
+    if value is random:
+        obj.__dict__.pop("_injected_rng", None)
+    else:
+        obj.__dict__["_injected_rng"] = value
+
+
+def _file_id(path: str) -> str:
+    return os.path.splitext(os.path.basename(path))[0]
+
+
+_COMPRESSED_TAR_SUFFIXES = (".gz", ".tgz", ".bz2", ".tbz2", ".xz", ".txz", ".zst", ".zstd")
+_COMPRESSION_MAGIC = (b"\x1f\x8b", b"BZh", b"\xfd7zXZ\x00", b"\x28\xb5\x2f\xfd")
+
+
+def _reject_compressed_tar(tar_path: str) -> None:
+    """Random access needs byte offsets into an uncompressed tar; compressed archives raise a clear error."""
+    compressed = str(tar_path).lower().endswith(_COMPRESSED_TAR_SUFFIXES)
+    if not compressed and not _is_remote_tar(tar_path) and os.path.exists(tar_path):
+        with open(tar_path, "rb") as f:
+            compressed = f.read(6).startswith(_COMPRESSION_MAGIC)
+    if compressed:
+        raise ValueError(
+            f"{tar_path} is a compressed archive, which can't be read by random access. Tarred noise/RIR audio read "
+            "with an injected (checkpointed) generator must be stored in uncompressed tar files."
+        )
+
+
+def _regular_member_names(reader, member_idx: int) -> List[str]:
+    """Names of all regular members within the byte range of index entry ``member_idx`` (PAX headers resolved)."""
+    start, end = int(reader.offsets[member_idx]), int(reader.offsets[member_idx + 1])
+    reader._ensure_open()
+    reader._fh.seek(start)
+    # TarFile starts reading at the current position of the file object and seeks over member payloads.
+    archive = tarfile.open(fileobj=reader._fh, mode="r:")
+    names = []
+    while True:
+        member = archive.next()
+        if member is None or member.offset >= end:
+            break
+        if member.isfile():
+            names.append(member.name)
+    return names

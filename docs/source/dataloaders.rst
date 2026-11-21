@@ -1474,6 +1474,68 @@ Other, more exotic configurations:
 
 * With ``seed="randomized"``, the base random seed is set to Python's global RNG seed. It might be different on each GPU training process. This setting is not recommended.
 
+Randomness inside datasets
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Per-example randomness in a dataset's ``__getitem__`` (random crops, context slicing, text augmentation, ...)
+must not use the global ``random`` / ``np.random`` generators: their state is not part of the
+``StatefulDataLoader`` checkpoint, so a resumed run would read the same cuts as the uninterrupted run but
+transform them differently. Datasets inherit
+``nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`` and draw from ``self.rng`` instead::
+
+    class MyDataset(StatefulRandomMixin, torch.utils.data.Dataset):
+        def __getitem__(self, cuts):
+            offsets = [self.rng.uniform(0, cut.duration) for cut in cuts]
+            ...
+
+This is opt-in: the dataloader builder enables it when ``use_stateful_dataloader=True``. Otherwise ``self.rng`` is
+the global ``random`` module and the dataset draws exactly the same numbers as before. When enabled, the generator
+is seeded per dataloading process from the dataloader seed and the data-parallel rank, and its state is saved and
+restored with the dataloader state: by ``StatefulDataLoader`` itself for map-style datasets, and by NeMo's
+``StatefulIterableDatasetWrapper`` for iterable-style datasets. A wrapper placed around the dataset must forward
+``state_dict()`` / ``load_state_dict()``, or the state is not saved (``FallbackDataset`` does). Across epochs: with
+``num_workers=0`` or persistent workers, the same generator continues its sequence, so a cut gets new random draws
+when it is read again. With non-persistent workers, each epoch starts new workers whose generators are seeded
+from that epoch's worker seeds, so the draws still differ between epochs but don't continue the previous
+sequence. Exact resume is guaranteed within an epoch.
+
+Not covered yet: these datasets still draw from the global ``random`` / ``np.random`` / ``torch`` generators, so
+they don't resume exactly even with ``use_stateful_dataloader=True``: ``LhotseAudioNoiseDataset``
+(``nemo/collections/asr/data/ssl_dataset.py``) and the speechlm2 duplex datasets
+(``nemo/collections/speechlm2/data/duplex_stt_dataset.py`` and ``duplex_ear_tts_dataset.py``).
+
+Randomness inside components a dataset calls must come from the same generator. For example, with checkpointed
+randomness enabled the TTS datasets pass ``self.rng`` to their tokenizers' G2P modules (``set_g2p_rng`` in
+``nemo.collections.tts.parts.utils.tts_dataset_utils``), so ``phoneme_probability`` decisions are restored on resume
+as well. Otherwise a G2P module draws from its own unseeded generator, as before.
+
+Audio augmentation with an ``AudioAugmentor`` (``nemo.collections.asr.parts.preprocessing.perturb``) uses the global
+``random`` module by default. A dataset assigns its generator with ``augmentor.rng = self.rng`` before calling
+``augmentor.perturb(...)``. That generator is then used by every perturbation in the pipeline, including nested
+ones, so augmentation is restored on resume as well. ``LhotseSpeechToTextBpeEOUDataset`` does this.
+With an injected generator, noise and RIR perturbations that read tarred audio (``audio_tar_filepaths``) choose
+a manifest entry with that generator and read its file by random access, from its own source's tars. They use the
+``.idx`` next to each tar; a local tar without one gets a cached temporary index, and a remote tar must have its
+``.idx`` (build it with ``scripts/dataloading/build_indexes.py``). The sequential tar reader is not used, because
+its position is not checkpointed. Random access needs uncompressed tars (a ``.tar.gz`` raises an error), and with
+``shard_strategy: scatter`` each rank samples only from the entries in its own shards.
+
+Noise mixing with ``noise_path`` (``CutSet.mix``) keeps the noise input as configured (repetition, blend weights,
+``max_open_streams``). Indexed noise with a length is sampled by index. Indexed noise without a length (repeated or
+blended tarred/Shar noise), which used to fail on the first batch with an "infinite iterator" error, is mixed as a
+stream; this bug fix applies with or without ``use_stateful_dataloader``. With ``use_stateful_dataloader=True``, the
+noise shards are shuffled with the data's ``shard_seed`` unless ``noise_path`` sets its own, so with an integer
+``shard_seed`` the mixed audio is reproducible and identical after a resume. Without it, the noise keeps its own
+default ``shard_seed`` (``"trng"``), as before. ``rir_path`` reverb draws from
+a generator that is saved with the sampler state, and it is restored exactly as well.
+
+Random transforms applied to the ``CutSet`` itself (``.map(...)`` in a data type parser) can't keep a checkpointed
+generator. They can seed a generator from the cut ID instead, e.g. ``random.Random(f"{seed}:{cut.id}")``, so the
+result is a pure function of the cut, and a cut then gets the same draw in every epoch. The
+``lhotse_magpietts_data_as_continuation`` parser does this for ``add_extra_end_silence`` when
+``extra_end_silence_seed`` is set; set it for exact resume. Without it, the silence is drawn from the global
+``random`` module as before and is not restored on resume.
+
 CP/TP-safe batches with ``BroadcastingDataLoader``
 ---------------------------------------------------
 

@@ -16,6 +16,7 @@
 
 from typing import Any
 
+import torch
 from torch import Tensor
 
 from nemo.collections.asr.inference.model_wrappers.asr_inference_wrapper import ASRInferenceWrapper
@@ -138,7 +139,31 @@ class CacheAwareASRInferenceWrapper(ASRInferenceWrapper):
         Args:
             enabled: (bool) whether to enable CUDA graphs for the encoder streaming step.
         """
+        if enabled and self.compile_encoder:
+            raise ValueError(
+                "compile_encoder and use_cuda_graphs cannot be combined: the CUDA-graph step replaces the "
+                "encoder body that would be compiled"
+            )
         self.asr_model.encoder.set_streaming_cuda_graphs(enabled=enabled)
+
+    def compile_encoder_module(self) -> None:
+        """
+        Compile the body of the cache-aware encoder with ``torch.compile``, as one graph so that inductor can fuse
+        across layer boundaries. The batch width stays dynamic, since it shrinks as streams finish, but the feature
+        length of a chunk is fixed by the bufferer, so that dimension is pinned: left symbolic, the subsampling output
+        length becomes an expression the shape solver cannot divide by.
+        """
+        encoder = self.asr_model.encoder
+        if not hasattr(encoder, "forward_internal"):
+            raise ValueError("compile_encoder is set, but the encoder has no forward_internal to compile")
+        compiled = torch.compile(encoder.forward_internal, dynamic=True)
+
+        def forward_internal(audio_signal, length, bypass_pre_encode=False, **kwargs):
+            if not bypass_pre_encode:
+                torch._dynamo.mark_static(audio_signal, 2)
+            return compiled(audio_signal, length, bypass_pre_encode=bypass_pre_encode, **kwargs)
+
+        encoder.forward_internal = forward_internal
 
     def stream_step(self, *args, **kwargs) -> Any:
         """

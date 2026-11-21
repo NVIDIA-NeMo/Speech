@@ -125,6 +125,12 @@ class BaseBuilder:
             "use_amp": cfg.asr.use_amp,
             "decoding_cfg": decoding_cfg,
         }
+        if cfg.asr.get("compile_encoder", False):
+            if asr_decoding_type is ASRDecodingType.SALM:
+                raise ValueError("asr.compile_encoder is not supported for the SALM pipeline")
+            model_params["compile_encoder"] = True
+        if cfg.asr.get("compile_cache_dir", None) is not None:
+            model_params["compile_cache_dir"] = cfg.asr.compile_cache_dir
         match (asr_decoding_type, pipeline_type):
             case (ASRDecodingType.CTC, PipelineType.BUFFERED):
                 asr_class = CTCInferenceWrapper

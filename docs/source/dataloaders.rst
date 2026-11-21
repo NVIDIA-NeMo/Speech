@@ -1470,6 +1470,25 @@ Other, more exotic configurations:
 
 * Indexed ``nemo`` manifest sources (``indexed: true``) ignore ``shard_seed="trng"`` and ``shard_seed="randomized"`` and shuffle shards with a fixed seed of 0, so every rank and worker uses the same order and reads its own disjoint slice. NeMo logs a warning about this once per process. Set an integer ``shard_seed`` to choose a different order.
 
+.. note::
+
+   On the iterable path (tarred, Lhotse Shar, Parquet, or ``force_iterable_dataset: true``) with non-indexed
+   sources, an integer ``shard_seed`` makes every dataloading worker on every rank yield the identical stream, so each
+   batch would be seen ``num_workers * world_size`` times. The dataloader raises a ``ValueError`` for this combination
+   whenever ``max(num_workers, 1) * world_size > 1``; use ``shard_seed: "randomized"`` for deterministic,
+   reproducible order instead. The check uses each source's effective settings after ``input_cfg`` overrides: a
+   non-indexed source that sets ``shard_seed: randomized`` (or ``trng``) together with ``shuffle: true`` or a
+   ``slice_length`` (random per-shard slices) is accepted under a loader-level integer ``shard_seed``, while every other
+   active non-indexed source in the blend that inherits the integer seed is still rejected. Zero-weight blend members
+   are ignored because they never contribute examples. A ``slice_length`` that covers whole shards selects no random
+   offset, but detecting that would require reading every manifest, so the check accepts it. Conversely, a source that
+   shuffles with its own integer ``shard_seed`` is rejected under a ``"randomized"``/``"trng"`` loader unless the
+   selected sampler shuffles: ``shuffle: true`` with the default or bucketing samplers does, while the non-bucketing
+   ``use_packed_sequence_sampling`` sampler never shuffles. Indexed sources (``indexed: true``) partition data across
+   ranks and workers, so they accept an integer ``shard_seed`` (and indexed weighted blends require one; see the
+   item above for how indexed ``nemo`` sources treat string seeds). Single-process loading (``num_workers <= 1`` on one rank) and map-style loading also still accept an integer
+   ``shard_seed``.
+
 * With ``seed="trng"``, the base random seed itself will be drawn using a TRNG. It will be different on each GPU training process. This setting is not recommended.
 
 * With ``seed="randomized"``, the base random seed is set to Python's global RNG seed. It might be different on each GPU training process. This setting is not recommended.

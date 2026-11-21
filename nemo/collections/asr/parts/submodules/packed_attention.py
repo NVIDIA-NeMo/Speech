@@ -89,13 +89,27 @@ class PackedAttentionContext:
 
     @classmethod
     def from_lengths(cls, lengths: Tensor) -> "PackedAttentionContext":
-        """Metadata for token-flat ids or states whose sequences have these lengths, in packing order."""
+        """Metadata for token-flat ids or states whose sequences have these lengths, in packing order.
+
+        Args:
+            lengths: sequence lengths of shape ``(B,)`` in an integer dtype, none negative,
+                with a sum that fits the int32 offsets of the variable-length kernels.
+        """
+        if lengths.ndim != 1:
+            raise ValueError(f"lengths must have shape (B,), got {tuple(lengths.shape)}.")
+        if lengths.dtype == torch.bool or lengths.is_floating_point() or lengths.is_complex():
+            raise TypeError(f"lengths must have an integer dtype, got {lengths.dtype}.")
         lengths = lengths.to(torch.int64)
-        total_tokens = int(lengths.sum().item())
-        max_seqlen = int(lengths.max().item()) if lengths.numel() else 0
+        # one host copy serves the checks and the host values the kernels need
+        host_lengths = lengths.tolist()
+        if any(length < 0 for length in host_lengths):
+            raise ValueError(f"lengths must not be negative, got {host_lengths}.")
+        total_tokens = sum(host_lengths)
+        if total_tokens > torch.iinfo(torch.int32).max:
+            raise ValueError(f"lengths must sum to at most 2**31 - 1 tokens, got {total_tokens}.")
         placeholder = lengths.new_empty((total_tokens, 0), dtype=torch.float32)
         packed = PackedEncoderActivations.from_validated(
-            placeholder, lengths, lengths_to_cu_seqlens(lengths), max_seqlen
+            placeholder, lengths, lengths_to_cu_seqlens(lengths), max(host_lengths, default=0)
         )
         return cls(packed)
 
@@ -215,19 +229,54 @@ def packed_attention(
         k: keys, shape ``(T_total, H, d_k)``.
         v: values, shape ``(T_total, H, d_k)``.
         context: packing metadata of the batch.
-        rel_pos_bias: optional Transformer-XL position bias, shape ``(T_total, H, 2 * max_seqlen - 1)``,
+        rel_pos_bias: optional Transformer-XL position bias, shape ``(T_total, H, 2 * max_seqlen - 1)``
+            (or a wider odd last axis around the same center),
             whose last axis is indexed by ``max_seqlen - 1 - (query position - key position)``;
             it is scaled like the content scores and added to them.
-        dropout_p: dropout on the attention weights,
+        dropout_p: dropout on the attention weights, in ``[0, 1)``,
             supported by the variable-length FlashAttention path and the reference path but not by FlexAttention
             (see ``packed_attention_supports_dropout``).
-        scale: score scale, ``1 / sqrt(d_k)`` by default.
+        scale: positive score scale, ``1 / sqrt(d_k)`` by default;
+            a one-element tensor or NumPy scalar is read as a number, so it must not require a gradient.
 
     Returns:
         Context vectors of shape ``(T_total, H, d_k)``.
+
+    Raises:
+        ValueError: for inputs that do not match the context and for scalars outside their ranges,
+            checked before the dispatch so that the backends reject these calls alike.
+        NotImplementedError: on CUDA for a positive ``dropout_p`` where FlexAttention would have to apply it.
     """
+    if not 0.0 <= dropout_p < 1.0:
+        raise ValueError(f"dropout_p must be in [0, 1), got {dropout_p}.")
+    if isinstance(scale, Tensor) and scale.requires_grad:
+        raise ValueError("scale is read as a number, so it must not require a gradient.")
+    # the compiled FlexAttention kernel takes a Python number
+    scale = None if scale is None else float(scale)
+    if scale is not None and not (math.isfinite(scale) and scale > 0.0):
+        raise ValueError(f"scale must be positive and finite, got {scale}.")
+    if q.device != context.device:
+        raise ValueError(f"q is on {q.device}, the context on {context.device}.")
+    if q.ndim != 3 or q.shape[0] != context.total_tokens or k.shape != q.shape or v.shape != q.shape:
+        raise ValueError(
+            "q, k and v must share one shape (T_total, H, d_k), "
+            f"with the {context.total_tokens} tokens of the context, "
+            f"got {tuple(q.shape)}, {tuple(k.shape)} and {tuple(v.shape)}."
+        )
     if scale is None:
         scale = 1.0 / math.sqrt(q.shape[-1])
+    if rel_pos_bias is not None:
+        min_width = max(2 * context.max_seqlen - 1, 1)
+        if (
+            rel_pos_bias.ndim != 3
+            or rel_pos_bias.shape[:2] != q.shape[:2]
+            or rel_pos_bias.shape[2] % 2 == 0
+            or rel_pos_bias.shape[2] < min_width
+        ):
+            raise ValueError(
+                f"rel_pos_bias must have shape ({q.shape[0]}, {q.shape[1]}, W) with an odd W of at least {min_width}, "
+                f"got {tuple(rel_pos_bias.shape)}."
+            )
     if context.total_tokens == 0:
         # keep every projection in the autograd graph when a rank holds no valid token,
         # so distributed gradient reductions see the same parameters on all ranks
@@ -464,13 +513,19 @@ def _reference_packed_attention(
     """Dense attention one utterance at a time, with the same bias convention as the kernels."""
     outputs = []
     center = (rel_pos_bias.shape[-1] - 1) // 2 if rel_pos_bias is not None else 0
+    # scaled before the product like torch's scaled_dot_product_attention:
+    # a product beyond the half-precision range whose scaled score is in range stays finite.
+    # A scale above one is applied after the product, so that it does not enlarge an operand beyond the range.
+    root = math.sqrt(min(scale, 1.0))
     for start, end in context.sequence_slices:
         if end == start:
             continue
         qi = q[start:end].transpose(0, 1)
         ki = k[start:end].transpose(0, 1)
         vi = v[start:end].transpose(0, 1)
-        scores = torch.matmul(qi, ki.transpose(-2, -1)) * scale
+        scores = torch.matmul(qi * root, (ki * root).transpose(-2, -1))
+        if scale > 1.0:
+            scores = scores * scale
         if rel_pos_bias is not None:
             length = end - start
             rows = torch.arange(length, device=q.device).view(length, 1)

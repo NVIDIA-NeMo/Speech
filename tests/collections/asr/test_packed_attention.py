@@ -198,6 +198,217 @@ class TestPackedAttentionKernelShapes:
             assert compiled_itself(q, q, q).shape == q.shape
 
 
+_CPU_AND_CUDA = [
+    "cpu",
+    pytest.param(
+        "cuda",
+        marks=[pytest.mark.gpu, pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")],
+    ),
+]
+
+
+class TestPackedAttentionArguments:
+    """Every backend of ``packed_attention`` accepts and rejects the same calls, before the dispatch."""
+
+    @staticmethod
+    def _inputs(device, dtype, lengths, with_bias):
+        context = PackedAttentionContext.from_lengths(torch.tensor(lengths, device=device))
+        q, k, v = (torch.randn(context.total_tokens, 2, 16, device=device, dtype=dtype) for _ in range(3))
+        bias = None
+        if with_bias:
+            bias = torch.randn(context.total_tokens, 2, max(2 * context.max_seqlen - 1, 1), device=device, dtype=dtype)
+        return q, k, v, context, bias
+
+    # float32 without a bias runs FlexAttention on CUDA, the half types variable-length FlashAttention where available
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", _CPU_AND_CUDA)
+    @pytest.mark.parametrize(
+        "dtype, with_bias",
+        [(torch.float32, False), (torch.bfloat16, False), (torch.float16, False), (torch.float32, True)],
+        ids=["fp32", "bf16", "fp16", "fp32_rel_pos_bias"],
+    )
+    @pytest.mark.parametrize("lengths", [[5, 0, 3], [0, 0]], ids=["tokens", "empty"])
+    @pytest.mark.parametrize(
+        "argument, match",
+        [
+            ({"dropout_p": 1.0}, "dropout_p must be in"),
+            ({"dropout_p": -0.1}, "dropout_p must be in"),
+            ({"dropout_p": 1.5}, "dropout_p must be in"),
+            ({"dropout_p": float("nan")}, "dropout_p must be in"),
+            ({"scale": 0.0}, "scale must be positive"),
+            ({"scale": -0.25}, "scale must be positive"),
+            ({"scale": float("inf")}, "scale must be positive"),
+            ({"scale": float("nan")}, "scale must be positive"),
+        ],
+        ids=lambda value: "_".join(f"{k}_{v}" for k, v in value.items()) if isinstance(value, dict) else "",
+    )
+    def test_scalar_arguments_are_checked_before_the_dispatch(
+        self, device, dtype, with_bias, lengths, argument, match
+    ):
+        q, k, v, context, bias = self._inputs(device, dtype, lengths, with_bias)
+        with pytest.raises(ValueError, match=match):
+            packed_attention(q, k, v, context, rel_pos_bias=bias, **argument)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", _CPU_AND_CUDA)
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16], ids=["fp32", "bf16"])
+    @pytest.mark.parametrize("lengths", [[5, 0, 3], [0, 0]], ids=["tokens", "empty"])
+    @pytest.mark.parametrize(
+        "name, shape, match",
+        [
+            ("q", (9, 2, 16), "q, k and v must share one shape"),
+            ("qkv", (9, 2, 16), "q, k and v must share one shape"),
+            ("qkv", (7, 2, 16), "q, k and v must share one shape"),
+            ("qkv", (8, 32), "q, k and v must share one shape"),
+            ("k", (9, 2, 16), "q, k and v must share one shape"),
+            ("k", (7, 2, 16), "q, k and v must share one shape"),
+            ("k", (8, 3, 16), "q, k and v must share one shape"),
+            ("v", (8, 2, 8), "q, k and v must share one shape"),
+            ("rel_pos_bias", (9, 2, 9), "rel_pos_bias must have shape"),
+            ("rel_pos_bias", (8, 3, 9), "rel_pos_bias must have shape"),
+            ("rel_pos_bias", (8, 2, 8), "rel_pos_bias must have shape"),
+            ("rel_pos_bias", (8, 2, 7), "rel_pos_bias must have shape"),
+            ("rel_pos_bias", (8, 2, 10), "rel_pos_bias must have shape"),
+            ("rel_pos_bias", (8, 2, 9, 1), "rel_pos_bias must have shape"),
+            ("rel_pos_bias", (16, 9), "rel_pos_bias must have shape"),
+        ],
+        ids=lambda value: "x".join(map(str, value)) if isinstance(value, tuple) else str(value).split(" must")[0],
+    )
+    def test_shapes_must_match_the_context(self, device, dtype, lengths, name, shape, match):
+        q, k, v, context, bias = self._inputs(device, dtype, lengths, with_bias=True)
+        tensors = {"q": q, "k": k, "v": v, "rel_pos_bias": bias}
+        for key in ("q", "k", "v") if name == "qkv" else (name,):
+            tensors[key] = torch.zeros(shape, device=device, dtype=dtype)
+        with pytest.raises(ValueError, match=match):
+            packed_attention(tensors["q"], tensors["k"], tensors["v"], context, rel_pos_bias=tensors["rel_pos_bias"])
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("lengths", [[5, 0, 3], [0, 0]], ids=["tokens", "empty"])
+    def test_scale_tensor_with_a_gradient_is_rejected(self, lengths):
+        """The scale is read as a number, which would drop the gradient of a tensor without a word."""
+        q, k, v, context, _ = self._inputs("cpu", torch.float32, lengths, with_bias=False)
+        with pytest.raises(ValueError, match="must not require a gradient"):
+            packed_attention(q, k, v, context, scale=torch.tensor(0.5, requires_grad=True))
+
+    @pytest.mark.unit
+    @pytest.mark.gpu
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+    @pytest.mark.parametrize("devices", [("cpu", "cuda"), ("cuda", "cpu")], ids=["cuda_context", "cpu_context"])
+    @pytest.mark.parametrize("lengths", [[5, 0, 3], [0, 0]], ids=["tokens", "empty"])
+    def test_context_must_be_on_the_device_of_the_queries(self, devices, lengths):
+        q, k, v, _, _ = self._inputs(devices[0], torch.float32, lengths, with_bias=False)
+        context = PackedAttentionContext.from_lengths(torch.tensor(lengths, device=devices[1]))
+        with pytest.raises(ValueError, match="the context on"):
+            packed_attention(q, k, v, context)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", _CPU_AND_CUDA)
+    @pytest.mark.parametrize("with_bias", [False, True], ids=["no_bias", "rel_pos_bias"])
+    @pytest.mark.parametrize("scale", [0.07, 1, torch.tensor(0.6)], ids=["0.07", "int_1", "tensor_0.6"])
+    def test_explicit_scale_matches_dense_attention(self, device, with_bias, scale):
+        """An accepted scale reaches the scores and the bias alike; float32 runs FlexAttention on CUDA."""
+        torch.manual_seed(0)
+        lengths = [5, 0, 3]
+        q, k, v, context, bias = self._inputs(device, torch.float32, lengths, with_bias)
+
+        def dense(q, k, v, bias):
+            outputs = []
+            for start, end in context.sequence_slices:
+                scores = torch.einsum("ihd,jhd->hij", q[start:end], k[start:end])
+                if bias is not None:
+                    positions = torch.arange(end - start, device=q.device)
+                    index = (bias.shape[-1] - 1) // 2 - positions[:, None] + positions[None, :]
+                    scores = scores + bias[start:end].gather(2, index[:, None, :].expand(-1, 2, -1)).transpose(0, 1)
+                weights = torch.softmax(scores * float(scale), dim=-1)
+                outputs.append(torch.einsum("hij,jhd->ihd", weights, v[start:end]))
+            return torch.cat(outputs)
+
+        def run(function, dtype):
+            inputs = [t.detach().to(dtype).requires_grad_() for t in (q, k, v)]
+            bias_input = None if bias is None else bias.detach().to(dtype).requires_grad_()
+            out = function(*inputs, bias_input)
+            out.square().sum().backward()
+            grads = [t.grad for t in inputs] + ([] if bias is None else [bias_input.grad])
+            return [out] + grads
+
+        actual = run(lambda q, k, v, bias: packed_attention(q, k, v, context, rel_pos_bias=bias, scale=scale), q.dtype)
+        expected = run(dense, torch.float64)
+        for value, reference in zip(actual, expected):
+            torch.testing.assert_close(value.double(), reference, rtol=1e-4, atol=1e-5)
+
+    @pytest.mark.unit
+    def test_reference_path_stays_finite_in_float16(self):
+        """Products of queries and keys beyond the float16 range whose scaled scores are in range.
+
+        The softmax saturates on such scores, so this checks that nothing overflows, not the scale.
+        """
+        torch.manual_seed(0)
+        context = PackedAttentionContext.from_lengths(torch.tensor([5, 0, 3]))
+        q = torch.randn(context.total_tokens, 2, 16, dtype=torch.float64) * 72.0
+        v = torch.randn(context.total_tokens, 2, 16, dtype=torch.float64)
+        largest_product = q.square().sum(-1).max()
+        assert largest_product > torch.finfo(torch.float16).max > 0.25 * largest_product + 100
+
+        def run(dtype):
+            inputs = [t.to(dtype).requires_grad_() for t in (q, v)]
+            # keys equal to the queries: every token's product with itself is a sum of squares
+            out = packed_attention(inputs[0], inputs[0], inputs[1], context)
+            out.float().sum().backward()
+            return out, [t.grad for t in inputs]
+
+        out, grads = run(torch.float16)
+        reference, _ = run(torch.float64)
+        assert out.dtype == torch.float16 and all(torch.isfinite(grad).all() for grad in grads)
+        torch.testing.assert_close(out.double(), reference, rtol=2e-3, atol=2e-3)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("with_bias", [False, True], ids=["no_bias", "zero_rel_pos_bias"])
+    def test_reference_path_scale_above_one_stays_finite_in_float16(self, with_bias):
+        """A scale above one must not push a representable query beyond the float16 range."""
+        context = PackedAttentionContext.from_lengths(torch.tensor([2]))
+        q = torch.tensor([32768.0, 32768.0], dtype=torch.float64).view(2, 1, 1)
+        k = torch.tensor([0.0, 2.0**-15], dtype=torch.float64).view(2, 1, 1)
+        v = torch.tensor([0.0, 1.0], dtype=torch.float64).view(2, 1, 1)
+
+        def run(dtype):
+            inputs = [t.to(dtype).requires_grad_() for t in (q, k, v)]
+            bias = torch.zeros(2, 1, 3, dtype=dtype) if with_bias else None
+            out = packed_attention(*inputs, context, rel_pos_bias=bias, scale=4.0)
+            out.float().sum().backward()
+            return out, [t.grad for t in inputs]
+
+        out, grads = run(torch.float16)
+        reference, _ = run(torch.float64)
+        assert out.dtype == torch.float16 and all(torch.isfinite(grad).all() for grad in grads)
+        torch.testing.assert_close(out.double(), reference, rtol=2e-3, atol=2e-3)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", _CPU_AND_CUDA)
+    def test_context_from_lengths_accepts_integer_lengths(self, device):
+        reference = PackedAttentionContext.from_lengths(torch.tensor([3, 0, 2], device=device))
+        context = PackedAttentionContext.from_lengths(torch.tensor([3, 0, 2], dtype=torch.int32, device=device))
+        assert context.lengths.dtype == torch.int64 and torch.equal(context.cu_seqlens, reference.cu_seqlens)
+        empty = PackedAttentionContext.from_lengths(torch.zeros(0, dtype=torch.int64, device=device))
+        assert empty.total_tokens == 0 and empty.max_seqlen == 0 and empty.cu_seqlens.tolist() == [0]
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", _CPU_AND_CUDA)
+    @pytest.mark.parametrize(
+        "lengths, error, match",
+        [
+            ([2.7, 3.2], TypeError, "integer dtype"),
+            ([True, False], TypeError, "integer dtype"),
+            ([3, -1, 2], ValueError, "must not be negative"),
+            ([[3, 2]], ValueError, "must have shape"),
+            ([2**31 - 1, 1], ValueError, "at most"),
+        ],
+        ids=["float", "bool", "negative", "two_dims", "beyond_int32"],
+    )
+    def test_context_from_lengths_rejects_other_lengths(self, device, lengths, error, match):
+        with pytest.raises(error, match=match):
+            PackedAttentionContext.from_lengths(torch.tensor(lengths, device=device))
+
+
 class TestPackedRelPositionAttention:
     @pytest.mark.unit
     def test_matches_padded(self):

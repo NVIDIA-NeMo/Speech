@@ -53,6 +53,7 @@ from nemo.collections.speechlm2.parts.ctc_timestamp_utils import (
     get_ctc_timestamp_aligner,
     merge_prepared_batches,
 )
+from nemo.utils import logging
 from tests.collections.asr.ctc_timestamp_test_utils import search_streams
 
 # ``@experimental`` wraps the class in a wrapt proxy, so ``__new__`` (used to build
@@ -2008,12 +2009,13 @@ def test_fastconformer_asr_branch_runs_packed_in_training_mode(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.run_only_on("GPU")
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="PEE GPU test requires CUDA")
-def test_fastconformer_asr_branch_with_attention_dropout_keeps_the_padded_fallback_in_packed_training(monkeypatch):
+def test_fastconformer_asr_branch_with_attention_dropout_needs_the_padded_fallback_in_packed_training(monkeypatch):
     """rel_pos attention over packed sequences runs FlexAttention on CUDA, which has no dropout.
 
     A FastConformer branch with ``dropout_att > 0`` therefore has no native packed form in training mode:
-    its ``supports_sequence_packed_output`` says so, the PEE keeps the padded fallback it ran before the native path
-    existed, and the step completes forward and backward; in evaluation mode the native path is available again.
+    its ``supports_sequence_packed_output`` says so and the PEE refuses the step with that reason.
+    With ``allow_padded_fallback=True`` the PEE runs that branch on the padded batch,
+    and the step completes forward and backward; in evaluation mode the native path is available again.
     """
     asr_encoder_cfg = toy_asr_encoder_cfg()
     asr_encoder_cfg.n_heads = 2
@@ -2023,6 +2025,13 @@ def test_fastconformer_asr_branch_with_attention_dropout_keeps_the_padded_fallba
     encoder = build_toy_pe_encoder(asr_encoder_cfg=asr_encoder_cfg, diarization_model_cfg=diarization_model_cfg)
     encoder = encoder.train().cuda()
     assert not encoder.asr_encoder.supports_sequence_packed_output
+    refused_mels = torch.randn(2, _MEL_FEATURES, 80, device="cuda")
+    refused_lengths = torch.tensor([80, 53], device="cuda")
+    with pytest.raises(NotImplementedError, match="FlexAttention has no dropout"):
+        encoder.forward_sequence_packed(
+            refused_mels, refused_lengths, spk_targets=torch.ones(2, 10, _N_SPK, device="cuda")
+        )
+    encoder.allow_padded_fallback = True
     native_calls = []
     native_forward = encoder.asr_encoder.forward_sequence_packed
 
@@ -2139,6 +2148,83 @@ def test_packed_fallback_rejects_online_scope():
     encoder = build_toy_pe_encoder().eval()
     with encoder.online_inference(), pytest.raises(RuntimeError, match="offline API"):
         encoder.forward_sequence_packed(torch.randn(1, _MEL_FEATURES, 32), torch.tensor([32]))
+
+
+_UNSUPPORTED_REASON = "This toy configuration has no sequence-packed form."
+
+
+@pytest.mark.unit
+def test_padded_fallback_of_a_branch_is_warned_once_with_the_reason(monkeypatch, caplog, request):
+    """The ASR branch reports no sequence-packed form: it runs padded, which the log says once, not per forward."""
+    # caplog reads the root logger, to which the NeMo logger propagates only in some environments:
+    # attach its handler to the NeMo logger alone, so that a record is captured exactly once
+    monkeypatch.setattr(logging._logger, "propagate", False)
+    logging._logger.addHandler(caplog.handler)
+    request.addfinalizer(lambda: logging._logger.removeHandler(caplog.handler))
+    torch.manual_seed(0)
+    encoder = build_toy_pe_encoder(allow_padded_fallback=True).eval()
+    lengths = torch.tensor([80, 53])
+    packed_input = pack_encoder_output(torch.randn(2, 80, _MEL_FEATURES), lengths)
+    targets = torch.ones(2, 10, _N_SPK)
+    with torch.no_grad():
+        native = encoder.forward_sequence_packed(packed_input, spk_targets=targets)
+    assert "no sequence-packed form" not in caplog.text
+
+    monkeypatch.setattr(logging, "once_logged", set())
+    monkeypatch.setattr(encoder.asr_encoder, "sequence_packed_unsupported_reason", lambda: _UNSUPPORTED_REASON)
+    assert not encoder.asr_encoder.supports_sequence_packed_output
+    with torch.no_grad():
+        first = encoder.forward_sequence_packed(packed_input, spk_targets=targets)
+        second = encoder.forward_sequence_packed(packed_input, spk_targets=targets)
+
+    warning = f"ConformerEncoder has no sequence-packed form in this configuration: {_UNSUPPORTED_REASON}"
+    assert caplog.text.count(warning) == 1
+    assert caplog.text.count("allow_padded_fallback=True") == 1
+    assert torch.equal(first.lengths, native.lengths) and torch.equal(first.data, second.data)
+    torch.testing.assert_close(first.data, native.data, rtol=1e-4, atol=1e-5)
+
+
+@pytest.mark.unit
+def test_padded_fallback_raises_with_the_reason_by_default(monkeypatch):
+    """Without the option, the branch without a sequence-packed form is an error; native branches still run."""
+    encoder = build_toy_pe_encoder().eval()
+    assert encoder.allow_padded_fallback is False
+    packed_input = pack_encoder_output(torch.randn(2, 80, _MEL_FEATURES), torch.tensor([80, 53]))
+    targets = torch.ones(2, 10, _N_SPK)
+    with torch.no_grad():
+        assert torch.isfinite(encoder.forward_sequence_packed(packed_input, spk_targets=targets).data).all()
+
+    monkeypatch.setattr(encoder.asr_encoder, "sequence_packed_unsupported_reason", lambda: _UNSUPPORTED_REASON)
+    with pytest.raises(NotImplementedError, match=_UNSUPPORTED_REASON) as error, torch.no_grad():
+        encoder.forward_sequence_packed(packed_input, spk_targets=targets)
+    assert "ConformerEncoder" in str(error.value) and "allow_padded_fallback=True" in str(error.value)
+
+
+@pytest.mark.unit
+def test_allow_padded_fallback_is_read_from_the_bundle_config_and_its_overrides(tmp_path, monkeypatch):
+    default = ParallelExpertEncoderPT(bundle_config()).encoder
+    assert default.allow_padded_fallback is False and default._bundle_config.allow_padded_fallback is False
+    assert ParallelExpertEncoderPT(bundle_config(allow_padded_fallback=True)).encoder.allow_padded_fallback is True
+
+    source = build_toy_pe_encoder()
+    archive = tmp_path / "bundle.nemo"
+    write_bundle(archive, bundle_config(), {f"encoder.{key}": value for key, value in source.state_dict().items()})
+    restored = ParallelExpertEncoderPT.load_from_nemo(
+        str(archive), strict=True, config_overrides={"allow_padded_fallback": True}
+    )
+    assert restored.allow_padded_fallback is True and restored._bundle_config.allow_padded_fallback is True
+
+    saved = tmp_path / "saved.nemo"
+    ParallelExpertEncoderPT.save_to_nemo(restored, str(saved), template_bundle_path=str(archive))
+    assert ParallelExpertEncoderPT.load_from_nemo(str(saved), strict=True).allow_padded_fallback is True
+    # a bad value is refused before either expert is built
+    built = []
+    monkeypatch.setattr(
+        "nemo.core.classes.common.Serialization.from_config_dict", lambda *args, **kwargs: built.append(1)
+    )
+    with pytest.raises(TypeError, match="allow_padded_fallback must be a bool"):
+        build_toy_pe_encoder(allow_padded_fallback="false")
+    assert built == []
 
 
 @pytest.mark.unit

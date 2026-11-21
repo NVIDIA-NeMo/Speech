@@ -70,6 +70,13 @@ class MultiHeadAttention(nn.Module):
         use_bias (bool): whether to remove bias in linear and conv layers
         use_pytorch_sdpa (bool): use torch sdpa instead of manual attention
         use_pytorch_sdpa_backends list[str]: list of backend names to use in sdpa. None or empty list means all backends. e.g. ["MATH"]
+        fused_qkv (bool): one projection `linear_qkv` of size (3 * n_feat, n_feat) in place of the three separate ones
+
+    With `fused_qkv`, the weight and bias of `linear_qkv` are those of `linear_q`, `linear_k` and `linear_v`
+    concatenated in that order, so the module computes the same function,
+    and a state dict of either form loads into a module of the other.
+    What changes is the parameter an optimizer sees:
+    one that treats every weight matrix as a whole, such as Muon, then updates the three projections as one matrix.
     """
 
     def __init__(
@@ -81,6 +88,7 @@ class MultiHeadAttention(nn.Module):
         use_bias=True,
         use_pytorch_sdpa=False,
         use_pytorch_sdpa_backends=None,
+        fused_qkv: bool = False,
     ):
         """Construct an MultiHeadedAttention object."""
         super(MultiHeadAttention, self).__init__()
@@ -102,9 +110,16 @@ class MultiHeadAttention(nn.Module):
         self.d_k = n_feat // n_head
         self.s_d_k = math.sqrt(self.d_k)
         self.h = n_head
-        self.linear_q = nn.Linear(n_feat, n_feat, bias=use_bias)
-        self.linear_k = nn.Linear(n_feat, n_feat, bias=use_bias)
-        self.linear_v = nn.Linear(n_feat, n_feat, bias=use_bias)
+        if not isinstance(fused_qkv, bool):
+            raise TypeError(f"fused_qkv must be a bool, got {fused_qkv!r}")
+        if fused_qkv:
+            self.linear_q = self.linear_k = self.linear_v = None
+            self.linear_qkv = nn.Linear(n_feat, 3 * n_feat, bias=use_bias)
+        else:
+            self.linear_q = nn.Linear(n_feat, n_feat, bias=use_bias)
+            self.linear_k = nn.Linear(n_feat, n_feat, bias=use_bias)
+            self.linear_v = nn.Linear(n_feat, n_feat, bias=use_bias)
+            self.linear_qkv = None
         self.linear_out = nn.Linear(n_feat, n_feat, bias=use_bias)
         self.dropout = nn.Dropout(p=dropout_rate)
 
@@ -122,9 +137,21 @@ class MultiHeadAttention(nn.Module):
             v (torch.Tensor): (batch, head, time2, size)
         """
         n_batch = query.size(0)
-        q = self.linear_q(query).view(n_batch, -1, self.h, self.d_k)
-        k = self.linear_k(key).view(n_batch, -1, self.h, self.d_k)
-        v = self.linear_v(value).view(n_batch, -1, self.h, self.d_k)
+        if self.linear_qkv is None:
+            q, k, v = self.linear_q(query), self.linear_k(key), self.linear_v(value)
+        elif query is key and key is value:
+            q, k, v = self.linear_qkv(query).chunk(3, dim=-1)
+        else:
+            # distinct inputs, as with a streaming cache: each takes its rows of the fused projection
+            weight_q, weight_k, weight_v = self.linear_qkv.weight.chunk(3)
+            bias = self.linear_qkv.bias
+            bias_q, bias_k, bias_v = (None, None, None) if bias is None else bias.chunk(3)
+            q = F.linear(query, weight_q, bias_q)
+            k = F.linear(key, weight_k, bias_k)
+            v = F.linear(value, weight_v, bias_v)
+        q = q.view(n_batch, -1, self.h, self.d_k)
+        k = k.view(n_batch, -1, self.h, self.d_k)
+        v = v.view(n_batch, -1, self.h, self.d_k)
         q = q.transpose(1, 2)
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
@@ -233,9 +260,12 @@ class MultiHeadAttention(nn.Module):
             x = x.to(torch.float32)
 
         with avoid_float16_autocast_context():
-            q = self.linear_q(x).view(-1, self.h, self.d_k)
-            k = self.linear_k(x).view(-1, self.h, self.d_k)
-            v = self.linear_v(x).view(-1, self.h, self.d_k)
+            if self.linear_qkv is None:
+                q = self.linear_q(x).view(-1, self.h, self.d_k)
+                k = self.linear_k(x).view(-1, self.h, self.d_k)
+                v = self.linear_v(x).view(-1, self.h, self.d_k)
+            else:
+                q, k, v = self.linear_qkv(x).view(-1, 3, self.h, self.d_k).unbind(1)
             q, k = self._apply_packed_pos_emb(q, k, context)
             q, rel_pos_bias = self._packed_rel_pos_terms(q, pos_emb)
             out = packed_attention(
@@ -271,6 +301,21 @@ class MultiHeadAttention(nn.Module):
         """Hook for subclasses to apply a positional transformation to Q/K. No-op by default."""
         return q, k
 
+    def _load_from_state_dict(self, state_dict: dict[str, torch.Tensor], prefix: str, *args, **kwargs) -> None:
+        """Converts the projections of a state dict in the other form: fused is the separate ones concatenated."""
+        for name in ('weight', 'bias'):
+            fused_key = f"{prefix}linear_qkv.{name}"
+            separate_keys = [f"{prefix}linear_{part}.{name}" for part in 'qkv']
+            if self.linear_qkv is None:
+                if fused_key in state_dict and not any(key in state_dict for key in separate_keys):
+                    for key, part in zip(separate_keys, state_dict.pop(fused_key).chunk(3)):
+                        state_dict[key] = part
+            elif fused_key not in state_dict and all(key in state_dict for key in separate_keys):
+                # unequal parts are left to the missing and unexpected key report
+                if len({state_dict[key].shape for key in separate_keys}) == 1:
+                    state_dict[fused_key] = torch.cat([state_dict.pop(key) for key in separate_keys])
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
 
 class RelPositionMultiHeadAttention(MultiHeadAttention):
     """Multi-Head Attention layer of Transformer-XL with support of relative positional encoding.
@@ -280,6 +325,7 @@ class RelPositionMultiHeadAttention(MultiHeadAttention):
         n_feat (int): size of the features
         dropout_rate (float): dropout rate
         use_bias (bool): whether to apply bias in linear and conv layers of MultiHeadAttention
+        fused_qkv (bool): one projection for query, key and value, see `MultiHeadAttention`
     """
 
     def __init__(
@@ -293,6 +339,7 @@ class RelPositionMultiHeadAttention(MultiHeadAttention):
         use_bias=True,
         use_pytorch_sdpa=False,
         use_pytorch_sdpa_backends=None,
+        fused_qkv: bool = False,
     ):
         """Construct an RelPositionMultiHeadedAttention object."""
         super().__init__(
@@ -303,6 +350,7 @@ class RelPositionMultiHeadAttention(MultiHeadAttention):
             use_bias=use_bias,
             use_pytorch_sdpa=use_pytorch_sdpa,
             use_pytorch_sdpa_backends=use_pytorch_sdpa_backends,
+            fused_qkv=fused_qkv,
         )
         # linear transformation for positional encoding
         self.linear_pos = nn.Linear(n_feat, n_feat, bias=False)
@@ -1086,6 +1134,7 @@ class RoPEMultiHeadAttention(MultiHeadAttention):
         use_bias (bool): whether to apply bias in linear and conv layers
         use_pytorch_sdpa (bool): use torch sdpa instead of manual attention
         use_pytorch_sdpa_backends list[str]: list of backend names to use in sdpa.
+        fused_qkv (bool): one projection for query, key and value, see `MultiHeadAttention`
     """
 
     def __init__(
@@ -1098,6 +1147,7 @@ class RoPEMultiHeadAttention(MultiHeadAttention):
         use_bias=True,
         use_pytorch_sdpa=False,
         use_pytorch_sdpa_backends=None,
+        fused_qkv: bool = False,
     ):
         """Construct a RoPEMultiHeadAttention object."""
         super(RoPEMultiHeadAttention, self).__init__(
@@ -1108,6 +1158,7 @@ class RoPEMultiHeadAttention(MultiHeadAttention):
             use_bias=use_bias,
             use_pytorch_sdpa=use_pytorch_sdpa,
             use_pytorch_sdpa_backends=use_pytorch_sdpa_backends,
+            fused_qkv=fused_qkv,
         )
         if pos_enc.d_k != self.d_k:
             raise ValueError(

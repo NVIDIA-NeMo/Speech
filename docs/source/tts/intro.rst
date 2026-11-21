@@ -18,6 +18,7 @@ We will illustrate details in the following sections.
     g2p
     magpietts
     magpietts-finetuning
+    easymagpietts-finetuning
     magpietts-po
     magpietts-longform
 

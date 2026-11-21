@@ -581,6 +581,8 @@ The Joint model config has several essential components which we discuss below :
 
 * ``fused_batch_size``: When the above flag is set to True, the model will have two distinct "batch sizes". The batch size provided in the three data loader configs (``model.*_ds.batch_size``) will now be the ``Acoustic model`` batch size, whereas the ``fused_batch_size`` will be the batch size of the ``Prediction model``, the ``Joint model``, the ``transducer loss`` module and the ``decoding`` module.
 
+* ``turbo_kernel``: Optional memory-efficient Joint kernel used to compute the loss during training, see :ref:`Joint Turbo Kernel <joint-turbo-kernel>`. Disabled by default.
+
 * ``jointnet.joint_hidden``: The hidden intermediate dimension of the joint network.
 
 .. code-block:: yaml
@@ -680,6 +682,80 @@ The fused operation goes as follows :
 
 10) Cleanup step. Compute full batch WER and log. Concatenate loss list and pass to PTL to compute the equivalent of the original (full batch) Joint step. Delete ancillary objects necessary for sub-batching.
 
+.. _joint-turbo-kernel:
+
+Joint Turbo Kernel
+^^^^^^^^^^^^^^^^^^
+
+The Joint output of size ``[B, T, U+1, V]`` is usually the largest tensor in Transducer training, and the same amount of memory
+is required for its gradient. The RNN-T loss, however, needs only the log-probabilities of the target and blank labels,
+two tensors of size ``[B, T, U+1]``. The Joint turbo kernel (``joint.turbo_kernel``) computes these log-probabilities directly
+from the Joint hidden representation ``[B, T, U+1, H]``: the vocabulary projection and log-softmax are fused in a single GPU
+kernel, and the logits are recomputed in the backward pass instead of being stored. The Joint output and its gradient
+are never materialized, so the memory used by the Joint and the loss does not depend on the vocabulary size, and the batch
+does not need to be split, in contrast to the fused batch step described above.
+
+For example, for ``B=64``, ``T=150``, ``U=72``, ``H=640`` in ``bfloat16`` precision, the Joint and the ``turbo_rnnt`` loss
+(forward and backward) use about 3.1 GB of GPU memory with the turbo kernel for any vocabulary size, compared with 4.8 GB
+for the standard Joint with the vocabulary of 1025 tokens, and 23.5 GB with the vocabulary of 8193 tokens. The speed is
+similar to the standard Joint or better (measured on RTX A6000 with
+``tests/collections/asr/turbo_transducer/benchmark_rnnt_joint_multi.py``).
+
+The kernel is used only to compute the loss (in training and validation). Decoding, export and the model checkpoints are
+not affected: the parameters of the Joint are the same, so the kernel can be enabled or disabled for an existing model.
+
+.. code-block:: yaml
+
+  joint:
+    _target_: nemo.collections.asr.modules.RNNTJoint
+    log_softmax: null
+    fuse_loss_wer: false  # incompatible with the turbo kernel
+
+    turbo_kernel:
+      type: fused_vocab  # options: null (disabled), fused_vocab
+      backend: triton  # options: triton, cutile
+      use_high_precision_mm: false
+      mm_full_precision: false
+      input_grad_full_precision: false
+      weight_grad_full_precision: false
+      backward_pruning:
+        range_size: null  # disabled by default; use values 8 or 16
+        start_step: 5000
+
+    jointnet:
+      joint_hidden: ${model.model_defaults.joint_hidden}
+      activation: "relu"
+      dropout: 0.2
+
+  loss:
+    loss_name: "turbo_rnnt"  # the loss must accept target and blank log-probabilities
+
+The ``turbo_kernel`` section has the following parameters (unknown parameters are rejected):
+
+* ``type``: The kernel type. ``null`` (or a missing ``turbo_kernel`` section) disables the kernel, the other parameters are ignored. ``fused_vocab`` fuses the vocabulary projection with log-softmax; the Joint hidden representation is still materialized.
+
+* ``backend``: ``triton`` (default, requires Triton) or ``cutile`` (requires cuTile, CUDA 13.2+ and a GPU with compute capability 9.0 or higher). ``null`` selects an available backend automatically. Backward pruning is implemented only for ``triton``.
+
+* ``mm_full_precision``: With ``bfloat16`` activations (``trainer.precision: bf16``), the vocabulary projection is computed with ``bfloat16`` operands, while the parameters are stored in ``float32``. Set to ``true`` to use ``float32`` operands: more accurate, but slower. Log-softmax is always computed in ``float32``.
+
+* ``use_high_precision_mm``: Use ``float32`` operands and IEEE precision for the matrix multiplication in Triton instead of the default (TF32). Implies ``mm_full_precision``. Mostly useful for testing and debugging.
+
+* ``input_grad_full_precision``, ``weight_grad_full_precision``: Accumulate the gradient for the Joint hidden representation / the weight of the vocabulary projection in ``float32`` instead of the dtype of the activations.
+
+* ``backward_pruning``: Optional section, a missing section or ``null`` disables pruning. With pruning, the gradient is computed only for ``range_size`` contiguous target positions for each frame; the positions with the largest gradient of the loss for the target and blank log-probabilities are selected. The loss value is not changed (the forward pass is always computed for the full lattice), but its gradient is approximated, which makes the backward pass several times faster for large vocabularies. ``range_size: null`` (or a non-positive value) disables pruning. ``start_step`` is the first optimizer step with pruning: before this step the full gradient is computed, since the alignments of a randomly initialized model are not reliable. ``start_step: null`` (or a non-positive value) enables pruning from the first step. Pruning is applied only in training mode.
+
+Requirements and limitations:
+
+* A CUDA GPU and the ``turbo_rnnt`` loss (see :ref:`Turbo-RNNT Loss <turbo-rnnt-loss>`) without gradient clamping (``clamp``): clamping is applied to the gradient for the Joint output, which is not materialized. An incompatible loss is rejected when the model is constructed.
+
+* Not compatible with ``fuse_loss_wer``, ``preserve_memory`` and the Joint with extra outputs (e.g., TDT models).
+
+* Supported by ``RNNTJoint``; ``HATJoint`` and ``SampledRNNTJoint`` do not support the kernel.
+
+* Supported by all ASR models with the RNN-T loss, including Hybrid RNNT-CTC models and the models with prompt conditioning.
+
+A complete example config can be found at ``<NeMo_git_root>/examples/asr/conf/transformer/transformer_stacking_rnnt_bpe.yaml``.
+
 Transducer Decoding
 ~~~~~~~~~~~~~~~~~~~
 
@@ -750,6 +826,8 @@ The loss config is based on a resolver pattern and can be used as follows:
     warprnnt_numba_kwargs:
       fastemit_lambda: 0.0
 
+.. _turbo-rnnt-loss:
+
 Turbo-RNNT Loss
 ^^^^^^^^^^^^^^^
 
@@ -769,7 +847,8 @@ This makes the loss significantly faster than ``warprnnt_numba`` and reduces mem
 Since the loss does not materialize additional full-size tensors, fused Joint and loss computation (``fuse_loss_wer``) is not
 required to limit the memory used by the loss itself. Fused computation can still reduce the memory used by the Joint output
 and its gradient (they are computed in sub-batches with the padding trimmed), so disable it for faster training when
-the full Joint output fits in memory.
+the full Joint output fits in memory. To avoid materializing the Joint output without splitting the batch, use
+the :ref:`Joint Turbo Kernel <joint-turbo-kernel>`.
 
 Gradient clamping is supported with the ``clamp`` argument (as for ``warprnnt_numba``): when set to a positive value,
 the gradient of each per-utterance loss for the Joint output is clamped to ``[-clamp, clamp]`` before the reduction of the loss

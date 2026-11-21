@@ -28,7 +28,10 @@ import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo.collections.asr.models import EncDecRNNTBPEModel
-from nemo.collections.asr.parts.mixins.mixins import _append_hypothesis_segment, _reset_hypothesis_decoder_state
+from nemo.collections.asr.parts.mixins.rnnt_restart_mixin import (
+    _append_hypothesis_segment,
+    _reset_hypothesis_decoder_state,
+)
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import create_spt_model
 

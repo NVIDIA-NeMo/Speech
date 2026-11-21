@@ -30,6 +30,7 @@ from nemo.collections.asr.parts.submodules.packed_attention import (
     PackedAttentionContext,
     document_block_mask,
     packed_attention,
+    packed_cross_attention,
 )
 
 
@@ -275,6 +276,163 @@ class TestPackedRelPositionAttention:
         torch.testing.assert_close(out, reference, atol=1e-4, rtol=1e-4)
         for grad, t in zip(grads, (q, k, v, bias)):
             torch.testing.assert_close(grad, t.grad, atol=1e-3, rtol=1e-3)
+
+
+def _cuda_param():
+    """The CUDA case of a device parametrization, marked as a GPU test and skipped without a GPU."""
+    return pytest.param(
+        "cuda",
+        marks=[pytest.mark.gpu, pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")],
+    )
+
+
+class TestPackedCrossAttention:
+    """Attention from token-flat queries to the keys of their own sequence, through FlashAttention and the reference."""
+
+    @pytest.mark.unit
+    def test_rejects_inputs_that_do_not_match_their_contexts(self):
+        queries = PackedAttentionContext.from_lengths(torch.tensor([3, 4]))
+        keys = PackedAttentionContext.from_lengths(torch.tensor([5, 4]))
+        q, k, v = torch.randn(7, 2, 8), torch.randn(9, 2, 8), torch.randn(9, 2, 8)
+        with pytest.raises(ValueError, match="equal query and key lengths"):
+            packed_cross_attention(q, k, v, queries, keys, causal=True)
+        with pytest.raises(ValueError, match="rows"):
+            packed_cross_attention(q[:5], k, v, queries, keys)
+        with pytest.raises(ValueError, match="rows"):
+            packed_cross_attention(q, k[:8], v, queries, keys)
+        with pytest.raises(ValueError, match="number of sequences"):
+            packed_cross_attention(q, k, v, queries, PackedAttentionContext.from_lengths(torch.tensor([9])))
+
+    @pytest.mark.unit
+    def test_half_precision_scores_stay_finite_on_the_dense_path(self):
+        """Unscaled products of 64 times 40 squared overflow float16; the scaling happens before the product."""
+        context = PackedAttentionContext.from_lengths(torch.tensor([2]))
+        x = torch.full((2, 1, 64), 40.0, dtype=torch.float16)
+        out = packed_cross_attention(x, x, x, context, context)
+        assert torch.isfinite(out).all()
+        torch.testing.assert_close(out, x)
+
+    @pytest.mark.unit
+    def test_queries_without_keys_keep_gradient_edges(self):
+        """A sequence with queries and no keys gets a zero context that still connects q, k and v."""
+        cases = [([1, 0], [0, 1], (1, 1, 8)), ([1, 1], [0, 0], (2, 1, 8)), ([0, 0], [1, 1], (0, 1, 8))]
+        for query_lengths, key_lengths, out_shape in cases:
+            query_context = PackedAttentionContext.from_lengths(torch.tensor(query_lengths))
+            key_context = PackedAttentionContext.from_lengths(torch.tensor(key_lengths))
+            q = torch.randn(query_context.total_tokens, 1, 8, requires_grad=True)
+            k, v = (torch.randn(key_context.total_tokens, 1, 8, requires_grad=True) for _ in range(2))
+            out = packed_cross_attention(q, k, v, query_context, key_context)
+            assert out.shape == out_shape and not out.any()
+            out.sum().backward()
+            for tensor in (q, k, v):
+                assert tensor.grad is not None and not tensor.grad.any()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", ["cpu", _cuda_param()])
+    def test_queries_without_keys_stay_finite_in_float16(self, device):
+        """The sum of 2048 rows of ones overflows float16; the zero context must not become NaN through it."""
+        query_context = PackedAttentionContext.from_lengths(torch.tensor([2048], device=device))
+        key_context = PackedAttentionContext.from_lengths(torch.tensor([0], device=device))
+        q = torch.ones((2048, 2, 64), dtype=torch.float16, device=device, requires_grad=True)
+        k, v = (torch.zeros((0, 2, 64), dtype=torch.float16, device=device, requires_grad=True) for _ in range(2))
+        out = packed_cross_attention(q, k, v, query_context, key_context)
+        assert out.shape == q.shape and torch.isfinite(out).all() and not out.any()
+        out.sum().backward()
+        for tensor in (q, k, v):
+            assert tensor.grad is not None and not tensor.grad.any()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", ["cpu", _cuda_param()])
+    def test_scalar_arguments_are_checked_before_the_dispatch(self, device):
+        """The same ranges on both backends: dropout in [0, 1), a positive finite scale; the boundaries run."""
+        dtype = torch.bfloat16 if device == "cuda" else torch.float32
+        context = PackedAttentionContext.from_lengths(torch.tensor([5, 3], device=device))
+        x = torch.randn(8, 2, 64, device=device, dtype=dtype)
+        for dropout_p in (1.0, -0.1, float("nan")):
+            with pytest.raises(ValueError, match="dropout_p"):
+                packed_cross_attention(x, x, x, context, context, dropout_p=dropout_p)
+        for scale in (-0.125, 0.0, float("nan"), float("inf")):
+            with pytest.raises(ValueError, match="scale"):
+                packed_cross_attention(x, x, x, context, context, scale=scale)
+        if device == "cuda":
+            self._skip_without_flash_attention(dtype)
+        out = packed_cross_attention(x, x, x, context, context, dropout_p=0.0, scale=0.5)
+        reference = packed_attention_module._reference_packed_cross_attention(
+            x.float(), x.float(), x.float(), context, context, causal=False, dropout_p=0.0, scale=0.5
+        )
+        torch.testing.assert_close(out.float(), reference, atol=5e-2, rtol=5e-2)
+        almost_all_dropped = packed_cross_attention(x, x, x, context, context, dropout_p=0.999)
+        assert almost_all_dropped.shape == x.shape and torch.isfinite(almost_all_dropped).all()
+
+    @pytest.mark.unit
+    @pytest.mark.gpu
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+    def test_rejects_cuda_inputs_outside_flash_attention(self):
+        """No silent fall-back to the dense per-sequence attention on CUDA: float32 and an odd head width."""
+        context = PackedAttentionContext.from_lengths(torch.tensor([3, 2], device="cuda"))
+        x = torch.randn(context.total_tokens, 2, 64, device="cuda")
+        with pytest.raises(NotImplementedError, match="FlashAttention only"):
+            packed_cross_attention(x, x, x, context, context)
+        narrow = torch.randn(context.total_tokens, 2, 12, device="cuda", dtype=torch.bfloat16)
+        with pytest.raises(NotImplementedError, match="FlashAttention only"):
+            packed_cross_attention(narrow, narrow, narrow, context, context)
+
+    @staticmethod
+    def _skip_without_flash_attention(dtype):
+        if packed_attention_module._flash_attention_varlen(torch.empty(1, 1, 8, device="cuda", dtype=dtype)) is None:
+            pytest.skip("requires a variable-length FlashAttention provider")
+
+    @pytest.mark.unit
+    @pytest.mark.gpu
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+    @pytest.mark.parametrize(
+        "dtype, tolerance",
+        [(torch.float16, 1e-2), (torch.bfloat16, 5e-2)],
+        ids=["fp16", "bf16"],
+    )
+    @pytest.mark.parametrize("causal", [False, True], ids=["cross", "causal"])
+    def test_flash_matches_the_dense_reference(self, dtype, tolerance, causal):
+        """Outputs and input gradients against the float32 reference; the lengths hold empty sequences."""
+        self._skip_without_flash_attention(dtype)
+        torch.manual_seed(0)
+        query_context = PackedAttentionContext.from_lengths(torch.tensor([5, 0, 130, 3], device="cuda"))
+        key_lengths = torch.tensor([9, 4, 0, 300], device="cuda")
+        key_context = query_context if causal else PackedAttentionContext.from_lengths(key_lengths)
+        heads, head_dim = 2, 64
+        q = torch.randn(query_context.total_tokens, heads, head_dim, device="cuda", dtype=dtype)
+        k, v = (torch.randn(key_context.total_tokens, heads, head_dim, device="cuda", dtype=dtype) for _ in range(2))
+        upstream = torch.randn_like(q)
+
+        def run(tensors, attention, **options):
+            inputs = [t.detach().clone().requires_grad_() for t in tensors]
+            out = attention(*inputs, query_context, key_context, causal=causal, **options)
+            out.backward(upstream.to(out.dtype))
+            return out.float(), [t.grad.float() for t in inputs]
+
+        out, grads = run((q, k, v), packed_cross_attention)
+        reference, reference_grads = run(
+            (q.float(), k.float(), v.float()),
+            packed_attention_module._reference_packed_cross_attention,
+            dropout_p=0.0,
+            scale=head_dim**-0.5,
+        )
+        torch.testing.assert_close(out, reference, atol=tolerance, rtol=tolerance)
+        for grad, reference_grad in zip(grads, reference_grads):
+            torch.testing.assert_close(grad, reference_grad, atol=tolerance, rtol=tolerance)
+
+    @pytest.mark.unit
+    @pytest.mark.gpu
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+    def test_dropout_reaches_the_kernel(self):
+        self._skip_without_flash_attention(torch.bfloat16)
+        torch.manual_seed(0)
+        context = PackedAttentionContext.from_lengths(torch.tensor([40, 25], device="cuda"))
+        q, k, v = (torch.randn(context.total_tokens, 2, 64, device="cuda", dtype=torch.bfloat16) for _ in range(3))
+        without = [packed_cross_attention(q, k, v, context, context) for _ in range(2)]
+        with_dropout = [packed_cross_attention(q, k, v, context, context, dropout_p=0.5) for _ in range(2)]
+        torch.testing.assert_close(without[0], without[1])
+        assert not torch.allclose(with_dropout[0], with_dropout[1])
+        assert not torch.allclose(with_dropout[0], without[0])
 
 
 @pytest.mark.gpu

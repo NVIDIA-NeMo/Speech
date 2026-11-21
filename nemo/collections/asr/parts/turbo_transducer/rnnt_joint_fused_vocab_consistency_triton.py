@@ -112,7 +112,9 @@ def _bwd_chunked_grad_logits_autotune_configs():
     key=["hidden_dim", "vocab_size", "USE_HIGH_PRECISION_MM", "MM_FULL_PRECISION", "SYMMETRICAL"],
     cache_results=True,
 )
-@triton.jit
+# In all kernels, shape-dependent integer arguments are not specialized to avoid recompilation
+# for each new batch shape (Triton specializes integers equal to 1 and divisible by 16 by default).
+@triton.jit(do_not_specialize=["max_src_len", "max_tgt_len_plus_1", "pair_flattened_size"])
 def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
     joint_hidden_ptr,
     targets_ptr,
@@ -295,7 +297,7 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
     reset_to_zero=["grad_joint_hidden_out_ptr", "grad_weight_out_ptr", "grad_bias_out_ptr"],
     cache_results=True,
 )
-@triton.jit
+@triton.jit(do_not_specialize=["max_src_len", "max_tgt_len_plus_1", "pair_flattened_size", "student_lattice_offset"])
 def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
     joint_hidden_ptr,
     targets_ptr,
@@ -541,7 +543,18 @@ def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
     reset_to_zero=["grad_bias_out_ptr"],
     cache_results=True,
 )
-@triton.jit
+@triton.jit(
+    do_not_specialize=[
+        "max_src_len",
+        "max_tgt_len_plus_1",
+        "student_lattice_offset",
+        "hidden_rows",
+        "teacher_hidden_row_start",
+        "student_hidden_row_start",
+        "chunk_start",
+        "chunk_size",
+    ]
+)
 def _rnnt_joint_fused_vocab_consistency_bwd_grad_logits_triton_kernel(
     hidden_ptr,
     targets_ptr,

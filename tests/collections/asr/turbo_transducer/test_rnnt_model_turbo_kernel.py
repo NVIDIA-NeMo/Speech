@@ -136,7 +136,8 @@ def _model_config(
     if is_char_model:
         config['labels'] = LABELS
     else:
-        config['tokenizer'] = {'dir': os.path.join(test_data_dir, "asr", "tokenizers", "an4_wpe_128"), 'type': 'wpe'}
+        # SentencePiece tokenizer is loaded from the local file (WPE tokenizer sends requests to HuggingFace Hub)
+        config['tokenizer'] = {'dir': os.path.join(test_data_dir, "asr", "tokenizers", "an4_spe_128"), 'type': 'bpe'}
     if model_class in HYBRID_MODELS:
         config['aux_ctc'] = {
             'ctc_loss_weight': 0.3,
@@ -166,6 +167,8 @@ def _model_config(
             'subsampling': 'dw_striding',
             'subsampling_factor': 4,
             'subsampling_conv_channels': 16,
+            # fused subsampling kernels are not related to the Joint, their autotuning takes ~30 seconds
+            'use_triton': False,
             'n_heads': 2,
             'dropout': 0.0,
             'dropout_pre_encoder': 0.0,

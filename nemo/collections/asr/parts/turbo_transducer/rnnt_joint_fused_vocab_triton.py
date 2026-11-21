@@ -156,7 +156,9 @@ def _bwd_chunked_grad_logits_autotune_configs():
     key=["hidden_dim", "vocab_size", "USE_HIGH_PRECISION_MM", "MM_FULL_PRECISION"],
     cache_results=True,
 )
-@triton.jit
+# In all kernels, shape-dependent integer arguments are not specialized to avoid recompilation
+# for each new batch shape (Triton specializes integers equal to 1 and divisible by 16 by default).
+@triton.jit(do_not_specialize=["max_src_len", "max_tgt_len_plus_1", "flattened_batch_size"])
 def _rnnt_joint_fused_vocab_fwd_triton_kernel(
     joint_hidden_ptr,
     targets_ptr,
@@ -304,7 +306,7 @@ def _rnnt_joint_fused_vocab_fwd_triton_kernel(
     reset_to_zero=["grad_joint_hidden_out_ptr", "grad_weight_out_ptr", "grad_bias_out_ptr"],
     cache_results=True,
 )
-@triton.jit
+@triton.jit(do_not_specialize=["max_src_len", "max_tgt_len_plus_1", "flattened_batch_size"])
 def _rnnt_joint_fused_vocab_bwd_triton_kernel(
     joint_hidden_ptr,
     targets_ptr,
@@ -484,7 +486,7 @@ def _rnnt_joint_fused_vocab_bwd_triton_kernel(
 
         grad_weight_delta = matmul(
             joint_hidden_chunk_t, grad_logits_matmul, USE_HIGH_PRECISION=USE_HIGH_PRECISION_MM
-        ).T.to(grad_joint_hidden_out_ptr.dtype.element_ty)
+        ).T.to(grad_weight_out_ptr.dtype.element_ty)
 
         # need atomic: different batch parts write to the same place
         tl.atomic_add(
@@ -509,7 +511,9 @@ def _rnnt_joint_fused_vocab_bwd_triton_kernel(
     reset_to_zero=["grad_bias_out_ptr"],
     cache_results=True,
 )
-@triton.jit
+@triton.jit(
+    do_not_specialize=["max_src_len", "max_tgt_len_plus_1", "flattened_batch_size", "chunk_start", "chunk_size"]
+)
 def _rnnt_joint_fused_vocab_bwd_grad_logits_triton_kernel(
     joint_hidden_ptr,
     targets_ptr,
@@ -1087,7 +1091,7 @@ def _select_pruning_starts(grad_target, grad_blank, src_lengths, tgt_lengths, ra
     return starts
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["max_src_len", "max_tgt_len_plus_1", "paired_frame_offset"])
 def _select_pruning_starts_kernel(
     grad_target_ptr,
     grad_blank_ptr,
@@ -1235,7 +1239,7 @@ def _copy_pruned_hidden(
     )
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["max_src_len", "max_tgt_len_plus_1", "chunk_start", "chunk_size"])
 def _copy_pruned_hidden_kernel(
     dense_ptr,
     packed_ptr,

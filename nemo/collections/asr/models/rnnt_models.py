@@ -768,7 +768,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             encoded_len: lengths of the encoder output, [B]
             target_length: lengths of the targets, [B]
             compute_consistency: whether to compute the consistency loss between the halves of the batch
-            current_step: optimizer step (training only), used by the Joint turbo kernel to schedule backward pruning
+            current_step: optimizer step (training only), used by the Joint turbo kernel to schedule pruning
 
         Returns:
             Tuple (RNN-T loss, consistency loss or None)
@@ -799,6 +799,8 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
                 input_lengths=encoded_len,
                 target_lengths=target_length,
             )
+            if loss_inputs.full_lattice_loss is not None:
+                self._log_full_lattice_loss(loss_inputs.full_lattice_loss, target_length)
             if not compute_consistency:
                 return loss_value, None
             consistency_loss_value = self.consistency_loss.forward_from_kl(
@@ -821,6 +823,17 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             tgt_lengths=target_length[:half_batch_size],
         )
         return loss_value, consistency_loss_value
+
+    def _log_full_lattice_loss(self, full_lattice_loss: torch.Tensor, target_length: torch.Tensor):
+        """
+        Log the RNN-T loss of the full lattice (`train_loss_full_lattice`), reported by the Joint with two-pass
+        pruning: the training loss is the loss of the pruned lattice, the difference shows the probability lost by
+        pruning.
+        The value is reduced as the training loss, but computed without dropout and FastEmit scaling.
+        """
+        if getattr(self, "_trainer", None) is None:
+            return
+        self.log("train_loss_full_lattice", self.loss.reduce(full_lattice_loss, target_length.long()))
 
     # PTL-specific methods
     def training_step(self, batch, batch_nb):

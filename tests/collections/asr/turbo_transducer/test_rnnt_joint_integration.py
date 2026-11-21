@@ -28,9 +28,10 @@ from nemo.collections.asr.modules.rnnt import RNNTJoint, SampledRNNTJoint
 from nemo.collections.asr.modules.rnnt_abstract import AbstractRNNTJoint
 from nemo.collections.asr.parts.turbo_transducer.rnnt_consistency import ConsistencyRNNTLoss
 from nemo.collections.asr.parts.turbo_transducer.types import (
-    TurboJointBackwardPruningConfig,
     TurboJointKernelConfig,
     TurboJointKernelType,
+    TurboJointPruningConfig,
+    TurboJointPruningType,
 )
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
@@ -94,13 +95,15 @@ class TestTurboJointKernelConfig:
         for config in [None, {}, {"type": None}]:
             kernel_config = TurboJointKernelConfig.from_config(config)
             assert kernel_config.kernel_type is None
-            assert not kernel_config.uses_backward_pruning
-            assert kernel_config.get_backward_pruning_range_size(current_step=10) is None
+            assert not kernel_config.uses_pruning
+            assert kernel_config.get_active_pruning(current_step=10) is None
 
     @pytest.mark.unit
     @pytest.mark.parametrize("as_dict_config", [False, True])
     def test_flat_parameters_and_nested_pruning(self, as_dict_config: bool):
-        config = _turbo_kernel_config(full_precision=False, backward_pruning={"range_size": 8, "start_step": 100})
+        config = _turbo_kernel_config(
+            full_precision=False, pruning={"type": "two_pass", "range_size": 8, "start_step": 100}
+        )
         config["mm_full_precision"] = True
         kernel_config = TurboJointKernelConfig.from_config(OmegaConf.create(config) if as_dict_config else config)
         assert kernel_config.kernel_type is TurboJointKernelType.FUSED_VOCAB
@@ -109,8 +112,9 @@ class TestTurboJointKernelConfig:
         assert not kernel_config.use_high_precision_mm
         assert not kernel_config.input_grad_full_precision
         assert not kernel_config.weight_grad_full_precision
-        assert kernel_config.backward_pruning == TurboJointBackwardPruningConfig(range_size=8, start_step=100)
-        assert kernel_config.uses_backward_pruning
+        assert kernel_config.pruning == TurboJointPruningConfig(type="two_pass", range_size=8, start_step=100)
+        assert kernel_config.pruning.pruning_type is TurboJointPruningType.TWO_PASS
+        assert kernel_config.uses_pruning
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
@@ -119,9 +123,18 @@ class TestTurboJointKernelConfig:
             # nested kwargs were supported by the draft implementation; parameters are flat now
             ({"type": "fused_vocab", "kwargs": {"backend": "triton"}}, ConfigKeyError),
             ({"type": "fused_vocab", "backward_pruning_range_size": 8}, ConfigKeyError),
-            ({"type": "fused_vocab", "backward_pruning": {"range": 8}}, ConfigKeyError),
-            ({"type": "fused_vocab", "backward_pruning": 8}, ValidationError),
-            ({"type": "fused_vocab", "backward_pruning": {"range_size": "wide"}}, ValidationError),
+            # the section was named `backward_pruning` by the draft implementation
+            ({"type": "fused_vocab", "backward_pruning": {"range_size": 8}}, ConfigKeyError),
+            ({"type": "fused_vocab", "pruning": {"type": "backward", "range": 8}}, ConfigKeyError),
+            ({"type": "fused_vocab", "pruning": 8}, ValidationError),
+            ({"type": "fused_vocab", "pruning": {"type": "backward", "range_size": "wide"}}, ValidationError),
+            # strict: an enabled pruning requires a valid type and range size
+            ({"type": "fused_vocab", "pruning": {"type": "forward", "range_size": 8}}, ValueError),
+            ({"type": "fused_vocab", "pruning": {"type": "backward"}}, ValueError),
+            ({"type": "fused_vocab", "pruning": {"type": "backward", "range_size": 0}}, ValueError),
+            ({"type": "fused_vocab", "pruning": {"type": "two_pass", "range_size": -1}}, ValueError),
+            # a range of a single position can't emit: the pruned lattice has no alignments
+            ({"type": "fused_vocab", "pruning": {"type": "two_pass", "range_size": 1}}, ValueError),
             ({"type": "fused_vocab", "mm_full_precision": "maybe"}, ValidationError),
             ({"type": "fused"}, ValueError),  # fully fused Joint is not implemented yet
             ({"type": "fused_vocab", "backend": "torch"}, ValueError),
@@ -139,40 +152,46 @@ class TestTurboJointKernelConfig:
         [
             (None, None, None),
             ({}, None, None),
-            ({"range_size": None}, None, None),
-            ({"range_size": None, "start_step": 5}, 10, None),
-            ({"range_size": 0}, None, None),
-            ({"range_size": -1}, None, None),
-            ({"range_size": 2}, None, 2),
-            ({"range_size": 2, "start_step": None}, None, 2),
-            ({"range_size": 2, "start_step": 0}, None, 2),
-            ({"range_size": 2, "start_step": -1}, None, 2),
-            ({"range_size": 2, "start_step": 5}, 4, None),
-            ({"range_size": 2, "start_step": 5}, 5, 2),
-            ({"range_size": 2, "start_step": 5}, 6, 2),
+            # `type: null` disables pruning, other parameters are ignored
+            ({"type": None}, None, None),
+            ({"type": None, "range_size": 2, "start_step": 5}, 10, None),
+            ({"range_size": 2}, None, None),
+            ({"type": "backward", "range_size": 1}, None, 1),
+            ({"type": "backward", "range_size": 2}, None, 2),
+            ({"type": "backward", "range_size": 2, "start_step": None}, None, 2),
+            ({"type": "backward", "range_size": 2, "start_step": 0}, None, 2),
+            ({"type": "backward", "range_size": 2, "start_step": -1}, None, 2),
+            ({"type": "backward", "range_size": 2, "start_step": 5}, 4, None),
+            ({"type": "backward", "range_size": 2, "start_step": 5}, 5, 2),
+            ({"type": "backward", "range_size": 2, "start_step": 5}, 6, 2),
+            ({"type": "two_pass", "range_size": 2}, None, 2),
+            ({"type": "two_pass", "range_size": 2, "start_step": 5}, 4, None),
+            ({"type": "two_pass", "range_size": 2, "start_step": 5}, 5, 2),
         ],
     )
-    def test_backward_pruning_schedule(self, pruning_config, current_step, expected_range_size):
-        kernel_config = TurboJointKernelConfig.from_config({"type": "fused_vocab", "backward_pruning": pruning_config})
-        assert kernel_config.get_backward_pruning_range_size(current_step) == expected_range_size
-        assert kernel_config.uses_backward_pruning == ((pruning_config or {}).get("range_size") == 2)
+    def test_pruning_schedule(self, pruning_config, current_step, expected_range_size):
+        kernel_config = TurboJointKernelConfig.from_config({"type": "fused_vocab", "pruning": pruning_config})
+        active_pruning = kernel_config.get_active_pruning(current_step)
+        assert (None if active_pruning is None else active_pruning.range_size) == expected_range_size
+        pruning_type = (pruning_config or {}).get("type")
+        assert kernel_config.uses_pruning == (pruning_type is not None)
+        if active_pruning is not None:
+            assert active_pruning.pruning_type is TurboJointPruningType(pruning_type)
 
     @pytest.mark.unit
-    def test_scheduled_backward_pruning_requires_step(self):
+    def test_scheduled_pruning_requires_step(self):
         kernel_config = TurboJointKernelConfig.from_config(
-            {"type": "fused_vocab", "backward_pruning": {"range_size": 2, "start_step": 5}}
+            {"type": "fused_vocab", "pruning": {"type": "backward", "range_size": 2, "start_step": 5}}
         )
         with pytest.raises(ValueError, match="current step is required"):
-            kernel_config.get_backward_pruning_range_size(current_step=None)
+            kernel_config.get_active_pruning(current_step=None)
 
     @pytest.mark.unit
-    def test_missing_backward_pruning_section_is_equivalent_to_null(self):
+    def test_missing_pruning_section_is_equivalent_to_null(self):
         without_section = TurboJointKernelConfig.from_config(OmegaConf.create({"type": "fused_vocab"}))
-        with_null = TurboJointKernelConfig.from_config(
-            OmegaConf.create({"type": "fused_vocab", "backward_pruning": None})
-        )
+        with_null = TurboJointKernelConfig.from_config(OmegaConf.create({"type": "fused_vocab", "pruning": None}))
         assert without_section == with_null
-        assert without_section.backward_pruning is None
+        assert without_section.pruning is None
 
 
 class TestJointTurboKernel:
@@ -186,7 +205,7 @@ class TestJointTurboKernel:
         joint = RNNTJoint(
             jointnet=_jointnet_config(),
             num_classes=NUM_CLASSES,
-            turbo_kernel={"type": None, "backend": "cutile", "backward_pruning": {"range_size": 8}},
+            turbo_kernel={"type": None, "backend": "cutile", "pruning": {"type": "two_pass", "range_size": 8}},
         )
         assert not joint.uses_turbo_kernel
 
@@ -211,8 +230,8 @@ class TestJointTurboKernel:
         """Turbo kernel section of the example config must be consistent with the Joint"""
         joint_config = OmegaConf.load(EXAMPLE_CONFIG_PATH).model.joint
         assert set(joint_config.turbo_kernel.keys()) == set(TurboJointKernelConfig.__dataclass_fields__.keys())
-        assert set(joint_config.turbo_kernel.backward_pruning.keys()) == set(
-            TurboJointBackwardPruningConfig.__dataclass_fields__.keys()
+        assert set(joint_config.turbo_kernel.pruning.keys()) == set(
+            TurboJointPruningConfig.__dataclass_fields__.keys()
         )
         joint = RNNTJoint(
             jointnet=_jointnet_config(),
@@ -222,9 +241,13 @@ class TestJointTurboKernel:
             turbo_kernel=joint_config.turbo_kernel,
         )
         assert joint.turbo_kernel_type is TurboJointKernelType.FUSED_VOCAB
-        # pruning is disabled by default (`range_size: null`)
+        # pruning is disabled by default (`type: null`)
         joint.train()
-        assert joint._get_backward_pruning_range_size(current_step=10**6) is None
+        assert joint._get_active_pruning(current_step=10**6) is None
+        # the range size of the example config is valid for each pruning type
+        for pruning_type in TurboJointPruningType:
+            joint_config.turbo_kernel.pruning.type = pruning_type.value
+            assert TurboJointKernelConfig.from_config(joint_config.turbo_kernel).uses_pruning
 
     @pytest.mark.unit
     def test_joint_rejects_incompatible_configuration(self):
@@ -250,12 +273,15 @@ class TestJointTurboKernel:
                 preserve_memory=True,
                 turbo_kernel=_turbo_kernel_config(),
             )
-        with pytest.raises(NotImplementedError, match="[Bb]ackward pruning"):
-            RNNTJoint(
-                jointnet=_jointnet_config(),
-                num_classes=NUM_CLASSES,
-                turbo_kernel=_turbo_kernel_config(backend="cutile", backward_pruning={"range_size": 8}),
-            )
+        for pruning_type in ["backward", "two_pass"]:
+            with pytest.raises(NotImplementedError, match="Pruning"):
+                RNNTJoint(
+                    jointnet=_jointnet_config(),
+                    num_classes=NUM_CLASSES,
+                    turbo_kernel=_turbo_kernel_config(
+                        backend="cutile", pruning={"type": pruning_type, "range_size": 8}
+                    ),
+                )
         with pytest.raises(ConfigKeyError):
             RNNTJoint(
                 jointnet=_jointnet_config(),
@@ -331,20 +357,22 @@ class TestJointTurboKernel:
             (None, None, True, True, None),
             ({}, 6, True, True, None),
             ({"start_step": 5}, 6, True, True, None),
-            ({"range_size": None, "start_step": 5}, 6, True, True, None),
-            ({"range_size": 0}, None, True, True, None),
-            ({"range_size": -1}, None, True, True, None),
-            ({"range_size": 2}, None, True, True, 2),
-            ({"range_size": 2, "start_step": None}, None, True, True, 2),
-            ({"range_size": 2, "start_step": 0}, 0, True, True, 2),
-            ({"range_size": 2, "start_step": 5}, 4, True, True, None),
-            ({"range_size": 2, "start_step": 5}, 5, True, True, 2),
-            ({"range_size": 2, "start_step": 5}, 6, True, True, 2),
+            ({"type": None, "range_size": 2, "start_step": 5}, 6, True, True, None),
+            ({"type": "backward", "range_size": 2}, None, True, True, 2),
+            ({"type": "backward", "range_size": 2, "start_step": None}, None, True, True, 2),
+            ({"type": "backward", "range_size": 2, "start_step": 0}, 0, True, True, 2),
+            ({"type": "backward", "range_size": 2, "start_step": 5}, 4, True, True, None),
+            ({"type": "backward", "range_size": 2, "start_step": 5}, 5, True, True, 2),
+            ({"type": "backward", "range_size": 2, "start_step": 5}, 6, True, True, 2),
             # pruning approximates the gradient: never applied in evaluation mode / without gradients
-            ({"range_size": 2}, None, False, True, None),
-            ({"range_size": 2}, None, True, False, None),
-            ({"range_size": 2, "start_step": 5}, None, False, True, None),
-            ({"range_size": 2, "start_step": 5}, None, True, False, None),
+            ({"type": "backward", "range_size": 2}, None, False, True, None),
+            ({"type": "backward", "range_size": 2}, None, True, False, None),
+            ({"type": "backward", "range_size": 2, "start_step": 5}, None, False, True, None),
+            ({"type": "backward", "range_size": 2, "start_step": 5}, None, True, False, None),
+            # two-pass pruning: no backward pruning; the full lattice before the start step and in evaluation mode
+            ({"type": "two_pass", "range_size": 2, "start_step": 5}, 4, True, True, None),
+            ({"type": "two_pass", "range_size": 2}, None, False, True, None),
+            ({"type": "two_pass", "range_size": 2}, None, True, False, None),
         ],
     )
     def test_backward_pruning_schedule(
@@ -357,7 +385,7 @@ class TestJointTurboKernel:
             return torch.zeros(2, 4, 4), torch.zeros(2, 4, 4)
 
         monkeypatch.setattr(rnnt_module, "rnnt_joint_fused_vocab", fake_fused_vocab)
-        config = OmegaConf.create(_turbo_kernel_config(backward_pruning=pruning_config))
+        config = OmegaConf.create(_turbo_kernel_config(pruning=pruning_config))
         joint = RNNTJoint(jointnet=_jointnet_config(), num_classes=NUM_CLASSES, turbo_kernel=config)
         # the schedule depends only on the step supplied by the model: a restored module behaves identically
         restored = RNNTJoint(jointnet=_jointnet_config(), num_classes=NUM_CLASSES, turbo_kernel=config)
@@ -369,11 +397,12 @@ class TestJointTurboKernel:
         assert range_sizes == [expected_range_size, expected_range_size]
 
     @pytest.mark.unit
-    def test_scheduled_backward_pruning_requires_step_in_training(self):
+    @pytest.mark.parametrize("pruning_type", ["backward", "two_pass"])
+    def test_scheduled_pruning_requires_step_in_training(self, pruning_type):
         joint = RNNTJoint(
             jointnet=_jointnet_config(),
             num_classes=NUM_CLASSES,
-            turbo_kernel=_turbo_kernel_config(backward_pruning={"range_size": 2, "start_step": 5}),
+            turbo_kernel=_turbo_kernel_config(pruning={"type": pruning_type, "range_size": 2, "start_step": 5}),
         )
         joint.train()
         with pytest.raises(ValueError, match="current step is required"):
@@ -504,7 +533,7 @@ class TestJointTurboKernel:
         pruned_joint = RNNTJoint(
             jointnet=_jointnet_config(),
             num_classes=NUM_CLASSES,
-            turbo_kernel=_turbo_kernel_config(backward_pruning={"range_size": 1, "start_step": 5}),
+            turbo_kernel=_turbo_kernel_config(pruning={"type": "backward", "range_size": 1, "start_step": 5}),
         ).to(device)
         pruned_joint.load_state_dict(dense_joint.state_dict(), strict=True)
         encoder_outputs, decoder_outputs, source_lengths, targets, target_lengths = _joint_inputs(device=device)
@@ -533,6 +562,30 @@ class TestJointTurboKernel:
         assert torch.equal(loss_after_start, dense_loss)
         assert torch.isfinite(grad_after_start).all()
         assert not torch.allclose(grad_after_start, dense_grad, atol=1e-6, rtol=1e-4)
+
+    @pytest.mark.unit
+    def test_two_pass_pruning_uses_full_lattice_for_wide_range(self, monkeypatch):
+        """A range covering all target positions (U+1 = 4): the full lattice is used, ranges are not estimated"""
+        calls = []
+
+        def fake_fused_vocab(joint_hidden, **kwargs):
+            calls.append((tuple(joint_hidden.shape), kwargs))
+            output = torch.zeros(joint_hidden.shape[:-1], device=joint_hidden.device)
+            return output, output
+
+        monkeypatch.setattr(rnnt_module, "rnnt_joint_fused_vocab", fake_fused_vocab)
+        joint = RNNTJoint(
+            jointnet=_jointnet_config(),
+            num_classes=NUM_CLASSES,
+            turbo_kernel=_turbo_kernel_config(pruning={"type": "two_pass", "range_size": 4}),
+        )
+        joint.train()
+        loss_inputs = joint.forward_for_loss(*_joint_inputs())
+        assert loss_inputs.full_lattice_loss is None
+        ((joint_hidden_shape, kernel_kwargs),) = calls
+        assert joint_hidden_shape == (2, 4, 4, 16)
+        assert kernel_kwargs["backward_pruning_range_size"] is None
+        assert "pruning_range_starts" not in kernel_kwargs
 
     @pytest.mark.unit
     @pytest.mark.gpu

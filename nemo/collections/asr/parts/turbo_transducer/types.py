@@ -31,14 +31,34 @@ class TransducerLossInputs(NamedTuple):
 
     Fields:
         target_logprobs: log-probabilities for target labels, `[B, T, U+1]`. Zero for non-existent targets.
+            With the pruned lattice (pruning ranges applied in forward): `-inf` outside the pruning ranges.
         blank_logprobs: log-probabilities for the blank label, `[B, T, U+1]`.
+            With the pruned lattice: `-inf` outside the pruning ranges.
         consistency_kl: optional per-position consistency (KL) loss, `[B // 2, T, U+1]`, computed between
             the first (teacher) and the second (student) half of a double batch. `None` if not requested.
+            With the pruned lattice: only for the positions of the pruning ranges, `[B // 2, T, range_size]`.
     """
 
     target_logprobs: torch.Tensor
     blank_logprobs: torch.Tensor
     consistency_kl: Optional[torch.Tensor] = None
+
+
+class JointLossInputs(NamedTuple):
+    """
+    Output of `Joint.forward_for_loss`: the fields of `TransducerLossInputs` and the values reported by the Joint.
+
+    Fields:
+        target_logprobs, blank_logprobs, consistency_kl: see `TransducerLossInputs`
+        full_lattice_loss: optional RNN-T loss of the full (not pruned) lattice for each utterance, `[B]`,
+            without gradient. Computed by the first pass of the two-pass pruning (no dropout, no FastEmit scaling)
+            and intended for logging; `None` otherwise.
+    """
+
+    target_logprobs: torch.Tensor
+    blank_logprobs: torch.Tensor
+    consistency_kl: Optional[torch.Tensor] = None
+    full_lattice_loss: Optional[torch.Tensor] = None
 
 
 class TurboJointKernelType(PrettyStrEnum):
@@ -52,24 +72,59 @@ class TurboJointKernelType(PrettyStrEnum):
     FUSED_VOCAB = "fused_vocab"
 
 
-@dataclass
-class TurboJointBackwardPruningConfig:
+class TurboJointPruningType(PrettyStrEnum):
     """
-    Backward pruning for the Joint turbo kernel: the gradient is computed only for `range_size` contiguous target
-    positions per frame. The forward pass (the loss value) is not changed, the gradient is approximated.
+    Pruning of the Joint lattice (training only): the Joint is evaluated only for a window of `range_size`
+    contiguous target positions per frame.
+
+    - BACKWARD: the forward pass is computed for the full lattice (the loss value is exact), the windows are
+      selected by the gradient of the loss, and the gradient of the Joint is computed only inside the windows
+      (approximated gradient). Makes the backward pass faster.
+    - TWO_PASS: the windows are selected by a forward pass for the full lattice without gradient (no dropout),
+      then the Joint is evaluated only inside the windows, with gradient. The loss is the loss of the pruned
+      lattice (not less than the exact one), and its gradient is exact. The activations with gradient are stored
+      only for the windows, which saves memory.
+    """
+
+    BACKWARD = "backward"
+    TWO_PASS = "two_pass"
+
+
+@dataclass
+class TurboJointPruningConfig:
+    """
+    Pruning for the Joint turbo kernel, see `TurboJointPruningType`.
 
     Fields:
-        range_size: number of target positions retained per frame. None or a non-positive value disables pruning.
-        start_step: the first optimizer step with pruning; before it the full gradient is computed.
+        type: pruning type. None disables pruning (other fields are ignored).
+        range_size: number of target positions retained per frame; required if `type` is set.
+            At least 1 for `backward` and at least 2 for `two_pass` (a window of a single position can't emit).
+        start_step: the first optimizer step with pruning; before it the full lattice is used.
             None or a non-positive value enables pruning from the first step.
     """
 
+    type: Optional[str] = None
     range_size: Optional[int] = None
     start_step: Optional[int] = None
 
     @property
+    def pruning_type(self) -> Optional[TurboJointPruningType]:
+        return TurboJointPruningType(self.type) if self.type is not None else None
+
+    @property
     def enabled(self) -> bool:
-        return self.range_size is not None and self.range_size > 0
+        return self.type is not None
+
+    def validate(self):
+        """Check the pruning type and the range size (strict: invalid values are rejected, not ignored)"""
+        pruning_type = self.pruning_type
+        if pruning_type is None:
+            return
+        min_range_size = 2 if pruning_type is TurboJointPruningType.TWO_PASS else 1
+        if self.range_size is None or self.range_size < min_range_size:
+            raise ValueError(
+                f"Pruning `{pruning_type}` requires `range_size` >= {min_range_size}, got {self.range_size}"
+            )
 
     def is_active(self, current_step: Optional[int]) -> bool:
         """Whether pruning should be applied at the given optimizer step"""
@@ -78,9 +133,7 @@ class TurboJointBackwardPruningConfig:
         if self.start_step is None or self.start_step <= 0:
             return True
         if current_step is None:
-            raise ValueError(
-                f"Backward pruning is scheduled to start at step {self.start_step}: the current step is required"
-            )
+            raise ValueError(f"Pruning is scheduled to start at step {self.start_step}: the current step is required")
         return current_step >= self.start_step
 
 
@@ -96,7 +149,7 @@ class TurboJointKernelConfig:
         mm_full_precision: use FP32 matmul operands for BF16 activations (by default BF16 operands are used).
         input_grad_full_precision: accumulate the gradient for the Joint hidden in FP32.
         weight_grad_full_precision: accumulate the gradient for the vocabulary projection weight in FP32.
-        backward_pruning: optional backward pruning, see `TurboJointBackwardPruningConfig`. None disables pruning.
+        pruning: optional pruning of the lattice, see `TurboJointPruningConfig`. None disables pruning.
     """
 
     type: Optional[str] = None
@@ -105,7 +158,7 @@ class TurboJointKernelConfig:
     mm_full_precision: bool = False
     input_grad_full_precision: bool = False
     weight_grad_full_precision: bool = False
-    backward_pruning: Optional[TurboJointBackwardPruningConfig] = None
+    pruning: Optional[TurboJointPruningConfig] = None
 
     @classmethod
     def from_config(cls, config: Optional[Mapping[str, Any]]) -> "TurboJointKernelConfig":
@@ -128,6 +181,8 @@ class TurboJointKernelConfig:
                     f"Backend `{kernel_config.backend}` is not supported by the Joint turbo kernel, "
                     f"use `{TurboTransducerBackend.TRITON}` or `{TurboTransducerBackend.CUTILE}`"
                 )
+            if kernel_config.pruning is not None:
+                kernel_config.pruning.validate()
         return kernel_config
 
     @property
@@ -135,11 +190,11 @@ class TurboJointKernelConfig:
         return TurboJointKernelType(self.type) if self.type is not None else None
 
     @property
-    def uses_backward_pruning(self) -> bool:
-        return self.backward_pruning is not None and self.backward_pruning.enabled
+    def uses_pruning(self) -> bool:
+        return self.pruning is not None and self.pruning.enabled
 
-    def get_backward_pruning_range_size(self, current_step: Optional[int]) -> Optional[int]:
-        """Pruning range size to use at the given optimizer step, None if pruning is not applied"""
-        if self.backward_pruning is None or not self.backward_pruning.is_active(current_step):
+    def get_active_pruning(self, current_step: Optional[int]) -> Optional[TurboJointPruningConfig]:
+        """Pruning config to apply at the given optimizer step, None if pruning is not applied"""
+        if self.pruning is None or not self.pruning.is_active(current_step):
             return None
-        return self.backward_pruning.range_size
+        return self.pruning

@@ -241,6 +241,80 @@ def reference_pruning_windows(
     return starts, mask.repeat(2, 1, 1) if paired else mask
 
 
+def random_pruning_range_starts(inputs: JointInputs, range_size: int, paired: bool = False) -> torch.Tensor:
+    """
+    Random starts of the pruning ranges inside the lattice, int32 [B, T] ([B // 2, T] if paired: ranges shared by
+    the halves of the double batch). The kernels do not require connected ranges.
+    """
+    batch_size, max_src_length, max_tgt_length_plus_1 = inputs.lattice_shape
+    num_utterances = batch_size // 2 if paired else batch_size
+    generator = torch.Generator(device=inputs.joint_hidden.device).manual_seed(7)
+    starts = torch.randint(
+        0, max_tgt_length_plus_1, (num_utterances, max_src_length), device=generator.device, generator=generator
+    )
+    max_starts = (inputs.tgt_lengths[:num_utterances] + 1 - range_size).clamp(min=0)
+    return starts.minimum(max_starts[:, None]).to(torch.int32)
+
+
+def gather_pruning_ranges(joint_hidden: torch.Tensor, range_starts: torch.Tensor, range_size: int) -> torch.Tensor:
+    """
+    Joint hidden of the pruned lattice [B, T, range_size, hidden_dim]: the rows of the pruning ranges of the dense
+    joint hidden [B, T, U+1, hidden_dim]. The gradient for the dense tensor is zero outside the ranges.
+    """
+    batch_size, max_src_length = joint_hidden.shape[:2]
+    starts = range_starts.long().repeat(batch_size // range_starts.shape[0], 1)
+    return joint_hidden[
+        torch.arange(batch_size, device=starts.device)[:, None, None],
+        torch.arange(max_src_length, device=starts.device)[None, :, None],
+        starts[:, :, None] + torch.arange(range_size, device=starts.device),
+    ]
+
+
+def reference_pruned_lattice_outputs(
+    inputs: JointInputs,
+    leaves: list[torch.Tensor],
+    range_starts: torch.Tensor,
+    range_size: int,
+    weight_matmul_dtype: torch.dtype | None = None,
+    consistency_symmetrical: bool | None = None,
+) -> tuple[list[torch.Tensor], torch.Tensor]:
+    """
+    `reference_outputs` restricted to the pruning ranges: log-probabilities [B, T, U+1] are `-inf` outside the ranges
+    (and at the invalid positions inside them), the consistency loss is gathered for the positions of the ranges
+    [B // 2, T, range_size] (zero at the invalid positions). The gradient of these outputs for the leaves is zero
+    outside the ranges.
+
+    Returns:
+        the outputs and the mask of the ranges [B, T, U+1] (shared by the halves of the double batch)
+    """
+    batch_size, max_src_length, max_tgt_length_plus_1 = inputs.lattice_shape
+    device = range_starts.device
+    starts = range_starts.long().repeat(batch_size // range_starts.shape[0], 1)[:, :, None]
+    tgt_positions = torch.arange(max_tgt_length_plus_1, device=device)
+    range_mask = (tgt_positions >= starts) & (tgt_positions < starts + range_size)
+    src_valid = torch.arange(max_src_length, device=device)[None, :, None] < inputs.src_lengths[:, None, None]
+    blank_valid = range_mask & src_valid & (tgt_positions <= inputs.tgt_lengths[:, None, None])
+    target_valid = blank_valid & (tgt_positions < inputs.tgt_lengths[:, None, None])
+    outputs = reference_outputs(
+        inputs, leaves, weight_matmul_dtype=weight_matmul_dtype, consistency_symmetrical=consistency_symmetrical
+    )
+    pruned_outputs = [
+        outputs[0].masked_fill(~target_valid, float("-inf")),
+        outputs[1].masked_fill(~blank_valid, float("-inf")),
+    ]
+    if consistency_symmetrical is not None:
+        half_batch_size = batch_size // 2
+        target_indices = starts[:half_batch_size] + torch.arange(range_size, device=device)
+        pruned_outputs.append((outputs[2] * blank_valid[:half_batch_size]).gather(2, target_indices))
+    return pruned_outputs, range_mask
+
+
+def random_grads_like(outputs: list[torch.Tensor], seed: int = 1) -> list[torch.Tensor]:
+    """Random upstream gradients of the shapes of the outputs"""
+    generator = torch.Generator(device=outputs[0].device).manual_seed(seed)
+    return [torch.randn(output.shape, device=output.device, generator=generator) for output in outputs]
+
+
 def max_relative_error(actual: torch.Tensor, expected: torch.Tensor) -> float:
     """
     Max absolute error relative to the largest magnitude of the reference (at least 1).
@@ -262,6 +336,24 @@ def assert_close_to_reference(
         assert actual_tensor.shape == expected_tensor.shape, f"{name}: shape mismatch"
         error = max_relative_error(actual_tensor, expected_tensor)
         assert error <= max_error, f"{name}: relative error {error:.3g} > {max_error:.3g}"
+
+
+def assert_pruned_outputs_close_to_reference(
+    actual: list[torch.Tensor], expected: list[torch.Tensor], tolerance: float | list[float], names: list[str]
+):
+    """
+    `assert_close_to_reference` for the outputs of the pruned lattice: the positions with zero probability (`-inf`)
+    must be the same, the other values are compared
+    """
+    for actual_tensor, expected_tensor, name in zip(actual, expected, names):
+        assert actual_tensor.shape == expected_tensor.shape, f"{name}: shape mismatch"
+        assert torch.equal(torch.isneginf(actual_tensor), torch.isneginf(expected_tensor)), f"{name}: -inf mismatch"
+    assert_close_to_reference(
+        [tensor.nan_to_num(neginf=0.0) for tensor in actual],
+        [tensor.nan_to_num(neginf=0.0) for tensor in expected],
+        tolerance,
+        names,
+    )
 
 
 def count_compiled_kernels(*modules) -> dict[str, int]:

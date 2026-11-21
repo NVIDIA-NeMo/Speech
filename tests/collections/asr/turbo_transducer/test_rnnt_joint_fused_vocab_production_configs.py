@@ -38,8 +38,13 @@ from nemo.collections.asr.parts.turbo_transducer.rnnt_joint_fused_vocab import (
 from nemo.core.utils.optional_libs import CUTILE_AVAILABLE, TRITON_AVAILABLE
 from tests.collections.asr.turbo_transducer.utils import (
     assert_close_to_reference,
+    assert_pruned_outputs_close_to_reference,
+    gather_pruning_ranges,
     make_joint_inputs,
+    random_grads_like,
+    random_pruning_range_starts,
     reference_outputs,
+    reference_pruned_lattice_outputs,
     reference_pruning_windows,
 )
 
@@ -70,16 +75,26 @@ GRAD_NAMES = ["joint_hidden grad", "weight grad", "bias grad"]
 # with BF16 atomics for the joint hidden gradient in the atomic backward
 TOLERANCES = [5e-5, 6e-2, 1e-2, 1e-5]
 
-# with the consistency loss, backward mode, pruning range
+# with the consistency loss, backward mode, pruning range, pruned lattice.
+# Pruning range without the pruned lattice: backward pruning (dense forward, ranges selected by the gradients);
+# pruned lattice: the joint hidden is given only for the pruning ranges, forward and backward are pruned
 TRITON_CASES = [
-    pytest.param(False, "atomic", None, id="rnnt-atomic"),
-    pytest.param(False, "chunked", None, id="rnnt-chunked"),
-    pytest.param(False, "atomic", PRUNING_RANGE_SIZE, id="rnnt-atomic-pruned"),
-    pytest.param(False, "chunked", PRUNING_RANGE_SIZE, id="rnnt-chunked-pruned"),
-    pytest.param(True, "atomic", None, id="consistency-atomic"),
-    pytest.param(True, "chunked", None, id="consistency-chunked"),
-    pytest.param(True, "atomic", PRUNING_RANGE_SIZE, id="consistency-atomic-pruned"),
-    pytest.param(True, "chunked", PRUNING_RANGE_SIZE, id="consistency-chunked-pruned"),
+    pytest.param(False, "atomic", None, False, id="rnnt-atomic"),
+    pytest.param(False, "chunked", None, False, id="rnnt-chunked"),
+    pytest.param(False, "atomic", PRUNING_RANGE_SIZE, False, id="rnnt-atomic-pruned"),
+    pytest.param(False, "chunked", PRUNING_RANGE_SIZE, False, id="rnnt-chunked-pruned"),
+    pytest.param(False, "atomic", PRUNING_RANGE_SIZE, True, id="rnnt-atomic-pruned-lattice"),
+    pytest.param(True, "atomic", None, False, id="consistency-atomic"),
+    pytest.param(True, "chunked", None, False, id="consistency-chunked"),
+    pytest.param(True, "atomic", PRUNING_RANGE_SIZE, False, id="consistency-atomic-pruned"),
+    pytest.param(True, "chunked", PRUNING_RANGE_SIZE, False, id="consistency-chunked-pruned"),
+    pytest.param(True, "atomic", PRUNING_RANGE_SIZE, True, id="consistency-atomic-pruned-lattice"),
+]
+# The chunked backward kernel is the same for backward pruning and for the pruned lattice (it is not autotuned
+# again), the rows of the pruning ranges are passed differently
+PRUNED_LATTICE_CHUNKED_CASES = [
+    pytest.param(False, "chunked", PRUNING_RANGE_SIZE, True, id="rnnt-chunked-pruned-lattice"),
+    pytest.param(True, "chunked", PRUNING_RANGE_SIZE, True, id="consistency-chunked-pruned-lattice"),
 ]
 
 
@@ -90,9 +105,15 @@ def triton_cache_dir(tmp_path_factory):
 
 
 @requires_triton
-@pytest.mark.parametrize("with_consistency,backward_mode,pruning_range_size", TRITON_CASES)
+@pytest.mark.parametrize("with_consistency,backward_mode,pruning_range_size,pruned_lattice", TRITON_CASES)
 def test_triton_autotuning(
-    with_consistency, backward_mode, pruning_range_size, production_kernel_configs, triton_cache_dir, monkeypatch
+    with_consistency,
+    backward_mode,
+    pruning_range_size,
+    pruned_lattice,
+    production_kernel_configs,
+    triton_cache_dir,
+    monkeypatch,
 ):
     """
     The call that triggers autotuning returns correct results (the benchmarked kernels accumulate gradients in
@@ -103,15 +124,25 @@ def test_triton_autotuning(
     assert len(forward_kernel.configs) > 1 and len(backward_kernel.configs) > 1
     num_tuned_backward_keys = len(backward_kernel.cache)
     for step in range(2):
-        _run_and_compare_with_reference(with_consistency, backward_mode, pruning_range_size, seed=step)
+        _run_and_compare_with_reference(
+            with_consistency, backward_mode, pruning_range_size, pruned_lattice=pruned_lattice, seed=step
+        )
         # backward kernel was autotuned by the first call for the new key (dims, precision, pruning range)
         assert len(backward_kernel.cache) == num_tuned_backward_keys + 1
 
 
 @requires_triton
-@pytest.mark.parametrize("with_consistency,backward_mode,pruning_range_size", TRITON_CASES)
+@pytest.mark.parametrize(
+    "with_consistency,backward_mode,pruning_range_size,pruned_lattice", TRITON_CASES + PRUNED_LATTICE_CHUNKED_CASES
+)
 def test_each_triton_config(
-    with_consistency, backward_mode, pruning_range_size, production_kernel_configs, triton_cache_dir, monkeypatch
+    with_consistency,
+    backward_mode,
+    pruning_range_size,
+    pruned_lattice,
+    production_kernel_configs,
+    triton_cache_dir,
+    monkeypatch,
 ):
     """
     Each production config (not only the fastest one, selected by autotuning on the current GPU) either
@@ -124,7 +155,9 @@ def test_each_triton_config(
     for forward_config in forward_configs:
         monkeypatch.setattr(forward_kernel, "configs", [forward_config])
         try:
-            _run_and_compare_with_reference(with_consistency, backward_mode, pruning_range_size, forward_only=True)
+            _run_and_compare_with_reference(
+                with_consistency, backward_mode, pruning_range_size, pruned_lattice=pruned_lattice, forward_only=True
+            )
         except OutOfResources:
             continue
         valid_forward_configs.append(forward_config)
@@ -135,7 +168,9 @@ def test_each_triton_config(
     for backward_config in backward_configs:
         monkeypatch.setattr(backward_kernel, "configs", [backward_config])
         try:
-            _run_and_compare_with_reference(with_consistency, backward_mode, pruning_range_size)
+            _run_and_compare_with_reference(
+                with_consistency, backward_mode, pruning_range_size, pruned_lattice=pruned_lattice
+            )
         except OutOfResources:
             continue
         num_valid_backward_configs += 1
@@ -169,11 +204,16 @@ def _run_and_compare_with_reference(
     with_consistency: bool,
     backward_mode: str | None,
     pruning_range_size: int | None,
+    pruned_lattice: bool = False,
     forward_only: bool = False,
     seed: int = 0,
     **kernel_kwargs,
 ):
-    """Forward and backward of the Joint: compare outputs and gradients with the reference from the logits"""
+    """
+    Forward and backward of the Joint: compare outputs and gradients with the reference from the logits.
+    With `pruned_lattice`, the Joint is evaluated only for random pruning ranges of size `pruning_range_size`;
+    otherwise `pruning_range_size` enables backward pruning.
+    """
     inputs = make_joint_inputs(
         hidden_dtype=torch.bfloat16,
         dims=PRODUCTION_DIMS,
@@ -184,28 +224,34 @@ def _run_and_compare_with_reference(
     )
     leaves, reference_leaves = inputs.leaves(), inputs.leaves(torch.float64)
     joint_function = rnnt_joint_fused_vocab_with_consistency if with_consistency else rnnt_joint_fused_vocab
-    with torch.autocast("cuda", dtype=torch.bfloat16):
-        outputs = list(
-            joint_function(
-                **inputs.kernel_kwargs(leaves),
-                backward_mode=backward_mode,
-                backward_pruning_range_size=pruning_range_size,
-                **kernel_kwargs,
-            )
-        )
-    expected_outputs = reference_outputs(
-        inputs,
-        reference_leaves,
-        weight_matmul_dtype=torch.bfloat16,
-        consistency_symmetrical=True if with_consistency else None,
+    tensor_kwargs = inputs.kernel_kwargs(leaves)
+    reference_kwargs = dict(
+        weight_matmul_dtype=torch.bfloat16, consistency_symmetrical=True if with_consistency else None
     )
-    assert_close_to_reference(outputs, expected_outputs, TOLERANCES[0], OUTPUT_NAMES[: len(outputs)])
+    if pruned_lattice:
+        range_starts = random_pruning_range_starts(inputs, pruning_range_size, paired=with_consistency)
+        tensor_kwargs["joint_hidden"] = gather_pruning_ranges(leaves[0], range_starts, pruning_range_size)
+        kernel_kwargs["pruning_range_starts"] = range_starts
+        expected_outputs, _ = reference_pruned_lattice_outputs(
+            inputs, reference_leaves, range_starts, pruning_range_size, **reference_kwargs
+        )
+        assert_outputs_close = assert_pruned_outputs_close_to_reference
+    else:
+        kernel_kwargs["backward_pruning_range_size"] = pruning_range_size
+        expected_outputs = reference_outputs(inputs, reference_leaves, **reference_kwargs)
+        assert_outputs_close = assert_close_to_reference
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        outputs = list(joint_function(**tensor_kwargs, backward_mode=backward_mode, **kernel_kwargs))
+    assert_outputs_close(outputs, expected_outputs, TOLERANCES[0], OUTPUT_NAMES[: len(outputs)])
     if forward_only:
         return
 
-    grads = inputs.random_grads(num_outputs=len(outputs), seed=seed + 1)
+    if pruned_lattice:
+        grads = random_grads_like(outputs, seed=seed + 1)
+    else:
+        grads = inputs.random_grads(num_outputs=len(outputs), seed=seed + 1)
     reference_grads = [grad.double() for grad in grads]
-    if pruning_range_size is not None:
+    if pruning_range_size is not None and not pruned_lattice:
         _, mask = reference_pruning_windows(
             grads[0], grads[1], inputs.src_lengths, inputs.tgt_lengths, pruning_range_size, paired=with_consistency
         )

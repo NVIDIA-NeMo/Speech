@@ -40,10 +40,13 @@ from nemo.collections.asr.parts.turbo_transducer.rnnt_joint_fused_vocab import (
     rnnt_joint_fused_vocab,
     rnnt_joint_fused_vocab_with_consistency,
 )
+from nemo.collections.asr.parts.turbo_transducer.rnnt_pruning import rnnt_pruning_range_starts
 from nemo.collections.asr.parts.turbo_transducer.types import (
-    TransducerLossInputs,
+    JointLossInputs,
     TurboJointKernelConfig,
     TurboJointKernelType,
+    TurboJointPruningConfig,
+    TurboJointPruningType,
 )
 from nemo.collections.asr.parts.utils import adapter_utils, rnnt_utils
 from nemo.collections.common.parts import rnn
@@ -1338,11 +1341,16 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             input_grad_full_precision, weight_grad_full_precision: bool, False by default. Accumulate
                 the gradient for the Joint hidden / vocabulary projection weight in FP32.
 
-            backward_pruning: Optional dict-like config, missing or None disables pruning (Triton backend only).
-                `range_size` is the number of contiguous target positions per frame for which the gradient is
-                computed (None or non-positive disables pruning). `start_step` is the first optimizer step
-                with pruning (None or non-positive: prune from the first step). Pruning keeps the loss value,
-                but approximates its gradient, and is applied only in training mode.
+            pruning: Optional dict-like config, missing or None disables pruning (Triton backend only).
+                With pruning, the Joint is evaluated only for `range_size` contiguous target positions per frame.
+                `type`: None (default) disables pruning. `backward` computes the full forward pass and selects
+                the positions by the gradient of the loss: the loss value is exact, its gradient is approximated,
+                the backward pass is faster. `two_pass` selects the positions by a forward pass without gradient
+                (and without dropout), then evaluates the Joint only for them: the loss is the loss of the pruned
+                lattice with the exact gradient, the memory for the activations is several times lower.
+                `range_size` is required if `type` is set (at least 2 for `two_pass`). `start_step` is the first
+                optimizer step with pruning (None or non-positive: prune from the first step).
+                Pruning is applied only in training mode.
 
             Incompatible with `fuse_loss_wer`, `preserve_memory` and extra outputs (e.g., TDT durations).
 
@@ -1484,8 +1492,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                 raise ValueError("`turbo_kernel` does not support extra Joint outputs")
             if preserve_memory:
                 raise ValueError("`preserve_memory` is not applicable when `turbo_kernel` is enabled")
-            if self._turbo_kernel_cfg.uses_backward_pruning and not self._uses_triton_turbo_kernel:
-                raise NotImplementedError("Backward pruning is supported only by the Triton `turbo_kernel` backend")
+            if self._turbo_kernel_cfg.uses_pruning and not self._uses_triton_turbo_kernel:
+                raise NotImplementedError("Pruning is supported only by the Triton `turbo_kernel` backend")
 
         self._loss = None
         self._wer = None
@@ -1567,7 +1575,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         compute_consistency: bool = False,
         consistency_symmetrical: bool = True,
         current_step: Optional[int] = None,
-    ) -> TransducerLossInputs:
+    ) -> JointLossInputs:
         """
         Run a Joint forward that returns per-position quantities for the losses (target/blank
         log-probabilities and, optionally, the consistency loss), instead of the full logits tensor.
@@ -1585,10 +1593,10 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                 (the batch is expected to be a double batch: teacher first half, student second half)
             consistency_symmetrical: if True, compute symmetric KL divergence for the consistency loss
             current_step: optimizer step, supplied by the model during training. Required in training mode
-                if backward pruning is scheduled with a positive `turbo_kernel.backward_pruning.start_step`.
+                if pruning is scheduled with a positive `turbo_kernel.pruning.start_step`.
 
         Returns:
-            `TransducerLossInputs`
+            `JointLossInputs`
         """
         if not self.supports_loss_logprobs:
             raise NotImplementedError(f"{type(self).__name__} does not support `forward_for_loss`")
@@ -1606,21 +1614,20 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         match self._turbo_kernel_type:
             case None:
                 logits = self._joint_logits_after_projection(encoder_output_projected, predictor_output_projected)
-                return rnnt_logprobs_with_consistency(
-                    logits=logits,
-                    targets=transcripts,
-                    blank_id=blank_id,
-                    src_lengths=encoder_lengths,
-                    tgt_lengths=transcript_lengths,
-                    compute_consistency=compute_consistency,
-                    consistency_symmetrical=consistency_symmetrical,
+                return JointLossInputs(
+                    *rnnt_logprobs_with_consistency(
+                        logits=logits,
+                        targets=transcripts,
+                        blank_id=blank_id,
+                        src_lengths=encoder_lengths,
+                        tgt_lengths=transcript_lengths,
+                        compute_consistency=compute_consistency,
+                        consistency_symmetrical=consistency_symmetrical,
+                    )
                 )
             case TurboJointKernelType.FUSED_VOCAB:
                 vocab_projection = self.joint_net[-1]
                 kernel_kwargs = dict(
-                    joint_hidden=self._joint_hidden_after_projection(
-                        encoder_output_projected, predictor_output_projected
-                    ),
                     targets=transcripts,
                     tgt_lengths=transcript_lengths,
                     src_lengths=encoder_lengths,
@@ -1632,14 +1639,50 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                     mm_full_precision=self._turbo_kernel_cfg.mm_full_precision,
                     input_grad_full_precision=self._turbo_kernel_cfg.input_grad_full_precision,
                     weight_grad_full_precision=self._turbo_kernel_cfg.weight_grad_full_precision,
-                    backward_pruning_range_size=self._get_backward_pruning_range_size(current_step),
                 )
+                pruning = self._get_active_pruning(current_step)
+                full_lattice_loss = None
+                # a range covering all target positions: nothing to prune
+                if (
+                    pruning is not None
+                    and pruning.pruning_type is TurboJointPruningType.TWO_PASS
+                    and pruning.range_size < predictor_output_projected.shape[1]
+                ):
+                    pruning_range_starts, full_lattice_loss = self._estimate_pruning_range_starts(
+                        encoder_output_projected,
+                        predictor_output_projected,
+                        range_size=pruning.range_size,
+                        paired=compute_consistency,
+                        kernel_kwargs=kernel_kwargs,
+                    )
+                    kernel_kwargs["pruning_range_starts"] = pruning_range_starts
+                    kernel_kwargs["joint_hidden"] = self._joint_hidden_after_projection(
+                        encoder_output_projected,
+                        predictor_output_projected,
+                        pruning_range_starts=pruning_range_starts,
+                        pruning_range_size=pruning.range_size,
+                    )
+                else:
+                    is_backward_pruning = (
+                        pruning is not None and pruning.pruning_type is TurboJointPruningType.BACKWARD
+                    )
+                    kernel_kwargs["backward_pruning_range_size"] = pruning.range_size if is_backward_pruning else None
+                    kernel_kwargs["joint_hidden"] = self._joint_hidden_after_projection(
+                        encoder_output_projected, predictor_output_projected
+                    )
                 if compute_consistency:
-                    return rnnt_joint_fused_vocab_with_consistency(
+                    target_logprobs, blank_logprobs, consistency_kl = rnnt_joint_fused_vocab_with_consistency(
                         consistency_symmetrical=consistency_symmetrical, **kernel_kwargs
                     )
-                target_logprobs, blank_logprobs = rnnt_joint_fused_vocab(**kernel_kwargs)
-                return TransducerLossInputs(target_logprobs=target_logprobs, blank_logprobs=blank_logprobs)
+                else:
+                    target_logprobs, blank_logprobs = rnnt_joint_fused_vocab(**kernel_kwargs)
+                    consistency_kl = None
+                return JointLossInputs(
+                    target_logprobs=target_logprobs,
+                    blank_logprobs=blank_logprobs,
+                    consistency_kl=consistency_kl,
+                    full_lattice_loss=full_lattice_loss,
+                )
             case _:
                 raise NotImplementedError(f"Turbo kernel `{self._turbo_kernel_type}` is not implemented")
 
@@ -1894,25 +1937,44 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
         return res
 
-    def _joint_input_after_projection(self, f: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
+    def _joint_input_after_projection(
+        self,
+        f: torch.Tensor,
+        g: torch.Tensor,
+        pruning_range_starts: Optional[torch.Tensor] = None,
+        pruning_range_size: Optional[int] = None,
+        deterministic: bool = False,
+    ) -> torch.Tensor:
         """
         Combine the projected encoder/predictor outputs into the input of the Joint network.
 
         Args:
             f: Output of the Encoder model after projection. A torch.Tensor of shape [B, T, H]
             g: Output of the Decoder model after projection. A torch.Tensor of shape [B, U, H]
+            pruning_range_starts: Optional starts of the pruning ranges, [B, T] (or [B // 2, T]: ranges shared by
+                the halves of a double batch). If set, the input is computed only for `pruning_range_size`
+                target positions per frame, starting from the given one (pruned lattice).
+            pruning_range_size: number of target positions in a pruning range.
+            deterministic: do not apply the random masking of the predictor output.
 
         Returns:
-            Input of `joint_net` of shape [B, T, U, H]
+            Input of `joint_net` of shape [B, T, U, H]; with pruning ranges - [B, T, pruning_range_size, H]
         """
         f = f.unsqueeze(dim=2)  # (B, T, 1, H)
         g = g.unsqueeze(dim=1)  # (B, 1, U, H)
 
-        if self.training and self.masking_prob > 0:
+        if self.training and self.masking_prob > 0 and not deterministic:
             [B, _, U, _] = g.shape
             rand = torch.rand([B, 1, U, 1]).to(g.device)
             rand = torch.gt(rand, self.masking_prob)
             g = g * rand
+
+        if pruning_range_starts is not None:
+            # predictor output for the target positions of the range of each frame: [B, T, pruning_range_size, H]
+            batch_size = g.shape[0]
+            starts = pruning_range_starts.long().repeat(batch_size // pruning_range_starts.shape[0], 1)
+            target_indices = starts.unsqueeze(-1) + torch.arange(pruning_range_size, device=g.device)
+            g = g.squeeze(1)[torch.arange(batch_size, device=g.device)[:, None, None], target_indices]
 
         inp = f + g  # [B, T, U, H]
 
@@ -1924,18 +1986,38 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
         return inp
 
-    def _joint_hidden_after_projection(self, f: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
+    def _joint_hidden_after_projection(
+        self,
+        f: torch.Tensor,
+        g: torch.Tensor,
+        pruning_range_starts: Optional[torch.Tensor] = None,
+        pruning_range_size: Optional[int] = None,
+        deterministic: bool = False,
+    ) -> torch.Tensor:
         """
         Compute the Joint hidden (input of the vocabulary projection, the last module of `joint_net`)
         from the projected encoder/predictor outputs.
 
+        Args:
+            f, g, pruning_range_starts, pruning_range_size: see `_joint_input_after_projection`
+            deterministic: do not apply dropout and the random masking of the predictor output
+
         Returns:
-            Joint hidden of shape [B, T, U, H]
+            Joint hidden of shape [B, T, U, H]; with pruning ranges - [B, T, pruning_range_size, H]
         """
-        joint_hidden = self._joint_input_after_projection(f, g)
+        joint_hidden = self._joint_input_after_projection(
+            f,
+            g,
+            pruning_range_starts=pruning_range_starts,
+            pruning_range_size=pruning_range_size,
+            deterministic=deterministic,
+        )
         # all modules except the vocabulary projection: activation and dropout
         for layer_index in range(len(self.joint_net) - 1):
-            joint_hidden = self.joint_net[layer_index](joint_hidden)
+            layer = self.joint_net[layer_index]
+            if deterministic and isinstance(layer, torch.nn.Dropout):
+                continue
+            joint_hidden = layer(joint_hidden)
         return joint_hidden
 
     def _joint_logits_after_projection(self, f: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
@@ -1956,11 +2038,43 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             return TRITON_AVAILABLE
         return TurboTransducerBackend(backend) is TurboTransducerBackend.TRITON
 
-    def _get_backward_pruning_range_size(self, current_step: Optional[int]) -> Optional[int]:
-        """Backward pruning range size for the current forward pass, None if pruning is not applied"""
+    def _get_active_pruning(self, current_step: Optional[int]) -> Optional[TurboJointPruningConfig]:
+        """Pruning config for the current forward pass, None if pruning is not applied"""
         if not self.training or not torch.is_grad_enabled():
             return None
-        return self._turbo_kernel_cfg.get_backward_pruning_range_size(current_step)
+        return self._turbo_kernel_cfg.get_active_pruning(current_step)
+
+    def _estimate_pruning_range_starts(
+        self, f: torch.Tensor, g: torch.Tensor, range_size: int, paired: bool, kernel_kwargs: Dict[str, Any]
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        The first pass of the two-pass pruning: evaluate the Joint for the full lattice without gradient,
+        dropout and masking, and select the pruning ranges by the occupation probabilities.
+        The activations of the full lattice are released before the second pass.
+
+        Args:
+            f: Output of the Encoder model after projection, [B, T, H]
+            g: Output of the Decoder model after projection, [B, U+1, H]
+            range_size: number of target positions in a pruning range
+            paired: one range for each pair of frames of the halves of a double batch (consistency loss)
+            kernel_kwargs: arguments of the Joint kernel (without the Joint hidden and pruning)
+
+        Returns:
+            starts of the pruning ranges, [B, T] ([B // 2, T] if `paired`),
+            and the RNN-T loss of the full lattice for each utterance, [B]
+        """
+        with torch.no_grad():
+            target_logprobs, blank_logprobs = rnnt_joint_fused_vocab(
+                joint_hidden=self._joint_hidden_after_projection(f, g, deterministic=True), **kernel_kwargs
+            )
+            return rnnt_pruning_range_starts(
+                target_logprobs=target_logprobs,
+                blank_logprobs=blank_logprobs,
+                src_lengths=kernel_kwargs["src_lengths"],
+                tgt_lengths=kernel_kwargs["tgt_lengths"],
+                range_size=range_size,
+                paired=paired,
+            )
 
     def _joint_net_modules(self, num_classes, pred_n_hidden, enc_n_hidden, joint_n_hidden, activation, dropout):
         """

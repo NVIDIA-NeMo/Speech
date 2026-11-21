@@ -13,10 +13,13 @@
 # limitations under the License.
 
 """
-Tests for the backward pruning of the `fused_vocab` Joint (with and without the consistency loss): backward is
-computed only for a window of target positions per frame, forward is exact.
+Tests for the pruning of the `fused_vocab` Joint (with and without the consistency loss).
 
-The reference is the dense backward with the upstream gradients masked outside the windows.
+- Backward pruning: backward is computed only for a window of target positions per frame, forward is exact.
+  The reference is the dense backward with the upstream gradients masked outside the windows.
+- Pruned lattice: the joint hidden is given only for the pruning ranges, forward and backward are computed only
+  for them. The reference is the dense Joint with the outputs and the upstream gradients masked outside the ranges.
+
 The kernels are compiled with a single small-tile config and share dimensions and precision settings with the other
 tests of the fused Joint, see `conftest.py` and `utils.py`; the pruning range is a compile-time constant of
 the kernels, so the tests use `PRUNING_RANGE_SIZE` unless the range itself is tested.
@@ -29,16 +32,21 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+import nemo.collections.asr.modules.rnnt as rnnt_module
 from nemo.collections.asr.models.rnnt_models import EncDecRNNTModel
+from nemo.collections.asr.modules.rnnt import RNNTJoint
+from nemo.collections.asr.parts.turbo_transducer.rnnt_consistency import ConsistencyRNNTLoss
 from nemo.collections.asr.parts.turbo_transducer.rnnt_joint_fused_vocab import (
     rnnt_joint_fused_vocab,
     rnnt_joint_fused_vocab_with_consistency,
 )
 from nemo.collections.asr.parts.turbo_transducer.rnnt_logprobs import rnnt_logprobs_torch
+from nemo.collections.asr.parts.turbo_transducer.rnnt_pruning import rnnt_pruning_range_starts
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 from tests.collections.asr.decoding.utils import avoid_sync_operations
 from tests.collections.asr.turbo_transducer.utils import (
     BLANK_ID,
+    DIMS_DEFAULT,
     FULL_PRECISION,
     FULL_PRECISION_TOLERANCE,
     HIDDEN_DIM,
@@ -48,9 +56,14 @@ from tests.collections.asr.turbo_transducer.utils import (
     VOCAB_SIZE,
     JointInputs,
     assert_close_to_reference,
+    assert_pruned_outputs_close_to_reference,
     count_compiled_kernels,
+    gather_pruning_ranges,
     make_joint_inputs,
+    random_grads_like,
+    random_pruning_range_starts,
     reference_outputs,
+    reference_pruned_lattice_outputs,
     reference_pruning_windows,
 )
 
@@ -302,6 +315,347 @@ class TestBackwardPruning:
 
 @pytest.mark.gpu
 @requires_triton_cuda
+@pytest.mark.parametrize("backward_mode", ["atomic", "chunked"])
+class TestPrunedLattice:
+    """Joint evaluated only inside the given pruning ranges: joint hidden [B, T, range_size, hidden_dim]"""
+
+    @pytest.mark.parametrize(
+        "consistency_symmetrical",
+        [pytest.param(None, id="rnnt"), pytest.param(True, id="consistency-symmetrical")],
+    )
+    def test_full_precision_forward_matches_masked_dense_reference(self, backward_mode, consistency_symmetrical):
+        """Exact FP32 computations: outputs match the FP64 dense reference restricted to the ranges"""
+        inputs = make_joint_inputs(double_batch=consistency_symmetrical is not None)
+        range_starts = random_pruning_range_starts(
+            inputs, PRUNING_RANGE_SIZE, paired=consistency_symmetrical is not None
+        )
+        with torch.no_grad():
+            outputs = _fused_joint(
+                inputs,
+                inputs.leaves(),
+                consistency_symmetrical,
+                pruning_range_starts=range_starts,
+                backward_mode=backward_mode,
+                **FULL_PRECISION,
+            )
+            expected_outputs, _ = reference_pruned_lattice_outputs(
+                inputs,
+                inputs.leaves(torch.float64),
+                range_starts,
+                PRUNING_RANGE_SIZE,
+                consistency_symmetrical=consistency_symmetrical,
+            )
+        assert_pruned_outputs_close_to_reference(
+            outputs, expected_outputs, FULL_PRECISION_TOLERANCE, OUTPUT_NAMES[: len(outputs)]
+        )
+
+    @pytest.mark.parametrize(
+        "consistency_symmetrical",
+        [pytest.param(None, id="rnnt"), pytest.param(True, id="consistency-symmetrical")],
+    )
+    def test_full_precision_matches_masked_dense_reference(self, backward_mode, consistency_symmetrical, monkeypatch):
+        """Exact FP32 computations: outputs and gradients match the FP64 dense reference restricted to the ranges"""
+        _use_min_chunk_size(monkeypatch)
+        inputs = make_joint_inputs(double_batch=consistency_symmetrical is not None)
+        leaves, reference_leaves = inputs.leaves(), inputs.leaves(torch.float64)
+        range_starts = random_pruning_range_starts(
+            inputs, PRUNING_RANGE_SIZE, paired=consistency_symmetrical is not None
+        )
+        outputs = _fused_joint(
+            inputs,
+            leaves,
+            consistency_symmetrical,
+            pruning_range_starts=range_starts,
+            backward_mode=backward_mode,
+            **FULL_PRECISION,
+        )
+        expected_outputs, range_mask = reference_pruned_lattice_outputs(
+            inputs, reference_leaves, range_starts, PRUNING_RANGE_SIZE, consistency_symmetrical=consistency_symmetrical
+        )
+        assert_pruned_outputs_close_to_reference(
+            outputs, expected_outputs, FULL_PRECISION_TOLERANCE, OUTPUT_NAMES[: len(outputs)]
+        )
+
+        grads = random_grads_like(outputs)
+        torch.autograd.backward(outputs, grads)
+        torch.autograd.backward(expected_outputs, [grad.double() for grad in grads])
+        assert_close_to_reference(
+            [leaf.grad for leaf in leaves],
+            [leaf.grad for leaf in reference_leaves],
+            FULL_PRECISION_TOLERANCE,
+            GRAD_NAMES,
+        )
+        assert torch.count_nonzero(leaves[0].grad[~range_mask]) == 0
+
+    # BF16 joint hidden with FP32 master weights, see `TestBackwardPruning`. The precision of the kernels does not
+    # depend on the consistency loss and is tested for it with the dense and the gathered rows of the joint hidden
+    def test_mixed_precision_matches_masked_dense_reference(self, backward_mode, monkeypatch):
+        _use_min_chunk_size(monkeypatch)
+        consistency_symmetrical = None
+        inputs = make_joint_inputs(hidden_dtype=torch.bfloat16)
+        leaves, reference_leaves = inputs.leaves(), inputs.leaves(torch.float64)
+        range_starts = random_pruning_range_starts(inputs, PRUNING_RANGE_SIZE, paired=False)
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            outputs = _fused_joint(
+                inputs, leaves, consistency_symmetrical, pruning_range_starts=range_starts, backward_mode=backward_mode
+            )
+        expected_outputs, range_mask = reference_pruned_lattice_outputs(
+            inputs, reference_leaves, range_starts, PRUNING_RANGE_SIZE, weight_matmul_dtype=torch.bfloat16
+        )
+        assert_pruned_outputs_close_to_reference(outputs, expected_outputs, 1e-5, OUTPUT_NAMES[: len(outputs)])
+
+        grads = random_grads_like(outputs)
+        torch.autograd.backward(outputs, grads)
+        torch.autograd.backward(expected_outputs, [grad.double() for grad in grads])
+        assert_close_to_reference(
+            [leaf.grad for leaf in leaves], [leaf.grad for leaf in reference_leaves], [3e-2, 1e-2, 1e-5], GRAD_NAMES
+        )
+        assert [leaf.grad.dtype for leaf in leaves] == [torch.bfloat16, torch.float32, torch.float32]
+        assert torch.count_nonzero(leaves[0].grad[~range_mask]) == 0
+
+    @pytest.mark.parametrize(
+        "consistency_symmetrical,hidden_dtype,kernel_kwargs",
+        [
+            # BF16 joint hidden with FP32 master weights and default kernel arguments, as in training with autocast
+            pytest.param(None, torch.bfloat16, {}, id="rnnt"),
+            # synchronization does not depend on the precision: the kernels compiled for the other tests
+            pytest.param(True, torch.float32, FULL_PRECISION, id="consistency"),
+        ],
+    )
+    def test_no_cuda_sync_operations(self, backward_mode, consistency_symmetrical, hidden_dtype, kernel_kwargs):
+        inputs = make_joint_inputs(hidden_dtype=hidden_dtype, double_batch=consistency_symmetrical is not None)
+        range_starts = random_pruning_range_starts(
+            inputs, PRUNING_RANGE_SIZE, paired=consistency_symmetrical is not None
+        )
+
+        def run_forward_backward():
+            outputs = _fused_joint(
+                inputs,
+                inputs.leaves(),
+                consistency_symmetrical,
+                pruning_range_starts=range_starts,
+                backward_mode=backward_mode,
+                **kernel_kwargs,
+            )
+            torch.autograd.backward(outputs, [torch.ones_like(output) for output in outputs])
+
+        run_forward_backward()  # warmup: compile the kernels
+        torch.cuda.synchronize()
+        with avoid_sync_operations(torch.device("cuda")):
+            run_forward_backward()
+
+    @pytest.mark.parametrize("consistency_symmetrical", CONSISTENCY_MODES)
+    def test_no_recompilation_for_new_lattice_shape(self, backward_mode, consistency_symmetrical, monkeypatch):
+        _use_min_chunk_size(monkeypatch)
+        modules = (fused_vocab_triton_module, consistency_triton_module)
+        num_compiled_kernels = None
+        for src_lengths, tgt_lengths in LATTICES_WITH_DIFFERENT_SPECIALIZATION:
+            inputs = make_joint_inputs(
+                src_lengths=src_lengths, tgt_lengths=tgt_lengths, double_batch=consistency_symmetrical is not None
+            )
+            outputs = _fused_joint(
+                inputs,
+                inputs.leaves(),
+                consistency_symmetrical,
+                pruning_range_starts=random_pruning_range_starts(
+                    inputs, PRUNING_RANGE_SIZE, paired=consistency_symmetrical is not None
+                ),
+                backward_mode=backward_mode,
+                **FULL_PRECISION,
+            )
+            torch.autograd.backward(outputs, [torch.ones_like(output) for output in outputs])
+            if num_compiled_kernels is None:
+                num_compiled_kernels = count_compiled_kernels(*modules)
+            assert count_compiled_kernels(*modules) == num_compiled_kernels
+
+
+@pytest.mark.gpu
+@requires_triton_cuda
+class TestJointTwoPassPruning:
+    """
+    `RNNTJoint` with two-pass pruning. The Joint has the dimensions and the precision settings of the kernel tests
+    (and the lattice with U+1 = 5 has the block size of the range selection of the other tests): no new kernels.
+    """
+
+    @staticmethod
+    def _make_joint(pruning: dict | None, dropout: float = 0.0, masking_prob: float = -1.0) -> RNNTJoint:
+        joint = RNNTJoint(
+            jointnet={
+                "encoder_hidden": 12,
+                "pred_hidden": 10,
+                "joint_hidden": HIDDEN_DIM,
+                "activation": "relu",
+                "dropout": dropout,
+            },
+            num_classes=BLANK_ID,  # blank is the last label
+            masking_prob=masking_prob,
+            turbo_kernel={"type": "fused_vocab", "backend": "triton", **FULL_PRECISION, "pruning": pruning},
+        )
+        return joint.to("cuda").train()
+
+    @staticmethod
+    def _make_inputs(double_batch: bool):
+        """
+        Encoder output [B, D, T], prediction network output [B, D, U+1], lengths and targets.
+        All positions of the second utterance (U+1 = 3) are inside the pruning range
+        """
+        generator = torch.Generator(device="cuda").manual_seed(5)
+        num_frames, num_tokens = 7, 4
+        encoder_outputs = torch.randn(2, 12, num_frames, device="cuda", generator=generator)
+        decoder_outputs = torch.randn(2, 10, num_tokens + 1, device="cuda", generator=generator)
+        targets = torch.randint(0, BLANK_ID, (2, num_tokens), device="cuda", generator=generator)
+        encoder_lengths = torch.tensor([num_frames, 5], device="cuda")
+        target_lengths = torch.tensor([num_tokens, 2], device="cuda")
+        if double_batch:
+            # the student half: perturbed encoder output, the same targets and lengths
+            student_encoder_outputs = encoder_outputs + 0.1 * torch.randn(
+                encoder_outputs.shape, device="cuda", generator=generator
+            )
+            encoder_outputs = torch.cat([encoder_outputs, student_encoder_outputs])
+            decoder_outputs, targets = decoder_outputs.repeat(2, 1, 1), targets.repeat(2, 1)
+            encoder_lengths, target_lengths = encoder_lengths.repeat(2), target_lengths.repeat(2)
+        return encoder_outputs, decoder_outputs, encoder_lengths, targets, target_lengths
+
+    @pytest.mark.parametrize("compute_consistency", [False, True])
+    def test_matches_pruned_lattice_reference(self, compute_consistency: bool):
+        """
+        The losses and their gradients are equal to the losses computed from the outputs of the full lattice,
+        restricted to the pruning ranges (zero probability and no consistency loss outside the ranges).
+        """
+        torch.manual_seed(42)
+        dense_joint = self._make_joint(pruning=None)
+        pruned_joint = self._make_joint({"type": "two_pass", "range_size": PRUNING_RANGE_SIZE, "start_step": 5})
+        pruned_joint.load_state_dict(dense_joint.state_dict(), strict=True)
+        inputs = self._make_inputs(double_batch=compute_consistency)
+        _, _, src_lengths, _, tgt_lengths = inputs
+        half_batch_size = len(src_lengths) // 2
+
+        def total_loss(loss_inputs, range_mask=None):
+            """RNN-T loss + consistency loss; `range_mask` [B, T, U+1] restricts the outputs of the full lattice"""
+            target_logprobs, blank_logprobs, consistency_kl = loss_inputs[:3]
+            if range_mask is not None:
+                target_logprobs = target_logprobs.masked_fill(~range_mask, float("-inf"))
+                blank_logprobs = blank_logprobs.masked_fill(~range_mask, float("-inf"))
+            loss_value = rnnt_loss_from_logprobs_triton(
+                target_logprobs, blank_logprobs, src_lengths, tgt_lengths
+            ).sum()
+            if not compute_consistency:
+                return loss_value
+            if range_mask is not None:
+                consistency_kl = consistency_kl * range_mask[:half_batch_size]
+            # mean over the positions with the consistency loss for each utterance, then over the utterances:
+            # `min(U+1, number of rows per frame)` positions for each frame
+            num_positions = src_lengths[:half_batch_size] * (tgt_lengths[:half_batch_size] + 1).clamp(
+                max=PRUNING_RANGE_SIZE if range_mask is not None else consistency_kl.shape[2]
+            )
+            return loss_value + (consistency_kl.sum(dim=(1, 2)) / num_positions).mean()
+
+        def forward_for_loss(joint: RNNTJoint, current_step: int):
+            return joint.forward_for_loss(*inputs, compute_consistency=compute_consistency, current_step=current_step)
+
+        # reference: the full lattice; ranges are estimated from its log-probabilities
+        dense_inputs = forward_for_loss(dense_joint, current_step=10)
+        assert dense_inputs.full_lattice_loss is None
+        range_starts, full_lattice_loss = rnnt_pruning_range_starts(
+            dense_inputs.target_logprobs,
+            dense_inputs.blank_logprobs,
+            src_lengths,
+            tgt_lengths,
+            PRUNING_RANGE_SIZE,
+            paired=compute_consistency,
+        )
+        tgt_positions = torch.arange(dense_inputs.blank_logprobs.shape[2], device="cuda")
+        starts = range_starts.repeat(2 if compute_consistency else 1, 1).unsqueeze(-1)
+        range_mask = (tgt_positions >= starts) & (tgt_positions < starts + PRUNING_RANGE_SIZE)
+        dense_loss = total_loss(dense_inputs).detach()
+        reference_loss = total_loss(dense_inputs, range_mask=range_mask)
+        reference_loss.backward()
+
+        # before `start_step`: the full lattice
+        loss_inputs = forward_for_loss(pruned_joint, current_step=4)
+        assert loss_inputs.full_lattice_loss is None
+        assert torch.equal(total_loss(loss_inputs), dense_loss)
+
+        loss_inputs = forward_for_loss(pruned_joint, current_step=5)
+        torch.testing.assert_close(loss_inputs.full_lattice_loss, full_lattice_loss)
+        assert not loss_inputs.full_lattice_loss.requires_grad
+        # zero probability outside the ranges
+        assert torch.isneginf(loss_inputs.blank_logprobs[~range_mask]).all()
+        assert torch.isneginf(loss_inputs.target_logprobs[~range_mask]).all()
+        if compute_consistency:
+            # the consistency loss is computed only for the positions of the ranges
+            assert loss_inputs.consistency_kl.shape == (half_batch_size, 7, PRUNING_RANGE_SIZE)
+            # `ConsistencyRNNTLoss` normalizes it by the number of these positions
+            consistency_loss_value = ConsistencyRNNTLoss(reduction="mean").forward_from_kl(
+                loss_inputs.consistency_kl, src_lengths[:half_batch_size], tgt_lengths[:half_batch_size]
+            )
+            num_positions = src_lengths[:half_batch_size] * (tgt_lengths[:half_batch_size] + 1).clamp(
+                max=PRUNING_RANGE_SIZE
+            )
+            torch.testing.assert_close(
+                consistency_loss_value, (loss_inputs.consistency_kl.sum(dim=(1, 2)) / num_positions).mean()
+            )
+        pruned_loss = total_loss(loss_inputs)
+        pruned_loss.backward()
+
+        assert torch.isfinite(pruned_loss) and pruned_loss > dense_loss
+        torch.testing.assert_close(pruned_loss, reference_loss, atol=1e-5, rtol=1e-5)
+        reference_parameters = dict(dense_joint.named_parameters())
+        for parameter_name, parameter in pruned_joint.named_parameters():
+            torch.testing.assert_close(
+                parameter.grad, reference_parameters[parameter_name].grad, atol=2e-4, rtol=2e-4, msg=parameter_name
+            )
+
+    def test_selects_ranges_without_dropout_and_gradient(self, monkeypatch):
+        """The first pass is deterministic (no dropout and masking of the predictor) and does not require gradient"""
+        torch.manual_seed(42)
+        joint = self._make_joint({"type": "two_pass", "range_size": PRUNING_RANGE_SIZE}, dropout=0.5, masking_prob=0.5)
+        inputs = self._make_inputs(double_batch=False)
+        estimation_logprobs = []
+
+        def spy_range_starts(target_logprobs, blank_logprobs, **kwargs):
+            estimation_logprobs.append((target_logprobs, blank_logprobs))
+            return rnnt_pruning_range_starts(target_logprobs, blank_logprobs, **kwargs)
+
+        monkeypatch.setattr(rnnt_module, "rnnt_pruning_range_starts", spy_range_starts)
+        loss_inputs = joint.forward_for_loss(*inputs)
+        assert loss_inputs.target_logprobs.requires_grad
+        ((target_logprobs, blank_logprobs),) = estimation_logprobs
+        assert not target_logprobs.requires_grad and not blank_logprobs.requires_grad
+
+        joint.eval()  # no pruning, dropout and masking
+        with torch.no_grad():
+            eval_inputs = joint.forward_for_loss(*inputs)
+        assert len(estimation_logprobs) == 1
+        assert torch.equal(target_logprobs, eval_inputs.target_logprobs)
+        assert torch.equal(blank_logprobs, eval_inputs.blank_logprobs)
+
+
+@requires_triton
+def test_rejects_invalid_pruning_range_starts():
+    inputs = make_joint_inputs(src_lengths=(4,), tgt_lengths=(5,), double_batch=True, device="cpu")
+    kernel_kwargs = inputs.kernel_kwargs(inputs.leaves())
+    kernel_kwargs["joint_hidden"] = kernel_kwargs["joint_hidden"][:, :, :PRUNING_RANGE_SIZE]
+    starts = torch.zeros(2, 4, dtype=torch.int32)
+    for joint_function, valid_starts in [
+        (rnnt_joint_fused_vocab, starts),
+        (rnnt_joint_fused_vocab_with_consistency, starts[:1]),  # ranges are shared by the halves of the batch
+    ]:
+        with pytest.raises(ValueError, match="can't be used together"):
+            joint_function(**kernel_kwargs, pruning_range_starts=valid_starts, backward_pruning_range_size=2)
+        for invalid_starts in [valid_starts.float(), valid_starts[:, :3], torch.zeros(3, 4, dtype=torch.int32)]:
+            with pytest.raises(ValueError, match="pruning_range_starts"):
+                joint_function(**kernel_kwargs, pruning_range_starts=invalid_starts)
+        # more rows of the joint hidden per frame than target positions (U+1 = 6)
+        wide_kwargs = dict(kernel_kwargs, joint_hidden=torch.zeros(2, 4, 7, DIMS_DEFAULT[0]))
+        with pytest.raises(ValueError, match="exceeds"):
+            joint_function(**wide_kwargs, pruning_range_starts=valid_starts)
+    with pytest.raises(NotImplementedError, match="Pruning"):
+        rnnt_joint_fused_vocab(**kernel_kwargs, pruning_range_starts=starts, backend="cutile")
+
+
+@pytest.mark.gpu
+@requires_triton_cuda
 @pytest.mark.parametrize(
     "range_size,paired,dtype",
     [
@@ -391,14 +745,26 @@ def test_training_supplies_optimizer_step():
 
 
 def _fused_joint(
-    inputs: JointInputs, leaves: list[torch.Tensor], consistency_symmetrical: bool | None, **kwargs
+    inputs: JointInputs,
+    leaves: list[torch.Tensor],
+    consistency_symmetrical: bool | None,
+    pruning_range_starts: torch.Tensor | None = None,
+    **kwargs,
 ) -> list[torch.Tensor]:
-    """Outputs of the fused Joint without (`consistency_symmetrical` is None) or with the consistency loss"""
+    """
+    Outputs of the fused Joint without (`consistency_symmetrical` is None) or with the consistency loss.
+    With `pruning_range_starts`, the Joint is evaluated for the pruned lattice: the rows of the pruning ranges
+    are gathered from the joint hidden, so the gradient for the (dense) leaf is zero outside the ranges.
+    """
+    kernel_kwargs = inputs.kernel_kwargs(leaves)
+    if pruning_range_starts is not None:
+        kernel_kwargs["joint_hidden"] = gather_pruning_ranges(leaves[0], pruning_range_starts, PRUNING_RANGE_SIZE)
+        kwargs["pruning_range_starts"] = pruning_range_starts
     if consistency_symmetrical is None:
-        return list(rnnt_joint_fused_vocab(**inputs.kernel_kwargs(leaves), **kwargs))
+        return list(rnnt_joint_fused_vocab(**kernel_kwargs, **kwargs))
     return list(
         rnnt_joint_fused_vocab_with_consistency(
-            **inputs.kernel_kwargs(leaves), consistency_symmetrical=consistency_symmetrical, **kwargs
+            **kernel_kwargs, consistency_symmetrical=consistency_symmetrical, **kwargs
         )
     )
 

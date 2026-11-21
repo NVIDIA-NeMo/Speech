@@ -37,7 +37,11 @@ from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models_prompt import EncDec
 from nemo.collections.asr.models.rnnt_bpe_models_prompt import EncDecRNNTBPEModelWithPrompt
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCBPEDecodingConfig, CTCDecodingConfig
 from nemo.collections.asr.parts.turbo_transducer.rnnt_consistency import ConsistencyRNNTLoss
-from nemo.collections.asr.parts.turbo_transducer.types import TransducerLossInputs, TurboJointKernelType
+from nemo.collections.asr.parts.turbo_transducer.types import (
+    JointLossInputs,
+    TurboJointKernelType,
+    TurboJointPruningType,
+)
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
 LABELS = [' ', 'a', 'b', 'c', 'd', 'e', 'f', 'g']
@@ -71,7 +75,7 @@ ALL_MODELS = [
 ]
 
 
-def _turbo_kernel_config(backward_pruning: Optional[dict] = None, backend: str = "triton") -> dict:
+def _turbo_kernel_config(pruning: Optional[dict] = None, backend: str = "triton") -> dict:
     return {
         'type': 'fused_vocab',
         'backend': backend,
@@ -79,7 +83,7 @@ def _turbo_kernel_config(backward_pruning: Optional[dict] = None, backend: str =
         'use_high_precision_mm': True,
         'input_grad_full_precision': True,
         'weight_grad_full_precision': True,
-        'backward_pruning': backward_pruning,
+        'pruning': pruning,
     }
 
 
@@ -303,14 +307,15 @@ class TestModelTurboKernelConfig:
 
     @pytest.mark.unit
     def test_save_restore(self, test_data_dir, tmp_path):
-        turbo_kernel = _turbo_kernel_config(backward_pruning={'range_size': 2, 'start_step': 5})
+        turbo_kernel = _turbo_kernel_config(pruning={'type': 'two_pass', 'range_size': 2, 'start_step': 5})
         model = EncDecRNNTModel(cfg=_model_config(EncDecRNNTModel, test_data_dir, turbo_kernel=turbo_kernel))
         model.save_to(str(tmp_path / "model.nemo"))
         restored_model = EncDecRNNTModel.restore_from(str(tmp_path / "model.nemo"), map_location="cpu")
         assert restored_model.joint.turbo_kernel_type is TurboJointKernelType.FUSED_VOCAB
         assert restored_model.joint._turbo_kernel_cfg == model.joint._turbo_kernel_cfg
-        assert restored_model.joint._turbo_kernel_cfg.backward_pruning.range_size == 2
-        assert restored_model.joint._turbo_kernel_cfg.backward_pruning.start_step == 5
+        assert restored_model.joint._turbo_kernel_cfg.pruning.pruning_type is TurboJointPruningType.TWO_PASS
+        assert restored_model.joint._turbo_kernel_cfg.pruning.range_size == 2
+        assert restored_model.joint._turbo_kernel_cfg.pruning.start_step == 5
 
 
 class TestModelComputeLossesRouting:
@@ -331,7 +336,7 @@ class TestModelComputeLossesRouting:
     def test_turbo_kernel_uses_logprobs_path(self, current_step):
         model = self._model_stub(uses_turbo_kernel=True)
         target_logprobs, blank_logprobs = torch.randn(2, 6, 4), torch.randn(2, 6, 4)
-        model.joint.forward_for_loss.return_value = TransducerLossInputs(target_logprobs, blank_logprobs)
+        model.joint.forward_for_loss.return_value = JointLossInputs(target_logprobs, blank_logprobs)
         inputs = _loss_inputs(SimpleNamespace(joint=SimpleNamespace(num_classes_with_blank=9)), torch.device("cpu"))
 
         loss_value, consistency_loss_value = EncDecRNNTModel._compute_losses(
@@ -360,6 +365,32 @@ class TestModelComputeLossesRouting:
         model.loss.assert_not_called()
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("with_trainer", [True, False])
+    def test_full_lattice_loss_is_logged(self, with_trainer):
+        """Two-pass pruning: the loss of the full lattice reported by the Joint is reduced as the loss and logged"""
+        model = self._model_stub(uses_turbo_kernel=True)
+        model._trainer = object() if with_trainer else None
+        model.log = Mock()
+        model._log_full_lattice_loss = lambda *args: EncDecRNNTModel._log_full_lattice_loss(model, *args)
+        full_lattice_loss = torch.tensor([3.0, 5.0])
+        model.joint.forward_for_loss.return_value = JointLossInputs(
+            torch.randn(2, 6, 4), torch.randn(2, 6, 4), full_lattice_loss=full_lattice_loss
+        )
+        inputs = _loss_inputs(SimpleNamespace(joint=SimpleNamespace(num_classes_with_blank=9)), torch.device("cpu"))
+
+        loss_value, _ = EncDecRNNTModel._compute_losses(model, **inputs, current_step=5)
+
+        # the training loss is the loss of the pruned lattice
+        assert loss_value is model.loss.forward_from_logprobs.return_value
+        if with_trainer:
+            (reduce_args,) = model.loss.reduce.call_args_list
+            assert reduce_args.args[0] is full_lattice_loss
+            assert torch.equal(reduce_args.args[1], inputs["target_length"])
+            model.log.assert_called_once_with("train_loss_full_lattice", model.loss.reduce.return_value)
+        else:
+            model.log.assert_not_called()
+
+    @pytest.mark.unit
     def test_standard_joint_uses_logits_path(self):
         """Without the turbo kernel the behavior is not changed, even if the loss supports log-probabilities"""
         model = self._model_stub(uses_turbo_kernel=False)
@@ -385,7 +416,7 @@ class TestModelComputeLossesRouting:
         consistency_loss.symmetrical = False
         model = self._model_stub(uses_turbo_kernel=uses_turbo_kernel, consistency_loss=consistency_loss)
         consistency_kl = torch.randn(2, 6, 4)
-        model.joint.forward_for_loss.return_value = TransducerLossInputs(
+        model.joint.forward_for_loss.return_value = JointLossInputs(
             torch.randn(4, 6, 4), torch.randn(4, 6, 4), consistency_kl
         )
         inputs = _loss_inputs(
@@ -469,7 +500,7 @@ class TestModelTurboKernel:
             losses.append(loss_value.detach())
             grads.append({name: parameter.grad for name, parameter in model.named_parameters()})
 
-        # the model passes the optimizer step to the Joint (schedule of backward pruning)
+        # the model passes the optimizer step to the Joint (schedule of pruning)
         forward_for_loss.assert_called_once()
         assert forward_for_loss.call_args.kwargs["current_step"] == global_step
         assert forward_for_loss.call_args.kwargs["compute_consistency"] is False
@@ -487,9 +518,9 @@ class TestModelTurboKernel:
     @pytest.mark.parametrize("model_class", ALL_MODELS)
     def test_validation_matches_standard_joint(self, model_class, test_data_dir, monkeypatch):
         device = torch.device("cuda")
-        # backward pruning is configured, but must not be applied (and must not require the step) in validation
+        # pruning is configured, but must not be applied (and must not require the step) in validation
         reference_model, turbo_model = _make_models(
-            model_class, test_data_dir, device, backward_pruning={'range_size': 2, 'start_step': 5}
+            model_class, test_data_dir, device, pruning={'type': 'two_pass', 'range_size': 2, 'start_step': 5}
         )
         batch = _make_batch(reference_model, device)
 
@@ -508,20 +539,24 @@ class TestModelTurboKernel:
         assert torch.equal(logs[1]['val_wer_denom'], logs[0]['val_wer_denom'])
 
     @pytest.mark.unit
-    def test_backward_pruning_is_scheduled_by_training_step(self, test_data_dir, monkeypatch):
+    def test_pruning_is_scheduled_by_training_step(self, test_data_dir, monkeypatch):
         device = torch.device("cuda")
         _, turbo_model = _make_models(
-            EncDecRNNTModel, test_data_dir, device, backward_pruning={'range_size': 2, 'start_step': 5}
+            EncDecRNNTModel,
+            test_data_dir,
+            device,
+            pruning={'type': 'backward', 'range_size': 2, 'start_step': 5},
         )
         batch = _make_batch(turbo_model, device)
         range_sizes = []
-        get_range_size = turbo_model.joint._get_backward_pruning_range_size
+        get_active_pruning = turbo_model.joint._get_active_pruning
 
-        def spy_range_size(current_step):
-            range_sizes.append(get_range_size(current_step))
-            return range_sizes[-1]
+        def spy_active_pruning(current_step):
+            pruning = get_active_pruning(current_step)
+            range_sizes.append(None if pruning is None else pruning.range_size)
+            return pruning
 
-        monkeypatch.setattr(turbo_model.joint, "_get_backward_pruning_range_size", spy_range_size)
+        monkeypatch.setattr(turbo_model.joint, "_get_active_pruning", spy_active_pruning)
         turbo_model.train()
         losses = []
         for global_step in [4, 5]:
@@ -532,7 +567,7 @@ class TestModelTurboKernel:
             losses.append(loss_value.detach())
             assert torch.isfinite(turbo_model.joint.joint_net[-1].weight.grad).all()
         assert range_sizes == [None, 2]
-        # pruning does not change the loss value
+        # backward pruning does not change the loss value
         assert torch.equal(losses[0], losses[1])
 
     @pytest.mark.unit

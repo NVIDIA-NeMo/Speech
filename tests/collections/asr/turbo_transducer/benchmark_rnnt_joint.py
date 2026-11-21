@@ -20,6 +20,7 @@ Usage:
     python benchmark_rnnt_joint.py --joint fused_vocab --loss turbo_rnnt --dtype bfloat16
     python benchmark_rnnt_joint.py --joint fused_vocab --dtype bf16-mixed
     python benchmark_rnnt_joint.py --joint fused_vocab --dtype bf16-mixed --pruning-range-size 8
+    python benchmark_rnnt_joint.py --joint fused_vocab --pruning-range-size 8 --pruning-type two_pass
     python benchmark_rnnt_joint.py --joint fused_vocab --dtype bf16-mixed --mm-full-precision
     python benchmark_rnnt_joint.py --joint standard --loss warprnnt_numba --dtype bfloat16
     python benchmark_rnnt_joint.py --joint fused_vocab --dtype bfloat16 -fo  # forward only
@@ -55,6 +56,7 @@ from nemo.collections.asr.parts.turbo_transducer.rnnt_joint_fused_vocab import (
     rnnt_joint_fused_vocab_with_consistency,
 )
 from nemo.collections.asr.parts.turbo_transducer.rnnt_loss_triton import rnnt_loss_from_logprobs_triton
+from nemo.collections.asr.parts.turbo_transducer.rnnt_pruning import rnnt_pruning_range_starts
 
 STANDARD_BACKEND_LABEL = "-"
 
@@ -63,6 +65,7 @@ VALID_JOINT_BACKENDS = ("triton", "cutile")
 VALID_LOSSES = ("warprnnt_numba", "turbo_rnnt")
 VALID_DTYPES = ("float32", "fp32", "bfloat16", "bf16", "bfloat16-mixed", "bf16-mixed")
 VALID_BACKWARD_MODES = ('auto', 'atomic', 'chunked')
+VALID_PRUNING_TYPES = ('backward', 'two_pass')
 CONSISTENCY_LOSS_WEIGHT = 0.2
 
 
@@ -88,6 +91,7 @@ class BenchmarkResults:
     mm_full_precision: bool = False
     use_high_precision_mm: bool = False
     pruning_range_size: int | None = None
+    pruning_type: str = '-'
     backward_mode: str = 'auto'
     with_consistency: bool = False
 
@@ -177,13 +181,17 @@ def run_benchmark(
     pruning_range_size: int | None = None,
     backward_mode: str | None = None,
     with_consistency: bool = False,
+    pruning_type: str = "backward",
 ) -> BenchmarkResults:
     """Benchmark Joint+loss. Mixed precision uses BF16 projected inputs, FP32 parameters and forward autocast.
 
     Backward runs outside autocast, as in training. ``mm_full_precision`` selects FP32 operands for optimized
     Joint matmuls; ``use_high_precision_mm`` additionally requests IEEE math in Triton. Standard Joint follows
     PyTorch's precision settings and does not accept these kernel-specific overrides.
-    ``pruning_range_size`` enables approximate backward for Triton ``fused_vocab`` only; forward stays dense.
+    ``pruning_range_size`` enables pruning for Triton ``fused_vocab`` only. With ``pruning_type='backward'``
+    backward is approximate, forward stays dense. With ``pruning_type='two_pass'`` the pruning ranges are selected
+    by a forward pass for the full lattice without gradient and dropout (included in the forward time and memory),
+    then the Joint and the loss are computed only for the ranges.
     ``with_consistency`` treats ``batch_size`` as a double batch and adds the consistency loss.
     """
     dtype = get_dtype(dtype) if isinstance(dtype, str) else dtype
@@ -217,7 +225,10 @@ def run_benchmark(
         if type(pruning_range_size) is not int or pruning_range_size <= 0:
             raise ValueError("pruning_range_size must be a positive integer or None")
         if joint != "fused_vocab" or joint_backend != "triton":
-            raise ValueError("Backward pruning requires joint='fused_vocab' and joint_backend='triton'")
+            raise ValueError("Pruning requires joint='fused_vocab' and joint_backend='triton'")
+        if pruning_type not in VALID_PRUNING_TYPES:
+            raise ValueError(f"Invalid pruning_type={pruning_type!r}. Expected one of {VALID_PRUNING_TYPES}.")
+    two_pass_pruning = pruning_range_size is not None and pruning_type == "two_pass"
     if with_consistency:
         if not supports_consistency(joint, joint_backend):
             raise ValueError(f"Consistency loss is not supported for joint={joint!r}, backend={joint_backend!r}")
@@ -333,12 +344,7 @@ def run_benchmark(
         return loss_value + CONSISTENCY_LOSS_WEIGHT * consistency_loss_value
 
     def run_fwd_fused_vocab() -> torch.Tensor:
-        joint_hidden = enc_proj.unsqueeze(2) + pred_proj.unsqueeze(1)
-        joint_hidden.relu_()
-        if dropout_p > 0.0:
-            joint_hidden = F.dropout(joint_hidden, p=dropout_p, training=True)
         kernel_kwargs = dict(
-            joint_hidden=joint_hidden,
             targets=targets,
             tgt_lengths=tgt_lengths,
             src_lengths=src_lengths,
@@ -346,17 +352,37 @@ def run_benchmark(
             bias=linear.bias,
             blank_id=blank_id,
             backend=joint_backend,
-            backward_pruning_range_size=pruning_range_size,
             backward_mode=backward_mode,
             mm_full_precision=mm_full_precision,
             use_high_precision_mm=use_high_precision_mm,
         )
+        if two_pass_pruning:
+            # first pass: full lattice without gradient and dropout => pruning ranges
+            with torch.no_grad():
+                joint_hidden = (enc_proj.unsqueeze(2) + pred_proj.unsqueeze(1)).relu_()
+                target_logprobs, blank_logprobs = rnnt_joint_fused_vocab(joint_hidden=joint_hidden, **kernel_kwargs)
+                del joint_hidden
+                pruning_range_starts, _ = rnnt_pruning_range_starts(
+                    target_logprobs, blank_logprobs, src_lengths, tgt_lengths, pruning_range_size, with_consistency
+                )
+            # second pass: Joint for the pruning ranges (shared by the halves of the double batch)
+            target_indices = pruning_range_starts.long().repeat(batch_size // pruning_range_starts.shape[0], 1)
+            target_indices = target_indices.unsqueeze(-1) + torch.arange(pruning_range_size, device=device)
+            pred_ranges = pred_proj[torch.arange(batch_size, device=device)[:, None, None], target_indices]
+            joint_hidden = enc_proj.unsqueeze(2) + pred_ranges
+            kernel_kwargs["pruning_range_starts"] = pruning_range_starts
+        else:
+            joint_hidden = enc_proj.unsqueeze(2) + pred_proj.unsqueeze(1)
+            kernel_kwargs["backward_pruning_range_size"] = pruning_range_size
+        joint_hidden.relu_()
+        if dropout_p > 0.0:
+            joint_hidden = F.dropout(joint_hidden, p=dropout_p, training=True)
         if with_consistency:
             target_logprobs, blank_logprobs, consistency_kl = rnnt_joint_fused_vocab_with_consistency(
-                **kernel_kwargs, consistency_symmetrical=consistency_loss_module.symmetrical
+                joint_hidden=joint_hidden, **kernel_kwargs, consistency_symmetrical=consistency_loss_module.symmetrical
             )
         else:
-            target_logprobs, blank_logprobs = rnnt_joint_fused_vocab(**kernel_kwargs)
+            target_logprobs, blank_logprobs = rnnt_joint_fused_vocab(joint_hidden=joint_hidden, **kernel_kwargs)
         loss_batch = rnnt_loss_from_logprobs_triton(
             target_logprobs=target_logprobs,
             blank_logprobs=blank_logprobs,
@@ -481,6 +507,7 @@ def run_benchmark(
         mm_full_precision=mm_full_precision,
         use_high_precision_mm=use_high_precision_mm,
         pruning_range_size=pruning_range_size,
+        pruning_type=pruning_type if pruning_range_size is not None else '-',
         backward_mode=(backward_mode or 'auto') if joint == 'fused_vocab' and joint_backend == 'triton' else '-',
         with_consistency=with_consistency,
     )
@@ -513,6 +540,7 @@ TABLE_COLUMNS: tuple[tuple[str, str, callable], ...] = (
     ("Loss", "loss", _fmt_str),
     ("Consistency", "with_consistency", lambda value: "yes" if value else "no"),
     ("Pruning Range", "pruning_range_size", lambda value: "-" if value is None else str(value)),
+    ("Pruning Type", "pruning_type", _fmt_str),
     ("Backward Mode", "backward_mode", _fmt_str),
     ("Fused Batch Size", "fused_batch_size", _fmt_int),
     ("Dtype", "dtype", _fmt_str),
@@ -641,7 +669,14 @@ def main():
         '--pruning-range-size',
         type=int,
         default=None,
-        help='Target window width for approximate Triton fused_vocab backward; omitted means dense backward',
+        help='Number of target positions per frame for Triton fused_vocab pruning; omitted means no pruning',
+    )
+    parser.add_argument(
+        '--pruning-type',
+        choices=VALID_PRUNING_TYPES,
+        default='backward',
+        help='backward: dense forward, pruned backward; two_pass: ranges from a forward pass without gradient, '
+        'then forward and backward for the ranges (used with --pruning-range-size)',
     )
     parser.add_argument('--backward-mode', choices=VALID_BACKWARD_MODES, default='auto')
     parser.add_argument(
@@ -685,6 +720,7 @@ def main():
         mm_full_precision=args.mm_full_precision,
         use_high_precision_mm=args.use_high_precision_mm,
         pruning_range_size=args.pruning_range_size,
+        pruning_type=args.pruning_type,
         backward_mode=None if args.backward_mode == 'auto' else args.backward_mode,
         with_consistency=args.with_consistency,
     )

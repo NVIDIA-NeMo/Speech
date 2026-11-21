@@ -25,6 +25,8 @@ Backward recomputes logits for both rows and adds the consistency gradient to th
 the single contraction with the vocabulary projection weight (atomic or chunked algorithm, see
 `FusedVocabBackwardMode`). With backward pruning, one target window is selected per teacher/student frame pair, and
 the consistency gradient is also restricted to this window (the loss value is computed exactly).
+With the pruned lattice (`pruning_range_starts`), the joint hidden is given only for the pruning ranges shared by
+the teacher and the student: [2B, T, range_size, hidden]; both losses are computed only inside the ranges.
 """
 
 import torch
@@ -41,6 +43,7 @@ from nemo.collections.asr.parts.turbo_transducer.rnnt_joint_fused_vocab_triton i
     _load_lattice_row_grads,
     _load_lattice_rows,
     _normalize_backward_options,
+    _normalize_pruning_range_starts,
     _select_pruning_starts,
 )
 from nemo.collections.asr.parts.turbo_transducer.types import TransducerLossInputs
@@ -114,7 +117,7 @@ def _bwd_chunked_grad_logits_autotune_configs():
 )
 # In all kernels, shape-dependent integer arguments are not specialized to avoid recompilation
 # for each new batch shape (Triton specializes integers equal to 1 and divisible by 16 by default).
-@triton.jit(do_not_specialize=["max_src_len", "max_tgt_len_plus_1", "pair_flattened_size"])
+@triton.jit(do_not_specialize=["max_src_len", "max_tgt_len_plus_1", "pair_flattened_size", "student_lattice_offset"])
 def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
     joint_hidden_ptr,
     targets_ptr,
@@ -126,9 +129,11 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
     blank_logprobs_out_ptr,
     log_sum_exp_out_ptr,
     consistency_kl_out_ptr,
+    pruning_starts_ptr,
     max_src_len: int,
     max_tgt_len_plus_1: int,
     pair_flattened_size: int,
+    student_lattice_offset: int,
     hidden_dim: tl.constexpr,
     vocab_size: tl.constexpr,
     blank_id: tl.constexpr,
@@ -138,9 +143,14 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
     SYMMETRICAL: tl.constexpr,
     USE_HIGH_PRECISION_MM: tl.constexpr,
     MM_FULL_PRECISION: tl.constexpr = False,
+    PRUNING_RANGE: tl.constexpr = 0,
 ):
     """
     Teacher rows are [0, pair_flattened_size) of the flattened batch, student rows are offset by pair_flattened_size.
+    The rows are the positions of the lattice [B, T, U+1], or, with `PRUNING_RANGE`, the positions of the pruning
+    ranges [B, T, PRUNING_RANGE] (pruned lattice). The log-probabilities are always stored to the lattice
+    [B, T, U+1], `student_lattice_offset` = B * T * (U+1) is the offset of the student outputs;
+    the consistency loss is stored for the rows.
     Log-softmax and KL accumulators are computed online over vocabulary blocks with running max and exp-sums:
     KL(teacher || student) = sum(p_teacher * (z_teacher - z_student)) - (lse_teacher - lse_student)
     Target and blank logits are computed after the vocabulary loop as dot products with the gathered weight rows:
@@ -162,9 +172,19 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
     pair_mask = teacher_offsets < pair_flattened_size
     student_offsets = teacher_offsets + pair_flattened_size
 
+    teacher_lattice_offsets = _get_lattice_offsets(
+        teacher_offsets, pair_mask, pruning_starts_ptr, max_tgt_len_plus_1, PRUNING_RANGE
+    )
+    student_lattice_offsets = teacher_lattice_offsets + student_lattice_offset
     # teacher and student rows have identical lengths and targets => load lattice rows once (also saves registers)
     blank_mask, target_mask, targets = _load_lattice_rows(
-        teacher_offsets, pair_mask, targets_ptr, src_lengths_ptr, tgt_lengths_ptr, max_src_len, max_tgt_len_plus_1
+        teacher_lattice_offsets,
+        pair_mask,
+        targets_ptr,
+        src_lengths_ptr,
+        tgt_lengths_ptr,
+        max_src_len,
+        max_tgt_len_plus_1,
     )
 
     vocab_offsets_in_block = tl.arange(0, VOCAB_BLOCK)
@@ -282,18 +302,26 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
     else:
         consistency_kl = teacher_kl_sum / teacher_exp_sum - (teacher_lse - student_lse)
 
-    tl.store(blank_logprobs_out_ptr + teacher_offsets, teacher_blank_logits - teacher_lse, mask=blank_mask)
-    tl.store(target_logprobs_out_ptr + teacher_offsets, teacher_target_logits - teacher_lse, mask=target_mask)
-    tl.store(log_sum_exp_out_ptr + teacher_offsets, teacher_lse, mask=blank_mask)
-    tl.store(blank_logprobs_out_ptr + student_offsets, student_blank_logits - student_lse, mask=blank_mask)
-    tl.store(target_logprobs_out_ptr + student_offsets, student_target_logits - student_lse, mask=target_mask)
-    tl.store(log_sum_exp_out_ptr + student_offsets, student_lse, mask=blank_mask)
+    tl.store(blank_logprobs_out_ptr + teacher_lattice_offsets, teacher_blank_logits - teacher_lse, mask=blank_mask)
+    tl.store(target_logprobs_out_ptr + teacher_lattice_offsets, teacher_target_logits - teacher_lse, mask=target_mask)
+    tl.store(log_sum_exp_out_ptr + teacher_lattice_offsets, teacher_lse, mask=blank_mask)
+    tl.store(blank_logprobs_out_ptr + student_lattice_offsets, student_blank_logits - student_lse, mask=blank_mask)
+    tl.store(target_logprobs_out_ptr + student_lattice_offsets, student_target_logits - student_lse, mask=target_mask)
+    tl.store(log_sum_exp_out_ptr + student_lattice_offsets, student_lse, mask=blank_mask)
     tl.store(consistency_kl_out_ptr + teacher_offsets, consistency_kl, mask=blank_mask)
 
 
 @triton.autotune(
     configs=_bwd_autotune_configs(),
-    key=["hidden_dim", "vocab_size", "USE_HIGH_PRECISION_MM", "MM_FULL_PRECISION", "PRUNING_RANGE", "SYMMETRICAL"],
+    key=[
+        "hidden_dim",
+        "vocab_size",
+        "USE_HIGH_PRECISION_MM",
+        "MM_FULL_PRECISION",
+        "PRUNING_RANGE",
+        "PACKED_HIDDEN",
+        "SYMMETRICAL",
+    ],
     reset_to_zero=["grad_joint_hidden_out_ptr", "grad_weight_out_ptr", "grad_bias_out_ptr"],
     cache_results=True,
 )
@@ -327,10 +355,14 @@ def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
     USE_HIGH_PRECISION_MM: tl.constexpr = False,
     MM_FULL_PRECISION: tl.constexpr = False,
     PRUNING_RANGE: tl.constexpr = 0,
+    PACKED_HIDDEN: tl.constexpr = False,
 ):
     """
     Atomic backward for (pair block, vocab block) tiles. `pair_flattened_size` is the number of processed teacher
     rows (B * T * (U+1), or B * T * PRUNING_RANGE with pruning); `student_lattice_offset` = B * T * (U+1).
+    With pruning, the joint hidden and its gradient are either dense [2B, T, U+1, hidden_dim] (rows of the ranges
+    are gathered/scattered), or, with `PACKED_HIDDEN`, contain only the rows of the ranges
+    [2B, T, PRUNING_RANGE, hidden_dim].
     """
     compute_dtype = tl.float32
     matmul_dtype = (
@@ -342,6 +374,8 @@ def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
         )
         else compute_dtype
     )
+    # rows of the pruning ranges are gathered from / scattered to the dense joint hidden
+    GATHER_HIDDEN: tl.constexpr = PRUNING_RANGE != 0 and not PACKED_HIDDEN
 
     # all vocab blocks for a pair block execute consecutively (see the single-row kernel)
     num_pair_blocks = tl.num_programs(axis=0)
@@ -358,9 +392,10 @@ def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
     NUM_HIDDEN_ITERS: tl.constexpr = tl.cdiv(hidden_dim, HIDDEN_BLOCK)
     HIDDEN_RESET: tl.constexpr = NUM_HIDDEN_ITERS * HIDDEN_BLOCK
 
+    # block pointers are not used with `GATHER_HIDDEN`; otherwise the joint hidden has 2 * pair_flattened_size rows
     teacher_hidden_block_ptr = tl.make_block_ptr(
         base=joint_hidden_ptr,
-        shape=(2 * student_lattice_offset, hidden_dim),
+        shape=(2 * pair_flattened_size, hidden_dim),
         strides=(hidden_dim, 1),
         offsets=(pair_start, 0),
         block_shape=(PAIR_BLOCK, HIDDEN_BLOCK),
@@ -368,9 +403,9 @@ def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
     )
     student_hidden_block_ptr = tl.make_block_ptr(
         base=joint_hidden_ptr,
-        shape=(2 * student_lattice_offset, hidden_dim),
+        shape=(2 * pair_flattened_size, hidden_dim),
         strides=(hidden_dim, 1),
-        offsets=(student_lattice_offset + pair_start, 0),
+        offsets=(pair_flattened_size + pair_start, 0),
         block_shape=(PAIR_BLOCK, HIDDEN_BLOCK),
         order=(1, 0),
     )
@@ -426,14 +461,19 @@ def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
             teacher_lattice_offsets, targets_ptr, student_lattice_offset, max_src_len, max_tgt_len_plus_1
         )
 
-    teacher_rows = teacher_lattice_offsets.to(tl.int64)
-    student_rows = student_lattice_offsets.to(tl.int64)
+    # rows of the joint hidden and of its gradient
+    if PACKED_HIDDEN:
+        teacher_rows = pair_offsets.to(tl.int64)
+        student_rows = teacher_rows + pair_flattened_size
+    else:
+        teacher_rows = teacher_lattice_offsets.to(tl.int64)
+        student_rows = student_lattice_offsets.to(tl.int64)
     teacher_logits = tl.zeros([PAIR_BLOCK, VOCAB_BLOCK], dtype=compute_dtype) + bias_chunk[None, :]
     student_logits = tl.zeros([PAIR_BLOCK, VOCAB_BLOCK], dtype=compute_dtype) + bias_chunk[None, :]
 
     # Inner loop 1: recompute logits for teacher and student rows
     for hidden_start in tl.range(0, hidden_dim, HIDDEN_BLOCK):
-        if PRUNING_RANGE:
+        if GATHER_HIDDEN:
             teacher_hidden_chunk = _load_hidden_rows(
                 joint_hidden_ptr, teacher_rows, blank_mask, hidden_start, hidden_dim, HIDDEN_BLOCK
             ).to(matmul_dtype)
@@ -507,7 +547,7 @@ def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
         hidden_offsets = hidden_start + tl.arange(0, HIDDEN_BLOCK)
         hidden_mask = hidden_offsets < hidden_dim
 
-        if PRUNING_RANGE:
+        if GATHER_HIDDEN:
             teacher_hidden_chunk_t = _load_hidden_rows(
                 joint_hidden_ptr, teacher_rows, blank_mask, hidden_start, hidden_dim, HIDDEN_BLOCK
             ).T.to(matmul_dtype)
@@ -755,12 +795,16 @@ class _RnntJointFusedVocabConsistencyTritonFunction(torch.autograd.Function):
         backward_mode: FusedVocabBackwardMode,
         mm_full_precision: bool,
         backward_pruning_range_size: int | None,
+        pruning_range_starts: torch.Tensor | None = None,
     ):
         float_dtype = torch.float64 if joint_hidden.dtype == torch.float64 else torch.float32
 
-        batch_size, src_max_length, tgt_max_length_plus_1, hidden_dim = joint_hidden.shape
+        # number of rows of the joint hidden for a frame: U+1, or the pruning range size for the pruned lattice
+        batch_size, src_max_length, num_frame_rows, hidden_dim = joint_hidden.shape
+        packed_hidden = pruning_range_starts is not None
+        tgt_max_length_plus_1 = targets.shape[1] + 1 if packed_hidden else num_frame_rows
         half_batch_size = batch_size // 2
-        pair_flattened_size = half_batch_size * src_max_length * tgt_max_length_plus_1
+        pair_flattened_size = half_batch_size * src_max_length * num_frame_rows
         vocab_size = weight.shape[0]
         device = joint_hidden.device
 
@@ -777,13 +821,18 @@ class _RnntJointFusedVocabConsistencyTritonFunction(torch.autograd.Function):
             else weight
         )
 
-        target_logprobs = torch.zeros(
-            [batch_size, src_max_length, tgt_max_length_plus_1], dtype=float_dtype, device=device
+        # pruned lattice: zero probability outside the pruning ranges
+        target_logprobs = torch.full(
+            [batch_size, src_max_length, tgt_max_length_plus_1],
+            fill_value=float("-inf") if packed_hidden else 0.0,
+            dtype=float_dtype,
+            device=device,
         )
-        blank_logprobs = torch.zeros_like(target_logprobs)
+        blank_logprobs = target_logprobs.clone()
         log_sum_exp_scores = torch.empty_like(target_logprobs)
+        # the consistency loss is computed for the rows of the joint hidden
         consistency_kl = torch.zeros(
-            [half_batch_size, src_max_length, tgt_max_length_plus_1], dtype=float_dtype, device=device
+            [half_batch_size, src_max_length, num_frame_rows], dtype=float_dtype, device=device
         )
 
         fwd_grid = lambda META: (triton.cdiv(pair_flattened_size, META["PAIR_BLOCK"]),)
@@ -798,15 +847,18 @@ class _RnntJointFusedVocabConsistencyTritonFunction(torch.autograd.Function):
             blank_logprobs_out_ptr=blank_logprobs,
             log_sum_exp_out_ptr=log_sum_exp_scores,
             consistency_kl_out_ptr=consistency_kl,
+            pruning_starts_ptr=pruning_range_starts,
             max_src_len=src_max_length,
             max_tgt_len_plus_1=tgt_max_length_plus_1,
             pair_flattened_size=pair_flattened_size,
+            student_lattice_offset=half_batch_size * src_max_length * tgt_max_length_plus_1,
             hidden_dim=hidden_dim,
             vocab_size=vocab_size,
             blank_id=blank_id,
             SYMMETRICAL=symmetrical,
             USE_HIGH_PRECISION_MM=use_high_precision_mm,
             MM_FULL_PRECISION=mm_full_precision,
+            PRUNING_RANGE=num_frame_rows if packed_hidden else 0,
         )
 
         ctx.save_for_backward(
@@ -820,6 +872,7 @@ class _RnntJointFusedVocabConsistencyTritonFunction(torch.autograd.Function):
         ctx.weight_grad_full_precision = weight_grad_full_precision
         ctx.backward_mode = backward_mode
         ctx.backward_pruning_range_size = backward_pruning_range_size
+        ctx.pruning_range_starts = pruning_range_starts
         return target_logprobs, blank_logprobs, consistency_kl
 
     @staticmethod
@@ -832,22 +885,33 @@ class _RnntJointFusedVocabConsistencyTritonFunction(torch.autograd.Function):
         grad_blank_scores = grad_blank_scores.contiguous()
         grad_consistency_kl = grad_consistency_kl.contiguous()
 
-        backward_pruning_range_size = ctx.backward_pruning_range_size
-        pruning_starts = None
-        if backward_pruning_range_size is not None:
+        # pruning ranges: given for the pruned lattice (packed joint hidden), or selected by the gradients
+        pruning_starts = ctx.pruning_range_starts
+        packed_hidden = pruning_starts is not None
+        pruning_range_size = joint_hidden.shape[2] if packed_hidden else ctx.backward_pruning_range_size
+        if pruning_range_size is not None and not packed_hidden:
             pruning_starts = _select_pruning_starts(
                 grad_target_scores,
                 grad_blank_scores,
                 src_lengths,
                 tgt_lengths,
-                backward_pruning_range_size,
+                pruning_range_size,
                 paired=True,
             )
 
-        batch_size, src_max_length, tgt_max_length_plus_1, hidden_dim = joint_hidden.shape
+        batch_size, src_max_length, _, hidden_dim = joint_hidden.shape
+        tgt_max_length_plus_1 = log_sum_exp_scores.shape[2]
+        if packed_hidden:
+            # the kernels read the upstream gradients from the lattice [B, T, U+1]
+            target_indices = pruning_starts.long().unsqueeze(-1) + torch.arange(
+                pruning_range_size, device=pruning_starts.device
+            )
+            grad_consistency_kl = torch.zeros_like(grad_target_scores[: batch_size // 2]).scatter_(
+                2, target_indices, grad_consistency_kl.to(grad_target_scores.dtype)
+            )
         half_batch_size = batch_size // 2
         student_lattice_offset = half_batch_size * src_max_length * tgt_max_length_plus_1
-        pair_flattened_size = half_batch_size * src_max_length * (backward_pruning_range_size or tgt_max_length_plus_1)
+        pair_flattened_size = half_batch_size * src_max_length * (pruning_range_size or tgt_max_length_plus_1)
         vocab_size = weight.shape[0]
         device = joint_hidden.device
 
@@ -869,7 +933,8 @@ class _RnntJointFusedVocabConsistencyTritonFunction(torch.autograd.Function):
                 mm_full_precision=ctx.mm_full_precision,
                 matmul_weight=matmul_weight,
                 pruning_starts=pruning_starts,
-                backward_pruning_range_size=backward_pruning_range_size,
+                pruning_range_size=pruning_range_size,
+                packed_hidden=packed_hidden,
             )
         else:
             grad_joint_hidden = torch.zeros(
@@ -914,28 +979,14 @@ class _RnntJointFusedVocabConsistencyTritonFunction(torch.autograd.Function):
                 SYMMETRICAL=ctx.symmetrical,
                 USE_HIGH_PRECISION_MM=ctx.use_high_precision_mm,
                 MM_FULL_PRECISION=ctx.mm_full_precision,
-                PRUNING_RANGE=backward_pruning_range_size or 0,
+                PRUNING_RANGE=pruning_range_size or 0,
+                PACKED_HIDDEN=packed_hidden,
             )
             grad_joint_hidden = grad_joint_hidden.to(joint_hidden.dtype)
             grad_weight = grad_weight.to(weight.dtype)
             grad_bias = grad_bias.to(bias.dtype)
 
-        return (
-            grad_joint_hidden,
-            None,
-            None,
-            None,
-            grad_weight,
-            grad_bias,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
+        return (grad_joint_hidden, None, None, None, grad_weight, grad_bias) + (None,) * 9
 
 
 def rnnt_joint_fused_vocab_consistency_triton(
@@ -953,6 +1004,7 @@ def rnnt_joint_fused_vocab_consistency_triton(
     backward_mode: str | FusedVocabBackwardMode | None = None,
     mm_full_precision: bool = False,
     backward_pruning_range_size: int | None = None,
+    pruning_range_starts: torch.Tensor | None = None,
 ) -> TransducerLossInputs:
     """
     Compute target/blank log probabilities and the per-position consistency loss from the joint hidden of a double
@@ -969,13 +1021,21 @@ def rnnt_joint_fused_vocab_consistency_triton(
     Args: see `rnnt_joint_fused_vocab_triton`. With backward pruning, one target window per frame is shared by the
         teacher and the student rows (selected by their summed gradient importance), and the consistency gradient
         is restricted to this window too; the loss values are computed exactly.
+        With the pruned lattice, `pruning_range_starts` [B, T] are the starts of the pruning ranges shared by
+        the teacher and the student rows, the joint hidden is [2B, T, range_size, hidden_dim]. The log-probabilities
+        are `-inf` outside the ranges, and the consistency loss is computed only for the positions of the ranges.
 
     Returns:
         `TransducerLossInputs`: target/blank log-probabilities [2B, T, U+1], consistency loss [B, T, U+1]
-        (zero at invalid positions of the teacher).
+        (zero at invalid positions of the teacher). With the pruned lattice, the consistency loss is
+        [B, T, range_size]: the loss at `range_index` of a frame is the loss of the target position
+        `start + range_index`.
     """
     if joint_hidden.shape[0] % 2 != 0:
         raise ValueError(f"Consistency loss requires a double batch, got odd batch size {joint_hidden.shape[0]}")
+    pruning_range_starts = _normalize_pruning_range_starts(
+        joint_hidden, targets, pruning_range_starts, backward_pruning_range_size, paired=True
+    )
     backward_mode, backward_pruning_range_size = _normalize_backward_options(
         joint_hidden, backward_mode, backward_pruning_range_size
     )
@@ -994,6 +1054,7 @@ def rnnt_joint_fused_vocab_consistency_triton(
         backward_mode,
         mm_full_precision,
         backward_pruning_range_size,
+        pruning_range_starts,
     )
     return TransducerLossInputs(
         target_logprobs=target_logprobs, blank_logprobs=blank_logprobs, consistency_kl=consistency_kl
@@ -1017,19 +1078,27 @@ def _rnnt_joint_fused_vocab_consistency_bwd_chunked(
     mm_full_precision: bool,
     matmul_weight: torch.Tensor,
     pruning_starts: torch.Tensor | None = None,
-    backward_pruning_range_size: int | None = None,
+    pruning_range_size: int | None = None,
+    packed_hidden: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Chunked backward over teacher/student pairs: the Triton kernel writes grad logits for the chunk pairs
     [2 * chunk_size, padded_vocab_size] (teacher rows first) to a bounded buffer, then GEMMs compute grad joint hidden
     and accumulate grad weight in full precision. No atomics except for grad bias.
+
+    With `pruning_range_size`, only the rows of the pruning ranges are processed. They are gathered from the dense
+    joint hidden [2B, T, U+1, hidden_dim] to a buffer (and the gradient is scattered back), unless the joint hidden
+    is `packed_hidden`: [2B, T, pruning_range_size, hidden_dim], only the rows of the ranges.
     """
     float_dtype = torch.float64 if joint_hidden.dtype == torch.float64 else torch.float32
-    batch_size, src_max_length, tgt_max_length_plus_1, hidden_dim = joint_hidden.shape
+    batch_size, src_max_length, num_frame_rows, hidden_dim = joint_hidden.shape
+    tgt_max_length_plus_1 = log_sum_exp_scores.shape[2]
     half_batch_size = batch_size // 2
-    dense_batch_size = batch_size * src_max_length * tgt_max_length_plus_1
+    num_hidden_rows = batch_size * src_max_length * num_frame_rows
+    student_hidden_offset = num_hidden_rows // 2  # first row of the student half of the joint hidden
     student_lattice_offset = half_batch_size * src_max_length * tgt_max_length_plus_1
-    pair_flattened_size = half_batch_size * src_max_length * (backward_pruning_range_size or tgt_max_length_plus_1)
+    pair_flattened_size = half_batch_size * src_max_length * (pruning_range_size or tgt_max_length_plus_1)
+    gather_hidden = pruning_range_size is not None and not packed_hidden
     vocab_size = weight.shape[0]
     device = joint_hidden.device
 
@@ -1041,20 +1110,18 @@ def _rnnt_joint_fused_vocab_consistency_bwd_chunked(
     chunk_pairs = max(chunk_pairs // _CHUNKED_BWD_ROWS_MULTIPLE, 1) * _CHUNKED_BWD_ROWS_MULTIPLE
     chunk_pairs = max(min(chunk_pairs, pair_flattened_size), 1)
 
-    joint_hidden_flat = joint_hidden.view(dense_batch_size, hidden_dim)
+    joint_hidden_flat = joint_hidden.view(num_hidden_rows, hidden_dim)
     # zero rows for padded vocab: grad logits there are zeros, padding only keeps GEMM operands aligned
     weight_padded = torch.zeros([padded_vocab_size, hidden_dim], dtype=grad_logits_dtype, device=device)
     weight_padded[:vocab_size] = matmul_weight
     grad_logits_buffer = torch.empty([2 * chunk_pairs, padded_vocab_size], dtype=grad_logits_dtype, device=device)
 
     # each element of grad joint hidden is computed by a single GEMM => store directly in the output dtype
-    grad_joint_hidden = (
-        torch.zeros_like(joint_hidden) if backward_pruning_range_size else torch.empty_like(joint_hidden)
-    )
-    grad_joint_hidden_flat = grad_joint_hidden.view(dense_batch_size, hidden_dim)
-    if backward_pruning_range_size:
-        packed_hidden = torch.empty([2 * chunk_pairs, hidden_dim], dtype=grad_logits_dtype, device=device)
-        packed_grad_hidden = torch.empty_like(packed_hidden)
+    grad_joint_hidden = torch.zeros_like(joint_hidden) if gather_hidden else torch.empty_like(joint_hidden)
+    grad_joint_hidden_flat = grad_joint_hidden.view(num_hidden_rows, hidden_dim)
+    if gather_hidden:
+        gathered_hidden = torch.empty([2 * chunk_pairs, hidden_dim], dtype=grad_logits_dtype, device=device)
+        gathered_grad_hidden = torch.empty_like(gathered_hidden)
     grad_weight_padded = torch.zeros([padded_vocab_size, hidden_dim], dtype=float_dtype, device=device)
     grad_bias = torch.zeros([vocab_size], dtype=float_dtype, device=device)
     # contiguous views of the halves of the double batch: lattice offsets of pairs index both of them
@@ -1063,24 +1130,24 @@ def _rnnt_joint_fused_vocab_consistency_bwd_chunked(
 
     for chunk_start in range(0, pair_flattened_size, chunk_pairs):
         chunk_size = min(chunk_pairs, pair_flattened_size - chunk_start)
-        if backward_pruning_range_size:
+        if gather_hidden:
             for half_index, joint_hidden_half in enumerate(joint_hidden_halves):
                 _copy_pruned_hidden(
                     joint_hidden_half,
-                    packed_hidden[half_index * chunk_size :],
+                    gathered_hidden[half_index * chunk_size :],
                     pruning_starts,
                     src_lengths,
                     tgt_lengths,
                     chunk_start,
                     chunk_size,
-                    backward_pruning_range_size,
+                    pruning_range_size,
                     scatter=False,
                 )
-            hidden, hidden_rows = packed_hidden, 2 * chunk_size
+            hidden, hidden_rows = gathered_hidden, 2 * chunk_size
             teacher_hidden_row_start, student_hidden_row_start = 0, chunk_size
         else:
-            hidden, hidden_rows = joint_hidden, dense_batch_size
-            teacher_hidden_row_start, student_hidden_row_start = chunk_start, student_lattice_offset + chunk_start
+            hidden, hidden_rows = joint_hidden, num_hidden_rows
+            teacher_hidden_row_start, student_hidden_row_start = chunk_start, student_hidden_offset + chunk_start
         grid = lambda META: (
             triton.cdiv(chunk_size, META["PAIR_BLOCK"]) * triton.cdiv(padded_vocab_size, META["VOCAB_BLOCK"]),
         )
@@ -1113,28 +1180,28 @@ def _rnnt_joint_fused_vocab_consistency_bwd_chunked(
             SYMMETRICAL=symmetrical,
             USE_HIGH_PRECISION_MM=use_high_precision_mm,
             MM_FULL_PRECISION=mm_full_precision,
-            PRUNING_RANGE=backward_pruning_range_size or 0,
+            PRUNING_RANGE=pruning_range_size or 0,
         )
         grad_logits_chunk = grad_logits_buffer[: 2 * chunk_size]
-        if backward_pruning_range_size:
-            # packed rows of the teacher and the student are contiguous => one GEMM for each gradient
-            torch.mm(grad_logits_chunk, weight_padded, out=packed_grad_hidden[: 2 * chunk_size])
+        if gather_hidden:
+            # gathered rows of the teacher and the student are contiguous => one GEMM for each gradient
+            torch.mm(grad_logits_chunk, weight_padded, out=gathered_grad_hidden[: 2 * chunk_size])
             for half_index, grad_joint_hidden_half in enumerate(grad_joint_hidden_halves):
                 _copy_pruned_hidden(
                     grad_joint_hidden_half,
-                    packed_grad_hidden[half_index * chunk_size :],
+                    gathered_grad_hidden[half_index * chunk_size :],
                     pruning_starts,
                     src_lengths,
                     tgt_lengths,
                     chunk_start,
                     chunk_size,
-                    backward_pruning_range_size,
+                    pruning_range_size,
                     scatter=True,
                 )
-            _addmm_full_precision_(grad_weight_padded, grad_logits_chunk.T, packed_hidden[: 2 * chunk_size])
+            _addmm_full_precision_(grad_weight_padded, grad_logits_chunk.T, gathered_hidden[: 2 * chunk_size])
             continue
 
-        for half_index, row_start in enumerate((chunk_start, student_lattice_offset + chunk_start)):
+        for half_index, row_start in enumerate((chunk_start, student_hidden_offset + chunk_start)):
             grad_logits_half = grad_logits_chunk[half_index * chunk_size : (half_index + 1) * chunk_size]
             grad_joint_hidden_rows = grad_joint_hidden_flat[row_start : row_start + chunk_size]
             if grad_joint_hidden_rows.dtype == grad_logits_dtype:

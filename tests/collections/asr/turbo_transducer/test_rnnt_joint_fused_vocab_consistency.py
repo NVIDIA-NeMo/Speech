@@ -252,7 +252,7 @@ def test_joint_forward_for_loss_matches_materialized_logits_path(symmetrical, pr
             "type": "fused_vocab",
             "backend": "triton",
             **FULL_PRECISION,
-            "backward_pruning": {"range_size": pruning_range_size},
+            "pruning": None if pruning_range_size is None else {"type": "backward", "range_size": pruning_range_size},
         },
     ).to(device)
     turbo_joint.load_state_dict(reference_joint.state_dict())
@@ -283,7 +283,7 @@ def test_joint_forward_for_loss_matches_materialized_logits_path(symmetrical, pr
             loss_inputs.target_logprobs.sum() + loss_inputs.blank_logprobs.sum() + loss_inputs.consistency_kl.sum()
         ).backward()
         results.append(
-            (list(loss_inputs), [encoder_input.grad, decoder_input.grad] + [p.grad for p in joint.parameters()])
+            (list(loss_inputs[:3]), [encoder_input.grad, decoder_input.grad] + [p.grad for p in joint.parameters()])
         )
     for actual, expected in zip(results[1][0], results[0][0]):
         torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)

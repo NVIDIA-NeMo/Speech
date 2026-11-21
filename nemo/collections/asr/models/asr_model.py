@@ -14,10 +14,11 @@
 # limitations under the License.
 import logging
 from abc import ABC
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import torch
 
+from nemo.collections.asr.parts.submodules.spectr_augment import SpecAugment
 from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
@@ -211,6 +212,14 @@ class ASRModel(ModelPT, WithOptionalCudaGraphs, ABC):
             logging.info(f"CUDA graphs disabled for {type(self).__name__}::encoder streaming step")
             state_changed = True
         return state_changed
+
+    def on_train_batch_start(self, batch: Any, batch_idx: int, unused: int = 0) -> Optional[int]:
+        """Give the trainer's global step to SpecAugment, for its mask schedule."""
+        result = super().on_train_batch_start(batch, batch_idx, unused)
+        for module in self.modules():
+            if isinstance(module, SpecAugment):
+                module.set_num_updates(self.trainer.global_step)
+        return result
 
     def on_train_epoch_start(self) -> None:
         """

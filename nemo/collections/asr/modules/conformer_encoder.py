@@ -869,9 +869,12 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         The subsampling and the depthwise convolutions run over gapped per-utterance slots
         and the self-attention over all tokens with a block mask of the utterances, so no padded frame is computed.
         At the valid frames the result equals ``forward`` up to floating-point summation order,
-        with one documented difference:
-        batch normalization in the convolution modules takes its training statistics from the valid frames only,
-        while the padded forward includes the padded frames (see ``ConformerConvolution.forward_packed``).
+        with two documented differences in the normalization of the convolution modules:
+        batch normalization takes its training statistics from the valid frames only,
+        while the padded forward includes the padded frames;
+        instance and group normalization take the statistics of every utterance from its own frames, in both modes,
+        while the padded forward of a batch counts the padded frames of the shorter utterances into theirs
+        (see ``ConformerConvolution.forward_packed``).
         Dropout draws its masks per token, so same-seed elementwise equality with the padded forward is not promised.
         A ``dw_striding`` frontend runs its stack layer by layer here, while the padded forward may run the fused
         Triton kernel (``use_triton``), so with the fusion on the two forms differ by that kernel's precision:
@@ -976,8 +979,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         Without a sequence-packed form: limited or chunked attention context, ``rel_pos_local_attn``,
         the sampling of attention context sizes in training, reduction layers, adapters,
         intermediate layer captures (InterCTC and ``save_encoder_tensors``, whose consumers expect padded tensors),
-        frontends other than a linear layer or a non-causal ``striding`` or ``dw_striding`` ``ConvSubsampling``,
-        and instance or group normalization in the convolution modules.
+        frontends other than a linear layer or a ``ConvSubsampling`` that names no reason of its own,
+        and whatever the convolution module of a layer names (both by ``sequence_packed_unsupported_reason``).
         Attention dropout in training mode on CUDA: FlexAttention has no dropout, so ``rel_pos`` attention,
         which carries its position bias through FlexAttention, needs ``dropout_att: 0``,
         and ``abs_pos`` and ``rope`` attention keep their dropout only where variable-length FlashAttention runs,

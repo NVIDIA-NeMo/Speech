@@ -18,14 +18,22 @@ import pytest
 import torch.utils.data
 from lhotse import CutSet, Seconds, SupervisionSegment
 from lhotse.dataset import DynamicBucketingSampler
+from lhotse.dataset.collation import collate_vectors
 from lhotse.testing.dummies import dummy_cut
 from lhotse.testing.random import deterministic_rng
+from omegaconf import OmegaConf
 
 from nemo.collections.common.data.lhotse.dataloader import (
     BucketingFilter,
+    DurationTokenBinsFilter,
     FixedBucketBatchSizeConstraint2D,
     get_lhotse_dataloader_from_config,
+    get_lhotse_sampler_from_config,
+    make_structured_with_schema_warnings,
+    tokenize_with_prompt,
 )
+from nemo.collections.common.data.lhotse.text_adapters import TextExample
+from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer, create_spt_model
 
 
 def make_cut(id_: int = 0, duration: Seconds = 1.0, num_tokens: int = 10):
@@ -279,3 +287,272 @@ def test_2d_bucketing_strict_mode_flag_works(deterministic_rng, tmp_path):
     assert len(batches[0]) == 1
     assert len(batches[0][0].supervisions[0].tokens) == 100
     assert len(batches[1][0].supervisions[0].tokens) == 10
+
+
+# Three duration groups with two sub-buckets each; the token bound of the last group is below the previous one.
+FILTER_BINS = [(5.0, 10), (5.0, 20), (10.0, 15), (10.0, 30), (15.0, 12), (15.0, 25)]
+FILTER_GRID = [
+    (duration, num_tokens)
+    for duration in (0.5, 5.0, 5.5, 8.0, 10.0, 12.0, 15.0, 15.5, 20.0)
+    for num_tokens in (0, 10, 11, 20, 21, 25, 26, 30, 31)
+]
+
+
+def _fits_filter_bins(duration: float, num_tokens: int) -> bool:
+    """The rule of strict 2D bucketing for FILTER_BINS, written out per duration group."""
+    for max_duration, max_tokens in ((5.0, 20), (10.0, 30), (15.0, 25)):
+        if duration <= max_duration:
+            return num_tokens <= max_tokens
+    return False
+
+
+def _cut_id(index: int) -> str:
+    return make_cut(index).id
+
+
+FILTER_GRID_IDS = sorted(_cut_id(i) for i in range(len(FILTER_GRID)))
+FILTER_GRID_KEPT_IDS = sorted(_cut_id(i) for i, lens in enumerate(FILTER_GRID) if _fits_filter_bins(*lens))
+
+
+def _filter_grid_cuts() -> CutSet:
+    return CutSet([make_cut(i, duration=lens[0], num_tokens=lens[1]) for i, lens in enumerate(FILTER_GRID)])
+
+
+def _sampled_ids(config: dict, tokenizer=None) -> list[str]:
+    sampler, _ = get_lhotse_sampler_from_config(
+        make_structured_with_schema_warnings(OmegaConf.create(config)),
+        global_rank=0,
+        world_size=1,
+        tokenizer=tokenizer,
+    )
+    return sorted(cut.id for batch in sampler for cut in batch)
+
+
+def _bucketing_2d_config(cuts_path, bins) -> dict:
+    """Strict 2D bucketing on the bins, the reference for the selection that filter_duration_bins makes."""
+    return {
+        "cuts_path": str(cuts_path),
+        "force_finite": True,
+        "bucket_duration_bins": bins,
+        "bucket_batch_size": [1] * len(bins),
+        "concurrent_bucketing": False,
+    }
+
+
+def _packed_sampling_config(cuts_path) -> dict:
+    """Packed sequence sampling with budgets on the audio seconds and the output tokens of a batch."""
+    return {
+        "cuts_path": str(cuts_path),
+        "force_finite": True,
+        "use_multimodal_sampling": True,
+        "use_packed_sequence_sampling": True,
+        "measure_total_length": False,
+        "batch_tokens": 64,
+        "batch_output_tokens": 256,
+        "audio_token_estimator": {
+            "preprocessor": {"n_fft": 16000, "hop_length": 16000, "stft_pad_amount": 8000},
+            "subsampling": [],
+        },
+    }
+
+
+def test_duration_token_bins_filter_keeps_what_strict_2d_bucketing_keeps():
+    cuts = _filter_grid_cuts()
+    bucketing_filter = BucketingFilter(
+        FixedBucketBatchSizeConstraint2D(FILTER_BINS, [1] * len(FILTER_BINS), strict_2d=True)
+    )
+
+    kept = sorted(cut.id for cut in cuts.filter(DurationTokenBinsFilter(FILTER_BINS)))
+
+    assert kept == FILTER_GRID_KEPT_IDS
+    assert kept == sorted(cut.id for cut in cuts.filter(bucketing_filter))
+    # The second sub-bucket of the first group, and the lower token bound of the last group.
+    assert _cut_id(FILTER_GRID.index((5.0, 20))) in kept
+    assert _cut_id(FILTER_GRID.index((5.0, 21))) not in kept
+    assert _cut_id(FILTER_GRID.index((10.0, 30))) in kept
+    assert _cut_id(FILTER_GRID.index((12.0, 26))) not in kept
+    assert _cut_id(FILTER_GRID.index((15.5, 0))) not in kept
+
+
+@pytest.mark.parametrize(
+    "bins",
+    [
+        [],
+        5.0,
+        "5.0",
+        [5.0, 10.0],
+        [(5.0, 10, 1)],
+        [(10.0, 15), (5.0, 20)],
+        [(5.0, 20), (5.0, 10)],
+        [(5.0, float("nan"))],
+        [(float("inf"), 10)],
+        [(0.0, 10)],
+        [(-5.0, 10)],
+        [(5.0, -1)],
+        [("5.0", "10")],
+        [(5.0, None)],
+        [(True, 10)],
+    ],
+)
+def test_duration_token_bins_filter_rejects_invalid_bins(bins):
+    with pytest.raises(ValueError, match="filter_duration_bins must be a non-empty, ascendingly sorted list"):
+        DurationTokenBinsFilter(bins)
+
+
+def test_duration_token_bins_filter_rejects_max_tps_of_other_length():
+    with pytest.raises(ValueError, match="got 2 values for 6 bins"):
+        DurationTokenBinsFilter(FILTER_BINS, max_tps=[2.0, 2.0])
+
+
+def test_duration_token_bins_filter_counts_input_ids_of_prompted_cuts():
+    cut = make_cut(duration=2.0, num_tokens=5)
+    cut.input_ids = np.zeros((12,), dtype=np.int32)
+    bucketing_filter = BucketingFilter(FixedBucketBatchSizeConstraint2D([(5.0, 8)], [1], strict_2d=True))
+
+    # The 12 tokens of prompt and answer count, not the 5 tokens of the supervision.
+    assert DurationTokenBinsFilter([(5.0, 8)])(cut) is False
+    assert bucketing_filter(cut) is False
+    assert DurationTokenBinsFilter([(5.0, 12)])(cut) is True
+
+
+def test_duration_token_bins_filter_passes_text_examples():
+    assert DurationTokenBinsFilter(FILTER_BINS)(TextExample("a text longer than every bin " * 20)) is True
+
+
+def test_duration_token_bins_filter_raises_for_untokenized_cut():
+    cut = dummy_cut(0, duration=1.0, supervisions=[SupervisionSegment("", "", 0, 1.0, text="dummy")])
+    with pytest.raises((AssertionError, ValueError), match="untokenized supervisions"):
+        DurationTokenBinsFilter(FILTER_BINS)(cut)
+
+
+def test_filter_duration_bins_applies_a_max_tps_list_as_strict_2d_bucketing(tmp_path):
+    cuts_path = tmp_path / "cuts.jsonl"
+    _filter_grid_cuts().to_file(cuts_path)
+    max_tps = [2.0, 2.0, 3.0, 3.0, 1.5, 1.5]
+    config = {"cuts_path": str(cuts_path), "force_finite": True, "batch_size": 4, "max_tps": max_tps}
+
+    kept = _sampled_ids({**config, "filter_duration_bins": FILTER_BINS})
+
+    assert kept == _sampled_ids({**_bucketing_2d_config(cuts_path, FILTER_BINS), "max_tps": max_tps})
+    assert 0 < len(kept) < len(FILTER_GRID_KEPT_IDS)
+    # 8 seconds: 20 tokens are 2.5 per second, within the 3.0 of the bin (10.0, 30); 25 tokens are above it.
+    assert _cut_id(FILTER_GRID.index((8.0, 20))) in kept
+    assert _cut_id(FILTER_GRID.index((8.0, 25))) not in kept
+
+
+def test_filter_duration_bins_rejects_a_scalar_in_the_config(tmp_path):
+    cuts_path = tmp_path / "cuts.jsonl"
+    _filter_grid_cuts().to_file(cuts_path)
+    with pytest.raises(ValueError, match="filter_duration_bins must be"):
+        _sampled_ids({"cuts_path": str(cuts_path), "batch_size": 4, "filter_duration_bins": 5.0})
+
+
+@pytest.mark.parametrize(
+    "sampling",
+    [
+        {"batch_size": 4},
+        {"batch_duration": 40.0},
+        {"bucket_duration_bins": [5.0, 10.0], "batch_duration": 40.0, "concurrent_bucketing": False},
+    ],
+    ids=["batch_size", "batch_duration", "bucketing_1d"],
+)
+def test_filter_duration_bins_selects_the_cuts_of_strict_2d_bucketing(tmp_path, sampling):
+    cuts_path = tmp_path / "cuts.jsonl"
+    _filter_grid_cuts().to_file(cuts_path)
+    config = {"cuts_path": str(cuts_path), "force_finite": True, **sampling}
+
+    kept = _sampled_ids({**config, "filter_duration_bins": FILTER_BINS})
+
+    assert kept == FILTER_GRID_KEPT_IDS
+    assert kept == _sampled_ids(_bucketing_2d_config(cuts_path, FILTER_BINS))
+    # Without the option nothing is filtered.
+    assert _sampled_ids(config) == FILTER_GRID_IDS
+
+
+def test_filter_duration_bins_with_packed_sequence_sampling(tmp_path):
+    cuts_path = tmp_path / "cuts.jsonl"
+    _filter_grid_cuts().to_file(cuts_path)
+    config = {**_packed_sampling_config(cuts_path), "pretokenize": False}
+
+    kept = _sampled_ids({**config, "filter_duration_bins": FILTER_BINS}, tokenizer=object())
+
+    assert kept == FILTER_GRID_KEPT_IDS
+    assert kept == _sampled_ids(_bucketing_2d_config(cuts_path, FILTER_BINS))
+    assert _sampled_ids(config, tokenizer=object()) == FILTER_GRID_IDS
+
+
+@pytest.fixture(scope="module")
+def filter_bins_tokenizer(tmp_path_factory):
+    tmpdir = tmp_path_factory.mktemp("filter_bins_tokenizer")
+    text_path = tmpdir / "text.txt"
+    text_path.write_text("a short answer\na much longer answer with many more words in it\n" * 4)
+    create_spt_model(
+        str(text_path),
+        vocab_size=64,
+        sample_size=-1,
+        do_lower_case=False,
+        output_dir=str(tmpdir),
+        remove_extra_whitespaces=True,
+        bos=True,
+        eos=True,
+    )
+    return SentencePieceTokenizer(str(tmpdir / "tokenizer.model"))
+
+
+@pytest.mark.parametrize("prompt_format", [None, "plain"])
+def test_filter_duration_bins_counts_the_tokens_of_the_dataloader_tokenizer(
+    tmp_path, filter_bins_tokenizer, prompt_format
+):
+    short, long = "a short answer", "a much longer answer with many more words in it " * 3
+    cuts = []
+    for index, (duration, text) in enumerate([(2.0, short), (2.0, long), (8.0, short), (8.0, long), (12.0, short)]):
+        supervision = SupervisionSegment(f"sup-{index}", f"rec-{index}", 0.0, duration, text=text)
+        cuts.append(dummy_cut(index, duration=duration, supervisions=[supervision]))
+    cuts_path = tmp_path / "cuts.jsonl"
+    CutSet(cuts).to_file(cuts_path)
+    if prompt_format is None:
+        num_tokens = [len(filter_bins_tokenizer.text_to_ids(text)) for text in (short, long)]
+    else:
+        num_tokens = [
+            len(tokenize_with_prompt(cut, filter_bins_tokenizer, prompt_format).input_ids) for cut in cuts[:2]
+        ]
+    # Up to 5 seconds only the short text fits, up to 10 seconds both texts, and nothing longer.
+    bins = [(5.0, num_tokens[0]), (10.0, num_tokens[1])]
+    tokenization = {"pretokenize": True, "prompt_format": prompt_format}
+
+    kept = _sampled_ids(
+        {**_packed_sampling_config(cuts_path), **tokenization, "filter_duration_bins": bins}, filter_bins_tokenizer
+    )
+
+    assert num_tokens[0] < num_tokens[1]
+    assert kept == [cuts[0].id, cuts[2].id, cuts[3].id]
+    assert kept == _sampled_ids({**_bucketing_2d_config(cuts_path, bins), **tokenization}, filter_bins_tokenizer)
+
+
+class _CollatedTokensDataset(torch.utils.data.Dataset):
+    def __getitem__(self, cuts):
+        tokens = [torch.as_tensor(cut.supervisions[0].tokens) for cut in cuts]
+        return [cut.id for cut in cuts], torch.tensor([len(t) for t in tokens]), collate_vectors(tokens, 0)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_filter_duration_bins_reaches_collated_dataloader(tmp_path, enabled):
+    cuts_path = tmp_path / "cuts.jsonl"
+    CutSet([make_cut(i, duration=1.0, num_tokens=num_tokens) for i, num_tokens in enumerate([2, 3, 6])]).to_file(
+        cuts_path
+    )
+    config = {"cuts_path": str(cuts_path), "force_finite": True, "batch_size": 3, "num_workers": 0, "shuffle": False}
+    if enabled:
+        config["filter_duration_bins"] = [(2.0, 3)]
+
+    dataloader = get_lhotse_dataloader_from_config(
+        config, global_rank=0, world_size=1, dataset=_CollatedTokensDataset()
+    )
+    batches = list(dataloader)
+
+    expected = [2, 3] if enabled else [2, 3, 6]
+    assert len(batches) == 1
+    ids, lengths, tokens = batches[0]
+    assert ids == [_cut_id(i) for i in range(len(expected))]
+    assert lengths.tolist() == expected
+    assert tokens.shape == (len(expected), max(expected))

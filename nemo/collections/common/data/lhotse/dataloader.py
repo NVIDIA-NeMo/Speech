@@ -379,26 +379,22 @@ def _build_dataloader(
     Construct a DataLoader, optionally using ``torchdata.stateful_dataloader.StatefulDataLoader``
     so that resume picks up at the exact next batch via ``state_dict()`` / ``load_state_dict()``.
 
-    When ``dp_rank`` / ``dp_world_size`` are provided AND we're building a
-    stateful loader under multi-rank training, wrap ``StatefulDataLoader`` in
-    :class:`_PerRankStatefulDataLoader`. The wrapper all-gathers each rank's
+    A stateful loader is always wrapped in :class:`_PerRankStatefulDataLoader`
+    (with ``dp_world_size=1`` when it is not given). The wrapper all-gathers each rank's
     local state at save time and scatters back the right entry at load time,
     so Lightning's automatic ``FitLoop`` save-and-restore of
     ``CombinedLoader._state_dicts()`` doesn't broadcast rank-0's iterator
     state to every rank (which would corrupt per-shard partitioning — see
-    the 2026-05-14 post-mortem).
+    the 2026-05-14 post-mortem). It also records ``num_workers`` and rejects a
+    resume with a different data-loading topology before ``StatefulDataLoader`` fails.
     """
     if use_stateful_dataloader:
-        from torchdata.stateful_dataloader import StatefulDataLoader
-
-        if dp_world_size is not None and dp_world_size > 1:
-            return _PerRankStatefulDataLoader(
-                dp_rank=dp_rank if dp_rank is not None else 0,
-                dp_world_size=dp_world_size,
-                dp_group=dp_group,
-                **kwargs,
-            )
-        return StatefulDataLoader(**kwargs)
+        return _PerRankStatefulDataLoader(
+            dp_rank=dp_rank if dp_rank is not None else 0,
+            dp_world_size=dp_world_size if dp_world_size is not None else 1,
+            dp_group=dp_group,
+            **kwargs,
+        )
     return torch.utils.data.DataLoader(**kwargs)
 
 
@@ -416,6 +412,12 @@ class _PerRankStatefulDataLoader:
     112, the iterator's first ``iterate()`` call raises ValueError, and the
     rest of the ranks get SIGTERMed via ``srun --kill-on-bad-exit=1``. (See
     ``agent-debug-workspace/0909-en-only-id2-4node-postfix/DIAGNOSIS_ORD_vs_IAD.md``.)
+
+    Each per-rank entry also records ``num_workers``. ``StatefulDataLoader`` can only
+    restore a state saved with the same ``num_workers`` (and the per-rank list requires the
+    same ``dp_world_size``), so ``load_state_dict`` validates both up front and raises a
+    clear error instead of torchdata's late assertion, which Lightning otherwise masks with
+    "Please call `iter(combined_loader)` first".
 
     The fix turns ``state_dict()`` into a per-rank gather and
     ``load_state_dict(state)`` into a per-rank scatter. The serialised payload
@@ -448,6 +450,7 @@ class _PerRankStatefulDataLoader:
         self._dp_rank = int(dp_rank)
         self._dp_world_size = int(dp_world_size)
         self._dp_group = dp_group
+        self._num_workers = int(kwargs.get("num_workers", 0))
         self._inner = StatefulDataLoader(**kwargs)
 
     def state_dict(self) -> dict:
@@ -455,6 +458,7 @@ class _PerRankStatefulDataLoader:
         tagged = {
             "dp_rank": self._dp_rank,
             "dp_world_size": self._dp_world_size,
+            "num_workers": self._num_workers,
             "state": local_state,
         }
         if self._dp_world_size <= 1 or not (torch.distributed.is_available() and torch.distributed.is_initialized()):
@@ -467,12 +471,19 @@ class _PerRankStatefulDataLoader:
     def load_state_dict(self, state_dict: dict) -> None:
         if not state_dict:
             return
-        # We exclusively support the per-rank wire format produced by our
-        # own ``state_dict()``. Anything else — a bare inner state, a
-        # rank-0-only StatefulDataLoader payload (the shape Lightning's
-        # FitLoop used to broadcast and silently corrupt resume), an old
-        # DataModule key — must fail loudly so any partial-rollforward or
-        # checkpoint-format mismatch is caught at load time rather than
+        if "train_dataloader_per_rank" not in state_dict and self._dp_world_size == 1:
+            # Single-GPU checkpoints saved before this wrapper was used for world size 1 contain
+            # a bare ``StatefulDataLoader`` state. With one rank there is no rank-0 broadcast to
+            # corrupt, so it is safe to apply after validating the worker topology.
+            self._check_num_workers(_stateful_dataloader_state_num_workers(state_dict))
+            self._inner.load_state_dict(state_dict)
+            return
+        # Under multi-rank training we exclusively support the per-rank wire
+        # format produced by our own ``state_dict()``. Anything else — a bare
+        # inner state, a rank-0-only StatefulDataLoader payload (the shape
+        # Lightning's FitLoop used to broadcast and silently corrupt resume),
+        # an old DataModule key — must fail loudly so any partial-rollforward
+        # or checkpoint-format mismatch is caught at load time rather than
         # producing wrong data several minutes into training.
         if "train_dataloader_per_rank" not in state_dict:
             raise RuntimeError(
@@ -508,7 +519,19 @@ class _PerRankStatefulDataLoader:
                 f"dp_world_size={saved_world}) loaded on (dp_rank={self._dp_rank}, "
                 f"dp_world_size={self._dp_world_size})."
             )
+        # Checkpoints written before ``num_workers`` was recorded: infer it from the inner state.
+        saved_num_workers = entry.get("num_workers", _stateful_dataloader_state_num_workers(entry["state"]))
+        self._check_num_workers(saved_num_workers)
         self._inner.load_state_dict(entry["state"])
+
+    def _check_num_workers(self, saved_num_workers: Optional[int]) -> None:
+        if saved_num_workers is not None and saved_num_workers != self._num_workers:
+            raise RuntimeError(
+                f"Cannot restore the stateful dataloader: the checkpoint was saved with "
+                f"num_workers={saved_num_workers}, but the current run has num_workers={self._num_workers}. "
+                f"StatefulDataLoader (use_stateful_dataloader=true) requires num_workers to match between "
+                f"save and resume; set num_workers={saved_num_workers} to resume from this checkpoint."
+            )
 
     # Forward everything else to the inner StatefulDataLoader so Lightning's
     # iterator-management, ``flattened``-discovery and friends keep working.
@@ -523,6 +546,29 @@ class _PerRankStatefulDataLoader:
 
     def __len__(self):
         return len(self._inner)
+
+
+def _stateful_dataloader_state_num_workers(state: Any) -> Optional[int]:
+    """Infer ``num_workers`` from a ``StatefulDataLoader.state_dict()`` payload.
+
+    torchdata's multiprocess iterator stores it in ``_snapshot._main_snapshot._num_workers``; the
+    single-process iterator stores ``_num_yielded`` and no snapshot. Returns ``None`` when the layout
+    is unrecognised (e.g. an un-iterated loader), so the caller skips validation.
+    """
+    if not isinstance(state, dict):
+        return None
+    snapshot = state.get("_snapshot")
+    if isinstance(snapshot, dict):
+        main_snapshot = snapshot.get("_main_snapshot")
+        if isinstance(main_snapshot, dict) and isinstance(main_snapshot.get("_num_workers"), int):
+            return main_snapshot["_num_workers"]
+        worker_snapshots = snapshot.get("_worker_snapshots")
+        if isinstance(worker_snapshots, dict):
+            return len(worker_snapshots)
+        return None
+    if "_num_yielded" in state:
+        return 0
+    return None
 
 
 def _maybe_init_main_process_for_iterable(num_workers: int, global_rank: int, world_size: int, seed: int) -> None:

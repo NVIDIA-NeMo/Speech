@@ -834,6 +834,38 @@ weights 0.1 and 0.3, specify:
 Note that the final-layer CTC loss weight is automatically computed to normalize
 all weight to 1 (0.6 in the example above).
 
+InterCTC also works when the Conformer encoder runs without padding, through ``forward_sequence_packed``.
+The encoder then registers the intermediate layer outputs as ``PackedEncoderActivations``, one row per valid frame,
+and ``InterCTCMixin`` passes them through ``ConvASRDecoder.forward_packed`` and ``CTCLoss.forward_packed``,
+so the intermediate losses need no padded tensor.
+The models' own ``training_step`` runs the padded encoder; a step that runs the packed encoder looks like this:
+
+.. code-block:: python
+
+    from nemo.core.classes.mixins import AccessMixin
+
+    # the encoder captures intermediate layers only while the access is enabled, as ``training_step`` enables it
+    AccessMixin.set_access_enabled(access_enabled=True, guid=model.model_guid)
+    encoded = model.encoder.forward_sequence_packed(features, feature_lengths)
+    log_probs = model.decoder.forward_packed(encoded)
+    loss = model.loss.forward_packed(log_probs=log_probs, targets=transcript, target_lengths=transcript_len)
+    loss, metrics = model.add_interctc_losses(loss, transcript, transcript_len, compute_wer=False)
+    AccessMixin.reset_registry(model)
+
+Requirements and limits of the packed form:
+
+* The CTC decoder and the loss need a ``forward_packed`` method. ``ConvASRDecoder`` and ``CTCLoss`` have one;
+  ``TransformerCTCDecoder`` has one for the Conv-only head without upsampling and raises otherwise.
+* ``CTCLoss.forward_packed`` runs its token-flat kernel on CUDA with Triton installed,
+  for float32, bfloat16 and float16 log probabilities; elsewhere it pads the log probabilities for the loss.
+* With ``compute_wer=True`` the WER of an intermediate layer is decoded from its best label per frame.
+  The ``greedy`` and ``greedy_batch`` decoding strategies accept that, unless they preserve alignments or confidences
+  or score with a fusion model (n-gram LM, boosting tree);
+  those options and the beam search strategies raise ``NotImplementedError``.
+* Adapters on the CTC decoder run on the token-flat states.
+  An adapter strategy with ``l2_lambda`` above zero raises in training mode:
+  its auxiliary loss sums over the frames of an utterance.
+
 
 Stochastic Depth Config
 -----------------------

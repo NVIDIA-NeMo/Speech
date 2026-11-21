@@ -29,15 +29,13 @@ from nemo.collections.asr.inference.model_wrappers.cache_aware_ctc_inference_wra
 from nemo.collections.asr.inference.pipelines.base_pipeline import BasePipeline
 from nemo.collections.asr.inference.streaming.decoders.greedy.greedy_ctc_decoder import CTCGreedyDecoder
 from nemo.collections.asr.inference.streaming.endpointing.greedy.greedy_ctc_endpointing import CTCGreedyEndpointing
-from nemo.collections.asr.inference.streaming.framing.multi_stream import ContinuousBatchedRequestStreamer
-from nemo.collections.asr.inference.streaming.framing.request import FeatureBuffer, Frame, Request
+from nemo.collections.asr.inference.streaming.framing.multi_stream import ContinuousBatchedFrameStreamer
+from nemo.collections.asr.inference.streaming.framing.request import Frame
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
 from nemo.collections.asr.inference.streaming.state.cache_aware_ctc_state import CacheAwareCTCStreamingState
 from nemo.collections.asr.inference.utils.endpointing_utils import millisecond_to_frames
-from nemo.collections.asr.inference.utils.enums import RequestType
 from nemo.collections.asr.inference.utils.pipeline_utils import (
     check_existance_of_required_attributes,
-    drop_trailing_features,
     get_confidence_utils,
     normalize_log_probs,
 )
@@ -95,7 +93,6 @@ class CacheAwareCTCPipeline(BasePipeline):
             raise ValueError(
                 f"Number of slots in the context manager must be >= batch_size: {self.num_slots} < {self.batch_size}"
             )
-        self.request_type = RequestType.from_str(cfg.streaming.request_type)
         self.word_boundary_tolerance = cfg.streaming.word_boundary_tolerance
         self.stop_history_eou_in_milliseconds = cfg.endpointing.stop_history_eou
         self.residue_tokens_at_end = cfg.endpointing.residue_tokens_at_end
@@ -140,9 +137,6 @@ class CacheAwareCTCPipeline(BasePipeline):
             )
             self.drop_left_context = left_context_size
             self.valid_out_len = self.tokens_per_frame
-
-        # Expected feature buffer length for trimming (safeguard for feature buffer inputs)
-        self.expected_feature_buffer_len = int(self.buffer_size_in_secs / self.window_stride)
 
     def init_greedy_ctc_decoder(self) -> None:
         """Initialize the CTC decoder."""
@@ -211,10 +205,6 @@ class CacheAwareCTCPipeline(BasePipeline):
             (tuple[Tensor, Tensor]) Processed feature buffers and their lengths.
         """
         feature_buffers = [f_buffer.unsqueeze_(0) for f_buffer in buffers]
-        # Trim to expected feature buffer length (safeguard for external feature buffer inputs)
-        feature_buffers = [
-            drop_trailing_features(f_buffer, self.expected_feature_buffer_len) for f_buffer in feature_buffers
-        ]
         feature_buffer_lens = torch.tensor([f_buffer.shape[2] for f_buffer in feature_buffers], device=self.device)
         if right_paddings is not None:
             right_paddings = torch.tensor(right_paddings, device=feature_buffer_lens.device)
@@ -222,12 +212,12 @@ class CacheAwareCTCPipeline(BasePipeline):
         feature_buffers = torch.cat(feature_buffers).to(self.device)
         return feature_buffers, feature_buffer_lens
 
-    def run_greedy_decoder(self, state: CacheAwareCTCStreamingState, request: Request, log_probs: Tensor):
+    def run_greedy_decoder(self, state: CacheAwareCTCStreamingState, request: Frame, log_probs: Tensor):
         """
         Run the greedy CTC decoder on the log_probs and update the state
         Args:
             state: (CacheAwareCTCStreamingState) The state of the stream
-            request: (Request) The current request (frame or feature buffer)
+            request: (Frame) The current request (frame)
             log_probs: (Tensor) The log probabilities of the current request
         Returns:
             (bool) Whether EOU is detected.
@@ -250,7 +240,7 @@ class CacheAwareCTCPipeline(BasePipeline):
 
     def decode_log_probs(
         self,
-        requests: list[Request],
+        requests: list[Frame],
         log_probs: Tensor,
         tail_log_probs: Tensor | None,
         ready_state_ids: set,
@@ -258,7 +248,7 @@ class CacheAwareCTCPipeline(BasePipeline):
         """
         Decode the log probabilities and update the state
         Args:
-            requests: (list[Request]) List of requests (frames or feature buffers) to transcribe.
+            requests: (list[Frame]) List of requests (frames) to transcribe.
             log_probs: (Tensor) Log probabilities.
             tail_log_probs: (Tensor | None) Tail log probabilities.
             ready_state_ids: (set) Set of ready state IDs.
@@ -282,7 +272,7 @@ class CacheAwareCTCPipeline(BasePipeline):
 
     def cache_aware_transcribe_step(
         self,
-        requests: list[Request],
+        requests: list[Frame],
         buffered_features: list[Tensor],
         right_paddings: list[int] | None,
         ready_state_ids: set,
@@ -290,7 +280,7 @@ class CacheAwareCTCPipeline(BasePipeline):
     ) -> None:
         """
         Cache Aware Transcribe Step
-        It receives a list of requests (Frame or FeatureBuffer) and features and do the following:
+        It receives a list of requests (Frame) and features and do the following:
 
         1. Preprocess the features by stacking them and computing the lengths
         2. Get the context from the context manager for cache aware streaming
@@ -299,7 +289,7 @@ class CacheAwareCTCPipeline(BasePipeline):
         5. Decode the log probabilities and update the state
 
         Args:
-            requests: (list[Request]) List of requests (frames or feature buffers) to transcribe.
+            requests: (list[Frame]) List of requests (frames) to transcribe.
             buffered_features: (list[Tensor]) List of buffered features.
             right_paddings: (list[int] | None) List of right paddings.
             ready_state_ids: (set) Set of ready state IDs.
@@ -372,63 +362,17 @@ class CacheAwareCTCPipeline(BasePipeline):
 
         self.update_partial_transcript(frames, self.tokenizer, self.leading_regex_pattern)
 
-    def transcribe_step_for_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> None:
-        """
-        Transcribes the feature buffers in a streaming manner.
-        After detecting EOU, it updates the state and run text processor.
-        If there are multiple streams, it waits until all states are ready to run text processor.
-        Args:
-            fbuffers: (list[FeatureBuffer]) List of feature buffers to transcribe.
-        """
-        ready_state_ids = set()
-
-        final_fbuffers, final_features = [], []
-        nonfinal_fbuffers, nonfinal_features = [], []
-        final_right_paddings = []
-
-        for fbuffer in fbuffers:
-            feature = fbuffer.features
-            right_padding = max(0, self.expected_feature_buffer_len - fbuffer.valid_size)
-
-            if fbuffer.is_last:
-                final_fbuffers.append(fbuffer)
-                final_features.append(feature)
-                final_right_paddings.append(right_padding)
-            else:
-                nonfinal_fbuffers.append(fbuffer)
-                nonfinal_features.append(feature)
-
-        if len(nonfinal_fbuffers) > 0:
-            self.cache_aware_transcribe_step(
-                nonfinal_fbuffers, nonfinal_features, None, ready_state_ids, keep_all_outputs=False
-            )
-
-        if len(final_fbuffers) > 0:
-            self.cache_aware_transcribe_step(
-                final_fbuffers, final_features, final_right_paddings, ready_state_ids, keep_all_outputs=True
-            )
-
-        if len(ready_state_ids) > 0:
-            self.text_processor.process([self.get_state(stream_id) for stream_id in ready_state_ids])
-            ready_state_ids.clear()
-
-        self.update_partial_transcript(fbuffers, self.tokenizer, self.leading_regex_pattern)
-
-    def get_request_generator(self) -> ContinuousBatchedRequestStreamer:
+    def get_request_generator(self) -> ContinuousBatchedFrameStreamer:
         """
         Initialize the request generator.
         Returns:
-            (ContinuousBatchedRequestStreamer) Request generator.
+            (ContinuousBatchedFrameStreamer) Request generator.
         """
-        request_generator = ContinuousBatchedRequestStreamer(
+        request_generator = ContinuousBatchedFrameStreamer(
             n_frames_per_stream=1,
             frame_size_in_secs=self.chunk_size_in_secs,
             sample_rate=self.sample_rate,
             batch_size=self.batch_size,
-            request_type=self.request_type,
-            preprocessor=self.preprocessor,
-            buffer_size_in_secs=self.buffer_size_in_secs,
-            device=self.device,
             pad_last_frame=True,
         )
         return request_generator

@@ -109,6 +109,21 @@ runs:
         path: >-
           ${{ github.run_id }}/${{ steps.uuid.outputs.id }}/NeMo/${{ inputs.download-artifact-path }}
 
+    - name: Pre-stage ASR adapter checkpoint
+      if: ${{ inputs.test_dir == 'functional_tests' && inputs.script == 'L2_ASR_Adapters' }}
+      shell: bash
+      env:
+        TEST_IMAGE: ${{ inputs.image }}
+        TEST_DATA_PATH: ${{ inputs.test-data-path }}
+        TEST_CHECKOUT: ${{ github.run_id }}/${{ steps.uuid.outputs.id }}/NeMo
+      run: |
+        # Prepare on this runner's data mount before starting the timed training container.
+        docker run --rm \
+          --volume "$PWD/$TEST_CHECKOUT:/workspace" \
+          --volume "$TEST_DATA_PATH:/home/TestData" \
+          --workdir /workspace "$TEST_IMAGE" \
+          bash tests/setup/models/prestage_asr_adapter.sh
+
     - name: Start container
       shell: bash
       env:

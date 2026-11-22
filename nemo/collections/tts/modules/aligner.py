@@ -47,6 +47,7 @@ import torch.nn.functional as F
 from einops import rearrange
 from omegaconf import OmegaConf, open_dict
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 
 from nemo.collections.tts.modules.attention_alignment import AttentionAlignmentGuidance, AttentionAlignmentTurn
 from nemo.collections.tts.modules.ffn_modules import ConvolutionLayer
@@ -742,6 +743,52 @@ class CodecSpeakerEncoder(nn.Module):
             return embedding * valid_rows.unsqueeze(1)
 
 
+class AlignedTextHead(nn.Module):
+    """Factorized BPE output projection with bounded training-logit memory."""
+
+    def __init__(self, hidden_dim: int, vocab_size: int, projection_dim: int = 128):
+        super().__init__()
+        if min(hidden_dim, vocab_size, projection_dim) < 1:
+            raise ValueError('Hidden, vocabulary and projection dimensions must be positive')
+        self.input_projection = nn.Linear(hidden_dim, projection_dim, bias=False)
+        self.output_projection = nn.Linear(projection_dim, vocab_size, bias=False)
+
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        return self.output_projection(self.input_projection(hidden))
+
+    def loss(
+        self,
+        hidden: torch.Tensor,
+        targets: torch.Tensor,
+        mask: torch.Tensor,
+        chunk_size: int = 128,
+    ) -> torch.Tensor:
+        """Mean hard cross-entropy over supervised frames, accumulated in FP32."""
+        if hidden.ndim != 3 or targets.shape != hidden.shape[:2] or mask.shape != targets.shape:
+            raise ValueError('Expected hidden [B,T,H] and matching targets/mask [B,T]')
+        if type(chunk_size) is not int or chunk_size < 1:
+            raise ValueError('chunk_size must be a positive integer')
+        selected_hidden = hidden[mask.bool()]
+        selected_targets = targets[mask.bool()].long()
+        if selected_targets.numel() == 0:
+            return hidden.float().sum() * 0.0 + _zero_parameter_loss(self, hidden)
+        total = hidden.new_zeros((), dtype=torch.float32)
+        for start in range(0, selected_targets.numel(), chunk_size):
+            features = selected_hidden[start : start + chunk_size]
+            labels = selected_targets[start : start + chunk_size]
+            if torch.is_grad_enabled():
+                chunk_loss = checkpoint(
+                    self._chunk_loss, features, labels, use_reentrant=False, preserve_rng_state=False
+                )
+            else:
+                chunk_loss = self._chunk_loss(features, labels)
+            total = total + chunk_loss
+        return total / selected_targets.numel()
+
+    def _chunk_loss(self, features, labels):
+        return F.cross_entropy(self(features).float(), labels, reduction='sum')
+
+
 @dataclass
 class TurnAlignmentOutput:
     """Acoustic likelihood and MAS positions on the original conversation grid."""
@@ -759,6 +806,8 @@ class AttentionAlignmentTrainingOutput:
     teacher: TurnAlignmentOutput
     guidance: AttentionAlignmentGuidance | None
     metrics: dict
+    aligned_text_targets: torch.Tensor | None = None
+    aligned_text_mask: torch.Tensor | None = None
 
 
 def resolve_aligner_config(config: Mapping | None = None) -> dict:
@@ -909,20 +958,50 @@ def load_pretrained_text_speech_aligner(
     return candidate, config
 
 
+def init_aligned_text_head(model, cfg):
+    """Create the optional framewise BPE projection for training and streaming."""
+    model.use_aligned_text_head = cfg.get('use_aligned_text_head', False)
+    if type(model.use_aligned_text_head) is not bool:
+        raise ValueError('use_aligned_text_head must be a boolean')
+    for name, default in (('aligned_text_head_dim', 128), ('aligned_text_head_chunk_size', 128)):
+        value = cfg.get(name, default)
+        if type(value) is not int or value < 1:
+            raise ValueError(f'{name} must be a positive integer')
+        setattr(model, name, value)
+    if model.use_aligned_text_head:
+        model.aligned_text_head = AlignedTextHead(
+            cfg['hidden_dim'], model.text_vocab_size, projection_dim=cfg.get('aligned_text_head_dim', 128)
+        )
+        allowed = torch.arange(model.text_vocab_size) < model.bos_id
+        allowed[model.eos_id] = True
+        allowed[model.pad_id] = True
+        model.register_buffer('_aligned_text_output_mask', allowed, persistent=False)
+
+
 def init_training_alignment(model, cfg):
     """Create the training teacher only when explicitly enabled."""
     model.use_attention_alignment = cfg.get('use_attention_alignment', False)
-    if type(model.use_attention_alignment) is not bool:
-        raise ValueError('use_attention_alignment must be a boolean')
-    model.attention_alignment_config = resolve_attention_alignment_config(cfg.get('attention_alignment'))
+    model.use_aligned_text_head = cfg.get('use_aligned_text_head', False)
+    for name in ('use_attention_alignment', 'use_aligned_text_head'):
+        if type(getattr(model, name)) is not bool:
+            raise ValueError(f'{name} must be a boolean')
+    model.attention_alignment_config = (
+        resolve_attention_alignment_config(cfg.get('attention_alignment')) if model.use_attention_alignment else {}
+    )
     model.aligner_loss_weight = float(cfg.get('aligner_loss_weight', 1.0))
     if not math.isfinite(model.aligner_loss_weight) or model.aligner_loss_weight < 0:
         raise ValueError('aligner_loss_weight must be finite and nonnegative')
+    model.aligned_text_loss_weight = float(cfg.get('aligned_text_loss_weight', 1.0))
+    if not math.isfinite(model.aligned_text_loss_weight) or model.aligned_text_loss_weight < 0:
+        raise ValueError('aligned_text_loss_weight must be finite and nonnegative')
+    model.start_aligner_text_head_steps = cfg.get('start_aligner_text_head_steps', 10000)
+    if type(model.start_aligner_text_head_steps) is not int or model.start_aligner_text_head_steps < 0:
+        raise ValueError('start_aligner_text_head_steps must be an integer >= 0')
     for name, default in (('aligned_text_max_turns_per_batch', 32), ('aligned_text_max_frames_per_batch', 8192)):
         value = cfg.get(name, default)
         if type(value) is not int or value < 1:
             raise ValueError(f'{name} must be a positive integer')
-    if not model.use_attention_alignment:
+    if not (model.use_attention_alignment or model.use_aligned_text_head):
         return
 
     restoring = bool(model._is_model_being_restored())
@@ -953,6 +1032,8 @@ def init_training_alignment(model, cfg):
         f'{model.text_aligner.audio_channels} flow channels; '
         f'speaker conditioning={model.text_aligner.use_speaker_conditioning}.'
     )
+    if not model.use_attention_alignment:
+        return
     attention_blocks = [
         index for index, kind in enumerate(model.decoder.config.layers_block_type) if kind == 'attention'
     ]
@@ -970,9 +1051,12 @@ def init_training_alignment(model, cfg):
 def reload_pretrained_aligner(model, checkpoint_path=None):
     """Apply an explicit teacher archive after loading ordinary TTS pretraining."""
     path = checkpoint_path or model.cfg.get('pretrained_model_text_speech_aligner')
-    if checkpoint_path and not model.use_attention_alignment:
-        raise ValueError('pretrained_model_text_speech_aligner requires use_attention_alignment=True')
-    if not model.use_attention_alignment or not path:
+    enabled = getattr(model, 'use_attention_alignment', False) or getattr(model, 'use_aligned_text_head', False)
+    if checkpoint_path and not enabled:
+        raise ValueError(
+            'pretrained_model_text_speech_aligner requires use_attention_alignment or use_aligned_text_head'
+        )
+    if not enabled or not path:
         return
 
     model.text_aligner, settings = load_pretrained_text_speech_aligner(
@@ -1043,14 +1127,33 @@ def prepare_attention_alignment_training(
         speaker_reference_features=reference_features,
         speaker_reference_lens=reference_lengths,
     )
-    settings = model.attention_alignment_config
-    loss_scale, prior_strength = alignment_schedule(settings, model.global_step)
+    use_attention = getattr(model, 'use_attention_alignment', True)
+    use_text_head = getattr(model, 'use_aligned_text_head', False)
+    settings = model.attention_alignment_config if use_attention else {}
+    loss_scale, prior_strength = alignment_schedule(settings, model.global_step) if use_attention else (0.0, 0.0)
+    targets = tokens.new_full((audio_codes.size(0), target_steps), model.pad_id) if use_text_head else None
+    target_mask = torch.zeros_like(targets, dtype=torch.bool) if use_text_head else None
+    use_alignment = int(model.global_step) >= getattr(model, 'start_aligner_text_head_steps', 10000)
     turns, causal_frames = [], tokens.new_zeros(())
     metadata = torch.cat([turn_indices, token_lens[:, None]], dim=1).detach().cpu().tolist()
     for row, (sample, start, end, count) in enumerate(metadata):
         if start < 0 or end <= start or end > teacher.token_indices.size(1) or not count:
             continue
         path = teacher.token_indices[sample, start:end].detach()
+        if use_text_head:
+            valid = (path >= 0) & (path < count)
+            if use_alignment:
+                labels = tokens[row, :count].gather(0, path.clamp(0, count - 1))
+            else:
+                labels = tokens.new_full((end - start,), model.pad_id)
+                copied = min(count, labels.numel())
+                labels[:copied] = tokens[row, :copied]
+                if count < labels.numel():
+                    labels[count] = model.eos_id
+            targets[sample, start:end] = torch.where(valid, labels, model.pad_id)
+            target_mask[sample, start:end] = valid
+        if not use_attention:
+            continue
         keys = key_positions[row, :count].long() + context_lens[sample]
         queries = torch.arange(start, end, device=text.device) + audio_delay[sample]
         selected_keys = keys.gather(0, path.clamp(0, count - 1))
@@ -1087,7 +1190,15 @@ def prepare_attention_alignment_training(
         loss_scale=loss_scale,
         prior_strength=prior_strength,
     )
-    return AttentionAlignmentTrainingOutput(teacher, guidance, metrics)
+    if use_text_head:
+        recent_speech = F.pad(target_mask, (1, 0))[:, :-1] | F.pad(target_mask, (2, 0))[:, :-2]
+        audio_eos_id = getattr(model, 'audio_eos_id', None)
+        if audio_eos_id is not None:
+            eos_mask = audio_targets[:, 0].eq(audio_eos_id) & recent_speech & ~target_mask
+            targets[eos_mask] = model.eos_id
+            target_mask |= eos_mask
+        metrics['aligned_text_curriculum_active'] = float(use_alignment)
+    return AttentionAlignmentTrainingOutput(teacher, guidance, metrics, targets, target_mask)
 
 
 def compact_conditioning_turns(model, text, text_lens, audio_lens, is_multiturn):

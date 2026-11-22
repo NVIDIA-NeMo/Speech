@@ -46,6 +46,41 @@ codec. The text encoder, flow, projection, and speaker encoder remain trainable.
 Logs include `aligner_nll`, `attention_alignment_loss`, valid-turn/causal-frame
 fractions, and the fraction of tokens assigned one frame.
 
+### Aligned BPE prediction head
+
+Enable the factorized BPE output head independently of attention supervision:
+
+```bash
+++model.use_aligned_text_head=true \
+++model.use_attention_alignment=false \
+++model.aligned_text_loss_weight=1.0
+```
+
+Set both feature flags to `true` to train both objectives. They share one acoustic
+aligner and MAS path, and the aligner likelihood is included once in the total
+loss. Both flags default to `false`. The head predicts the same BPE transcript
+used for text conditioning, including whichever raw or normalized input the
+data loader selects.
+
+The aligner trains from the first step. The head initially predicts right-padded
+text within each valid speech turn, then switches to MAS-repeated BPE targets at
+`model.start_aligner_text_head_steps` (default `10000`). Set this to `0` when
+starting immediately with a pretrained aligner. Head supervision uses the same
+backbone positions and speech delay as audio prediction, including the audio EOS
+slot. Training and validation log `aligned_text_loss` and
+`aligned_text_curriculum_active`.
+
+The head uses a 128-dimensional projection and computes FP32 cross-entropy in
+checkpointed chunks of 128 frames. Configure these with `aligned_text_head_dim`
+and `aligned_text_head_chunk_size`. Its predictions are output-only; text tokens
+are never fed into the audio generation loop and do not control stopping.
+Streaming consumers can read the current prediction from
+`state.all_aligned_text_predictions[-1]` when an audio step is emitted.
+`streaming_finalize` returns `aligned_text_tokens` and `aligned_text_tokens_lens`;
+`infer_batch` exposes `predicted_aligned_text_tokens` and
+`predicted_aligned_text_tokens_lens`. These repeated token IDs use the stacked
+audio-step grid and are cropped to the generated audio.
+
 ## Training precision
 
 V2 supports `bf16-true` and `16-true` training. The codec, quantizer conversion,

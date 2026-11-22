@@ -9,6 +9,12 @@ quadratic_duration: 20
 model:
   use_lhotse: true
 
+  use_aligned_text_head: false
+  aligned_text_head_dim: 128
+  aligned_text_head_chunk_size: 128
+  aligned_text_loss_weight: 1.0
+  start_aligner_text_head_steps: 10000
+
   # Decoder backend selection
   # Options: "huggingface" (default), "nemotron_h"
   decoder_type: "huggingface"

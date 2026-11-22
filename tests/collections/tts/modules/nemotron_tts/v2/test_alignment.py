@@ -5,15 +5,18 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+import torch.nn.functional as F
 from omegaconf import OmegaConf
 from torch import nn
 
 from nemo.collections.tts.modules.aligner import (
+    AlignedTextHead,
     TinyGlowTTSAligner,
     alignment_schedule,
     compact_conditioning_turns,
     compact_speaker_reference,
     decode_alignment_features,
+    init_aligned_text_head,
     init_training_alignment,
     prepare_attention_alignment_training,
     resolve_attention_alignment_config,
@@ -27,6 +30,64 @@ def test_alignment_disabled_by_default_constructs_no_teacher():
     init_training_alignment(model, {})
     assert model.use_attention_alignment is False
     assert not hasattr(model, 'text_aligner')
+
+
+def test_aligned_text_head_is_disabled_by_default_without_adding_parameters():
+    model = nn.Module()
+    init_aligned_text_head(model, {})
+    assert model.use_aligned_text_head is False
+    assert not hasattr(model, 'aligned_text_head')
+    assert list(model.state_dict()) == []
+
+
+@pytest.mark.parametrize('chunk_size', [1, 3, 128])
+def test_aligned_text_head_chunked_loss_matches_masked_cross_entropy_and_gradients(chunk_size):
+    head = AlignedTextHead(hidden_dim=4, vocab_size=9, projection_dim=3)
+    hidden = torch.randn(2, 4, 4, requires_grad=True)
+    targets = torch.tensor([[1, 2, 3, 99], [4, 99, 6, 7]])
+    mask = targets != 99
+    expected = F.cross_entropy(head(hidden)[mask].float(), targets[mask])
+    actual = head.loss(hidden, targets, mask, chunk_size=chunk_size)
+    assert actual.dtype == torch.float32
+    torch.testing.assert_close(actual, expected)
+    parameters = (hidden, *head.parameters())
+    expected_gradients = torch.autograd.grad(expected, parameters, retain_graph=True)
+    actual_gradients = torch.autograd.grad(actual, parameters)
+    for actual_gradient, expected_gradient in zip(actual_gradients, expected_gradients):
+        torch.testing.assert_close(actual_gradient, expected_gradient)
+
+
+@pytest.mark.parametrize('steps', [0, 3])
+def test_aligned_text_head_empty_supervision_keeps_a_finite_zero_gradient_graph(steps):
+    head = AlignedTextHead(hidden_dim=4, vocab_size=9, projection_dim=3)
+    hidden = torch.randn(2, steps, 4, requires_grad=True)
+    targets = torch.full((2, steps), 99, dtype=torch.long)
+    loss = head.loss(hidden, targets, torch.zeros_like(targets, dtype=torch.bool), chunk_size=2)
+    assert loss.dtype == torch.float32 and loss.item() == 0.0
+    loss.backward()
+    for parameter in (hidden, *head.parameters()):
+        assert parameter.grad is not None and parameter.grad.count_nonzero().item() == 0
+
+
+def test_head_only_training_initializes_the_teacher_without_selecting_attention_layers():
+    model = nn.Module()
+    model.cfg = OmegaConf.create(
+        dict(
+            embedding_dim=6,
+            use_aligned_text_head=True,
+            use_attention_alignment=False,
+            attention_alignment=dict(layers='unused'),
+            aligned_text_aligner=dict(hidden_channels=8, num_flows=1, num_text_layers=1, coupling_num_layers=1),
+        )
+    )
+    model._is_model_being_restored = lambda: False
+    model._codec_model = SimpleNamespace(vector_quantizer=SimpleNamespace(codebook_dim=4))
+    model.frame_stacking_factor = 1
+    model.decoder = SimpleNamespace()
+    init_training_alignment(model, model.cfg)
+    assert model.text_aligner is not None
+    assert model.use_aligned_text_head and not model.use_attention_alignment
+    assert model.start_aligner_text_head_steps == 10000
 
 
 @pytest.mark.parametrize('stack', [1, 2])
@@ -340,6 +401,91 @@ def test_control_frames_do_not_become_acoustic_teacher_observations():
     assert output.guidance is None
 
 
+@pytest.mark.parametrize('step', [9, 10])
+def test_aligned_bpe_targets_restore_repeated_tokens_per_turn_and_switch_from_warmup_at_the_boundary(step):
+    model = _model()
+    model.cfg = dict(use_multiturn_dataset=True)
+    model.use_attention_alignment = False
+    model.use_aligned_text_head = True
+    model.start_aligner_text_head_steps = 10
+    model.global_step = step
+    text = torch.tensor(
+        [
+            [
+                model.bos_id,
+                7,
+                7,
+                8,
+                model.eos_id,
+                model.pad_id,
+                model.interruption_token_id,
+                model.bos_id,
+                9,
+                model.eos_id,
+                model.pad_id,
+                model.pad_id,
+            ]
+        ]
+    )
+    targets = torch.zeros(1, 4, 13, dtype=torch.long)
+    targets[:, :, [6, 12]] = model.audio_eos_id
+    output = prepare_attention_alignment_training(
+        model,
+        torch.zeros(1, 2, 24, dtype=torch.long),
+        torch.tensor([24]),
+        targets,
+        text,
+        torch.tensor([12]),
+        torch.tensor([3]),
+        torch.tensor([8]),
+    )
+    assert output.guidance is None
+    assert output.aligned_text_targets.shape == output.aligned_text_mask.shape == (1, 13)
+    assert output.aligned_text_mask.all()
+    if step < 10:
+        expected = [
+            7,
+            7,
+            8,
+            model.eos_id,
+            model.pad_id,
+            model.pad_id,
+            model.eos_id,
+            9,
+            model.eos_id,
+            model.pad_id,
+            model.pad_id,
+            model.pad_id,
+            model.eos_id,
+        ]
+    else:
+        expected = [7, 7, 7, 7, 8, 8, model.eos_id, 9, 9, 9, 9, 9, model.eos_id]
+    assert output.aligned_text_targets.tolist() == [expected]
+    assert output.metrics['aligned_text_curriculum_active'] == float(step >= 10)
+
+
+def test_invalid_short_alignment_has_no_bpe_targets_or_invented_eos():
+    model = _model()
+    model.use_attention_alignment = False
+    model.use_aligned_text_head = True
+    model.start_aligner_text_head_steps = 0
+    targets = torch.zeros(1, 4, 2, dtype=torch.long)
+    targets[:, :, 1] = model.audio_eos_id
+    output = prepare_attention_alignment_training(
+        model,
+        torch.zeros(1, 2, 2, dtype=torch.long),
+        torch.tensor([2]),
+        targets,
+        torch.tensor([[model.bos_id, 7, 8, model.eos_id]]),
+        torch.tensor([4]),
+        torch.tensor([3]),
+        torch.tensor([8]),
+    )
+    assert not output.aligned_text_mask.any()
+    assert output.aligned_text_targets.eq(model.pad_id).all()
+    assert output.teacher.loss.item() == 0.0
+
+
 class _Teacher(nn.Module):
     def __init__(self):
         super().__init__()
@@ -381,6 +527,7 @@ def _model():
         eos_id=30,
         interruption_token_id=31,
         text_vocab_size=32,
+        audio_eos_id=129,
         frame_stacking_factor=2,
         global_step=0,
         embedding=embedding,

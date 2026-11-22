@@ -155,6 +155,34 @@ def _precision_model(enabled=True):
     return model
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='True precision aligned-head training requires CUDA')
+@pytest.mark.parametrize('dtype', [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize('attention', [False, True])
+def test_aligned_bpe_head_true_precision_has_finite_losses_and_gradients(dtype, attention):
+    if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
+        pytest.skip('CUDA device does not support bfloat16')
+    model = _training_model(enabled=attention, head_enabled=True)
+    codec = nn.Module()
+    codec.vector_quantizer = _Quantizer()
+    codec.codebook_size = 16
+    model._codec_model = codec.requires_grad_(False)
+    model.to(device='cuda', dtype=dtype)
+    inputs = {name: value.cuda() for name, value in _inputs(model).items()}
+
+    output = model.process_batch(**inputs, mode='val')
+
+    assert output.aligned_text_loss.dtype == torch.float32 and torch.isfinite(output.aligned_text_loss)
+    assert output.loss.dtype == torch.float32 and torch.isfinite(output.loss)
+    assert model.aligned_text_head.input_projection.weight.dtype == dtype
+    assert all(parameter.dtype == torch.float32 for parameter in model.text_aligner.parameters())
+    assert (output.attention_alignment_loss is not None) == attention
+    output.loss.backward()
+    gradients = [parameter.grad for parameter in model.parameters() if parameter.grad is not None]
+    assert gradients and all(torch.isfinite(gradient).all() for gradient in gradients)
+    for projection in [model.aligned_text_head.input_projection, model.aligned_text_head.output_projection]:
+        assert projection.weight.grad.dtype == dtype and projection.weight.grad.abs().sum() > 0
+
+
 @pytest.mark.parametrize('dtype', [torch.float16, torch.bfloat16])
 def test_codec_helper_preserves_fp32_default_dtype_and_waveforms(dtype):
     class Codec:

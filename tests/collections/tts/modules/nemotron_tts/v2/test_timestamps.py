@@ -329,6 +329,8 @@ def test_external_singleturn_runner_saves_timestamp_sidecar_and_manifest(tmp_pat
     batch = {'text': torch.tensor([[17, 91]]), 'text_lens': torch.tensor([2])}
 
     class Dataset(torch.utils.data.Dataset):
+        data_samples = [SimpleNamespace(text='hello')]
+
         def __len__(self):
             return 1
 
@@ -377,7 +379,14 @@ def test_multiturn_rank_merge_preserves_timestamp_sidecars_and_rebases_audio_pat
             timestamps_filepath=Path(sidecar).name,
         )
         (directory / f'multiturn_user_audio_turn_manifest_rank{rank:04d}.jsonl').write_text(json.dumps(row) + '\n')
-    manifest = Path(utils._merge_multiturn_rank_outputs(str(tmp_path), 2, save_predicted_codes=False))
+    manifest = Path(
+        utils._merge_rank_outputs(
+            str(tmp_path),
+            2,
+            save_predicted_codes=False,
+            manifest_name='multiturn_user_audio_turn_manifest_rank{rank:04d}.jsonl',
+        )
+    )
     records = [json.loads(line) for line in manifest.read_text().splitlines()]
     for index, record in enumerate(records):
         sidecar = tmp_path / f'predicted_audio_{index}.timestamps.json'

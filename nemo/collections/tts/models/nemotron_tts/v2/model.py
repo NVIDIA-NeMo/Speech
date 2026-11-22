@@ -90,6 +90,9 @@ class ProcessBatchOutput:
         context_audio_codes: Processed context audio codes (B, C, T')
         context_audio_codes_lens: Length of processed context audio codes (B,)
         selected_training_mode: Name of the training mode used for this batch (e.g., "streaming_4_8")
+        aligned_text_loss: Cross-entropy loss for the audio-aligned BPE prediction head.
+        aligned_text_targets: BPE supervision on the audio prediction grid.
+        aligned_text_mask: Frames included in aligned BPE supervision.
     """
 
     loss: torch.Tensor
@@ -109,6 +112,9 @@ class ProcessBatchOutput:
     attention_alignment_loss: Optional[torch.Tensor] = None
     attention_alignment_metrics: Optional[dict] = None
     acoustic_codes_predictor_logits: Optional[torch.Tensor] = None
+    aligned_text_loss: Optional[torch.Tensor] = None
+    aligned_text_targets: Optional[torch.Tensor] = None
+    aligned_text_mask: Optional[torch.Tensor] = None
 
 
 class NemotronTTSModel(NemotronTTSBase):
@@ -193,27 +199,38 @@ class NemotronTTSModel(NemotronTTSBase):
         """Load only the training teacher, preserving every generator weight."""
         reload_pretrained_aligner(self, checkpoint_path)
 
-    def _log_attention_alignment_losses(self, output, mode, batch_size):
-        if not self.use_attention_alignment:
+    def _log_alignment_losses(self, output, mode, batch_size):
+        if not (self.use_attention_alignment or self.use_aligned_text_head):
             return
         zero = output.loss.detach().new_zeros(())
         metrics = output.attention_alignment_metrics or {}
         turns = metrics.get('turns', zero).clamp_min(1)
         values = {
             f'{mode}/aligner_nll': output.aligner_loss if output.aligner_loss is not None else zero,
-            f'{mode}/attention_alignment_loss': (
-                output.attention_alignment_loss if output.attention_alignment_loss is not None else zero
-            ),
-            f'{mode}/attention_alignment_valid_turn_fraction': metrics.get('valid_turns', zero).float() / turns,
-            f'{mode}/attention_alignment_causal_frame_fraction': metrics.get('causal_frames', zero).float()
-            / metrics.get('teacher_frames', zero).clamp_min(1),
             f'{mode}/aligner_one_frame_token_fraction': metrics.get('one_frame_tokens', zero).float()
             / metrics.get('token_count', zero).clamp_min(1),
-            f'{mode}/attention_alignment_loss_scale': metrics.get('loss_scale', 0.0),
-            f'{mode}/attention_alignment_prior_strength': metrics.get('prior_strength', 0.0),
         }
-        for name in ('supervised_turns', 'invalid_spans', 'short_turns', 'empty_turns'):
-            values[f'{mode}/attention_alignment_{name}'] = metrics.get(name, zero)
+        if self.use_aligned_text_head:
+            values[f'{mode}/aligned_text_loss'] = (
+                output.aligned_text_loss if output.aligned_text_loss is not None else zero
+            )
+            values[f'{mode}/aligned_text_curriculum_active'] = metrics.get('aligned_text_curriculum_active', 0.0)
+        if self.use_attention_alignment:
+            values.update(
+                {
+                    f'{mode}/attention_alignment_loss': (
+                        output.attention_alignment_loss if output.attention_alignment_loss is not None else zero
+                    ),
+                    f'{mode}/attention_alignment_valid_turn_fraction': metrics.get('valid_turns', zero).float()
+                    / turns,
+                    f'{mode}/attention_alignment_causal_frame_fraction': metrics.get('causal_frames', zero).float()
+                    / metrics.get('teacher_frames', zero).clamp_min(1),
+                    f'{mode}/attention_alignment_loss_scale': metrics.get('loss_scale', 0.0),
+                    f'{mode}/attention_alignment_prior_strength': metrics.get('prior_strength', 0.0),
+                }
+            )
+            for name in ('supervised_turns', 'invalid_spans', 'short_turns', 'empty_turns'):
+                values[f'{mode}/attention_alignment_{name}'] = metrics.get(name, zero)
         self.log_dict(values, on_step=mode == 'train', on_epoch=mode != 'train', batch_size=batch_size, sync_dist=True)
 
     def _get_state_dict_keys_to_exclude(self):
@@ -1039,7 +1056,10 @@ class NemotronTTSModel(NemotronTTSBase):
             ProcessBatchOutput: Contains loss values and model predictions
         """
         # Preserve acoustic-end markers before the normal text-channel cleanup.
-        alignment_text = text.clone() if self.use_attention_alignment else None
+        use_alignment = (
+            self.use_attention_alignment or getattr(self, 'use_aligned_text_head', False)
+        ) and not return_policy_logits
+        alignment_text = text.clone() if use_alignment else None
 
         # Select training mode
         selected_training_mode = training_mode
@@ -1311,10 +1331,9 @@ class NemotronTTSModel(NemotronTTSBase):
 
         full_embedding = context_embedding_padded + combined_channel_embedding
 
-        # Only training/teacher-forced validation constructs the acoustic flow.
-        # The same raw input BPE occurrences supply the aligner and attention keys.
+        # Both auxiliary objectives share the same conditioning BPEs and MAS path.
         alignment = None
-        if self.use_attention_alignment and not return_policy_logits:
+        if use_alignment:
             alignment = prepare_attention_alignment_training(
                 self,
                 audio_codes,
@@ -1333,7 +1352,11 @@ class NemotronTTSModel(NemotronTTSBase):
         transformer_out = self.forward(
             inputs_embeds=full_embedding,
             attention_mask=get_mask_from_lengths(combined_channel_lens),
-            **({'attention_alignment': alignment.guidance} if alignment is not None else {}),
+            **(
+                {'attention_alignment': alignment.guidance}
+                if alignment is not None and self.use_attention_alignment
+                else {}
+            ),
         )
         transformer_hidden_states = transformer_out.last_hidden_state  # (B, T_total, E)
 
@@ -1422,17 +1445,34 @@ class NemotronTTSModel(NemotronTTSBase):
             loss = loss + self.phoneme_loss_weight * phoneme_loss
 
         attention_alignment_loss = None
+        aligned_text_loss = aligned_text_targets = aligned_text_mask = None
         if alignment is not None:
-            attention_alignment_loss = getattr(transformer_out, 'attention_alignment_loss', None)
-            if attention_alignment_loss is None:
-                attention_alignment_loss = transformer_hidden_states.float().sum() * 0.0
-            loss = (
-                loss
-                + self.aligner_loss_weight * alignment.teacher.loss
-                + self.attention_alignment_config['loss_weight']
-                * alignment.metrics['loss_scale']
-                * attention_alignment_loss
-            )
+            loss = loss + self.aligner_loss_weight * alignment.teacher.loss
+            if self.use_aligned_text_head:
+                steps = pred_embeddings.size(1)
+                aligned_text_targets = alignment.aligned_text_targets[:, :steps]
+                aligned_text_mask = alignment.aligned_text_mask[:, :steps] & (
+                    torch.arange(steps, device=pred_embeddings.device)[None, :] < audio_codes_lens_target[:, None]
+                )
+                if self.cfg.get('mask_user_on_loss', False) and agent_mask is not None:
+                    aligned_text_mask = aligned_text_mask & agent_mask[:, :steps].bool()
+                aligned_text_loss = self.aligned_text_head.loss(
+                    pred_embeddings,
+                    aligned_text_targets,
+                    aligned_text_mask,
+                    chunk_size=self.aligned_text_head_chunk_size,
+                )
+                loss = loss + self.aligned_text_loss_weight * aligned_text_loss
+            if self.use_attention_alignment:
+                attention_alignment_loss = getattr(transformer_out, 'attention_alignment_loss', None)
+                if attention_alignment_loss is None:
+                    attention_alignment_loss = transformer_hidden_states.float().sum() * 0.0
+                loss = (
+                    loss
+                    + self.attention_alignment_config['loss_weight']
+                    * alignment.metrics['loss_scale']
+                    * attention_alignment_loss
+                )
 
         return ProcessBatchOutput(
             loss=loss,
@@ -1452,6 +1492,9 @@ class NemotronTTSModel(NemotronTTSBase):
             attention_alignment_loss=attention_alignment_loss,
             attention_alignment_metrics=alignment.metrics if alignment is not None else None,
             acoustic_codes_predictor_logits=acoustic_codes_predictor_logits,
+            aligned_text_loss=aligned_text_loss,
+            aligned_text_targets=aligned_text_targets,
+            aligned_text_mask=aligned_text_mask,
         )
 
     def training_step(self, batch, batch_idx):
@@ -1682,7 +1725,7 @@ class NemotronTTSModel(NemotronTTSBase):
         codebook_loss = batch_output.codebook_loss
         self.log('train/codebook_loss', codebook_loss, prog_bar=True, sync_dist=True)
         self.log('train/loss', loss, prog_bar=True, sync_dist=True)
-        self._log_attention_alignment_losses(batch_output, 'train', batch['text'].size(0))
+        self._log_alignment_losses(batch_output, 'train', batch['text'].size(0))
 
         if self.phoneme_tokenizer is not None:
             phoneme_loss = batch_output.phoneme_loss
@@ -1780,7 +1823,7 @@ class NemotronTTSModel(NemotronTTSBase):
             task=batch["task"] if "task" in batch else None,
             agent_mask=batch["agent_mask"] if "agent_mask" in batch else None,
         )
-        self._log_attention_alignment_losses(batch_output, 'val', batch['text'].size(0))
+        self._log_alignment_losses(batch_output, 'val', batch['text'].size(0))
         # Access ProcessBatchOutput dataclass attributes
         # Logits come from the auxiliary parallel prediction head.
         loss = batch_output.loss

@@ -17,7 +17,14 @@ import triton
 import triton.language as tl
 
 
-from nemo.collections.asr.parts.turbo_transducer.utils_triton import log_add_exp, matmul
+from nemo.collections.asr.parts.turbo_transducer.utils_triton import (
+    BF16_ATOMICS_AVAILABLE,
+    autotune,
+    block_offsets_int64,
+    load_rows_block,
+    log_add_exp,
+    matmul,
+)
 from nemo.utils.enum import PrettyStrEnum
 
 
@@ -154,10 +161,9 @@ def _bwd_chunked_grad_logits_autotune_configs():
     return configs
 
 
-@triton.autotune(
+@autotune(
     configs=_fwd_autotune_configs(),
     key=["hidden_dim", "vocab_size", "USE_HIGH_PRECISION_MM", "MM_FULL_PRECISION"],
-    cache_results=True,
 )
 # In all kernels, shape-dependent integer arguments are not specialized to avoid recompilation
 # for each new batch shape (Triton specializes integers equal to 1 and divisible by 16 by default).
@@ -192,13 +198,10 @@ def _rnnt_joint_fused_vocab_fwd_triton_kernel(
     (pruned lattice). The outputs are always stored to the lattice [B, T, U+1].
     """
     compute_dtype = tl.float32
+    # NB: the flags go first, Triton 3.3 does not support `and` with a comparison of dtypes on the left
     matmul_dtype = (
         tl.bfloat16
-        if (
-            joint_hidden_ptr.dtype.element_ty == tl.bfloat16
-            and (not USE_HIGH_PRECISION_MM)
-            and (not MM_FULL_PRECISION)
-        )
+        if not (USE_HIGH_PRECISION_MM or MM_FULL_PRECISION) and joint_hidden_ptr.dtype.element_ty == tl.bfloat16
         else compute_dtype
     )
 
@@ -221,67 +224,40 @@ def _rnnt_joint_fused_vocab_fwd_triton_kernel(
     )
 
     vocab_offsets_in_block = tl.arange(0, VOCAB_BLOCK)
+    hidden_rows = block_offsets_int64(flattened_batch_start, FLATTENED_BATCH_BLOCK)
 
     log_sum_exp_score = tl.full([FLATTENED_BATCH_BLOCK], value=float("-inf"), dtype=compute_dtype)
     blank_logits = tl.zeros([FLATTENED_BATCH_BLOCK], dtype=compute_dtype)
     target_logits = tl.zeros([FLATTENED_BATCH_BLOCK], dtype=compute_dtype)
 
-    # Create block pointers once before the loops
-    NUM_HIDDEN_ITERS: tl.constexpr = tl.cdiv(hidden_dim, HIDDEN_BLOCK)
-    HIDDEN_RESET: tl.constexpr = NUM_HIDDEN_ITERS * HIDDEN_BLOCK
-
-    joint_hidden_block_ptr = tl.make_block_ptr(
-        base=joint_hidden_ptr,
-        shape=(flattened_batch_size, hidden_dim),
-        strides=(hidden_dim, 1),
-        offsets=(flattened_batch_start, 0),
-        block_shape=(FLATTENED_BATCH_BLOCK, HIDDEN_BLOCK),
-        order=(1, 0),
-    )
-    weight_block_ptr = tl.make_block_ptr(
-        base=weight_ptr,
-        shape=(vocab_size, hidden_dim),
-        strides=(hidden_dim, 1),
-        offsets=(0, 0),
-        block_shape=(VOCAB_BLOCK, HIDDEN_BLOCK),
-        order=(1, 0),
-    )
-    bias_block_ptr = tl.make_block_ptr(
-        base=bias_ptr,
-        shape=(vocab_size,),
-        strides=(1,),
-        offsets=(0,),
-        block_shape=(VOCAB_BLOCK,),
-        order=(0,),
-    )
-
     # Outer loop over vocab chunks
     for vocab_start in tl.range(0, vocab_size, VOCAB_BLOCK):
         vocab_offsets = vocab_start + vocab_offsets_in_block
         vocab_mask = vocab_offsets < vocab_size
+        weight_rows = block_offsets_int64(vocab_start, VOCAB_BLOCK)
         contains_blank = vocab_start <= blank_id and blank_id < vocab_start + VOCAB_BLOCK
 
-        bias_chunk = tl.load(bias_block_ptr, boundary_check=(0,)).to(compute_dtype)
+        bias_chunk = tl.load(bias_ptr + vocab_offsets, mask=vocab_mask, other=0.0).to(compute_dtype)
 
         block_logits = tl.zeros([FLATTENED_BATCH_BLOCK, VOCAB_BLOCK], dtype=compute_dtype) + bias_chunk[None, :]
-        for _ in tl.range(0, hidden_dim, HIDDEN_BLOCK):
+        for hidden_start in tl.range(0, hidden_dim, HIDDEN_BLOCK):
             # hidden chunk: do not cache
-            hidden_chunk = tl.load(joint_hidden_block_ptr, boundary_check=(0, 1), cache_modifier=".cv").to(
-                matmul_dtype
-            )
-            weight_chunk_t = tl.load(weight_block_ptr, boundary_check=(0, 1)).T.to(matmul_dtype)
+            hidden_chunk = load_rows_block(
+                joint_hidden_ptr,
+                hidden_rows,
+                flattened_batch_valid_mask,
+                hidden_start,
+                hidden_dim,
+                HIDDEN_BLOCK,
+                CACHE_VOLATILE=True,
+            ).to(matmul_dtype)
+            weight_chunk_t = load_rows_block(
+                weight_ptr, weight_rows, vocab_mask, hidden_start, hidden_dim, HIDDEN_BLOCK
+            ).T.to(matmul_dtype)
 
             block_logits += matmul(hidden_chunk, weight_chunk_t, USE_HIGH_PRECISION=USE_HIGH_PRECISION_MM).to(
                 compute_dtype
             )
-
-            joint_hidden_block_ptr = tl.advance(joint_hidden_block_ptr, (0, HIDDEN_BLOCK))
-            weight_block_ptr = tl.advance(weight_block_ptr, (0, HIDDEN_BLOCK))
-
-        # Reset hidden dim, advance vocab dim for next iteration
-        joint_hidden_block_ptr = tl.advance(joint_hidden_block_ptr, (0, -HIDDEN_RESET))
-        weight_block_ptr = tl.advance(weight_block_ptr, (VOCAB_BLOCK, -HIDDEN_RESET))
-        bias_block_ptr = tl.advance(bias_block_ptr, (VOCAB_BLOCK,))
 
         # Mask invalid vocab positions
         block_logits = tl.where(vocab_mask[None, :], block_logits, -float("inf"))
@@ -313,11 +289,10 @@ def _rnnt_joint_fused_vocab_fwd_triton_kernel(
     )
 
 
-@triton.autotune(
+@autotune(
     configs=_bwd_autotune_configs(),
     key=["hidden_dim", "vocab_size", "USE_HIGH_PRECISION_MM", "MM_FULL_PRECISION", "PRUNING_RANGE", "PACKED_HIDDEN"],
     reset_to_zero=["grad_joint_hidden_out_ptr", "grad_weight_out_ptr", "grad_bias_out_ptr"],
-    cache_results=True,
 )
 @triton.jit(do_not_specialize=["max_src_len", "max_tgt_len_plus_1", "flattened_batch_size"])
 def _rnnt_joint_fused_vocab_bwd_triton_kernel(
@@ -355,18 +330,12 @@ def _rnnt_joint_fused_vocab_bwd_triton_kernel(
     `PACKED_HIDDEN`, contain only the rows of the ranges [B, T, PRUNING_RANGE, hidden_dim].
     """
     compute_dtype = tl.float32
+    # NB: the flags go first, Triton 3.3 does not support `and` with a comparison of dtypes on the left
     matmul_dtype = (
         tl.bfloat16
-        if (
-            joint_hidden_ptr.dtype.element_ty == tl.bfloat16
-            and (not USE_HIGH_PRECISION_MM)
-            and (not MM_FULL_PRECISION)
-        )
+        if not (USE_HIGH_PRECISION_MM or MM_FULL_PRECISION) and joint_hidden_ptr.dtype.element_ty == tl.bfloat16
         else compute_dtype
     )
-    # rows of the pruning ranges are gathered from / scattered to the dense joint hidden
-    GATHER_HIDDEN: tl.constexpr = PRUNING_RANGE != 0 and not PACKED_HIDDEN
-
     # CUDA enumerates the x grid dimension fastest. Remap that physical order so all vocab blocks for a
     # flattened-batch tile execute consecutively, preserving joint-hidden and gradient cache locality.
     num_flattened_batch_blocks = tl.num_programs(axis=0)
@@ -379,37 +348,12 @@ def _rnnt_joint_fused_vocab_bwd_triton_kernel(
 
     vocab_offsets = vocab_block_start + tl.arange(0, VOCAB_BLOCK)
     vocab_mask = vocab_offsets < vocab_size
+    weight_rows = block_offsets_int64(vocab_block_start, VOCAB_BLOCK)
 
-    # Create block pointers once before the loops
-    NUM_HIDDEN_ITERS: tl.constexpr = tl.cdiv(hidden_dim, HIDDEN_BLOCK)
-    HIDDEN_RESET: tl.constexpr = NUM_HIDDEN_ITERS * HIDDEN_BLOCK
+    # start of the last hidden block: the loops for the gradients iterate over hidden blocks in reverse order
+    LAST_HIDDEN_START: tl.constexpr = (tl.cdiv(hidden_dim, HIDDEN_BLOCK) - 1) * HIDDEN_BLOCK
 
-    joint_hidden_block_ptr = tl.make_block_ptr(
-        base=joint_hidden_ptr,
-        shape=(flattened_batch_size, hidden_dim),
-        strides=(hidden_dim, 1),
-        offsets=(flattened_batch_start, 0),
-        block_shape=(FLATTENED_BATCH_BLOCK, HIDDEN_BLOCK),
-        order=(1, 0),
-    )
-    weight_block_ptr = tl.make_block_ptr(
-        base=weight_ptr,
-        shape=(vocab_size, hidden_dim),
-        strides=(hidden_dim, 1),
-        offsets=(vocab_block_start, 0),
-        block_shape=(VOCAB_BLOCK, HIDDEN_BLOCK),
-        order=(1, 0),
-    )
-    bias_block_ptr = tl.make_block_ptr(
-        base=bias_ptr,
-        shape=(vocab_size,),
-        strides=(1,),
-        offsets=(vocab_block_start,),
-        block_shape=(VOCAB_BLOCK,),
-        order=(0,),
-    )
-
-    bias_chunk = tl.load(bias_block_ptr, boundary_check=(0,)).to(compute_dtype)
+    bias_chunk = tl.load(bias_ptr + vocab_offsets, mask=vocab_mask, other=0.0).to(compute_dtype)
 
     flattened_batch_offsets = flattened_batch_start + tl.arange(0, FLATTENED_BATCH_BLOCK)
     flattened_batch_mask = flattened_batch_offsets < flattened_batch_size
@@ -435,34 +379,28 @@ def _rnnt_joint_fused_vocab_bwd_triton_kernel(
         compute_dtype,
     )
 
-    if PACKED_HIDDEN:
-        flattened_batch_flat_indices = flattened_batch_offsets.to(tl.int64)
-    else:
+    # rows of the joint hidden and of its gradient
+    if PRUNING_RANGE != 0 and not PACKED_HIDDEN:
+        # rows of the pruning ranges are gathered from / scattered to the dense joint hidden
         flattened_batch_flat_indices = lattice_offsets.to(tl.int64)
+    else:
+        flattened_batch_flat_indices = block_offsets_int64(flattened_batch_start, FLATTENED_BATCH_BLOCK)
     logits_block = tl.zeros([FLATTENED_BATCH_BLOCK, VOCAB_BLOCK], dtype=compute_dtype) + bias_chunk[None, :]
 
     # Inner loop 1: recompute logits
     for hidden_start in tl.range(0, hidden_dim, HIDDEN_BLOCK):
         # hidden_chunk: [FLATTENED_BATCH_BLOCK, HIDDEN_BLOCK]
-        if GATHER_HIDDEN:
-            hidden_offsets = hidden_start + tl.arange(0, HIDDEN_BLOCK)
-            hidden_chunk = tl.load(
-                joint_hidden_ptr + flattened_batch_flat_indices[:, None] * hidden_dim + hidden_offsets[None, :],
-                mask=output_blank_mask[:, None] & (hidden_offsets < hidden_dim)[None, :],
-                other=0.0,
-            ).to(matmul_dtype)
-        else:
-            hidden_chunk = tl.load(joint_hidden_block_ptr, boundary_check=(0, 1)).to(matmul_dtype)
+        hidden_chunk = load_rows_block(
+            joint_hidden_ptr, flattened_batch_flat_indices, output_blank_mask, hidden_start, hidden_dim, HIDDEN_BLOCK
+        ).to(matmul_dtype)
         # weight_chunk: [VOCAB_BLOCK, HIDDEN_BLOCK]
-        weight_chunk_t = tl.load(weight_block_ptr, boundary_check=(0, 1)).T.to(matmul_dtype)
+        weight_chunk_t = load_rows_block(
+            weight_ptr, weight_rows, vocab_mask, hidden_start, hidden_dim, HIDDEN_BLOCK
+        ).T.to(matmul_dtype)
 
         logits_block += matmul(hidden_chunk, weight_chunk_t, USE_HIGH_PRECISION=USE_HIGH_PRECISION_MM).to(
             compute_dtype
         )
-
-        if not GATHER_HIDDEN:
-            joint_hidden_block_ptr = tl.advance(joint_hidden_block_ptr, (0, HIDDEN_BLOCK))
-        weight_block_ptr = tl.advance(weight_block_ptr, (0, HIDDEN_BLOCK))
 
     # Compute grad_logits
     probabilities_block = tl.exp(logits_block - lse[:, None])  # [FLATTENED_BATCH_BLOCK, VOCAB_BLOCK]
@@ -475,12 +413,13 @@ def _rnnt_joint_fused_vocab_bwd_triton_kernel(
     # Inner loop 2: compute grad_hidden and grad_weight in reverse iteration for cache reuse
     grad_logits_matmul = grad_logits_block.to(matmul_dtype)
     for r_hidden_idx in tl.range(0, hidden_dim, HIDDEN_BLOCK):
-        hidden_start = HIDDEN_RESET - HIDDEN_BLOCK - r_hidden_idx
+        hidden_start = LAST_HIDDEN_START - r_hidden_idx
         hidden_offsets = hidden_start + tl.arange(0, HIDDEN_BLOCK)
         hidden_mask = hidden_offsets < hidden_dim
 
-        weight_block_ptr = tl.advance(weight_block_ptr, (0, -HIDDEN_BLOCK))
-        weight_chunk = tl.load(weight_block_ptr, boundary_check=(0, 1)).to(matmul_dtype)
+        weight_chunk = load_rows_block(weight_ptr, weight_rows, vocab_mask, hidden_start, hidden_dim, HIDDEN_BLOCK).to(
+            matmul_dtype
+        )
 
         grad_hidden_delta = matmul(grad_logits_matmul, weight_chunk, USE_HIGH_PRECISION=USE_HIGH_PRECISION_MM).to(
             grad_joint_hidden_out_ptr.dtype.element_ty
@@ -495,19 +434,13 @@ def _rnnt_joint_fused_vocab_bwd_triton_kernel(
         )
 
     for r_hidden_idx in tl.range(0, hidden_dim, HIDDEN_BLOCK):
-        hidden_start = HIDDEN_RESET - HIDDEN_BLOCK - r_hidden_idx
+        hidden_start = LAST_HIDDEN_START - r_hidden_idx
         hidden_offsets = hidden_start + tl.arange(0, HIDDEN_BLOCK)
         hidden_mask = hidden_offsets < hidden_dim
 
-        if GATHER_HIDDEN:
-            joint_hidden_chunk_t = tl.load(
-                joint_hidden_ptr + flattened_batch_flat_indices[:, None] * hidden_dim + hidden_offsets[None, :],
-                mask=output_blank_mask[:, None] & hidden_mask[None, :],
-                other=0.0,
-            ).T.to(matmul_dtype)
-        else:
-            joint_hidden_block_ptr = tl.advance(joint_hidden_block_ptr, (0, -HIDDEN_BLOCK))
-            joint_hidden_chunk_t = tl.load(joint_hidden_block_ptr, boundary_check=(0, 1)).T.to(matmul_dtype)
+        joint_hidden_chunk_t = load_rows_block(
+            joint_hidden_ptr, flattened_batch_flat_indices, output_blank_mask, hidden_start, hidden_dim, HIDDEN_BLOCK
+        ).T.to(matmul_dtype)
 
         grad_weight_delta = matmul(
             joint_hidden_chunk_t, grad_logits_matmul, USE_HIGH_PRECISION=USE_HIGH_PRECISION_MM
@@ -530,15 +463,12 @@ def _rnnt_joint_fused_vocab_bwd_triton_kernel(
     )
 
 
-@triton.autotune(
+@autotune(
     configs=_bwd_chunked_grad_logits_autotune_configs(),
     key=["hidden_dim", "vocab_size", "USE_HIGH_PRECISION_MM", "MM_FULL_PRECISION", "PRUNING_RANGE"],
     reset_to_zero=["grad_bias_out_ptr"],
-    cache_results=True,
 )
-@triton.jit(
-    do_not_specialize=["max_src_len", "max_tgt_len_plus_1", "flattened_batch_size", "chunk_start", "chunk_size"]
-)
+@triton.jit(do_not_specialize=["max_src_len", "max_tgt_len_plus_1", "chunk_start", "chunk_size"])
 def _rnnt_joint_fused_vocab_bwd_grad_logits_triton_kernel(
     joint_hidden_ptr,
     targets_ptr,
@@ -554,7 +484,6 @@ def _rnnt_joint_fused_vocab_bwd_grad_logits_triton_kernel(
     pruning_starts_ptr,
     max_src_len: int,
     max_tgt_len_plus_1: int,
-    flattened_batch_size: int,
     chunk_start: int,
     chunk_size: int,
     hidden_dim: tl.constexpr,
@@ -575,13 +504,10 @@ def _rnnt_joint_fused_vocab_bwd_grad_logits_triton_kernel(
     Grad bias is accumulated with atomics (one atomic per vocab column per program).
     """
     compute_dtype = tl.float32
+    # NB: the flags go first, Triton 3.3 does not support `and` with a comparison of dtypes on the left
     matmul_dtype = (
         tl.bfloat16
-        if (
-            joint_hidden_ptr.dtype.element_ty == tl.bfloat16
-            and (not USE_HIGH_PRECISION_MM)
-            and (not MM_FULL_PRECISION)
-        )
+        if not (USE_HIGH_PRECISION_MM or MM_FULL_PRECISION) and joint_hidden_ptr.dtype.element_ty == tl.bfloat16
         else compute_dtype
     )
 
@@ -605,34 +531,25 @@ def _rnnt_joint_fused_vocab_bwd_grad_logits_triton_kernel(
     vocab_start = vocab_block_index * VOCAB_BLOCK
     vocab_offsets = vocab_start + tl.arange(0, VOCAB_BLOCK)
     vocab_mask = vocab_offsets < vocab_size
+    weight_rows = block_offsets_int64(vocab_start, VOCAB_BLOCK)
 
-    joint_hidden_block_ptr = tl.make_block_ptr(
-        base=joint_hidden_ptr,
-        shape=(chunk_size if PRUNING_RANGE else flattened_batch_size, hidden_dim),
-        strides=(hidden_dim, 1),
-        offsets=((0 if PRUNING_RANGE else chunk_start) + flattened_batch_block_index * FLATTENED_BATCH_BLOCK, 0),
-        block_shape=(FLATTENED_BATCH_BLOCK, HIDDEN_BLOCK),
-        order=(1, 0),
-    )
-    # transposed view of weight: [hidden_dim, vocab_size]
-    weight_t_block_ptr = tl.make_block_ptr(
-        base=weight_ptr,
-        shape=(hidden_dim, vocab_size),
-        strides=(1, hidden_dim),
-        offsets=(0, vocab_start),
-        block_shape=(HIDDEN_BLOCK, VOCAB_BLOCK),
-        order=(0, 1),
-    )
+    # with pruning the joint hidden contains only the rows of the chunk, otherwise - all rows of the flattened batch
+    hidden_row_start = flattened_batch_block_index * FLATTENED_BATCH_BLOCK
+    if not PRUNING_RANGE:
+        hidden_row_start += chunk_start
+    hidden_rows = block_offsets_int64(hidden_row_start, FLATTENED_BATCH_BLOCK)
 
     logits_block = tl.zeros([FLATTENED_BATCH_BLOCK, VOCAB_BLOCK], dtype=compute_dtype)
-    for _ in tl.range(0, hidden_dim, HIDDEN_BLOCK):
-        hidden_chunk = tl.load(joint_hidden_block_ptr, boundary_check=(0, 1)).to(matmul_dtype)
-        weight_chunk_t = tl.load(weight_t_block_ptr, boundary_check=(0, 1)).to(matmul_dtype)
+    for hidden_start in tl.range(0, hidden_dim, HIDDEN_BLOCK):
+        hidden_chunk = load_rows_block(
+            joint_hidden_ptr, hidden_rows, chunk_mask, hidden_start, hidden_dim, HIDDEN_BLOCK
+        ).to(matmul_dtype)
+        weight_chunk_t = load_rows_block(
+            weight_ptr, weight_rows, vocab_mask, hidden_start, hidden_dim, HIDDEN_BLOCK, TRANSPOSED=True
+        ).to(matmul_dtype)
         logits_block += matmul(hidden_chunk, weight_chunk_t, USE_HIGH_PRECISION=USE_HIGH_PRECISION_MM).to(
             compute_dtype
         )
-        joint_hidden_block_ptr = tl.advance(joint_hidden_block_ptr, (0, HIDDEN_BLOCK))
-        weight_t_block_ptr = tl.advance(weight_t_block_ptr, (HIDDEN_BLOCK, 0))
 
     bias_chunk = tl.load(bias_ptr + vocab_offsets, mask=vocab_mask, other=0.0).to(compute_dtype)
     logits_block += bias_chunk[None, :]
@@ -828,6 +745,8 @@ class _RnntJointFusedVocabTritonFunction(torch.autograd.Function):
             [vocab_size], dtype=float_dtype if weight_grad_full_precision else bias.dtype, device=device
         )
 
+        _check_atomic_accumulators(grad_joint_hidden, grad_weight, grad_bias)
+
         bwd_grid = lambda META: (
             triton.cdiv(flattened_batch_size, META["FLATTENED_BATCH_BLOCK"]),
             triton.cdiv(vocab_size, META["VOCAB_BLOCK"]),
@@ -985,9 +904,19 @@ def _normalize_backward_options(
 def _get_default_backward_mode(device: torch.device) -> FusedVocabBackwardMode:
     # Native bf16 atomic add (`red.global.add.noftz.bf16x2`) requires sm_90+; on older GPUs Triton emits
     # compare-and-swap loops, which makes the ATOMIC backward several times slower than the CHUNKED one.
-    if device.type == "cuda" and torch.cuda.get_device_capability(device)[0] >= 9:
+    # Triton < 3.4 does not support BF16 atomics at all.
+    if device.type == "cuda" and torch.cuda.get_device_capability(device)[0] >= 9 and BF16_ATOMICS_AVAILABLE:
         return FusedVocabBackwardMode.ATOMIC
     return FusedVocabBackwardMode.CHUNKED
+
+
+def _check_atomic_accumulators(*accumulators: torch.Tensor):
+    """Atomic backward accumulates the gradients with `tl.atomic_add`: BF16 accumulators require Triton 3.4+"""
+    if not BF16_ATOMICS_AVAILABLE and any(accumulator.dtype == torch.bfloat16 for accumulator in accumulators):
+        raise RuntimeError(
+            "Atomic backward of the fused Joint with BF16 gradients requires Triton 3.4+ (BF16 atomics), "
+            f"found Triton {triton.__version__}. Update Triton or use the chunked backward (`backward_mode='chunked'`)."
+        )
 
 
 def _rnnt_joint_fused_vocab_bwd_chunked(
@@ -1087,7 +1016,6 @@ def _rnnt_joint_fused_vocab_bwd_chunked(
             pruning_starts_ptr=pruning_starts,
             max_src_len=src_max_length,
             max_tgt_len_plus_1=tgt_max_length_plus_1,
-            flattened_batch_size=flattened_batch_size,
             chunk_start=chunk_start,
             chunk_size=chunk_size,
             hidden_dim=hidden_dim,

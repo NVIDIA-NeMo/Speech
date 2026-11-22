@@ -65,6 +65,7 @@ from tests.collections.asr.turbo_transducer.utils import (
     reference_outputs,
     reference_pruned_lattice_outputs,
     reference_pruning_windows,
+    skip_if_bf16_atomics_unsupported,
 )
 
 if TRITON_AVAILABLE:
@@ -156,6 +157,7 @@ class TestBackwardPruning:
     def test_mixed_precision_matches_masked_dense_reference(
         self, backward_mode, consistency_symmetrical, kernel_kwargs, weight_matmul_dtype, tolerances, monkeypatch
     ):
+        skip_if_bf16_atomics_unsupported(backward_mode, kernel_kwargs)
         _use_min_chunk_size(monkeypatch)
         inputs = make_joint_inputs(hidden_dtype=torch.bfloat16, double_batch=consistency_symmetrical is not None)
         leaves, reference_leaves = inputs.leaves(), inputs.leaves(torch.float64)
@@ -272,6 +274,7 @@ class TestBackwardPruning:
     @pytest.mark.parametrize("consistency_symmetrical", CONSISTENCY_MODES)
     def test_no_cuda_sync_operations(self, backward_mode, consistency_symmetrical):
         # BF16 joint hidden with FP32 master weights and default kernel arguments, as in training with autocast
+        skip_if_bf16_atomics_unsupported(backward_mode)
         inputs = make_joint_inputs(hidden_dtype=torch.bfloat16, double_batch=consistency_symmetrical is not None)
 
         def run_forward_backward():
@@ -390,6 +393,7 @@ class TestPrunedLattice:
     # BF16 joint hidden with FP32 master weights, see `TestBackwardPruning`. The precision of the kernels does not
     # depend on the consistency loss and is tested for it with the dense and the gathered rows of the joint hidden
     def test_mixed_precision_matches_masked_dense_reference(self, backward_mode, monkeypatch):
+        skip_if_bf16_atomics_unsupported(backward_mode)
         _use_min_chunk_size(monkeypatch)
         consistency_symmetrical = None
         inputs = make_joint_inputs(hidden_dtype=torch.bfloat16)
@@ -423,6 +427,8 @@ class TestPrunedLattice:
         ],
     )
     def test_no_cuda_sync_operations(self, backward_mode, consistency_symmetrical, hidden_dtype, kernel_kwargs):
+        if hidden_dtype == torch.bfloat16:
+            skip_if_bf16_atomics_unsupported(backward_mode, kernel_kwargs)
         inputs = make_joint_inputs(hidden_dtype=hidden_dtype, double_batch=consistency_symmetrical is not None)
         range_starts = random_pruning_range_starts(
             inputs, PRUNING_RANGE_SIZE, paired=consistency_symmetrical is not None

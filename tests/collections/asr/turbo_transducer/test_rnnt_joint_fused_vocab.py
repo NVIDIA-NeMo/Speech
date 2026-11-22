@@ -40,6 +40,7 @@ from tests.collections.asr.turbo_transducer.utils import (
     count_compiled_kernels,
     make_joint_inputs,
     reference_outputs,
+    skip_if_bf16_atomics_unsupported,
 )
 
 if TRITON_AVAILABLE:
@@ -183,7 +184,7 @@ class TestFusedVocabJoint:
     ):
         """BF16 joint hidden: matmul operands as in forward, gradients preserve the dtypes of the inputs"""
         if uses_bf16_atomics:
-            _skip_if_bf16_atomics_unsupported(backend)
+            _skip_if_bf16_atomics_unsupported(backend, backward_mode)
         _use_min_chunk_size(monkeypatch)
         inputs = make_joint_inputs(hidden_dtype=torch.bfloat16, param_dtype=param_dtype)
         leaves, reference_leaves = inputs.leaves(), inputs.leaves(torch.float64)
@@ -245,7 +246,7 @@ class TestFusedVocabJoint:
     def test_no_cuda_sync_operations(self, backend, backward_mode, mixed_precision):
         if mixed_precision:
             # BF16 joint hidden with FP32 master weights and default kernel arguments, as in training with autocast
-            _skip_if_bf16_atomics_unsupported(backend)
+            _skip_if_bf16_atomics_unsupported(backend, backward_mode)
             inputs, kernel_kwargs = make_joint_inputs(hidden_dtype=torch.bfloat16), {}
         else:
             inputs, kernel_kwargs = make_joint_inputs(), FULL_PRECISION
@@ -321,11 +322,23 @@ def test_no_recompilation_for_new_lattice_shape(backward_mode, monkeypatch):
         ((12, 0), "atomic"),
     ],
 )
-def test_default_backward_mode(capability, expected_mode, monkeypatch):
-    """Atomic backward requires native BF16 atomics (compute capability 9.0+)"""
+@pytest.mark.parametrize("bf16_atomics_available", [True, False])
+def test_default_backward_mode(capability, expected_mode, bf16_atomics_available, monkeypatch):
+    """Atomic backward requires native BF16 atomics (compute capability 9.0+), supported by Triton 3.4+"""
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: capability)
+    monkeypatch.setattr(fused_vocab_triton_module, "BF16_ATOMICS_AVAILABLE", bf16_atomics_available)
     backward_mode = fused_vocab_triton_module._get_default_backward_mode(torch.device("cuda"))
-    assert backward_mode == FusedVocabBackwardMode(expected_mode)
+    assert backward_mode == FusedVocabBackwardMode(expected_mode if bf16_atomics_available else "chunked")
+
+
+@requires_triton
+def test_atomic_backward_requires_bf16_atomics(monkeypatch):
+    """Triton < 3.4: a clear error instead of a failed compilation of the kernel with BF16 atomics"""
+    monkeypatch.setattr(fused_vocab_triton_module, "BF16_ATOMICS_AVAILABLE", False)
+    fp32_accumulator, bf16_accumulator = torch.zeros(1), torch.zeros(1, dtype=torch.bfloat16)
+    fused_vocab_triton_module._check_atomic_accumulators(fp32_accumulator, fp32_accumulator)
+    with pytest.raises(RuntimeError, match="requires Triton 3.4+"):
+        fused_vocab_triton_module._check_atomic_accumulators(fp32_accumulator, bf16_accumulator)
 
 
 def test_cutile_rejects_triton_only_options():
@@ -348,10 +361,12 @@ def _use_min_chunk_size(monkeypatch):
         monkeypatch.setattr(fused_vocab_triton_module, "CHUNKED_BWD_GRAD_LOGITS_BUFFER_BYTES", 1)
 
 
-def _skip_if_bf16_atomics_unsupported(backend: TurboTransducerBackend):
+def _skip_if_bf16_atomics_unsupported(backend: TurboTransducerBackend, backward_mode: str | None):
     """
     Accumulation of gradients in BF16 requires BF16 atomics, native only for compute capability 9.0+.
-    Triton emulates them on older GPUs with compare-and-swap loops, cuTile does not compile.
+    Triton emulates them on older GPUs with compare-and-swap loops (Triton 3.4+), cuTile does not compile.
     """
     if backend == TurboTransducerBackend.CUTILE and torch.cuda.get_device_capability() < (9, 0):
         pytest.skip("cuTile backend requires compute capability 9.0+ for BF16 atomics")
+    if backend == TurboTransducerBackend.TRITON:
+        skip_if_bf16_atomics_unsupported(backward_mode)

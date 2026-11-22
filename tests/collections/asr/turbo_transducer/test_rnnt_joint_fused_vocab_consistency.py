@@ -44,6 +44,7 @@ from tests.collections.asr.turbo_transducer.utils import (
     count_compiled_kernels,
     make_joint_inputs,
     reference_outputs,
+    skip_if_bf16_atomics_unsupported,
 )
 
 if TRITON_AVAILABLE:
@@ -146,6 +147,7 @@ class TestFusedVocabJointWithConsistency:
         self, backward_mode, param_dtype, symmetrical, tolerances, monkeypatch
     ):
         """BF16 joint hidden: BF16 matmul operands in backward, gradients preserve the dtypes of the inputs"""
+        skip_if_bf16_atomics_unsupported(backward_mode)
         _use_min_chunk_size(monkeypatch)
         inputs = make_joint_inputs(hidden_dtype=torch.bfloat16, param_dtype=param_dtype, double_batch=True)
         leaves, reference_leaves = inputs.leaves(), inputs.leaves(torch.float64)
@@ -197,6 +199,7 @@ class TestFusedVocabJointWithConsistency:
     @pytest.mark.parametrize("backward_mode", BACKWARD_MODES)
     def test_no_cuda_sync_operations(self, backward_mode):
         # BF16 joint hidden with FP32 master weights and default kernel arguments, as in training with autocast
+        skip_if_bf16_atomics_unsupported(backward_mode)
         inputs = make_joint_inputs(hidden_dtype=torch.bfloat16, double_batch=True)
 
         def run_forward_backward():

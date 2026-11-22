@@ -759,6 +759,8 @@ Requirements and limitations:
 
 * A CUDA GPU and the ``turbo_rnnt`` loss (see :ref:`Turbo-RNNT Loss <turbo-rnnt-loss>`) without gradient clamping (``clamp``): clamping is applied to the gradient for the Joint output, which is not materialized. An incompatible loss is rejected when the model is constructed.
 
+* The ``triton`` backend supports Triton 3.3 and newer (the version installed with PyTorch 2.7). Triton 3.3 does not cache the results of kernel autotuning on disk: the kernels are autotuned on the first training step of each run (typically 10-30 seconds).
+
 * Not compatible with ``fuse_loss_wer``, ``preserve_memory`` and the Joint with extra outputs (e.g., TDT models).
 
 * Supported by ``RNNTJoint``; ``HATJoint`` and ``SampledRNNTJoint`` do not support the kernel.
@@ -842,7 +844,7 @@ The loss config is based on a resolver pattern and can be used as follows:
 Turbo-RNNT Loss
 ^^^^^^^^^^^^^^^
 
-``turbo_rnnt`` is a memory-efficient RNN-T loss implemented in Triton (requires a CUDA GPU and Triton).
+``turbo_rnnt`` is a memory-efficient RNN-T loss implemented in Triton (requires a CUDA GPU and Triton 3.3 or newer).
 It first reduces the Joint output to the log-probabilities of the target and blank labels with a fused log-softmax kernel,
 then computes the loss from these small tensors. Computations are performed in ``float32``, but the gradient for the Joint output
 is stored in the dtype of the Joint output, so ``bfloat16`` training does not require upcasting the Joint output to ``float32``.

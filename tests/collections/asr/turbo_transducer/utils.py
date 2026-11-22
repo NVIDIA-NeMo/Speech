@@ -23,11 +23,16 @@ and deviate from them only when the dimension itself is the subject of the test.
 
 from dataclasses import dataclass, field
 
+import pytest
 import torch
 import torch.nn.functional as F
 
 from nemo.collections.asr.parts.turbo_transducer.rnnt_consistency import get_rnnt_mask, kl_loss_torch
 from nemo.collections.asr.parts.turbo_transducer.rnnt_logprobs import rnnt_logprobs_torch
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE
+
+if TRITON_AVAILABLE:
+    from nemo.collections.asr.parts.turbo_transducer.utils_triton import BF16_ATOMICS_AVAILABLE
 
 # With the tile size 16 used in tests (see `conftest.py`): 2 full hidden tiles and a partial one
 HIDDEN_DIM = 40
@@ -370,3 +375,13 @@ def count_compiled_kernels(*modules) -> dict[str, int]:
                 kernel = kernel.fn
             counts[name] = sum(len(device_cache[0]) for device_cache in kernel.device_caches.values())
     return counts
+
+
+def skip_if_bf16_atomics_unsupported(backward_mode: str | None, kernel_kwargs: dict | None = None):
+    """
+    Skip a test of the Triton kernels with BF16 joint hidden, if the gradients are accumulated with BF16 atomics
+    (atomic backward without `input_grad_full_precision`), which are not supported by Triton < 3.4
+    """
+    uses_bf16_atomics = backward_mode == "atomic" and not (kernel_kwargs or {}).get("input_grad_full_precision")
+    if uses_bf16_atomics and TRITON_AVAILABLE and not BF16_ATOMICS_AVAILABLE:
+        pytest.skip("BF16 atomics require Triton 3.4+")

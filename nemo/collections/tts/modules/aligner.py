@@ -1201,6 +1201,80 @@ def prepare_attention_alignment_training(
     return AttentionAlignmentTrainingOutput(teacher, guidance, metrics, targets, target_mask)
 
 
+@torch.no_grad()
+def collect_aligned_text_head_diagnostics(
+    model, hidden, alignment, text, text_lens, audio_lens, targets, loss_mask, max_examples=3
+):
+    """Capture bounded teacher-forced plots and full repeated-token observations.
+
+    The teacher supplies occurrence positions; head columns retain full-vocabulary
+    probabilities and intentionally coincide for repeated instances of one BPE ID.
+    Call only for the validation examples selected for logging.
+    """
+    if max_examples < 1:
+        return []
+    tokens, lengths, turns, _ = compact_conditioning_turns(
+        model, text, text_lens, audio_lens, bool(model.cfg.get('use_multiturn_dataset', False))
+    )
+    frame_seconds = model.codec_model_samples_per_frame * model.frame_stacking_factor / model.sample_rate
+    records, turn_numbers = [], {}
+    path = alignment.teacher.token_indices
+    steps = min(hidden.size(1), targets.size(1), loss_mask.size(1), path.size(1))
+    for row, (sample, start, end, count) in enumerate(torch.cat([turns, lengths[:, None]], dim=1).cpu().tolist()):
+        turn_index = turn_numbers.get(sample, 0)
+        turn_numbers[sample] = turn_index + 1
+        end = min(end, steps)
+        if not (0 <= start < end and count > 0) or not path[sample, start:end].ge(0).any():
+            continue
+        for frame in range(end, min(end + 2, steps)):
+            if path[sample, frame] >= 0:
+                break
+            if loss_mask[sample, frame] and targets[sample, frame] == model.eos_id:
+                end = frame + 1
+        token_ids = tokens[row, :count].long()
+        mas_chunks, probability_chunks, predictions, confidences = [], [], [], []
+        for offset in range(start, end, model.aligned_text_head_chunk_size):
+            stop = min(end, offset + model.aligned_text_head_chunk_size)
+            logits = model.aligned_text_head(hidden[sample, offset:stop].detach()).float()
+            probabilities = logits.masked_fill(~model._aligned_text_output_mask, -torch.inf).softmax(dim=-1)
+            confidence, predicted = probabilities.max(dim=-1)
+            predictions.extend(predicted.cpu().tolist())
+            confidences.extend(confidence.cpu().tolist())
+            valid = loss_mask[sample, offset:stop].bool()
+            indices = path[sample, offset:stop]
+            mas_valid = valid & (indices >= 0) & (indices < count)
+            mas = F.one_hot(indices.clamp(0, count - 1).long(), num_classes=count).float()
+            selected = probabilities.index_select(-1, token_ids)
+            for values, mask, chunks in ((mas, mas_valid, mas_chunks), (selected, valid, probability_chunks)):
+                values = values.masked_fill(~mask[:, None], torch.nan)
+                chunks.append(F.adaptive_max_pool1d(values[:, None], min(count, 256)).squeeze(1).cpu())
+        displays = [
+            F.adaptive_max_pool1d(torch.cat(chunks).T[None], min(end - start, 1024)).squeeze(0).T
+            for chunks in (mas_chunks, probability_chunks)
+        ]
+        records.append(
+            dict(
+                batch_index=sample,
+                turn_index=turn_index,
+                start_frame=start,
+                end_frame=end,
+                frame_seconds=frame_seconds,
+                token_ids=token_ids.cpu().tolist(),
+                mas_alignment=displays[0],
+                head_probabilities=displays[1],
+                predicted_token_ids=predictions,
+                predicted_probabilities=confidences,
+                target_token_ids=targets[sample, start:end].cpu().tolist(),
+                supervised=loss_mask[sample, start:end].bool().cpu().tolist(),
+                curriculum_active=bool(alignment.metrics.get('aligned_text_curriculum_active', False)),
+                special_token_labels={int(model.pad_id): '<PAD>', int(model.eos_id): '<EOS>'},
+            )
+        )
+        if len(records) >= max_examples:
+            break
+    return records
+
+
 def compact_conditioning_turns(model, text, text_lens, audio_lens, is_multiturn):
     """Recover raw conditioning IDs, exact key positions, and acoustic spans.
 

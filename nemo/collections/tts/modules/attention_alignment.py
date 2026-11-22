@@ -970,6 +970,84 @@ def save_token_timestamps(audio_path, trace, tokenizer=None, **kwargs):
     return str(destination)
 
 
+def plot_aligned_text_head_alignment(diagnostic, tokenizer):
+    """Return a text-versus-speech figure and unaltered framewise predictions."""
+    import matplotlib.pyplot as plt
+
+    tokens = diagnostic['token_ids']
+    start, end = diagnostic['start_frame'], diagnostic['end_frame']
+    seconds = diagnostic['frame_seconds']
+    special = diagnostic.get('special_token_labels', {})
+
+    def label(token_id):
+        return special[token_id] if token_id in special else _token_label(tokenizer, token_id)
+
+    rows = [
+        [
+            frame,
+            frame * seconds,
+            (frame + 1) * seconds,
+            predicted,
+            label(predicted),
+            probability,
+            target,
+            label(target),
+            supervised,
+        ]
+        for frame, predicted, probability, target, supervised in zip(
+            range(start, end),
+            diagnostic['predicted_token_ids'],
+            diagnostic['predicted_probabilities'],
+            diagnostic['target_token_ids'],
+            diagnostic['supervised'],
+        )
+    ]
+    figure, axes = plt.subplots(1, 2, figsize=(14, 7), sharey=True)
+    colormap = plt.get_cmap('viridis').copy()
+    colormap.set_bad('lightgray')
+    ticks = torch.linspace(0, len(tokens) - 1, min(len(tokens), 32)).round().long().unique().tolist()
+    labels = [f'{index}: {label(tokens[index])}' for index in ticks]
+    for axis, name, values in zip(
+        axes, ['MAS teacher', 'BPE head probability'], [diagnostic['mas_alignment'], diagnostic['head_probabilities']]
+    ):
+        maximum = 1.0 if name == 'MAS teacher' else max(float(torch.nan_to_num(values).max()), 1e-8)
+        image = axis.imshow(
+            values.numpy(),
+            origin='lower',
+            aspect='auto',
+            interpolation='nearest',
+            cmap=colormap,
+            vmin=0,
+            vmax=maximum,
+            extent=(-0.5, len(tokens) - 0.5, start * seconds, end * seconds),
+        )
+        axis.set_title(name)
+        axis.set_xlabel('Conditioning BPE token occurrence')
+        axis.set_xticks(ticks, labels, rotation=60, ha='right', fontsize=7)
+        for tick in axis.get_xticklabels():
+            tick.set_parse_math(False)
+        colorbar = figure.colorbar(image, ax=axis, fraction=0.046)
+        if name != 'MAS teacher':
+            colorbar.set_label('Full-vocabulary probability')
+    axes[0].set_ylabel('Speech time (s)')
+    figure.suptitle(f'Teacher-forced validation: sample {diagnostic["batch_index"]}, turn {diagnostic["turn_index"]}')
+    curriculum = (
+        'MAS-repeated head targets.'
+        if diagnostic['curriculum_active']
+        else 'Head targets are right-padded during warmup.'
+    )
+    figure.text(
+        0.5,
+        0.01,
+        'Duplicate BPE IDs share head probabilities; the head does not identify separate occurrences.\n'
+        f'Gray: no MAS assignment or masked supervision. Long sequences are max-pooled for display. {curriculum}',
+        ha='center',
+        fontsize=8,
+    )
+    figure.tight_layout(rect=(0, 0.07, 1, 0.95))
+    return figure, rows
+
+
 def resolve_timestamp_config(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Validate independent, opt-in timestamp recording configuration."""
     values = dict(

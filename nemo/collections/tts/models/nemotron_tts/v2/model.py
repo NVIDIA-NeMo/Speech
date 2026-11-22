@@ -37,10 +37,12 @@ from nemo.collections.tts.data.text_to_speech_dataset_lhotse import MagpieTTSLho
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import MagpieTTSLhotseMultiturnDataset
 from nemo.collections.tts.models.nemotron_tts.v2.base import NemotronTTSBase, TrainingMode
 from nemo.collections.tts.modules.aligner import (
+    collect_aligned_text_head_diagnostics,
     init_training_alignment,
     prepare_attention_alignment_training,
     reload_pretrained_aligner,
 )
+from nemo.collections.tts.modules.attention_alignment import plot_aligned_text_head_alignment
 from nemo.collections.tts.modules.magpietts_modules import (
     add_special_tokens,
     remove_eos_token,
@@ -115,6 +117,7 @@ class ProcessBatchOutput:
     aligned_text_loss: Optional[torch.Tensor] = None
     aligned_text_targets: Optional[torch.Tensor] = None
     aligned_text_mask: Optional[torch.Tensor] = None
+    aligned_text_diagnostics: Optional[List[dict]] = None
 
 
 class NemotronTTSModel(NemotronTTSBase):
@@ -242,6 +245,42 @@ class NemotronTTSModel(NemotronTTSBase):
             'whisper_processor',
             '_utmos_calculator',
         ]
+
+    def _log_aligned_text_head_examples(self, output):
+        """Build W&B media for the first validation turns without retaining logits."""
+        if (
+            not self.use_aligned_text_head
+            or not output.aligned_text_diagnostics
+            or not any(isinstance(logger, WandbLogger) for logger in self.loggers)
+        ):
+            return {}
+        import matplotlib.pyplot as plt
+
+        media = {'trainer/global_step': self.global_step}
+        columns = [
+            'frame_index',
+            'start_seconds',
+            'end_seconds',
+            'predicted_token_id',
+            'predicted_token',
+            'predicted_probability',
+            'target_token_id',
+            'target_token',
+            'supervised',
+        ]
+        for index, diagnostic in enumerate(output.aligned_text_diagnostics):
+            figure, rows = plot_aligned_text_head_alignment(diagnostic, self.tokenizer)
+            try:
+                targets = 'MAS-repeated' if diagnostic['curriculum_active'] else 'right-padded'
+                caption = (
+                    f"Teacher-forced validation, batch {diagnostic['batch_index']}, "
+                    f"turn {diagnostic['turn_index']}; head targets: {targets}."
+                )
+                media[f'Aligned_Text/Alignment_{index}'] = wandb.Image(figure, caption=caption)
+                media[f'Aligned_Text/Tokens_{index}'] = wandb.Table(columns=columns, data=rows)
+            finally:
+                plt.close(figure)
+        return media
 
     def compute_loss(
         self,
@@ -1011,6 +1050,7 @@ class NemotronTTSModel(NemotronTTSBase):
         user_audio_embedded: Optional[torch.Tensor] = None,
         return_policy_logits: bool = False,
         audio_codes_are_stacked: bool = False,
+        return_aligned_text_diagnostics: bool = False,
     ) -> ProcessBatchOutput:
         """
         Simplified batch processing using channel-based embedding architecture.
@@ -1051,6 +1091,7 @@ class NemotronTTSModel(NemotronTTSBase):
             return_policy_logits: Return teacher-forced acoustic predictor logits for online policy training.
                 Policy scoring disables training corruption and acoustic alignment supervision.
             audio_codes_are_stacked: Input audio codes are exact stacked rollout actions, including EOS.
+            return_aligned_text_diagnostics: Collect bounded, detached BPE-head validation examples.
 
         Returns:
             ProcessBatchOutput: Contains loss values and model predictions
@@ -1446,6 +1487,7 @@ class NemotronTTSModel(NemotronTTSBase):
 
         attention_alignment_loss = None
         aligned_text_loss = aligned_text_targets = aligned_text_mask = None
+        aligned_text_diagnostics = None
         if alignment is not None:
             loss = loss + self.aligner_loss_weight * alignment.teacher.loss
             if self.use_aligned_text_head:
@@ -1463,6 +1505,17 @@ class NemotronTTSModel(NemotronTTSBase):
                     chunk_size=self.aligned_text_head_chunk_size,
                 )
                 loss = loss + self.aligned_text_loss_weight * aligned_text_loss
+                if return_aligned_text_diagnostics:
+                    aligned_text_diagnostics = collect_aligned_text_head_diagnostics(
+                        self,
+                        pred_embeddings,
+                        alignment,
+                        alignment_text,
+                        text_lens,
+                        audio_codes_lens,
+                        aligned_text_targets,
+                        aligned_text_mask,
+                    )
             if self.use_attention_alignment:
                 attention_alignment_loss = getattr(transformer_out, 'attention_alignment_loss', None)
                 if attention_alignment_loss is None:
@@ -1495,6 +1548,7 @@ class NemotronTTSModel(NemotronTTSBase):
             aligned_text_loss=aligned_text_loss,
             aligned_text_targets=aligned_text_targets,
             aligned_text_mask=aligned_text_mask,
+            aligned_text_diagnostics=aligned_text_diagnostics,
         )
 
     def training_step(self, batch, batch_idx):
@@ -1808,6 +1862,12 @@ class NemotronTTSModel(NemotronTTSBase):
             audio_lens = batch['audio_lens']
             audio_codes, audio_codes_lens = self._codec_helper.audio_to_codes(audio, audio_lens)
 
+        log_aligned_text = (
+            self.use_aligned_text_head
+            and batch_idx == 0
+            and self.global_rank == 0
+            and any(isinstance(logger, WandbLogger) for logger in self.loggers)
+        )
         batch_output = self.process_batch(
             text=batch['text'],
             text_lens=batch['text_lens'],
@@ -1822,6 +1882,7 @@ class NemotronTTSModel(NemotronTTSBase):
             mode="val",
             task=batch["task"] if "task" in batch else None,
             agent_mask=batch["agent_mask"] if "agent_mask" in batch else None,
+            return_aligned_text_diagnostics=log_aligned_text,
         )
         self._log_alignment_losses(batch_output, 'val', batch['text'].size(0))
         # Access ProcessBatchOutput dataclass attributes
@@ -1844,6 +1905,7 @@ class NemotronTTSModel(NemotronTTSBase):
                     logits, audio_codes_target, audio_codes_lens_target, context_audio_codes, context_audio_codes_lens
                 )
             )
+            wandb_log_dict.update(self._log_aligned_text_head_examples(batch_output))
 
             # Perform single wandb log call if wandb is active and there is data
             for logger in self.loggers:

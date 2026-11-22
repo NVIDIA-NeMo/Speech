@@ -81,6 +81,20 @@ Streaming consumers can read the current prediction from
 `predicted_aligned_text_tokens_lens`. These repeated token IDs use the stacked
 audio-step grid and are cropped to the generated audio.
 
+With a W&B logger, enabling the head also logs the first three valid turns from
+the first validation batch on rank zero. `Aligned_Text/Alignment_0` (and `_1`,
+`_2`) shows the MAS teacher beside the head's BPE probabilities, with text on the
+horizontal axis and speech time in seconds on the vertical axis. Identical BPE
+IDs share probability values across their text occurrences; the prediction panel
+does not infer a unique occurrence from the token ID. These are teacher-forced
+validation predictions. The caption identifies the current head-target curriculum.
+
+`Aligned_Text/Tokens_0` (and `_1`, `_2`) contains each frame's predicted and target
+token IDs/pieces, probability, time interval, and supervision mask. Figures use
+max pooling for long turns while tables retain the frame sequence. Diagnostics
+are detached and projected in chunks only for these logged examples. Head-disabled
+runs and runs without W&B preserve their usual validation computation.
+
 ## Training precision
 
 V2 supports `bf16-true` and `16-true` training. The codec, quantizer conversion,

@@ -126,3 +126,113 @@ class TestResetBeamScore:
         state.reset_beam_score_()  # must not raise
         assert state.hyp_decoding_state.score[0].item() == 0.0
         assert state.hyp_decoding_state.current_lengths_nb[0].item() == 0.0
+
+
+# Token ids used as "word starts" in this test's fake vocabulary; every other id is a continuation
+# sub-token. Chosen arbitrarily -- only membership in this set matters.
+WORD_STARTS = {10, 12, 14}
+
+
+def is_token_start_of_word(token_id: int) -> bool:
+    return token_id in WORD_STARTS
+
+
+def run_eou_cycle(state: CacheAwareRNNTBeamStreamingState, resume_global_frame: int) -> None:
+    """Mirror `CacheAwareRNNTPipeline._apply_beam_update_`'s EOU-with-carryover path."""
+    old_start = state._cumulative_tokens_len
+    beam_size = len(state.partial_tokens) if state.partial_tokens is not None else None
+    cum_tokens, cum_ts, cum_conf = state.refresh_publish_tokens()
+
+    state.prepare_finalize(resume_global_frame, is_token_start_of_word=is_token_start_of_word)
+    fold_at = old_start + len(state.tokens)
+    state.set_eou_search_start(resume_global_frame)
+    carryover = (state._carryover_tokens, state._carryover_timesteps, state._carryover_confidences)
+
+    state.fold_cumulative_(cum_tokens, cum_ts, cum_conf, fold_at=fold_at, carryover=carryover, beam_size=beam_size)
+
+    # Mirrors the pipeline: bpe-decode the finalized `state.tokens` here (skipped, not under test),
+    # then clean up and restore the carryover as the next utterance's start.
+    state.cleanup_after_eou()
+    state.restore_carryover()
+
+
+class TestCacheAwareRNNTBeamStreamingStateCarryover:
+    """
+    Regression coverage for the beam carryover fold-point fix: `CacheAwareRNNTBeamStreamingState`
+    must not duplicate or drop tokens that survive past an EoU point when the underlying beam
+    decoder's own `cumulative_*`/`partial_*` bookkeeping keeps growing across EoU cycles.
+
+    Before the fix, `update_()` always folded `cumulative_tokens` at `len(cum_tokens)` (the full
+    stream) regardless of where the carryover split fell, so any tokens manually restored into
+    `state.tokens` for the next utterance were silently dropped again the moment the next chunk's
+    `refresh_publish_tokens`/`fold_cumulative_` re-derived `state.tokens` from `cumulative_* +
+    partial_*` -- the carryover was never reflected in that bookkeeping. This test's first two
+    assertions after the second `append_chunk_beam_` call (`cum_tokens`/`state.tokens` below) are the
+    ones that would fail under that unmodified behavior: `state.tokens` would come back as just
+    `[14, 15]` (the carryover silently dropped) instead of `[12, 13, 14, 15]`.
+    """
+
+    @pytest.mark.unit
+    def test_two_consecutive_eou_cycles_preserve_all_tokens_without_duplication(self):
+        state = CacheAwareRNNTBeamStreamingState()
+        state.hyp_decoding_state = object()  # sentinel: only None-checked by `_get_tokens`
+
+        # Chunk 1: produces utterance-1 tokens [10, 11] plus utterance-2's opening tokens [12, 13],
+        # all in a single beam (beam_size=1).
+        state.append_chunk_beam_(
+            chunk_tokens=[[10, 11, 12, 13]],
+            chunk_timestamps=[[0, 1, 5, 6]],
+            root_ptrs=[0],
+            beam_size=1,
+            best_hyp_idx=0,
+        )
+        # EoU fires with the resume point at token 12 (timestep 5): utterance 1 = [10, 11],
+        # carryover (utterance 2's start) = [12, 13].
+        run_eou_cycle(state, resume_global_frame=5)
+
+        assert state.cumulative_tokens == [10, 11]
+        assert state.tokens == [12, 13]
+        assert state.timesteps == [5, 6]
+        assert state.partial_tokens == [[12, 13]]
+
+        # Chunk 2: the beam decoder keeps growing its own hypothesis from where it left off --
+        # lineage-appends new tokens [14, 15] onto the (seeded) carryover in `partial_tokens`.
+        state.append_chunk_beam_(
+            chunk_tokens=[[14, 15]],
+            chunk_timestamps=[[10, 11]],
+            root_ptrs=[0],
+            beam_size=1,
+            best_hyp_idx=0,
+        )
+        cum_tokens, cum_ts, _ = state.refresh_publish_tokens()
+
+        # No duplication: the carryover [12, 13] appears exactly once in the combined stream.
+        assert cum_tokens == [10, 11, 12, 13, 14, 15]
+        assert cum_ts == [0, 1, 5, 6, 10, 11]
+        # No loss: the presentation copy is carryover + new tokens, not just the new chunk.
+        assert state.tokens == [12, 13, 14, 15]
+
+        # Second EoU fires with the resume point at token 14 (timestep 10): utterance 2 = [12, 13],
+        # carryover (utterance 3's start) = [14, 15].
+        run_eou_cycle(state, resume_global_frame=10)
+
+        assert state.cumulative_tokens == [10, 11, 12, 13]
+        assert state.tokens == [14, 15]
+        assert state.timesteps == [10, 11]
+
+    @pytest.mark.unit
+    def test_full_fold_with_no_carryover_clears_partial_state(self):
+        state = CacheAwareRNNTBeamStreamingState()
+        state.hyp_decoding_state = object()
+        state.append_chunk_beam_(
+            chunk_tokens=[[10, 11]], chunk_timestamps=[[0, 1]], root_ptrs=[0], beam_size=1, best_hyp_idx=0
+        )
+        cum_tokens, cum_ts, cum_conf = state.refresh_publish_tokens()
+
+        # No carryover (fold_at=None): mirrors the final-frame flush, where the whole utterance is
+        # finalized and there is nothing left over for a next utterance.
+        state.fold_cumulative_(cum_tokens, cum_ts, cum_conf)
+
+        assert state.cumulative_tokens == [10, 11]
+        assert state.partial_tokens is None
+        assert state.best_hyp_idx is None

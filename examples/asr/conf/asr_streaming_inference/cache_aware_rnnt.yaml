@@ -113,8 +113,8 @@ confidence:
 # Endpointing settings
 # ========================
 endpointing:
-  stop_history_eou: 800                       # Time window (ms) for evaluating EoU
-  residue_tokens_at_end: 2                    # Number of residual tokens used for EoU
+  stop_history_eou: 400
+  stop_history_eou_end: 1000
 
 
 # ========================

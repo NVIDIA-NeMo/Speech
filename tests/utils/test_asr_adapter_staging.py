@@ -184,3 +184,20 @@ def test_action_propagates_preparation_result(exit_code: int, tmp_path: Path) ->
         'bash',
         'tests/setup/models/prestage_asr_adapter.sh',
     ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('has_contents', [False, True])
+def test_stage_preserves_directory_destination(
+    has_contents: bool, tmp_path: Path, staging_env: dict[str, str]
+) -> None:
+    destination = tmp_path / 'models/model.nemo'
+    destination.mkdir(parents=True)
+    if has_contents:
+        (destination / 'keep.txt').write_text('keep existing contents')
+    expected = {p.name: p.read_bytes() for p in destination.iterdir()}
+    result = subprocess.run(['bash', str(STAGE), str(destination)], env=staging_env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert destination.is_dir()
+    assert {p.name: p.read_bytes() for p in destination.iterdir()} == expected
+    assert not list(destination.parent.rglob('*.tmp.*'))

@@ -30,4 +30,4 @@ if ! is_checkpoint "$temporary"; then
     echo "Downloaded ASR adapter checkpoint is not a valid NeMo archive" >&2
     exit 1
 fi
-mv -f "$temporary" "$checkpoint"
+mv -fT -- "$temporary" "$checkpoint"

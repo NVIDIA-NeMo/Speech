@@ -281,6 +281,7 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
         blank_mask,
         blank_id,
         hidden_dim,
+        vocab_size,
         HIDDEN_BLOCK,
     )
     student_target_logits, student_blank_logits = _target_blank_logits(
@@ -292,6 +293,7 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
         blank_mask,
         blank_id,
         hidden_dim,
+        vocab_size,
         HIDDEN_BLOCK,
     )
 
@@ -1222,19 +1224,24 @@ def _target_blank_logits(
     blank_mask,
     blank_id: tl.constexpr,
     hidden_dim: tl.constexpr,
+    vocab_size: tl.constexpr,
     HIDDEN_BLOCK: tl.constexpr,
 ):
     """
     Target and blank logits of the hidden rows: dot products with the gathered weight rows (CUDA cores).
-    Bias and weight rows are gathered without the target mask: labels are zero (a valid row) at positions without
-    a target, and their target logits are not stored. With the target mask, `TritonGPURemoveLayoutConversions`
-    in Triton 3.7 fails ("'tt.load' op failed to verify that mask type matches ptr type").
+    Bias and weight rows are gathered without the target mask. With the target mask,
+    `TritonGPURemoveLayoutConversions` in Triton 3.7 fails ("'tt.load' op failed to verify that mask type
+    matches ptr type"). Instead, the labels are clamped to the vocabulary: the parameters are never read outside
+    the tensors for the positions without a target (label -1) and for the labels outside the vocabulary (invalid
+    input). The target logit is NaN for a label outside the vocabulary.
     """
     compute_dtype = tl.float32
-    target_logits = tl.load(bias_ptr + targets).to(compute_dtype)
+    target_is_valid = (targets >= 0) & (targets < vocab_size)
+    safe_targets = tl.minimum(tl.maximum(targets, 0), vocab_size - 1)
+    target_logits = tl.load(bias_ptr + safe_targets).to(compute_dtype)
     blank_logits = tl.zeros_like(target_logits) + tl.load(bias_ptr + blank_id).to(compute_dtype)
     hidden_rows = rows.to(tl.int64) * hidden_dim
-    target_weight_rows = targets.to(tl.int64) * hidden_dim
+    target_weight_rows = safe_targets.to(tl.int64) * hidden_dim
     for hidden_start in tl.range(0, hidden_dim, HIDDEN_BLOCK):
         hidden_offsets = hidden_start + tl.arange(0, HIDDEN_BLOCK)
         hidden_mask = hidden_offsets < hidden_dim
@@ -1253,7 +1260,7 @@ def _target_blank_logits(
         ).to(compute_dtype)
         target_logits += tl.sum(hidden_chunk * target_weight_chunk, axis=1)
         blank_logits += tl.sum(hidden_chunk * blank_weight_chunk[None, :], axis=1)
-    return target_logits, blank_logits
+    return tl.where(target_is_valid, target_logits, float("nan")), blank_logits
 
 
 @triton.jit

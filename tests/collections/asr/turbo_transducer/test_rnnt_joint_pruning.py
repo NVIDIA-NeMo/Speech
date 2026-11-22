@@ -25,6 +25,7 @@ tests of the fused Joint, see `conftest.py` and `utils.py`; the pruning range is
 the kernels, so the tests use `PRUNING_RANGE_SIZE` unless the range itself is tested.
 """
 
+import dataclasses
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -51,6 +52,7 @@ from tests.collections.asr.turbo_transducer.utils import (
     HIDDEN_DIM,
     LATTICES_WITH_DIFFERENT_SPECIALIZATION,
     PRUNING_RANGE_SIZE,
+    SRC_LENGTHS,
     TGT_LENGTHS,
     VOCAB_SIZE,
     JointInputs,
@@ -791,6 +793,128 @@ def test_window_selection(range_size, paired, dtype):
         paired=paired,
     )
     assert torch.count_nonzero(starts) == 0
+
+
+def _invalid_input_cases(inputs: JointInputs, pruned_lattice: bool, range_start: int) -> dict:
+    """
+    Arguments of `_fused_joint` for the tests with invalid targets or lengths. With `pruned_lattice`, all pruning
+    ranges of the first and the last utterance (of each half of a double batch) start at `range_start`.
+    """
+    if not pruned_lattice:
+        return {}
+    is_double_batch = inputs.joint_hidden.shape[0] != len(SRC_LENGTHS)
+    range_starts = random_pruning_range_starts(inputs, PRUNING_RANGE_SIZE, paired=is_double_batch)
+    range_starts[0] = range_start
+    range_starts[-1] = range_start
+    return dict(pruning_range_starts=range_starts)
+
+
+def _assert_equal_with_nan(actual: torch.Tensor, expected: torch.Tensor):
+    """Bitwise equal tensors, NaN values at the same positions"""
+    assert torch.equal(torch.isnan(actual), torch.isnan(expected))
+    assert torch.equal(actual.nan_to_num(nan=0.0), expected.nan_to_num(nan=0.0))
+
+
+@pytest.mark.gpu
+@requires_triton_cuda
+@pytest.mark.parametrize("consistency_symmetrical", CONSISTENCY_MODES)
+@pytest.mark.parametrize("pruned_lattice", [False, True])
+def test_target_length_beyond_targets_tensor(consistency_symmetrical, pruned_lattice):
+    """
+    Regression: for a target length larger than the width of the targets tensor (invalid input) the labels were
+    read after the end of the tensor. There is no label for the positions after the last target of the tensor:
+    their log-probability is NaN (the loss also rejects the length), other utterances are not affected.
+    """
+    inputs = make_joint_inputs(double_batch=consistency_symmetrical is not None)
+    num_utterances, num_targets = len(SRC_LENGTHS), inputs.targets.shape[1]
+    last_src_length = SRC_LENGTHS[-1]
+    # the ranges of the last utterance contain the last target position (without a label)
+    kwargs = _invalid_input_cases(inputs, pruned_lattice, range_start=num_targets + 1 - PRUNING_RANGE_SIZE)
+    with torch.no_grad():
+        expected_outputs = _fused_joint(inputs, inputs.leaves(), consistency_symmetrical, **kwargs, **FULL_PRECISION)
+
+    # the last utterance (of each half of a double batch): the target length exceeds the number of targets
+    tgt_lengths = inputs.tgt_lengths.clone()
+    tgt_lengths[num_utterances - 1 :: num_utterances] = num_targets + 1
+    outputs_by_label = []
+    for label_after_targets in [1, 5]:
+        # the targets are the head of a larger buffer: reading after the end of the tensor would change the result
+        buffer = torch.cat([inputs.targets.reshape(-1), torch.full_like(inputs.targets[0], label_after_targets)])
+        targets = buffer[: inputs.targets.numel()].view(inputs.targets.shape)
+        invalid_inputs = dataclasses.replace(inputs, targets=targets, tgt_lengths=tgt_lengths)
+        with torch.no_grad():
+            outputs_by_label.append(
+                _fused_joint(invalid_inputs, inputs.leaves(), consistency_symmetrical, **kwargs, **FULL_PRECISION)
+            )
+    for outputs, other_outputs in zip(*outputs_by_label):
+        _assert_equal_with_nan(outputs, other_outputs)
+    target_logprobs = outputs_by_label[0][0]
+    for batch_index in range(num_utterances - 1, target_logprobs.shape[0], num_utterances):
+        assert torch.isnan(target_logprobs[batch_index, :last_src_length, num_targets]).all()
+        # valid target positions of the utterance are not changed
+        _assert_equal_with_nan(target_logprobs[batch_index, :, :3], expected_outputs[0][batch_index, :, :3])
+    # other utterances are not affected
+    is_valid_utterance = torch.ones(target_logprobs.shape[0], dtype=torch.bool, device="cuda")
+    is_valid_utterance[num_utterances - 1 :: num_utterances] = False
+    for outputs, expected in zip(outputs_by_label[0][:2], expected_outputs[:2]):
+        _assert_equal_with_nan(outputs[is_valid_utterance], expected[is_valid_utterance])
+
+
+@pytest.mark.gpu
+@requires_triton_cuda
+@pytest.mark.parametrize("consistency_symmetrical", CONSISTENCY_MODES)
+@pytest.mark.parametrize("pruned_lattice", [False, True])
+@pytest.mark.parametrize("invalid_label", [-1, VOCAB_SIZE])
+def test_target_label_outside_vocabulary(consistency_symmetrical, pruned_lattice, invalid_label):
+    """
+    Regression: a target label outside the vocabulary (invalid input) had a finite log-probability, so the loss
+    was finite; with the consistency loss the label was used as an address of the projection parameters.
+    The log-probability of such a label is NaN (NaN loss, which can be masked), other positions are not affected.
+    The labels after the target length (padding) are ignored.
+    """
+    inputs = make_joint_inputs(double_batch=consistency_symmetrical is not None)
+    num_utterances, num_targets = len(SRC_LENGTHS), inputs.targets.shape[1]
+    invalid_target_index = 2
+    # the ranges of the first utterance contain the target position with the invalid label
+    kwargs = _invalid_input_cases(inputs, pruned_lattice, range_start=invalid_target_index - 1)
+    with torch.no_grad():
+        expected_outputs = _fused_joint(inputs, inputs.leaves(), consistency_symmetrical, **kwargs, **FULL_PRECISION)
+
+    targets = inputs.targets.clone()
+    # arbitrary values of the padding
+    is_padding = torch.arange(num_targets, device="cuda")[None, :] >= inputs.tgt_lengths[:, None]
+    targets[is_padding] = torch.where(torch.arange(num_targets, device="cuda") % 2 == 0, -100, 10**6).expand_as(
+        targets
+    )[is_padding]
+    assert TGT_LENGTHS[0] > invalid_target_index
+    with torch.no_grad():
+        outputs = _fused_joint(
+            dataclasses.replace(inputs, targets=targets),
+            inputs.leaves(),
+            consistency_symmetrical,
+            **kwargs,
+            **FULL_PRECISION,
+        )
+    for output, expected in zip(outputs, expected_outputs):
+        _assert_equal_with_nan(output, expected)  # the padding is ignored
+
+    # the first utterance (of each half of a double batch): a label outside the vocabulary
+    targets[::num_utterances, invalid_target_index] = invalid_label
+    with torch.no_grad():
+        outputs = _fused_joint(
+            dataclasses.replace(inputs, targets=targets),
+            inputs.leaves(),
+            consistency_symmetrical,
+            **kwargs,
+            **FULL_PRECISION,
+        )
+    is_invalid = torch.zeros_like(outputs[0], dtype=torch.bool)
+    is_invalid[::num_utterances, : SRC_LENGTHS[0], invalid_target_index] = True
+    assert torch.isnan(outputs[0][is_invalid]).all()
+    _assert_equal_with_nan(outputs[0][~is_invalid], expected_outputs[0][~is_invalid])
+    # blank log-probabilities and the consistency loss do not depend on the labels
+    for output, expected in zip(outputs[1:], expected_outputs[1:]):
+        _assert_equal_with_nan(output, expected)
 
 
 @pytest.mark.gpu

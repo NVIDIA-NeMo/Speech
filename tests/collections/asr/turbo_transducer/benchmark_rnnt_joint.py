@@ -191,6 +191,8 @@ def run_benchmark(
     backward is approximate, forward stays dense. With ``pruning_type='two_pass'`` the pruning ranges are selected
     by a forward pass for the full lattice without gradient and dropout (included in the forward time and memory),
     then the Joint and the loss are computed only for the ranges.
+    A range covering all target positions (``pruning_range_size >= max_targets + 1``) has nothing to prune:
+    the full lattice is used for both pruning types, as in ``RNNTJoint.forward_for_loss``.
     ``with_consistency`` treats ``batch_size`` as a double batch and adds the consistency loss.
     """
     dtype = get_dtype(dtype) if isinstance(dtype, str) else dtype
@@ -227,7 +229,9 @@ def run_benchmark(
             raise ValueError("Pruning requires joint='fused_vocab' and joint_backend='triton'")
         if pruning_type not in VALID_PRUNING_TYPES:
             raise ValueError(f"Invalid pruning_type={pruning_type!r}. Expected one of {VALID_PRUNING_TYPES}.")
-    two_pass_pruning = pruning_range_size is not None and pruning_type == "two_pass"
+    # as in `RNNTJoint.forward_for_loss`: a range covering all target positions has nothing to prune (full lattice)
+    pruning_is_applied = pruning_range_size is not None and pruning_range_size < max_targets + 1
+    two_pass_pruning = pruning_is_applied and pruning_type == "two_pass"
     if with_consistency:
         if not supports_consistency(joint, joint_backend):
             raise ValueError(f"Consistency loss is not supported for joint={joint!r}, backend={joint_backend!r}")
@@ -372,7 +376,8 @@ def run_benchmark(
             kernel_kwargs["pruning_range_starts"] = pruning_range_starts
         else:
             joint_hidden = enc_proj.unsqueeze(2) + pred_proj.unsqueeze(1)
-            kernel_kwargs["backward_pruning_range_size"] = pruning_range_size
+            if pruning_is_applied:
+                kernel_kwargs["backward_pruning_range_size"] = pruning_range_size
         joint_hidden.relu_()
         if dropout_p > 0.0:
             joint_hidden = F.dropout(joint_hidden, p=dropout_p, training=True)

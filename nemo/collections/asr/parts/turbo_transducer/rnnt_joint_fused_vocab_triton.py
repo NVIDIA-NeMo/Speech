@@ -635,6 +635,10 @@ class _RnntJointFusedVocabTritonFunction(torch.autograd.Function):
                 PRUNING_RANGE=num_frame_rows if packed_hidden else 0,
             )
 
+        # NB: the targets are checked here, not in the kernel: a check before / after the loop over the vocabulary
+        # makes the forward kernel 2% / 13% slower (interleaved A/B with the best configs, RTX A6000)
+        _set_nan_for_invalid_targets_(target_logprobs, targets, tgt_lengths, vocab_size)
+
         ctx.save_for_backward(
             joint_hidden, weight, bias, targets, src_lengths, tgt_lengths, log_sum_exp_scores, matmul_weight
         )
@@ -879,6 +883,31 @@ def _check_joint_inputs(
             f"Expected source and target lengths [{batch_size}], "
             f"got {list(src_lengths.shape)} and {list(tgt_lengths.shape)}"
         )
+
+
+def _set_nan_for_invalid_targets_(
+    target_logprobs: torch.Tensor, targets: torch.Tensor, tgt_lengths: torch.Tensor, vocab_size: int
+):
+    """
+    Set NaN log-probability for the targets (inside the target lengths) that are invalid: labels outside
+    the vocabulary, and the target positions after the last target of the tensor `[B, U]` for a target length
+    larger than U. The loss of such an utterance is NaN (it can be masked by the loss), as for the loss computed
+    from the Joint output. The labels after the target length (padding) are ignored.
+    No host-device synchronization.
+
+    Args:
+        target_logprobs: log-probabilities of the targets, [B, T, U+1], modified in-place
+        targets: targets, [B, U] (not used if U = 0)
+        tgt_lengths: target lengths, [B]
+        vocab_size: vocabulary size with blank
+    """
+    num_targets = target_logprobs.shape[2] - 1
+    labels = targets[:, :num_targets]
+    # no label for the last target position
+    is_invalid = torch.ones(target_logprobs.shape[::2], dtype=torch.bool, device=target_logprobs.device)
+    is_invalid[:, :num_targets] = (labels < 0) | (labels >= vocab_size)
+    is_inside_length = torch.arange(num_targets + 1, device=target_logprobs.device) < tgt_lengths.unsqueeze(1)
+    target_logprobs.masked_fill_((is_invalid & is_inside_length).unsqueeze(1), float("nan"))
 
 
 def _autotune_size_class(num_rows: int) -> int:
@@ -1193,6 +1222,9 @@ def _load_lattice_rows(
 ):
     """
     For flat offsets in the [B, T, U+1] lattice, return masks of the valid blank/target outputs and target labels.
+    The label is -1 (not a label) for the positions without a target. These are also the positions after the last
+    target of the tensor `[B, U]` for a target length larger than U (invalid input, rejected by the loss):
+    the labels are never read outside the tensor.
     """
     source_target_block_size = max_src_len * max_tgt_len_plus_1
     batch_index = lattice_offsets // source_target_block_size
@@ -1208,8 +1240,8 @@ def _load_lattice_rows(
     output_target_mask = row_mask & source_mask & (target_index < target_length)
     targets = tl.load(
         targets_ptr + batch_index * (max_tgt_len_plus_1 - 1) + target_index,
-        mask=output_target_mask,
-        other=0,
+        mask=output_target_mask & (target_index < max_tgt_len_plus_1 - 1),
+        other=-1,
     )
     return output_blank_mask, output_target_mask, targets
 

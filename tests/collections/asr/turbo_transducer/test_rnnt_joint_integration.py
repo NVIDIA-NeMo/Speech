@@ -481,6 +481,71 @@ class TestJointTurboKernel:
     @pytest.mark.unit
     @pytest.mark.gpu
     @requires_triton_cuda
+    @pytest.mark.parametrize("invalid_label", [-1, NUM_CLASSES + 1])
+    @pytest.mark.parametrize("compute_consistency", [False, True])
+    def test_label_outside_vocabulary_gives_nan_loss(self, invalid_label: int, compute_consistency: bool):
+        """
+        Regression: a target label outside the vocabulary had a finite loss with the turbo kernel. As for the loss
+        computed from the Joint output: NaN loss of the utterance, which can be masked (`mask_non_finite`);
+        other utterances are not affected, the labels after the target length (padding) are ignored.
+        """
+        torch.manual_seed(42)
+        device = torch.device("cuda")
+        joint = RNNTJoint(
+            jointnet=_jointnet_config(), num_classes=NUM_CLASSES, turbo_kernel=_turbo_kernel_config()
+        ).to(device)
+        batch_size = 4 if compute_consistency else 2
+        encoder_outputs, decoder_outputs, source_lengths, targets, target_lengths = _joint_inputs(
+            batch_size=batch_size, device=device
+        )
+        if compute_consistency:
+            targets[2:] = targets[:2]  # double batch: identical targets in both halves
+        encoder_outputs.requires_grad_()
+        is_invalid = torch.arange(batch_size, device=device) % 2 == 1  # utterances with the target length 2 of 3
+
+        def compute_losses(loss_targets: torch.Tensor, mask_non_finite: bool) -> torch.Tensor:
+            loss = RNNTLoss(
+                num_classes=NUM_CLASSES,
+                reduction=None,
+                loss_name="turbo_rnnt",
+                loss_kwargs={"mask_non_finite": mask_non_finite},
+            )
+            loss_inputs = joint.forward_for_loss(
+                encoder_outputs,
+                decoder_outputs,
+                source_lengths,
+                loss_targets,
+                target_lengths,
+                compute_consistency=compute_consistency,
+            )
+            return loss.forward_from_logprobs(
+                loss_inputs.target_logprobs, loss_inputs.blank_logprobs, source_lengths, target_lengths
+            )
+
+        expected_losses = compute_losses(targets, mask_non_finite=False).detach()
+        assert torch.isfinite(expected_losses).all()
+        invalid_targets = targets.clone()
+        invalid_targets[is_invalid, 2] = 10**6  # padding: ignored
+        assert torch.equal(compute_losses(invalid_targets, mask_non_finite=False), expected_losses)
+
+        invalid_targets[is_invalid, 0] = invalid_label
+        losses = compute_losses(invalid_targets, mask_non_finite=False)
+        assert torch.isnan(losses[is_invalid]).all()
+        assert torch.equal(losses[~is_invalid], expected_losses[~is_invalid])
+
+        losses = compute_losses(invalid_targets, mask_non_finite=True)
+        assert torch.all(losses[is_invalid] == 0.0)
+        assert torch.equal(losses[~is_invalid], expected_losses[~is_invalid])
+        losses.sum().backward()
+        assert torch.isfinite(encoder_outputs.grad).all()
+        assert torch.count_nonzero(encoder_outputs.grad[is_invalid]) == 0
+        assert torch.count_nonzero(encoder_outputs.grad[~is_invalid]) > 0
+        for parameter in joint.parameters():
+            assert torch.isfinite(parameter.grad).all()
+
+    @pytest.mark.unit
+    @pytest.mark.gpu
+    @requires_triton_cuda
     def test_backward_mode_selects_backward_algorithm(self, monkeypatch):
         """`backward_mode` of the config selects the algorithm of the backward pass; the gradients are the same"""
         torch.manual_seed(42)

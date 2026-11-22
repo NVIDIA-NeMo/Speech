@@ -122,7 +122,8 @@ def process_google_speech_train(data_dir):
         if os.path.isdir(os.path.join(data_dir, o)) and o.split("/")[-1] != "_background_noise_":
             X.extend(glob.glob(os.path.join(data_dir, o) + '/*.wav'))
 
-    short_files = [i.split(data_dir)[1] for i in files]
+    # same form as the entries of testing_list.txt and validation_list.txt, e.g. "right/0a7c2a8d_nohash_0.wav"
+    short_files = [os.path.relpath(i, data_dir).replace(os.sep, "/") for i in X]
 
     with open(os.path.join(data_dir, 'testing_list.txt'), 'r') as allfile:
         testing_list = allfile.read().splitlines()
@@ -139,7 +140,7 @@ def process_google_speech_train(data_dir):
         outfile.write("\n".join(training_list))
 
     logging.info(
-        f'Overall: {len(files)}, Train: {len(training_list)}, Validatoin: {len(validation_list)}, Test: {len(testing_list)}'
+        f'Overall: {len(X)}, Train: {len(training_list)}, Validation: {len(validation_list)}, Test: {len(testing_list)}'
     )
 
 
@@ -334,7 +335,7 @@ def generate_variety_noise(data_dir, filename, prefix):
     with open(new_list_file, "w") as outfile:
         outfile.write("\n".join(silence_files))
 
-    logging.info(f"Generate {len(out_file_path)} background files for {file_path}. => {new_list_file} !")
+    logging.info(f"Generate {len(silence_files)} background files for {file_path}. => {new_list_file} !")
     return len(silence_files)
 
 

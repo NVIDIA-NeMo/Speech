@@ -55,7 +55,7 @@ from tests.collections.asr.turbo_transducer.benchmark_rnnt_joint import (
 
 # Default vocab sizes (`--vocab-sizes`), including the blank symbol. `num_classes = vocab_size - 1` is what
 # `run_benchmark` expects (blank_id == num_classes).
-VOCAB_SIZES: list[int] = [1025, 8193]
+VOCAB_SIZES: list[int] = [1025, 16385]
 
 # Each entry is (joint, joint_backend, loss). Ordering preserved within each
 # vocab group in the printed/CSV output.
@@ -71,7 +71,7 @@ MAX_TIME: int = 150
 MAX_TARGETS: int = 72
 HIDDEN_DIM: int = 640
 DROPOUT_P: float = 0.2
-PRUNING_RANGE_SIZES: list[int] = [8]
+PRUNING_RANGE_SIZES: list[int] = [16]
 
 
 def main() -> None:

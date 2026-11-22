@@ -106,7 +106,7 @@ model:
       type: fused_vocab  # options: null, fused_vocab
       pruning:
           type: null  # options: null (disabled), backward, two_pass
-          range_size: 8  # target positions per frame; use values 8 or 16
+          range_size: 16  # target positions per frame; use values 8 or 16
           start_step: 5000
       use_high_precision_mm: false
       mm_full_precision: false

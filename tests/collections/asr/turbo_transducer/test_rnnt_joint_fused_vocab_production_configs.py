@@ -13,9 +13,9 @@
 # limitations under the License.
 
 """
-Tests for the production kernel configs of the `fused_vocab` Joint: Triton autotuning and each autotune config,
-the fixed config of the cuTile kernels - with production dimensions (hidden 640, vocab 1025) and precision
-(BF16 joint hidden, FP32 master weights, default kernel arguments).
+Tests for the production kernel configs of the `fused_vocab` Joint: Triton autotuning and each autotune config
+with production dimensions (hidden 640, vocab 1025) and precision (BF16 joint hidden, FP32 master weights,
+default kernel arguments).
 
 All the other tests compile the kernels with a single small-tile config (see `conftest.py`), which is fast, but
 covers neither the autotuning itself (benchmarking of the kernels that accumulate gradients with atomics, selection
@@ -35,7 +35,7 @@ from nemo.collections.asr.parts.turbo_transducer.rnnt_joint_fused_vocab import (
     rnnt_joint_fused_vocab,
     rnnt_joint_fused_vocab_with_consistency,
 )
-from nemo.core.utils.optional_libs import CUTILE_AVAILABLE, TRITON_AVAILABLE
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 from tests.collections.asr.turbo_transducer.utils import (
     assert_close_to_reference,
     assert_pruned_outputs_close_to_reference,
@@ -57,7 +57,6 @@ pytestmark = [
     pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable"),
 ]
 requires_triton = pytest.mark.skipif(not TRITON_AVAILABLE, reason="Triton is not installed")
-requires_cutile = pytest.mark.skipif(not CUTILE_AVAILABLE, reason="cuTile is not installed")
 
 # (hidden_dim, vocab_size, blank_id)
 PRODUCTION_DIMS = (640, 1025, 1024)
@@ -175,19 +174,6 @@ def test_each_triton_config(
             continue
         num_valid_backward_configs += 1
     assert num_valid_backward_configs > 0, "No valid config for the backward kernel"
-
-
-@requires_cutile
-@pytest.mark.parametrize("grad_full_precision", [False, True])
-def test_cutile_config(grad_full_precision, production_kernel_configs):
-    kernel_kwargs = {}
-    if grad_full_precision:
-        kernel_kwargs = dict(input_grad_full_precision=True, weight_grad_full_precision=True)
-    elif torch.cuda.get_device_capability() < (9, 0):
-        pytest.skip("cuTile backend requires compute capability 9.0+ for BF16 atomics")
-    _run_and_compare_with_reference(
-        with_consistency=False, backward_mode=None, pruning_range_size=None, backend="cutile", **kernel_kwargs
-    )
 
 
 def _get_triton_kernels(autotuned_kernels: dict, with_consistency: bool, backward_mode: str):

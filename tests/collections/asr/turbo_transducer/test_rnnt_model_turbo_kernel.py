@@ -306,6 +306,21 @@ class TestModelTurboKernelConfig:
         assert model.loss.supports_logprobs_input
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("model_class", [EncDecRNNTBPEModel, EncDecHybridRNNTCTCBPEModel])
+    def test_turbo_kernel_is_preserved_on_tokenizer_change(self, model_class, test_data_dir):
+        """Regression: the loss was replaced by the default one, which can't be computed from log-probabilities"""
+        config = _model_config(
+            model_class, test_data_dir, turbo_kernel=_turbo_kernel_config(), loss_kwargs={"fastemit_lambda": 0.01}
+        )
+        model = model_class(cfg=config)
+        model.change_vocabulary(new_tokenizer_dir=config.tokenizer.dir, new_tokenizer_type="bpe")
+        assert model.joint.turbo_kernel_type is TurboJointKernelType.FUSED_VOCAB
+        assert model.loss.supports_logprobs_input
+        # the loss is created from the config of the model, as in the constructor
+        assert model.loss._loss.fastemit_lambda == 0.01
+        assert model.loss.reduction == "mean_volume"
+
+    @pytest.mark.unit
     def test_save_restore(self, test_data_dir, tmp_path):
         turbo_kernel = _turbo_kernel_config(pruning={'type': 'two_pass', 'range_size': 2, 'start_step': 5})
         model = EncDecRNNTModel(cfg=_model_config(EncDecRNNTModel, test_data_dir, turbo_kernel=turbo_kernel))
@@ -458,6 +473,19 @@ class TestModelComputeLossesRouting:
         assert torch.equal(consistency_call["student_logits"], logits[2:])
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("loss_supports_logprobs", [False, True])
+    def test_consistency_rejects_odd_batch(self, loss_supports_logprobs):
+        """Regression: with the loss from the logits, the halves of an odd batch were broadcast silently"""
+        model = self._model_stub(
+            uses_turbo_kernel=False, loss_supports_logprobs=loss_supports_logprobs, consistency_loss=Mock()
+        )
+        inputs = _loss_inputs(
+            SimpleNamespace(joint=SimpleNamespace(num_classes_with_blank=9)), torch.device("cpu"), batch_size=3
+        )
+        with pytest.raises(ValueError, match="double batch"):
+            EncDecRNNTModel._compute_losses(model, **inputs, compute_consistency=True)
+
+    @pytest.mark.unit
     def test_consistency_requires_consistency_loss(self):
         model = self._model_stub(uses_turbo_kernel=True)
         inputs = _loss_inputs(
@@ -569,6 +597,38 @@ class TestModelTurboKernel:
         assert range_sizes == [None, 2]
         # backward pruning does not change the loss value
         assert torch.equal(losses[0], losses[1])
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("model_class", [EncDecRNNTModel, EncDecHybridRNNTCTCBPEModel])
+    def test_training_step_with_two_pass_pruning(self, model_class, test_data_dir, monkeypatch):
+        """Two-pass pruning in `training_step`: scheduled by the step, the loss of the full lattice is logged"""
+        device = torch.device("cuda")
+        _, turbo_model = _make_models(
+            model_class, test_data_dir, device, pruning={'type': 'two_pass', 'range_size': 2, 'start_step': 5}
+        )
+        batch = _make_batch(turbo_model, device)
+        turbo_model.train()
+        logged_by_step = {}
+        for global_step in [4, 5]:
+            _prepare_for_direct_steps(turbo_model, monkeypatch, global_step=global_step)
+            logged = logged_by_step.setdefault(global_step, {})
+            monkeypatch.setattr(
+                turbo_model, "log", lambda name, value, logged=logged, **kwargs: logged.update({name: value})
+            )
+            turbo_model.zero_grad()
+            loss_value = turbo_model.training_step(copy.copy(batch), 0)['loss']
+            loss_value.backward()
+            logged["loss"] = loss_value.detach()
+            assert torch.isfinite(turbo_model.joint.joint_net[-1].weight.grad).all()
+        # before `start_step`: the full lattice, nothing is logged by the Joint
+        assert "train_loss_full_lattice" not in logged_by_step[4]
+        full_lattice_loss = logged_by_step[5]["train_loss_full_lattice"]
+        assert torch.isfinite(full_lattice_loss) and not full_lattice_loss.requires_grad
+        # the pruned lattice contains a part of the alignments: its loss is not less than the loss of the full lattice
+        assert logged_by_step[5]["loss"] > logged_by_step[4]["loss"]
+        if model_class is EncDecRNNTModel:
+            # the same parameters and batch (no dropout): the loss of the full lattice is the loss of the previous step
+            torch.testing.assert_close(full_lattice_loss, logged_by_step[4]["loss"])
 
     @pytest.mark.unit
     @pytest.mark.parametrize("model_class", [EncDecRNNTModel, EncDecHybridRNNTCTCBPEModel])

@@ -59,10 +59,9 @@ def log_add_exp(log_probs_1, log_probs_2):
 
 
 @triton.jit
-def matmul(a: tl.tensor, b: tl.tensor, USE_FP64: tl.constexpr = False, USE_HIGH_PRECISION: tl.constexpr = False):
-    if USE_FP64:
-        result = tl.sum(a.T[:, :, None] * b[:, None, :], axis=0)
-    elif USE_HIGH_PRECISION:
+def matmul(a: tl.tensor, b: tl.tensor, USE_HIGH_PRECISION: tl.constexpr = False):
+    """Matrix product `a @ b` with FP32 accumulation; `USE_HIGH_PRECISION` requests IEEE precision for FP32 operands"""
+    if USE_HIGH_PRECISION:
         result = tl.dot(a, b, input_precision="ieee")
     else:
         result = tl.dot(a, b)

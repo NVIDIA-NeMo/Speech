@@ -40,8 +40,6 @@ __all__ = [
     # graphviz
     "GRAPHVIZ_AVAILABLE",
     "graphviz_required",
-    # cuTile
-    "CUTILE_AVAILABLE",
 ]
 
 import importlib.util
@@ -101,15 +99,6 @@ CUDA_PYTHON_INSTALLATION_MESSAGE = "Try installing cuda-python with `pip install
 
 GRAPHVIZ_AVAILABLE = is_lib_available("graphviz")
 GRAPHVIZ_INSTALLATION_MESSAGE = "Try installing graphviz with `sudo apt install graphviz && pip install graphviz`"
-
-
-try:
-    import cuda.tile as _  # noqa: F401
-
-    # TODO: check CUDA 13.2+
-    CUTILE_AVAILABLE = True
-except (ImportError, ModuleNotFoundError):
-    CUTILE_AVAILABLE = False
 
 
 def identity_decorator(f):

@@ -713,14 +713,15 @@ not affected: the parameters of the Joint are the same, so the kernel can be ena
 
     turbo_kernel:
       type: fused_vocab  # options: null (disabled), fused_vocab
-      backend: triton  # options: triton, cutile
+      backend: triton  # the only implemented backend
       use_high_precision_mm: false
       mm_full_precision: false
       input_grad_full_precision: false
       weight_grad_full_precision: false
-      pruning:
+      backward_mode: null  # options: null (selected by the GPU), atomic, chunked
+      pruning:  # experimental
         type: null  # options: null (disabled), backward, two_pass
-        range_size: 8  # target positions per frame; use values 8 or 16
+        range_size: 16  # target positions per frame; use values 8 or 16
         start_step: 5000
 
     jointnet:
@@ -735,7 +736,7 @@ The ``turbo_kernel`` section has the following parameters (unknown parameters ar
 
 * ``type``: The kernel type. ``null`` (or a missing ``turbo_kernel`` section) disables the kernel, the other parameters are ignored. ``fused_vocab`` fuses the vocabulary projection with log-softmax; the Joint hidden representation is still materialized.
 
-* ``backend``: ``triton`` (default, requires Triton) or ``cutile`` (requires cuTile, CUDA 13.2+ and a GPU with compute capability 9.0 or higher). ``null`` selects an available backend automatically. Pruning is implemented only for ``triton``.
+* ``backend``: ``triton`` (default, requires Triton) is the only implemented backend; ``null`` selects it automatically. ``cutile`` is reserved for the planned cuTile backend: requesting it raises ``NotImplementedError``.
 
 * ``mm_full_precision``: With ``bfloat16`` activations (``trainer.precision: bf16``), the vocabulary projection is computed with ``bfloat16`` operands, while the parameters are stored in ``float32``. Set to ``true`` to use ``float32`` operands: more accurate, but slower. Log-softmax is always computed in ``float32``.
 
@@ -743,13 +744,15 @@ The ``turbo_kernel`` section has the following parameters (unknown parameters ar
 
 * ``input_grad_full_precision``, ``weight_grad_full_precision``: Accumulate the gradient for the Joint hidden representation / the weight of the vocabulary projection in ``float32`` instead of the dtype of the activations.
 
-* ``pruning``: Optional section, a missing section or ``null`` disables pruning. With pruning, the Joint is evaluated only for ``range_size`` contiguous target positions (a pruning range) for each frame, since the alignments with non-negligible probability pass only through a narrow band of the lattice. Pruning is applied only in training mode. The section has the following parameters:
+* ``backward_mode``: The algorithm of the backward pass. ``atomic`` recomputes the logits and accumulates all gradients in a single GPU kernel with atomic operations. ``chunked`` processes the lattice by chunks: a GPU kernel computes the gradient for the logits of a chunk into a buffer of a fixed size (128 MiB), and the gradients are computed from it by matrix multiplications. ``null`` (default) selects the algorithm by the GPU: ``atomic`` for the GPUs with native ``bfloat16`` atomic operations (compute capability 9.0 or higher, e.g., H100 or newer), ``chunked`` otherwise. Both algorithms compute the same gradients (``input_grad_full_precision`` and ``weight_grad_full_precision`` affect only ``atomic``; ``chunked`` rounds each gradient once). The faster algorithm depends on the GPU and the vocabulary size: compare them if the backward pass is slower than expected.
+
+* ``pruning``: Optional section, a missing section or ``null`` disables pruning. Pruning is experimental: its behavior and parameters can change in future releases, and a warning is logged when it is enabled. With pruning, the Joint is evaluated only for ``range_size`` contiguous target positions (a pruning range) for each frame, since the alignments with non-negligible probability pass only through a narrow band of the lattice. Pruning is applied only in training mode. The section has the following parameters:
 
   * ``type``: ``null`` (default) disables pruning, the other parameters are ignored.
 
     ``backward`` computes the forward pass for the full lattice and selects the ranges with the largest gradient of the loss for the target and blank log-probabilities; only the backward pass of the Joint is pruned. The loss value is not changed, but its gradient is approximated. The backward pass is several times faster for large vocabularies.
 
-    ``two_pass`` first evaluates the Joint for the full lattice without gradient (and without dropout) and selects the ranges with the largest probability that an alignment passes through them. The ranges are adjusted to form a connected lattice (as in the pruned RNN-T loss of k2). Then the Joint is evaluated only for the ranges, with gradient. The loss is the loss of the pruned lattice: it is not less than the loss of the full lattice, and its gradient is exact. The activations required for the backward pass are stored only for the ranges, so the memory used by the Joint is several times lower, and the backward pass is faster than with ``backward`` pruning. The loss of the full lattice (computed by the first pass without dropout and FastEmit scaling) is logged as ``train_loss_full_lattice``: the difference with ``train_loss`` shows the probability lost by pruning. With the consistency loss, it is computed (and normalized) only for the positions inside the ranges. A frame can emit at most ``range_size - 1`` tokens inside its range: the loss is infinite for an utterance with more than ``(range_size - 1) * num_frames`` tokens.
+    ``two_pass`` first evaluates the Joint for the full lattice without gradient (and without dropout) and selects the ranges with the largest probability that an alignment passes through them. The ranges are adjusted to form a connected lattice (as in the pruned RNN-T loss of k2). Then the Joint is evaluated only for the ranges, with gradient. The loss is the loss of the pruned lattice: it is not less than the loss of the full lattice, and its gradient is exact. The activations required for the backward pass are stored only for the ranges, so the memory used by the Joint is several times lower, and the backward pass is faster than with ``backward`` pruning. The loss of the full lattice (computed by the first pass without dropout and FastEmit scaling) is logged as ``train_loss_full_lattice``: the difference with ``train_loss`` (``train_rnnt_loss`` for Hybrid RNNT-CTC models) shows the probability lost by pruning. It is not logged for the batches without pruning (before ``start_step``, or if the range covers all target positions). With the consistency loss, it is computed (and normalized) only for the positions inside the ranges. A frame can emit at most ``range_size - 1`` tokens inside its range: the loss is infinite for an utterance with more than ``(range_size - 1) * num_frames`` tokens.
 
   * ``range_size``: The number of target positions per frame, required if ``type`` is set: at least 1 for ``backward`` and at least 2 for ``two_pass``. If the range covers all target positions of a batch, the full lattice is used.
 
@@ -759,7 +762,7 @@ Requirements and limitations:
 
 * A CUDA GPU and the ``turbo_rnnt`` loss (see :ref:`Turbo-RNNT Loss <turbo-rnnt-loss>`) without gradient clamping (``clamp``): clamping is applied to the gradient for the Joint output, which is not materialized. An incompatible loss is rejected when the model is constructed.
 
-* The ``triton`` backend supports Triton 3.3 and newer (the version installed with PyTorch 2.7). Triton 3.3 does not cache the results of kernel autotuning on disk: the kernels are autotuned on the first training step of each run (typically 10-30 seconds).
+* The ``triton`` backend supports Triton 3.3 and newer (the version installed with PyTorch 2.7). The kernels are autotuned: on the first training steps (separately for small and for full-size batches) Triton compiles several variants of each kernel and selects the fastest one for the GPU, which takes up to a minute for large vocabularies. The result is cached on disk (``~/.triton/cache``, or the directory set by the ``TRITON_CACHE_DIR`` environment variable) and reused by the next runs. Triton 3.3 does not cache the results: the kernels are autotuned in each run.
 
 * Not compatible with ``fuse_loss_wer``, ``preserve_memory`` and the Joint with extra outputs (e.g., TDT models).
 

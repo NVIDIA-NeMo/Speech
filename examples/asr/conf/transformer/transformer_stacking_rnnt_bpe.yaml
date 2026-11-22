@@ -99,20 +99,21 @@ model:
     _target_: nemo.collections.asr.modules.RNNTJoint
     log_softmax: null
     preserve_memory: false
-    fuse_loss_wer: false
-    fused_batch_size: -1  # incompatible with joint turbo kernel
+    fuse_loss_wer: false  # incompatible with joint turbo kernel
+    fused_batch_size: -1
 
     turbo_kernel:
       type: fused_vocab  # options: null, fused_vocab
       pruning:
-          type: null  # options: null (disabled), backward, two_pass
-          range_size: 16  # target positions per frame; use values 8 or 16
-          start_step: 5000
+        type: null  # options: null (disabled), backward, two_pass; experimental
+        range_size: 16  # target positions per frame; use values 8 or 16
+        start_step: 5000
       use_high_precision_mm: false
       mm_full_precision: false
       input_grad_full_precision: false
       weight_grad_full_precision: false
-      backend: triton  # options: triton, cutile
+      backward_mode: null  # options: null (selected by the GPU), atomic, chunked
+      backend: triton  # the only implemented backend
 
     jointnet:
       joint_hidden: ${model.model_defaults.joint_hidden}

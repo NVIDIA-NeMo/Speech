@@ -48,6 +48,8 @@ from tests.collections.asr.turbo_transducer.utils import (
 )
 
 if TRITON_AVAILABLE:
+    import triton
+
     from nemo.collections.asr.parts.turbo_transducer import (
         rnnt_joint_fused_vocab_consistency_triton as consistency_triton_module,
     )
@@ -293,6 +295,34 @@ def test_joint_forward_for_loss_matches_materialized_logits_path(symmetrical, pr
     if pruning_range_size is None:
         for actual, expected in zip(results[1][1], results[0][1]):
             torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
+
+
+@pytest.mark.gpu
+@requires_triton_cuda
+def test_chunked_backward_is_autotuned_only_for_first_chunk(monkeypatch):
+    """
+    Regression: autotuning resets the bias gradient accumulated by the kernel, so it must be possible only for
+    the first chunk (see the test for the kernel without the consistency loss)
+    """
+    kernel = consistency_triton_module._rnnt_joint_fused_vocab_consistency_bwd_grad_logits_triton_kernel
+    test_config = kernel.configs[0]
+    monkeypatch.setattr(kernel, "configs", [test_config, triton.Config(test_config.kwargs, num_warps=2, num_stages=2)])
+    monkeypatch.setattr(kernel, "cache", {})
+    _use_min_chunk_size(monkeypatch)  # chunks of 256, 256 and 232 pairs of rows; the vocabulary is padded to 64
+    monkeypatch.setattr(consistency_triton_module, "_AUTOTUNE_MIN_GRAD_LOGITS", 2 * 250 * 64)
+    inputs = make_joint_inputs(double_batch=True)
+    leaves, reference_leaves = inputs.leaves(), inputs.leaves(torch.float64)
+    outputs = rnnt_joint_fused_vocab_with_consistency(
+        **inputs.kernel_kwargs(leaves), backward_mode="chunked", **FULL_PRECISION
+    )
+    expected_outputs = reference_outputs(inputs, reference_leaves, consistency_symmetrical=True)
+    grads = inputs.random_grads(num_outputs=3)
+    torch.autograd.backward(tuple(outputs), grads)
+    torch.autograd.backward(expected_outputs, [grad.double() for grad in grads])
+    assert_close_to_reference(
+        [leaf.grad for leaf in leaves], [leaf.grad for leaf in reference_leaves], FULL_PRECISION_TOLERANCE, GRAD_NAMES
+    )
+    assert len(kernel.cache) == 1
 
 
 @requires_triton

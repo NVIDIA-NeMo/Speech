@@ -380,10 +380,13 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             self.decoder = EncDecRNNTModel.from_config_dict(new_decoder_config)
 
             del self.loss
-            loss_name, loss_kwargs = self.extract_rnnt_loss_cfg(self.cfg.get('loss', None))
-            self.loss = RNNTLoss(
-                num_classes=self.joint.num_classes_with_blank - 1, loss_name=loss_name, loss_kwargs=loss_kwargs
-            )
+            if self.joint.uses_turbo_kernel:
+                self.loss = self._make_loss_for_joint_turbo_kernel()
+            else:
+                loss_name, loss_kwargs = self.extract_rnnt_loss_cfg(self.cfg.get('loss', None))
+                self.loss = RNNTLoss(
+                    num_classes=self.joint.num_classes_with_blank - 1, loss_name=loss_name, loss_kwargs=loss_kwargs
+                )
 
             if decoding_cfg is None:
                 # Assume same decoding config as before
@@ -740,6 +743,22 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
                 "use `loss.loss_name=turbo_rnnt` without gradient clamping"
             )
 
+    def _make_loss_for_joint_turbo_kernel(self) -> RNNTLoss:
+        """
+        Create the RNN-T loss for the Joint with the turbo kernel after the vocabulary is changed:
+        the loss from the config of the model with the same reduction, as in the constructor
+        (the default loss can't be computed from target/blank log-probabilities).
+        """
+        loss_name, loss_kwargs = self.extract_rnnt_loss_cfg(self.cfg.get("loss", None))
+        self.loss = RNNTLoss(
+            num_classes=self.joint.num_classes_with_blank - 1,
+            loss_name=loss_name,
+            loss_kwargs=loss_kwargs,
+            reduction=self.cfg.get("rnnt_reduction", "mean_batch"),
+        )
+        self._validate_joint_turbo_kernel()
+        return self.loss
+
     def _compute_losses(
         self,
         encoded: torch.Tensor,
@@ -776,6 +795,8 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         if compute_consistency:
             if self.consistency_loss is None:
                 raise ValueError("`compute_consistency` requires the consistency loss (`self.consistency_loss`)")
+            if encoded.shape[0] % 2 != 0:
+                raise ValueError(f"Consistency loss requires a double batch, got odd batch size {encoded.shape[0]}")
             if getattr(self.joint, "num_extra_outputs", 0) > 0:
                 raise NotImplementedError("Consistency loss is not supported for the Joint with extra outputs (TDT)")
             half_batch_size = encoded.shape[0] // 2

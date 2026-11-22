@@ -14,7 +14,7 @@
 
 import pytest
 
-from nemo.core.utils.optional_libs import CUTILE_AVAILABLE, TRITON_AVAILABLE
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
 if TRITON_AVAILABLE:
     import triton
@@ -24,9 +24,6 @@ if TRITON_AVAILABLE:
         rnnt_joint_fused_vocab_consistency_triton,
         rnnt_joint_fused_vocab_triton,
     )
-
-if CUTILE_AVAILABLE:
-    from nemo.collections.asr.parts.turbo_transducer import rnnt_joint_fused_vocab_cutile
 
 # Tile size (rows, hidden, vocab) of the kernel config used in tests, see `small_kernel_configs`
 TEST_BLOCK_SIZE = 16
@@ -41,7 +38,7 @@ def small_kernel_configs():
     new combination of `tl.constexpr` arguments (hidden dim, vocab size, precision flags, pruning range, ...).
     Without the Triton disk cache it takes from 10 seconds up to several minutes per combination, while the tests
     use dozens of them. With a single config Triton skips benchmarking, and a kernel with small tiles compiles in
-    0.3-0.6 seconds; the same holds for the fixed production config of the cuTile kernels.
+    0.3-0.6 seconds.
     Small tiles also split the small test tensors into several tiles along every dimension, so the tile boundaries
     are covered without large inputs.
 
@@ -60,10 +57,8 @@ def production_kernel_configs(small_kernel_configs, monkeypatch):
     return _get_autotuned_kernels()
 
 
-# Production configs by the name of the kernel (Triton) or of the module attribute (cuTile),
-# stored by `small_kernel_configs` before the first replacement
+# Production configs by the name of the kernel, stored by `small_kernel_configs` before the first replacement
 _PRODUCTION_CONFIGS = {}
-_CUTILE_CONFIG_ATTRIBUTES = ("_FORWARD_CONFIG", "_BACKWARD_CONFIG")
 
 
 def _set_kernel_configs(monkeypatch: pytest.MonkeyPatch, production: bool):
@@ -71,11 +66,6 @@ def _set_kernel_configs(monkeypatch: pytest.MonkeyPatch, production: bool):
         production_configs = _PRODUCTION_CONFIGS.setdefault(name, kernel.configs)
         configs = production_configs if production else [_make_small_triton_config(production_configs[0])]
         monkeypatch.setattr(kernel, "configs", configs)
-    if CUTILE_AVAILABLE:
-        for name in _CUTILE_CONFIG_ATTRIBUTES:
-            production_config = _PRODUCTION_CONFIGS.setdefault(name, getattr(rnnt_joint_fused_vocab_cutile, name))
-            config = production_config if production else (TEST_BLOCK_SIZE,) * len(production_config)
-            monkeypatch.setattr(rnnt_joint_fused_vocab_cutile, name, config)
 
 
 def _get_autotuned_kernels() -> dict:

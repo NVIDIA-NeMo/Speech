@@ -32,13 +32,17 @@ the teacher and the student: [2B, T, range_size, hidden]; both losses are comput
 import torch
 import triton
 import triton.language as tl
+from torch.autograd.function import once_differentiable
 
 from nemo.collections.asr.parts.turbo_transducer.rnnt_joint_fused_vocab_triton import (
+    _AUTOTUNE_MIN_GRAD_LOGITS,
     _CHUNKED_BWD_ROWS_MULTIPLE,
     _CHUNKED_BWD_VOCAB_PADDING,
     FusedVocabBackwardMode,
     _addmm_full_precision_,
+    _autotune_size_class,
     _check_atomic_accumulators,
+    _check_joint_inputs,
     _copy_pruned_hidden,
     _get_lattice_offsets,
     _load_lattice_row_grads,
@@ -51,6 +55,7 @@ from nemo.collections.asr.parts.turbo_transducer.types import TransducerLossInpu
 from nemo.collections.asr.parts.turbo_transducer.utils_triton import (
     autotune,
     block_offsets_int64,
+    cuda_device_guard,
     load_rows_block,
     matmul,
 )
@@ -61,9 +66,10 @@ CHUNKED_BWD_GRAD_LOGITS_BUFFER_BYTES = 128 * 1024**2
 _PADDED_VOCAB_LOGIT: tl.constexpr = tl.constexpr(-1.0e30)
 
 
+# Autotune configs: (PAIR_BLOCK, HIDDEN_BLOCK, VOCAB_BLOCK, num_warps, num_stages), see the comments for the configs
+# of the kernels without the consistency loss. Two tiles of logits [PAIR_BLOCK, VOCAB_BLOCK] (teacher, student)
+# are kept in registers: 2 * PAIR_BLOCK * VOCAB_BLOCK / (32 * num_warps) must not exceed 128.
 def _fwd_autotune_configs():
-    # Two [PAIR_BLOCK, VOCAB_BLOCK] logits accumulators (teacher, student) => half of the row block of the
-    # single-row kernel keeps register pressure similar. (PAIR_BLOCK, HB, VB, num_warps, num_stages)
     candidates = [
         (32, 32, 128, 4, 3),
         (64, 32, 64, 4, 3),
@@ -72,6 +78,9 @@ def _fwd_autotune_configs():
         (64, 64, 128, 8, 3),
         (128, 32, 64, 8, 3),
         (64, 64, 64, 4, 3),  # best for 1025, 8193 (RTX PRO 6000 Blackwell)
+        # Larger vocab tiles, best on RTX A6000 (sm_86): 10% faster for vocab 1025, 18% for vocab 16385
+        (32, 32, 256, 4, 3),
+        (64, 32, 256, 8, 3),
     ]
     return [
         triton.Config({"PAIR_BLOCK": pb, "HIDDEN_BLOCK": hb, "VOCAB_BLOCK": vb}, num_warps=nw, num_stages=ns)
@@ -80,7 +89,6 @@ def _fwd_autotune_configs():
 
 
 def _bwd_autotune_configs():
-    # (PAIR_BLOCK, HB, VB, num_warps, num_stages)
     candidates = [
         (64, 32, 64, 4, 2),
         (64, 32, 128, 8, 2),
@@ -97,7 +105,6 @@ def _bwd_autotune_configs():
 
 
 def _bwd_chunked_grad_logits_autotune_configs():
-    # (PAIR_BLOCK, HB, VB, num_warps, num_stages)
     candidates = [
         (32, 64, 128, 4, 4),
         (64, 32, 128, 4, 4),
@@ -118,11 +125,27 @@ def _bwd_chunked_grad_logits_autotune_configs():
 
 @autotune(
     configs=_fwd_autotune_configs(),
-    key=["hidden_dim", "vocab_size", "USE_HIGH_PRECISION_MM", "MM_FULL_PRECISION", "SYMMETRICAL"],
+    key=[
+        "hidden_dim",
+        "vocab_size",
+        "USE_HIGH_PRECISION_MM",
+        "MM_FULL_PRECISION",
+        "SYMMETRICAL",
+        "autotune_size_class",
+    ],
 )
 # In all kernels, shape-dependent integer arguments are not specialized to avoid recompilation
 # for each new batch shape (Triton specializes integers equal to 1 and divisible by 16 by default).
-@triton.jit(do_not_specialize=["max_src_len", "max_tgt_len_plus_1", "pair_flattened_size", "student_lattice_offset"])
+# `autotune_size_class` is not used by the kernels: it is only a part of the autotune key.
+@triton.jit(
+    do_not_specialize=[
+        "max_src_len",
+        "max_tgt_len_plus_1",
+        "pair_flattened_size",
+        "student_lattice_offset",
+        "autotune_size_class",
+    ]
+)
 def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
     joint_hidden_ptr,
     targets_ptr,
@@ -139,6 +162,7 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
     max_tgt_len_plus_1: int,
     pair_flattened_size: int,
     student_lattice_offset: int,
+    autotune_size_class: int,
     hidden_dim: tl.constexpr,
     vocab_size: tl.constexpr,
     blank_id: tl.constexpr,
@@ -160,6 +184,8 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
     KL(teacher || student) = sum(p_teacher * (z_teacher - z_student)) - (lse_teacher - lse_student)
     Target and blank logits are computed after the vocabulary loop as dot products with the gathered weight rows:
     extracting them from each block of logits needs more registers than the two logits accumulators leave.
+    NB: these dot products are exact, while the blocks of logits for FP32 operands are computed with TF32 precision
+    unless `USE_HIGH_PRECISION_MM` is set: the log-probabilities are then accurate to ~1e-3 (exact for BF16 operands).
     """
     compute_dtype = tl.float32
     # NB: the flags go first, Triton 3.3 does not support `and` with a comparison of dtypes on the left
@@ -296,10 +322,19 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
         "PRUNING_RANGE",
         "PACKED_HIDDEN",
         "SYMMETRICAL",
+        "autotune_size_class",
     ],
     reset_to_zero=["grad_joint_hidden_out_ptr", "grad_weight_out_ptr", "grad_bias_out_ptr"],
 )
-@triton.jit(do_not_specialize=["max_src_len", "max_tgt_len_plus_1", "pair_flattened_size", "student_lattice_offset"])
+@triton.jit(
+    do_not_specialize=[
+        "max_src_len",
+        "max_tgt_len_plus_1",
+        "pair_flattened_size",
+        "student_lattice_offset",
+        "autotune_size_class",
+    ]
+)
 def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
     joint_hidden_ptr,
     targets_ptr,
@@ -319,6 +354,7 @@ def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
     max_tgt_len_plus_1: int,
     pair_flattened_size: int,
     student_lattice_offset: int,
+    autotune_size_class: int,
     hidden_dim: tl.constexpr,
     vocab_size: tl.constexpr,
     blank_id: tl.constexpr,
@@ -514,7 +550,15 @@ def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
 
 @autotune(
     configs=_bwd_chunked_grad_logits_autotune_configs(),
-    key=["hidden_dim", "vocab_size", "USE_HIGH_PRECISION_MM", "MM_FULL_PRECISION", "PRUNING_RANGE", "SYMMETRICAL"],
+    key=[
+        "hidden_dim",
+        "vocab_size",
+        "USE_HIGH_PRECISION_MM",
+        "MM_FULL_PRECISION",
+        "PRUNING_RANGE",
+        "SYMMETRICAL",
+        "autotune_size_class",
+    ],
     reset_to_zero=["grad_bias_out_ptr"],
 )
 @triton.jit(
@@ -526,6 +570,7 @@ def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
         "student_hidden_row_start",
         "chunk_start",
         "chunk_size",
+        "autotune_size_class",
     ]
 )
 def _rnnt_joint_fused_vocab_consistency_bwd_grad_logits_triton_kernel(
@@ -549,6 +594,7 @@ def _rnnt_joint_fused_vocab_consistency_bwd_grad_logits_triton_kernel(
     student_hidden_row_start: int,
     chunk_start: int,
     chunk_size: int,
+    autotune_size_class: int,
     hidden_dim: tl.constexpr,
     vocab_size: tl.constexpr,
     padded_vocab_size: tl.constexpr,
@@ -711,7 +757,6 @@ class _RnntJointFusedVocabConsistencyTritonFunction(torch.autograd.Function):
         backward_pruning_range_size: int | None,
         pruning_range_starts: torch.Tensor | None = None,
     ):
-        float_dtype = torch.float64 if joint_hidden.dtype == torch.float64 else torch.float32
 
         # number of rows of the joint hidden for a frame: U+1, or the pruning range size for the pruned lattice
         batch_size, src_max_length, num_frame_rows, hidden_dim = joint_hidden.shape
@@ -739,41 +784,43 @@ class _RnntJointFusedVocabConsistencyTritonFunction(torch.autograd.Function):
         target_logprobs = torch.full(
             [batch_size, src_max_length, tgt_max_length_plus_1],
             fill_value=float("-inf") if packed_hidden else 0.0,
-            dtype=float_dtype,
+            dtype=torch.float32,
             device=device,
         )
         blank_logprobs = target_logprobs.clone()
         log_sum_exp_scores = torch.empty_like(target_logprobs)
         # the consistency loss is computed for the rows of the joint hidden
         consistency_kl = torch.zeros(
-            [half_batch_size, src_max_length, num_frame_rows], dtype=float_dtype, device=device
+            [half_batch_size, src_max_length, num_frame_rows], dtype=torch.float32, device=device
         )
 
         fwd_grid = lambda META: (triton.cdiv(pair_flattened_size, META["PAIR_BLOCK"]),)
-        _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel[fwd_grid](
-            joint_hidden_ptr=joint_hidden,
-            targets_ptr=targets,
-            src_lengths_ptr=src_lengths,
-            tgt_lengths_ptr=tgt_lengths,
-            weight_ptr=matmul_weight,
-            bias_ptr=bias,
-            target_logprobs_out_ptr=target_logprobs,
-            blank_logprobs_out_ptr=blank_logprobs,
-            log_sum_exp_out_ptr=log_sum_exp_scores,
-            consistency_kl_out_ptr=consistency_kl,
-            pruning_starts_ptr=pruning_range_starts,
-            max_src_len=src_max_length,
-            max_tgt_len_plus_1=tgt_max_length_plus_1,
-            pair_flattened_size=pair_flattened_size,
-            student_lattice_offset=half_batch_size * src_max_length * tgt_max_length_plus_1,
-            hidden_dim=hidden_dim,
-            vocab_size=vocab_size,
-            blank_id=blank_id,
-            SYMMETRICAL=symmetrical,
-            USE_HIGH_PRECISION_MM=use_high_precision_mm,
-            MM_FULL_PRECISION=mm_full_precision,
-            PRUNING_RANGE=num_frame_rows if packed_hidden else 0,
-        )
+        with cuda_device_guard(joint_hidden):
+            _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel[fwd_grid](
+                joint_hidden_ptr=joint_hidden,
+                targets_ptr=targets,
+                src_lengths_ptr=src_lengths,
+                tgt_lengths_ptr=tgt_lengths,
+                weight_ptr=matmul_weight,
+                bias_ptr=bias,
+                target_logprobs_out_ptr=target_logprobs,
+                blank_logprobs_out_ptr=blank_logprobs,
+                log_sum_exp_out_ptr=log_sum_exp_scores,
+                consistency_kl_out_ptr=consistency_kl,
+                pruning_starts_ptr=pruning_range_starts,
+                max_src_len=src_max_length,
+                max_tgt_len_plus_1=tgt_max_length_plus_1,
+                pair_flattened_size=pair_flattened_size,
+                autotune_size_class=_autotune_size_class(2 * pair_flattened_size),
+                student_lattice_offset=half_batch_size * src_max_length * tgt_max_length_plus_1,
+                hidden_dim=hidden_dim,
+                vocab_size=vocab_size,
+                blank_id=blank_id,
+                SYMMETRICAL=symmetrical,
+                USE_HIGH_PRECISION_MM=use_high_precision_mm,
+                MM_FULL_PRECISION=mm_full_precision,
+                PRUNING_RANGE=num_frame_rows if packed_hidden else 0,
+            )
 
         ctx.save_for_backward(
             joint_hidden, weight, bias, targets, src_lengths, tgt_lengths, log_sum_exp_scores, matmul_weight
@@ -790,11 +837,11 @@ class _RnntJointFusedVocabConsistencyTritonFunction(torch.autograd.Function):
         return target_logprobs, blank_logprobs, consistency_kl
 
     @staticmethod
+    @once_differentiable
     def backward(ctx, grad_target_scores, grad_blank_scores, grad_consistency_kl):
         (joint_hidden, weight, bias, targets, src_lengths, tgt_lengths, log_sum_exp_scores, matmul_weight) = (
             ctx.saved_tensors
         )
-        float_dtype = torch.float64 if joint_hidden.dtype == torch.float64 else torch.float32
         grad_target_scores = grad_target_scores.contiguous()
         grad_blank_scores = grad_blank_scores.contiguous()
         grad_consistency_kl = grad_consistency_kl.contiguous()
@@ -853,50 +900,52 @@ class _RnntJointFusedVocabConsistencyTritonFunction(torch.autograd.Function):
         else:
             grad_joint_hidden = torch.zeros(
                 joint_hidden.shape,
-                dtype=float_dtype if ctx.input_grad_full_precision else joint_hidden.dtype,
+                dtype=torch.float32 if ctx.input_grad_full_precision else joint_hidden.dtype,
                 device=device,
             )
             grad_weight = torch.zeros(
                 [vocab_size, hidden_dim],
-                dtype=float_dtype if ctx.weight_grad_full_precision else weight.dtype,
+                dtype=torch.float32 if ctx.weight_grad_full_precision else weight.dtype,
                 device=device,
             )
             grad_bias = torch.zeros(
-                [vocab_size], dtype=float_dtype if ctx.weight_grad_full_precision else bias.dtype, device=device
+                [vocab_size], dtype=torch.float32 if ctx.weight_grad_full_precision else bias.dtype, device=device
             )
             _check_atomic_accumulators(grad_joint_hidden, grad_weight, grad_bias)
             bwd_grid = lambda META: (
                 triton.cdiv(pair_flattened_size, META["PAIR_BLOCK"]),
                 triton.cdiv(vocab_size, META["VOCAB_BLOCK"]),
             )
-            _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel[bwd_grid](
-                joint_hidden_ptr=joint_hidden,
-                targets_ptr=targets,
-                src_lengths_ptr=src_lengths,
-                tgt_lengths_ptr=tgt_lengths,
-                weight_ptr=matmul_weight,
-                bias_ptr=bias,
-                log_sum_exp_ptr=log_sum_exp_scores,
-                grad_target_scores_ptr=grad_target_scores,
-                grad_blank_scores_ptr=grad_blank_scores,
-                grad_consistency_kl_ptr=grad_consistency_kl,
-                grad_joint_hidden_out_ptr=grad_joint_hidden,
-                grad_weight_out_ptr=grad_weight,
-                grad_bias_out_ptr=grad_bias,
-                pruning_starts_ptr=pruning_starts,
-                max_src_len=src_max_length,
-                max_tgt_len_plus_1=tgt_max_length_plus_1,
-                pair_flattened_size=pair_flattened_size,
-                student_lattice_offset=student_lattice_offset,
-                hidden_dim=hidden_dim,
-                vocab_size=vocab_size,
-                blank_id=ctx.blank_id,
-                SYMMETRICAL=ctx.symmetrical,
-                USE_HIGH_PRECISION_MM=ctx.use_high_precision_mm,
-                MM_FULL_PRECISION=ctx.mm_full_precision,
-                PRUNING_RANGE=pruning_range_size or 0,
-                PACKED_HIDDEN=packed_hidden,
-            )
+            with cuda_device_guard(joint_hidden):
+                _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel[bwd_grid](
+                    joint_hidden_ptr=joint_hidden,
+                    targets_ptr=targets,
+                    src_lengths_ptr=src_lengths,
+                    tgt_lengths_ptr=tgt_lengths,
+                    weight_ptr=matmul_weight,
+                    bias_ptr=bias,
+                    log_sum_exp_ptr=log_sum_exp_scores,
+                    grad_target_scores_ptr=grad_target_scores,
+                    grad_blank_scores_ptr=grad_blank_scores,
+                    grad_consistency_kl_ptr=grad_consistency_kl,
+                    grad_joint_hidden_out_ptr=grad_joint_hidden,
+                    grad_weight_out_ptr=grad_weight,
+                    grad_bias_out_ptr=grad_bias,
+                    pruning_starts_ptr=pruning_starts,
+                    max_src_len=src_max_length,
+                    max_tgt_len_plus_1=tgt_max_length_plus_1,
+                    pair_flattened_size=pair_flattened_size,
+                    autotune_size_class=_autotune_size_class(2 * pair_flattened_size),
+                    student_lattice_offset=student_lattice_offset,
+                    hidden_dim=hidden_dim,
+                    vocab_size=vocab_size,
+                    blank_id=ctx.blank_id,
+                    SYMMETRICAL=ctx.symmetrical,
+                    USE_HIGH_PRECISION_MM=ctx.use_high_precision_mm,
+                    MM_FULL_PRECISION=ctx.mm_full_precision,
+                    PRUNING_RANGE=pruning_range_size or 0,
+                    PACKED_HIDDEN=packed_hidden,
+                )
             grad_joint_hidden = grad_joint_hidden.to(joint_hidden.dtype)
             grad_weight = grad_weight.to(weight.dtype)
             grad_bias = grad_bias.to(bias.dtype)
@@ -948,6 +997,9 @@ def rnnt_joint_fused_vocab_consistency_triton(
     """
     if joint_hidden.shape[0] % 2 != 0:
         raise ValueError(f"Consistency loss requires a double batch, got odd batch size {joint_hidden.shape[0]}")
+    _check_joint_inputs(
+        joint_hidden, targets, tgt_lengths, src_lengths, weight, bias, blank_id, pruning_range_starts is not None
+    )
     pruning_range_starts = _normalize_pruning_range_starts(
         joint_hidden, targets, pruning_range_starts, backward_pruning_range_size, paired=True
     )
@@ -1005,7 +1057,6 @@ def _rnnt_joint_fused_vocab_consistency_bwd_chunked(
     joint hidden [2B, T, U+1, hidden_dim] to a buffer (and the gradient is scattered back), unless the joint hidden
     is `packed_hidden`: [2B, T, pruning_range_size, hidden_dim], only the rows of the ranges.
     """
-    float_dtype = torch.float64 if joint_hidden.dtype == torch.float64 else torch.float32
     batch_size, src_max_length, num_frame_rows, hidden_dim = joint_hidden.shape
     tgt_max_length_plus_1 = log_sum_exp_scores.shape[2]
     half_batch_size = batch_size // 2
@@ -1018,12 +1069,15 @@ def _rnnt_joint_fused_vocab_consistency_bwd_chunked(
     device = joint_hidden.device
 
     use_low_precision_mm = joint_hidden.dtype == torch.bfloat16 and not mm_full_precision and not use_high_precision_mm
-    grad_logits_dtype = torch.bfloat16 if use_low_precision_mm else float_dtype
+    grad_logits_dtype = torch.bfloat16 if use_low_precision_mm else torch.float32
     padded_vocab_size = triton.cdiv(vocab_size, _CHUNKED_BWD_VOCAB_PADDING) * _CHUNKED_BWD_VOCAB_PADDING
     # the buffer holds both teacher and student rows of the chunk
     chunk_pairs = CHUNKED_BWD_GRAD_LOGITS_BUFFER_BYTES // (2 * padded_vocab_size * grad_logits_dtype.itemsize)
     chunk_pairs = max(chunk_pairs // _CHUNKED_BWD_ROWS_MULTIPLE, 1) * _CHUNKED_BWD_ROWS_MULTIPLE
     chunk_pairs = max(min(chunk_pairs, pair_flattened_size), 1)
+    # NB: the size class of the first (largest) chunk is used for all chunks: autotuning resets the bias gradient
+    # accumulated by the kernel, so it must be possible only for the first chunk (the same autotune key)
+    autotune_size_class = int(2 * chunk_pairs * padded_vocab_size >= _AUTOTUNE_MIN_GRAD_LOGITS)
 
     joint_hidden_flat = joint_hidden.view(num_hidden_rows, hidden_dim)
     # zero rows for padded vocab: grad logits there are zeros, padding only keeps GEMM operands aligned
@@ -1037,96 +1091,99 @@ def _rnnt_joint_fused_vocab_consistency_bwd_chunked(
     if gather_hidden:
         gathered_hidden = torch.empty([2 * chunk_pairs, hidden_dim], dtype=grad_logits_dtype, device=device)
         gathered_grad_hidden = torch.empty_like(gathered_hidden)
-    grad_weight_padded = torch.zeros([padded_vocab_size, hidden_dim], dtype=float_dtype, device=device)
-    grad_bias = torch.zeros([vocab_size], dtype=float_dtype, device=device)
+    grad_weight_padded = torch.zeros([padded_vocab_size, hidden_dim], dtype=torch.float32, device=device)
+    grad_bias = torch.zeros([vocab_size], dtype=torch.float32, device=device)
     # contiguous views of the halves of the double batch: lattice offsets of pairs index both of them
     joint_hidden_halves = (joint_hidden[:half_batch_size], joint_hidden[half_batch_size:])
     grad_joint_hidden_halves = (grad_joint_hidden[:half_batch_size], grad_joint_hidden[half_batch_size:])
 
-    for chunk_start in range(0, pair_flattened_size, chunk_pairs):
-        chunk_size = min(chunk_pairs, pair_flattened_size - chunk_start)
-        if gather_hidden:
-            for half_index, joint_hidden_half in enumerate(joint_hidden_halves):
-                _copy_pruned_hidden(
-                    joint_hidden_half,
-                    gathered_hidden[half_index * chunk_size :],
-                    pruning_starts,
-                    src_lengths,
-                    tgt_lengths,
-                    chunk_start,
-                    chunk_size,
-                    pruning_range_size,
-                    scatter=False,
-                )
-            hidden = gathered_hidden
-            teacher_hidden_row_start, student_hidden_row_start = 0, chunk_size
-        else:
-            hidden = joint_hidden
-            teacher_hidden_row_start, student_hidden_row_start = chunk_start, student_hidden_offset + chunk_start
-        grid = lambda META: (
-            triton.cdiv(chunk_size, META["PAIR_BLOCK"]) * triton.cdiv(padded_vocab_size, META["VOCAB_BLOCK"]),
-        )
-        _rnnt_joint_fused_vocab_consistency_bwd_grad_logits_triton_kernel[grid](
-            hidden_ptr=hidden,
-            targets_ptr=targets,
-            src_lengths_ptr=src_lengths,
-            tgt_lengths_ptr=tgt_lengths,
-            weight_ptr=matmul_weight,
-            bias_ptr=bias,
-            log_sum_exp_ptr=log_sum_exp_scores,
-            grad_target_scores_ptr=grad_target_scores,
-            grad_blank_scores_ptr=grad_blank_scores,
-            grad_consistency_kl_ptr=grad_consistency_kl,
-            grad_logits_out_ptr=grad_logits_buffer,
-            grad_bias_out_ptr=grad_bias,
-            pruning_starts_ptr=pruning_starts,
-            max_src_len=src_max_length,
-            max_tgt_len_plus_1=tgt_max_length_plus_1,
-            student_lattice_offset=student_lattice_offset,
-            teacher_hidden_row_start=teacher_hidden_row_start,
-            student_hidden_row_start=student_hidden_row_start,
-            chunk_start=chunk_start,
-            chunk_size=chunk_size,
-            hidden_dim=hidden_dim,
-            vocab_size=vocab_size,
-            padded_vocab_size=padded_vocab_size,
-            blank_id=blank_id,
-            SYMMETRICAL=symmetrical,
-            USE_HIGH_PRECISION_MM=use_high_precision_mm,
-            MM_FULL_PRECISION=mm_full_precision,
-            PRUNING_RANGE=pruning_range_size or 0,
-        )
-        grad_logits_chunk = grad_logits_buffer[: 2 * chunk_size]
-        if gather_hidden:
-            # gathered rows of the teacher and the student are contiguous => one GEMM for each gradient
-            torch.mm(grad_logits_chunk, weight_padded, out=gathered_grad_hidden[: 2 * chunk_size])
-            for half_index, grad_joint_hidden_half in enumerate(grad_joint_hidden_halves):
-                _copy_pruned_hidden(
-                    grad_joint_hidden_half,
-                    gathered_grad_hidden[half_index * chunk_size :],
-                    pruning_starts,
-                    src_lengths,
-                    tgt_lengths,
-                    chunk_start,
-                    chunk_size,
-                    pruning_range_size,
-                    scatter=True,
-                )
-            _addmm_full_precision_(grad_weight_padded, grad_logits_chunk.T, gathered_hidden[: 2 * chunk_size])
-            continue
-
-        for half_index, row_start in enumerate((chunk_start, student_hidden_offset + chunk_start)):
-            grad_logits_half = grad_logits_chunk[half_index * chunk_size : (half_index + 1) * chunk_size]
-            grad_joint_hidden_rows = grad_joint_hidden_flat[row_start : row_start + chunk_size]
-            if grad_joint_hidden_rows.dtype == grad_logits_dtype:
-                torch.mm(grad_logits_half, weight_padded, out=grad_joint_hidden_rows)
+    # GEMMs use the dtypes selected above also if backward is called inside autocast
+    with cuda_device_guard(joint_hidden), torch.autocast(joint_hidden.device.type, enabled=False):
+        for chunk_start in range(0, pair_flattened_size, chunk_pairs):
+            chunk_size = min(chunk_pairs, pair_flattened_size - chunk_start)
+            if gather_hidden:
+                for half_index, joint_hidden_half in enumerate(joint_hidden_halves):
+                    _copy_pruned_hidden(
+                        joint_hidden_half,
+                        gathered_hidden[half_index * chunk_size :],
+                        pruning_starts,
+                        src_lengths,
+                        tgt_lengths,
+                        chunk_start,
+                        chunk_size,
+                        pruning_range_size,
+                        scatter=False,
+                    )
+                hidden = gathered_hidden
+                teacher_hidden_row_start, student_hidden_row_start = 0, chunk_size
             else:
-                grad_joint_hidden_rows.copy_(torch.mm(grad_logits_half, weight_padded))
-            _addmm_full_precision_(
-                grad_weight_padded,
-                grad_logits_half.T,
-                joint_hidden_flat[row_start : row_start + chunk_size].to(grad_logits_dtype),
+                hidden = joint_hidden
+                teacher_hidden_row_start, student_hidden_row_start = chunk_start, student_hidden_offset + chunk_start
+            grid = lambda META: (
+                triton.cdiv(chunk_size, META["PAIR_BLOCK"]) * triton.cdiv(padded_vocab_size, META["VOCAB_BLOCK"]),
             )
+            _rnnt_joint_fused_vocab_consistency_bwd_grad_logits_triton_kernel[grid](
+                hidden_ptr=hidden,
+                targets_ptr=targets,
+                src_lengths_ptr=src_lengths,
+                tgt_lengths_ptr=tgt_lengths,
+                weight_ptr=matmul_weight,
+                bias_ptr=bias,
+                log_sum_exp_ptr=log_sum_exp_scores,
+                grad_target_scores_ptr=grad_target_scores,
+                grad_blank_scores_ptr=grad_blank_scores,
+                grad_consistency_kl_ptr=grad_consistency_kl,
+                grad_logits_out_ptr=grad_logits_buffer,
+                grad_bias_out_ptr=grad_bias,
+                pruning_starts_ptr=pruning_starts,
+                max_src_len=src_max_length,
+                max_tgt_len_plus_1=tgt_max_length_plus_1,
+                student_lattice_offset=student_lattice_offset,
+                teacher_hidden_row_start=teacher_hidden_row_start,
+                student_hidden_row_start=student_hidden_row_start,
+                chunk_start=chunk_start,
+                chunk_size=chunk_size,
+                autotune_size_class=autotune_size_class,
+                hidden_dim=hidden_dim,
+                vocab_size=vocab_size,
+                padded_vocab_size=padded_vocab_size,
+                blank_id=blank_id,
+                SYMMETRICAL=symmetrical,
+                USE_HIGH_PRECISION_MM=use_high_precision_mm,
+                MM_FULL_PRECISION=mm_full_precision,
+                PRUNING_RANGE=pruning_range_size or 0,
+            )
+            grad_logits_chunk = grad_logits_buffer[: 2 * chunk_size]
+            if gather_hidden:
+                # gathered rows of the teacher and the student are contiguous => one GEMM for each gradient
+                torch.mm(grad_logits_chunk, weight_padded, out=gathered_grad_hidden[: 2 * chunk_size])
+                for half_index, grad_joint_hidden_half in enumerate(grad_joint_hidden_halves):
+                    _copy_pruned_hidden(
+                        grad_joint_hidden_half,
+                        gathered_grad_hidden[half_index * chunk_size :],
+                        pruning_starts,
+                        src_lengths,
+                        tgt_lengths,
+                        chunk_start,
+                        chunk_size,
+                        pruning_range_size,
+                        scatter=True,
+                    )
+                _addmm_full_precision_(grad_weight_padded, grad_logits_chunk.T, gathered_hidden[: 2 * chunk_size])
+                continue
+
+            for half_index, row_start in enumerate((chunk_start, student_hidden_offset + chunk_start)):
+                grad_logits_half = grad_logits_chunk[half_index * chunk_size : (half_index + 1) * chunk_size]
+                grad_joint_hidden_rows = grad_joint_hidden_flat[row_start : row_start + chunk_size]
+                if grad_joint_hidden_rows.dtype == grad_logits_dtype:
+                    torch.mm(grad_logits_half, weight_padded, out=grad_joint_hidden_rows)
+                else:
+                    grad_joint_hidden_rows.copy_(torch.mm(grad_logits_half, weight_padded))
+                _addmm_full_precision_(
+                    grad_weight_padded,
+                    grad_logits_half.T,
+                    joint_hidden_flat[row_start : row_start + chunk_size].to(grad_logits_dtype),
+                )
 
     grad_weight = grad_weight_padded[:vocab_size].to(weight.dtype)
     grad_bias = grad_bias.to(bias.dtype)

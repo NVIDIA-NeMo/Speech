@@ -18,16 +18,18 @@ Tests for the `fused_vocab` Joint: target/blank log-probs from the joint hidden 
 All kernels are compiled with a single small-tile config (see `conftest.py`) and share the dimensions and
 the precision settings from `utils.py`: a kernel is compiled once for each of them (0.3-0.6 seconds without
 the cache), so the tests that compile a new kernel take up to a second, all the other tests - milliseconds.
-The first test of a backend in the session also initializes its compiler, which takes 1-2 seconds more.
+The first test in the session that uses Triton also initializes its compiler, which takes 1-2 seconds more.
 The production autotune configs are covered by `test_rnnt_joint_fused_vocab_production_configs.py`.
 """
+
+import math
 
 import pytest
 import torch
 
 from nemo.collections.asr.parts.turbo_transducer.backend import TurboTransducerBackend
 from nemo.collections.asr.parts.turbo_transducer.rnnt_joint_fused_vocab import rnnt_joint_fused_vocab
-from nemo.core.utils.optional_libs import CUTILE_AVAILABLE, TRITON_AVAILABLE
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 from tests.collections.asr.decoding.utils import avoid_sync_operations
 from tests.collections.asr.turbo_transducer.utils import (
     DIMS_BELOW_TILE_BLANK_MIDDLE,
@@ -44,6 +46,12 @@ from tests.collections.asr.turbo_transducer.utils import (
 )
 
 if TRITON_AVAILABLE:
+    import triton
+    from triton.runtime.autotuner import Autotuner
+
+    from nemo.collections.asr.parts.turbo_transducer import (
+        rnnt_joint_fused_vocab_consistency_triton as consistency_triton_module,
+    )
     from nemo.collections.asr.parts.turbo_transducer import rnnt_joint_fused_vocab_triton as fused_vocab_triton_module
     from nemo.collections.asr.parts.turbo_transducer.rnnt_joint_fused_vocab_triton import FusedVocabBackwardMode
 
@@ -51,20 +59,9 @@ pytestmark = pytest.mark.unit
 
 requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 requires_triton = pytest.mark.skipif(not TRITON_AVAILABLE, reason="Triton is not installed")
-requires_cutile = pytest.mark.skipif(not CUTILE_AVAILABLE, reason="cuTile is not installed")
 
-# (backend, backward mode): both backward algorithms of the Triton backend are tested on any GPU,
-# independent of the GPU-based default selection
-IMPLEMENTATIONS = [
-    pytest.param(TurboTransducerBackend.TRITON, "atomic", marks=requires_triton, id="triton-atomic"),
-    pytest.param(TurboTransducerBackend.TRITON, "chunked", marks=requires_triton, id="triton-chunked"),
-    pytest.param(TurboTransducerBackend.CUTILE, None, marks=requires_cutile, id="cutile"),
-]
-
-BACKENDS = [
-    pytest.param(TurboTransducerBackend.TRITON, marks=requires_triton, id="triton"),
-    pytest.param(TurboTransducerBackend.CUTILE, marks=requires_cutile, id="cutile"),
-]
+# Both backward algorithms are tested on any GPU, independent of the GPU-based default selection
+BACKWARD_MODES = ["atomic", "chunked"]
 
 # (hidden_dim, vocab_size, blank_id)
 FULL_PRECISION_DIMS = [
@@ -111,31 +108,29 @@ MIXED_PRECISION_SETTINGS = [
 
 @pytest.mark.gpu
 @requires_cuda
+@requires_triton
 class TestFusedVocabJoint:
     """
     Forward (independent of the backward mode) and backward are tested separately: each test compiles one kernel,
     if the tests are executed in the order of definition.
     """
 
-    @pytest.mark.parametrize("backend", BACKENDS)
     @pytest.mark.parametrize("dims", FULL_PRECISION_DIMS)
-    def test_full_precision_forward_matches_reference(self, backend, dims):
+    def test_full_precision_forward_matches_reference(self, dims):
         """Exact FP32 computations: log-probs match the FP64 reference from the logits"""
         inputs = make_joint_inputs(dims=dims)
-        outputs = rnnt_joint_fused_vocab(**inputs.kernel_kwargs(inputs.leaves()), backend=backend, **FULL_PRECISION)
+        outputs = rnnt_joint_fused_vocab(**inputs.kernel_kwargs(inputs.leaves()), **FULL_PRECISION)
         expected_outputs = reference_outputs(inputs, inputs.leaves(torch.float64))
         assert_close_to_reference(outputs, expected_outputs, FULL_PRECISION_TOLERANCE, OUTPUT_NAMES)
 
-    @pytest.mark.parametrize("backend,backward_mode", IMPLEMENTATIONS)
+    @pytest.mark.parametrize("backward_mode", BACKWARD_MODES)
     @pytest.mark.parametrize("dims", FULL_PRECISION_DIMS)
-    def test_full_precision_backward_matches_reference(self, backend, backward_mode, dims, monkeypatch):
+    def test_full_precision_backward_matches_reference(self, backward_mode, dims, monkeypatch):
         """Exact FP32 computations: all gradients match the FP64 reference from the logits"""
         _use_min_chunk_size(monkeypatch)
         inputs = make_joint_inputs(dims=dims)
         leaves, reference_leaves = inputs.leaves(), inputs.leaves(torch.float64)
-        outputs = rnnt_joint_fused_vocab(
-            **inputs.kernel_kwargs(leaves), backend=backend, backward_mode=backward_mode, **FULL_PRECISION
-        )
+        outputs = rnnt_joint_fused_vocab(**inputs.kernel_kwargs(leaves), backward_mode=backward_mode, **FULL_PRECISION)
         grads = inputs.random_grads()
         torch.autograd.backward(outputs, grads)
         torch.autograd.backward(reference_outputs(inputs, reference_leaves), [grad.double() for grad in grads])
@@ -147,12 +142,11 @@ class TestFusedVocabJoint:
         )
         assert all(leaf.grad.dtype == torch.float32 for leaf in leaves)
 
-    @pytest.mark.parametrize("backend", BACKENDS)
     @pytest.mark.parametrize(
         "param_dtype,kernel_kwargs,weight_matmul_dtype,tolerances,uses_bf16_atomics", MIXED_PRECISION_SETTINGS
     )
     def test_mixed_precision_forward_matches_reference(
-        self, backend, param_dtype, kernel_kwargs, weight_matmul_dtype, tolerances, uses_bf16_atomics
+        self, param_dtype, kernel_kwargs, weight_matmul_dtype, tolerances, uses_bf16_atomics
     ):
         """
         BF16 joint hidden: FP32 log-probs, matmul operands are BF16 unless FP32 is requested
@@ -160,20 +154,19 @@ class TestFusedVocabJoint:
         """
         inputs = make_joint_inputs(hidden_dtype=torch.bfloat16, param_dtype=param_dtype)
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            outputs = rnnt_joint_fused_vocab(**inputs.kernel_kwargs(inputs.leaves()), backend=backend, **kernel_kwargs)
+            outputs = rnnt_joint_fused_vocab(**inputs.kernel_kwargs(inputs.leaves()), **kernel_kwargs)
         expected_outputs = reference_outputs(
             inputs, inputs.leaves(torch.float64), weight_matmul_dtype=weight_matmul_dtype
         )
         assert all(output.dtype == torch.float32 for output in outputs)
         assert_close_to_reference(outputs, expected_outputs, tolerances[0], OUTPUT_NAMES)
 
-    @pytest.mark.parametrize("backend,backward_mode", IMPLEMENTATIONS)
+    @pytest.mark.parametrize("backward_mode", BACKWARD_MODES)
     @pytest.mark.parametrize(
         "param_dtype,kernel_kwargs,weight_matmul_dtype,tolerances,uses_bf16_atomics", MIXED_PRECISION_SETTINGS
     )
     def test_mixed_precision_backward_matches_reference(
         self,
-        backend,
         backward_mode,
         param_dtype,
         kernel_kwargs,
@@ -184,7 +177,7 @@ class TestFusedVocabJoint:
     ):
         """BF16 joint hidden: matmul operands as in forward, gradients preserve the dtypes of the inputs"""
         if uses_bf16_atomics:
-            _skip_if_bf16_atomics_unsupported(backend, backward_mode)
+            skip_if_bf16_atomics_unsupported(backward_mode)
         _use_min_chunk_size(monkeypatch)
         inputs = make_joint_inputs(hidden_dtype=torch.bfloat16, param_dtype=param_dtype)
         leaves, reference_leaves = inputs.leaves(), inputs.leaves(torch.float64)
@@ -201,7 +194,7 @@ class TestFusedVocabJoint:
 
         with torch.autocast("cuda", dtype=torch.bfloat16):
             outputs = rnnt_joint_fused_vocab(
-                **inputs.kernel_kwargs(leaves), backend=backend, backward_mode=backward_mode, **kernel_kwargs
+                **inputs.kernel_kwargs(leaves), backward_mode=backward_mode, **kernel_kwargs
             )
         expected_outputs = reference_outputs(inputs, reference_leaves, weight_matmul_dtype=weight_matmul_dtype)
         grads = inputs.random_grads()
@@ -212,7 +205,45 @@ class TestFusedVocabJoint:
         )
         assert [leaf.grad.dtype for leaf in leaves] == [torch.bfloat16, param_dtype, param_dtype]
 
-    @pytest.mark.parametrize("backend,backward_mode", IMPLEMENTATIONS)
+    @pytest.mark.parametrize("backward_mode", BACKWARD_MODES)
+    def test_half_precision_matches_reference(self, backward_mode):
+        """FP16 joint hidden (`16-mixed` precision): FP32 matmul operands (TF32 by default), FP16 gradient"""
+        inputs = make_joint_inputs(hidden_dtype=torch.float16)
+        leaves, reference_leaves = inputs.leaves(), inputs.leaves(torch.float64)
+        with torch.autocast("cuda", dtype=torch.float16):
+            outputs = rnnt_joint_fused_vocab(**inputs.kernel_kwargs(leaves), backward_mode=backward_mode)
+        expected_outputs = reference_outputs(inputs, reference_leaves)
+        assert all(output.dtype == torch.float32 for output in outputs)
+        # errors of TF32 matmuls and of the FP16 gradient: ~1e-3 for 30 random inputs
+        assert_close_to_reference(outputs, expected_outputs, 5e-3, OUTPUT_NAMES)
+        grads = inputs.random_grads()
+        torch.autograd.backward(outputs, grads)
+        torch.autograd.backward(expected_outputs, [grad.double() for grad in grads])
+        assert_close_to_reference(
+            [leaf.grad for leaf in leaves], [leaf.grad for leaf in reference_leaves], 5e-3, GRAD_NAMES
+        )
+        assert [leaf.grad.dtype for leaf in leaves] == [torch.float16, torch.float32, torch.float32]
+
+    def test_chunked_backward_inside_autocast(self, monkeypatch):
+        """Regression: GEMMs of the chunked backward were autocast to BF16 if backward was called inside autocast"""
+        _use_min_chunk_size(monkeypatch)
+        kernel_kwargs = dict(backward_mode="chunked", mm_full_precision=True)
+        inputs = make_joint_inputs(hidden_dtype=torch.bfloat16)
+        results = []
+        for backward_inside_autocast in [False, True]:
+            leaves = inputs.leaves()
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                outputs = rnnt_joint_fused_vocab(**inputs.kernel_kwargs(leaves), **kernel_kwargs)
+                if backward_inside_autocast:
+                    torch.autograd.backward(outputs, inputs.random_grads())
+            if not backward_inside_autocast:
+                torch.autograd.backward(outputs, inputs.random_grads())
+            results.append([leaf.grad for leaf in leaves])
+        # the same computations (the bias gradient is accumulated with atomics: not bitwise reproducible);
+        # the error of the joint hidden gradient computed with BF16 operands is ~4e-3
+        assert_close_to_reference(results[1], results[0], 1e-6, GRAD_NAMES)
+
+    @pytest.mark.parametrize("backward_mode", BACKWARD_MODES)
     @pytest.mark.parametrize(
         "src_lengths,tgt_lengths",
         [
@@ -220,14 +251,10 @@ class TestFusedVocabJoint:
             pytest.param((4, 2), (0, 0), id="blank-only"),  # lattice [2, 4, 1], no targets
         ],
     )
-    def test_edge_case_lattice(self, backend, backward_mode, src_lengths, tgt_lengths):
-        # NB: cuTile compiles the forward and backward kernels again for some of the new lattice shapes
-        # (0.4 seconds per kernel), so the test can take about a second with the cuTile backend
+    def test_edge_case_lattice(self, backward_mode, src_lengths, tgt_lengths):
         inputs = make_joint_inputs(src_lengths=src_lengths, tgt_lengths=tgt_lengths)
         leaves, reference_leaves = inputs.leaves(), inputs.leaves(torch.float64)
-        outputs = rnnt_joint_fused_vocab(
-            **inputs.kernel_kwargs(leaves), backend=backend, backward_mode=backward_mode, **FULL_PRECISION
-        )
+        outputs = rnnt_joint_fused_vocab(**inputs.kernel_kwargs(leaves), backward_mode=backward_mode, **FULL_PRECISION)
         expected_outputs = reference_outputs(inputs, reference_leaves)
         assert_close_to_reference(outputs, expected_outputs, FULL_PRECISION_TOLERANCE, OUTPUT_NAMES)
 
@@ -241,19 +268,19 @@ class TestFusedVocabJoint:
             GRAD_NAMES,
         )
 
-    @pytest.mark.parametrize("backend,backward_mode", IMPLEMENTATIONS)
+    @pytest.mark.parametrize("backward_mode", BACKWARD_MODES)
     @pytest.mark.parametrize("mixed_precision", [False, True])
-    def test_no_cuda_sync_operations(self, backend, backward_mode, mixed_precision):
+    def test_no_cuda_sync_operations(self, backward_mode, mixed_precision):
         if mixed_precision:
             # BF16 joint hidden with FP32 master weights and default kernel arguments, as in training with autocast
-            _skip_if_bf16_atomics_unsupported(backend, backward_mode)
+            skip_if_bf16_atomics_unsupported(backward_mode)
             inputs, kernel_kwargs = make_joint_inputs(hidden_dtype=torch.bfloat16), {}
         else:
             inputs, kernel_kwargs = make_joint_inputs(), FULL_PRECISION
 
         def run_forward_backward():
             target_logprobs, blank_logprobs = rnnt_joint_fused_vocab(
-                **inputs.kernel_kwargs(inputs.leaves()), backend=backend, backward_mode=backward_mode, **kernel_kwargs
+                **inputs.kernel_kwargs(inputs.leaves()), backward_mode=backward_mode, **kernel_kwargs
             )
             (target_logprobs.sum() + blank_logprobs.sum()).backward()
 
@@ -309,6 +336,100 @@ def test_no_recompilation_for_new_lattice_shape(backward_mode, monkeypatch):
         assert count_compiled_kernels(fused_vocab_triton_module) == num_compiled_kernels
 
 
+@pytest.mark.gpu
+@requires_cuda
+@requires_triton
+def test_small_batches_are_autotuned_separately(monkeypatch):
+    """
+    Regression: the config selected by autotuning for a small first batch (e.g., a smoke run), which does not load
+    the GPU, was cached on disk and used for the batches of any size. The size class is a part of the autotune key.
+    """
+    kernel = fused_vocab_triton_module._rnnt_joint_fused_vocab_fwd_triton_kernel
+    # autotuning requires at least 2 configs (the tests use a single one); small tiles compile fast
+    test_config = kernel.configs[0]
+    monkeypatch.setattr(kernel, "configs", [test_config, triton.Config(test_config.kwargs, num_warps=2, num_stages=2)])
+    monkeypatch.setattr(kernel, "cache", {})
+    inputs = make_joint_inputs()
+    num_rows = math.prod(inputs.lattice_shape)
+    size_class_index = kernel.keys.index("autotune_size_class")
+    for min_rows, expected_size_classes in [(num_rows + 1, [0]), (num_rows, [0, 1])]:
+        monkeypatch.setattr(fused_vocab_triton_module, "_AUTOTUNE_MIN_ROWS", min_rows)
+        with torch.no_grad():
+            rnnt_joint_fused_vocab(**inputs.kernel_kwargs(inputs.leaves()), **FULL_PRECISION)
+        assert sorted(key[size_class_index] for key in kernel.cache) == expected_size_classes
+
+
+@pytest.mark.gpu
+@requires_cuda
+@requires_triton
+def test_chunked_backward_is_autotuned_only_for_first_chunk(monkeypatch):
+    """
+    Regression: autotuning resets the bias gradient accumulated by the kernel, so it must be possible only for
+    the first chunk. The last (smaller) chunk had another size class, was autotuned, and the gradient of
+    the previous chunks was lost.
+    """
+    kernel = fused_vocab_triton_module._rnnt_joint_fused_vocab_bwd_grad_logits_triton_kernel
+    test_config = kernel.configs[0]
+    monkeypatch.setattr(kernel, "configs", [test_config, triton.Config(test_config.kwargs, num_warps=2, num_stages=2)])
+    monkeypatch.setattr(kernel, "cache", {})
+    _use_min_chunk_size(monkeypatch)  # chunks of 256, 256 and 232 rows; the vocabulary is padded to 64
+    monkeypatch.setattr(fused_vocab_triton_module, "_AUTOTUNE_MIN_GRAD_LOGITS", 250 * 64)
+    inputs = make_joint_inputs()
+    assert math.prod(inputs.lattice_shape) == 744
+    leaves, reference_leaves = inputs.leaves(), inputs.leaves(torch.float64)
+    outputs = rnnt_joint_fused_vocab(**inputs.kernel_kwargs(leaves), backward_mode="chunked", **FULL_PRECISION)
+    grads = inputs.random_grads()
+    torch.autograd.backward(outputs, grads)
+    torch.autograd.backward(reference_outputs(inputs, reference_leaves), [grad.double() for grad in grads])
+    assert_close_to_reference(
+        [leaf.grad for leaf in leaves], [leaf.grad for leaf in reference_leaves], FULL_PRECISION_TOLERANCE, GRAD_NAMES
+    )
+    assert len(kernel.cache) == 1
+
+
+@requires_triton
+def test_autotuned_kernels_have_size_class():
+    """All autotuned kernels: the size class is in the autotune key and does not specialize (recompile) the kernel"""
+    kernels = [
+        kernel
+        for module in (fused_vocab_triton_module, consistency_triton_module)
+        for kernel in vars(module).values()
+        if isinstance(kernel, Autotuner)
+    ]
+    assert len(kernels) == 6
+    for kernel in kernels:
+        assert "autotune_size_class" in kernel.keys
+        assert "autotune_size_class" in kernel.fn.do_not_specialize
+
+
+@requires_triton
+@pytest.mark.parametrize(
+    "invalid_kwargs,error",
+    [
+        # targets [B, U+1] instead of [B, U]: labels of all utterances except the first one would be shifted
+        (dict(targets=torch.zeros(3, 8, dtype=torch.long)), ValueError),
+        (dict(targets=torch.zeros(2, 7, dtype=torch.long)), ValueError),
+        (dict(targets=torch.zeros(3, 7)), ValueError),
+        (dict(weight=torch.zeros(35, 41)), ValueError),
+        (dict(bias=torch.zeros(34)), ValueError),
+        (dict(src_lengths=torch.ones(2, dtype=torch.long)), ValueError),
+        (dict(tgt_lengths=torch.ones(4, dtype=torch.long)), ValueError),
+        (dict(blank_id=35), ValueError),
+        (dict(blank_id=-1), ValueError),
+        (dict(joint_hidden=torch.zeros(3, 31, 8)), ValueError),
+        # FP64 would be computed in FP32 silently
+        (dict(joint_hidden=torch.zeros(3, 31, 8, 40, dtype=torch.float64)), TypeError),
+    ],
+)
+def test_rejects_inconsistent_inputs(invalid_kwargs, error):
+    """The kernels index the tensors by the shape of the joint hidden: inconsistent inputs are rejected"""
+    inputs = make_joint_inputs(device="cpu")
+    assert inputs.lattice_shape == (3, 31, 8) and inputs.joint_hidden.shape[-1] == 40 and inputs.blank_id == 34
+    kernel_kwargs = dict(inputs.kernel_kwargs(inputs.leaves()), **invalid_kwargs)
+    with pytest.raises(error):
+        rnnt_joint_fused_vocab(**kernel_kwargs)
+
+
 @requires_triton
 @pytest.mark.parametrize(
     "capability,expected_mode",
@@ -341,32 +462,22 @@ def test_atomic_backward_requires_bf16_atomics(monkeypatch):
         fused_vocab_triton_module._check_atomic_accumulators(fp32_accumulator, bf16_accumulator)
 
 
-def test_cutile_rejects_triton_only_options():
+@pytest.mark.parametrize("backend", [TurboTransducerBackend.CUTILE, "cutile"])
+def test_cutile_backend_is_not_implemented(backend):
+    """cuTile backend is planned: the request is rejected, not replaced silently with Triton"""
     tensor_args = dict.fromkeys(["joint_hidden", "targets", "tgt_lengths", "src_lengths", "weight", "bias"])
-    with pytest.raises(NotImplementedError, match="Triton"):
-        rnnt_joint_fused_vocab(**tensor_args, blank_id=0, backend="cutile", backward_pruning_range_size=2)
-    with pytest.raises(ValueError, match="Triton"):
-        rnnt_joint_fused_vocab(**tensor_args, blank_id=0, backend="cutile", backward_mode="chunked")
+    with pytest.raises(NotImplementedError, match="cuTile"):
+        rnnt_joint_fused_vocab(**tensor_args, blank_id=0, backend=backend)
 
 
-def test_rejects_unknown_backend():
+@pytest.mark.parametrize("backend", ["torch", "unknown"])
+def test_rejects_unsupported_backend(backend):
     tensor_args = dict.fromkeys(["joint_hidden", "targets", "tgt_lengths", "src_lengths", "weight", "bias"])
     with pytest.raises(ValueError):
-        rnnt_joint_fused_vocab(**tensor_args, blank_id=0, backend="unknown")
+        rnnt_joint_fused_vocab(**tensor_args, blank_id=0, backend=backend)
 
 
 def _use_min_chunk_size(monkeypatch):
     """Chunked backward with the minimal chunk (256 rows): several chunks and a partial last chunk"""
     if TRITON_AVAILABLE:
         monkeypatch.setattr(fused_vocab_triton_module, "CHUNKED_BWD_GRAD_LOGITS_BUFFER_BYTES", 1)
-
-
-def _skip_if_bf16_atomics_unsupported(backend: TurboTransducerBackend, backward_mode: str | None):
-    """
-    Accumulation of gradients in BF16 requires BF16 atomics, native only for compute capability 9.0+.
-    Triton emulates them on older GPUs with compare-and-swap loops (Triton 3.4+), cuTile does not compile.
-    """
-    if backend == TurboTransducerBackend.CUTILE and torch.cuda.get_device_capability() < (9, 0):
-        pytest.skip("cuTile backend requires compute capability 9.0+ for BF16 atomics")
-    if backend == TurboTransducerBackend.TRITON:
-        skip_if_bf16_atomics_unsupported(backward_mode)

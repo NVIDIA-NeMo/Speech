@@ -32,7 +32,6 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-import nemo.collections.asr.modules.rnnt as rnnt_module
 from nemo.collections.asr.models.rnnt_models import EncDecRNNTModel
 from nemo.collections.asr.modules.rnnt import RNNTJoint
 from nemo.collections.asr.parts.turbo_transducer.rnnt_consistency import ConsistencyRNNTLoss
@@ -484,7 +483,9 @@ class TestJointTwoPassPruning:
     """
 
     @staticmethod
-    def _make_joint(pruning: dict | None, dropout: float = 0.0, masking_prob: float = -1.0) -> RNNTJoint:
+    def _make_joint(
+        pruning: dict | None, dropout: float = 0.0, masking_prob: float = -1.0, full_precision: bool = True
+    ) -> RNNTJoint:
         joint = RNNTJoint(
             jointnet={
                 "encoder_hidden": 12,
@@ -495,7 +496,12 @@ class TestJointTwoPassPruning:
             },
             num_classes=BLANK_ID,  # blank is the last label
             masking_prob=masking_prob,
-            turbo_kernel={"type": "fused_vocab", "backend": "triton", **FULL_PRECISION, "pruning": pruning},
+            turbo_kernel={
+                "type": "fused_vocab",
+                "backend": "triton",
+                **(FULL_PRECISION if full_precision else {}),
+                "pruning": pruning,
+            },
         )
         return joint.to("cuda").train()
 
@@ -521,6 +527,44 @@ class TestJointTwoPassPruning:
             decoder_outputs, targets = decoder_outputs.repeat(2, 1, 1), targets.repeat(2, 1)
             encoder_lengths, target_lengths = encoder_lengths.repeat(2), target_lengths.repeat(2)
         return encoder_outputs, decoder_outputs, encoder_lengths, targets, target_lengths
+
+    @pytest.mark.parametrize("compute_consistency", [False, True])
+    def test_mixed_precision_with_default_parameters(self, compute_consistency: bool):
+        """
+        BF16 autocast with the default parameters of the kernel, as in training (both passes run under autocast):
+        FP32 outputs close to the FP32 computations, finite gradients
+        """
+        torch.manual_seed(42)
+        pruning = {"type": "two_pass", "range_size": PRUNING_RANGE_SIZE}
+        reference_joint = self._make_joint(pruning)
+        joint = self._make_joint(pruning, full_precision=False)
+        joint.load_state_dict(reference_joint.state_dict(), strict=True)
+        inputs = self._make_inputs(double_batch=compute_consistency)
+        _, _, src_lengths, _, tgt_lengths = inputs
+        # NB: pruning is applied only with gradients enabled
+        reference_inputs = reference_joint.forward_for_loss(*inputs, compute_consistency=compute_consistency)
+
+        encoder_outputs = inputs[0].clone().requires_grad_()
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            loss_inputs = joint.forward_for_loss(encoder_outputs, *inputs[1:], compute_consistency=compute_consistency)
+        outputs = [loss_inputs.target_logprobs, loss_inputs.blank_logprobs]
+        if compute_consistency:
+            outputs.append(loss_inputs.consistency_kl)
+        assert all(output.dtype == torch.float32 for output in outputs)
+        # the loss of the full lattice does not depend on the selected ranges: BF16 rounding of the activations
+        torch.testing.assert_close(
+            loss_inputs.full_lattice_loss, reference_inputs.full_lattice_loss, rtol=3e-2, atol=3e-2
+        )
+        losses = rnnt_loss_from_logprobs_triton(outputs[0], outputs[1], src_lengths, tgt_lengths)
+        assert torch.isfinite(losses).all()
+        # the pruned lattice contains a part of the alignments
+        assert torch.all(losses >= loss_inputs.full_lattice_loss - 1e-3)
+        total_loss = losses.sum() + (outputs[2].sum() if compute_consistency else 0.0)
+        total_loss.backward()
+        for grad in [encoder_outputs.grad, joint.joint_net[-1].weight.grad, joint.joint_net[-1].bias.grad]:
+            assert grad.dtype == torch.float32
+            assert torch.isfinite(grad).all()
+            assert torch.count_nonzero(grad) > 0
 
     @pytest.mark.parametrize("compute_consistency", [False, True])
     def test_matches_pruned_lattice_reference(self, compute_consistency: bool):
@@ -623,7 +667,7 @@ class TestJointTwoPassPruning:
             estimation_logprobs.append((target_logprobs, blank_logprobs))
             return rnnt_pruning_range_starts(target_logprobs, blank_logprobs, **kwargs)
 
-        monkeypatch.setattr(rnnt_module, "rnnt_pruning_range_starts", spy_range_starts)
+        monkeypatch.setattr("nemo.collections.asr.modules.rnnt.rnnt_pruning_range_starts", spy_range_starts)
         loss_inputs = joint.forward_for_loss(*inputs)
         assert loss_inputs.target_logprobs.requires_grad
         ((target_logprobs, blank_logprobs),) = estimation_logprobs
@@ -635,6 +679,53 @@ class TestJointTwoPassPruning:
         assert len(estimation_logprobs) == 1
         assert torch.equal(target_logprobs, eval_inputs.target_logprobs)
         assert torch.equal(blank_logprobs, eval_inputs.blank_logprobs)
+
+
+@pytest.mark.gpu
+@requires_triton_cuda
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="Test requires 2 CUDA devices")
+@pytest.mark.parametrize("backward_mode", ["atomic", "chunked"])
+@pytest.mark.parametrize("consistency_symmetrical", CONSISTENCY_MODES)
+@pytest.mark.parametrize("pruning", [None, "backward", "pruned_lattice"])
+def test_non_current_device(backward_mode, consistency_symmetrical, pruning, monkeypatch):
+    """
+    Regression: all kernels of the fused Joint (with and without pruning) were launched for the current CUDA device
+    instead of the device of the inputs. The results must be the same on both devices.
+    """
+    _use_min_chunk_size(monkeypatch)
+    current_device = torch.device("cuda", torch.cuda.current_device())
+    other_device = torch.device("cuda", (current_device.index + 1) % torch.cuda.device_count())
+    # NB: inputs are moved through CPU; copying tensors between CUDA devices directly can hide the issue
+    cpu_inputs = make_joint_inputs(double_batch=consistency_symmetrical is not None, device="cpu")
+    cpu_range_starts = random_pruning_range_starts(
+        cpu_inputs, PRUNING_RANGE_SIZE, paired=consistency_symmetrical is not None
+    )
+    cpu_grads = None
+    results = []
+    for device in [current_device, other_device]:
+        inputs = JointInputs(
+            **{
+                name: value.to(device) if isinstance(value, torch.Tensor) else value
+                for name, value in vars(cpu_inputs).items()
+                if name != "lattice_shape"
+            }
+        )
+        leaves = inputs.leaves()
+        kwargs = dict(backward_mode=backward_mode, **FULL_PRECISION)
+        if pruning == "backward":
+            kwargs["backward_pruning_range_size"] = PRUNING_RANGE_SIZE
+        elif pruning == "pruned_lattice":
+            kwargs["pruning_range_starts"] = cpu_range_starts.to(device)
+        outputs = _fused_joint(inputs, leaves, consistency_symmetrical, **kwargs)
+        assert all(output.device == device for output in outputs)
+        if cpu_grads is None:
+            cpu_grads = [grad.cpu() for grad in random_grads_like(outputs)]
+        torch.autograd.backward(outputs, [grad.to(device) for grad in cpu_grads])
+        results.append([tensor.detach().cpu() for tensor in (*outputs, *[leaf.grad for leaf in leaves])])
+    num_outputs = len(results[0]) - len(GRAD_NAMES)
+    assert_pruned_outputs_close_to_reference(
+        results[1], results[0], FULL_PRECISION_TOLERANCE, OUTPUT_NAMES[:num_outputs] + GRAD_NAMES
+    )
 
 
 @requires_triton
@@ -656,8 +747,6 @@ def test_rejects_invalid_pruning_range_starts():
         wide_kwargs = dict(kernel_kwargs, joint_hidden=torch.zeros(2, 4, 7, DIMS_DEFAULT[0]))
         with pytest.raises(ValueError, match="exceeds"):
             joint_function(**wide_kwargs, pruning_range_starts=valid_starts)
-    with pytest.raises(NotImplementedError, match="Pruning"):
-        rnnt_joint_fused_vocab(**kernel_kwargs, pruning_range_starts=starts, backend="cutile")
 
 
 @pytest.mark.gpu
@@ -702,6 +791,55 @@ def test_window_selection(range_size, paired, dtype):
         paired=paired,
     )
     assert torch.count_nonzero(starts) == 0
+
+
+@pytest.mark.gpu
+@requires_triton_cuda
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_window_selection_with_non_finite_gradients(value):
+    """
+    Regression: with NaN gradients (e.g., a batch with NaN loss) the selected window was outside the valid
+    target positions, and the backward kernels processed rows outside the lattice
+    """
+    generator = torch.Generator(device="cuda").manual_seed(0)
+    grad_target = torch.randn(3, 7, 6, device="cuda", generator=generator)
+    grad_blank = torch.randn(3, 7, 6, device="cuda", generator=generator)
+    grad_target[0, 2, 1] = value
+    grad_blank[2] = value
+    src_lengths, tgt_lengths = torch.tensor([7, 1, 4], device="cuda"), torch.tensor([5, 0, 2], device="cuda")
+    starts = fused_vocab_triton_module._select_pruning_starts(
+        grad_target, grad_blank, src_lengths, tgt_lengths, PRUNING_RANGE_SIZE
+    )
+    max_starts = (tgt_lengths + 1 - PRUNING_RANGE_SIZE).clamp(min=0)
+    assert torch.all(starts >= 0)
+    assert torch.all(starts <= max_starts[:, None])
+
+
+@pytest.mark.gpu
+@requires_triton_cuda
+@pytest.mark.parametrize("backward_mode", ["atomic", "chunked"])
+def test_pruning_ranges_outside_lattice_are_clamped(backward_mode, monkeypatch):
+    """Starts of the pruning ranges outside the lattice: the ranges are moved inside, no access outside the tensors"""
+    _use_min_chunk_size(monkeypatch)
+    inputs = make_joint_inputs()
+    max_start = inputs.lattice_shape[2] - PRUNING_RANGE_SIZE
+    # starts before (-500) and after (500) the lattice
+    invalid_starts = random_pruning_range_starts(inputs, PRUNING_RANGE_SIZE).clamp(max=1) * 1000 - 500
+    clamped_starts = invalid_starts.clamp(0, max_start)
+    results = []
+    for starts in [invalid_starts, clamped_starts]:
+        leaves = inputs.leaves()
+        kernel_kwargs = inputs.kernel_kwargs(leaves)
+        # the same rows of the joint hidden for both variants of the starts
+        kernel_kwargs["joint_hidden"] = gather_pruning_ranges(leaves[0], clamped_starts, PRUNING_RANGE_SIZE)
+        outputs = rnnt_joint_fused_vocab(
+            **kernel_kwargs, pruning_range_starts=starts, backward_mode=backward_mode, **FULL_PRECISION
+        )
+        torch.autograd.backward(outputs, random_grads_like(outputs))
+        results.append([*outputs, *[leaf.grad for leaf in leaves]])
+    assert_pruned_outputs_close_to_reference(
+        results[0], results[1], FULL_PRECISION_TOLERANCE, OUTPUT_NAMES[:2] + GRAD_NAMES
+    )
 
 
 @requires_triton

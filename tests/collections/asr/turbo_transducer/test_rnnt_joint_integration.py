@@ -21,7 +21,6 @@ import torch
 from omegaconf import OmegaConf
 from omegaconf.errors import ConfigKeyError, ValidationError
 
-import nemo.collections.asr.modules.rnnt as rnnt_module
 from nemo.collections.asr.losses.rnnt import RNNTLoss
 from nemo.collections.asr.modules.hybrid_autoregressive_transducer import HATJoint
 from nemo.collections.asr.modules.rnnt import RNNTJoint, SampledRNNTJoint
@@ -34,11 +33,17 @@ from nemo.collections.asr.parts.turbo_transducer.types import (
     TurboJointPruningType,
 )
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
+from nemo.utils import logging
+
+if TRITON_AVAILABLE:
+    from nemo.collections.asr.parts.turbo_transducer import rnnt_joint_fused_vocab_triton as fused_vocab_triton_module
 
 EXAMPLE_CONFIG_PATH = (
     Path(__file__).parents[4] / "examples" / "asr" / "conf" / "transformer" / "transformer_stacking_rnnt_bpe.yaml"
 )
 NUM_CLASSES = 8
+# module of the Joint: the kernels are replaced there by name (`monkeypatch.setattr` with a dotted path)
+RNNT_MODULE = "nemo.collections.asr.modules.rnnt"
 
 requires_triton_cuda = pytest.mark.skipif(
     not (TRITON_AVAILABLE and torch.cuda.is_available()), reason="Triton and CUDA are required"
@@ -112,6 +117,7 @@ class TestTurboJointKernelConfig:
         assert not kernel_config.use_high_precision_mm
         assert not kernel_config.input_grad_full_precision
         assert not kernel_config.weight_grad_full_precision
+        assert kernel_config.backward_mode is None
         assert kernel_config.pruning == TurboJointPruningConfig(type="two_pass", range_size=8, start_step=100)
         assert kernel_config.pruning.pruning_type is TurboJointPruningType.TWO_PASS
         assert kernel_config.uses_pruning
@@ -139,6 +145,9 @@ class TestTurboJointKernelConfig:
             ({"type": "fused"}, ValueError),  # fully fused Joint is not implemented yet
             ({"type": "fused_vocab", "backend": "torch"}, ValueError),
             ({"type": "fused_vocab", "backend": "unknown"}, ValueError),
+            ({"type": "fused_vocab", "backend": "cutile"}, NotImplementedError),  # planned, not implemented yet
+            ({"type": "fused_vocab", "backward_mode": "fast"}, ValueError),
+            ({"type": "fused_vocab", "backward_mode": True}, ValueError),
             (["fused_vocab"], TypeError),
         ],
     )
@@ -273,15 +282,13 @@ class TestJointTurboKernel:
                 preserve_memory=True,
                 turbo_kernel=_turbo_kernel_config(),
             )
-        for pruning_type in ["backward", "two_pass"]:
-            with pytest.raises(NotImplementedError, match="Pruning"):
-                RNNTJoint(
-                    jointnet=_jointnet_config(),
-                    num_classes=NUM_CLASSES,
-                    turbo_kernel=_turbo_kernel_config(
-                        backend="cutile", pruning={"type": pruning_type, "range_size": 8}
-                    ),
-                )
+        # cuTile backend is planned, but not implemented: rejected when the Joint is constructed
+        with pytest.raises(NotImplementedError, match="cuTile"):
+            RNNTJoint(
+                jointnet=_jointnet_config(),
+                num_classes=NUM_CLASSES,
+                turbo_kernel=_turbo_kernel_config(backend="cutile"),
+            )
         with pytest.raises(ConfigKeyError):
             RNNTJoint(
                 jointnet=_jointnet_config(),
@@ -292,6 +299,30 @@ class TestJointTurboKernel:
         joint = RNNTJoint(jointnet=_jointnet_config(), num_classes=NUM_CLASSES, turbo_kernel=_turbo_kernel_config())
         with pytest.raises(ValueError, match="fuse_loss_wer"):
             joint.set_fuse_loss_wer(True)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("pruning_type", ["backward", "two_pass"])
+    def test_pruning_warns_once_that_it_is_experimental(self, pruning_type, monkeypatch, caplog):
+        monkeypatch.setattr(logging._logger, "propagate", True)
+        monkeypatch.setattr(logging, "once_logged", set())  # independent of the Joints constructed by other tests
+
+        def make_joint(pruning):
+            return RNNTJoint(
+                jointnet=_jointnet_config(),
+                num_classes=NUM_CLASSES,
+                turbo_kernel=_turbo_kernel_config(pruning=pruning),
+            )
+
+        with caplog.at_level("WARNING"):
+            make_joint(None)
+            make_joint({"type": None, "range_size": 8})
+            assert "experimental" not in caplog.text
+            for _ in range(2):
+                make_joint({"type": pruning_type, "range_size": 8})
+        # NB: a record can be captured twice (by the handlers of the NeMo logger and of the root logger)
+        messages = {id(record): record.getMessage() for record in caplog.records if "experimental" in record.msg}
+        assert len(messages) == 1
+        assert f"turbo_kernel.pruning.type={pruning_type}" in next(iter(messages.values()))
 
     @pytest.mark.unit
     def test_forward_for_loss_requires_unit_temperature(self):
@@ -309,15 +340,16 @@ class TestJointTurboKernel:
             output = torch.zeros(joint_hidden.shape[:-1], device=joint_hidden.device)
             return output, output
 
-        monkeypatch.setattr(rnnt_module, "rnnt_joint_fused_vocab", fake_fused_vocab)
+        monkeypatch.setattr(f"{RNNT_MODULE}.rnnt_joint_fused_vocab", fake_fused_vocab)
         joint = RNNTJoint(
             jointnet=_jointnet_config(dropout=0.25),
             num_classes=NUM_CLASSES,
             turbo_kernel={
                 "type": "fused_vocab",
-                "backend": "cutile",
+                "backend": None,
                 "mm_full_precision": True,
                 "weight_grad_full_precision": True,
+                "backward_mode": "chunked",
             },
         )
         encoder_outputs, decoder_outputs, source_lengths, targets, target_lengths = _joint_inputs()
@@ -335,18 +367,20 @@ class TestJointTurboKernel:
         (kernel_kwargs,) = calls
         vocab_projection = joint.joint_net[-1]
         # live parameters (not copies): the kernel computes gradients for them
-        assert kernel_kwargs.pop("weight") is vocab_projection.weight
-        assert kernel_kwargs.pop("bias") is vocab_projection.bias
-        assert kernel_kwargs.pop("targets") is targets
-        assert kernel_kwargs.pop("src_lengths") is source_lengths
-        assert kernel_kwargs.pop("tgt_lengths") is target_lengths
-        assert kernel_kwargs == {
+        assert kernel_kwargs["weight"] is vocab_projection.weight
+        assert kernel_kwargs["bias"] is vocab_projection.bias
+        assert kernel_kwargs["targets"] is targets
+        assert kernel_kwargs["src_lengths"] is source_lengths
+        assert kernel_kwargs["tgt_lengths"] is target_lengths
+        tensor_names = {"weight", "bias", "targets", "src_lengths", "tgt_lengths"}
+        assert {name: value for name, value in kernel_kwargs.items() if name not in tensor_names} == {
             "blank_id": NUM_CLASSES,
-            "backend": "cutile",
+            "backend": None,
             "use_high_precision_mm": False,
             "mm_full_precision": True,
             "input_grad_full_precision": False,
             "weight_grad_full_precision": True,
+            "backward_mode": "chunked",
             "backward_pruning_range_size": None,
         }
 
@@ -384,7 +418,7 @@ class TestJointTurboKernel:
             range_sizes.append(backward_pruning_range_size)
             return torch.zeros(2, 4, 4), torch.zeros(2, 4, 4)
 
-        monkeypatch.setattr(rnnt_module, "rnnt_joint_fused_vocab", fake_fused_vocab)
+        monkeypatch.setattr(f"{RNNT_MODULE}.rnnt_joint_fused_vocab", fake_fused_vocab)
         config = OmegaConf.create(_turbo_kernel_config(pruning=pruning_config))
         joint = RNNTJoint(jointnet=_jointnet_config(), num_classes=NUM_CLASSES, turbo_kernel=config)
         # the schedule depends only on the step supplied by the model: a restored module behaves identically
@@ -409,20 +443,7 @@ class TestJointTurboKernel:
             joint.forward_for_loss(*_joint_inputs())
 
     @pytest.mark.unit
-    def test_turbo_joint_rejects_unsupported_consistency_loss(self):
-        joint = RNNTJoint(
-            jointnet=_jointnet_config(),
-            num_classes=NUM_CLASSES,
-            log_softmax=False,
-            turbo_kernel=_turbo_kernel_config(backend="cutile"),
-        )
-        assert not joint.supports_consistency_loss
-        with pytest.raises(NotImplementedError, match="Consistency loss"):
-            joint.forward_for_loss(*_joint_inputs(batch_size=4), compute_consistency=True)
-
-    @pytest.mark.unit
-    @pytest.mark.skipif(not TRITON_AVAILABLE, reason="Triton is not installed")
-    def test_turbo_joint_supports_consistency_loss_with_triton(self):
+    def test_turbo_joint_supports_consistency_loss(self):
         for backend in ["triton", None]:
             joint = RNNTJoint(
                 jointnet=_jointnet_config(),
@@ -456,6 +477,40 @@ class TestJointTurboKernel:
                 torch.manual_seed(7)
                 outputs.append(joint(encoder_outputs=encoder_outputs, decoder_outputs=decoder_outputs))
             assert torch.equal(outputs[0], outputs[1])
+
+    @pytest.mark.unit
+    @pytest.mark.gpu
+    @requires_triton_cuda
+    def test_backward_mode_selects_backward_algorithm(self, monkeypatch):
+        """`backward_mode` of the config selects the algorithm of the backward pass; the gradients are the same"""
+        torch.manual_seed(42)
+        device = torch.device("cuda")
+        chunked_backward_calls = []
+        chunked_backward = fused_vocab_triton_module._rnnt_joint_fused_vocab_bwd_chunked
+
+        def spy_chunked_backward(**kwargs):
+            chunked_backward_calls.append(kwargs)
+            return chunked_backward(**kwargs)
+
+        monkeypatch.setattr(fused_vocab_triton_module, "_rnnt_joint_fused_vocab_bwd_chunked", spy_chunked_backward)
+        inputs = _joint_inputs(device=device)
+        grads, state_dict = {}, None
+        for backward_mode, num_expected_calls in [("chunked", 1), ("atomic", 0)]:
+            joint = RNNTJoint(
+                jointnet=_jointnet_config(),
+                num_classes=NUM_CLASSES,
+                turbo_kernel=_turbo_kernel_config(backward_mode=backward_mode),
+            ).to(device)
+            state_dict = state_dict or joint.state_dict()
+            joint.load_state_dict(state_dict, strict=True)
+            chunked_backward_calls.clear()
+            loss_inputs = joint.forward_for_loss(*inputs)
+            (loss_inputs.target_logprobs.sum() + loss_inputs.blank_logprobs.sum()).backward()
+            assert len(chunked_backward_calls) == num_expected_calls
+            grads[backward_mode] = [parameter.grad for parameter in joint.parameters()]
+        assert len(grads["chunked"]) > 0
+        for chunked_grad, atomic_grad in zip(grads["chunked"], grads["atomic"]):
+            torch.testing.assert_close(atomic_grad, chunked_grad, rtol=1e-4, atol=1e-5)
 
     @pytest.mark.unit
     @pytest.mark.gpu
@@ -573,7 +628,7 @@ class TestJointTurboKernel:
             output = torch.zeros(joint_hidden.shape[:-1], device=joint_hidden.device)
             return output, output
 
-        monkeypatch.setattr(rnnt_module, "rnnt_joint_fused_vocab", fake_fused_vocab)
+        monkeypatch.setattr(f"{RNNT_MODULE}.rnnt_joint_fused_vocab", fake_fused_vocab)
         joint = RNNTJoint(
             jointnet=_jointnet_config(),
             num_classes=NUM_CLASSES,

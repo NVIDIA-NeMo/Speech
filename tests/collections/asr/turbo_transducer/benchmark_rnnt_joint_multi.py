@@ -16,7 +16,7 @@
 Multi-config RNN-T Joint benchmark.
 
 The experiment matrix is a module-level constant — edit the constants below
-to change what gets benchmarked. The script then sweeps `VOCAB_SIZES` x
+to change what gets benchmarked. The script then sweeps the vocab sizes (`--vocab-sizes`) x
 `EXPERIMENTS`, prints one aggregated table (ordered by vocab), and
 optionally writes a CSV. Triton fused_vocab entries also run each backward
 pruning width in `PRUNING_RANGE_SIZES`, keeping their dense baseline.
@@ -27,10 +27,11 @@ Usage:
     python benchmark_rnnt_joint_multi.py --dtype bf16-mixed
     python benchmark_rnnt_joint_multi.py --dtype bfloat16-mixed --mm-full-precision
     python benchmark_rnnt_joint_multi.py --pruning-range-sizes 4 8 16
+    python benchmark_rnnt_joint_multi.py --vocab-sizes 1025 16385 --backward-modes atomic chunked
     python benchmark_rnnt_joint_multi.py --with-consistency
 
 With `--with-consistency`, `BATCH_SIZE` is the double batch (teacher + student halves) and the consistency loss is
-added; experiments without consistency support (cuTile backend) are skipped.
+added; experiments without consistency support are skipped.
 
 Mixed precision keeps the projection parameters in FP32 and runs forward under BF16 autocast.
 Matmul precision overrides apply to optimized Joint implementations; standard Joint follows PyTorch settings.
@@ -52,16 +53,9 @@ from tests.collections.asr.turbo_transducer.benchmark_rnnt_joint import (
     write_csv,
 )
 
-# Vocab sizes include the blank symbol. `num_classes = vocab_size - 1` is what
+# Default vocab sizes (`--vocab-sizes`), including the blank symbol. `num_classes = vocab_size - 1` is what
 # `run_benchmark` expects (blank_id == num_classes).
-VOCAB_SIZES: list[int] = [
-    # 1024,
-    1025,
-    # 8192,
-    8193,
-    # 13088,
-    # 16385,
-]
+VOCAB_SIZES: list[int] = [1025, 8193]
 
 # Each entry is (joint, joint_backend, loss). Ordering preserved within each
 # vocab group in the printed/CSV output.
@@ -69,7 +63,6 @@ EXPERIMENTS: list[tuple[str, str, str]] = [
     # ("standard", "-", "warprnnt_numba"),
     ("standard", "-", "turbo_rnnt"),
     ("fused_vocab", "triton", "turbo_rnnt"),
-    # ("fused_vocab", "cutile", "turbo_rnnt"),
 ]
 
 # Tensor shape / training-knob defaults from `_dev/flow/projects/turbo_transducer/main.md`.
@@ -91,6 +84,13 @@ def main() -> None:
     )
     parser.add_argument("--no-dropout", action="store_true", help="Disable dropout (enabled by default, p=0.2)")
     parser.add_argument("--dtype", type=str, default="bfloat16", choices=VALID_DTYPES)
+    parser.add_argument(
+        "--vocab-sizes",
+        type=int,
+        nargs="+",
+        default=VOCAB_SIZES,
+        help=f"Vocab sizes including the blank symbol (default: {' '.join(map(str, VOCAB_SIZES))})",
+    )
     parser.add_argument(
         '--pruning-range-sizes',
         type=int,
@@ -143,8 +143,8 @@ def main() -> None:
 
     print(f"\nGPU: {gpu_name}")
     print(
-        f"Sweep: {len(VOCAB_SIZES)} vocab sizes x {len(experiments)} experiments "
-        f"= {len(VOCAB_SIZES) * len(experiments)} runs"
+        f"Sweep: {len(args.vocab_sizes)} vocab sizes x {len(experiments)} experiments "
+        f"= {len(args.vocab_sizes) * len(experiments)} runs"
     )
     print(
         f"Shape: enc=[{BATCH_SIZE}, {MAX_TIME}, {HIDDEN_DIM}], "
@@ -153,11 +153,11 @@ def main() -> None:
     )
 
     results: list[BenchmarkResults] = []
-    for vocab_size in VOCAB_SIZES:
+    for vocab_size in args.vocab_sizes:
         for joint, joint_backend, loss, pruning_range_size, backward_mode in experiments:
             torch.manual_seed(42)
             print(
-                f"\n[{len(results) + 1}/{len(VOCAB_SIZES) * len(experiments)}] "
+                f"\n[{len(results) + 1}/{len(args.vocab_sizes) * len(experiments)}] "
                 f"vocab={vocab_size}, joint={joint}, backend={joint_backend}, loss={loss}, "
                 f"pruning_range_size={pruning_range_size}, backward_mode={backward_mode}"
             )

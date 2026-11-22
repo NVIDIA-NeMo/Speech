@@ -34,7 +34,6 @@ from omegaconf import DictConfig
 
 from nemo.collections.asr.modules import rnnt_abstract
 from nemo.collections.asr.parts.submodules import stateless_net
-from nemo.collections.asr.parts.turbo_transducer.backend import TurboTransducerBackend
 from nemo.collections.asr.parts.turbo_transducer.rnnt_consistency import rnnt_logprobs_with_consistency
 from nemo.collections.asr.parts.turbo_transducer.rnnt_joint_fused_vocab import (
     rnnt_joint_fused_vocab,
@@ -64,8 +63,7 @@ from nemo.core.neural_types import (
     NeuralType,
     SpectrogramType,
 )
-from nemo.core.utils.optional_libs import TRITON_AVAILABLE
-from nemo.utils import logging
+from nemo.utils import logging, logging_mode
 
 
 class StatelessTransducerDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
@@ -1331,7 +1329,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             type: kernel type. None (default) disables the turbo kernel; `fused_vocab` fuses the vocabulary
                 projection with log-softmax.
 
-            backend: `triton` (default) or `cutile`.
+            backend: `triton` (default), the only implemented backend. `cutile` is reserved for the planned
+                cuTile backend and raises `NotImplementedError`.
 
             mm_full_precision: bool, False by default. BF16 activations use BF16 matmul operands with FP32 master
                 parameters; set to True to use FP32 operands.
@@ -1341,7 +1340,12 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             input_grad_full_precision, weight_grad_full_precision: bool, False by default. Accumulate
                 the gradient for the Joint hidden / vocabulary projection weight in FP32.
 
-            pruning: Optional dict-like config, missing or None disables pruning (Triton backend only).
+            backward_mode: algorithm of the backward pass, `atomic` or `chunked`. None (default) selects it
+                by the GPU: `atomic` for compute capability 9.0+ (native BF16 atomic operations),
+                `chunked` otherwise. Both algorithms compute the same gradients.
+
+            pruning: Optional dict-like config, missing or None disables pruning. Experimental: a warning
+                is logged if pruning is enabled.
                 With pruning, the Joint is evaluated only for `range_size` contiguous target positions per frame.
                 `type`: None (default) disables pruning. `backward` computes the full forward pass and selects
                 the positions by the gradient of the loss: the loss value is exact, its gradient is approximated,
@@ -1492,8 +1496,12 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                 raise ValueError("`turbo_kernel` does not support extra Joint outputs")
             if preserve_memory:
                 raise ValueError("`preserve_memory` is not applicable when `turbo_kernel` is enabled")
-            if self._turbo_kernel_cfg.uses_pruning and not self._uses_triton_turbo_kernel:
-                raise NotImplementedError("Pruning is supported only by the Triton `turbo_kernel` backend")
+            if self._turbo_kernel_cfg.uses_pruning:
+                logging.warning(
+                    f"Pruning of the Joint lattice (`turbo_kernel.pruning.type={self._turbo_kernel_cfg.pruning.type}`) "
+                    "is experimental: its behavior and config can change in future releases.",
+                    mode=logging_mode.ONCE,
+                )
 
         self._loss = None
         self._wer = None
@@ -1556,14 +1564,12 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
     @property
     def supports_consistency_loss(self) -> bool:
         """
-        Whether `forward_for_loss` can compute the consistency loss: always for the materialized logits,
-        with `turbo_kernel` only for the `fused_vocab` kernel with Triton backend.
+        Whether `forward_for_loss` can compute the consistency loss:
+        for the materialized logits and for the `fused_vocab` turbo kernel.
         """
         if not self.supports_loss_logprobs:
             return False
-        if not self.uses_turbo_kernel:
-            return True
-        return self._turbo_kernel_type is TurboJointKernelType.FUSED_VOCAB and self._uses_triton_turbo_kernel
+        return self._turbo_kernel_type in (None, TurboJointKernelType.FUSED_VOCAB)
 
     def forward_for_loss(
         self,
@@ -1601,90 +1607,91 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         if not self.supports_loss_logprobs:
             raise NotImplementedError(f"{type(self).__name__} does not support `forward_for_loss`")
         if self.temperature != 1.0:
-            raise ValueError("`forward_for_loss` requires temperature == 1.0")
+            raise ValueError(
+                f"`forward_for_loss` requires temperature == 1.0, got {self.temperature} "
+                "(the temperature of the Joint is set by the decoding config)"
+            )
         if compute_consistency and not self.supports_consistency_loss:
             raise NotImplementedError(
-                "Consistency loss with `turbo_kernel` is supported only for the `fused_vocab` kernel with Triton backend"
+                f"Consistency loss is not supported for the turbo kernel `{self._turbo_kernel_type}`"
             )
 
         encoder_output_projected = self.project_encoder(encoder_outputs.transpose(1, 2))  # [B, T, H]
         predictor_output_projected = self.project_prednet(decoder_outputs.transpose(1, 2))  # [B, U+1, H]
         blank_id = self._vocab_size
 
-        match self._turbo_kernel_type:
-            case None:
-                logits = self._joint_logits_after_projection(encoder_output_projected, predictor_output_projected)
-                return JointLossInputs(
-                    *rnnt_logprobs_with_consistency(
-                        logits=logits,
-                        targets=transcripts,
-                        blank_id=blank_id,
-                        src_lengths=encoder_lengths,
-                        tgt_lengths=transcript_lengths,
-                        compute_consistency=compute_consistency,
-                        consistency_symmetrical=consistency_symmetrical,
-                    )
-                )
-            case TurboJointKernelType.FUSED_VOCAB:
-                vocab_projection = self.joint_net[-1]
-                kernel_kwargs = dict(
+        if self._turbo_kernel_type is None:
+            logits = self._joint_logits_after_projection(encoder_output_projected, predictor_output_projected)
+            return JointLossInputs(
+                *rnnt_logprobs_with_consistency(
+                    logits=logits,
                     targets=transcripts,
-                    tgt_lengths=transcript_lengths,
-                    src_lengths=encoder_lengths,
-                    weight=vocab_projection.weight,
-                    bias=vocab_projection.bias,
                     blank_id=blank_id,
-                    backend=self._turbo_kernel_cfg.backend,
-                    use_high_precision_mm=self._turbo_kernel_cfg.use_high_precision_mm,
-                    mm_full_precision=self._turbo_kernel_cfg.mm_full_precision,
-                    input_grad_full_precision=self._turbo_kernel_cfg.input_grad_full_precision,
-                    weight_grad_full_precision=self._turbo_kernel_cfg.weight_grad_full_precision,
+                    src_lengths=encoder_lengths,
+                    tgt_lengths=transcript_lengths,
+                    compute_consistency=compute_consistency,
+                    consistency_symmetrical=consistency_symmetrical,
                 )
-                pruning = self._get_active_pruning(current_step)
-                full_lattice_loss = None
-                # a range covering all target positions: nothing to prune
-                if (
-                    pruning is not None
-                    and pruning.pruning_type is TurboJointPruningType.TWO_PASS
-                    and pruning.range_size < predictor_output_projected.shape[1]
-                ):
-                    pruning_range_starts, full_lattice_loss = self._estimate_pruning_range_starts(
-                        encoder_output_projected,
-                        predictor_output_projected,
-                        range_size=pruning.range_size,
-                        paired=compute_consistency,
-                        kernel_kwargs=kernel_kwargs,
-                    )
-                    kernel_kwargs["pruning_range_starts"] = pruning_range_starts
-                    kernel_kwargs["joint_hidden"] = self._joint_hidden_after_projection(
-                        encoder_output_projected,
-                        predictor_output_projected,
-                        pruning_range_starts=pruning_range_starts,
-                        pruning_range_size=pruning.range_size,
-                    )
-                else:
-                    is_backward_pruning = (
-                        pruning is not None and pruning.pruning_type is TurboJointPruningType.BACKWARD
-                    )
-                    kernel_kwargs["backward_pruning_range_size"] = pruning.range_size if is_backward_pruning else None
-                    kernel_kwargs["joint_hidden"] = self._joint_hidden_after_projection(
-                        encoder_output_projected, predictor_output_projected
-                    )
-                if compute_consistency:
-                    target_logprobs, blank_logprobs, consistency_kl = rnnt_joint_fused_vocab_with_consistency(
-                        consistency_symmetrical=consistency_symmetrical, **kernel_kwargs
-                    )
-                else:
-                    target_logprobs, blank_logprobs = rnnt_joint_fused_vocab(**kernel_kwargs)
-                    consistency_kl = None
-                return JointLossInputs(
-                    target_logprobs=target_logprobs,
-                    blank_logprobs=blank_logprobs,
-                    consistency_kl=consistency_kl,
-                    full_lattice_loss=full_lattice_loss,
-                )
-            case _:
-                raise NotImplementedError(f"Turbo kernel `{self._turbo_kernel_type}` is not implemented")
+            )
+        if self._turbo_kernel_type is not TurboJointKernelType.FUSED_VOCAB:
+            raise NotImplementedError(f"Turbo kernel `{self._turbo_kernel_type}` is not implemented")
+
+        vocab_projection = self.joint_net[-1]
+        kernel_kwargs = dict(
+            targets=transcripts,
+            tgt_lengths=transcript_lengths,
+            src_lengths=encoder_lengths,
+            weight=vocab_projection.weight,
+            bias=vocab_projection.bias,
+            blank_id=blank_id,
+            backend=self._turbo_kernel_cfg.backend,
+            use_high_precision_mm=self._turbo_kernel_cfg.use_high_precision_mm,
+            mm_full_precision=self._turbo_kernel_cfg.mm_full_precision,
+            input_grad_full_precision=self._turbo_kernel_cfg.input_grad_full_precision,
+            weight_grad_full_precision=self._turbo_kernel_cfg.weight_grad_full_precision,
+            backward_mode=self._turbo_kernel_cfg.backward_mode,
+        )
+        pruning = self._get_active_pruning(current_step)
+        full_lattice_loss = None
+        # a range covering all target positions: nothing to prune
+        if (
+            pruning is not None
+            and pruning.pruning_type is TurboJointPruningType.TWO_PASS
+            and pruning.range_size < predictor_output_projected.shape[1]
+        ):
+            pruning_range_starts, full_lattice_loss = self._estimate_pruning_range_starts(
+                encoder_output_projected,
+                predictor_output_projected,
+                range_size=pruning.range_size,
+                paired=compute_consistency,
+                kernel_kwargs=kernel_kwargs,
+            )
+            kernel_kwargs["pruning_range_starts"] = pruning_range_starts
+            kernel_kwargs["joint_hidden"] = self._joint_hidden_after_projection(
+                encoder_output_projected,
+                predictor_output_projected,
+                pruning_range_starts=pruning_range_starts,
+                pruning_range_size=pruning.range_size,
+            )
+        else:
+            is_backward_pruning = pruning is not None and pruning.pruning_type is TurboJointPruningType.BACKWARD
+            kernel_kwargs["backward_pruning_range_size"] = pruning.range_size if is_backward_pruning else None
+            kernel_kwargs["joint_hidden"] = self._joint_hidden_after_projection(
+                encoder_output_projected, predictor_output_projected
+            )
+        if compute_consistency:
+            target_logprobs, blank_logprobs, consistency_kl = rnnt_joint_fused_vocab_with_consistency(
+                consistency_symmetrical=consistency_symmetrical, **kernel_kwargs
+            )
+        else:
+            target_logprobs, blank_logprobs = rnnt_joint_fused_vocab(**kernel_kwargs)
+            consistency_kl = None
+        return JointLossInputs(
+            target_logprobs=target_logprobs,
+            blank_logprobs=blank_logprobs,
+            consistency_kl=consistency_kl,
+            full_lattice_loss=full_lattice_loss,
+        )
 
     @typecheck()
     def forward(
@@ -2029,14 +2036,6 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             Logits of shape [B, T, U, V + 1]
         """
         return self.joint_net(self._joint_input_after_projection(f, g))
-
-    @property
-    def _uses_triton_turbo_kernel(self) -> bool:
-        """Whether the turbo kernel runs with Triton backend (explicitly requested or selected automatically)"""
-        backend = self._turbo_kernel_cfg.backend
-        if backend is None:
-            return TRITON_AVAILABLE
-        return TurboTransducerBackend(backend) is TurboTransducerBackend.TRITON
 
     def _get_active_pruning(self, current_step: Optional[int]) -> Optional[TurboJointPruningConfig]:
         """Pruning config for the current forward pass, None if pruning is not applied"""

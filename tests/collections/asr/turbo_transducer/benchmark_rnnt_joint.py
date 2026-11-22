@@ -30,7 +30,6 @@ With `--with-consistency`, `--batch-size` is the double batch (teacher + student
 RNN-T loss + `CONSISTENCY_LOSS_WEIGHT` * consistency (KL) loss. Each Joint uses its optimal route:
 standard + warprnnt_numba computes the consistency loss separately from the logits (legacy), standard + turbo_rnnt
 uses fused log-probs + KL extraction from the logits, Triton fused_vocab computes the KL inside the kernels.
-cuTile backend does not support the consistency loss.
 
 For a multi-config sweep (matrix defined at top of the file) see
 `benchmark_rnnt_joint_multi.py`.
@@ -61,7 +60,7 @@ from nemo.collections.asr.parts.turbo_transducer.rnnt_pruning import rnnt_prunin
 STANDARD_BACKEND_LABEL = "-"
 
 VALID_JOINTS = ("standard", "fused_vocab")
-VALID_JOINT_BACKENDS = ("triton", "cutile")
+VALID_JOINT_BACKENDS = ("triton",)
 VALID_LOSSES = ("warprnnt_numba", "turbo_rnnt")
 VALID_DTYPES = ("float32", "fp32", "bfloat16", "bf16", "bfloat16-mixed", "bf16-mixed")
 VALID_BACKWARD_MODES = ('auto', 'atomic', 'chunked')

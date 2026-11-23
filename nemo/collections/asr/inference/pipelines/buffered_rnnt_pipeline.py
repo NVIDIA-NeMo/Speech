@@ -27,11 +27,11 @@ from nemo.collections.asr.inference.model_wrappers.rnnt_inference_wrapper import
 from nemo.collections.asr.inference.pipelines.base_pipeline import BasePipeline
 from nemo.collections.asr.inference.streaming.decoders.greedy.greedy_rnnt_decoder import ClippedRNNTGreedyDecoder
 from nemo.collections.asr.inference.streaming.endpointing.greedy.greedy_rnnt_endpointing import RNNTGreedyEndpointing
-from nemo.collections.asr.inference.streaming.framing.multi_stream import ContinuousBatchedRequestStreamer
-from nemo.collections.asr.inference.streaming.framing.request import FeatureBuffer, Frame, Request
+from nemo.collections.asr.inference.streaming.framing.multi_stream import ContinuousBatchedFrameStreamer
+from nemo.collections.asr.inference.streaming.framing.request import Frame
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
 from nemo.collections.asr.inference.streaming.state.rnnt_state import RNNTStreamingState
-from nemo.collections.asr.inference.utils.enums import FeatureBufferPaddingMode, RequestType
+from nemo.collections.asr.inference.utils.enums import PaddingMode
 from nemo.collections.asr.inference.utils.pipeline_utils import (
     adjust_vad_segments,
     check_existance_of_required_attributes,
@@ -124,10 +124,9 @@ class BufferedRNNTPipeline(BasePipeline):
             self.right_padding_size = self.tokens_per_right_padding * self.model_stride_in_secs
             self.buffer_size_in_secs = self.chunk_size + self.left_padding_size + self.right_padding_size
 
-        self.request_type = RequestType.from_str(cfg.streaming.request_type)
         self.flush_size_in_secs = cfg.streaming.get("flush_size_in_secs", 0.0)  # 0.0 disables
-        self.padding_mode = FeatureBufferPaddingMode.from_str(cfg.streaming.padding_mode)
-        self.right_padding = self.padding_mode is FeatureBufferPaddingMode.RIGHT
+        self.padding_mode = PaddingMode.from_str(cfg.streaming.padding_mode)
+        self.right_padding = self.padding_mode is PaddingMode.RIGHT
         self.stop_history_eou_in_milliseconds = cfg.endpointing.stop_history_eou
         self.residue_tokens_at_end = cfg.endpointing.residue_tokens_at_end
         self.word_boundary_tolerance = cfg.streaming.word_boundary_tolerance
@@ -357,50 +356,6 @@ class BufferedRNNTPipeline(BasePipeline):
 
         return encoded, encoded_len
 
-    def encode_processed_signals(
-        self, fbuffers: list[FeatureBuffer], processed_signals: list[Tensor]
-    ) -> tuple[Tensor, Tensor]:
-        """
-        Run Encoder part on the feature buffers.
-        Args:
-            fbuffers: (list[FeatureBuffer]) Feature buffers.
-            processed_signals: (list[Tensor]) Processed buffers.
-        Returns:
-            (tuple[Tensor, Tensor]) Encoder output and their lengths.
-        """
-
-        processed_signals = torch.cat([sig.unsqueeze_(0) for sig in processed_signals]).to(self.device)
-        processed_signals = drop_trailing_features(processed_signals, self.expected_feature_buffer_len)
-        processed_signal_lengths = torch.tensor([f.valid_size for f in fbuffers], device=self.device)
-        processed_signals = normalize_features(processed_signals, processed_signal_lengths)
-        processed_signal_lengths = processed_signal_lengths.clamp(max=processed_signals.shape[2])
-
-        # Build prompt indices if prompts are enabled
-        if self.prompt_enabled:
-            requests_states = [self.get_state(f.stream_id) for f in fbuffers]
-            prompt_indices = self._build_prompt_indices(requests_states)
-
-            encoded, encoded_len = self.asr_model.encode_with_prompts(
-                processed_signal=processed_signals,
-                processed_signal_length=processed_signal_lengths,
-                language_prompt_indices=prompt_indices,
-            )
-        else:
-            encoded, encoded_len = self.asr_model.encode(
-                processed_signal=processed_signals, processed_signal_length=processed_signal_lengths
-            )
-        encoded = encoded.clone()
-        encoded_len = encoded_len.clone()
-
-        if self.right_padding:
-            for i in range(encoded.shape[0]):
-                lpad = int(fbuffers[i].roll_size / self.subsampling_factor)
-                if lpad > 0:
-                    encoded[i] = encoded[i].roll(lpad, dims=1)
-                    encoded[i][:, :lpad] = self.zero_encoded[:, :lpad]
-                    encoded_len[i] = torch.clamp(encoded_len[i] + lpad, max=encoded.shape[-1])
-        return encoded, encoded_len
-
     def encode_frames(self, frames: list[Frame]) -> tuple[Tensor, Tensor]:
         """
         Encode the frames using the Encoder part of the ASR model.
@@ -415,24 +370,10 @@ class BufferedRNNTPipeline(BasePipeline):
             encs, enc_lens = self.encode_raw_signals(frames, raw_signals, left_paddings)
         return encs, enc_lens
 
-    def encode_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> tuple[Tensor, Tensor]:
-        """
-        Encode the feature buffers using the Encoder part of the ASR model.
-        Args:
-            fbuffers: (list[FeatureBuffer]) Feature buffers to transcribe.
-        Returns:
-            (tuple[Tensor, Tensor]) Encoder output and their lengths.
-        """
-        processed_signals = self.bufferer.update(fbuffers)
-        encs, enc_lens = None, None
-        if len(processed_signals) > 0:
-            encs, enc_lens = self.encode_processed_signals(fbuffers, processed_signals)
-        return encs, enc_lens
-
     def run_greedy_decoder(
         self,
         state: RNNTStreamingState,
-        request: Request,
+        request: Frame,
         timesteps: torch.Tensor,
         tokens: torch.Tensor,
         start: int,
@@ -446,7 +387,7 @@ class BufferedRNNTPipeline(BasePipeline):
         Greedy RNN-T decoder.
         Args:
             state: (RNNTStreamingState) Current state for the particular stream.
-            request: (Request) Current request for the particular stream.
+            request: (Frame) Current request for the particular stream.
             timesteps: (Tensor) Timesteps.
             tokens: (Tensor) Tokens.
             start: (int) Start index.
@@ -488,13 +429,13 @@ class BufferedRNNTPipeline(BasePipeline):
         return eou_detected
 
     def stateless_transcribe_step(
-        self, requests: list[Request], encs: Tensor, enc_lens: Tensor, ready_state_ids: set
+        self, requests: list[Frame], encs: Tensor, enc_lens: Tensor, ready_state_ids: set
     ) -> None:
         """
         Stateless transcribe step.
         Stateless assumes that we don't keep track of partial hypotheses (partial_hypotheses=None).
         Args:
-            requests: (list[Request]) List of requests to transcribe.
+            requests: (list[Frame]) List of requests to transcribe.
             encs: (Tensor) Encoder output.
             enc_lens: (Tensor) Encoder output lengths.
             ready_state_ids: (set) Set of ready state IDs.
@@ -506,13 +447,13 @@ class BufferedRNNTPipeline(BasePipeline):
         ready_state_ids.update(ready_states)
 
     def stateful_transcribe_step(
-        self, requests: list[Request], encs: Tensor, enc_lens_chunk: Tensor, enc_lens: Tensor, ready_state_ids: set
+        self, requests: list[Frame], encs: Tensor, enc_lens_chunk: Tensor, enc_lens: Tensor, ready_state_ids: set
     ) -> None:
         """
         Stateful transcribe step.
         Stateful assumes that we keep track of partial hypotheses.
         Args:
-            requests: (list[Request]) List of requests to transcribe.
+            requests: (list[Frame]) List of requests to transcribe.
             encs: (Tensor) Encoder output.
             enc_lens_chunk: (Tensor) Encoder output lengths for the chunk.
             enc_lens: (Tensor) Encoder output lengths.
@@ -612,13 +553,13 @@ class BufferedRNNTPipeline(BasePipeline):
                         biasing_multi_model=self.decoding_computer.biasing_multi_model
                     )
 
-    def decode_step(self, best_hyp: list, requests: list[Request], states: list[RNNTStreamingState]) -> set:
+    def decode_step(self, best_hyp: list, requests: list[Frame], states: list[RNNTStreamingState]) -> set:
         """
         Perform greedy RNNT decoding to get the best hypothesis and update the state.
         If EOU is detected, push the words to the state and cleanup the state.
         Args:
             best_hyp: (list) Best hypothesis.
-            requests: (list[Request]) List of requests to transcribe.
+            requests: (list[Frame]) List of requests to transcribe.
             states: (list[RNNTStreamingState]) List of states.
         Returns:
             (set) Set of ready state IDs.
@@ -631,10 +572,7 @@ class BufferedRNNTPipeline(BasePipeline):
             if self.stateful:
                 alignment_length = self.tokens_per_right_padding + self.tokens_per_frame
             else:
-                if self.request_type is RequestType.FEATURE_BUFFER:
-                    alignment_length = math.ceil(request.size / self.subsampling_factor)
-                else:  # RequestType.FRAME
-                    alignment_length = math.ceil(self.expected_feature_buffer_len / self.subsampling_factor)
+                alignment_length = math.ceil(self.expected_feature_buffer_len / self.subsampling_factor)
 
             if self.stateful:
                 start, end = 0, self.tokens_per_frame
@@ -677,13 +615,13 @@ class BufferedRNNTPipeline(BasePipeline):
                 ready_state_ids.add(request.stream_id)
         return ready_state_ids
 
-    def shared_transcribe_step_stateful(self, requests: list[Request], encs: Tensor, enc_lens: Tensor) -> None:
+    def shared_transcribe_step_stateful(self, requests: list[Frame], encs: Tensor, enc_lens: Tensor) -> None:
         """
         Stateful transcribe step.
         After detecting EOU, it updates the state and run text processor.
         If there are multiple streams, it waits until all states are ready to run text processor.
         Args:
-            requests: (list[Request]) List of requests to transcribe.
+            requests: (list[Frame]) List of requests to transcribe.
             encs: (Tensor) Encoder output.
             enc_lens: (Tensor) Encoder output lengths.
         """
@@ -725,13 +663,13 @@ class BufferedRNNTPipeline(BasePipeline):
 
         self.update_partial_transcript(requests, self.tokenizer, self.leading_regex_pattern)
 
-    def shared_transcribe_step(self, requests: list[Request], encs: Tensor, enc_lens: Tensor) -> None:
+    def shared_transcribe_step(self, requests: list[Frame], encs: Tensor, enc_lens: Tensor) -> None:
         """
         Stateless transcribe step.
         After detecting EOU, it updates the state and run text processor.
         If there are multiple streams, it waits until all stated are ready to run text processor.
         Args:
-            requests: (list[Request]) List of requests to transcribe.
+            requests: (list[Frame]) List of requests to transcribe.
             encs: (Tensor) Encoder output.
             enc_lens: (Tensor) Encoder output lengths.
         """
@@ -769,19 +707,6 @@ class BufferedRNNTPipeline(BasePipeline):
 
         self.update_partial_transcript(requests, self.tokenizer, self.leading_regex_pattern)
 
-    def transcribe_step_for_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> None:
-        """
-        Transcribe a step for feature buffers.
-        Args:
-            fbuffers: (list[FeatureBuffer]) List of feature buffers to transcribe.
-        """
-        encs, enc_lens = self.encode_feature_buffers(fbuffers)
-        if encs is not None:
-            if self.stateful:
-                self.shared_transcribe_step_stateful(requests=fbuffers, encs=encs, enc_lens=enc_lens)
-            else:
-                self.shared_transcribe_step(requests=fbuffers, encs=encs, enc_lens=enc_lens)
-
     def transcribe_step_for_frames(self, frames: list[Frame]) -> None:
         """
         Transcribe a step for frames.
@@ -795,23 +720,18 @@ class BufferedRNNTPipeline(BasePipeline):
             else:
                 self.shared_transcribe_step(requests=frames, encs=encs, enc_lens=enc_lens)
 
-    def get_request_generator(self) -> ContinuousBatchedRequestStreamer:
+    def get_request_generator(self) -> ContinuousBatchedFrameStreamer:
         """
         Initialize the request generator.
         Returns:
-            (ContinuousBatchedRequestStreamer) Request generator.
+            (ContinuousBatchedFrameStreamer) Request generator.
         """
-        request_generator = ContinuousBatchedRequestStreamer(
+        request_generator = ContinuousBatchedFrameStreamer(
             n_frames_per_stream=1,
             frame_size_in_secs=self.chunk_size,
             sample_rate=self.sample_rate,
             batch_size=self.batch_size,
-            request_type=self.request_type,
-            preprocessor=self.preprocessor,
-            buffer_size_in_secs=self.buffer_size_in_secs,
-            device=self.device,
             pad_last_frame=True,
             flush_size_in_secs=self.flush_size_in_secs,
-            right_pad_features=self.right_padding,
         )
         return request_generator

@@ -314,5 +314,5 @@ With this option, `transcribe()` runs batched cache-aware streaming over the aud
 
 ## 5. Model deployment with voice agent
 
-Please refer to the [NeMo Voice Agent](https://github.com/NVIDIA-NeMo/Speech/tree/main/examples/voice_agent/README.md) example for more details on how to deploy the ASR-EOU model with voice agent.
+Please refer to the [NVIDIA NeMo Voice Agent repository](https://github.com/NVIDIA-NeMo/labs-Voice-Agent) for details on deploying the ASR-EOU model with a voice agent.
 

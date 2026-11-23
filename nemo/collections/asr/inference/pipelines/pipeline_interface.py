@@ -16,7 +16,7 @@
 
 from abc import ABC, abstractmethod
 
-from nemo.collections.asr.inference.streaming.framing.request import Request
+from nemo.collections.asr.inference.streaming.framing.request import Frame
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
 
 
@@ -73,7 +73,7 @@ class PipelineInterface(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def transcribe_step(self, requests: list[Request]):
+    def transcribe_step(self, requests: list[Frame]):
         """
         Transcribe a step
         """

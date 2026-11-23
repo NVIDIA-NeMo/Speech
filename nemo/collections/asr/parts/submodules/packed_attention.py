@@ -283,14 +283,16 @@ def packed_attention(
         dropout_p: dropout on the attention weights, in ``[0, 1]``, supported by every path but FlexAttention
             (see ``packed_attention_supports_dropout``);
             ``1.0`` drops every weight, so the result is zero on every path.
-        scale: positive score scale, ``1 / sqrt(d_k)`` by default;
+        scale: finite score scale, ``1 / sqrt(d_k)`` by default; zero gives uniform weights,
+            a negative scale turns the order of the scores around;
             a one-element tensor or NumPy scalar is read as a number, so it must not require a gradient.
 
     Returns:
         Context vectors of shape ``(T_total, H, d_k)``.
 
     Raises:
-        ValueError: for inputs that do not match the context and for scalars outside their ranges,
+        ValueError: for inputs that do not match the context or each other (shape, dtype of ``q``, ``k``
+            and ``v``, device) and for scalars outside their ranges,
             checked before the dispatch so that the backends reject these calls alike.
         NotImplementedError: on CUDA for a ``dropout_p`` inside ``(0, 1)`` where FlexAttention would have to apply it.
     """
@@ -300,24 +302,40 @@ def packed_attention(
         raise ValueError("scale is read as a number, so it must not require a gradient.")
     # the compiled FlexAttention kernel takes a Python number
     scale = None if scale is None else float(scale)
-    if scale is not None and not (math.isfinite(scale) and scale > 0.0):
-        raise ValueError(f"scale must be positive and finite, got {scale}.")
-    if q.device != context.device:
-        raise ValueError(f"q is on {q.device}, the context on {context.device}.")
+    if scale is not None and not math.isfinite(scale):
+        raise ValueError(f"scale must be finite, got {scale}.")
+    tensors = {"q": q, "k": k, "v": v, "pos_query": pos_query, "pos_emb": pos_emb, "rel_pos_bias": rel_pos_bias}
+    for name, tensor in tensors.items():
+        if tensor is not None and tensor.device != context.device:
+            raise ValueError(f"{name} is on {tensor.device}, the context on {context.device}.")
     if q.ndim != 3 or q.shape[0] != context.total_tokens or k.shape != q.shape or v.shape != q.shape:
         raise ValueError(
             "q, k and v must share one shape (T_total, H, d_k), "
             f"with the {context.total_tokens} tokens of the context, "
             f"got {tuple(q.shape)}, {tuple(k.shape)} and {tuple(v.shape)}."
         )
+    if k.dtype != q.dtype or v.dtype != q.dtype:
+        raise ValueError(f"q, k and v must share one dtype, got {q.dtype}, {k.dtype} and {v.dtype}.")
     if (pos_query is None) != (pos_emb is None):
         raise ValueError("pos_query and pos_emb come together: give both or neither.")
     if rel_pos_bias is not None and pos_query is not None:
         raise ValueError("The position term comes either as rel_pos_bias or as pos_query and pos_emb, not both.")
     if scale is None:
         scale = 1.0 / math.sqrt(q.shape[-1])
+    # the relative positions of the longest utterance, at least the position zero
+    min_width = max(2 * context.max_seqlen - 1, 1)
+    if pos_query is not None and (
+        pos_query.shape != q.shape
+        or pos_emb.ndim != 3
+        or pos_emb.shape[1:] != q.shape[1:]
+        or pos_emb.shape[0] % 2 == 0
+        or pos_emb.shape[0] < min_width
+    ):
+        raise ValueError(
+            f"pos_query must have the shape {tuple(q.shape)} of q "
+            f"and pos_emb the shape (R, {q.shape[1]}, {q.shape[2]}) with an odd R of at least {min_width}, got {tuple(pos_query.shape)} and {tuple(pos_emb.shape)}."
+        )
     if rel_pos_bias is not None:
-        min_width = max(2 * context.max_seqlen - 1, 1)
         if (
             rel_pos_bias.ndim != 3
             or rel_pos_bias.shape[:2] != q.shape[:2]
@@ -347,6 +365,14 @@ def packed_attention(
             if position_input is not None:
                 out = out + (0.0 * position_input).sum().to(out.dtype)
         return out
+    if scale <= 0.0:
+        # the kernels take a positive scale: the sign of the scale, or its zero, goes into the query side
+        # of the content scores and of the position term, which the scale multiplies alike
+        factor = -1.0 if scale < 0.0 else 0.0
+        q = factor * q
+        pos_query = None if pos_query is None else factor * pos_query
+        rel_pos_bias = None if rel_pos_bias is None else factor * rel_pos_bias
+        scale = -scale if scale < 0.0 else 1.0
     if q.is_cuda and q.dtype != torch.float64:
         if pos_query is None and rel_pos_bias is None:
             flash = _flash_attention_varlen(q)

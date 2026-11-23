@@ -297,10 +297,9 @@ class TestPackedAttentionArguments:
             ({"dropout_p": -0.1}, "dropout_p must be in"),
             ({"dropout_p": 1.5}, "dropout_p must be in"),
             ({"dropout_p": float("nan")}, "dropout_p must be in"),
-            ({"scale": 0.0}, "scale must be positive"),
-            ({"scale": -0.25}, "scale must be positive"),
-            ({"scale": float("inf")}, "scale must be positive"),
-            ({"scale": float("nan")}, "scale must be positive"),
+            ({"scale": float("inf")}, "scale must be finite"),
+            ({"scale": float("-inf")}, "scale must be finite"),
+            ({"scale": float("nan")}, "scale must be finite"),
         ],
         ids=lambda value: "_".join(f"{k}_{v}" for k, v in value.items()) if isinstance(value, dict) else "",
     )
@@ -314,6 +313,7 @@ class TestPackedAttentionArguments:
     @pytest.mark.unit
     @pytest.mark.parametrize("device", _CPU_AND_CUDA)
     @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16], ids=["fp32", "bf16"])
+    @pytest.mark.parametrize("dropout_p", [0.0, 1.0], ids=["no_dropout", "full_dropout"])
     @pytest.mark.parametrize("lengths", [[5, 0, 3], [0, 0]], ids=["tokens", "empty"])
     @pytest.mark.parametrize(
         "name, shape, match",
@@ -336,13 +336,130 @@ class TestPackedAttentionArguments:
         ],
         ids=lambda value: "x".join(map(str, value)) if isinstance(value, tuple) else str(value).split(" must")[0],
     )
-    def test_shapes_must_match_the_context(self, device, dtype, lengths, name, shape, match):
+    def test_shapes_must_match_the_context(self, device, dtype, dropout_p, lengths, name, shape, match):
         q, k, v, context, bias = self._inputs(device, dtype, lengths, with_bias=True)
         tensors = {"q": q, "k": k, "v": v, "rel_pos_bias": bias}
         for key in ("q", "k", "v") if name == "qkv" else (name,):
             tensors[key] = torch.zeros(shape, device=device, dtype=dtype)
         with pytest.raises(ValueError, match=match):
-            packed_attention(tensors["q"], tensors["k"], tensors["v"], context, rel_pos_bias=tensors["rel_pos_bias"])
+            packed_attention(
+                tensors["q"],
+                tensors["k"],
+                tensors["v"],
+                context,
+                rel_pos_bias=tensors["rel_pos_bias"],
+                dropout_p=dropout_p,
+            )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", _CPU_AND_CUDA)
+    @pytest.mark.parametrize("dropout_p", [0.0, 1.0], ids=["no_dropout", "full_dropout"])
+    @pytest.mark.parametrize("lengths", [[5, 0, 3], [0, 0]], ids=["tokens", "empty"])
+    @pytest.mark.parametrize(
+        "name, shape, match",
+        [
+            ("pos_query", (1, 2, 16), "pos_query must have the shape"),
+            ("pos_query", (8, 2, 8), "pos_query must have the shape"),
+            ("pos_emb", (9, 3, 16), "pos_query must have the shape"),
+            ("pos_emb", (9, 2, 8), "pos_query must have the shape"),
+            ("pos_emb", (10, 2, 16), "pos_query must have the shape"),
+            ("pos_emb", (7, 2, 16), "pos_query must have the shape"),
+            ("pos_emb", (9, 32), "pos_query must have the shape"),
+        ],
+        ids=lambda value: "x".join(map(str, value)) if isinstance(value, tuple) else str(value).split(" must")[0],
+    )
+    def test_position_factors_must_match_the_queries(self, device, dropout_p, lengths, name, shape, match):
+        """The same refusal with and without the full-dropout answer, which reads none of the values."""
+        q, k, v, context, _ = self._inputs(device, torch.float32, lengths, with_bias=False)
+        tensors = {"pos_query": torch.zeros_like(q), "pos_emb": torch.zeros(9, 2, 16, device=device)}
+        tensors[name] = torch.zeros(shape, device=device)
+        if context.total_tokens == 0 and shape == (7, 2, 16):
+            # an empty batch needs the relative position zero alone, so seven rows are enough for it
+            assert packed_attention(q, k, v, context, dropout_p=dropout_p, **tensors).shape == q.shape
+            return
+        with pytest.raises(ValueError, match=match):
+            packed_attention(q, k, v, context, dropout_p=dropout_p, **tensors)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", _CPU_AND_CUDA)
+    @pytest.mark.parametrize("dropout_p", [0.0, 1.0], ids=["no_dropout", "full_dropout"])
+    @pytest.mark.parametrize("lengths", [[5, 0, 3], [0, 0]], ids=["tokens", "empty"])
+    @pytest.mark.parametrize("name", ["q", "k", "v"])
+    def test_queries_keys_and_values_must_share_one_dtype(self, device, dropout_p, lengths, name):
+        q, k, v, context, _ = self._inputs(device, torch.float32, lengths, with_bias=False)
+        tensors = {"q": q, "k": k, "v": v}
+        tensors[name] = tensors[name].double()
+        with pytest.raises(ValueError, match="q, k and v must share one dtype"):
+            packed_attention(tensors["q"], tensors["k"], tensors["v"], context, dropout_p=dropout_p)
+
+    @pytest.mark.unit
+    @pytest.mark.gpu
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+    @pytest.mark.parametrize("dropout_p", [0.0, 1.0], ids=["no_dropout", "full_dropout"])
+    @pytest.mark.parametrize("lengths", [[5, 0, 3], [0, 0]], ids=["tokens", "empty"])
+    @pytest.mark.parametrize("name", ["k", "v", "rel_pos_bias", "pos_query", "pos_emb"])
+    def test_every_tensor_must_be_on_the_device_of_the_context(self, dropout_p, lengths, name):
+        q, k, v, context, bias = self._inputs("cuda", torch.float32, lengths, with_bias=True)
+        tensors = {"k": k, "v": v}
+        if name == "rel_pos_bias":
+            tensors[name] = bias
+        elif name.startswith("pos_"):
+            tensors.update(pos_query=torch.zeros_like(q), pos_emb=torch.zeros(9, 2, 16, device="cuda"))
+        tensors[name] = tensors[name].cpu()
+        with pytest.raises(ValueError, match=f"{name} is on cpu, the context on cuda"):
+            packed_attention(q, context=context, dropout_p=dropout_p, **tensors)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", _CPU_AND_CUDA)
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16], ids=["fp32", "bf16", "fp16"])
+    @pytest.mark.parametrize("position", [None, "rel_pos_bias", "factors"], ids=["no_bias", "rel_pos_bias", "factors"])
+    # a scale of -1 is in the two-token test below: over 16-wide heads its scores are too sharp for a bfloat16 comparison
+    @pytest.mark.parametrize("scale", [0.0, -0.0, -0.1, -0.3], ids=["0", "minus_0", "minus_0.1", "minus_0.3"])
+    def test_zero_and_negative_scales_match_dense_attention(self, device, dtype, position, scale):
+        """A finite scale that is not positive is a valid computation: uniform weights, or the scores turned around.
+
+        Outputs and input gradients against the dense float64 computation, on the reference path and on the
+        CUDA backends (FlashAttention in the half types, FlexAttention and the relative-position kernel).
+        """
+        torch.manual_seed(0)
+        q, k, v, context, _ = self._inputs(device, dtype, [5, 0, 3], with_bias=False)
+        extra = {}
+        if position == "rel_pos_bias":
+            extra["rel_pos_bias"] = torch.randn(8, 2, 9, device=device, dtype=dtype)
+        elif position == "factors":
+            extra["pos_query"] = torch.randn(8, 2, 16, device=device, dtype=dtype)
+            extra["pos_emb"] = torch.randn(9, 2, 16, device=device, dtype=dtype)
+
+        def run(dtype, device):
+            inputs = [t.detach().to(device, dtype).requires_grad_() for t in (q, k, v)]
+            others = {name: t.detach().to(device, dtype).requires_grad_() for name, t in extra.items()}
+            out = packed_attention(
+                *inputs, PackedAttentionContext.from_lengths(context.lengths.to(device)), scale=scale, **others
+            )
+            out.float().square().sum().backward()
+            return [out] + [t.grad for t in inputs] + [t.grad for t in others.values()]
+
+        actual = run(dtype, device)
+        expected = run(torch.float64, "cpu")
+        assert actual[0].dtype == dtype
+        tolerance = 1e-4 if dtype == torch.float32 else 5e-2
+        for value, reference in zip(actual, expected):
+            torch.testing.assert_close(value.double().cpu(), reference, rtol=tolerance, atol=tolerance)
+        if scale == 0.0 and position is None:
+            # uniform weights: every token gets the mean of its utterance's values
+            for start, end in context.sequence_slices:
+                mean = v[start:end].double().mean(0, keepdim=True).expand(end - start, -1, -1)
+                torch.testing.assert_close(actual[0][start:end].double(), mean, rtol=tolerance, atol=tolerance)
+
+    @pytest.mark.unit
+    def test_zero_and_negative_scales_keep_the_values_of_the_base(self):
+        """The two-token case of the review: ``[1.5, 1.5]`` for scale 0, about ``[1.269, 1.119]`` for scale -1."""
+        context = PackedAttentionContext.from_lengths(torch.tensor([2]))
+        x = torch.tensor([1.0, 2.0]).view(2, 1, 1)
+        assert torch.equal(packed_attention(x, x, x, context, scale=0.0).flatten(), torch.tensor([1.5, 1.5]))
+        torch.testing.assert_close(
+            packed_attention(x, x, x, context, scale=-1.0).flatten(), torch.tensor([1.2689, 1.1192]), atol=1e-4, rtol=0
+        )
 
     @pytest.mark.unit
     @pytest.mark.parametrize("lengths", [[5, 0, 3], [0, 0]], ids=["tokens", "empty"])

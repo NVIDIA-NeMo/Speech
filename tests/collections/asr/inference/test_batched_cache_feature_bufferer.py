@@ -166,3 +166,35 @@ def test_audio_buffer_as_long_as_the_chunk_is_handed_over_whole_and_a_frame_shor
 
     assert seen[1].shape == (1, 2 * CHUNK_SAMPLES)
     assert seen[1][0, :CHUNK_SAMPLES].eq(1).all() and seen[1][0, CHUNK_SAMPLES:].eq(2).all()
+
+
+@pytest.mark.unit
+def test_reset_of_an_unfinished_stream_drops_its_audio_and_keeps_the_audio_of_the_other_stream():
+    bufferer = _bufferer()
+    seen = _audio_seen_by_the_preprocessor(bufferer)
+    look_back = int(0.01 * SAMPLE_RATE)
+
+    bufferer.update([_const_frame(0, 9), _const_frame(1, 5)])
+    bufferer.reset_slots([bufferer.streamidx2slotidx[0]])
+    bufferer.update([_const_frame(0, 3), _const_frame(1, 6)])
+
+    # stream 0 starts over: silence before its chunk, not the 9s fed before the reset
+    assert seen[1][0, :look_back].eq(0).all() and seen[1][0, look_back:].eq(3).all()
+    # stream 1 was not reset: its look back is the end of its previous chunk
+    assert seen[1][1, :look_back].eq(5).all() and seen[1][1, look_back:].eq(6).all()
+
+
+@pytest.mark.unit
+def test_freeing_an_unfinished_stream_gives_its_audio_slot_to_the_next_stream():
+    bufferer = _bufferer(num_slots=2)
+    seen = _audio_seen_by_the_preprocessor(bufferer)
+    look_back = int(0.01 * SAMPLE_RATE)
+
+    bufferer.update([_const_frame(0, 9), _const_frame(1, 5)])
+    bufferer.free_slots([bufferer.streamidx2slotidx[0]])
+    bufferer.update([_const_frame(2, 3), _const_frame(1, 6)])
+
+    # stream 2 takes the audio slot of stream 0, zeroed: a slot still held would make the audio buffer grow
+    assert bufferer.audio_bufferer.buffer.shape[0] == 2
+    assert seen[1][0, :look_back].eq(0).all() and seen[1][0, look_back:].eq(3).all()
+    assert seen[1][1, :look_back].eq(5).all() and seen[1][1, look_back:].eq(6).all()

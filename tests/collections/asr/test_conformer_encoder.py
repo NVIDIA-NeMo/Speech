@@ -16,6 +16,7 @@ import copy
 import functools
 import inspect
 import os
+import random
 
 import numpy as np
 import pytest
@@ -44,6 +45,7 @@ from nemo.collections.asr.parts.submodules.multi_head_attention import (
     MultiHeadAttention,
     RelPositionalEncoding,
     RelPositionMultiHeadAttention,
+    RelPositionMultiHeadAttentionLongformer,
 )
 from nemo.collections.asr.parts.submodules.packed_attention import PackedAttentionContext
 from nemo.collections.asr.parts.submodules.subsampling import ConvSubsampling
@@ -1218,15 +1220,6 @@ class TestPackedConformerEncoder:
             encoder.interctc_capture_at_layers = None
 
     @pytest.mark.unit
-    def test_rejects_unsupported_configurations(self):
-        features = _packed_test_features(torch.tensor([20]))
-        with pytest.raises(NotImplementedError, match="full attention context"):
-            _packed_encoder(att_context_size=[4, 4]).double().forward_sequence_packed(features, torch.tensor([20]))
-        with pytest.raises(NotImplementedError, match="rel_pos_local_attn"):
-            local = _packed_encoder(self_attention_model="rel_pos_local_attn", att_context_size=[4, 4]).double()
-            local.forward_sequence_packed(features, torch.tensor([20]))
-
-    @pytest.mark.unit
     def test_attention_dropout_runs_on_cpu(self):
         """Off CUDA the per-utterance reference attention applies the dropout, with the position bias too."""
         torch.manual_seed(8)
@@ -1294,6 +1287,365 @@ class TestPackedConformerEncoder:
         ]
         encoder = ConformerEncoder(*positional, None)
         assert isinstance(encoder.pre_encode, ConvSubsampling) and encoder.packed_rel_pos_attention == "triton"
+
+
+def _limited_context_encoder(self_attention_model, att_context_style, att_context_size, default=None, **overrides):
+    """A small packed encoder with a limited attention context and position biases away from their zero init."""
+    encoder = _packed_encoder(
+        self_attention_model=self_attention_model,
+        att_context_style=att_context_style,
+        att_context_size=att_context_size,
+        **overrides,
+    )
+    if default is not None:
+        # chunked_limited_with_rc takes its sizes after construction, as does chunked_limited without a right limit
+        encoder.set_default_att_context_size(default)
+    for name, parameter in encoder.named_parameters():
+        if "pos_bias" in name:
+            torch.nn.init.normal_(parameter, std=0.5)
+    return encoder
+
+
+LIMITED_CONTEXTS = [
+    pytest.param("rel_pos", "regular", [4, 2], None, id="regular"),
+    pytest.param("rel_pos", "regular", [3, -1], None, id="regular_left_only"),
+    pytest.param("rel_pos", "regular", [-1, 2], None, id="regular_right_only"),
+    pytest.param("rel_pos", "regular", [0, 0], None, id="regular_own_frame"),
+    pytest.param("abs_pos", "regular", [4, 2], None, id="regular_abs_pos"),
+    pytest.param("rope", "regular", [4, 2], None, id="regular_rope"),
+    pytest.param("rel_pos", "chunked_limited", [6, 2], None, id="chunked"),
+    pytest.param("rel_pos", "chunked_limited", [-1, 3], None, id="chunked_all_left_chunks"),
+    pytest.param("rel_pos", "chunked_limited", [6, 2], [5, -1], id="chunked_no_right_limit"),
+    pytest.param("rel_pos", "chunked_limited", [0, 0], None, id="chunked_own_frame"),
+    pytest.param("rel_pos", "chunked_limited", [6, 2], [5, 2], id="chunked_left_not_whole_chunks"),
+    pytest.param("abs_pos", "chunked_limited", [6, 2], None, id="chunked_abs_pos"),
+    pytest.param("rope", "chunked_limited", [6, 2], None, id="chunked_rope"),
+    pytest.param("rel_pos", "chunked_limited_with_rc", None, [5, 3, 2], id="chunked_with_rc"),
+    pytest.param("rel_pos", "chunked_limited_with_rc", None, [0, 4, 0], id="chunked_with_rc_own_chunk"),
+    pytest.param("rope", "chunked_limited_with_rc", None, [5, 3, 2], id="chunked_with_rc_rope"),
+    pytest.param("rel_pos_local_attn", "regular", [3, 3], None, id="local"),
+    pytest.param("rel_pos_local_attn", "regular", [64, 64], None, id="local_wider_than_the_batch"),
+]
+
+
+class TestPackedConformerEncoderAttentionContext:
+    """forward_sequence_packed with a limited attention context against forward, for every context style.
+
+    The lengths give utterances of 34, 1, 17 and 0 frames after the subsampling.
+    """
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("self_attention_model, att_context_style, att_context_size, default", LIMITED_CONTEXTS)
+    def test_matches_padded_outputs_and_gradients(
+        self, self_attention_model, att_context_style, att_context_size, default
+    ):
+        torch.manual_seed(11)
+        padded_encoder = _limited_context_encoder(self_attention_model, att_context_style, att_context_size, default)
+        padded_encoder = padded_encoder.double().eval()
+        packed_encoder = copy.deepcopy(padded_encoder)
+        assert packed_encoder.supports_sequence_packed_output
+        lengths = torch.tensor([200, 1, 100, 0])
+        features = _packed_test_features(lengths)
+        padded_out, padded_lengths = padded_encoder(audio_signal=features, length=lengths)
+        assert padded_lengths.tolist() == [34, 1, 17, 0]
+        packed = packed_encoder.forward_sequence_packed(features, lengths)
+        assert packed.lengths.tolist() == padded_lengths.tolist()
+        padded_valid = _valid_frames(padded_out, padded_lengths)
+        torch.testing.assert_close(packed.data, padded_valid)
+
+        padded_valid.square().mean().backward()
+        packed.data.square().mean().backward()
+        padded_grads = dict(padded_encoder.named_parameters())
+        for name, parameter in packed_encoder.named_parameters():
+            torch.testing.assert_close(parameter.grad, padded_grads[name].grad, msg=name)
+
+    @pytest.mark.unit
+    def test_local_attention_set_by_change_attention_model_matches_padded(self):
+        torch.manual_seed(17)
+        encoder = _limited_context_encoder("rel_pos", "regular", [-1, -1]).double().eval()
+        encoder._cfg = OmegaConf.create(
+            {
+                "d_model": 16,
+                "n_heads": 2,
+                "dropout": 0.0,
+                "dropout_att": 0.0,
+                "dropout_emb": 0.0,
+                "pos_emb_max_len": 5000,
+            }
+        )
+        encoder.change_attention_model("rel_pos_local_attn", [5, 5])
+        encoder = encoder.double()
+        assert encoder.supports_sequence_packed_output
+        lengths = torch.tensor([200, 1, 100, 0])
+        features = _packed_test_features(lengths)
+        padded_out, padded_lengths = encoder(audio_signal=features, length=lengths)
+        packed = encoder.forward_sequence_packed(features, lengths)
+        torch.testing.assert_close(packed.data, _valid_frames(padded_out, padded_lengths))
+
+    @pytest.mark.unit
+    def test_local_window_follows_the_attention_block(self):
+        """A ``self_attn`` block may bind another context than the encoder's; the layers attend by the block's."""
+        torch.manual_seed(19)
+        padded_encoder = ConformerEncoder(
+            feat_in=8,
+            n_layers=1,
+            d_model=8,
+            n_heads=2,
+            subsampling_factor=1,
+            dropout=0.0,
+            dropout_pre_encoder=0.0,
+            dropout_emb=0.0,
+            dropout_att=0.0,
+            self_attention_model="rel_pos_local_attn",
+            att_context_size=[2, 4],
+            self_attn=functools.partial(RelPositionMultiHeadAttentionLongformer, att_context_size=[3, 3]),
+        )
+        for name, parameter in padded_encoder.named_parameters():
+            if "pos_bias" in name:
+                torch.nn.init.normal_(parameter, std=0.5)
+        padded_encoder = padded_encoder.double().eval()
+        packed_encoder = copy.deepcopy(padded_encoder)
+        assert packed_encoder.supports_sequence_packed_output
+        first_key, last_key = packed_encoder._packed_key_window(packed_encoder.att_context_size, 10)
+        assert (int(first_key[3]), int(last_key[3])) == (0, 6)
+        states = torch.randn(2, 10, 8, dtype=torch.float64)
+        lengths = torch.tensor([10, 7])
+        padded_out, padded_lengths = padded_encoder(audio_signal=states, length=lengths, bypass_pre_encode=True)
+        packed = packed_encoder.forward_sequence_packed(states, lengths, bypass_pre_encode=True)
+        padded_valid = _valid_frames(padded_out, padded_lengths)
+        torch.testing.assert_close(packed.data, padded_valid)
+        padded_valid.square().mean().backward()
+        packed.data.square().mean().backward()
+        padded_grads = dict(padded_encoder.named_parameters())
+        for name, parameter in packed_encoder.named_parameters():
+            torch.testing.assert_close(parameter.grad, padded_grads[name].grad, msg=name)
+
+    @pytest.mark.unit
+    def test_limited_context_changes_the_output(self):
+        """The window reaches the attention: the same weights with the full context give other outputs."""
+        torch.manual_seed(12)
+        limited = _limited_context_encoder("rel_pos", "regular", [4, 2]).double().eval()
+        full = _limited_context_encoder("rel_pos", "regular", [-1, -1]).double().eval()
+        full.load_state_dict(limited.state_dict())
+        lengths = torch.tensor([200, 100])
+        features = _packed_test_features(lengths)
+        limited_out = limited.forward_sequence_packed(features, lengths).data
+        full_out = full.forward_sequence_packed(features, lengths).data
+        assert (limited_out - full_out).abs().max() > 1e-3
+
+    @pytest.mark.unit
+    def test_context_size_is_drawn_per_forward_in_training(self):
+        """Training draws one of the configured sizes per forward, from the same random stream as the padded forward."""
+        torch.manual_seed(13)
+        padded_encoder = _limited_context_encoder(
+            "rel_pos",
+            "chunked_limited",
+            [[6, 2], [6, 0], [6, 5], [-1, -1]],
+            att_context_probs=[0.25, 0.25, 0.25, 0.25],
+            # layer normalization: batch normalization in training differs by the padded frames
+            conv=functools.partial(ConformerConvolution, kernel_size=4, norm_type="layer_norm"),
+        )
+        padded_encoder = padded_encoder.double().train()
+        packed_encoder = copy.deepcopy(padded_encoder)
+        assert packed_encoder.supports_sequence_packed_output
+        lengths = torch.tensor([200, 7, 100])
+        features = _packed_test_features(lengths)
+        outputs = []
+        padded_grads = dict(padded_encoder.named_parameters())
+        for seed in range(8):
+            padded_encoder.zero_grad()
+            packed_encoder.zero_grad()
+            random.seed(seed)
+            padded_out, padded_lengths = padded_encoder(audio_signal=features, length=lengths)
+            random.seed(seed)
+            packed = packed_encoder.forward_sequence_packed(features, lengths)
+            padded_valid = _valid_frames(padded_out, padded_lengths)
+            torch.testing.assert_close(packed.data, padded_valid, msg=f"seed {seed}")
+            padded_valid.square().mean().backward()
+            packed.data.square().mean().backward()
+            for name, parameter in packed_encoder.named_parameters():
+                torch.testing.assert_close(parameter.grad, padded_grads[name].grad, msg=f"seed {seed}, {name}")
+            outputs.append(packed.data.detach())
+        distinct = {tuple(output.flatten()[:8].tolist()) for output in outputs}
+        assert len(distinct) > 1
+
+        packed_encoder.eval()
+        default_out = packed_encoder.forward_sequence_packed(features, lengths)
+        packed_encoder.set_default_att_context_size([6, 0])
+        assert not torch.equal(packed_encoder.forward_sequence_packed(features, lengths).data, default_out.data)
+
+    @pytest.mark.unit
+    def test_attention_dropout_runs_on_cpu(self):
+        torch.manual_seed(14)
+        encoder = _limited_context_encoder("rel_pos", "chunked_limited", [6, 2], dropout_att=0.1).double().train()
+        assert encoder.supports_sequence_packed_output
+        lengths = torch.tensor([200, 100])
+        packed = encoder.forward_sequence_packed(_packed_test_features(lengths), lengths)
+        assert torch.isfinite(packed.data).all()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "overrides, default, message",
+        [
+            (
+                dict(self_attention_model="rel_pos_local_attn", att_context_size=[4, 4], global_tokens=1),
+                None,
+                "global tokens",
+            ),
+            (dict(self_attention_model="rel_pos_local_attn", att_context_size=[4, 2]), None, "both sides"),
+            (dict(att_context_style="chunked_limited_with_rc"), [-1, 4, 2], "chunked_limited_with_rc"),
+            (dict(att_context_style="chunked_limited_with_rc"), [4, 0, 2], "chunked_limited_with_rc"),
+            (dict(att_context_style="chunked_limited", att_context_size=[6, 2]), [6, -2], "chunked_limited"),
+        ],
+        ids=[
+            "local_global_tokens",
+            "local_asymmetric",
+            "with_rc_negative_left",
+            "with_rc_no_chunk",
+            "chunked_negative_right",
+        ],
+    )
+    def test_rejects_contexts_without_a_packed_form(self, overrides, default, message):
+        encoder = _packed_encoder(**overrides).double().eval()
+        if default is not None:
+            encoder.set_default_att_context_size(default)
+        assert not encoder.supports_sequence_packed_output
+        features = _packed_test_features(torch.tensor([60]))
+        with pytest.raises(NotImplementedError, match=message):
+            encoder.forward_sequence_packed(features, torch.tensor([60]))
+
+    @pytest.mark.unit
+    def test_a_drawn_size_without_a_packed_form_is_rejected_in_training_only(self):
+        encoder = _packed_encoder(att_context_style="chunked_limited", att_context_size=[[6, 2], [6, -2]]).double()
+        assert not encoder.train().supports_sequence_packed_output
+        assert encoder.eval().supports_sequence_packed_output
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+class TestPackedConformerEncoderAttentionContextCuda:
+    """A limited attention context through FlexAttention: the block mask of the window, with and without a bias."""
+
+    CONTEXTS = [
+        pytest.param("rel_pos", "regular", [40, 13], None, id="regular"),
+        pytest.param("abs_pos", "regular", [40, 13], None, id="regular_abs_pos"),
+        pytest.param("rel_pos", "chunked_limited", [42, 13], None, id="chunked"),
+        pytest.param("rope", "chunked_limited", [42, 13], None, id="chunked_rope"),
+        pytest.param("rel_pos", "chunked_limited_with_rc", None, [30, 8, 4], id="chunked_with_rc"),
+        pytest.param("rel_pos_local_attn", "regular", [24, 24], None, id="local"),
+    ]
+
+    @staticmethod
+    def _encoders(self_attention_model, att_context_style, att_context_size, default):
+        padded_encoder = _limited_context_encoder(
+            self_attention_model, att_context_style, att_context_size, default, d_model=32, n_heads=2
+        )
+        padded_encoder = padded_encoder.cuda().eval()
+        return padded_encoder, copy.deepcopy(padded_encoder)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("self_attention_model, att_context_style, att_context_size, default", CONTEXTS)
+    def test_matches_padded_outputs_and_gradients(
+        self, self_attention_model, att_context_style, att_context_size, default
+    ):
+        """Utterances of 300, 1, 150, 0 and 260 frames: several blocks of 128 tokens, one frame and no frame."""
+        torch.manual_seed(15)
+        padded_encoder, packed_encoder = self._encoders(
+            self_attention_model, att_context_style, att_context_size, default
+        )
+        lengths = torch.tensor([1800, 1, 900, 0, 1560], device="cuda")
+        features = _packed_test_features(lengths, dtype=torch.float32, device="cuda")
+        padded_out, padded_lengths = padded_encoder(audio_signal=features, length=lengths)
+        assert padded_lengths.tolist() == [300, 1, 150, 0, 260]
+        packed = packed_encoder.forward_sequence_packed(features, lengths)
+        padded_valid = _valid_frames(padded_out, padded_lengths)
+        torch.testing.assert_close(packed.data, padded_valid, atol=1e-4, rtol=1e-4)
+        padded_valid.square().mean().backward()
+        packed.data.square().mean().backward()
+        padded_grads = dict(padded_encoder.named_parameters())
+        for name, parameter in packed_encoder.named_parameters():
+            torch.testing.assert_close(parameter.grad, padded_grads[name].grad, atol=1e-4, rtol=1e-3, msg=name)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("self_attention_model, att_context_style, att_context_size, default", CONTEXTS)
+    def test_bf16_autocast_matches_padded_outputs_and_gradients(
+        self, self_attention_model, att_context_style, att_context_size, default, monkeypatch
+    ):
+        """Forward and backward under bfloat16 autocast; a limited context never takes variable-length FlashAttention."""
+
+        def no_flash_attention(queries):
+            raise AssertionError("variable-length FlashAttention cannot express a limited attention context")
+
+        monkeypatch.setattr(packed_attention_module, "_flash_attention_varlen", no_flash_attention)
+        torch.manual_seed(16)
+        padded_encoder, packed_encoder = self._encoders(
+            self_attention_model, att_context_style, att_context_size, default
+        )
+        lengths = torch.tensor([1800, 1, 900, 0], device="cuda")
+        features = _packed_test_features(lengths, dtype=torch.float32, device="cuda")
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            padded_out, padded_lengths = padded_encoder(audio_signal=features, length=lengths)
+            packed = packed_encoder.forward_sequence_packed(features, lengths)
+        padded_valid = _valid_frames(padded_out, padded_lengths).float()
+        torch.testing.assert_close(packed.data.float(), padded_valid, atol=5e-2, rtol=5e-2)
+        padded_valid.square().mean().backward()
+        packed.data.float().square().mean().backward()
+        padded_grads = dict(padded_encoder.named_parameters())
+        for name, parameter in packed_encoder.named_parameters():
+            # bf16 rounds differently in the padded and the packed kernels, so the gradients are compared in norm
+            reference = padded_grads[name].grad
+            assert (parameter.grad - reference).norm() <= 0.1 * reference.norm() + 1e-5, name
+
+    @pytest.mark.unit
+    def test_training_draws_sizes_under_bf16_autocast(self):
+        """Training mode on CUDA, forward and backward, with the size drawn from the padded forward's stream."""
+        torch.manual_seed(18)
+        padded_encoder = _limited_context_encoder(
+            "rel_pos",
+            "chunked_limited",
+            [[42, 13], [42, 6], [42, 1], [-1, -1]],
+            d_model=32,
+            n_heads=2,
+            # layer normalization: batch normalization in training differs by the padded frames
+            conv=functools.partial(ConformerConvolution, kernel_size=4, norm_type="layer_norm"),
+        )
+        padded_encoder = padded_encoder.cuda().train()
+        packed_encoder = copy.deepcopy(padded_encoder)
+        lengths = torch.tensor([1800, 1, 900, 0], device="cuda")
+        features = _packed_test_features(lengths, dtype=torch.float32, device="cuda")
+        padded_grads = dict(padded_encoder.named_parameters())
+        for seed in range(4):
+            padded_encoder.zero_grad()
+            packed_encoder.zero_grad()
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                random.seed(seed)
+                padded_out, padded_lengths = padded_encoder(audio_signal=features, length=lengths)
+                random.seed(seed)
+                packed = packed_encoder.forward_sequence_packed(features, lengths)
+            padded_valid = _valid_frames(padded_out, padded_lengths).float()
+            torch.testing.assert_close(packed.data.float(), padded_valid, atol=5e-2, rtol=5e-2, msg=f"seed {seed}")
+            padded_valid.square().mean().backward()
+            packed.data.float().square().mean().backward()
+            for name, parameter in packed_encoder.named_parameters():
+                reference = padded_grads[name].grad
+                assert (parameter.grad - reference).norm() <= 0.1 * reference.norm() + 1e-5, (seed, name)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("self_attention_model", ["rel_pos", "abs_pos", "rope", "rel_pos_local_attn"])
+    def test_attention_dropout_is_rejected_in_training(self, self_attention_model):
+        """FlexAttention carries the limited context and has no dropout, in bfloat16 as well."""
+        encoder = _packed_encoder(self_attention_model=self_attention_model, att_context_size=[4, 4], dropout_att=0.1)
+        encoder = encoder.cuda().train()
+        lengths = torch.tensor([200, 100], device="cuda")
+        features = _packed_test_features(lengths, dtype=torch.float32, device="cuda")
+        for autocast in (False, True):
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=autocast):
+                assert not encoder.supports_sequence_packed_output
+                with pytest.raises(NotImplementedError, match="limited attention context"):
+                    encoder.forward_sequence_packed(features, lengths)
+        encoder.eval()
+        assert encoder.supports_sequence_packed_output
+        assert torch.isfinite(encoder.forward_sequence_packed(features, lengths).data).all()
 
 
 @pytest.mark.gpu

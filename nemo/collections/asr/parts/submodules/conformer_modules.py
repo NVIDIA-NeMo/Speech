@@ -357,23 +357,21 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
     ) -> torch.Tensor:
         """The layer over token-flat input of all utterances, with explicit boundaries instead of padding masks.
 
-        Streaming caches, adapters, local attention and the ``save_encoder_tensors`` capture
+        Streaming caches, adapters, local attention with global tokens and the ``save_encoder_tensors`` capture
         are not supported in this form.
 
         Args:
             x: input signals, shape ``(T_total, d_model)``.
-            attention_context: packing metadata for the self-attention.
+            attention_context: packing metadata for the self-attention, with the limited attention context if any.
             conv_layout: gapped layout for the depthwise convolution, see ``ConformerConvolution.forward_packed``.
             pos_emb: relative positional embedding ``(1, 2 * max_seqlen - 1, d_model)`` for ``rel_pos`` attention,
-                else None.
+                the one of the window for ``rel_pos_local_attn``, else None.
 
         Returns:
             The layer output, shape ``(T_total, d_model)``.
         """
         if self.is_adapter_available():
             raise NotImplementedError("Adapters are not supported in the sequence-packed ConformerLayer.")
-        if self.self_attention_model == 'rel_pos_local_attn':
-            raise NotImplementedError("rel_pos_local_attn has no sequence-packed form.")
 
         # the broadcast dropouts take the packing to give every row the mask of its sequence;
         # a feed-forward block receives it only with the option, so a block without the argument keeps working

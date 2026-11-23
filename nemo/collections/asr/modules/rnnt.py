@@ -1341,8 +1341,9 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                 the gradient for the Joint hidden / vocabulary projection weight in FP32.
 
             backward_mode: algorithm of the backward pass, `atomic` or `chunked`. None (default) selects it
-                by the GPU: `atomic` for compute capability 9.0+ (native BF16 atomic operations),
-                `chunked` otherwise. Both algorithms compute the same gradients.
+                by the GPU: `atomic` for compute capability 9.0+ (native BF16 atomic operations) except
+                Blackwell data center GPUs (compute capability 10.x), `chunked` otherwise.
+                Both algorithms compute the same gradients.
 
             pruning: Optional dict-like config, missing or None disables pruning. Experimental: a warning
                 is logged if pruning is enabled.

@@ -24,6 +24,7 @@ if TRITON_AVAILABLE:
         rnnt_joint_fused_vocab_consistency_triton,
         rnnt_joint_fused_vocab_triton,
     )
+    from nemo.collections.asr.parts.turbo_transducer.utils_triton import TENSOR_DESCRIPTORS_AVAILABLE
 
 # Tile size (rows, hidden, vocab) of the kernel config used in tests, see `small_kernel_configs`
 TEST_BLOCK_SIZE = 16
@@ -81,8 +82,14 @@ def _get_autotuned_kernels() -> dict:
 
 
 def _make_small_triton_config(production_config):
-    """Copy of the config with all tile sizes (`*_BLOCK` meta-parameters) replaced by the small test tile size"""
+    """
+    Copy of the config with all tile sizes (`*_BLOCK` meta-parameters) replaced by the small test tile size.
+    The kernels that support tensor descriptors use them if the descriptors are allowed for the call
+    (compute capability 9.0+, see `can_use_tensor_descriptors`), and pointers with explicit masks otherwise.
+    """
     kwargs = {
         name: TEST_BLOCK_SIZE if name.endswith("_BLOCK") else value for name, value in production_config.kwargs.items()
     }
+    if "TENSOR_DESCRIPTORS" in kwargs:
+        kwargs["TENSOR_DESCRIPTORS"] = TENSOR_DESCRIPTORS_AVAILABLE
     return triton.Config(kwargs, num_warps=4, num_stages=2)

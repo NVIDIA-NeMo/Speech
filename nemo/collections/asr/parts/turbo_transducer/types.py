@@ -167,7 +167,8 @@ class TurboJointKernelConfig:
         input_grad_full_precision: accumulate the gradient for the Joint hidden in FP32.
         weight_grad_full_precision: accumulate the gradient for the vocabulary projection weight in FP32.
         backward_mode: backward algorithm, `atomic` or `chunked`, see `FusedVocabBackwardMode`. None selects it
-            by the GPU: `atomic` with native BF16 atomics (compute capability 9.0+), `chunked` otherwise.
+            by the GPU: `atomic` with native BF16 atomics (compute capability 9.0+) except Blackwell data center
+            GPUs (compute capability 10.x), `chunked` otherwise.
             The gradient precision flags affect only the `atomic` mode.
         pruning: optional pruning of the lattice, see `TurboJointPruningConfig`. None disables pruning.
     """

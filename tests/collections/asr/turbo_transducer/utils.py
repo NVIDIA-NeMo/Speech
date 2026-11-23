@@ -377,6 +377,28 @@ def count_compiled_kernels(*modules) -> dict[str, int]:
     return counts
 
 
+def set_tensor_descriptors_allowed(monkeypatch: pytest.MonkeyPatch, module, allowed: bool) -> list[bool]:
+    """
+    Select how the Triton kernels of the module load / store the tiles: with tensor descriptors (`allowed`:
+    the test is skipped if the GPU or Triton does not support them), or with pointers and explicit masks.
+    Returns the list with `TENSOR_DESCRIPTORS_ALLOWED` argument of each kernel launched by the module.
+    """
+    if allowed and not module.can_use_tensor_descriptors(torch.zeros(4, 8, device="cuda")):
+        pytest.skip("Tensor descriptors require compute capability 9.0+ and Triton 3.4+")
+    if not allowed:
+        monkeypatch.setattr(module, "can_use_tensor_descriptors", lambda *matrices: False)
+    launched_with_descriptors_allowed = []
+    launch_kernel_on_device = module.launch_kernel_on_device
+
+    def record_launch(kernel, grid, device_tensor, **kernel_arguments):
+        if "TENSOR_DESCRIPTORS_ALLOWED" in kernel_arguments:
+            launched_with_descriptors_allowed.append(kernel_arguments["TENSOR_DESCRIPTORS_ALLOWED"])
+        launch_kernel_on_device(kernel, grid, device_tensor, **kernel_arguments)
+
+    monkeypatch.setattr(module, "launch_kernel_on_device", record_launch)
+    return launched_with_descriptors_allowed
+
+
 def skip_if_bf16_atomics_unsupported(backward_mode: str | None, kernel_kwargs: dict | None = None):
     """
     Skip a test of the Triton kernels with BF16 joint hidden, if the gradients are accumulated with BF16 atomics

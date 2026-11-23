@@ -55,8 +55,11 @@ from nemo.collections.asr.parts.turbo_transducer.types import TransducerLossInpu
 from nemo.collections.asr.parts.turbo_transducer.utils_triton import (
     autotune,
     block_offsets_int64,
+    can_use_tensor_descriptors,
     cuda_device_guard,
+    launch_kernel_on_device,
     load_rows_block,
+    make_tile_configs,
     matmul,
 )
 
@@ -69,8 +72,11 @@ _PADDED_VOCAB_LOGIT: tl.constexpr = tl.constexpr(-1.0e30)
 # Autotune configs: (PAIR_BLOCK, HIDDEN_BLOCK, VOCAB_BLOCK, num_warps, num_stages), see the comments for the configs
 # of the kernels without the consistency loss. Two tiles of logits [PAIR_BLOCK, VOCAB_BLOCK] (teacher, student)
 # are kept in registers: 2 * PAIR_BLOCK * VOCAB_BLOCK / (32 * num_warps) must not exceed 128.
+_BLOCK_NAMES = ["PAIR_BLOCK", "HIDDEN_BLOCK", "VOCAB_BLOCK"]
+
+
 def _fwd_autotune_configs():
-    candidates = [
+    tiles = [
         (32, 32, 128, 4, 3),
         (64, 32, 64, 4, 3),
         (64, 32, 128, 4, 3),
@@ -82,14 +88,16 @@ def _fwd_autotune_configs():
         (32, 32, 256, 4, 3),
         (64, 32, 256, 8, 3),
     ]
-    return [
-        triton.Config({"PAIR_BLOCK": pb, "HIDDEN_BLOCK": hb, "VOCAB_BLOCK": vb}, num_warps=nw, num_stages=ns)
-        for pb, hb, vb, nw, ns in candidates
+    tensor_descriptor_tiles = [
+        (64, 64, 128, 4, 3),  # best on GB300 (sm_103) for vocab 1025 - 16385
+        (64, 64, 64, 4, 3),
+        (64, 64, 256, 8, 3),
     ]
+    return make_tile_configs(_BLOCK_NAMES, tiles, tensor_descriptor_tiles)
 
 
 def _bwd_autotune_configs():
-    candidates = [
+    tiles = [
         (64, 32, 64, 4, 2),
         (64, 32, 128, 8, 2),
         (64, 32, 256, 8, 2),
@@ -98,14 +106,11 @@ def _bwd_autotune_configs():
         (128, 32, 128, 8, 1),
         (64, 32, 128, 4, 2),  # best for 1025, 8193 (RTX PRO 6000 Blackwell)
     ]
-    return [
-        triton.Config({"PAIR_BLOCK": pb, "HIDDEN_BLOCK": hb, "VOCAB_BLOCK": vb}, num_warps=nw, num_stages=ns)
-        for pb, hb, vb, nw, ns in candidates
-    ]
+    return make_tile_configs(_BLOCK_NAMES, tiles)
 
 
 def _bwd_chunked_grad_logits_autotune_configs():
-    candidates = [
+    tiles = [
         (32, 64, 128, 4, 4),
         (64, 32, 128, 4, 4),
         (64, 64, 128, 8, 3),
@@ -115,12 +120,12 @@ def _bwd_chunked_grad_logits_autotune_configs():
         (64, 32, 128, 4, 3),  # best for 8193 (RTX PRO 6000 Blackwell)
         (64, 32, 64, 4, 4),  # best for 1025 (RTX PRO 6000 Blackwell)
     ]
-    return [
-        triton.Config(
-            {"PAIR_BLOCK": pb, "HIDDEN_BLOCK": hb, "VOCAB_BLOCK": vb, "GROUP_SIZE": 8}, num_warps=nw, num_stages=ns
-        )
-        for pb, hb, vb, nw, ns in candidates
+    tensor_descriptor_tiles = [
+        (64, 64, 64, 4, 3),  # best on GB300 (sm_103) for vocab 16385
+        (64, 64, 128, 4, 3),
+        (64, 32, 64, 4, 3),  # best on GB300 (sm_103) for vocab 1025
     ]
+    return make_tile_configs(_BLOCK_NAMES, tiles, tensor_descriptor_tiles, GROUP_SIZE=8)
 
 
 @autotune(
@@ -131,6 +136,7 @@ def _bwd_chunked_grad_logits_autotune_configs():
         "USE_HIGH_PRECISION_MM",
         "MM_FULL_PRECISION",
         "SYMMETRICAL",
+        "TENSOR_DESCRIPTORS_ALLOWED",
         "autotune_size_class",
     ],
 )
@@ -173,6 +179,8 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
     USE_HIGH_PRECISION_MM: tl.constexpr,
     MM_FULL_PRECISION: tl.constexpr = False,
     PRUNING_RANGE: tl.constexpr = 0,
+    TENSOR_DESCRIPTORS: tl.constexpr = False,
+    TENSOR_DESCRIPTORS_ALLOWED: tl.constexpr = False,
 ):
     """
     Teacher rows are [0, pair_flattened_size) of the flattened batch, student rows are offset by pair_flattened_size.
@@ -186,7 +194,11 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
     extracting them from each block of logits needs more registers than the two logits accumulators leave.
     NB: these dot products are exact, while the blocks of logits for FP32 operands are computed with TF32 precision
     unless `USE_HIGH_PRECISION_MM` is set: the log-probabilities are then accurate to ~1e-3 (exact for BF16 operands).
+    With `TENSOR_DESCRIPTORS` (autotune config) and `TENSOR_DESCRIPTORS_ALLOWED` (see `can_use_tensor_descriptors`),
+    the tiles of the joint hidden and of the weight are loaded with tensor descriptors, otherwise - with pointers
+    and explicit masks.
     """
+    USE_TENSOR_DESCRIPTORS: tl.constexpr = TENSOR_DESCRIPTORS and TENSOR_DESCRIPTORS_ALLOWED
     compute_dtype = tl.float32
     # NB: the flags go first, Triton 3.3 does not support `and` with a comparison of dtypes on the left
     matmul_dtype = (
@@ -218,6 +230,27 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
     vocab_offsets_in_block = tl.arange(0, VOCAB_BLOCK)
     teacher_rows = block_offsets_int64(pair_start, PAIR_BLOCK)
     student_rows = block_offsets_int64(pair_start + pair_flattened_size, PAIR_BLOCK)
+    if USE_TENSOR_DESCRIPTORS:
+        # the loads are bounded by the shapes of the descriptors: zeros outside the matrices, as for the masked loads;
+        # the rows of the teacher end with the first half of the joint hidden
+        teacher_hidden_descriptor = tl.make_tensor_descriptor(
+            joint_hidden_ptr,
+            shape=[pair_flattened_size, hidden_dim],
+            strides=[hidden_dim, 1],
+            block_shape=[PAIR_BLOCK, HIDDEN_BLOCK],
+        )
+        student_hidden_descriptor = tl.make_tensor_descriptor(
+            joint_hidden_ptr,
+            shape=[2 * pair_flattened_size, hidden_dim],
+            strides=[hidden_dim, 1],
+            block_shape=[PAIR_BLOCK, HIDDEN_BLOCK],
+        )
+        weight_descriptor = tl.make_tensor_descriptor(
+            weight_ptr,
+            shape=[vocab_size, hidden_dim],
+            strides=[hidden_dim, 1],
+            block_shape=[VOCAB_BLOCK, HIDDEN_BLOCK],
+        )
     teacher_max = tl.full([PAIR_BLOCK], value=float("-inf"), dtype=compute_dtype)
     teacher_exp_sum = tl.zeros([PAIR_BLOCK], dtype=compute_dtype)
     teacher_kl_sum = tl.zeros([PAIR_BLOCK], dtype=compute_dtype)
@@ -234,28 +267,37 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
         student_logits = tl.zeros([PAIR_BLOCK, VOCAB_BLOCK], dtype=compute_dtype) + bias_chunk[None, :]
         for hidden_start in tl.range(0, hidden_dim, HIDDEN_BLOCK):
             # weight tile is shared by teacher and student rows
-            weight_chunk_t = load_rows_block(
-                weight_ptr, weight_rows, vocab_mask, hidden_start, hidden_dim, HIDDEN_BLOCK
-            ).T.to(matmul_dtype)
-            teacher_hidden_chunk = load_rows_block(
-                joint_hidden_ptr,
-                teacher_rows,
-                pair_mask,
-                hidden_start,
-                hidden_dim,
-                HIDDEN_BLOCK,
-                CACHE_VOLATILE=True,
-            ).to(matmul_dtype)
+            if USE_TENSOR_DESCRIPTORS:
+                weight_chunk_t = weight_descriptor.load([vocab_start, hidden_start]).T.to(matmul_dtype)
+                teacher_hidden_chunk = teacher_hidden_descriptor.load([pair_start, hidden_start]).to(matmul_dtype)
+            else:
+                weight_chunk_t = load_rows_block(
+                    weight_ptr, weight_rows, vocab_mask, hidden_start, hidden_dim, HIDDEN_BLOCK
+                ).T.to(matmul_dtype)
+                teacher_hidden_chunk = load_rows_block(
+                    joint_hidden_ptr,
+                    teacher_rows,
+                    pair_mask,
+                    hidden_start,
+                    hidden_dim,
+                    HIDDEN_BLOCK,
+                    CACHE_VOLATILE=True,
+                ).to(matmul_dtype)
             teacher_logits += matmul(teacher_hidden_chunk, weight_chunk_t, USE_HIGH_PRECISION=USE_HIGH_PRECISION_MM)
-            student_hidden_chunk = load_rows_block(
-                joint_hidden_ptr,
-                student_rows,
-                pair_mask,
-                hidden_start,
-                hidden_dim,
-                HIDDEN_BLOCK,
-                CACHE_VOLATILE=True,
-            ).to(matmul_dtype)
+            if USE_TENSOR_DESCRIPTORS:
+                student_hidden_chunk = student_hidden_descriptor.load(
+                    [pair_start + pair_flattened_size, hidden_start]
+                ).to(matmul_dtype)
+            else:
+                student_hidden_chunk = load_rows_block(
+                    joint_hidden_ptr,
+                    student_rows,
+                    pair_mask,
+                    hidden_start,
+                    hidden_dim,
+                    HIDDEN_BLOCK,
+                    CACHE_VOLATILE=True,
+                ).to(matmul_dtype)
             student_logits += matmul(student_hidden_chunk, weight_chunk_t, USE_HIGH_PRECISION=USE_HIGH_PRECISION_MM)
 
         if vocab_start + VOCAB_BLOCK > vocab_size:
@@ -559,6 +601,7 @@ def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
         "MM_FULL_PRECISION",
         "PRUNING_RANGE",
         "SYMMETRICAL",
+        "TENSOR_DESCRIPTORS_ALLOWED",
         "autotune_size_class",
     ],
     reset_to_zero=["grad_bias_out_ptr"],
@@ -609,13 +652,19 @@ def _rnnt_joint_fused_vocab_consistency_bwd_grad_logits_triton_kernel(
     USE_HIGH_PRECISION_MM: tl.constexpr = False,
     MM_FULL_PRECISION: tl.constexpr = False,
     PRUNING_RANGE: tl.constexpr = 0,
+    TENSOR_DESCRIPTORS: tl.constexpr = False,
+    TENSOR_DESCRIPTORS_ALLOWED: tl.constexpr = False,
 ):
     """
     Recompute logits for teacher pair rows [chunk_start, chunk_start + chunk_size) and the corresponding student rows,
     store grad logits into grad_logits_out [2 * chunk_size, padded_vocab_size]: teacher rows first, then student rows.
     Hidden rows are read from `hidden_ptr` [*, hidden_dim] starting at `teacher_hidden_row_start` and
     `student_hidden_row_start` (the dense joint hidden, or the packed pruned rows of the chunk).
+    With `TENSOR_DESCRIPTORS` (autotune config) and `TENSOR_DESCRIPTORS_ALLOWED` (see `can_use_tensor_descriptors`),
+    the tiles of the hidden, of the weight and of the grad logits are loaded / stored with tensor descriptors,
+    otherwise - with pointers and explicit masks.
     """
+    USE_TENSOR_DESCRIPTORS: tl.constexpr = TENSOR_DESCRIPTORS and TENSOR_DESCRIPTORS_ALLOWED
     compute_dtype = tl.float32
     # NB: the flags go first, Triton 3.3 does not support `and` with a comparison of dtypes on the left
     matmul_dtype = (
@@ -635,7 +684,8 @@ def _rnnt_joint_fused_vocab_consistency_bwd_grad_logits_triton_kernel(
     pair_block_index = first_pair_block_index + program_index_in_group % current_group_size
     vocab_block_index = program_index_in_group // current_group_size
 
-    chunk_offsets = pair_block_index * PAIR_BLOCK + tl.arange(0, PAIR_BLOCK)
+    chunk_block_start = pair_block_index * PAIR_BLOCK
+    chunk_offsets = chunk_block_start + tl.arange(0, PAIR_BLOCK)
     chunk_mask = chunk_offsets < chunk_size
     teacher_lattice_offsets = _get_lattice_offsets(
         chunk_start + chunk_offsets, chunk_mask, pruning_starts_ptr, max_tgt_len_plus_1, PRUNING_RANGE
@@ -646,22 +696,66 @@ def _rnnt_joint_fused_vocab_consistency_bwd_grad_logits_triton_kernel(
     vocab_mask = vocab_offsets < vocab_size
     weight_rows = block_offsets_int64(vocab_start, VOCAB_BLOCK)
 
-    teacher_hidden_rows = block_offsets_int64(teacher_hidden_row_start + pair_block_index * PAIR_BLOCK, PAIR_BLOCK)
-    student_hidden_rows = block_offsets_int64(student_hidden_row_start + pair_block_index * PAIR_BLOCK, PAIR_BLOCK)
+    teacher_hidden_rows = block_offsets_int64(teacher_hidden_row_start + chunk_block_start, PAIR_BLOCK)
+    student_hidden_rows = block_offsets_int64(student_hidden_row_start + chunk_block_start, PAIR_BLOCK)
+    if USE_TENSOR_DESCRIPTORS:
+        # the loads and the stores are bounded by the shapes of the descriptors, as with the explicit masks:
+        # the rows of the teacher and of the student end with the chunk, the vocabulary of the grad logits is padded
+        teacher_hidden_descriptor = tl.make_tensor_descriptor(
+            hidden_ptr,
+            shape=[teacher_hidden_row_start + chunk_size, hidden_dim],
+            strides=[hidden_dim, 1],
+            block_shape=[PAIR_BLOCK, HIDDEN_BLOCK],
+        )
+        student_hidden_descriptor = tl.make_tensor_descriptor(
+            hidden_ptr,
+            shape=[student_hidden_row_start + chunk_size, hidden_dim],
+            strides=[hidden_dim, 1],
+            block_shape=[PAIR_BLOCK, HIDDEN_BLOCK],
+        )
+        weight_descriptor = tl.make_tensor_descriptor(
+            weight_ptr,
+            shape=[vocab_size, hidden_dim],
+            strides=[hidden_dim, 1],
+            block_shape=[VOCAB_BLOCK, HIDDEN_BLOCK],
+        )
+        teacher_grad_logits_descriptor = tl.make_tensor_descriptor(
+            grad_logits_out_ptr,
+            shape=[chunk_size, padded_vocab_size],
+            strides=[padded_vocab_size, 1],
+            block_shape=[PAIR_BLOCK, VOCAB_BLOCK],
+        )
+        student_grad_logits_descriptor = tl.make_tensor_descriptor(
+            grad_logits_out_ptr,
+            shape=[2 * chunk_size, padded_vocab_size],
+            strides=[padded_vocab_size, 1],
+            block_shape=[PAIR_BLOCK, VOCAB_BLOCK],
+        )
 
     teacher_logits = tl.zeros([PAIR_BLOCK, VOCAB_BLOCK], dtype=compute_dtype)
     student_logits = tl.zeros([PAIR_BLOCK, VOCAB_BLOCK], dtype=compute_dtype)
     for hidden_start in tl.range(0, hidden_dim, HIDDEN_BLOCK):
-        weight_chunk_t = load_rows_block(
-            weight_ptr, weight_rows, vocab_mask, hidden_start, hidden_dim, HIDDEN_BLOCK, TRANSPOSED=True
-        ).to(matmul_dtype)
-        teacher_hidden_chunk = load_rows_block(
-            hidden_ptr, teacher_hidden_rows, chunk_mask, hidden_start, hidden_dim, HIDDEN_BLOCK
-        ).to(matmul_dtype)
+        if USE_TENSOR_DESCRIPTORS:
+            weight_chunk_t = weight_descriptor.load([vocab_start, hidden_start]).T.to(matmul_dtype)
+            teacher_hidden_chunk = teacher_hidden_descriptor.load(
+                [teacher_hidden_row_start + chunk_block_start, hidden_start]
+            ).to(matmul_dtype)
+        else:
+            weight_chunk_t = load_rows_block(
+                weight_ptr, weight_rows, vocab_mask, hidden_start, hidden_dim, HIDDEN_BLOCK, TRANSPOSED=True
+            ).to(matmul_dtype)
+            teacher_hidden_chunk = load_rows_block(
+                hidden_ptr, teacher_hidden_rows, chunk_mask, hidden_start, hidden_dim, HIDDEN_BLOCK
+            ).to(matmul_dtype)
         teacher_logits += matmul(teacher_hidden_chunk, weight_chunk_t, USE_HIGH_PRECISION=USE_HIGH_PRECISION_MM)
-        student_hidden_chunk = load_rows_block(
-            hidden_ptr, student_hidden_rows, chunk_mask, hidden_start, hidden_dim, HIDDEN_BLOCK
-        ).to(matmul_dtype)
+        if USE_TENSOR_DESCRIPTORS:
+            student_hidden_chunk = student_hidden_descriptor.load(
+                [student_hidden_row_start + chunk_block_start, hidden_start]
+            ).to(matmul_dtype)
+        else:
+            student_hidden_chunk = load_rows_block(
+                hidden_ptr, student_hidden_rows, chunk_mask, hidden_start, hidden_dim, HIDDEN_BLOCK
+            ).to(matmul_dtype)
         student_logits += matmul(student_hidden_chunk, weight_chunk_t, USE_HIGH_PRECISION=USE_HIGH_PRECISION_MM)
 
     bias_chunk = tl.load(bias_ptr + vocab_offsets, mask=vocab_mask, other=0.0).to(compute_dtype)
@@ -724,19 +818,27 @@ def _rnnt_joint_fused_vocab_consistency_bwd_grad_logits_triton_kernel(
         mask=vocab_mask,
         sem="relaxed",
     )
-    output_mask = chunk_mask[:, None] & (vocab_offsets < padded_vocab_size)[None, :]
-    teacher_out_rows = chunk_offsets.to(tl.int64)
-    tl.store(
-        grad_logits_out_ptr + teacher_out_rows[:, None] * padded_vocab_size + vocab_offsets[None, :],
-        teacher_grad_logits.to(grad_logits_out_ptr.dtype.element_ty),
-        mask=output_mask,
-    )
-    student_out_rows = teacher_out_rows + chunk_size
-    tl.store(
-        grad_logits_out_ptr + student_out_rows[:, None] * padded_vocab_size + vocab_offsets[None, :],
-        student_grad_logits.to(grad_logits_out_ptr.dtype.element_ty),
-        mask=output_mask,
-    )
+    if USE_TENSOR_DESCRIPTORS:
+        teacher_grad_logits_descriptor.store(
+            [chunk_block_start, vocab_start], teacher_grad_logits.to(grad_logits_out_ptr.dtype.element_ty)
+        )
+        student_grad_logits_descriptor.store(
+            [chunk_size + chunk_block_start, vocab_start], student_grad_logits.to(grad_logits_out_ptr.dtype.element_ty)
+        )
+    else:
+        output_mask = chunk_mask[:, None] & (vocab_offsets < padded_vocab_size)[None, :]
+        teacher_out_rows = chunk_offsets.to(tl.int64)
+        tl.store(
+            grad_logits_out_ptr + teacher_out_rows[:, None] * padded_vocab_size + vocab_offsets[None, :],
+            teacher_grad_logits.to(grad_logits_out_ptr.dtype.element_ty),
+            mask=output_mask,
+        )
+        student_out_rows = teacher_out_rows + chunk_size
+        tl.store(
+            grad_logits_out_ptr + student_out_rows[:, None] * padded_vocab_size + vocab_offsets[None, :],
+            student_grad_logits.to(grad_logits_out_ptr.dtype.element_ty),
+            mask=output_mask,
+        )
 
 
 class _RnntJointFusedVocabConsistencyTritonFunction(torch.autograd.Function):
@@ -797,32 +899,35 @@ class _RnntJointFusedVocabConsistencyTritonFunction(torch.autograd.Function):
         )
 
         fwd_grid = lambda META: (triton.cdiv(pair_flattened_size, META["PAIR_BLOCK"]),)
-        with cuda_device_guard(joint_hidden):
-            _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel[fwd_grid](
-                joint_hidden_ptr=joint_hidden,
-                targets_ptr=targets,
-                src_lengths_ptr=src_lengths,
-                tgt_lengths_ptr=tgt_lengths,
-                weight_ptr=matmul_weight,
-                bias_ptr=bias,
-                target_logprobs_out_ptr=target_logprobs,
-                blank_logprobs_out_ptr=blank_logprobs,
-                log_sum_exp_out_ptr=log_sum_exp_scores,
-                consistency_kl_out_ptr=consistency_kl,
-                pruning_starts_ptr=pruning_range_starts,
-                max_src_len=src_max_length,
-                max_tgt_len_plus_1=tgt_max_length_plus_1,
-                pair_flattened_size=pair_flattened_size,
-                autotune_size_class=_autotune_size_class(2 * pair_flattened_size),
-                student_lattice_offset=half_batch_size * src_max_length * tgt_max_length_plus_1,
-                hidden_dim=hidden_dim,
-                vocab_size=vocab_size,
-                blank_id=blank_id,
-                SYMMETRICAL=symmetrical,
-                USE_HIGH_PRECISION_MM=use_high_precision_mm,
-                MM_FULL_PRECISION=mm_full_precision,
-                PRUNING_RANGE=num_frame_rows if packed_hidden else 0,
-            )
+        launch_kernel_on_device(
+            _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel,
+            fwd_grid,
+            joint_hidden,
+            joint_hidden_ptr=joint_hidden,
+            targets_ptr=targets,
+            src_lengths_ptr=src_lengths,
+            tgt_lengths_ptr=tgt_lengths,
+            weight_ptr=matmul_weight,
+            bias_ptr=bias,
+            target_logprobs_out_ptr=target_logprobs,
+            blank_logprobs_out_ptr=blank_logprobs,
+            log_sum_exp_out_ptr=log_sum_exp_scores,
+            consistency_kl_out_ptr=consistency_kl,
+            pruning_starts_ptr=pruning_range_starts,
+            max_src_len=src_max_length,
+            max_tgt_len_plus_1=tgt_max_length_plus_1,
+            pair_flattened_size=pair_flattened_size,
+            autotune_size_class=_autotune_size_class(2 * pair_flattened_size),
+            student_lattice_offset=half_batch_size * src_max_length * tgt_max_length_plus_1,
+            hidden_dim=hidden_dim,
+            vocab_size=vocab_size,
+            blank_id=blank_id,
+            SYMMETRICAL=symmetrical,
+            USE_HIGH_PRECISION_MM=use_high_precision_mm,
+            MM_FULL_PRECISION=mm_full_precision,
+            PRUNING_RANGE=num_frame_rows if packed_hidden else 0,
+            TENSOR_DESCRIPTORS_ALLOWED=can_use_tensor_descriptors(joint_hidden, matmul_weight),
+        )
 
         ctx.save_for_backward(
             joint_hidden, weight, bias, targets, src_lengths, tgt_lengths, log_sum_exp_scores, matmul_weight
@@ -1098,6 +1203,10 @@ def _rnnt_joint_fused_vocab_consistency_bwd_chunked(
     # contiguous views of the halves of the double batch: lattice offsets of pairs index both of them
     joint_hidden_halves = (joint_hidden[:half_batch_size], joint_hidden[half_batch_size:])
     grad_joint_hidden_halves = (grad_joint_hidden[:half_batch_size], grad_joint_hidden[half_batch_size:])
+    # all chunks must have the same autotune key
+    tensor_descriptors_allowed = can_use_tensor_descriptors(
+        gathered_hidden if gather_hidden else joint_hidden, matmul_weight, grad_logits_buffer
+    )
 
     # GEMMs use the dtypes selected above also if backward is called inside autocast
     with cuda_device_guard(joint_hidden), torch.autocast(joint_hidden.device.type, enabled=False):
@@ -1124,7 +1233,10 @@ def _rnnt_joint_fused_vocab_consistency_bwd_chunked(
             grid = lambda META: (
                 triton.cdiv(chunk_size, META["PAIR_BLOCK"]) * triton.cdiv(padded_vocab_size, META["VOCAB_BLOCK"]),
             )
-            _rnnt_joint_fused_vocab_consistency_bwd_grad_logits_triton_kernel[grid](
+            launch_kernel_on_device(
+                _rnnt_joint_fused_vocab_consistency_bwd_grad_logits_triton_kernel,
+                grid,
+                joint_hidden,
                 hidden_ptr=hidden,
                 targets_ptr=targets,
                 src_lengths_ptr=src_lengths,
@@ -1154,6 +1266,7 @@ def _rnnt_joint_fused_vocab_consistency_bwd_chunked(
                 USE_HIGH_PRECISION_MM=use_high_precision_mm,
                 MM_FULL_PRECISION=mm_full_precision,
                 PRUNING_RANGE=pruning_range_size or 0,
+                TENSOR_DESCRIPTORS_ALLOWED=tensor_descriptors_allowed,
             )
             grad_logits_chunk = grad_logits_buffer[: 2 * chunk_size]
             if gather_hidden:

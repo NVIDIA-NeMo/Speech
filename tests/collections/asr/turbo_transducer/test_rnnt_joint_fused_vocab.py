@@ -23,6 +23,7 @@ The production autotune configs are covered by `test_rnnt_joint_fused_vocab_prod
 """
 
 import math
+import threading
 
 import pytest
 import torch
@@ -42,6 +43,7 @@ from tests.collections.asr.turbo_transducer.utils import (
     count_compiled_kernels,
     make_joint_inputs,
     reference_outputs,
+    set_tensor_descriptors_allowed,
     skip_if_bf16_atomics_unsupported,
 )
 
@@ -53,6 +55,7 @@ if TRITON_AVAILABLE:
         rnnt_joint_fused_vocab_consistency_triton as consistency_triton_module,
     )
     from nemo.collections.asr.parts.turbo_transducer import rnnt_joint_fused_vocab_triton as fused_vocab_triton_module
+    from nemo.collections.asr.parts.turbo_transducer import utils_triton
     from nemo.collections.asr.parts.turbo_transducer.rnnt_joint_fused_vocab_triton import FusedVocabBackwardMode
 
 pytestmark = pytest.mark.unit
@@ -339,6 +342,140 @@ def test_no_recompilation_for_new_lattice_shape(backward_mode, monkeypatch):
 @pytest.mark.gpu
 @requires_cuda
 @requires_triton
+@pytest.mark.parametrize("tensor_descriptors_allowed", [True, False])
+def test_tensor_descriptors_and_pointers_match_reference(tensor_descriptors_allowed, monkeypatch):
+    """
+    The tiles are loaded / stored with tensor descriptors (GPUs with TMA) or with pointers and explicit masks:
+    forward and chunked backward match the FP64 reference for both, independent of the GPU
+    """
+    launched_with_descriptors_allowed = set_tensor_descriptors_allowed(
+        monkeypatch, fused_vocab_triton_module, tensor_descriptors_allowed
+    )
+    _use_min_chunk_size(monkeypatch)
+    inputs = make_joint_inputs()
+    leaves, reference_leaves = inputs.leaves(), inputs.leaves(torch.float64)
+    outputs = rnnt_joint_fused_vocab(**inputs.kernel_kwargs(leaves), backward_mode="chunked", **FULL_PRECISION)
+    expected_outputs = reference_outputs(inputs, reference_leaves)
+    assert_close_to_reference(outputs, expected_outputs, FULL_PRECISION_TOLERANCE, OUTPUT_NAMES)
+    grads = inputs.random_grads()
+    torch.autograd.backward(outputs, grads)
+    torch.autograd.backward(expected_outputs, [grad.double() for grad in grads])
+    assert_close_to_reference(
+        [leaf.grad for leaf in leaves], [leaf.grad for leaf in reference_leaves], FULL_PRECISION_TOLERANCE, GRAD_NAMES
+    )
+    # forward kernel and the kernel of the chunked backward for several chunks
+    assert len(launched_with_descriptors_allowed) > 2
+    assert set(launched_with_descriptors_allowed) == {tensor_descriptors_allowed}
+
+
+@pytest.mark.gpu
+@requires_cuda
+@requires_triton
+def test_forward_in_new_thread():
+    """
+    A kernel with tensor descriptors requires an allocator, stored by Triton in a context variable:
+    it is set for each launch, so the kernels can be launched from any thread (a new thread has an empty context)
+    """
+    inputs = make_joint_inputs()
+    outputs = {}
+
+    def run_forward(name: str):
+        with torch.no_grad():
+            outputs[name] = rnnt_joint_fused_vocab(**inputs.kernel_kwargs(inputs.leaves()), **FULL_PRECISION)
+
+    run_forward("main thread")
+    thread = threading.Thread(target=run_forward, args=("new thread",))
+    thread.start()
+    thread.join()
+    assert "new thread" in outputs, "Forward failed in a new thread"
+    for output, expected_output in zip(outputs["new thread"], outputs["main thread"], strict=True):
+        torch.testing.assert_close(output, expected_output, rtol=0.0, atol=0.0, equal_nan=True)
+
+
+@pytest.mark.gpu
+@requires_cuda
+@requires_triton
+@pytest.mark.parametrize("tensor_descriptors_allowed", [True, False])
+def test_tensor_descriptor_configs_are_autotuned_only_if_allowed(tensor_descriptors_allowed, monkeypatch):
+    """The autotune configs with tensor descriptors are benchmarked only for the calls that allow the descriptors"""
+    set_tensor_descriptors_allowed(monkeypatch, fused_vocab_triton_module, tensor_descriptors_allowed)
+    kernel = fused_vocab_triton_module._rnnt_joint_fused_vocab_fwd_triton_kernel
+    test_config = kernel.configs[0]
+    # at least 2 configs are benchmarked for any call: small tiles compile fast
+    configs = [
+        triton.Config(dict(test_config.kwargs, TENSOR_DESCRIPTORS=use_descriptors), num_warps=num_warps, num_stages=2)
+        for use_descriptors, num_warps in [(False, 4), (False, 2), (True, 4)]
+    ]
+    monkeypatch.setattr(kernel, "configs", configs)
+    monkeypatch.setattr(kernel, "cache", {})
+    inputs = make_joint_inputs()
+    with torch.no_grad():
+        rnnt_joint_fused_vocab(**inputs.kernel_kwargs(inputs.leaves()), **FULL_PRECISION)
+    benchmarked_with_descriptors = sorted(config.kwargs["TENSOR_DESCRIPTORS"] for config in kernel.configs_timings)
+    assert benchmarked_with_descriptors == ([False, False, True] if tensor_descriptors_allowed else [False, False])
+
+
+@pytest.mark.gpu
+@requires_cuda
+@requires_triton
+@pytest.mark.parametrize("capability,expected", [((8, 6), False), ((9, 0), True), ((10, 3), True), ((12, 0), True)])
+def test_tensor_descriptors_require_tma(capability, expected, monkeypatch):
+    """Tensor descriptors are allowed on the GPUs with TMA (compute capability 9.0+) with Triton 3.4+"""
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: capability)
+    matrix = torch.zeros(4, 8, device="cuda")
+    monkeypatch.setattr(utils_triton, "TENSOR_DESCRIPTORS_AVAILABLE", True)
+    assert utils_triton.can_use_tensor_descriptors(matrix, matrix) == expected
+    monkeypatch.setattr(utils_triton, "TENSOR_DESCRIPTORS_AVAILABLE", False)
+    assert not utils_triton.can_use_tensor_descriptors(matrix, matrix)
+
+
+@pytest.mark.gpu
+@requires_cuda
+@requires_triton
+def test_tensor_descriptors_require_alignment(monkeypatch):
+    """TMA requires the base pointers and the size of a row of each matrix to be multiples of 16 bytes"""
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: (9, 0))
+    monkeypatch.setattr(utils_triton, "TENSOR_DESCRIPTORS_AVAILABLE", True)
+    matrix = torch.zeros(4, 8, device="cuda")
+    assert utils_triton.can_use_tensor_descriptors(matrix, matrix.to(torch.bfloat16), torch.zeros(2, 3, 16).cuda())
+    # the size of a row: 24 bytes (FP32), 8 bytes (BF16)
+    assert not utils_triton.can_use_tensor_descriptors(matrix, torch.zeros(4, 6, device="cuda"))
+    assert not utils_triton.can_use_tensor_descriptors(torch.zeros(4, 4, dtype=torch.bfloat16, device="cuda"))
+    # the base pointer: offset of 4 bytes in the allocation
+    assert not utils_triton.can_use_tensor_descriptors(matrix, torch.zeros(33, device="cuda")[1:].view(4, 8))
+    assert not utils_triton.can_use_tensor_descriptors(torch.zeros(4, 8))
+
+
+@requires_triton
+@pytest.mark.parametrize("tensor_descriptors_available", [True, False])
+def test_make_tile_configs(tensor_descriptors_available, monkeypatch):
+    """Configs with tensor descriptors are created only for the kernels and the versions of Triton supporting them"""
+    monkeypatch.setattr(utils_triton, "TENSOR_DESCRIPTORS_AVAILABLE", tensor_descriptors_available)
+    configs = utils_triton.make_tile_configs(
+        ["ROW_BLOCK", "COLUMN_BLOCK"], [(64, 32, 4, 3), (128, 32, 8, 2)], [(128, 64, 8, 4)], GROUP_SIZE=8
+    )
+    expected_configs = [
+        (dict(ROW_BLOCK=64, COLUMN_BLOCK=32, GROUP_SIZE=8, TENSOR_DESCRIPTORS=False), 4, 3),
+        (dict(ROW_BLOCK=128, COLUMN_BLOCK=32, GROUP_SIZE=8, TENSOR_DESCRIPTORS=False), 8, 2),
+    ]
+    if tensor_descriptors_available:
+        expected_configs.append((dict(ROW_BLOCK=128, COLUMN_BLOCK=64, GROUP_SIZE=8, TENSOR_DESCRIPTORS=True), 8, 4))
+    assert [(config.kwargs, config.num_warps, config.num_stages) for config in configs] == expected_configs
+    # the configs with tensor descriptors are benchmarked only for the calls that allow the descriptors
+    assert utils_triton._prune_tensor_descriptor_configs(configs, {}, TENSOR_DESCRIPTORS_ALLOWED=False) == configs[:2]
+    assert utils_triton._prune_tensor_descriptor_configs(configs, {}, TENSOR_DESCRIPTORS_ALLOWED=True) == configs
+    assert utils_triton._prune_tensor_descriptor_configs(configs, {"TENSOR_DESCRIPTORS_ALLOWED": True}) == configs
+    # a kernel without tensor descriptors: no meta-parameter
+    configs = utils_triton.make_tile_configs(["ROW_BLOCK", "COLUMN_BLOCK"], [(64, 32, 4, 3)])
+    assert [(config.kwargs, config.num_warps, config.num_stages) for config in configs] == [
+        (dict(ROW_BLOCK=64, COLUMN_BLOCK=32), 4, 3)
+    ]
+    assert utils_triton._prune_tensor_descriptor_configs(configs, {}) == configs
+
+
+@pytest.mark.gpu
+@requires_cuda
+@requires_triton
 def test_small_batches_are_autotuned_separately(monkeypatch):
     """
     Regression: the config selected by autotuning for a small first batch (e.g., a smoke run), which does not load
@@ -439,13 +576,17 @@ def test_rejects_inconsistent_inputs(invalid_kwargs, error):
         ((8, 6), "chunked"),
         ((8, 9), "chunked"),
         ((9, 0), "atomic"),
-        ((10, 0), "atomic"),
+        ((10, 0), "chunked"),
+        ((10, 3), "chunked"),
         ((12, 0), "atomic"),
     ],
 )
 @pytest.mark.parametrize("bf16_atomics_available", [True, False])
 def test_default_backward_mode(capability, expected_mode, bf16_atomics_available, monkeypatch):
-    """Atomic backward requires native BF16 atomics (compute capability 9.0+), supported by Triton 3.4+"""
+    """
+    Atomic backward requires native BF16 atomics (compute capability 9.0+), supported by Triton 3.4+.
+    Chunked backward is faster on Blackwell data center GPUs (compute capability 10.x).
+    """
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: capability)
     monkeypatch.setattr(fused_vocab_triton_module, "BF16_ATOMICS_AVAILABLE", bf16_atomics_available)
     backward_mode = fused_vocab_triton_module._get_default_backward_mode(torch.device("cuda"))

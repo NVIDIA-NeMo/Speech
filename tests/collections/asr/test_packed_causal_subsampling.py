@@ -183,6 +183,24 @@ class TestPackedCausalConvSubsampling:
         # without the limited context the padded forward of the training mode does not pad either
         assert _encoder(subsampling).train().supports_sequence_packed_output
 
+    @pytest.mark.unit
+    @pytest.mark.parametrize("subsampling", ["striding", "dw_striding"])
+    def test_encoder_with_a_limited_regular_context_matches_padded(self, subsampling):
+        """Training mode with a limited attention context of the ``regular`` style, which the padded forward
+        runs without the padding of the first chunk: outputs and gradients against the padded forward."""
+        torch.manual_seed(6)
+        encoder = _encoder(subsampling, att_context_size=[3, 1]).double().train()
+        assert encoder.supports_sequence_packed_output
+        lengths = torch.tensor([48, 1, 0, 31])
+        features = torch.randn(4, FEAT_IN, 48, dtype=torch.float64, requires_grad=True)
+        packed = encoder.forward_sequence_packed(features, lengths)
+        padded = _encoder_padded(encoder, features, lengths)
+        torch.testing.assert_close(packed.data, padded)
+        packed_grads = _gradients(encoder, features, _weighted_sum(packed.data))
+        padded_grads = _gradients(encoder, features, _weighted_sum(padded))
+        for name, gradient in packed_grads.items():
+            torch.testing.assert_close(gradient, padded_grads[name], msg=name)
+
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")

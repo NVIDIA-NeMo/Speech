@@ -2100,10 +2100,12 @@ def test_fastconformer_asr_branch_with_full_attention_dropout_trains_packed(monk
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("diar_normalize_type", ["per_feature", "NA"])
 def test_native_packed_path_normalizes_diar_and_asr_independently_without_unpack(
     monkeypatch,
+    diar_normalize_type,
 ):
-    encoder = build_toy_packed_pe_encoder().eval()
+    encoder = build_toy_packed_pe_encoder(diar_normalize_type=diar_normalize_type).eval()
     lengths = torch.tensor([80, 53])
     mels = torch.randn(2, _MEL_FEATURES, 80)
     packed = pack_encoder_output(mels.transpose(1, 2), lengths)
@@ -2127,9 +2129,10 @@ def test_native_packed_path_normalizes_diar_and_asr_independently_without_unpack
         encoder.diarization_model.encoder,
         encoder.asr_encoder,
     ]
-    expected_diar = normalize_packed_batch(packed, "per_feature")
-    torch.testing.assert_close(calls[0][1], expected_diar.data)
-    torch.testing.assert_close(calls[1][1], expected_diar.data)
+    expected_asr = normalize_packed_batch(packed, "per_feature").data
+    expected_diar = packed.data if diar_normalize_type == "NA" else expected_asr
+    torch.testing.assert_close(calls[0][1], expected_diar)
+    torch.testing.assert_close(calls[1][1], expected_asr)
     assert torch.equal(output.lengths, torch.tensor([10, 7]))
     assert torch.isfinite(output.data).all()
 
@@ -2147,6 +2150,48 @@ def test_native_packed_output_matches_padded_two_branch_path():
     restored = unpack_encoder_output(packed, total_length=padded.shape[-1])
     valid = torch.arange(padded.shape[-1])[None, :] < padded_lengths[:, None]
     torch.testing.assert_close(restored[valid], padded.transpose(1, 2)[valid], rtol=1e-4, atol=1e-5)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mixed_rttm", [False, True], ids=["all-missing", "missing-silent-and-observed"])
+def test_native_packed_training_preserves_missing_rttm_features_and_gradients(mixed_rttm):
+    torch.manual_seed(7)
+    diar_cfg = toy_packed_diarization_model_cfg()
+    diar_cfg.max_num_of_spks = diar_cfg.sortformer_modules.num_spks = 8
+    diar_cfg.high_resolution = True
+    diar_cfg.output_subsampling_factor = 1
+    encoder = build_toy_packed_pe_encoder(
+        diarization_model_cfg=diar_cfg,
+        diar_normalize_type="NA",
+        chunk_size_seconds=0.32,
+        speaker_feature_mode="thresholded",
+        speaker_activity_threshold=0.5,
+    ).train()
+    lengths = torch.tensor([72, 55, 103])
+    mels = torch.randn(3, _MEL_FEATURES, 103, requires_grad=True)
+    oracle_targets = torch.zeros(3, 13, 8)
+    oracle_targets[2, :8, 7] = 1.0
+    targets = torch.full_like(oracle_targets, -1.0)
+
+    inferred = encoder.forward_sequence_packed(mels, lengths)
+    oracle = encoder.forward_sequence_packed(mels, lengths, spk_targets=oracle_targets)
+    assert not torch.allclose(inferred.data[:9], oracle.data[:9])
+    if mixed_rttm:
+        targets[1:] = oracle_targets[1:]
+        expected = torch.cat((inferred.data[:9], oracle.data[9:]))
+    else:
+        expected = inferred.data
+    actual = encoder.forward_sequence_packed(mels, lengths, spk_targets=targets)
+
+    assert actual.lengths.tolist() == [9, 7, 13]
+    assert actual.cu_seqlens.tolist() == [0, 9, 16, 29]
+    torch.testing.assert_close(actual.data, expected)
+    grad_inputs = (mels, encoder.asr_norm.weight)
+    expected_grads = torch.autograd.grad(expected.square().mean(), grad_inputs)
+    actual_grads = torch.autograd.grad(actual.data.square().mean(), grad_inputs)
+    for actual_grad, expected_grad in zip(actual_grads, expected_grads):
+        assert torch.isfinite(actual_grad).all() and torch.count_nonzero(actual_grad) > 0
+        torch.testing.assert_close(actual_grad, expected_grad)
 
 
 @pytest.mark.unit
@@ -2237,6 +2282,30 @@ def test_online_inference_context_controls_dispatch_and_restores_state():
     with encoder.online_inference():
         assert encoder(audio, length)[0] == "online"
     assert encoder(audio, length)[0] == "offline"
+
+
+@pytest.mark.unit
+def test_online_scope_keeps_explicit_missing_rttm_targets_on_offline_path():
+    torch.manual_seed(0)
+    encoder = build_toy_packed_pe_encoder(
+        online_inference_length=10,
+        chunk_left_context=2,
+        chunk_right_context=2,
+    ).eval()
+    encoder._suppress_online_pbar = True
+    mels = torch.randn(2, _MEL_FEATURES, 160)
+    lengths = torch.tensor([160, 103])
+    targets = torch.full((2, 20, _N_SPK), -1.0)
+
+    with torch.no_grad():
+        offline = encoder(mels, lengths, spk_targets=targets)
+        with encoder.online_inference():
+            supplied_targets = encoder(mels, lengths, spk_targets=targets)
+            no_targets = encoder(mels, lengths)
+
+    torch.testing.assert_close(supplied_targets, offline)
+    torch.testing.assert_close(no_targets[1], offline[1])
+    assert not torch.allclose(no_targets[0][0], offline[0][0])
 
 
 @pytest.mark.unit

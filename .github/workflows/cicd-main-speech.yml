@@ -246,6 +246,33 @@ jobs:
           download-artifact-name: easymagpie-codec-contract
           download-artifact-path: .ci_artifacts/easymagpie-codec-contract
 
+  nemotron35-transcribe-vllm-build:
+    if: >-
+      contains(fromJSON(inputs.test_to_run), 'all') ||
+      contains(fromJSON(inputs.test_to_run), 'SPEECHLM_Nemotron35_Transcribe_Inference')
+    uses: ./.github/workflows/_build_container.yml
+    with:
+      image-name: nemo_container_transcribe_vllm
+      dockerfile: tests/functional_tests/Dockerfile.nemotron35_transcribe_vllm
+      runner: ${{ inputs.runner }}
+
+  nemotron35-transcribe-vllm-tests:
+    needs: [nemotron35-transcribe-vllm-build]
+    runs-on: ${{ inputs.runner }}
+    name: SPEECHLM_Nemotron35_Transcribe_Inference
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: main
+        uses: ./.github/actions/test-template
+        with:
+          runner: ${{ runner.name }}
+          script: SPEECHLM_Nemotron35_Transcribe_Inference
+          image: ${{ needs.nemotron35-transcribe-vllm-build.outputs.image }}
+          tests_to_run: ${{ inputs.test_to_run }}
+          test-data-path: ${{ vars.DEFAULT_TEST_DATA_PATH || '/mnt/datadrive/TestData' }}
+          timeout: 15
+
   e2e-tests:
     strategy:
       fail-fast: false
@@ -354,6 +381,9 @@ jobs:
           - runner: ${{ inputs.runner }}
             script: SPEECHLM_Automodel_Compiled_Deps_Smoke
           - runner: ${{ inputs.runner }}
+            script: SPEECHLM_Nemotron35_Transcribe_Training
+            timeout: 15
+          - runner: ${{ inputs.runner }}
             script: L2_TTS_Fast_dev_runs_Magpietts_DecoderContext
           - runner: ${{ inputs.runner }}
             script: L2_TTS_Fast_dev_runs_Magpietts_MultiEncoder
@@ -435,6 +465,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - runner: ${{ inputs.runner }}
+            script: SPEECHLM_Nemotron35_Transcribe_Encoder_Artifact
+            timeout: 20
           # FastConformer and Parakeet checkpoints that share a test, see test_model_support_asr_shared_architectures.py.
           - runner: ${{ inputs.runner }}
             script: L2_Model_Support_ASR_Shared_Architectures_1

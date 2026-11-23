@@ -20,6 +20,7 @@ import pytest
 import soundfile as sf
 import torch
 from lhotse import CutSet, Recording, SupervisionSegment, fastcopy
+from lhotse.dataset import AudioSamples
 from lhotse.testing.dummies import dummy_cut, dummy_recording
 
 import nemo.collections.speechlm2.data.salm_dataset as salm_dataset_module
@@ -358,6 +359,64 @@ def test_salm_dataset_routes_speaker_targets_by_rttm_presence(monkeypatch, rttm_
     )
     assert torch.equal(batch["spk_target_length"], torch.tensor([4]))
     assert len(alignment_calls) == (1 if rttm_filepath is not None else 0)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("pack_sequences", [False, True], ids=["padded", "packed"])
+def test_salm_dataset_distinguishes_missing_rttm_from_explicit_silence(monkeypatch, tmp_path, pack_sequences):
+    monkeypatch.setattr(salm_dataset_module, "AudioSamples", AudioSamples)
+    conversations = []
+    for idx, (duration, text, rttm) in enumerate(
+        [
+            (0.16, "no speaker metadata", None),
+            (0.24, "", ""),
+            (0.32, "<spk:7> hello", "SPEAKER {recording_id} 1 0.000 0.320 <NA> <NA> <spk:7> <NA> <NA>\n"),
+        ]
+    ):
+        cut = dummy_cut(idx, duration=duration, recording=dummy_recording(idx, duration=duration, with_data=True))
+        cut.custom = {}
+        if rttm is not None:
+            rttm_path = tmp_path / f"{idx}.rttm"
+            rttm_path.write_text(rttm.format(recording_id=cut.recording_id), encoding="utf-8")
+            cut.custom["rttm_filepath"] = str(rttm_path)
+        conversation = NeMoMultimodalConversation(
+            id=cut.id,
+            turns=[
+                AudioTurn(role="user", cut=cut, audio_locator_tag="<|audio|>", text=text),
+                TextTurn(role="assistant", value=text),
+            ],
+            token_equivalent_duration=0.01,
+        )
+        conversation.input_ids = torch.tensor([7, 8], dtype=torch.long)
+        conversation.mask = torch.tensor([False, True])
+        conversations.append(conversation)
+
+    dataset = salm_dataset_module.SALMDataset(
+        tokenizer=_Tokenizer(),
+        pack_sequences=pack_sequences,
+        strict_audio_loading=True,
+        multispeaker_cfg={
+            "num_speakers": 8,
+            "sample_rate": 16000,
+            "window_stride": 0.01,
+            "subsampling_factor": 8,
+            "no_rttm_to_ones": True,
+        },
+    )
+    batch = dataset[CutSet(conversations)]
+
+    assert batch["spk_target_length"].tolist() == [2, 3, 4]
+    if pack_sequences:
+        assert batch["spk_target_cu_seqlens"].tolist() == [0, 2, 5, 9]
+        missing, silent, observed = batch["spk_targets"].split([2, 3, 4])
+    else:
+        assert batch["spk_targets"].shape == (3, 4, 8)
+        missing, silent, observed = batch["spk_targets"]
+    expected_observed = torch.zeros(4, 8)
+    expected_observed[:, 7] = 1.0
+    torch.testing.assert_close(missing, torch.full_like(missing, -1.0))
+    torch.testing.assert_close(silent, torch.zeros_like(silent))
+    torch.testing.assert_close(observed, expected_observed)
 
 
 @pytest.mark.unit

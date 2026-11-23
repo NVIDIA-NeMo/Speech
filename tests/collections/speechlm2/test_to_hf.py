@@ -992,6 +992,40 @@ def test_prepare_for_vllm_publication_failure_rolls_back_all_artifacts(tmp_path)
     assert list(output_dir.parent.glob(f".{output_dir.name}-vllm-*")) == []
 
 
+@pytest.mark.unit
+def test_single_rank_automodel_dcp_uses_dtype_preserving_export(tmp_path, monkeypatch, mocker):
+    checkpoint = tmp_path / "step=4.ckpt"
+    checkpoint.mkdir()
+    config = tmp_path / "training.yaml"
+    strategy_config = {"_target_": "nemo.collections.speechlm2.parts.parallel.AutomodelParallelStrategy"}
+    OmegaConf.save({"model": {}, "trainer": {"strategy": strategy_config}}, config)
+    cfg = to_hf.HfExportConfig(
+        class_path="nemo.collections.speechlm2.models.SALMAutomodel",
+        ckpt_path=str(checkpoint),
+        ckpt_config=str(config),
+        output_dir=str(tmp_path / "export"),
+    )
+    monkeypatch.setenv("RANK", "0")
+    mocker.patch.object(to_hf.dist, "is_initialized", return_value=True)
+    mocker.patch.object(to_hf.dist, "get_rank", return_value=0)
+    mocker.patch.object(to_hf.dist, "get_world_size", return_value=1)
+    mocker.patch.object(to_hf.dist, "barrier")
+    mocker.patch.object(to_hf.dist, "destroy_process_group")
+    model = mocker.Mock()
+    mocker.patch.object(to_hf, "import_class_by_path", return_value=mocker.Mock(return_value=model))
+    strategy = mocker.patch.object(to_hf, "setup_distributed_from_config").return_value
+    mocker.patch.object(to_hf, "load_checkpoint")
+    state = {"llm.A_log": torch.tensor([0.1234567])}
+    mocker.patch.object(to_hf, "consolidate_state_dict", return_value=state)
+    save_hf_checkpoint = mocker.patch.object(to_hf, "save_hf_checkpoint")
+    mocker.patch.object(to_hf, "_try_prepare_for_vllm")
+
+    to_hf.main(cfg)
+
+    model.configure_model.assert_called_once_with(distributed_setup=strategy.distributed_setup)
+    save_hf_checkpoint.assert_called_once_with(model, state, cfg)
+
+
 def test_adapt_strategy_collapses_incompatible_hsdp_replicate_axis() -> None:
     original = {
         "dp_size": None,

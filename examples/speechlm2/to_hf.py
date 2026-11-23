@@ -650,12 +650,8 @@ def main(cfg: HfExportConfig) -> None:
     _is_torchrun = "RANK" in os.environ
     if _is_torchrun and dist.is_available() and not dist.is_initialized():
         dist.init_process_group(backend="nccl")
-    is_distributed = (
-        _is_torchrun
-        and Path(cfg.ckpt_path).is_dir()
-        and _uses_automodel_parallel(strategy_cfg)
-        and dist.get_world_size() > 1
-    )
+    # The Automodel DCP exporter preserves protected FP32 tensors on every conversion world size.
+    is_distributed = _is_torchrun and Path(cfg.ckpt_path).is_dir() and _uses_automodel_parallel(strategy_cfg)
 
     if is_distributed:
         strategy = setup_distributed_from_config(strategy_cfg)

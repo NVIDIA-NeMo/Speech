@@ -49,6 +49,7 @@ from nemo.collections.tts.modules.magpietts_modules import (
     add_special_tokens,
 )
 from nemo.collections.tts.modules.nemotron_tts.v2 import AcousticCodesPredictor
+from nemo.collections.tts.modules.nemotron_tts.v2.timestamp_head import IGNORE_INDEX, TimestampHead
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
 from nemo.collections.tts.parts.utils.tts_dataset_utils import tokenize_text_with_phoneme_spans
 from nemo.core.classes import ModelPT
@@ -166,6 +167,7 @@ class StreamingState:
     timestamp_session: Optional[StreamingTimestampSession] = None
     timestamp_turn_counters: Optional[torch.Tensor] = None
     all_aligned_text_predictions: Optional[List[torch.Tensor]] = None
+    all_timestamp_predictions: Optional[List[torch.Tensor]] = None
 
 
 @dataclass
@@ -181,6 +183,8 @@ class StreamingFinalizeOutput:
     timestamps: Optional[List[dict]] = None
     aligned_text_tokens: Optional[torch.Tensor] = None  # (B, T_decoder), cropped to generated audio
     aligned_text_tokens_lens: Optional[torch.Tensor] = None
+    timestamp_classes: Optional[torch.Tensor] = None  # (B, decoder frames), output only
+    timestamp_classes_lens: Optional[torch.Tensor] = None
 
 
 @dataclass
@@ -198,6 +202,8 @@ class InferBatchOutput:
     timestamps: Optional[List[dict]] = None
     predicted_aligned_text_tokens: Optional[torch.Tensor] = None
     predicted_aligned_text_tokens_lens: Optional[torch.Tensor] = None
+    predicted_timestamp_classes: Optional[torch.Tensor] = None
+    predicted_timestamp_classes_lens: Optional[torch.Tensor] = None
 
 
 @dataclass
@@ -593,6 +599,14 @@ class NemotronTTSBase(ModelPT):
             n_layers=cfg.get('acoustic_codes_predictor_n_layers', 1),
         )
         init_aligned_text_head(self, cfg)
+        self.use_timestamp_head = bool(cfg.get('use_timestamp_head', False))
+        self.timestamp_head_config = dict(cfg.get('timestamp_head', {}) or {})
+        if self.use_timestamp_head:
+            self.timestamp_head = TimestampHead(
+                hidden_size=self.decoder.config.hidden_size,
+                projection_size=self.timestamp_head_config.get('projection_size', 128),
+                class_weights=self.timestamp_head_config.get('class_weights'),
+            )
 
     @property
     def codec_sil_codes(self):
@@ -805,6 +819,9 @@ class NemotronTTSBase(ModelPT):
             if state.all_aligned_text_predictions is not None:
                 padding = torch.full((B, T), self.pad_id, dtype=torch.long, device=device)
                 state.all_aligned_text_predictions.extend(padding.unbind(dim=1))
+            if state.all_timestamp_predictions is not None:
+                padding = torch.full((B, T), IGNORE_INDEX, dtype=torch.long, device=device)
+                state.all_timestamp_predictions.extend(padding.unbind(dim=1))
             if self.cfg.get("use_user_speaking_token", False):
                 state.last_audio_codes = torch.full(
                     (B, C * S),
@@ -868,7 +885,7 @@ class NemotronTTSBase(ModelPT):
                     name_with_dot = f"{name}."
                     if key.startswith(name_with_dot):
                         new_state_dict[key[len(name_with_dot) :]] = state_dict[key]
-                if name in {'text_aligner', 'aligned_text_head'} and not new_state_dict:
+                if name in {'text_aligner', 'aligned_text_head', 'timestamp_head'} and not new_state_dict:
                     # Auxiliary modules can be introduced when fine-tuning a base TTS checkpoint.
                     logging.info(f'Source TTS weights have no {name}; keeping its configured initialization')
                     continue
@@ -1838,6 +1855,7 @@ class NemotronTTSBase(ModelPT):
                 gt_audio_embeddings=gt_audio_embeddings,
                 gt_audio_lens=gt_audio_lens_state,
                 all_aligned_text_predictions=[] if getattr(self, 'use_aligned_text_head', False) else None,
+                all_timestamp_predictions=[] if getattr(self, 'use_timestamp_head', False) else None,
             )
             if self.timestamp_config['enabled']:
                 state.timestamp_session = StreamingTimestampSession(
@@ -1965,6 +1983,10 @@ class NemotronTTSBase(ModelPT):
                 if state.all_aligned_text_predictions is not None:
                     state.all_aligned_text_predictions.append(
                         torch.full((B,), self.pad_id, dtype=torch.long, device=device)
+                    )
+                if state.all_timestamp_predictions is not None:
+                    state.all_timestamp_predictions.append(
+                        torch.full((B,), IGNORE_INDEX, dtype=torch.long, device=device)
                     )
 
                 pred_phoneme_tokens = None
@@ -2358,6 +2380,10 @@ class NemotronTTSBase(ModelPT):
             if state.all_aligned_text_predictions is not None:
                 predicted_text = self._predict_aligned_text_tokens(state)
                 state.all_aligned_text_predictions.append(predicted_text.masked_fill(~needs_audio, self.pad_id))
+            if state.all_timestamp_predictions is not None:
+                hidden = state.last_hidden[: state.config.batch_size, -1, :]
+                classes = self.timestamp_head(hidden).argmax(dim=-1)
+                state.all_timestamp_predictions.append(classes.masked_fill(~needs_audio, IGNORE_INDEX))
             audio_codes_next = audio_codes_unstacked
         else:
             self._advance_acoustic_codes_predictor(state)
@@ -2455,6 +2481,9 @@ class NemotronTTSBase(ModelPT):
         device = state.config.device
         state.acoustic_codes_predictor_cache = None
         aligned_text_tokens, aligned_text_tokens_lens = self._finalize_aligned_text_predictions(state)
+        timestamp_classes, timestamp_classes_lens = self._finalize_frame_predictions(
+            state, state.all_timestamp_predictions, IGNORE_INDEX
+        )
 
         # Extract and decode phoneme predictions
         phoneme_tokens_list: List[List[int]] = []
@@ -2491,6 +2520,8 @@ class NemotronTTSBase(ModelPT):
                 timestamps=self.get_timestamps(state, finalize=True),
                 aligned_text_tokens=aligned_text_tokens,
                 aligned_text_tokens_lens=aligned_text_tokens_lens,
+                timestamp_classes=timestamp_classes,
+                timestamp_classes_lens=timestamp_classes_lens,
             )
 
         grad_ctx = torch.inference_mode if use_inference_mode else torch.no_grad
@@ -2526,6 +2557,8 @@ class NemotronTTSBase(ModelPT):
                     timestamps=self.get_timestamps(state, finalize=True),
                     aligned_text_tokens=aligned_text_tokens,
                     aligned_text_tokens_lens=aligned_text_tokens_lens,
+                    timestamp_classes=timestamp_classes,
+                    timestamp_classes_lens=timestamp_classes_lens,
                 )
 
             # Create padded output tensor and slice each item's valid predictions
@@ -2557,6 +2590,8 @@ class NemotronTTSBase(ModelPT):
                 timestamps=self.get_timestamps(state, finalize=True, audio_lengths=audio_len),
                 aligned_text_tokens=aligned_text_tokens,
                 aligned_text_tokens_lens=aligned_text_tokens_lens,
+                timestamp_classes=timestamp_classes,
+                timestamp_classes_lens=timestamp_classes_lens,
             )
 
     def infer_batch(
@@ -2801,6 +2836,8 @@ class NemotronTTSBase(ModelPT):
                 timestamps=finalize_output.timestamps,
                 predicted_aligned_text_tokens=finalize_output.aligned_text_tokens,
                 predicted_aligned_text_tokens_lens=finalize_output.aligned_text_tokens_lens,
+                predicted_timestamp_classes=finalize_output.timestamp_classes,
+                predicted_timestamp_classes_lens=finalize_output.timestamp_classes_lens,
             )
 
     @staticmethod
@@ -3038,7 +3075,12 @@ class NemotronTTSBase(ModelPT):
         self, state: StreamingState
     ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
         """Crop one BPE per decoder step to the retained, unpadded audio interval."""
-        history = state.all_aligned_text_predictions
+        return self._finalize_frame_predictions(state, state.all_aligned_text_predictions, self.pad_id)
+
+    def _finalize_frame_predictions(
+        self, state: StreamingState, history: Optional[List[torch.Tensor]], pad_id: int
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """Crop passive per-step predictions using the generated audio's exact interval."""
         if history is None:
             return None, None
         batch_size, device = state.config.batch_size, state.config.device
@@ -3046,9 +3088,9 @@ class NemotronTTSBase(ModelPT):
         total_frames = sum(prediction.size(-1) for prediction in state.all_predictions)
         total_steps = total_frames // self.frame_stacking_factor
         if len(history) != total_steps:
-            raise ValueError('Aligned-text history must contain one label per audio decoder step')
+            raise ValueError('Frame prediction history must contain one label per audio decoder step')
         if not total_steps:
-            return torch.full((batch_size, 0), self.pad_id, dtype=torch.long, device=device), lengths
+            return torch.full((batch_size, 0), pad_id, dtype=torch.long, device=device), lengths
         tokens = torch.stack(history, dim=1)
         starts = torch.div(
             state.audio_prediction_start_idx.clamp_min(0), self.frame_stacking_factor, rounding_mode='floor'
@@ -3068,4 +3110,4 @@ class NemotronTTSBase(ModelPT):
         positions = torch.arange(int(lengths.max()) if batch_size else 0, device=device).unsqueeze(0)
         indices = (positions + starts.unsqueeze(1)).clamp(max=total_steps - 1)
         result = tokens.gather(1, indices)
-        return result.masked_fill(positions >= lengths.unsqueeze(1), self.pad_id), lengths
+        return result.masked_fill(positions >= lengths.unsqueeze(1), pad_id), lengths

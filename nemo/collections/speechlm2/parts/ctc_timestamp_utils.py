@@ -303,6 +303,7 @@ class MultiSpeakerSOTWordTimestampAligner:
         speaker_logprob_weight: float = 1.0,
         maximum_token_len: float = 1.0,
         max_word_frames: int = 12,
+        refine_word_timestamps: bool = True,
         timestamp_language: Optional[str] = None,
         epsilon: float = 1.0e-6,
         online_inference_length: int = 0,
@@ -323,6 +324,8 @@ class MultiSpeakerSOTWordTimestampAligner:
             speaker_logprob_weight (float): Weight of the Sortformer prior in CTC alignment; defaults to 1.0.
             maximum_token_len (float): Maximum emitted word duration in seconds.
             max_word_frames (int): Word duration and onset-snap cap in encoder frames, scaled for upsampling.
+            refine_word_timestamps (bool): Refine word boundaries using diarization and following-word onsets.
+                False retains the CTC path's word spans, including intervening blank-frame gaps.
             timestamp_language (Optional[str]): Explicit alignment-unit policy: zh/ja characters,
                 th newmm words, or unchanged whitespace words for other languages. None selects
                 per-transcript script detection.
@@ -342,6 +345,9 @@ class MultiSpeakerSOTWordTimestampAligner:
         if isinstance(max_word_frames, bool) or not isinstance(max_word_frames, int) or max_word_frames < 1:
             raise ValueError("max_word_frames must be a positive integer.")
         self.max_word_frames = max_word_frames
+        if not isinstance(refine_word_timestamps, bool):
+            raise ValueError('refine_word_timestamps must be boolean.')
+        self.refine_word_timestamps = refine_word_timestamps
         self.timestamp_language = timestamp_language
         self.tokenizer = tokenizer
         self.blank_id = blank_id
@@ -778,6 +784,7 @@ class MultiSpeakerSOTWordTimestampAligner:
                 "speaker_logprob_weight": speaker_logprob_weight,
                 "maximum_token_len": self.maximum_token_len,
                 "max_word_frames": self._ctc_frames(self.max_word_frames),
+                "refine_word_timestamps": self.refine_word_timestamps,
                 "timestamp_language": self.timestamp_language,
                 "epsilon": self.epsilon,
             },
@@ -789,7 +796,7 @@ class MultiSpeakerSOTWordTimestampAligner:
 
     def align_prepared(self, prepared: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        Align a batch from :meth:`prepare_alignment` with single-pass banded CTC and word refinement.
+        Align a batch from :meth:`prepare_alignment` with single-pass banded CTC and optional word refinement.
         Reads only the batch and this aligner's hyperparameters, never the model, so it can
         run in another process than the one that prepared the batch.
 
@@ -2030,7 +2037,7 @@ def _align_banded_ctc(aligner, prepared):
     Per record, speaker tags are mapped to Sortformer columns by :func:`_one_pass_speaker_mapping`,
     and each stream is searched by :func:`_banded_ctc_search` over frames whose mapped activity is at
     least 0.01, with the log activity as a prior. Streams with no legal path are reported in
-    ``failed_streams``, and word timestamps are refined by :func:`_refine_word_timestamps`.
+    ``failed_streams``. When enabled, :func:`_refine_word_timestamps` refines word boundaries.
 
     Args:
         aligner (MultiSpeakerSOTWordTimestampAligner): Aligner supplying hyperparameters and helpers.
@@ -2139,7 +2146,9 @@ def _align_banded_ctc(aligner, prepared):
         result['alignment_diagnostics']['failed_streams'] = failures
         result['alignment_diagnostics']['one_pass'] = True
         result['alignment_diagnostics']['banded'] = diagnostics
-        results.append(_refine_word_timestamps(result, prepared['config']['max_word_frames']))
+        if prepared['config'].get('refine_word_timestamps', True):
+            result = _refine_word_timestamps(result, prepared['config']['max_word_frames'])
+        results.append(result)
     return results
 
 

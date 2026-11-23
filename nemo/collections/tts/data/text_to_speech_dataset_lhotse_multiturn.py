@@ -14,7 +14,7 @@
 # limitations under the License.
 import random
 import re
-from typing import Dict, List, Union
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 import torch
@@ -136,6 +136,8 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         load_normalized_text_percent: Probability in `[0.0, 1.0]` of loading the normalized transcript when
             available. Defaults to `1.0`. A cut-level `load_normalized_text_percent` tag overrides this
             default for both input and output turns.
+        return_timestamp_supervision: Return each output turn's selected lexical reference,
+            language, and exact start/end seconds before text-channel truncation or phonemization.
     """
 
     def __init__(
@@ -176,6 +178,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         phoneme_turn_dropout_turn_prob: float = 0.0,
         phoneme_turn_max_words_to_drop: int = 2,
         load_normalized_text_percent: float = 1.0,
+        return_timestamp_supervision: bool = False,
     ):
         super().__init__()
         self.sample_rate = sample_rate
@@ -219,6 +222,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         self.phoneme_turn_max_words_to_drop = phoneme_turn_max_words_to_drop
         _validate_probability("load_normalized_text_percent", load_normalized_text_percent)
         self.load_normalized_text_percent = load_normalized_text_percent
+        self.return_timestamp_supervision = return_timestamp_supervision
 
         self.frame_length = (
             self.codec_model_samples_per_frame / codec_model_input_sample_rate
@@ -338,6 +342,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         }
 
     def _collate_text_channels(self, cuts: CutSet, batch_tokenizer_names: list[str]) -> Dict[str, torch.Tensor]:
+        timestamp_turns = [] if getattr(self, 'return_timestamp_supervision', False) else None
         target_text_tokens, target_token_lens = collate_token_channel(
             cuts,
             self.text_tokenizer,
@@ -360,6 +365,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             ignore_phoneme_languages=self.ignore_phoneme_languages,
             apply_partial_phoneme_text=self.dataset_type == 'train',
             load_normalized_text_percent=self.load_normalized_text_percent,
+            timestamp_turns=timestamp_turns,
         )
         source_tokens, source_token_lens = collate_token_channel(
             cuts,
@@ -375,12 +381,15 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             load_normalized_text_percent=self.load_normalized_text_percent,
         )
 
-        return {
+        result = {
             "target_text_tokens": target_text_tokens,
             "target_token_lens": target_token_lens,
             "source_tokens": source_tokens,
             "source_token_lens": source_token_lens,
         }
+        if timestamp_turns is not None:
+            result['timestamp_turns'] = timestamp_turns
+        return result
 
     def _collate_phoneme_tokens(self, cuts: CutSet) -> Dict[str, Union[torch.Tensor, None]]:
         if self.phoneme_tokenizer is not None:
@@ -775,6 +784,8 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         }
 
         self._add_optional_batch_fields(batch_dict, phoneme_data, features)
+        if 'timestamp_turns' in text_data:
+            batch_dict['timestamp_turns'] = text_data['timestamp_turns']
 
         agent_mask, agent_mask_lens = collate_speaker_mask_channel(
             cuts,
@@ -828,12 +839,14 @@ def collate_token_channel(
     ignore_phoneme_languages: list[str] = None,
     apply_partial_phoneme_text: bool = False,
     load_normalized_text_percent: float = 1.0,
+    timestamp_turns: Optional[List[List[dict]]] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Build and collate token channels aligned to the audio frame grid."""
     tokens = []
 
     for i, c in enumerate(cuts):
         tok_name = tokenizer_names[i] if tokenizer_names else "english_phoneme"
+        turn_metadata = [] if timestamp_turns is not None else None
         tokens.append(
             build_token_channel(
                 c,
@@ -857,8 +870,11 @@ def collate_token_channel(
                 ignore_phoneme_languages,
                 apply_partial_phoneme_text,
                 load_normalized_text_percent=load_normalized_text_percent,
+                timestamp_turns=turn_metadata,
             )
         )
+        if timestamp_turns is not None:
+            timestamp_turns.append(turn_metadata)
     token_lens = torch.tensor([len(tt) for tt in tokens])
     return collate_vectors(tokens, padding_value=pad_id), token_lens
 
@@ -913,6 +929,7 @@ def build_token_channel(
     ignore_phoneme_languages: list[str] = None,
     apply_partial_phoneme_text: bool = False,
     load_normalized_text_percent: float = 1.0,
+    timestamp_turns: Optional[List[dict]] = None,
 ) -> torch.Tensor:
 
     load_normalized_text_percent = (cut.custom or {}).get("load_normalized_text_percent", load_normalized_text_percent)
@@ -932,6 +949,10 @@ def build_token_channel(
             )
             text_for_tokens = text
             language = cut.lang if cut.has_custom("lang") else supervision.language
+            if timestamp_turns is not None:
+                timestamp_turns.append(
+                    dict(text=text, start=supervision.start, end=supervision.end, language=language)
+                )
             if (
                 apply_partial_phoneme_text
                 and enable_phoneme_text_input

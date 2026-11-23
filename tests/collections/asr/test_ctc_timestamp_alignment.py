@@ -39,6 +39,30 @@ def test_auto_timestamp_units_without_dataset_language(text, expected):
 
 
 @pytest.mark.unit
+def test_raw_word_spans_preserve_blank_gap_in_cached_alignment():
+    tokenizer = SimpleNamespace(text_to_ids=lambda text: [{'first': 0, 'second': 1}[word] for word in text.split()])
+    logits = torch.full((1, 12, 3), -12.0)
+    logits[:, :, 2] = 0.0
+    logits[0, 2:4, 0] = 12.0
+    logits[0, 9:11, 1] = 12.0
+    aligner = MultiSpeakerSOTWordTimestampAligner(tokenizer=tokenizer, blank_id=2)
+    prepared = aligner.prepare_alignment(logits.log_softmax(-1), None, ['first second'], audio_durations=[1.2])
+    assert prepared['config']['refine_word_timestamps'] is True
+    refined = align_prepared_batch(prepared)[0]['speaker_word_timestamps'][0]
+    raw_prepared = copy.deepcopy(prepared)
+    raw_prepared['config']['refine_word_timestamps'] = False
+    raw_result = align_prepared_batch(raw_prepared)[0]
+    raw = raw_result['speaker_word_timestamps'][0]
+
+    assert raw[0]['end'] == pytest.approx(0.4)
+    assert raw[1]['start'] == pytest.approx(0.9)
+    assert raw[0]['end'] < raw[1]['start']
+    assert refined[0]['end'] == refined[1]['start']
+    assert 'word_timestamp_refinement' not in raw_result
+    assert aligner.align_prepared(raw_prepared) == [raw_result]
+
+
+@pytest.mark.unit
 def test_inference_cleanup_keeps_acoustic_tags():
     text = '<s> <spk:0> <sty:flat> 你好 <ev:laughter> </s>'
     assert (

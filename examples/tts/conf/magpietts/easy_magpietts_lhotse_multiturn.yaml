@@ -15,6 +15,18 @@ model:
   aligned_text_loss_weight: 1.0
   start_aligner_text_head_steps: 10000
 
+  use_timestamp_head: false
+  timestamp_head:
+    projection_size: 128
+    loss_weight: 0.1
+    class_weights: null
+    aligner:
+      snapshot_path: null  # Local NVIDIA-Nemotron-3.5-Transcribe-30B-A4B Hugging Face snapshot.
+      encoder_dtype: checkpoint
+      max_batch_size: 8
+      max_batch_duration: 120.0  # Padded audio seconds per frozen ASR encoder microbatch.
+      measure_timings: false
+
   # Decoder backend selection
   # Options: "huggingface" (default), "nemotron_h"
   decoder_type: "huggingface"

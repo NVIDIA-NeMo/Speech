@@ -556,3 +556,35 @@ def test_filter_duration_bins_reaches_collated_dataloader(tmp_path, enabled):
     assert ids == [_cut_id(i) for i in range(len(expected))]
     assert lengths.tolist() == expected
     assert tokens.shape == (len(expected), max(expected))
+
+
+def test_filter_duration_bins_in_multi_config_goes_into_the_sub_configs(tmp_path):
+    cuts_path = tmp_path / "cuts.jsonl"
+    CutSet([make_cut(i, duration=1.0, num_tokens=num_tokens) for i, num_tokens in enumerate([1, 3])]).to_file(
+        cuts_path
+    )
+    sub_config = {"cuts_path": str(cuts_path), "force_finite": True, "batch_size": 2}
+    config = {
+        "multi_config": True,
+        "seed": 0,
+        "shard_seed": 0,
+        "shuffle": False,
+        "num_workers": 0,
+        "force_finite": True,
+        "filtered": {**sub_config, "filter_duration_bins": [(2.0, 2)]},
+        "unfiltered": sub_config,
+    }
+
+    dataloader = get_lhotse_dataloader_from_config(
+        config, global_rank=0, world_size=1, dataset=_CollatedTokensDataset()
+    )
+    lengths = sorted(length for _, batch_lengths, _ in dataloader for length in batch_lengths.tolist())
+
+    assert lengths == [1, 1, 3]
+    with pytest.raises(ValueError, match="filter_duration_bins.*sub-config"):
+        get_lhotse_dataloader_from_config(
+            {**config, "filter_duration_bins": [(2.0, 2)]},
+            global_rank=0,
+            world_size=1,
+            dataset=_CollatedTokensDataset(),
+        )

@@ -1393,6 +1393,9 @@ or to bound the number of tokens by the duration of a cut without bucketing.
 
     filter_duration_bins: [[5.0, 20], [5.0, 40], [10.0, 35], [10.0, 70]]
 
+With ``multi_config: true`` the option goes into each sub-config it should apply to, next to that sub-config's sampling options;
+at the top level it raises an error.
+
 The value has the format of two-dimensional ``bucket_duration_bins`` for audio,
 so the bins of an existing audio configuration (without ``use_multimodal_sampling``) can be copied as they are,
 together with its ``max_tps`` list if it has one.

@@ -734,6 +734,12 @@ def get_lhotse_dataloader_from_multi_config(
         top_level_config["seed"] = resolve_seed(top_level_config["seed"])
         return OmegaConf.create({k: top_level_config.get(k, defaults[k]) for k in overwriting_opts})
 
+    if top_level_config.get("filter_duration_bins") is not None:
+        raise ValueError(
+            "filter_duration_bins is not shared by the sub-configs of a multi_config setup; "
+            "set it in each sub-config it should apply to."
+        )
+
     shared_opts = gather_shared_opts()
     dataset = configure_dataset_audio_loading(dataset, shared_opts.fault_tolerant_audio_loading)
     fix_random_seed(shared_opts.seed)

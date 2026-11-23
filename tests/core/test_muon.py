@@ -521,8 +521,8 @@ def _run_with_learning_rates(
         optimizer.step()
 
 
-# A tensor learning rate and the device step count fold the step size into the AdamW denominator
-# and scale the orthogonal factor as a separate product, so the updates differ at float32 rounding.
+# A tensor learning rate and the device step count scale the AdamW quotient and the orthogonal factor
+# as a separate product, so the updates differ at float32 rounding.
 CAPTURABLE_TOLERANCE = dict(rtol=1e-5, atol=1e-6)
 
 
@@ -619,6 +619,30 @@ class TestMuonCapturable:
             return param
 
         torch.testing.assert_close(run(torch.tensor(0.0)), run(0.0), **CAPTURABLE_TOLERANCE)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('dtype', [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize('foreach', [False, True])
+    @pytest.mark.parametrize('capturable', [False, True])
+    @pytest.mark.parametrize('tensor_rate', [False, True])
+    def test_small_learning_rate_updates_half_precision_parameters(self, dtype, foreach, capturable, tensor_rate):
+        # the AdamW denominator divided by a small tensor step size (a tensor learning rate or a device step count)
+        # overflows float16, and the update would be exactly zero
+        def run(learning_rate, **options):
+            param = torch.nn.Parameter(torch.zeros(8, dtype=dtype))
+            optimizer = Muon([param], lr=learning_rate, weight_decay=0.0, **options)
+            generator = torch.Generator().manual_seed(7)
+            for _ in range(3):
+                param.grad = (1.0 + torch.rand(8, generator=generator)).to(dtype)
+                optimizer.step()
+            return param.detach().float()
+
+        reference = run(5e-5, foreach=False)
+        assert reference.abs().min() > 1e-6
+        learning_rate = torch.tensor(5e-5) if tensor_rate else 5e-5
+        result = run(learning_rate, foreach=foreach, capturable=capturable)
+        # the absolute part is two units of the float16 subnormal spacing, well below the update itself
+        torch.testing.assert_close(result, reference, rtol=0.02, atol=1.2e-7)
 
     @pytest.mark.unit
     @pytest.mark.parametrize('foreach', [False, True])

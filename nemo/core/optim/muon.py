@@ -493,6 +493,7 @@ def _adamw_update(
     if isinstance(step_size, torch.Tensor):
         # a tensor learning rate or step count scales the quotient, since `value` takes no tensor;
         # dividing the denominator by it would give 0 / 0 at a zero learning rate
+        # and overflow a half-precision denominator at a small one
         param.addcmul_(exp_avg / denom, step_size, value=-1.0)
     else:
         param.addcdiv_(exp_avg, denom, value=-step_size)
@@ -548,21 +549,24 @@ def _adamw_update_foreach(
             torch._foreach_mul_(step_params, 1 - lr * weight_decay)
         denoms = torch._foreach_sqrt(exp_avg_sqs)
         if capturable:
-            # on the device, as torch's capturable Adam: the denominator ends up divided by `-lr / (1 - beta1^t)`;
-            # the two divisions by per-parameter scalars run one kernel per parameter
+            # on the device: the step sizes `-lr / (1 - beta1^t)` and the bias corrections are tensors;
+            # the division and the product by per-parameter scalars run one kernel per parameter
             steps = [states[index]['step'] for index in indices]
             negative_step_sizes = torch._foreach_pow(beta1, steps)
             torch._foreach_sub_(negative_step_sizes, 1)
-            torch._foreach_div_(negative_step_sizes, lr)
             torch._foreach_reciprocal_(negative_step_sizes)
+            torch._foreach_mul_(negative_step_sizes, lr)
             bias_correction2_sqrts = torch._foreach_pow(beta2, steps)
             torch._foreach_sub_(bias_correction2_sqrts, 1)
             torch._foreach_neg_(bias_correction2_sqrts)
             torch._foreach_sqrt_(bias_correction2_sqrts)
             torch._foreach_div_(denoms, bias_correction2_sqrts)
             torch._foreach_add_(denoms, eps)
-            torch._foreach_div_(denoms, negative_step_sizes)
-            torch._foreach_addcdiv_(step_params, exp_avgs, denoms)
+            # the step size scales the quotient, as in the loop: folded into the denominator (torch's capturable Adam)
+            # it overflows a half-precision denominator at a small learning rate, and the update becomes zero
+            updates = torch._foreach_div(exp_avgs, denoms)
+            torch._foreach_mul_(updates, negative_step_sizes)
+            torch._foreach_add_(step_params, updates)
         else:
             bias_correction1 = 1 - beta1**step
             bias_correction2 = 1 - beta2**step
@@ -570,9 +574,11 @@ def _adamw_update_foreach(
             torch._foreach_add_(denoms, eps)
             step_size = lr / bias_correction1
             if isinstance(step_size, torch.Tensor):
-                # a tensor learning rate: the step size folds into the denominator, since `value` takes no tensor
-                torch._foreach_div_(denoms, -step_size)
-                torch._foreach_addcdiv_(step_params, exp_avgs, denoms)
+                # a tensor learning rate scales the quotient, since `value` takes no tensor;
+                # dividing the denominator by it would overflow a half-precision one at a small learning rate
+                updates = torch._foreach_div(exp_avgs, denoms)
+                torch._foreach_mul_(updates, -step_size)
+                torch._foreach_add_(step_params, updates)
             else:
                 torch._foreach_addcdiv_(step_params, exp_avgs, denoms, value=-step_size)
 

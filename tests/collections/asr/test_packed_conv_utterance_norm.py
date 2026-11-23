@@ -14,6 +14,7 @@
 """Instance and group normalization of the Conformer convolution module over sequence-packed input."""
 
 import copy
+import dataclasses
 import functools
 
 import pytest
@@ -191,6 +192,23 @@ class TestPackedConvUtteranceNorm:
             torch.testing.assert_close(gradient, alone_grads[name], msg=name)
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("norm_type", ["instance_norm", "group_norm2"])
+    @pytest.mark.parametrize("gap", [0, KERNEL_SIZE - 1])
+    def test_layout_without_lengths_gives_the_same_result(self, norm_type, gap):
+        """``packed_slot_layout`` carries the lengths and the utterance indices; a layout built without them
+        has them derived from its slots, also where utterances without frames share a slot start."""
+        torch.manual_seed(12)
+        kernel_size = 1 if gap == 0 else KERNEL_SIZE
+        module = ConformerConvolution(d_model=D_MODEL, kernel_size=kernel_size, norm_type=norm_type).double()
+        lengths = torch.tensor([0, 4, 0, 0, 7, 1, 0])
+        packed = pack_encoder_output(_varied(torch.randn(7, 7, D_MODEL, dtype=torch.float64)), lengths)
+        layout = packed_slot_layout(packed, gap=gap)
+        assert torch.equal(layout.lengths, lengths) and layout.sequence_ids.tolist() == [1] * 4 + [4] * 7 + [5]
+        bare = dataclasses.replace(layout, lengths=None, sequence_ids=None)
+        outputs = module.forward_packed(packed.data, layout)
+        torch.testing.assert_close(module.forward_packed(packed.data, bare), outputs)
+
+    @pytest.mark.unit
     @pytest.mark.parametrize("norm_type, lengths", [("instance_norm", [50, 13, 31]), ("group_norm4", [50, 3, 31])])
     @pytest.mark.parametrize("self_attention_model", ["rel_pos", "abs_pos"])
     def test_encoder_matches_every_utterance_alone(self, norm_type, lengths, self_attention_model):
@@ -284,6 +302,29 @@ class TestPackedConvUtteranceNormCuda:
         for outputs, gradients in results[1:]:
             assert torch.equal(outputs, results[0][0])
             assert all(torch.equal(gradient, results[0][1][name]) for name, gradient in gradients.items())
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("norm_type", ["instance_norm", "group_norm2", "layer_norm"])
+    @pytest.mark.parametrize("with_lengths", [True, False])
+    def test_forward_and_backward_do_not_synchronize(self, norm_type, with_lengths):
+        """With a layout built before, the module reads no value back from the device, as with layer norm:
+        the lengths and the utterance indices are those of the layout, or derived from its slots on the device."""
+        torch.manual_seed(13)
+        module = _module(norm_type, d_model=24).cuda()
+        lengths = torch.tensor([16, 0, 7], device="cuda")
+        packed = pack_encoder_output(_varied(torch.randn(3, 16, 24, device="cuda")), lengths)
+        layout = packed_slot_layout(packed, gap=KERNEL_SIZE - 1)
+        if not with_lengths:
+            layout = dataclasses.replace(layout, lengths=None, sequence_ids=None)
+        # a leaf: the backward of the packing itself, a boolean mask, is not what is tested
+        data = packed.data.detach().requires_grad_()
+        mode = torch.cuda.get_sync_debug_mode()
+        torch.cuda.set_sync_debug_mode("error")
+        try:
+            module.forward_packed(data, layout).square().sum().backward()
+        finally:
+            torch.cuda.set_sync_debug_mode(mode)
+        assert data.grad is not None and torch.isfinite(data.grad).all()
 
     @pytest.mark.unit
     @pytest.mark.parametrize("norm_type", ["instance_norm", "group_norm2"])

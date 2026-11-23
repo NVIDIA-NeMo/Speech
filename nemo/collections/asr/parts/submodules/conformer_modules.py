@@ -602,17 +602,21 @@ class ConformerConvolution(nn.Module):
         """
         norm = self.batch_norm
         num_groups = norm.num_groups if isinstance(norm, nn.GroupNorm) else x.shape[1]
-        batch_size = layout.slot_offsets.numel()
-        # utterances without frames can share their slot start with the next utterance,
-        # so a token belongs to the last utterance that starts at or before its slot
-        sequence_ids = torch.bucketize(layout.token_slots, layout.slot_offsets[1:], right=True)
-        lengths = torch.bincount(sequence_ids, minlength=batch_size)
+        # the lengths and utterance indices the layout was built from, the same tensors for every layer;
+        # no step here reads a value back from the device
+        sequence_ids, lengths = layout.sequence_ids, layout.lengths
+        if sequence_ids is None or lengths is None:
+            # a layout built without them: utterances without frames can share their slot start
+            # with the next utterance, so a token belongs to the last utterance that starts at or before its slot
+            sequence_ids = torch.bucketize(layout.token_slots, layout.slot_offsets[1:], right=True)
+            lengths = sequence_ids.new_zeros(layout.slot_offsets.numel())
+            lengths = lengths.index_add_(0, sequence_ids, torch.ones_like(sequence_ids))
         counts = lengths.clamp(min=1) * (x.shape[1] // num_groups)
 
         def utterance_mean(values: torch.Tensor) -> torch.Tensor:
             """(T_total, G, C / G) to the mean over the utterance's frames and the group, per token (T_total, G, 1)."""
             # the tokens of an utterance are consecutive; segment_reduce adds them in a fixed order,
-            # which index_add on CUDA does not, and the lengths are counted here, so they need no check
+            # which index_add on CUDA does not, and the lengths are those of the layout, so they need no check
             sums = torch.segment_reduce(values.sum(dim=2), "sum", lengths=lengths, unsafe=True)
             return _UtteranceValuePerToken.apply(sums / counts.unsqueeze(1), sequence_ids, lengths).unsqueeze(2)
 

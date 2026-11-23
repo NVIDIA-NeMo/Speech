@@ -148,12 +148,17 @@ class PackedSlotLayout:
         slot_lengths: slot count of every utterance, shape ``(B,)``.
         total_slots: sum of ``slot_lengths``.
         token_slots: slot index of every packed token, shape ``(T_total,)``.
+        lengths: valid frames of every utterance, shape ``(B,)``; ``packed_slot_layout`` sets it,
+            a layout built without it leaves its consumers to derive it from the slots.
+        sequence_ids: utterance index of every packed token, shape ``(T_total,)``; set and optional as ``lengths``.
     """
 
     slot_offsets: Tensor
     slot_lengths: Tensor
     total_slots: int
     token_slots: Tensor
+    lengths: Tensor | None = None
+    sequence_ids: Tensor | None = None
 
     def scatter(self, data: Tensor) -> Tensor:
         """Place token-flat data ``(T_total, ...)`` into its slots; every other slot is zero."""
@@ -304,8 +309,9 @@ def packed_slot_layout(packed: PackedEncoderActivations, *, alignment: int = 1, 
     slot_lengths = torch.div(packed.lengths + (gap + alignment - 1), alignment, rounding_mode="floor") * alignment
     slot_offsets = torch.cumsum(slot_lengths, dim=0) - slot_lengths
     total_slots = int(slot_lengths.sum().item())
-    token_slots = slot_offsets[packed_sequence_ids(packed)] + packed_encoder_position_ids(packed)
-    return PackedSlotLayout(slot_offsets, slot_lengths, total_slots, token_slots)
+    sequence_ids = packed_sequence_ids(packed)
+    token_slots = slot_offsets[sequence_ids] + packed_encoder_position_ids(packed)
+    return PackedSlotLayout(slot_offsets, slot_lengths, total_slots, token_slots, packed.lengths, sequence_ids)
 
 
 def split_packed_data(data: Tensor, lengths: Tensor, cu_seqlens: Tensor) -> tuple[Tensor, ...]:

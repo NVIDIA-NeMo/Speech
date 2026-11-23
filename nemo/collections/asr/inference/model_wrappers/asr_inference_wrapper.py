@@ -21,6 +21,7 @@ from typing import Callable
 import torch
 from omegaconf import DictConfig, open_dict
 
+from nemo.collections.asr.data.audio_to_eou_label_lhotse import EOB_STRING, EOU_STRING
 from nemo.collections.asr.inference.utils.constants import SENTENCEPIECE_UNDERSCORE
 from nemo.collections.asr.inference.utils.device_utils import setup_device
 from nemo.collections.asr.inference.utils.pipeline_utils import make_preprocessor_deterministic
@@ -71,9 +72,13 @@ class ASRInferenceWrapper:
         self.asr_model_cfg = self.asr_model._cfg
         self.set_dither_to_zero()
         self.tokenizer = self.asr_model.tokenizer
+        self._check_no_restart_after_tokens()
 
         # post initialization steps that must be implemented in the derived classes
         self.__post_init__()
+
+        # after `__post_init__`, which checks that the model type matches the wrapper
+        self._check_not_end_of_utterance_model()
 
     @staticmethod
     def load_model(model_name: str, map_location: torch.device) -> ASRModel:
@@ -284,3 +289,34 @@ class ASRInferenceWrapper:
             (int) subsampling factor for the model.
         """
         raise NotImplementedError()
+
+    def _check_no_restart_after_tokens(self) -> None:
+        """
+        Raise if the pipeline or model decoding config sets ``decoding.restart_after_tokens``, which the streaming
+        pipelines do not support.
+        """
+        for cfg in (self.decoding_cfg, self.asr_model_cfg.get('decoding', None)):
+            if getattr(cfg, 'restart_after_tokens', None):  # DictConfig or decoding config dataclass
+                raise NotImplementedError(
+                    "`decoding.restart_after_tokens` is not supported by the streaming inference pipelines. "
+                    + _RESTART_AFTER_TOKENS_ALTERNATIVES
+                )
+
+    def _check_not_end_of_utterance_model(self) -> None:
+        """
+        Raise for end-of-utterance models (with ``<EOU>``/``<EOB>`` tokens). They stop emitting tokens after the first
+        ``<EOU>`` unless decoding restarts after it, so the pipelines would silently drop the rest of the audio.
+        """
+        eou_tokens = [token for token in (EOU_STRING, EOB_STRING) if token in self.get_vocabulary()]
+        if eou_tokens:
+            raise NotImplementedError(
+                f"End-of-utterance models (with {', '.join(eou_tokens)} in the vocabulary) are not supported by the "
+                "streaming inference pipelines: they stop emitting tokens after the first end of utterance, so the "
+                "rest of the audio would not be transcribed. " + _RESTART_AFTER_TOKENS_ALTERNATIVES
+            )
+
+
+_RESTART_AFTER_TOKENS_ALTERNATIVES = (
+    "Use `transcribe()` or `speech_to_text_cache_aware_streaming_infer.py` with `decoding.restart_after_tokens` "
+    "instead (see `examples/asr/asr_eou/README.md`)."
+)

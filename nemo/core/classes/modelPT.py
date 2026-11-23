@@ -2188,4 +2188,10 @@ class ModelPT(LightningModule, Model):
                 f"keeping trainer.{attr}={limit} and letting Lightning treat the epoch length as unknown."
             )
             return
+        if batch_size is None:
+            raise ValueError(
+                f"Cannot convert trainer.{attr}={limit} into a number of batches for the sized {stage} dataset "
+                f"({type(dataset).__name__}): its config has no 'batch_size'. Set 'batch_size' in the {stage} "
+                f"dataset config, or set trainer.{attr} to an integer number of batches."
+            )
         setattr(self._trainer, attr, int(limit * math.ceil((num_samples / self.world_size) / batch_size)))

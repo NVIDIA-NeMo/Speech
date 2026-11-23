@@ -94,6 +94,16 @@ def test_unsized_iterable_limit_is_kept(dataset_cls, limit):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("stage", ["train", "val"])
+def test_sized_iterable_without_batch_size_raises_actionable_error(stage):
+    with pytest.raises(ValueError, match=f"limit_{stage}_batches.*no 'batch_size'"):
+        _set_limit(_SizedIterableDataset(100), batch_size=None, stage=stage)
+    # An int limit doesn't need batch_size.
+    trainer = _set_limit(_SizedIterableDataset(100), batch_size=None, stage=stage, **{f"limit_{stage}_batches": 5})
+    assert getattr(trainer, f"limit_{stage}_batches") == 5
+
+
+@pytest.mark.unit
 def test_other_len_errors_propagate():
     with pytest.raises(ValueError, match="broken length"):
         _set_limit(_BrokenLenIterableDataset(), batch_size=4, limit_train_batches=1.0)

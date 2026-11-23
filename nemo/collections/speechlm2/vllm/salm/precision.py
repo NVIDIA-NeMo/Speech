@@ -48,6 +48,7 @@ def _promote_router_precision(gate: nn.Module) -> None:
     # otherwise GateLinear's existing linear path casts inputs to weight.dtype.
     for name in (
         "allow_ll_bf16_gemm",
+        "allow_ll_fp32w_gemm",
         "allow_dsv3_router_gemm",
         "allow_cublas_router_gemm",
         "allow_bf16x3_router_gemm",

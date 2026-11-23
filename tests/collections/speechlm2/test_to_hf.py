@@ -430,8 +430,13 @@ class RemoteNemotronHConfig(PretrainedConfig):
 '''
 
 
-def test_nemotron_remote_code_backbone_export_is_reloadable(tmp_path):
-    """Remote-code Nemotron-H configs must ship their ``auto_map`` module so the export reloads."""
+@pytest.mark.parametrize("trust_remote_code", [True, False])
+def test_nemotron_remote_code_backbone_export_is_reloadable(tmp_path, trust_remote_code):
+    """A Nemotron-H backbone export must reload whether training used the remote or the native config class.
+
+    With ``trust_remote_code=False`` (the SALMAutomodel default) the native Transformers class is used, but it
+    keeps the source ``auto_map``; the export must not advertise remote code it does not ship.
+    """
     from transformers import AutoConfig
 
     src_dir = tmp_path / "src"
@@ -448,24 +453,51 @@ def test_nemotron_remote_code_backbone_export_is_reloadable(tmp_path):
             }
         )
     )
-    config = AutoConfig.from_pretrained(src_dir, trust_remote_code=True)
+    config = AutoConfig.from_pretrained(src_dir, trust_remote_code=trust_remote_code)
     model = SimpleNamespace(llm=SimpleNamespace(config=config))
     output_dir = tmp_path / "out"
 
     to_hf.save_llm_backbone_config(model, output_dir)
 
     backbone_dir = output_dir / "llm_backbone"
-    assert (backbone_dir / "configuration_nemotron_h.py").exists()
     saved = json.loads((backbone_dir / "config.json").read_text())
     assert saved["layers_block_type"] == ["mamba", "attention"]
+    # vLLM prep reloads the exported backbone config with trust_remote_code=True.
     reloaded = AutoConfig.from_pretrained(backbone_dir, trust_remote_code=True)
+    assert type(reloaded).__name__ == type(config).__name__
+    assert type(reloaded).__module__.startswith("transformers_modules.") == trust_remote_code
     assert reloaded.layers_block_type == ["mamba", "attention"]
+    if trust_remote_code:
+        assert (backbone_dir / "configuration_nemotron_h.py").exists()
+    else:
+        # The native class wrote config.json; the source ``auto_map`` would point at code it was not saved with.
+        assert "auto_map" not in saved
 
     # vLLM prep (which also writes the tokenizer) must succeed on this export.
     _seed_output_dir(output_dir)
     with patch("transformers.AutoTokenizer.from_pretrained", return_value=_FakeTokenizer()):
         to_hf.prepare_for_vllm(str(output_dir), {"pretrained_llm": "fake-model", "audio_locator_tag": AUDIO_TOKEN})
     assert (output_dir / "tokenizer_config.json").exists()
+
+
+def test_try_prepare_for_vllm_raises_when_backbone_export_has_no_tokenizer(tmp_path):
+    """A failed prep must not exit cleanly with a bundled backbone config but no tokenizer to load it with."""
+    output_dir = _seed_output_dir(tmp_path)
+    (output_dir / "llm_backbone").mkdir()
+    (output_dir / "llm_backbone" / "config.json").write_text(json.dumps({"model_type": "nemotron_h"}))
+
+    with patch.object(to_hf, "_detect_vllm_architecture", side_effect=ValueError("cannot load backbone config")):
+        with pytest.raises(RuntimeError, match="no tokenizer was written"):
+            to_hf._try_prepare_for_vllm(
+                str(output_dir), {"pretrained_llm": "fake-model", "audio_locator_tag": AUDIO_TOKEN}
+            )
+
+    # Without a bundled backbone config, the HF-only export stays loadable and prep failure is a warning.
+    (output_dir / "llm_backbone" / "config.json").unlink()
+    with patch.object(to_hf, "_detect_vllm_architecture", side_effect=ValueError("cannot load backbone config")):
+        to_hf._try_prepare_for_vllm(
+            str(output_dir), {"pretrained_llm": "fake-model", "audio_locator_tag": AUDIO_TOKEN}
+        )
 
 
 def test_save_hf_checkpoint_accepts_bf16_export_dtype(tmp_path):

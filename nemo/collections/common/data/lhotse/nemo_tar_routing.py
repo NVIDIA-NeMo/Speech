@@ -6,14 +6,16 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import struct
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from multiprocessing import get_context
 from pathlib import Path
 
+import numpy as np
 from lhotse.indexing import read_index
 from lhotse.serialization import decode_json_line
 
@@ -33,6 +35,8 @@ NEMO_TAR_SKIP_ORDINAL = (1 << 32) - 1
 
 _OFFSET_PATTERN = re.compile(r"^(?P<stem>.+)(?P<sub>-sub\d+)(?P<ext>\.\w+)?$")
 _TAR_SHARD_PATTERN = re.compile(r"audio[^/]*_(\d+)[^/]*\.tar$")
+_ROUTE_ORDINAL_SIDECAR_SUFFIX = ".nemo-tar-ordinal"
+_ROUTE_SHARD_SIDECAR_SUFFIX = ".nemo-tar-shard"
 _MANIFEST_BATCH_BYTES = 64 << 20
 _U32 = struct.Struct("<I")
 
@@ -173,6 +177,134 @@ def nemo_tar_shard_map_collection_key(manifest_source_spec, tar_source_spec) -> 
         NEMO_TAR_SHARD_MAP_KIND,
         nemo_tar_shard_map_source_spec(manifest_source_spec, tar_source_spec),
     )
+
+
+def nemo_tar_route_sidecar_paths(manifest_path: str, indexes_root: str | Path | None = None) -> tuple[Path, Path]:
+    """Return the loose ``(ordinal, shard)`` route sidecar paths for a native NeMo manifest.
+
+    The sidecars hold exactly the raw little-endian uint32 arrays that the ``.idxpack`` converter
+    embeds as native-tar routes (one value per manifest row, ``NEMO_TAR_SKIP_ORDINAL`` for ``_skipme``
+    rows): the ordinal sidecar maps a row to its tar member ordinal, and the shard sidecar (written
+    only for one manifest paired with several tars) maps a row to its tar's position. They are placed
+    like ``.idx`` files, e.g. ``manifest_0.json.nemo-tar-ordinal.idx``, and must be local. The
+    ordered tar paths a route was built for are recorded next to it (see
+    :func:`nemo_tar_route_binding_path`), because stored ordinals and tar positions are only
+    meaningful for that tar collection.
+    """
+    from lhotse.indexing import index_file_path
+
+    paths = tuple(
+        index_file_path(f"{manifest_path}{suffix}", indexes_root)
+        for suffix in (_ROUTE_ORDINAL_SIDECAR_SUFFIX, _ROUTE_SHARD_SIDECAR_SUFFIX)
+    )
+    for path in paths:
+        if not isinstance(path, Path):
+            raise ValueError(
+                f"Native NeMo tar route sidecars must be local, got {path!r}. "
+                "Set a local indexes_root for remote manifests."
+            )
+    return paths
+
+
+def nemo_tar_route_binding_path(ordinal_path: Path) -> Path:
+    """Return the JSON file that records the ordered tar paths a route sidecar was built for."""
+    return ordinal_path.with_name(ordinal_path.name + ".tars.json")
+
+
+def check_nemo_tar_route_binding(ordinal_path: Path, tar_paths: Sequence[str]) -> None:
+    """Raise ``ValueError`` unless the route at ``ordinal_path`` was built for exactly ``tar_paths`` (in order)."""
+    binding_path = nemo_tar_route_binding_path(ordinal_path)
+    try:
+        bound = json.loads(binding_path.read_text())["tar_paths"]
+        if not isinstance(bound, list) or any(not isinstance(path, str) for path in bound):
+            raise ValueError("tar_paths must be a list of strings")
+    except (OSError, ValueError, KeyError, TypeError) as ex:
+        raise ValueError(
+            f"Native NeMo tar route {str(ordinal_path)!r} has no valid tar binding ({str(binding_path)!r}). "
+            "Rebuild it with 'python scripts/dataloading/build_indexes.py <input_cfg.yaml>'."
+        ) from ex
+    if bound != list(tar_paths):
+        raise ValueError(
+            f"Native NeMo tar route {str(ordinal_path)!r} was built for tars {bound}, but the dataset now pairs "
+            f"its manifest with {list(tar_paths)}. Stored ordinals and tar positions only apply to the tars "
+            "(and order) they were built for. Rebuild it with 'python scripts/dataloading/build_indexes.py "
+            "<input_cfg.yaml>'."
+        )
+
+
+def nemo_tar_route_is_needed(num_rows: int, tar_member_counts: tuple[int, ...]) -> bool:
+    """Return whether positional row ``i`` -> tar member ``i`` lookup cannot serve a manifest.
+
+    That is the case for one manifest paired with several tars, and for a manifest whose row
+    count differs from its tar's member count (repeated ``-subN`` rows or a filtered manifest).
+    """
+    return len(tar_member_counts) != 1 or num_rows != tar_member_counts[0]
+
+
+def write_nemo_tar_route_sidecars(
+    manifest_path: str,
+    tar_paths: tuple[str, ...],
+    *,
+    indexes_root: str | Path | None = None,
+) -> None:
+    """Build the loose route sidecars for ``manifest_path`` from existing manifest and tar ``.idx`` files.
+
+    Reuses the native-tar route writers of the ``.idxpack`` converter. Rows are matched to tar members
+    by normalized member name (``-subN`` suffixes stripped), and one manifest paired with several tars
+    is routed by each row's ``shard_id``. The ordered ``tar_paths`` are recorded in the route's binding
+    file. The old ordinal sidecar is removed first and the new one is moved into place last, so an
+    interrupted build leaves no route rather than one that disagrees with its binding.
+    """
+    from lhotse.indexing import index_file_path
+
+    ordinal_path, shard_path = nemo_tar_route_sidecar_paths(manifest_path, indexes_root)
+    manifest_index_path = index_file_path(manifest_path, indexes_root)
+    tar_index_paths = tuple(index_file_path(tar_path, indexes_root) for tar_path in tar_paths)
+    ordinal_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_ordinal = Path(f"{ordinal_path}.tmp.{os.getpid()}")
+    tmp_shard = Path(f"{shard_path}.tmp.{os.getpid()}")
+    binding_path = nemo_tar_route_binding_path(ordinal_path)
+    tmp_binding = Path(f"{binding_path}.tmp.{os.getpid()}")
+    try:
+        ordinal_path.unlink(missing_ok=True)
+        if len(tar_paths) == 1:
+            write_nemo_tar_ordinal_map_shard(
+                tmp_ordinal,
+                manifest_path=manifest_path,
+                manifest_index_path=manifest_index_path,
+                tar_path=tar_paths[0],
+                tar_index_path=tar_index_paths[0],
+            )
+            shard_path.unlink(missing_ok=True)
+        else:
+            write_nemo_tar_aggregate_ordinal_maps(
+                tmp_ordinal,
+                tmp_shard,
+                manifest_path=manifest_path,
+                manifest_index_path=manifest_index_path,
+                tar_paths=tar_paths,
+                tar_index_paths=tar_index_paths,
+                tar_sentinel_size_overrides=(None,) * len(tar_paths),
+            )
+            os.replace(tmp_shard, shard_path)
+        tmp_binding.write_text(json.dumps({"tar_paths": list(tar_paths)}))
+        os.replace(tmp_binding, binding_path)
+        os.replace(tmp_ordinal, ordinal_path)
+    finally:
+        tmp_ordinal.unlink(missing_ok=True)
+        tmp_shard.unlink(missing_ok=True)
+        tmp_binding.unlink(missing_ok=True)
+
+
+def load_nemo_tar_route_sidecar(path: str | Path, num_rows: int) -> np.ndarray:
+    """Load one route sidecar and check that it has one entry per manifest row."""
+    route = np.fromfile(path, dtype="<u4")
+    if route.shape[0] != num_rows:
+        raise ValueError(
+            f"Native NeMo tar route sidecar {str(path)!r} has {route.shape[0]} entries, but its manifest has "
+            f"{num_rows} rows. Rebuild it with 'python scripts/dataloading/build_indexes.py <input_cfg.yaml>'."
+        )
+    return route
 
 
 def _load_native_tar_member_indexes(

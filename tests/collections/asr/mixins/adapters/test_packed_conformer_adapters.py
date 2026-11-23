@@ -352,6 +352,27 @@ class TestPackedConformerAdapters:
         assert layer.sequence_packed_adapters_unsupported_reason() is None
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("attention, context", [("rope", [-1, -1]), ("rel_pos_local_attn", [4, 4])])
+    def test_attention_adapter_needs_rel_pos_or_abs_pos_attention(self, attention, context):
+        """The adapter call of the layer knows ``rel_pos`` and ``abs_pos`` attention only and raises otherwise,
+        padded and packed, so the encoder names the adapter instead of running into that; linear adapters run."""
+        torch.manual_seed(14)
+        encoder = _encoder(attention, att_context_size=context)
+        _add_adapter(encoder, "adapter_0", "mha")
+        encoder.double().eval()
+        lengths = torch.tensor([50, 31])
+        features = torch.randn(2, 8, 50, dtype=torch.float64)
+        assert "'adapter_0' runs with rel_pos and abs_pos" in encoder.sequence_packed_unsupported_reason()
+        with pytest.raises(ValueError, match="Unsupported value of self_attention_model"):
+            _padded_forward(encoder, features, lengths)
+        encoder.set_enabled_adapters(enabled=False)
+        _add_adapter(encoder, "linear_0", "linear")
+        encoder.double()
+        assert encoder.supports_sequence_packed_output
+        packed = encoder.forward_sequence_packed(features, lengths).data
+        torch.testing.assert_close(packed, _padded_forward(encoder, features, lengths))
+
+    @pytest.mark.unit
     @pytest.mark.parametrize("kind", ["linear", "relmha"])
     @pytest.mark.parametrize("lengths", [[], [0, 0]])
     def test_batch_without_frames_keeps_gradient_edges(self, kind, lengths):

@@ -388,6 +388,8 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         Linear adapters are pointwise and run on the token-flat states as they are,
         and the Conformer attention adapters attend within the utterance boundaries.
         Without a sequence-packed form: the attention adapters of the Transformer blocks,
+        an attention adapter in a layer whose attention is neither ``rel_pos`` nor ``abs_pos``
+        (``rope``, ``rel_pos_local_attn``), which the padded forward refuses as well,
         and in training mode a residual strategy with an auxiliary L2 loss (``l2_lambda`` above zero),
         which sums over the frames of a padded batch row and averages over the rows;
         it is refused whether or not the adapter's parameters and access configuration let the loss be computed.
@@ -400,6 +402,12 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
             adapter = self.adapter_layer[name]
             if isinstance(adapter, transformer_modules.MultiHeadAttention):
                 return f"The adapter {name!r} ({type(adapter).__name__}) has no sequence-packed form."
+            if isinstance(adapter, MultiHeadAttention) and self.self_attention_model not in ('rel_pos', 'abs_pos'):
+                # forward_single_enabled_adapter_ raises for it, in the padded forward as well
+                return (
+                    f"The attention adapter {name!r} runs with rel_pos and abs_pos attention only, "
+                    f"not with self_attention_model={self.self_attention_model!r}."
+                )
             strategy = adapter.adapter_strategy
             if self.training and isinstance(strategy, ResidualAddAdapterStrategy) and strategy.l2_lambda > 0.0:
                 return (

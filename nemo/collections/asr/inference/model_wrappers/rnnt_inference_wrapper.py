@@ -26,6 +26,8 @@ class RNNTInferenceWrapper(ASRInferenceWrapper):
     Provides a unified interface to work with RNNT/TDT/Hybrid models.
     """
 
+    decoder_type = 'rnnt'
+
     def __post_init__(self) -> None:
         """
         Additional post initialization step

@@ -44,6 +44,9 @@ class ASRInferenceWrapper:
         - get_subsampling_factor: Returns the subsampling factor for the model.
     """
 
+    # decoder used by the derived classes: 'ctc' or 'rnnt' (selects the decoding config of hybrid models)
+    decoder_type: str | None = None
+
     def __init__(
         self,
         model_name: str,
@@ -292,10 +295,12 @@ class ASRInferenceWrapper:
 
     def _check_no_restart_after_tokens(self) -> None:
         """
-        Raise if the pipeline or model decoding config sets ``decoding.restart_after_tokens``, which the streaming
-        pipelines do not support.
+        Raise if the pipeline decoding config or the model decoding config of an RNNT decoder sets
+        ``decoding.restart_after_tokens``, which the streaming pipelines do not support. For hybrid models used with
+        CTC decoding, the model ``decoding`` config belongs to the inactive RNNT decoder and is not checked.
         """
-        for cfg in (self.decoding_cfg, self.asr_model_cfg.get('decoding', None)):
+        model_decoding_cfg = self.asr_model_cfg.get('decoding', None) if self.decoder_type == 'rnnt' else None
+        for cfg in (self.decoding_cfg, model_decoding_cfg):
             if getattr(cfg, 'restart_after_tokens', None):  # DictConfig or decoding config dataclass
                 raise NotImplementedError(
                     "`decoding.restart_after_tokens` is not supported by the streaming inference pipelines. "
@@ -317,6 +322,6 @@ class ASRInferenceWrapper:
 
 
 _RESTART_AFTER_TOKENS_ALTERNATIVES = (
-    "Use `transcribe()` or `speech_to_text_cache_aware_streaming_infer.py` with `decoding.restart_after_tokens` "
-    "instead (see `examples/asr/asr_eou/README.md`)."
+    "Use `transcribe()` with `decoding.restart_after_tokens` or `speech_to_text_cache_aware_streaming_infer.py` "
+    "with `rnnt_decoding.restart_after_tokens` instead (see `examples/asr/asr_eou/README.md`)."
 )

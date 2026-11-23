@@ -36,6 +36,8 @@ VOCABULARY = ["<unk>", "▁a", "b", "c"]
 class _Wrapper(ASRInferenceWrapper):
     """Wrapper with the model-specific setup stubbed out, to exercise the shared construction."""
 
+    decoder_type = 'rnnt'
+
     def __post_init__(self):
         self.post_init_done = True
 
@@ -85,10 +87,27 @@ def test_pipeline_restart_after_tokens_raises(monkeypatch):
 
 
 @pytest.mark.unit
-def test_model_restart_after_tokens_raises(monkeypatch):
+@pytest.mark.parametrize("wrapper_cls", [_Wrapper, RNNTInferenceWrapper, CacheAwareRNNTInferenceWrapper])
+def test_model_restart_after_tokens_raises_for_rnnt(monkeypatch, wrapper_cls):
+    monkeypatch.setattr(wrapper_cls, "__post_init__", lambda self: None)
     model = _fake_model(VOCABULARY, model_decoding_cfg={"restart_after_tokens": ["c"]})
     with pytest.raises(NotImplementedError, match="`decoding.restart_after_tokens` is not supported"):
-        _make_wrapper(monkeypatch, _Wrapper, model, OmegaConf.structured(RNNTDecodingConfig))
+        _make_wrapper(monkeypatch, wrapper_cls, model, OmegaConf.structured(RNNTDecodingConfig))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("wrapper_cls", [CTCInferenceWrapper, CacheAwareCTCInferenceWrapper])
+def test_hybrid_model_rnnt_restart_after_tokens_is_ignored_with_ctc(monkeypatch, wrapper_cls):
+    """The model `decoding` config of a hybrid model belongs to its RNNT decoder, which CTC pipelines do not use."""
+    monkeypatch.setattr(wrapper_cls, "__post_init__", lambda self: None)
+    model = _fake_model(VOCABULARY, model_decoding_cfg={"restart_after_tokens": ["c"]})
+    assert isinstance(_make_wrapper(monkeypatch, wrapper_cls, model, CTCDecodingConfig()), wrapper_cls)
+
+
+@pytest.mark.unit
+def test_error_points_to_the_cli_option_of_the_cache_aware_streaming_script(monkeypatch):
+    with pytest.raises(NotImplementedError, match="streaming_infer.py` with `rnnt_decoding.restart_after_tokens`"):
+        _make_wrapper(monkeypatch, _Wrapper, _fake_model(VOCABULARY + ["<EOU>"]), CTCDecodingConfig())
 
 
 def _fake_model(vocabulary, model_decoding_cfg=None):

@@ -308,8 +308,9 @@ See :ref:`cache-aware streaming conformer` for model architecture details.
    End-of-utterance models with ``<EOU>``/``<EOB>`` tokens (e.g. ``parakeet_realtime_eou_120m-v1``) and
    ``decoding.restart_after_tokens`` are not supported by the streaming pipelines, which raise an error for them.
    Such models stop emitting tokens after the first ``<EOU>`` unless decoding restarts after it. Use ``transcribe()``
-   or ``examples/asr/asr_cache_aware_streaming/speech_to_text_cache_aware_streaming_infer.py`` with
-   ``decoding.restart_after_tokens`` instead (see ``examples/asr/asr_eou/README.md``).
+   with ``decoding.restart_after_tokens`` or
+   ``examples/asr/asr_cache_aware_streaming/speech_to_text_cache_aware_streaming_infer.py`` with
+   ``rnnt_decoding.restart_after_tokens='["<EOU>","<EOB>"]'`` instead (see ``examples/asr/asr_eou/README.md``).
 
 
 Prompt-conditioned Streaming (Multilingual)

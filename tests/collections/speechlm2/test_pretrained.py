@@ -22,6 +22,13 @@ from safetensors.torch import save_file
 
 from nemo.collections.speechlm2.modules.perception import IdentityConnector
 from nemo.collections.speechlm2.parts import pretrained
+from tests.collections.asr.test_parallel_expert_encoder import (
+    _ASR_D_MODEL,
+    _MEL_FEATURES,
+    build_toy_pe_encoder,
+    bundle_config,
+    write_bundle,
+)
 from tests.collections.speechlm2.test_independent_dual_encoder import make_encoder
 
 
@@ -116,6 +123,42 @@ def test_setup_parallel_expert_encoder_maps_shared_chunk_size(chunk_size_seconds
     assert pe_encoder._bundle_config.chunk_size_seconds == chunk_size_seconds
     assert model.perception.preprocessor.featurizer.normalize is None
     assert model.cfg.perception.preprocessor.normalize is None
+
+
+def test_setup_parallel_expert_encoder_mounts_a_bundle_with_the_diarization_backend_override(tmp_path):
+    """The recipe's ``pe_encoder_overrides.diar_packed_rel_pos_attention`` reaches the diarization encoder of a
+    bundle mounted through ``pe_encoder_path``, with the bundle's weights loaded strictly."""
+    source = build_toy_pe_encoder().eval()
+    archive = tmp_path / "pee.nemo"
+    write_bundle(archive, bundle_config(), {f"encoder.{key}": value for key, value in source.state_dict().items()})
+    model = SimpleNamespace(
+        cfg=DictConfig(
+            {
+                "pe_encoder_path": str(archive),
+                "pe_encoder_overrides": {"diar_packed_rel_pos_attention": "flex"},
+                "perception": {
+                    "preprocessor": {"features": _MEL_FEATURES, "normalize": "per_feature"},
+                    "modality_adapter": {"d_model": _ASR_D_MODEL},
+                },
+            }
+        ),
+        perception=SimpleNamespace(
+            encoder=SimpleNamespace(d_model=_ASR_D_MODEL),
+            modality_adapter=object(),
+            proj=torch.nn.Linear(_ASR_D_MODEL, 8),
+            preprocessor=SimpleNamespace(featurizer=SimpleNamespace(normalize="per_feature")),
+        ),
+    )
+
+    pretrained.setup_parallel_expert_encoder(model)
+
+    mounted = model.perception.encoder
+    assert mounted.diarization_model.encoder.packed_rel_pos_attention == "flex"
+    assert mounted.asr_encoder.packed_rel_pos_attention == "triton"
+    assert set(mounted.state_dict()) == set(source.state_dict())
+    for key, value in source.state_dict().items():
+        torch.testing.assert_close(mounted.state_dict()[key], value)
+    assert model.perception.preprocessor.featurizer.normalize is None
 
 
 def test_setup_parallel_expert_encoder_constructs_inline_export_architecture():

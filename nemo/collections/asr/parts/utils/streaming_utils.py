@@ -32,7 +32,7 @@ from nemo.collections.asr.data.audio_to_text_lhotse_prompted import PromptedAudi
 from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
-from nemo.collections.asr.parts.preprocessing.features import normalize_batch
+from nemo.collections.asr.parts.preprocessing.features import ZERO_LEVEL_SPEC_DB_VAL, normalize_batch
 from nemo.collections.asr.parts.preprocessing.segment import get_samples
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.timestamp_utils import get_forced_aligned_timestamps_with_external_model
@@ -399,7 +399,7 @@ class StreamingFeatureBufferer:
 
         self.NORM_CONSTANT = 1e-5
         if hasattr(asr_model.preprocessor, 'log') and asr_model.preprocessor.log:
-            self.ZERO_LEVEL_SPEC_DB_VAL = -16.635  # Log-Melspectrogram value for zero signal
+            self.ZERO_LEVEL_SPEC_DB_VAL = ZERO_LEVEL_SPEC_DB_VAL
         else:
             self.ZERO_LEVEL_SPEC_DB_VAL = 0.0
         self.asr_model = asr_model
@@ -623,7 +623,7 @@ class FeatureFrameBufferer:
           offset: number of symbols to drop for smooth streaming
         '''
         if hasattr(asr_model.preprocessor, 'log') and asr_model.preprocessor.log:
-            self.ZERO_LEVEL_SPEC_DB_VAL = -16.635  # Log-Melspectrogram value for zero signal
+            self.ZERO_LEVEL_SPEC_DB_VAL = ZERO_LEVEL_SPEC_DB_VAL
         else:
             self.ZERO_LEVEL_SPEC_DB_VAL = 0.0
         self.asr_model = asr_model
@@ -1568,7 +1568,7 @@ class CacheAwareStreamingAudioBuffer:
             model: An ASR model.
             online_normalization (bool): whether to perform online normalization per chunk or
             normalize the whole audio before chunking
-            pad_and_drop_preencoded (bool): if true pad first audio chunk and always drop preencoded
+            pad_and_drop_preencoded (bool): if true pad first audio chunk with log-mel silence and always drop preencoded
         '''
         self.model = model
         self.buffer = None
@@ -1646,8 +1646,9 @@ class CacheAwareStreamingAudioBuffer:
                     cache_pre_encode_num_frames = self.streaming_cfg.pre_encode_cache_size[1]
                 else:
                     cache_pre_encode_num_frames = self.streaming_cfg.pre_encode_cache_size[0]
-                cache_pre_encode = torch.zeros(
+                cache_pre_encode = torch.full(
                     (audio_chunk.size(0), self.input_features, cache_pre_encode_num_frames),
+                    ZERO_LEVEL_SPEC_DB_VAL if self.pad_and_drop_preencoded else 0.0,
                     device=audio_chunk.device,
                     dtype=audio_chunk.dtype,
                 )
@@ -1844,8 +1845,9 @@ class CacheAwareStreamingAudioBuffer:
                     cache_pre_encode_num_frames = self.streaming_cfg.pre_encode_cache_size[1]
                 else:
                     cache_pre_encode_num_frames = self.streaming_cfg.pre_encode_cache_size[0]
-                cache_pre_encode = torch.zeros(
+                cache_pre_encode = torch.full(
                     (main_chunk.size(0), self.input_features, cache_pre_encode_num_frames),
+                    ZERO_LEVEL_SPEC_DB_VAL if self.pad_and_drop_preencoded else 0.0,
                     device=main_chunk.device,
                     dtype=main_chunk.dtype,
                 )

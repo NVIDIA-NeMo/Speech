@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import pytest
 import torch
 
+from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 from nemo.collections.asr.parts.packed_sequence import pack_encoder_output
+from nemo.collections.asr.parts.submodules import packed_attention as packed_attention_module
 from nemo.collections.speechlm2.modules.perception import IndependentDualEncoder
 
 
@@ -88,3 +91,50 @@ def test_independent_dual_encoder_rejects_mismatched_frame_rates():
         assert "subsampling_factor" in str(error)
     else:
         raise AssertionError("Expected mismatched subsampling factors to be rejected.")
+
+
+def make_conformer_encoder(dropout_att: float) -> ConformerEncoder:
+    return ConformerEncoder(
+        feat_in=4,
+        n_layers=1,
+        d_model=32,
+        n_heads=2,
+        subsampling="striding",
+        subsampling_factor=2,
+        subsampling_conv_channels=4,
+        self_attention_model="rel_pos",
+        dropout=0.0,
+        dropout_pre_encoder=0.0,
+        dropout_emb=0.0,
+        dropout_att=dropout_att,
+    )
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_independent_dual_encoder_keeps_the_padded_fallback_for_a_branch_without_native_packed_support(monkeypatch):
+    """A ConformerEncoder branch training with attention dropout over rel_pos attention has no native packed form
+    on CUDA without the Triton attention kernel (FlexAttention has no dropout): the dual encoder still constructs
+    in training mode, runs that branch padded and re-packs it, and the step completes forward and backward."""
+    monkeypatch.setattr(packed_attention_module, "TRITON_AVAILABLE", False)
+    torch.manual_seed(7)
+    asr = make_conformer_encoder(dropout_att=0.1)
+    auxiliary = make_encoder(32)
+    dual = IndependentDualEncoder(asr, auxiliary, frame_shift_seconds=0.01, freeze_auxiliary=True).train().cuda()
+    assert not asr.supports_sequence_packed_output
+    native_calls = []
+    native_forward = asr.forward_sequence_packed
+
+    def record_native_call(*args, **kwargs):
+        native_calls.append(1)
+        return native_forward(*args, **kwargs)
+
+    asr.forward_sequence_packed = record_native_call
+    features = torch.randn(2, 4, 17, device="cuda")
+    lengths = torch.tensor([17, 10], dtype=torch.int64, device="cuda")
+    output = dual.forward_sequence_packed(pack_encoder_output(features.transpose(1, 2), lengths), lengths)
+    assert native_calls == [] and output.data.shape == (14, 64) and torch.isfinite(output.data).all()
+    output.data.square().mean().backward()
+    assert any(parameter.grad is not None for parameter in asr.parameters())
+    dual.eval()
+    assert asr.supports_sequence_packed_output

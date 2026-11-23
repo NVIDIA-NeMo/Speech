@@ -29,15 +29,14 @@ from nemo.collections.asr.inference.model_wrappers.cache_aware_rnnt_inference_wr
 from nemo.collections.asr.inference.pipelines.base_pipeline import BasePipeline
 from nemo.collections.asr.inference.streaming.decoders.greedy.greedy_rnnt_decoder import RNNTGreedyDecoder
 from nemo.collections.asr.inference.streaming.endpointing.greedy.greedy_rnnt_endpointing import RNNTGreedyEndpointing
-from nemo.collections.asr.inference.streaming.framing.multi_stream import ContinuousBatchedRequestStreamer
-from nemo.collections.asr.inference.streaming.framing.request import FeatureBuffer, Frame, Request
+from nemo.collections.asr.inference.streaming.framing.multi_stream import ContinuousBatchedFrameStreamer
+from nemo.collections.asr.inference.streaming.framing.request import Frame
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
 from nemo.collections.asr.inference.streaming.state.cache_aware_rnnt_state import (
     CacheAwareRNNTBeamStreamingState,
     CacheAwareRNNTStreamingState,
 )
 from nemo.collections.asr.inference.utils.endpointing_utils import millisecond_to_frames
-from nemo.collections.asr.inference.utils.enums import RequestType
 from nemo.collections.asr.inference.utils.per_stream_biasing import (
     build_multi_biasing_ids_np,
     release_all_biasing_models,
@@ -45,7 +44,6 @@ from nemo.collections.asr.inference.utils.per_stream_biasing import (
 )
 from nemo.collections.asr.inference.utils.pipeline_utils import (
     check_existance_of_required_attributes,
-    drop_trailing_features,
     filter_token_sequences,
     filter_token_triples,
     filter_tokens_from_greedy_output,
@@ -183,16 +181,12 @@ class CacheAwareRNNTPipeline(BasePipeline):
             self.drop_left_context = left_context_size
             self.valid_out_len = self.tokens_per_frame
 
-        # Expected feature buffer length for trimming (safeguard for feature buffer inputs)
-        self.expected_feature_buffer_len = int(self.buffer_size_in_secs / self.window_stride)
-
         self.stop_history_eou_in_milliseconds = cfg.endpointing.stop_history_eou
         self.residue_tokens_at_end = cfg.endpointing.residue_tokens_at_end
         self.word_boundary_tolerance = cfg.streaming.word_boundary_tolerance
         self.return_tail_result = cfg.return_tail_result
         self.length_norm_power = self.asr_model.asr_model_cfg.decoding.beam.length_norm_power
 
-        self.request_type = RequestType.from_str(cfg.streaming.request_type)
         self.flush_size_in_secs = cfg.streaming.get("flush_size_in_secs", 0.0)  # 0.0 disables
 
     def init_greedy_rnnt_decoder(self) -> None:
@@ -285,7 +279,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         """
         if isinstance(buffers, Tensor):
             # already batched by the bufferer: no stacking, and no host round trip for the lengths
-            feature_buffers = drop_trailing_features(buffers, self.expected_feature_buffer_len)
+            feature_buffers = buffers
             feature_buffer_lens = torch.full(
                 (feature_buffers.shape[0],), feature_buffers.shape[2], device=self.device, dtype=torch.long
             )
@@ -295,10 +289,6 @@ class CacheAwareRNNTPipeline(BasePipeline):
             return feature_buffers.to(self.device), feature_buffer_lens
 
         feature_buffers = [f_buffer.unsqueeze_(0) for f_buffer in buffers]
-        # Trim to expected feature buffer length (safeguard for external feature buffer inputs)
-        feature_buffers = [
-            drop_trailing_features(f_buffer, self.expected_feature_buffer_len) for f_buffer in feature_buffers
-        ]
         feature_buffer_lens = torch.tensor([f_buffer.shape[2] for f_buffer in feature_buffers], device=self.device)
         if right_paddings is not None:
             right_paddings = torch.as_tensor(right_paddings, device=feature_buffer_lens.device)
@@ -399,12 +389,12 @@ class CacheAwareRNNTPipeline(BasePipeline):
             state.last_token = state.tokens[-1] if state.tokens else None
             state.last_token_idx = state.timesteps[-1] if state.timesteps else None
 
-    def run_greedy_decoder(self, state: CacheAwareRNNTStreamingState, request: Request, hyp: Hypothesis) -> bool:
+    def run_greedy_decoder(self, state: CacheAwareRNNTStreamingState, request: Frame, hyp: Hypothesis) -> bool:
         """
         Run the greedy RNNT decoder on the hypothesis and update the state
         Args:
             state: (CacheAwareRNNTStreamingState) The state of the stream
-            request: (Request) The current request (frame or feature buffer)
+            request: (Frame) The current request (frame)
             hyp: (Hypothesis) The hypothesis of the current request
         Returns:
             (bool) Whether EOU is detected.
@@ -443,7 +433,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
     def cache_aware_transcribe_step(
         self,
-        requests: list[Request],
+        requests: list[Frame],
         features: list[Tensor] | Tensor,
         right_paddings: list[int] | Tensor,
         ready_state_ids: set,
@@ -452,7 +442,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
     ) -> None:
         """
         Cache Aware Transcribe Step
-        It receives a list of requests (Frame or FeatureBuffer) and features and do the following:
+        It receives a list of requests (Frame) and features and do the following:
 
         1. Preprocess the features by stacking them and computing the lengths
         2. Collecting previous hypotheses for stateful decoding
@@ -463,7 +453,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         7. Perform greedy RNNT decoding to get the best hypothesis and update the states
         8. Update the ready states to indicate that the state is ready for text post-processing
         Args:
-            requests: (list[Request]) List of requests (frames or feature buffers) to transcribe.
+            requests: (list[Frame]) List of requests (frames) to transcribe.
             features: (list[Tensor] | Tensor) Feature buffers, per stream or batched (B, F, T).
             right_paddings: (list[int] | Tensor | None) Right paddings, per stream or batched.
             ready_state_ids: (set) Set of ready state IDs.
@@ -554,31 +544,6 @@ class CacheAwareRNNTPipeline(BasePipeline):
             return {"keep_all_outputs": all(is_last)}
         return {"keep_all_outputs_mask": torch.tensor(is_last, device=self.device, dtype=torch.bool)}
 
-    def transcribe_step_for_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> None:
-        """
-        Transcribes the feature buffers in a streaming manner.
-        After detecting EOU, it updates the state and run text processor.
-        If there are multiple streams, it waits until all states are ready to run text processor.
-        Args:
-            fbuffers: (list[FeatureBuffer]) List of feature buffers to transcribe.
-        """
-        ready_state_ids = set()
-
-        features = [fbuffer.features for fbuffer in fbuffers]
-        right_paddings = [max(0, self.expected_feature_buffer_len - fbuffer.valid_size) for fbuffer in fbuffers]
-        is_last = [fbuffer.is_last for fbuffer in fbuffers]
-
-        if len(fbuffers) > 0:
-            self.cache_aware_transcribe_step(
-                fbuffers, features, right_paddings, ready_state_ids, **self._keep_args(is_last)
-            )
-
-        if len(ready_state_ids) > 0:
-            self.text_processor.process([self.get_state(stream_id) for stream_id in ready_state_ids])
-            ready_state_ids.clear()
-
-        self.update_partial_transcript(fbuffers, self.tokenizer, self.leading_regex_pattern)
-
     def transcribe_step_for_frames(self, frames: list[Frame]) -> None:
         """
         Transcribes the frames in a streaming manner.
@@ -605,22 +570,18 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         self.update_partial_transcript(frames, self.tokenizer, self.leading_regex_pattern)
 
-    def get_request_generator(self) -> ContinuousBatchedRequestStreamer:
+    def get_request_generator(self) -> ContinuousBatchedFrameStreamer:
         """
         Initialize the request generator.
         Returns:
-            (ContinuousBatchedRequestStreamer) Request generator.
+            (ContinuousBatchedFrameStreamer) Request generator.
         """
         # for cache aware streaming we need to process one frame at a time -> n_frames_per_stream=1
-        request_generator = ContinuousBatchedRequestStreamer(
+        request_generator = ContinuousBatchedFrameStreamer(
             n_frames_per_stream=1,
             frame_size_in_secs=self.chunk_size_in_secs,
             sample_rate=self.sample_rate,
             batch_size=self.batch_size,
-            request_type=self.request_type,
-            preprocessor=self.preprocessor,
-            buffer_size_in_secs=self.buffer_size_in_secs,
-            device=self.device,
             pad_last_frame=True,
             flush_size_in_secs=self.flush_size_in_secs,
         )

@@ -98,6 +98,18 @@ def _add_adapter(encoder: ConformerEncoderAdapter, name: str, kind: str, **optio
             torch.nn.init.normal_(parameter, std=0.3)
 
 
+class _OtherInputStrategy(mha_adapters.MHAResidualAddAdapterStrategy):
+    """A strategy of the adapter interface that gives the adapter one attention input other than its value."""
+
+    def __init__(self, other_input: str):
+        super().__init__()
+        self.other_input = other_input
+
+    def forward(self, input: dict, adapter: torch.nn.Module, *, module):
+        other = input[self.other_input].flip(-1)
+        return super().forward(dict(input, **{self.other_input: other}), adapter, module=module)
+
+
 def _valid_frames(padded_bdt: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
     """Rows of a padded (B, D, T) encoder output inside the lengths, in packing order."""
     padded = padded_bdt.transpose(1, 2)
@@ -175,6 +187,28 @@ class TestPackedConformerAdapters:
         padded_grads = _gradients(encoder, features, _weighted_sum(padded))
         for name, gradient in packed_grads.items():
             torch.testing.assert_close(gradient, padded_grads[name], msg=name)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("kind, self_attention_model", [("mha", "abs_pos"), ("relmha", "rel_pos")])
+    @pytest.mark.parametrize("other_input", ["query", "key"])
+    def test_strategy_with_distinct_attention_inputs_is_refused(self, kind, self_attention_model, other_input):
+        """A strategy may give the adapter a query or key other than its value, which the padded attention reads.
+        The packed attention is self-attention over one tensor, so the packed call refuses them
+        where taking the value alone would return another result than the padded forward."""
+        torch.manual_seed(8)
+        encoder = _encoder(self_attention_model).double().train()
+        _add_adapter(encoder, "adapter_0", kind)
+        encoder.double()
+        lengths = torch.tensor([50, 3, 31])
+        features = torch.randn(3, 8, 50, dtype=torch.float64)
+        same_inputs = _padded_forward(encoder, features, lengths)
+        torch.testing.assert_close(encoder.forward_sequence_packed(features, lengths).data, same_inputs)
+        for layer in encoder.layers:
+            layer.adapter_layer["adapter_0"].adapter_strategy = _OtherInputStrategy(other_input)
+        distinct_inputs = _padded_forward(encoder, features, lengths)
+        assert (distinct_inputs - same_inputs).abs().max() > 1e-3
+        with pytest.raises(ValueError, match="query, key and value must be the same tensor"):
+            encoder.forward_sequence_packed(features, lengths)
 
     @pytest.mark.unit
     def test_linear_and_attention_adapters_together(self):

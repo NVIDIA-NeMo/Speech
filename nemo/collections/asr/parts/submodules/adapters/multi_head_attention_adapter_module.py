@@ -120,6 +120,25 @@ class MHAResidualAddAdapterStrategyConfig(adapter_mixin_strategies.ResidualAddAd
     )  # mandatory field
 
 
+def _packed_self_attention_input(query, key, value, mask, cache) -> torch.Tensor:
+    """The one token-flat tensor of an adapter call with ``attention_context``.
+
+    The sequence-packed attention is self-attention over one tensor, as ``forward_packed`` takes it.
+    An adapter strategy can pass distinct ``query``, ``key`` and ``value``, which the padded attention reads;
+    they have no sequence-packed form and are refused, as a mask and a cache are,
+    where taking ``value`` alone would change the result without a notice.
+    """
+    if mask is not None or cache is not None:
+        raise ValueError("mask and cache cannot be combined with attention_context.")
+    if query is not value or key is not value:
+        raise ValueError(
+            "attention_context runs self-attention over one token-flat tensor: query, key and value must be "
+            "the same tensor. Distinct attention inputs have no sequence-packed form; "
+            "run the adapter padded for them."
+        )
+    return value
+
+
 class MultiHeadAttentionAdapter(mha.MultiHeadAttention, adapter_modules.AdapterModuleUtil):
     """Multi-Head Attention layer of Transformer.
 
@@ -197,16 +216,15 @@ class MultiHeadAttentionAdapter(mha.MultiHeadAttention, adapter_modules.AdapterM
             value(torch.Tensor): (batch, time2, size)
             mask (torch.Tensor): (batch, time1, time2)
             cache (torch.Tensor) : (batch, time_cache, size)
-            attention_context: packing metadata of token-flat `value` (T_total, size): `forward_packed` on `value` alone
+            attention_context: packing metadata of token-flat `value` (T_total, size); `query` and `key` must be it too
 
         returns:
             output (torch.Tensor): transformed `value` (batch, time1, d_model) weighted by the query dot key attention
             cache  (torch.Tensor) : (batch, time_cache_next, size)
         """
         if attention_context is not None:
-            if mask is not None or cache is not None:
-                raise ValueError("mask and cache cannot be combined with attention_context, which reads value alone.")
-            return self.forward_packed(value, attention_context, pos_emb=pos_emb)
+            x = _packed_self_attention_input(query, key, value, mask, cache)
+            return self.forward_packed(x, attention_context, pos_emb=pos_emb)
 
         # Need to perform duplicate computations as at this point the tensors have been
         # separated by the adapter forward
@@ -319,15 +337,14 @@ class RelPositionMultiHeadAttentionAdapter(mha.RelPositionMultiHeadAttention, ad
             mask (torch.Tensor): (batch, time1, time2)
             pos_emb (torch.Tensor) : (batch, time1, size)
             cache (torch.Tensor) : (batch, time_cache, size)
-            attention_context: packing metadata of token-flat `value` (T_total, size): `forward_packed` on `value` alone
+            attention_context: packing metadata of token-flat `value` (T_total, size); `query` and `key` must be it too
         Returns:
             output (torch.Tensor): transformed `value` (batch, time1, d_model) weighted by the query dot key attention
             cache_next (torch.Tensor) : (batch, time_cache_next, size)
         """
         if attention_context is not None:
-            if mask is not None or cache is not None:
-                raise ValueError("mask and cache cannot be combined with attention_context, which reads value alone.")
-            return self.forward_packed(value, attention_context, pos_emb=pos_emb)
+            x = _packed_self_attention_input(query, key, value, mask, cache)
+            return self.forward_packed(x, attention_context, pos_emb=pos_emb)
 
         # Need to perform duplicate computations as at this point the tensors have been
         # separated by the adapter forward

@@ -425,6 +425,8 @@ class NemotronTTSBase(ModelPT):
         self.add_language_to_context_text = cfg.get('add_language_to_context_text', False)
         self.ignore_phoneme_languages = cfg.get('ignore_phoneme_languages', [])
 
+        # ModelPT constructs the dataloaders during initialization.
+        self.use_timestamp_head = bool(cfg.get('use_timestamp_head', False))
         super().__init__(cfg=cfg, trainer=trainer)
         self.timestamp_config = resolve_timestamp_config(cfg.get('timestamp_config', None))
 
@@ -599,7 +601,6 @@ class NemotronTTSBase(ModelPT):
             n_layers=cfg.get('acoustic_codes_predictor_n_layers', 1),
         )
         init_aligned_text_head(self, cfg)
-        self.use_timestamp_head = bool(cfg.get('use_timestamp_head', False))
         self.timestamp_head_config = dict(cfg.get('timestamp_head', {}) or {})
         if self.use_timestamp_head:
             self.timestamp_head = TimestampHead(

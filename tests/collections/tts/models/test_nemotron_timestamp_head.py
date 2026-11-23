@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 import torch
 from lhotse import AudioSource, CutSet, MonoCut, Recording, SupervisionSegment
+from omegaconf import OmegaConf
 from torch import nn
 
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import (
@@ -14,6 +15,7 @@ from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import (
     collate_token_channel,
 )
 from nemo.collections.tts.models.nemotron_tts.v2.base import TrainingMode
+from nemo.collections.tts.models.nemotron_tts.v2.model import NemotronTTSModel
 from nemo.collections.tts.modules.nemotron_tts.v2.timestamp_head import (
     END,
     IGNORE_INDEX,
@@ -25,6 +27,71 @@ from tests.collections.tts.modules.nemotron_tts.v2.test_streaming_timestamps_mod
 from tests.collections.tts.modules.nemotron_tts.v2.test_training_model import _inputs, _training_model
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize('multiturn', [False, True])
+@pytest.mark.parametrize('enabled', [False, True])
+def test_timestamp_dataset_requirements_are_available_during_modelpt_initialization(multiturn, enabled):
+    class LoaderConstructed(Exception):
+        pass
+
+    config = OmegaConf.create(
+        dict(
+            codecmodel_path='unused.nemo',
+            text_tokenizers={'bpe': {}},
+            use_multiturn_dataset=multiturn,
+            load_cached_codes_if_available=True,
+            context_duration_min=3.0,
+            context_duration_max=3.0,
+            train_ds=dict(use_lhotse=True, volume_norm=True, dataset={}),
+        )
+    )
+    if enabled:
+        config.use_timestamp_head = True
+    codec = SimpleNamespace(
+        sample_rate=100, output_sample_rate=100, num_codebooks=2, codebook_size=16, samples_per_frame=4
+    )
+    observed = {}
+    original_loader = NemotronTTSModel.get_lhotse_dataloader
+
+    def record_loader(model, *args, **kwargs):
+        observed['enabled'] = getattr(model, 'use_timestamp_head', False)
+        observed['head_constructed'] = hasattr(model, 'timestamp_head')
+        return original_loader(model, *args, **kwargs)
+
+    def restore_codec(*args, **kwargs):
+        return OmegaConf.create({}) if kwargs.get('return_config') else codec
+
+    with (
+        patch(
+            'nemo.collections.tts.models.nemotron_tts.v2.base.AudioCodecModel.restore_from', side_effect=restore_codec
+        ),
+        patch(
+            'nemo.collections.tts.models.nemotron_tts.v2.base.setup_tokenizers',
+            return_value=SimpleNamespace(tokens=list(range(16)), pad=0),
+        ),
+        patch('nemo.collections.tts.models.nemotron_tts.v2.model.MagpieTTSLhotseMultiturnDataset') as mt_dataset,
+        patch('nemo.collections.tts.models.nemotron_tts.v2.model.MagpieTTSLhotseDataset') as st_dataset,
+        patch(
+            'nemo.collections.tts.models.nemotron_tts.v2.model.FallbackDataset', side_effect=lambda dataset: dataset
+        ),
+        patch(
+            'nemo.collections.tts.models.nemotron_tts.v2.model.get_lhotse_dataloader_from_config',
+            side_effect=LoaderConstructed,
+        ) as loader,
+        patch.object(NemotronTTSModel, 'get_lhotse_dataloader', record_loader),
+        pytest.raises(LoaderConstructed),
+    ):
+        NemotronTTSModel(cfg=config)
+
+    assert observed == dict(enabled=enabled, head_constructed=False)
+    loader.assert_called_once()
+    if multiturn:
+        assert mt_dataset.call_args.kwargs['return_timestamp_supervision'] is enabled
+        st_dataset.assert_not_called()
+    else:
+        assert st_dataset.call_args.kwargs['load_cached_codes_if_available'] is (not enabled)
+        mt_dataset.assert_not_called()
 
 
 def test_dataset_turn_boundaries_recover_exact_gt_audio_and_independent_transcripts():

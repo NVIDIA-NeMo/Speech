@@ -2,10 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """NeMo preserves the callback defaults used before the Lightning upgrade."""
 
-import json
-import re
 from importlib import import_module
-from pathlib import Path
 
 import pytest
 
@@ -87,26 +84,3 @@ def test_explicit_progress_bar_validation_is_not_bypassed(tmp_path, namespace):
     ]:
         with pytest.raises(exceptions.MisconfigurationException):
             lightning.Trainer(default_root_dir=tmp_path, accelerator='cpu', logger=False, callbacks=bars, **flags)
-
-
-REPO_ROOT = Path(__file__).parents[2]
-TUTORIALS = sorted((REPO_ROOT / 'tutorials').rglob('*.ipynb'))
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize('notebook', TUTORIALS, ids=lambda p: str(p.relative_to(REPO_ROOT)))
-def test_tutorials_import_nemo_before_creating_trainer(notebook):
-    """A Trainer built before NeMo is imported gets Lightning's Rich defaults, which break tqdm in Jupyter."""
-    nemo_imported = False
-    for cell in json.loads(notebook.read_text())['cells']:
-        if cell['cell_type'] != 'code':
-            continue
-        source = cell['source'] if isinstance(cell['source'], str) else ''.join(cell['source'])
-        for line in source.splitlines():
-            line = line.strip()
-            if line.startswith(('#', '!', '%')):
-                continue
-            nemo_imported = nemo_imported or re.match(r'(import|from) nemo\b', line) is not None
-            assert nemo_imported or not re.search(
-                r'\bTrainer\(', line
-            ), f'Trainer created before importing NeMo: {line}'

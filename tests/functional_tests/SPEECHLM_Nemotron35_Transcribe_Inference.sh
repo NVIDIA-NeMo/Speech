@@ -27,6 +27,13 @@ export COVERAGE_FILE="${NEMOTRON35_COVERAGE_FILE:-/workspace/.coverage}"
 
 # Stage the fixture once so the engine and draft workers do their reads on local disk.
 cp -r "${NEMOTRON35_SERVING_FIXTURE:-/home/TestData/speechlm/nemotron35-transcribe-ci-v1}" "$scratch/fixture"
-cover=(coverage run --parallel-mode --source="$PWD/nemo")
-"${cover[@]}" -m tests.functional_tests.nemotron35_transcribe_inference "$scratch/fixture" "$scratch/tokens.json"
-"${cover[@]}" -m tests.functional_tests.nemotron35_transcribe_inference "$scratch/fixture" "$scratch/tokens.json" --mtp
+export NEMOTRON35_SERVING_DIR="$scratch"
+test_script=tests/functional_tests/nemotron35_transcribe_inference.py
+
+echo "Standard decoding"
+NEMOTRON35_MTP=0 coverage run --parallel-mode --source="$PWD/nemo" \
+    -m pytest --noconftest -v "$test_script" -k "not mtp"
+
+echo "Two-token MTP decoding"
+NEMOTRON35_MTP=1 coverage run --parallel-mode --source="$PWD/nemo" \
+    -m pytest --noconftest -v "$test_script"

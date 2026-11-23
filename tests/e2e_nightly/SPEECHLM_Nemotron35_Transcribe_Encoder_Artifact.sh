@@ -37,4 +37,6 @@ d1e0294eba40bd907d1aa493f296c4bfd78f5b9bc9f81a9b2b396046a5fed2e2  short.wav
 792e52aeb746292451b9cfdccdfd0a754c517c721ea4d15d96cf47b024d9acd9  long.wav
 SHA256
 )
-coverage run --parallel-mode --source="$PWD/nemo" -m tests.e2e_nightly.nemotron35_transcribe_encoder "$scratch"
+export NEMOTRON35_ENCODER_DIR="$scratch"
+coverage run --parallel-mode --source="$PWD/nemo" \
+    -m pytest --noconftest -v tests/e2e_nightly/nemotron35_transcribe_encoder.py "$@"

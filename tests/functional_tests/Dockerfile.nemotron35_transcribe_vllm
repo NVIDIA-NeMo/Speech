@@ -19,6 +19,6 @@ FROM vllm/vllm-openai:v0.33.0
 WORKDIR /workspace
 COPY pyproject.toml LICENSE README.md ./
 COPY nemo/__init__.py nemo/package_info.py ./nemo/
-RUN uv pip install --system --no-cache -e '.[asr,vllm]' coverage
+RUN uv pip install --system --no-cache -e '.[asr,vllm]' coverage pytest
 
 ENTRYPOINT []

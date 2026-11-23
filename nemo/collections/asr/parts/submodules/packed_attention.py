@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Self-attention over sequence-packed activations with explicit per-utterance boundaries."""
+"""Self- and cross-attention over sequence-packed activations with explicit per-sequence boundaries."""
 
 import functools
 import math
@@ -30,8 +30,21 @@ from nemo.collections.asr.parts.packed_sequence import (
     packed_encoder_position_ids,
     packed_sequence_ids,
 )
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
-__all__ = ["PackedAttentionContext", "document_block_mask", "packed_attention", "packed_attention_supports_dropout"]
+if TRITON_AVAILABLE:
+    from nemo.collections.asr.parts.triton.rel_pos_attention import (
+        PACKED_REL_POS_ATTENTION_DTYPES,
+        packed_rel_pos_attention,
+    )
+
+__all__ = [
+    "PackedAttentionContext",
+    "document_block_mask",
+    "packed_attention",
+    "packed_attention_supports_dropout",
+    "packed_cross_attention",
+]
 
 # the sparse block size of FlexAttention; the document block mask is built at this granularity
 BLOCK_SIZE = 128
@@ -41,8 +54,11 @@ BLOCK_SIZE = 128
 # are keyed by the powers of two 64, 128 and 256: any other width falls to a generic configuration
 # whose shared memory exceeds the 101 KB of consumer Blackwell GPUs (torch 2.12, width 44, the FastConformer Small head).
 FLEX_MIN_HEAD_DIM = 16
-# The FlexAttention kernels are compiled statically per shape (a fully dynamic compile cannot trace the computed
-# gather of the relative-position bias; only the bias's token axis is marked dynamic, see _flex_packed_attention).
+# FlexAttention is the relative-position path without Triton
+# (with it, nemo.collections.asr.parts.triton.rel_pos_attention runs; float64 takes the reference path).
+# Its kernels are compiled statically per shape
+# (a fully dynamic compile cannot trace the computed gather of the relative-position bias;
+# only the bias's token axis is marked dynamic, see _flex_packed_attention).
 # The token axis and the relative-position width the kernels see are rounded up to powers of two
 # from these floors, so the kernels of a run are bounded by the logarithms of the two ranges,
 # not by the number of distinct batches, and the recompile limit below leaves room for them.
@@ -56,7 +72,9 @@ RECOMPILE_LIMIT = 64
 class PackedAttentionContext:
     """Packing metadata of one batch, shared by all attention layers of a packed forward.
 
-    The FlexAttention block mask is derived from the utterance boundaries,
+    On CUDA with Triton the relative-position attention runs the kernel of
+    :mod:`nemo.collections.asr.parts.triton.rel_pos_attention` over the utterance boundaries as they are.
+    Without it, or with ``rel_pos_kernel`` off, FlexAttention runs with a block mask derived from the boundaries,
     without evaluating a mask over the dense token grid:
     a key block is complete for a query block when both lie inside the same utterance,
     partial when it intersects an utterance that the query block touches,
@@ -64,9 +82,12 @@ class PackedAttentionContext:
 
     Args:
         packed: the packed activations entering the encoder layers; only their sequence metadata is used.
+        rel_pos_kernel: whether relative-position attention runs the Triton kernel where it can (the default),
+            or FlexAttention on CUDA whatever the dtype, the backend before the kernel,
+            which computes in float32 and has no dropout on the attention weights.
     """
 
-    def __init__(self, packed: PackedEncoderActivations):
+    def __init__(self, packed: PackedEncoderActivations, *, rel_pos_kernel: bool = True):
         self.lengths = packed.lengths
         self.cu_seqlens = packed.cu_seqlens
         self.max_seqlen = packed.max_seqlen
@@ -74,15 +95,20 @@ class PackedAttentionContext:
         self.device = packed.data.device
         self.sequence_ids = packed_sequence_ids(packed)
         self.position_ids = packed_encoder_position_ids(packed)
-        # the shapes the compiled attention kernels see, see TOKEN_PADDING and LENGTH_PADDING
+        # the shapes the compiled FlexAttention kernels see, see TOKEN_PADDING and LENGTH_PADDING
         self.padded_total_tokens = _padded_size(self.total_tokens, TOKEN_PADDING)
         self.padded_max_seqlen = _padded_size(self.max_seqlen, LENGTH_PADDING)
+        # the Triton kernel reads the relative-position table of the longest utterance (at least one row),
+        # FlexAttention one of its rounded length
+        self.rel_pos_kernel = rel_pos_kernel and TRITON_AVAILABLE and self.device.type == "cuda"
+        self.rel_pos_max_seqlen = max(self.max_seqlen, 1) if self.rel_pos_kernel else self.padded_max_seqlen
         self._block_mask = None
         self._bias_rows = None
         self._sequence_slices = None
+        self._seq_lens = None
 
     @classmethod
-    def from_lengths(cls, lengths: Tensor) -> "PackedAttentionContext":
+    def from_lengths(cls, lengths: Tensor, *, rel_pos_kernel: bool = True) -> "PackedAttentionContext":
         """Metadata for token-flat ids or states whose sequences have these lengths, in packing order."""
         lengths = lengths.to(torch.int64)
         total_tokens = int(lengths.sum().item())
@@ -91,7 +117,7 @@ class PackedAttentionContext:
         packed = PackedEncoderActivations.from_validated(
             placeholder, lengths, lengths_to_cu_seqlens(lengths), max_seqlen
         )
-        return cls(packed)
+        return cls(packed, rel_pos_kernel=rel_pos_kernel)
 
     @property
     def sequence_slices(self) -> tuple[tuple[int, int], ...]:
@@ -100,6 +126,18 @@ class PackedAttentionContext:
             offsets = self.cu_seqlens.tolist()
             self._sequence_slices = tuple(zip(offsets[:-1], offsets[1:]))
         return self._sequence_slices
+
+    @property
+    def seq_starts(self) -> Tensor:
+        """First token of every utterance, shape ``(B,)`` int32, for the Triton kernel."""
+        return self.cu_seqlens[:-1]
+
+    @property
+    def seq_lens(self) -> Tensor:
+        """Tokens of every utterance, shape ``(B,)`` int32, for the Triton kernel."""
+        if self._seq_lens is None:
+            self._seq_lens = self.lengths.to(torch.int32)
+        return self._seq_lens
 
     def block_mask(self) -> BlockMask:
         """The document block mask over the padded token axis, built once per batch."""
@@ -193,15 +231,22 @@ def packed_attention(
     v: Tensor,
     context: PackedAttentionContext,
     *,
+    pos_query: Tensor | None = None,
+    pos_emb: Tensor | None = None,
     rel_pos_bias: Tensor | None = None,
     dropout_p: float = 0.0,
     scale: float | None = None,
 ) -> Tensor:
     """Attend within utterances over token-flat queries, keys and values.
 
-    On CUDA, attention without a position bias runs variable-length FlashAttention in half precision when available,
-    and everything else runs FlexAttention with the document block mask of the context.
-    Elsewhere the utterances are attended one at a time with dense attention,
+    On CUDA, attention without a position term runs variable-length FlashAttention in half precision when available,
+    and attention with the Transformer-XL position term given by its factors runs the Triton kernel
+    of :mod:`nemo.collections.asr.parts.triton.rel_pos_attention` (float32, bfloat16 and float16, with dropout)
+    where the context selects it (``context.rel_pos_kernel``);
+    everything else, the materialized ``rel_pos_bias`` included, runs FlexAttention
+    with the document block mask of the context.
+    Elsewhere, and for float64 (FlexAttention's kernels compute in float32 at most),
+    the utterances are attended one at a time with dense attention,
     which is also the reference of the unit tests.
 
     Args:
@@ -209,28 +254,41 @@ def packed_attention(
         k: keys, shape ``(T_total, H, d_k)``.
         v: values, shape ``(T_total, H, d_k)``.
         context: packing metadata of the batch.
-        rel_pos_bias: optional Transformer-XL position bias, shape ``(T_total, H, 2 * max_seqlen - 1)``,
-            whose last axis is indexed by ``max_seqlen - 1 - (query position - key position)``;
-            it is scaled like the content scores and added to them.
-        dropout_p: dropout on the attention weights,
-            supported by the variable-length FlashAttention path and the reference path but not by FlexAttention
+        pos_query: queries with their position bias added, shape ``(T_total, H, d_k)``;
+            with ``pos_emb`` the Transformer-XL position term ``pos_query[i] . pos_emb[c - (i - j)]``
+            of query position ``i`` and key position ``j`` is scaled like the content scores and added to them;
+            both or neither.
+        pos_emb: projected relative position embedding, shape ``(R, H, d_k)`` with odd ``R``,
+            whose row ``c = (R - 1) / 2`` is the relative position zero;
+            it covers at least ``context.rel_pos_max_seqlen - 1`` positions each way.
+        rel_pos_bias: the position term materialized over the relative positions instead of its factors,
+            shape ``(T_total, H, R)`` with odd ``R`` and the row convention of ``pos_emb``
+            (``R = 2 * max_seqlen - 1`` indexes it by ``max_seqlen - 1 - (i - j)``);
+            the form of the FlexAttention and reference paths, which it keeps on.
+        dropout_p: dropout on the attention weights, supported by every path but FlexAttention
             (see ``packed_attention_supports_dropout``).
         scale: score scale, ``1 / sqrt(d_k)`` by default.
 
     Returns:
         Context vectors of shape ``(T_total, H, d_k)``.
     """
+    if (pos_query is None) != (pos_emb is None):
+        raise ValueError("pos_query and pos_emb come together: give both or neither.")
+    if rel_pos_bias is not None and pos_query is not None:
+        raise ValueError("The position term comes either as rel_pos_bias or as pos_query and pos_emb, not both.")
     if scale is None:
         scale = 1.0 / math.sqrt(q.shape[-1])
     if context.total_tokens == 0:
         # keep every projection in the autograd graph when a rank holds no valid token,
         # so distributed gradient reductions see the same parameters on all ranks
         anchor = q.sum() + k.sum()
+        if pos_query is not None:
+            anchor = anchor + pos_query.sum() + pos_emb.sum()
         if rel_pos_bias is not None:
             anchor = anchor + rel_pos_bias.sum()
         return v + 0.0 * anchor.to(v.dtype)
-    if q.is_cuda:
-        if rel_pos_bias is None:
+    if q.is_cuda and q.dtype != torch.float64:
+        if pos_query is None and rel_pos_bias is None:
             flash = _flash_attention_varlen(q)
             if flash is not None:
                 q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
@@ -246,33 +304,150 @@ def packed_attention(
                     softmax_scale=scale,
                     causal=False,
                 )
+        elif pos_query is not None and context.rel_pos_kernel and q.dtype in PACKED_REL_POS_ATTENTION_DTYPES:
+            # the context's lengths and max_seqlen agree by construction: no device read for the check
+            return packed_rel_pos_attention(
+                q,
+                k,
+                v,
+                pos_query,
+                pos_emb,
+                context.seq_starts,
+                context.seq_lens,
+                context.max_seqlen,
+                dropout_p=dropout_p,
+                scale=scale,
+                check_lengths=False,
+            )
         if dropout_p > 0.0:
             raise NotImplementedError(
-                "FlexAttention has no dropout on the attention weights: "
-                "set dropout_att: 0 on the encoder for rel_pos attention over packed sequences; "
-                "abs_pos and rope attention keep their dropout through variable-length FlashAttention, "
-                "which runs in float16 or bfloat16 (autocast) only."
+                "FlexAttention has no dropout on the attention weights. "
+                "rel_pos attention keeps its dropout through its Triton kernel "
+                "(Triton installed, float32, bfloat16 or float16), "
+                "abs_pos and rope attention through variable-length FlashAttention in float16 or bfloat16 (autocast); "
+                "otherwise set dropout_att: 0 on the encoder for packed sequences."
             )
-        return _flex_packed_attention(q, k, v, context, rel_pos_bias=rel_pos_bias, scale=scale)
-    return _reference_packed_attention(q, k, v, context, rel_pos_bias=rel_pos_bias, dropout_p=dropout_p, scale=scale)
+        return _flex_packed_attention(
+            q, k, v, context, rel_pos_bias=_materialized(pos_query, pos_emb, rel_pos_bias), scale=scale
+        )
+    return _reference_packed_attention(
+        q,
+        k,
+        v,
+        context,
+        rel_pos_bias=_materialized(pos_query, pos_emb, rel_pos_bias),
+        dropout_p=dropout_p,
+        scale=scale,
+    )
 
 
-def packed_attention_supports_dropout(device: torch.device, dtype: torch.dtype, head_dim: int) -> bool:
-    """Whether ``packed_attention`` without a position bias applies dropout on this device, dtype and head width.
+def packed_attention_supports_dropout(
+    device: torch.device, dtype: torch.dtype, head_dim: int, *, rel_pos: bool = False, rel_pos_kernel: bool = True
+) -> bool:
+    """Whether ``packed_attention`` applies dropout on this device, dtype and head width: the dispatch rule.
 
-    Off CUDA it always does (the dense reference path); on CUDA only where variable-length FlashAttention runs:
-    float16 or bfloat16, a head width that is a multiple of 8 up to 256, compute capability 8 or newer,
-    since FlexAttention has no dropout.
-    Attention with a position bias (``rel_pos``) runs FlexAttention on CUDA whatever the dtype.
+    Off CUDA, and on CUDA in float64, it always does (the dense reference path).
+    On CUDA without a position term, only where variable-length FlashAttention runs:
+    float16 or bfloat16, a head width that is a multiple of 8 up to 256, compute capability 8 or newer.
+    With the Transformer-XL position term (``rel_pos``), only where its Triton kernel runs:
+    selected (``rel_pos_kernel``, the switch of the ``PackedAttentionContext``), Triton installed,
+    in float32, bfloat16 or float16.
+    FlexAttention, the path otherwise, has no dropout.
     """
-    if device.type != 'cuda':
+    if device.type != 'cuda' or dtype == torch.float64:
         return True
+    if rel_pos:
+        return rel_pos_kernel and TRITON_AVAILABLE and dtype in PACKED_REL_POS_ATTENTION_DTYPES
     if dtype not in (torch.float16, torch.bfloat16) or head_dim > 256 or head_dim % 8 != 0:
         return False
     # a function-level import: the modules package initializes the encoders, which import this module
     from nemo.collections.asr.modules.transformer_encoder_utils import _get_flash_attention_varlen_for_device
 
     return _get_flash_attention_varlen_for_device(device) is not None
+
+
+def packed_cross_attention(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    query_context: PackedAttentionContext,
+    key_context: PackedAttentionContext,
+    *,
+    causal: bool = False,
+    dropout_p: float = 0.0,
+    scale: float | None = None,
+) -> Tensor:
+    """Attend from token-flat queries to the token-flat keys of the same sequence, without a position bias.
+
+    On CUDA this runs variable-length FlashAttention and raises when that does not apply
+    (float32, a head width above 256 or not divisible by 8, a GPU before Ampere):
+    the dense attention below would be several times slower than the padded attention.
+    On the CPU the sequences are attended one at a time with dense attention,
+    which is also the reference of the unit tests.
+
+    Args:
+        q: queries, shape ``(Q_total, H, d_k)``.
+        k: keys, shape ``(K_total, H, d_k)``, packed in the same sequence order as the queries.
+        v: values, shape ``(K_total, H, d_k)``.
+        query_context: packing metadata of the queries.
+        key_context: packing metadata of the keys; the same object as ``query_context`` in self-attention.
+        causal: let every query see only the keys at its position or before; needs equal query and key lengths.
+        dropout_p: dropout on the attention weights, in ``[0, 1)``.
+        scale: positive score scale, ``1 / sqrt(d_k)`` by default.
+
+    Returns:
+        Context vectors of shape ``(Q_total, H, d_k)``.
+
+    Raises:
+        ValueError: for inputs that do not match their contexts and for scalars outside their ranges,
+            checked before the dispatch so that every backend rejects the same calls.
+        NotImplementedError: on CUDA when variable-length FlashAttention does not apply.
+    """
+    if scale is None:
+        scale = 1.0 / math.sqrt(q.shape[-1])
+    if not 0.0 <= dropout_p < 1.0:
+        raise ValueError(f"dropout_p must be in [0, 1), got {dropout_p}.")
+    if not (math.isfinite(scale) and scale > 0.0):
+        raise ValueError(f"scale must be positive, got {scale}.")
+    if query_context.lengths.numel() != key_context.lengths.numel():
+        raise ValueError("query_context and key_context must describe the same number of sequences.")
+    if q.shape[0] != query_context.total_tokens:
+        raise ValueError(f"q has {q.shape[0]} rows, query_context describes {query_context.total_tokens} tokens.")
+    if k.shape[0] != key_context.total_tokens or v.shape[0] != key_context.total_tokens:
+        raise ValueError(
+            f"k and v have {k.shape[0]} and {v.shape[0]} rows, key_context describes {key_context.total_tokens} tokens."
+        )
+    if causal and query_context is not key_context and not torch.equal(query_context.lengths, key_context.lengths):
+        raise ValueError("causal packed attention needs equal query and key lengths per sequence.")
+    if query_context.total_tokens == 0 or key_context.total_tokens == 0:
+        # empty-slice sums keep the gradient edges to q, k and v without summing the inputs,
+        # which overflows in float16 and turns the zero anchor into NaN
+        anchor = q[:0].sum() + k[:0].sum() + v[:0].sum()
+        return q.new_zeros(q.shape) + anchor.to(q.dtype)
+    if q.is_cuda:
+        flash = _flash_attention_varlen(q)
+        if flash is None:
+            raise NotImplementedError(
+                "packed cross attention on CUDA runs variable-length FlashAttention only, which needs float16 or "
+                "bfloat16 (train under autocast), a head width of at most 256 and divisible by 8, and a GPU of "
+                f"compute capability 8.0 or newer; got {q.dtype} with head width {q.shape[-1]} on "
+                f"{torch.cuda.get_device_name(q.device)}."
+            )
+        return flash(
+            q.contiguous(),
+            k.contiguous(),
+            v.contiguous(),
+            query_context.cu_seqlens,
+            key_context.cu_seqlens,
+            query_context.max_seqlen,
+            key_context.max_seqlen,
+            dropout_p=dropout_p,
+            softmax_scale=scale,
+            causal=causal,
+        )
+    return _reference_packed_cross_attention(
+        q, k, v, query_context, key_context, causal=causal, dropout_p=dropout_p, scale=scale
+    )
 
 
 def _padded_size(value: int, floor: int) -> int:
@@ -317,8 +492,21 @@ def _flash_attention_varlen(q: Tensor) -> Callable | None:
     return _select_flash_attention_varlen(q, static_eligible=head_dim <= 256 and head_dim % 8 == 0)
 
 
+def _materialized(pos_query: Tensor | None, pos_emb: Tensor | None, rel_pos_bias: Tensor | None) -> Tensor | None:
+    """The unscaled position term over all relative positions, shape ``(T_total, H, R)``, from either form."""
+    if pos_query is None:
+        return rel_pos_bias
+    return torch.einsum("thd,rhd->thr", pos_query, pos_emb)
+
+
 def _flex_packed_attention(
-    q: Tensor, k: Tensor, v: Tensor, context: PackedAttentionContext, *, rel_pos_bias: Tensor | None, scale: float
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    context: PackedAttentionContext,
+    *,
+    rel_pos_bias: Tensor | None,
+    scale: float,
 ) -> Tensor:
     total_tokens = context.total_tokens
     padded_total = context.padded_total_tokens
@@ -371,7 +559,7 @@ def _reference_packed_attention(
     dropout_p: float,
     scale: float,
 ) -> Tensor:
-    """Dense attention one utterance at a time, with the same bias convention as the kernels."""
+    """Dense attention one utterance at a time, with the same position-term convention as the kernels."""
     outputs = []
     center = (rel_pos_bias.shape[-1] - 1) // 2 if rel_pos_bias is not None else 0
     for start, end in context.sequence_slices:
@@ -388,6 +576,43 @@ def _reference_packed_attention(
             # advanced indices around the head slice move the heads to the last axis
             bias = rel_pos_bias[start:end][rows, :, center - rows + cols]
             scores = scores + bias.permute(2, 0, 1) * scale
+        weights = torch.softmax(scores, dim=-1)
+        if dropout_p > 0.0:
+            weights = torch.nn.functional.dropout(weights, p=dropout_p, training=True)
+        outputs.append(torch.matmul(weights, vi).transpose(0, 1))
+    return torch.cat(outputs, dim=0)
+
+
+def _reference_packed_cross_attention(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    query_context: PackedAttentionContext,
+    key_context: PackedAttentionContext,
+    *,
+    causal: bool,
+    dropout_p: float,
+    scale: float,
+) -> Tensor:
+    """Dense attention one sequence at a time from its queries to its keys."""
+    outputs = []
+    for (q_start, q_end), (k_start, k_end) in zip(query_context.sequence_slices, key_context.sequence_slices):
+        if q_end == q_start:
+            continue
+        if k_end == k_start:
+            # a zero context that keeps the gradient edges to q, k and v, like the empty-batch case
+            anchor = q[:0].sum() + k[:0].sum() + v[:0].sum()
+            outputs.append(q.new_zeros((q_end - q_start,) + tuple(q.shape[1:])) + anchor)
+            continue
+        qi = q[q_start:q_end].transpose(0, 1)
+        ki = k[k_start:k_end].transpose(0, 1)
+        vi = v[k_start:k_end].transpose(0, 1)
+        # scaled before the product like the padded attention, so that half-precision scores stay finite
+        root = math.sqrt(scale)
+        scores = torch.matmul(qi * root, (ki * root).transpose(-2, -1))
+        if causal:
+            visible = torch.ones(q_end - q_start, k_end - k_start, dtype=torch.bool, device=q.device).tril()
+            scores = scores.masked_fill(~visible, float("-inf"))
         weights = torch.softmax(scores, dim=-1)
         if dropout_p > 0.0:
             weights = torch.nn.functional.dropout(weights, p=dropout_p, training=True)

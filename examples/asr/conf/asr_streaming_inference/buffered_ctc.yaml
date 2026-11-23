@@ -76,7 +76,6 @@ streaming:
   right_padding_size: 1.6                     # Right padding duration in seconds
   chunk_size: 4.8                             # Audio chunk size in seconds
   word_boundary_tolerance: 4                  # Tolerance for word boundaries
-  request_type: feature_buffer                # Type of request: frame or feature_buffer
   padding_mode: right                         # Padding mode: left or right. How to pad frames to match the required buffer length
 
 

@@ -1017,8 +1017,10 @@ class ParallelExpertEncoder(nn.Module):
     ) -> PackedEncoderActivations:
         """
         Run an encoder token-flat, optionally splitting after feature stacking.
-        Encoders without ``forward_sequence_packed`` fall back to a padded forward and are
-        re-packed. When a chunk size is set and an utterance exceeds it, feature stacking runs
+        Encoders without ``forward_sequence_packed``, or whose ``supports_sequence_packed_output``
+        denies it for their configuration (a ``ConformerEncoder`` training with attention dropout
+        over ``rel_pos`` attention, for one), fall back to a padded forward and are re-packed.
+        When a chunk size is set and an utterance exceeds it, feature stacking runs
         once over each full utterance, and the encoder layers then see each chunk as an
         independent sequence. Chunking requires ``subsampling='feature_stacking'``.
 
@@ -1032,9 +1034,14 @@ class ParallelExpertEncoder(nn.Module):
         """
         max_tokens = self._chunk_size_tokens(chunk_size_seconds)
         packed_forward = getattr(encoder, "forward_sequence_packed", None)
-        if not callable(packed_forward):
+        if not callable(packed_forward) or not getattr(encoder, "supports_sequence_packed_output", True):
             if max_tokens is not None and features.max_seqlen > max_tokens:
-                raise TypeError(f"{type(encoder).__name__} does not support packed independent chunking.")
+                reason = getattr(encoder, "sequence_packed_unsupported_reason", None)
+                reason = reason() if callable(reason) else None
+                raise TypeError(
+                    f"{type(encoder).__name__} does not support packed independent chunking"
+                    + (f" in this configuration: {reason}" if reason else ".")
+                )
             padded = unpack_encoder_output(features, total_length=features.padded_length).transpose(1, 2)
             encoded, encoded_lengths = encoder(audio_signal=padded, length=features.lengths)
             return pack_encoder_output(encoded.transpose(1, 2), encoded_lengths)

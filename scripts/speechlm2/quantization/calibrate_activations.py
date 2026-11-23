@@ -32,7 +32,7 @@ is the input of ``quantize_encoder_mtp_fp8.py``. Needs vLLM 0.33 and the SpeechL
 NVIDIA-NeMo/Speech#16341.
 
 Example (inside the vLLM image with NeMo on PYTHONPATH):
-    VLLM_PLUGINS=nemo_speechlm VLLM_WORKER_MULTIPROC_METHOD=spawn python calibrate_activations.py \\
+    VLLM_PLUGINS=nemo_speechlm python calibrate_activations.py \\
         --checkpoint /models/ckpt-nvfp4-bf16heads --manifest calib.jsonl --kv-cache-dtype fp8 --output ranges.json
 """
 

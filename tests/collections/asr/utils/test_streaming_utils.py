@@ -18,6 +18,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from nemo.collections.asr.models import EncDecCTCModel
+from nemo.collections.asr.parts.preprocessing.features import ZERO_LEVEL_SPEC_DB_VAL
 from nemo.collections.asr.parts.utils import streaming_utils
 from nemo.collections.asr.parts.utils.streaming_utils import CacheAwareStreamingAudioBuffer
 
@@ -45,6 +47,49 @@ def _make_streaming_buffer(stream_lengths, pre_encode_cache_size=3):
         pre_encode_cache_size=pre_encode_cache_size,
     )
     return streaming_buffer, features
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("right_context_size", [None, 8])
+@pytest.mark.parametrize("pad_and_drop_preencoded", [False, True])
+def test_first_chunk_silence_padding(cache_aware_model_cfg, right_context_size, pad_and_drop_preencoded):
+    cache_aware_model_cfg.encoder.att_context_size = [16, 1]
+    model = EncDecCTCModel(cfg=cache_aware_model_cfg).cpu()
+    streaming_buffer = CacheAwareStreamingAudioBuffer(model, pad_and_drop_preencoded=pad_and_drop_preencoded)
+    for stream_idx, length in enumerate((40, 31)):
+        features = torch.arange(1, length + 1, dtype=torch.float32) + 100 * stream_idx
+        streaming_buffer.append_processed_signal(features.expand(1, cache_aware_model_cfg.encoder.feat_in, -1))
+    features, input_lengths = streaming_buffer.get_all_audios()
+    streaming_cfg = model.encoder.streaming_cfg
+    chunks = (
+        list(streaming_buffer)
+        if right_context_size is None
+        else list(streaming_buffer.iter_with_right_context(right_context_size))
+    )
+
+    first = chunks[0]
+    audio, lengths = first[:2]
+    first_chunk_index = 1 if pad_and_drop_preencoded else 0
+    padding = streaming_cfg.pre_encode_cache_size[first_chunk_index]
+    chunk_size = streaming_cfg.chunk_size[first_chunk_index]
+    assert audio.dtype == features.dtype and audio.device == features.device
+    assert lengths.tolist() == [padding + chunk_size] * features.size(0)
+    torch.testing.assert_close(
+        audio[:, :, :padding], features.new_full((*features.shape[:2], padding), ZERO_LEVEL_SPEC_DB_VAL)
+    )
+    torch.testing.assert_close(audio[:, :, padding:], features[:, :, :chunk_size])
+    if right_context_size is not None:
+        torch.testing.assert_close(first[2][:, :, : audio.shape[-1]], audio)
+
+    second_audio, second_lengths = chunks[1][:2]
+    shift_size = streaming_cfg.shift_size[first_chunk_index]
+    cache_size = streaming_cfg.pre_encode_cache_size[1]
+    chunk_size = streaming_cfg.chunk_size[1]
+    torch.testing.assert_close(second_audio, features[:, :, shift_size - cache_size : shift_size + chunk_size])
+    assert (
+        second_lengths.tolist()
+        == (input_lengths - shift_size + cache_size).clamp(max=cache_size + chunk_size).tolist()
+    )
 
 
 @pytest.mark.unit

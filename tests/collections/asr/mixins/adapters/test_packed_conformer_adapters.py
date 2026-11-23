@@ -169,6 +169,26 @@ class TestPackedConformerAdapters:
             torch.testing.assert_close(gradient, padded_grads[name], msg=name)
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("kind, attention", [("mha", "abs_pos"), ("mha", "rel_pos"), ("relmha", "rel_pos")])
+    @pytest.mark.parametrize("style, size", [("regular", [3, 1]), ("chunked_limited", [4, 1])])
+    def test_attention_adapter_with_a_limited_attention_context(self, kind, attention, style, size):
+        """The adapter attends under the attention context of the layer, as it does under the padded mask."""
+        torch.manual_seed(11)
+        encoder = _encoder(attention, att_context_style=style, att_context_size=size)
+        _add_adapter(encoder, "adapter_0", kind)
+        encoder.double().train()
+        assert encoder.supports_sequence_packed_output
+        lengths = torch.tensor([50, 3, 31])
+        features = torch.randn(3, 8, 50, dtype=torch.float64, requires_grad=True)
+        packed = encoder.forward_sequence_packed(features, lengths).data
+        padded = _padded_forward(encoder, features, lengths)
+        torch.testing.assert_close(packed, padded)
+        packed_grads = _gradients(encoder, features, _weighted_sum(packed))
+        padded_grads = _gradients(encoder, features, _weighted_sum(padded))
+        for name, gradient in packed_grads.items():
+            torch.testing.assert_close(gradient, padded_grads[name], msg=name)
+
+    @pytest.mark.unit
     @pytest.mark.parametrize("kind, self_attention_model", [("mha", "abs_pos"), ("relmha", "rel_pos")])
     def test_attention_adapter_with_another_strategy(self, kind, self_attention_model):
         """The packed call is the adapter's own, so every strategy that calls the adapter reaches it."""

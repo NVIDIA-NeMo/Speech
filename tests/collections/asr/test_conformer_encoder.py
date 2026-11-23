@@ -14,6 +14,7 @@
 # limitations under the License.
 import copy
 import functools
+import inspect
 import os
 
 import numpy as np
@@ -21,6 +22,7 @@ import pytest
 import torch
 from omegaconf import DictConfig, OmegaConf
 
+from nemo.collections.asr.models import EncDecCTCModel
 from nemo.collections.asr.modules import transformer_encoder_utils
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
 from nemo.collections.asr.parts.packed_sequence import (
@@ -40,6 +42,8 @@ from nemo.collections.asr.parts.submodules.multi_head_attention import (
     RelPositionMultiHeadAttention,
 )
 from nemo.collections.asr.parts.submodules.subsampling import ConvSubsampling
+from nemo.collections.asr.parts.utils.streaming_utils import CacheAwareStreamingAudioBuffer
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
 
 class TestStochasticDepth:
@@ -898,6 +902,22 @@ class TestPackedConformerEncoder:
         assert sorted(encoder.state_dict()) == sorted(keys)
         assert "layers.0.self_attn.linear_pos.weight" in _packed_encoder().state_dict()
 
+    @pytest.mark.unit
+    def test_block_arguments_keep_their_positions(self):
+        """``packed_rel_pos_attention`` is keyword-only, after the block arguments: a positional ``None`` after
+        ``use_triton`` still binds to ``pre_encode``, as it did before the option existed."""
+        parameters = list(inspect.signature(ConformerEncoder.__init__).parameters.values())[1:]
+        names = [parameter.name for parameter in parameters]
+        assert names.index("pre_encode") == names.index("use_triton") + 1
+        option = inspect.signature(ConformerEncoder.__init__).parameters["packed_rel_pos_attention"]
+        assert option.kind is inspect.Parameter.KEYWORD_ONLY and option.default == "triton"
+        sizes = {"feat_in": 8, "n_layers": 1, "d_model": 16}
+        positional = [
+            sizes.get(parameter.name, parameter.default) for parameter in parameters[: names.index("pre_encode")]
+        ]
+        encoder = ConformerEncoder(*positional, None)
+        assert isinstance(encoder.pre_encode, ConvSubsampling) and encoder.packed_rel_pos_attention == "triton"
+
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
@@ -928,7 +948,7 @@ class TestPackedConformerEncoderCuda:
     @pytest.mark.unit
     @pytest.mark.parametrize("self_attention_model", ["rel_pos", "abs_pos", "rope"])
     def test_bf16_autocast_matches_padded_outputs_and_gradients(self, self_attention_model):
-        """rel_pos runs FlexAttention with the position bias; abs_pos and rope run variable-length FlashAttention."""
+        """rel_pos runs the Triton kernel with the position term; abs_pos and rope run variable-length FlashAttention."""
         if self_attention_model != "rel_pos" and not self._half_precision_flash_attention_available():
             pytest.skip("requires a variable-length FlashAttention provider")
         torch.manual_seed(9)
@@ -967,6 +987,86 @@ class TestPackedConformerEncoderCuda:
         assert encoder.layers[0].self_attn.linear_q.weight.grad is not None
 
     @pytest.mark.unit
+    @pytest.mark.skipif(not TRITON_AVAILABLE, reason="requires Triton")
+    def test_rel_pos_attention_dropout_runs_through_the_kernel(self, monkeypatch):
+        """Attention dropout with rel_pos trains packed, in float32 and under bf16 autocast, without FlexAttention."""
+
+        def no_flex_attention(*args, **kwargs):
+            raise AssertionError("FlexAttention must not run")
+
+        monkeypatch.setattr(packed_attention_module, "_flex_packed_attention", no_flex_attention)
+        torch.manual_seed(11)
+        encoder = _packed_encoder(self_attention_model="rel_pos", dropout_att=0.1, d_model=32, n_heads=2)
+        encoder = encoder.cuda().train()
+        lengths = torch.tensor([300, 7, 150], device="cuda")
+        features = _packed_test_features(lengths, dtype=torch.float32, device="cuda")
+        for autocast in (False, True):
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=autocast):
+                packed = encoder.forward_sequence_packed(features, lengths)
+                again = encoder.forward_sequence_packed(features, lengths)
+            assert packed.data.shape == (int(packed.lengths.sum()), 32) and torch.isfinite(packed.data).all()
+            # the dropout draws a fresh mask per call
+            assert not torch.equal(packed.data, again.data)
+            encoder.zero_grad()
+            packed.data.float().square().mean().backward()
+            assert encoder.layers[0].self_attn.linear_pos.weight.grad is not None
+            assert encoder.layers[0].self_attn.pos_bias_v.grad.abs().sum() > 0
+
+    @pytest.mark.unit
+    @pytest.mark.skipif(not TRITON_AVAILABLE, reason="requires Triton")
+    def test_flex_attention_stays_selectable_for_rel_pos(self, monkeypatch):
+        """``packed_rel_pos_attention: flex`` keeps the backend before the kernel: FlexAttention over the rounded
+        table, which has no dropout, so attention dropout in training mode is refused as before."""
+        with pytest.raises(ValueError, match="packed_rel_pos_attention"):
+            _packed_encoder(packed_rel_pos_attention="cuda")
+        torch.manual_seed(8)
+        encoder = _packed_encoder(self_attention_model="rel_pos", dropout_att=0.1, packed_rel_pos_attention="flex")
+        encoder = encoder.cuda().train()
+        reason = encoder.sequence_packed_unsupported_reason()
+        assert reason is not None and "FlexAttention" in reason
+        encoder.eval()
+        assert encoder.sequence_packed_unsupported_reason() is None
+
+        def no_kernel(*args, **kwargs):
+            raise AssertionError("the Triton kernel must not run")
+
+        monkeypatch.setattr(packed_attention_module, "packed_rel_pos_attention", no_kernel)
+        lengths = torch.tensor([300, 7, 150], device="cuda")
+        features = _packed_test_features(lengths, dtype=torch.float32, device="cuda")
+        padded_out, padded_lengths = encoder(audio_signal=features, length=lengths)
+        packed = encoder.forward_sequence_packed(features, lengths)
+        torch.testing.assert_close(packed.data, _valid_frames(padded_out, padded_lengths), atol=1e-4, rtol=1e-4)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("backend", ["flex", "triton"])
+    def test_float64_attention_dropout_runs_the_reference_on_either_backend(self, monkeypatch, backend):
+        """In float64 ``packed_attention`` runs the dense reference attention, with dropout, whichever backend the
+        encoder selects, and the capability check at the encoder entry point follows that dispatch rule."""
+
+        def no_flex_attention(*args, **kwargs):
+            raise AssertionError("FlexAttention must not run")
+
+        def no_kernel(*args, **kwargs):
+            raise AssertionError("the Triton kernel must not run")
+
+        monkeypatch.setattr(packed_attention_module, "_flex_packed_attention", no_flex_attention)
+        monkeypatch.setattr(packed_attention_module, "packed_rel_pos_attention", no_kernel, raising=False)
+        torch.manual_seed(5)
+        encoder = _packed_encoder(
+            self_attention_model="rel_pos", dropout_att=0.1, d_model=32, n_heads=2, packed_rel_pos_attention=backend
+        )
+        encoder = encoder.cuda().double().train()
+        assert encoder.sequence_packed_unsupported_reason() is None
+        lengths = torch.tensor([40, 7, 25], device="cuda")
+        features = _packed_test_features(lengths, dtype=torch.float64, device="cuda")
+        packed = encoder.forward_sequence_packed(features, lengths)
+        again = encoder.forward_sequence_packed(features, lengths)
+        assert packed.data.dtype == torch.float64 and torch.isfinite(packed.data).all()
+        # the dropout draws a fresh mask per call
+        assert not torch.equal(packed.data, again.data)
+        packed.data.square().mean().backward()
+        assert encoder.layers[0].self_attn.linear_pos.weight.grad is not None
+
     @pytest.mark.parametrize("self_attention_model", ["abs_pos", "rope"])
     def test_flash_and_flex_backends_match_padded_in_bf16(self, self_attention_model):
         """The same weights and inputs through both CUDA attention backends, each against the padded forward.
@@ -1016,12 +1116,15 @@ class TestPackedConformerEncoderCuda:
             assert (grad - flex[3][name]).norm() <= 0.05 * flex[3][name].norm() + 1e-5, name
 
     @pytest.mark.unit
-    def test_attention_dropout_without_flash_attention_is_rejected(self):
-        """FlexAttention has no dropout: rel_pos attention, and abs_pos attention in float32, refuse dropout_att.
+    def test_attention_dropout_without_flash_attention_is_rejected(self, monkeypatch):
+        """FlexAttention has no dropout: rel_pos attention without its Triton kernel, and abs_pos attention
+        in float32, refuse dropout_att.
 
         The refusal comes from the support check that ``supports_sequence_packed_output`` shares,
-        so packed perception modules keep their padded path for these configurations instead.
+        so packed perception modules keep their padded path for these configurations instead;
+        the kernel is switched off here, since with it rel_pos attention keeps its dropout.
         """
+        monkeypatch.setattr(packed_attention_module, "TRITON_AVAILABLE", False)
         lengths = torch.tensor([30, 7], device="cuda")
         features = _packed_test_features(lengths, dtype=torch.float32, device="cuda")
         for self_attention_model in ("rel_pos", "abs_pos"):
@@ -1096,3 +1199,127 @@ class TestPackedFastConformerSmoke:
                 stack.fuse_triton = fused
         assert errors[False] < 1e-4, errors
         assert errors.get(True, 0.0) < 5e-2, errors
+
+
+class TestCacheAwareTraining:
+    """Testing that training matches cache-aware streaming."""
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("subsampling", ["vggnet", "dw_striding_conv1d", "striding_conv1d"])
+    def test_training_prefix_requires_causal_convolution(self, cache_aware_model_cfg, subsampling):
+        encoder_cfg = cache_aware_model_cfg.encoder
+        encoder_cfg.subsampling = subsampling
+        encoder = ConformerEncoder.from_config_dict(encoder_cfg).cpu().train()
+        features = torch.randn(1, encoder_cfg.feat_in, 16)
+        expected_frames = features.size(-1)
+        if subsampling == "striding_conv1d":
+            expected_frames += encoder.streaming_cfg.pre_encode_cache_size[1]
+
+        class ReachedFrontend(Exception):
+            pass
+
+        def check_input(module, args, kwargs):
+            assert kwargs["x"].size(1) == kwargs["lengths"].item() == expected_frames
+            raise ReachedFrontend
+
+        with (
+            encoder.pre_encode.register_forward_pre_hook(check_input, with_kwargs=True),
+            pytest.raises(ReachedFrontend),
+        ):
+            encoder(audio_signal=features, length=torch.tensor([features.size(-1)]))
+
+    @pytest.mark.unit
+    def test_activation_checkpointing_preserves_pad_and_drop(self, cache_aware_model_cfg):
+        from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
+
+        torch.manual_seed(0)
+        encoder = ConformerEncoder.from_config_dict(cache_aware_model_cfg.encoder).cpu().train()
+        wrapped = copy.deepcopy(encoder)
+        wrapped.pre_encode = checkpoint_wrapper(wrapped.pre_encode)
+        features = torch.randn(1, cache_aware_model_cfg.encoder.feat_in, 128)
+        lengths = torch.tensor([features.size(-1)])
+
+        reference, reference_len = encoder(audio_signal=features, length=lengths)
+        output, output_len = wrapped(audio_signal=features, length=lengths)
+        assert output_len.tolist() == reference_len.tolist() == [16]
+        torch.testing.assert_close(output, reference)
+
+        grad = torch.randn_like(reference)
+        reference.backward(grad)
+        output.backward(grad)
+        for parameter, wrapped_parameter in zip(encoder.parameters(), wrapped.parameters()):
+            torch.testing.assert_close(wrapped_parameter.grad, parameter.grad)
+
+    @pytest.mark.parametrize("n_frames", [7, 32])
+    @pytest.mark.parametrize("subsampling", ["striding", "dw_striding"])
+    def test_noncausal_train_matches_eval(self, cache_aware_model_cfg, n_frames, subsampling):
+        """Noncausal training preserves output lengths and frame alignment."""
+        torch.manual_seed(0)
+        encoder_cfg = cache_aware_model_cfg.encoder
+        encoder_cfg.update(
+            n_layers=1, d_model=16, subsampling=subsampling, subsampling_conv_channels=8, causal_downsampling=False
+        )
+        model = ConformerEncoder.from_config_dict(encoder_cfg).cpu()
+        feats = torch.randn(1, encoder_cfg.feat_in, n_frames)
+        lengths = torch.tensor([n_frames])
+        with torch.no_grad():
+            model.eval()
+            eval_out, eval_len = model(audio_signal=feats, length=lengths)
+            model.train()
+            train_out, train_len = model(audio_signal=feats, length=lengths)
+
+        factor = encoder_cfg.subsampling_factor
+        assert train_len.tolist() == eval_len.tolist() == [(n_frames + factor - 1) // factor]
+        torch.testing.assert_close(train_out, eval_out)
+
+    @pytest.mark.parametrize(
+        "lengths,stream_in_train_mode",
+        [((128,), False), ((127,), False), ((127, 73), False), pytest.param((128,), True, id="cached-training")],
+    )
+    @pytest.mark.parametrize(
+        "att_context_size,context_index",
+        [([16, 3], 0), ([[16, 3], [16, 1]], 0), ([[16, 3], [16, 1]], 1)],
+    )
+    def test_train_matches_streaming(
+        self, cache_aware_model_cfg, lengths, stream_in_train_mode, att_context_size, context_index
+    ):
+        """Training matches real buffered streaming for partial chunks and ragged batches."""
+        torch.manual_seed(0)
+        encoder_cfg = cache_aware_model_cfg.encoder
+        num_contexts = len(att_context_size) if isinstance(att_context_size[0], list) else 1
+        encoder_cfg.att_context_size = att_context_size
+        # Select each supported training lookahead deterministically for comparison with eval.
+        encoder_cfg.att_context_probs = [float(i == context_index) for i in range(num_contexts)]
+        model = EncDecCTCModel(cfg=cache_aware_model_cfg).cpu()
+        encoder = model.encoder
+        encoder.set_default_att_context_size(encoder.att_context_size_all[context_index])
+        buffer = CacheAwareStreamingAudioBuffer(model, pad_and_drop_preencoded=True)
+        for length in lengths:
+            buffer.append_processed_signal(torch.randn(1, encoder_cfg.feat_in, length))
+        feats, input_lengths = buffer.get_all_audios()
+
+        model.train()
+        with torch.no_grad():
+            train_out, train_len = encoder(audio_signal=feats, length=input_lengths)
+
+        model.train(stream_in_train_mode)
+        cache_channel, cache_time, cache_len = encoder.get_initial_cache_state(batch_size=len(lengths))
+        stream_out = [[] for _ in lengths]
+        with torch.no_grad():
+            for chunk, chunk_len in buffer:
+                out, out_len, cache_channel, cache_time, cache_len = encoder.cache_aware_stream_step(
+                    processed_signal=chunk,
+                    processed_signal_length=chunk_len,
+                    cache_last_channel=cache_channel,
+                    cache_last_time=cache_time,
+                    cache_last_channel_len=cache_len,
+                    keep_all_outputs=buffer.is_buffer_empty(),
+                    drop_extra_pre_encoded=encoder.streaming_cfg.drop_extra_pre_encoded,
+                )
+                for i, length in enumerate(out_len):
+                    stream_out[i].append(out[i, :, :length])
+
+        for i, outputs in enumerate(stream_out):
+            streamed = torch.cat(outputs, dim=-1)
+            assert streamed.shape[-1] == train_len[i].item()
+            torch.testing.assert_close(train_out[i, :, : train_len[i]], streamed, atol=1e-5, rtol=1e-5)

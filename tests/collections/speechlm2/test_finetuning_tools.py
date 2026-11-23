@@ -25,6 +25,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 import torch
+import yaml
 from safetensors.torch import save_file
 
 FT = Path(__file__).resolve().parents[3] / "examples" / "speechlm2" / "finetuning"
@@ -50,49 +51,68 @@ def test_torchrun_uses_standalone_rendezvous():
     assert cmd[-1] == "trainer.max_steps=5"
 
 
-PACKED_TE_CFG = {"model": {"packed_sequences": True, "automodel_backend": {"attn": "te"}}}
+PACKED_TE_CFG = {"model": {"use_nemo_automodel": True, "packed_sequences": True, "automodel_backend": {"attn": "te"}}}
+
+
+def write_cfg(tmp_path, cfg):
+    path = tmp_path / "ft.yaml"
+    path.write_text(yaml.safe_dump(cfg))
+    return path
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    "cfg,overrides,capability,expected",
+    "model,overrides,capability,expected",
     [
-        (PACKED_TE_CFG, [], (12, 0), "0"),  # packed THD training on sm_120 needs flash attention
-        ({"model": {"packed_sequences": True}}, [], (12, 0), "0"),  # attn defaults to te
-        (PACKED_TE_CFG, [], (10, 3), None),  # other GPUs keep cuDNN fused attention
-        (PACKED_TE_CFG, [], None, None),  # no GPU visible
-        ({"model": {"packed_sequences": False}}, [], (12, 0), None),
-        (PACKED_TE_CFG, ["model.packed_sequences=false"], (12, 0), None),
-        ({"model": {"packed_sequences": False}}, ["model.packed_sequences=true"], (12, 0), "0"),
-        ({"model": {"packed_sequences": True, "automodel_backend": {"attn": "sdpa"}}}, [], (12, 0), None),
+        ({}, [], (12, 0), "0"),  # packed THD training on sm_120 needs flash attention
+        ({"automodel_backend": None}, [], (12, 0), "0"),  # attn defaults to te
+        ({}, [], (10, 3), None),  # other GPUs keep cuDNN fused attention
+        ({}, [], None, None),  # no GPU visible
+        ({"packed_sequences": False}, [], (12, 0), None),
+        ({"use_nemo_automodel": False}, [], (12, 0), None),  # the guard applies to SALMAutomodel only
+        ({"automodel_backend": {"attn": "sdpa"}}, [], (12, 0), None),
+        ({}, ["model.packed_sequences=false"], (12, 0), None),
+        ({"packed_sequences": False}, ["model.packed_sequences=true"], (12, 0), "0"),
+        # repeated overrides: the last one wins, as in Hydra
+        ({}, ["model.packed_sequences=false", "model.packed_sequences=true"], (12, 0), "0"),
+        ({}, ["model.packed_sequences=true", "model.packed_sequences=false"], (12, 0), None),
+        # an override of the parent mapping
+        ({}, ["model.automodel_backend={attn: sdpa}"], (12, 0), None),
+        ({"automodel_backend": {"attn": "sdpa"}}, ["model.automodel_backend={attn: te}"], (12, 0), "0"),
+        # interpolations are resolved as in training
+        ({}, ["model.automodel_backend.attn=${oc.env:SALM_FT_TEST_ATTN,te}"], (12, 0), "0"),
+        ({"automodel_backend": {"attn": "${oc.env:SALM_FT_TEST_ATTN,sdpa}"}}, [], (12, 0), None),
+        ({"packed_sequences": "${model.use_nemo_automodel}"}, [], (12, 0), "0"),
     ],
 )
 def test_training_env_sets_nvte_fused_attn_for_packed_training_on_sm120(
-    cfg, overrides, capability, expected, monkeypatch
+    model, overrides, capability, expected, monkeypatch, tmp_path
 ):
     rt = load("run_training")
     monkeypatch.setattr(rt, "_device_capability", lambda: capability)
-    env = rt.training_env(cfg, overrides, environ={"PATH": "/bin"})
+    monkeypatch.delenv("SALM_FT_TEST_ATTN", raising=False)
+    cfg = {"model": {**PACKED_TE_CFG["model"], **model}}
+    env = rt.training_env(write_cfg(tmp_path, cfg), overrides, environ={"PATH": "/bin"})
     assert env.get("NVTE_FUSED_ATTN") == expected
     assert env["PATH"] == "/bin"
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("user_value", ["0", "1", ""])
-def test_training_env_keeps_user_nvte_fused_attn(user_value, monkeypatch):
+def test_training_env_keeps_user_nvte_fused_attn(user_value, monkeypatch, tmp_path):
     rt = load("run_training")
     monkeypatch.setattr(rt, "_device_capability", lambda: pytest.fail("must not probe the GPU"))
-    env = rt.training_env(PACKED_TE_CFG, [], environ={"NVTE_FUSED_ATTN": user_value})
+    env = rt.training_env(write_cfg(tmp_path, PACKED_TE_CFG), [], environ={"NVTE_FUSED_ATTN": user_value})
     assert env["NVTE_FUSED_ATTN"] == user_value
 
 
 @pytest.mark.unit
-def test_training_env_starts_from_the_process_environment(monkeypatch):
+def test_training_env_starts_from_the_process_environment(monkeypatch, tmp_path):
     rt = load("run_training")
     monkeypatch.setattr(rt, "_device_capability", lambda: (12, 0))
     monkeypatch.delenv("NVTE_FUSED_ATTN", raising=False)
     monkeypatch.setenv("SALM_FT_TEST_VAR", "1")
-    env = rt.training_env(PACKED_TE_CFG, [])
+    env = rt.training_env(write_cfg(tmp_path, PACKED_TE_CFG), [])
     assert env["NVTE_FUSED_ATTN"] == "0" and env["SALM_FT_TEST_VAR"] == "1"
     assert "NVTE_FUSED_ATTN" not in rt.os.environ
 

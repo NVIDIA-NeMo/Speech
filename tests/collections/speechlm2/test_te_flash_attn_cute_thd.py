@@ -16,7 +16,9 @@
 Packed SALM training on Blackwell requires ``NVTE_FUSED_ATTN=0``, so TE routes its THD ``padding_causal`` attention
 to flash-attn-4 (flash_attn.cute). TE releases before 2.21 passed the causal mask to flash-attn-4 as
 ``window_size=(-1, 0)``, which flash-attn-4 reads as a local window that admits no keys: the output and dQ/dK/dV are
-all zero while training loss still decreases. This guards the TE pin in pyproject.toml.
+all zero while training loss still decreases. The bug is in TE's argument conversion, not in the GPU architecture, so
+this runs wherever TE picks flash-attn-4 (sm_90 without FlashAttention 3, and newer GPUs). This guards the TE pin in
+pyproject.toml.
 """
 import importlib.util
 
@@ -28,8 +30,14 @@ pytestmark = [
     pytest.mark.gpu,
     pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA"),
     pytest.mark.skipif(
-        torch.cuda.is_available() and torch.cuda.get_device_capability()[0] < 10,
-        reason="TE dispatches THD attention to flash-attn-4 only on Blackwell (sm_100+) in this setup",
+        torch.cuda.is_available() and torch.cuda.get_device_capability() < (9, 0),
+        reason="Transformer Engine uses flash-attn-4 on sm_90 and newer",
+    ),
+    pytest.mark.skipif(
+        torch.cuda.is_available()
+        and torch.cuda.get_device_capability() == (9, 0)
+        and importlib.util.find_spec("flash_attn_interface") is not None,
+        reason="Transformer Engine prefers FlashAttention 3 over flash-attn-4 on sm_90",
     ),
     pytest.mark.skipif(
         importlib.util.find_spec("transformer_engine") is None, reason="Transformer Engine is not installed"

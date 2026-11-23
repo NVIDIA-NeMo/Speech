@@ -92,18 +92,24 @@ def torchrun(cfg, exp, overrides, log, env=None):
         )
 
 
-def training_env(cfg: dict, overrides: list, environ=None) -> dict:
+def training_env(config: Path, overrides: list, environ=None) -> dict:
     """Environment for the training process.
 
-    Packed (THD) training with TE attention on Blackwell sm_120 must run with ``NVTE_FUSED_ATTN=0`` (SALMAutomodel
-    refuses to train otherwise), so it is set here unless the user already set ``NVTE_FUSED_ATTN``: an explicit value
-    is left as is, and SALMAutomodel then reports it if it is not supported.
+    Packed (THD) SALMAutomodel training with TE attention on Blackwell sm_120 must run with ``NVTE_FUSED_ATTN=0``
+    (SALMAutomodel refuses to train otherwise), so it is set here unless the user already set ``NVTE_FUSED_ATTN``:
+    an explicit value is left as is, and SALMAutomodel then reports it if it is not supported.
+    The decision uses the model config as training sees it (``config`` composed with ``overrides`` and resolved).
     """
     env = dict(os.environ if environ is None else environ)
     if "NVTE_FUSED_ATTN" in env:
         return env
-    packed_sequences = _model_option(cfg, overrides, "packed_sequences", False)
-    attn_backend = _model_option(cfg, overrides, "automodel_backend.attn", "te")
+    model = _resolved_model_options(
+        config,
+        overrides,
+        {"use_nemo_automodel": False, "packed_sequences": False, "automodel_backend.attn": "te"},
+    )
+    packed_sequences = bool(model["use_nemo_automodel"] and model["packed_sequences"])
+    attn_backend = model["automodel_backend.attn"]
     if not (packed_sequences and attn_backend == "te"):
         return env
     device_capability = _device_capability()
@@ -205,7 +211,7 @@ def main():
     t = cfg["trainer"]
     interval = validation_interval_steps(t)
     check_provenance(exp, cfg, overrides)
-    env = training_env(cfg, overrides)
+    env = training_env(a.config, overrides)
 
     lock_path = Path(os.environ.get("SALM_FT_WORK", "salm_ft_work")).absolute() / ".train.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -321,18 +327,15 @@ def main():
         print("[train] checkpoints:", sorted(os.listdir(exp / "checkpoints")))
 
 
-def _model_option(cfg: dict, overrides: list, key: str, default):
-    """``model.<key>`` (dotted) after applying the command-line Hydra overrides that set it."""
-    for o in overrides:
-        k, _, v = o.lstrip("+~").partition("=")
-        if k == f"model.{key}":
-            return yaml.safe_load(v)
-    node = cfg.get("model") or {}
-    for part in key.split("."):
-        if not isinstance(node, dict) or part not in node:
-            return default
-        node = node[part]
-    return node
+def _resolved_model_options(config: Path, overrides: list, defaults: dict) -> dict:
+    """Resolved ``model.<key>`` values (``defaults`` maps dotted keys to their defaults) of ``config`` with the Hydra
+    ``overrides`` applied, as salm_train.py sees them."""
+    from hydra import compose, initialize_config_dir
+    from omegaconf import OmegaConf
+
+    with initialize_config_dir(config_dir=str(config.parent.absolute()), version_base=None):
+        cfg = compose(config_name=config.stem, overrides=list(overrides))
+    return {k: OmegaConf.select(cfg, f"model.{k}", default=d) for k, d in defaults.items()}
 
 
 def _device_capability():

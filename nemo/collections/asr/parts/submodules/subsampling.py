@@ -24,6 +24,8 @@ from nemo.collections.asr.parts.packed_sequence import (
     PackedEncoderActivations,
     PackedSlotLayout,
     lengths_to_cu_seqlens,
+    packed_encoder_position_ids,
+    packed_sequence_ids,
     packed_slot_layout,
 )
 from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D, CausalConv2D
@@ -1050,6 +1052,42 @@ class SubsamplingReductionModule(nn.Module):
             x = torch.transpose(x, 1, 2)  # [B, T, C]
 
         return x, lengths
+
+    def forward_packed(self, packed: PackedEncoderActivations) -> PackedEncoderActivations:
+        """Downsample token-flat states within every utterance, equal to ``forward`` at the valid frames.
+
+        Pooling keeps the complete windows of every utterance,
+        so a window never spans two utterances and the incomplete window at the end of an utterance is dropped,
+        as the floor-mode length of the padded forward drops it.
+        Striding runs the packed form of its ``ConvSubsampling``.
+        An empty batch and a batch whose utterances all lose every frame give an empty result with zero lengths;
+        ``forward`` raises for an empty batch through the striding and for a padded width below one window.
+
+        Args:
+            packed: states of all utterances, data of shape ``(sum(T_i), C)``;
+                striding needs ``C = d_model``, pooling takes any width.
+
+        Returns:
+            The downsampled states with their lengths, data of shape ``(sum(T'_i), C)``.
+        """
+        if not isinstance(packed, PackedEncoderActivations):
+            raise TypeError(
+                f"forward_packed expects PackedEncoderActivations, got {type(packed).__name__}; "
+                "padded (B, T, C) states go to forward."
+            )
+        if self.reduction == 'striding':
+            return self.reduction_enc.forward_packed(packed)
+        lengths = torch.div(packed.lengths, self.kernel_size, rounding_mode='floor')
+        in_complete_window = (
+            packed_encoder_position_ids(packed) < (lengths * self.kernel_size)[packed_sequence_ids(packed)]
+        )
+        data = packed.data[in_complete_window]
+        if data.shape[0] > 0:
+            # all windows on one time axis: every utterance keeps a multiple of the kernel size
+            data = self.reduction_enc(data.t().unsqueeze(0)).squeeze(0).t()
+        return PackedEncoderActivations.from_validated(
+            data, lengths, lengths_to_cu_seqlens(lengths), packed.max_seqlen // self.kernel_size
+        )
 
 
 def apply_channel_mask(tensor, mask):

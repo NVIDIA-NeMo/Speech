@@ -917,12 +917,16 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
 
         Configurations without a sequence-packed form (streaming caches, ``rel_pos_local_attn`` with global tokens
         or different context sizes on the two sides, context sizes that ``att_context_style`` does not define,
-        reduction layers, adapters, causal or VGGNet subsampling,
+        adapters, causal or VGGNet subsampling,
         the ``save_encoder_tensors`` capture,
         and in training mode attention dropout where FlexAttention would have to apply it)
         are named by ``sequence_packed_unsupported_reason`` and refused here with ``NotImplementedError``;
         the parallel expert encoder and the independent dual encoder consult ``supports_sequence_packed_output``
         at dispatch time and keep their padded path for them, the plain perception module reports the reason.
+
+        A reduction layer (``reduction_position``) pools or strides within every utterance,
+        see ``SubsamplingReductionModule.forward_packed``,
+        and the layers after it run on the reduced utterances with their own boundaries and positions.
 
         InterCTC captures are registered token-flat:
         ``interctc/layer_output_X`` is a ``PackedEncoderActivations`` with data ``(sum(T'_i), feat_out)``
@@ -978,22 +982,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             if self.pos_enc.xscale:
                 x = x * self.pos_enc.xscale
             x = self.pos_enc.dropout(x)
-            if self.self_attention_model == 'rel_pos_local_attn':
-                # the relative positions of the window, as LocalAttRelPositionalEncoding.forward
-                pos_emb = self.pos_enc.pe[:, : self.pos_enc.left_context + self.pos_enc.right_context + 1]
-            else:
-                # the relative positions L - 1 down to -(L - 1) for the table length L,
-                # as RelPositionalEncoding.forward
-                center_pos = self.pos_enc.pe.size(1) // 2 + 1
-                table_len = attention_context.rel_pos_max_seqlen
-                if attention_context.key_window_is_bounded and packed.max_seqlen > 0:
-                    # no key is further from its query than the window reaches, so a shorter table serves it
-                    positions = torch.arange(packed.max_seqlen)
-                    reach = max((positions - key_window[0]).max(), (key_window[1] - positions).max())
-                    table_len = min(table_len, int(reach) + 1)
-                pos_emb = self.pos_enc.pe[:, center_pos - table_len : center_pos + table_len - 1]
-            if self.pos_enc.dropout_emb:
-                pos_emb = self.pos_enc.dropout_emb(pos_emb)
+            pos_emb = self._packed_rel_pos_emb(attention_context, key_window)
 
         # one gapped layout for all depthwise convolutions, wide enough for the largest kernel
         conv_gap = max(layer.conv.kernel_size for layer in self.layers) - 1
@@ -1011,6 +1000,20 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                     x = x * 0.0 + original_signal
                 else:
                     x = (x - original_signal) / (1.0 - drop_prob) + original_signal
+            if self.reduction_position == lth:
+                packed = self.reduction_subsampling.forward_packed(
+                    PackedEncoderActivations.from_validated(x, packed.lengths, packed.cu_seqlens, packed.max_seqlen)
+                )
+                x = packed.data
+                # the following layers see the reduced utterances: boundaries, positions and the conv layout,
+                # with the same attention context size counted in reduced frames, as forward_internal
+                key_window = self._packed_key_window(cur_att_context_size, packed.max_seqlen)
+                attention_context = PackedAttentionContext(
+                    packed, key_window=key_window, rel_pos_kernel=self.packed_rel_pos_attention == 'triton'
+                )
+                conv_layout = packed_slot_layout(packed, gap=conv_gap)
+                if pos_emb is not None:
+                    pos_emb = self._packed_rel_pos_emb(attention_context, key_window)
             if self.is_access_enabled(getattr(self, "model_guid", None)):
                 if self.interctc_capture_at_layers is None:
                     self.interctc_capture_at_layers = self.access_cfg.get('interctc', {}).get('capture_layers', [])
@@ -1028,7 +1031,10 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         if self.out_proj is not None:
             x = self.out_proj(x)
         # encoder outputs pad with zeros, whatever padding metadata the input carried
-        return PackedEncoderActivations.from_validated(x, packed.lengths, packed.cu_seqlens, packed.max_seqlen)
+        packed = PackedEncoderActivations.from_validated(x, packed.lengths, packed.cu_seqlens, packed.max_seqlen)
+        if self.reduction_position == -1:
+            packed = self.reduction_subsampling.forward_packed(packed)
+        return packed
 
     @property
     def supports_sequence_packed_output(self) -> bool:
@@ -1046,7 +1052,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
 
         Without a sequence-packed form: ``rel_pos_local_attn`` with global tokens or with different context sizes
         on the two sides, attention context sizes that ``att_context_style`` does not define
-        (see ``_att_context_unsupported_reason``), reduction layers, adapters,
+        (see ``_att_context_unsupported_reason``), adapters,
         the ``save_encoder_tensors`` capture (its consumers expect padded tensors),
         frontends other than a linear layer or a non-causal ``striding`` or ``dw_striding`` ``ConvSubsampling``,
         and instance or group normalization in the convolution modules.
@@ -1078,8 +1084,6 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 if reason is not None:
                     return reason
             limited_context = not all(self._att_context_is_full(size) for size in att_context_sizes)
-        if self.reduction_position is not None:
-            return "Reduction layers have no sequence-packed form."
         if isinstance(self, adapter_mixins.AdapterModuleMixin) and self.is_adapter_available():
             return "Adapters have no sequence-packed form."
         if self.is_access_enabled(getattr(self, "model_guid", None)) and self.access_cfg.get(
@@ -1177,6 +1181,30 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 f"Packed audio_signal must have feature width {expected_width}, got {packed.data.shape[-1]}."
             )
         return packed
+
+    def _packed_rel_pos_emb(
+        self,
+        attention_context: PackedAttentionContext,
+        key_window: tuple[torch.Tensor | None, torch.Tensor | None] | None,
+    ) -> torch.Tensor:
+        """The relative positions the packed attention reads for ``attention_context``, with their dropout."""
+        if self.self_attention_model == 'rel_pos_local_attn':
+            # the relative positions of the window, as LocalAttRelPositionalEncoding.forward
+            pos_emb = self.pos_enc.pe[:, : self.pos_enc.left_context + self.pos_enc.right_context + 1]
+        else:
+            # the relative positions L - 1 down to -(L - 1) for the table length L,
+            # as RelPositionalEncoding.forward
+            center_pos = self.pos_enc.pe.size(1) // 2 + 1
+            table_len = attention_context.rel_pos_max_seqlen
+            if attention_context.key_window_is_bounded and attention_context.max_seqlen > 0:
+                # no key is further from its query than the window reaches, so a shorter table serves it
+                positions = torch.arange(attention_context.max_seqlen)
+                reach = max((positions - key_window[0]).max(), (key_window[1] - positions).max())
+                table_len = min(table_len, int(reach) + 1)
+            pos_emb = self.pos_enc.pe[:, center_pos - table_len : center_pos + table_len - 1]
+        if self.pos_enc.dropout_emb:
+            pos_emb = self.pos_enc.dropout_emb(pos_emb)
+        return pos_emb
 
     def _current_att_context_size(self) -> list[int]:
         # select a random att_context_size with the distribution specified by att_context_probs during training

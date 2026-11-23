@@ -518,6 +518,27 @@ class TestSequencePackedInterCTC:
         assert padded_parameters["decoder.decoder_layers.0.weight"].grad.abs().sum() > 0
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("reduction", ["pooling", "striding"])
+    def test_losses_and_gradients_match_padded_with_a_reduction_layer(self, reduction):
+        """Layer 0 is captured before the reduction layer 1, layer 1 after it, so the two losses see other lengths."""
+        padded_model, packed_model = _padded_and_packed_models(
+            reduction=reduction, reduction_position=1, reduction_factor=2
+        )
+        batch = _interctc_batch((64, 9, 40, 13, 0))
+        padded_loss, padded_metrics = _interctc_step(padded_model, *batch, packed=False)
+        packed_loss, packed_metrics = _interctc_step(packed_model, *batch, packed=True)
+        torch.testing.assert_close(packed_loss, padded_loss)
+        assert set(packed_metrics) == set(padded_metrics)
+        for name, value in padded_metrics.items():
+            torch.testing.assert_close(packed_metrics[name], value, msg=name)
+        assert not torch.isclose(padded_metrics["inter_ctc_loss_l0"], padded_metrics["inter_ctc_loss_l1"])
+        padded_loss.backward()
+        packed_loss.backward()
+        padded_parameters = dict(padded_model.named_parameters())
+        for name, parameter in packed_model.named_parameters():
+            torch.testing.assert_close(parameter.grad, padded_parameters[name].grad, msg=name)
+
+    @pytest.mark.unit
     def test_captured_tensors_are_packed_log_probabilities(self):
         padded_model, packed_model = _padded_and_packed_models()
         features, lengths, _, _ = _interctc_batch((64, 9, 40))

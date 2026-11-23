@@ -1532,6 +1532,310 @@ class TestPackedConformerEncoderCuda:
                 narrow.forward_sequence_packed(features, lengths)
 
 
+def _gradient_difference(packed_encoder, padded_encoder):
+    """The norm of the gradient difference over all parameters, relative to the padded encoder's gradient norm."""
+    padded_parameters = dict(padded_encoder.named_parameters())
+    difference = reference_norm = 0.0
+    for name, parameter in packed_encoder.named_parameters():
+        reference = padded_parameters[name].grad
+        assert torch.isfinite(parameter.grad).all(), name
+        difference += float((parameter.grad - reference).square().sum())
+        reference_norm += float(reference.square().sum())
+    return (difference / reference_norm) ** 0.5
+
+
+def _projected_loss(out):
+    """A loss whose gradient passes the final layer norm.
+
+    The mean of squares of a normalized output is constant,
+    so it leaves every parameter before that norm with a gradient at the rounding level.
+    """
+    generator = torch.Generator().manual_seed(17)
+    projection = torch.randn(out.shape[-1], 2, generator=generator, dtype=torch.float64).to(out)
+    projected = out @ projection
+    return projected[:, 0].square().mean() + projected[:, 1].mean()
+
+
+def _dropped_layers(encoder):
+    """Per layer, whether stochastic depth dropped it in the last backward: all its gradients are zero."""
+    return [not any(parameter.grad.any() for parameter in layer.parameters()) for layer in encoder.layers]
+
+
+class TestPackedConformerReduction:
+    """forward_sequence_packed with a reduction layer against forward: outputs, lengths and all gradients."""
+
+    # 9, 2, 6, 3, 1, 0 and 8 frames after the sixfold subsampling: not divisible by the factors, one frame, none
+    LENGTHS = [50, 7, 31, 13, 1, 0, 44]
+
+    @staticmethod
+    def _encoders(**options):
+        torch.manual_seed(3)
+        padded_encoder = _packed_encoder(n_layers=3, **options).double().eval()
+        return padded_encoder, copy.deepcopy(padded_encoder)
+
+    def _assert_matches_padded(self, padded_encoder, packed_encoder):
+        lengths = torch.tensor(self.LENGTHS)
+        features = _packed_test_features(lengths)
+        padded_out, padded_lengths = padded_encoder(audio_signal=features, length=lengths)
+        packed = packed_encoder.forward_sequence_packed(features, lengths)
+        assert packed.lengths.tolist() == padded_lengths.tolist()
+        assert packed.max_seqlen == int(padded_lengths.max()) and int(packed.cu_seqlens[-1]) == packed.data.shape[0]
+        padded_valid = _valid_frames(padded_out, padded_lengths)
+        torch.testing.assert_close(packed.data, padded_valid)
+        _projected_loss(padded_valid).backward()
+        _projected_loss(packed.data).backward()
+        padded_grads = dict(padded_encoder.named_parameters())
+        for name, parameter in packed_encoder.named_parameters():
+            torch.testing.assert_close(parameter.grad, padded_grads[name].grad, msg=name)
+        # the comparison is not one of zeros: the frontend, before every reduction position, has a real gradient
+        assert padded_encoder.pre_encode.out.weight.grad.abs().max() > 1e-4
+        return packed
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("reduction", ["pooling", "striding"])
+    @pytest.mark.parametrize("reduction_position", [0, 1, 2, -1])
+    @pytest.mark.parametrize("reduction_factor", [2, 4])
+    def test_matches_padded(self, reduction, reduction_position, reduction_factor):
+        padded_encoder, packed_encoder = self._encoders(
+            reduction=reduction, reduction_position=reduction_position, reduction_factor=reduction_factor
+        )
+        assert packed_encoder.supports_sequence_packed_output
+        packed = self._assert_matches_padded(padded_encoder, packed_encoder)
+        if reduction == "pooling":
+            assert packed.lengths.tolist() == [frames // reduction_factor for frames in (9, 2, 6, 3, 1, 0, 8)]
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("reduction", ["pooling", "striding"])
+    @pytest.mark.parametrize("self_attention_model", ["abs_pos", "rope"])
+    def test_matches_padded_for_the_other_attention_types(self, reduction, self_attention_model):
+        """The layers after the reduction see the positions of the reduced utterances."""
+        padded_encoder, packed_encoder = self._encoders(
+            reduction=reduction, reduction_position=1, reduction_factor=2, self_attention_model=self_attention_model
+        )
+        self._assert_matches_padded(padded_encoder, packed_encoder)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("reduction", ["pooling", "striding"])
+    @pytest.mark.parametrize(
+        "self_attention_model, att_context_style, att_context_size, default",
+        [
+            pytest.param("rel_pos", "regular", [2, 1], None, id="regular"),
+            pytest.param("abs_pos", "regular", [2, 1], None, id="regular_abs_pos"),
+            pytest.param("rope", "regular", [2, 1], None, id="regular_rope"),
+            pytest.param("rel_pos", "chunked_limited", [2, 1], None, id="chunked"),
+            pytest.param("rel_pos", "chunked_limited_with_rc", None, [0, 2, 0], id="chunked_with_rc"),
+            pytest.param("rel_pos_local_attn", "regular", [2, 2], None, id="local"),
+        ],
+    )
+    def test_matches_padded_with_a_limited_attention_context(
+        self, reduction, self_attention_model, att_context_style, att_context_size, default
+    ):
+        """The layers after the reduction keep the context size, counted in the frames of the reduced utterances."""
+        torch.manual_seed(3)
+        padded_encoder = _limited_context_encoder(
+            self_attention_model,
+            att_context_style,
+            att_context_size,
+            default,
+            n_layers=3,
+            reduction=reduction,
+            reduction_position=0,
+            reduction_factor=2,
+        )
+        padded_encoder = padded_encoder.double().eval()
+        packed_encoder = copy.deepcopy(padded_encoder)
+        assert packed_encoder.supports_sequence_packed_output
+        packed = self._assert_matches_padded(padded_encoder, packed_encoder)
+        # four or five frames remain in the longest utterances, more than any of these contexts lets one frame see
+        assert packed.max_seqlen in (4, 5)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("reduction,reduction_position", [("pooling", 1), ("striding", 1), ("striding", -1)])
+    def test_matches_padded_in_training_mode(self, reduction, reduction_position):
+        """Layer normalization in the convolution modules, since batch normalization differs by the padded frames.
+
+        Stochastic depth draws once per layer in both forms, so the same seed drops the same layers;
+        the seed drops the second layer and keeps the third with the rescaled residual,
+        which runs on the reduced utterances when the reduction is at position 1.
+        """
+        padded_encoder, packed_encoder = self._encoders(
+            reduction=reduction,
+            reduction_position=reduction_position,
+            reduction_factor=2,
+            stochastic_depth_drop_prob=0.5,
+            stochastic_depth_mode="uniform",
+            conv=functools.partial(ConformerConvolution, kernel_size=4, norm_type="layer_norm"),
+        )
+        padded_encoder.train()
+        packed_encoder.train()
+        lengths = torch.tensor(self.LENGTHS)
+        features = _packed_test_features(lengths)
+        torch.manual_seed(0)
+        padded_out, padded_lengths = padded_encoder(audio_signal=features, length=lengths)
+        torch.manual_seed(0)
+        packed = packed_encoder.forward_sequence_packed(features, lengths)
+        assert packed.lengths.tolist() == padded_lengths.tolist()
+        padded_valid = _valid_frames(padded_out, padded_lengths)
+        torch.testing.assert_close(packed.data, padded_valid)
+        _projected_loss(padded_valid).backward()
+        _projected_loss(packed.data).backward()
+        padded_grads = dict(padded_encoder.named_parameters())
+        for name, parameter in packed_encoder.named_parameters():
+            torch.testing.assert_close(parameter.grad, padded_grads[name].grad, msg=name)
+        assert _dropped_layers(padded_encoder) == _dropped_layers(packed_encoder) == [False, True, False]
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("reduction,reduction_position", [("pooling", 1), ("pooling", -1), ("striding", 1)])
+    def test_matches_padded_with_an_output_projection(self, reduction, reduction_position):
+        """``feat_out``: the projection runs before the reduction of the output and inside the InterCTC capture."""
+        padded_encoder, packed_encoder = self._encoders(
+            reduction=reduction, reduction_position=reduction_position, reduction_factor=2, feat_out=12
+        )
+        packed = self._assert_matches_padded(padded_encoder, packed_encoder)
+        assert packed.data.shape[1] == 12
+
+    @pytest.mark.unit
+    def test_matches_padded_for_pre_encoded_packed_input(self):
+        padded_encoder, packed_encoder = self._encoders(
+            reduction="pooling", reduction_position=1, reduction_factor=2, xscaling=True
+        )
+        torch.manual_seed(12)
+        lengths = torch.tensor([9, 2, 6, 3, 1, 0, 8])
+        states = torch.randn(7, 9, 16, dtype=torch.float64)
+        padded_out, padded_lengths = padded_encoder(audio_signal=states, length=lengths, bypass_pre_encode=True)
+        packed = packed_encoder.forward_sequence_packed(pack_encoder_output(states, lengths), bypass_pre_encode=True)
+        assert packed.lengths.tolist() == padded_lengths.tolist() == [4, 1, 3, 1, 0, 0, 4]
+        torch.testing.assert_close(packed.data, _valid_frames(padded_out, padded_lengths))
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("reduction", ["pooling", "striding"])
+    def test_interctc_captures_follow_the_reduction(self, reduction):
+        """The capture of the reduction layer and of the layers after it carries the reduced utterances."""
+        encoder = _packed_encoder(n_layers=3, reduction=reduction, reduction_position=1, reduction_factor=2)
+        encoder = encoder.double().eval()
+        lengths = torch.tensor(self.LENGTHS)
+        features = _packed_test_features(lengths)
+        guid = getattr(encoder, "model_guid", None)
+        encoder.update_access_cfg({"interctc": {"capture_layers": [0, 1, 2]}}, guid=guid)
+        try:
+            registries = []
+            for packed in (False, True):
+                # reset_registry switches the access off
+                encoder.set_access_enabled(access_enabled=True, guid=guid)
+                if packed:
+                    encoder.forward_sequence_packed(features, lengths)
+                else:
+                    encoder(audio_signal=features, length=lengths)
+                registry = {}
+                for module_registry in encoder.get_module_registry(encoder).values():
+                    registry.update(module_registry)
+                registries.append({name: captures[0] for name, captures in registry.items()})
+                encoder.reset_registry()
+            padded, packed = registries
+            for layer, frames in ((0, [9, 2, 6, 3, 1, 0, 8]), (1, None), (2, None)):
+                padded_lengths = padded[f"interctc/layer_length_{layer}"]
+                capture = packed[f"interctc/layer_output_{layer}"]
+                assert capture.lengths.tolist() == padded_lengths.tolist()
+                assert packed[f"interctc/layer_length_{layer}"].tolist() == padded_lengths.tolist()
+                if frames is not None:
+                    assert padded_lengths.tolist() == frames
+                else:
+                    assert (
+                        padded_lengths.tolist() == padded["interctc/layer_length_2"].tolist() != [9, 2, 6, 3, 1, 0, 8]
+                    )
+                torch.testing.assert_close(
+                    capture.data, _valid_frames(padded[f"interctc/layer_output_{layer}"], padded_lengths)
+                )
+        finally:
+            encoder.reset_registry()
+            encoder.set_access_enabled(access_enabled=False, guid=guid)
+            encoder.interctc_capture_at_layers = None
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("reduction", ["pooling", "striding"])
+    @pytest.mark.parametrize("lengths", [[], [0, 0], [7, 13]])
+    def test_batches_without_frames_after_the_reduction(self, reduction, lengths):
+        """An empty batch, empty utterances and utterances shorter than the pooling window keep every gradient.
+
+        The padded forward raises for an empty batch, for a batch of empty utterances
+        and when the pooling leaves no frame at all, so these have no padded reference;
+        the strided convolution over two and three frames has one and is covered by the comparisons above.
+        """
+        encoder = _packed_encoder(n_layers=3, reduction=reduction, reduction_position=1, reduction_factor=4)
+        encoder = encoder.double().train()
+        lengths = torch.tensor(lengths, dtype=torch.long)
+        width = int(lengths.max()) if lengths.numel() else 0
+        features = torch.randn(len(lengths), 8, width, dtype=torch.float64, requires_grad=True)
+        out = encoder.forward_sequence_packed(features, lengths)
+        # two and three frames after the subsampling: the pooling by 4 leaves none, the strided convolution one
+        expected = [1, 1] if reduction == "striding" and width else [0] * len(lengths)
+        assert out.lengths.tolist() == expected and out.data.shape == (sum(expected), 16)
+        assert torch.isfinite(out.data).all()
+        out.data.sum().backward()
+        assert features.grad is not None and torch.isfinite(features.grad).all()
+        for name, parameter in encoder.named_parameters():
+            assert parameter.grad is not None and torch.isfinite(parameter.grad).all(), name
+            if not sum(expected):
+                assert not parameter.grad.any(), name
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+class TestPackedConformerReductionCuda:
+    LENGTHS = [600, 7, 300, 13, 1, 0, 451]
+
+    def _run(self, reduction, reduction_position, autocast, train=False):
+        torch.manual_seed(8)
+        padded_encoder = _packed_encoder(
+            n_layers=3,
+            d_model=32,
+            n_heads=2,
+            reduction=reduction,
+            reduction_position=reduction_position,
+            reduction_factor=2,
+            # batch normalization differs by the padded frames in training mode
+            conv=functools.partial(ConformerConvolution, kernel_size=4, norm_type="layer_norm"),
+            # in training mode the seed drops the second layer and keeps the third, the one after the reduction
+            stochastic_depth_drop_prob=0.5 if train else 0.0,
+            stochastic_depth_mode="uniform",
+        )
+        padded_encoder = padded_encoder.cuda().train(train)
+        packed_encoder = copy.deepcopy(padded_encoder)
+        lengths = torch.tensor(self.LENGTHS, device="cuda")
+        features = _packed_test_features(lengths, dtype=torch.float32, device="cuda")
+        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=autocast):
+            torch.manual_seed(0)
+            padded_out, padded_lengths = padded_encoder(audio_signal=features, length=lengths)
+            torch.manual_seed(0)
+            packed = packed_encoder.forward_sequence_packed(features, lengths)
+        assert packed.lengths.tolist() == padded_lengths.tolist()
+        padded_valid = _valid_frames(padded_out, padded_lengths).float()
+        _projected_loss(padded_valid).backward()
+        _projected_loss(packed.data.float()).backward()
+        assert _dropped_layers(padded_encoder) == _dropped_layers(packed_encoder) == [False, train, False]
+        return packed.data.float(), padded_valid, _gradient_difference(packed_encoder, padded_encoder)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("reduction", ["pooling", "striding"])
+    @pytest.mark.parametrize("reduction_position", [1, -1])
+    def test_matches_padded_outputs_and_gradients(self, reduction, reduction_position):
+        packed_out, padded_out, gradient_difference = self._run(reduction, reduction_position, autocast=False)
+        torch.testing.assert_close(packed_out, padded_out, atol=1e-4, rtol=1e-4)
+        # measured 6e-6 at most
+        assert gradient_difference <= 1e-4
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("reduction", ["pooling", "striding"])
+    @pytest.mark.parametrize("reduction_position", [1, -1])
+    @pytest.mark.parametrize("train", [False, True])
+    def test_bf16_autocast_matches_padded_outputs_and_gradients(self, reduction, reduction_position, train):
+        packed_out, padded_out, gradient_difference = self._run(reduction, reduction_position, True, train=train)
+        # measured 6e-2 at most on the outputs
+        torch.testing.assert_close(packed_out, padded_out, atol=1.5e-1, rtol=1e-1)
+        # measured 6e-3 at most: bf16 rounds differently in the padded and the packed kernels
+        assert gradient_difference <= 3e-2
+
+
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 class TestPackedFastConformerSmoke:

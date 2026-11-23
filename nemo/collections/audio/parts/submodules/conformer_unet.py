@@ -97,6 +97,10 @@ class ConformerEncoderUNet(ConformerEncoder):
             new_layers.append(nn.ModuleList([combiner, layer]))
         self.layers = new_layers
 
+    def sequence_packed_unsupported_reason(self) -> str | None:
+        """The skip connections have no sequence-packed form, so ``forward_sequence_packed`` raises with this reason."""
+        return "The U-Net skip connections of ConformerEncoderUNet have no sequence-packed form."
+
     def forward_internal(
         self,
         audio_signal,

@@ -26,7 +26,7 @@ from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 from nemo.utils import logging
 
 if TRITON_AVAILABLE:
-    from nemo.collections.asr.parts.k2.rnnt_logprobs_triton import rnnt_logprobs_triton
+    from nemo.collections.asr.parts.turbo_transducer.rnnt_logprobs_triton import rnnt_logprobs_triton
 
 
 def force_float32_context() -> ContextManager:
@@ -519,8 +519,8 @@ class GraphRnntLoss(GraphTransducerLossBase):
                     logits=logits,
                     targets=targets,
                     blank_id=self.blank,
-                    source_lengths=source_lengths,
-                    target_lengths=target_lengths,
+                    src_lengths=source_lengths,
+                    tgt_lengths=target_lengths,
                 )
                 text_units_blank_mask = text_units == self.blank
                 scores = torch.where(

@@ -194,7 +194,9 @@ def _make_dataloader(
             "use_bucketing": False,
             "num_workers": num_workers,
             "seed": 0,
-            "shard_seed": 0,
+            # On the iterable path every worker runs its own sampler over the (non-indexed) cuts, so the shuffle
+            # needs a per-worker seed; an integer seed would give each worker the same stream.
+            "shard_seed": "randomized" if mode == "iterable" else 0,
             "use_stateful_dataloader": use_stateful_dataloader,
             "force_map_dataset": mode == "map",
             "force_iterable_dataset": mode == "iterable",

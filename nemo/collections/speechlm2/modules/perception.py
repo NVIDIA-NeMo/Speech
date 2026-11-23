@@ -278,7 +278,8 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         if not self.supports_sequence_packed_output:
             raise ValueError(
                 "Packed encoder sequences require an encoder with native packed support, "
-                "IdentityConnector, no multi-layer feature extraction, and rote=null."
+                "IdentityConnector, no multi-layer feature extraction, and rote=null. "
+                + _sequence_packed_unsupported_reason(self.encoder)
             )
         processed_signal, processed_signal_length = self.maybe_preprocess_audio(
             input_signal,
@@ -303,6 +304,13 @@ class AudioPerceptionModule(NeuralModule, Exportable):
             encoder_kwargs["spk_targets"] = spk_targets
         encoded = self.encoder.forward_sequence_packed(**encoder_kwargs)
         return encoded.with_data(self.proj(encoded.data))
+
+
+def _sequence_packed_unsupported_reason(encoder: nn.Module) -> str:
+    """The encoder's own account of why it has no native packed form in its configuration, or an empty string."""
+    reason = getattr(encoder, "sequence_packed_unsupported_reason", None)
+    reason = reason() if callable(reason) else None
+    return f"{type(encoder).__name__}: {reason}" if reason else ""
 
 
 class IdentityConnector(nn.Module):
@@ -366,10 +374,10 @@ class IndependentDualEncoder(nn.Module):
         self.subsampling_factor = self._matching_positive_int("subsampling_factor")
         self.d_model = self._encoder_width(asr_encoder) + self._encoder_width(auxiliary_encoder)
 
+        # `supports_sequence_packed_output` may depend on the configuration and the mode (a ConformerEncoder
+        # training with attention dropout over rel_pos attention), so it is consulted per forward, not here
         if not all(
-            bool(getattr(encoder, "supports_sequence_packed_output", False))
-            and callable(getattr(encoder, "forward_sequence_packed", None))
-            for encoder in (asr_encoder, auxiliary_encoder)
+            callable(getattr(encoder, "forward_sequence_packed", None)) for encoder in (asr_encoder, auxiliary_encoder)
         ):
             raise TypeError("IndependentDualEncoder requires two native sequence-packed encoders.")
 
@@ -429,6 +437,17 @@ class IndependentDualEncoder(nn.Module):
         chunk_size_seconds: float | None,
     ) -> PackedEncoderActivations:
         max_tokens = self._chunk_size_tokens(chunk_size_seconds)
+        if not getattr(encoder, "supports_sequence_packed_output", True):
+            # a configuration without a native packed form (see ConformerEncoder.sequence_packed_unsupported_reason)
+            # runs padded and is re-packed, as it did before the encoder had a packed forward
+            if max_tokens is not None and features.max_seqlen > max_tokens:
+                raise TypeError(
+                    f"{type(encoder).__name__} does not support packed chunking in this configuration: "
+                    f"{_sequence_packed_unsupported_reason(encoder)}"
+                )
+            padded = unpack_encoder_output(features, total_length=features.padded_length).transpose(1, 2)
+            encoded, encoded_lengths = encoder(audio_signal=padded, length=features.lengths)
+            return pack_encoder_output(encoded.transpose(1, 2), encoded_lengths)
         if max_tokens is None or features.max_seqlen <= max_tokens:
             return encoder.forward_sequence_packed(features, features.lengths)
 

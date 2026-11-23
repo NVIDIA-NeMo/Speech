@@ -22,6 +22,7 @@ weights.
 
 import contextlib
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -166,6 +167,9 @@ def _install_fake_vllm(monkeypatch, version):
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
     monkeypatch.delitem(sys.modules, "nemo.collections.speechlm2.vllm.salm.config_hook", raising=False)
+    # register() writes this variable; setting it before deleting it makes monkeypatch restore the original state.
+    monkeypatch.setenv("VLLM_WORKER_MULTIPROC_METHOD", "")
+    monkeypatch.delenv("VLLM_WORKER_MULTIPROC_METHOD")
     return config_registry
 
 
@@ -191,6 +195,19 @@ def test_register_does_not_skip_supported_vllm(monkeypatch, version):
         _salm_module.register()
 
     assert "nemo_speechlm" in config_registry
+
+
+@pytest.mark.skipif(not _HAS_CONFIG, reason="SpeechLM vLLM plugin not available")
+@pytest.mark.parametrize(("preset", "expected"), ((None, "spawn"), ("fork", "fork")))
+def test_register_defaults_vllm_workers_to_spawn(monkeypatch, preset, expected):
+    """Importing the plugin initializes CUDA, so a forked engine process would fail; explicit choices win."""
+    _install_fake_vllm(monkeypatch, "0.12.0")
+    if preset is not None:
+        monkeypatch.setenv("VLLM_WORKER_MULTIPROC_METHOD", preset)
+
+    _salm_module.register()
+
+    assert os.environ["VLLM_WORKER_MULTIPROC_METHOD"] == expected
 
 
 @pytest.mark.skipif(not _HAS_CONFIG, reason="SpeechLM vLLM plugin not available")
@@ -2429,6 +2446,24 @@ class TestMTPPlugin:
         assert result is hf_cfg
         assert original_calls == [hf_cfg]
         assert salm_module._ORIGINAL_VLLM_HF_CONFIG_OVERRIDE is _recording_native
+
+    def test_patched_override_forwards_native_hook_arguments(self, monkeypatch):
+        """vLLM 0.33 calls the hook with ``transformers_mtp_overrides``; unrelated configs must pass it through."""
+        from nemo.collections.speechlm2.vllm import salm as salm_module
+
+        native_calls = []
+
+        def _recording_native(cfg, *args, **kwargs):
+            native_calls.append((cfg, args, kwargs))
+            return cfg
+
+        monkeypatch.setattr(salm_module, "_ORIGINAL_VLLM_HF_CONFIG_OVERRIDE", _recording_native)
+        hf_cfg = self._HFConfigLike(model_type="unrelated")
+        overrides = {"n_predict": 2}
+        result = salm_module._nemo_speechlm_mtp_hf_config_override(hf_cfg, transformers_mtp_overrides=overrides)
+
+        assert result is hf_cfg
+        assert native_calls == [(hf_cfg, (), {"transformers_mtp_overrides": overrides})]
 
     def test_patched_override_rejects_missing_native_hook(self, monkeypatch):
         """A corrupted install must fail clearly instead of recursing into our override."""

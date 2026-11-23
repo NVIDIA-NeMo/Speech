@@ -125,16 +125,6 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
         # SimulStream configs are SimpleNamespace objects; NeMo expects an OmegaConf DictConfig.
         cfg = OmegaConf.create(cls._namespace_to_dict(config))
 
-        # This adapter always sends raw-audio Frame requests (see process_chunk), so the pipeline
-        # must be built to match: `streaming.request_type` controls whether BufferedRNNTPipeline
-        # builds a Frame- or feature_buffer-based bufferer, and mismatching it would silently
-        # produce unpadded/wrong features. Force it here instead of relying on every config.
-        if cfg.get('streaming', {}).get('request_type', 'frame') != 'frame':
-            logging.warning(
-                f"Overriding streaming.request_type='{cfg.streaming.request_type}' to 'frame' "
-                f"({type(cls).__name__} only supports frame requests)."
-            )
-            cfg.streaming.request_type = 'frame'
         cls.cfg = cfg
 
         cls.pipeline = PipelineBuilder.build_pipeline(cfg)

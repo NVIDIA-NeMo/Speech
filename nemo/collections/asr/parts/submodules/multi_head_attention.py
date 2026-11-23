@@ -1291,14 +1291,12 @@ class LocalAttRelPositionalEncoding(PositionalEncoding):
 class RotaryPositionalEncoding(torch.nn.Module):
     """Rotary position embedding.
 
-    The cos and sin tables are built for ``max_len`` positions at construction, in float32 on the CPU,
-    and ``extend_pe`` rebuilds them when a call needs more positions or another device.
-    They are plain tensors of the module, not buffers: they follow from ``inv_freq`` alone, so a distributed
-    training has nothing to broadcast for them and a checkpoint nothing to store, and a table that one rank
-    extended beyond ``max_len`` harms nothing on the others.
-    They follow the module's device through ``.to()`` and the like, and ``forward`` moves them to the queries'
-    device when a wrapper moved the parameters and buffers alone (FSDP does).
-    Memory: ``2 * max_len * d_k * rotary_fraction * 4`` bytes per module, 4.9 MiB for 5,000 positions of 128.
+    The cos and sin tables are plain float32 tensors of the module, not buffers, built for ``max_len`` positions
+    at construction and rebuilt from the module's scalars when a call needs more positions or another device,
+    so a distributed training has nothing to broadcast for them and a checkpoint nothing to store.
+    They follow the module's device through ``.to()`` and the like, ``forward`` brings them to the queries' device
+    when a wrapper moved the parameters and buffers alone (FSDP does), and a dtype change leaves them float32.
+    They cost ``2 * max_len * d_k * rotary_fraction * 4`` bytes per module, 4.9 MiB for 5,000 positions of 128.
 
     Args:
         d_k (int): per-head feature dim
@@ -1328,10 +1326,14 @@ class RotaryPositionalEncoding(torch.nn.Module):
         self.cos, self.sin = self._tables(torch.arange(0, max_len, dtype=torch.float32, device="cpu"))
 
     def _apply(self, fn, recurse=True):
-        # `.to()`, `.cuda()` and the like move the tables with the module; a dtype change leaves them float32
+        # `.to()`, `.cuda()` and the like move the tables with the module; a dtype change leaves them float32.
+        # A move rebuilds the tables from the scalars instead of copying them: after `.to("meta")` they are meta
+        # tensors, which `to_empty(device=...)` could not copy out of.
         module = super()._apply(fn, recurse)
-        self.cos = self.cos.to(self.inv_freq.device)
-        self.sin = self.sin.to(self.inv_freq.device)
+        device = self.inv_freq.device
+        if self.cos.device != device:
+            cos, sin = self._tables(torch.arange(0, self.cos.size(0), dtype=torch.float32, device="cpu"))
+            self.cos, self.sin = cos.to(device), sin.to(device)
         return module
 
     def _rotate_half(self, x):

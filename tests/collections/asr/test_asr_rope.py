@@ -178,6 +178,20 @@ class TestRotaryPositionalEncoding:
         torch.testing.assert_close(out, expected)
 
     @pytest.mark.unit
+    def test_materialization_from_meta_rebuilds_the_tables(self):
+        # `.to("meta")` leaves meta tables behind, which `to_empty` cannot copy out of: a move rebuilds the tables
+        # from the scalars, so the materialized module has real tables and its forward matches a fresh module's
+        pe = RotaryPositionalEncoding(d_k=8, max_len=16).to('meta')
+        assert pe.cos.device.type == 'meta' and pe.cos.shape == (16, 8)
+        pe.to_empty(device='cpu')
+        assert pe.cos.device.type == 'cpu' and pe.cos.dtype == torch.float32 and pe.cos.shape == (16, 8)
+        fresh = RotaryPositionalEncoding(d_k=8, max_len=16)
+        torch.testing.assert_close(pe.cos, fresh.cos)
+        torch.testing.assert_close(pe.sin, fresh.sin)
+        q = torch.randn(1, 2, 12, 8)
+        torch.testing.assert_close(pe(q, q), fresh(q, q))
+
+    @pytest.mark.unit
     def test_forward_first_token_is_identity(self):
         # Position 0 has zero phase, so cos=1, sin=0 -> rotation is identity.
         pe = RotaryPositionalEncoding(d_k=16, rotary_fraction=1.0)

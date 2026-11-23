@@ -112,7 +112,7 @@ model:
       mm_full_precision: false
       input_grad_full_precision: false
       weight_grad_full_precision: false
-      backward_mode: null  # options: null (selected by the GPU), atomic, chunked
+      backward_mode: chunked  # options: chunked, atomic (experimental)
       backend: triton  # the only implemented backend
 
     jointnet:

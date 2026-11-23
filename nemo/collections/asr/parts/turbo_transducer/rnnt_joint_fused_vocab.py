@@ -53,8 +53,8 @@ def rnnt_joint_fused_vocab(
 
     ``backward_pruning_range_size`` enables approximate backward on that many contiguous target positions per frame.
     Windows maximize incoming target/blank gradient magnitude. Forward remains unchanged.
-    None or non-positive widths disable pruning. ``backward_mode`` optionally selects the ``'atomic'``
-    or ``'chunked'`` algorithm independently of pruning.
+    None or non-positive widths disable pruning. ``backward_mode`` selects the algorithm of the backward pass
+    independently of pruning: ``'chunked'`` (default, also if None) or ``'atomic'`` (experimental).
 
     ``pruning_range_starts`` evaluates the Joint for the pruned lattice: ``joint_hidden`` is given only
     for the pruning ranges, ``[B, T, range_size, hidden_dim]``, and the integer tensor ``[B, T]`` defines the first

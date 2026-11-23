@@ -512,7 +512,7 @@ def run_benchmark(
         use_high_precision_mm=use_high_precision_mm,
         pruning_range_size=pruning_range_size,
         pruning_type=pruning_type if pruning_range_size is not None else '-',
-        backward_mode=(backward_mode or 'auto') if joint == 'fused_vocab' and joint_backend == 'triton' else '-',
+        backward_mode=(backward_mode or 'chunked') if joint == 'fused_vocab' and joint_backend == 'triton' else '-',
         with_consistency=with_consistency,
     )
 

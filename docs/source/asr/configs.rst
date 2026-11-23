@@ -718,7 +718,7 @@ not affected: the parameters of the Joint are the same, so the kernel can be ena
       mm_full_precision: false
       input_grad_full_precision: false
       weight_grad_full_precision: false
-      backward_mode: null  # options: null (selected by the GPU), atomic, chunked
+      backward_mode: chunked  # options: chunked, atomic (experimental)
       pruning:  # experimental
         type: null  # options: null (disabled), backward, two_pass
         range_size: 16  # target positions per frame; use values 8 or 16
@@ -744,7 +744,7 @@ The ``turbo_kernel`` section has the following parameters (unknown parameters ar
 
 * ``input_grad_full_precision``, ``weight_grad_full_precision``: Accumulate the gradient for the Joint hidden representation / the weight of the vocabulary projection in ``float32`` instead of the dtype of the activations.
 
-* ``backward_mode``: The algorithm of the backward pass. ``atomic`` recomputes the logits and accumulates all gradients in a single GPU kernel with atomic operations. ``chunked`` processes the lattice by chunks: a GPU kernel computes the gradient for the logits of a chunk into a buffer of a fixed size (128 MiB), and the gradients are computed from it by matrix multiplications. ``null`` (default) selects the algorithm by the GPU: ``atomic`` for the GPUs with native ``bfloat16`` atomic operations (compute capability 9.0 or higher, e.g., H100 or newer) except Blackwell data center GPUs (compute capability 10.x, e.g., B200, GB200, GB300), ``chunked`` otherwise. Both algorithms compute the same gradients (``input_grad_full_precision`` and ``weight_grad_full_precision`` affect only ``atomic``; ``chunked`` rounds each gradient once). The faster algorithm depends on the GPU and the vocabulary size: compare them if the backward pass is slower than expected.
+* ``backward_mode``: The algorithm of the backward pass. ``chunked`` (default, also selected by ``null``) processes the lattice by chunks: a GPU kernel computes the gradient for the logits of a chunk into a buffer of a fixed size (128 MiB), and the gradients are computed from it by matrix multiplications. ``atomic`` recomputes the logits and accumulates all gradients in a single GPU kernel with atomic operations, without the buffer. ``atomic`` is experimental: its behavior can change in future releases. It requires Triton 3.4 or higher for ``bfloat16`` gradients, and it was slower than ``chunked`` on the GPUs where both algorithms were compared (RTX A6000, GB300); native ``bfloat16`` atomic operations are available only on the GPUs with compute capability 9.0 or higher (e.g., H100 or newer). Both algorithms compute the same gradients (``input_grad_full_precision`` and ``weight_grad_full_precision`` affect only ``atomic``; ``chunked`` rounds each gradient once).
 
 * ``pruning``: Optional section, a missing section or ``null`` disables pruning. Pruning is experimental: its behavior and parameters can change in future releases, and a warning is logged when it is enabled. With pruning, the Joint is evaluated only for ``range_size`` contiguous target positions (a pruning range) for each frame, since the alignments with non-negligible probability pass only through a narrow band of the lattice. Pruning is applied only in training mode. The section has the following parameters:
 

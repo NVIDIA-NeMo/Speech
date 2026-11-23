@@ -117,7 +117,7 @@ class TestTurboJointKernelConfig:
         assert not kernel_config.use_high_precision_mm
         assert not kernel_config.input_grad_full_precision
         assert not kernel_config.weight_grad_full_precision
-        assert kernel_config.backward_mode is None
+        assert kernel_config.backward_mode == "chunked"
         assert kernel_config.pruning == TurboJointPruningConfig(type="two_pass", range_size=8, start_step=100)
         assert kernel_config.pruning.pruning_type is TurboJointPruningType.TWO_PASS
         assert kernel_config.uses_pruning
@@ -547,7 +547,10 @@ class TestJointTurboKernel:
     @pytest.mark.gpu
     @requires_triton_cuda
     def test_backward_mode_selects_backward_algorithm(self, monkeypatch):
-        """`backward_mode` of the config selects the algorithm of the backward pass; the gradients are the same"""
+        """
+        `backward_mode` of the config selects the algorithm of the backward pass (chunked by default, also for None);
+        the gradients are the same
+        """
         torch.manual_seed(42)
         device = torch.device("cuda")
         chunked_backward_calls = []
@@ -560,11 +563,18 @@ class TestJointTurboKernel:
         monkeypatch.setattr(fused_vocab_triton_module, "_rnnt_joint_fused_vocab_bwd_chunked", spy_chunked_backward)
         inputs = _joint_inputs(device=device)
         grads, state_dict = {}, None
-        for backward_mode, num_expected_calls in [("chunked", 1), ("atomic", 0)]:
+        # (config of the backward mode, number of the calls of the chunked backward); no key: the default mode
+        cases = [
+            ({}, 1),
+            ({"backward_mode": None}, 1),
+            ({"backward_mode": "chunked"}, 1),
+            ({"backward_mode": "atomic"}, 0),
+        ]
+        for backward_mode_config, num_expected_calls in cases:
             joint = RNNTJoint(
                 jointnet=_jointnet_config(),
                 num_classes=NUM_CLASSES,
-                turbo_kernel=_turbo_kernel_config(backward_mode=backward_mode),
+                turbo_kernel=_turbo_kernel_config(**backward_mode_config),
             ).to(device)
             state_dict = state_dict or joint.state_dict()
             joint.load_state_dict(state_dict, strict=True)
@@ -572,7 +582,7 @@ class TestJointTurboKernel:
             loss_inputs = joint.forward_for_loss(*inputs)
             (loss_inputs.target_logprobs.sum() + loss_inputs.blank_logprobs.sum()).backward()
             assert len(chunked_backward_calls) == num_expected_calls
-            grads[backward_mode] = [parameter.grad for parameter in joint.parameters()]
+            grads[backward_mode_config.get("backward_mode")] = [parameter.grad for parameter in joint.parameters()]
         assert len(grads["chunked"]) > 0
         for chunked_grad, atomic_grad in zip(grads["chunked"], grads["atomic"]):
             torch.testing.assert_close(atomic_grad, chunked_grad, rtol=1e-4, atol=1e-5)

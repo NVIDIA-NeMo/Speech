@@ -76,12 +76,14 @@ class FusedVocabBackwardMode(PrettyStrEnum):
     """
     Backward algorithm for the Triton `fused_vocab` Joint.
 
-    - ATOMIC: single fused kernel; recomputes logits per (flattened batch, vocab) tile and accumulates
-      grad_joint_hidden / grad_weight / grad_bias with atomics. Fast only with native bf16 atomics (sm_90+);
-      on older GPUs bf16 atomics are emulated with compare-and-swap loops.
-    - CHUNKED: processes the flattened batch in row chunks: a Triton kernel recomputes logits and writes grad logits
-      for the chunk into a bounded buffer, then two GEMMs compute grad_joint_hidden and accumulate grad_weight.
-      Avoids large-scale atomics; memory overhead is bounded by the chunk buffer (independent of B, T, U).
+    - CHUNKED (default): processes the flattened batch in row chunks: a Triton kernel recomputes logits and writes
+      grad logits for the chunk into a bounded buffer, then two GEMMs compute grad_joint_hidden and accumulate
+      grad_weight. Avoids large-scale atomics; memory overhead is bounded by the chunk buffer (independent of
+      B, T, U).
+    - ATOMIC (experimental): single fused kernel; recomputes logits per (flattened batch, vocab) tile and accumulates
+      grad_joint_hidden / grad_weight / grad_bias with atomics. No buffer for the grad logits. Native bf16 atomics
+      require sm_90+ (on older GPUs they are emulated with compare-and-swap loops) and Triton 3.4+.
+      Slower than CHUNKED on the GPUs where both modes were measured (RTX A6000, GB300).
     """
 
     ATOMIC = "atomic"
@@ -166,10 +168,8 @@ class TurboJointKernelConfig:
         mm_full_precision: use FP32 matmul operands for BF16 activations (by default BF16 operands are used).
         input_grad_full_precision: accumulate the gradient for the Joint hidden in FP32.
         weight_grad_full_precision: accumulate the gradient for the vocabulary projection weight in FP32.
-        backward_mode: backward algorithm, `atomic` or `chunked`, see `FusedVocabBackwardMode`. None selects it
-            by the GPU: `atomic` with native BF16 atomics (compute capability 9.0+) except Blackwell data center
-            GPUs (compute capability 10.x), `chunked` otherwise.
-            The gradient precision flags affect only the `atomic` mode.
+        backward_mode: backward algorithm, see `FusedVocabBackwardMode`: `chunked` (default, also if None)
+            or `atomic` (experimental). The gradient precision flags affect only the `atomic` mode.
         pruning: optional pruning of the lattice, see `TurboJointPruningConfig`. None disables pruning.
     """
 
@@ -179,7 +179,7 @@ class TurboJointKernelConfig:
     mm_full_precision: bool = False
     input_grad_full_precision: bool = False
     weight_grad_full_precision: bool = False
-    backward_mode: Optional[str] = None
+    backward_mode: Optional[str] = FusedVocabBackwardMode.CHUNKED.value
     pruning: Optional[TurboJointPruningConfig] = None
 
     @classmethod

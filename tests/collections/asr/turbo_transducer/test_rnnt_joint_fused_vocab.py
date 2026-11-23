@@ -297,7 +297,7 @@ class TestFusedVocabJoint:
 @requires_cuda
 @requires_triton
 def test_default_backend_and_backward_mode(monkeypatch):
-    """Without explicit backend and backward mode: Triton backend with the backward mode selected by the GPU"""
+    """Without explicit backend and backward mode: Triton backend with the chunked backward"""
     inputs = make_joint_inputs()
     leaves, reference_leaves = inputs.leaves(), inputs.leaves(torch.float64)
     selected_modes = []
@@ -310,7 +310,7 @@ def test_default_backend_and_backward_mode(monkeypatch):
 
     monkeypatch.setattr(fused_vocab_triton_module, "_normalize_backward_options", record_backward_mode)
     outputs = rnnt_joint_fused_vocab(**inputs.kernel_kwargs(leaves), backend=None, **FULL_PRECISION)
-    assert selected_modes == [fused_vocab_triton_module._get_default_backward_mode(torch.device("cuda"))]
+    assert selected_modes == [FusedVocabBackwardMode.CHUNKED]
     expected_outputs = reference_outputs(inputs, reference_leaves)
     assert_close_to_reference(outputs, expected_outputs, FULL_PRECISION_TOLERANCE, OUTPUT_NAMES)
     torch.autograd.backward(outputs, [torch.ones_like(output) for output in outputs])
@@ -568,29 +568,16 @@ def test_rejects_inconsistent_inputs(invalid_kwargs, error):
 
 
 @requires_triton
-@pytest.mark.parametrize(
-    "capability,expected_mode",
-    [
-        ((7, 5), "chunked"),
-        ((8, 0), "chunked"),
-        ((8, 6), "chunked"),
-        ((8, 9), "chunked"),
-        ((9, 0), "atomic"),
-        ((10, 0), "chunked"),
-        ((10, 3), "chunked"),
-        ((12, 0), "atomic"),
-    ],
-)
+@pytest.mark.parametrize("capability", [(7, 5), (8, 6), (9, 0), (10, 3), (12, 0)])
 @pytest.mark.parametrize("bf16_atomics_available", [True, False])
-def test_default_backward_mode(capability, expected_mode, bf16_atomics_available, monkeypatch):
-    """
-    Atomic backward requires native BF16 atomics (compute capability 9.0+), supported by Triton 3.4+.
-    Chunked backward is faster on Blackwell data center GPUs (compute capability 10.x).
-    """
+def test_default_backward_mode(capability, bf16_atomics_available, monkeypatch):
+    """Chunked backward is the default for all GPUs and versions of Triton; atomic backward is only by request"""
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: capability)
     monkeypatch.setattr(fused_vocab_triton_module, "BF16_ATOMICS_AVAILABLE", bf16_atomics_available)
-    backward_mode = fused_vocab_triton_module._get_default_backward_mode(torch.device("cuda"))
-    assert backward_mode == FusedVocabBackwardMode(expected_mode if bf16_atomics_available else "chunked")
+    joint_hidden = torch.empty(1, 2, 4, 8)
+    for backward_mode, expected_mode in [(None, "chunked"), ("chunked", "chunked"), ("atomic", "atomic")]:
+        selected_mode, _ = fused_vocab_triton_module._normalize_backward_options(joint_hidden, backward_mode, None)
+        assert selected_mode is FusedVocabBackwardMode(expected_mode)
 
 
 @requires_triton

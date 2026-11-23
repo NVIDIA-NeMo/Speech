@@ -649,7 +649,7 @@ class _RnntJointFusedVocabTritonFunction(torch.autograd.Function):
         use_high_precision_mm: bool = False,
         input_grad_full_precision: bool = False,
         weight_grad_full_precision: bool = False,
-        backward_mode: FusedVocabBackwardMode = FusedVocabBackwardMode.ATOMIC,
+        backward_mode: FusedVocabBackwardMode = FusedVocabBackwardMode.CHUNKED,
         mm_full_precision: bool = False,
         backward_pruning_range_size: int | None = None,
         pruning_range_starts: torch.Tensor | None = None,
@@ -873,9 +873,8 @@ def rnnt_joint_fused_vocab_triton(
             matmul precision setting in the chunked GEMMs.
         use_high_precision_mm: Use FP32 operands and IEEE input precision in Triton. This implies full precision
             operands independently of ``mm_full_precision``, preserving the existing high-precision behavior.
-        backward_mode: backward algorithm, see `FusedVocabBackwardMode`. If None, selected automatically:
-            ATOMIC on GPUs with native bf16 atomics (compute capability >= 9.0) except Blackwell data center GPUs
-            (compute capability 10.x), CHUNKED otherwise.
+        backward_mode: backward algorithm, see `FusedVocabBackwardMode`: CHUNKED (default, also if None)
+            or ATOMIC (experimental).
             input_grad_full_precision / weight_grad_full_precision affect only the ATOMIC mode
             (CHUNKED always accumulates grad weight in full precision and rounds each gradient once).
         backward_pruning_range_size: Optional positive number of contiguous target positions retained per frame in
@@ -1031,30 +1030,18 @@ def _normalize_backward_options(
     backward_mode: str | FusedVocabBackwardMode | None,
     backward_pruning_range_size: int | None,
 ) -> tuple[FusedVocabBackwardMode, int | None]:
-    """Resolve the automatic backward mode; disable pruning for non-positive widths or widths covering U+1"""
+    """Resolve the default backward mode; disable pruning for non-positive widths or widths covering U+1"""
     if backward_pruning_range_size is not None:
         if type(backward_pruning_range_size) is not int:
             raise ValueError("backward_pruning_range_size must be an integer or None")
         if backward_pruning_range_size <= 0 or backward_pruning_range_size >= joint_hidden.shape[2]:
             backward_pruning_range_size = None
     if backward_mode is None:
-        backward_mode = _get_default_backward_mode(joint_hidden.device)
+        # CHUNKED is the default for all GPUs: it is the faster mode on the GPUs where both modes were measured
+        # (RTX A6000: BF16 atomics are emulated; GB300: 2 times faster for vocab 1025 and 16385, BF16, lattice
+        # [64, 150, 73], hidden 640), and it works with all supported versions of Triton. ATOMIC is experimental.
+        backward_mode = FusedVocabBackwardMode.CHUNKED
     return FusedVocabBackwardMode(backward_mode), backward_pruning_range_size
-
-
-def _get_default_backward_mode(device: torch.device) -> FusedVocabBackwardMode:
-    # Native bf16 atomic add (`red.global.add.noftz.bf16x2`) requires sm_90+; on older GPUs Triton emits
-    # compare-and-swap loops, which makes the ATOMIC backward several times slower than the CHUNKED one.
-    # Triton < 3.4 does not support BF16 atomics at all.
-    # Blackwell data center GPUs (compute capability 10.x: B200, GB200, GB300): the CHUNKED backward is faster,
-    # GEMMs are several times faster than the kernel with atomics. Measured on GB300 (sm_103), BF16, lattice
-    # [64, 150, 73], hidden 640, the best configs: 2 times faster for vocab 1025 and 16385.
-    if device.type != "cuda" or not BF16_ATOMICS_AVAILABLE:
-        return FusedVocabBackwardMode.CHUNKED
-    capability_major = torch.cuda.get_device_capability(device)[0]
-    if capability_major >= 9 and capability_major != 10:
-        return FusedVocabBackwardMode.ATOMIC
-    return FusedVocabBackwardMode.CHUNKED
 
 
 def _check_atomic_accumulators(*accumulators: torch.Tensor):

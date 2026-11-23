@@ -582,13 +582,14 @@ def _try_prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
     """Run vLLM prep; on ``ValueError``, warn and keep the HF-only output.
 
     Backward compat for callers that never needed vLLM (e.g., NeMo SALM).
-    vLLM prep also writes the root tokenizer. An export with a bundled
-    ``llm_backbone`` config loads its tokenizer from the export itself, so a
-    failure there is re-raised instead of leaving an unloadable checkpoint.
+    vLLM prep also writes the root tokenizer. Unless the model config names an
+    explicit ``tokenizer_path``, an export with a bundled ``llm_backbone``
+    config loads its tokenizer from the export itself, so a failure there is
+    re-raised instead of leaving an unloadable checkpoint.
 
     Raises:
         RuntimeError: If prep fails for an export that has a bundled backbone
-            config but no tokenizer.
+            config, no tokenizer, and no explicit ``tokenizer_path``.
     """
     from nemo.utils import logging as LOG
 
@@ -597,7 +598,8 @@ def _try_prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
     except ValueError as e:
         output_dir = Path(output_dir)
         has_backbone_config = (output_dir / LLM_BACKBONE_DIR / "config.json").exists()
-        if has_backbone_config and not (output_dir / "tokenizer_config.json").exists():
+        has_tokenizer = (output_dir / "tokenizer_config.json").exists() or model_cfg.get("tokenizer_path")
+        if has_backbone_config and not has_tokenizer:
             raise RuntimeError(
                 f"vLLM prep failed for the export in {output_dir}, so no tokenizer was written and the "
                 f"checkpoint cannot be loaded by NeMo SALM, HF, or vLLM: {e}"

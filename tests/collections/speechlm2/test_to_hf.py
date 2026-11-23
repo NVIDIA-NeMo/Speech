@@ -466,7 +466,8 @@ def test_nemotron_remote_code_backbone_export_is_reloadable(tmp_path, trust_remo
     reloaded = AutoConfig.from_pretrained(backbone_dir, trust_remote_code=True)
     assert type(reloaded).__name__ == type(config).__name__
     assert type(reloaded).__module__.startswith("transformers_modules.") == trust_remote_code
-    assert reloaded.layers_block_type == ["mamba", "attention"]
+    # Newer native classes normalize the portable on-disk names in memory; compare in-memory topologies.
+    assert reloaded.layers_block_type == config.layers_block_type
     if trust_remote_code:
         assert (backbone_dir / "configuration_nemotron_h.py").exists()
     else:
@@ -491,6 +492,11 @@ def test_try_prepare_for_vllm_raises_when_backbone_export_has_no_tokenizer(tmp_p
             to_hf._try_prepare_for_vllm(
                 str(output_dir), {"pretrained_llm": "fake-model", "audio_locator_tag": AUDIO_TOKEN}
             )
+
+    # An explicit tokenizer_path (e.g. a Duplex S2S model without an audio tag) keeps the HF-only export
+    # loadable: the HF loader only redirects the backbone config, so prep failure stays a warning.
+    to_hf._try_prepare_for_vllm(str(output_dir), {"pretrained_llm": "fake-model", "tokenizer_path": "fake-tokenizer"})
+    assert not (output_dir / "tokenizer_config.json").exists()
 
     # Without a bundled backbone config, the HF-only export stays loadable and prep failure is a warning.
     (output_dir / "llm_backbone" / "config.json").unlink()

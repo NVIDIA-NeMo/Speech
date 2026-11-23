@@ -43,7 +43,7 @@ from nemo.collections.speechlm2.vllm.salm.config import (
 _PKG = "nemo.collections.speechlm2.vllm.salm"
 _LOGGER = logging.getLogger(__name__)
 _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE = None
-# Oldest vLLM release whose internals the plugin hooks into (NeMo's ``vllm`` extra pins it).
+# Oldest vLLM release whose internals the plugin hooks into; NeMo's ``vllm`` extra pins a newer one.
 _MIN_VLLM_VERSION = "0.32.0"
 _AUTOMODEL_DFLASH2_ARCHITECTURES = frozenset(
     {
@@ -110,9 +110,10 @@ def _register_model_aliases(model_registry, native_arch, aliases, supported_arch
             model_registry.register_model(alias, model_ref)
 
 
-def _nemo_speechlm_mtp_hf_config_override(hf_config):
+def _nemo_speechlm_mtp_hf_config_override(hf_config, *args, **kwargs):
     """Apply SpeechLM speculative-config rewrites, then defer to vLLM.
 
+    Extra arguments belong to vLLM's hook and are forwarded to it unchanged.
     This function must remain at module scope: vLLM retains it on the draft
     ``ModelConfig``, which can cross a spawned process boundary. The original
     vLLM callable stays in process-local module state because binding the
@@ -167,7 +168,7 @@ def _nemo_speechlm_mtp_hf_config_override(hf_config):
         if current_override is _nemo_speechlm_mtp_hf_config_override:
             raise RuntimeError("NeMo SpeechLM MTP override was installed without preserving vLLM's original hook.")
         _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE = current_override
-    hf_config = _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE(hf_config)
+    hf_config = _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE(hf_config, *args, **kwargs)
     return _normalize_dflash2_architecture(hf_config)
 
 

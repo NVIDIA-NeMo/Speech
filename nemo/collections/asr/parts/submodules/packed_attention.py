@@ -74,7 +74,8 @@ class PackedAttentionContext:
 
     On CUDA with Triton the relative-position attention runs the kernel of
     :mod:`nemo.collections.asr.parts.triton.rel_pos_attention` over the utterance boundaries as they are.
-    Without it, or with ``rel_pos_kernel`` off, FlexAttention runs with a block mask derived from the boundaries,
+    Without it, with ``rel_pos_kernel`` off, or with a limited attention context (``key_window``),
+    FlexAttention runs with a block mask derived from the boundaries,
     without evaluating a mask over the dense token grid:
     a key block is complete for a query block when both lie inside the same utterance,
     partial when it intersects an utterance that the query block touches,

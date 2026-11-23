@@ -107,6 +107,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             dropout wherever Triton is installed (FlexAttention otherwise), or 'flex', FlexAttention always,
             the backend before the kernel, which computes in float32 and has no attention dropout.
             Keyword-only; defaults to 'triton'. In float64 both run the dense reference attention.
+            A limited attention context runs FlexAttention with either value: the kernel has no key window.
         reduction (str, Optional): the method of reduction, choices=['pooling', 'striding']. If no value
             is passed, then no reduction is performed and the models runs with the original 4x subsampling.
         reduction_position (int, Optional): the index of the layer to apply reduction. If -1, apply reduction

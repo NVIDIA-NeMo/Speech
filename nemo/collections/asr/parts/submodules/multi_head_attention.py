@@ -224,6 +224,7 @@ class MultiHeadAttention(nn.Module):
             x: layer input of all utterances, shape ``(T_total, n_feat)``.
             context: packing metadata of the batch.
             pos_emb: relative positional embedding ``(1, 2 * context.rel_pos_max_seqlen - 1, n_feat)``,
+                or a shorter one that covers the reach of a key window bounded on both sides;
                 used by the Transformer-XL subclass only.
 
         Returns:

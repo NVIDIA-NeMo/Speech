@@ -949,9 +949,18 @@ def build_token_channel(
             )
             text_for_tokens = text
             language = cut.lang if cut.has_custom("lang") else supervision.language
+            pos = compute_num_frames(supervision.start, frame_length, cut.sampling_rate)
+            interruption_pos = compute_num_frames(supervision.end, frame_length, cut.sampling_rate)
             if timestamp_turns is not None:
                 timestamp_turns.append(
-                    dict(text=text, start=supervision.start, end=supervision.end, language=language)
+                    dict(
+                        text=text,
+                        start=supervision.start,
+                        end=supervision.end,
+                        language=language,
+                        start_frame=pos,
+                        end_frame=interruption_pos,
+                    )
                 )
             if (
                 apply_partial_phoneme_text
@@ -995,7 +1004,6 @@ def build_token_channel(
             else:
                 text_ids = torch.as_tensor(raw_ids + [eos_id])
 
-            pos = compute_num_frames(supervision.start, frame_length, cut.sampling_rate)
             if pos >= len(tokens):
                 continue
 
@@ -1005,10 +1013,13 @@ def build_token_channel(
             tokens[pos : pos + len(text_ids)] = text_ids
 
             # add interruption token, used for add speech eos and interrupt the model
-            interruption_pos = compute_num_frames(supervision.end, frame_length, cut.sampling_rate)
             if interruption_pos < len(tokens):
                 tokens[interruption_pos] = interruption_token_id
 
+    if timestamp_turns is not None:
+        for turn in timestamp_turns:
+            end_frame = turn['end_frame']
+            turn['has_end_marker'] = 0 <= end_frame < len(tokens) and tokens[end_frame].item() == interruption_token_id
     return tokens
 
 

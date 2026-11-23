@@ -23,6 +23,7 @@ import numpy as np
 import soundfile as sf
 import torch
 import wandb
+from lhotse.utils import compute_num_frames
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 from omegaconf import DictConfig
@@ -278,7 +279,20 @@ class NemotronTTSModel(NemotronTTSBase):
             }
         values = {f'{mode}/timestamp_loss': output.timestamp_loss}
         values.update({f'{mode}/timestamp_{name}': value for name, value in metrics.items()})
-        self.log_dict(values, on_step=mode == 'train', on_epoch=mode != 'train', batch_size=batch_size, sync_dist=True)
+        if mode == 'train':
+            # Reduce training diagnostics together, preserving their per-rank means.
+            packed = torch.stack([value.detach().float() for value in values.values()])
+            trainer = getattr(self, '_trainer', None)
+            if trainer is not None:
+                packed = trainer.strategy.reduce(packed, reduce_op='mean')
+            values = dict(zip(values, packed.unbind()))
+        self.log_dict(
+            values,
+            on_step=mode == 'train',
+            on_epoch=mode != 'train',
+            batch_size=batch_size,
+            sync_dist=mode != 'train',
+        )
 
     def _get_timestamp_teacher(self):
         """Cache the frozen external teacher without registering checkpoint/optimizer weights."""
@@ -317,8 +331,10 @@ class NemotronTTSModel(NemotronTTSBase):
                 raise ValueError('timestamp_turns must contain one list of GT turns per sample')
             for sample, turns in enumerate(batch['timestamp_turns']):
                 for turn in turns:
-                    start = math.floor(float(turn['start']) / frame_seconds + 0.5)
-                    end = math.floor(float(turn['end']) / frame_seconds + 0.5)
+                    start = turn.get(
+                        'start_frame', compute_num_frames(float(turn['start']), frame_seconds, sample_rate)
+                    )
+                    end = turn.get('end_frame', compute_num_frames(float(turn['end']), frame_seconds, sample_rate))
                     language = turn.get('language') or batch.get('languages', [None] * text.size(0))[sample]
                     plans.append(
                         (
@@ -329,6 +345,7 @@ class NemotronTTSModel(NemotronTTSBase):
                             round(turn['end'] * sample_rate),
                             turn['text'],
                             language,
+                            turn,
                         )
                     )
         else:
@@ -337,11 +354,18 @@ class NemotronTTSModel(NemotronTTSBase):
             for sample, code_length in enumerate(audio_codes_lens.detach().cpu().tolist()):
                 end = (code_length + self.frame_stacking_factor - 1) // self.frame_stacking_factor
                 language = batch.get('languages', [None] * text.size(0))[sample]
-                plans.append((sample, 0, end, 0, source_lengths[sample], batch['raw_texts'][sample], language))
-        metrics = dict(turns=len(plans), valid_turns=0, invalid_turns=0, collision_frames=0, collision_words=0)
+                plans.append((sample, 0, end, 0, source_lengths[sample], batch['raw_texts'][sample], language, None))
+        metrics = dict(
+            turns=len(plans),
+            valid_turns=0,
+            invalid_turns=0,
+            collision_frames=0,
+            collision_words=0,
+            missing_end_markers=0,
+        )
         waveforms, references, languages, metadata = [], [], [], []
         acoustic_mask = batch.get('acoustic_loss_mask')
-        for sample, start, end, left, right, reference, language in plans:
+        for sample, start, end, left, right, reference, language, turn in plans:
             end = min(end, num_frames)
             valid_audio = 0 <= left < right <= source_lengths[sample]
             if (
@@ -355,7 +379,7 @@ class NemotronTTSModel(NemotronTTSBase):
             waveforms.append(audio[sample, left:right].detach())
             references.append(reference)
             languages.append(language)
-            metadata.append((sample, start, end, left / sample_rate))
+            metadata.append((sample, start, end, left / sample_rate, turn))
         if waveforms:
             lengths = torch.tensor([waveform.numel() for waveform in waveforms], device=audio.device, dtype=torch.long)
             teacher = self._get_timestamp_teacher()
@@ -365,7 +389,7 @@ class NemotronTTSModel(NemotronTTSBase):
                 )
             if len(records) != len(metadata):
                 raise ValueError('Timestamp teacher must return one alignment per ground-truth turn')
-            for turn_index, ((sample, start, end, offset), record) in enumerate(zip(metadata, records)):
+            for turn_index, ((sample, start, end, offset, turn), record) in enumerate(zip(metadata, records)):
                 if record.get('error') or not record.get('words'):
                     metrics['invalid_turns'] += 1
                     continue
@@ -391,15 +415,22 @@ class NemotronTTSModel(NemotronTTSBase):
                 coverage[sample, start:end] += 1
                 aligned_end = float(record['words'][-1]['end'])
                 if is_multiturn:
-                    # Audio EOS follows the interruption frame; targets remove BOS.
-                    terminal = math.floor((aligned_end + offset) / frame_seconds + 0.5) + 1
+                    # Anchor to the original packing grid, preserving any teacher endpoint error.
+                    delta = aligned_end - waveforms[turn_index].numel() / sample_rate
+                    frames = compute_num_frames(abs(delta), frame_seconds, sample_rate)
+                    end_frame = turn.get(
+                        'end_frame', compute_num_frames(float(turn['end']), frame_seconds, sample_rate)
+                    )
+                    terminal = end_frame + 1 + (-frames if delta < 0 else frames)
                 else:
                     aligned_samples = round(aligned_end * sample_rate)
                     codec_frames = (
                         aligned_samples + self.codec_model_samples_per_frame - 1
                     ) // self.codec_model_samples_per_frame
                     terminal = codec_frames // self.frame_stacking_factor
-                if 0 <= terminal < num_frames:
+                if is_multiturn and not turn.get('has_end_marker', True):
+                    metrics['missing_end_markers'] += 1
+                elif 0 <= terminal < num_frames:
                     labels[sample, terminal] = END
                     mask[sample, terminal] = terminal_mask[sample, terminal] = True
                 metrics['valid_turns'] += 1
@@ -1676,8 +1707,13 @@ class NemotronTTSModel(NemotronTTSBase):
                 torch.arange(steps, device=pred_embeddings.device)[None, :] < audio_codes_lens_target[:, None]
             )
             eos_positions = (audio_codes_target[:, :, :steps] == self.audio_eos_id).any(dim=1)
-            if (timestamp_terminals & valid_steps & ~eos_positions).any():
-                raise ValueError('Alignment-derived terminal word boundaries do not match speech EOS target positions')
+            terminal_mismatch = timestamp_terminals & valid_steps & ~eos_positions
+            if terminal_mismatch.any():
+                raise ValueError(
+                    'Alignment-derived terminal word boundaries do not match speech EOS target positions: '
+                    f'aligned (sample, frame)={terminal_mismatch.nonzero().tolist()[:8]}, '
+                    f'speech EOS={(eos_positions & valid_steps).nonzero().tolist()[:16]}'
+                )
             timestamp_mask &= (
                 (audio_codes_target[:, :, :steps] >= 0) & (audio_codes_target[:, :, :steps] < self.codebook_size)
             ).all(dim=1) | timestamp_terminals

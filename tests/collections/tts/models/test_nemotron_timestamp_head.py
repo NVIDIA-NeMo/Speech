@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 import torch
 from lhotse import AudioSource, CutSet, MonoCut, Recording, SupervisionSegment
+from lhotse.utils import compute_num_frames
 from omegaconf import OmegaConf
 from torch import nn
 
@@ -119,7 +120,7 @@ def test_terminal_end_survives_the_next_turns_first_nonend_frame():
     model = _timestamp_model(multiturn=True)
     turns = []
     text = _packed_text(model, timestamp_turns=turns)
-    turns[1].update(start=0.64, end=1.04)
+    turns[1].update(start=0.64, end=1.04, start_frame=8, end_frame=13)
     labels, valid, metrics, terminal = model._prepare_timestamp_targets(
         dict(audio=torch.zeros(1, 120), audio_lens=torch.tensor([120]), timestamp_turns=[turns]),
         text,
@@ -196,7 +197,9 @@ def test_source_metadata_keeps_chosen_full_transcript_and_fractional_waveform_of
     turns = []
     text = _packed_text(model, timestamp_turns=turns, fractional=True, normalized=True)
     text[0, 5] = model.pad_id  # The full reference survives even when packed conditioning is truncated.
-    assert turns[0] == dict(text='first turn', start=0.13, end=0.53, language=None)
+    assert turns[0] == dict(
+        text='first turn', start=0.13, end=0.53, language=None, start_frame=2, end_frame=7, has_end_marker=True
+    )
     model._timestamp_teacher.records = [
         {'words': [{'start': 0.0, 'end': 0.18}, {'start': 0.18, 'end': 0.4}], 'error': None},
         {'words': [{'start': 0.0, 'end': 0.24}, {'start': 0.24, 'end': 0.4}], 'error': None},
@@ -259,6 +262,84 @@ def test_optional_dataset_collector_keeps_default_token_channel_and_groups_turns
     observed, observed_lens = collate_token_channel(**kwargs, timestamp_turns=turns)
     assert torch.equal(baseline, observed) and torch.equal(baseline_lens, observed_lens)
     assert [[turn['text'] for turn in sample] for sample in turns] == [['first turn', 'second turn']]
+
+
+@pytest.mark.parametrize(
+    'start,end,source_rate,legacy_metadata',
+    [(0.72, 0.92, 24000, False), (0.72, 0.92, 24000, True), (0.0, 1.16, 24000, False), (0.0, 0.119979, 22050, False)],
+)
+def test_terminal_alignment_reuses_the_original_cut_grid_at_half_frames(start, end, source_rate, legacy_metadata):
+    model = _timestamp_model(multiturn=True)
+    model.sample_rate, model.codec_model_samples_per_frame = 24000, 960
+    cut = _packed_cut()
+    cut.duration = cut.recording.duration = 2.0
+    cut.recording.sampling_rate = source_rate
+    cut.recording.num_samples = 2 * source_rate
+    cut.supervisions = cut.supervisions[:1]
+    cut.supervisions[0].start, cut.supervisions[0].duration = start, end - start
+    turns = []
+    text = _packed_text(model, timestamp_turns=turns, cut=cut)
+    expected_frame = compute_num_frames(cut.supervisions[0].end, 0.08, source_rate)
+    if 'end_frame' in turns[0]:
+        assert turns[0]['end_frame'] == expected_frame
+    assert text[0, expected_frame] == model.interruption_token_id
+    if legacy_metadata:
+        for key in ('start_frame', 'end_frame', 'has_end_marker'):
+            turns[0].pop(key, None)
+    duration = (round(end * model.sample_rate) - round(start * model.sample_rate)) / model.sample_rate
+    model._timestamp_teacher.records = [{'words': [{'start': 0.0, 'end': duration}], 'error': None}]
+    labels, valid, metrics, terminal = model._prepare_timestamp_targets(
+        dict(audio=torch.zeros(1, 48000), audio_lens=torch.tensor([48000]), timestamp_turns=[turns]),
+        text,
+        torch.tensor([50]),
+        26,
+    )
+    assert terminal[0].nonzero().flatten().tolist() == [expected_frame + 1]
+    assert labels[terminal].tolist() == [END] and valid[terminal].all()
+    assert metrics['valid_turns'] == 1 and metrics['missing_end_markers'] == 0
+
+
+@pytest.mark.parametrize('marker_problem', ['overwritten', 'truncated'])
+def test_missing_packed_end_marker_keeps_word_labels_without_a_terminal_target(marker_problem):
+    model = _timestamp_model(multiturn=True)
+    cut = _packed_cut()
+    if marker_problem == 'overwritten':
+        cut.supervisions[1].start = cut.supervisions[0].end
+    else:
+        cut.supervisions = cut.supervisions[:1]
+        cut.duration = cut.recording.duration = cut.supervisions[0].end
+        cut.recording.num_samples = round(cut.duration * cut.sampling_rate)
+    turns = []
+    text = _packed_text(model, timestamp_turns=turns, cut=cut)
+    assert turns[0]['has_end_marker'] is False
+    samples = round(cut.duration * model.sample_rate)
+    labels, valid, metrics, terminal = model._prepare_timestamp_targets(
+        dict(audio=torch.zeros(1, samples), audio_lens=torch.tensor([samples]), timestamp_turns=[turns]),
+        text,
+        torch.tensor([30]),
+        16,
+    )
+    assert not terminal[0, turns[0]['end_frame'] + 1]
+    assert (labels[0, turns[0]['start_frame'] : turns[0]['end_frame']] == END).any()
+    assert metrics['missing_end_markers'] == 1 and metrics['valid_turns'] == len(turns)
+    assert valid.any()
+
+
+def test_original_packing_grid_does_not_hide_an_incorrect_teacher_endpoint():
+    model = _timestamp_model(multiturn=True)
+    turns = []
+    text = _packed_text(model, timestamp_turns=turns)
+    model._timestamp_teacher.records = [
+        {'words': [{'start': 0.0, 'end': 0.08}], 'error': None},
+        {'words': [{'start': 0.0, 'end': 0.4}], 'error': None},
+    ]
+    _, _, _, terminal = model._prepare_timestamp_targets(
+        dict(audio=torch.zeros(1, 120), audio_lens=torch.tensor([120]), timestamp_turns=[turns]),
+        text,
+        torch.tensor([30]),
+        16,
+    )
+    assert terminal[0, 4] and not terminal[0, turns[0]['end_frame'] + 1]
 
 
 @pytest.mark.parametrize('text_input_mode,audio_delay', [('streaming', 1), ('full', 5)])
@@ -385,6 +466,50 @@ def test_class_metrics_expose_missing_word_ends_when_every_prediction_is_nonend(
     assert metrics['end_count'] == 2
     assert metrics['end_recall'] == 0
     assert metrics['accuracy'] == 0.6
+
+
+@pytest.mark.parametrize('distributed', [False, True])
+@pytest.mark.parametrize('all_masked', [False, True])
+def test_training_timestamp_metrics_share_one_detached_reduction(distributed, all_masked):
+    model = _timestamp_model(multiturn=False)
+    output = SimpleNamespace(
+        timestamp_loss=torch.tensor(0.0 if all_masked else 0.7, requires_grad=True),
+        timestamp_metrics={
+            'valid_turns': torch.tensor(0 if all_masked else 2),
+            'supervised_frames': torch.tensor(0 if all_masked else 9),
+            'end_recall': torch.tensor(0.0 if all_masked else 0.5),
+        },
+    )
+    local = torch.stack([output.timestamp_loss.detach(), *output.timestamp_metrics.values()]).float()
+    other_rank = torch.tensor([0.9, 4.0, 17.0, 0.8])
+    calls = []
+
+    def reduce(packed, reduce_op):
+        assert reduce_op == 'mean'
+        assert not packed.requires_grad and packed.dtype == torch.float32
+        calls.append(packed.clone())
+        packed.add_(other_rank).div_(2)
+        return packed
+
+    model._trainer = SimpleNamespace(strategy=SimpleNamespace(reduce=reduce)) if distributed else None
+    with patch.object(model, 'log_dict') as log:
+        model._log_timestamp_losses(output, 'train', batch_size=3)
+
+    assert len(calls) == int(distributed)
+    logged = log.call_args.args[0]
+    assert list(logged) == [
+        'train/timestamp_loss',
+        'train/timestamp_valid_turns',
+        'train/timestamp_supervised_frames',
+        'train/timestamp_end_recall',
+    ]
+    expected = (local + other_rank) / 2 if distributed else local
+    torch.testing.assert_close(torch.stack(list(logged.values())), expected)
+    torch.testing.assert_close(
+        torch.stack([output.timestamp_loss.detach(), *output.timestamp_metrics.values()]).float(), local
+    )
+    assert output.timestamp_loss.requires_grad
+    assert log.call_args.kwargs == dict(on_step=True, on_epoch=False, batch_size=3, sync_dist=False)
 
 
 def test_validation_timestamp_metrics_use_global_frame_totals_and_reset_between_epochs():
@@ -609,9 +734,9 @@ def _packed_cut(fractional=False, normalized=False):
     )
 
 
-def _packed_text(model, timestamp_turns=None, fractional=False, normalized=False):
+def _packed_text(model, timestamp_turns=None, fractional=False, normalized=False, cut=None):
     text = build_token_channel(
-        _packed_cut(fractional=fractional, normalized=normalized),
+        _packed_cut(fractional=fractional, normalized=normalized) if cut is None else cut,
         model.tokenizer,
         frame_length=0.08,
         roles={'agent'},

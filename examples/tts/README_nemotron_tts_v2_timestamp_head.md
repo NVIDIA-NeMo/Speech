@@ -25,7 +25,8 @@ TTS model uses BF16-true; preprocessing and the CTC adapter use FP32.
 The teacher force-aligns each reference transcript to its ground-truth audio.
 Multiturn examples are split into independent agent turns and the resulting
 labels are restored to the original audio timeline, including fractional turn
-offsets. The dataset preserves each complete lexical reference at the same
+offsets. The original cut's sample-based frame indices preserve the text/audio
+packing clock across resampling. The dataset preserves each complete lexical reference at the same
 raw/normalized-text selection used for conditioning, before inline phonemization
 or token-channel truncation. Failed teacher alignments do not contribute
 timestamp supervision. Singleturn target waveforms are loaded even when cached
@@ -63,7 +64,9 @@ valid/invalid turn counts, boundary collisions, and supervised-frame counts
 are logged. This is an experimental training target; successful forced
 alignment does not establish the accuracy of a newly trained causal head.
 Per-class counts and recall help distinguish boundary learning from predicting
-only the most frequent class.
+only the most frequent class. Training metrics share one distributed reduction.
+`timestamp_missing_end_markers` counts turns whose terminal control marker was
+overwritten or truncated during packing; their interior word targets remain usable.
 
 `use_timestamp_head` defaults to `false`. The head can coexist with the
 existing aligned BPE head and attention loss. Its predictions do not affect

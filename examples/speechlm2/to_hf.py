@@ -196,6 +196,7 @@ def _hf_export_config(model: torch.nn.Module, dtype: str | torch.dtype) -> dict[
             ("speaker_feature_mode", "speaker_feature_mode"),
             ("speaker_activity_threshold", "speaker_activity_threshold"),
             ("spk_kernel_scale", "spk_kernel_scale"),
+            ("allow_padded_fallback", "allow_padded_fallback"),
         ):
             if hasattr(pe_encoder, attr_name):
                 bundle_config[config_key] = getattr(pe_encoder, attr_name)
@@ -219,6 +220,7 @@ def _hf_export_config(model: torch.nn.Module, dtype: str | torch.dtype) -> dict[
             "frozen": bool(getattr(dual, "freeze_auxiliary", True)),
             "chunk_size_seconds": getattr(dual, "auxiliary_chunk_size_seconds", None),
             "asr_chunk_size_seconds": getattr(dual, "asr_chunk_size_seconds", None),
+            "allow_padded_fallback": bool(getattr(dual, "allow_padded_fallback", False)),
         }
     dtype_name = _canonical_torch_dtype_name(dtype)
     config["dtype"] = dtype_name

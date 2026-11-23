@@ -44,7 +44,7 @@ Training and inference need **two separate Python environments**:
 | Environment | Contents | Runs |
 |---|---|---|
 | Training | NeMo Speech with `speechlm2` and the exact NeMo Automodel revision this repository pins | `salm_train.py`, `to_hf.py`, the config, export, and data tools |
-| Inference | vLLM 0.32.0 plus this repository installed in editable mode | `vllm_task_eval.py`, `vllm_label_scores.py`, `prompt_search.py` |
+| Inference | vLLM 0.33.0 plus this repository installed in editable mode | `vllm_task_eval.py`, `vllm_label_scores.py`, `prompt_search.py` |
 
 **Use the repository's exact Automodel pin for training.** `pyproject.toml` pins `nemo_automodel` to a specific git
 revision (`[tool.uv.sources]`); install the training environment from the lockfile
@@ -52,23 +52,23 @@ revision (`[tool.uv.sources]`); install the training environment from the lockfi
 Automodel imports cleanly but fails at the first loss call, because the API changed between revisions. Check with
 `python -c "import nemo_automodel, importlib.metadata as m; print(m.version('nemo_automodel'))"` against the pin.
 
-vLLM 0.27 through 0.32 pin a newer torch than the training stack's TransformerEngine and flash-attn are compiled
+vLLM 0.27 through 0.33 pin a newer torch than the training stack's TransformerEngine and flash-attn are compiled
 against, so installing vLLM into the training environment breaks training. Set up the inference environment
 separately:
 
 ```bash
 uv venv --python 3.13 "$VLLM_VENV"
-VIRTUAL_ENV="$VLLM_VENV" uv pip install vllm==0.32.0
+VIRTUAL_ENV="$VLLM_VENV" uv pip install vllm==0.33.0
 # expose NeMo and its vLLM plugin entry point to the inference environment
 cd /path/to/Speech
-VIRTUAL_ENV="$VLLM_VENV" uv pip install -e ".[core,asr-only,common-only]" torch==2.13.0   # the torch vLLM 0.32 pins
+VIRTUAL_ENV="$VLLM_VENV" uv pip install -e ".[core,asr-only,common-only]" torch==2.14.0   # the torch vLLM 0.33 pins
 VIRTUAL_ENV="$VLLM_VENV" uv pip install "peft>=0.18.1" kaldialign   # kaldialign: WER/MER scoring in task_metrics.py
 ```
 
 `vllm_task_eval.py` checks that the metric's dependencies are importable *before* it loads the model, so a missing
 scoring package fails in seconds rather than after a full decode.
 
-**Pin vLLM to 0.32.0** (it needs Python 3.11 or newer). The SpeechLM plugin and these scripts are tested on that
+**Pin vLLM to 0.33.0** (it needs Python 3.11 or newer). The SpeechLM plugin and these scripts are tested on that
 release only. In the training environment, `cross_entropy_backend: fused_linear` additionally requires
 `uv pip install cut-cross-entropy`.
 
@@ -98,7 +98,6 @@ concurrent runs queue.
 | Variable | Value | Why |
 |---|---|---|
 | `CUDA_VISIBLE_DEVICES` | the compute GPU's CUDA index | see above |
-| `VLLM_WORKER_MULTIPROC_METHOD` | `spawn` | otherwise the `EngineCore` subprocess reports `CUDA driver initialization failed` |
 | `HF_HUB_OFFLINE` | `1` | keeps a local checkpoint from triggering hub lookups |
 | `PYTORCH_CUDA_ALLOC_CONF` | `expandable_segments:True` | reduces fragmentation with variable-length batches |
 | `SALM_FT_WORK` | a work directory | where the tools write audio, manifests, and the GPU lock |
@@ -445,7 +444,7 @@ with 60 to 150 in vLLM).
 ```bash
 python vllm_task_eval.py --model /path/to/merged --task asr \
   --manifest manifests/dev.json manifests/test.json --out eval/dev.jsonl eval/test.jsonl \
-  --spec-k 2 --max-num-seqs 64 --gpu-memory-utilization 0.85
+  --max-num-seqs 64 --gpu-memory-utilization 0.85
 ```
 
 `--task` takes `asr`, `bleu`, `cls`, `squad`, `mer`, `pcc`, `eer`, or `multilabel`. Loading the engine once and
@@ -690,7 +689,7 @@ needs no further training.
 | Target metric improves, general-domain WER collapses | reference surface style differs from model output | audit style before training; blend in a cased, punctuated source |
 | `OverrideParseException: mismatched input '='` | Hydra override value contains `=` | symlink the checkpoint to a name without `=` (`export_checkpoint.py` does this) |
 | `to_hf.py`: `No such file or directory` on an existing checkpoint | the save is still in progress | wait until `<step>-unfinished` is gone |
-| `RuntimeError: CUDA driver initialization failed` in `EngineCore` | fork start method | `VLLM_WORKER_MULTIPROC_METHOD=spawn` |
+| `RuntimeError: CUDA driver initialization failed` in `EngineCore` | `VLLM_WORKER_MULTIPROC_METHOD=fork` | unset it; the NeMo plugin defaults to `spawn` |
 | vLLM appears hung on its first start | one-time kernel JIT compilation (about 15 minutes) | wait; persist the flashinfer and vLLM caches |
 | `incorrect regex pattern … set fix_mistral_regex=True` when loading the tokenizer | transformers assumes an old Mistral tokenizer because the SALM `config.json` has no `transformers_version` | harmless: the checkpoint's `tokenizer.json` already has the corrected pattern, and token IDs are identical with or without the flag |
 | `CUDA out of memory` in a job that normally fits | another GPU job holds the device | run jobs one at a time; check `nvidia-smi --query-compute-apps` |

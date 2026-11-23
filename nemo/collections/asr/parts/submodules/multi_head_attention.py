@@ -47,6 +47,7 @@ import torch.nn as nn
 import torch.nn.attention
 import torch.nn.functional as F
 
+from nemo.collections.asr.parts.submodules.packed_attention import PackedAttentionContext, packed_attention
 from nemo.utils import avoid_float16_autocast_context
 
 __all__ = [
@@ -210,6 +211,57 @@ class MultiHeadAttention(nn.Module):
         else:
             return out, cache
 
+    def forward_packed(
+        self, x: torch.Tensor, context: PackedAttentionContext, pos_emb: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """Self-attention over token-flat input with explicit utterance boundaries.
+
+        Streaming caches are not supported in this form.
+        The dtype handling is that of ``forward``:
+        the projections run under the autocast context and float16 autocast is avoided.
+
+        Args:
+            x: layer input of all utterances, shape ``(T_total, n_feat)``.
+            context: packing metadata of the batch.
+            pos_emb: relative positional embedding ``(1, 2 * context.rel_pos_max_seqlen - 1, n_feat)``,
+                or a shorter one that covers the reach of a key window bounded on both sides;
+                used by the Transformer-XL subclass only.
+
+        Returns:
+            The attention output, shape ``(T_total, n_feat)``.
+        """
+        if torch.is_autocast_enabled():
+            x = x.to(torch.float32)
+
+        with avoid_float16_autocast_context():
+            q = self.linear_q(x).view(-1, self.h, self.d_k)
+            k = self.linear_k(x).view(-1, self.h, self.d_k)
+            v = self.linear_v(x).view(-1, self.h, self.d_k)
+            q, k = self._apply_packed_pos_emb(q, k, context)
+            q, pos_query, pos_emb = self._packed_rel_pos_terms(q, pos_emb)
+            out = packed_attention(
+                q,
+                k,
+                v,
+                context,
+                pos_query=pos_query,
+                pos_emb=pos_emb,
+                dropout_p=self.dropout_rate if self.training else 0.0,
+            )
+            return self.linear_out(out.reshape(-1, self.h * self.d_k))
+
+    def _apply_packed_pos_emb(
+        self, q: torch.Tensor, k: torch.Tensor, context: PackedAttentionContext
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Hook for the rotary subclass; q and k have shape (T_total, head, d_k). No-op by default."""
+        return q, k
+
+    def _packed_rel_pos_terms(
+        self, q: torch.Tensor, pos_emb: torch.Tensor | None
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+        """Hook for the Transformer-XL subclass: the query with its content bias and the two position-term factors."""
+        return q, None, None
+
     def update_cache(self, key, value, query, cache):
         if cache is not None:
             key = value = torch.cat([cache, key], dim=1)
@@ -366,6 +418,23 @@ class RelPositionMultiHeadAttention(MultiHeadAttention):
         else:
             return out, cache
 
+    def _packed_rel_pos_terms(
+        self, q: torch.Tensor, pos_emb: torch.Tensor | None
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+        """Matrix (c) folded into the query, and the factors of matrices (b) + (d).
+
+        The position query ``(T_total, head, d_k)`` and the projected embedding ``(R, head, d_k)`` form the bias
+        over relative positions inside the attention kernel;
+        its entry ``(R - 1) / 2 - (i - j)`` is the term of query position i and key position j,
+        which is what ``rel_shift`` selects in the padded forward.
+        """
+        if pos_emb is None:
+            raise ValueError("Transformer-XL attention over packed sequences needs pos_emb.")
+        p = self.linear_pos(pos_emb).view(-1, self.h, self.d_k)  # (R, head, d_k)
+        bias_u = self.pos_bias_u.to(q.dtype)
+        bias_v = self.pos_bias_v.to(q.dtype)
+        return q + bias_u, q + bias_v, p
+
 
 class RelPositionMultiHeadAttentionLongformer(RelPositionMultiHeadAttention):
     """Multi-Head Attention layer of Transformer-XL with sliding window local+global attention from Longformer.
@@ -428,6 +497,54 @@ class RelPositionMultiHeadAttentionLongformer(RelPositionMultiHeadAttention):
             self.global_q = nn.Linear(n_feat, n_feat, bias=use_bias)
             self.global_k = nn.Linear(n_feat, n_feat, bias=use_bias)
             self.global_v = nn.Linear(n_feat, n_feat, bias=use_bias)
+
+    def forward_packed(
+        self, x: torch.Tensor, context: PackedAttentionContext, pos_emb: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """Local attention over token-flat input, as Transformer-XL attention inside the context's key window.
+
+        Without global tokens and with the same context on both sides, the sliding-window attention of ``forward``
+        is Transformer-XL attention restricted to the keys ``att_context_size`` around the query,
+        so no overlapping chunks are formed here.
+
+        Args:
+            x: layer input of all utterances, shape ``(T_total, n_feat)``.
+            context: packing metadata of the batch, whose ``key_window`` must hold the keys
+                ``att_context_size`` around every query (the positions ``i - w`` to ``i + w`` for query ``i``);
+                the caller's contract, since comparing it would take a device read.
+            pos_emb: relative positional embedding of the window, shape ``(1, 2 * w + 1, n_feat)``
+                for the context ``[w, w]``.
+
+        Returns:
+            The attention output, shape ``(T_total, n_feat)``.
+        """
+        reason = self.sequence_packed_unsupported_reason()
+        if reason is not None:
+            raise NotImplementedError(reason)
+        if not context.key_window_is_bounded:
+            raise ValueError("Local attention over packed sequences needs the key window of att_context_size.")
+        window = 2 * self.att_context_size[0] + 1
+        if pos_emb is None or pos_emb.size(1) != window:
+            raise ValueError(
+                f"Local attention with att_context_size={list(self.att_context_size)} needs pos_emb of "
+                f"{window} relative positions, got {None if pos_emb is None else pos_emb.size(1)}."
+            )
+        return super().forward_packed(x, context, pos_emb=pos_emb)
+
+    def sequence_packed_unsupported_reason(self) -> str | None:
+        """Why ``forward_packed`` cannot run this module, or None when it can."""
+        if self.global_tokens > 0:
+            return (
+                "rel_pos_local_attn with global tokens has no sequence-packed form: the global tokens enter "
+                "the softmax of every query a second time and attend with projections of their own."
+            )
+        if self.att_context_size[0] != self.att_context_size[1]:
+            return (
+                "rel_pos_local_attn has a sequence-packed form for the same context on both sides only, "
+                f"got att_context_size={list(self.att_context_size)}: with different sides the padded forward "
+                "adds the position term to other relative positions than the ones it attends to."
+            )
+        return None
 
     def forward(self, query, key, value, pad_mask, pos_emb, cache=None):
         """Compute Scaled Dot Product Local Attention with rel. positional encoding. using overlapping chunks
@@ -1047,6 +1164,16 @@ class RoPEMultiHeadAttention(MultiHeadAttention):
     def _apply_pos_emb(self, q, k):
         """Rotate Q and K via the attached RotaryPositionalEncoding."""
         return self.pos_enc(q, k)
+
+    def _apply_packed_pos_emb(
+        self, q: torch.Tensor, k: torch.Tensor, context: PackedAttentionContext
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Rotate token-flat Q and K by their positions within their utterances."""
+        # a function-level import: the modules package initializes the encoders, which import this module
+        from nemo.collections.asr.modules.transformer_encoder_utils import _apply_packed_rope
+
+        self.pos_enc.extend_pe(context.max_seqlen, q.device, q.dtype)
+        return _apply_packed_rope(self.pos_enc, q, k, context.position_ids)
 
 
 class PositionalEncoding(torch.nn.Module):

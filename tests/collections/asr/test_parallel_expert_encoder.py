@@ -42,6 +42,7 @@ from nemo.collections.asr.modules.parallel_expert_encoder import (
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 from nemo.collections.asr.parts.packed_sequence import pack_encoder_output, unpack_encoder_output
 from nemo.collections.asr.parts.preprocessing.features import normalize_batch, normalize_packed_batch
+from nemo.collections.asr.parts.submodules import packed_attention as packed_attention_module
 from nemo.collections.common.parts.optional_cuda_graphs import capture_cuda_graph
 from nemo.collections.speechlm2.parts import ctc_timestamp_utils
 from nemo.collections.speechlm2.parts.ctc_timestamp_utils import (
@@ -53,6 +54,7 @@ from nemo.collections.speechlm2.parts.ctc_timestamp_utils import (
     get_ctc_timestamp_aligner,
     merge_prepared_batches,
 )
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 from tests.collections.asr.ctc_timestamp_test_utils import search_streams
 
 # ``@experimental`` wraps the class in a wrapt proxy, so ``__new__`` (used to build
@@ -1981,6 +1983,123 @@ def test_packed_fallback_matches_padded_forward_for_dense_and_packed_inputs():
 
 
 @pytest.mark.unit
+def test_fastconformer_asr_branch_runs_packed_in_training_mode(monkeypatch):
+    """The FastConformer branch runs ``forward_sequence_packed`` itself (no padded fallback), in training mode too;
+    its BatchNorm then sees the valid frames only, so with equal lengths the result equals the padded forward."""
+    torch.manual_seed(0)
+    encoder = build_toy_pe_encoder().train()
+    assert isinstance(encoder.asr_encoder, ConformerEncoder) and encoder.asr_encoder.training
+    packed_calls = []
+    packed_forward = encoder.asr_encoder.forward_sequence_packed
+
+    def tracked_packed_forward(*args, **kwargs):
+        packed_calls.append(1)
+        return packed_forward(*args, **kwargs)
+
+    monkeypatch.setattr(encoder.asr_encoder, "forward_sequence_packed", tracked_packed_forward)
+    lengths = torch.tensor([80, 80])
+    mels = torch.randn(2, _MEL_FEATURES, 80)
+    padded, padded_lengths = encoder(mels, lengths)
+    packed = encoder.forward_sequence_packed(mels, lengths)
+    assert packed_calls == [1]
+    assert torch.equal(packed.lengths, padded_lengths)
+    restored = unpack_encoder_output(packed, total_length=padded.shape[-1])
+    torch.testing.assert_close(restored, padded.transpose(1, 2), rtol=1e-4, atol=1e-5)
+
+
+@pytest.mark.unit
+@pytest.mark.run_only_on("GPU")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="PEE GPU test requires CUDA")
+def test_fastconformer_asr_branch_with_attention_dropout_in_packed_training(monkeypatch):
+    """rel_pos attention over packed sequences keeps its dropout through its Triton kernel;
+    without Triton it runs FlexAttention, which has no dropout.
+
+    With Triton the FastConformer branch with ``dropout_att > 0`` runs its native packed path.
+    Without it the branch has no native packed form in training mode: its ``supports_sequence_packed_output``
+    says so, the PEE keeps the padded fallback it ran before the native path existed, and the step completes
+    forward and backward; in evaluation mode the native path is available again.
+    """
+    # two heads over the 32-wide toy encoders: head dimension 16
+    asr_encoder_cfg = toy_asr_encoder_cfg()
+    asr_encoder_cfg.n_heads = 2
+    asr_encoder_cfg.dropout_att = 0.1
+    diarization_model_cfg = toy_diarization_model_cfg()
+    diarization_model_cfg.encoder.n_heads = 2
+    encoder = build_toy_pe_encoder(asr_encoder_cfg=asr_encoder_cfg, diarization_model_cfg=diarization_model_cfg)
+    encoder = encoder.train().cuda()
+    native_calls = []
+    native_forward = encoder.asr_encoder.forward_sequence_packed
+
+    def tracked_native_forward(*args, **kwargs):
+        native_calls.append(1)
+        return native_forward(*args, **kwargs)
+
+    monkeypatch.setattr(encoder.asr_encoder, "forward_sequence_packed", tracked_native_forward)
+    lengths = torch.tensor([80, 53], device="cuda")
+    mels = torch.randn(2, _MEL_FEATURES, 80, device="cuda", requires_grad=True)
+    targets = torch.ones(2, 10, _N_SPK, device="cuda")  # external speaker targets: Sortformer is skipped
+    if TRITON_AVAILABLE:
+        assert encoder.asr_encoder.supports_sequence_packed_output
+        packed = encoder.forward_sequence_packed(mels, lengths, spk_targets=targets)
+        assert native_calls == [1] and torch.isfinite(packed.data).all()
+        # the backward through the native path as well
+        packed.data.square().mean().backward()
+        assert mels.grad is not None and torch.isfinite(mels.grad).all()
+        query_grad = encoder.asr_encoder.layers[0].self_attn.linear_q.weight.grad
+        assert query_grad is not None and torch.isfinite(query_grad).all()
+        mels.grad = None
+        encoder.zero_grad()
+        native_calls.clear()
+    monkeypatch.setattr(packed_attention_module, "TRITON_AVAILABLE", False)
+    assert not encoder.asr_encoder.supports_sequence_packed_output
+    packed = encoder.forward_sequence_packed(mels, lengths, spk_targets=targets)
+    assert native_calls == [] and torch.isfinite(packed.data).all()
+    packed.data.square().mean().backward()
+    assert mels.grad is not None and torch.isfinite(mels.grad).all()
+    assert encoder.asr_encoder.layers[0].self_attn.linear_q.weight.grad is not None
+    encoder.eval()
+    assert encoder.asr_encoder.supports_sequence_packed_output
+
+
+@pytest.mark.unit
+@pytest.mark.run_only_on("GPU")
+@pytest.mark.skipif(not (torch.cuda.is_available() and TRITON_AVAILABLE), reason="requires CUDA and Triton")
+def test_fastconformer_asr_branch_with_full_attention_dropout_trains_packed(monkeypatch):
+    """``dropout_att: 1.0`` is a valid ``nn.Dropout`` setting: the native packed path drops every attention weight
+    and the step completes forward and backward, as the padded fallback did before the kernel."""
+    asr_encoder_cfg = toy_asr_encoder_cfg()
+    asr_encoder_cfg.n_heads = 2
+    asr_encoder_cfg.dropout_att = 1.0
+    diarization_model_cfg = toy_diarization_model_cfg()
+    diarization_model_cfg.encoder.n_heads = 2
+    encoder = build_toy_pe_encoder(asr_encoder_cfg=asr_encoder_cfg, diarization_model_cfg=diarization_model_cfg)
+    encoder = encoder.train().cuda()
+    native_calls = []
+    native_forward = encoder.asr_encoder.forward_sequence_packed
+
+    def tracked_native_forward(*args, **kwargs):
+        native_calls.append(1)
+        return native_forward(*args, **kwargs)
+
+    monkeypatch.setattr(encoder.asr_encoder, "forward_sequence_packed", tracked_native_forward)
+    assert encoder.asr_encoder.supports_sequence_packed_output
+    lengths = torch.tensor([80, 53], device="cuda")
+    mels = torch.randn(2, _MEL_FEATURES, 80, device="cuda", requires_grad=True)
+    targets = torch.ones(2, 10, _N_SPK, device="cuda")
+    for autocast in (False, True):
+        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=autocast):
+            packed = encoder.forward_sequence_packed(mels, lengths, spk_targets=targets)
+        assert torch.isfinite(packed.data).all()
+        packed.data.float().square().mean().backward()
+        assert mels.grad is not None and torch.isfinite(mels.grad).all()
+        for name, parameter in encoder.asr_encoder.named_parameters():
+            assert parameter.grad is None or torch.isfinite(parameter.grad).all(), name
+        mels.grad = None
+        encoder.zero_grad()
+    assert native_calls == [1, 1]
+
+
+@pytest.mark.unit
 def test_native_packed_path_normalizes_diar_and_asr_independently_without_unpack(
     monkeypatch,
 ):
@@ -2532,6 +2651,60 @@ def test_legacy_canonical_bundle_requires_explicit_speaker_contract(tmp_path):
     assert restored._bundle_config.speaker_feature_mode == "continuous"
     assert restored._bundle_config.speaker_activity_threshold is None
     assert restored._bundle_config.sync_max_audio_length is False
+
+
+@pytest.mark.unit
+def test_bundle_override_selects_the_diarization_attention_backend(tmp_path):
+    """``diar_packed_rel_pos_attention`` is a runtime override of a bundle: it selects the packed attention backend
+    of the diarization ConformerEncoder, leaves the architecture and the strictly loaded weights as they are, and
+    is the only accepted way to reach that setting (``diarization_model_cfg`` is not an override key)."""
+    source = build_toy_pe_encoder().eval()
+    state = {f"encoder.{key}": value for key, value in source.state_dict().items()}
+    archive = tmp_path / "diar-backend.nemo"
+    write_bundle(archive, bundle_config(), state)
+
+    with pytest.raises(ValueError, match="Unsupported ParallelExpertEncoder config_overrides keys"):
+        ParallelExpertEncoderPT.load_from_nemo(
+            str(archive),
+            strict=True,
+            config_overrides={"diarization_model_cfg": {"encoder": {"packed_rel_pos_attention": "flex"}}},
+        )
+    with pytest.raises(ValueError, match="diar_packed_rel_pos_attention must be 'triton' or 'flex'"):
+        ParallelExpertEncoderPT.load_from_nemo(
+            str(archive), strict=True, config_overrides={"diar_packed_rel_pos_attention": "cuda"}
+        )
+
+    restored = ParallelExpertEncoderPT.load_from_nemo(
+        str(archive), strict=True, config_overrides={"diar_packed_rel_pos_attention": "flex"}
+    ).eval()
+    assert restored.diarization_model.encoder.packed_rel_pos_attention == "flex"
+    assert restored.asr_encoder.packed_rel_pos_attention == "triton"
+    assert restored.diar_packed_rel_pos_attention == "flex"
+    assert restored._bundle_config.diar_packed_rel_pos_attention == "flex"
+    assert set(restored.state_dict()) == set(source.state_dict())
+    for key, value in source.state_dict().items():
+        torch.testing.assert_close(restored.state_dict()[key], value)
+    # without the override the bundle keeps its config's backend
+    plain = ParallelExpertEncoderPT.load_from_nemo(str(archive), strict=True)
+    assert plain.diarization_model.encoder.packed_rel_pos_attention == "triton"
+    assert plain.diar_packed_rel_pos_attention is None
+
+    # the override names a ConformerEncoder setting: a Transformer diarization branch has none
+    packed_source = build_toy_packed_pe_encoder().eval()
+    packed_archive = tmp_path / "transformer-diar.nemo"
+    write_bundle(
+        packed_archive,
+        bundle_config(
+            asr_encoder_type="transformer",
+            asr_encoder_cfg=toy_transformer_asr_encoder_cfg(),
+            diarization_model_cfg=toy_packed_diarization_model_cfg(),
+        ),
+        {f"encoder.{key}": value for key, value in packed_source.state_dict().items()},
+    )
+    with pytest.raises(ValueError, match="ConformerEncoder diarization branch"):
+        ParallelExpertEncoderPT.load_from_nemo(
+            str(packed_archive), strict=True, config_overrides={"diar_packed_rel_pos_attention": "flex"}
+        )
 
 
 @pytest.mark.unit

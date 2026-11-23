@@ -416,6 +416,58 @@ def test_nemotron_backbone_export_preserves_portable_topology(tmp_path, mtp_laye
     assert wrapper["llm_config"] == saved
 
 
+_REMOTE_NEMOTRON_CONFIG_CODE = '''
+from transformers import PretrainedConfig
+
+
+class RemoteNemotronHConfig(PretrainedConfig):
+    model_type = "nemotron_h"
+
+    def __init__(self, layers_block_type=("mamba", "attention"), vocab_size=100, **kwargs):
+        self.layers_block_type = list(layers_block_type)
+        self.vocab_size = vocab_size
+        super().__init__(**kwargs)
+'''
+
+
+def test_nemotron_remote_code_backbone_export_is_reloadable(tmp_path):
+    """Remote-code Nemotron-H configs must ship their ``auto_map`` module so the export reloads."""
+    from transformers import AutoConfig
+
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    (src_dir / "configuration_nemotron_h.py").write_text(_REMOTE_NEMOTRON_CONFIG_CODE)
+    (src_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "nemotron_h",
+                "architectures": ["NemotronHForCausalLM"],
+                "auto_map": {"AutoConfig": "configuration_nemotron_h.RemoteNemotronHConfig"},
+                "layers_block_type": ["mamba", "attention"],
+                "vocab_size": 100,
+            }
+        )
+    )
+    config = AutoConfig.from_pretrained(src_dir, trust_remote_code=True)
+    model = SimpleNamespace(llm=SimpleNamespace(config=config))
+    output_dir = tmp_path / "out"
+
+    to_hf.save_llm_backbone_config(model, output_dir)
+
+    backbone_dir = output_dir / "llm_backbone"
+    assert (backbone_dir / "configuration_nemotron_h.py").exists()
+    saved = json.loads((backbone_dir / "config.json").read_text())
+    assert saved["layers_block_type"] == ["mamba", "attention"]
+    reloaded = AutoConfig.from_pretrained(backbone_dir, trust_remote_code=True)
+    assert reloaded.layers_block_type == ["mamba", "attention"]
+
+    # vLLM prep (which also writes the tokenizer) must succeed on this export.
+    _seed_output_dir(output_dir)
+    with patch("transformers.AutoTokenizer.from_pretrained", return_value=_FakeTokenizer()):
+        to_hf.prepare_for_vllm(str(output_dir), {"pretrained_llm": "fake-model", "audio_locator_tag": AUDIO_TOKEN})
+    assert (output_dir / "tokenizer_config.json").exists()
+
+
 def test_save_hf_checkpoint_accepts_bf16_export_dtype(tmp_path):
     cfg = to_hf.HfExportConfig(
         class_path="fake.Class",

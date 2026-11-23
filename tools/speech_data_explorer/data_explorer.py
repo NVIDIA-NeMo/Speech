@@ -37,8 +37,6 @@ from urllib.parse import urlparse
 import dash
 import dash_bootstrap_components as dbc
 import diff_match_patch
-import editdistance
-import jiwer
 import numpy as np
 import pandas as pd
 import soundfile as sf
@@ -1133,7 +1131,8 @@ def load_data(
                     for m in sm.get_matching_blocks():
                         for word_idx in range(m[0], m[0] + m[2]):
                             match_vocab[orig[word_idx]] += 1
-                    wmr_count += num_words - measures['sub'] - measures['del']
+                    word_hits = num_words - measures['sub'] - measures['del']
+                    wmr_count += word_hits
                 elif field_name in item:
                     pass
                 else:
@@ -1166,10 +1165,10 @@ def load_data(
                         num_chars = 1e-9
                     data[-1]['WER'] = round(word_dist / num_words * 100.0, 2)
                     data[-1]['CER'] = round(char_dist / num_chars * 100.0, 2)
-                    data[-1]['WMR'] = round(measures['hits'] / num_words * 100.0, 2)
-                    data[-1]['I'] = measures['insertions']
-                    data[-1]['D'] = measures['deletions']
-                    data[-1]['D-I'] = measures['deletions'] - measures['insertions']
+                    data[-1]['WMR'] = round(word_hits / num_words * 100.0, 2)
+                    data[-1]['I'] = measures['ins']
+                    data[-1]['D'] = measures['del']
+                    data[-1]['D-I'] = measures['del'] - measures['ins']
                 if estimate_audio:
                     try:
                         signal, sr = load_audio_data(

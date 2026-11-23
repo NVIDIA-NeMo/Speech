@@ -19,6 +19,7 @@ from typing import Optional, Type
 import numpy as np
 import pytest
 import torch
+from omegaconf import DictConfig
 
 from nemo.collections.asr.models import ASRModel
 
@@ -386,3 +387,43 @@ def canary_1b_v2():
 @pytest.fixture(scope='session')
 def hybrid_rnnt_ctc_bpe_model_with_prompt():
     return ASRModel.restore_from("/home/TestData/asr/hybrid_rnnt_ctc_bpe_model_with_prompt.nemo")
+
+
+@pytest.fixture()
+def cache_aware_model_cfg():
+    return DictConfig(
+        {
+            'preprocessor': {
+                '_target_': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor',
+                'features': '${encoder.feat_in}',
+                'normalize': None,
+                'dither': 0.0,
+                'pad_to': 0,
+            },
+            'encoder': {
+                '_target_': 'nemo.collections.asr.modules.ConformerEncoder',
+                'feat_in': 80,
+                'n_layers': 2,
+                'd_model': 64,
+                'n_heads': 4,
+                'subsampling_factor': 8,
+                'subsampling_conv_channels': 32,
+                'causal_downsampling': True,
+                'att_context_size': [16, 3],
+                'att_context_style': 'chunked_limited',
+                'conv_kernel_size': 5,
+                'conv_context_size': 'causal',
+                'conv_norm_type': 'layer_norm',
+                'dropout': 0.0,
+                'dropout_pre_encoder': 0.0,
+                'dropout_emb': 0.0,
+                'dropout_att': 0.0,
+            },
+            'decoder': {
+                '_target_': 'nemo.collections.asr.modules.ConvASRDecoder',
+                'feat_in': '${encoder.d_model}',
+                'num_classes': 1,
+                'vocabulary': ['a'],
+            },
+        }
+    )

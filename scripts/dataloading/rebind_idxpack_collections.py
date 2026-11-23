@@ -631,6 +631,8 @@ def relocate_idxpack_collections(
         raise FileExistsError(f"Output index pack already exists: {output}")
 
     observed, header, sequences, segments = _read_pack_layout(source)
+    if any(segment.flags & 4 for segment in segments):  # v4 gzip JSONL segment flag
+        raise ValueError("Gzip JSONL packs cannot be relocated; rebuild the pack with the target paths")
     relocated_paths = validate_relocation_contract(observed, segments, target)
     target_layout_hash = _target_layout_hash(observed, target)
     if not trust_relocated_payloads:

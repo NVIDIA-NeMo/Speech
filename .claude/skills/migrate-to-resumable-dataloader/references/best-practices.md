@@ -17,8 +17,9 @@ checkpointable dataloading.
    snapshots and iterable partition state.
 
 4. **Build `.idx` sidecars once per stable source path set.** Reuse a persistent
-   index mirror across experiments. Rebuild only when source contents or path
-   strings change.
+   index mirror across experiments. Include `.gzidx` for gzip JSONL and install
+   `lhotse[gzip]` in build and runtime environments. Rebuild only when source
+   contents or path strings change.
 
 5. **Disable concurrent bucketing for resumable training.** Background producer
    threads can advance iterators outside the checkpointed main-thread state.
@@ -41,9 +42,10 @@ checkpointable dataloading.
 9. **Smoke test in stages.** Run single-node single-chunk, then single-node
    multi-chunk resume, then the intended full topology.
 
-10. **Keep `.idx` files on a persistent filesystem by default.** Stage to
+10. **Keep loose sidecars on a persistent filesystem by default.** Stage to
     node-local SSD only when direct filesystem reads are proven problematic, and
-    ensure the YAML `indexes_root` matches the staged destination.
+    ensure the YAML `indexes_root` matches the staged destination. Include both
+    `.idx` and `.gzidx` when staging gzip JSONL indexes.
 
 11. **Use AIStore batch fetching deliberately.** For remote tar/audio sources,
     `USE_AIS_GET_BATCH=true` avoids eager remote tar-reader construction. If the
@@ -54,7 +56,8 @@ checkpointable dataloading.
     built, create one `.idxpack` per supported outer `input_cfg` when sidecar
     discovery/open time is material. Keep each pack declaration explicit so
     one dataset can be rebuilt or rolled back without changing the rest of a
-    mixture.
+    mixture. Gzip JSONL selects v4 and embeds the seek indexes, so packed reads
+    need no loose sidecars. Rebuild gzip packs when source paths change.
 
 ## Tier 3 - operational hygiene
 

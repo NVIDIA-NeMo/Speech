@@ -645,6 +645,39 @@ class TestMuonCapturable:
         torch.testing.assert_close(result, reference, rtol=0.02, atol=1.2e-7)
 
     @pytest.mark.unit
+    @pytest.mark.parametrize('dtype', [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize('foreach', [False, True])
+    @pytest.mark.parametrize('capturable', [False, True])
+    @pytest.mark.parametrize('tensor_rate', [False, True])
+    def test_large_quotient_stays_finite_for_half_precision_parameters(self, dtype, foreach, capturable, tensor_rate):
+        # a large first moment over a small denominator: the quotient of the second step, about 99,000,
+        # exceeds the float16 range, the update itself, about -5, does not
+        def run(learning_rate, dtype, **options):
+            param = torch.nn.Parameter(torch.zeros(8, dtype=dtype))
+            optimizer = Muon(
+                [param],
+                lr=learning_rate,
+                adam_betas=(0.99, 0.0),
+                adam_eps=1e-5,
+                adam_lr_ratio=1.0,
+                weight_decay=0.0,
+                **options,
+            )
+            for gradient in (100.0, 0.0):
+                param.grad = torch.full_like(param, gradient)
+                optimizer.step()
+            assert float(optimizer.state[param]['step']) == 2.0
+            return param.detach().float()
+
+        reference = run(1e-6, torch.float32, foreach=False)
+        torch.testing.assert_close(reference, torch.full((8,), -4.975), rtol=1e-3, atol=0.0)
+        learning_rate = torch.tensor(1e-6) if tensor_rate else 1e-6
+        result = run(learning_rate, dtype, foreach=foreach, capturable=capturable)
+        assert torch.isfinite(result).all()
+        # the float16 epsilon is a subnormal number, 0.14 percent off, and the result rounds to the parameter dtype
+        torch.testing.assert_close(result, reference, rtol=5e-3, atol=0.0)
+
+    @pytest.mark.unit
     @pytest.mark.parametrize('foreach', [False, True])
     def test_device_step_count_is_float32_under_a_reduced_default_dtype(self, foreach):
         # a bfloat16 count would stay at 256 when one is added

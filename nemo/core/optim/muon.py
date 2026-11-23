@@ -493,8 +493,9 @@ def _adamw_update(
     if isinstance(step_size, torch.Tensor):
         # a tensor learning rate or step count scales the quotient, since `value` takes no tensor;
         # dividing the denominator by it would give 0 / 0 at a zero learning rate
-        # and overflow a half-precision denominator at a small one
-        param.addcmul_(exp_avg / denom, step_size, value=-1.0)
+        # and overflow a float16 denominator at a small one; the quotient itself can exceed the float16 range
+        # (a large first moment over a small denominator), so it and its product are computed in float32
+        param.addcmul_(_float32_range(exp_avg) / _float32_range(denom), step_size, value=-1.0)
     else:
         param.addcdiv_(exp_avg, denom, value=-step_size)
 
@@ -563,8 +564,11 @@ def _adamw_update_foreach(
             torch._foreach_div_(denoms, bias_correction2_sqrts)
             torch._foreach_add_(denoms, eps)
             # the step size scales the quotient, as in the loop: folded into the denominator (torch's capturable Adam)
-            # it overflows a half-precision denominator at a small learning rate, and the update becomes zero
-            updates = torch._foreach_div(exp_avgs, denoms)
+            # it overflows a float16 denominator at a small learning rate, and the update becomes zero;
+            # the quotient and its product are computed in float32 for float16 parameters, see the loop
+            updates = torch._foreach_div(
+                [_float32_range(exp_avg) for exp_avg in exp_avgs], [_float32_range(denom) for denom in denoms]
+            )
             torch._foreach_mul_(updates, negative_step_sizes)
             torch._foreach_add_(step_params, updates)
         else:
@@ -575,12 +579,20 @@ def _adamw_update_foreach(
             step_size = lr / bias_correction1
             if isinstance(step_size, torch.Tensor):
                 # a tensor learning rate scales the quotient, since `value` takes no tensor;
-                # dividing the denominator by it would overflow a half-precision one at a small learning rate
-                updates = torch._foreach_div(exp_avgs, denoms)
+                # dividing the denominator by it would overflow a float16 one at a small learning rate;
+                # the quotient and its product are computed in float32 for float16 parameters, see the loop
+                updates = torch._foreach_div(
+                    [_float32_range(exp_avg) for exp_avg in exp_avgs], [_float32_range(denom) for denom in denoms]
+                )
                 torch._foreach_mul_(updates, -step_size)
                 torch._foreach_add_(step_params, updates)
             else:
                 torch._foreach_addcdiv_(step_params, exp_avgs, denoms, value=-step_size)
+
+
+def _float32_range(tensor: torch.Tensor) -> torch.Tensor:
+    # float16 is the one floating-point dtype with a smaller range than float32 (bfloat16 has float32's)
+    return tensor.float() if tensor.dtype == torch.float16 else tensor
 
 
 def _initial_step(param: torch.Tensor, capturable: bool) -> Union[int, torch.Tensor]:

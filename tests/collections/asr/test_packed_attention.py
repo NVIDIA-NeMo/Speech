@@ -294,7 +294,6 @@ class TestPackedAttentionArguments:
     @pytest.mark.parametrize(
         "argument, match",
         [
-            ({"dropout_p": 1.0}, "dropout_p must be in"),
             ({"dropout_p": -0.1}, "dropout_p must be in"),
             ({"dropout_p": 1.5}, "dropout_p must be in"),
             ({"dropout_p": float("nan")}, "dropout_p must be in"),
@@ -423,6 +422,25 @@ class TestPackedAttentionArguments:
         reference, _ = run(torch.float64)
         assert out.dtype == torch.float16 and all(torch.isfinite(grad).all() for grad in grads)
         torch.testing.assert_close(out.double(), reference, rtol=2e-3, atol=2e-3)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", _CPU_AND_CUDA)
+    @pytest.mark.parametrize(
+        "dtype, with_bias",
+        [(torch.float32, False), (torch.bfloat16, False), (torch.float16, False), (torch.float32, True)],
+        ids=["fp32", "bf16", "fp16", "fp32_rel_pos_bias"],
+    )
+    @pytest.mark.parametrize("lengths", [[5, 0, 3], [0, 0]], ids=["tokens", "empty"])
+    def test_full_dropout_gives_zeros_on_every_backend(self, device, dtype, with_bias, lengths):
+        """``dropout_p=1.0`` drops every weight: zeros with zero gradients, whatever the backend would do with it."""
+        torch.manual_seed(0)
+        q, k, v, context, bias = self._inputs(device, dtype, lengths, with_bias)
+        # values whose sum is beyond the float16 range must not turn the zeros into NaN
+        inputs = [(t * 3000.0).requires_grad_() for t in (q, k, v)] + ([] if bias is None else [bias.requires_grad_()])
+        out = packed_attention(*inputs[:3], context, rel_pos_bias=bias, dropout_p=1.0)
+        assert out.dtype == dtype and torch.equal(out, torch.zeros_like(q))
+        grads = torch.autograd.grad(out.float().sum(), inputs)
+        assert all(not grad.any() for grad in grads)
 
     @pytest.mark.unit
     @pytest.mark.parametrize("with_bias", [False, True], ids=["no_bias", "zero_rel_pos_bias"])

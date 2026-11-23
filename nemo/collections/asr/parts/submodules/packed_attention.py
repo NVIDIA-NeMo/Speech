@@ -280,8 +280,9 @@ def packed_attention(
             shape ``(T_total, H, R)`` with odd ``R`` and the row convention of ``pos_emb``
             (``R = 2 * max_seqlen - 1`` indexes it by ``max_seqlen - 1 - (i - j)``);
             the form of the FlexAttention and reference paths, which it keeps on.
-        dropout_p: dropout on the attention weights, in ``[0, 1)``, supported by every path but FlexAttention
-            (see ``packed_attention_supports_dropout``).
+        dropout_p: dropout on the attention weights, in ``[0, 1]``, supported by every path but FlexAttention
+            (see ``packed_attention_supports_dropout``);
+            ``1.0`` drops every weight, so the result is zero on every path.
         scale: positive score scale, ``1 / sqrt(d_k)`` by default;
             a one-element tensor or NumPy scalar is read as a number, so it must not require a gradient.
 
@@ -291,10 +292,10 @@ def packed_attention(
     Raises:
         ValueError: for inputs that do not match the context and for scalars outside their ranges,
             checked before the dispatch so that the backends reject these calls alike.
-        NotImplementedError: on CUDA for a positive ``dropout_p`` where FlexAttention would have to apply it.
+        NotImplementedError: on CUDA for a ``dropout_p`` inside ``(0, 1)`` where FlexAttention would have to apply it.
     """
-    if not 0.0 <= dropout_p < 1.0:
-        raise ValueError(f"dropout_p must be in [0, 1), got {dropout_p}.")
+    if not 0.0 <= dropout_p <= 1.0:
+        raise ValueError(f"dropout_p must be in [0, 1], got {dropout_p}.")
     if isinstance(scale, Tensor) and scale.requires_grad:
         raise ValueError("scale is read as a number, so it must not require a gradient.")
     # the compiled FlexAttention kernel takes a Python number
@@ -336,6 +337,16 @@ def packed_attention(
         if rel_pos_bias is not None:
             anchor = anchor + rel_pos_bias.sum()
         return v + 0.0 * anchor.to(v.dtype)
+    if dropout_p == 1.0:
+        # every weight is dropped, as nn.Dropout(1.0) on the attention weights would:
+        # zeros that keep the inputs in the autograd graph, the same on every backend
+        # (FlashAttention raises for it, FlexAttention has no dropout).
+        # Each input is zeroed on its own, so that no sum of large values overflows on the way.
+        out = 0.0 * q + 0.0 * k + 0.0 * v
+        for position_input in (pos_query, pos_emb, rel_pos_bias):
+            if position_input is not None:
+                out = out + (0.0 * position_input).sum().to(out.dtype)
+        return out
     if q.is_cuda and q.dtype != torch.float64:
         if pos_query is None and rel_pos_bias is None:
             flash = _flash_attention_varlen(q)

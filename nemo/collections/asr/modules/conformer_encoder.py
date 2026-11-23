@@ -32,6 +32,7 @@ from nemo.collections.asr.parts.packed_sequence import (
     pack_encoder_output,
     packed_slot_layout,
 )
+from nemo.collections.asr.parts.preprocessing.features import ZERO_LEVEL_SPEC_DB_VAL
 from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D
 from nemo.collections.asr.parts.submodules.conformer_modules import ConformerLayer, build_self_attention
 from nemo.collections.asr.parts.submodules.multi_head_attention import (
@@ -100,6 +101,11 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         use_triton (bool, Optional): use the fused Triton subsampling kernels, for CUDA input with
             'dw_striding' subsampling. Defaults to None, enabling them whenever Triton is
             installed. Export always uses the PyTorch path.
+        packed_rel_pos_attention (str): the backend of 'rel_pos' attention over packed sequences
+            (``forward_sequence_packed``) on CUDA: 'triton', the fused attention kernel with attention
+            dropout wherever Triton is installed (FlexAttention otherwise), or 'flex', FlexAttention always,
+            the backend before the kernel, which computes in float32 and has no attention dropout.
+            Keyword-only; defaults to 'triton'. In float64 both run the dense reference attention.
         reduction (str, Optional): the method of reduction, choices=['pooling', 'striding']. If no value
             is passed, then no reduction is performed and the models runs with the original 4x subsampling.
         reduction_position (int, Optional): the index of the layer to apply reduction. If -1, apply reduction
@@ -383,6 +389,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         conv: ModuleBlock | None = None,
         self_attn: ModuleBlock | None = None,
         norm: ModuleBlock | None = None,
+        *,
+        packed_rel_pos_attention: str = 'triton',
     ):
         super().__init__()
         d_ff = d_model * ff_expansion_factor
@@ -394,6 +402,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         self.subsampling_conv_chunking_factor = subsampling_conv_chunking_factor
 
         self.self_attention_model = self_attention_model
+        if packed_rel_pos_attention not in ('triton', 'flex'):
+            raise ValueError(f"packed_rel_pos_attention must be 'triton' or 'flex', got {packed_rel_pos_attention!r}.")
+        self.packed_rel_pos_attention = packed_rel_pos_attention
         self.global_tokens = global_tokens
         self.global_attn_separate = global_attn_separate
         self.global_tokens_spacing = global_tokens_spacing
@@ -724,10 +735,33 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             if isinstance(self.pre_encode, nn.Linear):
                 audio_signal = self.pre_encode(audio_signal)
             else:
+                pre_encode = _unwrap_checkpoint(self.pre_encode)
+                pad_for_streaming = (
+                    self.training
+                    and cache_last_channel is None
+                    and self.att_context_style == "chunked_limited"
+                    and isinstance(pre_encode, ConvSubsampling)
+                    and pre_encode.is_causal
+                    and pre_encode._subsampling in ("striding", "dw_striding", "striding_conv1d")
+                )
+                # Later chunks carry pre_encode_cache_size frames over from the previous chunk.
+                # The first one has nothing to carry over, so pad it with silence and let the drop
+                # below handle it like any other chunk. Same as pad_and_drop_preencoded=True.
+                if pad_for_streaming:
+                    cache_size = self.streaming_cfg.pre_encode_cache_size
+                    pad_frames = cache_size[1] if isinstance(cache_size, list) else cache_size
+                    if pad_frames > 0:
+                        audio_signal = nn.functional.pad(
+                            audio_signal, (0, 0, pad_frames, 0), value=ZERO_LEVEL_SPEC_DB_VAL
+                        )
+                        length = length + pad_frames
+
                 audio_signal, length = self.pre_encode(x=audio_signal, lengths=length)
                 length = length.to(torch.int64)
                 # `self.streaming_cfg` is set by setup_streaming_cfg(), called in the init
-                if self.streaming_cfg.drop_extra_pre_encoded > 0 and cache_last_channel is not None:
+                if self.streaming_cfg.drop_extra_pre_encoded > 0 and (
+                    cache_last_channel is not None or pad_for_streaming
+                ):
                     audio_signal = audio_signal[:, self.streaming_cfg.drop_extra_pre_encoded :, :]
                     length = (length - self.streaming_cfg.drop_extra_pre_encoded).clamp(min=0)
 
@@ -912,9 +946,10 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             else:
                 packed = _forward_packed_module(self.pre_encode, packed)
 
-        attention_context = PackedAttentionContext(packed)
-        # the relative-position table covers the padded length the attention kernels see
-        self.update_max_seq_length(seq_length=attention_context.padded_max_seqlen, device=packed.data.device)
+        attention_context = PackedAttentionContext(packed, rel_pos_kernel=self.packed_rel_pos_attention == 'triton')
+        # the relative-position table covers the length the attention backend reads:
+        # the longest utterance for the Triton kernel, the rounded kernel shape for FlexAttention
+        self.update_max_seq_length(seq_length=attention_context.rel_pos_max_seqlen, device=packed.data.device)
         x = packed.data
         if self.self_attention_model == 'rope':
             if self.xscale:
@@ -933,10 +968,10 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             if self.pos_enc.xscale:
                 x = x * self.pos_enc.xscale
             x = self.pos_enc.dropout(x)
-            # the relative positions L - 1 down to -(L - 1) for the padded length L, as RelPositionalEncoding.forward
+            # the relative positions L - 1 down to -(L - 1) for the table length L, as RelPositionalEncoding.forward
             center_pos = self.pos_enc.pe.size(1) // 2 + 1
-            padded_len = attention_context.padded_max_seqlen
-            pos_emb = self.pos_enc.pe[:, center_pos - padded_len : center_pos + padded_len - 1]
+            table_len = attention_context.rel_pos_max_seqlen
+            pos_emb = self.pos_enc.pe[:, center_pos - table_len : center_pos + table_len - 1]
             if self.pos_enc.dropout_emb:
                 pos_emb = self.pos_enc.dropout_emb(pos_emb)
 
@@ -981,9 +1016,11 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         intermediate layer captures (InterCTC and ``save_encoder_tensors``, whose consumers expect padded tensors),
         frontends other than a linear layer or a ``ConvSubsampling`` that names no reason of its own,
         and whatever the convolution module of a layer names (both by ``sequence_packed_unsupported_reason``).
-        Attention dropout in training mode on CUDA: FlexAttention has no dropout, so ``rel_pos`` attention,
-        which carries its position bias through FlexAttention, needs ``dropout_att: 0``,
-        and ``abs_pos`` and ``rope`` attention keep their dropout only where variable-length FlashAttention runs,
+        Attention dropout in training mode on CUDA: FlexAttention has no dropout, so ``rel_pos`` attention
+        keeps its dropout only through its Triton kernel
+        (``packed_rel_pos_attention: triton``, Triton installed, float32, bfloat16 or float16)
+        or in float64, which runs the dense reference attention on every backend,
+        and ``abs_pos`` and ``rope`` attention only where variable-length FlashAttention runs,
         in float16 or bfloat16 (autocast counts) with a head width that is a multiple of 8 up to 256;
         see ``packed_attention_supports_dropout``. Off CUDA the dense reference attention applies the dropout.
         """
@@ -1024,16 +1061,28 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             and parameter.device.type == 'cuda'
             and any(layer.self_attn.dropout_rate > 0 for layer in layers)
         ):
-            # off CUDA the dense per-utterance reference path applies the dropout, with or without a position bias
-            if self.self_attention_model == 'rel_pos':
-                return (
-                    "FlexAttention has no dropout on the attention weights: set dropout_att: 0 on the encoder "
-                    "for rel_pos attention over packed sequences; abs_pos and rope attention keep their dropout "
-                    "through variable-length FlashAttention, which runs in float16 or bfloat16 (autocast) only."
-                )
+            # off CUDA the dense per-utterance reference path applies the dropout, with or without a position term
             autocast = torch.is_autocast_enabled('cuda')
             dtype = torch.get_autocast_dtype('cuda') if autocast else parameter.dtype
-            if not packed_attention_supports_dropout(parameter.device, dtype, layers[0].self_attn.d_k):
+            head_dim = layers[0].self_attn.d_k
+            if self.self_attention_model == 'rel_pos':
+                # the same rule as the dispatch of packed_attention: the kernel where it is selected and runs,
+                # the dense reference in float64, FlexAttention otherwise
+                if not packed_attention_supports_dropout(
+                    parameter.device,
+                    dtype,
+                    head_dim,
+                    rel_pos=True,
+                    rel_pos_kernel=self.packed_rel_pos_attention == 'triton',
+                ):
+                    return (
+                        "rel_pos attention over packed sequences keeps its dropout through its Triton kernel "
+                        "(packed_rel_pos_attention: triton; Triton installed; float32, bfloat16 or float16) "
+                        "or in float64 (the dense reference attention), "
+                        "and FlexAttention, the path otherwise, has no dropout on the attention weights: "
+                        "set dropout_att: 0 on the encoder or select the kernel."
+                    )
+            elif not packed_attention_supports_dropout(parameter.device, dtype, head_dim):
                 return (
                     "Attention dropout over packed sequences runs through variable-length FlashAttention, which "
                     "needs float16 or bfloat16 (autocast), a head width that is a multiple of 8 up to 256, and a CUDA "

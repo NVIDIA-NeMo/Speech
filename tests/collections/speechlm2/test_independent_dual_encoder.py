@@ -18,6 +18,7 @@ import torch
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 from nemo.collections.asr.parts.packed_sequence import pack_encoder_output
+from nemo.collections.asr.parts.submodules import packed_attention as packed_attention_module
 from nemo.collections.speechlm2.modules.perception import IndependentDualEncoder
 
 
@@ -111,10 +112,11 @@ def make_conformer_encoder(dropout_att: float) -> ConformerEncoder:
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_independent_dual_encoder_keeps_the_padded_fallback_for_a_branch_without_native_packed_support():
+def test_independent_dual_encoder_keeps_the_padded_fallback_for_a_branch_without_native_packed_support(monkeypatch):
     """A ConformerEncoder branch training with attention dropout over rel_pos attention has no native packed form
-    on CUDA (FlexAttention has no dropout): the dual encoder still constructs in training mode, runs that branch
-    padded and re-packs it, and the step completes forward and backward."""
+    on CUDA without the Triton attention kernel (FlexAttention has no dropout): the dual encoder still constructs
+    in training mode, runs that branch padded and re-packs it, and the step completes forward and backward."""
+    monkeypatch.setattr(packed_attention_module, "TRITON_AVAILABLE", False)
     torch.manual_seed(7)
     asr = make_conformer_encoder(dropout_att=0.1)
     auxiliary = make_encoder(32)

@@ -58,22 +58,17 @@ class PipelineType(StrEnumMixin, Enum):
     CACHE_AWARE = auto()
 
 
-class RequestType(StrEnumMixin, Enum):
+class PaddingMode(StrEnumMixin, Enum):
     """
-    Enumeration of the request types.
-    """
-
-    FRAME = auto()
-    FEATURE_BUFFER = auto()
-
-
-class FeatureBufferPaddingMode(StrEnumMixin, Enum):
-    """
-    Enumeration of the feature buffer padding modes.
+    Enumeration of the padding modes of the audio buffers.
     """
 
     LEFT = auto()
     RIGHT = auto()
+
+
+# Deprecated alias, kept so that existing imports keep working
+FeatureBufferPaddingMode = PaddingMode
 
 
 class MergingStrategy(StrEnumMixin, Enum):

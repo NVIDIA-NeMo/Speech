@@ -50,6 +50,7 @@ from nemo.collections.common.parts.utils import build_module
 from nemo.utils import logging
 
 CONSTANT = 1e-5
+ZERO_LEVEL_SPEC_DB_VAL = -16.635  # Log-mel spectrogram value for zero signal.
 
 
 def normalize_batch(x, seq_len, normalize_type):

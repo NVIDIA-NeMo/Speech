@@ -59,6 +59,21 @@ def test_streamer_rejects_audio_samples_of_another_length_than_the_filepaths():
         streamer.set_audio_filepaths(MISSING_FILES, [ASRRequestOptions()] * 3, audio_samples=[torch.zeros(10)])
 
 
+@pytest.mark.unit
+def test_streamer_reports_the_filepath_and_the_valid_audio_duration_of_each_stream():
+    # 3500, 1700 and 2600 samples at 16 kHz are 0.21875 s, 0.10625 s and 0.1625 s; the padded last frames must not count
+    samples = [torch.zeros(n) for n in (3500, 1700, 2600)]
+    streamer = ContinuousBatchedFrameStreamer(
+        sample_rate=SAMPLE_RATE, frame_size_in_secs=0.1, batch_size=2, n_frames_per_stream=1, pad_last_frame=True
+    )
+    streamer.set_audio_filepaths(MISSING_FILES, [ASRRequestOptions()] * 3, audio_samples=samples)
+
+    _streamed_samples(streamer, num_streams=3)
+
+    assert [streamer.get_audio_filepath(sid) for sid in range(3)] == MISSING_FILES
+    assert [streamer.get_elapsed_duration(sid) for sid in range(3)] == pytest.approx([0.21875, 0.10625, 0.1625])
+
+
 class _FakeRequestGenerator:
     def __init__(self):
         self.audio_samples = "not called"

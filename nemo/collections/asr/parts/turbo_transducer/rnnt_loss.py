@@ -47,7 +47,7 @@ class TurboRnntLoss(nn.Module):
 
     Gradient clamping (`clamp`) is applied to the gradient of each per-utterance loss for the logits before it is
     multiplied by the upstream gradient (as in `warprnnt_numba`), so it does not depend on the reduction of the loss
-    and the batch size. Clamping requires the logits and is not available in `forward_from_logprobs`.
+    and the batch size. With precomputed scores, the producing joint must apply this clamp during its backward.
     """
 
     def __init__(
@@ -135,6 +135,8 @@ class TurboRnntLoss(nn.Module):
         blank_logprobs: torch.Tensor,
         act_lens: torch.Tensor,
         label_lens: torch.Tensor,
+        *,
+        loss_grad_scale: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Compute RNN-T loss from target and blank log-probabilities.
@@ -144,14 +146,15 @@ class TurboRnntLoss(nn.Module):
             blank_logprobs: log-probabilities for the blank label of size [B, T, U+1]
             act_lens: lengths of activations (source lengths) of size [B]
             label_lens: lengths of label sequences of size [B]
+            loss_grad_scale: optional FP32 buffer [B] shared with a joint that clamps logits gradients.
 
         Returns:
             batch of RNN-T scores (loss) of size [B]
         """
-        if not self.supports_logprobs_input:
+        if not self.supports_logprobs_input and loss_grad_scale is None:
             raise NotImplementedError(
                 "Gradient clamping is applied to the gradient for the logits "
-                "and is not supported when computing the loss from log-probabilities"
+                "and requires the score producer to clamp them"
             )
         if target_logprobs.device.type != "cuda" or blank_logprobs.device.type != "cuda":
             raise NotImplementedError("Turbo-RNNT loss supports only CUDA inputs")
@@ -162,6 +165,7 @@ class TurboRnntLoss(nn.Module):
             src_lengths=act_lens,
             tgt_lengths=label_lens,
             fastemit_lambda=self.fastemit_lambda,
+            loss_grad_scale=loss_grad_scale,
         )
         return self._postprocess_loss(loss_batch)
 

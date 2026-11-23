@@ -259,6 +259,7 @@ class TritonRnntLossFunction(torch.autograd.Function):
         src_lengths: torch.Tensor,
         tgt_lengths: torch.Tensor,
         fastemit_lambda: float = 0.0,
+        loss_grad_scale: torch.Tensor | None = None,
     ):
         """
         RNN-T loss calculation from target/blank log-probs. Forward pass.
@@ -296,6 +297,7 @@ class TritonRnntLossFunction(torch.autograd.Function):
         )
 
         ctx.save_for_backward(target_logprobs, blank_logprobs, alpha, src_lengths, tgt_lengths)
+        ctx.loss_grad_scale = loss_grad_scale
         ctx.fastemit_lambda = fastemit_lambda
         return loss_batch
 
@@ -304,6 +306,8 @@ class TritonRnntLossFunction(torch.autograd.Function):
         """
         Backward pass for RNN-T loss
         """
+        if ctx.loss_grad_scale is not None:
+            ctx.loss_grad_scale.copy_(grad_rnnt_loss.detach())
         (target_logprobs, blank_logprobs, alpha, src_lengths, tgt_lengths) = ctx.saved_tensors
         target_logprobs_grad, blank_logprobs_grad = _rnnt_loss_bwd(
             target_logprobs=target_logprobs,
@@ -314,7 +318,7 @@ class TritonRnntLossFunction(torch.autograd.Function):
             grad_rnnt_loss=grad_rnnt_loss.to(alpha.dtype).contiguous(),
             fastemit_lambda=ctx.fastemit_lambda,
         )
-        return target_logprobs_grad, blank_logprobs_grad, None, None, None
+        return target_logprobs_grad, blank_logprobs_grad, None, None, None, None
 
 
 class TritonRnntLossWithClampFunction(torch.autograd.Function):
@@ -418,6 +422,7 @@ def rnnt_loss_from_logprobs_triton(
     src_lengths: torch.Tensor,
     tgt_lengths: torch.Tensor,
     fastemit_lambda: float = 0.0,
+    loss_grad_scale: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
     RNN-T loss in Triton
@@ -428,11 +433,12 @@ def rnnt_loss_from_logprobs_triton(
         src_lengths: source lengths of size [B]
         tgt_lengths: target lengths of size [B]
         fastemit_lambda: Float scaling factor for FastEmit regularization. Default 0.0 (disabled).
+        loss_grad_scale: optional per-utterance backward scales for a joint that clamps logits gradients.
     Returns:
         tensor of size [B] with RNN-T loss
     """
     loss_batch = TritonRnntLossFunction.apply(
-        target_logprobs, blank_logprobs, src_lengths, tgt_lengths, fastemit_lambda
+        target_logprobs, blank_logprobs, src_lengths, tgt_lengths, fastemit_lambda, loss_grad_scale
     )
     return loss_batch
 

@@ -14,15 +14,13 @@
 # limitations under the License.
 
 
-from typing import Callable, Iterator
+from typing import Iterator
 
 import torch
 
-from nemo.collections.asr.inference.streaming.buffering.audio_bufferer import BatchedAudioBufferer
 from nemo.collections.asr.inference.streaming.framing.mono_stream import MonoStream
-from nemo.collections.asr.inference.streaming.framing.request import FeatureBuffer, Frame, Request, RequestOptions
+from nemo.collections.asr.inference.streaming.framing.request import Frame, RequestOptions
 from nemo.collections.asr.inference.streaming.framing.stream import Stream
-from nemo.collections.asr.inference.utils.enums import RequestType
 from nemo.collections.asr.inference.utils.progressbar import ProgressBar
 
 
@@ -178,6 +176,26 @@ class ContinuousBatchedFrameStreamer:
         if self._progress_bar:
             self._progress_bar.finish()
 
+    def get_audio_filepath(self, stream_id: int) -> str:
+        """
+        Get the audio filepath for a given stream id
+        Args:
+            stream_id (int): The id of the stream
+        Returns:
+            str: The audio filepath for the given stream id
+        """
+        return self.sid2filepath[stream_id]
+
+    def get_elapsed_duration(self, stream_id: int) -> float:
+        """
+        Get the elapsed audio duration for a given stream id
+        Args:
+            stream_id (int): The id of the stream
+        Returns:
+            float: The elapsed audio duration for the given stream id
+        """
+        return self.elapsed_durations[stream_id]
+
     def __iter__(self) -> Iterator:
         """Returns the iterator object"""
         return self
@@ -242,186 +260,3 @@ class ContinuousBatchedFrameStreamer:
             raise StopIteration
 
         raise ValueError("stream_id > self.n_audio_files unexpected")
-
-
-class ContinuousBatchedRequestStreamer:
-    """
-    A class that manages continuous streaming of requests from multiple audio files, providing
-    request generation in batches. Requests can be frames or feature buffers.
-    The class supports dynamically adding audio streams, updating a progress bar,
-    and yielding batches of requests for further processing.
-    """
-
-    def __init__(
-        self,
-        sample_rate: int,
-        frame_size_in_secs: float,
-        batch_size: int,
-        n_frames_per_stream: int,
-        request_type: RequestType = RequestType.FRAME,
-        preprocessor: Callable = None,
-        buffer_size_in_secs: float = None,
-        device: torch.device = None,
-        pad_last_frame: bool = False,
-        right_pad_features: bool = False,
-        flush_size_in_secs: float = 0.0,
-    ):
-        """
-        Args:
-            sample_rate (int): The sample rate of the audio
-            frame_size_in_secs (float): The size of the frame in seconds
-            batch_size (int): The batch size
-            n_frames_per_stream (int): The number of frames per stream
-            request_type (RequestType): The type of request
-            preprocessor (Callable): Preprocessor object, required for request type FEATURE_BUFFER
-            buffer_size_in_secs (float): The size of the buffer in seconds, required for request type FEATURE_BUFFER
-            device (torch.device): The device to use, required for request type FEATURE_BUFFER
-            pad_last_frame (bool): Whether to pad the last frame
-            right_pad_features (bool): Whether to right pad the features, optional for request type FEATURE_BUFFER
-        """
-
-        if request_type is RequestType.FEATURE_BUFFER:
-            if buffer_size_in_secs is None:
-                raise ValueError("buffer_size_in_secs must be provided for request type FEATURE_BUFFER")
-            if preprocessor is None:
-                raise ValueError("preprocessor must be provided for request type FEATURE_BUFFER")
-            if device is None:
-                raise ValueError("device must be provided for request type FEATURE_BUFFER")
-
-        self.request_type = request_type
-        self.multi_streamer = ContinuousBatchedFrameStreamer(
-            sample_rate=sample_rate,
-            frame_size_in_secs=frame_size_in_secs,
-            batch_size=batch_size,
-            n_frames_per_stream=n_frames_per_stream,
-            pad_last_frame=pad_last_frame,
-            flush_size_in_secs=flush_size_in_secs,
-        )
-
-        if self.request_type is RequestType.FEATURE_BUFFER:
-            self.preprocessor = preprocessor
-            self.device = device
-            self.audio_bufferer = BatchedAudioBufferer(
-                sample_rate=sample_rate, buffer_size_in_secs=buffer_size_in_secs
-            )
-            self.right_pad_features = right_pad_features
-
-    def set_audio_filepaths(
-        self,
-        audio_filepaths: list[str],
-        options: list[RequestOptions],
-        audio_samples: list[torch.Tensor] | None = None,
-    ) -> None:
-        """
-        Set the audio filepaths
-        Args:
-            audio_filepaths (list[str]): The list of audio filepaths
-            options (list[RequestOptions]): The list of options
-            audio_samples (list[torch.Tensor] | None): Preloaded audio samples, one tensor per filepath.
-        """
-        self.multi_streamer.set_audio_filepaths(audio_filepaths, options, audio_samples=audio_samples)
-
-    def set_progress_bar(self, progress_bar: ProgressBar) -> None:
-        """
-        Set the progress bar
-        Args:
-            progress_bar (ProgressBar): The progress bar to set
-        """
-        self.multi_streamer.set_progress_bar(progress_bar)
-
-    def get_audio_filepath(self, stream_id: int) -> str:
-        """
-        Get the audio filepath for a given stream id
-        Args:
-            stream_id (int): The id of the stream
-        Returns:
-            str: The audio filepath for the given stream id
-        """
-        return self.multi_streamer.sid2filepath[stream_id]
-
-    def get_elapsed_duration(self, stream_id: int) -> float:
-        """
-        Get the elapsed audio duration for a given stream id
-        Args:
-            stream_id (int): The id of the stream
-        Returns:
-            float: The elapsed audio duration for the given stream id
-        """
-        return self.multi_streamer.elapsed_durations[stream_id]
-
-    def to_feature_buffers(self, frames: list[Frame]) -> list[FeatureBuffer]:
-        """
-        Convert frames to feature buffers
-        Args:
-            frames (list[Frame]): The list of frames
-        Returns:
-            list[FeatureBuffer]: The list of feature buffers
-        """
-
-        # Buffer input frames
-        buffered_frames, left_paddings = self.audio_bufferer.update(frames)
-        buffers = []
-
-        # If right padding is enabled, convert left paddings to tensor
-        if self.right_pad_features:
-            left_paddings = torch.tensor(left_paddings, dtype=torch.int64, device=self.device)
-
-        # If right padding is enabled, roll the frames to the left
-        for i in range(len(buffered_frames)):
-            if self.right_pad_features:
-                lpad = left_paddings[i].item()
-                if lpad > 0:
-                    buffered_frames[i] = buffered_frames[i].roll(shifts=-lpad)
-            buffers.append(buffered_frames[i].unsqueeze_(0))
-
-        buffer_lens = torch.tensor([buffers[0].size(1)] * len(buffers), device=self.device)
-
-        # Calculate right paddings and subtract from buffer lens
-        right_paddings = torch.tensor([frame.size - frame.valid_size for frame in frames], device=self.device).clamp(
-            min=0
-        )
-
-        # Subtract right paddings from buffer lens
-        buffer_lens = buffer_lens - right_paddings
-
-        # If right padding is enabled, subtract left paddings from buffer lens
-        # Becouse we rolled the frames to the left
-        if self.right_pad_features:
-            buffer_lens = buffer_lens - left_paddings
-
-        # Apply preprocessor to get mel spectrograms
-        feature_buffers, feature_buffer_lens = self.preprocessor(
-            input_signal=torch.cat(buffers).to(self.device), length=buffer_lens
-        )
-
-        # Adjust left paddings after preprocessor
-        if self.right_pad_features:
-            left_paddings = left_paddings / self.preprocessor.featurizer.hop_length
-            left_paddings = left_paddings.to(torch.int64)
-
-        return [
-            FeatureBuffer(
-                features=feature_buffers[i],
-                is_first=frame.is_first,
-                is_last=frame.is_last,
-                stream_id=frame.stream_id,
-                right_pad_features=self.right_pad_features,
-                length=feature_buffer_lens[i].item(),
-                left_padding_length=left_paddings[i].item() if self.right_pad_features else 0,
-                options=frame.options,
-            )
-            for i, frame in enumerate(frames)
-        ]
-
-    def __iter__(self) -> Iterator:
-        """Returns the iterator object"""
-        return self
-
-    def __next__(self) -> list[Request]:
-        """Get the next batch of requests.
-        Returns:
-            list of frames or feature buffers.
-        """
-        if self.request_type is RequestType.FRAME:
-            return next(self.multi_streamer)
-        return self.to_feature_buffers(next(self.multi_streamer))

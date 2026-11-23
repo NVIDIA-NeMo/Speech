@@ -10,12 +10,6 @@ This inventory covers material distributed in the repository. Dependencies
 obtained separately when building or running NeMo Speech are governed by the
 licenses included with those dependencies.
 
-Component: Daily / Pipecat client and transport code
-Paths: examples/voice_agent/client/src/app.ts; nemo/agents/voice_agent/pipecat/
-Copyright: Copyright (c) 2024–2025, Daily
-License: BSD-2-Clause
-Source: https://github.com/pipecat-ai/pipecat
-
 Component: Triton lazy-initialization patch
 Path: external/patches/triton-lang_triton_6570_lazy_init.patch
 Copyright: Copyright (c) 2018-2022 Philippe Tillet, OpenAI

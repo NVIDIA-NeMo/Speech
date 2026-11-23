@@ -22,6 +22,7 @@ import numpy as np
 import pytest
 import torch
 
+import nemo.collections.tts.parts.utils.tts_dataset_utils as tts_dataset_utils
 from nemo.collections.tts.modules.magpietts_modules import build_vocabs
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     LanguageThresholds,

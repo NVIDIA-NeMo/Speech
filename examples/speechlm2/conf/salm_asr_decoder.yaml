@@ -30,7 +30,7 @@ model:
   #   target_modules: ["q_proj", "v_proj"]
 
   perception:
-     target: nemo.collections.speechlm2.modules.perception.AudioPerceptionModule
+     target: nemo.collections.speechlm2.modules.perception.AudioTranscriptionPerceptionModule
      output_dim: 2048
      modality_adapter:
        _target_: nemo.collections.speechlm2.modules.perception.IdentityConnector

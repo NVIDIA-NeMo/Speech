@@ -25,6 +25,7 @@ from nemo.collections.asr.parts.submodules import packed_attention as packed_att
 from nemo.collections.asr.parts.submodules.multi_head_attention import (
     RelPositionalEncoding,
     RelPositionMultiHeadAttention,
+    RelPositionMultiHeadAttentionLongformer,
 )
 from nemo.collections.asr.parts.submodules.packed_attention import (
     PackedAttentionContext,
@@ -160,6 +161,234 @@ class TestDocumentBlockMask:
         assert context.sequence_slices == ((0, 3), (3, 3), (3, 5))
         assert context.seq_starts.tolist() == [0, 3, 3] and context.seq_lens.tolist() == [3, 0, 2]
         assert context.seq_starts.dtype == torch.int32 and context.seq_lens.dtype == torch.int32
+
+
+def _key_window(name, max_seqlen, device="cpu"):
+    """Key windows by query position: the first and the last key position, None for a side without a limit."""
+    positions = torch.arange(max_seqlen, device=device)
+    chunk_start = positions // 100 * 100
+    return {
+        "band": (positions - 40, positions + 13),
+        "wide_band": (positions - 300, positions + 300),
+        "left_only": (positions - 70, None),
+        "right_only": (None, positions + 5),
+        "chunks": (chunk_start - 200, chunk_start + 99),
+        "own_token": (positions, positions),
+    }[name]
+
+
+def _dense_window_attention(q, k, v, lengths, key_window, rel_pos_bias=None):
+    """Attention one query at a time over the keys of its window, written out with loops."""
+    first_key, last_key = key_window
+    outputs, offset = [], 0
+    scale = q.shape[-1] ** -0.5
+    for length in lengths.tolist():
+        for i in range(length):
+            lo = 0 if first_key is None else max(int(first_key[i]), 0)
+            hi = length - 1 if last_key is None else min(int(last_key[i]), length - 1)
+            keys = slice(offset + lo, offset + hi + 1)
+            scores = torch.einsum("hd,jhd->hj", q[offset + i], k[keys]) * scale
+            if rel_pos_bias is not None:
+                center = (rel_pos_bias.shape[-1] - 1) // 2
+                rel = center - i + torch.arange(lo, hi + 1, device=q.device)
+                scores = scores + rel_pos_bias[offset + i][:, rel] * scale
+            outputs.append(torch.einsum("hj,jhd->hd", torch.softmax(scores, dim=-1), v[keys]))
+        offset += length
+    return torch.stack(outputs)
+
+
+class TestPackedAttentionKeyWindow:
+    """A limited attention context: the keys of every token narrowed to a window inside its utterance."""
+
+    @pytest.mark.unit
+    def test_key_spans_stay_inside_the_utterance_and_hold_the_token(self):
+        lengths = torch.tensor([5, 0, 3])
+        packed = pack_encoder_output(torch.zeros(3, 5, 1), lengths)
+        positions = torch.arange(5)
+        context = PackedAttentionContext(packed, key_window=(positions - 1, positions + 2))
+        start, end = context.key_spans()
+        assert start.tolist() == [0, 0, 1, 2, 3, 5, 5, 6]
+        assert end.tolist() == [3, 4, 5, 5, 5, 8, 8, 8]
+        one_sided = PackedAttentionContext(packed, key_window=(None, positions))
+        assert [t.tolist() for t in one_sided.key_spans()] == [[0, 0, 0, 0, 0, 5, 5, 5], [1, 2, 3, 4, 5, 6, 7, 8]]
+        # a window that leaves its own token out is widened to it
+        beside = PackedAttentionContext(packed, key_window=(positions + 1, positions + 1))
+        assert [t.tolist() for t in beside.key_spans()] == [[0, 1, 2, 3, 4, 5, 6, 7], [2, 3, 4, 5, 5, 7, 8, 8]]
+        whole = PackedAttentionContext(packed)
+        assert whole.key_window is None
+        assert [t.tolist() for t in whole.key_spans()] == [[0, 0, 0, 0, 0, 5, 5, 5], [5, 5, 5, 5, 5, 8, 8, 8]]
+        assert PackedAttentionContext(packed, key_window=(None, None)).key_window is None
+        with pytest.raises(ValueError, match="key_window bounds must have shape"):
+            PackedAttentionContext(packed, key_window=(torch.arange(8), None))
+        with pytest.raises(TypeError, match="integer tensors"):
+            PackedAttentionContext(packed, key_window=(positions.double(), None))
+
+    @pytest.mark.unit
+    def test_bias_narrower_than_the_utterances_needs_a_two_sided_window(self):
+        packed = pack_encoder_output(torch.zeros(2, 60, 1), torch.tensor([60, 20]))
+        positions = torch.arange(60)
+        q = torch.randn(80, 2, 4)
+        bias = torch.randn(80, 2, 7)
+        for key_window in (None, (positions - 3, None), (None, positions + 3)):
+            with pytest.raises(ValueError, match="The position term covers 7 relative positions"):
+                packed_attention(q, q, q, PackedAttentionContext(packed, key_window=key_window), rel_pos_bias=bias)
+        context = PackedAttentionContext(packed, key_window=(positions - 3, positions + 3))
+        assert packed_attention(q, q, q, context, rel_pos_bias=bias).shape == q.shape
+
+    @pytest.mark.unit
+    def test_local_attention_checks_its_window_and_position_table(self):
+        attention = RelPositionMultiHeadAttentionLongformer(
+            n_head=2, n_feat=8, dropout_rate=0.0, pos_bias_u=None, pos_bias_v=None, att_context_size=[4, 4]
+        )
+        packed = pack_encoder_output(torch.randn(2, 40, 8), torch.tensor([40, 9]))
+        positions = torch.arange(40)
+        context = PackedAttentionContext(packed, key_window=(positions - 4, positions + 4))
+        assert attention.forward_packed(packed.data, context, pos_emb=torch.randn(1, 9, 8)).shape == (49, 8)
+        with pytest.raises(ValueError, match="needs pos_emb of 9 relative positions, got 13"):
+            attention.forward_packed(packed.data, context, pos_emb=torch.randn(1, 13, 8))
+        with pytest.raises(ValueError, match="needs the key window"):
+            attention.forward_packed(packed.data, PackedAttentionContext(packed), pos_emb=torch.randn(1, 9, 8))
+        with pytest.raises(ValueError, match="needs the key window"):
+            one_sided = PackedAttentionContext(packed, key_window=(positions - 4, None))
+            attention.forward_packed(packed.data, one_sided, pos_emb=torch.randn(1, 9, 8))
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("window", ["band", "wide_band", "left_only", "right_only", "chunks", "own_token"])
+    @pytest.mark.parametrize("lengths", [[1000, 1, 129, 0, 128, 40], [257]])
+    def test_block_mask_matches_dense_window_mask(self, lengths, window):
+        lengths = torch.tensor(lengths)
+        packed = pack_encoder_output(torch.zeros(len(lengths), int(lengths.max()), 1), lengths)
+        context = PackedAttentionContext(packed, key_window=_key_window(window, packed.max_seqlen))
+        total, padded_total = context.total_tokens, context.padded_total_tokens
+        start, end = context.key_spans()
+        starts = torch.full((padded_total,), padded_total)
+        starts[:total] = start
+        ends = torch.zeros(padded_total, dtype=torch.int64)
+        ends[:total] = end
+
+        def mask_mod(b, h, q_idx, kv_idx):
+            return (kv_idx >= starts[q_idx]) & (kv_idx < ends[q_idx])
+
+        reference = create_block_mask(mask_mod, B=None, H=None, Q_LEN=padded_total, KV_LEN=padded_total, device="cpu")
+        block_mask = context.block_mask()
+        torch.testing.assert_close(block_mask.to_dense(), reference.to_dense())
+
+        document = PackedAttentionContext(packed).block_mask()
+        blocks = int(block_mask.kv_num_blocks.sum() + block_mask.full_kv_num_blocks.sum())
+        document_blocks = int(document.kv_num_blocks.sum() + document.full_kv_num_blocks.sum())
+        assert blocks <= document_blocks
+        if window in ("band", "own_token") and max(lengths.tolist()) >= 1000:
+            # the blocks outside the window are skipped, not evaluated
+            assert blocks < document_blocks / 2
+        if window == "wide_band" and max(lengths.tolist()) >= 1000:
+            assert int(block_mask.full_kv_num_blocks.sum()) > 0
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("window", ["band", "left_only", "right_only", "chunks", "own_token"])
+    @pytest.mark.parametrize("bias_width", [None, "utterance", "window"])
+    def test_reference_path_attends_inside_the_window(self, window, bias_width):
+        """Outputs and gradients against attention written out per query; a bias as wide as the window suffices."""
+        if bias_width == "window" and window != "band":
+            pytest.skip("a bias narrower than the utterance needs a window bounded on both sides")
+        torch.manual_seed(1)
+        lengths = torch.tensor([150, 1, 0, 60])
+        packed = pack_encoder_output(torch.zeros(4, 150, 1), lengths)
+        key_window = _key_window(window, packed.max_seqlen)
+        context = PackedAttentionContext(packed, key_window=key_window)
+        total = context.total_tokens
+        q, k, v = (torch.randn(total, 2, 4, dtype=torch.float64, requires_grad=True) for _ in range(3))
+        bias = None
+        if bias_width is not None:
+            reach = 150 if bias_width == "utterance" else 41
+            bias = torch.randn(total, 2, 2 * reach - 1, dtype=torch.float64, requires_grad=True)
+        inputs = [t for t in (q, k, v, bias) if t is not None]
+
+        out = packed_attention(q, k, v, context, rel_pos_bias=bias)
+        grads = torch.autograd.grad(out.square().sum(), inputs)
+        reference = _dense_window_attention(q, k, v, lengths, key_window, rel_pos_bias=bias)
+        reference_grads = torch.autograd.grad(reference.square().sum(), inputs)
+        torch.testing.assert_close(out, reference)
+        for grad, reference_grad in zip(grads, reference_grads):
+            torch.testing.assert_close(grad, reference_grad)
+
+    @pytest.mark.unit
+    def test_empty_batch_keeps_gradients(self):
+        packed = pack_encoder_output(torch.zeros(2, 0, 1), torch.tensor([0, 0]))
+        empty = torch.empty(0, dtype=torch.int64)
+        context = PackedAttentionContext(packed, key_window=(empty, empty))
+        q = torch.randn(0, 2, 4, requires_grad=True)
+        out = packed_attention(q, q, q, context)
+        out.sum().backward()
+        assert out.shape == (0, 2, 4) and q.grad is not None
+
+    @pytest.mark.unit
+    @pytest.mark.gpu
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA FlexAttention")
+    @pytest.mark.parametrize("window", ["band", "wide_band", "left_only", "right_only", "chunks", "own_token"])
+    @pytest.mark.parametrize("with_bias", [False, True], ids=["no_bias", "bias"])
+    def test_flex_attention_matches_reference_on_cuda(self, window, with_bias):
+        """Utterances over several blocks of 128 tokens, of one token and of none; outputs and all gradients."""
+        torch.manual_seed(0)
+        lengths = torch.tensor([1000, 1, 300, 0, 129], device="cuda")
+        packed = pack_encoder_output(torch.zeros(5, 1000, 1, device="cuda"), lengths)
+        context = PackedAttentionContext(packed, key_window=_key_window(window, packed.max_seqlen, device="cuda"))
+        total, heads, head_dim = packed.total_tokens, 2, 32
+        inputs = [torch.randn(total, heads, head_dim, device="cuda", requires_grad=True) for _ in range(3)]
+        bias = None
+        if with_bias:
+            bias = torch.randn(total, heads, 2 * packed.max_seqlen - 1, device="cuda", requires_grad=True)
+            inputs.append(bias)
+
+        out = packed_attention(*inputs[:3], context, rel_pos_bias=bias)
+        grads = torch.autograd.grad(out.square().sum(), inputs)
+        reference = packed_attention_module._reference_packed_attention(
+            *inputs[:3], context, rel_pos_bias=bias, dropout_p=0.0, scale=head_dim**-0.5
+        )
+        reference_grads = torch.autograd.grad(reference.square().sum(), inputs)
+        torch.testing.assert_close(out, reference, atol=1e-4, rtol=1e-4)
+        for grad, reference_grad in zip(grads, reference_grads):
+            torch.testing.assert_close(grad, reference_grad, atol=1e-3, rtol=1e-3)
+
+    @pytest.mark.unit
+    @pytest.mark.gpu
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA FlexAttention")
+    @pytest.mark.parametrize("dtype, tolerance", [(torch.float16, 4e-3), (torch.bfloat16, 2e-2)], ids=["fp16", "bf16"])
+    def test_half_precision_window_runs_flex_attention_not_flash(self, dtype, tolerance, monkeypatch):
+        """Variable-length FlashAttention knows no window, so bias-free half precision takes FlexAttention too."""
+
+        def no_flash_attention(queries):
+            raise AssertionError("variable-length FlashAttention cannot express a key window")
+
+        monkeypatch.setattr(packed_attention_module, "_flash_attention_varlen", no_flash_attention)
+        torch.manual_seed(0)
+        lengths = torch.tensor([127, 0, 128, 129, 300, 1], device="cuda")
+        packed = pack_encoder_output(torch.zeros(6, 300, 1, device="cuda"), lengths)
+        context = PackedAttentionContext(packed, key_window=_key_window("band", packed.max_seqlen, device="cuda"))
+        q, k, v = (torch.randn(context.total_tokens, 2, 64, device="cuda", dtype=dtype) for _ in range(3))
+        upstream = torch.randn(context.total_tokens, 2, 64, device="cuda", dtype=dtype)
+
+        inputs = [t.detach().clone().requires_grad_() for t in (q, k, v)]
+        out = packed_attention(*inputs, context)
+        out.backward(upstream)
+        reference_inputs = [t.detach().float().requires_grad_() for t in (q, k, v)]
+        reference = packed_attention_module._reference_packed_attention(
+            *reference_inputs, context, rel_pos_bias=None, dropout_p=0.0, scale=64**-0.5
+        )
+        reference.backward(upstream.float())
+        torch.testing.assert_close(out.float(), reference, atol=tolerance, rtol=tolerance)
+        for value, reference_value in zip(inputs, reference_inputs):
+            torch.testing.assert_close(value.grad.float(), reference_value.grad, atol=tolerance, rtol=tolerance)
+
+    @pytest.mark.unit
+    @pytest.mark.gpu
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA FlexAttention")
+    def test_dropout_with_a_window_raises_on_cuda(self):
+        lengths = torch.tensor([40, 20], device="cuda")
+        packed = pack_encoder_output(torch.zeros(2, 40, 1, device="cuda"), lengths)
+        context = PackedAttentionContext(packed, key_window=_key_window("band", 40, device="cuda"))
+        q = torch.randn(60, 2, 64, device="cuda", dtype=torch.bfloat16)
+        with pytest.raises(NotImplementedError, match="limited attention context"):
+            packed_attention(q, q, q, context, dropout_p=0.1)
 
 
 class TestPackedAttentionKernelShapes:
@@ -329,7 +558,7 @@ class TestPackedAttentionArguments:
             ("rel_pos_bias", (9, 2, 9), "rel_pos_bias must have shape"),
             ("rel_pos_bias", (8, 3, 9), "rel_pos_bias must have shape"),
             ("rel_pos_bias", (8, 2, 8), "rel_pos_bias must have shape"),
-            ("rel_pos_bias", (8, 2, 7), "rel_pos_bias must have shape"),
+            ("rel_pos_bias", (8, 2, 7), "rel_pos_bias must have shape|The position term covers 7 relative positions"),
             ("rel_pos_bias", (8, 2, 10), "rel_pos_bias must have shape"),
             ("rel_pos_bias", (8, 2, 9, 1), "rel_pos_bias must have shape"),
             ("rel_pos_bias", (16, 9), "rel_pos_bias must have shape"),
@@ -363,7 +592,7 @@ class TestPackedAttentionArguments:
             ("pos_emb", (9, 3, 16), "pos_query must have the shape"),
             ("pos_emb", (9, 2, 8), "pos_query must have the shape"),
             ("pos_emb", (10, 2, 16), "pos_query must have the shape"),
-            ("pos_emb", (7, 2, 16), "pos_query must have the shape"),
+            ("pos_emb", (7, 2, 16), "The position term covers 7 relative positions"),
             ("pos_emb", (9, 32), "pos_query must have the shape"),
         ],
         ids=lambda value: "x".join(map(str, value)) if isinstance(value, tuple) else str(value).split(" must")[0],

@@ -74,20 +74,35 @@ class PackedAttentionContext:
 
     On CUDA with Triton the relative-position attention runs the kernel of
     :mod:`nemo.collections.asr.parts.triton.rel_pos_attention` over the utterance boundaries as they are.
-    Without it, or with ``rel_pos_kernel`` off, FlexAttention runs with a block mask derived from the boundaries,
+    Without it, with ``rel_pos_kernel`` off, or with a limited attention context (``key_window``),
+    FlexAttention runs with a block mask derived from the boundaries,
     without evaluating a mask over the dense token grid:
     a key block is complete for a query block when both lie inside the same utterance,
     partial when it intersects an utterance that the query block touches,
     and skipped otherwise.
+    A limited attention context (``key_window``) narrows the keys of every token inside its utterance,
+    and the block mask skips the key blocks outside of it.
 
     Args:
         packed: the packed activations entering the encoder layers; only their sequence metadata is used.
+        key_window: a limited attention context, or None for the whole utterance:
+            the first and the last key position that a query at each position of an utterance attends to,
+            two integer tensors of shape ``(max_seqlen,)`` indexed by the query position, on any device,
+            either of them None for a side without a limit (both None is the whole utterance).
+            Positions beyond the utterance are cut off, and a token always attends to itself.
         rel_pos_kernel: whether relative-position attention runs the Triton kernel where it can (the default),
             or FlexAttention on CUDA whatever the dtype, the backend before the kernel,
             which computes in float32 and has no dropout on the attention weights.
+            The kernel knows the utterance boundaries only, so a context with a key window never runs it.
     """
 
-    def __init__(self, packed: PackedEncoderActivations, *, rel_pos_kernel: bool = True):
+    def __init__(
+        self,
+        packed: PackedEncoderActivations,
+        *,
+        key_window: tuple[Tensor | None, Tensor | None] | None = None,
+        rel_pos_kernel: bool = True,
+    ):
         self.lengths = packed.lengths
         self.cu_seqlens = packed.cu_seqlens
         self.max_seqlen = packed.max_seqlen
@@ -98,14 +113,34 @@ class PackedAttentionContext:
         # the shapes the compiled FlexAttention kernels see, see TOKEN_PADDING and LENGTH_PADDING
         self.padded_total_tokens = _padded_size(self.total_tokens, TOKEN_PADDING)
         self.padded_max_seqlen = _padded_size(self.max_seqlen, LENGTH_PADDING)
+        if key_window is not None:
+            first_key, last_key = key_window
+            for bound in (first_key, last_key):
+                if bound is None:
+                    continue
+                if bound.shape != (self.max_seqlen,):
+                    raise ValueError(
+                        f"key_window bounds must have shape ({self.max_seqlen},), one entry per position "
+                        f"of the longest utterance, got {tuple(bound.shape)}."
+                    )
+                if bound.dtype == torch.bool or bound.is_floating_point() or bound.is_complex():
+                    raise TypeError(f"key_window bounds must be integer tensors, got {bound.dtype}.")
+            if first_key is None and last_key is None:
+                key_window = None
+        self.key_window = key_window
+        # whether the window limits both sides, so that no key is further from its query than the window reaches
+        self.key_window_is_bounded = key_window is not None and key_window[0] is not None and key_window[1] is not None
         # the Triton kernel reads the relative-position table of the longest utterance (at least one row),
-        # FlexAttention one of its rounded length
-        self.rel_pos_kernel = rel_pos_kernel and TRITON_AVAILABLE and self.device.type == "cuda"
+        # FlexAttention one of its rounded length; a key window is FlexAttention's, the kernel has none
+        self.rel_pos_kernel = (
+            rel_pos_kernel and TRITON_AVAILABLE and self.device.type == "cuda" and self.key_window is None
+        )
         self.rel_pos_max_seqlen = max(self.max_seqlen, 1) if self.rel_pos_kernel else self.padded_max_seqlen
         self._block_mask = None
         self._bias_rows = None
         self._sequence_slices = None
         self._seq_lens = None
+        self._key_spans = None
 
     @classmethod
     def from_lengths(cls, lengths: Tensor, *, rel_pos_kernel: bool = True) -> "PackedAttentionContext":
@@ -142,6 +177,25 @@ class PackedAttentionContext:
             self._sequence_slices = tuple(zip(offsets[:-1], offsets[1:]))
         return self._sequence_slices
 
+    def key_spans(self) -> tuple[Tensor, Tensor]:
+        """The keys of every token as a span ``[start, end)`` of the token axis, two tensors of shape ``(T_total,)``.
+
+        The utterance of the token, narrowed to the key window when the context has one.
+        """
+        if self._key_spans is None:
+            offsets = self.cu_seqlens.to(torch.int64)
+            first = offsets[self.sequence_ids]
+            start, end = first, offsets[self.sequence_ids + 1]
+            if self.key_window is not None:
+                first_key, last_key = self.key_window
+                positions = self.position_ids
+                if first_key is not None:
+                    start = first + torch.minimum(first_key.to(self.device)[positions], positions).clamp(min=0)
+                if last_key is not None:
+                    end = torch.minimum(first + torch.maximum(last_key.to(self.device)[positions], positions) + 1, end)
+            self._key_spans = (start, end)
+        return self._key_spans
+
     @property
     def seq_starts(self) -> Tensor:
         """First token of every utterance, shape ``(B,)`` int32, for the Triton kernel."""
@@ -155,10 +209,14 @@ class PackedAttentionContext:
         return self._seq_lens
 
     def block_mask(self) -> BlockMask:
-        """The document block mask over the padded token axis, built once per batch."""
+        """The block mask of the utterances and the key window over the padded token axis, built once per batch."""
         if self._block_mask is None:
             self._block_mask = document_block_mask(
-                self.sequence_ids, self.cu_seqlens, self.total_tokens, padded_total_tokens=self.padded_total_tokens
+                self.sequence_ids,
+                self.cu_seqlens,
+                self.total_tokens,
+                padded_total_tokens=self.padded_total_tokens,
+                key_spans=self.key_spans(),
             )
         return self._block_mask
 
@@ -175,9 +233,13 @@ class PackedAttentionContext:
 
 
 def document_block_mask(
-    sequence_ids: Tensor, cu_seqlens: Tensor, total_tokens: int, padded_total_tokens: int | None = None
+    sequence_ids: Tensor,
+    cu_seqlens: Tensor,
+    total_tokens: int,
+    padded_total_tokens: int | None = None,
+    key_spans: tuple[Tensor, Tensor] | None = None,
 ) -> BlockMask:
-    """Build the FlexAttention block mask that confines attention to the utterance of every token.
+    """Build the FlexAttention block mask that confines attention to the utterance of every token, or to its key span.
 
     Args:
         sequence_ids: utterance index of every token, shape ``(T_total,)``.
@@ -185,6 +247,10 @@ def document_block_mask(
         total_tokens: number of tokens.
         padded_total_tokens: length of the token axis the kernel sees, ``total_tokens`` by default;
             the tail beyond ``total_tokens`` belongs to no utterance and its blocks are skipped.
+        key_spans: a narrower attention context than the utterance: the keys of every token
+            as a span ``[start, end)`` of the token axis inside its utterance, two tensors of shape ``(T_total,)``
+            (see ``PackedAttentionContext.key_spans``, which builds them; they are not checked here);
+            the whole utterance by default.
 
     Returns:
         The block mask over the padded token axis.
@@ -197,26 +263,29 @@ def document_block_mask(
         raise ValueError("padded_total_tokens must not be smaller than total_tokens.")
     device = sequence_ids.device
     num_blocks = -(-padded_total_tokens // BLOCK_SIZE)
-    # FlexAttention evaluates the mask on the block-rounded grid,
-    # so the tail beyond the last token must index safely; the sentinel never equals a real utterance index.
-    padded_ids = sequence_ids.new_full((num_blocks * BLOCK_SIZE,), -1)
-    padded_ids[:total_tokens] = sequence_ids
-    block_starts = torch.arange(num_blocks, device=device) * BLOCK_SIZE
-    block_ends = torch.clamp(block_starts + BLOCK_SIZE - 1, max=total_tokens - 1)
-    in_range = block_starts < total_tokens
-    first_utterance = sequence_ids[torch.clamp(block_starts, max=total_tokens - 1)]
-    last_utterance = sequence_ids[block_ends]
-    offsets = cu_seqlens.to(torch.int64)
-    # the token span of all utterances a query block touches
-    span_start = offsets[first_utterance].view(-1, 1)
-    span_end = offsets[last_utterance + 1].view(-1, 1)
-    intersects = (block_starts.view(1, -1) < span_end) & (block_ends.view(1, -1) >= span_start)
-    intersects &= in_range.view(-1, 1) & in_range.view(1, -1)
-    # a complete block lies inside one utterance and holds no padded tail tokens;
-    # the tail belongs to no utterance and must stay masked, so a partially filled block keeps its mask evaluation
-    complete = block_ends == block_starts + BLOCK_SIZE - 1
-    one_utterance = (first_utterance == last_utterance) & in_range & complete
-    full = one_utterance.view(-1, 1) & one_utterance.view(1, -1) & (first_utterance.view(-1, 1) == first_utterance)
+    if key_spans is None:
+        offsets = cu_seqlens.to(torch.int64)
+        key_spans = (offsets[sequence_ids], offsets[sequence_ids + 1])
+    # FlexAttention evaluates the mask on the block-rounded grid, so the tail beyond the last token
+    # must index safely; the tail attends to itself, which no token's span reaches.
+    tail = num_blocks * BLOCK_SIZE - total_tokens
+    span_starts = torch.nn.functional.pad(key_spans[0], (0, tail), value=total_tokens)
+    span_ends = torch.nn.functional.pad(key_spans[1], (0, tail), value=num_blocks * BLOCK_SIZE)
+    # per query block the spans of its tokens; the tail has none, so it widens no hull and completes no block
+    block_span_starts = torch.nn.functional.pad(key_spans[0], (0, tail), value=num_blocks * BLOCK_SIZE)
+    block_span_starts = block_span_starts.view(num_blocks, BLOCK_SIZE)
+    block_span_ends = torch.nn.functional.pad(key_spans[1], (0, tail), value=0).view(num_blocks, BLOCK_SIZE)
+    block_starts = (torch.arange(num_blocks, device=device) * BLOCK_SIZE).view(1, -1)
+    block_ends = block_starts + BLOCK_SIZE
+    # a key block is needed when it intersects the hull of the key spans of a query block,
+    intersects = (block_starts < block_span_ends.amax(dim=1, keepdim=True)) & (
+        block_ends > block_span_starts.amin(dim=1, keepdim=True)
+    )
+    # and complete when every query of the block attends to all of its keys;
+    # no span reaches into the tail, so a partially filled block keeps its mask evaluation, as queries and as keys
+    full = (block_span_starts.amax(dim=1, keepdim=True) <= block_starts) & (
+        block_span_ends.amin(dim=1, keepdim=True) >= block_ends
+    )
     partial = intersects & ~full
 
     def ordered(blocks: Tensor) -> tuple[Tensor, Tensor]:
@@ -225,7 +294,7 @@ def document_block_mask(
         return count.view(1, 1, num_blocks), indices.view(1, 1, num_blocks, num_blocks)
 
     def mask_mod(b, h, q_idx, kv_idx):
-        return padded_ids[q_idx] == padded_ids[kv_idx]
+        return (kv_idx >= span_starts[q_idx]) & (kv_idx < span_ends[q_idx])
 
     kv_num_blocks, kv_indices = ordered(partial)
     full_kv_num_blocks, full_kv_indices = ordered(full)
@@ -254,12 +323,13 @@ def packed_attention(
 ) -> Tensor:
     """Attend within utterances over token-flat queries, keys and values.
 
-    On CUDA, attention without a position term runs variable-length FlashAttention in half precision when available,
-    and attention with the Transformer-XL position term given by its factors runs the Triton kernel
-    of :mod:`nemo.collections.asr.parts.triton.rel_pos_attention` (float32, bfloat16 and float16, with dropout)
-    where the context selects it (``context.rel_pos_kernel``);
-    everything else, the materialized ``rel_pos_bias`` included, runs FlexAttention
-    with the document block mask of the context.
+    On CUDA, attention without a position term over the whole utterance runs variable-length FlashAttention
+    in half precision when available,
+    and attention over the whole utterance with the Transformer-XL position term given by its factors
+    runs the Triton kernel of :mod:`nemo.collections.asr.parts.triton.rel_pos_attention`
+    (float32, bfloat16 and float16, with dropout) where the context selects it (``context.rel_pos_kernel``);
+    everything else, the materialized ``rel_pos_bias`` and a limited attention context (``context.key_window``)
+    included, runs FlexAttention with the block mask of the context.
     Elsewhere, and for float64 (FlexAttention's kernels compute in float32 at most),
     the utterances are attended one at a time with dense attention,
     which is also the reference of the unit tests.
@@ -276,6 +346,8 @@ def packed_attention(
         pos_emb: projected relative position embedding, shape ``(R, H, d_k)`` with odd ``R``,
             whose row ``c = (R - 1) / 2`` is the relative position zero;
             it covers at least ``context.rel_pos_max_seqlen - 1`` positions each way.
+            With a key window bounded on both sides a shorter one serves, provided no key is further
+            than ``c`` from its query, which is the caller's contract and not checked (it would take a device read).
         rel_pos_bias: the position term materialized over the relative positions instead of its factors,
             shape ``(T_total, H, R)`` with odd ``R`` and the row convention of ``pos_emb``
             (``R = 2 * max_seqlen - 1`` indexes it by ``max_seqlen - 1 - (i - j)``);
@@ -322,30 +394,33 @@ def packed_attention(
         raise ValueError("The position term comes either as rel_pos_bias or as pos_query and pos_emb, not both.")
     if scale is None:
         scale = 1.0 / math.sqrt(q.shape[-1])
-    # the relative positions of the longest utterance, at least the position zero
-    min_width = max(2 * context.max_seqlen - 1, 1)
     if pos_query is not None and (
         pos_query.shape != q.shape
         or pos_emb.ndim != 3
         or pos_emb.shape[1:] != q.shape[1:]
         or pos_emb.shape[0] % 2 == 0
-        or pos_emb.shape[0] < min_width
     ):
         raise ValueError(
             f"pos_query must have the shape {tuple(q.shape)} of q "
-            f"and pos_emb the shape (R, {q.shape[1]}, {q.shape[2]}) with an odd R of at least {min_width}, got {tuple(pos_query.shape)} and {tuple(pos_emb.shape)}."
+            f"and pos_emb the shape (R, {q.shape[1]}, {q.shape[2]}) with an odd R, "
+            f"got {tuple(pos_query.shape)} and {tuple(pos_emb.shape)}."
         )
+    if rel_pos_bias is not None and (
+        rel_pos_bias.ndim != 3 or rel_pos_bias.shape[:2] != q.shape[:2] or rel_pos_bias.shape[2] % 2 == 0
+    ):
+        raise ValueError(
+            f"rel_pos_bias must have shape ({q.shape[0]}, {q.shape[1]}, W) with an odd W, "
+            f"got {tuple(rel_pos_bias.shape)}."
+        )
+    rel_positions = pos_emb.shape[0] if pos_emb is not None else None
     if rel_pos_bias is not None:
-        if (
-            rel_pos_bias.ndim != 3
-            or rel_pos_bias.shape[:2] != q.shape[:2]
-            or rel_pos_bias.shape[2] % 2 == 0
-            or rel_pos_bias.shape[2] < min_width
-        ):
-            raise ValueError(
-                f"rel_pos_bias must have shape ({q.shape[0]}, {q.shape[1]}, W) with an odd W of at least {min_width}, "
-                f"got {tuple(rel_pos_bias.shape)}."
-            )
+        rel_positions = rel_pos_bias.shape[-1]
+    if rel_positions is not None and not context.key_window_is_bounded and rel_positions < 2 * context.max_seqlen - 1:
+        raise ValueError(
+            f"The position term covers {rel_positions} relative positions, but the utterances reach "
+            f"{2 * context.max_seqlen - 1} (2 * max_seqlen - 1); only a key window bounded on both sides "
+            "takes a narrower one."
+        )
     if context.total_tokens == 0:
         # keep every projection in the autograd graph when a rank holds no valid token,
         # so distributed gradient reductions see the same parameters on all ranks
@@ -374,7 +449,8 @@ def packed_attention(
         rel_pos_bias = None if rel_pos_bias is None else factor * rel_pos_bias
         scale = -scale if scale < 0.0 else 1.0
     if q.is_cuda and q.dtype != torch.float64:
-        if pos_query is None and rel_pos_bias is None:
+        # variable-length FlashAttention knows the utterance boundaries only, not a window inside them
+        if pos_query is None and rel_pos_bias is None and context.key_window is None:
             flash = _flash_attention_varlen(q)
             if flash is not None:
                 q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
@@ -410,8 +486,9 @@ def packed_attention(
                 "FlexAttention has no dropout on the attention weights. "
                 "rel_pos attention keeps its dropout through its Triton kernel "
                 "(Triton installed, float32, bfloat16 or float16), "
-                "abs_pos and rope attention through variable-length FlashAttention in float16 or bfloat16 (autocast); "
-                "otherwise set dropout_att: 0 on the encoder for packed sequences."
+                "abs_pos and rope attention through variable-length FlashAttention in float16 or bfloat16 (autocast), "
+                "both with the full attention context only; "
+                "otherwise, and for a limited attention context, set dropout_att: 0 on the encoder for packed sequences."
             )
         return _flex_packed_attention(
             q, k, v, context, rel_pos_bias=_materialized(pos_query, pos_emb, rel_pos_bias), scale=scale
@@ -428,7 +505,13 @@ def packed_attention(
 
 
 def packed_attention_supports_dropout(
-    device: torch.device, dtype: torch.dtype, head_dim: int, *, rel_pos: bool = False, rel_pos_kernel: bool = True
+    device: torch.device,
+    dtype: torch.dtype,
+    head_dim: int,
+    *,
+    rel_pos: bool = False,
+    rel_pos_kernel: bool = True,
+    limited_context: bool = False,
 ) -> bool:
     """Whether ``packed_attention`` applies dropout on this device, dtype and head width: the dispatch rule.
 
@@ -438,10 +521,13 @@ def packed_attention_supports_dropout(
     With the Transformer-XL position term (``rel_pos``), only where its Triton kernel runs:
     selected (``rel_pos_kernel``, the switch of the ``PackedAttentionContext``), Triton installed,
     in float32, bfloat16 or float16.
-    FlexAttention, the path otherwise, has no dropout.
+    FlexAttention, the path otherwise and the path of every limited attention context (``limited_context``),
+    has no dropout.
     """
     if device.type != 'cuda' or dtype == torch.float64:
         return True
+    if limited_context:
+        return False
     if rel_pos:
         return rel_pos_kernel and TRITON_AVAILABLE and dtype in PACKED_REL_POS_ATTENTION_DTYPES
     if dtype not in (torch.float16, torch.bfloat16) or head_dim > 256 or head_dim % 8 != 0:
@@ -652,6 +738,7 @@ def _reference_packed_attention(
     # a product beyond the half-precision range whose scaled score is in range stays finite.
     # A scale above one is applied after the product, so that it does not enlarge an operand beyond the range.
     root = math.sqrt(min(scale, 1.0))
+    span_starts, span_ends = context.key_spans() if context.key_window is not None else (None, None)
     for start, end in context.sequence_slices:
         if end == start:
             continue
@@ -661,13 +748,19 @@ def _reference_packed_attention(
         scores = torch.matmul(qi * root, (ki * root).transpose(-2, -1))
         if scale > 1.0:
             scores = scores * scale
+        length = end - start
+        rows = torch.arange(length, device=q.device).view(length, 1)
+        cols = torch.arange(length, device=q.device).view(1, length)
         if rel_pos_bias is not None:
-            length = end - start
-            rows = torch.arange(length, device=q.device).view(length, 1)
-            cols = torch.arange(length, device=q.device).view(1, length)
+            # relative positions beyond a narrow bias lie outside the key window and are masked below;
             # advanced indices around the head slice move the heads to the last axis
-            bias = rel_pos_bias[start:end][rows, :, center - rows + cols]
+            rel = (center - rows + cols).clamp(0, rel_pos_bias.shape[-1] - 1)
+            bias = rel_pos_bias[start:end][rows, :, rel]
             scores = scores + bias.permute(2, 0, 1) * scale
+        if span_starts is not None:
+            keys = cols + start
+            outside = (keys < span_starts[start:end].view(length, 1)) | (keys >= span_ends[start:end].view(length, 1))
+            scores = scores.masked_fill(outside, float("-inf"))
         weights = torch.softmax(scores, dim=-1)
         if dropout_p > 0.0:
             weights = torch.nn.functional.dropout(weights, p=dropout_p, training=True)

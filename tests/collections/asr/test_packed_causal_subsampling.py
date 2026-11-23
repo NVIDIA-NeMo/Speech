@@ -162,6 +162,27 @@ class TestPackedCausalConvSubsampling:
         for name, gradient in packed_grads.items():
             torch.testing.assert_close(gradient, padded_grads[name], msg=name)
 
+    @pytest.mark.unit
+    @pytest.mark.parametrize("subsampling", ["striding", "dw_striding"])
+    def test_chunked_training_with_first_chunk_padding_is_refused(self, subsampling):
+        """In training with ``chunked_limited`` attention the padded forward pads every utterance with silence
+        before the causal subsampling and drops the frames of that padding, which the packed forward does not do,
+        so it names that; in evaluation mode the padded forward does neither and the two forms agree."""
+        torch.manual_seed(5)
+        encoder = _encoder(subsampling, att_context_style="chunked_limited", att_context_size=[4, 3]).double()
+        lengths = torch.tensor([48, 31, 8])
+        features = torch.randn(3, FEAT_IN, 48, dtype=torch.float64)
+        encoder.train()
+        assert "pads the first chunk" in encoder.sequence_packed_unsupported_reason()
+        with pytest.raises(NotImplementedError, match="pads the first chunk"):
+            encoder.forward_sequence_packed(features, lengths)
+        encoder.eval()
+        assert encoder.supports_sequence_packed_output
+        packed = encoder.forward_sequence_packed(features, lengths)
+        torch.testing.assert_close(packed.data, _encoder_padded(encoder, features, lengths))
+        # without the limited context the padded forward of the training mode does not pad either
+        assert _encoder(subsampling).train().supports_sequence_packed_output
+
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")

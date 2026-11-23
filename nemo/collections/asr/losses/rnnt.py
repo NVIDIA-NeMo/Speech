@@ -402,16 +402,13 @@ class RNNTLoss(Loss):
                         warprnnt_numba_kwargs:
                             fastemit_lambda: 0.0
 
-            Flash RNN-T additionally requires ``joint.fuse_loss_wer=true`` and a
-            positive ``joint.fused_batch_size``:
+            Flash RNN-T additionally requires ``joint.fuse_loss_wer=true``:
 
             .. code-block:: yaml
 
                 model:
                     joint:
                         fuse_loss_wer: true
-                        # Required by the fused joint step; this loss does not read it.
-                        fused_batch_size: 4
                         jointnet:
                             dropout: 0.1
                     loss:

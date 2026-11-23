@@ -122,7 +122,7 @@ def test_flash_rnnt_reads_labels_from_a_strided_transcript():
 
     values = []
     for transcripts in (labels, strided):
-        joint = _make_joint(4)
+        joint = _make_joint()
         torch.manual_seed(29)
         for parameter in joint.parameters():
             torch.nn.init.normal_(parameter, std=0.2)
@@ -146,7 +146,7 @@ def test_flash_rnnt_reads_labels_from_a_strided_transcript():
 @pytest.mark.gpu
 def test_flash_rnnt_rejects_lengths_past_the_states_they_index(axis):
     """A length beyond its tensor would be read, not masked, so it has to be refused up front."""
-    joint = _make_joint(4)
+    joint = _make_joint()
     joint.set_loss(RNNTLoss(num_classes=NUM_LABELS, reduction="mean_batch", loss_name="flash_rnnt"))
     joint.set_wer(object())
     encoder, predictor, source_lengths, target_lengths, labels = _end_to_end_batch()
@@ -214,7 +214,6 @@ def test_flash_rnnt_rejects_hat_joint_without_reading_blank_out_of_bounds():
         num_classes=NUM_LABELS,
         log_softmax=False,
         fuse_loss_wer=True,
-        fused_batch_size=1,
     ).cuda()
     assert joint.joint_net[-1].out_features == NUM_LABELS
     assert joint.num_classes_with_blank == VOCAB
@@ -247,7 +246,6 @@ def test_flash_rnnt_early_return_preserves_requested_empty_hypotheses():
         num_classes=NUM_LABELS,
         log_softmax=False,
         fuse_loss_wer=True,
-        fused_batch_size=1,
     )
     joint.set_loss(FlashLoss())
     joint.set_wer(object())
@@ -329,7 +327,7 @@ def _end_to_end_batch(dtype=torch.float32):
     return encoder, predictor, source_lengths, target_lengths, labels
 
 
-def _make_joint(fused_batch_size, activation="relu", log_softmax=False, dropout=0.0, masking_prob=-1.0):
+def _make_joint(activation="relu", log_softmax=False, dropout=0.0, masking_prob=-1.0):
     return RNNTJoint(
         jointnet={
             "encoder_hidden": ENCODER_HIDDEN,
@@ -341,7 +339,6 @@ def _make_joint(fused_batch_size, activation="relu", log_softmax=False, dropout=
         num_classes=NUM_LABELS,
         log_softmax=log_softmax,
         fuse_loss_wer=True,
-        fused_batch_size=fused_batch_size,
         masking_prob=masking_prob,
     ).cuda()
 
@@ -361,7 +358,7 @@ def test_flash_rnnt_clamp_matches_numba_across_tiles(objective_reduction, amp_sc
     from nemo.collections.asr.parts.numba.rnnt_loss import RNNTLossNumba
 
     torch.manual_seed(23)
-    joint = _make_joint(4)
+    joint = _make_joint()
     for parameter in joint.parameters():
         torch.nn.init.normal_(parameter, std=0.3)
     batch, source_steps, target_tokens = 6, 9, 5
@@ -465,7 +462,7 @@ def test_joint_dropout_mask_agrees_across_kernels(hidden_size):
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
 @pytest.mark.gpu
 def test_flash_rnnt_rejects_invalid_joint_dropout():
-    joint = _make_joint(4, dropout=1.0)
+    joint = _make_joint(dropout=1.0)
     joint.set_loss(RNNTLoss(num_classes=NUM_LABELS, reduction="mean_batch", loss_name="flash_rnnt"))
     joint.set_wer(object())
     encoder, predictor, source_lengths, target_lengths, labels = _end_to_end_batch()
@@ -491,8 +488,8 @@ def test_flash_rnnt_tile_budget_equivalence(dtype, max_joint_rows):
     and each backward has to bound itself to the sample it landed in rather than to a whole one.
     """
     torch.manual_seed(23)
-    reference_joint = _make_joint(4).to(dtype)
-    packed_joint = _make_joint(4).to(dtype)
+    reference_joint = _make_joint().to(dtype)
+    packed_joint = _make_joint().to(dtype)
     packed_joint.load_state_dict(reference_joint.state_dict())
     reference_joint.set_loss(RNNTLoss(num_classes=NUM_LABELS, reduction="mean_batch", loss_name="flash_rnnt"))
     packed_joint.set_loss(
@@ -543,7 +540,7 @@ def test_flash_rnnt_joint_dropout_recomputes_the_same_mask(monkeypatch):
     from nemo.collections.asr.parts.triton import rnnt_joint
 
     torch.manual_seed(137)
-    joint = _make_joint(4, activation="tanh", dropout=0.25)
+    joint = _make_joint(activation="tanh", dropout=0.25)
     joint.set_loss(
         RNNTLoss(
             num_classes=NUM_LABELS,
@@ -604,8 +601,8 @@ def test_flash_rnnt_matches_numba_loss_and_gradients(dtype, activation):
     from nemo.collections.asr.parts.numba.rnnt_loss import RNNTLossNumba
 
     torch.manual_seed(19)
-    dense_joint = _make_joint(4, activation=activation).to(dtype)
-    flash_joint = _make_joint(4, activation=activation).to(dtype)
+    dense_joint = _make_joint(activation=activation).to(dtype)
+    flash_joint = _make_joint(activation=activation).to(dtype)
     flash_joint.load_state_dict(dense_joint.state_dict())
     flash_loss = RNNTLoss(
         num_classes=NUM_LABELS,
@@ -657,8 +654,8 @@ def test_flash_rnnt_prediction_masking_matches_numba():
 
     masking_prob = 0.5
     torch.manual_seed(31)
-    dense_joint = _make_joint(4)
-    flash_joint = _make_joint(4, masking_prob=masking_prob)
+    dense_joint = _make_joint()
+    flash_joint = _make_joint(masking_prob=masking_prob)
     flash_joint.load_state_dict(dense_joint.state_dict())
     flash_joint.set_loss(
         RNNTLoss(
@@ -703,7 +700,7 @@ def test_flash_rnnt_prediction_masking_matches_numba():
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
 @pytest.mark.gpu
 def test_flash_rnnt_does_not_materialize_dense_joint_logits(monkeypatch):
-    joint = _make_joint(1, activation="tanh")
+    joint = _make_joint(activation="tanh")
     loss = RNNTLoss(num_classes=NUM_LABELS, reduction="mean_batch", loss_name="flash_rnnt")
 
     def reject_dense_joint(*args, **kwargs):

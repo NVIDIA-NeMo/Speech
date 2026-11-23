@@ -913,7 +913,6 @@ fused joint step:
   model:
     joint:
       fuse_loss_wer: true
-      fused_batch_size: 4  # required by the fused joint step; this loss does not read it
     loss:
       loss_name: "flash_rnnt"
       flash_rnnt_kwargs:
@@ -924,8 +923,7 @@ fused joint step:
 ``max_joint_rows`` is the only knob on cost and does not change the result: it sets peak workspace
 and the size of the projection's problem. Raise it to trade memory for speed, lower it to fit a
 larger batch. Rows are packed rather than padded out to a rectangle, so a tile costs the same
-whatever mix of utterance lengths falls inside it. ``fused_batch_size`` is still required by the
-fused joint step, but does not reach this loss.
+whatever mix of utterance lengths falls inside it.
 
 FastEmit Regularization
 ^^^^^^^^^^^^^^^^^^^^^^^

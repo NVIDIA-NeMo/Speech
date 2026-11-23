@@ -1367,9 +1367,6 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             When this flag is set, prior to calling forward, the fields `loss` and `wer` (either one) *must*
             be set using the `RNNTJoint.set_loss()` or `RNNTJoint.set_wer()` methods.
 
-            Further, when this flag is set, the following argument `fused_batch_size` *must* be provided
-            as a non negative integer. This value refers to the size of the sub-batch.
-
             When the flag is set, the input and output signature of `forward()` of this method changes.
             Input - in addition to `encoder_outputs` (mandatory argument), the following arguments can be provided.
 
@@ -1392,9 +1389,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                 - wer_numerator + wer_denominator (optional). Returned if transcripts, transcripts_lengths are provided
                     and compute_wer is set.
 
-        fused_batch_size: Optional int, required if `fuse_loss_wer` flag is set. Determines the size of the
-            sub-batches. Should be any value below the actual batch size per GPU. A factorized-joint loss
-            consumes the whole batch at once and does not read this, though it is still required to be set.
+        fused_batch_size: Number of utterances per sub-batch. Required for fused execution with
+            sub-batching. Factorized-joint losses consume the whole batch and can omit this setting.
         masking_prob: Optional float, indicating the probability of masking out decoder output in HAINAN
             (Hybrid Autoregressive Inference Transducer) model, described in https://arxiv.org/pdf/2410.02597
             Default to -1.0, which runs standard Joint network computation; if > 0, then masking out decoder output
@@ -1483,9 +1479,6 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
         self._fuse_loss_wer = fuse_loss_wer
         self._fused_batch_size = fused_batch_size
-
-        if fuse_loss_wer and (fused_batch_size is None):
-            raise ValueError("If `fuse_loss_wer` is set, then `fused_batch_size` cannot be None!")
 
         self._turbo_kernel_cfg = TurboJointKernelConfig.from_config(turbo_kernel)
         self._turbo_kernel_type = self._turbo_kernel_cfg.kernel_type
@@ -1756,10 +1749,6 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             if self._loss is None or self._wer is None:
                 raise ValueError("`fuse_loss_wer` flag is set, but `loss` and `wer` modules were not provided! ")
 
-            # If fused joint step is required, fused batch size is required as well
-            if self._fused_batch_size is None:
-                raise ValueError("If `fuse_loss_wer` is set, then `fused_batch_size` cannot be None!")
-
             # When using fused joint step, both encoder and transcript lengths must be provided
             if (encoder_lengths is None) or (transcript_lengths is None):
                 raise ValueError(
@@ -1788,6 +1777,9 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                     )
                 self.hypotheses = hypotheses if keep_hypotheses else None
                 return losses, wer, wer_num, wer_denom
+
+            if self._fused_batch_size is None:
+                raise ValueError("`fused_batch_size` is required for fused joint sub-batching.")
 
             losses = []
             wers, wer_nums, wer_denoms = [], [], []

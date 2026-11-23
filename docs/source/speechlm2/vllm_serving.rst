@@ -31,8 +31,8 @@ opt-in and requires a CTC adapter.
 Installation
 ------------
 
-Install the ASR runtime and vLLM 0.32.0, pinned by NeMo's ``vllm`` extra.
-vLLM 0.32 requires Python 3.11 or newer:
+Install the ASR runtime and vLLM 0.33.0, pinned by NeMo's ``vllm`` extra.
+vLLM 0.33 requires Python 3.11 or newer:
 
 .. code-block:: bash
 

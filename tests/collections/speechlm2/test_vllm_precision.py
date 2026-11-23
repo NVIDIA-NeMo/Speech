@@ -85,6 +85,7 @@ def test_router_uses_fp32_operands_and_preserves_loader(specialized):
     gate.FP32_SUPPORTED_SHAPES = {(3, 2)}
     for name in (
         "allow_ll_bf16_gemm",
+        "allow_ll_fp32w_gemm",
         "allow_dsv3_router_gemm",
         "allow_cublas_router_gemm",
         "allow_bf16x3_router_gemm",
@@ -99,6 +100,7 @@ def test_router_uses_fp32_operands_and_preserves_loader(specialized):
         getattr(gate, name)
         for name in (
             "allow_ll_bf16_gemm",
+            "allow_ll_fp32w_gemm",
             "allow_dsv3_router_gemm",
             "allow_cublas_router_gemm",
             "allow_bf16x3_router_gemm",

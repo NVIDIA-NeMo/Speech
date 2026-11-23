@@ -32,6 +32,7 @@ from nemo.collections.asr.parts.submodules.packed_attention import PackedAttenti
 from nemo.collections.asr.parts.submodules.subsampling import ConvSubsampling
 from nemo.collections.common.parts import adapter_modules
 from nemo.core.classes.mixins import adapter_mixin_strategies
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
 D_MODEL = 16
 # adapter kind, attention model of the encoder, adapter options
@@ -375,13 +376,15 @@ class TestPackedConformerAdaptersCuda:
 
     @pytest.mark.unit
     def test_attention_adapter_dropout_follows_the_attention_dropout_rule(self):
-        """FlexAttention has no dropout, so a ``rel_pos`` adapter with dropout has no packed form in training."""
-        encoder = self._cuda_encoder("relmha", "rel_pos", dict(dropout_rate=0.1))
+        """FlexAttention has no dropout, so with ``packed_rel_pos_attention: flex``
+        a ``rel_pos`` adapter with dropout has no packed form in training."""
+        options = dict(dropout_rate=0.1)
+        encoder = self._cuda_encoder("relmha", "rel_pos", options, packed_rel_pos_attention="flex")
         lengths = torch.tensor([50, 31], device="cuda")
         features = torch.randn(2, 8, 50, device="cuda")
         encoder.train()
         assert "attention adapters" in encoder.sequence_packed_unsupported_reason()
-        with pytest.raises(NotImplementedError, match="FlexAttention has no dropout"):
+        with pytest.raises(NotImplementedError, match="has no dropout on the attention weights"):
             encoder.forward_sequence_packed(features, lengths)
         encoder.set_enabled_adapters(enabled=False)
         assert encoder.supports_sequence_packed_output
@@ -391,9 +394,26 @@ class TestPackedConformerAdaptersCuda:
         torch.testing.assert_close(packed, _padded_forward(encoder, features, lengths), atol=1e-4, rtol=1e-4)
 
     @pytest.mark.unit
+    @pytest.mark.skipif(not TRITON_AVAILABLE, reason="requires Triton")
+    def test_rel_pos_adapter_keeps_its_dropout_through_the_kernel(self):
+        """With the Triton kernel of ``rel_pos`` attention, the default backend,
+        a ``rel_pos`` adapter with dropout runs packed in training and draws a fresh mask per call."""
+        encoder = self._cuda_encoder("relmha", "rel_pos", dict(dropout_rate=0.1)).train()
+        assert encoder.supports_sequence_packed_output
+        lengths = torch.tensor([50, 31], device="cuda")
+        features = torch.randn(2, 8, 50, device="cuda")
+        packed = encoder.forward_sequence_packed(features, lengths).data
+        again = encoder.forward_sequence_packed(features, lengths).data
+        assert torch.isfinite(packed).all() and not torch.equal(packed, again)
+        packed.square().mean().backward()
+        adapter = encoder.layers[0].adapter_layer["adapter_0"]
+        assert adapter.linear_pos.weight.grad is not None
+
+    @pytest.mark.unit
     def test_dropout_rule_follows_the_mode_of_the_adapter(self):
         """A frozen encoder in evaluation mode with its adapters in training mode, and the reverse."""
-        encoder = self._cuda_encoder("relmha", "rel_pos", dict(dropout_rate=0.1))
+        options = dict(dropout_rate=0.1)
+        encoder = self._cuda_encoder("relmha", "rel_pos", options, packed_rel_pos_attention="flex")
         adapters = [layer.adapter_layer["adapter_0"] for layer in encoder.layers]
         encoder.eval()
         for adapter in adapters:
@@ -428,5 +448,8 @@ class TestPackedConformerAdaptersCuda:
             options = dict(dropout_rate=0.1, proj_dim=4)
             mixed_width = self._cuda_encoder("mha", "abs_pos", options, dropout_att=0.1).train()
             assert "head width" in mixed_width.sequence_packed_unsupported_reason()
-            mixed_bias = self._cuda_encoder("mha", "rel_pos", dict(dropout_rate=0.1), dropout_att=0.1).train()
-            assert "FlexAttention has no dropout" in mixed_bias.sequence_packed_unsupported_reason()
+            options = dict(dropout_rate=0.1)
+            mixed_bias = self._cuda_encoder(
+                "mha", "rel_pos", options, dropout_att=0.1, packed_rel_pos_attention="flex"
+            ).train()
+            assert "has no dropout on the attention weights" in mixed_bias.sequence_packed_unsupported_reason()

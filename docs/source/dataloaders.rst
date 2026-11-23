@@ -1841,20 +1841,42 @@ audio payload, configure:
 For NeMo manifests these are the additional keys of a row,
 that is, all keys except the ones the reader consumes, such as ``audio_filepath`` and ``duration``;
 the ``tags`` of an ``input_cfg`` entry are custom fields as well.
-The option maps a field name to the value to keep (a bool, a number or a string):
+The option maps a field name to a condition on its value.
+An example is kept when the conditions of all fields hold:
 
 .. code-block:: yaml
 
    custom_field_filter:
-     verified: true
+     verified: true                    # short for {eq: true}
+     snr: {gt: 5.0, le: 10.5}          # all operators of a field must hold
+     quality: {in: [very_high, high, medium]}
+     language: {neq: unknown, keep_if_missing: false}
 
-A cut whose ``verified`` field has another value is dropped.
-A cut without the field is kept, as with ``keep`` and ``max_cer``,
-so a field name that no cut has filters nothing.
-With several fields, a cut is kept when no field has another value.
+The operators of a condition are:
+
+* ``eq``, ``neq``: the value equals, or does not equal, the operand (a bool, a number or a string).
+  A bool, a number or a string in place of the condition stands for ``eq``.
+* ``gt``, ``ge``, ``lt``, ``le``: the value is greater than, at least, less than, or at most the operand (a number).
+* ``in``: the value equals one of the operands (a list of bools, numbers or strings).
+* ``keep_if_missing`` (default ``true``): whether an example that does not have the field is kept.
+  With the default, as with ``keep`` and ``max_cer``,
+  a field that only some of the data has filters only that part,
+  and a field name that no example has filters nothing.
+  With ``false``, an example without the field is dropped;
+  ``{keep_if_missing: false}`` alone keeps exactly the examples that have the field.
+
+An unknown operator or an operand of another type raises an error when the dataloader is built.
 
 * The values are compared as Python values: ``true`` matches ``true`` and ``1``
-  but not the string ``"true"``, and a ``null`` in the manifest is another value.
+  but not the string ``"true"``.
+  A bool value orders as the number ``1`` or ``0``.
+* A ``null`` in the manifest is a value, not a missing field:
+  it differs from every operand, so it fails ``eq`` and ``in`` and passes ``neq``.
+  A value that cannot be compared with the operand,
+  such as ``null`` or a string with ``gt``, does not meet the condition, so the example is dropped.
+* ``keep_if_missing`` belongs inside the condition of a field; at the top level of the option it raises an error.
+* In YAML, quote strings that YAML reads as another type:
+  an unquoted ``yes`` or ``on`` is a bool there and does not match the string ``"yes"``.
 * The filter looks at the fields of the cut, not of its supervisions.
   Text and conversation examples are filtered by their custom fields the same way;
   for text sources these are the ``tags`` only, since the reader keeps no other key of a row.

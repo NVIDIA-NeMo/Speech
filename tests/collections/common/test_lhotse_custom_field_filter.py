@@ -12,9 +12,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import pickle
 from io import BytesIO
 from pathlib import Path
 
+import numpy as np
 import pytest
 from lhotse import CutSet
 from lhotse.cut import Cut, PaddingCut
@@ -31,6 +33,8 @@ from nemo.collections.common.data.lhotse.text_adapters import NeMoMultimodalConv
 # The "verified" value of each manifest row, in row order; ``_ABSENT`` rows do not have the key.
 _ABSENT = object()
 _VERIFIED_VALUES = [True, False, _ABSENT, True, False, _ABSENT, 1, 0, False, True]
+_SNR_VALUES = [0.0, 2.0, 4.0, 6.0, _ABSENT, 10.0, 12, None, 16.0, 18.0]
+_QUALITY_VALUES = ["high", "low", "medium", "high", _ABSENT, "low", "very_high", "medium", "low", "high"]
 
 
 def _keeps_verified_or_unmarked(cut: Cut) -> bool:
@@ -45,19 +49,20 @@ class _Identity:
 
 @pytest.fixture(scope="module")
 def manifest_rows(tmp_path_factory) -> list[dict]:
-    """Ten one-second utterances as NeMo manifest rows, with ``verified`` true, false or absent."""
+    """Ten one-second utterances as NeMo manifest rows; ``verified``, ``snr`` and ``quality`` are absent in some."""
     cuts = DummyManifest(CutSet, begin_id=0, end_id=len(_VERIFIED_VALUES), with_data=True)
     cuts = cuts.save_audios(tmp_path_factory.mktemp("custom_field_filter_audio"))
     rows = []
-    for idx, (cut, verified) in enumerate(zip(cuts, _VERIFIED_VALUES)):
+    for idx, cut in enumerate(cuts):
         row = {
             "audio_filepath": cut.recording.sources[0].source,
             "text": f"utt-{idx}",
             "duration": cut.duration,
             "id": f"row-{idx}",
         }
-        if verified is not _ABSENT:
-            row["verified"] = verified
+        for name, values in (("verified", _VERIFIED_VALUES), ("snr", _SNR_VALUES), ("quality", _QUALITY_VALUES)):
+            if values[idx] is not _ABSENT:
+                row[name] = values[idx]
         rows.append(row)
     return rows
 
@@ -97,7 +102,7 @@ def _read_all_cuts(source_config: dict, **options) -> list[Cut]:
 class TestCustomFieldFilter:
     @pytest.mark.unit
     @pytest.mark.parametrize(
-        "custom, field_values, expected",
+        "custom, conditions, expected",
         [
             ({"verified": True}, {"verified": True}, True),
             ({"verified": False}, {"verified": True}, False),
@@ -125,10 +130,135 @@ class TestCustomFieldFilter:
             ({"verified": False}, {}, True),
         ],
     )
-    def test_keeps_matching_and_unmarked_cuts(self, custom, field_values, expected):
+    def test_keeps_matching_and_unmarked_cuts(self, custom, conditions, expected):
         cut = dummy_cut(0)
         cut.custom = custom
-        assert CustomFieldFilter(field_values)(cut) is expected
+        assert CustomFieldFilter(conditions)(cut) is expected
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "value, condition, expected",
+        [
+            (True, {"eq": True}, True),
+            (False, {"eq": True}, False),
+            ("read", {"neq": "read"}, False),
+            ("spontaneous", {"neq": "read"}, True),
+            (None, {"neq": "read"}, True),
+            (5.0, {"gt": 5.0}, False),
+            (5.5, {"gt": 5.0}, True),
+            (5.0, {"ge": 5.0}, True),
+            (4.5, {"ge": 5.0}, False),
+            (5.0, {"lt": 5.0}, False),
+            (4.5, {"lt": 5.0}, True),
+            (5.0, {"le": 5.0}, True),
+            (5.5, {"le": 5.0}, False),
+            (7, {"gt": 5.0, "le": 10.5}, True),
+            (10.5, {"gt": 5.0, "le": 10.5}, True),
+            (5.0, {"gt": 5.0, "le": 10.5}, False),
+            (11, {"gt": 5.0, "le": 10.5}, False),
+            (7, {"gt": 5, "neq": 7}, False),
+            ("high", {"in": ["very_high", "high", "medium"]}, True),
+            ("low", {"in": ["very_high", "high", "medium"]}, False),
+            (3, {"in": [1, 3]}, True),
+            (2, {"in": [1, 3]}, False),
+            (None, {"in": ["high"]}, False),
+            (["high"], {"in": ["high"]}, False),
+            (None, {"gt": 5.0}, False),
+            ("7", {"gt": 5.0}, False),
+            ([7], {"le": 5.0}, False),
+            (float("nan"), {"gt": 5.0}, False),
+            (float("nan"), {"le": 5.0}, False),
+            (True, {"gt": 0.5}, True),
+            (np.float32(7), {"gt": 5.0, "le": 10.5}, True),
+            (np.int64(7), {"in": [1, 7]}, True),
+            (np.array([7, 8]), {"gt": 5.0}, False),
+            (np.array([7, 8]), {"eq": 7}, False),
+            (np.array([7, 8]), {"in": [7]}, False),
+            (7, OmegaConf.create({"gt": 5.0, "le": 10.5}), True),
+            ("low", OmegaConf.create({"in": ["high", "medium"]}), False),
+            (7, {"gt": 5.0, "keep_if_missing": False}, True),
+            (3, {"gt": 5.0, "keep_if_missing": False}, False),
+            (None, {"keep_if_missing": False}, True),
+        ],
+    )
+    def test_operators(self, value, condition, expected):
+        cut = dummy_cut(0)
+        cut.custom = {"field": value}
+        assert CustomFieldFilter({"field": condition})(cut) is expected
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "condition, expected",
+        [
+            (True, True),
+            ({"eq": True}, True),
+            ({"gt": 5.0}, True),
+            ({"in": ["high"]}, True),
+            ({"eq": True, "keep_if_missing": True}, True),
+            ({"eq": True, "keep_if_missing": False}, False),
+            ({"gt": 5.0, "le": 10.5, "keep_if_missing": False}, False),
+            ({"keep_if_missing": False}, False),
+            (OmegaConf.create({"in": ["high"], "keep_if_missing": False}), False),
+        ],
+    )
+    @pytest.mark.parametrize("custom", [None, {}, {"other": 7}])
+    def test_keep_if_missing_decides_for_an_example_without_the_field(self, custom, condition, expected):
+        custom_field_filter = CustomFieldFilter({"field": condition})
+        cut = dummy_cut(0)
+        cut.custom = custom
+        assert custom_field_filter(cut) is expected
+        assert custom_field_filter(TextExample("some text", custom=custom)) is expected
+        other = dummy_cut(1)
+        other.custom = None
+        assert custom_field_filter(cut.mix(other)) is expected
+
+    @pytest.mark.unit
+    def test_conditions_of_all_fields_must_hold(self):
+        custom_field_filter = CustomFieldFilter(
+            {
+                "verified": True,
+                "snr": {"gt": 5.0, "le": 10.5},
+                "quality": {"in": ["high", "medium"], "keep_if_missing": False},
+            }
+        )
+        cut = dummy_cut(0)
+        for custom, expected in [
+            ({"verified": True, "snr": 7.0, "quality": "high"}, True),
+            ({"snr": 7.0, "quality": "medium"}, True),
+            ({"quality": "medium"}, True),
+            ({"verified": False, "snr": 7.0, "quality": "high"}, False),
+            ({"verified": True, "snr": 11.0, "quality": "high"}, False),
+            ({"verified": True, "snr": 7.0, "quality": "low"}, False),
+            ({"verified": True, "snr": 7.0}, False),
+        ]:
+            cut.custom = custom
+            assert custom_field_filter(cut) is expected, custom
+
+    @pytest.mark.unit
+    def test_mixed_cut_with_all_tracks_muted_has_no_field(self):
+        cuts = [dummy_cut(0), dummy_cut(1)]
+        for cut in cuts:
+            cut.custom = {"snr": 7.0}
+        mixed = cuts[0].mix(cuts[1])
+        mixed = fastcopy(mixed, tracks=[fastcopy(track, mute=True) for track in mixed.tracks])
+        assert mixed.has_custom("snr") is False
+        assert CustomFieldFilter({"snr": {"gt": 5.0}})(mixed) is True
+        assert CustomFieldFilter({"snr": {"gt": 5.0, "keep_if_missing": False}})(mixed) is False
+
+    @pytest.mark.unit
+    def test_filter_can_be_pickled(self):
+        conditions = {"verified": True, "snr": {"gt": 5.0, "keep_if_missing": False}, "quality": {"in": ["high"]}}
+        custom_field_filter = pickle.loads(pickle.dumps(CustomFieldFilter(OmegaConf.create(conditions))))
+        cut = dummy_cut(0)
+        cut.custom = {"snr": 7.0, "quality": "high"}
+        assert custom_field_filter(cut) is True
+        cut.custom = {"snr": 7.0, "quality": "low"}
+        assert custom_field_filter(cut) is False
+
+    @pytest.mark.unit
+    def test_keep_if_missing_does_not_apply_to_examples_that_cannot_have_custom_fields(self):
+        padding = PaddingCut(id="padding", duration=1.0, sampling_rate=16000, feat_value=0.0)
+        assert CustomFieldFilter({"verified": {"eq": True, "keep_if_missing": False}})(padding) is True
 
     @pytest.mark.unit
     def test_looks_at_cut_fields_not_supervision_fields(self):
@@ -184,21 +314,41 @@ class TestCustomFieldFilter:
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
-        "field_values",
+        "conditions",
         [
             {"verified": [True, False]},
             {"verified": None},
             {"verified": {"nested": True}},
             {"verified": float("nan")},
+            {"verified": {}},
+            {"verified": {"eq": [True]}},
+            {"verified": {"eq": None}},
+            {"verified": {"neq": float("nan")}},
+            {"verified": {"equals": True}},
+            {"verified": {"gt": "5"}},
+            {"verified": {"ge": True}},
+            {"verified": {"lt": None}},
+            {"verified": {"le": float("nan")}},
+            {"verified": {"in": "high"}},
+            {"verified": {"in": []}},
+            {"verified": {"in": [["high"]]}},
+            {"verified": {"in": [None]}},
+            {"verified": {"in": 3}},
+            {"verified": {"eq": True, "keep_if_missing": "no"}},
+            {"verified": {"keep_if_missing": 0}},
+            {"keep_if_missing": False, "verified": True},
+            {"keep_if_missing": True},
+            OmegaConf.create({"verified": {"in": []}}),
+            OmegaConf.create({"verified": {"between": [1, 2]}}),
             {"": True},
             {3: True},
             "verified",
             ["verified"],
         ],
     )
-    def test_rejects_invalid_field_values(self, field_values):
+    def test_rejects_invalid_conditions(self, conditions):
         with pytest.raises(ValueError, match="custom_field_filter"):
-            CustomFieldFilter(field_values)
+            CustomFieldFilter(conditions)
 
 
 class TestCustomFieldFilterDataloader:
@@ -226,6 +376,43 @@ class TestCustomFieldFilterDataloader:
         cuts = _read_all_cuts(manifest_config, custom_field_filter={"verified": False})
         texts = sorted(cut.supervisions[0].text for cut in cuts)
         assert texts == ["utt-1", "utt-2", "utt-4", "utt-5", "utt-7", "utt-8"]
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("source", ["manifest_config", "tarred_manifest_config"])
+    @pytest.mark.parametrize(
+        "snr_keep_if_missing, expected", [(True, ["utt-3", "utt-4", "utt-6"]), (False, ["utt-3", "utt-6"])]
+    )
+    def test_operators_select_the_cuts_of_the_predicate(self, source, snr_keep_if_missing, expected, request):
+        def predicate(cut: Cut) -> bool:
+            if cut.has_custom("snr"):
+                if cut.snr is None or not 5.0 < cut.snr <= 12.0:
+                    return False
+            elif not snr_keep_if_missing:
+                return False
+            return not cut.has_custom("quality") or cut.quality in ("very_high", "high", "medium")
+
+        source_config = request.getfixturevalue(source)
+        all_cuts = _read_all_cuts(source_config)
+        assert sorted(cut.supervisions[0].text for cut in all_cuts if predicate(cut)) == expected
+
+        custom_field_filter = {
+            "snr": {"gt": 5.0, "le": 12.0, "keep_if_missing": snr_keep_if_missing},
+            "quality": {"in": ["very_high", "high", "medium"]},
+        }
+        cuts = _read_all_cuts(source_config, custom_field_filter=custom_field_filter)
+
+        assert sorted(cut.supervisions[0].text for cut in cuts) == expected
+
+    @pytest.mark.unit
+    def test_conditions_from_yaml_text(self, manifest_config):
+        yaml_text = (
+            "custom_field_filter:\n"
+            "  verified: true\n"
+            "  snr: {ge: 6, lt: 18.0, keep_if_missing: false}\n"
+            "  quality: {in: [very_high, high]}\n"
+        )
+        cuts = _read_all_cuts(manifest_config, **OmegaConf.create(yaml_text))
+        assert sorted(cut.supervisions[0].text for cut in cuts) == ["utt-3", "utt-6"]
 
     @pytest.mark.unit
     def test_field_named_like_a_cut_attribute(self, manifest_config):
@@ -286,6 +473,7 @@ class TestCustomFieldFilterDataloader:
     @pytest.mark.unit
     def test_invalid_value_raises_at_construction(self, manifest_config):
         config = {**manifest_config, "sample_rate": 16000, "batch_size": 3}
-        config["custom_field_filter"] = {"verified": [True, False]}
-        with pytest.raises(ValueError, match="custom_field_filter.*'verified'"):
-            get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=_Identity())
+        for condition in ([True, False], {"equals": True}, {"gt": "5"}):
+            config["custom_field_filter"] = {"verified": condition}
+            with pytest.raises(ValueError, match="custom_field_filter.*'verified'"):
+                get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=_Identity())

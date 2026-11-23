@@ -190,8 +190,10 @@ class LhotseDataLoadingConfig:
 
     # 2.5 Filter on custom fields of a cut (``cut.custom``; for NeMo manifests, the additional keys
     # of a row, plus the tags of input_cfg).
-    # Maps a field name to the value to keep, e.g. {verified: true}.
-    # A cut that has the field with another value is filtered out; a cut without the field is kept.
+    # Maps a field name to its condition: a value to keep, e.g. {verified: true},
+    # or operators with operands (eq, neq, gt, ge, lt, le, in), e.g. {snr: {gt: 5.0, le: 10.5}}.
+    # A cut is kept when all conditions hold. A cut without the field is kept,
+    # unless the condition sets keep_if_missing: false.
     custom_field_filter: dict[str, Any] | None = None
 
     # 3. Supported existing NeMo options.

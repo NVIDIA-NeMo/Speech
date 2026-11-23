@@ -1615,6 +1615,41 @@ class TestPackedConformerReduction:
         self._assert_matches_padded(padded_encoder, packed_encoder)
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("reduction", ["pooling", "striding"])
+    @pytest.mark.parametrize(
+        "self_attention_model, att_context_style, att_context_size, default",
+        [
+            pytest.param("rel_pos", "regular", [2, 1], None, id="regular"),
+            pytest.param("abs_pos", "regular", [2, 1], None, id="regular_abs_pos"),
+            pytest.param("rope", "regular", [2, 1], None, id="regular_rope"),
+            pytest.param("rel_pos", "chunked_limited", [2, 1], None, id="chunked"),
+            pytest.param("rel_pos", "chunked_limited_with_rc", None, [0, 2, 0], id="chunked_with_rc"),
+            pytest.param("rel_pos_local_attn", "regular", [2, 2], None, id="local"),
+        ],
+    )
+    def test_matches_padded_with_a_limited_attention_context(
+        self, reduction, self_attention_model, att_context_style, att_context_size, default
+    ):
+        """The layers after the reduction keep the context size, counted in the frames of the reduced utterances."""
+        torch.manual_seed(3)
+        padded_encoder = _limited_context_encoder(
+            self_attention_model,
+            att_context_style,
+            att_context_size,
+            default,
+            n_layers=3,
+            reduction=reduction,
+            reduction_position=0,
+            reduction_factor=2,
+        )
+        padded_encoder = padded_encoder.double().eval()
+        packed_encoder = copy.deepcopy(padded_encoder)
+        assert packed_encoder.supports_sequence_packed_output
+        packed = self._assert_matches_padded(padded_encoder, packed_encoder)
+        # four or five frames remain in the longest utterances, more than any of these contexts lets one frame see
+        assert packed.max_seqlen in (4, 5)
+
+    @pytest.mark.unit
     @pytest.mark.parametrize("reduction,reduction_position", [("pooling", 1), ("striding", 1), ("striding", -1)])
     def test_matches_padded_in_training_mode(self, reduction, reduction_position):
         """Layer normalization in the convolution modules, since batch normalization differs by the padded frames.

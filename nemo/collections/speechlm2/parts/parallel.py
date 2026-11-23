@@ -27,8 +27,8 @@ from lightning.fabric.plugins.collectives.torch_collective import default_pg_tim
 from lightning.pytorch.strategies.model_parallel import ModelParallelStrategy
 from typing_extensions import override
 
-# Blackwell sm_120, where TE 2.14's cuDNN fused-attention backward kernel
-# silently amplifies THD/padding_causal gradients 8x-960x per layer.
+# Blackwell sm_120, where TE's cuDNN fused-attention backward kernel (observed
+# with TE 2.14 and 2.15) silently amplifies THD/padding_causal gradients 8x-960x per layer.
 _SM120 = (12, 0)
 
 
@@ -133,13 +133,14 @@ def validate_parallelism_compatibility(
        FlashAttention. SDPA's 3D-THD path is broken in the Automodel
        branch we depend on (transpose assumes 4D BSHD).
     3. ``packed_sequences=True`` + ``attn="te"`` +
-       ``NVTE_FUSED_ATTN != "0"``: TE 2.14's cuDNN fused-attention
-       backward kernel produces forward outputs that match FA bit-for-bit
+       ``NVTE_FUSED_ATTN != "0"``: TE's cuDNN fused-attention backward
+       kernel (observed with TE 2.14 and 2.15) produces forward outputs that match FA bit-for-bit
        but a backward that amplifies gradients 8x-960x per layer on
        Blackwell sm_120. Compounded across the LLM's attention stack
        this drives gradients to ``inf`` and the optimizer to NaN. Set
        ``NVTE_FUSED_ATTN=0`` in the launcher environment to force
-       FlashAttention dispatch.
+       FlashAttention dispatch. On sm_120 that dispatches to
+       flash-attn-4, which needs TE >= 2.21 for causal masks.
 
     Hard error on (1) and (2). When ``check_backward`` is true, hard error
     on (3)-on-sm_120 and ``warnings.warn`` on (3) for other architectures
@@ -178,17 +179,30 @@ def validate_parallelism_compatibility(
             msg = (
                 "SALMAutomodel: ``packed_sequences=true`` with ``attn=te`` and "
                 '``NVTE_FUSED_ATTN`` not set to ``"0"`` (got '
-                f"{nvte_fused_attn!r}). TE 2.14's cuDNN fused-attention "
-                "backward kernel amplifies THD/padding_causal gradients "
+                f"{nvte_fused_attn!r}). TE's cuDNN fused-attention "
+                "backward kernel (observed with TE 2.14 and 2.15) amplifies THD/padding_causal gradients "
                 "8x-960x per layer on Blackwell sm_120; the resulting ``inf`` "
                 "gradients drive the optimizer to NaN. Set "
                 "``NVTE_FUSED_ATTN=0`` in the launcher environment to force "
                 "FlashAttention dispatch (requires ``flash-attn`` installed "
                 "for your GPU arch)."
             )
-            if device_capability == _SM120:
+            if packed_attention_requires_flash_attention(
+                packed_sequences=packed_sequences, attn_backend=attn_backend, device_capability=device_capability
+            ):
                 raise ValueError(msg)
             warnings.warn(msg, stacklevel=2)
+
+
+def packed_attention_requires_flash_attention(
+    *, packed_sequences: bool, attn_backend: str, device_capability: Optional[tuple[int, int]]
+) -> bool:
+    """Whether training must run with ``NVTE_FUSED_ATTN=0`` (case 3 of :func:`validate_parallelism_compatibility`).
+
+    True for packed (THD) sequences with TE attention on Blackwell sm_120, where TE's cuDNN fused-attention backward
+    is wrong for THD/``padding_causal``. Launchers use this to set ``NVTE_FUSED_ATTN=0`` for the training process.
+    """
+    return bool(packed_sequences) and attn_backend == "te" and tuple(device_capability or ()) == _SM120
 
 
 def setup_distributed(

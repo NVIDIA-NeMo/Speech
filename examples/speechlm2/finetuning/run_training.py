@@ -85,9 +85,36 @@ def torchrun_cmd(cfg, overrides):
     ]
 
 
-def torchrun(cfg, exp, overrides, log):
+def torchrun(cfg, exp, overrides, log, env=None):
     with open(log, "w") as fo:
-        return subprocess.Popen(torchrun_cmd(cfg, overrides), cwd=NEMO_ROOT, stdout=fo, stderr=subprocess.STDOUT)
+        return subprocess.Popen(
+            torchrun_cmd(cfg, overrides), cwd=NEMO_ROOT, stdout=fo, stderr=subprocess.STDOUT, env=env
+        )
+
+
+def training_env(cfg: dict, overrides: list, environ=None) -> dict:
+    """Environment for the training process.
+
+    Packed (THD) training with TE attention on Blackwell sm_120 must run with ``NVTE_FUSED_ATTN=0`` (SALMAutomodel
+    refuses to train otherwise), so it is set here unless the user already set ``NVTE_FUSED_ATTN``: an explicit value
+    is left as is, and SALMAutomodel then reports it if it is not supported.
+    """
+    env = dict(os.environ if environ is None else environ)
+    if "NVTE_FUSED_ATTN" in env:
+        return env
+    packed_sequences = _model_option(cfg, overrides, "packed_sequences", False)
+    attn_backend = _model_option(cfg, overrides, "automodel_backend.attn", "te")
+    if not (packed_sequences and attn_backend == "te"):
+        return env
+    device_capability = _device_capability()
+    from nemo.collections.speechlm2.parts.parallel import packed_attention_requires_flash_attention
+
+    if packed_attention_requires_flash_attention(
+        packed_sequences=packed_sequences, attn_backend=attn_backend, device_capability=device_capability
+    ):
+        print("[train] packed sequences with TE attention on sm_120: setting NVTE_FUSED_ATTN=0", flush=True)
+        env["NVTE_FUSED_ATTN"] = "0"
+    return env
 
 
 def validation_interval_steps(trainer: dict) -> int:
@@ -178,6 +205,7 @@ def main():
     t = cfg["trainer"]
     interval = validation_interval_steps(t)
     check_provenance(exp, cfg, overrides)
+    env = training_env(cfg, overrides)
 
     lock_path = Path(os.environ.get("SALM_FT_WORK", "salm_ft_work")).absolute() / ".train.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -223,6 +251,7 @@ def main():
                     "exp_manager.create_checkpoint_callback=false",
                 ],
                 log,
+                env=env,
             )
             rc = pr.wait()
             text = log.read_text(errors="ignore")
@@ -248,7 +277,7 @@ def main():
                 sys.exit(f"smoke run failed; see {log}")
 
         log = exp / "train.log"
-        pr = torchrun(a.config, exp, overrides, log)
+        pr = torchrun(a.config, exp, overrides, log, env=env)
         stop = threading.Event()
         keep_thread = None
         if a.keep_steps is not None:
@@ -290,6 +319,36 @@ def main():
         ev = events(exp)
         print("[train] val_loss by step: " + ", ".join(f"{e.step + 1}: {e.value:.4f}" for e in ev.get("val_loss", [])))
         print("[train] checkpoints:", sorted(os.listdir(exp / "checkpoints")))
+
+
+def _model_option(cfg: dict, overrides: list, key: str, default):
+    """``model.<key>`` (dotted) after applying the command-line Hydra overrides that set it."""
+    for o in overrides:
+        k, _, v = o.lstrip("+~").partition("=")
+        if k == f"model.{key}":
+            return yaml.safe_load(v)
+    node = cfg.get("model") or {}
+    for part in key.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return default
+        node = node[part]
+    return node
+
+
+def _device_capability():
+    """Compute capability of the first visible GPU, or None. Probed in a child process so that this long-lived
+    launcher does not hold a CUDA context on the GPU it hands to training."""
+    r = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import torch; torch.cuda.is_available() and print(*torch.cuda.get_device_capability())",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    parts = r.stdout.split()
+    return (int(parts[0]), int(parts[1])) if r.returncode == 0 and len(parts) == 2 else None
 
 
 if __name__ == "__main__":

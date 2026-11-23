@@ -52,6 +52,7 @@ from nemo.collections.tts.modules.magpietts_modules import (
     worker_init_fn,
 )
 from nemo.collections.tts.modules.nemotron_tts.v2.timestamp_head import (
+    END,
     IGNORE_INDEX,
     TIMESTAMP_LABELS,
     word_intervals_to_frame_labels,
@@ -305,6 +306,7 @@ class NemotronTTSModel(NemotronTTSBase):
         # Build CPU metadata in one pass, then transfer the completed targets once.
         labels = torch.full((text.size(0), num_frames), IGNORE_INDEX, dtype=torch.long)
         mask = torch.zeros_like(labels, dtype=torch.bool)
+        terminal_mask = torch.zeros_like(mask)
         coverage = torch.zeros_like(labels)
         source_lengths = audio_lens.detach().cpu().tolist()
         plans = []
@@ -336,7 +338,7 @@ class NemotronTTSModel(NemotronTTSBase):
                 end = (code_length + self.frame_stacking_factor - 1) // self.frame_stacking_factor
                 language = batch.get('languages', [None] * text.size(0))[sample]
                 plans.append((sample, 0, end, 0, source_lengths[sample], batch['raw_texts'][sample], language))
-        metrics = dict(turns=len(plans), valid_turns=0, invalid_turns=0, collision_frames=0, collapsed_words=0)
+        metrics = dict(turns=len(plans), valid_turns=0, invalid_turns=0, collision_frames=0, collision_words=0)
         waveforms, references, languages, metadata = [], [], [], []
         acoustic_mask = batch.get('acoustic_loss_mask')
         for sample, start, end, left, right, reference, language in plans:
@@ -363,36 +365,57 @@ class NemotronTTSModel(NemotronTTSBase):
                 )
             if len(records) != len(metadata):
                 raise ValueError('Timestamp teacher must return one alignment per ground-truth turn')
-            for (sample, start, end, offset), record in zip(metadata, records):
+            for turn_index, ((sample, start, end, offset), record) in enumerate(zip(metadata, records)):
                 if record.get('error') or not record.get('words'):
                     metrics['invalid_turns'] += 1
                     continue
                 try:
+                    phase = offset - start * frame_seconds
                     words = [
-                        dict(word, start=float(word['start']) + offset, end=float(word['end']) + offset)
+                        dict(word, start=float(word['start']) + phase, end=float(word['end']) + phase)
                         for word in record['words']
                     ]
                 except (KeyError, TypeError, ValueError):
                     metrics['invalid_turns'] += 1
                     continue
                 result = word_intervals_to_frame_labels(
-                    words, num_frames, frame_seconds, source_lengths[sample] / sample_rate
+                    words, end - start, frame_seconds, waveforms[turn_index].numel() / sample_rate + phase
                 )
                 metrics['collision_frames'] += result.collision_count
-                metrics['collapsed_words'] += result.collapsed_word_count
+                metrics['collision_words'] += result.collision_word_count
                 if result.invalid_word_count:
                     metrics['invalid_turns'] += 1
                     continue
-                labels[sample, start:end] = result.labels[start:end]
-                mask[sample, start:end] = result.valid_mask[start:end]
+                labels[sample, start:end] = result.labels
+                mask[sample, start:end] = result.valid_mask
                 coverage[sample, start:end] += 1
+                aligned_end = float(record['words'][-1]['end'])
+                if is_multiturn:
+                    # Audio EOS follows the interruption frame; targets remove BOS.
+                    terminal = math.floor((aligned_end + offset) / frame_seconds + 0.5) + 1
+                else:
+                    aligned_samples = round(aligned_end * sample_rate)
+                    codec_frames = (
+                        aligned_samples + self.codec_model_samples_per_frame - 1
+                    ) // self.codec_model_samples_per_frame
+                    terminal = codec_frames // self.frame_stacking_factor
+                if 0 <= terminal < num_frames:
+                    labels[sample, terminal] = END
+                    mask[sample, terminal] = terminal_mask[sample, terminal] = True
                 metrics['valid_turns'] += 1
         overlapping_turns = coverage > 1
         metrics['collision_frames'] += int(overlapping_turns.sum().item())
         mask &= ~overlapping_turns
+        terminal_mask &= mask
+        labels[terminal_mask] = END
         labels[~mask] = IGNORE_INDEX
-        # Teacher forward uses inference_mode; keep all CE targets ordinary detached tensors.
-        return labels.clone().to(device=text.device), mask.clone().to(device=text.device), metrics
+        # Teacher forward uses inference_mode; keep targets ordinary detached tensors.
+        return (
+            labels.clone().to(device=text.device),
+            mask.clone().to(device=text.device),
+            metrics,
+            terminal_mask.to(device=text.device),
+        )
 
     def _log_aligned_text_head_examples(self, output):
         """Build W&B media for the first validation turns without retaining logits."""
@@ -1251,12 +1274,12 @@ class NemotronTTSModel(NemotronTTSBase):
             self.use_attention_alignment or getattr(self, 'use_aligned_text_head', False)
         ) and not return_policy_logits
         alignment_text = text.clone() if use_alignment else None
-        timestamp_targets = timestamp_mask = timestamp_metrics = None
+        timestamp_targets = timestamp_mask = timestamp_metrics = timestamp_terminals = None
         use_timestamp_head = getattr(self, 'use_timestamp_head', False) and not return_policy_logits
         if use_timestamp_head:
             num_frames = (audio_codes.size(-1) + self.frame_stacking_factor - 1) // self.frame_stacking_factor + 1
-            timestamp_targets, timestamp_mask, timestamp_metrics = self._prepare_timestamp_targets(
-                timestamp_batch, text, audio_codes_lens, num_frames
+            timestamp_targets, timestamp_mask, timestamp_metrics, timestamp_terminals = (
+                self._prepare_timestamp_targets(timestamp_batch, text, audio_codes_lens, num_frames)
             )
 
         # Select training mode
@@ -1648,12 +1671,17 @@ class NemotronTTSModel(NemotronTTSBase):
             steps = pred_embeddings.size(1)
             timestamp_targets = timestamp_targets[:, :steps]
             timestamp_mask = timestamp_mask[:, :steps]
-            timestamp_mask &= (
+            timestamp_terminals = timestamp_terminals[:, :steps]
+            valid_steps = (
                 torch.arange(steps, device=pred_embeddings.device)[None, :] < audio_codes_lens_target[:, None]
             )
+            eos_positions = (audio_codes_target[:, :, :steps] == self.audio_eos_id).any(dim=1)
+            if (timestamp_terminals & valid_steps & ~eos_positions).any():
+                raise ValueError('Alignment-derived terminal word boundaries do not match speech EOS target positions')
             timestamp_mask &= (
                 (audio_codes_target[:, :, :steps] >= 0) & (audio_codes_target[:, :, :steps] < self.codebook_size)
-            ).all(dim=1)
+            ).all(dim=1) | timestamp_terminals
+            timestamp_mask &= valid_steps
             if agent_mask is not None:
                 timestamp_mask &= agent_mask[:, :steps].bool()
             timestamp_targets = timestamp_targets.masked_fill(~timestamp_mask, IGNORE_INDEX)
@@ -1664,7 +1692,14 @@ class NemotronTTSModel(NemotronTTSBase):
                 name: torch.tensor(value, device=loss.device) for name, value in timestamp_metrics.items()
             }
             timestamp_metrics['supervised_frames'] = timestamp_mask.sum()
-            correct = (timestamp_logits.detach().argmax(dim=-1) == timestamp_targets) & timestamp_mask
+            predicted_ends = (timestamp_logits.detach() >= 0).long()
+            correct = (predicted_ends == timestamp_targets) & timestamp_mask
+            terminal_frames = timestamp_terminals & timestamp_mask
+            timestamp_metrics['eos_count'] = terminal_frames.sum()
+            timestamp_metrics['eos_correct'] = (correct & terminal_frames).sum()
+            timestamp_metrics['eos_recall'] = timestamp_metrics[
+                'eos_correct'
+            ].float() / terminal_frames.sum().clamp_min(1)
             timestamp_metrics['accuracy'] = correct.sum().float() / timestamp_mask.sum().clamp_min(1)
             for index, name in enumerate(TIMESTAMP_LABELS):
                 selected = timestamp_mask & timestamp_targets.eq(index)

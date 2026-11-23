@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import math
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -44,7 +45,8 @@ class NemotronASRTimestampAligner(nn.Module):
     an individual longer turn retains its full encoder context.
     FP32 attention uses PyTorch SDPA with its existing weights, positions, and
     masks, avoiding oversized FlexAttention kernels on A100.
-    Word spans retain CTC blank-frame gaps by default, preserving silence targets.
+    The first word starts at zero. Each word ends at the following CTC word
+    onset, and the final word ends at the exact input audio duration.
     """
 
     def __init__(self, config: Mapping[str, Any]):
@@ -63,12 +65,23 @@ class NemotronASRTimestampAligner(nn.Module):
             **dict(self.config.get('alignment', {}) or {}),
         }
         self.teacher_info['refine_word_timestamps'] = self._alignment_options['refine_word_timestamps']
+        self.teacher_info['word_interval_policy'] = 'zero_then_ctc_onsets_to_audio_end'
         self._aligners = {}
         self.measure_timings = bool(self.config.get('measure_timings', False))
         self.max_batch_size = int(self.config.get('max_batch_size', 8))
         self.max_batch_duration = float(self.config.get('max_batch_duration', 120.0))
+        self.use_cuda_alignment = bool(self.config.get('use_cuda_alignment', True))
+        self.group_languages_by_policy = bool(self.config.get('group_languages_by_policy', True))
+        self.ctc_max_batch_elements = int(self.config.get('ctc_max_batch_elements', 128 * 2**20))
         if self.max_batch_size < 1 or not 0 < self.max_batch_duration < float('inf'):
             raise ValueError('max_batch_size and max_batch_duration must be positive finite values.')
+        if self.ctc_max_batch_elements < 1:
+            raise ValueError('ctc_max_batch_elements must be positive.')
+        self.teacher_info.update(
+            use_cuda_alignment=self.use_cuda_alignment,
+            group_languages_by_policy=self.group_languages_by_policy,
+            ctc_max_batch_elements=self.ctc_max_batch_elements,
+        )
         self.last_timings = {}
         self.register_buffer('_device_anchor', torch.empty(0), persistent=False)
         self.requires_grad_(False)
@@ -109,7 +122,8 @@ class NemotronASRTimestampAligner(nn.Module):
 
         ``audio`` is mono audio shaped ``(B, samples)``; ``lengths`` excludes padding.
         Resampling trims each turn before converting it to FP32 16 kHz audio.
-        Word times are relative to each input turn, in seconds. Invalid transcripts
+        Word times are relative to each input turn, in seconds. ``ctc_start`` and
+        ``ctc_end`` retain the native CTC emission bounds for inspection. Invalid transcripts
         are reported independently, so one failure does not remove other records.
         """
         _validate_batch(audio, lengths, sample_rate, texts, languages)
@@ -173,7 +187,11 @@ class NemotronASRTimestampAligner(nn.Module):
 
         groups = defaultdict(list)
         for row, index in enumerate(valid):
-            groups[_timestamp_language(languages[index])].append((row, index))
+            language = _timestamp_language(languages[index])
+            if self.group_languages_by_policy and language not in (None, 'zh', 'ja', 'th'):
+                language = 'whitespace'
+            groups[language].append((row, index))
+        alignment_device = device if self.use_cuda_alignment and device.type == 'cuda' else None
         prepare_seconds = align_seconds = 0.0
         # The existing deferred-head API only retains transcript token columns on
         # the host, avoiding a full B x T x vocabulary tensor in device memory.
@@ -197,13 +215,15 @@ class NemotronASRTimestampAligner(nn.Module):
                         )
                         try:
                             prepared_one = aligner.prepare_from_inputs(single, [texts[index]], [durations[offset]])
-                            results[index] = _checked_alignment_results(aligner, prepared_one)[0]
+                            results[index] = _checked_alignment_results(
+                                aligner, prepared_one, [durations[offset]], device=alignment_device
+                            )[0]
                         except (ValueError, UnicodeError) as error:
                             results[index]['error'] = f'{type(error).__name__}: {error}'
                     prepare_seconds += _timestamp(device, self.measure_timings) - before_prepare
                     continue
                 after_prepare = _timestamp(device, self.measure_timings)
-                aligned = _checked_alignment_results(aligner, prepared)
+                aligned = _checked_alignment_results(aligner, prepared, durations, device=alignment_device)
                 after_align = _timestamp(device, self.measure_timings)
                 prepare_seconds += after_prepare - before_prepare
                 align_seconds += after_align - after_prepare
@@ -228,7 +248,9 @@ class NemotronASRTimestampAligner(nn.Module):
             options = dict(self._alignment_options)
             if language is not None:
                 options['timestamp_language'] = language
-            self._aligners[language] = _make_aligner(self.ctc_decoder, self.tokenizer, options)
+            aligner = _make_aligner(self.ctc_decoder, self.tokenizer, options)
+            aligner._CTC_WINDOW_MAX_ELEMENTS = self.ctc_max_batch_elements
+            self._aligners[language] = aligner
         return self._aligners[language]
 
 
@@ -437,24 +459,54 @@ def _turn_batches(lengths, sample_rate, max_batch_size, max_batch_duration):
     return batches
 
 
-def _checked_alignment_results(aligner, prepared):
-    aligned = aligner.align_prepared(prepared)
+def _checked_alignment_results(aligner, prepared, audio_durations, *, device=None):
+    aligned = aligner.align_prepared(prepared) if device is None else aligner.align_prepared(prepared, device=device)
     records = prepared['records']
     if len(aligned) != len(records):
         raise RuntimeError(f'CTC alignment returned {len(aligned)} records for {len(records)} input turns.')
+    if len(audio_durations) != len(records):
+        raise RuntimeError('CTC alignment requires one exact audio duration per input turn.')
     return [
-        _public_result(result, expected_words=sum(len(stream['words']) for stream in record['streams']))
-        for result, record in zip(aligned, records)
+        _public_result(result, duration, expected_words=sum(len(stream['words']) for stream in record['streams']))
+        for result, record, duration in zip(aligned, records, audio_durations)
     ]
 
 
-def _public_result(result, expected_words=None):
+def _public_result(result, audio_duration, expected_words=None):
+    """Partition the whole turn from zero using subsequent CTC onsets as word ends."""
     words = [dict(word) for group in result.get('speaker_word_timestamps', {}).values() for word in group]
-    words.sort(key=lambda word: (word['start'], word['end']))
     failures = result.get('alignment_diagnostics', {}).get('failed_streams', [])
     error = 'no_legal_ctc_path' if failures else ('no_aligned_words' if not words else None)
     if error is None and expected_words is not None and len(words) != expected_words:
         error = 'incomplete_alignment'
+    if error is None:
+        try:
+            audio_duration = float(audio_duration)
+            starts = [float(word['start']) for word in words]
+            ends = [float(word['end']) for word in words]
+        except (KeyError, TypeError, ValueError, OverflowError):
+            error = 'invalid_word_timestamps'
+        else:
+            tolerance = max(1e-8, 4 * math.ulp(audio_duration)) if math.isfinite(audio_duration) else 0.0
+            valid = (
+                math.isfinite(audio_duration)
+                and audio_duration > 0
+                and all(math.isfinite(start) and 0 <= start < audio_duration for start in starts)
+                and all(right > left for left, right in zip(starts, starts[1:]))
+                and all(
+                    math.isfinite(end) and start < end <= audio_duration + tolerance
+                    for start, end in zip(starts, ends)
+                )
+            )
+            if valid:
+                for index, (word, ctc_start, ctc_end, end) in enumerate(
+                    zip(words, starts, ends, [*starts[1:], audio_duration])
+                ):
+                    word.update(start=0.0 if index == 0 else ctc_start, end=end, ctc_start=ctc_start, ctc_end=ctc_end)
+            else:
+                error = 'invalid_word_timestamps'
+        if error is not None:
+            words = []
     return {'words': words, 'error': error, 'alignment': result}
 
 

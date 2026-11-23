@@ -15,17 +15,14 @@ from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import (
 )
 from nemo.collections.tts.models.nemotron_tts.v2.base import TrainingMode
 from nemo.collections.tts.modules.nemotron_tts.v2.timestamp_head import (
-    CONTINUE,
     END,
     IGNORE_INDEX,
-    OUTSIDE,
-    START,
+    NONEND,
     TIMESTAMP_LABELS,
     TimestampHead,
 )
 from tests.collections.tts.modules.nemotron_tts.v2.test_streaming_timestamps_model import _init_stream
 from tests.collections.tts.modules.nemotron_tts.v2.test_training_model import _inputs, _training_model
-
 
 pytestmark = pytest.mark.unit
 
@@ -36,17 +33,37 @@ def test_dataset_turn_boundaries_recover_exact_gt_audio_and_independent_transcri
     text = _packed_text(model, timestamp_turns=turns)
     audio = torch.arange(120, dtype=torch.float32).unsqueeze(0)
     batch = dict(audio=audio, audio_lens=torch.tensor([120]), languages=['en'], timestamp_turns=[turns])
-    labels, valid, metrics = model._prepare_timestamp_targets(batch, text, torch.tensor([30]), 16)
+    labels, valid, metrics, terminal = model._prepare_timestamp_targets(batch, text, torch.tensor([30]), 16)
     teacher = model._timestamp_teacher
     assert teacher.calls[0]['texts'] == ['first turn', 'second turn']
     assert teacher.calls[0]['languages'] == ['en', 'en']
     assert teacher.calls[0]['lengths'].tolist() == [40, 40]
     torch.testing.assert_close(teacher.calls[0]['audio'][0], audio[0, 16:56])
     torch.testing.assert_close(teacher.calls[0]['audio'][1], audio[0, 72:112])
-    assert labels[0, 2:7].tolist() == [OUTSIDE, START, END, OUTSIDE, OUTSIDE]
-    assert labels[0, 9:14].tolist() == [OUTSIDE, START, END, OUTSIDE, OUTSIDE]
-    assert valid[0].nonzero().flatten().tolist() == list(range(2, 7)) + list(range(9, 14))
+    assert labels[0, 2:7].tolist() == [NONEND, NONEND, END, NONEND, NONEND]
+    assert labels[0, 9:14].tolist() == [NONEND, NONEND, END, NONEND, NONEND]
+    assert valid[0].nonzero().flatten().tolist() == list(range(2, 7)) + [8] + list(range(9, 14)) + [15]
+    assert terminal[0].nonzero().flatten().tolist() == [8, 15]
+    assert labels[terminal].tolist() == [END, END]
     assert metrics['valid_turns'] == 2
+
+
+def test_terminal_end_survives_the_next_turns_first_nonend_frame():
+    model = _timestamp_model(multiturn=True)
+    turns = []
+    text = _packed_text(model, timestamp_turns=turns)
+    turns[1].update(start=0.64, end=1.04)
+    labels, valid, metrics, terminal = model._prepare_timestamp_targets(
+        dict(audio=torch.zeros(1, 120), audio_lens=torch.tensor([120]), timestamp_turns=[turns]),
+        text,
+        torch.tensor([30]),
+        16,
+    )
+    # The first turn's terminal shares frame 8 with the next turn's initial NONEND.
+    assert terminal[0].nonzero().flatten().tolist() == [8, 14]
+    assert labels[0, 8:13].tolist() == [END, NONEND, END, NONEND, NONEND]
+    assert valid[terminal].all() and (labels[terminal] == END).all()
+    assert metrics['valid_turns'] == 2 and metrics['collision_frames'] == 0
 
 
 def test_teacher_uses_unpadded_gt_audio_and_raw_reference_even_with_cached_codec_targets():
@@ -83,9 +100,18 @@ def test_dataset_packed_turn_labels_land_on_raw_audio_targets_after_bos_and_eos_
     assert output.audio_codes_target.shape[-1] == 15
     # The artificial stacked BOS was removed from targets; target t=2 contains raw codec frames 4 and 5.
     assert output.audio_codes_target[0, :, 2].tolist() == [4, 5, 2, 3]
-    assert output.timestamp_targets[0, 2:7].tolist() == [OUTSIDE, START, END, OUTSIDE, OUTSIDE]
-    assert output.timestamp_targets[0, 9:14].tolist() == [OUTSIDE, START, END, OUTSIDE, OUTSIDE]
-    assert not output.timestamp_mask[(output.audio_codes_target >= model.codebook_size).any(dim=1)].any()
+    assert output.timestamp_targets[0, 2:7].tolist() == [NONEND, NONEND, END, NONEND, NONEND]
+    assert output.timestamp_targets[0, 9:14].tolist() == [NONEND, NONEND, END, NONEND, NONEND]
+    eos = (output.audio_codes_target == model.audio_eos_id).any(dim=1)
+    # The first text marker injects EOS at target 8 despite the speech delay.
+    # The second alignment-derived terminal at 15 lies past this target crop.
+    assert eos[0].nonzero().flatten().tolist() == [8, 14]
+    assert output.timestamp_targets[0, 8] == END and output.timestamp_mask[0, 8]
+    # A separate target EOS cannot create an alignment-derived END label.
+    assert output.timestamp_targets[0, 14] == IGNORE_INDEX and not output.timestamp_mask[0, 14]
+    other_specials = (output.audio_codes_target >= model.codebook_size).any(dim=1) & ~eos
+    assert output.timestamp_targets[eos & output.timestamp_mask].tolist() == [END]
+    assert not output.timestamp_mask[other_specials].any()
 
 
 def test_packed_teacher_requires_complete_source_metadata_instead_of_reconstructing_tokens():
@@ -105,11 +131,11 @@ def test_source_metadata_keeps_chosen_full_transcript_and_fractional_waveform_of
     text[0, 5] = model.pad_id  # The full reference survives even when packed conditioning is truncated.
     assert turns[0] == dict(text='first turn', start=0.13, end=0.53, language=None)
     model._timestamp_teacher.records = [
-        {'words': [{'start': 0.05, 'end': 0.18}], 'error': None},
-        {'words': [{'start': 0.08, 'end': 0.24}], 'error': None},
+        {'words': [{'start': 0.0, 'end': 0.18}, {'start': 0.18, 'end': 0.4}], 'error': None},
+        {'words': [{'start': 0.0, 'end': 0.24}, {'start': 0.24, 'end': 0.4}], 'error': None},
     ]
     audio = torch.arange(120, dtype=torch.float32)[None]
-    labels, valid, metrics = model._prepare_timestamp_targets(
+    labels, valid, metrics, terminal = model._prepare_timestamp_targets(
         dict(audio=audio, audio_lens=torch.tensor([120]), timestamp_turns=[turns]),
         text,
         torch.tensor([30]),
@@ -118,9 +144,34 @@ def test_source_metadata_keeps_chosen_full_transcript_and_fractional_waveform_of
     call = model._timestamp_teacher.calls[0]
     assert call['texts'] == ['first turn', 'second turn']
     torch.testing.assert_close(call['audio'][0], audio[0, 13:53])
-    # Global word times .18-.31 quantize to [frame 2, frame 4), using the .13 source origin.
-    assert labels[0, 2:7].tolist() == [START, END, OUTSIDE, OUTSIDE, OUTSIDE]
+    # Global internal end .31 rounds to .32, so its preceding acoustic frame is 3.
+    assert labels[0, 2:7].tolist() == [NONEND, END, NONEND, NONEND, NONEND]
     assert valid[0, 2:7].all() and metrics['valid_turns'] == 2
+    # Terminal alignment .53 maps to native multiturn EOS round(.53 / .08) + 1 = 8.
+    assert terminal[0].nonzero().flatten().tolist() == [8, 15]
+    assert labels[0, 8] == END and valid[0, 8]
+
+
+@pytest.mark.parametrize('fractional', [False, True])
+def test_early_internal_end_stays_in_the_first_retained_turn_frame(fractional):
+    model = _timestamp_model(multiturn=True)
+    turns = []
+    text = _packed_text(model, timestamp_turns=turns, fractional=fractional)
+    model._timestamp_teacher.records = [
+        {'words': [{'start': 0.0, 'end': 0.05}, {'start': 0.05, 'end': 0.4}], 'error': None},
+        {'words': [{'start': 0.0, 'end': 0.05}, {'start': 0.05, 'end': 0.4}], 'error': None},
+    ]
+    labels, valid, metrics, terminal = model._prepare_timestamp_targets(
+        dict(audio=torch.zeros(1, 120), audio_lens=torch.tensor([120]), timestamp_turns=[turns]),
+        text,
+        torch.tensor([30]),
+        16,
+    )
+    # For the .13s origin, .18s is before the first retained frame's right edge;
+    # it still closes the first word in that frame, instead of leaking to frame 1.
+    assert labels[0, 2:7].tolist() == [END, NONEND, NONEND, NONEND, NONEND]
+    assert labels[0, 9:14].tolist() == [END, NONEND, NONEND, NONEND, NONEND]
+    assert valid[0, 2] and valid[0, 9] and metrics['valid_turns'] == 2
 
 
 def test_optional_dataset_collector_keeps_default_token_channel_and_groups_turns_per_cut():
@@ -143,13 +194,15 @@ def test_optional_dataset_collector_keeps_default_token_channel_and_groups_turns
     assert [[turn['text'] for turn in sample] for sample in turns] == [['first turn', 'second turn']]
 
 
-def test_one_step_audio_delay_reads_the_audio_prediction_state_and_masks_special_and_user_frames():
+@pytest.mark.parametrize('text_input_mode,audio_delay', [('streaming', 1), ('full', 5)])
+def test_audio_delay_keeps_internal_and_terminal_ends_on_the_audio_prediction_grid(text_input_mode, audio_delay):
     model = _timestamp_model(multiturn=False)
     inputs = _inputs(model)
     inputs['context_text_tokens'] = torch.empty(1, 0, dtype=torch.long)
     inputs['context_text_tokens_lens'] = torch.tensor([0])
-    mode = TrainingMode('streaming', 0, 1, 0)
-    # Lexical token 8 arrives at time 2, after the first audio prediction state at time 1.
+    mode = TrainingMode(text_input_mode, 0, 1, 0)
+    # Full-text conditioning adds all four text positions before the speech delay.
+    assert audio_delay == (int(inputs['text_lens'][0]) if text_input_mode == 'full' else 0) + 1
     assert inputs['text'][0, 2].item() == 8
     hidden, projected = [], []
     decoder_hook = model.decoder.register_forward_hook(
@@ -168,12 +221,43 @@ def test_one_step_audio_delay_reads_the_audio_prediction_state_and_masks_special
         decoder_hook.remove()
         head_hook.remove()
     frames = output.audio_codes_target.size(-1)
-    torch.testing.assert_close(projected[0], hidden[0][:, 1 : 1 + frames], rtol=0, atol=0)
+    torch.testing.assert_close(projected[0], hidden[0][:, audio_delay : audio_delay + frames], rtol=0, atol=0)
     assert output.timestamp_targets.shape == (1, frames)
-    assert output.timestamp_targets[0].tolist() == [OUTSIDE, IGNORE_INDEX, END, OUTSIDE, IGNORE_INDEX]
-    assert output.timestamp_mask[0].tolist() == [True, False, True, True, False]
+    # The .24-second end belongs to acoustic frame 2, whose hidden state is delay+2.
+    assert output.timestamp_targets[0].tolist() == [NONEND, IGNORE_INDEX, END, NONEND, END]
+    assert output.timestamp_mask[0].tolist() == [True, False, True, True, True]
     special = (output.audio_codes_target >= model.codebook_size).any(dim=1)
-    assert not output.timestamp_mask[special].any()
+    eos = (output.audio_codes_target == model.audio_eos_id).any(dim=1)
+    assert eos[0].nonzero().flatten().tolist() == [4]
+    assert output.timestamp_targets[eos].tolist() == [END]
+    torch.testing.assert_close(projected[0][0, 4], hidden[0][0, audio_delay + 4], rtol=0, atol=0)
+    assert not output.timestamp_mask[special & ~eos].any()
+
+
+def test_terminal_target_comes_from_alignment_and_must_match_the_audio_eos_clock():
+    model = _timestamp_model(multiturn=False)
+    # The waveform/codes contain four acoustic frames, but the supplied alignment
+    # falsely places its final boundary after the first frame.
+    model._timestamp_teacher.records = [{'words': [{'start': 0.0, 'end': 0.08}], 'error': None}]
+    inputs = _inputs(model)
+    labels, valid, _, terminal = model._prepare_timestamp_targets(
+        _raw_batch(), inputs['text'], inputs['audio_codes_lens'], 5
+    )
+    assert terminal[0].nonzero().flatten().tolist() == [1]
+    assert valid[0, 1] and labels[0, 1] == END
+    assert not terminal[0, 4]
+    with pytest.raises(ValueError, match=r'(terminal|EOS|alignment)'):
+        model.process_batch(**inputs, timestamp_batch=_raw_batch(), mode='val')
+
+
+def test_a_terminal_outside_the_retained_target_grid_is_ignored_without_moving_it():
+    model = _timestamp_model(multiturn=False)
+    inputs = _inputs(model)
+    labels, valid, _, terminal = model._prepare_timestamp_targets(
+        _raw_batch(), inputs['text'], inputs['audio_codes_lens'], 4
+    )
+    assert labels[0].tolist() == [NONEND, NONEND, END, NONEND]
+    assert valid[0].all() and not terminal.any()
 
 
 def test_timestamp_loss_trains_head_and_backbone_while_teacher_is_excluded_from_state_and_optimizer():
@@ -218,21 +302,22 @@ def test_zero_timestamp_loss_weight_preserves_audio_logits_and_base_loss():
     assert baseline_output.timestamp_loss is None
 
 
-def test_class_metrics_expose_missing_boundaries_when_every_prediction_is_continue():
+def test_class_metrics_expose_missing_word_ends_when_every_prediction_is_nonend():
     model = _timestamp_model(multiturn=False)
-    model._timestamp_teacher.records = [{'words': [{'start': 0.0, 'end': 0.32}], 'error': None}]
+    model._timestamp_teacher.records = [
+        {'words': [{'start': 0.0, 'end': 0.08}, {'start': 0.08, 'end': 0.32}], 'error': None}
+    ]
     with torch.no_grad():
         model.timestamp_head.projection[-1].weight.zero_()
-        model.timestamp_head.projection[-1].bias.zero_()
-        model.timestamp_head.projection[-1].bias[CONTINUE] = 10
+        model.timestamp_head.projection[-1].bias.fill_(-10)
     output = model.process_batch(**_inputs(model), timestamp_batch=_raw_batch(), mode='val')
     metrics = output.timestamp_metrics
     assert metrics['turns'].dtype == torch.long
-    assert metrics['continue_count'] == metrics['continue_correct'] == 2
-    assert metrics['continue_recall'] == 1
-    assert metrics['start_count'] == metrics['end_count'] == 1
-    assert metrics['start_recall'] == metrics['end_recall'] == 0
-    assert metrics['accuracy'] == 0.5
+    assert metrics['nonend_count'] == metrics['nonend_correct'] == 3
+    assert metrics['nonend_recall'] == 1
+    assert metrics['end_count'] == 2
+    assert metrics['end_recall'] == 0
+    assert metrics['accuracy'] == 0.6
 
 
 def test_validation_timestamp_metrics_use_global_frame_totals_and_reset_between_epochs():
@@ -245,7 +330,7 @@ def test_validation_timestamp_metrics_use_global_frame_totals_and_reset_between_
             val_acoustic_codes_predictor_loss=torch.tensor(1.0),
         )
     ]
-    batches = [([0, 1, 0, 1, 0], [0, 1, 0, 1, 0]), ([0, 0, 6, 0, 2], [0, 0, 3, 0, 0])]
+    batches = [([0, 2], [0, 2]), ([8, 0], [3, 0])]
     logs = []
     with (
         patch.object(model, 'log'),
@@ -270,36 +355,37 @@ def test_validation_timestamp_metrics_use_global_frame_totals_and_reset_between_
         final = logs[-1]
         assert final['val/timestamp_supervised_frames'] == 10
         assert final['val/timestamp_accuracy'] == 0.5
-        assert final['val/timestamp_start_count'] == final['val/timestamp_start_correct'] == 1
-        assert final['val/timestamp_start_recall'] == 1
-        assert final['val/timestamp_continue_count'] == 6
-        assert final['val/timestamp_continue_recall'] == 0.5
+        assert final['val/timestamp_end_count'] == final['val/timestamp_end_correct'] == 2
+        assert final['val/timestamp_end_recall'] == 1
+        assert final['val/timestamp_nonend_count'] == 8
+        assert final['val/timestamp_nonend_recall'] == 0.375
         assert '_timestamp_validation_totals' not in model._buffers
         assert '_timestamp_validation_totals' not in model.state_dict()
         model.on_validation_epoch_start()
         assert not model._timestamp_validation_totals.any()
 
 
-def test_invalid_teacher_turn_and_colliding_frames_are_ignored_without_retiming():
+def test_invalid_teacher_turn_is_ignored_and_shared_ends_remain_binary_positive():
     model = _timestamp_model(multiturn=True)
     model._timestamp_teacher.records = [
         {'words': [], 'error': 'unreliable'},
         {
-            'words': [{'start': 0.0, 'end': 0.16}, {'start': 0.08, 'end': 0.32}],
+            'words': [{'start': 0.0, 'end': 0.05}, {'start': 0.05, 'end': 0.06}, {'start': 0.06, 'end': 0.4}],
             'error': None,
         },
     ]
     turns = []
     text = _packed_text(model, timestamp_turns=turns)
-    labels, valid, metrics = model._prepare_timestamp_targets(
+    labels, valid, metrics, terminal = model._prepare_timestamp_targets(
         dict(audio=torch.zeros(1, 120), audio_lens=torch.tensor([120]), timestamp_turns=[turns]),
         text,
         torch.tensor([30]),
         16,
     )
     assert not valid[0, :9].any()
-    assert labels[0, 9:14].tolist() == [START, IGNORE_INDEX, CONTINUE, END, OUTSIDE]
+    assert labels[0, 9:14].tolist() == [END, NONEND, NONEND, NONEND, NONEND]
     assert metrics['invalid_turns'] == 1 and metrics['collision_frames'] == 1
+    assert metrics['collision_words'] == 1 and valid[0, 9]
 
 
 def test_code_only_batches_require_gt_waveform_and_policy_scoring_never_loads_teacher():
@@ -339,7 +425,33 @@ def test_streaming_classes_are_passive_and_never_load_teacher(use_cfg):
         output = observed.streaming_finalize(states[1])
     assert output.timestamp_classes.shape[0] == 2
     assert (output.timestamp_classes_lens > 0).all()
-    assert ((output.timestamp_classes >= 0) & (output.timestamp_classes < 5)).all()
+    assert ((output.timestamp_classes >= 0) & (output.timestamp_classes < 2)).all()
+
+
+def test_timestamp_finalization_retains_eos_predictions_without_changing_other_passive_heads():
+    model = _timestamp_model().eval()
+    stacking = model.frame_stacking_factor
+    history = [
+        torch.tensor([NONEND, NONEND, NONEND]),
+        torch.tensor([NONEND, NONEND, NONEND]),
+        torch.tensor([END, NONEND, NONEND]),
+        torch.tensor([NONEND, END, NONEND]),
+    ]
+    state = SimpleNamespace(
+        config=SimpleNamespace(batch_size=3, device=torch.device('cpu')),
+        all_predictions=[torch.zeros(3, 1, stacking, dtype=torch.long) for _ in history],
+        audio_prediction_start_idx=torch.tensor([0, stacking, 0]),
+        # First item has EOS in an EOS-only step. Second item has an acoustic
+        # subframe before EOS in its final stacked step. Third has not emitted EOS.
+        audio_prediction_end_idx=torch.tensor([2 * stacking, 4 * stacking - 1, -1]),
+    )
+    previous, previous_lens = model._finalize_frame_predictions(state, history, IGNORE_INDEX)
+    observed, observed_lens = model._finalize_frame_predictions(state, history, IGNORE_INDEX, include_eos=True)
+    assert previous_lens.tolist() == [2, 3, 4]
+    assert observed_lens.tolist() == [3, 3, 4]
+    assert observed[0, 2] == END and observed[0, 3] == IGNORE_INDEX
+    assert observed[1, 2] == END
+    torch.testing.assert_close(previous[2], observed[2], rtol=0, atol=0)
 
 
 class _ReferenceTokenizer:
@@ -365,7 +477,16 @@ class _FrozenTeacher(nn.Module):
         )
         if self.records is not None:
             return self.records
-        return [{'words': [{'word': text, 'start': 0.08, 'end': 0.24}], 'error': None} for text in texts]
+        return [
+            {
+                'words': [
+                    {'word': text, 'start': 0.0, 'end': 0.24},
+                    {'word': 'last', 'start': 0.24, 'end': int(length) / sample_rate},
+                ],
+                'error': None,
+            }
+            for text, length in zip(texts, lengths)
+        ]
 
 
 def _timestamp_model(enabled=True, multiturn=True):

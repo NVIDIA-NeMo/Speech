@@ -19,12 +19,15 @@ model:
   timestamp_head:
     projection_size: 128
     loss_weight: 0.1
-    class_weights: null
+    pos_weight: 1.0
     aligner:
       snapshot_path: null  # Local NVIDIA-Nemotron-3.5-Transcribe-30B-A4B Hugging Face snapshot.
       encoder_dtype: checkpoint
       max_batch_size: 8
       max_batch_duration: 120.0  # Padded audio seconds per frozen ASR encoder microbatch.
+      ctc_max_batch_elements: 134217728  # Up to 512 MiB of FP32 vocabulary logits per CTC decoder call.
+      group_languages_by_policy: true
+      use_cuda_alignment: true
       measure_timings: false
 
   # Decoder backend selection

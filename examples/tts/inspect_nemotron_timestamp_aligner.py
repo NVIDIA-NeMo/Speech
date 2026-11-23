@@ -429,6 +429,9 @@ records.forEach((r,index)=>{const card=node('article',undefined,'sample');card.d
  full.disabled=!r.audio_wav_base64||r.duration<=0;
  controls.append(full,node('span',`${sec(r.duration)} s · ${r.words.length} aligned words`,'muted'));
  card.append(controls);
+ if(r.reference_kind)card.append(node('p',`Alignment input: ${r.reference_kind}`,'muted'));
+ if(r.normalized_text&&r.normalized_text!==r.text)
+ card.append(node('p',`Normalized reference (for comparison): ${r.normalized_text}`,'muted'));
  const stats=node('div',undefined,'stats');
  for(const key of ['language_confidence','detected_language','language_probabilities','confidence']){
  if(r[key]!==undefined)stats.append(node('span',`${key.replaceAll('_',' ')}: ${label(r[key])}`));}

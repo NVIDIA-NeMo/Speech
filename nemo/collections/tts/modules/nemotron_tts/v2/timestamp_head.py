@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Output-only word-boundary supervision at the TTS backbone's audio-frame rate."""
+"""Output-only word-end supervision at the TTS backbone's audio-frame rate."""
 
 import math
 from collections.abc import Mapping, Sequence
@@ -13,13 +13,13 @@ from torch import nn
 from torch.nn import functional as F
 
 
-OUTSIDE, START, CONTINUE, END, SINGLE = range(5)
-TIMESTAMP_LABELS = ('OUTSIDE', 'START', 'CONTINUE', 'END', 'SINGLE')
+NONEND, END = range(2)
+TIMESTAMP_LABELS = ('NONEND', 'END')
 IGNORE_INDEX = -100
 
 
 class TimestampHead(nn.Module):
-    """Predict five independent word-boundary classes from each audio hidden state.
+    """Predict one binary word-end logit from each audio hidden state.
 
     This projection only reads hidden states; its predictions never feed back into
     audio generation. ``compute_loss`` accepts a mask whose true entries are usable
@@ -30,7 +30,7 @@ class TimestampHead(nn.Module):
         self,
         hidden_size: int,
         projection_size: int = 128,
-        class_weights: Optional[Sequence[float]] = None,
+        pos_weight: float = 1.0,
         ignore_index: int = IGNORE_INDEX,
     ):
         super().__init__()
@@ -41,65 +41,55 @@ class TimestampHead(nn.Module):
             nn.LayerNorm(hidden_size),
             nn.Linear(hidden_size, projection_size),
             nn.GELU(),
-            nn.Linear(projection_size, len(TIMESTAMP_LABELS)),
+            nn.Linear(projection_size, 1),
         )
-        weights = None if class_weights is None else torch.as_tensor(class_weights, dtype=torch.float32)
-        if weights is not None:
-            if weights.shape != (len(TIMESTAMP_LABELS),) or not torch.isfinite(weights).all():
-                raise ValueError('class_weights must contain five finite values')
-            if (weights < 0).any() or not (weights > 0).any():
-                raise ValueError('class_weights must be nonnegative with at least one positive value')
-        self.register_buffer('class_weights', weights, persistent=False)
+        weight = torch.as_tensor(pos_weight, dtype=torch.float32)
+        if isinstance(pos_weight, bool) or weight.ndim != 0 or not torch.isfinite(weight) or weight <= 0:
+            raise ValueError('pos_weight must be a finite positive scalar')
+        self.register_buffer('pos_weight', weight, persistent=False)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        """Return logits shaped ``(..., frames, 5)`` without modifying the input."""
-        return self.projection(hidden_states)
+        """Return logits shaped ``(..., frames)`` without modifying the input."""
+        return self.projection(hidden_states).squeeze(-1)
 
     def compute_loss(
         self, logits: torch.Tensor, labels: torch.Tensor, valid_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        """Compute masked FP32 cross entropy, including a differentiable empty zero.
+        """Compute masked FP32 BCEWithLogits with a differentiable all-masked zero.
 
-        Weights use the same weighted-mean normalization as PyTorch cross entropy.
-        A selection containing only zero-weight classes also returns zero.
+        Targets are NONEND=0 or END=1. ``pos_weight`` scales positive examples;
+        the mean denominator is the number of supervised frames, as in PyTorch BCE.
         """
-        if logits.shape[:-1] != labels.shape or logits.shape[-1] != len(TIMESTAMP_LABELS):
-            raise ValueError('Timestamp logits must have shape labels.shape + (5,)')
-        if labels.dtype not in (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64):
-            raise ValueError('Timestamp labels must have an integer dtype')
+        if logits.shape != labels.shape:
+            raise ValueError('Timestamp logits and labels must have the same shape')
         selected = labels != self.ignore_index
         if valid_mask is not None:
             if valid_mask.shape != labels.shape or valid_mask.dtype != torch.bool:
                 raise ValueError('valid_mask must be boolean and have the same shape as labels')
             selected = selected & valid_mask
         selected_logits = logits[selected].float()
-        selected_labels = labels[selected].long()
+        selected_labels = labels[selected].float()
         if selected_labels.numel() == 0:
             return selected_logits.sum()
-        weights = None if self.class_weights is None else self.class_weights.float()
-        losses = F.cross_entropy(selected_logits, selected_labels, weight=weights, reduction='none')
-        denominator = losses.new_tensor(selected_labels.numel())
-        if weights is not None:
-            denominator = weights[selected_labels].sum()
-        return losses.sum() / denominator.clamp_min(torch.finfo(losses.dtype).tiny)
+        return F.binary_cross_entropy_with_logits(selected_logits, selected_labels, pos_weight=self.pos_weight.float())
 
 
 @dataclass(frozen=True)
 class TimestampFrameLabels:
     """Frame targets and diagnostics for a single aligned audio turn.
 
-    ``collision_count`` counts distinct bins occupied by more than one word.
-    ``collapsed_word_count`` counts positive words whose quantized duration is zero.
-    ``valid_mask`` is false on collisions, cropped one-bin words, padding, or
-    every bin when any word has invalid timing. Ignored labels always contain
-    ``IGNORE_INDEX``.
+    ``collision_count`` counts bins containing multiple internal word ends and
+    ``collision_word_count`` counts extra ends beyond the first in those bins.
+    Shared bins remain valid END targets because this head predicts presence.
+    ``valid_mask`` excludes padding or the whole turn when any word has invalid
+    timing. Ignored labels always contain ``IGNORE_INDEX``.
     """
 
     labels: torch.Tensor
     valid_mask: torch.Tensor
     collision_count: int
     invalid_word_count: int
-    collapsed_word_count: int = 0
+    collision_word_count: int = 0
 
 
 def word_intervals_to_frame_labels(
@@ -109,23 +99,25 @@ def word_intervals_to_frame_labels(
     audio_duration: Optional[float] = None,
     device: Optional[torch.device] = None,
 ) -> TimestampFrameLabels:
-    """Quantize reference word boundaries and label their disjoint frame spans.
+    """Label internal word ends; the caller adds the alignment-derived terminal END.
 
-    Each timestamp rounds to its nearest frame boundary (ties round forward), so
-    adjacent nonempty spans with a shared boundary never collide. At 80 ms per
-    frame each boundary moves by at most 40 ms. Words occupy their rounded spans;
-    one-bin words are SINGLE and gaps remain OUTSIDE. Genuine overlapping spans
-    are ambiguous and ignored. A positive word rounded to zero bins contributes
-    SINGLE in its original midpoint bin if uncontested, without shifting its
-    neighbors. A SINGLE label requires the complete word to lie inside the crop.
+    Each nonfinal word's end is the following word's onset. The first word starts
+    at zero, including leading silence. This helper excludes the last word's end:
+    the caller maps that alignment timestamp to the decoder's EOS slot and
+    supervises a terminal END there. A single-word turn has only NONEND targets
+    here and receives its terminal END separately.
 
-    Cropping retains the original quantized boundary classes without inventing a
-    START or END at the crop.
+    An internal end rounds to the nearest frame boundary (ties round forward)
+    and labels its preceding acoustic frame: an end at 0.16 seconds is END in
+    frame 1 on the 80 ms grid. Consumers recover the event time as
+    ``(frame_index + 1) * frame_seconds``. A positive end rounding to zero uses
+    frame 0. Multiple ends in one bin stay one valid END with collision counts.
 
-    ``audio_duration`` excludes padded bins (the last partial bin remains valid).
-    Missing, nonfinite, or nonpositive word timings invalidate the whole turn,
-    since replacing their unknown locations with OUTSIDE would teach false labels.
-    Negative starts and intervals beyond the crop are allowed and clipped.
+    Ends beyond the crop or at audio EOS create no internal event. A true internal end
+    exactly on the crop edge closes the last retained frame. Cropping a word
+    does not manufacture an end. ``audio_duration`` excludes padded bins; the last
+    partial audio bin remains valid. Invalid or nonpositive word intervals mask
+    the whole turn rather than teaching false NONEND labels.
     """
     if isinstance(num_frames, bool) or not isinstance(num_frames, int) or num_frames < 0:
         raise ValueError('num_frames must be a nonnegative integer')
@@ -141,12 +133,10 @@ def word_intervals_to_frame_labels(
     # Word metadata is already on the host. Avoid launching CUDA kernels for each word.
     labels = torch.full((num_frames,), IGNORE_INDEX, dtype=torch.long)
     valid_mask = torch.arange(num_frames) < num_valid
-    labels[valid_mask] = OUTSIDE
+    labels[valid_mask] = NONEND
     occupancy = torch.zeros(num_frames, dtype=torch.long)
-    cropped_word_mask = torch.zeros(num_frames, dtype=torch.bool)
     invalid_word_count = 0
-    collapsed_word_count = 0
-    for word in words:
+    for index, word in enumerate(words):
         try:
             start, end = float(word['start']), float(word['end'])
         except (KeyError, TypeError, ValueError, OverflowError):
@@ -155,45 +145,22 @@ def word_intervals_to_frame_labels(
         if not math.isfinite(start) or not math.isfinite(end) or end <= start:
             invalid_word_count += 1
             continue
-        if not num_valid or end <= 0 or start >= crop_duration:
+        if index == len(words) - 1 or not num_valid or end <= 0 or end > crop_duration or end >= audio_duration:
             continue
-        complete_word = start >= 0 and end <= crop_duration
-        first = math.floor(_frame_coordinate(start + frame_seconds / 2, frame_seconds))
-        stop = math.floor(_frame_coordinate(end + frame_seconds / 2, frame_seconds))
-        if first == stop:
-            collapsed_word_count += 1
-            midpoint_bin = math.floor((start + (end - start) / 2) / frame_seconds)
-            midpoint_bin = min(max(midpoint_bin, 0), num_valid - 1)
-            labels[midpoint_bin] = SINGLE
-            occupancy[midpoint_bin] += 1
-            if not complete_word:
-                cropped_word_mask[midpoint_bin] = True
-            continue
-        last = stop - 1
-        left, right = max(first, 0), min(last + 1, num_valid)
-        if left >= right:
-            continue
-        labels[left:right] = CONTINUE
-        if first == last:
-            labels[left] = SINGLE
-            if not complete_word:
-                cropped_word_mask[left] = True
-        else:
-            if left == first:
-                labels[left] = START
-            if right - 1 == last:
-                labels[right - 1] = END
-        occupancy[left:right] += 1
+        boundary = math.floor(_frame_coordinate(end + frame_seconds / 2, frame_seconds))
+        frame = min(max(boundary - 1, 0), num_valid - 1)
+        labels[frame] = END
+        occupancy[frame] += 1
 
     collisions = occupancy > 1
     collision_count = int(collisions.sum().item())
-    valid_mask &= ~(collisions | cropped_word_mask)
+    collision_word_count = int((occupancy - 1).clamp_min(0).sum().item())
     if invalid_word_count:
         valid_mask[:] = False
     labels[~valid_mask] = IGNORE_INDEX
     if device is not None:
         labels, valid_mask = labels.to(device=device), valid_mask.to(device=device)
-    return TimestampFrameLabels(labels, valid_mask, collision_count, invalid_word_count, collapsed_word_count)
+    return TimestampFrameLabels(labels, valid_mask, collision_count, invalid_word_count, collision_word_count)
 
 
 def _frame_coordinate(seconds: float, frame_seconds: float) -> float:

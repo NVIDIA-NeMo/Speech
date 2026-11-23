@@ -794,7 +794,7 @@ class MultiSpeakerSOTWordTimestampAligner:
             "records": records,
         }
 
-    def align_prepared(self, prepared: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def align_prepared(self, prepared: Dict[str, Any], *, device=None) -> List[Dict[str, Any]]:
         """
         Align a batch from :meth:`prepare_alignment` with single-pass banded CTC and optional word refinement.
         Reads only the batch and this aligner's hyperparameters, never the model, so it can
@@ -802,11 +802,18 @@ class MultiSpeakerSOTWordTimestampAligner:
 
         Args:
             prepared (Dict[str, Any]): A batch from :meth:`prepare_alignment`.
+            device: Optional CUDA device for batched single-speaker Viterbi search.
+                Unsupported records retain the native CPU search.
 
         Returns:
             List[Dict[str, Any]]: One alignment result per record.
         """
-        return _align_banded_ctc(self, prepared)
+        paths = None
+        if device is not None and torch.device(device).type == 'cuda' and self.epsilon <= 1:
+            from nemo.collections.speechlm2.parts.ctc_timestamp_kernels import gpu_prepared_paths
+
+            paths = gpu_prepared_paths(prepared, device)
+        return _align_banded_ctc(self, prepared, paths)
 
     @staticmethod
     def diarization_segments(
@@ -2031,7 +2038,7 @@ def _refine_word_timestamps(result, max_frames=12):
     }
 
 
-def _align_banded_ctc(aligner, prepared):
+def _align_banded_ctc(aligner, prepared, precomputed_paths=None):
     """
     Align a prepared batch with the single-pass ``banded`` backend.
     Per record, speaker tags are mapped to Sortformer columns by :func:`_one_pass_speaker_mapping`,
@@ -2042,12 +2049,13 @@ def _align_banded_ctc(aligner, prepared):
     Args:
         aligner (MultiSpeakerSOTWordTimestampAligner): Aligner supplying hyperparameters and helpers.
         prepared (Dict[str, Any]): A batch from :meth:`MultiSpeakerSOTWordTimestampAligner.prepare_alignment`.
+        precomputed_paths: Optional ``(record, stream) -> (path, score, band_starts)`` searches.
 
     Returns:
         List[Dict[str, Any]]: One alignment result per record.
     """
     results = []
-    for record in prepared['records']:
+    for record_index, record in enumerate(prepared['records']):
         ctc = record['ctc_log_probs'].numpy()
         greedy = ctc.argmax(axis=1)
         diagnostics = []
@@ -2063,7 +2071,7 @@ def _align_banded_ctc(aligner, prepared):
                 ctc, record['streams'], speaker.numpy(), aligner.speaker_activity_threshold, greedy
             )
         rows, scores, failures = [], {}, []
-        for stream in record['streams']:
+        for stream_index, stream in enumerate(record['streams']):
             labels = np.asarray(stream['labels'], np.int64)
             column = mapping[stream['speaker_tag']]
             activity = (
@@ -2074,7 +2082,8 @@ def _align_banded_ctc(aligner, prepared):
             # Conservative support selection is separate from the >0.5 diarization labels.
             positions = np.flatnonzero(activity >= 0.01)
             prior = prepared['config']['speaker_logprob_weight'] * np.log(np.maximum(activity, aligner.epsilon))
-            path, score, _ = _banded_ctc_search(ctc, labels, positions, prior, greedy)
+            cached = None if precomputed_paths is None else precomputed_paths.get((record_index, stream_index))
+            path, score, _ = _banded_ctc_search(ctc, labels, positions, prior, greedy) if cached is None else cached
             failed = not np.isfinite(score)
             half = len(labels) if len(positions) < 1000 else min(len(labels), math.ceil(0.10 * len(labels) + 100))
             diagnostics.append(

@@ -605,7 +605,7 @@ class NemotronTTSBase(ModelPT):
             self.timestamp_head = TimestampHead(
                 hidden_size=self.decoder.config.hidden_size,
                 projection_size=self.timestamp_head_config.get('projection_size', 128),
-                class_weights=self.timestamp_head_config.get('class_weights'),
+                pos_weight=self.timestamp_head_config.get('pos_weight', 1.0),
             )
 
     @property
@@ -2382,7 +2382,7 @@ class NemotronTTSBase(ModelPT):
                 state.all_aligned_text_predictions.append(predicted_text.masked_fill(~needs_audio, self.pad_id))
             if state.all_timestamp_predictions is not None:
                 hidden = state.last_hidden[: state.config.batch_size, -1, :]
-                classes = self.timestamp_head(hidden).argmax(dim=-1)
+                classes = (self.timestamp_head(hidden) >= 0).long()
                 state.all_timestamp_predictions.append(classes.masked_fill(~needs_audio, IGNORE_INDEX))
             audio_codes_next = audio_codes_unstacked
         else:
@@ -2482,7 +2482,7 @@ class NemotronTTSBase(ModelPT):
         state.acoustic_codes_predictor_cache = None
         aligned_text_tokens, aligned_text_tokens_lens = self._finalize_aligned_text_predictions(state)
         timestamp_classes, timestamp_classes_lens = self._finalize_frame_predictions(
-            state, state.all_timestamp_predictions, IGNORE_INDEX
+            state, state.all_timestamp_predictions, IGNORE_INDEX, include_eos=True
         )
 
         # Extract and decode phoneme predictions
@@ -3078,9 +3078,9 @@ class NemotronTTSBase(ModelPT):
         return self._finalize_frame_predictions(state, state.all_aligned_text_predictions, self.pad_id)
 
     def _finalize_frame_predictions(
-        self, state: StreamingState, history: Optional[List[torch.Tensor]], pad_id: int
+        self, state: StreamingState, history: Optional[List[torch.Tensor]], pad_id: int, *, include_eos: bool = False
     ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
-        """Crop passive per-step predictions using the generated audio's exact interval."""
+        """Crop passive predictions to the audio interval, optionally retaining its EOS step."""
         if history is None:
             return None, None
         batch_size, device = state.config.batch_size, state.config.device
@@ -3103,6 +3103,12 @@ class NemotronTTSBase(ModelPT):
         ends = torch.div(
             end_frames + self.frame_stacking_factor - 1, self.frame_stacking_factor, rounding_mode='floor'
         )
+        if include_eos:
+            ends = torch.where(
+                state.audio_prediction_end_idx >= 0,
+                torch.div(end_frames, self.frame_stacking_factor, rounding_mode='floor') + 1,
+                ends,
+            )
         starts, ends = starts.clamp(0, total_steps), ends.clamp(0, total_steps)
         lengths = torch.where(
             state.audio_prediction_start_idx >= 0, (ends - starts).clamp_min(0), torch.zeros_like(starts)

@@ -112,7 +112,7 @@ def test_teacher_uses_ground_truth_lengths_and_separate_language_policies(monkey
     assert [record['error'] for record in records] == [None, None, 'invalid_audio_length']
     assert records[0]['words'][0]['word'] == 'hello'
     assert records[1]['words'][0]['word'] == '世界'
-    assert [call['language'] for call in calls] == ['en', 'zh']
+    assert [call['language'] for call in calls] == ['whitespace', 'zh']
     assert [call['durations'] for call in calls] == [[8 / 16000], [4 / 16000]]
     assert all(call['inference'] and not call['grad_enabled'] for call in calls)
     assert all(call['refine_word_timestamps'] is False for call in calls)
@@ -144,6 +144,44 @@ def test_encoder_microbatches_preserve_record_order_and_aggregate_timings(monkey
     assert all(record['timings'] == teacher.last_timings for record in records)
     assert teacher.last_timings['total'] >= teacher.last_timings['encoder']
     assert module._turn_batches([16000, 16000, 32000, 16000], 16000, 10, 3.0) == [(0, 2), (2, 3), (3, 4)]
+
+
+def test_shared_whitespace_policy_batches_languages_and_keeps_special_policies(monkeypatch):
+    teacher, _, calls = _teacher(monkeypatch)
+    teacher(
+        torch.ones(7, 8),
+        torch.full((7,), 8),
+        16000,
+        ['English', 'Portuguese', 'Spanish', '中文', '日本語', 'ไทย', 'unspecified'],
+        ['en', 'pt-BR', 'es', 'zh', 'ja', 'th', None],
+    )
+    assert [call['language'] for call in calls] == ['whitespace', 'zh', 'ja', 'th', None]
+    assert [len(call['durations']) for call in calls] == [3, 1, 1, 1, 1]
+    assert all(aligner._CTC_WINDOW_MAX_ELEMENTS == 128 * 2**20 for aligner in teacher._aligners.values())
+
+
+def test_reference_grouping_and_ctc_budget_can_be_restored(monkeypatch):
+    teacher, _, calls = _teacher(
+        monkeypatch, group_languages_by_policy=False, use_cuda_alignment=False, ctc_max_batch_elements=16 * 2**20
+    )
+    teacher(torch.ones(3, 8), torch.full((3,), 8), 16000, ['one', 'dois', 'tres'], ['en', 'pt', 'es'])
+    assert [call['language'] for call in calls] == ['en', 'pt', 'es']
+    assert all(aligner._CTC_WINDOW_MAX_ELEMENTS == 16 * 2**20 for aligner in teacher._aligners.values())
+
+
+def test_alignment_helper_forwards_cuda_device_without_changing_public_spans():
+    seen = []
+    native = {'speaker_word_timestamps': {0: [{'word': 'hello', 'start': 0.2, 'end': 0.6}]}}
+
+    def align(prepared, *, device):
+        seen.append(device)
+        return [native]
+
+    prepared = {'records': [{'streams': [{'words': ['hello']}]}]}
+    result = module._checked_alignment_results(SimpleNamespace(align_prepared=align), prepared, [1.0], device='cuda:0')
+    assert seen == ['cuda:0']
+    assert result[0]['words'][0]['start'] == 0.0
+    assert result[0]['words'][0]['end'] == 1.0
 
 
 def test_resampling_trims_each_turn_and_keeps_fp32(monkeypatch):
@@ -213,7 +251,7 @@ def test_failed_ctc_path_is_reported_and_native_metadata_is_retained():
         },
     }
 
-    result = module._public_result(native)
+    result = module._public_result(native, 1.0)
 
     assert result == {'words': [], 'error': 'no_legal_ctc_path', 'alignment': native}
 
@@ -221,14 +259,88 @@ def test_failed_ctc_path_is_reported_and_native_metadata_is_retained():
 def test_alignment_cardinality_and_missing_units_are_never_silently_accepted():
     prepared = {'records': [{'streams': [{'words': ['first', 'second']}]}]}
     with pytest.raises(RuntimeError, match='0 records for 1 input turns'):
-        module._checked_alignment_results(SimpleNamespace(align_prepared=lambda prepared: []), prepared)
+        module._checked_alignment_results(SimpleNamespace(align_prepared=lambda prepared: []), prepared, [1.0])
     native = {
         'speaker_word_timestamps': {0: [{'word': 'first', 'start': 0.0, 'end': 0.1}]},
         'alignment_diagnostics': {'failed_streams': []},
     }
-    result = module._checked_alignment_results(SimpleNamespace(align_prepared=lambda prepared: [native]), prepared)
+    result = module._checked_alignment_results(
+        SimpleNamespace(align_prepared=lambda prepared: [native]), prepared, [1.0]
+    )
     assert result[0]['error'] == 'incomplete_alignment'
     assert result[0]['words'] == native['speaker_word_timestamps'][0]
+
+
+def test_word_intervals_include_leading_silence_and_end_at_next_onset_or_exact_audio_duration():
+    native = {
+        'speaker_word_timestamps': {
+            0: [
+                {'word': 'first', 'start': 0.08, 'end': 0.12},
+                {'word': 'second', 'start': 0.64, 'end': 0.72},
+                {'word': 'last', 'start': 0.94, 'end': 1.04},
+            ]
+        },
+        'alignment_diagnostics': {'failed_streams': []},
+    }
+    result = module._public_result(native, 1.35, expected_words=3)
+
+    assert result['error'] is None
+    assert [word['start'] for word in result['words']] == [0.0, 0.64, 0.94]
+    assert [word['end'] for word in result['words']] == [0.64, 0.94, 1.35]
+    assert [word['ctc_start'] for word in result['words']] == [0.08, 0.64, 0.94]
+    assert [word['ctc_end'] for word in result['words']] == [0.12, 0.72, 1.04]
+    assert result['alignment'] is native
+    assert [word['end'] for word in native['speaker_word_timestamps'][0]] == [0.12, 0.72, 1.04]
+    assert not any('ctc_start' in word or 'ctc_end' in word for word in native['speaker_word_timestamps'][0])
+
+
+def test_single_word_includes_all_leading_and_trailing_audio():
+    native = {'speaker_word_timestamps': {0: [{'word': 'only', 'start': 0.5, 'end': 0.6}]}}
+
+    result = module._public_result(native, 2.0)
+
+    assert result['error'] is None
+    assert result['words'] == [{'word': 'only', 'start': 0.0, 'end': 2.0, 'ctc_start': 0.5, 'ctc_end': 0.6}]
+
+
+@pytest.mark.parametrize(
+    'intervals,duration',
+    [
+        ([(0.1, 0.2), (0.1, 0.3)], 1.0),
+        ([(0.6, 0.7), (0.2, 0.3)], 1.0),
+        ([(float('nan'), 0.2)], 1.0),
+        ([(float('inf'), 0.2)], 1.0),
+        ([(-0.1, 0.2)], 1.0),
+        ([(1.0, 1.1)], 1.0),
+        ([(0.1, 0.1)], 1.0),
+        ([(0.1, float('inf'))], 1.0),
+        ([(0.1, 1.2)], 1.0),
+        ([(0.1, 0.2)], 0.0),
+        ([(0.1, 0.2)], float('nan')),
+    ],
+)
+def test_invalid_or_duplicate_word_onsets_are_masked_without_fabricated_boundaries(intervals, duration):
+    native = {
+        'speaker_word_timestamps': {
+            0: [{'word': str(index), 'start': start, 'end': end} for index, (start, end) in enumerate(intervals)]
+        }
+    }
+
+    result = module._public_result(native, duration)
+
+    assert result['error'] == 'invalid_word_timestamps'
+    assert result['words'] == []
+    assert result['alignment'] is native
+
+
+def test_native_end_roundoff_does_not_move_exact_final_boundary():
+    native = {'speaker_word_timestamps': {0: [{'word': 'last', 'start': 0.4, 'end': 1.0 + 1e-15}]}}
+
+    result = module._public_result(native, 1.0)
+
+    assert result['error'] is None
+    assert result['words'][0]['end'] == 1.0
+    assert result['words'][0]['ctc_end'] == 1.0 + 1e-15
 
 
 @pytest.mark.parametrize('language,expected', [('und', None), ('auto', None), ('zh-Hant', 'zh'), ('Japanese', 'ja')])

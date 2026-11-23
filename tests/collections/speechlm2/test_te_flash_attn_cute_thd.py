@@ -17,7 +17,8 @@ Packed SALM training on Blackwell requires ``NVTE_FUSED_ATTN=0``, so TE routes i
 to flash-attn-4 (flash_attn.cute). TE releases before 2.21 passed the causal mask to flash-attn-4 as
 ``window_size=(-1, 0)``, which flash-attn-4 reads as a local window that admits no keys: the output and dQ/dK/dV are
 all zero while training loss still decreases. The bug is in TE's argument conversion, not in the GPU architecture, so
-this runs wherever TE picks flash-attn-4 (sm_90 without FlashAttention 3, and newer GPUs). This guards the TE pin in
+this runs on every GPU where TE supports flash-attn-4 (sm_90 and newer). TE prefers FlashAttention 3 on sm_90 when it
+is installed, so the test hides FlashAttention 3 from TE's backend selection. This guards the TE pin in
 pyproject.toml.
 """
 import importlib.util
@@ -32,12 +33,6 @@ pytestmark = [
     pytest.mark.skipif(
         torch.cuda.is_available() and torch.cuda.get_device_capability() < (9, 0),
         reason="Transformer Engine uses flash-attn-4 on sm_90 and newer",
-    ),
-    pytest.mark.skipif(
-        torch.cuda.is_available()
-        and torch.cuda.get_device_capability() == (9, 0)
-        and importlib.util.find_spec("flash_attn_interface") is not None,
-        reason="Transformer Engine prefers FlashAttention 3 over flash-attn-4 on sm_90",
     ),
     pytest.mark.skipif(
         importlib.util.find_spec("transformer_engine") is None, reason="Transformer Engine is not installed"
@@ -58,6 +53,7 @@ REL_TOL = 2e-2
 def test_te_thd_padding_causal_flash_attn_4_matches_reference(monkeypatch):
     import transformer_engine.pytorch as te
     from transformer_engine.pytorch.attention.dot_product_attention import _attention_backends
+    from transformer_engine.pytorch.attention.dot_product_attention.utils import FlashAttentionUtils
 
     # TE reads these when it (re)selects a backend and caches the choice per attention-parameter set, so force a
     # fresh selection under this environment and restore the cache afterwards.
@@ -68,6 +64,8 @@ def test_te_thd_padding_causal_flash_attn_4_matches_reference(monkeypatch):
         monkeypatch.setitem(_attention_backends, key, _attention_backends[key])
     monkeypatch.setitem(_attention_backends, "attention_params", None)
     monkeypatch.setitem(_attention_backends, "backend_selection_requires_update", True)
+    # On sm_90 TE prefers FlashAttention 3 when installed; hide it so this always exercises flash-attn-4.
+    monkeypatch.setattr(FlashAttentionUtils, "v3_is_installed", False)
 
     seqlens = [97, 65, 33]  # sequence boundaries not tile-aligned
     torch.manual_seed(0)

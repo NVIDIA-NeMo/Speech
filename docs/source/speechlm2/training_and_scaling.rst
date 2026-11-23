@@ -384,6 +384,8 @@ sequence rounding aligns naturally with CP's ``2*cp_size`` requirement.
    On Blackwell, TransformerEngine dispatches this to flash-attn-4 (``flash_attn.cute``), which requires
    TransformerEngine 2.21 or newer: earlier releases pass the causal mask as a window that flash-attn-4 treats
    as admitting no keys, so attention outputs and q/k/v gradients are zero while the loss still decreases.
+   SALMAutomodel refuses packed TE attention with ``NVTE_FUSED_ATTN=0`` when flash-attn-4 is installed alongside
+   an older TransformerEngine.
    ``examples/speechlm2/finetuning/run_training.py`` sets ``NVTE_FUSED_ATTN=0`` automatically for packed
    training on ``sm_120``.
 

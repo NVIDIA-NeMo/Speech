@@ -493,9 +493,18 @@ def test_try_prepare_for_vllm_raises_when_backbone_export_has_no_tokenizer(tmp_p
                 str(output_dir), {"pretrained_llm": "fake-model", "audio_locator_tag": AUDIO_TOKEN}
             )
 
-    # An explicit tokenizer_path (e.g. a Duplex S2S model without an audio tag) keeps the HF-only export
-    # loadable: the HF loader only redirects the backbone config, so prep failure stays a warning.
-    to_hf._try_prepare_for_vllm(str(output_dir), {"pretrained_llm": "fake-model", "tokenizer_path": "fake-tokenizer"})
+    # An explicit tokenizer_path keeps the HF-only export loadable: the HF loader only redirects the
+    # backbone config, so prep failure stays a warning.
+    with patch.object(to_hf, "_detect_vllm_architecture", side_effect=ValueError("cannot load backbone config")):
+        to_hf._try_prepare_for_vllm(
+            str(output_dir),
+            {"pretrained_llm": "fake-model", "audio_locator_tag": AUDIO_TOKEN, "tokenizer_path": "fake-tokenizer"},
+        )
+    assert not (output_dir / "tokenizer_config.json").exists()
+
+    # Non-SALM exports (e.g. DuplexSTTModel / DuplexS2SModel) have no audio_locator_tag and are not vLLM
+    # targets: prep is skipped with a warning, as before, even with a bundled backbone and no tokenizer.
+    to_hf._try_prepare_for_vllm(str(output_dir), {"pretrained_llm": "fake-model"})
     assert not (output_dir / "tokenizer_config.json").exists()
 
     # Without a bundled backbone config, the HF-only export stays loadable and prep failure is a warning.

@@ -581,15 +581,16 @@ def prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
 def _try_prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
     """Run vLLM prep; on ``ValueError``, warn and keep the HF-only output.
 
-    Backward compat for callers that never needed vLLM (e.g., NeMo SALM).
-    vLLM prep also writes the root tokenizer. Unless the model config names an
-    explicit ``tokenizer_path``, an export with a bundled ``llm_backbone``
-    config loads its tokenizer from the export itself, so a failure there is
-    re-raised instead of leaving an unloadable checkpoint.
+    Backward compat for exports that are not vLLM targets (e.g., Duplex models
+    without ``audio_locator_tag``). vLLM prep also writes the root tokenizer.
+    A SALM-style export (with ``audio_locator_tag``) that bundles an
+    ``llm_backbone`` config and names no explicit ``tokenizer_path`` loads its
+    tokenizer from the export itself, so a failure there is re-raised instead
+    of leaving an unloadable checkpoint.
 
     Raises:
-        RuntimeError: If prep fails for an export that has a bundled backbone
-            config, no tokenizer, and no explicit ``tokenizer_path``.
+        RuntimeError: If prep fails for a SALM-style export that has a bundled
+            backbone config, no tokenizer, and no explicit ``tokenizer_path``.
     """
     from nemo.utils import logging as LOG
 
@@ -597,9 +598,10 @@ def _try_prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
         prepare_for_vllm(output_dir, model_cfg)
     except ValueError as e:
         output_dir = Path(output_dir)
+        is_salm_export = bool(model_cfg.get("audio_locator_tag"))
         has_backbone_config = (output_dir / LLM_BACKBONE_DIR / "config.json").exists()
         has_tokenizer = (output_dir / "tokenizer_config.json").exists() or model_cfg.get("tokenizer_path")
-        if has_backbone_config and not has_tokenizer:
+        if is_salm_export and has_backbone_config and not has_tokenizer:
             raise RuntimeError(
                 f"vLLM prep failed for the export in {output_dir}, so no tokenizer was written and the "
                 f"checkpoint cannot be loaded by NeMo SALM, HF, or vLLM: {e}"

@@ -49,8 +49,9 @@ def _preprocessor():
     )
 
 
-def _encoder():
+def _encoder(**overrides):
     return ConformerEncoder(
+        **overrides,
         feat_in=16,
         n_layers=2,
         d_model=16,
@@ -277,6 +278,25 @@ class TestPackedCapacityMode:
         for name, buffer in encoder.named_buffers():
             if name.endswith("num_batches_tracked"):
                 assert buffer == 0, name
+
+    @torch.no_grad()
+    def test_bounded_equals_dynamic_limited_context(self):
+        """The slack rows have no keys under a limited attention context either."""
+        dyn_features, features = self._same_features()
+        encoder = _encoder(att_context_size=[3, 2]).double().eval()
+        dynamic = encoder.forward_sequence_packed(dyn_features)
+        bounded = encoder.forward_sequence_packed(features)
+        torch.testing.assert_close(bounded.data[: dynamic.data.shape[0]], dynamic.data, atol=1e-9, rtol=1e-9)
+        assert torch.isfinite(bounded.data).all()
+
+    @torch.no_grad()
+    def test_bounded_refuses_utterance_norms(self):
+        """Instance and group normalization index the rows by utterance, which the slack rows have none of."""
+        dyn_features, features = self._same_features()
+        encoder = _encoder(conv_norm_type="instance_norm").double().eval()
+        encoder.forward_sequence_packed(dyn_features)
+        with pytest.raises(NotImplementedError, match="capacity-mode"):
+            encoder.forward_sequence_packed(features)
 
     def test_batch_means_count_the_utterances_in_use(self):
         """The CTC batch means of a bounded batch divide by the utterances with frames, not by the slots."""

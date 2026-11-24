@@ -676,6 +676,8 @@ class ConformerConvolution(nn.Module):
         elif self.norm_type == 'batch_norm' and self.batch_norm.training and x.shape[0] == 1:
             x = self._batch_norm_one_frame(x)
         elif self.norm_type == 'instance_norm' or self.norm_type.startswith('group_norm'):
+            if (layout is not None and layout.token_valid is not None) or (context is not None and context.bounded):
+                raise NotImplementedError(f"conv_norm_type={self.norm_type} has no capacity-mode form.")
             x = self._utterance_norm_packed(x, layout, context)
         else:
             x = norm(x)

@@ -26,8 +26,8 @@ the convention of ``RelPositionMultiHeadAttention`` (``rel_shift`` selects the s
 The position term ``(T_total, H, 2 * max_seqlen - 1)`` is computed from ``pos_query`` and ``pos_emb``
 inside the custom ops, in the forward and again in the backward,
 so it is never saved for the backward and no layer retains one;
-the kernels read it through 64-bit offsets, since ``H * T_total * (2 * max_seqlen - 1)`` passes 2**31
-at large packed batches.
+the kernels read it through 64-bit offsets,
+since ``H * T_total * (2 * max_seqlen - 1)`` passes 2**31 at large packed batches.
 Its buffer is ``(H, T_total, R)`` with ``R`` rounded up to a multiple of eight,
 because an odd leading dimension sends the GEMMs to slow unaligned kernels;
 the kernels take the strides of the ``(T_total, H, R)`` view.
@@ -42,22 +42,39 @@ so the backward is deterministic.
 
 One head dimension serves queries, keys, values and the position embedding, as in RETURNN's kernel
 (``returnn/torch/util/rel_pos_att_triton.py`` of https://github.com/rwth-i6/returnn), which this follows.
-The backward recomputes ``delta = sum_j p_ij dp_ij`` in a pass of its own instead of the flash-attention shortcut
-``rowsum(out * d_out)``, which holds only for an exactly accumulated ``out``;
+The backward recomputes ``delta = sum_j p_ij dp_ij`` in a pass of its own
+instead of the flash-attention shortcut ``rowsum(out * d_out)``, which holds only for an exactly accumulated ``out``;
 with bf16 storage the shortcut's rounding error enters the position-term gradient as a per-row bias.
+
+The tiles of the four kernels are tuned on a GB300 (228 KB of shared memory per block).
+A GPU with less shared memory refuses the first configuration at its first launch (Triton's ``OutOfResources``);
+the launch then steps down a ladder of smaller tiles, once per kernel, device, dtype and head width,
+so the kernels run on workstation and consumer GPUs as well, at a lower speed.
 """
 
 import math
+from typing import Callable
 
 import torch
 import triton
 import triton.language as tl
 from torch import Tensor
+from triton.runtime.errors import OutOfResources
 
 __all__ = ["PACKED_REL_POS_ATTENTION_DTYPES", "packed_rel_pos_attention"]
 
 # the dtypes the kernels read and write; the softmax and the accumulations run in float32 either way
 PACKED_REL_POS_ATTENTION_DTYPES = (torch.float32, torch.bfloat16, torch.float16)
+
+# Tiles (BLOCK_M, BLOCK_N, warps, pipeline stages);
+# the first entry of each ladder is the configuration tuned on a GB300, the later ones need less shared memory.
+# The forward: 64 x 128 tiles with eight warps and two stages (tuned at D = 128; 148 KB in float32).
+FORWARD_TILES = ((64, 128, 8, 2), (64, 64, 8, 2), (64, 64, 4, 1), (32, 64, 4, 1), (32, 32, 4, 1))
+# The backward kernels: 64 x 64 tiles up to D = 64, 32 x 32 above.
+BACKWARD_TILES = ((64, 64, 4, 3), (32, 32, 4, 3), (32, 32, 4, 1), (16, 32, 4, 1))
+BACKWARD_TILES_WIDE = BACKWARD_TILES[1:]
+# the head enters the dropout seed through this stride
+DROPOUT_HEAD_SEED_STRIDE = tl.constexpr(1000003)
 
 
 def packed_rel_pos_attention(
@@ -73,6 +90,7 @@ def packed_rel_pos_attention(
     dropout_p: float = 0.0,
     dropout_seed: Tensor | None = None,
     scale: float | None = None,
+    check_lengths: bool = True,
 ) -> Tensor:
     """Attend within utterances over token-flat queries, keys and values with the Transformer-XL position term.
 
@@ -86,12 +104,20 @@ def packed_rel_pos_attention(
             so the table must cover at least ``max_seqlen - 1`` positions each way (``R >= 2 * max_seqlen - 1``).
         seq_starts: first row of every utterance, shape ``(B,)``, integer.
         seq_lens: rows of every utterance, shape ``(B,)``, integer; the rows between the utterances are never read.
-        max_seqlen: longest utterance, a host integer; the lengths are not checked against it (no device read),
-            and an utterance beyond it attends within ``max_seqlen`` positions with its later query rows left zero.
-        dropout_p: dropout probability on the attention weights, below one.
+        max_seqlen: longest utterance, a host integer, which sizes the launch grid and the table the kernels read;
+            a length beyond it is rejected (``check_lengths``).
+        dropout_p: dropout probability on the attention weights, up to one;
+            at one every weight is dropped and the output is zero, as ``nn.Dropout(1.0)`` on the weights.
         dropout_seed: one-element integer tensor with the Philox seed for a reproducible mask;
             drawn on the device of ``q`` by default, which gives a fresh mask on every CUDA-graph replay.
         scale: factor of both score terms, ``1 / sqrt(D)`` by default.
+        check_lengths: read the lengths from the device once and reject one beyond ``max_seqlen``,
+            which would otherwise leave the query rows past the launched tiles zero
+            and send the position lookups past the table. The read is impossible in compiled code and under
+            CUDA-graph capture, so a compiled or captured call with the check on is refused:
+            such a caller validates the lengths against ``max_seqlen`` itself, outside the compiled region,
+            and passes ``False``, as the ``PackedAttentionContext`` of the encoders does for metadata whose
+            bound holds by construction, which keeps the launch free of device reads.
 
     Returns:
         Context vectors of shape ``(T_total, H, D)`` and the dtype of ``q``; rows outside every utterance are zero.
@@ -123,16 +149,19 @@ def packed_rel_pos_attention(
     for name, tensor in (("seq_starts", seq_starts), ("seq_lens", seq_lens)):
         if tensor.dtype not in (torch.int32, torch.int64) or tensor.device != q.device:
             raise TypeError(f"{name} must be int32 or int64 on {q.device}, got {tensor.dtype} on {tensor.device}.")
-    if not 0.0 <= dropout_p < 1.0:
-        raise ValueError(f"dropout_p must be in [0, 1), got {dropout_p}.")
+    if not 0.0 <= dropout_p <= 1.0:
+        raise ValueError(f"dropout_p must be in [0, 1], got {dropout_p}.")
     if total * heads * head_dim >= 2**31:
         raise ValueError(
             f"q with {total} x {heads} x {head_dim} elements exceeds the 32-bit row offsets of the kernels."
         )
     if scale is None:
         scale = 1.0 / math.sqrt(head_dim)
-    if total == 0 or max_seqlen == 0:
-        return torch.zeros_like(q)
+    if check_lengths:
+        _check_lengths(seq_lens, max_seqlen)
+    if total == 0 or max_seqlen == 0 or dropout_p == 1.0:
+        # nothing to attend, or every weight dropped: zeros, with a zero gradient edge to every input
+        return _zeros_with_gradient_edges(q, k, v, pos_query, pos_emb)
     if width > 2 * max_seqlen - 1:
         center = (width - 1) // 2
         pos_emb = pos_emb[center - (max_seqlen - 1) : center + max_seqlen]
@@ -164,37 +193,6 @@ def packed_rel_pos_attention(
     return out
 
 
-def _keep_mask(
-    total: int, heads: int, max_seqlen: int, *, dropout_p: float, dropout_seed: Tensor, device: torch.device
-) -> Tensor:
-    """The attention weights the kernels keep under dropout, for exact comparisons with a dense reference.
-
-    Args:
-        total: rows of the packed batch.
-        heads: attention heads.
-        max_seqlen: longest utterance.
-        dropout_p: dropout probability on the attention weights.
-        dropout_seed: the one-element integer seed tensor the kernels ran with.
-        device: the CUDA device.
-
-    Returns:
-        Boolean mask of shape ``(T_total, H, max_seqlen)``:
-        entry ``(i, h, j)`` says whether query row ``i`` keeps the weight of the key at local position ``j``.
-    """
-    mask = torch.zeros((total, heads, max_seqlen), dtype=torch.int8, device=device)
-    if total and heads and max_seqlen:
-        _keep_mask_kernel[(total, heads)](
-            mask,
-            dropout_seed.to(device=device, dtype=torch.int32),
-            dropout_p,
-            max_seqlen,
-            mask.stride(0),
-            mask.stride(1),
-            BLOCK_N=triton.next_power_of_2(max_seqlen),
-        )
-    return mask.bool()
-
-
 @torch.library.custom_op("nemo_asr::packed_rel_pos_attention_fwd", mutates_args=(), device_types="cuda")
 def _attention_fwd(
     q: Tensor,
@@ -209,8 +207,10 @@ def _attention_fwd(
     dropout_seed: Tensor,
     scale: float,
 ) -> tuple[Tensor, Tensor]:
-    # the inputs are made contiguous here as well: a compiled graph may feed the op any layout
+    # the inputs are made contiguous here as well: a compiled graph may feed the op any layout,
+    # and the kernels read the starts and lengths with unit stride
     q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
+    seq_starts, seq_lens = seq_starts.contiguous(), seq_lens.contiguous()
     pos_emb = _padded_rows(pos_emb.contiguous())
     position_term = _position_term(pos_query.contiguous(), pos_emb, scale)
     out, lse = _forward(
@@ -220,7 +220,19 @@ def _attention_fwd(
 
 
 @_attention_fwd.register_fake
-def _attention_fwd_fake(q, k, v, pos_query, pos_emb, seq_starts, seq_lens, max_seqlen, dropout_p, dropout_seed, scale):
+def _attention_fwd_fake(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    pos_query: Tensor,
+    pos_emb: Tensor,
+    seq_starts: Tensor,
+    seq_lens: Tensor,
+    max_seqlen: int,
+    dropout_p: float,
+    dropout_seed: Tensor,
+    scale: float,
+) -> tuple[Tensor, Tensor]:
     del k, v, pos_query, pos_emb, seq_starts, seq_lens, max_seqlen, dropout_p, dropout_seed, scale
     # new_empty, not empty_like: the outputs are contiguous whatever the traced input layout
     return q.new_empty(tuple(q.shape)), q.new_empty(tuple(q.shape[:2]), dtype=torch.float32)
@@ -243,6 +255,7 @@ def _attention_bwd(
     scale: float,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     q, k, v, pos_query = q.contiguous(), k.contiguous(), v.contiguous(), pos_query.contiguous()
+    seq_starts, seq_lens = seq_starts.contiguous(), seq_lens.contiguous()
     total, heads, head_dim = q.shape
     width = pos_emb.shape[0]
     pos_emb = _padded_rows(pos_emb.contiguous())
@@ -266,14 +279,16 @@ def _attention_bwd(
     )
     del position_term
     # the chain rule through the position term, GEMMs in the io dtype on the row-padded buffers
-    # (the zero padding columns contribute nothing), with the scale in their epilogue
-    d_position_term = d_position_term.to(q.dtype)
+    # (the zero padding columns contribute nothing); the scale is applied in float32 before the cast,
+    # as the kernels do for the content gradients, since the unscaled term can exceed the float16 range
+    d_position_term = d_position_term.mul_(scale).to(q.dtype)
     d_pos_query = torch.empty((heads, total, head_dim), dtype=q.dtype, device=q.device)
-    torch.baddbmm(d_pos_query, d_position_term, pos_emb.transpose(0, 1), beta=0.0, alpha=scale, out=d_pos_query)
+    torch.baddbmm(d_pos_query, d_position_term, pos_emb.transpose(0, 1), beta=0.0, out=d_pos_query)
+    # rows outside every utterance have a zero gradient row, but their position queries may hold anything,
+    # and zero times a non-finite payload is NaN: they are zeroed for this GEMM
+    pos_query = torch.where(_utterance_rows(seq_starts, seq_lens, total)[:, None, None], pos_query, 0.0)
     d_pos_emb = torch.empty((heads, pos_emb.shape[0], head_dim), dtype=q.dtype, device=q.device)
-    torch.baddbmm(
-        d_pos_emb, d_position_term.transpose(1, 2), pos_query.transpose(0, 1), beta=0.0, alpha=scale, out=d_pos_emb
-    )
+    torch.baddbmm(d_pos_emb, d_position_term.transpose(1, 2), pos_query.transpose(0, 1), beta=0.0, out=d_pos_emb)
     return (
         dq.to(q.dtype),
         dk.to(q.dtype),
@@ -285,8 +300,20 @@ def _attention_bwd(
 
 @_attention_bwd.register_fake
 def _attention_bwd_fake(
-    q, k, v, pos_query, pos_emb, seq_starts, seq_lens, max_seqlen, lse, d_out, dropout_p, dropout_seed, scale
-):
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    pos_query: Tensor,
+    pos_emb: Tensor,
+    seq_starts: Tensor,
+    seq_lens: Tensor,
+    max_seqlen: int,
+    lse: Tensor,
+    d_out: Tensor,
+    dropout_p: float,
+    dropout_seed: Tensor,
+    scale: float,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     del seq_starts, seq_lens, max_seqlen, lse, d_out, dropout_p, dropout_seed, scale
     return (
         q.new_empty(tuple(q.shape)),
@@ -352,68 +379,116 @@ def _term_view(buffer: Tensor) -> Tensor:
     return buffer.permute(1, 0, 2)
 
 
-def _head_dim_block(head_dim: int) -> int:
-    return max(16, triton.next_power_of_2(head_dim))
+def _utterance_rows(seq_starts: Tensor, seq_lens: Tensor, total: int) -> Tensor:
+    """Boolean mask of the rows inside an utterance, from the starts and lengths on the device (no host read)."""
+    marks = torch.zeros(total + 1, dtype=torch.int32, device=seq_starts.device)
+    marks.scatter_add_(0, seq_starts.long(), torch.ones_like(seq_starts))
+    marks.scatter_add_(0, (seq_starts + seq_lens).long(), -torch.ones_like(seq_starts))
+    return torch.cumsum(marks[:-1], 0) > 0
 
 
-def _forward(q, k, v, position_term, seq_starts, seq_lens, max_seqlen, dropout_p, dropout_seed, scale):
+def _check_lengths(seq_lens: Tensor, max_seqlen: int) -> None:
+    """Reject a length beyond ``max_seqlen`` with one device read; refuse the call where no read is possible."""
+    if seq_lens.numel() == 0:
+        return
+    if torch.compiler.is_compiling():
+        raise RuntimeError(_NO_DEVICE_READ.format(where="in compiled code"))
+    with torch.cuda.device(seq_lens.device):
+        if torch.cuda.is_current_stream_capturing():
+            raise RuntimeError(_NO_DEVICE_READ.format(where="during CUDA-graph capture"))
+        longest = int(seq_lens.max())
+    if longest > max_seqlen:
+        raise ValueError(
+            f"max_seqlen {max_seqlen} is below the longest utterance of {longest} rows: "
+            "its rows past the launched tiles would stay zero and its position lookups would pass the table."
+        )
+
+
+_NO_DEVICE_READ = (
+    "packed_rel_pos_attention(check_lengths=True) reads the lengths from the device, which is impossible {where}: "
+    "validate the lengths against max_seqlen outside the compiled or captured region and pass check_lengths=False."
+)
+
+
+def _zeros_with_gradient_edges(q: Tensor, *inputs: Tensor) -> Tensor:
+    """Zeros of the shape and dtype of ``q`` with a zero gradient edge to ``q`` and every input.
+
+    ``torch.where`` with a false condition selects nothing from a tensor and sends it a zero gradient,
+    so a non-finite payload (in a gap row, say) reaches neither the output nor a gradient,
+    which ``0.0 * tensor`` would not guarantee.
+    """
+    nothing = torch.zeros((), dtype=torch.bool, device=q.device)
+    out = q.new_zeros(tuple(q.shape))
+    for tensor in (q, *inputs):
+        out = torch.where(nothing, tensor.sum(), out)
+    return out
+
+
+def _forward(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    position_term: Tensor,
+    seq_starts: Tensor,
+    seq_lens: Tensor,
+    max_seqlen: int,
+    dropout_p: float,
+    dropout_seed: Tensor,
+    scale: float,
+) -> tuple[Tensor, Tensor]:
     total, heads, head_dim = q.shape
     # zeros, not empty: the kernels write the rows of the utterances only
     out = torch.zeros_like(q)
     lse = torch.empty((total, heads), dtype=torch.float32, device=q.device)
     n_batch = seq_starts.numel()
     if n_batch and max_seqlen:
-        # 64 x 128 tiles with eight warps and two pipeline stages (tuned at D = 128 in bf16 on a GB300);
-        # rows above 256 bytes (float32 at D = 128) take 64 key columns to fit the shared memory
         head_dim_block = _head_dim_block(head_dim)
-        block_m, block_n = 64, (128 if head_dim_block * q.element_size() <= 256 else 64)
-        _forward_kernel[(n_batch * heads, triton.cdiv(max_seqlen, block_m))](
-            q,
-            k,
-            v,
-            position_term,
-            out,
-            lse,
-            seq_starts,
-            seq_lens,
-            dropout_seed,
-            dropout_p,
-            scale,
-            q.stride(0),
-            q.stride(1),
-            position_term.stride(0),
-            position_term.stride(1),
-            2 * max_seqlen - 1,
-            max_seqlen - 1,
-            max_seqlen,
-            H=heads,
-            D=head_dim,
-            D_PAD=head_dim_block,
-            BLOCK_M=block_m,
-            BLOCK_N=block_n,
-            DROPOUT=dropout_p > 0.0,
-            IEEE=q.dtype == torch.float32,
-            num_warps=8,
-            num_stages=2,
+        _launch(
+            _forward_kernel,
+            FORWARD_TILES,
+            q.device,
+            ("forward", q.device.index, q.dtype, head_dim_block),
+            lambda block_m, block_n: (n_batch * heads, triton.cdiv(max_seqlen, block_m)),
+            (
+                q,
+                k,
+                v,
+                position_term,
+                out,
+                lse,
+                seq_starts,
+                seq_lens,
+                dropout_seed,
+                dropout_p,
+                scale,
+                q.stride(0),
+                q.stride(1),
+                position_term.stride(0),
+                position_term.stride(1),
+                2 * max_seqlen - 1,
+                max_seqlen - 1,
+                max_seqlen,
+            ),
+            dict(H=heads, D=head_dim, D_PAD=head_dim_block, DROPOUT=dropout_p > 0.0, FP32=q.dtype == torch.float32),
         )
     return out, lse
 
 
 def _backward(
-    q,
-    k,
-    v,
-    position_term,
-    seq_starts,
-    seq_lens,
-    max_seqlen,
-    lse,
-    d_out,
-    dropout_p,
-    dropout_seed,
-    scale,
-    d_position_term,
-):
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    position_term: Tensor,
+    seq_starts: Tensor,
+    seq_lens: Tensor,
+    max_seqlen: int,
+    lse: Tensor,
+    d_out: Tensor,
+    dropout_p: float,
+    dropout_seed: Tensor,
+    scale: float,
+    d_position_term: Tensor,
+) -> tuple[Tensor, Tensor, Tensor]:
     total, heads, head_dim = q.shape
     delta = torch.zeros((total, heads), dtype=torch.float32, device=q.device)
     dq = torch.zeros_like(q, dtype=torch.float32)
@@ -422,68 +497,85 @@ def _backward(
     n_batch = seq_starts.numel()
     if n_batch and max_seqlen:
         head_dim_block = _head_dim_block(head_dim)
-        # smaller tiles for wide heads (the shared memory of the backward tiles)
-        block_m, block_n = (64, 64) if head_dim_block <= 64 else (32, 32)
+        ladder = BACKWARD_TILES if head_dim_block <= 64 else BACKWARD_TILES_WIDE
         common = dict(
-            H=heads,
-            D=head_dim,
-            D_PAD=head_dim_block,
-            BLOCK_M=block_m,
-            BLOCK_N=block_n,
-            DROPOUT=dropout_p > 0.0,
-            IEEE=q.dtype == torch.float32,
+            H=heads, D=head_dim, D_PAD=head_dim_block, DROPOUT=dropout_p > 0.0, FP32=q.dtype == torch.float32
         )
         strides = (q.stride(0), q.stride(1), position_term.stride(0), position_term.stride(1))
         inputs = (q, k, v, position_term, d_out, lse)
-        _delta_kernel[(n_batch * heads, triton.cdiv(max_seqlen, block_m))](
-            *inputs,
-            delta,
-            seq_starts,
-            seq_lens,
-            dropout_seed,
-            dropout_p,
-            scale,
-            *strides,
-            2 * max_seqlen - 1,
-            max_seqlen - 1,
-            max_seqlen,
-            **common,
-        )
-        _dkv_kernel[(n_batch * heads, triton.cdiv(max_seqlen, block_n))](
-            *inputs,
-            delta,
-            dk,
-            dv,
-            seq_starts,
-            seq_lens,
-            dropout_seed,
-            dropout_p,
-            scale,
-            *strides,
-            2 * max_seqlen - 1,
-            max_seqlen - 1,
-            max_seqlen,
-            **common,
-        )
-        _dq_kernel[(n_batch * heads, triton.cdiv(max_seqlen, block_m))](
-            *inputs,
-            delta,
-            dq,
-            d_position_term,
-            seq_starts,
-            seq_lens,
-            dropout_seed,
-            dropout_p,
-            scale,
-            *strides,
-            d_position_term.stride(0),
-            d_position_term.stride(1),
-            2 * max_seqlen - 1,
-            max_seqlen - 1,
-            max_seqlen,
-            **common,
+        widths = (2 * max_seqlen - 1, max_seqlen - 1, max_seqlen)
+
+        def key(name):
+            return (name, q.device.index, q.dtype, head_dim_block)
+
+        def rows(block_m, block_n):
+            return n_batch * heads, triton.cdiv(max_seqlen, block_m)
+
+        def columns(block_m, block_n):
+            return n_batch * heads, triton.cdiv(max_seqlen, block_n)
+
+        bounds = (seq_starts, seq_lens, dropout_seed, dropout_p, scale, *strides)
+        _launch(_delta_kernel, ladder, q.device, key("delta"), rows, (*inputs, delta, *bounds, *widths), common)
+        _launch(_dkv_kernel, ladder, q.device, key("dkv"), columns, (*inputs, delta, dk, dv, *bounds, *widths), common)
+        _launch(
+            _dq_kernel,
+            ladder,
+            q.device,
+            key("dq"),
+            rows,
+            (
+                *inputs,
+                delta,
+                dq,
+                d_position_term,
+                *bounds,
+                d_position_term.stride(0),
+                d_position_term.stride(1),
+                *widths,
+            ),
+            common,
         )
     return dq, dk, dv
+
+
+def _head_dim_block(head_dim: int) -> int:
+    return max(16, triton.next_power_of_2(head_dim))
+
+
+# the ladder entry in use per (kernel, device, dtype, head width)
+_tiles_in_use: dict[tuple[str, int, torch.dtype, int], int] = {}
+
+
+def _launch(
+    kernel: triton.JITFunction,
+    ladder: tuple[tuple[int, int, int, int], ...],
+    device: torch.device,
+    key: tuple[str, int, torch.dtype, int],
+    grid: Callable[[int, int], tuple[int, int]],
+    args: tuple,
+    constexprs: dict[str, object],
+) -> None:
+    """Launch ``kernel`` on ``device`` with the first entry of ``ladder`` that its shared memory takes.
+
+    Triton launches in the current CUDA context, not on the tensors' device, so the device is pinned for the launch.
+    Triton refuses a configuration beyond the device's shared memory at its first launch (``OutOfResources``);
+    the next entry is tried, and the one that runs is remembered under ``key``.
+    ``grid`` maps the tile sizes (BLOCK_M, BLOCK_N) to the launch grid.
+    """
+    error = None
+    for index in range(_tiles_in_use.get(key, 0), len(ladder)):
+        block_m, block_n, num_warps, num_stages = ladder[index]
+        try:
+            with torch.cuda.device(device):
+                kernel[grid(block_m, block_n)](
+                    *args, BLOCK_M=block_m, BLOCK_N=block_n, num_warps=num_warps, num_stages=num_stages, **constexprs
+                )
+        except OutOfResources as exc:
+            error = exc
+            continue
+        _tiles_in_use[key] = index
+        return
+    raise error
 
 
 @triton.jit
@@ -508,9 +600,11 @@ def _store_rows(ptr, rows, h, stride_t, stride_h, offs_d, row_mask, tile, D: tl.
 
 
 @triton.jit
-def _dot(a, b, IEEE: tl.constexpr):
-    if IEEE:
-        product = tl.dot(a, b, input_precision="ieee")
+def _dot(a, b, FP32: tl.constexpr):
+    # float32 dots as three TF32 products: the accuracy of float32 on the tensor cores,
+    # where plain float32 dots run on the FMA units at several times the time
+    if FP32:
+        product = tl.dot(a, b, input_precision="tf32x3")
     else:
         product = tl.dot(a, b)
     return product
@@ -524,12 +618,9 @@ def _term_offsets(q_rows, h, rel, stride_bt, stride_bh):
 
 @triton.jit
 def _keep(dropout_seed, h, q_rows, offs_n, drop_stride, dropout_p):
-    """The kept attention weights of the (global query row, local key column) pairs; 32-bit Philox offsets.
-
-    The head enters the seed through a literal stride (Triton takes no Python globals in a kernel).
-    """
-    offsets = q_rows[:, None] * drop_stride + offs_n[None, :]
-    return tl.rand(tl.load(dropout_seed) + h * 1000003, offsets) >= dropout_p
+    """Which (global query row, local key column) pairs keep their weight: a Philox hash with the head in the seed."""
+    offsets = q_rows[:, None].to(tl.int64) * drop_stride + offs_n[None, :]
+    return tl.rand(tl.load(dropout_seed) + h * DROPOUT_HEAD_SEED_STRIDE, offsets) >= dropout_p
 
 
 @triton.jit
@@ -558,7 +649,7 @@ def _forward_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     DROPOUT: tl.constexpr,
-    IEEE: tl.constexpr,
+    FP32: tl.constexpr,
 ):
     pid_bh = tl.program_id(0)
     pid_m = tl.program_id(1)
@@ -581,7 +672,7 @@ def _forward_kernel(
         n_mask = offs_n < seq_len
         k_rows = seq_start + offs_n
         k = _load_rows(K, k_rows, h, stride_qt, stride_qh, offs_d, n_mask, D, D_PAD)
-        s = _dot(q, tl.trans(k), IEEE) * scale
+        s = _dot(q, tl.trans(k), FP32) * scale
         rel = center + offs_n[None, :] - offs_m[:, None]
         valid = q_mask[:, None] & n_mask[None, :] & (rel >= 0) & (rel < R)
         bd = tl.load(BD + _term_offsets(q_rows, h, rel, stride_bt, stride_bh), mask=valid, other=0.0)
@@ -599,20 +690,11 @@ def _forward_kernel(
         else:
             p_use = p
         v_tile = _load_rows(V, k_rows, h, stride_qt, stride_qh, offs_d, n_mask, D, D_PAD)
-        acc += _dot(p_use.to(v_tile.dtype), v_tile, IEEE)
+        acc += _dot(p_use.to(v_tile.dtype), v_tile, FP32)
         m_i = m_new
     out = acc / l_i[:, None]
     _store_rows(Out, q_rows, h, stride_qt, stride_qh, offs_d, q_mask, out, D, D_PAD)
     tl.store(Lse + q_rows * H + h, m_i + tl.log(l_i), mask=q_mask)
-
-
-@triton.jit
-def _keep_mask_kernel(Mask, Seed, dropout_p, max_seqlen, stride_mt, stride_mh, BLOCK_N: tl.constexpr):
-    i = tl.program_id(0)
-    h = tl.program_id(1)
-    offs_n = tl.arange(0, BLOCK_N)
-    keep = tl.rand(tl.load(Seed) + h * 1000003, i * max_seqlen + offs_n) >= dropout_p
-    tl.store(Mask + i * stride_mt + h * stride_mh + offs_n, keep.to(tl.int8), mask=offs_n < max_seqlen)
 
 
 @triton.jit
@@ -642,7 +724,7 @@ def _delta_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     DROPOUT: tl.constexpr,
-    IEEE: tl.constexpr,
+    FP32: tl.constexpr,
 ):
     # delta_i = sum_j p_ij dp_ij from the recomputed weights, see the module docstring
     pid_bh = tl.program_id(0)
@@ -667,8 +749,8 @@ def _delta_kernel(
         k_rows = seq_start + offs_n
         k = _load_rows(K, k_rows, h, stride_qt, stride_qh, offs_d, n_mask, D, D_PAD)
         v = _load_rows(V, k_rows, h, stride_qt, stride_qh, offs_d, n_mask, D, D_PAD)
-        s = _dot(q, tl.trans(k), IEEE) * scale
-        dp = _dot(do, tl.trans(v), IEEE)
+        s = _dot(q, tl.trans(k), FP32) * scale
+        dp = _dot(do, tl.trans(v), FP32)
         rel = center + offs_n[None, :] - offs_m[:, None]
         valid = m_mask[:, None] & n_mask[None, :] & (rel >= 0) & (rel < R)
         bd = tl.load(BD + _term_offsets(q_rows, h, rel, stride_bt, stride_bh), mask=valid, other=0.0)
@@ -710,7 +792,7 @@ def _dkv_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     DROPOUT: tl.constexpr,
-    IEEE: tl.constexpr,
+    FP32: tl.constexpr,
 ):
     pid_bh = tl.program_id(0)
     pid_n = tl.program_id(1)
@@ -736,7 +818,7 @@ def _dkv_kernel(
         do = _load_rows(DO, q_rows, h, stride_qt, stride_qh, offs_d, m_mask, D, D_PAD)
         lse = tl.load(Lse + q_rows * H + h, mask=m_mask, other=0.0)
         delta = tl.load(Delta + q_rows * H + h, mask=m_mask, other=0.0)
-        s = _dot(q, tl.trans(k), IEEE) * scale
+        s = _dot(q, tl.trans(k), FP32) * scale
         rel = center + offs_n[None, :] - offs_m[:, None]
         valid = m_mask[:, None] & n_mask[None, :] & (rel >= 0) & (rel < R)
         bd = tl.load(BD + _term_offsets(q_rows, h, rel, stride_bt, stride_bh), mask=valid, other=0.0)
@@ -747,14 +829,14 @@ def _dkv_kernel(
             p_use = tl.where(keep, p / (1.0 - dropout_p), 0.0)
         else:
             p_use = p
-        dv += _dot(tl.trans(p_use.to(do.dtype)), do, IEEE)
-        dp = _dot(do, tl.trans(v), IEEE)
+        dv += _dot(tl.trans(p_use.to(do.dtype)), do, FP32)
+        dp = _dot(do, tl.trans(v), FP32)
         if DROPOUT:
             dp = tl.where(keep, dp / (1.0 - dropout_p), 0.0)
-        # the scale is folded into ds before the dot, as in the flash-attention backward:
-        # Triton 3.8 compiled a scaled dot (dot(trans(ds), q) * scale) in bf16 and fp16 to a non-accumulating update
+        # the scale is folded into ds before the dot, as in the flash-attention backward;
+        # the scaled dot (dot(trans(ds), q) * scale) miscompiles on Blackwell in bf16 and fp16 (triton-lang/triton#12757)
         ds = tl.where(valid, p * (dp - delta[:, None]) * scale, 0.0)
-        dk += _dot(tl.trans(ds.to(q.dtype)), q, IEEE)
+        dk += _dot(tl.trans(ds.to(q.dtype)), q, FP32)
     _store_rows(DK, k_rows, h, stride_qt, stride_qh, offs_d, n_mask, dk, D, D_PAD)
     _store_rows(DV, k_rows, h, stride_qt, stride_qh, offs_d, n_mask, dv, D, D_PAD)
 
@@ -790,7 +872,7 @@ def _dq_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     DROPOUT: tl.constexpr,
-    IEEE: tl.constexpr,
+    FP32: tl.constexpr,
 ):
     pid_bh = tl.program_id(0)
     pid_m = tl.program_id(1)
@@ -815,18 +897,18 @@ def _dq_kernel(
         k_rows = seq_start + offs_n
         k = _load_rows(K, k_rows, h, stride_qt, stride_qh, offs_d, n_mask, D, D_PAD)
         v = _load_rows(V, k_rows, h, stride_qt, stride_qh, offs_d, n_mask, D, D_PAD)
-        s = _dot(q, tl.trans(k), IEEE) * scale
+        s = _dot(q, tl.trans(k), FP32) * scale
         rel = center + offs_n[None, :] - offs_m[:, None]
         valid = m_mask[:, None] & n_mask[None, :] & (rel >= 0) & (rel < R)
         bd = tl.load(BD + _term_offsets(q_rows, h, rel, stride_bt, stride_bh), mask=valid, other=0.0)
         s = tl.where(valid, s + bd, float("-inf"))
         p = tl.exp(s - lse[:, None])
-        dp = _dot(do, tl.trans(v), IEEE)
+        dp = _dot(do, tl.trans(v), FP32)
         if DROPOUT:
             keep = _keep(Seed, h, q_rows, offs_n, drop_stride, dropout_p)
             dp = tl.where(keep, dp / (1.0 - dropout_p), 0.0)
         ds = tl.where(valid, p * (dp - delta[:, None]), 0.0)
-        dq += _dot((ds * scale).to(k.dtype), k, IEEE)
+        dq += _dot((ds * scale).to(k.dtype), k, FP32)
         # the position-term gradient is ds itself, row-owned: every (i, j) of a row has its own entry
         tl.store(DBD + _term_offsets(q_rows, h, rel, stride_dbt, stride_dbh), ds, mask=valid)
     _store_rows(DQ, q_rows, h, stride_qt, stride_qh, offs_d, m_mask, dq, D, D_PAD)

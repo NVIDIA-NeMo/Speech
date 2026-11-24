@@ -35,6 +35,7 @@ from nemo.collections.asr.modules.rnnt import RNNTDecoderJoint
 from nemo.collections.asr.parts.mixins import (
     ASRModuleMixin,
     ASRTranscriptionMixin,
+    RNNTRestartMixin,
     TranscribeConfig,
     TranscriptionReturnType,
 )
@@ -51,7 +52,7 @@ from nemo.core.neural_types import AcousticEncodedRepresentation, AudioSignal, L
 from nemo.utils import logging
 
 
-class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTranscriptionMixin):
+class EncDecRNNTModel(ASRModel, ASRModuleMixin, RNNTRestartMixin, ExportableEncDecModel, ASRTranscriptionMixin):
     """Base class for encoder decoder RNNT-based models."""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
@@ -115,6 +116,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             use_cer=self._cfg.get('use_cer', False),
             log_prediction=self._cfg.get('log_prediction', True),
             dist_sync_on_step=True,
+            wer_text_normalize=self._cfg.get('wer_text_normalize', False),
         )
 
         # Whether to compute loss during evaluation
@@ -400,6 +402,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
                 use_cer=self.wer.use_cer,
                 log_prediction=self.wer.log_prediction,
                 dist_sync_on_step=True,
+                wer_text_normalize=self.wer.wer_text_normalize,
             )
 
             # Setup fused Joint step
@@ -460,6 +463,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             use_cer=self.wer.use_cer,
             log_prediction=self.wer.log_prediction,
             dist_sync_on_step=True,
+            wer_text_normalize=self.wer.wer_text_normalize,
         )
 
         # Setup fused Joint step
@@ -949,24 +953,40 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
     """ Transcription related methods """
 
     def _transcribe_forward(self, batch: Any, trcfg: TranscribeConfig):
-        encoded, encoded_len = self.forward(input_signal=batch[0], input_signal_length=batch[1])
-        output = dict(encoded=encoded, encoded_len=encoded_len)
-        return output
+        return self._transcribe_encode(batch[0], batch[1], trcfg)
+
+    def _transcribe_encode(self, signal: torch.Tensor, signal_len: torch.Tensor, trcfg: TranscribeConfig) -> dict:
+        """Encode audio for ``transcribe()``; with ``decoding.restart_after_tokens``, only extract features."""
+        if getattr(self, 'cur_decoder', 'rnnt') == 'rnnt' and getattr(self.decoding, 'restart_token_ids', None):
+            if trcfg.partial_hypothesis is not None:
+                raise NotImplementedError("`partial_hypothesis` is not supported with `restart_after_tokens`.")
+            processed_signal, processed_signal_length = self.preprocessor(input_signal=signal, length=signal_len)
+            return dict(processed_signal=processed_signal, processed_signal_length=processed_signal_length)
+        encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len)
+        return dict(encoded=encoded, encoded_len=encoded_len)
 
     def _transcribe_output_processing(
         self, outputs, trcfg: TranscribeConfig
     ) -> Union[List['Hypothesis'], List[List['Hypothesis']]]:
-        encoded = outputs.pop('encoded')
-        encoded_len = outputs.pop('encoded_len')
-
-        hyp = self.decoding.rnnt_decoder_predictions_tensor(
-            encoded,
-            encoded_len,
-            return_hypotheses=trcfg.return_hypotheses,
-            partial_hypotheses=trcfg.partial_hypothesis,
-        )
-        # cleanup memory
-        del encoded, encoded_len
+        if 'processed_signal' in outputs:
+            with torch.inference_mode():
+                hyp = self.cache_aware_transcribe_with_restart(
+                    outputs.pop('processed_signal'),
+                    outputs.pop('processed_signal_length'),
+                    self.decoding.restart_token_ids,
+                )
+            hyp = self.decoding.postprocess_hypotheses(hyp, return_hypotheses=trcfg.return_hypotheses)
+        else:
+            encoded = outputs.pop('encoded')
+            encoded_len = outputs.pop('encoded_len')
+            hyp = self.decoding.rnnt_decoder_predictions_tensor(
+                encoded,
+                encoded_len,
+                return_hypotheses=trcfg.return_hypotheses,
+                partial_hypotheses=trcfg.partial_hypothesis,
+            )
+            # cleanup memory
+            del encoded, encoded_len
 
         if trcfg.timestamps:
             hyp = process_timestamp_outputs(

@@ -21,6 +21,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from nemo.collections.asr.modules.transformer_encoder_utils import _apply_packed_rope
 from nemo.collections.asr.parts.submodules.multi_head_attention import RotaryPositionalEncoding
 from nemo.collections.asr.parts.submodules.packed_attention import PackedAttentionContext, packed_cross_attention
 from nemo.collections.common.parts import form_attention_mask
@@ -202,15 +203,12 @@ class TransformerEmbedding(nn.Module):
 
         return embeddings
 
-    def forward_packed(
-        self, input_ids: torch.Tensor, position_ids: torch.Tensor, token_type_ids: torch.Tensor | None = None
-    ) -> torch.Tensor:
+    def forward_packed(self, input_ids: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
         """Embed token-flat ids with explicit positions.
 
         Args:
             input_ids: ids of all sequences, shape ``(U_total,)``.
             position_ids: position of every id within its sequence, shape ``(U_total,)``.
-            token_type_ids: optional token types, shape ``(U_total,)``.
 
         Returns:
             The embeddings, shape ``(U_total, hidden_size)``.
@@ -219,8 +217,6 @@ class TransformerEmbedding(nn.Module):
         if self.embedding_scale is not None:
             token_embeddings = token_embeddings * self.embedding_scale
         embeddings = token_embeddings + self.position_embedding(position_ids)
-        if token_type_ids is not None:
-            embeddings = embeddings + self.token_type_embedding(token_type_ids)
         if self.layer_norm is not None:
             embeddings = self.layer_norm(embeddings)
         return self.dropout(embeddings)
@@ -328,6 +324,7 @@ class MultiHeadAttention(nn.Module):
         values: torch.Tensor,
         query_context: PackedAttentionContext,
         key_context: PackedAttentionContext,
+        *,
         causal: bool = False,
     ) -> tuple[torch.Tensor, dict]:
         """Attention over token-flat queries and keys with explicit sequence boundaries instead of masks.
@@ -337,7 +334,8 @@ class MultiHeadAttention(nn.Module):
             keys: shape ``(K_total, hidden_size)``, packed in the same sequence order as the queries.
             values: shape ``(K_total, hidden_size)``.
             query_context: boundaries and positions of the queries.
-            key_context: boundaries and positions of the keys; the same object as ``query_context`` in self-attention.
+            key_context: boundaries and positions of the keys; self-attention passes the ``query_context`` object
+                itself, which the rotary position embedding requires.
             causal: let every query see only the keys at its position or before (self-attention).
 
         Returns:
@@ -346,18 +344,14 @@ class MultiHeadAttention(nn.Module):
             are not formed by the fused kernels.
         """
         heads, head_size = self.num_attention_heads, self.attn_head_size
-        query = self.query_net(queries).view(-1, heads, head_size) / self.attn_scale
-        key = self.key_net(keys).view(-1, heads, head_size) / self.attn_scale
+        query = self.query_net(queries).view(-1, heads, head_size)
+        key = self.key_net(keys).view(-1, heads, head_size)
         value = self.value_net(values).view(-1, heads, head_size)
         if self.rotary_pos_enc is not None:
-            # a function-level import: the modules package initializes the encoders, which import this module
-            from nemo.collections.asr.modules.transformer_encoder_utils import _apply_packed_rope
-
             if query_context is not key_context:
                 raise NotImplementedError("The rotary position embedding applies to self-attention only.")
             self.rotary_pos_enc.extend_pe(query_context.max_seqlen, key.device, key.dtype)
             query, key = _apply_packed_rope(self.rotary_pos_enc, query, key, query_context.position_ids)
-        # the scores are already scaled by the two divisions above
         context = packed_cross_attention(
             query,
             key,
@@ -366,7 +360,6 @@ class MultiHeadAttention(nn.Module):
             key_context,
             causal=causal,
             dropout_p=self.attn_dropout.p if self.training else 0.0,
-            scale=1.0,
         )
         output_states = self.out_projection(context.reshape(-1, heads * head_size))
         return self.layer_dropout(output_states), {}

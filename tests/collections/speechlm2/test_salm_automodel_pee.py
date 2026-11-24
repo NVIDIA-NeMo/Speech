@@ -42,6 +42,7 @@ from nemo.collections.speechlm2.data import SALMDataset
 from nemo.collections.speechlm2.data.salm_dataset import MultiSpeakerConfig, SALMMultiSpeakerProcessor
 from nemo.collections.speechlm2.models import SALMAutomodel
 from nemo.collections.speechlm2.modules.perception import AudioPerceptionModule, IdentityConnector
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
 # Reuse the toy PE encoder (and its dimensions) defined for the standalone
 # ParallelExpertEncoder tests, so both suites share one dummy bundle definition.
@@ -242,6 +243,7 @@ def training_cutset_batch():
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_pee_uses_parallel_expert_encoder(model):
     assert isinstance(model.perception.encoder, ParallelExpertEncoder)
     assert model._uses_parallel_expert_encoder()
@@ -253,6 +255,7 @@ def test_salm_automodel_pee_uses_parallel_expert_encoder(model):
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_pee_dataset_emits_speaker_targets(dataset, prompt_formatter, training_cutset_batch):
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
     batch = dataset[training_cutset_batch]
@@ -266,6 +269,7 @@ def test_salm_automodel_pee_dataset_emits_speaker_targets(dataset, prompt_format
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_pee_training_step(model, dataset, prompt_formatter, training_cutset_batch):
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
     batch = dataset[training_cutset_batch]
@@ -278,6 +282,39 @@ def test_salm_automodel_pee_training_step(model, dataset, prompt_formatter, trai
 
 
 @requires_cuda
+@pytest.mark.gpu
+@pytest.mark.skipif(not TRITON_AVAILABLE, reason="the native packed rel_pos path with attention dropout needs Triton")
+@pytest.mark.parametrize("dropout_att", [0.1, 1.0], ids=["partial_dropout", "full_dropout"])
+def test_salm_automodel_pee_packed_training_step_with_attention_dropout(
+    model, dataset, prompt_formatter, training_cutset_batch, monkeypatch, dropout_att
+):
+    """Packed encoder sequences train through the native packed FastConformer branch with attention dropout,
+    at the boundary of the kernel's range as well: ``dropout_att: 1.0``, a valid ``nn.Dropout`` setting,
+    drops every attention weight and still completes the loss, the backward and finite ASR gradients."""
+    monkeypatch.setitem(model.cfg, "packed_encoder_sequences", True)
+    asr_encoder = model.perception.encoder.asr_encoder
+    for layer in asr_encoder.layers:
+        monkeypatch.setattr(layer.self_attn, "dropout_rate", dropout_att)
+    was_training = model.training
+    model.train()
+    try:
+        assert asr_encoder.supports_sequence_packed_output
+        training_cutset_batch = training_cutset_batch.map(
+            lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None
+        )
+        batch = move_data_to_device(dataset[training_cutset_batch], device=model.device)
+        results = model._training_step_batch(batch, batch_idx=0)
+        assert torch.isfinite(results["loss"]) and results["loss"] > 0
+        results["loss"].backward()
+        grads = [parameter.grad for parameter in asr_encoder.parameters() if parameter.grad is not None]
+        assert grads and all(torch.isfinite(grad).all() for grad in grads)
+    finally:
+        model.zero_grad(set_to_none=True)
+        model.train(was_training)
+
+
+@requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_pee_validation_step(model, dataset, prompt_formatter, training_cutset_batch):
     model.on_validation_epoch_start()
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
@@ -289,6 +326,7 @@ def test_salm_automodel_pee_validation_step(model, dataset, prompt_formatter, tr
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_pee_generation(model):
     # No spk_targets at inference -> the PE encoder predicts diarization internally.
     answer = model.generate(

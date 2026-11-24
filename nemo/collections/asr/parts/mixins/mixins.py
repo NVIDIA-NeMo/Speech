@@ -754,12 +754,33 @@ class ASRModuleMixin(ASRAdapterModelMixin):
                     all_hyp_or_transcribed_texts.append(decoded_out[0])
             best_hyp = None
         else:
-            best_hyp = self.decoding.rnnt_decoder_predictions_tensor(
-                encoder_output=encoded,
-                encoded_lengths=encoded_len,
-                return_hypotheses=True,
-                partial_hypotheses=previous_hypotheses,
-            )
+            restart_token_ids = getattr(self.decoding, 'restart_token_ids', None)
+            if restart_token_ids:
+                if not hasattr(self, 'decode_chunk_with_restart'):
+                    raise NotImplementedError(f"`restart_after_tokens` is not supported by {type(self).__name__}.")
+                if bypass_pre_encode:
+                    raise NotImplementedError("`restart_after_tokens` is not supported with `bypass_pre_encode`.")
+                hyps, (cache_last_channel_next, cache_last_time_next, cache_last_channel_next_len) = (
+                    self.decode_chunk_with_restart(
+                        encoded=encoded,
+                        encoded_len=encoded_len,
+                        processed_signal=processed_signal,
+                        processed_signal_length=processed_signal_length,
+                        hypotheses=previous_hypotheses,
+                        caches=(cache_last_channel_next, cache_last_time_next, cache_last_channel_next_len),
+                        restart_token_ids=restart_token_ids,
+                        keep_all_outputs=keep_all_outputs,
+                        drop_extra_pre_encoded=drop_extra_pre_encoded or 0,
+                    )
+                )
+                best_hyp = self.decoding.postprocess_hypotheses(hyps, return_hypotheses=True)
+            else:
+                best_hyp = self.decoding.rnnt_decoder_predictions_tensor(
+                    encoder_output=encoded,
+                    encoded_lengths=encoded_len,
+                    return_hypotheses=True,
+                    partial_hypotheses=previous_hypotheses,
+                )
             greedy_predictions = [hyp.y_sequence for hyp in best_hyp]
 
             all_hyp_or_transcribed_texts = best_hyp

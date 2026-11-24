@@ -103,6 +103,20 @@ def test_safe_instantiate_allows_exact_exception_targets(target, target_type):
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
+    "target_type,allowed",
+    [
+        (type("FlashAdamW", (torch.optim.AdamW,), {}), True),
+        (type("NotAnOptimizer", (), {}), False),
+    ],
+)
+def test_safe_instantiate_allows_only_flashoptim_optimizers(target_type, allowed):
+    # The speechlm2 Automodel recipes (e.g. examples/speechlm2/conf/salm_automodel.yaml) use flashoptim.FlashAdamW.
+    with patch("hydra.utils.get_class", return_value=target_type):
+        assert _is_target_allowed("flashoptim.FlashAdamW") is allowed
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
     "target",
     [
         "subprocess.Popen",

@@ -32,6 +32,7 @@ from nemo.collections.asr.parts.submodules.packed_attention import PackedAttenti
 from nemo.collections.asr.parts.utils.activations import Swish
 from nemo.collections.common.parts.utils import ModuleBlock, activation_registry, block_binds, build_module
 from nemo.core.classes.mixins import AccessMixin
+from nemo.core.classes.mixins.adapter_mixin_strategies import ResidualAddAdapterStrategy
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
 if TRITON_AVAILABLE:
@@ -343,24 +344,26 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
     ) -> torch.Tensor:
         """The layer over token-flat input of all utterances, with explicit boundaries instead of padding masks.
 
-        Streaming caches, adapters, local attention and the ``save_encoder_tensors`` capture
+        Streaming caches, local attention with global tokens and the ``save_encoder_tensors`` capture
         are not supported in this form.
+        Enabled adapters run on the token-flat states at the places where ``forward`` runs them,
+        see ``sequence_packed_adapters_unsupported_reason`` for what is refused.
 
         Args:
             x: input signals, shape ``(T_total, d_model)``.
-            attention_context: packing metadata for the self-attention and the depthwise convolution.
+            attention_context: packing metadata for the self-attention, with the limited attention context if any,
+                and for the depthwise convolution.
             conv_layout: gapped layout for the depthwise convolution where its Triton kernel does not run
                 (see ``ConformerConvolution.forward_packed``), None where it does.
             pos_emb: relative positional embedding ``(1, 2 * max_seqlen - 1, d_model)`` for ``rel_pos`` attention,
-                else None.
+                the one of the window for ``rel_pos_local_attn``, else None.
 
         Returns:
             The layer output, shape ``(T_total, d_model)``.
         """
-        if self.is_adapter_available():
-            raise NotImplementedError("Adapters are not supported in the sequence-packed ConformerLayer.")
-        if self.self_attention_model == 'rel_pos_local_attn':
-            raise NotImplementedError("rel_pos_local_attn has no sequence-packed form.")
+        reason = self.sequence_packed_adapters_unsupported_reason()
+        if reason is not None:
+            raise NotImplementedError(reason)
 
         residual = x
         x = self.norm_feed_forward1(x)
@@ -371,6 +374,15 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         x = self.self_attn.forward_packed(x, attention_context, pos_emb=pos_emb)
         residual = residual + self.dropout(x)
 
+        if self.is_adapter_available():
+            pack_input = {
+                'x': residual,
+                'loc': 'mha',
+                'pos_emb': pos_emb,
+                'attention_context': attention_context,
+            }
+            residual = self.forward_enabled_adapters(pack_input)['x']
+
         x = self.norm_conv(residual)
         x = self.conv.forward_packed(x, conv_layout, context=attention_context)
         residual = residual + self.dropout(x)
@@ -379,7 +391,45 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         x = self.feed_forward2(x)
         residual = residual + self.dropout(x) * self.fc_factor
 
-        return self.norm_out(residual)
+        x = self.norm_out(residual)
+        if self.is_adapter_available():
+            pack_input = {'x': x, 'loc': 'post'}
+            x = self.forward_enabled_adapters(pack_input)['x']
+        return x
+
+    def sequence_packed_adapters_unsupported_reason(self) -> str | None:
+        """Why ``forward_packed`` cannot run the enabled adapters of this layer, or None when it can.
+
+        Linear adapters are pointwise and run on the token-flat states as they are,
+        and the Conformer attention adapters attend within the utterance boundaries.
+        Without a sequence-packed form: the attention adapters of the Transformer blocks,
+        an attention adapter in a layer whose attention is neither ``rel_pos`` nor ``abs_pos``
+        (``rope``, ``rel_pos_local_attn``), which the padded forward refuses as well,
+        and in training mode a residual strategy with an auxiliary L2 loss (``l2_lambda`` above zero),
+        which sums over the frames of a padded batch row and averages over the rows;
+        it is refused whether or not the adapter's parameters and access configuration let the loss be computed.
+        Disabled adapters do not run and are never a reason.
+        """
+        # a function-level import as in AttentionAdapterModuleMixin, to prevent a circular import
+        from nemo.collections.asr.modules.transformer import transformer_modules
+
+        for name in self.get_enabled_adapters():
+            adapter = self.adapter_layer[name]
+            if isinstance(adapter, transformer_modules.MultiHeadAttention):
+                return f"The adapter {name!r} ({type(adapter).__name__}) has no sequence-packed form."
+            if isinstance(adapter, MultiHeadAttention) and self.self_attention_model not in ('rel_pos', 'abs_pos'):
+                # forward_single_enabled_adapter_ raises for it, in the padded forward as well
+                return (
+                    f"The attention adapter {name!r} runs with rel_pos and abs_pos attention only, "
+                    f"not with self_attention_model={self.self_attention_model!r}."
+                )
+            strategy = adapter.adapter_strategy
+            if self.training and isinstance(strategy, ResidualAddAdapterStrategy) and strategy.l2_lambda > 0.0:
+                return (
+                    f"The auxiliary L2 loss of the adapter {name!r} (l2_lambda={strategy.l2_lambda}) averages over "
+                    "padded batch rows and has no sequence-packed form: set l2_lambda: 0 on its adapter_strategy."
+                )
+        return None
 
 
 def packed_depthwise_conv_kernel_available(x: torch.Tensor) -> bool:
@@ -496,7 +546,8 @@ class ConformerConvolution(nn.Module):
         # kernel_size=1 convs are pointwise, i.e. linear, but nn.Conv1d dispatches to much slower
         # cuBLAS kernels. squeeze(-1) on the (O, I, 1) weight is a free view, so
         # the module stays an nn.Conv1d and checkpoints are unchanged.
-        return nn.functional.linear(x, conv.weight.squeeze(-1), conv.bias)
+        # contiguous() avoids a strided-batched fp16 GEMM that hits illegal memory access on sm_120.
+        return nn.functional.linear(x.contiguous(), conv.weight.squeeze(-1), conv.bias)
 
     def forward(self, x, pad_mask=None, cache=None):
         x = self._apply_pointwise(x, self.pointwise_conv1)
@@ -546,9 +597,15 @@ class ConformerConvolution(nn.Module):
         The padded forward includes the padded frames,
         which hold the bias and the boundary tails of the depthwise convolution,
         so the two forms differ in training mode by the share of padding in the batch and agree in evaluation mode.
-        Instance and group normalization need per-utterance statistics and are not supported here.
+        Instance and group normalization take the statistics of every utterance from its own frames,
+        in both modes (see ``_utterance_norm_packed``),
+        so an utterance gets the result of the padded forward on that utterance alone;
+        the padded forward of a batch counts the padded frames of the shorter utterances into their statistics.
+        The normalization takes the utterance boundaries from ``context`` where the kernel runs, else from ``layout``.
         Without any frame (a rank whose share of a batch is empty) the convolution is skipped
-        and its parameters keep a zero gradient edge.
+        and its parameters keep a zero gradient edge;
+        a single valid frame, which ``BatchNorm1d`` refuses to normalize in training mode,
+        is normalized to the bias (see ``_batch_norm_one_frame``).
 
         Args:
             x: input signals, shape ``(T_total, d_model)``.
@@ -561,8 +618,6 @@ class ConformerConvolution(nn.Module):
         Returns:
             The module output, shape ``(T_total, d_model)``.
         """
-        if self.norm_type == 'instance_norm' or self.norm_type.startswith('group_norm'):
-            raise NotImplementedError(f"conv_norm_type={self.norm_type} has no sequence-packed form.")
         x = self._apply_pointwise(x, self.pointwise_conv1)
         if self.pointwise_activation == 'glu_':
             x = nn.functional.glu(x, dim=-1)
@@ -616,9 +671,96 @@ class ConformerConvolution(nn.Module):
                 raise NotImplementedError(
                     f"capacity mode has masked batch statistics for nn.BatchNorm1d only, got {type(norm).__name__}."
                 )
-        x = norm(x) if valid is None else _masked_batch_norm(norm, x, valid)
+        if valid is not None:
+            x = _masked_batch_norm(norm, x, valid)
+        elif self.norm_type == 'batch_norm' and self.batch_norm.training and x.shape[0] == 1:
+            x = self._batch_norm_one_frame(x)
+        elif self.norm_type == 'instance_norm' or self.norm_type.startswith('group_norm'):
+            x = self._utterance_norm_packed(x, layout, context)
+        else:
+            x = norm(x)
         x = self.activation(x)
         return self._apply_pointwise(x, self.pointwise_conv2)
+
+    def sequence_packed_unsupported_reason(self) -> str | None:
+        """Why ``forward_packed`` cannot run this module, or None when it can.
+
+        The encoder asks the convolution block of every layer; this module runs every norm type.
+        """
+        return None
+
+    def _batch_norm_one_frame(self, x: torch.Tensor) -> torch.Tensor:
+        """Training-mode batch normalization of a batch that holds one valid frame, which ``BatchNorm1d`` refuses.
+
+        The frame is its own batch mean, so its normalized value is zero and the output is the bias,
+        the limit of the training formula for a vanishing batch variance.
+        The running mean moves towards the frame as it does for any batch,
+        and the running variance keeps its value, since one frame has no unbiased variance.
+        The frame and the weight keep their (zero) gradient edges.
+        """
+        batch_norm = self.batch_norm
+        if batch_norm.track_running_stats and batch_norm.running_mean is not None:
+            with torch.no_grad():
+                batch_norm.num_batches_tracked += 1
+                momentum = batch_norm.momentum
+                if momentum is None:  # cumulative moving average
+                    momentum = 1.0 / float(batch_norm.num_batches_tracked)
+                frame = x[0].to(batch_norm.running_mean.dtype)
+                batch_norm.running_mean.mul_(1.0 - momentum).add_(frame, alpha=momentum)
+        return x * 0.0 + batch_norm.weight.to(x.dtype) * 0.0 + batch_norm.bias.to(x.dtype)
+
+    def _utterance_norm_packed(
+        self,
+        x: torch.Tensor,
+        layout: PackedSlotLayout | None,
+        context: PackedAttentionContext | None = None,
+    ) -> torch.Tensor:
+        """Instance or group normalization of token-flat input ``(T_total, C)``, per utterance.
+
+        The utterance lengths and indices are those of ``context`` when it is given, else those of ``layout``
+        (the encoder builds the layout only where the depthwise convolution kernel does not run).
+        Mean and variance of a group are taken over the frames of one utterance and the channels of the group,
+        as ``InstanceNorm1d`` (one channel per group) and ``GroupNorm`` take them over ``(C / G, T)`` of a batch row.
+        float16 and bfloat16 input is normalized in float32 and cast back:
+        without autocast half-precision squares overflow and the sums lose the small terms,
+        and in either case a mean rounded to half precision before the subtraction
+        costs several percent of the output where the mean is large against the spread.
+        A group with a single value, one frame of a one-channel group, which both modules refuse,
+        has no variance and is normalized to the bias.
+        """
+        norm = self.batch_norm
+        num_groups = norm.num_groups if isinstance(norm, nn.GroupNorm) else x.shape[1]
+        # the lengths and utterance indices the context or the layout was built from, the same tensors for every
+        # layer; no step here reads a value back from the device
+        if context is not None:
+            sequence_ids, lengths = context.sequence_ids, context.lengths
+        elif layout is not None:
+            sequence_ids, lengths = layout.sequence_ids, layout.lengths
+            if sequence_ids is None or lengths is None:
+                # a layout built without them: utterances without frames can share their slot start
+                # with the next utterance, so a token belongs to the last utterance that starts at or before its slot
+                sequence_ids = torch.bucketize(layout.token_slots, layout.slot_offsets[1:], right=True)
+                lengths = sequence_ids.new_zeros(layout.slot_offsets.numel())
+                lengths = lengths.index_add_(0, sequence_ids, torch.ones_like(sequence_ids))
+        else:
+            raise ValueError("Instance and group normalization over packed input need the layout or the context.")
+        counts = lengths.clamp(min=1) * (x.shape[1] // num_groups)
+
+        def utterance_mean(values: torch.Tensor) -> torch.Tensor:
+            """(T_total, G, C / G) to the mean over the utterance's frames and the group, per token (T_total, G, 1)."""
+            # the tokens of an utterance are consecutive; segment_reduce adds them in a fixed order,
+            # which index_add on CUDA does not, and the lengths are those of the context or the layout,
+            # so they need no check
+            sums = torch.segment_reduce(values.sum(dim=2), "sum", lengths=lengths, unsafe=True)
+            return _UtteranceValuePerToken.apply(sums / counts.unsqueeze(1), sequence_ids, lengths).unsqueeze(2)
+
+        dtype = x.dtype
+        x = x.to(torch.promote_types(dtype, torch.float32)).unflatten(1, (num_groups, -1))
+        x = x - utterance_mean(x)
+        x = (x * torch.rsqrt(utterance_mean(x.square()) + norm.eps)).flatten(1)
+        if norm.weight is not None:
+            x = x * norm.weight.to(x.dtype) + norm.bias.to(x.dtype)
+        return x.to(dtype)
 
     def reset_parameters_conv(self):
         pw1_max = pw2_max = self.d_model**-0.5
@@ -705,3 +847,23 @@ class ConformerFeedForward(nn.Module):
             if self.use_bias:
                 nn.init.uniform_(self.linear1.bias, -ffn1_max, ffn1_max)
                 nn.init.uniform_(self.linear2.bias, -ffn2_max, ffn2_max)
+
+
+class _UtteranceValuePerToken(torch.autograd.Function):
+    """One row per utterance ``(B, ...)`` repeated for every token of the utterance, ``(T_total, ...)``.
+
+    The same values as ``values.index_select(0, sequence_ids)``.
+    Its backward adds the token gradients of an utterance with ``segment_reduce``, in a fixed order,
+    where the backward of ``index_select`` is an ``index_add``, whose result on CUDA changes from run to run.
+    """
+
+    @staticmethod
+    def forward(ctx, values: torch.Tensor, sequence_ids: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+        ctx.save_for_backward(lengths)
+        return values.index_select(0, sequence_ids)
+
+    @staticmethod
+    @torch.autograd.function.once_differentiable
+    def backward(ctx, grad_output: torch.Tensor) -> tuple[torch.Tensor, None, None]:
+        (lengths,) = ctx.saved_tensors
+        return torch.segment_reduce(grad_output, "sum", lengths=lengths, unsafe=True), None, None

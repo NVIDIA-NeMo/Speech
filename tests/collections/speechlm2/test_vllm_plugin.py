@@ -22,6 +22,7 @@ weights.
 
 import contextlib
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -149,6 +150,64 @@ def test_dflash2_normalization_requires_canonical_only_runtime(supported_archs):
     _salm_module._normalize_dflash2_architecture(config, supported_archs=supported_archs)
 
     assert config.architectures == ["Qwen3DFlash2DraftModel"]
+
+
+def _install_fake_vllm(monkeypatch, version):
+    """Install a minimal vLLM whose model config module lacks ``NemotronHForCausalLMConfig``."""
+    config_registry = {}
+    modules = {
+        "vllm": SimpleNamespace(__version__=version),
+        "vllm.transformers_utils": SimpleNamespace(),
+        "vllm.transformers_utils.config": SimpleNamespace(_CONFIG_REGISTRY=config_registry),
+        "vllm.model_executor": SimpleNamespace(),
+        "vllm.model_executor.models": SimpleNamespace(),
+        "vllm.model_executor.models.config": SimpleNamespace(MODELS_CONFIG_MAP={}),
+        "vllm.model_executor.models.registry": SimpleNamespace(ModelRegistry=SimpleNamespace()),
+    }
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.delitem(sys.modules, "nemo.collections.speechlm2.vllm.salm.config_hook", raising=False)
+    # register() writes this variable; setting it before deleting it makes monkeypatch restore the original state.
+    monkeypatch.setenv("VLLM_WORKER_MULTIPROC_METHOD", "")
+    monkeypatch.delenv("VLLM_WORKER_MULTIPROC_METHOD")
+    return config_registry
+
+
+@pytest.mark.skipif(not _HAS_CONFIG, reason="SpeechLM vLLM plugin not available")
+def test_register_skips_unsupported_vllm_without_breaking_other_models(monkeypatch, caplog):
+    """vLLM loads general plugins for every model; an old vLLM must keep serving unrelated models."""
+    config_registry = _install_fake_vllm(monkeypatch, "0.12.0")
+
+    with caplog.at_level("WARNING", logger=_salm_module.__name__):
+        _salm_module.register()
+
+    assert config_registry == {}
+    assert "requires vllm>=" in caplog.text
+
+
+@pytest.mark.skipif(not _HAS_CONFIG, reason="SpeechLM vLLM plugin not available")
+@pytest.mark.parametrize("version", ("0.32.0", "0.32.0rc1", "0.33.0.dev1+gabc"))
+def test_register_does_not_skip_supported_vllm(monkeypatch, version):
+    config_registry = _install_fake_vllm(monkeypatch, version)
+
+    # The fake vLLM lacks the internals the plugin needs, so registration proceeds and fails loudly.
+    with pytest.raises(ImportError, match="NemotronHForCausalLMConfig"):
+        _salm_module.register()
+
+    assert "nemo_speechlm" in config_registry
+
+
+@pytest.mark.skipif(not _HAS_CONFIG, reason="SpeechLM vLLM plugin not available")
+@pytest.mark.parametrize(("preset", "expected"), ((None, "spawn"), ("fork", "fork")))
+def test_register_defaults_vllm_workers_to_spawn(monkeypatch, preset, expected):
+    """Importing the plugin initializes CUDA, so a forked engine process would fail; explicit choices win."""
+    _install_fake_vllm(monkeypatch, "0.12.0")
+    if preset is not None:
+        monkeypatch.setenv("VLLM_WORKER_MULTIPROC_METHOD", preset)
+
+    _salm_module.register()
+
+    assert os.environ["VLLM_WORKER_MULTIPROC_METHOD"] == expected
 
 
 @pytest.mark.skipif(not _HAS_CONFIG, reason="SpeechLM vLLM plugin not available")
@@ -956,7 +1015,10 @@ class TestAudioProcessing:
         model._uses_pe_encoder = True
         return model
 
-    def test_independent_speaker_encoder_mount_reconstructs_dual_encoder(self, monkeypatch, tmp_path):
+    @pytest.mark.parametrize("fallback_option, allowed", [({}, False), ({"allow_padded_fallback": True}, True)])
+    def test_independent_speaker_encoder_mount_reconstructs_dual_encoder(
+        self, monkeypatch, tmp_path, fallback_option, allowed
+    ):
         import torch
 
         from nemo.collections.speechlm2.modules.perception import IdentityConnector, IndependentDualEncoder
@@ -999,6 +1061,7 @@ class TestAudioProcessing:
                 "frozen": True,
                 "chunk_size_seconds": 120.0,
                 "asr_chunk_size_seconds": None,
+                **fallback_option,
             },
         )
 
@@ -1010,6 +1073,7 @@ class TestAudioProcessing:
         assert perception.encoder.asr_chunk_size_seconds is None
         assert perception.encoder.auxiliary_chunk_size_seconds == 120.0
         assert perception.encoder.freeze_auxiliary is True
+        assert perception.encoder.allow_padded_fallback is allowed
         assert all(not parameter.requires_grad for parameter in speaker.parameters())
         assert perception.proj.in_features == 8
         assert perception.proj.out_features == 7
@@ -1741,6 +1805,7 @@ class TestAudioProcessing:
         assert runner(audio, lengths) is None
         assert len(attempts) == 2 and runner.graphs == {} and runner.pool is None and not runner.enabled
 
+    @pytest.mark.gpu
     def test_encoder_graph_runner_failed_capture_leaves_eager_inference_working(self, monkeypatch):
         """A capture that syncs the host fails; the eager forward still runs on the same device afterwards."""
         import torch
@@ -1762,6 +1827,7 @@ class TestAudioProcessing:
             emb, emb_len = perception(input_signal=audio, input_signal_length=lengths)
         assert torch.isfinite(emb).all() and emb_len.tolist()[0] > 0
 
+    @pytest.mark.gpu
     def test_encoder_graph_runner_matches_eager_forward(self):
         """Graph replays over padded buckets return the eager forward's per-row embeddings."""
         import torch
@@ -1787,6 +1853,7 @@ class TestAudioProcessing:
         assert runner(torch.randn(1, 30000, device="cuda"), torch.tensor([30000], device="cuda")) is None
         assert {b for b, _ in runner.graphs} <= {4, 8, 16}
 
+    @pytest.mark.gpu
     def test_perception_forward(self):
         """A small NeMo perception module should encode dummy audio to embeddings."""
         import torch
@@ -2384,6 +2451,24 @@ class TestMTPPlugin:
         assert result is hf_cfg
         assert original_calls == [hf_cfg]
         assert salm_module._ORIGINAL_VLLM_HF_CONFIG_OVERRIDE is _recording_native
+
+    def test_patched_override_forwards_native_hook_arguments(self, monkeypatch):
+        """vLLM 0.33 calls the hook with ``transformers_mtp_overrides``; unrelated configs must pass it through."""
+        from nemo.collections.speechlm2.vllm import salm as salm_module
+
+        native_calls = []
+
+        def _recording_native(cfg, *args, **kwargs):
+            native_calls.append((cfg, args, kwargs))
+            return cfg
+
+        monkeypatch.setattr(salm_module, "_ORIGINAL_VLLM_HF_CONFIG_OVERRIDE", _recording_native)
+        hf_cfg = self._HFConfigLike(model_type="unrelated")
+        overrides = {"n_predict": 2}
+        result = salm_module._nemo_speechlm_mtp_hf_config_override(hf_cfg, transformers_mtp_overrides=overrides)
+
+        assert result is hf_cfg
+        assert native_calls == [(hf_cfg, (), {"transformers_mtp_overrides": overrides})]
 
     def test_patched_override_rejects_missing_native_hook(self, monkeypatch):
         """A corrupted install must fail clearly instead of recursing into our override."""

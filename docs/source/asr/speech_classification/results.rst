@@ -44,7 +44,7 @@ You may perform inference and transcribe a sample of speech after loading the mo
 
 Setting argument ``logprobs`` to True would return the log probabilities instead of transcriptions. You may find more details in :ref:`Modules <asr-api-modules>`.
 
-Learn how to fine tune on your own data or on subset classes in ``<NeMo_git_root>/tutorials/asr/Speech_Commands.ipynb``
+Learn how to fine tune on your own data or on subset classes with ``<NeMo_git_root>/examples/asr/speech_classification/speech_to_label.py``.
 
 
 `Run VAD inference:`

@@ -23,8 +23,7 @@ from torch.nn import LayerNorm
 from nemo.collections.asr.parts.packed_sequence import (
     PackedEncoderActivations,
     PackedSlotLayout,
-    _lengths_to_cu_seqlens,
-    _new_packed_encoder_activations,
+    lengths_to_cu_seqlens,
     packed_slot_layout,
 )
 from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D, CausalConv2D
@@ -129,7 +128,7 @@ class FeatureStacking(nn.Module):
             slots[slot_positions + local_positions] = packed.data
         stacked = slots.reshape(-1, self.proj.in_features)
         max_seqlen = self.compute_num_out_frames(packed.max_seqlen)
-        return _new_packed_encoder_activations(stacked, output_lengths, output_cu_seqlens, max_seqlen)
+        return PackedEncoderActivations.from_validated(stacked, output_lengths, output_cu_seqlens, max_seqlen)
 
 
 class StackingSubsampling(torch.nn.Module):
@@ -636,10 +635,9 @@ class ConvSubsampling(torch.nn.Module):
         Returns:
             The subsampled features, data of shape ``(sum(T'_i), feat_out)``.
         """
-        if not self.conv2d_subsampling or self._subsampling == 'vggnet':
-            raise NotImplementedError(f"subsampling={self._subsampling!r} has no sequence-packed form.")
-        if self.is_causal:
-            raise NotImplementedError("Causal subsampling has no sequence-packed form.")
+        reason = self.sequence_packed_unsupported_reason()
+        if reason is not None:
+            raise NotImplementedError(reason)
         if packed.data.shape[1] != self._feat_in:
             raise ValueError(f"Packed features must have width {self._feat_in}, got {packed.data.shape[1]}.")
         self._check_packed_stack_gaps()
@@ -649,7 +647,7 @@ class ConvSubsampling(torch.nn.Module):
             for parameter in self.conv.parameters():
                 anchor = anchor + parameter.sum().to(anchor.dtype) * 0.0
             empty = self.out(packed.data.new_zeros((0, self.out.in_features))) + anchor
-            return _new_packed_encoder_activations(empty, packed.lengths, packed.cu_seqlens, 0)
+            return PackedEncoderActivations.from_validated(empty, packed.lengths, packed.cu_seqlens, 0)
         layout = packed_slot_layout(packed, alignment=self.subsampling_factor, gap=self.subsampling_factor)
         if packed.bounded:
             # capacity mode: one group over the slot capacity, the output buffer sized by the frame capacity,
@@ -662,8 +660,8 @@ class ConvSubsampling(torch.nn.Module):
                 packed.data, packed.lengths, layout.slot_offsets, layout.token_slots, layout.total_slots, total_out
             )
             out_lengths = out_lengths.to(torch.int64)
-            return _new_packed_encoder_activations(
-                data, out_lengths, _lengths_to_cu_seqlens(out_lengths), out_bound, bounded=True
+            return PackedEncoderActivations.from_validated(
+                data, out_lengths, lengths_to_cu_seqlens(out_lengths), out_bound, bounded=True
             )
         outputs = []
         lengths = []
@@ -683,8 +681,8 @@ class ConvSubsampling(torch.nn.Module):
             lengths.append(out_lengths)
         out_lengths = torch.cat(lengths).to(torch.int64)
         max_seqlen = int(out_lengths.max().item()) if out_lengths.numel() else 0
-        return _new_packed_encoder_activations(
-            torch.cat(outputs), out_lengths, _lengths_to_cu_seqlens(out_lengths), max_seqlen
+        return PackedEncoderActivations.from_validated(
+            torch.cat(outputs), out_lengths, lengths_to_cu_seqlens(out_lengths), max_seqlen
         )
 
     def _packed_output_frames(self, frames: int) -> int:
@@ -698,6 +696,18 @@ class ConvSubsampling(torch.nn.Module):
 
     def _strided_stages(self) -> int:
         return sum(1 for layer in self.conv if hasattr(layer, 'stride') and layer.stride != (1, 1))
+
+    def sequence_packed_unsupported_reason(self) -> str | None:
+        """Why ``forward_packed`` cannot run this stack, or None when it can.
+
+        Only the non-causal ``striding`` and ``dw_striding`` stacks have a sequence-packed form;
+        VGGNet pools with ``ceil_mode``, which the floor-mode lengths of the gapped layout do not model.
+        """
+        if not self.conv2d_subsampling or self._subsampling == 'vggnet':
+            return f"subsampling={self._subsampling!r} has no sequence-packed form."
+        if self.is_causal:
+            return "Causal subsampling has no sequence-packed form."
+        return None
 
     def _check_packed_stack_gaps(self):
         """Verify that no layer of the stack reads across utterances on the gapped time axis.

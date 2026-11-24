@@ -138,8 +138,6 @@ def _window_kernel(
             taps = taps + (tl.load(Taps + k * n_chan + offs_c, mask=c_mask, other=0.0).to(tl.float32),)
         if HAS_BIAS:
             bias = tl.load(Bias + offs_c, mask=c_mask, other=0.0).to(tl.float32)
-        else:
-            bias = taps[0]
         base = start.to(tl.int64) * n_chan + offs_c
         acc = (tl.zeros((BLOCK_C,), dtype=tl.float32),) * BLOCK_R
         for jj in tl.static_range(BLOCK_R + KW - 1):

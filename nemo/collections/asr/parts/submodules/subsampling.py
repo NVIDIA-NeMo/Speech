@@ -433,6 +433,7 @@ class ConvSubsampling(torch.nn.Module):
                 in_channels = conv_channels
 
         elif subsampling == 'striding_conv1d':
+
             in_channels = feat_in
 
             self._stride = 2
@@ -473,6 +474,7 @@ class ConvSubsampling(torch.nn.Module):
                 in_channels = conv_channels
 
         elif subsampling == 'dw_striding_conv1d':
+
             in_channels = feat_in
 
             self._stride = 2
@@ -541,6 +543,7 @@ class ConvSubsampling(torch.nn.Module):
             self.out = torch.nn.Linear(in_channels * freq, feat_out, bias=out_bias)
             self.conv2d_subsampling = True
         elif subsampling in ["vggnet", "dw_striding", "striding"]:
+
             in_length = torch.tensor(feat_in, dtype=torch.float)
             out_length = calc_length(
                 lengths=in_length,
@@ -1124,20 +1127,16 @@ class MaskedConvSequential(nn.Sequential):
             # Apply layer
             x = layer(x)
 
-            # Update lengths for stride operations with proper padding
-            if hasattr(layer, 'stride'):
-                stride = _time_axis(layer.stride)
-                if stride != 1:
-                    kernel_size = _time_axis(layer.kernel_size)
-                    ceil_mode = getattr(layer, 'ceil_mode', False)
-                    current_lengths = calculate_conv_output_size(
-                        current_lengths,
-                        kernel_size,
-                        stride,
-                        _layer_padding(layer),
-                        ceil_mode=ceil_mode,
-                    )
-                    mask = self._create_mask(x, current_lengths.long())
+            # A stride over either axis changes the shape of x, so the mask is rebuilt.
+            if hasattr(layer, 'stride') and layer.stride not in (1, (1, 1)):
+                current_lengths = calculate_conv_output_size(
+                    current_lengths,
+                    _time_axis(layer.kernel_size),
+                    _time_axis(layer.stride),
+                    _layer_padding(layer),
+                    ceil_mode=getattr(layer, 'ceil_mode', False),
+                )
+                mask = self._create_mask(x, current_lengths.long())
 
         return x, current_lengths, mask
 

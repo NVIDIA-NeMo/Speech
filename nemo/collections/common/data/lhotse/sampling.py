@@ -613,7 +613,8 @@ class CustomFieldFilter:
             ``in`` (a list of bools, numbers or strings),
             and optionally ``keep_if_missing`` (default ``True``), whether an example without the field passes.
             A bool, a number or a string in place of the mapping stands for ``{"eq": value}``.
-            A value that cannot be compared with the operand, such as ``None`` with ``gt``, fails the condition.
+            A value that is not a number fails ``gt``, ``ge``, ``lt`` and ``le``,
+            and a value that is not a bool, a number, a string or ``None`` (a list, say) fails every operator.
             ``None`` or an empty mapping disables the filter.
 
     Example::
@@ -700,10 +701,14 @@ class CustomFieldFilter:
                     return False
                 continue
             for key, operand in checks:
-                try:
-                    if not _CUSTOM_FIELD_OPERATORS[key](value, operand):
+                if key in _CUSTOM_FIELD_ORDER_OPERATORS:
+                    # Only a number orders with the numeric operand, not None or a string.
+                    if not isinstance(value, (Real, np.bool_)):
                         return False
-                except (TypeError, ValueError):  # e.g. None or a string against a number, or an array value
+                elif value is not None and not isinstance(value, (Real, np.bool_, str)):
+                    # A list, a mapping or an array equals no operand.
+                    return False
+                if not _CUSTOM_FIELD_OPERATORS[key](value, operand):
                     return False
         return True
 

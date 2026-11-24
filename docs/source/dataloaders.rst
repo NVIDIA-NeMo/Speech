@@ -1942,8 +1942,9 @@ An unknown operator or an operand of another type raises an error when the datal
   A bool value orders as the number ``1`` or ``0``.
 * A ``null`` in the manifest is a value, not a missing field:
   it differs from every operand, so it fails ``eq`` and ``in`` and passes ``neq``.
-  A value that cannot be compared with the operand,
-  such as ``null`` or a string with ``gt``, does not meet the condition, so the example is dropped.
+  A value that is not a number, such as ``null`` or a string, does not meet ``gt``, ``ge``, ``lt`` or ``le``,
+  and a value that is a list or a mapping meets no operator, also not ``neq``;
+  in both cases the example is dropped.
 * ``keep_if_missing`` belongs inside the condition of a field; at the top level of the option it raises an error.
 * In YAML, quote strings that YAML reads as another type:
   an unquoted ``yes`` or ``on`` is a bool there and does not match the string ``"yes"``.

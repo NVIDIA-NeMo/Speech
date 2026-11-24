@@ -32,6 +32,7 @@ class TimestampHead(nn.Module):
         projection_size: int = 128,
         pos_weight: float = 1.0,
         ignore_index: int = IGNORE_INDEX,
+        local_count_loss: Optional[Mapping] = None,
     ):
         super().__init__()
         if hidden_size <= 0 or projection_size <= 0:
@@ -47,6 +48,25 @@ class TimestampHead(nn.Module):
         if isinstance(pos_weight, bool) or weight.ndim != 0 or not torch.isfinite(weight) or weight <= 0:
             raise ValueError('pos_weight must be a finite positive scalar')
         self.register_buffer('pos_weight', weight, persistent=False)
+        count_config = {} if local_count_loss is None else local_count_loss
+        if not isinstance(count_config, Mapping):
+            raise ValueError('local_count_loss must be a mapping')
+        self.local_count_loss_enabled = count_config.get('enabled', False)
+        if not isinstance(self.local_count_loss_enabled, bool):
+            raise ValueError('local_count_loss.enabled must be boolean')
+        count_weight = count_config.get('weight', 2.0)
+        if isinstance(count_weight, bool) or not isinstance(count_weight, (int, float)):
+            raise ValueError('local_count_loss.weight must be finite and nonnegative')
+        self.local_count_loss_weight = float(count_weight)
+        if not math.isfinite(self.local_count_loss_weight) or self.local_count_loss_weight < 0:
+            raise ValueError('local_count_loss.weight must be finite and nonnegative')
+        self.local_count_window_size = count_config.get('window_size', 5)
+        if (
+            isinstance(self.local_count_window_size, bool)
+            or not isinstance(self.local_count_window_size, int)
+            or self.local_count_window_size < 2
+        ):
+            raise ValueError('local_count_loss.window_size must be an integer of at least two frames')
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """Return logits shaped ``(..., frames)`` without modifying the input."""
@@ -60,6 +80,46 @@ class TimestampHead(nn.Module):
         Targets are NONEND=0 or END=1. ``pos_weight`` scales positive examples;
         the mean denominator is the number of supervised frames, as in PyTorch BCE.
         """
+        selected = self._supervision_mask(logits, labels, valid_mask)
+        selected_logits = logits[selected].float()
+        selected_labels = labels[selected].float()
+        if selected_labels.numel() == 0:
+            return selected_logits.sum()
+        return F.binary_cross_entropy_with_logits(selected_logits, selected_labels, pos_weight=self.pos_weight.float())
+
+    def compute_local_count_loss(
+        self,
+        logits: torch.Tensor,
+        labels: torch.Tensor,
+        valid_mask: Optional[torch.Tensor] = None,
+        eos_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Match expected and target END counts in fully supervised sliding windows.
+
+        Return the unweighted FP32 mean squared count error. Invalid frames break
+        windows; speech EOS can close a window but cannot occur inside it. Thus
+        neighboring turns cannot cancel each other's count errors. Targets count
+        binary events, including genuine adjacent ENDs and coalesced collisions.
+        Sequences without a complete usable window receive a differentiable zero.
+        """
+        selected = self._supervision_mask(logits, labels, valid_mask)
+        if logits.ndim == 0:
+            raise ValueError('Local count loss requires a frame dimension')
+        if eos_mask is not None and (eos_mask.shape != labels.shape or eos_mask.dtype != torch.bool):
+            raise ValueError('eos_mask must be boolean and have the same shape as labels')
+        safe_logits = logits.float().masked_fill(~selected, 0)
+        window = self.local_count_window_size
+        if logits.size(-1) < window:
+            return safe_logits.sum() * 0
+        safe_labels = labels.masked_fill(~selected, 0).float()
+        error = (safe_logits.sigmoid() - safe_labels).masked_fill(~selected, 0)
+        windows = selected.unfold(-1, window, 1).all(dim=-1)
+        if eos_mask is not None:
+            windows = windows & ~eos_mask.unfold(-1, window, 1)[..., :-1].any(dim=-1)
+        count_error = error.unfold(-1, window, 1).sum(dim=-1).masked_fill(~windows, 0)
+        return count_error.square().sum() / windows.sum().clamp_min(1)
+
+    def _supervision_mask(self, logits, labels, valid_mask):
         if logits.shape != labels.shape:
             raise ValueError('Timestamp logits and labels must have the same shape')
         selected = labels != self.ignore_index
@@ -67,11 +127,7 @@ class TimestampHead(nn.Module):
             if valid_mask.shape != labels.shape or valid_mask.dtype != torch.bool:
                 raise ValueError('valid_mask must be boolean and have the same shape as labels')
             selected = selected & valid_mask
-        selected_logits = logits[selected].float()
-        selected_labels = labels[selected].float()
-        if selected_labels.numel() == 0:
-            return selected_logits.sum()
-        return F.binary_cross_entropy_with_logits(selected_logits, selected_labels, pos_weight=self.pos_weight.float())
+        return selected
 
 
 @dataclass(frozen=True)

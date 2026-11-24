@@ -64,6 +64,28 @@ intervals, rather than measured phonetic offsets.
 
 The small head uses LayerNorm, a 128-unit projection, GELU, and one output.
 `timestamp_head.pos_weight` controls BCE positive weighting (default 1.0).
+An optional local count penalty adds a squared difference between the sum of
+END probabilities and binary END targets in each fully supervised sliding
+window. Enable it with:
+
+```bash
+++model.timestamp_head.local_count_loss.enabled=true \
+++model.timestamp_head.local_count_loss.weight=2.0 \
+++model.timestamp_head.local_count_loss.window_size=5
+```
+
+It defaults to disabled. Five frames cover 400 ms at 12.5 Hz; weight 2.0 is
+a strong initial coefficient to validate, not a tuned optimum. The timestamp
+objective is `BCE + weight * local_count_loss`; `timestamp_head.loss_weight`
+scales that complete objective. Invalid frames break windows, and speech EOS
+can close a window but cannot occur inside one, keeping turns independent.
+Sequences shorter than the window retain BCE supervision. Genuine adjacent
+ENDs remain valid, and target counts use binary frame labels after collisions.
+The penalty is computed in FP32 and adds no inference state or lookahead.
+It constrains expected counts, not the number of thresholded END events.
+When enabled, `timestamp_bce_loss`, `timestamp_local_count_loss`, and
+`timestamp_local_count_loss_weighted` are logged under both `train/` and `val/`.
+
 `train/timestamp_loss`, `val/timestamp_loss`, supervised-frame accuracy,
 valid/invalid turn counts, boundary collisions, and supervised-frame counts
 are logged. This is an experimental training target; successful forced

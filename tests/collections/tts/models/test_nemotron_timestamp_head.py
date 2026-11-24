@@ -11,6 +11,7 @@ from lhotse.utils import compute_num_frames
 from lightning.pytorch.loggers import WandbLogger
 from omegaconf import OmegaConf
 from torch import nn
+from torch.nn import functional as F
 
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import (
     build_token_channel,
@@ -738,6 +739,124 @@ def test_zero_timestamp_loss_weight_preserves_audio_logits_and_base_loss():
     assert baseline_output.timestamp_loss is None
 
 
+def test_disabled_local_count_loss_preserves_bce_and_never_computes_windows():
+    baseline = _timestamp_model(multiturn=False).eval()
+    observed = _timestamp_model(
+        multiturn=False, local_count_loss={'enabled': False, 'weight': 20.0, 'window_size': 3}
+    ).eval()
+    with patch.object(
+        observed.timestamp_head,
+        'compute_local_count_loss',
+        side_effect=AssertionError('Disabled local count loss must not compute windows'),
+    ):
+        expected = baseline.process_batch(**_inputs(baseline), timestamp_batch=_raw_batch(), mode='val')
+        actual = observed.process_batch(**_inputs(observed), timestamp_batch=_raw_batch(), mode='val')
+    torch.testing.assert_close(actual.loss, expected.loss, rtol=0, atol=0)
+    torch.testing.assert_close(actual.timestamp_loss, expected.timestamp_loss, rtol=0, atol=0)
+    torch.testing.assert_close(actual.logits, expected.logits, rtol=0, atol=0)
+    assert actual.timestamp_metrics.keys() == expected.timestamp_metrics.keys()
+    assert 'local_count_loss' not in actual.timestamp_metrics
+
+
+@pytest.mark.parametrize('text_input_mode,audio_delay', [('streaming', 1), ('full', 5)])
+def test_local_count_loss_uses_the_masked_audio_grid_and_keeps_terminal_eos(text_input_mode, audio_delay):
+    model = _timestamp_model(multiturn=False, local_count_loss={'enabled': True, 'weight': 2.0, 'window_size': 3})
+    inputs = _inputs(model)
+    inputs['context_text_tokens'] = torch.empty(1, 0, dtype=torch.long)
+    inputs['context_text_tokens_lens'] = torch.tensor([0])
+    hidden, projected = [], []
+    decoder_hook = model.decoder.register_forward_hook(
+        lambda _module, _args, output: hidden.append(output.last_hidden_state)
+    )
+    head_hook = model.timestamp_head.register_forward_pre_hook(lambda _module, args: projected.append(args[0]))
+    logits = torch.logit(torch.tensor([[0.1, 0.99, 0.8, 0.7, 0.6]], requires_grad=True))
+    try:
+        with (
+            patch.object(model.timestamp_head, 'forward', return_value=logits),
+            patch.object(
+                model.timestamp_head,
+                'compute_local_count_loss',
+                wraps=model.timestamp_head.compute_local_count_loss,
+            ) as count,
+        ):
+            output = model.process_batch(
+                **inputs,
+                timestamp_batch=_raw_batch(),
+                mode='val',
+                training_mode=TrainingMode(text_input_mode, 0, 1, 0),
+                agent_mask=torch.tensor([[True, False, True, True]]),
+            )
+    finally:
+        decoder_hook.remove()
+        head_hook.remove()
+    frames = output.audio_codes_target.size(-1)
+    torch.testing.assert_close(projected[0], hidden[0][:, audio_delay : audio_delay + frames], rtol=0, atol=0)
+    assert output.timestamp_targets.tolist() == [[NONEND, IGNORE_INDEX, END, NONEND, END]]
+    assert output.timestamp_mask.tolist() == [[True, False, True, True, True]]
+    torch.testing.assert_close(count.call_args.args[1], output.timestamp_targets)
+    torch.testing.assert_close(count.call_args.args[2], output.timestamp_mask)
+    assert count.call_args.kwargs['eos_mask'].tolist() == [[False, False, False, False, True]]
+    bce = F.binary_cross_entropy_with_logits(
+        logits[output.timestamp_mask], output.timestamp_targets[output.timestamp_mask].float()
+    )
+    # The sole complete usable window has probabilities .8+.7+.6 and two END targets.
+    expected_count = torch.tensor((0.8 + 0.7 + 0.6 - 2.0) ** 2)
+    torch.testing.assert_close(output.timestamp_metrics['bce_loss'], bce.detach())
+    torch.testing.assert_close(output.timestamp_metrics['local_count_loss'], expected_count)
+    torch.testing.assert_close(output.timestamp_metrics['local_count_loss_weighted'], 2 * expected_count)
+    torch.testing.assert_close(output.timestamp_loss, bce + 2 * expected_count)
+    base_loss = (
+        model.parallel_codebook_loss_scale * output.codebook_loss
+        + model.acoustic_codes_predictor_loss_scale * output.acoustic_codes_predictor_loss
+    )
+    torch.testing.assert_close(output.loss, base_loss + model.timestamp_head_loss_weight * output.timestamp_loss)
+    for name in ('bce_loss', 'local_count_loss', 'local_count_loss_weighted'):
+        assert not output.timestamp_metrics[name].requires_grad
+
+
+def test_local_count_loss_trains_head_and_backbone_and_reuses_metric_reduction():
+    model = _timestamp_model(multiturn=False, local_count_loss={'enabled': True, 'window_size': 3})
+    counts = []
+    compute = model.timestamp_head.compute_local_count_loss
+
+    def collect(*args, **kwargs):
+        value = compute(*args, **kwargs)
+        counts.append(value)
+        return value
+
+    with patch.object(model.timestamp_head, 'compute_local_count_loss', side_effect=collect):
+        output = model.process_batch(**_inputs(model), timestamp_batch=_raw_batch(), mode='val')
+    # The detached logging values do not sever the actual count-loss graph.
+    counts[0].backward()
+    assert model.timestamp_head.projection[-1].weight.grad.abs().sum() > 0
+    assert model.decoder.layers[2].mixer.q_proj.weight.grad.abs().sum() > 0
+    assert all(parameter.grad is None for parameter in model._timestamp_teacher.parameters())
+    reduced = []
+
+    def reduce(packed, reduce_op):
+        assert reduce_op == 'mean' and not packed.requires_grad
+        reduced.append(packed)
+        return packed
+
+    model._trainer = SimpleNamespace(strategy=SimpleNamespace(reduce=reduce))
+    with patch.object(model, 'log_dict') as log:
+        model._log_timestamp_losses(output, 'train', batch_size=1)
+    assert len(reduced) == 1
+    for name in ('bce_loss', 'local_count_loss', 'local_count_loss_weighted'):
+        torch.testing.assert_close(log.call_args.args[0][f'train/timestamp_{name}'], output.timestamp_metrics[name])
+
+
+def test_zero_outer_timestamp_weight_preserves_base_loss_with_local_count_enabled():
+    baseline = _timestamp_model(enabled=False, multiturn=False).eval()
+    observed = _timestamp_model(multiturn=False, local_count_loss={'enabled': True, 'window_size': 3}).eval()
+    observed.timestamp_head_loss_weight = 0.0
+    expected = baseline.process_batch(**_inputs(baseline), mode='val')
+    actual = observed.process_batch(**_inputs(observed), timestamp_batch=_raw_batch(), mode='val')
+    torch.testing.assert_close(actual.logits, expected.logits, rtol=0, atol=0)
+    torch.testing.assert_close(actual.loss, expected.loss, rtol=0, atol=0)
+    assert actual.timestamp_loss.requires_grad and actual.timestamp_metrics['local_count_loss'] > 0
+
+
 def test_class_metrics_expose_missing_word_ends_when_every_prediction_is_nonend():
     model = _timestamp_model(multiturn=False)
     model._timestamp_teacher.records = [
@@ -1003,7 +1122,7 @@ class _FrozenTeacher(nn.Module):
         ]
 
 
-def _timestamp_model(enabled=True, multiturn=True):
+def _timestamp_model(enabled=True, multiturn=True, local_count_loss=None):
     model = _training_model(enabled=False, multiturn=multiturn)
     model._device = next(model.parameters()).device
     model.use_timestamp_head = enabled
@@ -1012,7 +1131,7 @@ def _timestamp_model(enabled=True, multiturn=True):
     model.text_conditioning_tokenizer_name = 'bpe'
     model.tokenizer = _ReferenceTokenizer()
     if enabled:
-        model.timestamp_head = TimestampHead(16)
+        model.timestamp_head = TimestampHead(16, local_count_loss=local_count_loss)
         object.__setattr__(model, '_timestamp_teacher', _FrozenTeacher())
     return model
 

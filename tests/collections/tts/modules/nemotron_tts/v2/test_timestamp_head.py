@@ -305,6 +305,145 @@ def test_loss_rejects_mismatched_shapes_and_nonboolean_masks():
         head.compute_loss(torch.zeros(2), torch.zeros(2), torch.ones(2))
 
 
+def test_local_count_configuration_preserves_checkpoint_and_bce_compatibility():
+    original = TimestampHead(4)
+    assert not original.local_count_loss_enabled
+    assert original.local_count_loss_weight == 2.0 and original.local_count_window_size == 5
+    enabled = TimestampHead(4, local_count_loss={'enabled': True, 'weight': 0.0, 'window_size': 2})
+    assert enabled.local_count_loss_enabled and enabled.local_count_loss_weight == 0.0
+    assert enabled.local_count_window_size == 2
+    enabled.load_state_dict(original.state_dict(), strict=True)
+    assert enabled.state_dict().keys() == original.state_dict().keys()
+    hidden, labels = torch.randn(2, 6, 4), torch.tensor([[0, 1, 0, 0, 1, 0], [1, 0, 0, 1, 0, 0]])
+    torch.testing.assert_close(enabled(hidden), original(hidden), rtol=0, atol=0)
+    torch.testing.assert_close(
+        enabled.compute_loss(enabled(hidden), labels), original.compute_loss(original(hidden), labels), rtol=0, atol=0
+    )
+
+
+@pytest.mark.parametrize(
+    'config',
+    [
+        {'enabled': 'true'},
+        {'enabled': 1},
+        {'weight': -1},
+        {'weight': float('inf')},
+        {'weight': float('nan')},
+        {'weight': True},
+        {'window_size': 0},
+        {'window_size': 1},
+        {'window_size': -1},
+        {'window_size': 2.5},
+        {'window_size': True},
+    ],
+)
+def test_local_count_rejects_invalid_configuration(config):
+    with pytest.raises(ValueError, match='local_count'):
+        TimestampHead(4, local_count_loss=config)
+
+
+@pytest.mark.parametrize('dtype', [torch.float32, torch.bfloat16])
+def test_local_count_matches_independent_window_oracle_and_gradients(dtype):
+    head = TimestampHead(4, pos_weight=3, local_count_loss={'window_size': 3, 'weight': 7})
+    logits = torch.tensor(
+        [[-1.2, 0.8, 0.4, -0.6, 1.1, -0.2, 0.9, -1.0], [0.4, -0.8, 0.3, float('nan'), 0.7, -0.4, float('nan'), 1.2]],
+        dtype=dtype,
+        requires_grad=True,
+    )
+    labels = torch.tensor([[0, 1, 1, 0, 0, 1, 0, 1], [0, 1, 0, 0, 1, 0, IGNORE_INDEX, 1]])
+    mask = torch.ones_like(labels, dtype=torch.bool)
+    mask[1, 3] = False
+    eos = torch.zeros_like(mask)
+    eos[0, 2] = True
+    expected_logits = logits.detach().clone().requires_grad_()
+    terms = []
+    for sample in range(labels.size(0)):
+        for start in range(labels.size(1) - 2):
+            stop = start + 3
+            if not mask[sample, start:stop].all() or (labels[sample, start:stop] == IGNORE_INDEX).any():
+                continue
+            if eos[sample, start : stop - 1].any():
+                continue
+            expected_count = expected_logits[sample, start:stop].float().sigmoid().sum()
+            terms.append((expected_count - labels[sample, start:stop].sum()).square())
+    expected = torch.stack(terms).mean()
+    actual = head.compute_local_count_loss(logits, labels, mask, eos)
+    assert actual.dtype == torch.float32 and torch.isfinite(actual)
+    torch.testing.assert_close(actual, expected)
+    actual.backward()
+    expected.backward()
+    torch.testing.assert_close(logits.grad, expected_logits.grad)
+    assert logits.grad[1, [3, 6]].count_nonzero() == 0
+
+
+def test_local_count_allows_genuine_adjacent_ends_and_detects_offsetting_extra_and_missing_ends():
+    head = TimestampHead(4)
+    labels = torch.tensor([[0, 1, 1, 0, 1]])
+    good = torch.where(labels.bool(), 12.0, -12.0)
+    duplicate, missing = good.clone(), good.clone()
+    duplicate[0, 0], missing[0, 2] = 12, -12
+    assert head.compute_local_count_loss(good, labels) < 1e-6
+    assert head.compute_local_count_loss(duplicate, labels) > 0.99
+    assert head.compute_local_count_loss(missing, labels) > 0.99
+    labels = torch.tensor([[0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]])
+    predictions = torch.tensor([[0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]])
+    assert predictions.sum() == labels.sum()
+    assert head.compute_local_count_loss(torch.where(predictions.bool(), 12.0, -12.0), labels) > 0.99
+
+
+def test_local_count_keeps_turns_separate_and_ignores_padding_and_masked_nan_frames():
+    head = TimestampHead(4)
+    logits = torch.logit(torch.tensor([[0.9] * 5 + [0.1] * 5]))
+    labels = torch.tensor([[0, 0, 0, 0, 1] * 2])
+    eos = labels.bool()
+    expected = (
+        head.compute_local_count_loss(logits[:, :5], labels[:, :5])
+        + head.compute_local_count_loss(logits[:, 5:], labels[:, 5:])
+    ) / 2
+    actual = head.compute_local_count_loss(logits, labels, eos_mask=eos)
+    torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(actual, torch.tensor(6.25))
+    assert not torch.isclose(actual, head.compute_local_count_loss(logits, labels))
+    padding = torch.full((1, 7), float('nan'))
+    split_logits = torch.cat((logits[:, :5], padding, logits[:, 5:], padding), dim=1)
+    split_labels = torch.cat(
+        (labels[:, :5], torch.zeros(1, 7), labels[:, 5:], torch.full((1, 7), IGNORE_INDEX)), dim=1
+    )
+    valid = torch.ones_like(split_labels, dtype=torch.bool)
+    valid[:, 5:12] = False
+    split_logits.requires_grad_()
+    observed = head.compute_local_count_loss(split_logits, split_labels, valid)
+    torch.testing.assert_close(observed, expected)
+    observed.backward()
+    assert torch.isfinite(split_logits.grad).all()
+    assert split_logits.grad[:, 5:12].count_nonzero() == split_logits.grad[:, -7:].count_nonzero() == 0
+
+
+@pytest.mark.parametrize('case', ['empty', 'short', 'masked', 'ignored', 'eos_split'])
+def test_local_count_without_valid_windows_returns_finite_connected_zero(case):
+    size = 0 if case == 'empty' else 3 if case == 'short' else 7
+    logits = torch.full((1, size), 0.5 if case in ('short', 'eos_split') else float('nan'), requires_grad=True)
+    labels = torch.full((1, size), IGNORE_INDEX if case == 'ignored' else 0)
+    mask = torch.full_like(labels, case != 'masked', dtype=torch.bool)
+    eos = torch.ones_like(mask) if case == 'eos_split' else None
+    loss = TimestampHead(4).compute_local_count_loss(logits, labels, mask, eos)
+    assert loss.dtype == torch.float32 and loss.item() == 0
+    loss.backward()
+    assert logits.grad is not None and logits.grad.count_nonzero() == 0
+
+
+@pytest.mark.parametrize('name', ['valid_mask', 'eos_mask'])
+@pytest.mark.parametrize('mask', [torch.ones(2, 4, dtype=torch.bool), torch.ones(2, 5)])
+def test_local_count_rejects_nonboolean_or_mismatched_masks(name, mask):
+    with pytest.raises(ValueError, match=name):
+        TimestampHead(4).compute_local_count_loss(torch.zeros(2, 5), torch.zeros(2, 5), **{name: mask})
+
+
+def test_local_count_rejects_mismatched_target_shapes():
+    with pytest.raises(ValueError, match='same shape'):
+        TimestampHead(4).compute_local_count_loss(torch.zeros(2, 5), torch.zeros(2, 4))
+
+
 def test_timestamp_clicks_follow_boundaries_without_changing_source_or_audio_length():
     source = np.zeros(16000, dtype=np.float64)
     marked = add_timestamp_markers(source, 16000, [0.25, 0.75])

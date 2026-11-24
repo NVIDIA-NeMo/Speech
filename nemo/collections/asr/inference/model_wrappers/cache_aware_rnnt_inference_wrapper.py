@@ -36,6 +36,8 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
     Provides a unified interface to work with Cache-Aware RNNT models.
     """
 
+    decoder_type = 'rnnt'
+
     def __post_init__(self) -> None:
         """
         Additional post initialization step

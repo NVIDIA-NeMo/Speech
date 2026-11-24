@@ -227,6 +227,46 @@ class TestFilterbankFeaturesOptions:
             start += frames
 
     @pytest.mark.unit
+    def test_exact_pad_preemph_keeps_signal_tail(self):
+        # exact_pad adds (n_fft - hop) // 2 zeros on each side. The preemphasis mask has to follow the signal
+        # inside the padded buffer; otherwise the last samples of every utterance are zeroed before the STFT.
+        torch.manual_seed(2)
+        n_fft, hop, win, preemph = 512, 160, 320, 0.97
+        module = FilterbankFeatures(
+            n_window_size=win,
+            n_window_stride=hop,
+            n_fft=n_fft,
+            nfilt=40,
+            preemph=preemph,
+            dither=0.0,
+            pad_to=0,
+            normalize=None,
+            log=False,
+            exact_pad=True,
+        ).eval()
+        lengths = torch.tensor([1600, 1234])
+        signal = torch.randn(2, 1600) * (torch.arange(1600)[None, :] < lengths[:, None])
+        dense, dense_lengths = module(signal, lengths)
+        pad = (n_fft - hop) // 2
+        for index, length in enumerate(lengths.tolist()):
+            s = signal[index, :length]
+            # Preemphasize the unpadded signal, then pad (the module's semantics).
+            e = torch.cat([s[:1], s[1:] - preemph * s[:-1]])
+            emphasized = torch.nn.functional.pad(e, (pad, pad))
+            spectrum = torch.stft(
+                emphasized,
+                n_fft=n_fft,
+                hop_length=hop,
+                win_length=win,
+                window=module.window,
+                center=False,
+                return_complex=True,
+            )
+            expected = module.fb[0] @ spectrum.abs().pow(2)
+            frames = int(dense_lengths[index])
+            torch.testing.assert_close(dense[index, :, :frames], expected[:, :frames], atol=1e-4, rtol=1e-4)
+
+    @pytest.mark.unit
     def test_log_base(self):
         torch.manual_seed(2)
         natural = FilterbankFeatures(normalize=None, **PLAIN).eval()

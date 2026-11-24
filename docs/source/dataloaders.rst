@@ -1958,6 +1958,28 @@ An unknown operator or an operand of another type raises an error when the datal
 * When no example passes, a dataloader over an infinite source yields nothing and does not stop,
   as with the other filters.
 
+How ``custom_field_filter`` relates to the other ways to drop examples by their metadata:
+
+* ``_skipme`` is a key of a NeMo manifest row.
+  The reader drops a row with a truthy ``_skipme`` before it builds the cut,
+  so no cut is built for it, and an indexed tarred set does not read its audio.
+  The selection is part of the data: every dataloader that reads the manifest skips the row,
+  and another selection needs another copy of the manifests.
+  ``custom_field_filter`` leaves the manifests as they are and selects in the config,
+  so several configs select differently from the same manifests,
+  on any source type and with conditions beyond a flag.
+  It runs after the reader, on the built cut,
+  so the reader's work for a rejected example is already spent;
+  with a sequentially read tarred source that includes reading its audio from the tar.
+  Use ``_skipme`` for a fixed exclusion, such as broken or missing audio,
+  or when one fixed subset is all that is needed and rewriting the manifests is acceptable;
+  use ``custom_field_filter`` to select by metadata per experiment.
+  Both can be combined: a skipped row never reaches the filter.
+* ``keep`` is the same test on one fixed cut field:
+  ``keep: pass`` selects like ``custom_field_filter: {validation_status: pass}``.
+* ``max_cer`` and ``min_context_speaker_similarity`` read fields of the first supervision,
+  which ``custom_field_filter`` does not look at.
+
 For exact types and defaults, see the dataclass definition in the source
 file — it is the single source of truth.
 

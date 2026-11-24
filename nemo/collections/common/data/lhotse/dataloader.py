@@ -199,6 +199,8 @@ class LhotseDataLoadingConfig:
     # or operators with operands (eq, neq, gt, ge, lt, le, in), e.g. {snr: {gt: 5.0, le: 10.5}}.
     # A cut is kept when all conditions hold. A cut without the field is kept,
     # unless the condition sets keep_if_missing: false.
+    # Unlike ``_skipme`` in a NeMo manifest row, which the reader applies before it builds the cut,
+    # this selects per config and after the reader; see docs/source/dataloaders.rst for when to use which.
     custom_field_filter: dict[str, Any] | None = None
 
     # 3. Supported existing NeMo options.

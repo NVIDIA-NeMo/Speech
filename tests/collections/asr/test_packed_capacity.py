@@ -26,6 +26,7 @@ from nemo.collections.asr.parts.packed_sequence import (
     packed_slot_layout,
     unpack_encoder_output,
 )
+from nemo.collections.asr.parts.submodules.batchnorm import replace_bn_with_fused_bn_all
 from nemo.collections.asr.parts.submodules.packed_attention import PackedAttentionContext
 
 SAMPLE_RATE = 16_000
@@ -229,6 +230,53 @@ class TestPackedCapacityMode:
                 continue
             assert torch.isfinite(parameter.grad).all(), name
             torch.testing.assert_close(parameter.grad, reference.grad, atol=1e-7, rtol=1e-6, msg=name)
+        # the running statistics of the batch norms moved over the content rows only
+        buffers = dict(encoder_a.named_buffers())
+        assert any(name.endswith("running_mean") and buffer.abs().sum() > 0 for name, buffer in buffers.items())
+        for name, buffer in encoder_b.named_buffers():
+            torch.testing.assert_close(buffer, buffers[name], atol=1e-9, rtol=1e-9, msg=name)
+
+    def _same_features(self):
+        preprocessor = _preprocessor().double().train()
+        with torch.no_grad():
+            dyn_features = preprocessor.forward_packed(*_dynamic_batch(_waveforms(self.lengths), self.lengths))
+        rows, bound = preprocessor.featurizer.packed_frame_capacity(self.capacity)
+        return dyn_features, _bounded_features(dyn_features, self.capacity, rows, bound)
+
+    @torch.no_grad()
+    def test_bounded_refuses_converted_batch_norm(self):
+        """A batch norm without the masked form (SyncBatchNorm) would count the slack rows: refused."""
+        dyn_features, features = self._same_features()
+        encoder = torch.nn.SyncBatchNorm.convert_sync_batchnorm(_encoder().double()).train()
+        encoder.forward_sequence_packed(dyn_features)
+        with pytest.raises(NotImplementedError, match="SyncBatchNorm"):
+            encoder.forward_sequence_packed(features)
+        # no batch statistics once the norms are frozen
+        for layer in encoder.layers:
+            layer.conv.batch_norm.eval()
+        encoder.forward_sequence_packed(features)
+
+    @torch.no_grad()
+    @pytest.mark.parametrize("norm", ["frozen", "fused", "no_running_stats"])
+    def test_bounded_equals_dynamic_by_norm_mode(self, norm):
+        """The norm's own mode decides: running statistics or an affine take every row, batch statistics the content."""
+        dyn_features, features = self._same_features()
+        encoder = _encoder().double().train()
+        if norm == "frozen":
+            for layer in encoder.layers:
+                layer.conv.batch_norm.eval()
+        elif norm == "fused":
+            replace_bn_with_fused_bn_all(encoder)
+        else:
+            for layer in encoder.layers:
+                layer.conv.batch_norm = torch.nn.BatchNorm1d(16, track_running_stats=False).double()
+            encoder.eval()
+        dynamic = encoder.forward_sequence_packed(dyn_features)
+        bounded = encoder.forward_sequence_packed(features)
+        torch.testing.assert_close(bounded.data[: dynamic.data.shape[0]], dynamic.data, atol=1e-9, rtol=1e-9)
+        for name, buffer in encoder.named_buffers():
+            if name.endswith("num_batches_tracked"):
+                assert buffer == 0, name
 
     def test_batch_means_count_the_utterances_in_use(self):
         """The CTC batch means of a bounded batch divide by the utterances with frames, not by the slots."""

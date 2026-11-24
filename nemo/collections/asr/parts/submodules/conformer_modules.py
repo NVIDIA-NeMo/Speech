@@ -604,13 +604,19 @@ class ConformerConvolution(nn.Module):
             )
 
         valid = None
-        if self.norm_type == 'batch_norm' and self.training and type(self.batch_norm) is nn.BatchNorm1d:
-            # capacity mode: the statistics exclude the slack rows of the buffer, which the layout or the context marks
+        norm = self.batch_norm
+        if isinstance(norm, nn.modules.batchnorm._BatchNorm) and (norm.training or norm.running_mean is None):
+            # capacity mode: the batch statistics exclude the slack rows, which the layout or the context marks
             if layout is not None and layout.token_valid is not None:
                 valid = layout.token_valid
             elif context is not None and context.bounded:
                 valid = context.valid_rows()
-        x = self.batch_norm(x) if valid is None else _masked_batch_norm(self.batch_norm, x, valid)
+            if valid is not None and type(norm) is not nn.BatchNorm1d:
+                # e.g. a converted SyncBatchNorm would count the slack rows
+                raise NotImplementedError(
+                    f"capacity mode has masked batch statistics for nn.BatchNorm1d only, got {type(norm).__name__}."
+                )
+        x = norm(x) if valid is None else _masked_batch_norm(norm, x, valid)
         x = self.activation(x)
         return self._apply_pointwise(x, self.pointwise_conv2)
 
@@ -629,7 +635,7 @@ class ConformerConvolution(nn.Module):
 
 
 def _masked_batch_norm(norm: nn.BatchNorm1d, x: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
-    """Training-mode batch normalization over the rows of ``x`` that ``valid`` marks, with ``norm``'s state.
+    """Batch-statistics normalization over the rows of ``x`` that ``valid`` marks, with ``norm``'s state.
 
     The semantics of ``torch.nn.functional.batch_norm`` in training: the batch is normalized by the biased
     variance of the counted rows, the running variance moves towards the unbiased one; no host read, so the

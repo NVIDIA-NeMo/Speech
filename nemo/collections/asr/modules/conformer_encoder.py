@@ -40,6 +40,7 @@ from nemo.collections.asr.parts.submodules.multi_head_attention import (
     MultiHeadAttention,
     PositionalEncoding,
     RelPositionalEncoding,
+    RelPositionMultiHeadAttention,
     RelPositionMultiHeadAttentionLongformer,
     RotaryPositionalEncoding,
 )
@@ -920,12 +921,14 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
 
         Configurations without a sequence-packed form (streaming caches, ``rel_pos_local_attn`` with global tokens
         or different context sizes on the two sides, context sizes that ``att_context_style`` does not define,
-        reduction layers, adapters, causal or VGGNet subsampling,
+        reduction layers, causal or VGGNet subsampling,
         intermediate layer captures, and in training mode attention dropout where FlexAttention would have to apply it)
         are named by ``sequence_packed_unsupported_reason`` and refused here with ``NotImplementedError``;
         the parallel expert encoder and the independent dual encoder consult ``supports_sequence_packed_output``
         at dispatch time and refuse them with the same reason unless their ``allow_padded_fallback`` is set,
         which runs the padded path with a warning; the plain perception module reports the reason.
+        Of the adapters, only those are refused that ``ConformerLayer.sequence_packed_adapters_unsupported_reason``
+        names: enabled linear and Conformer attention adapters run on the token-flat states.
 
         Args:
             audio_signal: packed features (``PackedEncoderActivations`` with data ``(sum(T_i), feat_in)``),
@@ -1031,7 +1034,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
 
         Without a sequence-packed form: ``rel_pos_local_attn`` with global tokens or with different context sizes
         on the two sides, attention context sizes that ``att_context_style`` does not define
-        (see ``_att_context_unsupported_reason``), reduction layers, adapters,
+        (see ``_att_context_unsupported_reason``), reduction layers,
+        what ``ConformerLayer.sequence_packed_adapters_unsupported_reason`` names of the enabled adapters
+        (linear and Conformer attention adapters run on the token-flat states, disabled adapters do not run),
         intermediate layer captures (InterCTC and ``save_encoder_tensors``, whose consumers expect padded tensors),
         frontends other than a linear layer or a ``ConvSubsampling`` that names no reason of its own,
         and whatever the convolution module of a layer names (both by ``sequence_packed_unsupported_reason``).
@@ -1044,6 +1049,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         a limited attention context runs through FlexAttention in every dtype but float64
         and needs ``dropout_att: 0`` there;
         see ``packed_attention_supports_dropout``. Off CUDA the dense reference attention applies the dropout.
+        The rule reads every attention module that is in training mode, by its own mode, class and head width:
+        the self-attention of every layer and the enabled attention adapters with their ``dropout_rate``.
         """
         layers = [_unwrap_checkpoint(layer) for layer in self.layers]
         if self.self_attention_model == 'rel_pos_local_attn':
@@ -1065,8 +1072,6 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             limited_context = not all(self._att_context_is_full(size) for size in att_context_sizes)
         if self.reduction_position is not None:
             return "Reduction layers have no sequence-packed form."
-        if isinstance(self, adapter_mixins.AdapterModuleMixin) and self.is_adapter_available():
-            return "Adapters have no sequence-packed form."
         if self.is_access_enabled(getattr(self, "model_guid", None)):
             if self.interctc_capture_at_layers is None:
                 self.interctc_capture_at_layers = self.access_cfg.get('interctc', {}).get('capture_layers', [])
@@ -1082,52 +1087,61 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 return reason
         elif not isinstance(pre_encode, nn.Linear):
             return f"{type(pre_encode).__name__} has no sequence-packed form."
+        # the self-attention of every layer and its enabled attention adapters, which run the same packed attention
+        attention_modules = []
         for layer in layers:
             reason = layer.conv.sequence_packed_unsupported_reason()
             if reason is not None:
                 return reason
+            reason = layer.sequence_packed_adapters_unsupported_reason()
+            if reason is not None:
+                return reason
+            attention_modules.append(layer.self_attn)
+            adapters = [layer.adapter_layer[name] for name in layer.get_enabled_adapters()]
+            attention_modules.extend(adapter for adapter in adapters if isinstance(adapter, MultiHeadAttention))
+        # every module applies its dropout by its own mode: a frozen encoder can hold adapters in training mode
+        dropout_modules = [module for module in attention_modules if module.training and module.dropout_rate > 0]
         parameter = next(self.parameters(), None)
-        if (
-            self.training
-            and parameter is not None
-            and parameter.device.type == 'cuda'
-            and any(layer.self_attn.dropout_rate > 0 for layer in layers)
-        ):
+        if parameter is not None and parameter.device.type == 'cuda' and dropout_modules:
             # off CUDA the dense per-utterance reference path applies the dropout, with or without a position term
             autocast = torch.is_autocast_enabled('cuda')
             dtype = torch.get_autocast_dtype('cuda') if autocast else parameter.dtype
-            head_dim = layers[0].self_attn.d_k
+            rel_pos_modules = [m for m in dropout_modules if isinstance(m, RelPositionMultiHeadAttention)]
+            other_modules = [m for m in dropout_modules if not isinstance(m, RelPositionMultiHeadAttention)]
+            # the same rule as the dispatch of packed_attention: FlexAttention for every limited context,
+            # else for rel_pos the kernel where it is selected and runs, the dense reference in float64
             if limited_context:
+                head_dim = dropout_modules[0].d_k
                 if not packed_attention_supports_dropout(parameter.device, dtype, head_dim, limited_context=True):
                     return (
                         "A limited attention context over packed sequences runs through FlexAttention, "
                         "which has no dropout on the attention weights "
                         "(float64 runs the dense reference attention, which has it): "
-                        "set dropout_att: 0 on the encoder."
+                        "set dropout_att: 0 on the encoder (and dropout_rate: 0 on its attention adapters)."
                     )
-            elif self.self_attention_model == 'rel_pos':
-                # the same rule as the dispatch of packed_attention: the kernel where it is selected and runs,
-                # the dense reference in float64, FlexAttention otherwise
-                if not packed_attention_supports_dropout(
-                    parameter.device,
-                    dtype,
-                    head_dim,
-                    rel_pos=True,
-                    rel_pos_kernel=self.packed_rel_pos_attention == 'triton',
-                ):
-                    return (
-                        "rel_pos attention over packed sequences keeps its dropout through its Triton kernel "
-                        "(packed_rel_pos_attention: triton; Triton installed; float32, bfloat16 or float16) "
-                        "or in float64 (the dense reference attention), "
-                        "and FlexAttention, the path otherwise, has no dropout on the attention weights: "
-                        "set dropout_att: 0 on the encoder or select the kernel."
-                    )
-            elif not packed_attention_supports_dropout(parameter.device, dtype, head_dim):
+            elif rel_pos_modules and not packed_attention_supports_dropout(
+                parameter.device,
+                dtype,
+                rel_pos_modules[0].d_k,
+                rel_pos=True,
+                rel_pos_kernel=self.packed_rel_pos_attention == 'triton',
+            ):
+                return (
+                    "rel_pos attention over packed sequences keeps its dropout through its Triton kernel "
+                    "(packed_rel_pos_attention: triton; Triton installed; float32, bfloat16 or float16) "
+                    "or in float64 (the dense reference attention), "
+                    "and FlexAttention, the path otherwise, has no dropout on the attention weights: "
+                    "set dropout_att: 0 on the encoder (and dropout_rate: 0 on its attention adapters) "
+                    "or select the kernel."
+                )
+            if not limited_context and not all(
+                packed_attention_supports_dropout(parameter.device, dtype, m.d_k) for m in other_modules
+            ):
                 return (
                     "Attention dropout over packed sequences runs through variable-length FlashAttention, which "
                     "needs float16 or bfloat16 (autocast), a head width that is a multiple of 8 up to 256, and a CUDA "
                     "device of compute capability 8 or newer; FlexAttention, the other path, has no dropout: "
-                    "set dropout_att: 0 or meet those conditions."
+                    "set dropout_att: 0 (and dropout_rate: 0 on the attention adapters) or meet those conditions."
                 )
         return None
 

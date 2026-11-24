@@ -659,11 +659,11 @@ class SaveRestoreConnector:
             tar_file = os.path.join(tmpdir, filename_with_extension)
             with tarfile.open(tar_file, "w:") as tar:
                 tar.add(source_dir, arcname=".")
-                start_time = time.time()
-                msc.upload_file(filename, tar_file)
-                logging.debug(
-                    f"Time spent for msc.upload_file from {tar_file} to {filename}: {time.time() - start_time:.4f}"
-                )
+            start_time = time.time()
+            msc.upload_file(filename, tar_file)
+            logging.debug(
+                f"Time spent for msc.upload_file from {tar_file} to {filename}: {time.time() - start_time:.4f}"
+            )
 
     @staticmethod
     def _resolve_archive_artifact(folder: str, source: str) -> str:

@@ -19,6 +19,7 @@ from bisect import bisect_left
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from numbers import Real
 from typing import Any, Sequence
 
 import numpy as np
@@ -881,6 +882,54 @@ class TokenPerTokenFilter:
             return True  # pass-through for non-text examples.
         tpt = example.answer_ids.shape[0] / example.context_ids.shape[0]
         return self.tpt_min <= tpt <= self.tpt_max
+
+
+class DurationTokenBinsFilter:
+    """
+    Callable, returns ``True`` if a cut fits one of the ``(max duration, max tokens)`` bins and ``False`` otherwise.
+    The rule is the one of strict 2D bucketing, applied without bucketing:
+    the bins with the smallest maximum duration that covers the cut's duration are the candidates,
+    and the cut is kept if its number of tokens fits one of them.
+    Acts as a pass-through for objects of other type than Cut.
+
+    Args:
+        bins: the ``(max duration in seconds, max number of tokens)`` pairs, sorted ascendingly,
+            in the format of two-dimensional ``bucket_duration_bins`` for audio.
+        max_tps: optional maximum number of tokens per second for every bin, as strict 2D bucketing applies it:
+            a cut above the limit of the smallest bin that fits it is discarded.
+    """
+
+    def __init__(self, bins: Sequence[Sequence[float]], max_tps: Sequence[float] | None = None) -> None:
+        try:
+            pairs = [tuple(bin_) for bin_ in bins]
+        except TypeError:
+            pairs = []
+        is_valid = bool(pairs) and all(
+            len(pair) == 2
+            and all(isinstance(bound, Real) and not isinstance(bound, bool) and math.isfinite(bound) for bound in pair)
+            and pair[0] > 0
+            and pair[1] >= 0
+            for pair in pairs
+        )
+        if not is_valid or pairs != sorted(pairs):
+            raise ValueError(
+                "filter_duration_bins must be a non-empty, ascendingly sorted list of [max_duration, max_tokens] pairs "
+                f"of finite numbers with max_duration > 0 and max_tokens >= 0 (got {bins!r}); "
+                "for a duration limit alone use max_duration"
+            )
+        if max_tps is not None and len(max_tps) != len(pairs):
+            raise ValueError(
+                "A max_tps list needs one value per bin of filter_duration_bins "
+                f"(got {len(max_tps)} values for {len(pairs)} bins)"
+            )
+        self.bins = np.asarray(pairs)
+        self.max_tps = None if max_tps is None else list(max_tps)
+
+    def __call__(self, example) -> bool:
+        if not isinstance(example, Cut):
+            return True  # pass-through for examples other than cuts.
+        example_lens = (example.duration, _measure_tokens(example))
+        return find_smallest_bucket(self.bins, example_lens, strict=True, max_ratio=self.max_tps) is not None
 
 
 class BucketingFilter:

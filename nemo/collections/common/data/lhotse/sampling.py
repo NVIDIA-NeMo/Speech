@@ -603,7 +603,8 @@ class CustomFieldFilter:
     Compared to the ``_skipme`` key of a NeMo manifest row, which makes the reader drop the row before a cut is built:
     this filter selects in the config and leaves the manifests unchanged, for any source type,
     but it sees the cut after the reader built it, so the reader's work for a rejected example is spent.
-    :class:`ValidationStatusFilter` is the same test on the fixed field ``validation_status``.
+    :class:`ValidationStatusFilter` applies the same equality rule to the fixed field ``validation_status``,
+    but to mono cuts only, and the dataloader applies it later, after padding, so the two can select differently.
 
     Args:
         conditions: maps the name of a custom field (a key of ``example.custom``) to its condition.

@@ -1971,12 +1971,22 @@ How ``custom_field_filter`` relates to the other ways to drop examples by their 
   It runs after the reader, on the built cut,
   so the reader's work for a rejected example is already spent;
   with a sequentially read tarred source that includes reading its audio from the tar.
-  Use ``_skipme`` for a fixed exclusion, such as broken or missing audio,
+  Use ``_skipme`` for a fixed exclusion,
   or when one fixed subset is all that is needed and rewriting the manifests is acceptable;
   use ``custom_field_filter`` to select by metadata per experiment.
   Both can be combined: a skipped row never reaches the filter.
-* ``keep`` is the same test on one fixed cut field:
-  ``keep: pass`` selects like ``custom_field_filter: {validation_status: pass}``.
+
+  ``_skipme`` keeps a row with broken audio out of the data
+  only where the reader does not open the audio of a skipped row:
+  with non-tarred manifests and with indexed tarred sets.
+  The sequential tar reader reads and inspects every member before it looks at the marker,
+  so a corrupt member still raises there unless ``fault_tolerant_audio_loading`` is set.
+* ``keep`` applies the same equality rule to the fixed cut field ``validation_status``,
+  but the two options are not interchangeable.
+  ``keep`` looks at mono cuts only and runs later in the pipeline, after padding with ``pad_min_duration``,
+  which turns a short cut into a mixed cut that ``keep`` lets pass.
+  ``custom_field_filter: {validation_status: pass}`` runs first and also covers mixed cuts and text examples,
+  so it drops such a cut.
 * ``max_cer`` and ``min_context_speaker_similarity`` read fields of the first supervision,
   which ``custom_field_filter`` does not look at.
 

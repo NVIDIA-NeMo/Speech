@@ -1291,12 +1291,14 @@ class LocalAttRelPositionalEncoding(PositionalEncoding):
 class RotaryPositionalEncoding(torch.nn.Module):
     """Rotary position embedding.
 
-    The cos and sin tables are plain float32 tensors of the module, not buffers, built for ``max_len`` positions
-    at construction and rebuilt from the module's scalars when a call needs more positions or another device,
-    so a distributed training has nothing to broadcast for them and a checkpoint nothing to store.
-    They follow the module's device through ``.to()`` and the like, ``forward`` brings them to the queries' device
-    when a wrapper moved the parameters and buffers alone (FSDP does), and a dtype change leaves them float32.
-    They cost ``2 * max_len * d_k * rotary_fraction * 4`` bytes per module, 4.9 MiB for 5,000 positions of 128.
+    The cos and sin tables are plain tensors of the module, not buffers, built for ``max_len`` positions at
+    construction in float32 and moved and converted with the module like its buffers (``.to()``, ``.cuda()``,
+    ``.half()``), so a distributed training has nothing to broadcast for them and a checkpoint nothing to store.
+    ``forward`` brings them to the queries' device when a wrapper moved the parameters and buffers alone (FSDP
+    does), and ``to_empty`` after ``.to("meta")`` rebuilds them for the positions they covered, which the module
+    keeps.
+    They cost ``2 * max_len * d_k * rotary_fraction`` elements per module, 4.9 MiB of float32 for 5,000 positions
+    of 128.
 
     Args:
         d_k (int): per-head feature dim
@@ -1322,18 +1324,22 @@ class RotaryPositionalEncoding(torch.nn.Module):
         self.max_len = max_len
 
         self.register_buffer('inv_freq', self._frequencies(), persistent=False)
-        # plain tensors, see the class docstring; they follow the module's device through _apply
-        self.cos, self.sin = self._tables(torch.arange(0, max_len, dtype=torch.float32, device="cpu"))
+        # plain tensors, see the class docstring; `positions` are the ones the tables were built for, a float32
+        # tensor kept on the CPU for a rebuild
+        self.positions = torch.arange(0, max_len, dtype=torch.float32, device="cpu")
+        self.cos, self.sin = self._tables(self.positions)
 
     def _apply(self, fn, recurse=True):
-        # `.to()`, `.cuda()` and the like move the tables with the module; a dtype change leaves them float32.
-        # A move rebuilds the tables from the scalars instead of copying them: after `.to("meta")` they are meta
-        # tensors, which `to_empty(device=...)` could not copy out of.
+        # the tables follow the module like its buffers: `fn` gives the device and dtype (`.to()`, `.cuda()`,
+        # `.half()`, `.to("meta")`), the values are copied from the tables while they have storage and rebuilt
+        # for their positions once they are meta tensors, to which `to_empty` gives storage without values
         module = super()._apply(fn, recurse)
-        device = self.inv_freq.device
-        if self.cos.device != device:
-            cos, sin = self._tables(torch.arange(0, self.cos.size(0), dtype=torch.float32, device="cpu"))
-            self.cos, self.sin = cos.to(device), sin.to(device)
+        cos, sin = fn(self.cos), fn(self.sin)
+        if self.cos.device.type == "meta":
+            cos, sin = (t.to(device=cos.device, dtype=cos.dtype) for t in self._tables(self.positions))
+        else:
+            cos, sin = self.cos.to(device=cos.device, dtype=cos.dtype), self.sin.to(device=sin.device, dtype=sin.dtype)
+        self.cos, self.sin = cos, sin
         return module
 
     def _rotate_half(self, x):
@@ -1356,44 +1362,48 @@ class RotaryPositionalEncoding(torch.nn.Module):
         return 1.0 / (self.rope_base**exponents)
 
     def _tables(self, positions):
-        """The cos and sin tables of ``positions`` (1D fp32 tensor), in float32 on the positions' device.
+        """The cos and sin tables of ``positions`` (1D fp32 tensor), in float32 on the CPU.
 
-        The tables stay float32 whatever the model's dtype, and they come from the float32 frequencies of the
-        module's scalars, not from the ``inv_freq`` buffer, which a dtype conversion of the module rounds:
-        a rebuild after such a conversion, for growth or a device change, keeps the rows it already covered.
-        The cast to the Q/K runtime dtype happens in ``forward``.
+        They come from the float32 frequencies of the module's scalars, not from the ``inv_freq`` buffer, which a
+        dtype conversion of the module rounds: a rebuild after such a conversion keeps the rows it already covered.
         """
         # Build the tables with one device-independent fp32 reference.
         # CPU and CUDA transcendental kernels can round differently
         # before the model-dtype cast, making identical weights produce different
         # rotations solely because the model was constructed on another device.
-        target_device = positions.device
         positions_cpu = positions.detach().to(device="cpu", dtype=torch.float32)
         freqs = torch.outer(positions_cpu, self._frequencies())
         # Duplicate to align with `_rotate_half`: tail half mirrors the head half.
         emb = torch.cat((freqs, freqs), dim=-1)
-        return emb.cos().to(device=target_device), emb.sin().to(device=target_device)
+        return emb.cos(), emb.sin()
 
     def create_pe(self, positions, dtype=None):
-        """Rebuild the cos/sin tables to cover ``positions`` (1D fp32 tensor), see ``_tables``.
+        """Build the cos/sin tables for ``positions`` (1D fp32 tensor) on their device, stored in ``dtype``.
 
-        ``dtype`` is accepted for the interface the positional encodings share and ignored: the tables are float32.
+        The frequencies are float32 (see ``_tables``) and the tables are stored in ``dtype``, their current dtype
+        when it is None; the cast to the Q/K runtime dtype happens in ``forward``.
         """
-        del dtype
-        self.cos, self.sin = self._tables(positions)
+        if dtype is None:
+            dtype = self.cos.dtype
+        self.positions = positions.detach().to(device="cpu", dtype=torch.float32)
+        cos, sin = self._tables(self.positions)
+        self.cos = cos.to(device=positions.device, dtype=dtype)
+        self.sin = sin.to(device=positions.device, dtype=dtype)
 
     def extend_pe(self, length, device, dtype=None):
-        """Extend the cos/sin tables when ``length`` exceeds them, or rebuild them on ``device`` when it differs.
+        """Bring the cos/sin tables to ``device`` and grow them when ``length`` exceeds them.
 
-        They cover ``max_len`` from construction on, built on the CPU like ``inv_freq``,
-        so a module built under another default device gets them there at its first call.
-        ``dtype`` is accepted for the interface the positional encodings share and ignored: the tables are float32.
+        A device change moves the tables as they are, so a module built under another default device gets them
+        at its first call and positions given to ``create_pe`` stay; growth rebuilds them for ``0`` to
+        ``length - 1`` in ``dtype``, their current dtype when it is None.
         """
         device = torch.device(device)
         same_device = self.cos.device.type == device.type and device.index in (None, self.cos.device.index)
-        if self.cos.size(0) >= length and same_device:
+        if not same_device:
+            self.cos, self.sin = self.cos.to(device), self.sin.to(device)
+        if self.cos.size(0) >= length:
             return
-        positions = torch.arange(0, max(length, self.cos.size(0)), dtype=torch.float32, device=device)
+        positions = torch.arange(0, length, dtype=torch.float32, device=device)
         self.create_pe(positions=positions, dtype=dtype)
 
     def forward(self, q, k):
@@ -1421,7 +1431,7 @@ class RotaryPositionalEncoding(torch.nn.Module):
         cos_q = self.cos[cache_len:t_k].view(1, 1, t_q, self.d_k_rot)
         sin_q = self.sin[cache_len:t_k].view(1, 1, t_q, self.d_k_rot)
 
-        # The tables are float32; cast to the Q/K runtime dtype (which may have
+        # The tables are stored in the module's dtype; cast to the Q/K runtime dtype (which may have
         # been upgraded to fp32 by autocast handling in MultiHeadAttention.forward).
         q = self._apply_rotary(q, cos_q.to(q.dtype), sin_q.to(q.dtype))
         k = self._apply_rotary(k, cos_k.to(k.dtype), sin_k.to(k.dtype))

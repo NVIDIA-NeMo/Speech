@@ -146,7 +146,7 @@ Your  pull requests must pass all checks and peer-review before they can be merg
 4. **Reusable**: for every piece of code, think about how it can be reused in the future and make it easy to be reused.
 5. **Readable**: code should be easier to read.
 6. **Legal**: if you copy even one line of code from the Internet, make sure that the code allows the license that NeMo supports. Give credit and link back to the code.
-7. **Sensible**: code should make sense. If you think a piece of code might be confusing, write comments.
+7. **Sensible**: make the code clear first; comment only on intent or constraints that the code cannot show.
 
 ## Class naming conventions
 * No “I”, “Interface”, “NM” nor “NeMo” pre/postfixes anywhere
@@ -196,12 +196,27 @@ We use ``black`` and ``isort`` (see ``pyproject.toml``) as our style guide. Run 
     occur, or an option with one sensible value.
 19. YAML configs use ASCII only. A new option also goes into the structured config (dataclass) that its siblings are in.
 
+## Writing documentation, docstrings, and comments
+
+These rules apply to documentation, inline docstrings, and code comments; violations must be fixed before approval.
+
+- **Refine after drafting.** After the initial writing pass, analyze and refine the text to distill its absolute
+  essence; remove anything the reader does not need.
+- **Assume very limited context retention.** Make every line readable without remembering distant text or knowing
+  the author's setup; use explicit subjects and short, direct sentences.
+- **Lead with the key insight.** Start every paragraph with its essential information, ideally in a single sentence;
+  keep each following sentence only when it adds information necessary to understand or use that insight.
+- **Never include implementation details.** Describe user-visible contracts or intent, not implementation mechanics.
+- **Keep comments short.** Use detailed multi-line comments only to explain intent and add information that cannot
+  be learned by reading the code; never narrate what the code does.
+- **Reject experiment-specific context.** Accept only generally relevant information, not details tied to someone's
+  experiment, local environment, or one-off setup.
+
 ## Documentation, dependencies and compatibility
 
 1. Update the documentation in the same PR when you change a public API, a configuration option, a script or a workflow. After a rename or
    removal, search ``docs/``, ``examples/`` and the configs for the old name.
-2. Write documentation for readers: simple language, one consistent narrative, no list of what each commit did. Implementation details
-   belong in code comments, not in a README or a user guide. Put a fact that several pages need on one page and link to it.
+2. Keep one consistent narrative, not a list of what each commit did; put shared facts on one page and link to it.
 3. Examples and configs point to released models and public datasets. Do not mention internal datasets, internal paths or models that are
    not released yet.
 4. Released checkpoints and existing configurations keep their behavior: add new behavior as a new class or an opt-in option. When you

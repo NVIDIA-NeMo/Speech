@@ -112,6 +112,22 @@ Follow these when writing code; reviews enforce them. The full rubric is
 
 ## Documentation
 
+### Writing rules
+
+These rules apply to documentation, inline docstrings, and code comments; violations must be fixed before approval.
+
+- **Refine after drafting.** After the initial writing pass, analyze and refine the text to distill its absolute
+  essence; remove anything the reader does not need.
+- **Assume very limited context retention.** Make every line readable without remembering distant text or knowing
+  the author's setup; use explicit subjects and short, direct sentences.
+- **Lead with the key insight.** Start every paragraph with its essential information, ideally in a single sentence;
+  keep each following sentence only when it adds information necessary to understand or use that insight.
+- **Never include implementation details.** Describe user-visible contracts or intent, not implementation mechanics.
+- **Keep comments short.** Use detailed multi-line comments only to explain intent and add information that cannot
+  be learned by reading the code; never narrate what the code does.
+- **Reject experiment-specific context.** Accept only generally relevant information, not details tied to someone's
+  experiment, local environment, or one-off setup.
+
 Sphinx-based docs live in `docs/source/`. Build with:
 
 ```bash

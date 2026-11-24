@@ -26,6 +26,7 @@ import soundfile as sf
 import torch
 from omegaconf import OmegaConf
 from safetensors import safe_open
+from torch.distributed.checkpoint import FileSystemReader, load
 from transformers import AutoTokenizer
 
 from tests.functional_tests.nemotron35_transcribe_fixture import (
@@ -166,7 +167,14 @@ def test_resume_restores_fused_adam_state_and_step(continuous, resumed):
     assert continuous["start_step"] == 0
     assert resumed["start_step"] == RESUME_STEP
     assert resumed["optimizer"] == continuous["optimizer"] == "FusedAdam"
-    assert resumed["restored_adam_state"]
+    saved = continuous["adam_at_resume_step"]
+    restored = resumed["adam_at_resume_step"]
+    assert restored["group_steps"] == saved["group_steps"]
+    assert RESUME_STEP in saved["group_steps"]
+    assert any(moment["exp_avg"].count_nonzero() for moment in saved["moments"].values())
+    # Resume can allocate zero buffers for parameters without checkpointed moments.
+    for parameter, moments in saved["moments"].items():
+        torch.testing.assert_close(restored["moments"][parameter], moments, rtol=0, atol=0)
 
 
 def test_resume_replays_packed_text_audio_speaker_targets_and_lr(continuous, resumed):
@@ -205,11 +213,20 @@ def test_export_includes_both_encoder_branches_and_mtp_weights(export_dir, prefi
 
 
 @pytest.mark.parametrize("name", ["A_log", "e_score_correction_bias"])
-def test_bf16_export_keeps_protected_weights_in_fp32(export_dir, name):
-    with safe_open(export_dir / "model.safetensors", framework="pt") as checkpoint:
-        keys = [key for key in checkpoint.keys() if key.endswith(f".{name}")]
+def test_bf16_export_preserves_exact_fp32_checkpoint_weights(export_dir, work_dir, name):
+    with safe_open(export_dir / "model.safetensors", framework="pt") as exported:
+        keys = [key for key in exported.keys() if key.endswith(f".{name}")]
         assert keys, f"Missing exported {name}"
-        assert all(checkpoint.get_slice(key).get_dtype() == "F32" for key in keys)
+        reader = FileSystemReader(work_dir / "resumed/checkpoints" / f"step={TRAINING_STEPS}.ckpt")
+        metadata = reader.read_metadata().state_dict_metadata
+        original = {}
+        for key in keys:
+            tensor = metadata[f"state_dict.{key}"]
+            assert tensor.properties.dtype == torch.float32
+            original[key] = torch.empty(tensor.size, dtype=torch.float32)
+        load({"state_dict": original}, storage_reader=reader)
+        for key in keys:
+            torch.testing.assert_close(exported.get_tensor(key), original[key], rtol=0, atol=0)
 
 
 def _speaker_targets(run, samples):

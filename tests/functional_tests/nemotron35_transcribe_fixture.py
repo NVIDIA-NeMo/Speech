@@ -106,7 +106,7 @@ class RecordTraining(Callback):
         self.projection = _local_tensor(pl_module.perception.proj.weight).detach().clone()
         optimizer = trainer.optimizers[0]
         self.optimizer = type(optimizer).__name__
-        self.restored_adam_state = any("exp_avg" in state for state in optimizer.state.values())
+        self.adam_at_resume_step = _snapshot_adam(optimizer) if self.initial_step else None
         self.diarization_frozen = all(
             not parameter.requires_grad for parameter in pl_module.perception.encoder.diarization_model.parameters()
         )
@@ -119,6 +119,8 @@ class RecordTraining(Callback):
         }
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        if self.initial_step == 0 and trainer.global_step == RESUME_STEP:
+            self.adam_at_resume_step = _snapshot_adam(trainer.optimizers[0])
         batch_keys = (
             "input_ids",
             "loss_mask",
@@ -147,7 +149,7 @@ class RecordTraining(Callback):
             {
                 "start_step": self.initial_step,
                 "optimizer": self.optimizer,
-                "restored_adam_state": self.restored_adam_state,
+                "adam_at_resume_step": self.adam_at_resume_step,
                 "projection_changed": not torch.equal(
                     self.projection, _local_tensor(pl_module.perception.proj.weight)
                 ),
@@ -234,6 +236,18 @@ def _index_source(work_dir, name, rows, config, path_key="manifest_filepath"):
 
 def _local_tensor(tensor):
     return tensor.to_local() if isinstance(tensor, DTensor) else tensor
+
+
+def _snapshot_adam(optimizer):
+    moments = {}
+    for group_index, group in enumerate(optimizer.param_groups):
+        for param_index, parameter in enumerate(group["params"]):
+            state = optimizer.state.get(parameter, {})
+            if "exp_avg" in state:
+                moments[(group_index, param_index)] = {
+                    name: _local_tensor(state[name]).detach().cpu().clone() for name in ("exp_avg", "exp_avg_sq")
+                }
+    return {"group_steps": [int(group.get("step", 0)) for group in optimizer.param_groups], "moments": moments}
 
 
 def _max_gradient(module):

@@ -26,6 +26,19 @@ from easymagpie_vllm_omni.tokenizer import EasyMagpieTextTokenizer
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 
 
+@pytest.mark.asyncio
+async def test_timestamp_audio_lists_are_independent_deltas():
+    from easymagpie_vllm_omni.serving_stream import _streaming_pcm_deltas
+
+    async def outputs():
+        for _ in range(3):
+            yield SimpleNamespace(multimodal_output={'audio': [torch.ones(2560) * 0.1], 'sr': 32000})
+
+    chunks = [chunk async for chunk in _streaming_pcm_deltas(outputs(), 32000)]
+    assert len(chunks) == 3
+    assert sum(map(len, chunks)) == 3 * 2560 * 2
+
+
 def test_input_stream_default_pacing_tolerates_loaded_service_queueing():
     stream = EasyMagpieInputStream(
         prefill_prompt={"prompt_token_ids": [0]},

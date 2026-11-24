@@ -66,6 +66,13 @@ def merge_streaming_additional_information(
 class EasyMagpieGPUARModelRunner(GPUARModelRunner):
     """GPU AR runner that restores streaming chunk metadata propagation."""
 
+    def _update_states(self, scheduler_output, *args, **kwargs):
+        result = super()._update_states(scheduler_output, *args, **kwargs)
+        observer = getattr(getattr(self, 'model', None), '_timestamp_observer', None)
+        if observer is not None:
+            observer.discard_requests(scheduler_output.finished_req_ids)
+        return result
+
     def _update_streaming_request(self, req_id, new_req_data):
         payload = getattr(new_req_data, "additional_information", None)
         incoming = deserialize_additional_information(payload)

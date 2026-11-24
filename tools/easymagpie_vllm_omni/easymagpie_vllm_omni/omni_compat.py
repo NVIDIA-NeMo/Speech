@@ -36,8 +36,15 @@ def patch_streaming_lifecycle() -> None:
     from vllm_omni.engine.orchestrator import (
         Orchestrator,
         _build_terminal_empty_output,
-        _infer_stage_audio_sample_rate,
     )
+
+    try:
+        from vllm_omni.engine.orchestrator import _infer_stage_audio_sample_rate
+    except ImportError:
+        # vLLM-Omni >= 0.26 finishes via Orchestrator._apply_raw_terminal_stage_finish;
+        # the legacy terminal bridge below is never installed there.
+        def _infer_stage_audio_sample_rate(pool):
+            raise RuntimeError("legacy terminal bridge is unsupported on this vLLM-Omni")
 
     original_outputs = Orchestrator._handle_processed_outputs
     if not getattr(original_outputs, "_easymagpie_patched", False):

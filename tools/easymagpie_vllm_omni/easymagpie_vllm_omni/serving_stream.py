@@ -230,6 +230,28 @@ class EasyMagpieInputStream:
 class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
     """Use resumable EasyMagpie requests while preserving the generic handler."""
 
+    async def _receive_session_config(self, websocket: WebSocket):
+        """Read and validate the first ``session.config`` message.
+
+        Older vLLM-Omni handlers expose ``_receive_config``; newer ones split it
+        into ``_parse_message`` and ``_build_config``.
+        """
+        receive = getattr(super(), "_receive_config", None)
+        if receive is not None:
+            return await receive(websocket)
+        try:
+            raw = await asyncio.wait_for(websocket.receive_text(), timeout=self._config_timeout)
+        except asyncio.TimeoutError:
+            await self._send_error(websocket, "Timeout waiting for session.config")
+            return None
+        message = await self._parse_message(websocket, raw)
+        if message is None:
+            return None
+        if message.get("type") != "session.config":
+            await self._send_error(websocket, "The first message must be session.config")
+            return None
+        return await self._build_config(websocket, message)
+
     async def handle_session(self, websocket: WebSocket) -> None:
         if getattr(self._speech_service, "_tts_model_type", None) != _MODEL_TYPE:
             await super().handle_session(websocket)
@@ -241,18 +263,13 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
         input_stream: EasyMagpieInputStream | None = None
         completed = False
         try:
-            config = await self._receive_config(websocket)
+            config = await self._receive_session_config(websocket)
             if config is None:
                 return
             if not config.stream_audio or config.response_format != "pcm":
                 await self._send_error(
                     websocket,
                     "Incremental EasyMagpie input requires stream_audio=true and response_format='pcm'.",
-                )
-                return
-            if config.word_timestamps:
-                await self._send_error(
-                    websocket, "word_timestamps is not supported with incremental EasyMagpie input."
                 )
                 return
             if config.model and hasattr(self._speech_service, "_check_model"):
@@ -277,6 +294,17 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
                 stream=True,
             )
             spec = adapter.build_streaming_spec(request)
+            alignment = None
+            if config.word_timestamps:
+                if not adapter.timestamps_enabled():
+                    await self._send_error(
+                        websocket, 'Start the V2 server with hf_overrides.easymagpie_timestamps=true'
+                    )
+                    return
+                from easymagpie_vllm_omni.timestamps import StreamingAlignmentDecoder
+
+                alignment = StreamingAlignmentDecoder(adapter._model_path(), tokenizer=spec.tokenizer)
+                spec.prefill_prompt['additional_information']['return_timestamps'] = True
             text_encoder = spec.tokenizer.incremental_encoder()
             sampling_params_list = copy.deepcopy(self._speech_service.engine_client.default_sampling_params_list)
             sampling_params_list = coerce_param_message_types(sampling_params_list, is_streaming=True)
@@ -304,6 +332,13 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
             async def observed_generator():
                 async for output in generator:
                     input_stream.observe_output(output)
+                    if alignment is not None:
+                        from easymagpie_vllm_omni.timestamps import unpack_alignment_packets
+
+                        for packet in unpack_alignment_packets(output):
+                            delta = alignment.update(packet)
+                            if delta is not None:
+                                await websocket.send_json(delta)
                     yield output
 
             await websocket.send_json(
@@ -377,6 +412,9 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
                     # Raw ids establish an explicit tokenization boundary.
                     # Flush any buffered ordinary text first to preserve order.
                     buffered_tokens = text_encoder.finish()
+                    if alignment is not None:
+                        alignment.append_stream_text("", buffered_tokens, closes_segment=True)
+                        alignment.append_token_ids(tokens)
                     if buffered_tokens:
                         await input_stream.put_tokens(buffered_tokens)
                         input_token_count += len(buffered_tokens)
@@ -388,12 +426,18 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
                         await self._send_error(websocket, "input.text requires a string value")
                         continue
                     tokens = text_encoder.push(text)
+                    if alignment is not None:
+                        # The incremental encoder may hold a word or marker back across
+                        # chunks, so offsets are derived from the whole open segment.
+                        alignment.append_stream_text(text, tokens, deferred=not text_encoder.clean)
                     text_parts.append(text)
                     if tokens:
                         await input_stream.put_tokens(tokens)
                         input_token_count += len(tokens)
                 elif msg_type == "input.done":
                     tokens = text_encoder.finish()
+                    if alignment is not None:
+                        alignment.append_stream_text("", tokens, closes_segment=True)
                     if tokens:
                         await input_stream.put_tokens(tokens)
                         input_token_count += len(tokens)
@@ -406,6 +450,8 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
                     await self._send_error(websocket, f"Unknown message type: {msg_type}")
 
             total_bytes = await audio_task
+            if alignment is not None:
+                await websocket.send_json(alignment.finalize(total_bytes / (2 * spec.sample_rate)))
             await websocket.send_json(
                 {
                     "type": "audio.done",

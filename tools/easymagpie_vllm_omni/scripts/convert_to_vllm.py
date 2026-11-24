@@ -68,7 +68,6 @@ from easymagpie_vllm_omni.config import EasyMagpieOmniArch
 from omegaconf import OmegaConf
 from safetensors.torch import load_file, save_file
 
-
 # Top-level checkpoint key prefixes the vLLM model's ``load_weights`` consumes
 # for the TTS submodules (everything else under these names maps 1:1 into the
 # vLLM model). ``text_embedding.*`` is intentionally excluded here: it is
@@ -239,7 +238,7 @@ def precompute_text_embeddings(model, batch_size: int) -> torch.Tensor:
         end = min(start + batch_size, vocab_size)
         ids = torch.arange(start, end, dtype=torch.long, device=device).unsqueeze(0)  # (1, n)
         lens = torch.tensor([end - start], dtype=torch.long, device=device)
-        embeds = model.embed_text_tokens(ids, text_lens=lens, disable_cas_embedding=False)  # (1, n, E)
+        embeds = model.embed_text_tokens(ids, text_lens=lens)  # (1, n, E)
         table[start:end] = embeds.squeeze(0).to(torch.float32)
     return table.cpu()
 
@@ -744,6 +743,17 @@ def convert(args) -> None:
     )
     if encoder_path is not None:
         configure_codec_reference_speaker_encoder(args.outdir, config)
+    if config['acoustic_predictor_type'] == 'acoustic_codes_predictor':
+        import inspect
+
+        from easymagpie_vllm_omni.timestamps import bundle_timestamp_runtime
+
+        from nemo.collections.tts.modules import attention_alignment
+
+        config.update(bundle_timestamp_runtime(args.outdir, inspect.getsourcefile(attention_alignment)))
+        config['timestamp_config'] = dict(model.timestamp_config, enabled=False)
+        config['text_bos_id'] = int(model.bos_id)
+        config['text_pad_id'] = int(model.pad_id)
     with open(os.path.join(args.outdir, "config.json"), "w") as f:
         json.dump(config, f, indent=2)
     logging.info("Saved config.json")

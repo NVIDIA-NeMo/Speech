@@ -916,9 +916,12 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         The subsampling and the depthwise convolutions run over gapped per-utterance slots
         and the self-attention over all tokens with a block mask of the utterances, so no padded frame is computed.
         At the valid frames the result equals ``forward`` up to floating-point summation order,
-        with one documented difference:
-        batch normalization in the convolution modules takes its training statistics from the valid frames only,
-        while the padded forward includes the padded frames (see ``ConformerConvolution.forward_packed``).
+        with two documented differences in the normalization of the convolution modules:
+        batch normalization takes its training statistics from the valid frames only,
+        while the padded forward includes the padded frames;
+        instance and group normalization take the statistics of every utterance from its own frames, in both modes,
+        while the padded forward of a batch counts the padded frames of the shorter utterances into theirs
+        (see ``ConformerConvolution.forward_packed``).
         Dropout draws its masks per token, so same-seed elementwise equality with the padded forward is not promised.
         A ``dw_striding`` frontend runs its stack layer by layer here, while the padded forward may run the fused
         Triton kernel (``use_triton``), so with the fusion on the two forms differ by that kernel's precision:
@@ -937,7 +940,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         intermediate layer captures, and in training mode attention dropout where FlexAttention would have to apply it)
         are named by ``sequence_packed_unsupported_reason`` and refused here with ``NotImplementedError``;
         the parallel expert encoder and the independent dual encoder consult ``supports_sequence_packed_output``
-        at dispatch time and keep their padded path for them, the plain perception module reports the reason.
+        at dispatch time and refuse them with the same reason unless their ``allow_padded_fallback`` is set,
+        which runs the padded path with a warning; the plain perception module reports the reason.
 
         Args:
             audio_signal: packed features (``PackedEncoderActivations`` with data ``(sum(T_i), feat_in)``),
@@ -1032,9 +1036,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
     def supports_sequence_packed_output(self) -> bool:
         """Whether ``forward_sequence_packed`` runs this encoder as configured and in its current mode.
 
-        The parallel expert encoder and the independent dual encoder read it before they dispatch and keep their
-        padded path when it is False, so an encoder whose configuration has no packed form
-        (see ``sequence_packed_unsupported_reason``) trains as it did before the packed path existed;
+        The parallel expert encoder and the independent dual encoder read it before they dispatch.
+        When it is False (see ``sequence_packed_unsupported_reason``) they raise with the reason,
+        or run the encoder on the padded batch with a warning when their ``allow_padded_fallback`` is set;
         the answer depends on the mode and, under autocast, on the autocast dtype, so it is read per forward.
         """
         return self.sequence_packed_unsupported_reason() is None
@@ -1046,8 +1050,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         on the two sides, attention context sizes that ``att_context_style`` does not define
         (see ``_att_context_unsupported_reason``), reduction layers, adapters,
         intermediate layer captures (InterCTC and ``save_encoder_tensors``, whose consumers expect padded tensors),
-        frontends other than a linear layer or a non-causal ``striding`` or ``dw_striding`` ``ConvSubsampling``,
-        and instance or group normalization in the convolution modules.
+        frontends other than a linear layer or a ``ConvSubsampling`` that names no reason of its own,
+        and whatever the convolution module of a layer names (both by ``sequence_packed_unsupported_reason``).
         Attention dropout in training mode on CUDA: FlexAttention has no dropout, so ``rel_pos`` attention
         keeps its dropout only through its Triton kernel
         (``packed_rel_pos_attention: triton``, Triton installed, float32, bfloat16 or float16)

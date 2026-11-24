@@ -543,7 +543,10 @@ class ConformerConvolution(nn.Module):
         The padded forward includes the padded frames,
         which hold the bias and the boundary tails of the depthwise convolution,
         so the two forms differ in training mode by the share of padding in the batch and agree in evaluation mode.
-        Instance and group normalization need per-utterance statistics and are not supported here.
+        Instance and group normalization take the statistics of every utterance from its own frames,
+        in both modes (see ``_utterance_norm_packed``),
+        so an utterance gets the result of the padded forward on that utterance alone;
+        the padded forward of a batch counts the padded frames of the shorter utterances into their statistics.
         Without any frame (a rank whose share of a batch is empty) the convolution is skipped
         and its parameters keep a zero gradient edge;
         a single valid frame, which ``BatchNorm1d`` refuses to normalize in training mode,
@@ -558,9 +561,6 @@ class ConformerConvolution(nn.Module):
         Returns:
             The module output, shape ``(T_total, d_model)``.
         """
-        reason = self.sequence_packed_unsupported_reason()
-        if reason is not None:
-            raise NotImplementedError(reason)
         x = self._apply_pointwise(x, self.pointwise_conv1)
         if self.pointwise_activation == 'glu_':
             x = nn.functional.glu(x, dim=-1)
@@ -583,15 +583,18 @@ class ConformerConvolution(nn.Module):
 
         if self.norm_type == 'batch_norm' and self.batch_norm.training and x.shape[0] == 1:
             x = self._batch_norm_one_frame(x)
+        elif self.norm_type == 'instance_norm' or self.norm_type.startswith('group_norm'):
+            x = self._utterance_norm_packed(x, layout)
         else:
             x = self.batch_norm(x)
         x = self.activation(x)
         return self._apply_pointwise(x, self.pointwise_conv2)
 
     def sequence_packed_unsupported_reason(self) -> str | None:
-        """Why ``forward_packed`` cannot run this module, or None when it can."""
-        if self.norm_type == 'instance_norm' or self.norm_type.startswith('group_norm'):
-            return f"conv_norm_type={self.norm_type} has no sequence-packed form."
+        """Why ``forward_packed`` cannot run this module, or None when it can.
+
+        The encoder asks the convolution block of every layer; this module runs every norm type.
+        """
         return None
 
     def _batch_norm_one_frame(self, x: torch.Tensor) -> torch.Tensor:
@@ -613,6 +616,46 @@ class ConformerConvolution(nn.Module):
                 frame = x[0].to(batch_norm.running_mean.dtype)
                 batch_norm.running_mean.mul_(1.0 - momentum).add_(frame, alpha=momentum)
         return x * 0.0 + batch_norm.weight.to(x.dtype) * 0.0 + batch_norm.bias.to(x.dtype)
+
+    def _utterance_norm_packed(self, x: torch.Tensor, layout: PackedSlotLayout) -> torch.Tensor:
+        """Instance or group normalization of token-flat input ``(T_total, C)``, per utterance.
+
+        Mean and variance of a group are taken over the frames of one utterance and the channels of the group,
+        as ``InstanceNorm1d`` (one channel per group) and ``GroupNorm`` take them over ``(C / G, T)`` of a batch row.
+        float16 and bfloat16 input is normalized in float32 and cast back:
+        without autocast half-precision squares overflow and the sums lose the small terms,
+        and in either case a mean rounded to half precision before the subtraction
+        costs several percent of the output where the mean is large against the spread.
+        A group with a single value, one frame of a one-channel group, which both modules refuse,
+        has no variance and is normalized to the bias.
+        """
+        norm = self.batch_norm
+        num_groups = norm.num_groups if isinstance(norm, nn.GroupNorm) else x.shape[1]
+        # the lengths and utterance indices the layout was built from, the same tensors for every layer;
+        # no step here reads a value back from the device
+        sequence_ids, lengths = layout.sequence_ids, layout.lengths
+        if sequence_ids is None or lengths is None:
+            # a layout built without them: utterances without frames can share their slot start
+            # with the next utterance, so a token belongs to the last utterance that starts at or before its slot
+            sequence_ids = torch.bucketize(layout.token_slots, layout.slot_offsets[1:], right=True)
+            lengths = sequence_ids.new_zeros(layout.slot_offsets.numel())
+            lengths = lengths.index_add_(0, sequence_ids, torch.ones_like(sequence_ids))
+        counts = lengths.clamp(min=1) * (x.shape[1] // num_groups)
+
+        def utterance_mean(values: torch.Tensor) -> torch.Tensor:
+            """(T_total, G, C / G) to the mean over the utterance's frames and the group, per token (T_total, G, 1)."""
+            # the tokens of an utterance are consecutive; segment_reduce adds them in a fixed order,
+            # which index_add on CUDA does not, and the lengths are those of the layout, so they need no check
+            sums = torch.segment_reduce(values.sum(dim=2), "sum", lengths=lengths, unsafe=True)
+            return _UtteranceValuePerToken.apply(sums / counts.unsqueeze(1), sequence_ids, lengths).unsqueeze(2)
+
+        dtype = x.dtype
+        x = x.to(torch.promote_types(dtype, torch.float32)).unflatten(1, (num_groups, -1))
+        x = x - utterance_mean(x)
+        x = (x * torch.rsqrt(utterance_mean(x.square()) + norm.eps)).flatten(1)
+        if norm.weight is not None:
+            x = x * norm.weight.to(x.dtype) + norm.bias.to(x.dtype)
+        return x.to(dtype)
 
     def reset_parameters_conv(self):
         pw1_max = pw2_max = self.d_model**-0.5
@@ -765,3 +808,23 @@ def apply_dropout(dropout: nn.Module, x: torch.Tensor, context: PackedAttentionC
     if isinstance(dropout, BroadcastDropout):
         return dropout(x, context)
     return dropout(x)
+
+
+class _UtteranceValuePerToken(torch.autograd.Function):
+    """One row per utterance ``(B, ...)`` repeated for every token of the utterance, ``(T_total, ...)``.
+
+    The same values as ``values.index_select(0, sequence_ids)``.
+    Its backward adds the token gradients of an utterance with ``segment_reduce``, in a fixed order,
+    where the backward of ``index_select`` is an ``index_add``, whose result on CUDA changes from run to run.
+    """
+
+    @staticmethod
+    def forward(ctx, values: torch.Tensor, sequence_ids: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+        ctx.save_for_backward(lengths)
+        return values.index_select(0, sequence_ids)
+
+    @staticmethod
+    @torch.autograd.function.once_differentiable
+    def backward(ctx, grad_output: torch.Tensor) -> tuple[torch.Tensor, None, None]:
+        (lengths,) = ctx.saved_tensors
+        return torch.segment_reduce(grad_output, "sum", lengths=lengths, unsafe=True), None, None

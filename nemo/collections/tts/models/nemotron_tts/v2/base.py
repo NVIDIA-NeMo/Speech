@@ -608,6 +608,7 @@ class NemotronTTSBase(ModelPT):
                 projection_size=self.timestamp_head_config.get('projection_size', 128),
                 pos_weight=self.timestamp_head_config.get('pos_weight', 1.0),
                 local_count_loss=self.timestamp_head_config.get('local_count_loss'),
+                cumulative_count_loss=self.timestamp_head_config.get('cumulative_count_loss'),
             )
 
     @property

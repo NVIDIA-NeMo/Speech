@@ -814,17 +814,20 @@ def test_local_count_loss_uses_the_masked_audio_grid_and_keeps_terminal_eos(text
         assert not output.timestamp_metrics[name].requires_grad
 
 
-def test_local_count_loss_trains_head_and_backbone_and_reuses_metric_reduction():
-    model = _timestamp_model(multiturn=False, local_count_loss={'enabled': True, 'window_size': 3})
+@pytest.mark.parametrize('name', ['local', 'cumulative'])
+def test_count_loss_trains_head_and_backbone_and_reuses_metric_reduction(name):
+    config = {'enabled': True, **({'window_size': 3} if name == 'local' else {})}
+    model = _timestamp_model(multiturn=False, **{f'{name}_count_loss': config})
     counts = []
-    compute = model.timestamp_head.compute_local_count_loss
+    method = f'compute_{name}_count_loss'
+    compute = getattr(model.timestamp_head, method)
 
     def collect(*args, **kwargs):
         value = compute(*args, **kwargs)
         counts.append(value)
         return value
 
-    with patch.object(model.timestamp_head, 'compute_local_count_loss', side_effect=collect):
+    with patch.object(model.timestamp_head, method, side_effect=collect):
         output = model.process_batch(**_inputs(model), timestamp_batch=_raw_batch(), mode='val')
     # The detached logging values do not sever the actual count-loss graph.
     counts[0].backward()
@@ -842,8 +845,110 @@ def test_local_count_loss_trains_head_and_backbone_and_reuses_metric_reduction()
     with patch.object(model, 'log_dict') as log:
         model._log_timestamp_losses(output, 'train', batch_size=1)
     assert len(reduced) == 1
-    for name in ('bce_loss', 'local_count_loss', 'local_count_loss_weighted'):
-        torch.testing.assert_close(log.call_args.args[0][f'train/timestamp_{name}'], output.timestamp_metrics[name])
+    for key in ('bce_loss', f'{name}_count_loss', f'{name}_count_loss_weighted'):
+        torch.testing.assert_close(log.call_args.args[0][f'train/timestamp_{key}'], output.timestamp_metrics[key])
+
+
+@pytest.mark.parametrize('local_enabled', [False, True])
+def test_disabled_cumulative_count_preserves_existing_loss_and_never_computes_prefixes(local_enabled):
+    local = {'enabled': local_enabled, 'window_size': 3}
+    baseline = _timestamp_model(multiturn=False, local_count_loss=local).eval()
+    observed = _timestamp_model(
+        multiturn=False,
+        local_count_loss=local,
+        cumulative_count_loss={'enabled': False, 'weight': 100.0, 'delta': 10.0},
+    ).eval()
+    with patch.object(
+        observed.timestamp_head,
+        'compute_cumulative_count_loss',
+        side_effect=AssertionError('Disabled cumulative count loss must not compute prefixes'),
+    ):
+        expected = baseline.process_batch(**_inputs(baseline), timestamp_batch=_raw_batch(), mode='val')
+        actual = observed.process_batch(**_inputs(observed), timestamp_batch=_raw_batch(), mode='val')
+    torch.testing.assert_close(actual.loss, expected.loss, rtol=0, atol=0)
+    torch.testing.assert_close(actual.timestamp_loss, expected.timestamp_loss, rtol=0, atol=0)
+    torch.testing.assert_close(actual.logits, expected.logits, rtol=0, atol=0)
+    assert actual.timestamp_metrics.keys() == expected.timestamp_metrics.keys()
+    assert 'cumulative_count_loss' not in actual.timestamp_metrics
+
+
+@pytest.mark.parametrize('text_input_mode,audio_delay', [('streaming', 1), ('full', 5)])
+@pytest.mark.parametrize(
+    'local_enabled,cumulative_enabled', [(False, False), (False, True), (True, False), (True, True)]
+)
+def test_count_losses_coexist_on_the_masked_audio_prediction_grid(
+    text_input_mode, audio_delay, local_enabled, cumulative_enabled
+):
+    model = _timestamp_model(
+        multiturn=False,
+        local_count_loss={'enabled': local_enabled, 'weight': 2.0, 'window_size': 3},
+        cumulative_count_loss={'enabled': cumulative_enabled, 'weight': 0.1, 'delta': 1.0},
+    )
+    inputs = _inputs(model)
+    inputs['context_text_tokens'] = torch.empty(1, 0, dtype=torch.long)
+    inputs['context_text_tokens_lens'] = torch.tensor([0])
+    hidden, projected = [], []
+    decoder_hook = model.decoder.register_forward_hook(
+        lambda _module, _args, output: hidden.append(output.last_hidden_state)
+    )
+    head_hook = model.timestamp_head.register_forward_pre_hook(lambda _module, args: projected.append(args[0]))
+    values = torch.logit(torch.tensor([[0.1, 0.99, 0.8, 0.7, 0.6]], requires_grad=True))
+    try:
+        with (
+            patch.object(model.timestamp_head, 'forward', return_value=values),
+            patch.object(
+                model.timestamp_head,
+                'compute_cumulative_count_loss',
+                wraps=model.timestamp_head.compute_cumulative_count_loss,
+            ) as cumulative,
+        ):
+            output = model.process_batch(
+                **inputs,
+                timestamp_batch=_raw_batch(),
+                mode='val',
+                training_mode=TrainingMode(text_input_mode, 0, 1, 0),
+                agent_mask=torch.tensor([[True, False, True, True]]),
+            )
+    finally:
+        decoder_hook.remove()
+        head_hook.remove()
+    steps = output.audio_codes_target.size(-1)
+    torch.testing.assert_close(projected[0], hidden[0][:, audio_delay : audio_delay + steps], rtol=0, atol=0)
+    assert output.timestamp_targets.tolist() == [[NONEND, IGNORE_INDEX, END, NONEND, END]]
+    assert output.timestamp_mask.tolist() == [[True, False, True, True, True]]
+    assert cumulative.call_count == int(cumulative_enabled)
+    bce = F.binary_cross_entropy_with_logits(
+        values[output.timestamp_mask], output.timestamp_targets[output.timestamp_mask].float()
+    )
+    expected = bce
+    metrics = output.timestamp_metrics
+    if local_enabled or cumulative_enabled:
+        torch.testing.assert_close(metrics['bce_loss'], bce.detach())
+        assert not metrics['bce_loss'].requires_grad
+    else:
+        assert 'bce_loss' not in metrics
+    if local_enabled:
+        expected = expected + 2 * 0.01
+        torch.testing.assert_close(metrics['local_count_loss'], torch.tensor(0.01))
+    if cumulative_enabled:
+        torch.testing.assert_close(cumulative.call_args.args[1], output.timestamp_targets)
+        torch.testing.assert_close(cumulative.call_args.args[2], output.timestamp_mask)
+        assert cumulative.call_args.kwargs['eos_mask'].tolist() == [[False, False, False, False, True]]
+        # The masked frame splits regions of lengths one and three; EOS belongs to the latter.
+        raw = torch.tensor((0.1**2 + ((-0.2) ** 2 + 0.5**2 + 0.1**2) / 3) / (2 * 4))
+        torch.testing.assert_close(metrics['cumulative_count_loss'], raw)
+        torch.testing.assert_close(metrics['cumulative_count_loss_weighted'], 0.1 * raw)
+        assert not metrics['cumulative_count_loss'].requires_grad
+        assert not metrics['cumulative_count_loss_weighted'].requires_grad
+        expected = expected + 0.1 * raw
+    else:
+        assert 'cumulative_count_loss' not in metrics
+    torch.testing.assert_close(output.timestamp_loss, expected)
+    base = (
+        model.parallel_codebook_loss_scale * output.codebook_loss
+        + model.acoustic_codes_predictor_loss_scale * output.acoustic_codes_predictor_loss
+    )
+    torch.testing.assert_close(output.loss, base + model.timestamp_head_loss_weight * expected)
 
 
 def test_zero_outer_timestamp_weight_preserves_base_loss_with_local_count_enabled():
@@ -1122,7 +1227,7 @@ class _FrozenTeacher(nn.Module):
         ]
 
 
-def _timestamp_model(enabled=True, multiturn=True, local_count_loss=None):
+def _timestamp_model(enabled=True, multiturn=True, local_count_loss=None, cumulative_count_loss=None):
     model = _training_model(enabled=False, multiturn=multiturn)
     model._device = next(model.parameters()).device
     model.use_timestamp_head = enabled
@@ -1131,7 +1236,9 @@ def _timestamp_model(enabled=True, multiturn=True, local_count_loss=None):
     model.text_conditioning_tokenizer_name = 'bpe'
     model.tokenizer = _ReferenceTokenizer()
     if enabled:
-        model.timestamp_head = TimestampHead(16, local_count_loss=local_count_loss)
+        model.timestamp_head = TimestampHead(
+            16, local_count_loss=local_count_loss, cumulative_count_loss=cumulative_count_loss
+        )
         object.__setattr__(model, '_timestamp_teacher', _FrozenTeacher())
     return model
 

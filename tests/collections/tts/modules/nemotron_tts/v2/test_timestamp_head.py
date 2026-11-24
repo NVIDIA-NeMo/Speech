@@ -444,6 +444,216 @@ def test_local_count_rejects_mismatched_target_shapes():
         TimestampHead(4).compute_local_count_loss(torch.zeros(2, 5), torch.zeros(2, 4))
 
 
+def test_cumulative_count_configuration_preserves_checkpoint_and_bce_compatibility():
+    original = TimestampHead(4)
+    assert not original.cumulative_count_loss_enabled
+    enabled = TimestampHead(4, cumulative_count_loss={'enabled': True, 'weight': 0.0, 'delta': 0.25})
+    assert enabled.cumulative_count_loss_enabled and enabled.cumulative_count_loss_weight == 0.0
+    assert enabled.cumulative_count_delta == 0.25
+    enabled.load_state_dict(original.state_dict(), strict=True)
+    assert enabled.state_dict().keys() == original.state_dict().keys()
+    logits = torch.tensor([[-0.5, 0.5, 0.1, -0.1]], requires_grad=True)
+    labels = torch.tensor([[0, 1, 1, 0]])
+    torch.testing.assert_close(
+        enabled.compute_loss(logits, labels), original.compute_loss(logits, labels), rtol=0, atol=0
+    )
+
+
+@pytest.mark.parametrize(
+    'config',
+    [
+        {'enabled': 'true'},
+        {'enabled': 1},
+        {'weight': -1},
+        {'weight': True},
+        {'weight': float('inf')},
+        {'weight': float('nan')},
+        {'delta': 0},
+        {'delta': -1},
+        {'delta': True},
+        {'delta': float('inf')},
+        {'delta': float('nan')},
+        {'delta': [1]},
+    ],
+)
+def test_cumulative_count_rejects_invalid_configuration(config):
+    with pytest.raises(ValueError, match='cumulative_count'):
+        TimestampHead(4, cumulative_count_loss=config)
+
+
+@pytest.mark.parametrize('dtype', [torch.float32, torch.bfloat16])
+def test_cumulative_count_matches_segmented_loop_oracle_and_gradients(dtype):
+    delta = 0.7
+    head = TimestampHead(4, pos_weight=3, cumulative_count_loss={'weight': 7, 'delta': delta})
+    logits = torch.tensor(
+        [[-1.2, 0.8, 0.4, -0.6, 1.1, -0.2, 0.9, -1.0], [0.4, -0.8, 0.3, float('nan'), 0.7, -0.4, float('nan'), 1.2]],
+        dtype=dtype,
+        requires_grad=True,
+    )
+    labels = torch.tensor([[0, 1, 1, 0, 0, 1, 0, 1], [0, 1, 0, 0, 1, 0, IGNORE_INDEX, 1]])
+    mask = torch.ones_like(labels, dtype=torch.bool)
+    mask[1, 3] = False
+    eos = torch.zeros_like(mask)
+    eos[0, 2] = True
+    expected_logits = logits.detach().clone().requires_grad_()
+    segments = []
+    for sample in range(labels.size(0)):
+        running = 0.0
+        terms = []
+        for frame in range(labels.size(1)):
+            if not mask[sample, frame] or labels[sample, frame] == IGNORE_INDEX:
+                if terms:
+                    segments.append(terms)
+                    terms = []
+                running = 0.0
+                continue
+            running = running + expected_logits[sample, frame].float().sigmoid() - labels[sample, frame]
+            magnitude = running.abs()
+            terms.append(torch.where(magnitude <= delta, 0.5 * running.square(), delta * (magnitude - 0.5 * delta)))
+            if eos[sample, frame]:
+                segments.append(terms)
+                terms = []
+                running = 0.0
+        if terms:
+            segments.append(terms)
+    expected = torch.stack([term / len(segment) for segment in segments for term in segment]).mean()
+    actual = head.compute_cumulative_count_loss(logits, labels, mask, eos)
+    assert actual.dtype == torch.float32 and torch.isfinite(actual)
+    torch.testing.assert_close(actual, expected)
+    actual.backward()
+    expected.backward()
+    torch.testing.assert_close(logits.grad, expected_logits.grad)
+    assert logits.grad[1, [3, 6]].count_nonzero() == 0
+
+
+def test_cumulative_count_penalizes_persistent_drift_more_than_a_one_frame_shift():
+    head = TimestampHead(4)
+    labels = torch.tensor([[0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]])
+    duplicate, shifted = labels.clone(), labels.clone()
+    duplicate[0, 2] = END
+    shifted[0, 1], shifted[0, 2] = NONEND, END
+    duplicate_loss = head.compute_cumulative_count_loss(torch.where(duplicate.bool(), 20.0, -20.0), labels)
+    shift_loss = head.compute_cumulative_count_loss(torch.where(shifted.bool(), 20.0, -20.0), labels)
+    assert duplicate_loss > shift_loss * 8
+    labels = torch.tensor([[0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0]])
+    early = labels.clone()
+    early[0, 5], early[0, 10] = END, NONEND
+    assert early.sum() == labels.sum()
+    cancellation_loss = head.compute_cumulative_count_loss(torch.where(early.bool(), 20.0, -20.0), labels)
+    torch.testing.assert_close(cancellation_loss, torch.tensor(5 * 0.5 / (12 * 12)))
+    adjacent = torch.tensor([[0, 1, 1, 0, 1, 0, 1]])
+    assert head.compute_cumulative_count_loss(torch.where(adjacent.bool(), 20.0, -20.0), adjacent) < 1e-10
+
+
+def test_cumulative_count_includes_eos_then_resets_and_isolates_invalid_gaps():
+    head = TimestampHead(4, cumulative_count_loss={'delta': 1.0})
+    logits = torch.logit(torch.tensor([[0.9] * 3 + [0.1] * 3]))
+    labels = torch.tensor([[0, 0, 1] * 2])
+    expected = (
+        head.compute_cumulative_count_loss(logits[:, :3], labels[:, :3])
+        + head.compute_cumulative_count_loss(logits[:, 3:], labels[:, 3:])
+    ) / 2
+    actual = head.compute_cumulative_count_loss(logits, labels, eos_mask=labels.bool())
+    torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(actual, torch.tensor((0.405 + 1.3 + 1.2 + 0.005 + 0.02 + 0.245) / 18))
+    assert not torch.isclose(actual, head.compute_cumulative_count_loss(logits, labels))
+    padding = torch.full((1, 4), float('nan'))
+    padded_logits = torch.cat((padding, logits[:, :3], padding, logits[:, 3:], padding), dim=1).requires_grad_()
+    padded_labels = torch.cat(
+        (
+            torch.full((1, 4), IGNORE_INDEX),
+            labels[:, :3],
+            torch.zeros(1, 4),
+            labels[:, 3:],
+            torch.full((1, 4), IGNORE_INDEX),
+        ),
+        dim=1,
+    )
+    valid = padded_labels != IGNORE_INDEX
+    valid[:, 7:11] = False
+    observed = head.compute_cumulative_count_loss(padded_logits, padded_labels, valid)
+    torch.testing.assert_close(observed, expected)
+    observed.backward()
+    assert torch.isfinite(padded_logits.grad).all()
+    assert padded_logits.grad[~valid].count_nonzero() == 0
+
+
+def test_cumulative_count_supervises_single_frame_segments_without_tensor_host_reads(monkeypatch):
+    head = TimestampHead(4, cumulative_count_loss={'delta': 1.0})
+    logits = torch.zeros(1, 1, requires_grad=True)
+
+    def reject_host_read(*args, **kwargs):
+        raise AssertionError('Cumulative count loss must not synchronize tensors with the host')
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(torch.Tensor, 'item', reject_host_read)
+        patcher.setattr(torch.Tensor, '__bool__', reject_host_read)
+        loss = head.compute_cumulative_count_loss(
+            logits, torch.ones(1, 1), eos_mask=torch.ones(1, 1, dtype=torch.bool)
+        )
+    torch.testing.assert_close(loss, torch.tensor(0.125))
+    loss.backward()
+    torch.testing.assert_close(logits.grad, torch.tensor([[-0.125]]))
+
+
+def test_cumulative_count_tail_gradients_reset_after_a_long_drifting_turn():
+    head = TimestampHead(4, cumulative_count_loss={'delta': 1.0})
+    prefix_frames = 8192
+    tail_logits = torch.full((1, 9), math.log(0.2 / 0.8), requires_grad=True)
+    tail_labels = torch.tensor([[0] * 8 + [END]])
+    isolated = head.compute_cumulative_count_loss(tail_logits, tail_labels)
+    expected_gradient = torch.autograd.grad(isolated, tail_logits)[0]
+    combined_logits = torch.cat((torch.full((1, prefix_frames), 20.0), tail_logits.detach()), dim=1).requires_grad_()
+    combined_labels = torch.cat((torch.zeros(1, prefix_frames), tail_labels), dim=1)
+    combined_labels[0, prefix_frames - 1] = END
+    eos = torch.zeros_like(combined_labels, dtype=torch.bool)
+    eos[0, prefix_frames - 1] = True
+    combined = head.compute_cumulative_count_loss(combined_logits, combined_labels, eos_mask=eos)
+    observed_gradient = torch.autograd.grad(combined, combined_logits)[0][:, prefix_frames:]
+    observed_gradient *= combined_logits.numel() / tail_logits.numel()
+    # Segment resets remain stable despite FP32 prefix-sum cancellation after a large error.
+    torch.testing.assert_close(observed_gradient, expected_gradient, rtol=2e-3, atol=2e-5)
+
+
+def test_cumulative_count_loss_and_gradient_strength_remain_stable_for_longer_fresh_head_sequences():
+    head = TimestampHead(4, cumulative_count_loss={'delta': 1.0})
+    scales = []
+    for frames in (64, 4096):
+        logits = torch.zeros(1, frames, requires_grad=True)
+        labels = torch.zeros_like(logits)
+        count_loss = head.compute_cumulative_count_loss(logits, labels)
+        count_gradient = torch.autograd.grad(count_loss, logits, retain_graph=True)[0]
+        bce_gradient = torch.autograd.grad(head.compute_loss(logits, labels), logits)[0]
+        scales.append(torch.stack((count_loss.detach(), count_gradient.norm() / bce_gradient.norm())))
+    torch.testing.assert_close(scales[0], scales[1], rtol=0.04, atol=0.001)
+
+
+@pytest.mark.parametrize('case', ['empty', 'masked', 'ignored'])
+def test_cumulative_count_without_supervision_returns_finite_connected_zero(case):
+    logits = torch.full((2, 0 if case == 'empty' else 7), float('nan'), requires_grad=True)
+    labels = torch.full_like(logits, IGNORE_INDEX if case == 'ignored' else 0)
+    mask = torch.full_like(logits, case != 'masked', dtype=torch.bool)
+    loss = TimestampHead(4).compute_cumulative_count_loss(logits, labels, mask)
+    assert loss.dtype == torch.float32 and loss.item() == 0
+    loss.backward()
+    assert logits.grad is not None and logits.grad.count_nonzero() == 0
+
+
+@pytest.mark.parametrize('name', ['valid_mask', 'eos_mask'])
+@pytest.mark.parametrize('mask', [torch.ones(2, 4, dtype=torch.bool), torch.ones(2, 5)])
+def test_cumulative_count_rejects_nonboolean_or_mismatched_masks(name, mask):
+    with pytest.raises(ValueError, match=name):
+        TimestampHead(4).compute_cumulative_count_loss(torch.zeros(2, 5), torch.zeros(2, 5), **{name: mask})
+
+
+def test_cumulative_count_rejects_mismatched_targets_and_missing_frame_dimension():
+    head = TimestampHead(4)
+    with pytest.raises(ValueError, match='same shape'):
+        head.compute_cumulative_count_loss(torch.zeros(2, 5), torch.zeros(2, 4))
+    with pytest.raises(ValueError, match='frame dimension'):
+        head.compute_cumulative_count_loss(torch.tensor(0.0), torch.tensor(0))
+
+
 def test_timestamp_clicks_follow_boundaries_without_changing_source_or_audio_length():
     source = np.zeros(16000, dtype=np.float64)
     marked = add_timestamp_markers(source, 16000, [0.25, 0.75])

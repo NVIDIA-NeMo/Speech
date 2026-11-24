@@ -24,6 +24,10 @@ model:
       enabled: false
       weight: 2.0
       window_size: 5
+    cumulative_count_loss:
+      enabled: false
+      weight: 32.0
+      delta: 1.0
     aligner:
       snapshot_path: null  # Local NVIDIA-Nemotron-3.5-Transcribe-30B-A4B Hugging Face snapshot.
       encoder_dtype: checkpoint

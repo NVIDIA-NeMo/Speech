@@ -1829,17 +1829,17 @@ class NemotronTTSModel(NemotronTTSBase):
             timestamp_metrics = {
                 name: torch.tensor(value, device=loss.device) for name, value in timestamp_metrics.items()
             }
-            if self.timestamp_head.local_count_loss_enabled:
-                count_loss = self.timestamp_head.compute_local_count_loss(
-                    timestamp_logits, timestamp_targets, timestamp_mask, eos_mask=eos_positions
-                )
-                weighted_count_loss = self.timestamp_head.local_count_loss_weight * count_loss
-                timestamp_metrics.update(
-                    bce_loss=timestamp_loss.detach(),
-                    local_count_loss=count_loss.detach(),
-                    local_count_loss_weighted=weighted_count_loss.detach(),
-                )
-                timestamp_loss = timestamp_loss + weighted_count_loss
+            if self.timestamp_head.local_count_loss_enabled or self.timestamp_head.cumulative_count_loss_enabled:
+                timestamp_metrics['bce_loss'] = timestamp_loss.detach()
+            for name in ('local', 'cumulative'):
+                if getattr(self.timestamp_head, f'{name}_count_loss_enabled'):
+                    count_loss = getattr(self.timestamp_head, f'compute_{name}_count_loss')(
+                        timestamp_logits, timestamp_targets, timestamp_mask, eos_mask=eos_positions
+                    )
+                    weighted_count_loss = getattr(self.timestamp_head, f'{name}_count_loss_weight') * count_loss
+                    timestamp_metrics[f'{name}_count_loss'] = count_loss.detach()
+                    timestamp_metrics[f'{name}_count_loss_weighted'] = weighted_count_loss.detach()
+                    timestamp_loss = timestamp_loss + weighted_count_loss
             loss = loss + self.timestamp_head_loss_weight * timestamp_loss
             timestamp_metrics.update(eos_alignment_metrics)
             timestamp_metrics['supervised_frames'] = timestamp_mask.sum()

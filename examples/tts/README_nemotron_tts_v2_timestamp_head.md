@@ -86,6 +86,38 @@ It constrains expected counts, not the number of thresholded END events.
 When enabled, `timestamp_bce_loss`, `timestamp_local_count_loss`, and
 `timestamp_local_count_loss_weighted` are logged under both `train/` and `val/`.
 
+To supervise word-count progress throughout a turn, enable the cumulative
+trajectory loss instead:
+
+```bash
+++model.timestamp_head.local_count_loss.enabled=false \
+++model.timestamp_head.cumulative_count_loss.enabled=true \
+++model.timestamp_head.cumulative_count_loss.weight=32.0 \
+++model.timestamp_head.cumulative_count_loss.delta=1.0
+```
+
+It defaults to disabled. The head accumulates `sigmoid(logit) - binary_target`
+on the existing audio prediction grid and applies Huber loss to the cumulative
+error at every supervised frame. Counts start at zero, include speech EOS,
+and reset after EOS and across invalid regions. A missed or extra END therefore
+affects the remaining trajectory until another error compensates it; a short
+timing shift affects only the intervening frames. Genuine adjacent ENDs remain
+valid. Each frame's Huber contribution is divided by the length of its valid
+region before the FP32 supervised-frame mean. This controls the growth of
+cumulative gradients on long turns while preserving raw boundary counts and
+the minimum of the objective. Empty supervision receives a differentiable zero.
+The loss adds no inference state or lookahead.
+
+Weight 32.0 is a strong starting coefficient for this length-normalized loss,
+with Huber delta 1.0 measured in boundary-count units. It requires validation
+on generated speech. The complete objective is
+`BCE + local_weight * local_count_loss + cumulative_weight * cumulative_count_loss`
+for enabled terms, scaled by `timestamp_head.loss_weight`. Both count losses
+can be enabled independently. `timestamp_cumulative_count_loss` and
+`timestamp_cumulative_count_loss_weighted` are logged under `train/` and `val/`,
+along with raw BCE. This constrains expected counts; measure thresholded END
+counts and timing on generated audio to establish its effect on duplicates.
+
 `train/timestamp_loss`, `val/timestamp_loss`, supervised-frame accuracy,
 valid/invalid turn counts, boundary collisions, and supervised-frame counts
 are logged. This is an experimental training target; successful forced

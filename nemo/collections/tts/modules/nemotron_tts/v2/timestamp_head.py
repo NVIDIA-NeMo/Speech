@@ -33,6 +33,7 @@ class TimestampHead(nn.Module):
         pos_weight: float = 1.0,
         ignore_index: int = IGNORE_INDEX,
         local_count_loss: Optional[Mapping] = None,
+        cumulative_count_loss: Optional[Mapping] = None,
     ):
         super().__init__()
         if hidden_size <= 0 or projection_size <= 0:
@@ -67,6 +68,24 @@ class TimestampHead(nn.Module):
             or self.local_count_window_size < 2
         ):
             raise ValueError('local_count_loss.window_size must be an integer of at least two frames')
+        cumulative_config = {} if cumulative_count_loss is None else cumulative_count_loss
+        if not isinstance(cumulative_config, Mapping):
+            raise ValueError('cumulative_count_loss must be a mapping')
+        self.cumulative_count_loss_enabled = cumulative_config.get('enabled', False)
+        if not isinstance(self.cumulative_count_loss_enabled, bool):
+            raise ValueError('cumulative_count_loss.enabled must be boolean')
+        cumulative_weight = cumulative_config.get('weight', 32.0)
+        if isinstance(cumulative_weight, bool) or not isinstance(cumulative_weight, (int, float)):
+            raise ValueError('cumulative_count_loss.weight must be finite and nonnegative')
+        self.cumulative_count_loss_weight = float(cumulative_weight)
+        if not math.isfinite(self.cumulative_count_loss_weight) or self.cumulative_count_loss_weight < 0:
+            raise ValueError('cumulative_count_loss.weight must be finite and nonnegative')
+        cumulative_delta = cumulative_config.get('delta', 1.0)
+        if isinstance(cumulative_delta, bool) or not isinstance(cumulative_delta, (int, float)):
+            raise ValueError('cumulative_count_loss.delta must be finite and positive')
+        self.cumulative_count_delta = float(cumulative_delta)
+        if not math.isfinite(self.cumulative_count_delta) or self.cumulative_count_delta <= 0:
+            raise ValueError('cumulative_count_loss.delta must be finite and positive')
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """Return logits shaped ``(..., frames)`` without modifying the input."""
@@ -118,6 +137,45 @@ class TimestampHead(nn.Module):
             windows = windows & ~eos_mask.unfold(-1, window, 1)[..., :-1].any(dim=-1)
         count_error = error.unfold(-1, window, 1).sum(dim=-1).masked_fill(~windows, 0)
         return count_error.square().sum() / windows.sum().clamp_min(1)
+
+    def compute_cumulative_count_loss(
+        self,
+        logits: torch.Tensor,
+        labels: torch.Tensor,
+        valid_mask: Optional[torch.Tensor] = None,
+        eos_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Match the expected and target cumulative END counts with FP32 Huber loss.
+
+        Each valid region starts at zero, includes its speech EOS, and resets
+        after EOS or invalid frames. Divide each frame's Huber contribution by
+        its valid region length before averaging over supervised frames, so long
+        turns do not amplify the cumulative gradients. Counts remain unnormalized.
+        Binary targets preserve adjacent ENDs and coalesced collisions. Empty
+        supervision returns a differentiable zero.
+        """
+        selected = self._supervision_mask(logits, labels, valid_mask)
+        if logits.ndim == 0:
+            raise ValueError('Cumulative count loss requires a frame dimension')
+        if eos_mask is not None and (eos_mask.shape != labels.shape or eos_mask.dtype != torch.bool):
+            raise ValueError('eos_mask must be boolean and have the same shape as labels')
+        safe_logits = logits.float().masked_fill(~selected, 0)
+        if logits.size(-1) == 0:
+            return safe_logits.sum() * 0
+        error = (safe_logits.sigmoid() - labels.masked_fill(~selected, 0).float()).masked_fill(~selected, 0)
+        prefix = error.cumsum(dim=-1)
+        resets = ~selected
+        if eos_mask is not None:
+            resets[..., 1:] |= eos_mask[..., :-1]
+        positions = torch.arange(logits.size(-1), device=logits.device)
+        offsets = torch.where(resets, positions, 0).cummax(dim=-1).values
+        previous = F.pad(prefix[..., :-1], (1, 0))
+        trajectory_error = prefix - previous.gather(-1, offsets)
+        losses = F.huber_loss(
+            trajectory_error, torch.zeros_like(trajectory_error), reduction='none', delta=self.cumulative_count_delta
+        )
+        lengths = torch.zeros_like(prefix).scatter_add(-1, offsets, selected.float()).gather(-1, offsets)
+        return (losses / lengths.clamp_min(1)).masked_fill(~selected, 0).sum() / selected.sum().clamp_min(1)
 
     def _supervision_mask(self, logits, labels, valid_mask):
         if logits.shape != labels.shape:

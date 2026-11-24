@@ -682,7 +682,8 @@ class CustomFieldFilter:
 
     def __call__(self, example) -> bool:
         if isinstance(example, MixedCut):
-            # As Lhotse resolves a custom field of a mixed cut: the first unmuted data track that has the field.
+            # As attribute access on a mixed cut resolves a custom field: the first unmuted data track that has it.
+            # The merged `cut.custom` mapping differs: there a later track overrides an earlier one.
             customs = [
                 track.cut.custom
                 for track in example.tracks

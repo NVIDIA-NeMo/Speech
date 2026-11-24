@@ -1908,6 +1908,9 @@ audio payload, configure:
 ``custom_field_filter``.
 
 ``custom_field_filter`` selects examples by their custom fields (``cut.custom``).
+For a mixed cut, each field comes from the first unmuted data track that has it,
+as with attribute access on the cut (``cut.verified``),
+not from the merged ``cut.custom`` mapping, in which a later track overrides an earlier one.
 For NeMo manifests these are the additional keys of a row,
 that is, all keys except the ones the reader consumes, such as ``audio_filepath`` and ``duration``;
 the ``tags`` of an ``input_cfg`` entry are custom fields as well.

@@ -42,6 +42,7 @@ from torch import nn
 
 from nemo.collections.asr.modules.conv_asr import ConvASRDecoder
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
+from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer
 from nemo.core.utils.optional_libs import NUMBA_AVAILABLE
 from nemo.utils import logging
@@ -340,6 +341,24 @@ class TransformerCTCDecoder(ConvASRDecoder):
     def classify(self, encoded: torch.Tensor) -> torch.Tensor:
         """The rest of :meth:`forward`: log probabilities from :meth:`trunk` states, each frame on its own."""
         return super().forward(encoder_output=encoded)
+
+    def forward_packed(self, encoder_output: PackedEncoderActivations) -> PackedEncoderActivations:
+        """Log probabilities of token-flat encoder states, for the Conv-only head without upsampling.
+
+        Args:
+            encoder_output: encoder states of all utterances, data of shape ``(sum(T_i), feat_in)``.
+
+        Returns:
+            The log probabilities with the sequence metadata of the input,
+            data of shape ``(sum(T_i), num_classes_with_blank)``.
+        """
+        if self.use_transformer or self.upsampling_factor > 1:
+            raise NotImplementedError(
+                "TransformerCTCDecoder has no sequence-packed form "
+                f"with use_transformer={self.use_transformer} and upsampling_factor={self.upsampling_factor}: "
+                "only the Conv-only head without upsampling runs over packed encoder states."
+            )
+        return super().forward_packed(encoder_output)
 
     def _upsample(self, encoded: torch.Tensor) -> torch.Tensor:
         """

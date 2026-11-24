@@ -22,6 +22,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from omegaconf import MISSING, DictConfig, ListConfig, OmegaConf
 
+from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations
 from nemo.collections.asr.parts.submodules.jasper import (
     JasperBlock,
     MaskedConv1d,
@@ -467,6 +468,54 @@ class ConvASRDecoder(NeuralModule, Exportable, adapter_mixins.AdapterModuleMixin
                 self.decoder_layers(encoder_output).transpose(1, 2) / self.temperature, dim=-1
             )
         return torch.nn.functional.log_softmax(self.decoder_layers(encoder_output).transpose(1, 2), dim=-1)
+
+    def forward_packed(self, encoder_output: PackedEncoderActivations) -> PackedEncoderActivations:
+        """Log probabilities of token-flat encoder states, equal to ``forward`` at the valid frames.
+
+        The kernel-1 convolution runs as a linear layer over the token axis,
+        so no padded ``(B, D, T)`` tensor is formed;
+        ``CTCLoss.forward_packed`` takes the result.
+        Enabled adapters run on the token-flat states;
+        an adapter strategy with ``l2_lambda`` above zero raises in training mode,
+        since its auxiliary loss sums over the frames of an utterance.
+        A subclass that overrides ``forward`` overrides this method as well, or raises in it.
+
+        Args:
+            encoder_output: encoder states of all utterances, data of shape ``(sum(T_i), feat_in)``.
+
+        Returns:
+            The log probabilities with the sequence metadata of the input,
+            data of shape ``(sum(T_i), num_classes_with_blank)``.
+        """
+        if not isinstance(encoder_output, PackedEncoderActivations):
+            raise TypeError(
+                f"forward_packed expects PackedEncoderActivations as encoder_output, "
+                f"got {type(encoder_output).__name__}; padded (B, D, T) states go to forward."
+            )
+        if encoder_output.data.shape[-1] != self._feat_in:
+            raise ValueError(
+                f"Packed encoder_output must have feature width {self._feat_in}, got {encoder_output.data.shape[-1]}."
+            )
+        data = encoder_output.data
+        if self.is_adapter_available():
+            if self.training:
+                for name in self.get_enabled_adapters():
+                    strategy = getattr(self.adapter_layer[name], 'adapter_strategy', None)
+                    if getattr(strategy, 'l2_lambda', 0.0) > 0.0:
+                        # the auxiliary loss sums over the frames of an utterance, which token-flat states do not have
+                        raise NotImplementedError(
+                            f"The l2_lambda auxiliary loss of adapter {name!r} has no sequence-packed form: "
+                            "set l2_lambda to 0 or run the padded forward."
+                        )
+            # adapters act on the last axis, so they take the token-flat states as they are
+            data = self.forward_enabled_adapters(data)
+        conv = self.decoder_layers[0]
+        logits = F.linear(data, conv.weight.squeeze(-1), conv.bias)
+        if self.temperature != 1.0:
+            logits = logits / self.temperature
+        return PackedEncoderActivations.from_validated(
+            F.log_softmax(logits, dim=-1), encoder_output.lengths, encoder_output.cu_seqlens, encoder_output.max_seqlen
+        )
 
     def input_example(self, max_batch=1, max_dim=256):
         """

@@ -240,14 +240,19 @@ elif [[ "${GPU_TARGET}" == "a100" ]]; then
     automodel_extra=compiled-a100
 fi
 cuda_flavor="$(nemo-cuda-flavor)"
-uv sync \
-    --inexact \
-    --link-mode copy \
-    --locked \
-    --extra all \
-    --extra "${cuda_flavor}" \
-    --extra "${automodel_extra}" \
+sync_args=(
+    --inexact
+    --link-mode copy
+    --locked
+    --extra all
+    --extra "${cuda_flavor}"
+    --extra "${automodel_extra}"
     --group test
+)
+# TransformerEngine builds without isolation and its setup.py needs the nvidia-cudnn-frontend headers, so install
+# the locked dependencies first and build TransformerEngine in a second pass.
+uv sync "${sync_args[@]}" --no-install-package transformer-engine
+uv sync "${sync_args[@]}"
 nemo-install-cuda-python
 
 automodel_site_packages="$(
@@ -271,8 +276,9 @@ if [[ "${GPU_TARGET}" == "a100" ]]; then
 fi
 
 if [[ "${GPU_TARGET}" == "h100plus" ]]; then
-    # flash-attn-4 requires apache-tvm-ffi 0.1.11, while mamba-ssm
-    # currently constrains the solved environment to apache-tvm-ffi<=0.1.9.
+    # flash-attn-4 (not in uv.lock) requires apache-tvm-ffi 0.1.11. uv.lock now
+    # resolves 0.1.11 too (pyproject.toml overrides mamba-ssm's <=0.1.9 cap for
+    # transformer-engine's nvidia-cudnn-frontend), so this only pins it explicitly.
     # Keep CUTLASS and Quack at the versions resolved by uv.lock. Automodel
     # main now requires quack-kernels 0.6.1, which in turn requires CUTLASS
     # 4.6.0; installing the old 4.5.2 override leaves the runtime inconsistent.

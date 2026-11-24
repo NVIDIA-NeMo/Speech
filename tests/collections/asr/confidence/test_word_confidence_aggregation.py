@@ -26,8 +26,10 @@ from types import SimpleNamespace
 
 import pytest
 import sentencepiece as spm
+import torch
+from omegaconf import OmegaConf
 
-from nemo.collections.asr.parts.submodules.ctc_decoding import CTCBPEDecoding
+from nemo.collections.asr.parts.submodules.ctc_decoding import CTCBPEDecoding, CTCDecoding, CTCDecodingConfig
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTBPEDecoding
 from nemo.collections.asr.parts.utils import asr_confidence_utils
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMixin
@@ -503,3 +505,54 @@ def test_lone_underlines_stay_on_the_fast_path():
     wc = agg._aggregate_token_confidence_subwords_sentencepiece(words, conf, ids, agg.decode_with_strip_punctuation)
     assert wc == pytest.approx([(0.1 + 0.9) / 2, (0.2 + 0.9 + 0.9) / 3, (0.9 * 3 + 0.3) / 4])
     assert agg.decoded == len(ids)
+
+
+# Character CTC: ``hypothesis.text[0]`` holds the ids of single characters, and the final text drops
+# the space before a supported punctuation mark.
+_CHAR_VOCAB = [' ', 'a', 'b', 'c', ',']  # the blank id is len(_CHAR_VOCAB)
+
+
+def _ctc_char_decoding(strategy="greedy_batch"):
+    cfg = OmegaConf.structured(CTCDecodingConfig(strategy=strategy))
+    cfg.confidence_cfg.preserve_word_confidence = True
+    cfg.confidence_cfg.aggregation = "mean"
+    return CTCDecoding(cfg, vocabulary=_CHAR_VOCAB)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "ids, confidences, text, expected",
+    [
+        ([1, 2, 0, 3], [0.9, 0.7, 0.1, 0.3], "ab c", [0.8, 0.3]),
+        # The comma joins "ab", so its confidence does too; the dropped space counts for no word.
+        ([1, 2, 0, 4, 0, 3], [0.9, 0.7, 0.1, 0.2, 0.1, 0.3], "ab, c", [0.6, 0.3]),
+        # Only one space is dropped before the comma, so it stays a word of its own.
+        ([1, 2, 0, 0, 4, 0, 3], [0.9, 0.7, 0.1, 0.1, 0.2, 0.1, 0.3], "ab , c", [0.8, 0.2, 0.3]),
+        ([4, 0, 1, 2, 0], [0.2, 0.1, 0.9, 0.7, 0.1], ", ab ", [0.2, 0.8]),
+    ],
+)
+def test_ctc_char_word_confidence_follows_the_stripped_text(ids, confidences, text, expected):
+    decoding = _ctc_char_decoding()
+    assert decoding.decode_tokens_to_str_with_strip_punctuation(ids) == text
+    hypothesis = SimpleNamespace(text=(ids, [1] * len(ids)), token_confidence=confidences)
+
+    wc = decoding._aggregate_token_confidence(hypothesis)
+    assert len(wc) == len(text.split())
+    assert wc == pytest.approx(expected)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("strategy", ["greedy", "greedy_batch"])
+def test_ctc_char_decoding_returns_one_word_confidence_per_word(strategy):
+    blank = len(_CHAR_VOCAB)
+    frames = [1, 1, blank, 2, 0, 4, 0, 3]  # a a _ b ' ' , ' ' c -> "ab, c"
+    logits = torch.full((1, len(frames), blank + 1), -10.0)
+    for t, label in enumerate(frames):
+        logits[0, t, label] = 0.0
+    decoding = _ctc_char_decoding(strategy)
+
+    hyps = decoding.ctc_decoder_predictions_tensor(
+        logits.log_softmax(-1), torch.tensor([len(frames)]), return_hypotheses=True
+    )
+    assert hyps[0].text == "ab, c"
+    assert len(hyps[0].word_confidence) == len(hyps[0].text.split())

@@ -1098,15 +1098,13 @@ def create_tar_index(tar_path, idx_path):
     :func:`lhotse.indexing.create_jsonl_index` and the other readers in this
     module: a sequence of little-endian uint64 byte offsets.
 
-    Reads ``tar_path`` through the indexed-source opener for local files and
-    ``s3://`` / ``ais://`` / ``http(s)://`` URIs. When
-    ``LHOTSE_S3_LOCAL_MIRROR_ROOTS`` maps an S3 identity to a local file, the
-    mirror is read without changing the logical source path; otherwise the
-    remote range reader is used. Local and mirrored files adaptively choose
-    streaming iteration (``r|``) for dense/small-member archives and seekable
-    iteration (``r:``) for sparse/large-payload archives. Unresolved remote
-    URLs retain streaming iteration, and the sentinel records the total bytes
-    read through ``_CountingReader``.
+    Supports local files and ``s3://``, ``ais://``, and ``http(s)://`` URIs.
+    When ``LHOTSE_S3_LOCAL_MIRROR_ROOTS`` maps an S3 identity to a local file,
+    the mirror is read without changing the logical source path.
+    Otherwise, remote sources use a sequential stream opened through Lhotse.
+    Local and mirrored files adaptively choose streaming iteration (``r|``) for dense archives,
+    or seekable iteration (``r:``) for archives with large payloads.
+    Remote streams use ``r|``, and the sentinel records the total bytes read through ``_CountingReader``.
 
     Written atomically: data is staged in a per-process temp file next to
     ``idx_path`` and then ``os.replace()``-d into place, so concurrent writers
@@ -1136,25 +1134,20 @@ def create_tar_index(tar_path, idx_path):
         return offsets, counter.bytes_read
 
     read_path = _resolve_data_path(str(tar_path))
-    scheme = urlsplit(read_path).scheme.lower() if _is_remote_path(read_path) else ""
-    if scheme and scheme not in _SUPPORTED_REMOTE_RANGE_SCHEMES:
+    if _is_remote_path(read_path):
         from lhotse.serialization import open_best
 
+        # Sequential scans need one streaming response, not an HTTP range request per 10 KiB tarfile read.
         with open_best(read_path, "rb") as f:
             offsets, file_size = scan_stream(f)
     else:
         with _open_data_path(read_path) as f:
-            if _is_remote_path(read_path):
-                offsets, file_size = scan_stream(f)
-            else:
-                mode = _select_local_tar_index_mode(f)
-                with tarfile.open(fileobj=f, mode=mode) as tar:
-                    offsets = scan_offsets(tar)
-                # Seek to the physical end rather than using tarfile's logical
-                # end-of-archive position, preserving trailing record padding in
-                # the sentinel without reading it.
-                f.seek(0, os.SEEK_END)
-                file_size = f.tell()
+            mode = _select_local_tar_index_mode(f)
+            with tarfile.open(fileobj=f, mode=mode) as tar:
+                offsets = scan_offsets(tar)
+            # Preserve trailing record padding in the sentinel without reading it.
+            f.seek(0, os.SEEK_END)
+            file_size = f.tell()
     tmp_path = f"{idx_path}.tmp.{os.getpid()}"
     with open(tmp_path, "wb") as f_out:
         buf = bytearray()
@@ -1163,6 +1156,87 @@ def create_tar_index(tar_path, idx_path):
         buf.extend(struct.pack("<Q", file_size))
         f_out.write(buf)
     os.replace(tmp_path, idx_path)
+
+
+def validate_tar_member_index_layout(tar_path, idx_path) -> None:
+    """
+    Raise ``ValueError`` when ``idx_path`` does not use the one-entry-per-member layout
+    written by :func:`create_tar_index`.
+
+    ``lhotse index tar`` (:func:`lhotse.indexing.create_tar_index`) writes the Shar/WebDataset
+    paired layout, with one entry per *two* consecutive members. Readers such as
+    :class:`IndexedTarMemberReader` would then see only half of the samples. Only the first
+    indexed byte range is inspected: its regular members must share a single basename, while
+    non-regular entries (e.g. directories, which :func:`create_tar_index` skips) are allowed.
+    This reads just the tar headers in that range (no payloads), so it is cheap enough to run
+    on every existing sidecar.
+    """
+    from lhotse.indexing import read_index
+
+    offsets = read_index(idx_path)
+    if offsets.shape[0] < 2:
+        # No entries besides the size sentinel: nothing to validate.
+        return
+    tar_path = str(tar_path)
+    start, end = int(offsets[0]), int(offsets[1])
+
+    def read_range(range_start: int, range_end: int) -> bytes:
+        return read_exact_range(tar_path, range_start, range_end)
+
+    stems = _regular_member_stems_in_range(read_range, start, end, tar_path)
+    if len(stems) > 1:
+        raise ValueError(
+            f"Tar index {idx_path} does not have the one-entry-per-member layout expected for {tar_path}: "
+            f"its first entry spans members of {len(stems)} different samples ({stems[:4]}). "
+            "It was likely written by 'lhotse index tar', which uses the Lhotse Shar paired-member layout. "
+            "Rebuild it with 'python scripts/dataloading/build_indexes.py --force <input_cfg.yaml>'."
+        )
+
+
+def _regular_member_stems_in_range(read_range, start: int, end: int, source_path: str) -> list[str]:
+    """Return the basename stems of the regular members in the tar byte range ``[start, end)``.
+
+    Walks headers only (no payload reads). Non-regular entries such as directories are skipped,
+    PAX and GNU long-name metadata name the following regular member, and the walk ends cleanly
+    at the range end or at the end-of-archive marker. An entry whose header or payload extends
+    past ``end`` raises ``ValueError`` because the range does not hold complete entries.
+    """
+    stems: list[str] = []
+    pax_headers: dict[str, str] = {}
+    long_name: str | None = None
+    position = start
+    while position < end:
+        if position + _TAR_BLOCK_SIZE > end:
+            raise ValueError(f"Truncated tar header at {position} in indexed range [{start}, {end}) of {source_path}")
+        header = read_range(position, position + _TAR_BLOCK_SIZE)
+        if header == _TAR_ZERO_BLOCK:
+            break  # End-of-archive marker after the last member.
+        try:
+            info = tarfile.TarInfo.frombuf(header, tarfile.ENCODING, "surrogateescape")
+        except tarfile.TarError as ex:
+            raise ValueError(f"{ex} — reading tar header at {position} in {source_path}") from ex
+        data_position = position + _TAR_BLOCK_SIZE
+        next_position = data_position + (-(-info.size // _TAR_BLOCK_SIZE) * _TAR_BLOCK_SIZE)
+        if data_position + info.size > end:
+            raise ValueError(
+                f"Tar entry {info.name!r} at {position} extends past indexed range [{start}, {end}) in {source_path}"
+            )
+        if info.type in (tarfile.XHDTYPE, tarfile.XGLTYPE):
+            pax_headers.update(_parse_pax_headers(read_range(data_position, data_position + info.size)))
+        elif info.type == tarfile.GNUTYPE_LONGNAME:
+            raw_name = read_range(data_position, data_position + info.size)
+            long_name = raw_name.rstrip(b"\0\n").decode(tarfile.ENCODING, "surrogateescape")
+        elif info.type == tarfile.GNUTYPE_LONGLINK:
+            pass  # Link target of the next entry; irrelevant for sample names.
+        else:
+            if info.type in (tarfile.REGTYPE, tarfile.AREGTYPE):
+                stem = Path(pax_headers.get("path") or long_name or info.name).stem
+                if stem not in stems:
+                    stems.append(stem)
+            # Per-entry metadata applies only to the entry that follows it.
+            pax_headers, long_name = {}, None
+        position = next_position
+    return stems
 
 
 def _scan_wds_v2_tar(tar_path: str) -> tuple[list[int], int, int]:

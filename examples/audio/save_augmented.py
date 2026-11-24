@@ -120,6 +120,7 @@ def main(cfg: DictConfig):
         "max_duration",
         "min_tps",
         "max_tps",
+        "filter_duration_bins",
         "min_tokens",
         "max_tokens",
         "max_cer",

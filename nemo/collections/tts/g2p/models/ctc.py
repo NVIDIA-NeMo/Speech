@@ -125,24 +125,26 @@ class CTCG2PModel(G2PModel, ASRBPEMixin, Exportable):
 
             # TODO store byt5 vocab file
         elif self.mode == "conformer_bpe":
-            grapheme_unk_token = (
-                cfg.tokenizer_grapheme.unk_token if cfg.tokenizer_grapheme.unk_token is not None else ""
-            )
-            chars = string.ascii_lowercase + grapheme_unk_token + " " + "'"
+            vocab_file = cfg.tokenizer_grapheme.get("vocab_file")
+            if not vocab_file:
+                grapheme_unk_token = (
+                    cfg.tokenizer_grapheme.unk_token if cfg.tokenizer_grapheme.unk_token is not None else ""
+                )
+                chars = string.ascii_lowercase + grapheme_unk_token + " " + "'"
 
-            if not cfg.tokenizer_grapheme.do_lower:
-                chars += string.ascii_uppercase
+                if not cfg.tokenizer_grapheme.do_lower:
+                    chars += string.ascii_uppercase
 
-            if cfg.tokenizer_grapheme.add_punctuation:
-                punctuation_marks = string.punctuation.replace('"', "").replace("\\", "").replace("'", "")
-                chars += punctuation_marks
+                if cfg.tokenizer_grapheme.add_punctuation:
+                    punctuation_marks = string.punctuation.replace('"', "").replace("\\", "").replace("'", "")
+                    chars += punctuation_marks
 
-            vocab_file = "/tmp/char_vocab.txt"
-            with open(vocab_file, "w") as f:
-                [f.write(f'"{ch}"\n') for ch in chars]
-                f.write('"\\""\n')  # add " to the vocab
+                vocab_file = "/tmp/char_vocab.txt"
+                with open(vocab_file, "w") as f:
+                    [f.write(f'"{ch}"\n') for ch in chars]
+                    f.write('"\\""\n')  # add " to the vocab
 
-            self.register_artifact("tokenizer_grapheme.vocab_file", vocab_file)
+            vocab_file = self.register_artifact("tokenizer_grapheme.vocab_file", vocab_file)
             grapheme_tokenizer = safe_instantiate(cfg.tokenizer_grapheme.dataset, vocab_file=vocab_file)
             self.max_source_len = cfg.get("max_source_len", 512)
             self.max_target_len = cfg.get("max_target_len", 512)

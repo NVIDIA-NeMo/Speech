@@ -20,7 +20,16 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 from safetensors.torch import save_file
 
+from nemo.collections.speechlm2.modules.perception import IdentityConnector
 from nemo.collections.speechlm2.parts import pretrained
+from tests.collections.asr.test_parallel_expert_encoder import (
+    _ASR_D_MODEL,
+    _MEL_FEATURES,
+    build_toy_pe_encoder,
+    bundle_config,
+    write_bundle,
+)
+from tests.collections.speechlm2.test_independent_dual_encoder import make_encoder
 
 
 def test_setup_speech_encoder_hydrates_missing_config_without_weights():
@@ -116,6 +125,98 @@ def test_setup_parallel_expert_encoder_maps_shared_chunk_size(chunk_size_seconds
     assert model.cfg.perception.preprocessor.normalize is None
 
 
+def test_setup_parallel_expert_encoder_mounts_a_bundle_with_the_diarization_backend_override(tmp_path):
+    """The recipe's ``pe_encoder_overrides.diar_packed_rel_pos_attention`` reaches the diarization encoder of a
+    bundle mounted through ``pe_encoder_path``, with the bundle's weights loaded strictly."""
+    source = build_toy_pe_encoder().eval()
+    archive = tmp_path / "pee.nemo"
+    write_bundle(archive, bundle_config(), {f"encoder.{key}": value for key, value in source.state_dict().items()})
+    model = SimpleNamespace(
+        cfg=DictConfig(
+            {
+                "pe_encoder_path": str(archive),
+                "pe_encoder_overrides": {"diar_packed_rel_pos_attention": "flex"},
+                "perception": {
+                    "preprocessor": {"features": _MEL_FEATURES, "normalize": "per_feature"},
+                    "modality_adapter": {"d_model": _ASR_D_MODEL},
+                },
+            }
+        ),
+        perception=SimpleNamespace(
+            encoder=SimpleNamespace(d_model=_ASR_D_MODEL),
+            modality_adapter=object(),
+            proj=torch.nn.Linear(_ASR_D_MODEL, 8),
+            preprocessor=SimpleNamespace(featurizer=SimpleNamespace(normalize="per_feature")),
+        ),
+    )
+
+    pretrained.setup_parallel_expert_encoder(model)
+
+    mounted = model.perception.encoder
+    assert mounted.diarization_model.encoder.packed_rel_pos_attention == "flex"
+    assert mounted.asr_encoder.packed_rel_pos_attention == "triton"
+    assert set(mounted.state_dict()) == set(source.state_dict())
+    for key, value in source.state_dict().items():
+        torch.testing.assert_close(mounted.state_dict()[key], value)
+    assert model.perception.preprocessor.featurizer.normalize is None
+
+
+def test_setup_parallel_expert_encoder_constructs_inline_export_architecture():
+    inline_config = {"target": "ParallelExpertEncoderPT", "asr_encoder_cfg": {}, "diarization_model_cfg": {}}
+    pe_encoder = SimpleNamespace(
+        d_model=4,
+        n_spk=8,
+        _feat_in=80,
+        freeze_asr=False,
+        freeze_diar=True,
+        spk_kernel_scale=1.0,
+        chunk_size_seconds=45.0,
+        _bundle_config=DictConfig({"chunk_size_seconds": 45.0}),
+        online_inference_enabled=False,
+    )
+    model = SimpleNamespace(
+        cfg=DictConfig(
+            {
+                "pe_encoder_path": None,
+                "pe_encoder_config": inline_config,
+                "encoder_chunk_size_seconds": 30.0,
+                "perception": {
+                    "preprocessor": {"features": 80, "normalize": "per_feature"},
+                    "modality_adapter": {"d_model": 4},
+                },
+            }
+        ),
+        perception=SimpleNamespace(
+            encoder=SimpleNamespace(d_model=4),
+            modality_adapter=object(),
+            proj=torch.nn.Linear(4, 8),
+            preprocessor=SimpleNamespace(featurizer=SimpleNamespace(normalize="per_feature")),
+        ),
+    )
+
+    with patch.object(pretrained.ParallelExpertEncoderPT, "from_inline_config", return_value=pe_encoder) as build:
+        pretrained.setup_parallel_expert_encoder(model)
+
+    build.assert_called_once_with(model.cfg.pe_encoder_config, map_location="cpu")
+    assert model.perception.encoder is pe_encoder
+    assert pe_encoder.chunk_size_seconds == 30.0
+    assert model.perception.preprocessor.featurizer.normalize is None
+
+
+def test_setup_parallel_expert_encoder_rejects_path_and_inline_config_together():
+    model = SimpleNamespace(
+        cfg=DictConfig(
+            {
+                "pe_encoder_path": "/tmp/encoder.nemo",
+                "pe_encoder_config": {"target": "ParallelExpertEncoderPT"},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        pretrained.setup_parallel_expert_encoder(model)
+
+
 @pytest.mark.parametrize(
     ("cfg_update", "match"),
     [
@@ -207,6 +308,29 @@ def test_load_pretrained_automodel_llm_builds_missing_mtp_before_loading_weights
     )
     base_load.assert_called_once_with(result, "base-checkpoint", {})
     automodel.from_pretrained.assert_not_called()
+
+
+def test_load_pretrained_automodel_llm_points_to_trust_remote_code_for_read_only_mtp_config():
+    class ReadOnlyMTPConfig(SimpleNamespace):
+        @property
+        def mtp_hybrid_override_pattern(self):
+            return None
+
+    config = ReadOnlyMTPConfig(num_nextn_predict_layers=0, name_or_path="base-checkpoint")
+    automodel, config_patch, module_patch, compat_patch = _mock_automodel_loader(config)
+
+    with (
+        config_patch,
+        module_patch,
+        compat_patch,
+        patch.object(pretrained, "_resolve_automodel_checkpoint_path", return_value="base-checkpoint"),
+        pytest.raises(AttributeError, match=r"\+\+model\.trust_remote_code=true"),
+    ):
+        pretrained.load_pretrained_automodel_llm(
+            "base-checkpoint",
+            mtp_config_overrides={"num_nextn_predict_layers": 1, "mtp_hybrid_override_pattern": "*"},
+        )
+    automodel.from_config.assert_not_called()
 
 
 def test_load_pretrained_automodel_llm_preserves_native_mtp_config_by_default():
@@ -563,6 +687,40 @@ def test_load_pretrained_automodel_llm_forwards_hf_resolution_kwargs():
     base_load.assert_called_once_with(result, "/cache/exact-snapshot/subdir", {"cache_dir": "/cache"})
 
 
+@pytest.mark.parametrize("pretrained_weights", [False, True])
+def test_load_pretrained_automodel_llm_hf_fallback_accepts_disabled_mtp(tmp_path, pretrained_weights):
+    automodel = _install_cpu_hf_fallback_automodel()
+    checkpoint = _save_tiny_gpt2_config(tmp_path)
+
+    # SALMAutomodel passes num_nextn_predict_layers=0 whenever MTP is disabled.
+    with patch.object(automodel, "NeMoAutoModelForCausalLM", _CpuHFFallbackAutoModel):
+        llm = pretrained.load_pretrained_automodel_llm(
+            checkpoint, pretrained_weights=pretrained_weights, num_nextn_predict_layers=0
+        )
+
+    assert type(llm).__name__ == "GPT2LMHeadModel"
+
+
+@pytest.mark.parametrize(
+    "mtp_kwargs",
+    [
+        {"num_nextn_predict_layers": 1},
+        {"num_nextn_predict_layers": 0, "mtp_loss_scaling_factor": 0.1},
+        {"mtp_config_overrides": {"num_nextn_predict_layers": 1}},
+    ],
+)
+@pytest.mark.parametrize("pretrained_weights", [False, True])
+def test_load_pretrained_automodel_llm_hf_fallback_rejects_mtp(tmp_path, mtp_kwargs, pretrained_weights):
+    automodel = _install_cpu_hf_fallback_automodel()
+    checkpoint = _save_tiny_gpt2_config(tmp_path)
+
+    with (
+        patch.object(automodel, "NeMoAutoModelForCausalLM", _CpuHFFallbackAutoModel),
+        pytest.raises(ValueError, match="does not support Multi-Token Prediction"),
+    ):
+        pretrained.load_pretrained_automodel_llm(checkpoint, pretrained_weights=pretrained_weights, **mtp_kwargs)
+
+
 @pytest.mark.parametrize(
     ("include_weights", "expected_extra_kwargs"),
     [(True, {}), (False, {"allow_patterns": ["*.json", "*.py"]})],
@@ -799,7 +957,7 @@ class _TinyPerception(torch.nn.Module):
 
 def test_inline_pe_encoder_config_mounts_through_setup_speech_encoder_and_restores_weights(tmp_path):
     from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
-    from tests.collections.asr.test_parallel_expert_encoder_two_branch import bundle_config
+    from tests.collections.asr.test_parallel_expert_encoder import bundle_config
 
     inline = OmegaConf.to_container(bundle_config(), resolve=True)
     reference = ParallelExpertEncoderPT.from_inline_config(inline)
@@ -841,3 +999,68 @@ def test_inline_pe_encoder_config_mounts_through_setup_speech_encoder_and_restor
     assert set(restored) == set(expected)
     for key, value in expected.items():
         torch.testing.assert_close(restored[key], value)
+
+
+def _install_cpu_hf_fallback_automodel():
+    """Import Automodel for its real HF-fallback model selection; skip when unavailable."""
+    return pytest.importorskip("nemo_automodel")
+
+
+def _save_tiny_gpt2_config(path) -> str:
+    """Save a tiny local GPT-2 config, which Automodel serves through its Hugging Face fallback."""
+    from transformers import GPT2Config
+
+    GPT2Config(vocab_size=16, n_positions=16, n_embd=8, n_layer=1, n_head=2).save_pretrained(path)
+    return str(path)
+
+
+class _CpuHFFallbackAutoModel:
+    """CPU stand-in for Automodel's HF fallback: forwards extra kwargs to the HF model constructor."""
+
+    @staticmethod
+    def from_config(config, torch_dtype=None, trust_remote_code=False, **kwargs):
+        from transformers import AutoModelForCausalLM
+
+        return AutoModelForCausalLM.from_config(config, torch_dtype=torch_dtype, **kwargs)
+
+    @classmethod
+    def from_pretrained(cls, model_path_or_name, torch_dtype=None, trust_remote_code=False, **kwargs):
+        config = pretrained.AutoConfig.from_pretrained(model_path_or_name, local_files_only=True)
+        return cls.from_config(config, torch_dtype=torch_dtype, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "option, expected",
+    [({}, False), ({"allow_padded_fallback": True}, True), ({"allow_padded_fallback": False}, False)],
+    ids=["default", "allowed", "refused"],
+)
+def test_setup_independent_speaker_encoder_keeps_the_fallback_option(tmp_path, option, expected):
+    (tmp_path / "model_config.yaml").write_text("{}")
+    (tmp_path / "model.safetensors").touch()
+    speaker = make_encoder(32)
+    perception = torch.nn.Module()
+    perception.encoder = make_encoder(32)
+    perception.modality_adapter = IdentityConnector()
+    perception.rote = None
+    perception.proj = torch.nn.Linear(32, 7)
+    perception.preprocessor = SimpleNamespace(featurizer=SimpleNamespace(hop_length=160, sample_rate=16000))
+    perception.from_config_dict = lambda config: speaker
+    model = SimpleNamespace(
+        cfg=DictConfig(
+            {
+                "speaker_encoder": {"path": str(tmp_path), "frozen": True, "chunk_size_seconds": 120.0, **option},
+                "perception": {"modality_adapter": {"d_model": 32}},
+            }
+        ),
+        perception=perception,
+    )
+    with patch.object(pretrained, "load_file", return_value=speaker.state_dict()):
+        pretrained.setup_independent_speaker_encoder(model)
+
+    dual = model.perception.encoder
+    assert dual.allow_padded_fallback is expected
+    assert dual.asr_chunk_size_seconds is None
+    assert dual.auxiliary_chunk_size_seconds == 120.0
+    assert all(not parameter.requires_grad for parameter in speaker.parameters())
+    assert model.perception.proj.in_features == 64
+    assert model.perception.proj.out_features == 7

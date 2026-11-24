@@ -53,7 +53,8 @@ Examples::
 import logging
 import os
 import sys
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+import time
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, TimeoutError, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -66,11 +67,22 @@ from scripts.dataloading._sharegpt_route_cli import ensure_sharegpt_route
 from nemo.collections.common.data.lhotse.indexed_adapters import create_tar_index as create_nemo_tar_index
 from nemo.collections.common.data.lhotse.indexed_adapters import (
     create_wds_v2_tar_index,
+    validate_tar_member_index_layout,
     validate_wds_v2_tar_index,
     wds_v2_index_path,
     wds_v2_metadata_path,
 )
-from nemo.collections.common.data.lhotse.nemo_adapters import expand_sharded_filepaths
+from nemo.collections.common.data.lhotse.nemo_adapters import (
+    expand_sharded_filepaths,
+    pair_nemo_tarred_manifests_with_tars,
+)
+from nemo.collections.common.data.lhotse.nemo_tar_routing import (
+    check_nemo_tar_route_binding,
+    nemo_tar_route_binding_path,
+    nemo_tar_route_is_needed,
+    nemo_tar_route_sidecar_paths,
+    write_nemo_tar_route_sidecars,
+)
 from nemo.collections.common.data.lhotse.wds_catalog import discover_webdataset_shards
 
 # --------------------------------------------------------------------------- #
@@ -87,7 +99,14 @@ WDS_TAR = "wds_tar"
 WDS_TAR_V2 = "wds_tar_v2"
 JSONL = "jsonl"
 SHAREGPT_ROUTE = "sharegpt_route"
-INDEX_KINDS = (JSONL, NEMO_TAR, WDS_TAR, WDS_TAR_V2, SHAREGPT_ROUTE)
+# NEMO_TAR_ROUTE — row-to-member route sidecars for a nemo/nemo_tarred manifest whose rows can't be
+#             looked up positionally in its tar (repeated ``-subN`` rows, filtered manifests, or one
+#             manifest paired with several tars). Built after the JSONL and tar indexes it reads.
+NEMO_TAR_ROUTE = "nemo_tar_route"
+INDEX_KINDS = (JSONL, NEMO_TAR, WDS_TAR, WDS_TAR_V2, SHAREGPT_ROUTE, NEMO_TAR_ROUTE)
+_PROGRESS_INTERVAL = 60.0
+# Route sidecars read other sidecars, so they are built after the parallel index builds finish.
+_ROUTE_KINDS = (SHAREGPT_ROUTE, NEMO_TAR_ROUTE)
 
 
 @dataclass(frozen=True)
@@ -113,6 +132,8 @@ class IndexJob:
             return Path(self.indexes_root) / route_path
         if self.kind == WDS_TAR_V2:
             return wds_v2_index_path(self.path, self.indexes_root)
+        if self.kind == NEMO_TAR_ROUTE:
+            return nemo_tar_route_sidecar_paths(self.path, self.indexes_root)[0]
         return index_file_path(self.path, self.indexes_root)
 
 
@@ -248,10 +269,58 @@ def _discover_keys(
             jobs.append(IndexJob(p, JSONL, indexes_root))
         for p in _expand_tars(entry.get("tarred_audio_filepaths")):
             jobs.append(IndexJob(p, NEMO_TAR, indexes_root))
+        if entry.get("index_pack") is None:
+            _discover_nemo_tar_routes(mfp, entry.get("tarred_audio_filepaths"), jobs, indexes_root)
     if (paths := entry.get("paths")) is not None:
         _discover_paths(paths, jobs, indexes_root)
     if (sub := _resolve_input_cfg(entry.get("input_cfg"), data_blend_dir)) is not None:
         discover(sub, jobs, indexes_root, data_blend_dir=data_blend_dir)
+
+
+def _discover_nemo_tar_routes(raw_manifests, raw_tars, jobs: list[IndexJob], indexes_root: Optional[str]) -> None:
+    """Add one route job per manifest that a loose-indexed nemo/nemo_tarred entry pairs with tars.
+
+    Routes are built only when needed. Each dataset of a list-form entry is paired separately, exactly
+    like ``read_nemo_manifest()`` does, before its paths are expanded.
+    """
+    if raw_manifests is None or raw_tars is None:
+        return
+    pairs = []
+    for manifest_spec, tar_spec in _nemo_tarred_dataset_specs(raw_manifests, raw_tars):
+        tars = _expand_tars(tar_spec)
+        if not tars:
+            continue
+        try:
+            pairs.extend(pair_nemo_tarred_manifests_with_tars(_expand_jsonl(manifest_spec), tars))
+        except (AssertionError, ValueError) as error:
+            # The dataloader would reject this dataset too; still build its plain .idx files.
+            logging.warning("  [SKIP route] cannot pair manifests with tars: %s", error)
+    for manifest_path, tar_paths in pairs:
+        try:
+            nemo_tar_route_sidecar_paths(manifest_path, indexes_root)
+        except ValueError as error:
+            logging.warning("  [SKIP route] %s", error)
+            continue
+        jobs.append(IndexJob(manifest_path, NEMO_TAR_ROUTE, indexes_root, tar_paths=tar_paths))
+
+
+def _nemo_tarred_dataset_specs(raw_manifests, raw_tars) -> list[tuple]:
+    """Split ``manifest_filepath``/``tarred_audio_filepaths`` into per-dataset specs like ``read_nemo_manifest()``.
+
+    A scalar manifest spec is one dataset. List forms are zipped: ``[[m], ...]`` / ``[[m, weight], ...]``
+    with ``[[t], ...]`` (buckets or weighted blends), or ``[m, ...]`` with ``[t, ...]`` (concatenation).
+    """
+    if isinstance(raw_manifests, (str, Path)):
+        return [(raw_manifests, raw_tars)]
+    specs = []
+    for manifest_info, tar_spec in zip(raw_manifests, raw_tars):
+        if isinstance(tar_spec, (list, tuple, ListConfig)):
+            (tar_spec,) = tar_spec
+            manifest_spec = manifest_info[0]
+        else:
+            manifest_spec = manifest_info
+        specs.append((manifest_spec, tar_spec))
+    return specs
 
 
 def _discover_paths(paths, jobs: list[IndexJob], indexes_root: Optional[str]) -> None:
@@ -343,6 +412,8 @@ def discover(
             jobs.append(IndexJob(p, JSONL, indexes_root))
         for p in _expand_tars(raw_tars):
             jobs.append(IndexJob(p, NEMO_TAR, indexes_root))
+        if typ in ("nemo", "nemo_tarred") and entry.get("index_pack") is None:
+            _discover_nemo_tar_routes(raw_manifests, raw_tars, jobs, indexes_root)
         if collection_mode:
             route_path = entry.get("tar_routing_filepath")
             legacy_route_path = entry.get("tar_routing_index")
@@ -471,6 +542,13 @@ def _build_one(job: IndexJob, *, force: bool = False) -> tuple[IndexJob, str]:
         create_nemo_tar_index(job.path, idx)
     elif job.kind == WDS_TAR_V2:
         create_wds_v2_tar_index(job.path, idx_path=idx)
+    elif job.kind == NEMO_TAR_ROUTE:
+        if not _nemo_tar_route_is_needed(job):
+            ordinal_path, shard_path = nemo_tar_route_sidecar_paths(job.path, job.indexes_root)
+            for path in (ordinal_path, shard_path, nemo_tar_route_binding_path(ordinal_path)):
+                path.unlink(missing_ok=True)
+            return job, "not needed"
+        write_nemo_tar_route_sidecars(job.path, job.tar_paths, indexes_root=job.indexes_root)
     elif job.kind == SHAREGPT_ROUTE:
         ensure_sharegpt_route(
             idx,
@@ -536,11 +614,97 @@ def _is_indexed(job: IndexJob) -> bool:
             )
         elif job.kind == WDS_TAR_V2:
             validate_wds_v2_tar_index(job.path, idx_path=job.idx_path())
+        elif job.kind == NEMO_TAR_ROUTE:
+            _validate_nemo_tar_route(job)
         else:
             _validate_legacy_sidecar(job)
+            if job.kind == NEMO_TAR:
+                _validate_nemo_tar_layout(job)
         return True
     except (OSError, ValueError):
         return False
+
+
+def _nemo_tar_route_is_needed(job: IndexJob) -> bool:
+    from lhotse.indexing import index_file_path, read_index
+
+    num_rows = len(read_index(index_file_path(job.path, job.indexes_root))) - 1
+    member_counts = tuple(len(read_index(index_file_path(p, job.indexes_root))) - 1 for p in job.tar_paths)
+    return nemo_tar_route_is_needed(num_rows, member_counts)
+
+
+def _validate_nemo_tar_route(job: IndexJob) -> None:
+    """Raise unless the route sidecars match what the manifest/tar indexes need and are newer than them."""
+    from lhotse.indexing import index_file_path
+
+    ordinal_path, shard_path = nemo_tar_route_sidecar_paths(job.path, job.indexes_root)
+    if not _nemo_tar_route_is_needed(job):
+        if ordinal_path.exists() or shard_path.exists() or nemo_tar_route_binding_path(ordinal_path).exists():
+            raise ValueError(f"Unneeded native NeMo tar route sidecar: {ordinal_path}")
+        return
+    check_nemo_tar_route_binding(ordinal_path, job.tar_paths)
+    sidecars = [ordinal_path] if len(job.tar_paths) == 1 else [ordinal_path, shard_path]
+    manifest_idx = Path(index_file_path(job.path, job.indexes_root))
+    num_rows = (manifest_idx.stat().st_size // 8) - 1
+    inputs = [manifest_idx, *(Path(index_file_path(p, job.indexes_root)) for p in job.tar_paths)]
+    newest_input = max(path.stat().st_mtime_ns for path in inputs)
+    for sidecar in sidecars:
+        stat = sidecar.stat()
+        if stat.st_size != 4 * num_rows:
+            raise ValueError(f"Native NeMo tar route sidecar has the wrong length: {sidecar}")
+        if stat.st_mtime_ns < newest_input:
+            raise ValueError(f"Native NeMo tar route sidecar is older than its indexes: {sidecar}")
+
+
+def _select_todo(jobs: list[IndexJob]) -> list[IndexJob]:
+    """Jobs whose sidecars are missing or stale, plus native-tar routes whose input indexes will be rebuilt."""
+    todo = [job for job in jobs if not _is_indexed(job)]
+    rebuilt = {(job.path, job.indexes_root) for job in todo if job.kind in (JSONL, NEMO_TAR)}
+    todo_ids = {id(job) for job in todo}
+    for job in jobs:
+        if job.kind == NEMO_TAR_ROUTE and id(job) not in todo_ids:
+            if any((path, job.indexes_root) in rebuilt for path in (job.path, *job.tar_paths)):
+                todo.append(job)
+    return todo
+
+
+def _resolve_route_conflicts(jobs: list[IndexJob], route_todo: list[IndexJob]) -> list[IndexJob]:
+    """Handle one manifest paired with different tars by different entries; return the route jobs to run.
+
+    One route sidecar can serve only one ordered tar collection, so such pairings are rejected when any
+    of them needs a route. When none does, every dataset loads positionally without a route, and a single
+    job removes any leftover route artifacts. Called once the manifest and tar indexes are built.
+    """
+    groups: dict[tuple[str, Optional[str]], list[IndexJob]] = {}
+    for job in jobs:
+        if job.kind == NEMO_TAR_ROUTE:
+            groups.setdefault((job.path, job.indexes_root), []).append(job)
+    todo_ids = {id(job) for job in route_todo}
+    for (manifest_path, _), group in groups.items():
+        if len(group) < 2:
+            continue
+        if any(_nemo_tar_route_is_needed(job) for job in group):
+            pairings = "; ".join(str(list(job.tar_paths)) for job in group)
+            raise click.ClickException(
+                f"Manifest {manifest_path} is paired with different tars in different entries ({pairings}) "
+                "and needs a route sidecar, which can serve only one ordered tar collection. Give each dataset "
+                "its own manifest file."
+            )
+        if any(id(job) in todo_ids for job in group):
+            todo_ids.add(id(group[0]))
+        todo_ids -= {id(job) for job in group[1:]}
+    return [job for job in route_todo if id(job) in todo_ids] + [
+        job for job in jobs if id(job) in todo_ids and job not in route_todo
+    ]
+
+
+def _validate_nemo_tar_layout(job: IndexJob) -> None:
+    """Reject NeMo tar sidecars in the Shar paired layout (e.g. written by ``lhotse index tar``)."""
+    try:
+        validate_tar_member_index_layout(job.path, job.idx_path())
+    except ValueError as error:
+        logging.warning("  [WRONG LAYOUT, will rebuild] %s", error)
+        raise
 
 
 # --------------------------------------------------------------------------- #
@@ -602,6 +766,7 @@ def main(
     Build .idx sidecars for every JSONL/tar referenced by INPUT_CFGS.
 
     INPUT_CFGS are NeMo Lhotse dataloading configs (``input_cfg`` YAML).
+    During parallel builds, progress is logged every minute even when no file completes.
     """
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -616,10 +781,12 @@ def main(
         )
 
     # Deduplicate while preserving order.
-    seen: set[tuple[str, str, Optional[str]]] = set()
+    seen: set[tuple] = set()
     unique: list[IndexJob] = []
     for j in jobs:
-        key = (j.path, j.kind, j.indexes_root)
+        # Route jobs for one manifest paired with different tars stay distinct until their input indexes
+        # exist; see _resolve_route_conflicts().
+        key = (j.path, j.kind, j.indexes_root, j.tar_paths if j.kind == NEMO_TAR_ROUTE else ())
         if key not in seen:
             seen.add(key)
             unique.append(j)
@@ -628,9 +795,9 @@ def main(
         selected = frozenset(kinds)
         unique = [job for job in unique if job.kind in selected]
 
-    all_todo = unique if force else [job for job in unique if not _is_indexed(job)]
-    route_todo = [job for job in all_todo if job.kind == SHAREGPT_ROUTE]
-    todo = [job for job in all_todo if job.kind != SHAREGPT_ROUTE]
+    all_todo = unique if force else _select_todo(unique)
+    route_todo = [job for job in all_todo if job.kind in _ROUTE_KINDS]
+    todo = [job for job in all_todo if job.kind not in _ROUTE_KINDS]
     skipped = len(unique) - len(all_todo)
 
     logging.info("Discovered %d files (%d already indexed, %d to build).", len(unique), skipped, len(all_todo))
@@ -640,37 +807,42 @@ def main(
             logging.info("  [%s] %s -> %s", j.kind, j.path, j.idx_path())
         return
 
-    # Per-file success logging is suppressed: building 80k-400k indexes would
-    # otherwise emit one log line per file, swamping the SLURM stdout buffer.
-    # Failures are still logged inline; success only emits a periodic
-    # "<built>/<total> processed" heartbeat (~every 5% of total or 5000 files,
-    # whichever is smaller) plus a final summary.
+    # A completion-count threshold can leave slow archives silent for hours.
+    # Time out the iterator, not the workers, so progress also reports stalled work.
     failures: list[tuple[IndexJob, Exception]] = []
     total = len(todo)
-    log_every = max(1, min(5000, total // 20))
+    started = last_completion = time.monotonic()
     pool_cls = ProcessPoolExecutor if executor == "process" else ThreadPoolExecutor
     with pool_cls(max_workers=max(1, workers)) as ex:
         futures = {ex.submit(_build_one, j, force=force): j for j in todo}
         done = 0
-        for fut in as_completed(futures):
-            done += 1
-            j = futures[fut]
+        while futures:
             try:
-                _, _status = fut.result()
-            except Exception as e:  # surface worker failures but let interrupts/system exits propagate
-                failures.append((j, e))
-                logging.error("  [FAIL] %s %s: %s", j.kind, j.path, e)
-                continue
-            if done % log_every == 0 or done == total:
-                logging.info(
-                    "  built %d/%d (%.1f%%)  failures=%d",
-                    done,
-                    total,
-                    100.0 * done / total,
-                    len(failures),
-                )
+                for fut in as_completed(futures, timeout=_PROGRESS_INTERVAL):
+                    j = futures.pop(fut)
+                    done += 1
+                    last_completion = time.monotonic()
+                    try:
+                        _, _status = fut.result()
+                    except Exception as e:  # Keep interrupts and system exits visible to the caller.
+                        failures.append((j, e))
+                        logging.error("  [FAIL] %s %s: %s", j.kind, j.path, e)
+            except TimeoutError:
+                # The reporting interval elapsed; log progress below and keep waiting for unfinished workers.
+                pass
+            now = time.monotonic()
+            logging.info(
+                "  built %d/%d  failures=%d  pending=%d  elapsed=%.0fs  last completion=%.0fs ago",
+                done - len(failures),
+                total,
+                len(failures),
+                len(futures),
+                now - started,
+                now - last_completion,
+            )
 
     if not failures:
+        route_todo = _resolve_route_conflicts(unique, route_todo)
         for job in route_todo:
             try:
                 _build_one(job, force=force)

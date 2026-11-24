@@ -163,6 +163,7 @@ class EncDecSpeechLabelModelTest(TestCase):
         self.assertTrue(isinstance(instance2, EncDecSpeakerLabelModel))
 
 
+@pytest.mark.gpu
 class TestEncDecSpeechLabelModel:
     @pytest.mark.unit
     def test_pretrained_titanet_embeddings(self, test_data_dir):

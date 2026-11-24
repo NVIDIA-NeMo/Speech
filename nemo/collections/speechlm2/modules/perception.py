@@ -23,10 +23,24 @@ from transformers.models.bert.modeling_bert import BertEncoder
 
 from nemo.collections.asr.parts.packed_sequence import (
     PackedEncoderActivations,
+    forward_padded_fallback,
     pack_encoder_output,
     unpack_encoder_output,
 )
 from nemo.core import Exportable, NeuralModule, typecheck
+
+
+def _configure_short_recording_spec_augment(spec_augmentation: nn.Module | None, preprocessor: nn.Module) -> None:
+    """Apply the SpeechLM short-recording safety policy when supported."""
+    configure = getattr(spec_augmentation, "configure_short_recording_time_mask_cap", None)
+    if not callable(configure):
+        return
+    featurizer = preprocessor.featurizer
+    configure(
+        frame_duration_seconds=featurizer.hop_length / featurizer.sample_rate,
+        max_duration_seconds=1.0,
+        max_mask_fraction=0.1,
+    )
 
 
 class AudioPerceptionModule(NeuralModule, Exportable):
@@ -87,6 +101,7 @@ class AudioPerceptionModule(NeuralModule, Exportable):
             self.spec_augmentation = self.from_config_dict(cfg.spec_augment)
         else:
             self.spec_augmentation = None
+        _configure_short_recording_spec_augment(self.spec_augmentation, self.preprocessor)
         self.modality_adapter = self.from_config_dict(cfg.modality_adapter)
         if isinstance(self.modality_adapter, (QformerConnector, MultiLayerProjectionConnector)):
             from nemo.collections.asr.modules.conformer_encoder import ConformerMultiLayerFeatureExtractor
@@ -186,6 +201,7 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         processed_signal=None,
         processed_signal_length=None,
         return_encoder_emb=False,
+        return_ctc_timestamp_inputs=False,
         time_offset=None,
         spk_targets=None,
         input_signal_cu_seqlens=None,
@@ -206,7 +222,10 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         if self.spec_augmentation is not None and self.training:
             processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
 
+        ctc_timestamp_inputs = None
         if isinstance(self.modality_adapter, (QformerConnector, MultiLayerProjectionConnector)):
+            if return_ctc_timestamp_inputs:
+                raise ValueError("CTC timestamp inputs are not supported with multi-layer perception adapters.")
             encoder_emb, encoded_len = self.encoder_multilayer(
                 audio_signal=processed_signal, length=processed_signal_length
             )
@@ -220,7 +239,13 @@ class AudioPerceptionModule(NeuralModule, Exportable):
                         "spk_targets has no effect when the encoder does not support it."
                     )
                 encoder_kwargs["spk_targets"] = spk_targets
-            encoder_emb, encoded_len = self.encoder(**encoder_kwargs)
+            if return_ctc_timestamp_inputs:
+                if not getattr(self.encoder, "supports_ctc_timestamp_inputs", False):
+                    raise ValueError(f"{type(self.encoder).__name__} does not support returning CTC timestamp inputs.")
+                encoder_kwargs["return_ctc_timestamp_inputs"] = True
+                encoder_emb, encoded_len, ctc_timestamp_inputs = self.encoder(**encoder_kwargs)
+            else:
+                encoder_emb, encoded_len = self.encoder(**encoder_kwargs)
         if self.rote is not None:
             encoder_emb = self._apply_rote(encoder_emb, time_offset)
         encoded, encoded_len = self.modality_adapter(audio_signal=encoder_emb, length=encoded_len)
@@ -230,6 +255,8 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         result = (encoded, encoded_len)
         if return_encoder_emb:
             result += (encoder_emb.transpose(1, 2),)
+        if return_ctc_timestamp_inputs:
+            result += (ctc_timestamp_inputs,)
         return result
 
     @typecheck.disable_checks()
@@ -252,7 +279,8 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         if not self.supports_sequence_packed_output:
             raise ValueError(
                 "Packed encoder sequences require an encoder with native packed support, "
-                "IdentityConnector, no multi-layer feature extraction, and rote=null."
+                "IdentityConnector, no multi-layer feature extraction, and rote=null. "
+                + _sequence_packed_unsupported_reason(self.encoder)
             )
         processed_signal, processed_signal_length = self.maybe_preprocess_audio(
             input_signal,
@@ -277,6 +305,13 @@ class AudioPerceptionModule(NeuralModule, Exportable):
             encoder_kwargs["spk_targets"] = spk_targets
         encoded = self.encoder.forward_sequence_packed(**encoder_kwargs)
         return encoded.with_data(self.proj(encoded.data))
+
+
+def _sequence_packed_unsupported_reason(encoder: nn.Module) -> str:
+    """The encoder's own account of why it has no native packed form in its configuration, or an empty string."""
+    reason = getattr(encoder, "sequence_packed_unsupported_reason", None)
+    reason = reason() if callable(reason) else None
+    return f"{type(encoder).__name__}: {reason}" if reason else ""
 
 
 class IdentityConnector(nn.Module):
@@ -304,6 +339,9 @@ class IndependentDualEncoder(nn.Module):
     This is primarily intended for a trainable ASR encoder paired with a frozen
     auxiliary encoder. A frozen branch is kept in evaluation mode and runs under
     ``no_grad`` even when the parent perception module is training.
+
+    A branch whose configuration has no sequence-packed form is an error with the encoder's reason;
+    with ``allow_padded_fallback=True`` it runs on the padded batch and is re-packed, with one warning.
     """
 
     supports_sequence_packed_output = True
@@ -317,8 +355,12 @@ class IndependentDualEncoder(nn.Module):
         asr_chunk_size_seconds: float | None = None,
         auxiliary_chunk_size_seconds: float | None = None,
         freeze_auxiliary: bool = True,
+        allow_padded_fallback: bool = False,
     ) -> None:
         super().__init__()
+        if not isinstance(allow_padded_fallback, bool):
+            raise TypeError(f"allow_padded_fallback must be a bool, got {allow_padded_fallback!r}.")
+        self.allow_padded_fallback = allow_padded_fallback
         self.asr_encoder = asr_encoder
         self.auxiliary_encoder = auxiliary_encoder
         self.frame_shift_seconds = float(frame_shift_seconds)
@@ -340,10 +382,10 @@ class IndependentDualEncoder(nn.Module):
         self.subsampling_factor = self._matching_positive_int("subsampling_factor")
         self.d_model = self._encoder_width(asr_encoder) + self._encoder_width(auxiliary_encoder)
 
+        # `supports_sequence_packed_output` may depend on the configuration and the mode (a ConformerEncoder
+        # training with attention dropout over rel_pos attention), so it is consulted per forward, not here
         if not all(
-            bool(getattr(encoder, "supports_sequence_packed_output", False))
-            and callable(getattr(encoder, "forward_sequence_packed", None))
-            for encoder in (asr_encoder, auxiliary_encoder)
+            callable(getattr(encoder, "forward_sequence_packed", None)) for encoder in (asr_encoder, auxiliary_encoder)
         ):
             raise TypeError("IndependentDualEncoder requires two native sequence-packed encoders.")
 
@@ -403,6 +445,13 @@ class IndependentDualEncoder(nn.Module):
         chunk_size_seconds: float | None,
     ) -> PackedEncoderActivations:
         max_tokens = self._chunk_size_tokens(chunk_size_seconds)
+        if not getattr(encoder, "supports_sequence_packed_output", True):
+            if max_tokens is not None and features.max_seqlen > max_tokens:
+                raise TypeError(
+                    f"{type(encoder).__name__} does not support packed chunking in this configuration: "
+                    f"{_sequence_packed_unsupported_reason(encoder)}"
+                )
+            return forward_padded_fallback(encoder, features, allowed=self.allow_padded_fallback)
         if max_tokens is None or features.max_seqlen <= max_tokens:
             return encoder.forward_sequence_packed(features, features.lengths)
 
@@ -534,6 +583,7 @@ class AudioTranscriptionPerceptionModule(NeuralModule, Exportable):
         self.spec_augmentation = None
         if 'spec_augment' in cfg and cfg.spec_augment is not None:
             self.spec_augmentation = self.from_config_dict(cfg.spec_augment)
+        _configure_short_recording_spec_augment(self.spec_augmentation, self.preprocessor)
         self.modality_adapter = self.from_config_dict(cfg.modality_adapter)
         if isinstance(self.modality_adapter, (QformerConnector, MultiLayerProjectionConnector)):
             from nemo.collections.asr.modules.conformer_encoder import ConformerMultiLayerFeatureExtractor

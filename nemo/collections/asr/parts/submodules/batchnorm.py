@@ -136,16 +136,18 @@ class MaskedBatchNorm1d(nn.Module):
         mask = torch.arange(x.shape[2], device=x.device)[None, :] < lengths[:, None]
         return self._normalize(x, mask.unsqueeze(1))
 
-    def forward_packed(self, data: torch.Tensor) -> torch.Tensor:
+    def forward_packed(self, data: torch.Tensor, valid: torch.Tensor | None = None) -> torch.Tensor:
         """Normalize token-flat features, one row per valid frame of the batch.
 
         Args:
             data: Features with shape (N, D).
+            valid: Boolean mask of the rows that hold valid frames, shape (N,); None takes every row
+                (a bounded batch passes the mask of its content rows).
 
         Returns:
             Normalized features with the shape and dtype of ``data``.
         """
-        return self._normalize(data, None)
+        return self._normalize(data, None if valid is None else valid.unsqueeze(1))
 
     def _normalize(self, x: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
         reduce_dims = [dim for dim in range(x.dim()) if dim != 1]
@@ -182,7 +184,7 @@ class MaskedBatchNorm1d(nn.Module):
             valid = count > 0
         self.num_batches_tracked += valid.to(torch.long)
         if self.momentum is None:
-            factor = 1.0 / float(self.num_batches_tracked.clamp_min(1))
+            factor = 1.0 / self.num_batches_tracked.clamp_min(1).to(mean.dtype)
         else:
             factor = self.momentum
         self.running_mean += torch.where(valid, (mean - self.running_mean) * factor, 0.0)

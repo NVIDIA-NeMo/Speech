@@ -954,7 +954,11 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             if isinstance(_unwrap_checkpoint(self.pre_encode), nn.Linear):
                 # the input's padding metadata describes features, not the projected states
                 packed = PackedEncoderActivations.from_validated(
-                    self.pre_encode(packed.data), packed.lengths, packed.cu_seqlens, packed.max_seqlen
+                    self.pre_encode(packed.data),
+                    packed.lengths,
+                    packed.cu_seqlens,
+                    packed.max_seqlen,
+                    bounded=packed.bounded,
                 )
             else:
                 packed = _forward_packed_module(self.pre_encode, packed)
@@ -965,7 +969,12 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         )
         # the relative-position table covers the length the attention backend reads:
         # the longest utterance for the Triton kernel, the rounded kernel shape for FlexAttention
-        self.update_max_seq_length(seq_length=attention_context.rel_pos_max_seqlen, device=packed.data.device)
+        if packed.bounded:
+            # capacity mode: the bound is a host constant, no collective and no device read
+            if attention_context.rel_pos_max_seqlen > self.max_audio_length:
+                self.set_max_audio_length(attention_context.rel_pos_max_seqlen)
+        else:
+            self.update_max_seq_length(seq_length=attention_context.rel_pos_max_seqlen, device=packed.data.device)
         x = packed.data
         if self.self_attention_model == 'rope':
             if self.xscale:
@@ -1024,7 +1033,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         if self.out_proj is not None:
             x = self.out_proj(x)
         # encoder outputs pad with zeros, whatever padding metadata the input carried
-        return PackedEncoderActivations.from_validated(x, packed.lengths, packed.cu_seqlens, packed.max_seqlen)
+        return PackedEncoderActivations.from_validated(
+            x, packed.lengths, packed.cu_seqlens, packed.max_seqlen, bounded=packed.bounded
+        )
 
     @property
     def supports_sequence_packed_output(self) -> bool:

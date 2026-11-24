@@ -24,7 +24,7 @@ stuttering detection.
 | | `check_contamination.py` | drop training rows that equal or overlap a test reference; report vocabulary overlap |
 | config | `make_ft_config.py` | derive the training YAML from the checkpoint's own `config.json` (freeze policy, LoRA, optimizer, batching) |
 | | `epoch_batches.py` | count the real batches per epoch, so `limit_train_batches` stays below it and validation runs |
-| train | `run_training.py` | coverage preflight (`check_checkpoint_coverage.py`), 20-step smoke test, full run with a validation watchdog, checkpoint pruning, GPU lock |
+| train | `run_training.py` | coverage preflight (`check_checkpoint_coverage.py`), 20-step smoke test, full run with a validation watchdog, checkpoint pruning, GPU lock; sets `NVTE_FUSED_ATTN=0` for packed training on Blackwell sm_120 unless already set |
 | export | `export_checkpoint.py` | convert to HF format, check the LoRA adapters are non-zero, merge LoRA (`merge_lora_checkpoint.py`) → a directory vLLM can serve |
 | | `average_checkpoints.py` | uniform weight average of merged checkpoints |
 | evaluate | `vllm_task_eval.py` | vLLM decoding with per-row prompts, speculative decoding where the checkpoint supports it, label log-odds, output-length cap |

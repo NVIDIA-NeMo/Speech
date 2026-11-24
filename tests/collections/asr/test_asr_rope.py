@@ -245,6 +245,32 @@ class TestRotaryPositionalEncoding:
         pe.extend_pe(2, torch.device('cpu'))
         assert pe.cos.device.type == 'cpu' and torch.equal(pe.cos, before[0])
 
+    @pytest.mark.unit
+    def test_scripted_module_follows_a_device_move(self):
+        # `.to()` of a scripted module bypasses the Python `_apply`, so the plain tables stay behind; the scripted
+        # forward brings them to the queries' device
+        pe = RotaryPositionalEncoding(d_k=8, max_len=16)
+        scripted = torch.jit.script(pe).to('meta')
+        assert scripted.cos.device.type == 'cpu'
+        q = torch.zeros(1, 1, 2, 8, device='meta')
+        out, _ = scripted(q, q)
+        assert out.device.type == 'meta' and scripted.cos.device.type == 'meta' and scripted.cos.shape == (16, 8)
+
+    @pytest.mark.run_only_on('GPU')
+    @pytest.mark.unit
+    def test_scripted_module_follows_a_device_move_gpu(self):
+        pe = RotaryPositionalEncoding(d_k=8, max_len=16)
+        q = torch.randn(1, 2, 12, 8)
+        expected = pe(q, q)
+        scripted = torch.jit.script(pe).to('cuda')
+        out = scripted(q.cuda(), q.cuda())
+        assert scripted.cos.device.type == 'cuda'
+        torch.testing.assert_close(out[0].cpu(), expected[0])
+        torch.testing.assert_close(out[1].cpu(), expected[1])
+        back = scripted.cpu()
+        torch.testing.assert_close(back(q, q)[0], expected[0])
+        assert back.cos.device.type == 'cpu'
+
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
     def test_materialization_of_a_meta_construction_on_cuda(self):

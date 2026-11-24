@@ -1295,8 +1295,8 @@ class RotaryPositionalEncoding(torch.nn.Module):
     construction in float32 and moved and converted with the module like its buffers (``.to()``, ``.cuda()``,
     ``.half()``), so a distributed training has nothing to broadcast for them and a checkpoint nothing to store.
     ``forward`` brings them to the queries' device when a wrapper moved the parameters and buffers alone (FSDP
-    does), and ``to_empty`` after ``.to("meta")`` rebuilds them for the positions they covered, which the module
-    keeps.
+    does) or a scripted module was moved after scripting, and ``to_empty`` after ``.to("meta")`` rebuilds them
+    for the positions they covered, which the module keeps.
     They cost ``2 * max_len * d_k * rotary_fraction`` elements per module, 4.9 MiB of float32 for 5,000 positions
     of 128.
 
@@ -1420,9 +1420,13 @@ class RotaryPositionalEncoding(torch.nn.Module):
         t_q = q.size(2)
         t_k = k.size(2)
         cache_len = t_k - t_q
-        # the tables' device and size, a Python compare without a sync: a wrapper that moved the parameters and
-        # buffers alone (FSDP) leaves plain tensors behind, and a caller may skip extend_pe;
-        # a scripted module keeps the tables it was scripted with
+        # the tables are plain tensors, which a wrapper that moved the parameters and buffers alone (FSDP) and a
+        # scripted module moved after scripting (its `.to()` bypasses `_apply`) leave behind: a device compare
+        # without a sync, in the scripted forward as well
+        if self.cos.device != q.device:
+            self.cos = self.cos.to(q.device)
+            self.sin = self.sin.to(q.device)
+        # growth when a caller skipped extend_pe; a scripted module keeps the size it was scripted with
         if not torch.jit.is_scripting():
             self.extend_pe(t_k, q.device)
 

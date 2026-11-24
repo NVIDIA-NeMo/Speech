@@ -2,12 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
 from lhotse import AudioSource, CutSet, MonoCut, Recording, SupervisionSegment
 from lhotse.utils import compute_num_frames
+from lightning.pytorch.loggers import WandbLogger
 from omegaconf import OmegaConf
 from torch import nn
 
@@ -473,6 +474,226 @@ def test_a_terminal_outside_the_retained_target_grid_is_ignored_without_moving_i
     )
     assert labels[0].tolist() == [NONEND, NONEND, END, NONEND]
     assert valid[0].all() and not terminal.any()
+
+
+def test_timestamp_diagnostics_are_opt_in_detached_and_reuse_the_training_alignment():
+    model = _timestamp_model(multiturn=False).eval()
+    baseline = model.process_batch(**_inputs(model), timestamp_batch=_raw_batch(), mode='val')
+    logits = []
+    hook = model.timestamp_head.register_forward_hook(lambda _module, _args, output: logits.append(output.detach()))
+    try:
+        output = model.process_batch(
+            **_inputs(model), timestamp_batch=_raw_batch(), mode='val', return_timestamp_diagnostics=True
+        )
+    finally:
+        hook.remove()
+    assert baseline.timestamp_diagnostics is None
+    assert len(model._timestamp_teacher.calls) == 2 and len(logits) == 1
+    torch.testing.assert_close(output.loss, baseline.loss, rtol=0, atol=0)
+    torch.testing.assert_close(output.logits, baseline.logits, rtol=0, atol=0)
+    (diagnostic,) = output.timestamp_diagnostics
+    assert (diagnostic['batch_index'], diagnostic['turn_index']) == (0, 0)
+    assert [word['word'] for word in diagnostic['words']] == ['ground truth transcript', 'last']
+    assert diagnostic['frame_indices'].tolist() == [0, 1, 2, 3, 4]
+    assert diagnostic['frame_end_seconds'].tolist() == pytest.approx([0.08, 0.16, 0.24, 0.32, 0.32])
+    torch.testing.assert_close(diagnostic['end_probabilities'], logits[0][0].sigmoid(), rtol=0, atol=0)
+    torch.testing.assert_close(diagnostic['targets'], output.timestamp_targets[0])
+    torch.testing.assert_close(diagnostic['valid_mask'], output.timestamp_mask[0])
+    assert diagnostic['eos_mask'].tolist() == [False, False, False, False, True]
+    assert diagnostic['audio_duration'] == pytest.approx(0.32)
+    for key in ('frame_indices', 'frame_end_seconds', 'end_probabilities', 'targets', 'valid_mask', 'eos_mask'):
+        assert diagnostic[key].device.type == 'cpu' and not diagnostic[key].requires_grad
+
+
+@pytest.mark.parametrize('text_input_mode', ['streaming', 'full'])
+def test_timestamp_diagnostics_keep_fractional_turn_times_without_adding_the_speech_delay(text_input_mode):
+    model = _timestamp_model(multiturn=True).eval()
+    turns = []
+    inputs = _inputs(model)
+    inputs.update(
+        text=_packed_text(model, timestamp_turns=turns, fractional=True),
+        text_lens=torch.tensor([15]),
+        audio_codes=torch.arange(60).reshape(1, 2, 30) % model.codebook_size,
+        audio_codes_lens=torch.tensor([30]),
+        context_text_tokens=torch.empty(1, 0, dtype=torch.long),
+        context_text_tokens_lens=torch.tensor([0]),
+    )
+    batch = dict(audio=torch.zeros(1, 120), audio_lens=torch.tensor([120]), timestamp_turns=[turns])
+    output = model.process_batch(
+        **inputs,
+        timestamp_batch=batch,
+        mode='val',
+        training_mode=TrainingMode(text_input_mode, 0, 1, 0),
+        return_timestamp_diagnostics=True,
+    )
+    first, second = output.timestamp_diagnostics
+    assert [(row['batch_index'], row['turn_index']) for row in output.timestamp_diagnostics] == [(0, 0), (0, 1)]
+    assert (first['wave_start'], first['wave_end']) == (13, 53)
+    assert first['frame_indices'].tolist() == [2, 3, 4, 5, 6, 8]
+    assert first['frame_end_seconds'].tolist() == pytest.approx([0.11, 0.19, 0.27, 0.35, 0.4, 0.4])
+    assert second['frame_indices'].tolist() == [9, 10, 11, 12, 13, 14]
+    assert second['frame_end_seconds'].max() <= second['audio_duration']
+    assert len(model._timestamp_teacher.calls) == 1
+
+
+@pytest.mark.parametrize('invalid_first', [False, True])
+def test_timestamp_diagnostics_collect_at_most_three_valid_turns_without_changing_target_returns(invalid_first):
+    model = _timestamp_model(multiturn=True)
+    turns = []
+    text = _packed_text(model, timestamp_turns=turns).repeat(3, 1)
+    batch = dict(audio=torch.zeros(3, 120), audio_lens=torch.tensor([120, 120, 120]), timestamp_turns=[turns] * 3)
+    if invalid_first:
+        model._timestamp_teacher.records = [
+            {'words': [], 'error': 'invalid_reference'},
+            *[{'words': [{'word': 'only', 'start': 0.0, 'end': 0.4}], 'error': None} for _ in range(5)],
+        ]
+    diagnostics = []
+    result = model._prepare_timestamp_targets(batch, text, torch.tensor([30, 30, 30]), 16, diagnostics=diagnostics)
+    assert len(result) == 4 and len(diagnostics) == 3
+    expected = [(0, 1), (1, 0), (1, 1)] if invalid_first else [(0, 0), (0, 1), (1, 0)]
+    assert [(row['batch_index'], row['turn_index']) for row in diagnostics] == expected
+    assert len(model._timestamp_teacher.calls) == 1
+
+
+def test_timestamp_diagnostics_show_unsupervised_audio_but_exclude_ineligible_prediction_frames():
+    model = _timestamp_model(multiturn=True).eval()
+    turns = []
+    inputs = _inputs(model)
+    inputs.update(
+        text=_packed_text(model, timestamp_turns=turns),
+        text_lens=torch.tensor([15]),
+        audio_codes=torch.arange(60).reshape(1, 2, 30) % model.codebook_size,
+        audio_codes_lens=torch.tensor([30]),
+        context_text_tokens=torch.empty(1, 0, dtype=torch.long),
+        context_text_tokens_lens=torch.tensor([0]),
+    )
+    turns[1].update(start=0.32, end=0.72, start_frame=4, end_frame=9)
+    agent_mask = torch.ones(1, 15, dtype=torch.bool)
+    agent_mask[0, 3] = False
+    output = model.process_batch(
+        **inputs,
+        timestamp_batch=dict(audio=torch.zeros(1, 120), audio_lens=torch.tensor([120]), timestamp_turns=[turns]),
+        agent_mask=agent_mask,
+        mode='val',
+        training_mode=TrainingMode('streaming', 0, 1, 0),
+        return_timestamp_diagnostics=True,
+    )
+    diagnostic = output.timestamp_diagnostics[0]
+    assert 3 not in diagnostic['frame_indices'].tolist()
+    overlapping = diagnostic['frame_indices'] == 4
+    assert overlapping.any() and not diagnostic['valid_mask'][overlapping].any()
+    assert torch.isfinite(diagnostic['end_probabilities'][overlapping]).all()
+
+
+@pytest.mark.parametrize('enabled,policy', [(False, False), (True, True)])
+def test_timestamp_diagnostics_do_not_activate_a_disabled_or_policy_teacher(enabled, policy):
+    model = _timestamp_model(enabled=enabled, multiturn=False)
+    with patch.object(model, '_get_timestamp_teacher', side_effect=AssertionError('Unused teacher was loaded')):
+        output = model.process_batch(
+            **_inputs(model), mode='val', return_policy_logits=policy, return_timestamp_diagnostics=True
+        )
+    assert output.timestamp_diagnostics is None
+
+
+@pytest.mark.parametrize(
+    'rank,batch_index,has_wandb,enabled,collect',
+    [
+        (0, 0, True, True, True),
+        (0, 1, True, True, False),
+        (1, 0, True, True, False),
+        (0, 0, False, True, False),
+        (0, 0, True, False, False),
+    ],
+)
+def test_validation_collects_timestamp_media_only_for_the_first_wandb_batch(
+    rank, batch_index, has_wandb, enabled, collect
+):
+    model = _timestamp_model(enabled=enabled, multiturn=True).eval()
+    model._fabric = None
+    logger = MagicMock(spec=WandbLogger)
+    model._trainer = SimpleNamespace(
+        world_size=2, global_rank=rank, local_rank=rank, global_step=100, loggers=[logger] if has_wandb else []
+    )
+    model.run_val_inference = False
+    model.validation_step_outputs = []
+    with (
+        patch.object(model, 'log_dict'),
+        patch.object(model, 'log_val_audio_example', return_value={}),
+        patch.object(model, '_log_timestamp_head_examples', return_value={'Timestamp/Stub': 'media'}) as media,
+        patch.object(model, 'process_batch', wraps=model.process_batch) as process,
+    ):
+        model.on_validation_epoch_start()
+        output = model.validation_step({**_inputs(model), **_raw_batch()}, batch_idx=batch_index)
+    assert torch.isfinite(output['val_loss'])
+    assert process.call_args.kwargs.get('return_timestamp_diagnostics', False) is collect
+    assert media.call_count == int(collect)
+    if collect:
+        assert media.call_args.args[0].timestamp_diagnostics
+        assert logger.experiment.log.call_args.args[0]['Timestamp/Stub'] == 'media'
+
+
+@pytest.mark.parametrize('predict_eos', [False, True])
+def test_timestamp_media_saves_marked_copies_without_forcing_predicted_ends(tmp_path, predict_eos):
+    import json
+
+    import numpy as np
+    import soundfile as sf
+
+    model = _timestamp_model(multiturn=False).eval()
+    batch = _raw_batch()
+    batch['audio'].zero_()
+    with torch.no_grad():
+        model.timestamp_head.projection[-1].weight.zero_()
+        model.timestamp_head.projection[-1].bias.fill_(-10)
+    output = model.process_batch(
+        **_inputs(model), timestamp_batch=batch, mode='val', return_timestamp_diagnostics=True
+    )
+    model._trainer = SimpleNamespace(log_dir=str(tmp_path), global_step=100)
+    classes = torch.zeros(1, 15, dtype=torch.long)
+    classes[0, 2] = classes[0, 14] = END
+    classes[0, 12] = END if predict_eos else NONEND
+    generated = SimpleNamespace(
+        predicted_audio=torch.zeros(1, 104),
+        predicted_audio_lens=torch.tensor([96]),
+        predicted_timestamp_classes=classes,
+        predicted_timestamp_classes_lens=torch.tensor([13]),
+        predicted_codes_lens=torch.tensor([24]),
+    )
+    generated.predicted_audio[0, 96:] = 0.9
+    original_gt, original_generated = batch['audio'].clone(), generated.predicted_audio.clone()
+    prefix = 'nemo.collections.tts.models.nemotron_tts.v2.model'
+    with (
+        patch(f'{prefix}.wandb.Image') as image,
+        patch(f'{prefix}.wandb.Audio') as audio,
+        patch.object(model, '_get_timestamp_teacher', side_effect=AssertionError('Media reran the ASR teacher')),
+    ):
+        ground_truth_media = model._log_timestamp_head_examples(output, batch)
+        generated_media = model._log_timestamp_head_examples(output, batch, generated=generated)
+    assert 'Timestamp/Alignment_0' in ground_truth_media and image.call_count == 1
+    assert 'Timestamp/Generated_predicted_0' in generated_media and audio.call_count == 3
+    directory = tmp_path / 'val_audios' / 'timestamps_step_100'
+    assert (directory / 'sample_0_turn_0.png').is_file()
+    teacher_forced = json.loads((directory / 'sample_0_turn_0.json').read_text())
+    predicted = json.loads((directory / 'generated_sample_0.json').read_text())
+    assert teacher_forced['predicted_end_seconds'] == []
+    assert predicted['predicted_end_seconds'] == pytest.approx([0.24, 0.96] if predict_eos else [0.24])
+    assert len(predicted['predicted_classes']) == 13
+    assert predicted['frame_end_seconds'][-1] == pytest.approx(0.96)
+    assert teacher_forced['sample_rate'] == predicted['sample_rate'] == 100
+    assert predicted['audio_duration'] == pytest.approx(0.96)
+    assert predicted['frame_seconds'] == pytest.approx(0.08)
+    for name, expected_frames in [
+        ('gt_reference_sample_0_turn_0.wav', 32),
+        ('gt_predicted_sample_0_turn_0.wav', 32),
+        ('generated_predicted_sample_0.wav', 96),
+    ]:
+        info = sf.info(directory / name)
+        assert info.frames == expected_frames and info.samplerate == 100
+    marked_reference, _ = sf.read(directory / 'gt_reference_sample_0_turn_0.wav', dtype='float32')
+    unmarked_predictions, _ = sf.read(directory / 'gt_predicted_sample_0_turn_0.wav', dtype='float32')
+    assert np.any(marked_reference) and not np.any(unmarked_predictions)
+    torch.testing.assert_close(batch['audio'], original_gt, rtol=0, atol=0)
+    torch.testing.assert_close(generated.predicted_audio, original_generated, rtol=0, atol=0)
 
 
 def test_timestamp_loss_trains_head_and_backbone_while_teacher_is_excluded_from_state_and_optimizer():

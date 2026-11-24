@@ -117,6 +117,30 @@ aligned interval; full recordings, interval tables, and teacher diagnostics
 are also available. An existing result JSON can be rendered again with
 `--alignments-json` instead of running the teacher again.
 
+## Validation diagnostics
+
+With W&B enabled, the first validation batch on rank zero logs up to three
+valid speech turns:
+
+- `Timestamp/Alignment_*`: ASR word occupancy, the head's cumulative word
+  position, and `P(END)` with reference and predicted boundaries.
+- `Timestamp/GT_reference_*`: ground-truth speech with clicks at ASR word ends.
+- `Timestamp/GT_predicted_*`: the same speech with teacher-forced head clicks.
+- `Timestamp/Generated_predicted_*`: generated speech with its own head clicks,
+  when `run_val_inference=true`.
+
+Plots, marked WAV copies, and frame-level JSON diagnostics are also saved under
+`val_audios/timestamps_step_<step>/`. The JSON includes reference words,
+probabilities, supervision masks, and predicted end times. Generated recordings
+use their own audio duration and predicted boundary classes.
+
+Clicks are short tapered tones, including a clipped tone at the waveform end
+when an END is actually predicted there. The displayed word position follows
+the raw boundary count; missing and extra ends remain visible. Word identity
+is inferred from reference order. Plots show at most 800 frames and 80 word
+positions; audio and JSON retain the complete turn. The existing alignment is
+reused, and all capture and rendering is limited to validation examples.
+
 ## Passive inference output
 
 For checkpoints trained with the head enabled, `infer_batch()` returns

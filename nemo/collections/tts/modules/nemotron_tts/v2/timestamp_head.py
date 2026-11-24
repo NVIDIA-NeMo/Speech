@@ -188,6 +188,133 @@ def reconcile_timestamp_eos(labels, valid_mask, terminal_mask, eos_mask, audio_f
     )
 
 
+def add_timestamp_markers(audio, sample_rate, boundaries):
+    """Return a mono FP32 diagnostic copy with short, tapered clicks at word ends."""
+    import numpy as np
+
+    marked = np.array(audio, dtype=np.float32, copy=True)
+    if marked.ndim != 1 or isinstance(sample_rate, bool) or not isinstance(sample_rate, int) or sample_rate <= 0:
+        raise ValueError('Timestamp audio must be mono and sample_rate must be a positive integer')
+    positions = set()
+    for value in boundaries:
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(seconds) and 0 <= seconds <= marked.size / sample_rate:
+            positions.add(round(seconds * sample_rate))
+    size = max(3, round(0.012 * sample_rate))
+    phase = np.arange(size) * (2 * np.pi * min(1000, sample_rate / 4) / sample_rate)
+    click = (0.15 * np.hanning(size) * np.sin(phase)).astype(np.float32)
+    for position in sorted(positions):
+        start = int(position) - size // 2
+        left, right = max(0, start), min(marked.size, start + size)
+        if right > left:
+            marked[left:right] = np.clip(marked[left:right] + click[left - start : right - start], -1, 1)
+    return marked
+
+
+def plot_timestamp_alignment(diagnostic):
+    """Plot teacher words, cumulative predicted word position, and END probability.
+
+    Frame endpoints are physical audio times, including a possible zero-duration
+    EOS row. Word positions follow the raw END predictions; an END frame still
+    belongs to the word it closes. Only the display is cropped.
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    words = diagnostic['words']
+    times = np.asarray(diagnostic['frame_end_seconds'], dtype=np.float64)
+    values = diagnostic['end_probabilities']
+    if isinstance(values, torch.Tensor):
+        values = values.detach().double().numpy()
+    probabilities = np.asarray(values, dtype=np.float64)
+    targets = np.asarray(diagnostic['targets'])
+    valid = np.asarray(diagnostic['valid_mask'], dtype=bool)
+    if times.ndim != 1 or any(array.shape != times.shape for array in (probabilities, targets, valid)):
+        raise ValueError('Timestamp diagnostic arrays must be one-dimensional with matching shapes')
+    if not np.isfinite(times).all() or (np.diff(times) < 0).any():
+        raise ValueError('Frame endpoints must be finite and nondecreasing')
+    times = np.clip(times, 0, float(diagnostic['audio_duration']))
+    predicted = np.isfinite(probabilities) & (probabilities >= 0.5)
+    positions = np.cumsum(predicted) - predicted
+    expected = len(words)
+    position_count = expected or (int(positions.max()) + 1 if positions.size else 1)
+    visible = min(position_count, 80)
+    later = position_count > visible
+    labels = [f'{index}: {str(words[index]["word"])[:28]}' if words else str(index) for index in range(visible)]
+    labels += (['later words'] if later else []) + (['extra'] if words else [])
+    shown = min(times.size, 800)
+    edges = np.r_[0.0, times[:shown]]
+    centers = (edges[:-1] + edges[1:]) / 2
+    reference_positions = np.searchsorted([float(word['end']) for word in words], centers, side='right')
+    reference_valid = valid[:shown] & (reference_positions < expected)
+    if words and shown:
+        starts = np.asarray([float(word['start']) for word in words])
+        reference_valid &= centers >= starts[np.minimum(reference_positions, expected - 1)]
+    head_positions = np.minimum(positions[:shown], visible)
+    if words:
+        head_positions = np.where(positions[:shown] >= expected, len(labels) - 1, head_positions)
+    figure, axes = plt.subplots(1, 3, figsize=(15, 7), sharey=True, gridspec_kw={'width_ratios': [1, 1, 0.6]})
+    colormap = plt.get_cmap('viridis').copy()
+    colormap.set_bad('lightgray')
+    ticks = np.unique(
+        np.r_[np.linspace(0, visible - 1, min(visible, 24)).astype(int), np.arange(visible, len(labels))]
+    )
+    for axis, title, index, selected in zip(
+        axes[:2],
+        ['ASR word alignment', 'Head word position (END count)'],
+        [np.minimum(reference_positions, visible), head_positions],
+        [reference_valid, np.isfinite(probabilities[:shown])],
+    ):
+        matrix = (index[:, None] == np.arange(len(labels))[None, :]).astype(np.float32)
+        matrix[~selected] = np.nan
+        if shown:
+            axis.pcolormesh(np.arange(len(labels) + 1) - 0.5, edges, matrix, cmap=colormap, vmin=0, vmax=1)
+        else:
+            axis.text(0.5, 0.5, 'No timestamp frames', ha='center', transform=axis.transAxes)
+        axis.set_title(title)
+        axis.set_xlabel('Word occurrence')
+        axis.set_xticks(ticks, [labels[index] for index in ticks], rotation=60, ha='right', fontsize=7)
+        for tick in axis.get_xticklabels():
+            tick.set_parse_math(False)
+    if not words:
+        axes[0].text(0.5, 0.5, 'Reference words unavailable', ha='center', transform=axes[0].transAxes)
+    axes[0].set_ylabel('Speech time (s)')
+    axes[2].plot(probabilities[:shown], times[:shown], label='P(END)')
+    axes[2].axvline(0.5, color='gray', linestyle='--', label='Threshold')
+    reference_ends = valid & (targets == END)
+    axes[2].scatter(
+        np.ones(reference_ends[:shown].sum()),
+        times[:shown][reference_ends[:shown]],
+        color='green',
+        marker='|',
+        label='Reference END',
+    )
+    axes[2].scatter(
+        probabilities[:shown][predicted[:shown]],
+        times[:shown][predicted[:shown]],
+        color='darkorange',
+        marker='x',
+        label='Predicted END',
+    )
+    axes[2].set(
+        xlim=(-0.05, 1.08),
+        xlabel='Probability',
+        title=f'Ends: {predicted.sum()} predicted / {reference_ends.sum()} reference',
+    )
+    axes[2].legend(loc='upper left', fontsize=7)
+    axes[0].set_ylim(0, max(float(times[shown - 1]) if shown else 0, float(diagnostic['frame_seconds'])))
+    figure.suptitle('Word-end alignment')
+    cropped = f'Display: first {shown}/{times.size} frames, {visible}/{position_count} word positions. '
+    figure.text(
+        0.5, 0.01, cropped + 'Counts use all frames. Gray: reference supervision unavailable.', ha='center', fontsize=8
+    )
+    figure.tight_layout(rect=(0, 0.09, 1, 0.95))
+    return figure
+
+
 def _frame_coordinate(seconds: float, frame_seconds: float) -> float:
     """Avoid spurious shared bins from floating-point roundoff at exact boundaries."""
     coordinate = seconds / frame_seconds

@@ -55,6 +55,8 @@ from nemo.collections.tts.modules.magpietts_modules import (
 from nemo.collections.tts.modules.nemotron_tts.v2.timestamp_head import (
     IGNORE_INDEX,
     TIMESTAMP_LABELS,
+    add_timestamp_markers,
+    plot_timestamp_alignment,
     reconcile_timestamp_eos,
     word_intervals_to_frame_labels,
 )
@@ -131,6 +133,7 @@ class ProcessBatchOutput:
     timestamp_targets: Optional[torch.Tensor] = None
     timestamp_mask: Optional[torch.Tensor] = None
     timestamp_metrics: Optional[dict] = None
+    timestamp_diagnostics: Optional[List[dict]] = None
 
 
 class NemotronTTSModel(NemotronTTSBase):
@@ -310,7 +313,7 @@ class NemotronTTSModel(NemotronTTSBase):
             object.__setattr__(self, '_timestamp_teacher', teacher)
         return teacher
 
-    def _prepare_timestamp_targets(self, batch, text, audio_codes_lens, num_frames):
+    def _prepare_timestamp_targets(self, batch, text, audio_codes_lens, num_frames, *, diagnostics=None):
         """Align independent GT waveform turns and restore classes to the audio target grid."""
         if batch is None:
             raise ValueError('Timestamp supervision requires timestamp_batch with ground-truth waveform and text')
@@ -441,6 +444,28 @@ class NemotronTTSModel(NemotronTTSBase):
                 elif 0 <= terminal < num_frames:
                     terminal_mask[sample, terminal] = True
                 metrics['valid_turns'] += 1
+                if diagnostics is not None and len(diagnostics) < 3:
+                    left = round(offset * sample_rate)
+                    diagnostics.append(
+                        dict(
+                            batch_index=sample,
+                            turn_index=batch['timestamp_turns'][sample].index(turn) if turn is not None else 0,
+                            start_frame=start,
+                            end_frame=end,
+                            wave_start=left,
+                            wave_end=left + waveforms[turn_index].numel(),
+                            audio_start_seconds=offset,
+                            audio_duration=waveforms[turn_index].numel() / sample_rate,
+                            frame_seconds=frame_seconds,
+                            reference_text=references[turn_index],
+                            words=[
+                                dict(
+                                    word=str(word.get('word', '')), start=float(word['start']), end=float(word['end'])
+                                )
+                                for word in record['words']
+                            ],
+                        )
+                    )
         overlapping_turns = coverage > 1
         metrics['collision_frames'] += int(overlapping_turns.sum().item())
         mask &= ~overlapping_turns
@@ -453,6 +478,75 @@ class NemotronTTSModel(NemotronTTSBase):
             metrics,
             terminal_mask.to(device=text.device),
         )
+
+    def _log_timestamp_head_examples(self, output, batch, generated=None):
+        """Log bounded word-end plots and marked audio copies from validation."""
+        if not output.timestamp_diagnostics:
+            return {}
+        import matplotlib.pyplot as plt
+
+        media = {'trainer/global_step': self.global_step}
+        directory = os.path.join(self.trainer.log_dir, 'val_audios', f'timestamps_step_{self.global_step}')
+        os.makedirs(directory, exist_ok=True)
+        seen = set()
+        for index, diagnostic in enumerate(output.timestamp_diagnostics):
+            sample, turn = diagnostic['batch_index'], diagnostic['turn_index']
+            if generated is None:
+                stem = f'sample_{sample}_turn_{turn}'
+                audio = batch['audio'][sample, diagnostic['wave_start'] : diagnostic['wave_end']]
+                audio = audio.detach().float().cpu().numpy()
+                sample_rate = self.sample_rate
+                ends = diagnostic['frame_end_seconds'][diagnostic['end_probabilities'] >= 0.5].tolist()
+                tracks = [
+                    ('GT_reference', [word['end'] for word in diagnostic['words']], 'GT speech; ASR reference ends'),
+                    ('GT_predicted', ends, 'GT speech; teacher-forced head ends'),
+                ]
+                figure = plot_timestamp_alignment(diagnostic)
+                try:
+                    figure.savefig(os.path.join(directory, f'{stem}.png'), dpi=150)
+                    media[f'Timestamp/Alignment_{index}'] = wandb.Image(
+                        figure, caption=f'Teacher-forced validation: sample {sample}, turn {turn}.'
+                    )
+                finally:
+                    plt.close(figure)
+                report = {
+                    key: value.tolist() if isinstance(value, torch.Tensor) else value
+                    for key, value in diagnostic.items()
+                }
+            else:
+                if sample in seen or generated.predicted_timestamp_classes is None:
+                    continue
+                seen.add(sample)
+                stem = f'generated_sample_{sample}'
+                samples = int(generated.predicted_audio_lens[sample])
+                audio = generated.predicted_audio[sample, :samples].detach().float().cpu().numpy()
+                sample_rate = self.output_sample_rate
+                length = int(generated.predicted_timestamp_classes_lens[sample])
+                classes = generated.predicted_timestamp_classes[sample, :length].detach().cpu()
+                times = ((torch.arange(length, dtype=torch.float64) + 1) * diagnostic['frame_seconds']).clamp_max(
+                    samples / sample_rate
+                )
+                ends = times[classes == 1].tolist()
+                tracks = [('Generated_predicted', ends, 'Generated speech; head ends')]
+                report = dict(
+                    batch_index=sample,
+                    audio_duration=samples / sample_rate,
+                    frame_seconds=diagnostic['frame_seconds'],
+                    frame_end_seconds=times.tolist(),
+                    predicted_classes=classes.tolist(),
+                )
+            report['sample_rate'] = sample_rate
+            report['predicted_end_seconds'] = ends
+            with open(os.path.join(directory, f'{stem}.json'), 'w', encoding='utf-8') as stream:
+                json.dump(report, stream, ensure_ascii=False, indent=2)
+            for name, boundaries, caption in tracks:
+                marked = add_timestamp_markers(audio, sample_rate, boundaries)
+                audio_path = os.path.join(directory, f'{name.lower()}_{stem.removeprefix("generated_")}.wav')
+                sf.write(audio_path, marked, sample_rate)
+                media[f'Timestamp/{name}_{index if generated is None else sample}'] = wandb.Audio(
+                    marked, sample_rate=sample_rate, caption=caption
+                )
+        return media
 
     def _log_aligned_text_head_examples(self, output):
         """Build W&B media for the first validation turns without retaining logits."""
@@ -1260,6 +1354,7 @@ class NemotronTTSModel(NemotronTTSBase):
         audio_codes_are_stacked: bool = False,
         return_aligned_text_diagnostics: bool = False,
         timestamp_batch: Optional[dict] = None,
+        return_timestamp_diagnostics: bool = False,
     ) -> ProcessBatchOutput:
         """
         Simplified batch processing using channel-based embedding architecture.
@@ -1302,6 +1397,7 @@ class NemotronTTSModel(NemotronTTSBase):
             audio_codes_are_stacked: Input audio codes are exact stacked rollout actions, including EOS.
             return_aligned_text_diagnostics: Collect bounded, detached BPE-head validation examples.
             timestamp_batch: Original batch containing GT waveforms and reference texts for the frozen teacher.
+            return_timestamp_diagnostics: Collect up to three detached validation word-boundary examples.
 
         Returns:
             ProcessBatchOutput: Contains loss values and model predictions
@@ -1313,10 +1409,13 @@ class NemotronTTSModel(NemotronTTSBase):
         alignment_text = text.clone() if use_alignment else None
         timestamp_targets = timestamp_mask = timestamp_metrics = timestamp_terminals = None
         use_timestamp_head = getattr(self, 'use_timestamp_head', False) and not return_policy_logits
+        timestamp_diagnostics = [] if use_timestamp_head and return_timestamp_diagnostics else None
         if use_timestamp_head:
             num_frames = (audio_codes.size(-1) + self.frame_stacking_factor - 1) // self.frame_stacking_factor + 1
             timestamp_targets, timestamp_mask, timestamp_metrics, timestamp_terminals = (
-                self._prepare_timestamp_targets(timestamp_batch, text, audio_codes_lens, num_frames)
+                self._prepare_timestamp_targets(
+                    timestamp_batch, text, audio_codes_lens, num_frames, diagnostics=timestamp_diagnostics
+                )
             )
 
         # Select training mode
@@ -1749,6 +1848,24 @@ class NemotronTTSModel(NemotronTTSBase):
                 timestamp_metrics[f'{name.lower()}_count'] = count
                 timestamp_metrics[f'{name.lower()}_correct'] = class_correct
                 timestamp_metrics[f'{name.lower()}_recall'] = class_correct.float() / count.clamp_min(1)
+            for diagnostic in timestamp_diagnostics or []:
+                sample, start, end = (diagnostic[key] for key in ('batch_index', 'start_frame', 'end_frame'))
+                indices = torch.arange(start, min(end + 2, steps), device=timestamp_logits.device)
+                selected = valid_steps[sample, indices] & (
+                    ((indices < end) & audio_frames[sample, indices]) | eos_positions[sample, indices]
+                )
+                indices = indices[selected]
+                frame_indices = indices.detach().cpu()
+                diagnostic.update(
+                    frame_indices=frame_indices,
+                    frame_end_seconds=(
+                        (frame_indices.double() + 1) * diagnostic['frame_seconds'] - diagnostic['audio_start_seconds']
+                    ).clamp(0, diagnostic['audio_duration']),
+                    end_probabilities=timestamp_logits[sample, indices].detach().float().sigmoid().cpu(),
+                    targets=timestamp_targets[sample, indices].detach().cpu(),
+                    valid_mask=timestamp_mask[sample, indices].detach().cpu(),
+                    eos_mask=eos_positions[sample, indices].detach().cpu(),
+                )
         aligned_text_loss = aligned_text_targets = aligned_text_mask = None
         aligned_text_diagnostics = None
         if alignment is not None:
@@ -1816,6 +1933,7 @@ class NemotronTTSModel(NemotronTTSBase):
             timestamp_targets=timestamp_targets,
             timestamp_mask=timestamp_mask,
             timestamp_metrics=timestamp_metrics,
+            timestamp_diagnostics=timestamp_diagnostics,
         )
 
     def training_step(self, batch, batch_idx):
@@ -2132,12 +2250,13 @@ class NemotronTTSModel(NemotronTTSBase):
             audio_lens = batch['audio_lens']
             audio_codes, audio_codes_lens = self._codec_helper.audio_to_codes(audio, audio_lens)
 
-        log_aligned_text = (
-            self.use_aligned_text_head
-            and batch_idx == 0
+        log_examples = (
+            batch_idx == 0
             and self.global_rank == 0
             and any(isinstance(logger, WandbLogger) for logger in self.loggers)
         )
+        log_aligned_text = self.use_aligned_text_head and log_examples
+        log_timestamps = getattr(self, 'use_timestamp_head', False) and log_examples
         batch_output = self.process_batch(
             text=batch['text'],
             text_lens=batch['text_lens'],
@@ -2154,6 +2273,7 @@ class NemotronTTSModel(NemotronTTSBase):
             agent_mask=batch["agent_mask"] if "agent_mask" in batch else None,
             return_aligned_text_diagnostics=log_aligned_text,
             timestamp_batch=batch if getattr(self, 'use_timestamp_head', False) else None,
+            return_timestamp_diagnostics=log_timestamps,
         )
         self._log_alignment_losses(batch_output, 'val', batch['text'].size(0))
         if getattr(self, 'use_timestamp_head', False):
@@ -2179,6 +2299,8 @@ class NemotronTTSModel(NemotronTTSBase):
                 )
             )
             wandb_log_dict.update(self._log_aligned_text_head_examples(batch_output))
+            if log_timestamps:
+                wandb_log_dict.update(self._log_timestamp_head_examples(batch_output, batch))
 
             # Perform single wandb log call if wandb is active and there is data
             for logger in self.loggers:
@@ -2205,6 +2327,11 @@ class NemotronTTSModel(NemotronTTSBase):
                 use_cfg=self.use_cfg_in_val,
                 cfg_scale=self.val_cfg_scale,
             )
+            if log_timestamps:
+                media = self._log_timestamp_head_examples(batch_output, batch, generated=infer_output)
+                for logger in self.loggers:
+                    if isinstance(logger, WandbLogger):
+                        logger.experiment.log(media)
 
             # Get audio output directory
             audio_dir = self.trainer.log_dir

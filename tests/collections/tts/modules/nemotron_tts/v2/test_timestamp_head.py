@@ -3,6 +3,7 @@
 
 import math
 
+import numpy as np
 import pytest
 import torch
 from torch.nn import functional as F
@@ -13,6 +14,8 @@ from nemo.collections.tts.modules.nemotron_tts.v2.timestamp_head import (
     NONEND,
     TIMESTAMP_LABELS,
     TimestampHead,
+    add_timestamp_markers,
+    plot_timestamp_alignment,
     reconcile_timestamp_eos,
     word_intervals_to_frame_labels,
 )
@@ -300,6 +303,123 @@ def test_loss_rejects_mismatched_shapes_and_nonboolean_masks():
         head.compute_loss(torch.zeros(2, 1), torch.zeros(2))
     with pytest.raises(ValueError, match='valid_mask'):
         head.compute_loss(torch.zeros(2), torch.zeros(2), torch.ones(2))
+
+
+def test_timestamp_clicks_follow_boundaries_without_changing_source_or_audio_length():
+    source = np.zeros(16000, dtype=np.float64)
+    marked = add_timestamp_markers(source, 16000, [0.25, 0.75])
+    assert marked.dtype == np.float32 and marked.shape == source.shape
+    assert not np.shares_memory(source, marked) and not source.any()
+    allowed = np.zeros(source.size, dtype=bool)
+    for frame in [4000, 12000]:
+        allowed[frame - 96 : frame + 96] = True
+        assert np.max(np.abs(marked[frame - 96 : frame + 96])) > 0.1
+    assert not marked[~allowed].any()
+    assert np.max(np.abs(marked)) <= 0.15
+
+
+def test_timestamp_clicks_keep_start_and_eos_audible_ignore_invalid_and_duplicate_events():
+    source = np.zeros(200, dtype=np.float32)
+    expected = add_timestamp_markers(source, 8000, [0, 0.025])
+    observed = add_timestamp_markers(
+        source, 8000, [0, 0, 0.025, 0.025, -1, 0.026, None, 'bad', float('nan'), float('inf')]
+    )
+    np.testing.assert_array_equal(observed, expected)
+    assert observed[:48].any() and observed[-48:].any() and not observed[60:140].any()
+    assert observed.size == source.size and not source.any()
+    assert add_timestamp_markers(np.zeros(0), 8000, [0]).size == 0
+    np.testing.assert_array_equal(add_timestamp_markers(source, 8000, []), source)
+
+
+def test_timestamp_click_overlay_stays_bounded_and_leaves_other_samples_unchanged():
+    source = np.full(1000, 0.98, dtype=np.float32)
+    observed = add_timestamp_markers(source, 8000, [0.05])
+    assert observed.max() <= 1 and observed.min() >= -1
+    np.testing.assert_array_equal(observed[:352], source[:352])
+    np.testing.assert_array_equal(observed[448:], source[448:])
+    assert np.all(source == np.float32(0.98))
+    with pytest.raises(ValueError, match='mono'):
+        add_timestamp_markers(np.zeros((2, 3)), 8000, [])
+    with pytest.raises(ValueError, match='sample_rate'):
+        add_timestamp_markers(source, 0, [])
+
+
+@pytest.fixture
+def timestamp_plot():
+    matplotlib = pytest.importorskip('matplotlib')
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    yield plt
+    plt.close('all')
+
+
+@pytest.mark.parametrize('probabilities,positions', [([0, 0, 0, 0], [0, 0, 0, 0]), ([1, 1, 1, 1], [0, 1, 2, 2])])
+def test_timestamp_plot_shows_missing_and_extra_ends_without_forcing_counts(timestamp_plot, probabilities, positions):
+    diagnostic = _timestamp_diagnostic()
+    diagnostic['end_probabilities'] = probabilities
+    figure = plot_timestamp_alignment(diagnostic)
+    assert len(figure.axes) == 3
+    matrix = np.ma.getdata(figure.axes[1].collections[0].get_array()).reshape(4, 3)
+    np.testing.assert_array_equal(matrix.argmax(axis=1), positions)
+    assert 'extra' in [tick.get_text() for tick in figure.axes[1].get_xticklabels()]
+    assert f'{sum(probabilities)} predicted / 2 reference' in figure.axes[2].get_title()
+    edges = figure.axes[0].collections[0].get_coordinates()[:, 0, 1]
+    np.testing.assert_allclose(edges, [0, 0.05, 0.13, 0.21, 0.21])
+    np.testing.assert_array_equal(figure.axes[2].lines[0].get_ydata(), diagnostic['frame_end_seconds'])
+    figure.canvas.draw()
+
+
+def test_timestamp_plot_keeps_head_predictions_on_masked_reference_frames(timestamp_plot):
+    diagnostic = _timestamp_diagnostic()
+    diagnostic['valid_mask'] = [True, False, True, True]
+    figure = plot_timestamp_alignment(diagnostic)
+    reference = np.ma.getmaskarray(figure.axes[0].collections[0].get_array()).reshape(4, 3)
+    predicted = np.ma.getdata(figure.axes[1].collections[0].get_array()).reshape(4, 3)
+    assert reference[1].all() and predicted[1, 0] == 1
+    assert '2 predicted / 1 reference' in figure.axes[2].get_title()
+
+
+def test_timestamp_plot_bounds_display_but_counts_all_frames_and_separates_later_words(timestamp_plot):
+    diagnostic = dict(
+        words=[dict(word=f'word{index}', start=index * 0.644, end=(index + 1) * 0.644) for index in range(100)],
+        frame_end_seconds=np.arange(1, 806) * 0.08,
+        end_probabilities=np.r_[np.zeros(804), 1.0],
+        targets=np.r_[np.zeros(804), END],
+        valid_mask=np.ones(805, dtype=bool),
+        frame_seconds=0.08,
+        audio_duration=64.4,
+    )
+    figure = plot_timestamp_alignment(diagnostic)
+    assert figure.axes[1].collections[0].get_array().size == 800 * 82
+    labels = [tick.get_text() for tick in figure.axes[1].get_xticklabels()]
+    assert 'later words' in labels and 'extra' in labels
+    assert '1 predicted / 1 reference' in figure.axes[2].get_title()
+    assert any('800/805' in text.get_text() and '80/100' in text.get_text() for text in figure.texts)
+    assert len(diagnostic['end_probabilities']) == 805 and diagnostic['end_probabilities'][-1] == 1
+
+
+def test_timestamp_plot_handles_empty_diagnostics_and_missing_reference_words(timestamp_plot):
+    diagnostic = _timestamp_diagnostic()
+    diagnostic.update(
+        words=[], frame_end_seconds=[], end_probabilities=[], targets=[], valid_mask=[], audio_duration=0
+    )
+    figure = plot_timestamp_alignment(diagnostic)
+    assert '0 predicted / 0 reference' in figure.axes[2].get_title()
+    assert any('unavailable' in text.get_text() for text in figure.axes[0].texts)
+    figure.canvas.draw()
+
+
+def _timestamp_diagnostic():
+    return dict(
+        words=[dict(word='one $10', start=0, end=0.13), dict(word='two', start=0.13, end=0.21)],
+        frame_end_seconds=np.array([0.05, 0.13, 0.21, 0.21]),
+        end_probabilities=torch.tensor([0.1, 0.8, 0.2, 0.9]),
+        targets=torch.tensor([NONEND, END, NONEND, END]),
+        valid_mask=torch.ones(4, dtype=torch.bool),
+        frame_seconds=0.08,
+        audio_duration=0.21,
+    )
 
 
 def _labels(intervals, **kwargs):

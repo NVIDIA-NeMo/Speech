@@ -159,25 +159,42 @@ class EasyMagpieTextTokenizer:
 
 
 class EasyMagpieIncrementalTextEncoder:
-    """Stateful parser for marker and IPA spans split across text chunks."""
+    """Buffer incomplete words and pronunciation markers across text chunks."""
 
     def __init__(self, tokenizer: EasyMagpieTextTokenizer) -> None:
         self.tokenizer = tokenizer
         self._buffer = ""
         self._in_phoneme_span = False
+        self._emitted_parts: list[str] = []
 
     @property
     def clean(self) -> bool:
         """Whether raw token ids may be safely interleaved at this boundary."""
-        return not self._buffer and not self._in_phoneme_span
+        return not self._in_phoneme_span and (
+            not self.tokenizer.enabled or self._marker_prefix_suffix_length(self._buffer) == 0
+        )
+
+    @property
+    def emitted_text(self) -> str:
+        """Exact text committed by the most recent push, flush or finish, including marker syntax."""
+        return ''.join(self._emitted_parts)
 
     def push(self, text: str, *, final: bool = False) -> list[int]:
         if not isinstance(text, str):
             raise TypeError("Incremental text chunks must be strings.")
-        if not self.tokenizer.enabled:
-            return self.tokenizer._encode_text(text)
-
+        self._emitted_parts = []
+        # Revisit a possible partial marker and newly appended characters only.
+        lookback = max(len(self.tokenizer.bop_marker), len(self.tokenizer.eop_marker)) if self.tokenizer.enabled else 1
+        scan_start = max(0, len(self._buffer) - lookback)
         self._buffer += text
+        if not self.tokenizer.enabled:
+            emit_end = len(self._buffer) if final else self._stable_text_end(self._buffer, scan_start)
+            emitted = self._buffer[:emit_end]
+            token_ids = self.tokenizer._encode_text(emitted)
+            self._emitted_parts.append(emitted)
+            self._buffer = self._buffer[emit_end:]
+            return token_ids
+
         token_ids: list[int] = []
         while self._buffer:
             if self._in_phoneme_span:
@@ -191,8 +208,12 @@ class EasyMagpieIncrementalTextEncoder:
                     break
                 ipa_text = self._buffer[:eop_idx].strip()
                 token_ids.extend(self.tokenizer._encode_phoneme(ipa_text))
+                self._emitted_parts.append(
+                    self.tokenizer.bop_marker + self._buffer[: eop_idx + len(self.tokenizer.eop_marker)]
+                )
                 self._buffer = self._buffer[eop_idx + len(self.tokenizer.eop_marker) :]
                 self._in_phoneme_span = False
+                scan_start = 0
                 continue
 
             bop_idx = self._buffer.find(self.tokenizer.bop_marker)
@@ -203,13 +224,18 @@ class EasyMagpieIncrementalTextEncoder:
                 )
             if bop_idx >= 0:
                 token_ids.extend(self.tokenizer._encode_text(self._buffer[:bop_idx]))
+                self._emitted_parts.append(self._buffer[:bop_idx])
                 self._buffer = self._buffer[bop_idx + len(self.tokenizer.bop_marker) :]
                 self._in_phoneme_span = True
+                scan_start = 0
                 continue
 
             held_suffix = 0 if final else self._marker_prefix_suffix_length(self._buffer)
             emit_end = len(self._buffer) - held_suffix
+            if not final:
+                emit_end = self._stable_text_end(self._buffer[:emit_end], scan_start)
             token_ids.extend(self.tokenizer._encode_text(self._buffer[:emit_end]))
+            self._emitted_parts.append(self._buffer[:emit_end])
             self._buffer = self._buffer[emit_end:]
             break
 
@@ -221,6 +247,20 @@ class EasyMagpieIncrementalTextEncoder:
         """Flush literal marker prefixes and reject incomplete IPA spans."""
         return self.push("", final=True)
 
+    def flush(self) -> list[int]:
+        """Commit a text boundary without consuming whitespace that may prefix the next BPE token.
+
+        Unlike finish, this does not commit trailing whitespace or end the input
+        stream. Callers may append the next sentence after an explicit flush.
+        """
+        end = len(self._buffer.rstrip())
+        trailing = self._buffer[end:]
+        self._buffer = self._buffer[:end]
+        try:
+            return self.finish()
+        finally:
+            self._buffer += trailing
+
     def _marker_prefix_suffix_length(self, text: str) -> int:
         max_length = 0
         for marker in (self.tokenizer.bop_marker, self.tokenizer.eop_marker):
@@ -228,3 +268,14 @@ class EasyMagpieIncrementalTextEncoder:
                 if text.endswith(marker[:length]):
                     max_length = max(max_length, length)
         return max_length
+
+    @staticmethod
+    def _stable_text_end(text: str, start: int = 0) -> int:
+        """Keep an unfinished word and its leading whitespace until a stable boundary is available."""
+        end = 0
+        for index in range(max(1, start), len(text)):
+            char = text[index]
+            previous = text[index - 1]
+            if char.isspace() and not previous.isspace() and (char == " " or previous.isalnum()):
+                end = index
+        return end

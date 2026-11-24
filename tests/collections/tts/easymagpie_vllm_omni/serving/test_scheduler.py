@@ -348,6 +348,40 @@ def test_codec_segment_stop_consumes_late_boundary_readiness(monkeypatch):
     assert scheduler.chunk_transfer_adapter.requests_with_ready_chunks == set()
 
 
+@pytest.mark.parametrize("prompt_len", [0, 6])
+@pytest.mark.parametrize(
+    ("status", "queue_name", "num_waiting"),
+    [
+        (RequestStatus.WAITING, "waiting", 0),
+        (RequestStatus.WAITING_FOR_STREAMING_REQ, "skipped_waiting", 1),
+    ],
+)
+def test_cold_codec_segment_stays_on_new_request_path(prompt_len, status, queue_name, num_waiting):
+    class _RequestQueue(list):
+        def remove_requests(self, requests):
+            for request in requests:
+                self.remove(request)
+
+    scheduler = object.__new__(EasyMagpieCodecScheduler)
+    scheduler.waiting = _RequestQueue()
+    scheduler.skipped_waiting = _RequestQueue()
+    scheduler.running = []
+    scheduler.num_waiting_for_streaming_input = num_waiting
+    scheduler.chunk_transfer_adapter = SimpleNamespace(segment_finished_requests={"request"})
+    session = SimpleNamespace(
+        request_id="request", prompt_token_ids=[0] * prompt_len, num_computed_tokens=0, status=status
+    )
+    getattr(scheduler, queue_name).append(session)
+
+    scheduler._resume_codec_after_segment(session)
+
+    assert scheduler.running == []
+    assert getattr(scheduler, queue_name) == [session]
+    assert scheduler.num_waiting_for_streaming_input == num_waiting
+    assert session.status == status
+    assert session.num_computed_tokens == 0
+
+
 def test_dialogue_boundary_resets_codec_before_consuming_queued_update(monkeypatch):
     scheduler = object.__new__(EasyMagpieCodecScheduler)
     scheduler.chunk_transfer_adapter = SimpleNamespace(

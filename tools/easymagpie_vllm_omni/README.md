@@ -173,6 +173,19 @@ cross `input.text` messages. An unclosed IPA span is rejected at `input.done`;
 `input.tokens` remains an exact tokenization bypass and is accepted only when
 there is no incomplete text marker or IPA span.
 
+Send only new text in each `input.text` message, preserving spaces between
+words. The incremental tokenizer buffers an unfinished word and its leading
+whitespace so changing message boundaries does not change the BPE input.
+`input.flush` commits a sentence boundary without ending the utterance or
+replaying prior text; trailing whitespace remains available for the next
+sentence. Send `input.done` once after the final text. Pending ordinary text
+is also committed before an `input.tokens` update.
+
+These rules apply with `word_timestamps=true` as well. Timestamp offsets
+follow the text actually committed to the model, including words or IPA spans
+split across messages. Append each received binary PCM message exactly once;
+the stream contains audio deltas rather than the cumulative audio history.
+
 Query the HTTP endpoint from any OpenAI-compatible client:
 
 ```bash

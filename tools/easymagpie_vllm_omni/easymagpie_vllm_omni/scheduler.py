@@ -326,6 +326,11 @@ class EasyMagpieCodecScheduler(OmniGenerationScheduler):
 
     def _resume_codec_after_segment(self, session: Request) -> None:
         """Keep a resumable codec request on the worker's cached-request path."""
+        # Metadata can arrive before any codec payload has created worker state.
+        # Keep such a session on the new-request path until a real step runs.
+        if session.num_computed_tokens == 0:
+            return
+
         waiting_for_input = session.status == RequestStatus.WAITING_FOR_STREAMING_REQ
         if session in self.waiting:
             self.waiting.remove_requests((session,))

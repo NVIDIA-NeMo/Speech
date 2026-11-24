@@ -278,9 +278,8 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
             text_encoder = spec.tokenizer.incremental_encoder()
             sampling_params_list = copy.deepcopy(self._speech_service.engine_client.default_sampling_params_list)
             sampling_params_list = coerce_param_message_types(sampling_params_list, is_streaming=True)
-            if alignment is not None:
-                for params in sampling_params_list:
-                    params.output_kind = RequestOutputKind.DELTA
+            for params in sampling_params_list:
+                params.output_kind = RequestOutputKind.DELTA
             stage0_params = sampling_params_list[0]
             max_new_tokens = config.max_new_tokens or getattr(stage0_params, "max_tokens", 2048)
             input_stream = EasyMagpieInputStream(
@@ -338,6 +337,17 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
             audio_task = asyncio.create_task(send_audio())
             text_parts: list[str] = []
             input_token_count = 0
+
+            async def put_encoded_text(tokens: list[int]) -> None:
+                nonlocal input_token_count
+                if alignment is not None:
+                    emitted = text_encoder.emitted_text
+                    if emitted:
+                        alignment.append_text(emitted, expected_ids=tokens)
+                if tokens:
+                    await input_stream.put_tokens(tokens)
+                    input_token_count += len(tokens)
+
             while True:
                 raw = await asyncio.wait_for(websocket.receive_text(), timeout=self._idle_timeout)
                 if audio_task.done():
@@ -383,6 +393,7 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
                             "input.tokens cannot be used while an input.text marker or IPA span is incomplete.",
                         )
                         continue
+                    await put_encoded_text(text_encoder.finish())
                     if alignment is not None:
                         alignment.append_token_ids(tokens)
                     await input_stream.put_tokens(tokens)
@@ -392,22 +403,15 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
                     if not isinstance(text, str):
                         await self._send_error(websocket, "input.text requires a string value")
                         continue
-                    if alignment is not None:
-                        # Complete spans per message make character offsets unambiguous;
-                        # ordinary text still supports arbitrarily small text chunks.
-                        spec.tokenizer.encode_with_offsets(text)
                     tokens = text_encoder.push(text)
-                    if alignment is not None:
-                        alignment.append_text(text, expected_ids=tokens)
                     text_parts.append(text)
-                    if tokens:
-                        await input_stream.put_tokens(tokens)
-                        input_token_count += len(tokens)
+                    await put_encoded_text(tokens)
+                elif msg_type == "input.flush":
+                    # Commit this boundary while keeping one continuous model
+                    # request and any whitespace needed by the next text chunk.
+                    await put_encoded_text(text_encoder.flush())
                 elif msg_type == "input.done":
-                    tokens = text_encoder.finish()
-                    if tokens:
-                        await input_stream.put_tokens(tokens)
-                        input_token_count += len(tokens)
+                    await put_encoded_text(text_encoder.finish())
                     if input_token_count == 0:
                         await self._send_error(websocket, "No text or token input was provided.")
                         return

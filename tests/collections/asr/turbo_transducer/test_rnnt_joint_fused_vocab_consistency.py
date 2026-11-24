@@ -40,9 +40,13 @@ from tests.collections.asr.turbo_transducer.utils import (
     HIDDEN_DIM,
     LATTICES_WITH_DIFFERENT_SPECIALIZATION,
     PRUNING_RANGE_SIZE,
+    SRC_LENGTHS,
+    VOCAB_SIZE,
     assert_close_to_reference,
     count_compiled_kernels,
+    gather_pruning_ranges,
     make_joint_inputs,
+    random_pruning_range_starts,
     reference_outputs,
     set_tensor_descriptors_allowed,
     skip_if_bf16_atomics_unsupported,
@@ -54,6 +58,7 @@ if TRITON_AVAILABLE:
     from nemo.collections.asr.parts.turbo_transducer import (
         rnnt_joint_fused_vocab_consistency_triton as consistency_triton_module,
     )
+    from nemo.collections.asr.parts.turbo_transducer.rnnt_loss_triton import rnnt_loss_from_logprobs_triton
 
 pytestmark = pytest.mark.unit
 
@@ -300,6 +305,84 @@ def test_joint_forward_for_loss_matches_materialized_logits_path(symmetrical, pr
 
 @pytest.mark.gpu
 @requires_triton_cuda
+@pytest.mark.parametrize("hidden_dtype", [torch.float32, torch.bfloat16], ids=["fp32", "bf16"])
+@pytest.mark.parametrize("pruned_lattice", [False, True])
+def test_default_precision_logprobs_match_kernel_without_consistency(hidden_dtype, pruned_lattice):
+    """
+    Regression: with the default precision of the kernels the operands of FP32 matmul are rounded to TF32, but
+    the target and blank logits were computed from the operands without rounding. They were not consistent with
+    the log-sum-exp: for confident predictions the error of the log-probabilities was up to 0.3 (logits of
+    the order of 100), and the log-probabilities were positive (negative loss).
+    The log-probabilities are equal to the log-probabilities of the kernel without the consistency loss (computed
+    from the same logits as the log-sum-exp) and are not positive, also for BF16 operands (exact products).
+
+    NB: the only test of the kernels with FP32 joint hidden and default precision: ~1 second for the compilation
+    of the kernels without the Triton cache.
+    """
+    inputs = make_joint_inputs(hidden_dtype=hidden_dtype, double_batch=True)
+    # confident predictions: logits of the order of 100
+    kernel_kwargs = inputs.kernel_kwargs([inputs.joint_hidden, 100 * inputs.weight, inputs.bias])
+    range_starts, paired_range_starts = None, None
+    if not pruned_lattice:
+        # the first utterance (of each half of the double batch): a label outside the vocabulary, NaN log-probability
+        # (NB: for the pruned lattice the kernel without the consistency loss sets NaN also outside the ranges)
+        kernel_kwargs["targets"] = inputs.targets.clone()
+        kernel_kwargs["targets"][:: len(SRC_LENGTHS), 2] = VOCAB_SIZE
+    else:
+        paired_range_starts = random_pruning_range_starts(inputs, PRUNING_RANGE_SIZE, paired=True)
+        range_starts = paired_range_starts.repeat(2, 1)
+        kernel_kwargs["joint_hidden"] = gather_pruning_ranges(
+            inputs.joint_hidden, paired_range_starts, PRUNING_RANGE_SIZE
+        )
+
+    expected_outputs = rnnt_joint_fused_vocab(**kernel_kwargs, pruning_range_starts=range_starts)
+    outputs = rnnt_joint_fused_vocab_with_consistency(**kernel_kwargs, pruning_range_starts=paired_range_starts)[:2]
+
+    assert torch.isnan(outputs[0]).any() == (not pruned_lattice) and not torch.isnan(outputs[1]).any()
+    for logprobs, expected_logprobs, name in zip(outputs, expected_outputs, OUTPUT_NAMES):
+        assert torch.equal(torch.isnan(logprobs), torch.isnan(expected_logprobs)), name
+        assert torch.equal(torch.isneginf(logprobs), torch.isneginf(expected_logprobs)), name
+        assert not (logprobs > 0).any(), name
+    assert_close_to_reference(
+        [logprobs.nan_to_num(nan=0.0, neginf=0.0) for logprobs in outputs],
+        [logprobs.nan_to_num(nan=0.0, neginf=0.0) for logprobs in expected_outputs],
+        FULL_PRECISION_TOLERANCE,
+        OUTPUT_NAMES[:2],
+    )
+
+
+@pytest.mark.gpu
+@requires_triton_cuda
+def test_dominant_blank_logit_gives_non_negative_loss():
+    """
+    Regression: a single frame without targets, the blank logit 1.0003 dominates. FP32 matmul rounds the operand
+    to TF32 (1.0), so the log-sum-exp was 1.0, and the blank log-probability computed from the exact logit
+    was +0.0003: negative RNN-T loss.
+    """
+    joint_hidden = torch.zeros(2, 1, 1, HIDDEN_DIM, device="cuda")
+    joint_hidden[..., 0] = 1.0003
+    joint_hidden[..., 1] = 1.0
+    weight = torch.zeros(VOCAB_SIZE, HIDDEN_DIM, device="cuda")
+    weight[BLANK_ID, 0] = 1.0
+    weight[:BLANK_ID, 1] = -1e4
+    src_lengths = torch.ones(2, dtype=torch.long, device="cuda")
+    tgt_lengths = torch.zeros(2, dtype=torch.long, device="cuda")
+    target_logprobs, blank_logprobs, _ = rnnt_joint_fused_vocab_with_consistency(
+        joint_hidden=joint_hidden,
+        targets=torch.zeros(2, 1, dtype=torch.long, device="cuda"),
+        tgt_lengths=tgt_lengths,
+        src_lengths=src_lengths,
+        weight=weight,
+        bias=torch.zeros(VOCAB_SIZE, device="cuda"),
+        blank_id=BLANK_ID,
+    )
+    assert torch.count_nonzero(blank_logprobs) == 0
+    losses = rnnt_loss_from_logprobs_triton(target_logprobs, blank_logprobs, src_lengths, tgt_lengths)
+    assert torch.count_nonzero(losses) == 0
+
+
+@pytest.mark.gpu
+@requires_triton_cuda
 @pytest.mark.parametrize("tensor_descriptors_allowed", [True, False])
 def test_tensor_descriptors_and_pointers_match_reference(tensor_descriptors_allowed, monkeypatch):
     """
@@ -336,8 +419,10 @@ def test_chunked_backward_is_autotuned_only_for_first_chunk(monkeypatch):
     the first chunk (see the test for the kernel without the consistency loss)
     """
     kernel = consistency_triton_module._rnnt_joint_fused_vocab_consistency_bwd_grad_logits_triton_kernel
-    test_config = kernel.configs[0]
-    monkeypatch.setattr(kernel, "configs", [test_config, triton.Config(test_config.kwargs, num_warps=2, num_stages=2)])
+    # NB: without tensor descriptors: such configs are not autotuned if the descriptors are not allowed for the call
+    test_kwargs = dict(kernel.configs[0].kwargs, TENSOR_DESCRIPTORS=False)
+    configs = [triton.Config(test_kwargs, num_warps=num_warps, num_stages=2) for num_warps in (4, 2)]
+    monkeypatch.setattr(kernel, "configs", configs)
     monkeypatch.setattr(kernel, "cache", {})
     _use_min_chunk_size(monkeypatch)  # chunks of 256, 256 and 232 pairs of rows; the vocabulary is padded to 64
     monkeypatch.setattr(consistency_triton_module, "_AUTOTUNE_MIN_GRAD_LOGITS", 2 * 250 * 64)

@@ -27,6 +27,7 @@ from nemo.collections.asr.parts.turbo_transducer.utils_triton import (
     launch_kernel_on_device,
     load_rows_block,
     log_add_exp,
+    make_tensor_descriptor,
     make_tile_configs,
     matmul,
 )
@@ -199,13 +200,13 @@ def _rnnt_joint_fused_vocab_fwd_triton_kernel(
     hidden_rows = block_offsets_int64(flattened_batch_start, FLATTENED_BATCH_BLOCK)
     if USE_TENSOR_DESCRIPTORS:
         # the loads are bounded by the shapes of the descriptors: zeros outside the matrices, as for the masked loads
-        joint_hidden_descriptor = tl.make_tensor_descriptor(
+        joint_hidden_descriptor = make_tensor_descriptor(
             joint_hidden_ptr,
             shape=[flattened_batch_size, hidden_dim],
             strides=[hidden_dim, 1],
             block_shape=[FLATTENED_BATCH_BLOCK, HIDDEN_BLOCK],
         )
-        weight_descriptor = tl.make_tensor_descriptor(
+        weight_descriptor = make_tensor_descriptor(
             weight_ptr,
             shape=[vocab_size, hidden_dim],
             strides=[hidden_dim, 1],
@@ -559,19 +560,19 @@ def _rnnt_joint_fused_vocab_bwd_grad_logits_triton_kernel(
     if USE_TENSOR_DESCRIPTORS:
         # the loads and the store are bounded by the shapes of the descriptors, as with the explicit masks:
         # the rows of the joint hidden end with the chunk, the vocabulary of the grad logits is padded
-        joint_hidden_descriptor = tl.make_tensor_descriptor(
+        joint_hidden_descriptor = make_tensor_descriptor(
             joint_hidden_ptr,
             shape=[num_hidden_rows, hidden_dim],
             strides=[hidden_dim, 1],
             block_shape=[FLATTENED_BATCH_BLOCK, HIDDEN_BLOCK],
         )
-        weight_descriptor = tl.make_tensor_descriptor(
+        weight_descriptor = make_tensor_descriptor(
             weight_ptr,
             shape=[vocab_size, hidden_dim],
             strides=[hidden_dim, 1],
             block_shape=[VOCAB_BLOCK, HIDDEN_BLOCK],
         )
-        grad_logits_descriptor = tl.make_tensor_descriptor(
+        grad_logits_descriptor = make_tensor_descriptor(
             grad_logits_out_ptr,
             shape=[chunk_size, padded_vocab_size],
             strides=[padded_vocab_size, 1],
@@ -751,6 +752,9 @@ class _RnntJointFusedVocabTritonFunction(torch.autograd.Function):
 
         grad_target_scores = grad_target_scores.contiguous()
         grad_blank_scores = grad_blank_scores.contiguous()
+        src_lengths = _exclude_utterances_without_grad(
+            src_lengths, _has_utterance_grad(torch.logical_or(grad_target_scores, grad_blank_scores))
+        )
         # pruning ranges: given for the pruned lattice (packed joint hidden), or selected by the gradients
         pruning_starts = ctx.pruning_range_starts
         packed_hidden = pruning_starts is not None
@@ -887,8 +891,9 @@ def rnnt_joint_fused_vocab_triton(
             is the target position ``start + range_index``. Forward and backward are computed only for these
             positions. The outputs have the shape of the full lattice [B, T, U+1] with U = ``targets.shape[1]``
             and are ``-inf`` outside the ranges (zero probability): the loss computed from them is the loss of
-            the pruned lattice, and its gradient is exact. The ranges must be inside the lattice and connected
-            for a finite loss, see ``rnnt_pruning``. Incompatible with ``backward_pruning_range_size``.
+            the pruned lattice, and its gradient is exact. The ranges must be connected for a finite loss,
+            see ``rnnt_pruning``; the starts outside the lattice are clamped to the first / last range of the frame.
+            Incompatible with ``backward_pruning_range_size``.
     """
     _check_joint_inputs(
         joint_hidden, targets, tgt_lengths, src_lengths, weight, bias, blank_id, pruning_range_starts is not None
@@ -991,6 +996,32 @@ def _set_nan_for_invalid_targets_(
     target_logprobs.masked_fill_((is_invalid & is_inside_length).unsqueeze(1), float("nan"))
 
 
+def _has_utterance_grad(grad: torch.Tensor) -> torch.Tensor:
+    """Mask [B] of the utterances with non-zero (or NaN) elements of the upstream gradient [B, ...] (or of its mask)"""
+    return grad.flatten(1).any(dim=1)
+
+
+def _exclude_utterances_without_grad(src_lengths: torch.Tensor, has_utterance_grad: torch.Tensor) -> torch.Tensor:
+    """
+    Source lengths for the backward kernels: zero for the utterances without upstream gradients, so that all rows
+    of such an utterance are invalid, and the kernels compute zero gradients for them.
+
+    Without it the gradients are the products of the zero upstream gradients and the probabilities recomputed
+    from the logits: NaN instead of zero, if the logits are not finite. This is the case for an utterance with
+    a non-finite loss that is excluded by the loss (`mask_non_finite`): e.g., the vocabulary projection overflows.
+    The gradients of the shared parameters must not be affected by such an utterance, as for the Joint
+    with materialized logits. No host-device synchronization.
+
+    Args:
+        src_lengths: source lengths, [B]
+        has_utterance_grad: mask of the utterances with upstream gradients, [B]
+
+    Returns:
+        source lengths [B], zero for the utterances without upstream gradients
+    """
+    return torch.where(has_utterance_grad, src_lengths, torch.zeros_like(src_lengths))
+
+
 def _autotune_size_class(num_rows: int) -> int:
     """Class of the number of rows of the joint hidden for the autotune key, see `_AUTOTUNE_MIN_ROWS`"""
     return int(num_rows >= _AUTOTUNE_MIN_ROWS)
@@ -1006,6 +1037,8 @@ def _normalize_pruning_range_starts(
     """
     Validate the starts of the pruning ranges for the joint hidden of the pruned lattice [B, T, range_size, hidden]
     and convert them to contiguous int32 [B, T] ([B // 2, T] if `paired`: ranges are shared by the halves of the batch)
+    with the starts limited by the lattice (the values are not checked to avoid host-device synchronization):
+    the kernels and the host code (scatter of the gradient of the consistency loss) use the same positions.
     """
     if pruning_range_starts is None:
         return None
@@ -1022,7 +1055,8 @@ def _normalize_pruning_range_starts(
             f"Pruning range size {joint_hidden.shape[2]} (joint hidden {list(joint_hidden.shape)}) exceeds "
             f"the number of target positions {targets.shape[1] + 1} (targets {list(targets.shape)})"
         )
-    return pruning_range_starts.to(torch.int32).contiguous()
+    max_start = targets.shape[1] + 1 - joint_hidden.shape[2]
+    return pruning_range_starts.to(torch.int32).clamp(min=0, max=max_start).contiguous()
 
 
 def _normalize_backward_options(

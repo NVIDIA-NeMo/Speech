@@ -1588,6 +1588,10 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         With `turbo_kernel` enabled, the logits are never materialized. Otherwise the logits are computed
         as usual, but the losses do not keep a separate gradient buffer for each of them.
 
+        The temperature of the Joint is not applied: it is a parameter of decoding (set by the decoding config),
+        and the losses are computed for the distribution of the model.
+        NB: `forward` divides the logits by the temperature if it applies log-softmax (`log_softmax=True`).
+
         Args:
             encoder_outputs: Output of the Encoder model, [B, D, T]
             decoder_outputs: Output of the Prediction network, [B, D, U+1]
@@ -1605,11 +1609,6 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         """
         if not self.supports_loss_logprobs:
             raise NotImplementedError(f"{type(self).__name__} does not support `forward_for_loss`")
-        if self.temperature != 1.0:
-            raise ValueError(
-                f"`forward_for_loss` requires temperature == 1.0, got {self.temperature} "
-                "(the temperature of the Joint is set by the decoding config)"
-            )
         if compute_consistency and not self.supports_consistency_loss:
             raise NotImplementedError(
                 f"Consistency loss is not supported for the turbo kernel `{self._turbo_kernel_type}`"
@@ -1977,8 +1976,11 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
         if pruning_range_starts is not None:
             # predictor output for the target positions of the range of each frame: [B, T, pruning_range_size, H]
-            batch_size = g.shape[0]
-            starts = pruning_range_starts.long().repeat(batch_size // pruning_range_starts.shape[0], 1)
+            batch_size, _, num_target_positions, _ = g.shape
+            # the ranges are limited by the lattice, as in the Joint kernel: the ranges estimated for a target length
+            # larger than the number of targets (invalid input, the loss is NaN) end after the last target position
+            starts = pruning_range_starts.long().clamp(min=0, max=num_target_positions - pruning_range_size)
+            starts = starts.repeat(batch_size // pruning_range_starts.shape[0], 1)
             target_indices = starts.unsqueeze(-1) + torch.arange(pruning_range_size, device=g.device)
             g = g.squeeze(1)[torch.arange(batch_size, device=g.device)[:, None, None], target_indices]
 

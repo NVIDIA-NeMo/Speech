@@ -567,6 +567,38 @@ class TestModelTurboKernel:
         assert torch.equal(logs[1]['val_wer_denom'], logs[0]['val_wer_denom'])
 
     @pytest.mark.unit
+    def test_validation_after_decoding_temperature_change(self, test_data_dir, monkeypatch):
+        """
+        Regression: the temperature set by the decoding config (`change_decoding_strategy`) was rejected by
+        the Joint with the turbo kernel, and validation with the loss failed. The temperature is a parameter of
+        decoding: the loss does not depend on it, as for the standard Joint without log-softmax.
+        """
+        device = torch.device("cuda")
+        reference_model, turbo_model = _make_models(EncDecRNNTModel, test_data_dir, device)
+        batch = _make_batch(reference_model, device)
+
+        logs = []
+        for model in [reference_model, turbo_model]:
+            model.joint.log_softmax = None  # as in the example configs: the loss is computed from the raw logits
+            model.eval()
+            _prepare_for_direct_steps(model, monkeypatch)
+            assert model.compute_eval_loss
+            for temperature in [1.0, 0.8]:
+                model.change_decoding_strategy(
+                    OmegaConf.create(
+                        {'strategy': 'greedy_batch', 'greedy': {'max_symbols': 5}, 'temperature': temperature}
+                    )
+                )
+                assert model.joint.temperature == temperature
+                with torch.no_grad():
+                    logs.append(model.validation_pass(copy.copy(batch), 0, 0))
+
+        reference_loss = logs[0]['val_loss']
+        assert torch.isfinite(reference_loss)
+        for log in logs[1:]:
+            assert torch.allclose(log['val_loss'], reference_loss, atol=1e-4, rtol=1e-4)
+
+    @pytest.mark.unit
     def test_pruning_is_scheduled_by_training_step(self, test_data_dir, monkeypatch):
         device = torch.device("cuda")
         _, turbo_model = _make_models(

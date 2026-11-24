@@ -22,8 +22,11 @@ The first test in the session that uses Triton also initializes its compiler, wh
 The production autotune configs are covered by `test_rnnt_joint_fused_vocab_production_configs.py`.
 """
 
+import ast
+import inspect
 import math
 import threading
+from pathlib import Path
 
 import pytest
 import torch
@@ -483,8 +486,10 @@ def test_small_batches_are_autotuned_separately(monkeypatch):
     """
     kernel = fused_vocab_triton_module._rnnt_joint_fused_vocab_fwd_triton_kernel
     # autotuning requires at least 2 configs (the tests use a single one); small tiles compile fast
-    test_config = kernel.configs[0]
-    monkeypatch.setattr(kernel, "configs", [test_config, triton.Config(test_config.kwargs, num_warps=2, num_stages=2)])
+    # NB: without tensor descriptors: such configs are not autotuned if the descriptors are not allowed for the call
+    test_kwargs = dict(kernel.configs[0].kwargs, TENSOR_DESCRIPTORS=False)
+    configs = [triton.Config(test_kwargs, num_warps=num_warps, num_stages=2) for num_warps in (4, 2)]
+    monkeypatch.setattr(kernel, "configs", configs)
     monkeypatch.setattr(kernel, "cache", {})
     inputs = make_joint_inputs()
     num_rows = math.prod(inputs.lattice_shape)
@@ -506,8 +511,10 @@ def test_chunked_backward_is_autotuned_only_for_first_chunk(monkeypatch):
     the previous chunks was lost.
     """
     kernel = fused_vocab_triton_module._rnnt_joint_fused_vocab_bwd_grad_logits_triton_kernel
-    test_config = kernel.configs[0]
-    monkeypatch.setattr(kernel, "configs", [test_config, triton.Config(test_config.kwargs, num_warps=2, num_stages=2)])
+    # NB: without tensor descriptors: such configs are not autotuned if the descriptors are not allowed for the call
+    test_kwargs = dict(kernel.configs[0].kwargs, TENSOR_DESCRIPTORS=False)
+    configs = [triton.Config(test_kwargs, num_warps=num_warps, num_stages=2) for num_warps in (4, 2)]
+    monkeypatch.setattr(kernel, "configs", configs)
     monkeypatch.setattr(kernel, "cache", {})
     _use_min_chunk_size(monkeypatch)  # chunks of 256, 256 and 232 rows; the vocabulary is padded to 64
     monkeypatch.setattr(fused_vocab_triton_module, "_AUTOTUNE_MIN_GRAD_LOGITS", 250 * 64)
@@ -522,6 +529,66 @@ def test_chunked_backward_is_autotuned_only_for_first_chunk(monkeypatch):
         [leaf.grad for leaf in leaves], [leaf.grad for leaf in reference_leaves], FULL_PRECISION_TOLERANCE, GRAD_NAMES
     )
     assert len(kernel.cache) == 1
+
+
+# Attributes of `triton.language` (`tl`) used by the Turbo Transducer modules. All of them are available in Triton 3.3,
+# the minimum supported version (installed with PyTorch 2.7). Before adding a name, check that it exists in Triton 3.3;
+# otherwise the kernels must not refer to it as an attribute of `tl`, see `utils_triton.make_tensor_descriptor`
+TRITON_3_3_LANGUAGE_ATTRIBUTES = {
+    "PropagateNan",
+    "abs",
+    "arange",
+    "argmax",
+    "atomic_add",
+    "bfloat16",
+    "cdiv",
+    "clamp",
+    "constexpr",
+    "cumsum",
+    "debug_barrier",
+    "dot",
+    "exp",
+    "float32",
+    "float64",
+    "full",
+    "gather",
+    "int32",
+    "int64",
+    "load",
+    "log",
+    "max",
+    "maximum",
+    "min",
+    "minimum",
+    "num_programs",
+    "program_id",
+    "range",
+    "store",
+    "sum",
+    "tensor",
+    "where",
+    "zeros",
+    "zeros_like",
+}
+
+
+def test_kernels_use_triton_language_of_minimum_version():
+    """
+    Regression: Triton resolves all attributes of `triton.language` in the source of a kernel when the kernel is
+    created, also in the branches that are not compiled. The kernels referred to `tl.make_tensor_descriptor`
+    (Triton 3.4+) in the branch for the GPUs with TMA, and no kernel of these modules could be used with Triton 3.3
+    (`module 'triton.language' has no attribute 'make_tensor_descriptor'`).
+    The test does not require Triton: it checks the source of the modules.
+    """
+    package_dir = Path(inspect.getfile(TurboTransducerBackend)).parent
+    used_attributes = {
+        node.attr
+        for module_path in package_dir.glob("*.py")
+        for node in ast.walk(ast.parse(module_path.read_text()))
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "tl"
+    }
+    assert "dot" in used_attributes  # the modules are found
+    assert used_attributes - TRITON_3_3_LANGUAGE_ATTRIBUTES == set()
 
 
 @requires_triton

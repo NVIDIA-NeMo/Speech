@@ -848,9 +848,10 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
     def _log_full_lattice_loss(self, full_lattice_loss: torch.Tensor, target_length: torch.Tensor):
         """
         Log the RNN-T loss of the full lattice (`train_loss_full_lattice`), reported by the Joint with two-pass
-        pruning: the training loss is the loss of the pruned lattice, the difference shows the probability lost by
-        pruning.
-        The value is reduced as the training loss, but computed without dropout and FastEmit scaling.
+        pruning. The value is reduced as the training loss, but it is a baseline computed by the first pass
+        without dropout, masking of the prediction network output and FastEmit scaling. The training loss is
+        the loss of the pruned lattice computed with the training settings (and can include auxiliary losses):
+        the difference between the logged values does not isolate the probability removed by pruning.
         """
         if getattr(self, "_trainer", None) is None:
             return

@@ -44,7 +44,9 @@ from nemo.collections.asr.parts.turbo_transducer.rnnt_joint_fused_vocab_triton i
     _check_atomic_accumulators,
     _check_joint_inputs,
     _copy_pruned_hidden,
+    _exclude_utterances_without_grad,
     _get_lattice_offsets,
+    _has_utterance_grad,
     _load_lattice_row_grads,
     _load_lattice_rows,
     _normalize_backward_options,
@@ -59,6 +61,7 @@ from nemo.collections.asr.parts.turbo_transducer.utils_triton import (
     cuda_device_guard,
     launch_kernel_on_device,
     load_rows_block,
+    make_tensor_descriptor,
     make_tile_configs,
     matmul,
 )
@@ -190,10 +193,18 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
     the consistency loss is stored for the rows.
     Log-softmax and KL accumulators are computed online over vocabulary blocks with running max and exp-sums:
     KL(teacher || student) = sum(p_teacher * (z_teacher - z_student)) - (lse_teacher - lse_student)
-    Target and blank logits are computed after the vocabulary loop as dot products with the gathered weight rows:
-    extracting them from each block of logits needs more registers than the two logits accumulators leave.
-    NB: these dot products are exact, while the blocks of logits for FP32 operands are computed with TF32 precision
-    unless `USE_HIGH_PRECISION_MM` is set: the log-probabilities are then accurate to ~1e-3 (exact for BF16 operands).
+    Target and blank logits are computed after the vocabulary loop from the gathered weight rows: extracting them
+    from each block of logits needs more registers than the two logits accumulators leave (the best configs for
+    the vocab 16385 are 35-40% slower, RTX A6000). They must be consistent with the logits used for the log-sum-exp,
+    otherwise the log-probability of a label with the probability close to 1 can be positive (negative loss):
+    - the matmul does not round its operands (BF16 operands, or `USE_HIGH_PRECISION_MM`): dot products computed
+      by CUDA cores, see `_target_blank_logits`. They differ from the logits of the blocks only by the order of
+      the FP32 accumulation (~1e-7 of the magnitude of the logits);
+    - the matmul rounds FP32 operands to TF32 (`MATMUL_ROUNDS_OPERANDS_TO_TF32`; the error is ~1e-3 of
+      the magnitude of the logits, which is larger than the log-probabilities of the confident predictions):
+      the same matmul for the labels of the rows, see `_target_blank_logits_matmul`. It is not used in the first
+      case: the forward kernel is 0.6% (vocab 1025) - 4.7% (vocab 16385) slower with it for BF16 (RTX A6000).
+    In both cases the log-probabilities are limited by 0.
     With `TENSOR_DESCRIPTORS` (autotune config) and `TENSOR_DESCRIPTORS_ALLOWED` (see `can_use_tensor_descriptors`),
     the tiles of the joint hidden and of the weight are loaded with tensor descriptors, otherwise - with pointers
     and explicit masks.
@@ -206,6 +217,13 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
         if not (USE_HIGH_PRECISION_MM or MM_FULL_PRECISION) and joint_hidden_ptr.dtype.element_ty == tl.bfloat16
         else compute_dtype
     )
+
+    # The matmul (tensor cores) rounds FP32 operands to TF32, 10 bits of mantissa instead of 23, unless the IEEE
+    # precision is requested (`USE_HIGH_PRECISION_MM`); BF16 operands are used without rounding.
+    # The flag selects how the target and blank logits are computed after the loop over the vocabulary: they must
+    # be computed from the same (rounded) operands as the blocks of logits, see the docstring.
+    # NB: the flag goes first, see above
+    MATMUL_ROUNDS_OPERANDS_TO_TF32: tl.constexpr = not USE_HIGH_PRECISION_MM and matmul_dtype != tl.bfloat16
 
     pair_start = tl.program_id(axis=0) * PAIR_BLOCK
     teacher_offsets = pair_start + tl.arange(0, PAIR_BLOCK)
@@ -233,19 +251,19 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
     if USE_TENSOR_DESCRIPTORS:
         # the loads are bounded by the shapes of the descriptors: zeros outside the matrices, as for the masked loads;
         # the rows of the teacher end with the first half of the joint hidden
-        teacher_hidden_descriptor = tl.make_tensor_descriptor(
+        teacher_hidden_descriptor = make_tensor_descriptor(
             joint_hidden_ptr,
             shape=[pair_flattened_size, hidden_dim],
             strides=[hidden_dim, 1],
             block_shape=[PAIR_BLOCK, HIDDEN_BLOCK],
         )
-        student_hidden_descriptor = tl.make_tensor_descriptor(
+        student_hidden_descriptor = make_tensor_descriptor(
             joint_hidden_ptr,
             shape=[2 * pair_flattened_size, hidden_dim],
             strides=[hidden_dim, 1],
             block_shape=[PAIR_BLOCK, HIDDEN_BLOCK],
         )
-        weight_descriptor = tl.make_tensor_descriptor(
+        weight_descriptor = make_tensor_descriptor(
             weight_ptr,
             shape=[vocab_size, hidden_dim],
             strides=[hidden_dim, 1],
@@ -314,44 +332,89 @@ def _rnnt_joint_fused_vocab_consistency_fwd_triton_kernel(
             student_logits, -logits_diff, student_max, student_exp_sum, student_kl_sum, WITH_WEIGHTED_SUM=SYMMETRICAL
         )
 
-    teacher_target_logits, teacher_blank_logits = _target_blank_logits(
-        joint_hidden_ptr,
-        teacher_offsets,
-        weight_ptr,
-        bias_ptr,
-        targets,
-        blank_mask,
-        blank_id,
-        hidden_dim,
-        vocab_size,
-        HIDDEN_BLOCK,
-    )
-    student_target_logits, student_blank_logits = _target_blank_logits(
-        joint_hidden_ptr,
-        student_offsets,
-        weight_ptr,
-        bias_ptr,
-        targets,
-        blank_mask,
-        blank_id,
-        hidden_dim,
-        vocab_size,
-        HIDDEN_BLOCK,
-    )
-
     teacher_lse = teacher_max + tl.log(teacher_exp_sum)
     student_lse = student_max + tl.log(student_exp_sum)
+    if MATMUL_ROUNDS_OPERANDS_TO_TF32:
+        # the same matmul as for the blocks of logits, only for the labels of the rows: the same rounding
+        teacher_target_logits, teacher_blank_logits = _target_blank_logits_matmul(
+            joint_hidden_ptr,
+            teacher_offsets,
+            weight_ptr,
+            bias_ptr,
+            targets,
+            blank_mask,
+            blank_id,
+            hidden_dim,
+            vocab_size,
+            PAIR_BLOCK,
+            HIDDEN_BLOCK,
+        )
+        student_target_logits, student_blank_logits = _target_blank_logits_matmul(
+            joint_hidden_ptr,
+            student_offsets,
+            weight_ptr,
+            bias_ptr,
+            targets,
+            blank_mask,
+            blank_id,
+            hidden_dim,
+            vocab_size,
+            PAIR_BLOCK,
+            HIDDEN_BLOCK,
+        )
+    else:
+        # no rounding in the matmul: dot products (faster than the matmul for the labels of the rows)
+        teacher_target_logits, teacher_blank_logits = _target_blank_logits(
+            joint_hidden_ptr,
+            teacher_offsets,
+            weight_ptr,
+            bias_ptr,
+            targets,
+            blank_mask,
+            blank_id,
+            hidden_dim,
+            vocab_size,
+            HIDDEN_BLOCK,
+        )
+        student_target_logits, student_blank_logits = _target_blank_logits(
+            joint_hidden_ptr,
+            student_offsets,
+            weight_ptr,
+            bias_ptr,
+            targets,
+            blank_mask,
+            blank_id,
+            hidden_dim,
+            vocab_size,
+            HIDDEN_BLOCK,
+        )
     if SYMMETRICAL:
         # 0.5 * sum((p_teacher - p_student) * (log p_teacher - log p_student)); log-sum-exp terms cancel out
         consistency_kl = 0.5 * (teacher_kl_sum / teacher_exp_sum + student_kl_sum / student_exp_sum)
     else:
         consistency_kl = teacher_kl_sum / teacher_exp_sum - (teacher_lse - student_lse)
 
-    tl.store(blank_logprobs_out_ptr + teacher_lattice_offsets, teacher_blank_logits - teacher_lse, mask=blank_mask)
-    tl.store(target_logprobs_out_ptr + teacher_lattice_offsets, teacher_target_logits - teacher_lse, mask=target_mask)
+    tl.store(
+        blank_logprobs_out_ptr + teacher_lattice_offsets,
+        _limit_logprobs(teacher_blank_logits - teacher_lse),
+        mask=blank_mask,
+    )
+    tl.store(
+        target_logprobs_out_ptr + teacher_lattice_offsets,
+        _limit_logprobs(teacher_target_logits - teacher_lse),
+        mask=target_mask,
+    )
     tl.store(log_sum_exp_out_ptr + teacher_lattice_offsets, teacher_lse, mask=blank_mask)
-    tl.store(blank_logprobs_out_ptr + student_lattice_offsets, student_blank_logits - student_lse, mask=blank_mask)
-    tl.store(target_logprobs_out_ptr + student_lattice_offsets, student_target_logits - student_lse, mask=target_mask)
+    tl.store(
+        blank_logprobs_out_ptr + student_lattice_offsets,
+        _limit_logprobs(student_blank_logits - student_lse),
+        mask=blank_mask,
+    )
+    tl.store(
+        target_logprobs_out_ptr + student_lattice_offsets,
+        _limit_logprobs(student_target_logits - student_lse),
+        mask=target_mask,
+    )
     tl.store(log_sum_exp_out_ptr + student_lattice_offsets, student_lse, mask=blank_mask)
     tl.store(consistency_kl_out_ptr + teacher_offsets, consistency_kl, mask=blank_mask)
 
@@ -522,8 +585,9 @@ def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
         grad_consistency_kl,
         targets,
         blank_mask,
+        (vocab_block_start + VOCAB_BLOCK > vocab_size)
+        | _has_excluded_rows(teacher_lattice_offsets, pair_mask, src_lengths_ptr, max_src_len, max_tgt_len_plus_1),
         vocab_offsets,
-        vocab_block_start + VOCAB_BLOCK > vocab_size,
         vocab_size,
         blank_id,
         SYMMETRICAL,
@@ -701,31 +765,31 @@ def _rnnt_joint_fused_vocab_consistency_bwd_grad_logits_triton_kernel(
     if USE_TENSOR_DESCRIPTORS:
         # the loads and the stores are bounded by the shapes of the descriptors, as with the explicit masks:
         # the rows of the teacher and of the student end with the chunk, the vocabulary of the grad logits is padded
-        teacher_hidden_descriptor = tl.make_tensor_descriptor(
+        teacher_hidden_descriptor = make_tensor_descriptor(
             hidden_ptr,
             shape=[teacher_hidden_row_start + chunk_size, hidden_dim],
             strides=[hidden_dim, 1],
             block_shape=[PAIR_BLOCK, HIDDEN_BLOCK],
         )
-        student_hidden_descriptor = tl.make_tensor_descriptor(
+        student_hidden_descriptor = make_tensor_descriptor(
             hidden_ptr,
             shape=[student_hidden_row_start + chunk_size, hidden_dim],
             strides=[hidden_dim, 1],
             block_shape=[PAIR_BLOCK, HIDDEN_BLOCK],
         )
-        weight_descriptor = tl.make_tensor_descriptor(
+        weight_descriptor = make_tensor_descriptor(
             weight_ptr,
             shape=[vocab_size, hidden_dim],
             strides=[hidden_dim, 1],
             block_shape=[VOCAB_BLOCK, HIDDEN_BLOCK],
         )
-        teacher_grad_logits_descriptor = tl.make_tensor_descriptor(
+        teacher_grad_logits_descriptor = make_tensor_descriptor(
             grad_logits_out_ptr,
             shape=[chunk_size, padded_vocab_size],
             strides=[padded_vocab_size, 1],
             block_shape=[PAIR_BLOCK, VOCAB_BLOCK],
         )
-        student_grad_logits_descriptor = tl.make_tensor_descriptor(
+        student_grad_logits_descriptor = make_tensor_descriptor(
             grad_logits_out_ptr,
             shape=[2 * chunk_size, padded_vocab_size],
             strides=[padded_vocab_size, 1],
@@ -805,8 +869,9 @@ def _rnnt_joint_fused_vocab_consistency_bwd_grad_logits_triton_kernel(
         grad_consistency_kl,
         targets,
         blank_mask,
+        (vocab_start + VOCAB_BLOCK > vocab_size)
+        | _has_excluded_rows(teacher_lattice_offsets, chunk_mask, src_lengths_ptr, max_src_len, max_tgt_len_plus_1),
         vocab_offsets,
-        vocab_start + VOCAB_BLOCK > vocab_size,
         vocab_size,
         blank_id,
         SYMMETRICAL,
@@ -952,6 +1017,15 @@ class _RnntJointFusedVocabConsistencyTritonFunction(torch.autograd.Function):
         grad_target_scores = grad_target_scores.contiguous()
         grad_blank_scores = grad_blank_scores.contiguous()
         grad_consistency_kl = grad_consistency_kl.contiguous()
+        # a pair of utterances (teacher, student) is excluded only if it has no upstream gradient at all
+        half_batch_size = joint_hidden.shape[0] // 2
+        has_utterance_grad = _has_utterance_grad(torch.logical_or(grad_target_scores, grad_blank_scores))
+        has_pair_grad = (
+            has_utterance_grad[:half_batch_size]
+            | has_utterance_grad[half_batch_size:]
+            | _has_utterance_grad(grad_consistency_kl)
+        )
+        src_lengths = _exclude_utterances_without_grad(src_lengths, has_pair_grad.repeat(2))
 
         # pruning ranges: given for the pruned lattice (packed joint hidden), or selected by the gradients
         pruning_starts = ctx.pruning_range_starts
@@ -977,7 +1051,6 @@ class _RnntJointFusedVocabConsistencyTritonFunction(torch.autograd.Function):
             grad_consistency_kl = torch.zeros_like(grad_target_scores[: batch_size // 2]).scatter_(
                 2, target_indices, grad_consistency_kl.to(grad_target_scores.dtype)
             )
-        half_batch_size = batch_size // 2
         student_lattice_offset = half_batch_size * src_max_length * tgt_max_length_plus_1
         pair_flattened_size = half_batch_size * src_max_length * (pruning_range_size or tgt_max_length_plus_1)
         vocab_size = weight.shape[0]
@@ -1377,6 +1450,77 @@ def _target_blank_logits(
 
 
 @triton.jit
+def _target_blank_logits_matmul(
+    joint_hidden_ptr,
+    rows,
+    weight_ptr,
+    bias_ptr,
+    targets,
+    blank_mask,
+    blank_id: tl.constexpr,
+    hidden_dim: tl.constexpr,
+    vocab_size: tl.constexpr,
+    PAIR_BLOCK: tl.constexpr,
+    HIDDEN_BLOCK: tl.constexpr,
+):
+    """
+    Target and blank logits of the hidden rows for FP32 matmul operands: the logits of the labels of the rows,
+    computed as the blocks of logits in the loop over the vocabulary (bias, then the same matmul for each block
+    of the hidden dimension, the operands are rounded to TF32 by the matmul). The dot products
+    of `_target_blank_logits` are computed from the operands that are not rounded.
+    The labels of the columns are the targets of the rows: [rows, hidden] x [hidden, rows] => the target logit
+    of a row is on the diagonal. The weight row of the blank is the first column of a block of the minimal size.
+    The labels are clamped to the vocabulary, the target logit is NaN for a label outside the vocabulary,
+    see `_target_blank_logits`.
+    """
+    compute_dtype = tl.float32
+    BLANK_COLUMNS: tl.constexpr = 16  # minimal block of the matmul; all columns except the first are zeros
+    blank_column_offsets = tl.arange(0, BLANK_COLUMNS)
+    is_blank_column = blank_column_offsets == 0
+    target_is_valid = (targets >= 0) & (targets < vocab_size)
+    safe_targets = tl.minimum(tl.maximum(targets, 0), vocab_size - 1)
+    target_bias = tl.load(bias_ptr + safe_targets).to(compute_dtype)
+    target_logits_block = tl.zeros([PAIR_BLOCK, PAIR_BLOCK], dtype=compute_dtype) + target_bias[None, :]
+    blank_logits_block = tl.zeros([PAIR_BLOCK, BLANK_COLUMNS], dtype=compute_dtype) + tl.load(bias_ptr + blank_id).to(
+        compute_dtype
+    )
+    hidden_rows = rows.to(tl.int64) * hidden_dim
+    target_weight_rows = safe_targets.to(tl.int64) * hidden_dim
+    for hidden_start in tl.range(0, hidden_dim, HIDDEN_BLOCK):
+        hidden_offsets = hidden_start + tl.arange(0, HIDDEN_BLOCK)
+        hidden_mask = hidden_offsets < hidden_dim
+        hidden_chunk = tl.load(
+            joint_hidden_ptr + hidden_rows[:, None] + hidden_offsets[None, :],
+            mask=blank_mask[:, None] & hidden_mask[None, :],
+            other=0.0,
+        ).to(compute_dtype)
+        # weight rows in the transposed layout: [HIDDEN_BLOCK, labels].
+        # NB: pointers and masks of the full shape, Triton < 3.5 does not broadcast them to each other
+        target_weight_chunk_t = tl.load(
+            weight_ptr + target_weight_rows[None, :] + hidden_offsets[:, None],
+            mask=hidden_mask[:, None] & (safe_targets >= 0)[None, :],
+            other=0.0,
+        ).to(compute_dtype)
+        blank_weight_chunk_t = tl.load(
+            weight_ptr + blank_id * hidden_dim + hidden_offsets[:, None] + 0 * blank_column_offsets[None, :],
+            mask=hidden_mask[:, None] & is_blank_column[None, :],
+            other=0.0,
+        ).to(compute_dtype)
+        target_logits_block += matmul(hidden_chunk, target_weight_chunk_t)
+        blank_logits_block += matmul(hidden_chunk, blank_weight_chunk_t)
+    row_indices = tl.arange(0, PAIR_BLOCK)
+    target_logits = tl.sum(tl.where(row_indices[:, None] == row_indices[None, :], target_logits_block, 0.0), axis=1)
+    blank_logits = tl.sum(tl.where(is_blank_column[None, :], blank_logits_block, 0.0), axis=1)
+    return tl.where(target_is_valid, target_logits, float("nan")), blank_logits
+
+
+@triton.jit
+def _limit_logprobs(logprobs):
+    """Log-probabilities limited by 0. NaN values are preserved (`tl.minimum` can replace NaN with the limit)"""
+    return tl.where(logprobs > 0.0, 0.0, logprobs)
+
+
+@triton.jit
 def _paired_grad_logits(
     teacher_logits,
     student_logits,
@@ -1389,8 +1533,8 @@ def _paired_grad_logits(
     grad_consistency_kl,
     targets,
     row_mask,
+    mask_logits,
     vocab_offsets,
-    has_padded_vocab,
     vocab_size: tl.constexpr,
     blank_id: tl.constexpr,
     SYMMETRICAL: tl.constexpr,
@@ -1403,11 +1547,15 @@ def _paired_grad_logits(
     Terms are grouped by probabilities with per-row coefficients to keep few [rows, vocab] tensors alive.
     Gradients are zero for invalid rows and padded vocabulary columns without masking the [rows, vocab] outputs:
     probabilities are zero there (+inf log-sum-exp, -inf logits), upstream gradients of invalid rows are zero.
+    The logits are masked only if `mask_logits` is set (a scalar, computed for the tile): for the padded vocabulary
+    columns, and for all invalid rows if the tile contains the rows of an excluded utterance, see
+    `_has_excluded_rows` (the recomputed logits of these rows can be non-finite: NaN probabilities for +inf
+    log-sum-exp). Masking each tile makes the chunked backward ~1% slower (RTX A6000, vocab 1025).
     """
-    if has_padded_vocab:
-        vocab_mask = vocab_offsets < vocab_size
-        teacher_logits = tl.where(vocab_mask[None, :], teacher_logits, -float("inf"))
-        student_logits = tl.where(vocab_mask[None, :], student_logits, -float("inf"))
+    if mask_logits:
+        logits_mask = row_mask[:, None] & (vocab_offsets < vocab_size)[None, :]
+        teacher_logits = tl.where(logits_mask, teacher_logits, -float("inf"))
+        student_logits = tl.where(logits_mask, student_logits, -float("inf"))
     teacher_lse = tl.where(row_mask, teacher_lse, float("inf"))
     student_lse = tl.where(row_mask, student_lse, float("inf"))
     consistency_coef = (0.5 if SYMMETRICAL else 1.0) * grad_consistency_kl
@@ -1432,6 +1580,17 @@ def _paired_grad_logits(
     student_grad_logits += tl.where(is_target_col, student_grad_target[:, None], 0.0)
     student_grad_logits += tl.where(is_blank_col, student_grad_blank[:, None], 0.0)
     return teacher_grad_logits, student_grad_logits
+
+
+@triton.jit
+def _has_excluded_rows(lattice_offsets, row_mask, src_lengths_ptr, max_src_len, max_tgt_len_plus_1):
+    """
+    Whether the tile contains a row of an utterance with zero source length (scalar): backward excludes
+    the utterances without upstream gradients by their source lengths, see `_exclude_utterances_without_grad`
+    """
+    batch_index = lattice_offsets // (max_src_len * max_tgt_len_plus_1)
+    source_length = tl.load(src_lengths_ptr + batch_index, mask=row_mask, other=1)
+    return tl.min(source_length, axis=0) == 0
 
 
 @triton.jit

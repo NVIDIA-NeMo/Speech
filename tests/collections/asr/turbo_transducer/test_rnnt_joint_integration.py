@@ -26,6 +26,7 @@ from nemo.collections.asr.modules.hybrid_autoregressive_transducer import HATJoi
 from nemo.collections.asr.modules.rnnt import RNNTJoint, SampledRNNTJoint
 from nemo.collections.asr.modules.rnnt_abstract import AbstractRNNTJoint
 from nemo.collections.asr.parts.turbo_transducer.rnnt_consistency import ConsistencyRNNTLoss
+from nemo.collections.asr.parts.turbo_transducer.rnnt_logprobs import rnnt_logprobs_torch
 from nemo.collections.asr.parts.turbo_transducer.types import (
     TurboJointKernelConfig,
     TurboJointKernelType,
@@ -325,11 +326,38 @@ class TestJointTurboKernel:
         assert f"turbo_kernel.pruning.type={pruning_type}" in next(iter(messages.values()))
 
     @pytest.mark.unit
-    def test_forward_for_loss_requires_unit_temperature(self):
-        joint = RNNTJoint(jointnet=_jointnet_config(), num_classes=NUM_CLASSES, turbo_kernel=_turbo_kernel_config())
-        joint.temperature = 2.0
-        with pytest.raises(ValueError, match="temperature"):
-            joint.forward_for_loss(*_joint_inputs())
+    @pytest.mark.gpu
+    @requires_triton_cuda
+    @pytest.mark.parametrize("log_softmax", [None, True])
+    @pytest.mark.parametrize("use_turbo_kernel", [False, True])
+    def test_forward_for_loss_ignores_decoding_temperature(self, log_softmax: bool | None, use_turbo_kernel: bool):
+        """
+        Regression: `forward_for_loss` rejected the temperature of the Joint, so the loss could not be computed
+        after the temperature was changed by the decoding config (`change_decoding_strategy`).
+        The temperature is a parameter of decoding: the outputs for the losses do not depend on it.
+        """
+        torch.manual_seed(42)
+        joint = RNNTJoint(
+            jointnet=_jointnet_config(),
+            num_classes=NUM_CLASSES,
+            log_softmax=log_softmax,
+            turbo_kernel=_turbo_kernel_config() if use_turbo_kernel else None,
+        ).to("cuda")
+        encoder_outputs, decoder_outputs, source_lengths, targets, target_lengths = _joint_inputs(device="cuda")
+        # reference: from the raw logits (GPU, `log_softmax=None`)
+        joint.log_softmax = None
+        expected = rnnt_logprobs_torch(
+            logits=joint(encoder_outputs=encoder_outputs, decoder_outputs=decoder_outputs),
+            targets=targets,
+            blank_id=NUM_CLASSES,
+            src_lengths=source_lengths,
+            tgt_lengths=target_lengths,
+        )
+        joint.log_softmax = log_softmax
+        joint.temperature = 0.8
+        loss_inputs = joint.forward_for_loss(encoder_outputs, decoder_outputs, source_lengths, targets, target_lengths)
+        torch.testing.assert_close(loss_inputs.target_logprobs, expected[0], atol=1e-5, rtol=1e-5)
+        torch.testing.assert_close(loss_inputs.blank_logprobs, expected[1], atol=1e-5, rtol=1e-5)
 
     @pytest.mark.unit
     def test_joint_passes_flat_parameters_to_kernel(self, monkeypatch):

@@ -23,8 +23,12 @@ from packaging.version import Version
 
 # `tl.atomic_add` supports BF16 values starting from Triton 3.4
 BF16_ATOMICS_AVAILABLE = Version(triton.__version__) >= Version("3.4.0")
-# Tensor descriptors (`tl.make_tensor_descriptor`) are available starting from Triton 3.4
-TENSOR_DESCRIPTORS_AVAILABLE = hasattr(tl, "make_tensor_descriptor")
+# Tensor descriptors (`tl.make_tensor_descriptor`) are available starting from Triton 3.4.
+# NB: the kernels must use this name instead of `tl.make_tensor_descriptor`. Triton resolves all attributes of `tl`
+# in the source of a kernel when the kernel is created, also in the branches that are not compiled:
+# a kernel that refers to an attribute missing in the installed Triton can't be used
+make_tensor_descriptor = getattr(tl, "make_tensor_descriptor", None)
+TENSOR_DESCRIPTORS_AVAILABLE = make_tensor_descriptor is not None
 # Required alignment of the base pointer and of the strides of a tensor descriptor (TMA)
 _TENSOR_DESCRIPTOR_ALIGNMENT_BYTES = 16
 

@@ -658,6 +658,45 @@ class TestJointTwoPassPruning:
                 parameter.grad, reference_parameters[parameter_name].grad, atol=2e-4, rtol=2e-4, msg=parameter_name
             )
 
+    @pytest.mark.parametrize("compute_consistency", [False, True])
+    def test_target_length_beyond_predictor_output(self, compute_consistency: bool):
+        """
+        Regression: for a target length larger than the number of targets (invalid input) the last pruning ranges
+        ended after the last target position, and the predictor output was gathered outside the tensor
+        (CUDA device-side assert). The ranges are limited by the lattice; the lengths are not changed,
+        so the loss of the utterance is NaN. Other utterances are not affected.
+        """
+        torch.manual_seed(42)
+        joint = self._make_joint({"type": "two_pass", "range_size": PRUNING_RANGE_SIZE})
+        encoder_outputs, decoder_outputs, src_lengths, targets, tgt_lengths = self._make_inputs(compute_consistency)
+        encoder_outputs.requires_grad_()
+
+        def forward(target_lengths: torch.Tensor):
+            loss_inputs = joint.forward_for_loss(
+                encoder_outputs,
+                decoder_outputs,
+                src_lengths,
+                targets,
+                target_lengths,
+                compute_consistency=compute_consistency,
+            )
+            losses = rnnt_loss_from_logprobs_triton(
+                loss_inputs.target_logprobs, loss_inputs.blank_logprobs, src_lengths, target_lengths
+            )
+            return loss_inputs, losses
+
+        _, expected_losses = forward(tgt_lengths)
+        # the first utterance (of each half of a double batch): the target length exceeds the number of targets
+        invalid_tgt_lengths = tgt_lengths.clone()
+        invalid_tgt_lengths[0::2] = targets.shape[1] + 1
+        loss_inputs, losses = forward(invalid_tgt_lengths)
+
+        assert torch.isnan(losses[0::2]).all() and torch.isnan(loss_inputs.full_lattice_loss[0::2]).all()
+        torch.testing.assert_close(losses[1::2], expected_losses[1::2])
+        losses[1::2].sum().backward()
+        for grad in [encoder_outputs.grad, joint.joint_net[-1].weight.grad, joint.joint_net[-1].bias.grad]:
+            assert torch.isfinite(grad).all()
+
     def test_selects_ranges_without_dropout_and_gradient(self, monkeypatch):
         """The first pass is deterministic (no dropout and masking of the predictor) and does not require gradient"""
         torch.manual_seed(42)
@@ -919,6 +958,63 @@ def test_target_label_outside_vocabulary(consistency_symmetrical, pruned_lattice
 
 @pytest.mark.gpu
 @requires_triton_cuda
+@pytest.mark.parametrize("backward_mode", ["atomic", "chunked"])
+@pytest.mark.parametrize("consistency_symmetrical", CONSISTENCY_MODES)
+@pytest.mark.parametrize("pruning", [None, "backward", "pruned_lattice"])
+def test_utterance_without_upstream_gradient_is_excluded(backward_mode, consistency_symmetrical, pruning, monkeypatch):
+    """
+    Regression: an utterance with a non-finite loss that is excluded by the loss (`mask_non_finite`: zero upstream
+    gradients) made the gradients of all parameters NaN, if its logits recomputed in backward were not finite
+    (NaN probabilities multiplied by the zero gradients). The gradients are the gradients for the valid utterances.
+    A pair of utterances with the gradient only for the consistency loss is not excluded.
+    """
+    _use_min_chunk_size(monkeypatch)
+    with_consistency = consistency_symmetrical is not None
+    inputs = make_joint_inputs(double_batch=with_consistency)
+    num_utterances = len(SRC_LENGTHS)
+    # the first utterance (of each half of a double batch): finite joint hidden, the vocabulary projection overflows
+    joint_hidden = inputs.joint_hidden.clone()
+    joint_hidden[::num_utterances] = 3e38 * torch.sign(joint_hidden[::num_utterances])
+    overflow_inputs = dataclasses.replace(inputs, joint_hidden=joint_hidden)
+    kwargs = dict(backward_mode=backward_mode, **FULL_PRECISION)
+    if pruning == "backward":
+        kwargs["backward_pruning_range_size"] = PRUNING_RANGE_SIZE
+    elif pruning == "pruned_lattice":
+        kwargs["pruning_range_starts"] = random_pruning_range_starts(
+            inputs, PRUNING_RANGE_SIZE, paired=with_consistency
+        )
+
+    grads_by_inputs = []
+    for joint_inputs in [overflow_inputs, inputs]:
+        leaves = joint_inputs.leaves()
+        outputs = _fused_joint(joint_inputs, leaves, consistency_symmetrical, **kwargs)
+        if joint_inputs is overflow_inputs:
+            assert torch.isnan(outputs[1][0, 0]).any()  # non-finite logits
+        upstream_grads = random_grads_like(outputs)
+        for upstream_grad in upstream_grads:
+            upstream_grad[::num_utterances] = 0.0  # the first utterance is excluded by the losses
+        if with_consistency:
+            # the last utterance: only the consistency loss
+            upstream_grads[0][num_utterances - 1 :: num_utterances] = 0.0
+            upstream_grads[1][num_utterances - 1 :: num_utterances] = 0.0
+        torch.autograd.backward(outputs, upstream_grads)
+        grads_by_inputs.append([leaf.grad for leaf in leaves])
+    grads, expected_grads = grads_by_inputs
+
+    assert torch.count_nonzero(grads[0][::num_utterances]) == 0
+    assert_close_to_reference(grads, expected_grads, FULL_PRECISION_TOLERANCE, GRAD_NAMES)
+    if pruning is None:
+        reference_leaves = inputs.leaves(torch.float64)
+        reference = reference_outputs(inputs, reference_leaves, consistency_symmetrical=consistency_symmetrical)
+        torch.autograd.backward(reference, [upstream_grad.double() for upstream_grad in upstream_grads])
+        assert torch.count_nonzero(reference_leaves[0].grad[num_utterances - 1 :: num_utterances]) > 0
+        assert_close_to_reference(
+            grads, [leaf.grad for leaf in reference_leaves], FULL_PRECISION_TOLERANCE, GRAD_NAMES
+        )
+
+
+@pytest.mark.gpu
+@requires_triton_cuda
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
 def test_window_selection_with_non_finite_gradients(value):
     """
@@ -942,13 +1038,20 @@ def test_window_selection_with_non_finite_gradients(value):
 @pytest.mark.gpu
 @requires_triton_cuda
 @pytest.mark.parametrize("backward_mode", ["atomic", "chunked"])
-def test_pruning_ranges_outside_lattice_are_clamped(backward_mode, monkeypatch):
-    """Starts of the pruning ranges outside the lattice: the ranges are moved inside, no access outside the tensors"""
+@pytest.mark.parametrize("consistency_symmetrical", CONSISTENCY_MODES)
+def test_pruning_ranges_outside_lattice_are_clamped(backward_mode, consistency_symmetrical, monkeypatch):
+    """
+    Starts of the pruning ranges outside the lattice: the ranges are moved inside, no access outside the tensors
+    (by the kernels and by the scatter of the gradient of the consistency loss)
+    """
     _use_min_chunk_size(monkeypatch)
-    inputs = make_joint_inputs()
+    with_consistency = consistency_symmetrical is not None
+    inputs = make_joint_inputs(double_batch=with_consistency)
     max_start = inputs.lattice_shape[2] - PRUNING_RANGE_SIZE
     # starts before (-500) and after (500) the lattice
-    invalid_starts = random_pruning_range_starts(inputs, PRUNING_RANGE_SIZE).clamp(max=1) * 1000 - 500
+    invalid_starts = (
+        random_pruning_range_starts(inputs, PRUNING_RANGE_SIZE, paired=with_consistency).clamp(max=1) * 1000 - 500
+    )
     clamped_starts = invalid_starts.clamp(0, max_start)
     results = []
     for starts in [invalid_starts, clamped_starts]:
@@ -956,13 +1059,17 @@ def test_pruning_ranges_outside_lattice_are_clamped(backward_mode, monkeypatch):
         kernel_kwargs = inputs.kernel_kwargs(leaves)
         # the same rows of the joint hidden for both variants of the starts
         kernel_kwargs["joint_hidden"] = gather_pruning_ranges(leaves[0], clamped_starts, PRUNING_RANGE_SIZE)
-        outputs = rnnt_joint_fused_vocab(
-            **kernel_kwargs, pruning_range_starts=starts, backward_mode=backward_mode, **FULL_PRECISION
-        )
+        kwargs = dict(pruning_range_starts=starts, backward_mode=backward_mode, **FULL_PRECISION)
+        if with_consistency:
+            outputs = rnnt_joint_fused_vocab_with_consistency(
+                **kernel_kwargs, consistency_symmetrical=consistency_symmetrical, **kwargs
+            )
+        else:
+            outputs = rnnt_joint_fused_vocab(**kernel_kwargs, **kwargs)
         torch.autograd.backward(outputs, random_grads_like(outputs))
         results.append([*outputs, *[leaf.grad for leaf in leaves]])
     assert_pruned_outputs_close_to_reference(
-        results[0], results[1], FULL_PRECISION_TOLERANCE, OUTPUT_NAMES[:2] + GRAD_NAMES
+        results[0], results[1], FULL_PRECISION_TOLERANCE, OUTPUT_NAMES[: len(outputs)] + GRAD_NAMES
     )
 
 

@@ -17,13 +17,20 @@
 from dataclasses import dataclass
 
 import torch
-from torch import Tensor
+from torch import Tensor, nn
 from torch.utils._pytree import GetAttrKey, register_pytree_node
+
+from nemo.utils import logging, logging_mode
 
 __all__ = [
     "PackedEncoderActivations",
+    "PackedSlotLayout",
+    "forward_padded_fallback",
+    "lengths_to_cu_seqlens",
     "pack_encoder_output",
     "packed_encoder_position_ids",
+    "packed_sequence_ids",
+    "packed_slot_layout",
     "split_packed_data",
     "split_encoder_output",
     "unpack_encoder_output",
@@ -62,6 +69,24 @@ class PackedEncoderActivations:
     def __post_init__(self) -> None:
         _validate_packed_encoder_activations(self)
 
+    @classmethod
+    def from_validated(
+        cls,
+        data: Tensor,
+        lengths: Tensor,
+        cu_seqlens: Tensor,
+        max_seqlen: int,
+        padding_value: float | Tensor = 0.0,
+        padded_length: int | None = None,
+    ) -> "PackedEncoderActivations":
+        """Construct without validation from metadata that a validating constructor already checked.
+
+        The encoder stages build their outputs with it:
+        the validation of the public constructor compares ``cu_seqlens`` with ``lengths`` on the device
+        and reads the token count back, host synchronizations the hot path and a CUDA-graph capture cannot afford.
+        """
+        return _new_packed_encoder_activations(data, lengths, cu_seqlens, max_seqlen, padding_value, padded_length)
+
     @property
     def batch_size(self) -> int:
         """Number of utterances represented by this output."""
@@ -92,6 +117,55 @@ class PackedEncoderActivations:
             padding_value=self.padding_value,
             padded_length=self.padded_length,
         )
+
+    def detach(self) -> "PackedEncoderActivations":
+        """Detach the token data from the autograd graph, keeping the sequence metadata."""
+        return self.with_data(self.data.detach())
+
+    def cpu(self) -> "PackedEncoderActivations":
+        """Move the token data and the sequence metadata to the CPU."""
+        padding_value = self.padding_value.cpu() if isinstance(self.padding_value, Tensor) else self.padding_value
+        return _new_packed_encoder_activations(
+            self.data.cpu(),
+            self.lengths.cpu(),
+            self.cu_seqlens.cpu(),
+            self.max_seqlen,
+            padding_value=padding_value,
+            padded_length=self.padded_length,
+        )
+
+
+@dataclass(frozen=True)
+class PackedSlotLayout:
+    """A gapped time axis on which a convolution runs over all packed utterances at once.
+
+    Every utterance owns a slot of ``slot_lengths[i]`` frames starting at ``slot_offsets[i]``:
+    its valid frames first, zeros after them.
+    The caller chooses the alignment of the slot starts and the number of empty frames after the valid ones
+    so that a convolution never reads a neighbouring utterance:
+    the frames it reads beyond an utterance are zeros, like the masked padding of a padded batch,
+    and a strided convolution keeps its phase per utterance.
+
+    Args:
+        slot_offsets: first slot of every utterance, shape ``(B,)``.
+        slot_lengths: slot count of every utterance, shape ``(B,)``.
+        total_slots: sum of ``slot_lengths``.
+        token_slots: slot index of every packed token, shape ``(T_total,)``.
+    """
+
+    slot_offsets: Tensor
+    slot_lengths: Tensor
+    total_slots: int
+    token_slots: Tensor
+
+    def scatter(self, data: Tensor) -> Tensor:
+        """Place token-flat data ``(T_total, ...)`` into its slots; every other slot is zero."""
+        slots = data.new_zeros((self.total_slots,) + tuple(data.shape[1:]))
+        return slots.index_copy(0, self.token_slots, data)
+
+    def gather(self, slots: Tensor) -> Tensor:
+        """Read the valid frames back from slot-major data ``(total_slots, ...)``."""
+        return slots.index_select(0, self.token_slots)
 
 
 def _packed_encoder_activations_flatten(packed: PackedEncoderActivations):
@@ -163,7 +237,7 @@ def pack_encoder_output(padded: Tensor, lengths: Tensor) -> PackedEncoderActivat
     )
     mask = _length_mask(lengths, padded.shape[1])
     data = padded[mask]
-    cu_seqlens = _lengths_to_cu_seqlens(lengths)
+    cu_seqlens = lengths_to_cu_seqlens(lengths)
     return _new_packed_encoder_activations(data, lengths, cu_seqlens, max_seqlen, padded_length=padded.shape[1])
 
 
@@ -189,11 +263,64 @@ def unpack_encoder_output(packed: PackedEncoderActivations, *, total_length: int
     return output
 
 
+def forward_padded_fallback(
+    encoder: nn.Module, features: PackedEncoderActivations, *, allowed: bool
+) -> PackedEncoderActivations:
+    """Run an encoder without a sequence-packed form on the padded batch and re-pack its output.
+
+    The padded forward computes the padding that the packed layout exists to avoid, so it is never taken silently:
+    with ``allowed=False`` it raises, and otherwise it logs one warning per encoder class and reason.
+    Both name ``allow_padded_fallback``, the option of the encoders that call this, which is off by default.
+
+    Args:
+        encoder: an encoder with the padded ``forward(audio_signal, length)`` contract,
+            ``(B, D, T)`` features in and ``(B, D', T')`` states out.
+        features: packed features, data of shape ``(T_total, D)``.
+        allowed: whether the padded forward may run.
+
+    Returns:
+        The encoder states as ``PackedEncoderActivations`` with data of shape ``(T'_total, D')``.
+
+    Raises:
+        NotImplementedError: when ``allowed`` is False, with the encoder's ``sequence_packed_unsupported_reason()``.
+    """
+    reason = getattr(encoder, "sequence_packed_unsupported_reason", None)
+    reason = reason() if callable(reason) else None
+    # the fixed prefix keeps the class name inside the key that logging_mode.ONCE deduplicates on
+    unsupported = f"Padded fallback: {type(encoder).__name__} has no sequence-packed form" + (
+        f" in this configuration: {reason}" if reason else "."
+    )
+    if not allowed:
+        raise NotImplementedError(
+            f"{unsupported} Running it on the padded batch would cost the padded frames "
+            "that sequence-packed execution avoids; set allow_padded_fallback=True to allow that "
+            "(the option of ParallelExpertEncoder, in SpeechLM2 configs under pe_encoder_overrides or inside "
+            "pe_encoder_config, and of the speaker_encoder section)."
+        )
+    logging.warning(
+        f"{unsupported} It runs on the padded batch and is re-packed (allow_padded_fallback=True), "
+        "which costs the padded frames that sequence-packed execution avoids.",
+        mode=logging_mode.ONCE,
+    )
+    padded = unpack_encoder_output(features, total_length=features.padded_length).transpose(1, 2)
+    encoded, encoded_lengths = encoder(audio_signal=padded, length=features.lengths)
+    return pack_encoder_output(encoded.transpose(1, 2), encoded_lengths)
+
+
 def split_encoder_output(packed: PackedEncoderActivations) -> tuple[Tensor, ...]:
     """Return one unpadded ``(T_i, D)`` view per utterance."""
 
     offsets = packed.cu_seqlens.tolist()
     return tuple(packed.data[offsets[i] : offsets[i + 1]] for i in range(packed.batch_size))
+
+
+def packed_sequence_ids(packed: PackedEncoderActivations) -> Tensor:
+    """Return the utterance index of every packed token."""
+
+    if packed.total_tokens == 0:
+        return packed.lengths.new_empty((0,))
+    token_indices = torch.arange(packed.total_tokens, device=packed.data.device, dtype=torch.int64)
+    return torch.bucketize(token_indices, packed.cu_seqlens[1:], right=True)
 
 
 def packed_encoder_position_ids(packed: PackedEncoderActivations) -> Tensor:
@@ -202,8 +329,30 @@ def packed_encoder_position_ids(packed: PackedEncoderActivations) -> Tensor:
     if packed.total_tokens == 0:
         return packed.lengths.new_empty((0,))
     token_indices = torch.arange(packed.total_tokens, device=packed.data.device, dtype=torch.int64)
-    sequence_ids = torch.bucketize(token_indices, packed.cu_seqlens[1:], right=True)
-    return token_indices - packed.cu_seqlens[sequence_ids]
+    return token_indices - packed.cu_seqlens[packed_sequence_ids(packed)]
+
+
+def packed_slot_layout(packed: PackedEncoderActivations, *, alignment: int = 1, gap: int = 0) -> PackedSlotLayout:
+    """Lay the utterances of ``packed`` out on one gapped time axis.
+
+    Args:
+        packed: the packed activations whose lengths define the utterances.
+        alignment: every slot starts at a multiple of this.
+        gap: empty frames after the valid frames of every utterance.
+
+    Returns:
+        The layout; an utterance with ``L`` valid frames gets ``ceil((L + gap) / alignment) * alignment`` slots.
+    """
+
+    if alignment < 1:
+        raise ValueError(f"alignment must be positive, got {alignment}.")
+    if gap < 0:
+        raise ValueError(f"gap must be non-negative, got {gap}.")
+    slot_lengths = torch.div(packed.lengths + (gap + alignment - 1), alignment, rounding_mode="floor") * alignment
+    slot_offsets = torch.cumsum(slot_lengths, dim=0) - slot_lengths
+    total_slots = int(slot_lengths.sum().item())
+    token_slots = slot_offsets[packed_sequence_ids(packed)] + packed_encoder_position_ids(packed)
+    return PackedSlotLayout(slot_offsets, slot_lengths, total_slots, token_slots)
 
 
 def split_packed_data(data: Tensor, lengths: Tensor, cu_seqlens: Tensor) -> tuple[Tensor, ...]:
@@ -245,7 +394,8 @@ def _length_mask(lengths: Tensor, total_length: int) -> Tensor:
     return positions.unsqueeze(0) < lengths.unsqueeze(1)
 
 
-def _lengths_to_cu_seqlens(lengths: Tensor) -> Tensor:
+def lengths_to_cu_seqlens(lengths: Tensor) -> Tensor:
+    """The cumulative token counts ``(B + 1,)`` in int32 that the variable-length kernels take, from ``lengths``."""
     return torch.cat(
         [
             torch.zeros(1, dtype=torch.int32, device=lengths.device),
@@ -286,7 +436,7 @@ def _validate_packed_encoder_activations(packed: PackedEncoderActivations) -> No
         raise ValueError("data, lengths, and cu_seqlens must be on the same device.")
     if packed.cu_seqlens.numel() != packed.lengths.numel() + 1:
         raise ValueError("cu_seqlens must have exactly batch_size + 1 entries.")
-    expected = _lengths_to_cu_seqlens(packed.lengths)
+    expected = lengths_to_cu_seqlens(packed.lengths)
     if not torch.equal(packed.cu_seqlens, expected):
         raise ValueError("cu_seqlens must start at zero and have differences equal to lengths.")
     if packed.data.shape[0] != int(expected[-1].item()):

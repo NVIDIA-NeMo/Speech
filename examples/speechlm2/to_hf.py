@@ -196,6 +196,7 @@ def _hf_export_config(model: torch.nn.Module, dtype: str | torch.dtype) -> dict[
             ("speaker_feature_mode", "speaker_feature_mode"),
             ("speaker_activity_threshold", "speaker_activity_threshold"),
             ("spk_kernel_scale", "spk_kernel_scale"),
+            ("allow_padded_fallback", "allow_padded_fallback"),
         ):
             if hasattr(pe_encoder, attr_name):
                 bundle_config[config_key] = getattr(pe_encoder, attr_name)
@@ -219,6 +220,7 @@ def _hf_export_config(model: torch.nn.Module, dtype: str | torch.dtype) -> dict[
             "frozen": bool(getattr(dual, "freeze_auxiliary", True)),
             "chunk_size_seconds": getattr(dual, "auxiliary_chunk_size_seconds", None),
             "asr_chunk_size_seconds": getattr(dual, "asr_chunk_size_seconds", None),
+            "allow_padded_fallback": bool(getattr(dual, "allow_padded_fallback", False)),
         }
     dtype_name = _canonical_torch_dtype_name(dtype)
     config["dtype"] = dtype_name
@@ -345,7 +347,8 @@ def save_llm_backbone_config(model: torch.nn.Module, output_dir: str | Path) -> 
         return
 
     llm_backbone_dir = Path(output_dir) / LLM_BACKBONE_DIR
-    llm_backbone_dir.mkdir(parents=True, exist_ok=True)
+    # save_pretrained also copies remote-code modules referenced by ``auto_map``.
+    llm_config.save_pretrained(str(llm_backbone_dir))
     if getattr(llm_config, "model_type", None) == "nemotron_h":
         # Transformers >= 5.15 renames these discriminators in memory. Serialize
         # the original names, which both older and newer serving runtimes accept.
@@ -356,8 +359,6 @@ def save_llm_backbone_config(model: torch.nn.Module, output_dir: str | Path) -> 
             if config.get(key) is not None:
                 config[key] = [aliases.get(block, block) for block in config[key]]
         (llm_backbone_dir / "config.json").write_text(json.dumps(config, indent=2) + "\n")
-    else:
-        llm_config.save_pretrained(str(llm_backbone_dir))
 
 
 def _detect_vllm_architecture(model_cfg: dict) -> tuple[str, int]:

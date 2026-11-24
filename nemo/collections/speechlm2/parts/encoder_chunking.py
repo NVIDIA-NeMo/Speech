@@ -622,9 +622,13 @@ def _encode_perception_unpadded(
         audio_embs, audio_emb_lens = perception(**perception_kwargs)
         return _unpad_audio_embeddings(audio_embs, audio_emb_lens)
     if not bool(getattr(perception, 'supports_sequence_packed_output', False)):
+        # an encoder that has a packed forward but not for its configuration says why
+        reason = getattr(getattr(perception, 'encoder', None), 'sequence_packed_unsupported_reason', None)
+        reason = reason() if callable(reason) else None
         raise ValueError(
             "packed_encoder_sequences=true, but the mounted perception stack does not support native packed output. "
             "Use TransformerEncoder/ParallelExpertEncoder with IdentityConnector and rote=null."
+            + (f" {reason}" if reason else "")
         )
     packed = perception.forward_sequence_packed(**perception_kwargs)
     return split_encoder_output(packed)

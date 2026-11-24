@@ -23,7 +23,7 @@ class TimestampHead(nn.Module):
 
     This projection only reads hidden states; its predictions never feed back into
     audio generation. ``compute_loss`` accepts a mask whose true entries are usable
-    audio frames, after the caller excludes unreliable teacher rows and control tokens.
+    audio frames and speech EOS, after the caller excludes unreliable ordinary frames.
     """
 
     def __init__(
@@ -99,12 +99,12 @@ def word_intervals_to_frame_labels(
     audio_duration: Optional[float] = None,
     device: Optional[torch.device] = None,
 ) -> TimestampFrameLabels:
-    """Label internal word ends; the caller adds the alignment-derived terminal END.
+    """Label internal word ends; the caller separately supervises speech EOS.
 
     Each nonfinal word's end is the following word's onset. The first word starts
     at zero, including leading silence. This helper excludes the last word's end:
-    the caller maps that alignment timestamp to the decoder's EOS slot and
-    supervises a terminal END there. A single-word turn has only NONEND targets
+    the caller maps that alignment timestamp to check the decoder's EOS slot and
+    supervises terminal END separately. A single-word turn has only NONEND targets
     here and receives its terminal END separately.
 
     An internal end rounds to the nearest frame boundary (ties round forward)
@@ -161,6 +161,31 @@ def word_intervals_to_frame_labels(
     if device is not None:
         labels, valid_mask = labels.to(device=device), valid_mask.to(device=device)
     return TimestampFrameLabels(labels, valid_mask, collision_count, invalid_word_count, collision_word_count)
+
+
+def reconcile_timestamp_eos(labels, valid_mask, terminal_mask, eos_mask, audio_frame_mask, eligible_mask):
+    """Supervise eligible speech EOS and count differences from aligned endpoints.
+
+    Ordinary frame labels require valid teacher supervision and codec audio.
+    Eligible speech EOS always receives END, including missing aligned endpoints.
+    Alignment endpoints only affect diagnostics here; they never create a new
+    event away from speech EOS. Inputs are left unchanged and counts stay on device.
+    """
+    masks = (valid_mask, terminal_mask, eos_mask, audio_frame_mask, eligible_mask)
+    if any(mask.dtype != torch.bool or mask.shape != labels.shape or mask.device != labels.device for mask in masks):
+        raise ValueError('Timestamp masks must be boolean, match labels.shape, and share its device')
+    eos = eos_mask & eligible_mask
+    mask = (valid_mask & audio_frame_mask & eligible_mask) | eos
+    targets = labels.masked_fill(~mask, IGNORE_INDEX).masked_fill(eos, END)
+    return (
+        targets,
+        mask,
+        {
+            'eos_alignment_total_count': eos.sum(),
+            'eos_alignment_missing_count': (eos & ~terminal_mask).sum(),
+            'eos_alignment_extra_count': (terminal_mask & eligible_mask & ~eos_mask).sum(),
+        },
+    )
 
 
 def _frame_coordinate(seconds: float, frame_seconds: float) -> float:

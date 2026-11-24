@@ -110,13 +110,13 @@ def test_dataset_turn_boundaries_recover_exact_gt_audio_and_independent_transcri
     torch.testing.assert_close(teacher.calls[0]['audio'][1], audio[0, 72:112])
     assert labels[0, 2:7].tolist() == [NONEND, NONEND, END, NONEND, NONEND]
     assert labels[0, 9:14].tolist() == [NONEND, NONEND, END, NONEND, NONEND]
-    assert valid[0].nonzero().flatten().tolist() == list(range(2, 7)) + [8] + list(range(9, 14)) + [15]
+    assert valid[0].nonzero().flatten().tolist() == list(range(2, 7)) + list(range(9, 14))
     assert terminal[0].nonzero().flatten().tolist() == [8, 15]
-    assert labels[terminal].tolist() == [END, END]
+    assert labels[terminal].tolist() == [IGNORE_INDEX, IGNORE_INDEX]
     assert metrics['valid_turns'] == 2
 
 
-def test_terminal_end_survives_the_next_turns_first_nonend_frame():
+def test_terminal_candidates_preserve_the_next_turns_interior_labels():
     model = _timestamp_model(multiturn=True)
     turns = []
     text = _packed_text(model, timestamp_turns=turns)
@@ -129,8 +129,8 @@ def test_terminal_end_survives_the_next_turns_first_nonend_frame():
     )
     # The first turn's terminal shares frame 8 with the next turn's initial NONEND.
     assert terminal[0].nonzero().flatten().tolist() == [8, 14]
-    assert labels[0, 8:13].tolist() == [END, NONEND, END, NONEND, NONEND]
-    assert valid[terminal].all() and (labels[terminal] == END).all()
+    assert labels[0, 8:13].tolist() == [NONEND, NONEND, END, NONEND, NONEND]
+    assert valid[0, 8] and not valid[0, 14]
     assert metrics['valid_turns'] == 2 and metrics['collision_frames'] == 0
 
 
@@ -175,10 +175,13 @@ def test_dataset_packed_turn_labels_land_on_raw_audio_targets_after_bos_and_eos_
     # The second alignment-derived terminal at 15 lies past this target crop.
     assert eos[0].nonzero().flatten().tolist() == [8, 14]
     assert output.timestamp_targets[0, 8] == END and output.timestamp_mask[0, 8]
-    # A separate target EOS cannot create an alignment-derived END label.
-    assert output.timestamp_targets[0, 14] == IGNORE_INDEX and not output.timestamp_mask[0, 14]
+    # Actual speech EOS remains supervised even when the alignment endpoint was cropped.
+    assert output.timestamp_targets[0, 14] == END and output.timestamp_mask[0, 14]
     other_specials = (output.audio_codes_target >= model.codebook_size).any(dim=1) & ~eos
-    assert output.timestamp_targets[eos & output.timestamp_mask].tolist() == [END]
+    assert output.timestamp_targets[eos & output.timestamp_mask].tolist() == [END, END]
+    assert output.timestamp_metrics['eos_alignment_total_count'] == 2
+    assert output.timestamp_metrics['eos_alignment_missing_count'] == 1
+    assert output.timestamp_metrics['eos_alignment_extra_count'] == 0
     assert not output.timestamp_mask[other_specials].any()
 
 
@@ -219,7 +222,7 @@ def test_source_metadata_keeps_chosen_full_transcript_and_fractional_waveform_of
     assert valid[0, 2:7].all() and metrics['valid_turns'] == 2
     # Terminal alignment .53 maps to native multiturn EOS round(.53 / .08) + 1 = 8.
     assert terminal[0].nonzero().flatten().tolist() == [8, 15]
-    assert labels[0, 8] == END and valid[0, 8]
+    assert labels[0, 8] == IGNORE_INDEX and not valid[0, 8]
 
 
 @pytest.mark.parametrize('fractional', [False, True])
@@ -295,7 +298,7 @@ def test_terminal_alignment_reuses_the_original_cut_grid_at_half_frames(start, e
         26,
     )
     assert terminal[0].nonzero().flatten().tolist() == [expected_frame + 1]
-    assert labels[terminal].tolist() == [END] and valid[terminal].all()
+    assert labels[terminal].tolist() == [IGNORE_INDEX] and not valid[terminal].any()
     assert metrics['valid_turns'] == 1 and metrics['missing_end_markers'] == 0
 
 
@@ -382,7 +385,7 @@ def test_audio_delay_keeps_internal_and_terminal_ends_on_the_audio_prediction_gr
     assert not output.timestamp_mask[special & ~eos].any()
 
 
-def test_terminal_target_comes_from_alignment_and_must_match_the_audio_eos_clock():
+def test_missing_alignment_terminal_is_reported_while_actual_eos_is_supervised():
     model = _timestamp_model(multiturn=False)
     # The waveform/codes contain four acoustic frames, but the supplied alignment
     # falsely places its final boundary after the first frame.
@@ -392,10 +395,14 @@ def test_terminal_target_comes_from_alignment_and_must_match_the_audio_eos_clock
         _raw_batch(), inputs['text'], inputs['audio_codes_lens'], 5
     )
     assert terminal[0].nonzero().flatten().tolist() == [1]
-    assert valid[0, 1] and labels[0, 1] == END
+    assert valid[0, 1] and labels[0, 1] == NONEND
     assert not terminal[0, 4]
-    with pytest.raises(ValueError, match=r'(terminal|EOS|alignment)'):
-        model.process_batch(**inputs, timestamp_batch=_raw_batch(), mode='val')
+    output = model.process_batch(**inputs, timestamp_batch=_raw_batch(), mode='val')
+    assert output.timestamp_targets[0, 4] == END and output.timestamp_mask[0, 4]
+    assert output.timestamp_targets[0, 1] == NONEND and output.timestamp_mask[0, 1]
+    assert output.timestamp_metrics['eos_alignment_total_count'] == 1
+    assert output.timestamp_metrics['eos_alignment_missing_count'] == 1
+    assert output.timestamp_metrics['eos_alignment_extra_count'] == 1
 
 
 def test_a_terminal_outside_the_retained_target_grid_is_ignored_without_moving_it():
@@ -510,6 +517,40 @@ def test_training_timestamp_metrics_share_one_detached_reduction(distributed, al
     )
     assert output.timestamp_loss.requires_grad
     assert log.call_args.kwargs == dict(on_step=True, on_epoch=False, batch_size=3, sync_dist=False)
+
+
+@pytest.mark.parametrize(
+    'local_counts,other_counts,world_size,expected_percent',
+    [((1, 1), (9, 0), 2, 10.0), ((1, 1), (0, 0), 16, 100.0), ((0, 0), (1, 0), 16, 0.0), ((0, 0), (0, 0), 16, 0.0)],
+)
+def test_eos_missing_percentage_uses_the_ratio_of_globally_reduced_counts(
+    local_counts, other_counts, world_size, expected_percent
+):
+    model = _timestamp_model(multiturn=False)
+    output = SimpleNamespace(
+        timestamp_loss=torch.tensor(0.7),
+        timestamp_metrics={
+            'eos_alignment_total_count': torch.tensor(local_counts[0]),
+            'eos_alignment_missing_count': torch.tensor(local_counts[1]),
+            'eos_alignment_extra_count': torch.tensor(1),
+        },
+    )
+    calls = []
+
+    def reduce(packed, reduce_op):
+        assert reduce_op == 'mean' and packed.numel() == 4
+        calls.append(packed.clone())
+        return (packed + torch.tensor([0.0, *other_counts, 0.0])) / world_size
+
+    model._trainer = SimpleNamespace(strategy=SimpleNamespace(reduce=reduce))
+    with patch.object(model, 'log_dict') as log:
+        model._log_timestamp_losses(output, 'train', batch_size=1)
+    assert len(calls) == 1
+    logged = log.call_args.args[0]
+    percent = logged['train/timestamp_eos_alignment_missing_percent']
+    assert torch.isfinite(percent) and percent.item() == pytest.approx(expected_percent)
+    assert logged['train/timestamp_eos_alignment_extra_count'].item() == pytest.approx(1 / world_size)
+    assert log.call_args.kwargs['sync_dist'] is False
 
 
 def test_validation_timestamp_metrics_use_global_frame_totals_and_reset_between_epochs():

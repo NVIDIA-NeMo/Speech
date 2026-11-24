@@ -39,16 +39,16 @@ of one. A single logit is trained with masked FP32 binary cross entropy.
 An `END` marks the boundary shared by the end of one word and the next word's
 raw CTC onset. These boundaries round to the nearest frame boundary; an `END`
 on zero-based frame `f` marks time `(f + 1) * frame_seconds`, at that frame's end.
-The first word begins implicitly at zero. The final aligned endpoint produces
-an `END` target on the speech EOS decoder step. Its position is derived from
-the alignment and checked against the actual speech EOS target; EOS does not
-create or move the label. The existing audio-delay slice selects the hidden
+The first word begins implicitly at zero. The final aligned endpoint is compared
+with the actual speech EOS position. Every eligible speech EOS receives an `END`
+target, including when the aligned endpoint is missing or shifted. Interior word
+targets remain unchanged. The existing audio-delay slice selects the hidden
 state, so the timestamp channel receives the speech delay exactly once.
-Endpoints outside the retained target sequence remain unsupervised.
 Multiple word ends in one bin remain a positive binary
 target and are counted separately as collisions. A binary head cannot represent
-how many words share that frame. Padding and failed teacher turns are excluded,
-and cropping does not invent an end for an unfinished word.
+how many words share that frame. Padding and failed teacher turns are excluded
+from interior word supervision. Cropping does not invent a word end; an actual
+speech EOS remains supervised even when the teacher alignment fails.
 
 Teacher intervals cover the full turn: the first word starts at zero, each
 word ends at the following CTC onset, and the final word ends at the exact turn
@@ -67,6 +67,11 @@ Per-class counts and recall help distinguish boundary learning from predicting
 only the most frequent class. Training metrics share one distributed reduction.
 `timestamp_missing_end_markers` counts turns whose terminal control marker was
 overwritten or truncated during packing; their interior word targets remain usable.
+`train/timestamp_eos_alignment_missing_count` counts eligible speech EOS positions
+without a matching aligned terminal. `train/timestamp_eos_alignment_missing_percent`
+reports their percentage using globally reduced missing and total counts.
+`train/timestamp_eos_alignment_extra_count` counts aligned terminals away from EOS.
+These diagnostics measure target corrections, separately from the head's EOS recall.
 
 `use_timestamp_head` defaults to `false`. The head can coexist with the
 existing aligned BPE head and attention loss. Its predictions do not affect

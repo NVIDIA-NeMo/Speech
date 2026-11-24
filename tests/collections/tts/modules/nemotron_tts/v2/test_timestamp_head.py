@@ -13,10 +13,85 @@ from nemo.collections.tts.modules.nemotron_tts.v2.timestamp_head import (
     NONEND,
     TIMESTAMP_LABELS,
     TimestampHead,
+    reconcile_timestamp_eos,
     word_intervals_to_frame_labels,
 )
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize('aligned', [[], [2], [3], [4], [5], [6]])
+def test_eos_reconciliation_repairs_shifted_terminals_without_new_off_eos_events(aligned):
+    labels = torch.tensor([[NONEND, END, NONEND, NONEND, NONEND, IGNORE_INDEX, IGNORE_INDEX]])
+    valid = labels != IGNORE_INDEX
+    terminal = torch.zeros_like(valid)
+    terminal[:, aligned] = True
+    eos = torch.zeros_like(valid)
+    eos[:, 4] = True
+    audio = ~eos
+    eligible = torch.ones_like(valid)
+    originals = [tensor.clone() for tensor in (labels, valid, terminal, eos, audio, eligible)]
+
+    targets, mask, stats = reconcile_timestamp_eos(labels, valid, terminal, eos, audio, eligible)
+
+    assert targets.tolist() == [[NONEND, END, NONEND, NONEND, END, IGNORE_INDEX, IGNORE_INDEX]]
+    assert mask.tolist() == [[True, True, True, True, True, False, False]]
+    assert stats['eos_alignment_total_count'] == 1
+    assert stats['eos_alignment_missing_count'] == int(aligned != [4])
+    assert stats['eos_alignment_extra_count'] == int(bool(aligned) and aligned != [4])
+    for original, observed in zip(originals, (labels, valid, terminal, eos, audio, eligible)):
+        torch.testing.assert_close(observed, original, rtol=0, atol=0)
+
+
+def test_eos_reconciliation_counts_missing_and_extra_endpoints_and_excludes_ineligible_steps():
+    labels = torch.full((2, 7), NONEND, dtype=torch.long)
+    valid = torch.ones_like(labels, dtype=torch.bool)
+    terminal = torch.tensor([[False, False, True, False, False, True, False], [False] * 7])
+    eos = torch.tensor(
+        [[False, False, True, False, True, False, True], [False, True, False, False, False, False, False]]
+    )
+    eligible = torch.tensor([[True, True, True, True, True, True, False], [False] * 7])
+    audio = torch.ones_like(valid)
+    audio[:, 0] = False  # Non-EOS control frames never gain supervision.
+    targets, mask, stats = reconcile_timestamp_eos(labels, valid, terminal, eos, audio, eligible)
+    assert targets.tolist() == [[IGNORE_INDEX, NONEND, END, NONEND, END, NONEND, IGNORE_INDEX], [IGNORE_INDEX] * 7]
+    assert mask.tolist() == [[False, True, True, True, True, True, False], [False] * 7]
+    assert {name: value.item() for name, value in stats.items()} == {
+        'eos_alignment_total_count': 2,
+        'eos_alignment_missing_count': 1,
+        'eos_alignment_extra_count': 1,
+    }
+
+
+def test_eos_reconciliation_recovers_a_terminal_when_the_teacher_has_no_usable_frames():
+    labels = torch.full((1, 4), IGNORE_INDEX, dtype=torch.long)
+    absent = torch.zeros_like(labels, dtype=torch.bool)
+    eos = torch.tensor([[False, False, False, True]])
+    targets, mask, stats = reconcile_timestamp_eos(labels, absent, absent, eos, ~eos, ~absent)
+    assert targets.tolist() == [[IGNORE_INDEX, IGNORE_INDEX, IGNORE_INDEX, END]]
+    assert mask.tolist() == [[False, False, False, True]]
+    assert stats['eos_alignment_missing_count'] == stats['eos_alignment_total_count'] == 1
+
+
+def test_eos_reconciliation_leaves_no_eos_batches_without_a_terminal_event():
+    labels = torch.tensor([[NONEND, END, NONEND]])
+    valid = torch.ones_like(labels, dtype=torch.bool)
+    absent = torch.zeros_like(valid)
+    targets, mask, stats = reconcile_timestamp_eos(labels, valid, absent, absent, valid, valid)
+    torch.testing.assert_close(targets, labels)
+    torch.testing.assert_close(mask, valid)
+    assert not any(value.item() for value in stats.values())
+
+
+def test_eos_reconciliation_keeps_all_masked_loss_connected_and_zero():
+    labels = torch.full((2, 3), IGNORE_INDEX, dtype=torch.long)
+    absent = torch.zeros_like(labels, dtype=torch.bool)
+    targets, mask, stats = reconcile_timestamp_eos(labels, absent, ~absent, ~absent, absent, absent)
+    assert not mask.any() and not any(value.item() for value in stats.values())
+    logits = torch.randn(2, 3, requires_grad=True)
+    loss = TimestampHead(4).compute_loss(logits, targets, mask)
+    loss.backward()
+    assert loss.item() == 0 and not logits.grad.any()
 
 
 @pytest.mark.parametrize(

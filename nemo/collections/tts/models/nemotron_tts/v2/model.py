@@ -53,9 +53,9 @@ from nemo.collections.tts.modules.magpietts_modules import (
     worker_init_fn,
 )
 from nemo.collections.tts.modules.nemotron_tts.v2.timestamp_head import (
-    END,
     IGNORE_INDEX,
     TIMESTAMP_LABELS,
+    reconcile_timestamp_eos,
     word_intervals_to_frame_labels,
 )
 from nemo.collections.tts.parts.utils.helpers import (
@@ -286,6 +286,12 @@ class NemotronTTSModel(NemotronTTSBase):
             if trainer is not None:
                 packed = trainer.strategy.reduce(packed, reduce_op='mean')
             values = dict(zip(values, packed.unbind()))
+            missing_key = 'train/timestamp_eos_alignment_missing_count'
+            if missing_key in values:
+                total = values['train/timestamp_eos_alignment_total_count']
+                values['train/timestamp_eos_alignment_missing_percent'] = (
+                    100 * values[missing_key] / total.clamp_min(torch.finfo(total.dtype).tiny)
+                )
         self.log_dict(
             values,
             on_step=mode == 'train',
@@ -431,14 +437,12 @@ class NemotronTTSModel(NemotronTTSBase):
                 if is_multiturn and not turn.get('has_end_marker', True):
                     metrics['missing_end_markers'] += 1
                 elif 0 <= terminal < num_frames:
-                    labels[sample, terminal] = END
-                    mask[sample, terminal] = terminal_mask[sample, terminal] = True
+                    terminal_mask[sample, terminal] = True
                 metrics['valid_turns'] += 1
         overlapping_turns = coverage > 1
         metrics['collision_frames'] += int(overlapping_turns.sum().item())
         mask &= ~overlapping_turns
-        terminal_mask &= mask
-        labels[terminal_mask] = END
+        terminal_mask &= ~overlapping_turns
         labels[~mask] = IGNORE_INDEX
         # Teacher forward uses inference_mode; keep targets ordinary detached tensors.
         return (
@@ -1707,30 +1711,29 @@ class NemotronTTSModel(NemotronTTSBase):
                 torch.arange(steps, device=pred_embeddings.device)[None, :] < audio_codes_lens_target[:, None]
             )
             eos_positions = (audio_codes_target[:, :, :steps] == self.audio_eos_id).any(dim=1)
-            terminal_mismatch = timestamp_terminals & valid_steps & ~eos_positions
-            if terminal_mismatch.any():
-                raise ValueError(
-                    'Alignment-derived terminal word boundaries do not match speech EOS target positions: '
-                    f'aligned (sample, frame)={terminal_mismatch.nonzero().tolist()[:8]}, '
-                    f'speech EOS={(eos_positions & valid_steps).nonzero().tolist()[:16]}'
-                )
-            timestamp_mask &= (
+            audio_frames = (
                 (audio_codes_target[:, :, :steps] >= 0) & (audio_codes_target[:, :, :steps] < self.codebook_size)
-            ).all(dim=1) | timestamp_terminals
-            timestamp_mask &= valid_steps
+            ).all(dim=1)
             if agent_mask is not None:
-                timestamp_mask &= agent_mask[:, :steps].bool()
-            timestamp_targets = timestamp_targets.masked_fill(~timestamp_mask, IGNORE_INDEX)
+                valid_steps &= agent_mask[:, :steps].bool()
+            if timestamp_batch.get('acoustic_loss_mask') is not None:
+                valid_steps &= torch.as_tensor(
+                    timestamp_batch['acoustic_loss_mask'], device=pred_embeddings.device, dtype=torch.bool
+                ).view(-1, 1)
+            timestamp_targets, timestamp_mask, eos_alignment_metrics = reconcile_timestamp_eos(
+                timestamp_targets, timestamp_mask, timestamp_terminals, eos_positions, audio_frames, valid_steps
+            )
             timestamp_logits = self.timestamp_head(pred_embeddings)
             timestamp_loss = self.timestamp_head.compute_loss(timestamp_logits, timestamp_targets, timestamp_mask)
             loss = loss + self.timestamp_head_loss_weight * timestamp_loss
             timestamp_metrics = {
                 name: torch.tensor(value, device=loss.device) for name, value in timestamp_metrics.items()
             }
+            timestamp_metrics.update(eos_alignment_metrics)
             timestamp_metrics['supervised_frames'] = timestamp_mask.sum()
             predicted_ends = (timestamp_logits.detach() >= 0).long()
             correct = (predicted_ends == timestamp_targets) & timestamp_mask
-            terminal_frames = timestamp_terminals & timestamp_mask
+            terminal_frames = eos_positions & timestamp_mask
             timestamp_metrics['eos_count'] = terminal_frames.sum()
             timestamp_metrics['eos_correct'] = (correct & terminal_frames).sum()
             timestamp_metrics['eos_recall'] = timestamp_metrics[

@@ -311,6 +311,8 @@ model.transcribe(["long_audio.wav"])
 ```
 With this option, `transcribe()` runs batched cache-aware streaming over the audio, so its cost stays linear in the audio length. For streaming inference, use `rnnt_decoding.restart_after_tokens='["<EOU>","<EOB>"]'` with `speech_to_text_cache_aware_streaming_infer.py`. The option requires a cache-aware streaming model and `greedy_batch` decoding; other decoding strategies, buffered (no-cache) streaming, and `partial_hypothesis` are not supported. With this option, `Hypothesis.length` is the total number of encoder frames decoded for the audio (also in streaming).
 
+The streaming inference pipelines (`examples/asr/asr_streaming_inference/asr_streaming_infer.py`, `nemo.collections.asr.inference`) do not support `decoding.restart_after_tokens` and raise an error for models with `<EOU>`/`<EOB>` tokens.
+
 
 ## 5. Model deployment with voice agent
 

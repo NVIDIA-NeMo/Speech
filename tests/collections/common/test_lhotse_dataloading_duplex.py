@@ -302,7 +302,7 @@ def test_data_input_cfg_reverse_role_multi_config_with_workers(regular_duplex_s2
             "sampler_fusion": "randomized_round_robin",
             "sampler_weights": {"reverse_a": 0.5, "reverse_b": 0.5},
             "seed": 0,
-            "shard_seed": 0,
+            "shard_seed": "randomized",  # an integer would duplicate the stream across the 2 workers
             "shuffle": True,
             "num_workers": 2,
             "reverse_a": {

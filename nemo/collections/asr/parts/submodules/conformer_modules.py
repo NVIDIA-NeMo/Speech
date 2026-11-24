@@ -33,6 +33,7 @@ from nemo.collections.asr.parts.submodules.packed_attention import PackedAttenti
 from nemo.collections.asr.parts.utils.activations import Swish
 from nemo.collections.common.parts.utils import ModuleBlock, activation_registry, block_binds, build_module
 from nemo.core.classes.mixins import AccessMixin
+from nemo.core.classes.mixins.adapter_mixin_strategies import ResidualAddAdapterStrategy
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
 if TRITON_AVAILABLE:
@@ -357,8 +358,10 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
     ) -> torch.Tensor:
         """The layer over token-flat input of all utterances, with explicit boundaries instead of padding masks.
 
-        Streaming caches, adapters, local attention with global tokens and the ``save_encoder_tensors`` capture
+        Streaming caches, local attention with global tokens and the ``save_encoder_tensors`` capture
         are not supported in this form.
+        Enabled adapters run on the token-flat states at the places where ``forward`` runs them,
+        see ``sequence_packed_adapters_unsupported_reason`` for what is refused.
 
         Args:
             x: input signals, shape ``(T_total, d_model)``.
@@ -370,8 +373,9 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         Returns:
             The layer output, shape ``(T_total, d_model)``.
         """
-        if self.is_adapter_available():
-            raise NotImplementedError("Adapters are not supported in the sequence-packed ConformerLayer.")
+        reason = self.sequence_packed_adapters_unsupported_reason()
+        if reason is not None:
+            raise NotImplementedError(reason)
 
         # the broadcast dropouts take the packing to give every row the mask of its sequence;
         # a feed-forward block receives it only with the option, so a block without the argument keeps working
@@ -386,6 +390,15 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         x = self.self_attn.forward_packed(x, attention_context, pos_emb=pos_emb)
         residual = residual + apply_dropout(self.dropout, x, attention_context)
 
+        if self.is_adapter_available():
+            pack_input = {
+                'x': residual,
+                'loc': 'mha',
+                'pos_emb': pos_emb,
+                'attention_context': attention_context,
+            }
+            residual = self.forward_enabled_adapters(pack_input)['x']
+
         x = self.norm_conv(residual)
         x = self.conv.forward_packed(x, conv_layout)
         residual = residual + apply_dropout(self.dropout, x, attention_context)
@@ -394,7 +407,45 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         x = self.feed_forward2(x, **ff_kwargs)
         residual = residual + apply_dropout(self.dropout, x, attention_context) * self.fc_factor
 
-        return self.norm_out(residual)
+        x = self.norm_out(residual)
+        if self.is_adapter_available():
+            pack_input = {'x': x, 'loc': 'post'}
+            x = self.forward_enabled_adapters(pack_input)['x']
+        return x
+
+    def sequence_packed_adapters_unsupported_reason(self) -> str | None:
+        """Why ``forward_packed`` cannot run the enabled adapters of this layer, or None when it can.
+
+        Linear adapters are pointwise and run on the token-flat states as they are,
+        and the Conformer attention adapters attend within the utterance boundaries.
+        Without a sequence-packed form: the attention adapters of the Transformer blocks,
+        an attention adapter in a layer whose attention is neither ``rel_pos`` nor ``abs_pos``
+        (``rope``, ``rel_pos_local_attn``), which the padded forward refuses as well,
+        and in training mode a residual strategy with an auxiliary L2 loss (``l2_lambda`` above zero),
+        which sums over the frames of a padded batch row and averages over the rows;
+        it is refused whether or not the adapter's parameters and access configuration let the loss be computed.
+        Disabled adapters do not run and are never a reason.
+        """
+        # a function-level import as in AttentionAdapterModuleMixin, to prevent a circular import
+        from nemo.collections.asr.modules.transformer import transformer_modules
+
+        for name in self.get_enabled_adapters():
+            adapter = self.adapter_layer[name]
+            if isinstance(adapter, transformer_modules.MultiHeadAttention):
+                return f"The adapter {name!r} ({type(adapter).__name__}) has no sequence-packed form."
+            if isinstance(adapter, MultiHeadAttention) and self.self_attention_model not in ('rel_pos', 'abs_pos'):
+                # forward_single_enabled_adapter_ raises for it, in the padded forward as well
+                return (
+                    f"The attention adapter {name!r} runs with rel_pos and abs_pos attention only, "
+                    f"not with self_attention_model={self.self_attention_model!r}."
+                )
+            strategy = adapter.adapter_strategy
+            if self.training and isinstance(strategy, ResidualAddAdapterStrategy) and strategy.l2_lambda > 0.0:
+                return (
+                    f"The auxiliary L2 loss of the adapter {name!r} (l2_lambda={strategy.l2_lambda}) averages over "
+                    "padded batch rows and has no sequence-packed form: set l2_lambda: 0 on its adapter_strategy."
+                )
+        return None
 
 
 class ConformerConvolution(nn.Module):

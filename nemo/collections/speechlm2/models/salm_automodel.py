@@ -485,7 +485,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         """
         import os
 
-        from nemo.collections.speechlm2.parts.parallel import validate_parallelism_compatibility
+        from nemo.collections.speechlm2.parts.parallel import installed_version, validate_parallelism_compatibility
 
         cp_size = 1
         tp_size = 1
@@ -508,6 +508,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             nvte_fused_attn=nvte_fused_attn,
             device_capability=device_capability,
             check_backward=check_backward,
+            te_version=installed_version("transformer-engine"),
+            flash_attn_4_version=installed_version("flash-attn-4"),
         )
         mtp_cfg = self.cfg.get("mtp", None)
         mtp_enabled = mtp_cfg is not None and bool(mtp_cfg.get("enabled", False))

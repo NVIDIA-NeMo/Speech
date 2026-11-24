@@ -166,15 +166,25 @@ def test_word_midpoints_on_half_samples_have_one_owner_whatever_the_read_offset(
 
 @pytest.mark.unit
 @pytest.mark.parametrize('num_samples', [12960, 12800 * 4 + 160])
-def test_short_final_window_reads_real_left_context(num_samples):
-    # Without context, 0.8 s chunks leave a 160-sample final window: a single feature frame.
+def test_short_remainder_joins_the_previous_chunk(num_samples):
+    # A 160-sample remainder is a single feature frame.
     plan = make_chunk_plan(num_samples, 16000, ChunkingConfig(chunk_size=0.8, context_size=0), frame_samples=640)
     last = plan[-1]
-    assert (last.keep_start, last.keep_end) == (num_samples - 160, num_samples)
-    assert last.read_start % 640 == 0
-    # Two encoder frames are at least two feature hops, enough for per-feature normalization.
-    assert last.read_end - last.read_start >= 2 * 640
+    assert len(plan) == num_samples // 12800
+    assert (last.keep_start, last.keep_end) == (num_samples - 12800 - 160, num_samples)
+    assert all(c.read_end - c.read_start >= 2 * 640 for c in plan)
     assert all(a.keep_end == b.keep_start for a, b in zip(plan, plan[1:]))
+    assert all(a.read_end <= b.read_start for a, b in zip(plan, plan[1:]))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('tail_frames', [0.375, 1, 1.5, 2, 3, 4])
+def test_no_final_read_reaches_into_the_previous_chunk_without_context(tail_frames):
+    num_samples = 15360 + round(tail_frames * 1280)
+    plan = make_chunk_plan(num_samples, 16000, ChunkingConfig(chunk_size=0.96, context_size=0), frame_samples=1280)
+    assert len(plan) == (1 if tail_frames < 2 else 2)
+    assert all(a.read_end <= b.read_start for a, b in zip(plan, plan[1:]))
+    assert plan[-1].keep_end == num_samples
 
 
 @pytest.mark.unit
@@ -570,7 +580,7 @@ def test_chunked_file_tensor_and_offset_manifest_match(tmp_path):
 @pytest.mark.unit
 @pytest.mark.parametrize('workers', [0, 2])
 def test_lazy_chunk_dataset_preserves_order_with_workers(workers):
-    sources = [torch.arange(13), torch.arange(7)]
+    sources = [torch.arange(14), torch.arange(7)]
     plan = ChunkBatches(sources, 1, ChunkingConfig(chunk_size=4, context_size=1), frame_samples=1, batch_size=2)
     loader = torch.utils.data.DataLoader(
         ChunkedAudioDataset(sources, 1), batch_sampler=plan, num_workers=workers, collate_fn=collate_audio_chunks
@@ -903,6 +913,18 @@ def test_aed_without_ctc_model_keeps_a_word_once_after_a_short_final_chunk():
     config.chunking = ChunkingConfig(chunk_size=0.9, context_size=0)
     result = model.transcribe(audio, override_config=config)[0]
     assert result.text.split() == [f'w{i}' for i in range(2, 20)]
+
+
+@pytest.mark.unit
+def test_aed_without_ctc_model_keeps_a_word_once_after_a_remainder_under_two_frames():
+    # A one-frame remainder used to re-read one word of the previous chunk, which was kept twice.
+    model = _AlignedAEDModel()
+    model.timestamps_asr_model = None
+    audio = torch.arange(2, 12).float()
+    config = _aed_config()
+    config.chunking = ChunkingConfig(chunk_size=0.9, context_size=0)
+    result = model.transcribe(audio, override_config=config)[0]
+    assert result.text.split() == [f'w{i}' for i in range(2, 12)]
 
 
 def _aed_config(**kwargs):

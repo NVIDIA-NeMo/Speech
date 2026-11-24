@@ -73,10 +73,8 @@ def make_chunk_plan(
         frame_samples: Samples per encoder frame; read starts align to this grid.
 
     Returns:
-        Ordered chunks with half-open intervals. Every source sample has one owner. The final
-        read interval spans at least two frames where the source allows it: a shorter final chunk
-        reads extra left context. A frame is at least one feature hop, so per-feature
-        normalization never sees a single feature frame.
+        Ordered chunks with half-open intervals. Every source sample has one owner. A remainder
+        shorter than two frames joins the previous chunk.
     """
     if num_samples <= 0 or sample_rate <= 0 or frame_samples <= 0:
         raise ValueError('Audio length, sample rate, and frame size must be positive.')
@@ -88,21 +86,20 @@ def make_chunk_plan(
     context = math.ceil(config.context_size * sample_rate / frame_samples) * frame_samples
     min_read = 2 * frame_samples
     chunks = []
-    for start in range(0, num_samples, size):
-        read_start = start - context
-        read_end = min(num_samples, start + size + context)
-        is_last = start + size >= num_samples
-        if is_last:
-            read_start = min(read_start, (read_end - min_read) // frame_samples * frame_samples)
+    start = 0
+    while start < num_samples:
+        is_last = num_samples - (start + size) < min_read
+        keep_end = num_samples if is_last else start + size
         chunks.append(
             AudioChunk(
-                read_start=max(0, read_start),
-                read_end=read_end,
+                read_start=max(0, start - context),
+                read_end=min(num_samples, keep_end + context),
                 keep_start=start,
-                keep_end=min(num_samples, start + size),
+                keep_end=keep_end,
                 is_last=is_last,
             )
         )
+        start = keep_end
     return chunks
 
 

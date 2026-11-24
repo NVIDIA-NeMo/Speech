@@ -42,7 +42,12 @@ from nemo.collections.asr.parts.mixins import (
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecoding, RNNTDecodingConfig
 from nemo.collections.asr.parts.utils.asr_batching import get_semi_sorted_batch_sampler
-from nemo.collections.asr.parts.utils.longform_inference import ChunkingConfig, select_chunk_words, words_to_hypothesis
+from nemo.collections.asr.parts.utils.longform_inference import (
+    ChunkingConfig,
+    resolve_chunking,
+    select_chunk_words,
+    words_to_hypothesis,
+)
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.timestamp_utils import process_timestamp_outputs
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
@@ -303,7 +308,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, RNNTRestartMixin, ExportableEncD
 
         timestamps = timestamps or (override_config.timestamps if override_config is not None else None)
         # Planned chunking computes word timestamps call-locally and leaves the model decoding unchanged.
-        planned_chunking = chunking is not None or getattr(override_config, 'chunking', None) is not None
+        planned_chunking = resolve_chunking(chunking, override_config) is not None
         if timestamps is not None and not planned_chunking:
             need_change_decoding = False
             if timestamps or (override_config is not None and override_config.timestamps):

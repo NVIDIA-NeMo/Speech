@@ -32,7 +32,7 @@ from nemo.collections.asr.parts.mixins import ASRTranscriptionMixin, PromptStrea
 from nemo.collections.asr.parts.mixins.transcription import TranscriptionReturnType
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTBPEDecoding
-from nemo.collections.asr.parts.utils.longform_inference import ChunkingConfig
+from nemo.collections.asr.parts.utils.longform_inference import ChunkingConfig, resolve_chunking
 from nemo.collections.asr.parts.utils.prompt_language_utils import (
     AUTO_PROMPT_LANGUAGE,
     resolve_deprecated_prompt_arguments,
@@ -659,7 +659,7 @@ class EncDecRNNTBPEModelWithPrompt(PromptStreamingMixin, EncDecRNNTBPEModel, ASR
         fields instead. Returns one transcription hypothesis per input utterance.
         """
         # Planned chunking computes timestamps call-locally and leaves the model decoding unchanged.
-        planned_chunking = chunking is not None or getattr(override_config, 'chunking', None) is not None
+        planned_chunking = resolve_chunking(chunking, override_config) is not None
         if timestamps is not None and not planned_chunking:
             decoding_cfg = self.cfg.decoding
             if timestamps or (override_config is not None and override_config.timestamps):

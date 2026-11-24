@@ -233,18 +233,23 @@ From the command line:
 
 Each recording is split into chunks of ``chunk_size`` seconds. Each chunk is transcribed with
 ``context_size`` seconds of extra audio on each side; the context improves recognition near
-chunk edges, and its output is kept from one chunk only, so joins are not duplicated. Memory
-depends on the chunk duration plus context and on the batch size, not on the recording length.
+chunk edges, and its output is kept from one chunk only, so joins are not duplicated. Encoder
+memory depends on the chunk duration plus context and on the batch size, not on the recording
+length. CTC models keep each recording's owned output frames on the CPU until the recording is
+complete: frame labels by default, and full log probabilities when hypotheses, alignments,
+confidence or a fusion model are requested, so that storage grows with the recording length.
 The defaults (30 s and 2 s) suit Parakeet and Canary models.
 
 Planned chunking works with CTC, RNNT/TDT, hybrid and AED (Canary) models, and accepts files,
 manifests and waveforms at the model's sample rate. It is off unless ``chunking`` is set. With
-``override_config`` or ``transcribe_generator``, set ``config.chunking`` instead.
+``override_config`` or ``transcribe_generator``, set ``config.chunking`` instead; as with the
+other arguments, ``override_config`` takes precedence over ``chunking=``.
 
 Limitations:
 
-* Results contain text and word/segment timestamps. Token confidence, alignments and AED
-  cross-attention scores are not returned.
+* CTC results keep the usual CTC hypothesis fields, including confidence and alignments.
+  RNNT/TDT and AED results contain text and word/segment timestamps; token confidence,
+  alignments and AED cross-attention scores are not returned.
 * AED models transcribe only (no speech translation). Their timestamps require a CTC timestamp
   model, as in ``canary-1b-v2``.
 * One best hypothesis per chunk. CTC supports ``greedy`` and ``greedy_batch`` without an n-gram LM.

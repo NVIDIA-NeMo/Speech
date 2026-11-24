@@ -710,3 +710,23 @@ def test_chunked_transcription_leaves_model_decoding_unchanged(prompt_model, tim
     )
     assert len(results) == 1
     assert prompt_model.decoding is decoding and OmegaConf.to_container(prompt_model.cfg) == settings
+
+
+@pytest.mark.unit
+def test_override_config_takes_precedence_over_the_chunking_argument(prompt_model, monkeypatch):
+    from nemo.collections.asr.parts.mixins.transcription import ChunkingConfig, TranscriptionMixin
+
+    changes, seen = [], []
+    monkeypatch.setattr(prompt_model, 'change_decoding_strategy', lambda *args, **kwargs: changes.append(args))
+    monkeypatch.setattr(
+        TranscriptionMixin,
+        'transcribe',
+        lambda self, audio, override_config=None, **kwargs: seen.append(override_config),
+    )
+    override = RNNTPromptTranscribeConfig(timestamps=True, return_hypotheses=True)
+    prompt_model.transcribe(
+        ['audio.wav'], timestamps=True, override_config=override, chunking=ChunkingConfig(10.0, 1.0)
+    )
+    # The override config has no chunking, so the plain path runs with the usual timestamp setup.
+    assert seen == [override] and override.chunking is None
+    assert changes and prompt_model.cfg.decoding.compute_timestamps

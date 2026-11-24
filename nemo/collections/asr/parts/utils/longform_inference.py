@@ -53,6 +53,14 @@ class AudioChunk:
     is_last: bool
 
 
+def resolve_chunking(chunking: ChunkingConfig | None, override_config=None) -> ChunkingConfig | None:
+    """The chunking ``transcribe()`` applies: ``override_config`` takes precedence over the argument,
+    as it does for every other transcription option."""
+    if override_config is not None:
+        return getattr(override_config, 'chunking', None)
+    return chunking
+
+
 def make_chunk_plan(
     num_samples: int, sample_rate: int, config: ChunkingConfig, frame_samples: int = 1
 ) -> list[AudioChunk]:
@@ -66,8 +74,9 @@ def make_chunk_plan(
 
     Returns:
         Ordered chunks with half-open intervals. Every source sample has one owner. The final
-        read interval spans at least one second where the source allows it, adding left context
-        to a short final chunk, so that its features are computed over more than a few frames.
+        read interval spans at least two frames where the source allows it: a shorter final chunk
+        reads extra left context. A frame is at least one feature hop, so per-feature
+        normalization never sees a single feature frame.
     """
     if num_samples <= 0 or sample_rate <= 0 or frame_samples <= 0:
         raise ValueError('Audio length, sample rate, and frame size must be positive.')
@@ -77,7 +86,7 @@ def make_chunk_plan(
         raise ValueError('context_size must be finite and nonnegative.')
     size = max(1, math.ceil(config.chunk_size * sample_rate / frame_samples)) * frame_samples
     context = math.ceil(config.context_size * sample_rate / frame_samples) * frame_samples
-    min_read = math.ceil(sample_rate / frame_samples) * frame_samples
+    min_read = 2 * frame_samples
     chunks = []
     for start in range(0, num_samples, size):
         read_start = start - context

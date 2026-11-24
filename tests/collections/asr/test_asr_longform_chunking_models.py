@@ -17,6 +17,7 @@ from nemo.collections.asr.models import (
     EncDecMultiTaskModel,
     EncDecRNNTBPEModel,
 )
+from nemo.collections.asr.parts.mixins.transcription import TranscribeConfig
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCBPEDecodingConfig
 from nemo.collections.asr.parts.utils.longform_inference import ChunkingConfig
 
@@ -196,6 +197,32 @@ def test_restored_transducer_chunking_leaves_model_decoding_unchanged(test_data_
     assert len(results) == 2 and bool(results[0].timestamp) is timestamps
     assert model.decoding is decoding and getattr(model, 'ctc_decoding', None) is ctc_decoding
     assert OmegaConf.to_container(model.cfg) == settings
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    'head, timestamps',
+    # The hybrid wrappers set up timestamps only when the argument is given.
+    [('rnnt', None), ('rnnt', True), ('hybrid-rnnt', True), ('hybrid-ctc', True)],
+)
+def test_override_config_takes_precedence_over_the_chunking_argument(test_data_dir, tmp_path, head, timestamps):
+    # The override config has no chunking, so the plain path runs and needs the usual timestamp setup.
+    if head == 'rnnt':
+        model = EncDecRNNTBPEModel(cfg=_transducer_config(test_data_dir, 'rnnt')).eval()
+    else:
+        model = EncDecHybridRNNTCTCBPEModel(cfg=_transducer_config(test_data_dir, 'rnnt', hybrid=True)).eval()
+        model.change_decoding_strategy(decoder_type=head.split('-')[1], verbose=False)
+    model = _restore(model, tmp_path)
+    tensors, _ = _sources(tmp_path)
+
+    def transcribe(**kwargs):
+        override = TranscribeConfig(timestamps=True, return_hypotheses=True, verbose=False)
+        return model.transcribe(tensors, timestamps=timestamps, override_config=override, **kwargs)
+
+    results = transcribe(chunking=CHUNKING)
+    plain = transcribe()
+    assert [h.text for h in results] == [h.text for h in plain]
+    assert [h.timestamp['word'] for h in results] == [h.timestamp['word'] for h in plain]
 
 
 @pytest.mark.unit

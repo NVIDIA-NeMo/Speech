@@ -95,12 +95,11 @@ def test_word_selection_keeps_real_repetitions_and_exact_start_times():
 
 @pytest.mark.unit
 def test_last_chunk_accepts_encoder_dropping_final_partial_hop():
-    # 25 frames plus 1 sample: the feature extractor drops the final partial hop. The final
-    # window reads one second (frames 12 to 25); frames 20 to 24 are owned.
+    # 25 frames plus 1 sample: the feature extractor drops the final partial hop.
     last = make_chunk_plan(1280 * 25 + 1, 16000, ChunkingConfig(chunk_size=0.8, context_size=0.16), 1280)[-1]
-    assert last.is_last and select_chunk_frames(torch.arange(13), last, 1280).tolist() == [8, 9, 10, 11, 12]
-    with pytest.raises(RuntimeError, match='requires 14'):
-        select_chunk_frames(torch.arange(12), last, 1280)
+    assert last.is_last and select_chunk_frames(torch.arange(7), last, 1280).tolist() == [2, 3, 4, 5, 6]
+    with pytest.raises(RuntimeError, match='requires 8'):
+        select_chunk_frames(torch.arange(6), last, 1280)
     inner = make_chunk_plan(1280 * 25, 16000, ChunkingConfig(chunk_size=0.8, context_size=0.16), 1280)[0]
     with pytest.raises(RuntimeError, match='requires 10'):
         select_chunk_frames(torch.arange(9), inner, 1280)
@@ -173,8 +172,19 @@ def test_short_final_window_reads_real_left_context(num_samples):
     last = plan[-1]
     assert (last.keep_start, last.keep_end) == (num_samples - 160, num_samples)
     assert last.read_start % 640 == 0
-    assert last.read_end - last.read_start >= 16000 or last.read_start == 0
+    # Two encoder frames are at least two feature hops, enough for per-feature normalization.
+    assert last.read_end - last.read_start >= 2 * 640
     assert all(a.keep_end == b.keep_start for a, b in zip(plan, plan[1:]))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('context_size', [0, 0.16])
+def test_final_window_with_two_encoder_frames_reads_only_its_context(context_size):
+    # 0.9 s chunks of a 1.8 s source leave a 0.84 s final chunk; it needs no extra left context.
+    config = ChunkingConfig(chunk_size=0.9, context_size=context_size)
+    first, last = make_chunk_plan(28800, 16000, config, frame_samples=1280)
+    assert (last.keep_start, last.keep_end) == (first.keep_end, 28800)
+    assert last.read_start == last.keep_start - round(context_size * 16000)
 
 
 @pytest.mark.unit
@@ -189,19 +199,7 @@ def test_short_final_window_reads_real_left_context(num_samples):
     ],
 )
 def test_conformer_ctc_chunking_with_a_one_frame_final_window(device):
-    config = OmegaConf.create(
-        {
-            **_tiny_conformer_config(),
-            'decoder': {
-                '_target_': 'nemo.collections.asr.modules.ConvASRDecoder',
-                'feat_in': 8,
-                'num_classes': 3,
-                'vocabulary': ['a', 'b', ' '],
-            },
-            'decoding': {'strategy': 'greedy_batch'},
-        }
-    )
-    model = EncDecCTCModel(config).eval().to(device)
+    model = _tiny_char_ctc_model().to(device)
     waveform = torch.randn(12960, generator=torch.Generator().manual_seed(5)) * 0.1
     result = model.transcribe(
         waveform,
@@ -216,6 +214,37 @@ def test_conformer_ctc_chunking_with_a_one_frame_final_window(device):
         )[:2]
     # The final window owns its single encoder frame; owned frames tile the whole source.
     assert result.y_sequence.shape[0] == int(num_frames[0])
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('timestamps', [None, True])
+def test_ctc_override_config_takes_precedence_over_the_chunking_argument(timestamps):
+    # The override config has no chunking, so the plain path runs and needs the usual timestamp setup.
+    model = _tiny_char_ctc_model()
+    waveform = torch.randn(32000, generator=torch.Generator().manual_seed(5)) * 0.1
+
+    def transcribe(**kwargs):
+        override = TranscribeConfig(timestamps=True, return_hypotheses=True, verbose=False)
+        return model.transcribe(waveform, timestamps=timestamps, override_config=override, **kwargs)[0]
+
+    result, plain = transcribe(chunking=ChunkingConfig(chunk_size=0.8, context_size=0.16)), transcribe()
+    assert result.text == plain.text and result.timestamp['word'] == plain.timestamp['word']
+
+
+def _tiny_char_ctc_model():
+    config = OmegaConf.create(
+        {
+            **_tiny_conformer_config(),
+            'decoder': {
+                '_target_': 'nemo.collections.asr.modules.ConvASRDecoder',
+                'feat_in': 8,
+                'num_classes': 3,
+                'vocabulary': ['a', 'b', ' '],
+            },
+            'decoding': {'strategy': 'greedy_batch'},
+        }
+    )
+    return EncDecCTCModel(config).eval()
 
 
 @pytest.mark.unit
@@ -861,6 +890,19 @@ def test_aed_without_ctc_model_stitches_overlapping_windows():
     assert result.text.split() == [f'w{i}' for i in range(2, 25)]
     with pytest.raises(ValueError, match='CTC timestamp model'):
         model.transcribe(audio, override_config=_aed_config(timestamps=True))
+
+
+@pytest.mark.unit
+def test_aed_without_ctc_model_keeps_a_word_once_after_a_short_final_chunk():
+    # 0.9 s chunks without context leave a 0.9 s final chunk. A read reaching into the previous
+    # chunk repeats one word there, too short a shared run to stitch, so it appears twice.
+    model = _AlignedAEDModel()
+    model.timestamps_asr_model = None
+    audio = torch.arange(2, 20).float()
+    config = _aed_config()
+    config.chunking = ChunkingConfig(chunk_size=0.9, context_size=0)
+    result = model.transcribe(audio, override_config=config)[0]
+    assert result.text.split() == [f'w{i}' for i in range(2, 20)]
 
 
 def _aed_config(**kwargs):

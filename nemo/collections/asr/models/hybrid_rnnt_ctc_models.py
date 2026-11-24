@@ -29,7 +29,7 @@ from nemo.collections.asr.parts.mixins import ASRBPEMixin, ASRTranscriptionMixin
 from nemo.collections.asr.parts.mixins.transcription import TranscriptionReturnType
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecoding, CTCDecodingConfig
-from nemo.collections.asr.parts.utils.longform_inference import ChunkingConfig
+from nemo.collections.asr.parts.utils.longform_inference import ChunkingConfig, resolve_chunking
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.timestamp_utils import process_timestamp_outputs
 from nemo.core.classes.common import PretrainedModelInfo
@@ -142,7 +142,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin, ASRT
         """
 
         # Planned chunking computes timestamps call-locally and leaves the model decoding unchanged.
-        planned_chunking = chunking is not None or getattr(override_config, 'chunking', None) is not None
+        planned_chunking = resolve_chunking(chunking, override_config) is not None
         if timestamps is not None and not planned_chunking:
             if self.cur_decoder not in ["ctc", "rnnt"]:
                 raise ValueError(

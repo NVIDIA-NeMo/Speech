@@ -35,7 +35,7 @@ from nemo.collections.asr.parts.mixins.transcription import GenericTranscription
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecoding, CTCDecodingConfig
 from nemo.collections.asr.parts.utils.asr_batching import get_semi_sorted_batch_sampler
-from nemo.collections.asr.parts.utils.longform_inference import ChunkingConfig, select_chunk_frames
+from nemo.collections.asr.parts.utils.longform_inference import ChunkingConfig, resolve_chunking, select_chunk_frames
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.timestamp_utils import process_timestamp_outputs
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
@@ -183,7 +183,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
             paths2audio_files
         """
         timestamps = timestamps or (override_config.timestamps if override_config is not None else None)
-        planned_chunking = chunking is not None or getattr(override_config, 'chunking', None) is not None
+        planned_chunking = resolve_chunking(chunking, override_config) is not None
         if timestamps is not None and not planned_chunking:
             # else retain the decoder state (users can set it using change_decoding_strategy)
             if timestamps or (override_config is not None and override_config.timestamps):

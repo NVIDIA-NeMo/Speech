@@ -343,7 +343,8 @@ def packed_attention(
             with ``pos_emb`` the Transformer-XL position term ``pos_query[i] . pos_emb[c - (i - j)]``
             of query position ``i`` and key position ``j`` is scaled like the content scores and added to them;
             both or neither.
-        pos_emb: projected relative position embedding, shape ``(R, H, d_k)`` with odd ``R``,
+        pos_emb: projected relative position embedding in the dtype of ``q``, as ``pos_query``,
+            shape ``(R, H, d_k)`` with odd ``R``,
             whose row ``c = (R - 1) / 2`` is the relative position zero;
             it covers at least ``context.rel_pos_max_seqlen - 1`` positions each way.
             With a key window bounded on both sides a shorter one serves, provided no key is further
@@ -352,6 +353,7 @@ def packed_attention(
             shape ``(T_total, H, R)`` with odd ``R`` and the row convention of ``pos_emb``
             (``R = 2 * max_seqlen - 1`` indexes it by ``max_seqlen - 1 - (i - j)``);
             the form of the FlexAttention and reference paths, which it keeps on.
+            Any floating-point dtype; the output keeps the dtype of ``q``.
         dropout_p: dropout on the attention weights, in ``[0, 1]``, supported by every path but FlexAttention
             (see ``packed_attention_supports_dropout``);
             ``1.0`` drops every weight, so the result is zero on every path.
@@ -363,8 +365,8 @@ def packed_attention(
         Context vectors of shape ``(T_total, H, d_k)``.
 
     Raises:
-        ValueError: for inputs that do not match the context or each other (shape, dtype of ``q``, ``k``
-            and ``v``, device) and for scalars outside their ranges,
+        ValueError: for inputs that do not match the context or each other (shape, dtype of ``q``, ``k``,
+            ``v``, ``pos_query`` and ``pos_emb``, device) and for scalars outside their ranges,
             checked before the dispatch so that the backends reject these calls alike.
         NotImplementedError: on CUDA for a ``dropout_p`` inside ``(0, 1)`` where FlexAttention would have to apply it.
     """
@@ -392,6 +394,17 @@ def packed_attention(
         raise ValueError("pos_query and pos_emb come together: give both or neither.")
     if rel_pos_bias is not None and pos_query is not None:
         raise ValueError("The position term comes either as rel_pos_bias or as pos_query and pos_emb, not both.")
+    if pos_query is not None and (pos_query.dtype != q.dtype or pos_emb.dtype != q.dtype):
+        # the kernel and the materialization take the factors in the dtype of the queries
+        raise ValueError(
+            f"pos_query and pos_emb must have the dtype {q.dtype} of q, got {pos_query.dtype} and {pos_emb.dtype}."
+        )
+    if rel_pos_bias is not None:
+        if not rel_pos_bias.is_floating_point():
+            raise ValueError(f"rel_pos_bias must have a floating-point dtype, got {rel_pos_bias.dtype}.")
+        if rel_pos_bias.dtype == torch.float64 and q.dtype != torch.float64:
+            # FlexAttention compiles no float64; the scores of narrower queries gain nothing from it
+            rel_pos_bias = rel_pos_bias.to(torch.float32)
     if scale is None:
         scale = 1.0 / math.sqrt(q.shape[-1])
     if pos_query is not None and (
@@ -756,12 +769,15 @@ def _reference_packed_attention(
             # advanced indices around the head slice move the heads to the last axis
             rel = (center - rows + cols).clamp(0, rel_pos_bias.shape[-1] - 1)
             bias = rel_pos_bias[start:end][rows, :, rel]
-            scores = scores + bias.permute(2, 0, 1) * scale
+            # a bias of another floating-point dtype: the sum and the softmax run in the wider of the two,
+            # as FlexAttention adds a float32 bias to half-precision scores
+            wider = torch.promote_types(scores.dtype, bias.dtype)
+            scores = scores.to(wider) + bias.permute(2, 0, 1).to(wider) * scale
         if span_starts is not None:
             keys = cols + start
             outside = (keys < span_starts[start:end].view(length, 1)) | (keys >= span_ends[start:end].view(length, 1))
             scores = scores.masked_fill(outside, float("-inf"))
-        weights = torch.softmax(scores, dim=-1)
+        weights = torch.softmax(scores, dim=-1).to(vi.dtype)
         if dropout_p > 0.0:
             weights = torch.nn.functional.dropout(weights, p=dropout_p, training=True)
         outputs.append(torch.matmul(weights, vi).transpose(0, 1))

@@ -622,6 +622,87 @@ class TestPackedAttentionArguments:
             packed_attention(tensors["q"], tensors["k"], tensors["v"], context, dropout_p=dropout_p)
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("device", _CPU_AND_CUDA)
+    @pytest.mark.parametrize("dropout_p", [0.0, 1.0], ids=["no_dropout", "full_dropout"])
+    @pytest.mark.parametrize("lengths", [[5, 0, 3], [0, 0]], ids=["tokens", "empty"])
+    @pytest.mark.parametrize("names", [("pos_query",), ("pos_emb",), ("pos_query", "pos_emb")], ids="+".join)
+    @pytest.mark.parametrize(
+        "dtype, other",
+        [
+            (torch.float32, torch.float64),
+            (torch.float64, torch.float32),
+            (torch.bfloat16, torch.float32),
+            (torch.float32, torch.float16),
+        ],
+        ids=["fp32_fp64", "fp64_fp32", "bf16_fp32", "fp32_fp16"],
+    )
+    def test_position_factors_must_have_the_dtype_of_the_queries(
+        self, device, dropout_p, lengths, names, dtype, other
+    ):
+        q, k, v, context, _ = self._inputs(device, dtype, lengths, with_bias=False)
+        factors = {
+            "pos_query": torch.zeros_like(q),
+            "pos_emb": torch.zeros(9, 2, 16, device=device, dtype=dtype),
+        }
+        for name in names:
+            factors[name] = factors[name].to(other)
+        with pytest.raises(ValueError, match="pos_query and pos_emb must have the dtype"):
+            packed_attention(q, k, v, context, dropout_p=dropout_p, **factors)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", _CPU_AND_CUDA)
+    @pytest.mark.parametrize("dropout_p", [0.0, 1.0], ids=["no_dropout", "full_dropout"])
+    @pytest.mark.parametrize(
+        "dtype, other",
+        [
+            (torch.float32, torch.float64),
+            (torch.float64, torch.float32),
+            (torch.bfloat16, torch.float32),
+            (torch.float16, torch.float32),
+            (torch.float32, torch.bfloat16),
+        ],
+        ids=["fp32_fp64", "fp64_fp32", "bf16_fp32", "fp16_fp32", "fp32_bf16"],
+    )
+    @pytest.mark.parametrize("scale", [None, 0.3, -0.3], ids=["default_scale", "scale_0.3", "scale_-0.3"])
+    def test_bias_of_another_float_dtype_is_taken_on_every_backend(self, device, dropout_p, dtype, other, scale):
+        """The bias may come in another floating-point dtype: the result of a float64 computation on its values."""
+        q, k, v, context, bias = self._inputs(device, dtype, [5, 0, 3], with_bias=True)
+        bias = bias.to(other)
+        expected = packed_attention(
+            q.double(), k.double(), v.double(), context, rel_pos_bias=bias.double(), dropout_p=dropout_p, scale=scale
+        )
+        out = packed_attention(q, k, v, context, rel_pos_bias=bias, dropout_p=dropout_p, scale=scale)
+        assert out.dtype == dtype
+        tolerance = 0.0 if dropout_p == 1.0 else {torch.float64: 1e-12, torch.float32: 1e-5}.get(dtype, 3e-2)
+        torch.testing.assert_close(out.double(), expected, rtol=0.0, atol=tolerance)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", _CPU_AND_CUDA)
+    @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16], ids=["bf16", "fp16"])
+    def test_wider_bias_is_not_rounded_to_the_queries(self, device, dtype):
+        """A float32 bias beyond the float16 range and with steps below the bfloat16 spacing keeps its values."""
+        context = PackedAttentionContext.from_lengths(torch.tensor([4], device=device))
+        q = torch.zeros(4, 1, 16, device=device, dtype=dtype)
+        v = torch.eye(4, 16, device=device, dtype=dtype).view(4, 1, 16)
+        bias = torch.full((4, 1, 7), -1e4, device=device)
+        bias[:, :, 3] = 1e6
+        out = packed_attention(q, q, v, context, rel_pos_bias=bias, scale=1.0)
+        torch.testing.assert_close(out.float(), v.float(), rtol=0.0, atol=1e-3)
+        bias[:, :, 2], bias[:, :, 3], bias[:, :, 4] = 257.0, 256.0, 258.0
+        out = packed_attention(q, q, v, context, rel_pos_bias=bias, scale=1.0)
+        expected = packed_attention(q.double(), q.double(), v.double(), context, rel_pos_bias=bias.double(), scale=1.0)
+        torch.testing.assert_close(out.double(), expected, rtol=0.0, atol=1e-2)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", _CPU_AND_CUDA)
+    @pytest.mark.parametrize("dropout_p", [0.0, 1.0], ids=["no_dropout", "full_dropout"])
+    @pytest.mark.parametrize("lengths", [[5, 0, 3], [0, 0]], ids=["tokens", "empty"])
+    def test_bias_must_have_a_float_dtype(self, device, dropout_p, lengths):
+        q, k, v, context, bias = self._inputs(device, torch.float32, lengths, with_bias=True)
+        with pytest.raises(ValueError, match="rel_pos_bias must have a floating-point dtype"):
+            packed_attention(q, k, v, context, rel_pos_bias=bias.long(), dropout_p=dropout_p)
+
+    @pytest.mark.unit
     @pytest.mark.gpu
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
     @pytest.mark.parametrize("dropout_p", [0.0, 1.0], ids=["no_dropout", "full_dropout"])

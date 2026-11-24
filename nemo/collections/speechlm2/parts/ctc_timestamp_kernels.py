@@ -28,7 +28,17 @@ MAX_SUPPORTED_STATES = 4096
 
 if triton is not None:
 
-    @triton.jit
+    @triton.jit(
+        do_not_specialize=[
+            'LOG_BATCH_STRIDE',
+            'LOG_FRAME_STRIDE',
+            'LABEL_BATCH_STRIDE',
+            'MAX_FRAMES',
+            'MAX_STATES',
+            'MAX_WIDTH',
+            'COLUMNS',
+        ]
+    )
     def _ctc_viterbi_kernel(
         LogProbs,
         Labels,
@@ -39,13 +49,13 @@ if triton is not None:
         Backpointers,
         Paths,
         Scores,
-        LOG_BATCH_STRIDE: tl.constexpr,
-        LOG_FRAME_STRIDE: tl.constexpr,
-        LABEL_BATCH_STRIDE: tl.constexpr,
-        MAX_FRAMES: tl.constexpr,
-        MAX_STATES: tl.constexpr,
-        MAX_WIDTH: tl.constexpr,
-        COLUMNS: tl.constexpr,
+        LOG_BATCH_STRIDE,
+        LOG_FRAME_STRIDE,
+        LABEL_BATCH_STRIDE,
+        MAX_FRAMES,
+        MAX_STATES,
+        MAX_WIDTH,
+        COLUMNS,
         BANDED: tl.constexpr,
         BLOCK: tl.constexpr,
     ):

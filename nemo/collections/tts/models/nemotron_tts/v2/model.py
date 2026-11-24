@@ -371,6 +371,8 @@ class NemotronTTSModel(NemotronTTSBase):
         )
         waveforms, references, languages, metadata = [], [], [], []
         acoustic_mask = batch.get('acoustic_loss_mask')
+        if acoustic_mask is not None:
+            acoustic_mask = acoustic_mask.detach().cpu().tolist()
         for sample, start, end, left, right, reference, language, turn in plans:
             end = min(end, num_frames)
             valid_audio = 0 <= left < right <= source_lengths[sample]
@@ -378,7 +380,7 @@ class NemotronTTSModel(NemotronTTSBase):
                 start < 0
                 or end <= start
                 or not valid_audio
-                or (acoustic_mask is not None and not bool(acoustic_mask[sample]))
+                or (acoustic_mask is not None and not acoustic_mask[sample])
             ):
                 metrics['invalid_turns'] += 1
                 continue

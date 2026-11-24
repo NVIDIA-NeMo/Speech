@@ -15,6 +15,7 @@ pytest.importorskip('triton')
 
 from nemo.collections.speechlm2.parts.ctc_timestamp_kernels import (
     MAX_SUPPORTED_STATES,
+    _ctc_viterbi_kernel,
     batched_ctc_viterbi,
     gpu_prepared_paths,
 )
@@ -69,9 +70,11 @@ def _batch(token_rows, frame_lengths, columns=7, seed=1234, *, zeros=False):
     return emissions, packed_labels, np.asarray(frame_lengths, np.int64), np.asarray(list(map(len, labels)), np.int64)
 
 
-def _assert_matches(arrays):
+def _assert_matches(arrays, **kwargs):
     expected_paths, expected_scores = _reference(*arrays)
-    actual_paths, actual_scores = batched_ctc_viterbi(*(torch.as_tensor(array, device='cuda') for array in arrays))
+    actual_paths, actual_scores = batched_ctc_viterbi(
+        *(torch.as_tensor(array, device='cuda') for array in arrays), **kwargs
+    )
     torch.cuda.synchronize()
     np.testing.assert_array_equal(actual_paths.cpu().numpy(), expected_paths)
     np.testing.assert_array_equal(actual_scores.cpu().numpy(), expected_scores)
@@ -88,6 +91,37 @@ def test_random_variable_lengths_repeats_and_padding_match_native(seed):
             seed=seed,
         )
     )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA is required for the CTC kernel')
+@pytest.mark.parametrize('banded', [False, True])
+def test_changed_batch_dimensions_reuse_the_compiled_kernel_and_preserve_exact_paths(monkeypatch, banded):
+    launched = []
+    run = _ctc_viterbi_kernel.run
+
+    def record_kernel(*args, **kwargs):
+        kernel = run(*args, **kwargs)
+        launched.append(kernel)
+        return kernel
+
+    monkeypatch.setattr(_ctc_viterbi_kernel, 'run', record_kernel)
+    for tokens, frames, columns in (
+        ([[1, 2], [2]], [13, 11], 4),
+        ([[1, 2, 1], [2, 1], [3, 2]], [16, 10, 12], 8),
+        ([[2, 1, 3]], [19], 6),
+    ):
+        arrays = _batch(tokens, frames, columns=columns)
+        bands = {}
+        if banded:
+            bands = dict(
+                band_starts=torch.zeros(arrays[0].shape[:2], device='cuda', dtype=torch.long),
+                band_widths=torch.as_tensor(arrays[3], device='cuda'),
+                max_band_width=arrays[1].shape[1],
+            )
+        _assert_matches(arrays, **bands)
+    assert len(launched) == 3
+    assert launched[0] is not None
+    assert all(kernel is launched[0] for kernel in launched)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA is required for the CTC kernel')

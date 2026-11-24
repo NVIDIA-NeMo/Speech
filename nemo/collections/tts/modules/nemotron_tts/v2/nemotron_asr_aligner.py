@@ -43,8 +43,8 @@ class NemotronASRTimestampAligner(nn.Module):
     synchronized wall-clock measurements in seconds. ``max_batch_size`` (8) and
     ``max_batch_duration`` (120 padded audio seconds) bound acoustic microbatches;
     an individual longer turn retains its full encoder context.
-    FP32 attention uses PyTorch SDPA with its existing weights, positions, and
-    masks, avoiding oversized FlexAttention kernels on A100.
+    Attention uses PyTorch SDPA with its existing weights, positions, and masks,
+    avoiding per-shape FlexAttention compilation during variable-length training.
     The first word starts at zero. Each word ends at the following CTC word
     onset, and the final word ends at the exact input audio duration.
     """
@@ -156,12 +156,19 @@ class NemotronASRTimestampAligner(nn.Module):
             self.to(device=device)
         languages = list(languages) if languages is not None else [None] * audio.shape[0]
         results = [{'words': [], 'error': None} for _ in texts]
+        frontend = getattr(self.preprocessor, 'featurizer', None)
+        expected_feature_lengths = None
+        if hasattr(frontend, 'get_seq_len'):
+            resampled_lengths = [(length * 16000 + sample_rate - 1) // sample_rate for length in source_lengths]
+            expected_feature_lengths = frontend.get_seq_len(torch.tensor(resampled_lengths, device='cpu')).tolist()
         valid = []
         for index, (text, length) in enumerate(zip(texts, source_lengths)):
             if not isinstance(text, str) or not text.strip():
                 results[index]['error'] = 'empty_transcript'
             elif length <= 0 or length > audio.shape[1]:
                 results[index]['error'] = 'invalid_audio_length'
+            elif expected_feature_lengths is not None and expected_feature_lengths[index] < 2:
+                results[index]['error'] = 'audio_too_short'
             else:
                 valid.append(index)
         if not valid:
@@ -175,6 +182,21 @@ class NemotronASRTimestampAligner(nn.Module):
         after_resample = _timestamp(device, self.measure_timings)
         with torch.autocast(device_type=device.type, enabled=False):
             features, feature_lengths = self.preprocessor(input_signal=waveforms, length=waveform_lengths)
+            retained = [row for row, length in enumerate(feature_lengths.detach().cpu().tolist()) if length >= 2]
+            if len(retained) != len(valid):
+                for row, index in enumerate(valid):
+                    if row not in retained:
+                        results[index]['error'] = 'audio_too_short'
+                valid = [valid[row] for row in retained]
+                if not valid:
+                    self.last_timings = {'total': _timestamp(device, self.measure_timings) - started}
+                    if self.measure_timings:
+                        for result in results:
+                            result['timings'] = dict(self.last_timings)
+                    return results
+                selected = torch.tensor(retained, device=features.device)
+                features = features.index_select(0, selected)
+                feature_lengths = feature_lengths.index_select(0, selected)
             features = _normalize_features(features.float(), feature_lengths, self.normalize_type)
         after_preprocess = _timestamp(device, self.measure_timings)
         parameter = next(self.encoder.parameters(), None)
@@ -343,10 +365,7 @@ def _load_teacher_components(config):
             artifact = load_ctc_timestamp_artifact(artifact_path, map_location='cpu', dtype=torch.float32)
     finally:
         torch.set_default_dtype(previous_dtype)
-    encoder_sdpa = next(encoder.parameters()).dtype == torch.float32
-    for transformer in (encoder if encoder_sdpa else None, artifact.decoder.transformer):
-        if transformer is None:
-            continue
+    for transformer in (encoder, artifact.decoder.transformer):
         for layer in transformer.layers:
             layer.attn = _CTCSDPAAttention(layer.attn)
     for module in (preprocessor, encoder, artifact.decoder):
@@ -373,7 +392,7 @@ def _load_teacher_components(config):
             'asr_encoder_prefix': 'perception.encoder.asr_encoder.',
             'ctc_artifact_path': str(artifact_path),
             'ctc_attention_backend': 'sdpa',
-            'encoder_attention_backend': 'sdpa' if encoder_sdpa else 'native',
+            'encoder_attention_backend': 'sdpa',
         },
     )
 

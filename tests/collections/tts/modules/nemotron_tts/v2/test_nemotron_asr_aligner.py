@@ -3,6 +3,7 @@
 
 import sys
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -62,7 +63,8 @@ def test_forward_isolates_default_dtype_and_preserves_nested_bf16_encoder(monkey
     assert all(call['default_dtype'] == torch.float32 for call in calls)
 
 
-def test_ctc_sdpa_matches_native_positions_and_padding_without_changing_weights():
+@pytest.mark.parametrize('dtype', [torch.float32, torch.bfloat16])
+def test_ctc_sdpa_matches_native_positions_and_padding_without_changing_weights(dtype):
     from nemo.collections.speechlm2.parts.ctc_timestamp_utils import TransformerCTCDecoder
 
     torch.manual_seed(1234)
@@ -79,10 +81,10 @@ def test_ctc_sdpa_matches_native_positions_and_padding_without_changing_weights(
             residual=True,
             residual_scale=0.1,
         )
-        .float()
+        .to(dtype=dtype)
         .eval()
     )
-    states, lengths = torch.randn(2, 64, 5), torch.tensor([5, 3])
+    states, lengths = torch.randn(2, 64, 5, dtype=dtype), torch.tensor([5, 3])
     parameters = {id(parameter): parameter.detach().clone() for parameter in decoder.parameters()}
     with torch.inference_mode():
         expected = decoder(states, encoded_lengths=lengths)
@@ -94,10 +96,11 @@ def test_ctc_sdpa_matches_native_positions_and_padding_without_changing_weights(
 
     assert set(parameters) == {id(parameter) for parameter in decoder.parameters()}
     for parameter in decoder.parameters():
-        assert parameter.dtype == torch.float32
+        assert parameter.dtype == dtype
         torch.testing.assert_close(parameter, parameters[id(parameter)], rtol=0, atol=0)
     for index, count in enumerate(lengths.tolist()):
-        torch.testing.assert_close(actual[index, : 2 * count], expected[index, : 2 * count], rtol=1e-5, atol=1e-6)
+        tolerance = dict(rtol=1e-5, atol=1e-6) if dtype == torch.float32 else dict(rtol=0.02, atol=0.02)
+        torch.testing.assert_close(actual[index, : 2 * count], expected[index, : 2 * count], **tolerance)
         torch.testing.assert_close(padded[index, : 2 * count], actual[index, : 2 * count], rtol=1e-5, atol=1e-6)
 
 
@@ -133,6 +136,70 @@ def test_bad_transcript_does_not_discard_other_turns(monkeypatch):
     assert records[1] == {'words': [], 'error': 'ValueError: unrepresentable transcript'}
     assert records[2] == {'words': [], 'error': 'empty_transcript'}
     assert len(calls) == 3  # One batch preparation, followed by one per valid record.
+
+
+@pytest.mark.parametrize('sample_rate', [16000, 32000])
+def test_short_turns_are_removed_before_the_native_frontend_without_changing_healthy_alignments(
+    monkeypatch, sample_rate
+):
+    from nemo.collections.asr.modules import AudioToMelSpectrogramPreprocessor
+
+    teacher, _, _ = _teacher(monkeypatch)
+    teacher.preprocessor = AudioToMelSpectrogramPreprocessor(
+        window_size=None,
+        window_stride=None,
+        n_window_size=8,
+        n_window_stride=4,
+        n_fft=8,
+        features=2,
+        normalize='per_feature',
+        dither=0.0,
+        pad_to=0,
+        preemph=None,
+    ).eval()
+    teacher.normalize_type = 'per_feature'
+    scale = sample_rate // 16000
+    audio = torch.arange(4 * 16 * scale, dtype=torch.float32).reshape(4, 16 * scale)
+    lengths = torch.tensor([16, 1, 5, 12]) * scale
+    # Exercise the native GPU error check while keeping this regression CPU-runnable.
+    with (
+        patch.object(torch.cuda, 'is_available', return_value=True),
+        patch.object(torch.cuda, 'is_current_stream_capturing', return_value=False),
+    ):
+        expected = teacher(audio[[0, 3]], lengths[[0, 3]], sample_rate, ['first', 'last'])
+        with patch.object(teacher.preprocessor, 'forward', wraps=teacher.preprocessor.forward) as frontend:
+            observed = teacher(audio, lengths, sample_rate, ['first', 'tiny', 'short', 'last'])
+    assert [record['error'] for record in observed] == [None, 'audio_too_short', 'audio_too_short', None]
+    assert observed[0] == expected[0] and observed[3] == expected[1]
+    assert frontend.call_args.kwargs['length'].tolist() == [16, 12]
+
+
+@pytest.mark.parametrize('feature_lengths', [[8, 1, 6], [1, 0, 1]])
+def test_returned_short_features_never_reach_normalization_or_discard_healthy_turns(monkeypatch, feature_lengths):
+    teacher, components, calls = _teacher(monkeypatch)
+    teacher.normalize_type = 'per_feature'
+
+    def preprocess(input_signal, length):
+        return input_signal.unsqueeze(1), length.new_tensor(feature_lengths)
+
+    monkeypatch.setattr(components.preprocessor, 'forward', preprocess)
+    with (
+        patch.object(torch.cuda, 'is_available', return_value=True),
+        patch.object(torch.cuda, 'is_current_stream_capturing', return_value=False),
+        patch.object(components.encoder, 'forward', wraps=components.encoder.forward) as encoder,
+    ):
+        records = teacher(torch.ones(3, 8), torch.full((3,), 8), 16000, ['first', 'short', 'last'])
+    retained = [index for index, length in enumerate(feature_lengths) if length >= 2]
+    assert [record['error'] for record in records] == [
+        None if index in retained else 'audio_too_short' for index in range(3)
+    ]
+    if retained:
+        assert [record['words'][0]['word'] for record in records if record['error'] is None] == ['first', 'last']
+        assert encoder.call_args.kwargs['length'].tolist() == [8, 6]
+        assert len(calls) == 1
+    else:
+        encoder.assert_not_called()
+        assert not calls
 
 
 def test_encoder_microbatches_preserve_record_order_and_aggregate_timings(monkeypatch):

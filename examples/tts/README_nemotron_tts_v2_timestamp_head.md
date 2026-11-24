@@ -21,6 +21,8 @@ model are not needed for aligning individual ground-truth speech turns.
 The teacher stays frozen in evaluation mode and is excluded from TTS
 checkpoints and optimizers. Its checkpoint precision is preserved when the
 TTS model uses BF16-true; preprocessing and the CTC adapter use FP32.
+Encoder and CTC attention use PyTorch SDPA to avoid compilation for each new
+audio shape. The CUDA CTC search reuses kernels across frame and text lengths.
 
 The teacher force-aligns each reference transcript to its ground-truth audio.
 The batch layout selects single-turn or multiturn supervision, so multiturn
@@ -31,7 +33,8 @@ offsets. The original cut's sample-based frame indices preserve the text/audio
 packing clock across resampling. The dataset preserves each complete lexical reference at the same
 raw/normalized-text selection used for conditioning, before inline phonemization
 or token-channel truncation. Failed teacher alignments do not contribute
-timestamp supervision. Singleturn target waveforms are loaded even when cached
+interior timestamp supervision. Turns with fewer than two mel frames are skipped
+before normalization. Singleturn target waveforms are loaded even when cached
 codec codes are available; `audio_16khz` can be speaker-reference audio and is
 not used as a target waveform.
 
@@ -93,7 +96,7 @@ up to `ctc_max_batch_elements=134217728` vocabulary values per decoder call
 including the native anchor bands for long turns. CPU execution and unsupported
 records retain the existing search. Set `use_cuda_alignment=false`,
 `group_languages_by_policy=false`, and `ctc_max_batch_elements=16777216`
-to reproduce the original teacher execution path.
+to restore the original batching and CPU alignment settings.
 
 ## Inspect reference-word alignments
 

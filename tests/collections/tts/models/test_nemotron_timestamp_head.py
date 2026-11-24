@@ -132,6 +132,33 @@ def test_dataset_turn_boundaries_recover_exact_gt_audio_and_independent_transcri
     assert metrics['valid_turns'] == 2
 
 
+def test_acoustic_loss_mask_filters_whole_samples_without_per_turn_tensor_truth_checks():
+    model = _timestamp_model(multiturn=True)
+    turns = []
+    text = _packed_text(model, timestamp_turns=turns).repeat(3, 1)
+    audio = torch.arange(360, dtype=torch.float32).reshape(3, 120)
+    batch = dict(
+        audio=audio,
+        audio_lens=torch.tensor([120, 120, 120]),
+        timestamp_turns=[turns, turns, turns],
+        languages=['en', 'es', 'pt'],
+        acoustic_loss_mask=torch.tensor([True, False, True]),
+    )
+    with patch.object(torch.Tensor, '__bool__', side_effect=AssertionError('Per-turn CUDA synchronization')):
+        labels, valid, metrics, terminal = model._prepare_timestamp_targets(
+            batch, text, torch.tensor([30, 30, 30]), 16
+        )
+    call = model._timestamp_teacher.calls[0]
+    assert call['texts'] == ['first turn', 'second turn', 'first turn', 'second turn']
+    assert call['languages'] == ['en', 'en', 'pt', 'pt']
+    expected_audio = torch.stack([audio[0, 16:56], audio[0, 72:112], audio[2, 16:56], audio[2, 72:112]])
+    torch.testing.assert_close(call['audio'], expected_audio)
+    assert metrics['turns'] == 6 and metrics['valid_turns'] == 4 and metrics['invalid_turns'] == 2
+    torch.testing.assert_close(labels[0], labels[2])
+    torch.testing.assert_close(valid[0], valid[2])
+    assert labels[1].eq(IGNORE_INDEX).all() and not valid[1].any() and not terminal[1].any()
+
+
 def test_terminal_candidates_preserve_the_next_turns_interior_labels():
     model = _timestamp_model(multiturn=True)
     turns = []

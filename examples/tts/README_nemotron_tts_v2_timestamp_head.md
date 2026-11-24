@@ -23,7 +23,9 @@ checkpoints and optimizers. Its checkpoint precision is preserved when the
 TTS model uses BF16-true; preprocessing and the CTC adapter use FP32.
 
 The teacher force-aligns each reference transcript to its ground-truth audio.
-Multiturn examples are split into independent agent turns and the resulting
+The batch layout selects single-turn or multiturn supervision, so multiturn
+training can use single-turn validation datasets. Multiturn examples are split
+into independent agent turns and the resulting
 labels are restored to the original audio timeline, including fractional turn
 offsets. The original cut's sample-based frame indices preserve the text/audio
 packing clock across resampling. The dataset preserves each complete lexical reference at the same

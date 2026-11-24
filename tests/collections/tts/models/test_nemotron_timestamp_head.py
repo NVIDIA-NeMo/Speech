@@ -32,7 +32,8 @@ pytestmark = pytest.mark.unit
 
 @pytest.mark.parametrize('multiturn', [False, True])
 @pytest.mark.parametrize('enabled', [False, True])
-def test_timestamp_dataset_requirements_are_available_during_modelpt_initialization(multiturn, enabled):
+@pytest.mark.parametrize('lhotse', [False, True])
+def test_timestamp_dataset_requirements_are_available_during_modelpt_initialization(multiturn, enabled, lhotse):
     class LoaderConstructed(Exception):
         pass
 
@@ -44,7 +45,12 @@ def test_timestamp_dataset_requirements_are_available_during_modelpt_initializat
             load_cached_codes_if_available=True,
             context_duration_min=3.0,
             context_duration_max=3.0,
-            train_ds=dict(use_lhotse=True, volume_norm=True, dataset={}),
+            train_ds=dict(
+                use_lhotse=lhotse,
+                volume_norm=True,
+                dataset={},
+                dataloader_params=dict(batch_size=2, num_workers=2),
+            ),
         )
     )
     if enabled:
@@ -53,12 +59,16 @@ def test_timestamp_dataset_requirements_are_available_during_modelpt_initializat
         sample_rate=100, output_sample_rate=100, num_codebooks=2, codebook_size=16, samples_per_frame=4
     )
     observed = {}
-    original_loader = NemotronTTSModel.get_lhotse_dataloader
+    loader_method = 'get_lhotse_dataloader' if lhotse else 'get_dataset'
+    original_loader = getattr(NemotronTTSModel, loader_method)
 
     def record_loader(model, *args, **kwargs):
         observed['enabled'] = getattr(model, 'use_timestamp_head', False)
         observed['head_constructed'] = hasattr(model, 'timestamp_head')
-        return original_loader(model, *args, **kwargs)
+        result = original_loader(model, *args, **kwargs)
+        if not lhotse:
+            raise LoaderConstructed
+        return result
 
     def restore_codec(*args, **kwargs):
         return OmegaConf.create({}) if kwargs.get('return_config') else codec
@@ -73,6 +83,7 @@ def test_timestamp_dataset_requirements_are_available_during_modelpt_initializat
         ),
         patch('nemo.collections.tts.models.nemotron_tts.v2.model.MagpieTTSLhotseMultiturnDataset') as mt_dataset,
         patch('nemo.collections.tts.models.nemotron_tts.v2.model.MagpieTTSLhotseDataset') as st_dataset,
+        patch('nemo.collections.tts.models.nemotron_tts.v2.model.safe_instantiate') as manifest_dataset,
         patch(
             'nemo.collections.tts.models.nemotron_tts.v2.model.FallbackDataset', side_effect=lambda dataset: dataset
         ),
@@ -80,17 +91,22 @@ def test_timestamp_dataset_requirements_are_available_during_modelpt_initializat
             'nemo.collections.tts.models.nemotron_tts.v2.model.get_lhotse_dataloader_from_config',
             side_effect=LoaderConstructed,
         ) as loader,
-        patch.object(NemotronTTSModel, 'get_lhotse_dataloader', record_loader),
+        patch.object(NemotronTTSModel, loader_method, record_loader),
         pytest.raises(LoaderConstructed),
     ):
         NemotronTTSModel(cfg=config)
 
     assert observed == dict(enabled=enabled, head_constructed=False)
-    loader.assert_called_once()
-    if multiturn:
+    if not lhotse:
+        manifest_dataset.assert_called_once()
+        assert manifest_dataset.call_args.kwargs['load_cached_codes_if_available'] is (not enabled)
+        loader.assert_not_called()
+    elif multiturn:
+        loader.assert_called_once()
         assert mt_dataset.call_args.kwargs['return_timestamp_supervision'] is enabled
         st_dataset.assert_not_called()
     else:
+        loader.assert_called_once()
         assert st_dataset.call_args.kwargs['load_cached_codes_if_available'] is (not enabled)
         mt_dataset.assert_not_called()
 
@@ -134,8 +150,9 @@ def test_terminal_candidates_preserve_the_next_turns_interior_labels():
     assert metrics['valid_turns'] == 2 and metrics['collision_frames'] == 0
 
 
-def test_teacher_uses_unpadded_gt_audio_and_raw_reference_even_with_cached_codec_targets():
-    model = _timestamp_model(multiturn=False)
+@pytest.mark.parametrize('multiturn', [False, True])
+def test_teacher_uses_unpadded_gt_audio_and_raw_reference_even_with_cached_codec_targets(multiturn):
+    model = _timestamp_model(multiturn=multiturn)
     inputs = _inputs(model)
     batch = _raw_batch()
     batch['audio'] = torch.cat([batch['audio'], torch.full((1, 12), 999.0)], dim=1)
@@ -145,6 +162,21 @@ def test_teacher_uses_unpadded_gt_audio_and_raw_reference_even_with_cached_codec
     assert call['lengths'].tolist() == [32]
     torch.testing.assert_close(call['audio'], batch['audio'][:, :32])
     assert not call['audio'].requires_grad
+
+
+def test_multiturn_model_validates_singleturn_batch_with_timestamp_supervision():
+    model = _timestamp_model(multiturn=True)
+    model._trainer = SimpleNamespace(world_size=1, global_rank=0, local_rank=0, loggers=[])
+    model.run_val_inference = False
+    model.validation_step_outputs = []
+    batch = {**_inputs(model), **_raw_batch()}
+    with patch.object(model, 'log_dict') as log:
+        model.on_validation_epoch_start()
+        output = model.validation_step(batch, batch_idx=1)
+    assert torch.isfinite(output['val_loss'])
+    assert model._timestamp_teacher.calls[0]['texts'] == batch['raw_texts']
+    assert model._timestamp_validation_totals[0].sum() > 0
+    assert any('val/timestamp_loss' in call.args[0] for call in log.call_args_list)
 
 
 def test_dataset_packed_turn_labels_land_on_raw_audio_targets_after_bos_and_eos_processing():
@@ -185,13 +217,14 @@ def test_dataset_packed_turn_labels_land_on_raw_audio_targets_after_bos_and_eos_
     assert not output.timestamp_mask[other_specials].any()
 
 
-def test_packed_teacher_requires_complete_source_metadata_instead_of_reconstructing_tokens():
+@pytest.mark.parametrize('layout_field', ['task', 'agent_mask'])
+def test_packed_teacher_requires_complete_source_metadata_instead_of_reconstructing_tokens(layout_field):
     model = _timestamp_model(multiturn=True)
     text = _packed_text(model)
+    batch = dict(audio=torch.zeros(1, 120), audio_lens=torch.tensor([120]), raw_texts=['packed transcript'])
+    batch[layout_field] = ['tts'] if layout_field == 'task' else torch.ones_like(text, dtype=torch.bool)
     with pytest.raises(ValueError, match='timestamp_turns'):
-        model._prepare_timestamp_targets(
-            dict(audio=torch.zeros(1, 120), audio_lens=torch.tensor([120])), text, torch.tensor([30]), 16
-        )
+        model._prepare_timestamp_targets(batch, text, torch.tensor([30]), 16)
     assert not model._timestamp_teacher.calls
 
 

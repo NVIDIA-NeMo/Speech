@@ -321,7 +321,7 @@ class NemotronTTSModel(NemotronTTSBase):
                 'Timestamp supervision requires ground-truth target audio/audio_lens; '
                 'codes and speaker-reference audio_16khz are insufficient'
             )
-        is_multiturn = bool(self.cfg.get('use_multiturn_dataset', False))
+        is_multiturn = any(key in batch for key in ('timestamp_turns', 'task', 'agent_mask'))
         frame_seconds = self.codec_model_samples_per_frame * self.frame_stacking_factor / self.sample_rate
         # Build CPU metadata in one pass, then transfer the completed targets once.
         labels = torch.full((text.size(0), num_frames), IGNORE_INDEX, dtype=torch.long)
@@ -2503,7 +2503,9 @@ class NemotronTTSModel(NemotronTTSBase):
             num_audio_codebooks=self.data_num_audio_codebooks,
             codec_model_samples_per_frame=self.codec_model_samples_per_frame,
             prior_scaling_factor=0.0,
-            load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
+            load_cached_codes_if_available=(
+                self.cfg.load_cached_codes_if_available and not getattr(self, 'use_timestamp_head', False)
+            ),
             dataset_type=dataset_type,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
             use_text_conditioning_tokenizer=True,
             text_conditioning_tokenizer_name=self.text_conditioning_tokenizer_name,

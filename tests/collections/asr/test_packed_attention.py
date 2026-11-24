@@ -826,6 +826,33 @@ class TestPackedAttentionArguments:
             torch.testing.assert_close(value.double(), reference, rtol=1e-4, atol=1e-5)
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("with_bias", [False, True], ids=["no_bias", "zero_bias"])
+    def test_reference_path_float16_gradient_stays_finite(self, with_bias):
+        """A query gradient that fits in float16 while an intermediate of the backward pass does not."""
+        context = PackedAttentionContext.from_lengths(torch.tensor([2]))
+        q = torch.zeros(2, 1, 16, dtype=torch.float64)
+        k = torch.zeros(2, 1, 16, dtype=torch.float64)
+        k[1, 0, 0] = 65504.0
+        v = torch.zeros(2, 1, 16, dtype=torch.float64)
+        v[:, 0, 0] = torch.tensor([-6.0, 6.0], dtype=torch.float64)
+
+        def run(dtype):
+            inputs = [t.to(dtype).requires_grad_() for t in (q, k, v)]
+            bias = torch.zeros(2, 1, 3, dtype=dtype) if with_bias else None
+            out = packed_attention(*inputs, context, rel_pos_bias=bias)
+            out.float().sum().backward()
+            return out, [t.grad for t in inputs]
+
+        out, grads = run(torch.float16)
+        reference, reference_grads = run(torch.float64)
+        assert out.dtype == torch.float16 and all(grad.dtype == torch.float16 for grad in grads)
+        torch.testing.assert_close(out.double(), reference, rtol=0.0, atol=1e-6)
+        assert reference_grads[0][:, 0, 0].tolist() == pytest.approx([49128.0, 49128.0])
+        for grad, reference_grad in zip(grads, reference_grads):
+            assert torch.isfinite(grad).all()
+            torch.testing.assert_close(grad.double(), reference_grad, rtol=1e-3, atol=1e-3)
+
+    @pytest.mark.unit
     def test_reference_path_stays_finite_in_float16(self):
         """Products of queries and keys beyond the float16 range whose scaled scores are in range.
 

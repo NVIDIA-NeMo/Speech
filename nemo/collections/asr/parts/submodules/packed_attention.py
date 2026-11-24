@@ -751,13 +751,16 @@ def _reference_packed_attention(
     # a product beyond the half-precision range whose scaled score is in range stays finite.
     # A scale above one is applied after the product, so that it does not enlarge an operand beyond the range.
     root = math.sqrt(min(scale, 1.0))
+    # float16 inputs are computed in float32 and the output is cast back: an intermediate of the forward
+    # or of the backward pass beyond the float16 range does not turn a representable result into inf
+    compute_dtype = torch.float32 if q.dtype == torch.float16 else q.dtype
     span_starts, span_ends = context.key_spans() if context.key_window is not None else (None, None)
     for start, end in context.sequence_slices:
         if end == start:
             continue
-        qi = q[start:end].transpose(0, 1)
-        ki = k[start:end].transpose(0, 1)
-        vi = v[start:end].transpose(0, 1)
+        qi = q[start:end].transpose(0, 1).to(compute_dtype)
+        ki = k[start:end].transpose(0, 1).to(compute_dtype)
+        vi = v[start:end].transpose(0, 1).to(compute_dtype)
         scores = torch.matmul(qi * root, (ki * root).transpose(-2, -1))
         if scale > 1.0:
             scores = scores * scale
@@ -780,7 +783,7 @@ def _reference_packed_attention(
         weights = torch.softmax(scores, dim=-1).to(vi.dtype)
         if dropout_p > 0.0:
             weights = torch.nn.functional.dropout(weights, p=dropout_p, training=True)
-        outputs.append(torch.matmul(weights, vi).transpose(0, 1))
+        outputs.append(torch.matmul(weights, vi).transpose(0, 1).to(q.dtype))
     return torch.cat(outputs, dim=0)
 
 

@@ -193,6 +193,10 @@ class ConvSubsampling(torch.nn.Module):
             and the product of the strides must equal `subsampling_factor`
         freq_pools: with `conv_strides`, a max-pool over the frequency axis after each stage, 1 for none
         out_bias: bias of the output projection
+
+    Note:
+        1D convolution stacks ('striding_conv1d', 'dw_striding_conv1d') run without masking
+        and are not padding-invariant.
     """
 
     def __init__(
@@ -429,7 +433,6 @@ class ConvSubsampling(torch.nn.Module):
                 in_channels = conv_channels
 
         elif subsampling == 'striding_conv1d':
-
             in_channels = feat_in
 
             self._stride = 2
@@ -470,7 +473,6 @@ class ConvSubsampling(torch.nn.Module):
                 in_channels = conv_channels
 
         elif subsampling == 'dw_striding_conv1d':
-
             in_channels = feat_in
 
             self._stride = 2
@@ -539,7 +541,6 @@ class ConvSubsampling(torch.nn.Module):
             self.out = torch.nn.Linear(in_channels * freq, feat_out, bias=out_bias)
             self.conv2d_subsampling = True
         elif subsampling in ["vggnet", "dw_striding", "striding"]:
-
             in_length = torch.tensor(feat_in, dtype=torch.float)
             out_length = calc_length(
                 lengths=in_length,
@@ -557,7 +558,10 @@ class ConvSubsampling(torch.nn.Module):
         else:
             raise ValueError(f"Not valid sub-sampling: {subsampling}!")
 
-        self.conv = MaskedConvSequential(*layers)
+        if self.conv2d_subsampling:
+            self.conv = MaskedConvSequential(*layers)
+        else:
+            self.conv = torch.nn.Sequential(*layers)
 
         # The kernels implement `dw_striding`'s layout, [conv, act] + (sampling_num - 1) x
         # [dw, pw, act], with ReLU baked in; a factor of 2 stops after [conv, act], leaving no
@@ -568,7 +572,8 @@ class ConvSubsampling(torch.nn.Module):
                 "use_triton=True was requested, but the fused kernels only cover dw_striding with "
                 "subsampling_factor >= 4 and a ReLU activation, falling back to PyTorch instead."
             )
-        self.conv.fuse_triton = supported and (TRITON_AVAILABLE if use_triton is None else use_triton)
+        if self.conv2d_subsampling:
+            self.conv.fuse_triton = supported and (TRITON_AVAILABLE if use_triton is None else use_triton)
 
     def get_sampling_frames(self):
         return [1, self.subsampling_factor]
@@ -808,7 +813,10 @@ class ConvSubsampling(torch.nn.Module):
             x = x.transpose(1, 2)
 
         # split inputs if chunking_factor is set
-        if self.subsampling_conv_chunking_factor != -1 and self.conv2d_subsampling:
+        if not self.conv2d_subsampling:
+            x = self.conv(x)
+            lengths = out_lengths
+        elif self.subsampling_conv_chunking_factor != -1:
             if self.subsampling_conv_chunking_factor == 1:
                 # if subsampling_conv_chunking_factor is 1, we split only if needed
                 # avoiding a bug / feature limiting indexing of tensors to 2**31
@@ -832,7 +840,7 @@ class ConvSubsampling(torch.nn.Module):
             else:
                 x, lengths = self.conv(x, lengths)
         else:
-            x, lengths = self.conv(x)
+            x, lengths = self.conv(x, lengths)
 
         # Flatten Channel and Frequency Axes
         if self.conv2d_subsampling:
@@ -1061,8 +1069,20 @@ def apply_channel_mask(tensor, mask):
     return tensor * expanded_mask
 
 
-def calculate_conv_output_size(input_size: torch.Tensor, kernel_size: int, stride: int, padding: tuple[int, int]):
-    """Calculate exact output size after convolution."""
+def calculate_conv_output_size(
+    input_size: torch.Tensor,
+    kernel_size: int,
+    stride: int,
+    padding: tuple[int, int],
+    ceil_mode: bool = False,
+):
+    """Calculate exact output size after convolution or pooling.
+
+    When ceil_mode is True, this matches PyTorch pooling output sizing only without padding
+    (PyTorch drops the last window when it starts in the right padding), which is the vggnet case.
+    """
+    if ceil_mode:
+        return (input_size + padding[0] + padding[1] - kernel_size + stride - 1) // stride + 1
     return (input_size + padding[0] + padding[1] - kernel_size) // stride + 1
 
 
@@ -1105,11 +1125,19 @@ class MaskedConvSequential(nn.Sequential):
             x = layer(x)
 
             # Update lengths for stride operations with proper padding
-            if hasattr(layer, 'stride') and layer.stride != (1, 1):
-                current_lengths = calculate_conv_output_size(
-                    current_lengths, layer.kernel_size[0], layer.stride[0], _layer_padding(layer)
-                )
-                mask = self._create_mask(x, current_lengths.long())
+            if hasattr(layer, 'stride'):
+                stride = _time_axis(layer.stride)
+                if stride != 1:
+                    kernel_size = _time_axis(layer.kernel_size)
+                    ceil_mode = getattr(layer, 'ceil_mode', False)
+                    current_lengths = calculate_conv_output_size(
+                        current_lengths,
+                        kernel_size,
+                        stride,
+                        _layer_padding(layer),
+                        ceil_mode=ceil_mode,
+                    )
+                    mask = self._create_mask(x, current_lengths.long())
 
         return x, current_lengths, mask
 

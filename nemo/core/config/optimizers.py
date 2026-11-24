@@ -253,8 +253,7 @@ class MuonParams(OptimizerParams):
         adam_lr_ratio: the AdamW learning rate is ``lr * adam_lr_ratio``
         adam_dim_threshold: matrices with a dimension of at least this size use AdamW
         use_muon: force or exclude the Muon update; None selects by shape
-        foreach: the per-parameter loop (False) or the multi-tensor form of the step
-            (batched Newton-Schulz, ``torch._foreach`` arithmetic; faster, more transient memory)
+        foreach: the multi-tensor step (True) or the per-parameter loop (False)
         capturable: keep the AdamW step count on the device, for a step captured in a CUDA graph
     """
 

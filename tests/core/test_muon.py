@@ -324,12 +324,8 @@ def _run_layered(optimizer: Muon, parameters: torch.nn.ParameterDict, steps: int
         optimizer.step()
 
 
-# The batched Newton-Schulz iteration computes the same bfloat16 arithmetic as the per-matrix one,
-# but a batched matrix product may round differently on some devices and shapes
-# (on CPU the two agree bitwise; on a GB300 four of 351 matrices of a 750-million-parameter model differed,
-# by up to 2.4 percent of the update after five iterations amplified the rounding),
-# so the Muon parameters are compared to within five percent of the update's scale
-# (the learning rate times the largest shape factor), and everything else bitwise.
+# A batched matrix product may round differently in bfloat16 than the single one,
+# so the Muon parameters are compared to within five percent of the update's scale, everything else bitwise.
 MUON_FOREACH_ATOL = 0.05 * LR * 2.5**0.5
 
 
@@ -447,9 +443,7 @@ class TestMuonForeach:
 
     @pytest.mark.unit
     def test_reduced_precision_parameters_differ_at_the_coefficient_rounding(self):
-        # the CPU torch._foreach scalar operations round each scalar coefficient to the parameter dtype,
-        # so with bfloat16 parameters the two forms agree to two bfloat16 ulps of a tensor's largest value,
-        # bitwise on CUDA and not on CPU
+        # the CPU torch._foreach scalar operations round each coefficient to the parameter dtype
         def two_ulps(tensor):
             return 2.0 ** (math.floor(math.log2(tensor.abs().max().item())) - 6)
 
@@ -626,8 +620,7 @@ class TestMuonCapturable:
     @pytest.mark.parametrize('capturable', [False, True])
     @pytest.mark.parametrize('tensor_rate', [False, True])
     def test_small_learning_rate_updates_half_precision_parameters(self, dtype, foreach, capturable, tensor_rate):
-        # the AdamW denominator divided by a small tensor step size (a tensor learning rate or a device step count)
-        # overflows float16, and the update would be exactly zero
+        # a denominator divided by a small tensor step size overflows float16: the update would be zero
         def run(learning_rate, **options):
             param = torch.nn.Parameter(torch.zeros(8, dtype=dtype))
             optimizer = Muon([param], lr=learning_rate, weight_decay=0.0, **options)
@@ -650,8 +643,7 @@ class TestMuonCapturable:
     @pytest.mark.parametrize('capturable', [False, True])
     @pytest.mark.parametrize('tensor_rate', [False, True])
     def test_large_quotient_stays_finite_for_half_precision_parameters(self, dtype, foreach, capturable, tensor_rate):
-        # a large first moment over a small denominator: the quotient of the second step, about 99,000,
-        # exceeds the float16 range, the update itself, about -5, does not
+        # the quotient of the second step, about 99,000, exceeds the float16 range; the update, about -5, does not
         def run(learning_rate, dtype, **options):
             param = torch.nn.Parameter(torch.zeros(8, dtype=dtype))
             optimizer = Muon(
@@ -674,7 +666,7 @@ class TestMuonCapturable:
         learning_rate = torch.tensor(1e-6) if tensor_rate else 1e-6
         result = run(learning_rate, dtype, foreach=foreach, capturable=capturable)
         assert torch.isfinite(result).all()
-        # the float16 epsilon is a subnormal number, 0.14 percent off, and the result rounds to the parameter dtype
+        # the float16 epsilon is subnormal, 0.14 percent off
         torch.testing.assert_close(result, reference, rtol=5e-3, atol=0.0)
 
     @pytest.mark.unit

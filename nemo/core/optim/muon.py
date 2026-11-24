@@ -73,47 +73,17 @@ class Muon(Optimizer):
     so the relative decay per step is the same fraction of the respective learning rate;
     set ``weight_decay: 0.0`` on a parameter group to exclude it.
 
-    ``foreach`` selects the form of the step.
-    The multi-tensor form (``True``, the default) runs one batched Newton-Schulz iteration
-    for all matrices of one shape
-    and the momentum, weight decay and AdamW arithmetic as ``torch._foreach`` operations,
-    a few dozen kernel launches per step instead of a sequence per parameter;
-    it allocates the stacked copies of the largest shape group and their iteration intermediates
-    while it runs.
-    The per-parameter loop (``False``) updates one parameter after the other.
-    Both forms keep the same per-parameter state, so a state dict moves between them,
-    and compute the same arithmetic for float32 parameters;
-    their updates differ only where the batched matrix products of the Newton-Schulz iteration
-    round differently in bfloat16, which leaves the iteration's error against a float64 evaluation
-    the same or smaller (about two percent in either form, the bfloat16 error of the iteration itself).
-    With bfloat16 or float16 parameters on CPU the multi-tensor form applies the scalar coefficients
-    (``momentum``, the AdamW coefficients, the decay factor) rounded to the parameter dtype,
-    as the CPU ``torch._foreach`` scalar operations do; the CUDA operations apply them exactly.
+    ``foreach=True`` (the default) runs one batched Newton-Schulz iteration per matrix shape
+    and the remaining arithmetic as ``torch._foreach`` operations:
+    faster, with transient memory for the stacked matrices of the largest shape group.
+    ``foreach=False`` updates one parameter after the other.
+    Both keep the same state and compute the same update up to bfloat16 rounding.
 
-    For a step captured in a CUDA graph, the learning rate and the AdamW step count must live on the device,
-    since the capture bakes Python numbers in:
-    pass ``lr`` as a one-element float32 or float64 tensor on the parameters' device,
-    which the step reads from ``param_groups[i]['lr']`` every time
-    (a scheduler writes the new value into that tensor in place, as ``torch.optim.lr_scheduler`` does),
-    and set ``capturable=True``, which keeps each parameter's AdamW step count as a float32 tensor on its device
-    and computes the bias corrections there.
-    A capture of the step without both raises.
-    Under ``torch.compile`` the step traces as one graph and runs the capturable form
-    (Dynamo sets ``capturable`` while tracing, as for ``torch.optim``), so construct the optimizer with
-    ``capturable=True`` or compile it before its first step; the multi-tensor form raises on Python step counts
-    (with ``fullgraph=True``; otherwise Dynamo breaks the graph there and runs the AdamW update eagerly).
-    The compiled step performs no capture check (``torch.cuda.is_current_stream_capturing`` has no trace),
-    so pass the learning rate as a tensor when the compiled step is captured; a Python one is baked in at the capture.
-    The Muon update of a compiled step differs from the eager one at the bfloat16 rounding of the Newton-Schulz
-    iteration, whose fused kernels round differently.
-    For float32 parameters, a tensor learning rate changes the updates at float32 rounding
-    (the orthogonal factor and the AdamW quotient are scaled by the tensor as separate products)
-    and the device step count changes the AdamW update at float32 rounding, the Muon update not at all;
-    the step then performs no host synchronization and no Python control flow on tensor values.
-    A state dict moves between ``capturable`` and ``foreach`` settings:
-    a loaded state keeps the options this instance was constructed with, and the step count is converted;
-    the learning rate is taken from the state dict, as in ``torch.optim``,
-    so load it before constructing the scheduler.
+    For a step captured in a CUDA graph or compiled with ``torch.compile``,
+    pass ``lr`` as a one-element float32 or float64 tensor on the parameters' device
+    (a scheduler updates it in place) and set ``capturable=True``,
+    which keeps the AdamW step counts on the device.
+    A loaded state dict keeps the ``foreach`` and ``capturable`` of this instance.
 
     Args:
         params: iterable of parameters or of parameter-group dicts
@@ -128,8 +98,7 @@ class Muon(Optimizer):
         adam_lr_ratio: the AdamW learning rate is ``lr * adam_lr_ratio``
         adam_dim_threshold: matrices with a dimension of at least this size fall back to AdamW
         use_muon: force (``True``) or exclude (``False``) the Muon update; ``None`` selects by shape
-        foreach: the per-parameter loop (``False``) or the multi-tensor form of the step
-            (``True``, faster, more transient memory, updates equal up to bfloat16 rounding), see above
+        foreach: the multi-tensor step (``True``) or the per-parameter loop (``False``), see above
         capturable: keep the AdamW step count on the device, for a step captured in a CUDA graph, see above
     """
 
@@ -262,7 +231,7 @@ class Muon(Optimizer):
             with torch.enable_grad():
                 loss = closure()
 
-        # checks of the eager step: Dynamo folds them away and runs the capturable form, see the class docstring
+        # checks of the eager step only: the capture query has no Dynamo trace
         capturing = (
             not torch.compiler.is_compiling()
             and torch.cuda.is_available()
@@ -491,10 +460,7 @@ def _adamw_update(
     step_size = lr / bias_correction1
     denom = (exp_avg_sq.sqrt() / (bias_correction2**0.5)).add_(eps)
     if isinstance(step_size, torch.Tensor):
-        # a tensor learning rate or step count scales the quotient, since `value` takes no tensor;
-        # dividing the denominator by it would give 0 / 0 at a zero learning rate
-        # and overflow a float16 denominator at a small one; the quotient itself can exceed the float16 range
-        # (a large first moment over a small denominator), so it and its product are computed in float32
+        # a tensor step size scales the quotient, in float32 for float16 (the quotient can exceed its range)
         param.addcmul_(_float32_range(exp_avg) / _float32_range(denom), step_size, value=-1.0)
     else:
         param.addcdiv_(exp_avg, denom, value=-step_size)
@@ -517,14 +483,11 @@ def _adamw_update_foreach(
             state['exp_avg'] = torch.zeros_like(param)
             state['exp_avg_sq'] = torch.zeros_like(param)
     beta1, beta2 = betas
-    # the bias corrections depend on the step count, which differs between parameters
-    # when one of them had no gradient in an earlier step:
-    # the device step counts of the capturable form carry it per parameter,
-    # the Python counts need one batch per count
+    # the step count differs between parameters after a step without a gradient: one batch per Python count
     if capturable:
         steps = [state['step'] for state in states]
         if not all(isinstance(step, torch.Tensor) for step in steps):
-            # reached under torch.compile only, which runs this form (Dynamo sets `capturable` while tracing)
+            # reached under torch.compile only: Dynamo sets `capturable` while tracing
             raise RuntimeError(
                 "The multi-tensor capturable Muon step needs the AdamW step counts on the device: "
                 "construct the optimizer with capturable=True (a loaded state dict is converted) "
@@ -550,8 +513,7 @@ def _adamw_update_foreach(
             torch._foreach_mul_(step_params, 1 - lr * weight_decay)
         denoms = torch._foreach_sqrt(exp_avg_sqs)
         if capturable:
-            # on the device: the step sizes `-lr / (1 - beta1^t)` and the bias corrections are tensors;
-            # the division and the product by per-parameter scalars run one kernel per parameter
+            # step sizes `-lr / (1 - beta1^t)` and bias corrections as device tensors, one per parameter
             steps = [states[index]['step'] for index in indices]
             negative_step_sizes = torch._foreach_pow(beta1, steps)
             torch._foreach_sub_(negative_step_sizes, 1)
@@ -563,9 +525,7 @@ def _adamw_update_foreach(
             torch._foreach_sqrt_(bias_correction2_sqrts)
             torch._foreach_div_(denoms, bias_correction2_sqrts)
             torch._foreach_add_(denoms, eps)
-            # the step size scales the quotient, as in the loop: folded into the denominator (torch's capturable Adam)
-            # it overflows a float16 denominator at a small learning rate, and the update becomes zero;
-            # the quotient and its product are computed in float32 for float16 parameters, see the loop
+            # as in the loop: the step size scales the quotient, in float32 for float16
             updates = torch._foreach_div(
                 [_float32_range(exp_avg) for exp_avg in exp_avgs], [_float32_range(denom) for denom in denoms]
             )
@@ -578,9 +538,7 @@ def _adamw_update_foreach(
             torch._foreach_add_(denoms, eps)
             step_size = lr / bias_correction1
             if isinstance(step_size, torch.Tensor):
-                # a tensor learning rate scales the quotient, since `value` takes no tensor;
-                # dividing the denominator by it would overflow a float16 one at a small learning rate;
-                # the quotient and its product are computed in float32 for float16 parameters, see the loop
+                # as in the loop: the step size scales the quotient, in float32 for float16
                 updates = torch._foreach_div(
                     [_float32_range(exp_avg) for exp_avg in exp_avgs], [_float32_range(denom) for denom in denoms]
                 )

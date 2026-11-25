@@ -38,6 +38,7 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 
 import torch
 import torch.distributed as dist
+import yaml
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf
 from torch import nn
@@ -88,6 +89,7 @@ _ASR_ENCODER_TYPES = {
     "fastconformer": ConformerEncoder,
     "transformer": TransformerEncoder,
 }
+_MAX_PROBE_CONFIG_BYTES = 1024 * 1024
 # Sections of the obsolete three-expert bundle schema, which cannot be mapped onto the current one.
 _LEGACY_THREE_EXPERT_BUNDLE_KEYS = (
     "speech_expert_cfg",
@@ -457,7 +459,8 @@ class ParallelExpertEncoderPT(ModelPT):
     def is_pe_nemo(cls, nemo_path: str) -> bool:
         """
         Return whether a local archive declares a ParallelExpertEncoderPT target.
-        Only the ``target`` field of ``model_config.yaml`` is inspected; unreadable archives return ``False``.
+        Only a literal ``target`` field of ``model_config.yaml`` is inspected.
+        Unreadable archives, malformed configs, links, and configs over 1 MiB return ``False``.
 
         Args:
             nemo_path (str): Path to a candidate local ``.nemo`` file.
@@ -472,16 +475,30 @@ class ParallelExpertEncoderPT(ModelPT):
                 for member in archive.getmembers():
                     if os.path.basename(member.name) != "model_config.yaml":
                         continue
+                    if not member.isreg() or not 0 < member.size <= _MAX_PROBE_CONFIG_BYTES:
+                        return False
                     stream = archive.extractfile(member)
                     if stream is None:
                         return False
-                    cfg = OmegaConf.create(stream.read().decode("utf-8"))
-                    if not str(cfg.get("target", "")).endswith("ParallelExpertEncoderPT"):
+                    with stream:
+                        cfg = yaml.safe_load(stream.read(_MAX_PROBE_CONFIG_BYTES + 1).decode("utf-8"))
+                    if not isinstance(cfg, dict):
                         return False
-                    # Keep the released public probe target-based. Runtime loading
-                    # uses the schema resolver and remains strict.
-                    return True
-        except (tarfile.TarError, OSError) as error:
+                    target = cfg.get("target", "")
+                    return (
+                        isinstance(target, str) and "${" not in target and target.endswith("ParallelExpertEncoderPT")
+                    )
+        except (
+            tarfile.TarError,
+            OSError,
+            UnicodeError,
+            ValueError,
+            RecursionError,
+            yaml.YAMLError,
+            KeyError,
+            IndexError,
+            AttributeError,
+        ) as error:
             logging.warning("[ParallelExpertEncoder] Could not inspect %s: %s", nemo_path, error)
             return False
         return False

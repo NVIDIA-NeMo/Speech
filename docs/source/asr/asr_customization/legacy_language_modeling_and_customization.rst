@@ -118,9 +118,6 @@ The width of the beam search (``--beam_width``) specifies the number of top cand
     Therefore it is possible to forward arguments for various beam search libraries such as ``flashlight``
     and ``pyctcdecode`` via the ``decoding`` subconfig.
 
-To learn more about evaluating the ASR models with N-gram LM, refer to the tutorial here: Offline ASR Inference with Beam Search and External Language Model Rescoring
-`Offline ASR Inference with Beam Search and External Language Model Rescoring <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Offline_ASR.ipynb>`_
-
 Beam Search Engines
 -------------------
 

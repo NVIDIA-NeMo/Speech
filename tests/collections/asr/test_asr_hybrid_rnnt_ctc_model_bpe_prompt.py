@@ -13,13 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import os
 import shutil
 import tempfile
 
 import pytest
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, open_dict
 
 from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models_prompt import EncDecHybridRNNTCTCBPEModelWithPrompt
 from nemo.collections.asr.parts.submodules import rnnt_beam_decoding as beam_decode
@@ -470,6 +471,38 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
         reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.unit
+    def test_wer_text_normalize(self, test_data_dir, hybrid_asr_model_with_prompt):
+        assert hybrid_asr_model_with_prompt.wer.wer_text_normalize is False
+        assert hybrid_asr_model_with_prompt.ctc_wer.wer_text_normalize is False
+
+        cfg = copy.deepcopy(hybrid_asr_model_with_prompt.cfg)
+        with open_dict(cfg):
+            cfg.wer_text_normalize = True
+        model = EncDecHybridRNNTCTCBPEModelWithPrompt(cfg=cfg)
+        assert model.wer.wer_text_normalize is True
+        assert model.ctc_wer.wer_text_normalize is True
+
+        # flag is preserved when WER is re-created
+        model.change_decoding_strategy(decoding_cfg=DictConfig({'strategy': 'greedy', 'greedy': {'max_symbols': 10}}))
+        assert model.wer.wer_text_normalize is True
+        model.change_decoding_strategy(decoding_cfg=DictConfig({'strategy': 'greedy'}), decoder_type='ctc')
+        assert model.ctc_wer.wer_text_normalize is True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            new_tokenizer_dir = os.path.join(tmpdir, 'tokenizer')
+            os.makedirs(new_tokenizer_dir, exist_ok=True)
+            shutil.copy2(
+                os.path.join(test_data_dir, "asr", "tokenizers", "an4_wpe_128", 'vocab.txt'), new_tokenizer_dir
+            )
+            model.change_vocabulary(new_tokenizer_dir=new_tokenizer_dir, new_tokenizer_type='wpe')
+        assert model.wer.wer_text_normalize is True
+        assert model.ctc_wer.wer_text_normalize is True
+
+    @pytest.mark.skipif(
+        not NUMBA_RNNT_LOSS_AVAILABLE,
+        reason='RNNTLoss has not been compiled with appropriate numba version.',
+    )
+    @pytest.mark.unit
     def test_decoding_change(self, hybrid_asr_model_with_prompt):
         assert isinstance(hybrid_asr_model_with_prompt.decoding.decoding, greedy_decode.GreedyBatchedRNNTInfer)
 
@@ -604,3 +637,56 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
         # Should not crash and should produce valid output
         assert encoded.shape[0] == 1
         assert encoded_len.shape[0] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('decoder_type', ['rnnt', 'ctc'])
+@pytest.mark.parametrize('timestamps', [True, False])
+def test_planned_chunking_skips_legacy_timestamp_setup(
+    hybrid_asr_model_with_prompt, monkeypatch, decoder_type, timestamps
+):
+    from nemo.collections.asr.parts.mixins.transcription import ChunkingConfig, TranscriptionMixin
+
+    model = hybrid_asr_model_with_prompt
+    model.change_decoding_strategy(decoder_type=decoder_type, verbose=False)
+    settings = copy.deepcopy(model.cfg)
+
+    def change_decoding_strategy(*args, **kwargs):
+        raise AssertionError('Planned chunking must not change the model decoding.')
+
+    seen = []
+    monkeypatch.setattr(model, 'change_decoding_strategy', change_decoding_strategy)
+    monkeypatch.setattr(
+        TranscriptionMixin,
+        'transcribe',
+        lambda self, audio, override_config=None, **kwargs: seen.append(override_config),
+    )
+    chunking = ChunkingConfig(chunk_size=10.0, context_size=1.0)
+    model.transcribe(['audio.wav'], chunking=chunking, timestamps=timestamps)
+    assert len(seen) == 1 and seen[0].chunking == chunking and seen[0].timestamps is timestamps
+    assert model.cfg == settings
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('decoder_type', ['rnnt', 'ctc'])
+def test_override_config_takes_precedence_over_the_chunking_argument(
+    hybrid_asr_model_with_prompt, monkeypatch, decoder_type
+):
+    from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models_prompt import HybridRNNTCTCPromptTranscribeConfig
+    from nemo.collections.asr.parts.mixins.transcription import ChunkingConfig, TranscriptionMixin
+
+    model = hybrid_asr_model_with_prompt
+    model.change_decoding_strategy(decoder_type=decoder_type, verbose=False)
+    changes, seen = [], []
+    monkeypatch.setattr(model, 'change_decoding_strategy', lambda *args, **kwargs: changes.append(args))
+    monkeypatch.setattr(
+        TranscriptionMixin,
+        'transcribe',
+        lambda self, audio, override_config=None, **kwargs: seen.append(override_config),
+    )
+    override = HybridRNNTCTCPromptTranscribeConfig(timestamps=True, return_hypotheses=True)
+    model.transcribe(['audio.wav'], timestamps=True, override_config=override, chunking=ChunkingConfig(10.0, 1.0))
+    # The override config has no chunking, so the plain path runs with the usual timestamp setup.
+    decoding_cfg = model.cfg.aux_ctc.decoding if decoder_type == 'ctc' else model.cfg.decoding
+    assert seen == [override] and override.chunking is None
+    assert changes and decoding_cfg.compute_timestamps

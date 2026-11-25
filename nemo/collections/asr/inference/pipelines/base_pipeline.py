@@ -30,15 +30,13 @@ from nemo.collections.asr.inference.model_wrappers.asr_inference_wrapper import 
 from nemo.collections.asr.inference.pipelines.pipeline_interface import PipelineInterface
 from nemo.collections.asr.inference.streaming.buffering.audio_bufferer import BatchedAudioBufferer
 from nemo.collections.asr.inference.streaming.buffering.cache_feature_bufferer import BatchedCacheFeatureBufferer
-from nemo.collections.asr.inference.streaming.buffering.feature_bufferer import BatchedFeatureBufferer
-from nemo.collections.asr.inference.streaming.framing.multi_stream import ContinuousBatchedRequestStreamer
-from nemo.collections.asr.inference.streaming.framing.request import FeatureBuffer, Frame, Request
+from nemo.collections.asr.inference.streaming.framing.multi_stream import ContinuousBatchedFrameStreamer
+from nemo.collections.asr.inference.streaming.framing.request import Frame
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
 from nemo.collections.asr.inference.streaming.state.state import StreamingState
 from nemo.collections.asr.inference.streaming.text.text_processing import StreamingTextProcessor
 from nemo.collections.asr.inference.utils.bpe_decoder import BPEDecoder
 from nemo.collections.asr.inference.utils.context_manager import CacheAwareContextManager
-from nemo.collections.asr.inference.utils.enums import RequestType
 from nemo.collections.asr.inference.utils.pipeline_utils import (
     check_existance_of_required_attributes,
     get_leading_punctuation_regex_pattern,
@@ -77,12 +75,12 @@ class TranscribeStepOutput:
     current_step_translation: str = ""
 
     @classmethod
-    def from_state(cls, state: StreamingState, request: Request, sep: str = ' ') -> 'TranscribeStepOutput':
+    def from_state(cls, state: StreamingState, request: Frame, sep: str = ' ') -> 'TranscribeStepOutput':
         """
         Create a TranscribeStepOutput from a StreamingState
         Args:
             state (StreamingState): The state to create the output from.
-            request (Request): The request to create the output from.
+            request (Frame): The request to create the output from.
             sep (str): The separator for the text postprocessor.
         Returns:
             TranscribeStepOutput: The output for the step.
@@ -174,12 +172,7 @@ class BasePipeline(PipelineInterface):
         pass
 
     @abstractmethod
-    def transcribe_step_for_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> None:
-        """Transcribe a step for feature buffers"""
-        pass
-
-    @abstractmethod
-    def get_request_generator(self) -> ContinuousBatchedRequestStreamer:
+    def get_request_generator(self) -> ContinuousBatchedFrameStreamer:
         """Return the request generator."""
         pass
 
@@ -258,11 +251,11 @@ class BasePipeline(PipelineInterface):
             lcp = os.path.commonprefix([prev_prefix, new_prefix])
             step_output.current_step_translation = new_prefix[len(lcp) :]
 
-    def transcribe_step(self, requests: list[Request]) -> list[TranscribeStepOutput]:
+    def transcribe_step(self, requests: list[Frame]) -> list[TranscribeStepOutput]:
         """
         Transcribe step
         Args:
-            requests (list[Request]): List of Request objects.
+            requests (list[Frame]): List of Frame objects.
         Returns:
             list[TranscribeStepOutput]: List of TranscribeStepOutput objects.
         """
@@ -274,13 +267,8 @@ class BasePipeline(PipelineInterface):
                 self.init_state(request.stream_id, request.options)
             states.append(self.get_state(request.stream_id))
 
-        # Perform the transcribe step for the frames or feature buffers
-        if isinstance(requests[0], Frame):
-            self.transcribe_step_for_frames(frames=requests)
-        elif isinstance(requests[0], FeatureBuffer):
-            self.transcribe_step_for_feature_buffers(fbuffers=requests)
-        else:
-            raise ValueError(f"Invalid request type: {type(requests[0])}")
+        # Perform the transcribe step for the frames
+        self.transcribe_step_for_frames(frames=requests)
 
         # Create current step output for each request
         outputs = []
@@ -326,12 +314,12 @@ class BasePipeline(PipelineInterface):
         self.model_stride_in_milliseconds = asr_model.get_model_stride(in_milliseconds=True)
 
     def update_partial_transcript(
-        self, requests: list[Request], tokenizer: TokenizerSpec, leading_regex_pattern: str
+        self, requests: list[Frame], tokenizer: TokenizerSpec, leading_regex_pattern: str
     ) -> None:
         """
         Update partial and current step transcripts from the state.
         Args:
-            requests (list[Request]): List of Request objects.
+            requests (list[Frame]): List of Frame objects.
             tokenizer (TokenizerSpec): Used to convert tokens into text
             leading_regex_pattern (str): Regex pattern for the punctuation marks.
         """
@@ -424,30 +412,12 @@ class BasePipeline(PipelineInterface):
         """Initialize the bufferer."""
         check_existance_of_required_attributes(
             self,
-            [
-                'request_type',
-                'sample_rate',
-                'buffer_size_in_secs',
-                'preprocessor_config',
-                'device',
-            ],
+            ['sample_rate', 'buffer_size_in_secs'],
         )
 
-        if self.request_type is RequestType.FEATURE_BUFFER:
-            # Feature buffering: It will be used when the input is feature buffers
-            self.bufferer = BatchedFeatureBufferer(
-                sample_rate=self.sample_rate,
-                buffer_size_in_secs=self.buffer_size_in_secs,
-                preprocessor_cfg=self.preprocessor_config,
-                device=self.device,
-            )
-        elif self.request_type is RequestType.FRAME:
-            # Audio buffering: It will be used when the input is audio frames
-            self.bufferer = BatchedAudioBufferer(
-                sample_rate=self.sample_rate, buffer_size_in_secs=self.buffer_size_in_secs
-            )
-        else:
-            raise ValueError(f"Unknown request type: {self.request_type}")
+        self.bufferer = BatchedAudioBufferer(
+            sample_rate=self.sample_rate, buffer_size_in_secs=self.buffer_size_in_secs
+        )
 
     def init_bufferer_for_cache_aware_streaming(self) -> None:
         """Initialize the bufferer for cache-aware streaming."""
@@ -582,6 +552,7 @@ class BasePipeline(PipelineInterface):
         audio_filepaths: list[str],
         options: list[ASRRequestOptions] | None = None,
         progress_bar: ProgressBar | None = None,
+        audio_samples: list[Tensor] | None = None,
     ) -> dict:
         """
         Orchestrates reading from audio_filepaths in a streaming manner,
@@ -590,6 +561,8 @@ class BasePipeline(PipelineInterface):
             audio_filepaths (list[str]): List of audio filepaths to transcribe.
             options (list[ASRRequestOptions] | None): List of RequestOptions for each stream.
             progress_bar (ProgressBar | None): Progress bar to show the progress. Default is None.
+            audio_samples (list[Tensor] | None): Preloaded audio samples, one tensor per filepath, already at
+                the pipeline's sample rate. When given, no audio file is read from disk during the run.
         Returns:
             dict: A dictionary containing transcriptions and segments for each stream.
         """
@@ -604,7 +577,7 @@ class BasePipeline(PipelineInterface):
             raise ValueError("options must be the same length as audio_filepaths")
 
         request_generator = self.get_request_generator()
-        request_generator.set_audio_filepaths(audio_filepaths, options)
+        request_generator.set_audio_filepaths(audio_filepaths, options, audio_samples=audio_samples)
         request_generator.set_progress_bar(progress_bar)
 
         pipeline_output = {}

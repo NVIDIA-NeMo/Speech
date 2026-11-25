@@ -21,6 +21,7 @@ from nemo.collections.common.data.fallback import FallbackDataset
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.collections.common.data.lhotse.broadcasting import BroadcastingDataLoader, is_dp_source_rank
 from nemo.collections.common.tokenizers import TokenizerSpec
+from nemo.lightning.callback_group import callback_context
 
 
 class DataModule(LightningDataModule):
@@ -88,18 +89,19 @@ class DataModule(LightningDataModule):
             return None
         mesh = self._get_device_mesh()
         if self._train_dl is None:
-            if is_dp_source_rank(mesh):
-                source = get_lhotse_dataloader_from_config(
-                    config=self.cfg.train_ds,
-                    global_rank=self._get_dp_rank(),
-                    world_size=self._get_world_size(),
-                    dataset=self._dataset_for_config(self.cfg.train_ds, training=True),
-                    tokenizer=self.tokenizer,
-                    dp_group=self._get_dp_group(),
-                )
-            else:
-                source = None
-            self._train_dl = BroadcastingDataLoader(source=source, device_mesh=mesh)
+            with callback_context('on_dataloader_init_start', 'on_dataloader_init_end'):
+                if is_dp_source_rank(mesh):
+                    source = get_lhotse_dataloader_from_config(
+                        config=self.cfg.train_ds,
+                        global_rank=self._get_dp_rank(),
+                        world_size=self._get_world_size(),
+                        dataset=self._dataset_for_config(self.cfg.train_ds, training=True),
+                        tokenizer=self.tokenizer,
+                        dp_group=self._get_dp_group(),
+                    )
+                else:
+                    source = None
+                self._train_dl = BroadcastingDataLoader(source=source, device_mesh=mesh)
         return self._train_dl
 
     # state_dict / load_state_dict are intentionally NOT overridden.

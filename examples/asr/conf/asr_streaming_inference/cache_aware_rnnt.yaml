@@ -132,7 +132,6 @@ streaming:
   use_cache: true                             # Whether to use cache for streaming
   use_feat_cache: true                        # Whether to cache mel-spec features, set false to re-calculate all mel-spec features in audio buffer
   chunk_size_in_secs: null                    # Amount of audio to load for each streaming step, e.g., 0.08s for FastConformer. Set to `null` for using default size equal to 1+lookahead frames.
-  request_type: frame                         # Type of request: frame or feature_buffer
   flush_size_in_secs: 0.0                     # Silence appended per stream so the decoder can flush its tail; 0.0 appends none
   num_slots: 256                             # Number of slots in the context manager: must be >= batch_size
 
@@ -140,6 +139,7 @@ streaming:
 # ========================
 # Pipeline settings
 # ========================
+preload_audio: false                          # Set true to read all audio into host memory before the timed loop, so RTFx excludes disk I/O
 matmul_precision: high                        # Matrix multiplication precision: highest, high, medium
 log_level: 20                                 # Logging level: 0 (NOTSET), 10 (DEBUG), 20 (INFO), 30 (WARNING), 40 (ERROR), 50 (CRITICAL)
 pipeline_type: cache_aware                    # Pipeline type: buffered, cache_aware

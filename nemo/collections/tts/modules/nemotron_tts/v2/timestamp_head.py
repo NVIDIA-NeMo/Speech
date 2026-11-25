@@ -249,6 +249,7 @@ class CTCTimestampHead(nn.Module):
         input_length: Optional[int] = None,
         input_start: int = 0,
         return_predictions: bool = False,
+        word_intervals: Optional[Sequence[Mapping] | torch.Tensor] = None,
     ) -> dict:
         """Return weighted loss, raw FP32 CTC/KL, and feasibility diagnostics.
 
@@ -264,6 +265,10 @@ class CTCTimestampHead(nn.Module):
         chunks, without retaining full-vocabulary logits.
 
         ``teacher=None`` supports transcript-only CTC when distillation is off.
+        Optional word intervals specify exclusive ``token_start``/``token_end``
+        transcript ranges and ``start_frame``/``end_frame`` CTC-subframe ranges.
+        Their additional CTC loss uses the full vocabulary normalization and is
+        returned separately from ``loss``. Overlapping time windows are allowed.
         """
         from torch.utils.checkpoint import checkpoint
 
@@ -363,6 +368,62 @@ class CTCTimestampHead(nn.Module):
             'supervised_subframes': ctc_length,
             'distilled_subframes': distillation_mask[:length].sum().to(device=device),
         }
+        if word_intervals is not None:
+            fields = ('token_start', 'token_end', 'start_frame', 'end_frame')
+            if isinstance(word_intervals, torch.Tensor):
+                if word_intervals.ndim != 2 or word_intervals.size(1) != len(fields):
+                    raise ValueError(
+                        'word_intervals must have four columns: token_start, token_end, start_frame, end_frame'
+                    )
+                word_intervals = [dict(zip(fields, row)) for row in word_intervals.detach().cpu().tolist()]
+            intervals, skipped, infeasible = [], 0, 0
+            for word in word_intervals:
+                token_start, token_end, left, right = (word[key] for key in fields)
+                if any(
+                    isinstance(value, bool) or not isinstance(value, int)
+                    for value in (token_start, token_end, left, right)
+                ):
+                    raise ValueError('Word interval token and subframe indices must be integers')
+                left, right = max(left, input_start), min(right, length)
+                if not 0 <= token_start < token_end <= targets.numel() or right <= left:
+                    skipped += 1
+                    continue
+                word_targets = targets[token_start:token_end]
+                required = word_targets.numel() + int(word_targets[1:].eq(word_targets[:-1]).sum())
+                if right - left < required:
+                    infeasible += 1
+                    continue
+                intervals.append((left, right, token_start, token_end))
+
+            # Group similar lengths and bound padded DP inputs for long turns.
+            groups, group = [], []
+            for interval in sorted(intervals, key=lambda item: item[1] - item[0]):
+                padded_elements = (interval[1] - interval[0]) * (len(group) + 1) * (compact_ids.numel() + 1)
+                if group and (len(group) == 64 or padded_elements > 8_000_000):
+                    groups.append(group)
+                    group = []
+                group.append(interval)
+            if group:
+                groups.append(group)
+            word_losses = []
+            for group in groups:
+                sequences = [compact_log_probs[left:right] for left, right, _, _ in group]
+                log_probs = nn.utils.rnn.pad_sequence(sequences, padding_value=float('-inf'))
+                input_lengths = torch.tensor([right - left for left, right, _, _ in group])
+                target_lengths = torch.tensor([last - first for _, _, first, last in group])
+                valid = torch.arange(log_probs.size(0), device=device)[:, None] < input_lengths.to(device)[None]
+                blank_padding = log_probs.new_full((log_probs.size(-1),), float('-inf'))
+                blank_padding[0] = 0
+                log_probs = torch.where(valid[..., None], log_probs, blank_padding)
+                word_targets = torch.cat([mapped_targets[first:last] for _, _, first, last in group])
+                losses = F.ctc_loss(log_probs, word_targets, input_lengths, target_lengths, blank=0, reduction='none')
+                word_losses.append((losses / target_lengths.to(device)).sum())
+            result.update(
+                word_ctc_loss=torch.stack(word_losses).sum() / len(intervals) if word_losses else zero,
+                word_ctc_valid_intervals=len(intervals),
+                word_ctc_infeasible_intervals=infeasible,
+                word_ctc_skipped_intervals=skipped,
+            )
         if return_predictions:
             result['predicted_ids'] = (
                 torch.cat(prediction_chunks) if prediction_chunks else torch.empty(0, dtype=torch.long, device=device)
@@ -873,6 +934,133 @@ class TTSCtcTokenizer:
         if not 0 <= token < self.vocab_size:
             raise ValueError('Remove CTC blank and ignored IDs before decoding the TTS vocabulary')
         return self._names[bisect_right(self._offsets, token) - 1]
+
+
+def map_tts_ctc_word_intervals(tokenizer, text, token_ids, words, audio_duration):
+    """Map complete native input BPE occurrences to forced-aligned word intervals.
+
+    Offsets come from one full-text native tokenization and must reproduce the
+    actual conditioning IDs exactly. No target is re-tokenized per word. BPEs
+    spanning words merge their intervals; standalone punctuation joins the
+    nearest lexical word. Crops and incompatible transcripts are skipped.
+    """
+    from bisect import bisect_left, bisect_right
+
+    def result(error, segments=()):
+        return dict(
+            segments=list(segments),
+            error=error,
+            token_coverage=0.0 if error else 1.0,
+            merged_word_groups=0 if error else len(words) - len(segments),
+        )
+
+    if not isinstance(text, str) or not text or not words:
+        return result('empty_transcript')
+    try:
+        duration = float(audio_duration)
+        times = [(float(word['start']), float(word['end'])) for word in words]
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return result('invalid_word_times')
+    if (
+        not math.isfinite(duration)
+        or duration <= 0
+        or any(
+            not math.isfinite(start) or not math.isfinite(end) or not 0 <= start < end <= duration + 1e-6
+            for start, end in times
+        )
+        or any(right[0] < left[1] - 1e-6 for left, right in zip(times, times[1:]))
+    ):
+        return result('invalid_word_times')
+
+    lexical, starts, ends = _lexical_text_offsets(text)
+    word_ends, cursor = [], 0
+    try:
+        for word in words:
+            unit, _, _ = _lexical_text_offsets(word['word'])
+            if not unit:
+                return result('nonlexical_teacher_word')
+            if lexical[cursor : cursor + len(unit)] != unit:
+                return result('transcript_mismatch')
+            cursor += len(unit)
+            word_ends.append(cursor)
+    except (KeyError, TypeError):
+        return result('transcript_mismatch')
+    if cursor != len(lexical) or not lexical:
+        return result('transcript_mismatch')
+
+    native = tokenizer.tokenizer.tokenizers[tokenizer.tokenizer_name]
+    try:
+        encoded = native(text, return_offsets_mapping=True, add_special_tokens=False)
+        offset = tokenizer.tokenizer.tokenizer_offsets[tokenizer.tokenizer_name]
+        encoded_ids = [int(token) + offset for token in encoded['input_ids']]
+        offsets = encoded['offset_mapping']
+    except (AttributeError, KeyError, NotImplementedError, TypeError, ValueError):
+        return result('offsets_unavailable')
+    if isinstance(token_ids, torch.Tensor):
+        token_ids = token_ids.detach().cpu().tolist()
+    if encoded_ids != list(token_ids):
+        return result('input_token_mismatch')
+    if not encoded_ids or not isinstance(offsets, Sequence) or len(offsets) != len(encoded_ids):
+        return result('invalid_token_offsets')
+
+    ownership, previous = [], (0, 0)
+    for bounds in offsets:
+        if not isinstance(bounds, Sequence) or len(bounds) != 2:
+            return result('invalid_token_offsets')
+        left, right = bounds
+        if not all(isinstance(value, int) and not isinstance(value, bool) for value in bounds) or not (
+            0 <= left < right <= len(text) and left >= previous[0] and right >= previous[1]
+        ):
+            return result('invalid_token_offsets')
+        previous = left, right
+        first, last = bisect_right(ends, left), bisect_left(starts, right)
+        if first == last:
+            following = bisect_left(starts, right)
+            preceding = following - 1
+            nearest = (
+                preceding
+                if preceding >= 0 and (following == len(starts) or left - ends[preceding] <= starts[following] - right)
+                else following
+            )
+            first = last = nearest
+        else:
+            last -= 1
+        ownership.append((bisect_right(word_ends, first), bisect_right(word_ends, last)))
+
+    segments, token_start, word_start = [], 0, 0
+    word_end = ownership[0][1]
+    if ownership[0][0] != 0:
+        return result('uncovered_word')
+    for index, (left, right) in enumerate(ownership[1:], 1):
+        if left <= word_end:
+            word_end = max(word_end, right)
+            continue
+        if left != word_end + 1:
+            return result('uncovered_word')
+        segments.append(
+            dict(token_start=token_start, token_end=index, start=times[word_start][0], end=times[word_end][1])
+        )
+        token_start, word_start, word_end = index, left, right
+    if word_end != len(words) - 1:
+        return result('uncovered_word')
+    segments.append(
+        dict(token_start=token_start, token_end=len(encoded_ids), start=times[word_start][0], end=times[word_end][1])
+    )
+    return result(None, segments)
+
+
+def _lexical_text_offsets(text):
+    """Retain source-character spans while comparing casefolded Unicode lexemes."""
+    import unicodedata
+
+    characters, starts, ends = [], [], []
+    for index, character in enumerate(text):
+        for normalized in unicodedata.normalize('NFKD', character).casefold():
+            if unicodedata.category(normalized)[0] in 'LMN':
+                characters.append(normalized)
+                starts.append(index)
+                ends.append(index + 1)
+    return ''.join(characters), starts, ends
 
 
 def _frame_coordinate(seconds: float, frame_seconds: float) -> float:

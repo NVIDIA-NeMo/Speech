@@ -57,6 +57,7 @@ from nemo.collections.tts.modules.nemotron_tts.v2.timestamp_head import (
     TIMESTAMP_LABELS,
     add_timestamp_markers,
     decode_ctc_tokens,
+    map_tts_ctc_word_intervals,
     plot_ctc_timestamp_alignment,
     plot_timestamp_alignment,
     reconcile_timestamp_eos,
@@ -174,6 +175,12 @@ class NemotronTTSModel(NemotronTTSBase):
         self.tts_ctc_loss_weight = float(self.tts_ctc_head_config.get('loss_weight', 0.1))
         if not math.isfinite(self.tts_ctc_loss_weight) or self.tts_ctc_loss_weight < 0:
             raise ValueError('tts_ctc_head.loss_weight must be finite and nonnegative')
+        self.tts_ctc_word_interval_config = dict(self.tts_ctc_head_config.get('word_interval', {}) or {})
+        for key, default in (('weight', 1.0), ('tolerance_seconds', 0.08)):
+            value = self.tts_ctc_word_interval_config.get(key, default)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+                raise ValueError(f'tts_ctc_head.word_interval.{key} must be finite and nonnegative')
+            self.tts_ctc_word_interval_config[key] = float(value)
 
         self.label_smoothing = cfg.get('label_smoothing', 0.1)
         self.cross_entropy_loss = nn.CrossEntropyLoss(reduction='none', label_smoothing=self.label_smoothing)
@@ -324,7 +331,10 @@ class NemotronTTSModel(NemotronTTSBase):
 
             config = (
                 self.ctc_timestamp_head_config
-                if getattr(self, 'use_ctc_timestamp_head', False)
+                if (
+                    getattr(self, 'use_ctc_timestamp_head', False)
+                    or getattr(self, 'use_tts_ctc_word_intervals', False)
+                )
                 else self.timestamp_head_config
             )
             teacher = NemotronASRTimestampAligner(config.get('aligner', {}))
@@ -337,7 +347,7 @@ class NemotronTTSModel(NemotronTTSBase):
         return teacher
 
     def _prepare_timestamp_targets(
-        self, batch, text, audio_codes_lens, num_frames, *, diagnostics=None, ctc_targets=None
+        self, batch, text, audio_codes_lens, num_frames, *, diagnostics=None, ctc_targets=None, word_targets=None
     ):
         """Align independent GT waveform turns and restore classes to the audio target grid."""
         if batch is None:
@@ -424,7 +434,7 @@ class NemotronTTSModel(NemotronTTSBase):
             if ctc_targets is not None:
                 teacher_options = dict(
                     return_ctc=True,
-                    align_words=getattr(self, 'use_timestamp_head', False),
+                    align_words=getattr(self, 'use_timestamp_head', False) or word_targets is not None,
                     distillation_topk=self.ctc_timestamp_head_config.get('distillation_topk', 32),
                 )
             with torch.no_grad():
@@ -441,6 +451,15 @@ class NemotronTTSModel(NemotronTTSBase):
             for turn_index, ((sample, start, end, offset, turn, complete_turn), record) in enumerate(
                 zip(metadata, records)
             ):
+                if word_targets is not None:
+                    word_targets.append(
+                        dict(
+                            batch_index=sample,
+                            turn_index=batch['timestamp_turns'][sample].index(turn) if turn is not None else 0,
+                            words=record.get('words', []),
+                            error=record.get('error'),
+                        )
+                    )
                 if ctc_targets is not None and record.get('ctc') is not None:
                     ctc_targets.append(
                         dict(
@@ -455,7 +474,9 @@ class NemotronTTSModel(NemotronTTSBase):
                             turn_index=batch['timestamp_turns'][sample].index(turn) if turn is not None else 0,
                         )
                     )
-                if ctc_targets is not None and not getattr(self, 'use_timestamp_head', False):
+                if (ctc_targets is not None or word_targets is not None) and not getattr(
+                    self, 'use_timestamp_head', False
+                ):
                     continue
                 if record.get('error') or not record.get('words'):
                     metrics['invalid_turns'] += 1
@@ -620,6 +641,53 @@ class NemotronTTSModel(NemotronTTSBase):
                 )
         return result
 
+    def _attach_tts_ctc_word_intervals(self, targets, word_targets):
+        """Map teacher word times onto the existing target occurrences and audio grid."""
+        records = {(item['batch_index'], item['turn_index']): item for item in word_targets}
+        metrics = dict(
+            word_interval_mapping_turns=0,
+            word_interval_mapping_failed_turns=0,
+            word_interval_teacher_failed_turns=0,
+            word_interval_merged_word_groups=0,
+            word_interval_target_tokens=0,
+            word_interval_mapped_tokens=0,
+        )
+        interval = self.codec_model_samples_per_frame / self.sample_rate / 2
+        tolerance = self.tts_ctc_word_interval_config['tolerance_seconds']
+        for target in targets:
+            target['word_intervals'] = []
+            metrics['word_interval_target_tokens'] += len(target['token_ids'])
+            record = records.get((target['batch_index'], target['turn_index']))
+            if record is None or record.get('error') or not record.get('words'):
+                metrics['word_interval_teacher_failed_turns'] += 1
+                continue
+            mapping = map_tts_ctc_word_intervals(
+                self.tts_ctc_tokenizer,
+                target['reference_text'],
+                target['token_ids'],
+                record['words'],
+                target['audio_duration'],
+            )
+            if mapping['error'] or not mapping['segments']:
+                metrics['word_interval_mapping_failed_turns'] += 1
+                continue
+            phase = target['audio_start_seconds'] - target['start_frame'] * interval * 2
+            target['word_intervals'] = [
+                dict(
+                    token_start=segment['token_start'],
+                    token_end=segment['token_end'],
+                    start_frame=math.floor((segment['start'] + phase - tolerance) / interval + 1e-6),
+                    end_frame=math.ceil((segment['end'] + phase + tolerance) / interval - 1e-6),
+                )
+                for segment in mapping['segments']
+            ]
+            metrics['word_interval_mapping_turns'] += 1
+            metrics['word_interval_merged_word_groups'] += mapping['merged_word_groups']
+            metrics['word_interval_mapped_tokens'] += sum(
+                segment['token_end'] - segment['token_start'] for segment in mapping['segments']
+            )
+        return metrics
+
     def _compute_tts_ctc_loss(
         self, hidden, targets, audio_codes_target, audio_codes_lens, agent_mask=None, *, collect_predictions=False
     ):
@@ -649,6 +717,9 @@ class NemotronTTSModel(NemotronTTSBase):
         head = self.ctc_timestamp_head if source == 'aligner' else self.tts_ctc_head
         zero = head(hidden[0, :0]).float().sum() * 0
         losses, ctc_losses, kd_losses = [], [], []
+        word_losses = []
+        word_counts = dict(word_ctc_valid_intervals=0, word_ctc_infeasible_intervals=0, word_ctc_skipped_intervals=0)
+        use_word_intervals = source == 'tts' and getattr(self, 'use_tts_ctc_word_intervals', False)
         frames = skipped = infeasible = 0
         captured = []
         interval = self.codec_model_samples_per_frame / self.sample_rate / 2
@@ -697,8 +768,15 @@ class NemotronTTSModel(NemotronTTSBase):
                 input_start=int(valid.nonzero()[0]),
                 **({'distillation_mask': valid[:input_length]} if aligned is not None else {}),
                 **({'return_predictions': True} if collect_predictions else {}),
+                **({'word_intervals': target.get('word_intervals', [])} if use_word_intervals else {}),
             )
-            losses.append(result['loss'])
+            value = result['loss']
+            if use_word_intervals:
+                word_losses.append(result['word_ctc_loss'])
+                value = value + self.tts_ctc_word_interval_config['weight'] * result['word_ctc_loss']
+                for key in word_counts:
+                    word_counts[key] += result[key]
+            losses.append(value)
             ctc_losses.append(result['ctc_loss'])
             kd_losses.append(result['distillation_loss'])
             infeasible += int(not result['ctc_valid'])
@@ -719,6 +797,8 @@ class NemotronTTSModel(NemotronTTSBase):
         )
         if collect_predictions:
             metrics.update(self._collect_ctc_timestamp_predictions(captured, diagnostics, source=source))
+        if use_word_intervals:
+            metrics.update(word_counts, word_ctc_loss=average(word_losses).detach())
         return average(losses), metrics
 
     def _collect_ctc_timestamp_predictions(self, captured, diagnostics=None, *, source='aligner'):
@@ -1843,6 +1923,9 @@ class NemotronTTSModel(NemotronTTSBase):
         use_timestamp_head = getattr(self, 'use_timestamp_head', False) and not return_policy_logits
         use_ctc_timestamp_head = getattr(self, 'use_ctc_timestamp_head', False) and not return_policy_logits
         use_tts_ctc_head = getattr(self, 'use_tts_ctc_head', False) and not return_policy_logits
+        use_word_intervals = use_tts_ctc_head and getattr(self, 'use_tts_ctc_word_intervals', False)
+        word_targets = [] if use_word_intervals else None
+        word_interval_metrics = None
         tts_ctc_targets = None
         if use_tts_ctc_head:
             native_frames = (audio_codes.size(-1) + self.frame_stacking_factor - 1) // self.frame_stacking_factor + 1
@@ -1852,7 +1935,7 @@ class NemotronTTSModel(NemotronTTSBase):
         ctc_timestamp_targets = [] if use_ctc_timestamp_head else None
         ctc_timestamp_diagnostics = [] if use_ctc_timestamp_head and return_ctc_timestamp_diagnostics else None
         timestamp_diagnostics = [] if use_timestamp_head and return_timestamp_diagnostics else None
-        if use_timestamp_head or use_ctc_timestamp_head:
+        if use_timestamp_head or use_ctc_timestamp_head or use_word_intervals:
             num_frames = (audio_codes.size(-1) + self.frame_stacking_factor - 1) // self.frame_stacking_factor + 1
             timestamp_targets, timestamp_mask, timestamp_metrics, timestamp_terminals = (
                 self._prepare_timestamp_targets(
@@ -1862,8 +1945,11 @@ class NemotronTTSModel(NemotronTTSBase):
                     num_frames,
                     diagnostics=timestamp_diagnostics,
                     ctc_targets=ctc_timestamp_targets,
+                    **({'word_targets': word_targets} if use_word_intervals else {}),
                 )
             )
+        if use_word_intervals:
+            word_interval_metrics = self._attach_tts_ctc_word_intervals(tts_ctc_targets, word_targets)
 
         # Select training mode
         selected_training_mode = training_mode
@@ -2349,6 +2435,8 @@ class NemotronTTSModel(NemotronTTSBase):
                 collect_predictions=mode == 'val',
             )
             loss = loss + self.tts_ctc_loss_weight * tts_ctc_loss
+            if word_interval_metrics is not None:
+                tts_ctc_metrics.update(word_interval_metrics)
 
         aligned_text_loss = aligned_text_targets = aligned_text_mask = None
         aligned_text_diagnostics = None
@@ -3192,7 +3280,11 @@ class NemotronTTSModel(NemotronTTSBase):
             prior_scaling_factor=0.0,
             load_cached_codes_if_available=(
                 self.cfg.load_cached_codes_if_available
-                and not (getattr(self, 'use_timestamp_head', False) or getattr(self, 'use_ctc_timestamp_head', False))
+                and not (
+                    getattr(self, 'use_timestamp_head', False)
+                    or getattr(self, 'use_ctc_timestamp_head', False)
+                    or getattr(self, 'use_tts_ctc_word_intervals', False)
+                )
             ),
             dataset_type=dataset_type,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
             use_text_conditioning_tokenizer=True,
@@ -3279,7 +3371,9 @@ class NemotronTTSModel(NemotronTTSBase):
                 load_cached_codes_if_available=(
                     self.cfg.load_cached_codes_if_available
                     and not (
-                        getattr(self, 'use_timestamp_head', False) or getattr(self, 'use_ctc_timestamp_head', False)
+                        getattr(self, 'use_timestamp_head', False)
+                        or getattr(self, 'use_ctc_timestamp_head', False)
+                        or getattr(self, 'use_tts_ctc_word_intervals', False)
                     )
                 ),
                 dataset_type=mode,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)

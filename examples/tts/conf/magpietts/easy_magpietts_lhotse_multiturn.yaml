@@ -53,6 +53,10 @@ model:
     projection_size: 256
     loss_weight: 0.1
     chunk_size: 128
+    word_interval:
+      enabled: false
+      weight: 1.0
+      tolerance_seconds: 0.08
 
   # Decoder backend selection
   # Options: "huggingface" (default), "nemotron_h"

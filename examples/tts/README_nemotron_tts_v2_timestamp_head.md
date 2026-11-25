@@ -92,10 +92,9 @@ The comparison recipe starts with outer weight 0.1 for each head. Existing
 ASR CTC and distillation component weights remain 1.0. The native head uses
 the selected TTS input BPE IDs directly for ordinary CTC, excluding padding
 and model control markers. It does not tokenize the transcript again.
-Its supervision is independent of ASR alignment success. Enable the native
-head alone with `use_ctc_timestamp_head=false` to avoid loading the ASR
-teacher; when both heads are enabled, the existing ASR pass serves only the
-teacher-dependent head.
+Its global CTC supervision is independent of ASR alignment success. With
+word-interval supervision disabled, enable the native head alone with
+`use_ctc_timestamp_head=false` to avoid loading the ASR teacher.
 
 `train/tts_ctc_loss` and `val/tts_ctc_loss` report the native head's loss.
 `val/tts_ctc_cer` evaluates its teacher-forced predictions against the selected
@@ -116,6 +115,58 @@ Slurm job, `srun` step, and example launch commands use `_dual_ctc` names.
 override its native head settings. The vocabulary size follows the TTS
 tokenizer, so this head may be larger than the ASR-tokenizer head. Chunked
 projection and compact CTC probability aggregation bound retained logits.
+
+### Optional word-interval supervision for native CTC
+
+Use the frozen ASR aligner's word timing to add local supervision to the
+native TTS-tokenizer head:
+
+```bash
+++model.use_tts_ctc_head=true \
+++model.tts_ctc_head.word_interval.enabled=true \
+++model.tts_ctc_head.word_interval.weight=1.0 \
+++model.tts_ctc_head.word_interval.tolerance_seconds=0.08
+```
+
+`word_interval.enabled` defaults to `false`. The native head continues to
+learn global CTC over the complete selected input. The additional objective
+applies CTC to word-associated input BPE IDs within intervals derived from
+the ASR word starts. An interval ends at the following word's start, so
+inter-word silence stays with the preceding word; the final interval ends
+with the audio. Initial silence belongs to the first word. Each interval
+has 80 ms of timing tolerance on either side
+by default, clipped to the available utterance. Both native losses use the
+same two predictions per audio frame and the speech-delayed hidden states.
+Mapping must recover the exact visible input BPE sequence. BPE pieces that
+span word boundaries merge the affected words into one local target.
+Unmappable turns and intervals too short for a valid CTC path are counted
+and skipped for the local loss.
+
+The native head's contribution is
+`tts_ctc_head.loss_weight * (CTC_TTS + word_interval.weight * mean_word_CTC)`.
+With both heads enabled, the ASR-tokenizer head retains its CTC and
+distillation losses. One frozen ASR forward supplies both ASR posteriors and
+word alignment. Enabling word-interval supervision with only the native
+head also loads the frozen teacher, using `ctc_timestamp_head.aligner`
+settings. Local alignment failures do not remove the global CTC target.
+The added loss does not change the inference path or the streaming API.
+
+`train/tts_ctc_word_ctc_loss` and `val/tts_ctc_word_ctc_loss` report the local
+loss before the configured weights. Each eligible turn averages its
+token-normalized word losses; the batch averages those turn losses.
+The corresponding `tts_ctc_word_ctc_valid_intervals`,
+`tts_ctc_word_ctc_infeasible_intervals`, and
+`tts_ctc_word_ctc_skipped_intervals` metrics expose local supervision
+coverage. The native head's CER metrics continue to evaluate its decoded
+global CTC output.
+
+The separate comparison recipe ends in `_dual_ctc_word_intervals.sub` and
+uses the same suffix for its experiment, Slurm job, `srun` step, and launch
+examples. It enables both CTC heads and word-interval supervision, keeping
+the other comparison recipes intact. Override its local supervision with
+`TTS_CTC_WORD_INTERVAL_WEIGHT` and
+`TTS_CTC_WORD_INTERVAL_TOLERANCE_SECONDS`; their initial values are `1.0`
+and `0.08`.
 
 ### CTC validation diagnostics
 

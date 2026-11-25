@@ -7,7 +7,11 @@ from unittest.mock import Mock
 import pytest
 import torch
 
-from nemo.collections.tts.modules.nemotron_tts.v2.timestamp_head import TTSCtcTokenizer, decode_ctc_tokens
+from nemo.collections.tts.modules.nemotron_tts.v2.timestamp_head import (
+    TTSCtcTokenizer,
+    decode_ctc_tokens,
+    map_tts_ctc_word_intervals,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -85,6 +89,121 @@ def test_native_huggingface_tokenizer_ids_and_decoding_match_the_existing_tts_ag
     assert adapter.text_to_ids('hello world') == aggregate.encode('hello world', tokenizer_name='second') == [7, 5]
     assert adapter.ids_to_tokens([7, 5]) == ['hello', 'world']
     assert adapter.ids_to_text([7, 5]) == aggregate.decode([7, 5], tokenizer_name='second') == 'hello world'
+    intervals = map_tts_ctc_word_intervals(adapter, 'hello world', [7, 5], _words('hello', 'world'), 1.0)
+    assert intervals['error'] is None
+    assert intervals['segments'] == [
+        dict(token_start=0, token_end=1, start=0.0, end=0.5),
+        dict(token_start=1, token_end=2, start=0.5, end=1.0),
+    ]
+
+
+def test_word_intervals_preserve_full_input_ids_and_affiliate_punctuation_without_retokenizing_words():
+    adapter, ids, native = _interval_tokenizer([(0, 2), (2, 3), (3, 9), (9, 10)])
+    mapped = map_tts_ctc_word_intervals(adapter, 'Hi, world!', ids, _words('Hi,', 'world!'), 1.0)
+    assert mapped == dict(
+        segments=[
+            dict(token_start=0, token_end=2, start=0.0, end=0.5),
+            dict(token_start=2, token_end=4, start=0.5, end=1.0),
+        ],
+        error=None,
+        token_coverage=1.0,
+        merged_word_groups=0,
+    )
+    native.assert_called_once_with('Hi, world!', return_offsets_mapping=True, add_special_tokens=False)
+    adapter.tokenizer.encode.assert_not_called()
+
+
+def test_word_intervals_merge_connected_cross_word_bpes_without_duplicate_target_occurrences():
+    adapter, ids, _ = _interval_tokenizer([(0, 3), (2, 5)])
+    mapped = map_tts_ctc_word_intervals(adapter, 'a b c', ids, _words('a', 'b', 'c'), 1.5)
+    assert mapped['error'] is None
+    assert mapped['segments'] == [dict(token_start=0, token_end=2, start=0.0, end=1.5)]
+    assert mapped['merged_word_groups'] == 2
+
+
+def test_word_intervals_map_unicode_normalization_and_character_units_to_original_offsets():
+    adapter, ids, _ = _interval_tokenizer([(0, 4), (4, 6), (6, 7)])
+    mapped = map_tts_ctc_word_intervals(adapter, 'CAFÉ 中文', ids, _words('cafe\u0301', '中', '文'), 1.5)
+    assert mapped['error'] is None
+    assert [(segment['token_start'], segment['token_end']) for segment in mapped['segments']] == [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+    ]
+
+
+def test_word_intervals_keep_raw_number_tokens_and_do_not_expand_or_retokenize_numbers():
+    adapter, ids, _ = _interval_tokenizer([(0, 3), (3, 9), (9, 15), (15, 16)])
+    mapped = map_tts_ctc_word_intervals(adapter, '$10 costs 1,000.', ids, _words('$10', 'costs', '1,000.'), 1.5)
+    assert mapped['error'] is None
+    assert [(segment['token_start'], segment['token_end']) for segment in mapped['segments']] == [
+        (0, 1),
+        (1, 2),
+        (2, 4),
+    ]
+    mismatched = map_tts_ctc_word_intervals(
+        adapter, '$10 costs 1,000.', ids, _words('ten', 'dollars', 'costs', 'one', 'thousand'), 2.5
+    )
+    assert mismatched['error'] == 'transcript_mismatch'
+    assert mismatched['segments'] == []
+    assert mismatched['token_coverage'] == 0.0
+
+
+def test_word_intervals_keep_repeated_bpe_occurrences_as_separate_targets():
+    adapter, ids, _ = _interval_tokenizer([(0, 2), (3, 5)], local_ids=[1, 1])
+    mapped = map_tts_ctc_word_intervals(adapter, 'ha ha', torch.tensor(ids), _words('ha', 'ha'), 1.0)
+    assert mapped['error'] is None
+    assert [(segment['token_start'], segment['token_end']) for segment in mapped['segments']] == [(0, 1), (1, 2)]
+
+
+def test_word_intervals_reject_actual_input_crops_instead_of_guessing_token_correspondence():
+    adapter, ids, _ = _interval_tokenizer([(0, 2), (3, 5)])
+    mapped = map_tts_ctc_word_intervals(adapter, 'ha ha', ids[:1], _words('ha', 'ha'), 1.0)
+    assert mapped['error'] == 'input_token_mismatch'
+    assert mapped['segments'] == []
+
+
+def test_word_intervals_skip_native_tokenizers_without_character_offsets():
+    adapter = TTSCtcTokenizer(_aggregate(single=True))
+    mapped = map_tts_ctc_word_intervals(adapter, 'one two', [0, 1, 2], _words('one', 'two'), 1.0)
+    assert mapped['error'] == 'offsets_unavailable'
+
+
+@pytest.mark.parametrize('offsets', [[(0, 0)], [(0, 5)], [(1, 2), (0, 1)]])
+def test_word_intervals_reject_invalid_native_character_offsets(offsets):
+    adapter, ids, _ = _interval_tokenizer(offsets)
+    mapped = map_tts_ctc_word_intervals(adapter, 'a b', ids, _words('a', 'b'), 1.0)
+    assert mapped['error'] == 'invalid_token_offsets'
+
+
+@pytest.mark.parametrize('offsets', [None, 1, [None], [1], ['01'], [(0.0, 1.0)], [(False, True)]])
+def test_word_intervals_skip_malformed_native_offsets_without_raising(offsets):
+    adapter, ids, native = _interval_tokenizer([(0, 1)])
+    native.return_value['offset_mapping'] = offsets
+    mapped = map_tts_ctc_word_intervals(adapter, 'a', ids, _words('a'), 0.5)
+    assert mapped['error'] == 'invalid_token_offsets'
+    assert mapped['segments'] == []
+
+
+def test_word_intervals_propagate_runtime_failures_instead_of_treating_them_as_bad_alignment():
+    adapter, ids, native = _interval_tokenizer([(0, 1)])
+    native.side_effect = RuntimeError('CUDA out of memory')
+    with pytest.raises(RuntimeError, match='out of memory'):
+        map_tts_ctc_word_intervals(adapter, 'a', ids, _words('a'), 0.5)
+
+
+def test_word_intervals_reject_words_not_covered_by_any_native_token_offset():
+    adapter, ids, _ = _interval_tokenizer([(0, 1)])
+    mapped = map_tts_ctc_word_intervals(adapter, 'a b', ids, _words('a', 'b'), 1.0)
+    assert mapped['error'] == 'uncovered_word'
+
+
+@pytest.mark.parametrize('times', [[(0.0, 0.0)], [(0.0, float('nan'))], [(0.0, 0.7), (0.5, 1.0)]])
+def test_word_intervals_reject_invalid_or_overlapping_teacher_times(times):
+    adapter, ids, _ = _interval_tokenizer([(0, 1)])
+    words = [dict(word='a', start=start, end=end) for start, end in times]
+    mapped = map_tts_ctc_word_intervals(adapter, 'a', ids, words, 1.0)
+    assert mapped['error'] == 'invalid_word_times'
 
 
 @pytest.mark.parametrize('add_bos', [False, True])
@@ -289,3 +408,20 @@ def _aggregate(single=False):
         encode=Mock(side_effect=encode),
         decode=Mock(side_effect=decode),
     )
+
+
+def _interval_tokenizer(offsets, local_ids=None):
+    local_ids = list(range(1, len(offsets) + 1)) if local_ids is None else local_ids
+    native = Mock(return_value=dict(input_ids=local_ids, offset_mapping=offsets))
+    aggregate = SimpleNamespace(
+        tokenizers={'native': native},
+        tokenizer_offsets={'native': 17},
+        tokens=[''] * (18 + max(local_ids)),
+        encode=Mock(),
+        decode=Mock(),
+    )
+    return TTSCtcTokenizer(aggregate, 'native'), [token + 17 for token in local_ids], native
+
+
+def _words(*words):
+    return [dict(word=word, start=index * 0.5, end=(index + 1) * 0.5) for index, word in enumerate(words)]

@@ -453,6 +453,9 @@ class NemotronTTSBase(ModelPT):
         self.use_timestamp_head = bool(cfg.get('use_timestamp_head', False))
         self.use_ctc_timestamp_head = bool(cfg.get('use_ctc_timestamp_head', False))
         self.use_tts_ctc_head = bool(cfg.get('use_tts_ctc_head', False))
+        self.use_tts_ctc_word_intervals = self.use_tts_ctc_head and bool(
+            ((cfg.get('tts_ctc_head') or {}).get('word_interval') or {}).get('enabled', False)
+        )
         super().__init__(cfg=cfg, trainer=trainer)
         self.timestamp_config = resolve_timestamp_config(cfg.get('timestamp_config', None))
 

@@ -25,6 +25,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 import torch
+import yaml
 from safetensors.torch import save_file
 
 FT = Path(__file__).resolve().parents[3] / "examples" / "speechlm2" / "finetuning"
@@ -48,6 +49,72 @@ def test_torchrun_uses_standalone_rendezvous():
     assert "--standalone" in cmd
     assert not any(c.startswith("--master_port") for c in cmd)
     assert cmd[-1] == "trainer.max_steps=5"
+
+
+PACKED_TE_CFG = {"model": {"use_nemo_automodel": True, "packed_sequences": True, "automodel_backend": {"attn": "te"}}}
+
+
+def write_cfg(tmp_path, cfg):
+    path = tmp_path / "ft.yaml"
+    path.write_text(yaml.safe_dump(cfg))
+    return path
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "model,overrides,capability,expected",
+    [
+        ({}, [], (12, 0), "0"),  # packed THD training on sm_120 needs flash attention
+        ({"automodel_backend": None}, [], (12, 0), "0"),  # attn defaults to te
+        ({}, [], (10, 3), None),  # other GPUs keep cuDNN fused attention
+        ({}, [], None, None),  # no GPU visible
+        ({"packed_sequences": False}, [], (12, 0), None),
+        ({"use_nemo_automodel": False}, [], (12, 0), None),  # the guard applies to SALMAutomodel only
+        ({"automodel_backend": {"attn": "sdpa"}}, [], (12, 0), None),
+        ({}, ["model.packed_sequences=false"], (12, 0), None),
+        ({"packed_sequences": False}, ["model.packed_sequences=true"], (12, 0), "0"),
+        # repeated overrides: the last one wins, as in Hydra
+        ({}, ["model.packed_sequences=false", "model.packed_sequences=true"], (12, 0), "0"),
+        ({}, ["model.packed_sequences=true", "model.packed_sequences=false"], (12, 0), None),
+        # an override of the parent mapping
+        ({}, ["model.automodel_backend={attn: sdpa}"], (12, 0), None),
+        ({"automodel_backend": {"attn": "sdpa"}}, ["model.automodel_backend={attn: te}"], (12, 0), "0"),
+        # interpolations are resolved as in training
+        ({}, ["model.automodel_backend.attn=${oc.env:SALM_FT_TEST_ATTN,te}"], (12, 0), "0"),
+        ({"automodel_backend": {"attn": "${oc.env:SALM_FT_TEST_ATTN,sdpa}"}}, [], (12, 0), None),
+        ({"packed_sequences": "${model.use_nemo_automodel}"}, [], (12, 0), "0"),
+    ],
+)
+def test_training_env_sets_nvte_fused_attn_for_packed_training_on_sm120(
+    model, overrides, capability, expected, monkeypatch, tmp_path
+):
+    rt = load("run_training")
+    monkeypatch.setattr(rt, "_device_capability", lambda: capability)
+    monkeypatch.delenv("SALM_FT_TEST_ATTN", raising=False)
+    cfg = {"model": {**PACKED_TE_CFG["model"], **model}}
+    env = rt.training_env(write_cfg(tmp_path, cfg), overrides, environ={"PATH": "/bin"})
+    assert env.get("NVTE_FUSED_ATTN") == expected
+    assert env["PATH"] == "/bin"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("user_value", ["0", "1", ""])
+def test_training_env_keeps_user_nvte_fused_attn(user_value, monkeypatch, tmp_path):
+    rt = load("run_training")
+    monkeypatch.setattr(rt, "_device_capability", lambda: pytest.fail("must not probe the GPU"))
+    env = rt.training_env(write_cfg(tmp_path, PACKED_TE_CFG), [], environ={"NVTE_FUSED_ATTN": user_value})
+    assert env["NVTE_FUSED_ATTN"] == user_value
+
+
+@pytest.mark.unit
+def test_training_env_starts_from_the_process_environment(monkeypatch, tmp_path):
+    rt = load("run_training")
+    monkeypatch.setattr(rt, "_device_capability", lambda: (12, 0))
+    monkeypatch.delenv("NVTE_FUSED_ATTN", raising=False)
+    monkeypatch.setenv("SALM_FT_TEST_VAR", "1")
+    env = rt.training_env(write_cfg(tmp_path, PACKED_TE_CFG), [])
+    assert env["NVTE_FUSED_ATTN"] == "0" and env["SALM_FT_TEST_VAR"] == "1"
+    assert "NVTE_FUSED_ATTN" not in rt.os.environ
 
 
 @pytest.mark.unit
@@ -195,6 +262,9 @@ def test_checkpoint_shapes_read_only_header(tmp_path):
 @pytest.mark.unit
 @pytest.mark.parametrize("model_shape,expected_status", [((2, 3), 0), ((3, 2), 1)])
 def test_checkpoint_coverage_compares_shapes(tmp_path, monkeypatch, capsys, model_shape, expected_status):
+    # Import the real package before its models module is replaced by the fake below.
+    from nemo.collections.speechlm2.parts.ctc_timestamp_checkpoint import read_ctc_timestamp_config  # noqa: F401
+
     coverage = load("check_checkpoint_coverage")
     save_file(
         {"llm.weight": torch.zeros(2, 3), "counter": torch.tensor(1), "llm._extra_state": torch.ones(1)},
@@ -222,6 +292,114 @@ def test_checkpoint_coverage_compares_shapes(tmp_path, monkeypatch, capsys, mode
         assert "llm.weight: checkpoint (2, 3), model (3, 2)" in output
     else:
         assert "OK:" in output
+
+
+def _ctc_bundle_checkpoint(path: Path, value: float = 1.0) -> Path:
+    """A tiny checkpoint laid out like a released SALM with a bundled frozen CTC timestamp head.
+
+    The head has a Transformer bridge, a residual scale buffer and an integer ``upsample_factor``
+    buffer that safetensors stores as I64.
+    """
+    from nemo.collections.speechlm2.parts.ctc_timestamp_utils import (
+        CTC_TIMESTAMP_ARTIFACT_FORMAT,
+        TransformerCTCDecoder,
+    )
+
+    config = {
+        "feat_in": 32,
+        "num_classes": 3,
+        "vocabulary": ["a", "b", "c"],
+        "n_heads": 2,
+        "n_layers": 2,
+        "residual": True,
+        "upsampling_factor": 4,
+        "upsampling_mode": "repeat_phase",
+    }
+    decoder = TransformerCTCDecoder(**config)
+    state = {"ctc_timestamp.decoder." + k: v.contiguous() for k, v in decoder.state_dict().items()}
+    assert state["ctc_timestamp.decoder.upsample_factor"].dtype == torch.int64
+    state["ctc_timestamp.tokenizer.model_proto"] = torch.tensor([1, 2, 3], dtype=torch.uint8)
+    state["llm.weight"] = torch.full((2, 3), value)
+    metadata = {
+        "ctc_timestamp_format": CTC_TIMESTAMP_ARTIFACT_FORMAT,
+        "ctc_timestamp_decoder_config": json.dumps(config),
+        "ctc_timestamp_tokenizer_config": json.dumps({"legacy": False}),
+    }
+    path.mkdir(parents=True)
+    save_file(state, str(path / "model.safetensors"), metadata=metadata)
+    config = {"pretrained_asr": "test-encoder", "prompt_format": "test", "audio_locator_tag": "<audio>"}
+    (path / "config.json").write_text(json.dumps(config))
+    return path
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("use_ft_config", [True, False])
+def test_checkpoint_coverage_accepts_bundled_ctc_timestamp_head(tmp_path, monkeypatch, capsys, use_ft_config):
+    from nemo.collections.speechlm2.parts.ctc_timestamp_checkpoint import (
+        CTCTimestampCheckpoint,
+        read_ctc_timestamp_config,
+    )
+
+    ckpt = _ctc_bundle_checkpoint(tmp_path / "base")
+    config = None
+    if use_ft_config:
+        config = tmp_path / "ft.yaml"
+        argv = ["make_ft_config.py", "--checkpoint", str(ckpt), "--out", str(config), "--exp-dir", str(tmp_path)]
+        argv += ["--train-manifest", "train.json", "--val-manifest", "val.json"]
+        monkeypatch.setattr(sys, "argv", argv)
+        load("make_ft_config").main()
+        import yaml
+
+        model_cfg = yaml.safe_load(config.read_text())["model"]
+        assert model_cfg["ctc_timestamp_artifact"] == read_ctc_timestamp_config(ckpt / "model.safetensors")
+
+    def build(cfg):
+        model = torch.nn.Module()
+        model.llm = torch.nn.Linear(3, 2, bias=False)
+        if cfg.get("ctc_timestamp_artifact") is not None:
+            model.ctc_timestamp = CTCTimestampCheckpoint(cfg["ctc_timestamp_artifact"])
+        return model
+
+    coverage = load("check_checkpoint_coverage")
+    models = ModuleType("nemo.collections.speechlm2.models")
+    models.SALMAutomodel = build
+    monkeypatch.setitem(sys.modules, models.__name__, models)
+    monkeypatch.setattr(
+        coverage, "parse_args", lambda: Namespace(checkpoint=ckpt, config=config, ignore_suffix="_extra_state")
+    )
+    assert coverage.main() == 0, capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_merge_and_average_keep_bundled_ctc_timestamp_head(tmp_path, monkeypatch):
+    from nemo.collections.speechlm2.parts.ctc_timestamp_checkpoint import read_ctc_timestamp_config
+
+    a = _ctc_bundle_checkpoint(tmp_path / "a", 1.0)
+    b = _ctc_bundle_checkpoint(tmp_path / "b", 3.0)
+    expected = read_ctc_timestamp_config(a / "model.safetensors")
+    r = subprocess.run(
+        [sys.executable, str(FT / "average_checkpoints.py"), "--src", str(a), str(b), "--dst", str(tmp_path / "avg")],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr
+    assert read_ctc_timestamp_config(tmp_path / "avg" / "model.safetensors") == expected
+
+    raw = _ctc_bundle_checkpoint(tmp_path / "raw")
+    from safetensors import safe_open
+    from safetensors.torch import load_file
+
+    with safe_open(str(raw / "model.safetensors"), framework="pt") as f:
+        metadata = f.metadata()
+    state = load_file(str(raw / "model.safetensors"))
+    state["llm.lora_A.weight"] = torch.ones(1, 3)
+    state["llm.lora_B.weight"] = torch.ones(2, 1)
+    save_file(state, str(raw / "model.safetensors"), metadata=metadata)
+    (raw / "config.json").write_text(json.dumps({"lora": {"dim": 1, "alpha": 1}}))
+    merge = load("merge_lora_checkpoint")
+    monkeypatch.setattr(merge, "parse_args", lambda: Namespace(src=raw, dst=tmp_path / "merged", scaling=None))
+    merge.main()
+    assert read_ctc_timestamp_config(tmp_path / "merged" / "model.safetensors") == expected
 
 
 # ---------------------------------------------------------------- export and averaging
@@ -429,9 +607,74 @@ def test_resolve_speculation_records_the_effective_settings(
 ):
     ev = load("vllm_task_eval")
     monkeypatch.setattr(ev, "speechlm_is_hybrid", lambda model: hybrid)
+    monkeypatch.setattr(ev, "speechlm_mtp_layers", lambda model: 1)
     args = Namespace(model="ckpt", spec_k=spec_k, score_labels=score_labels)
     ev.resolve_speculation(args)
     assert (args.spec_k, args.replayssm) == (expected_spec_k, expected_replayssm)
+
+
+def _write_salm_export(path, **extra):
+    """A minimal SALM HF export config (embedded Qwen2 backbone, so nothing is downloaded)."""
+    path.mkdir(parents=True, exist_ok=True)
+    cfg = {
+        "model_type": "nemo_speechlm",
+        "architectures": ["NeMoSpeechLMForConditionalGeneration"],
+        "pretrained_llm": "Qwen/Qwen3-1.7B",
+        "pretrained_asr": "nvidia/canary-1b-v2",
+        "audio_locator_tag": "<|audio|>",
+        "prompt_format": "qwen3",
+        "pretrained_weights": True,
+        "llm_config": {"model_type": "qwen2", "architectures": ["Qwen2ForCausalLM"], "vocab_size": 100},
+        **extra,
+    }
+    (path / "config.json").write_text(json.dumps(cfg))
+    return str(path)
+
+
+_MTP_ON = {"enabled": True, "num_nextn_predict_layers": 1, "hybrid_override_pattern": "*"}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "extra,expected",
+    [
+        ({"mtp": {"enabled": False, "num_nextn_predict_layers": 1}}, 0),  # salm_automodel.yaml default export
+        ({}, 0),  # no mtp block, no compute_mtp
+        ({"compute_mtp": False}, 0),
+        ({"mtp": _MTP_ON}, 1),
+    ],
+)
+def test_speechlm_mtp_layers_reads_the_export_config(tmp_path, extra, expected):
+    ev = load("vllm_task_eval")
+    assert ev.speechlm_mtp_layers(_write_salm_export(tmp_path / "ckpt", **extra)) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "spec_k,mtp,expected_spec_k",
+    [
+        (None, None, 0),  # default on a checkpoint without MTP heads: no speculation
+        (None, _MTP_ON, 2),  # default on a checkpoint with MTP heads: speculation
+        (0, _MTP_ON, 0),
+        (3, _MTP_ON, 3),
+        (0, None, 0),
+    ],
+)
+def test_resolve_speculation_enables_mtp_only_when_the_checkpoint_has_it(tmp_path, spec_k, mtp, expected_spec_k):
+    ev = load("vllm_task_eval")
+    model = _write_salm_export(tmp_path / "ckpt", mtp=mtp or {"enabled": False})
+    args = Namespace(model=model, spec_k=spec_k, score_labels=None)
+    ev.resolve_speculation(args)
+    assert args.spec_k == expected_spec_k
+    assert args.replayssm is False  # Qwen2 backbone is not hybrid
+
+
+@pytest.mark.unit
+def test_resolve_speculation_refuses_explicit_mtp_without_mtp_heads(tmp_path):
+    ev = load("vllm_task_eval")
+    model = _write_salm_export(tmp_path / "ckpt", mtp={"enabled": False})
+    with pytest.raises(SystemExit, match="has no MTP heads"):
+        ev.resolve_speculation(Namespace(model=model, spec_k=2, score_labels=None))
 
 
 @pytest.mark.unit

@@ -201,6 +201,17 @@ WER is the default metric for all ASR models and measures transcription accuracy
     use_cer: false                  # Set to true for Character Error Rate instead (default: false)
     log_prediction: true            # Whether to log a sample prediction during training (default: true)
     batch_dim_index: 0              # Index of batch dimension in prediction tensors output. Set to 1 for RNNT models.
+    wer_text_normalize: false       # Normalize references and predictions before computing WER/CER (default: false)
+
+Models trained with punctuation and capitalization produce WER that is dominated by casing and punctuation errors.
+For CTC, RNN-T and hybrid RNN-T/CTC models (``EncDecCTCModel``, ``EncDecCTCModelBPE``, ``EncDecRNNTModel``,
+``EncDecRNNTBPEModel``, ``EncDecRNNTBPEModelWithPrompt``, ``EncDecHybridRNNTCTCModel``,
+``EncDecHybridRNNTCTCBPEModel``, ``EncDecHybridRNNTCTCBPEModelWithPrompt``), set ``wer_text_normalize: true`` to
+lowercase the text, remove punctuation and collapse whitespace in both references and predictions before scoring
+(see ``nemo.collections.asr.parts.utils.eval_utils.clean_label``). Typographic apostrophes inside words are treated
+as ASCII apostrophes (``It’s`` matches ``it's``), while contractions stay distinct from other words (``it's`` does not
+match ``its``). For hybrid models the flag also applies to the auxiliary CTC WER. Logged sample predictions and
+returned hypotheses keep the original text.
 
 BLEU Score
 ~~~~~~~~~~
@@ -739,6 +750,43 @@ The loss config is based on a resolver pattern and can be used as follows:
     warprnnt_numba_kwargs:
       fastemit_lambda: 0.0
 
+Turbo-RNNT Loss
+^^^^^^^^^^^^^^^
+
+``turbo_rnnt`` is a memory-efficient RNN-T loss implemented in Triton (requires a CUDA GPU and Triton).
+It first reduces the Joint output to the log-probabilities of the target and blank labels with a fused log-softmax kernel,
+then computes the loss from these small tensors. Computations are performed in ``float32``, but the gradient for the Joint output
+is stored in the dtype of the Joint output, so ``bfloat16`` training does not require upcasting the Joint output to ``float32``.
+This makes the loss significantly faster than ``warprnnt_numba`` and reduces memory usage for ``bfloat16`` training.
+
+.. code-block:: yaml
+
+  loss:
+    loss_name: "turbo_rnnt"
+    turbo_rnnt_kwargs:
+      fastemit_lambda: 0.0
+
+Since the loss does not materialize additional full-size tensors, fused Joint and loss computation (``fuse_loss_wer``) is not
+required to limit the memory used by the loss itself. Fused computation can still reduce the memory used by the Joint output
+and its gradient (they are computed in sub-batches with the padding trimmed), so disable it for faster training when
+the full Joint output fits in memory.
+
+Gradient clamping is supported with the ``clamp`` argument (as for ``warprnnt_numba``): when set to a positive value,
+the gradient of each per-utterance loss for the Joint output is clamped to ``[-clamp, clamp]`` before the reduction of the loss
+is applied, so the result does not depend on the batch size. Clamping is computed in the same kernel as the gradient
+and does not affect the speed or memory usage of the loss.
+
+.. code-block:: yaml
+
+  loss:
+    loss_name: "turbo_rnnt"
+    turbo_rnnt_kwargs:
+      clamp: 1.0
+
+The loss is infinite for an utterance without a valid alignment (e.g., ``-inf`` logits for a target label), and NaN for invalid
+targets (labels outside the vocabulary). Set ``mask_non_finite: true`` in ``turbo_rnnt_kwargs`` to exclude such utterances
+from the loss (zero loss and gradient), and ``warn_non_finite: true`` to log them.
+
 Numba Transducer Warmup
 ^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -750,7 +798,7 @@ Custom training loops can call ``RNNTLoss.warmup(device)`` before allocating bat
 FastEmit Regularization
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-FastEmit Regularization is supported for the default Numba based WarpRNNT loss. Recently proposed regularization approach - `FastEmit: Low-latency Streaming ASR with Sequence-level Emission Regularization <https://arxiv.org/abs/2010.11148>`_ allows us near-direct control over the latency of transducer models.
+FastEmit Regularization is supported for the default Numba based WarpRNNT loss and for the ``turbo_rnnt`` loss. Recently proposed regularization approach - `FastEmit: Low-latency Streaming ASR with Sequence-level Emission Regularization <https://arxiv.org/abs/2010.11148>`_ allows us near-direct control over the latency of transducer models.
 
 Refer to the above paper for results and recommendations of ``fastemit_lambda``.
 

@@ -183,12 +183,5 @@ slurm*.out
 # Onelogger
 onelogger.*
 
-# voice agent
-node_modules/
-.vite/
-bot_server.*
-audio_logs/
-eval_results/
-
 # agents
 .claude/settings.local.json

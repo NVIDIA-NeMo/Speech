@@ -35,23 +35,31 @@ from nemo.collections.asr.modules.rnnt import RNNTDecoderJoint
 from nemo.collections.asr.parts.mixins import (
     ASRModuleMixin,
     ASRTranscriptionMixin,
+    RNNTRestartMixin,
     TranscribeConfig,
     TranscriptionReturnType,
 )
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecoding, RNNTDecodingConfig
 from nemo.collections.asr.parts.utils.asr_batching import get_semi_sorted_batch_sampler
+from nemo.collections.asr.parts.utils.longform_inference import (
+    ChunkingConfig,
+    resolve_chunking,
+    select_chunk_words,
+    words_to_hypothesis,
+)
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.timestamp_utils import process_timestamp_outputs
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.collections.common.parts.preprocessing.parsers import make_parser
+from nemo.collections.common.tokenizers.aggregate_tokenizer import AggregateTokenizer
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.classes.mixins import AccessMixin
 from nemo.core.neural_types import AcousticEncodedRepresentation, AudioSignal, LengthsType, NeuralType, SpectrogramType
 from nemo.utils import logging
 
 
-class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTranscriptionMixin):
+class EncDecRNNTModel(ASRModel, ASRModuleMixin, RNNTRestartMixin, ExportableEncDecModel, ASRTranscriptionMixin):
     """Base class for encoder decoder RNNT-based models."""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
@@ -115,6 +123,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             use_cer=self._cfg.get('use_cer', False),
             log_prediction=self._cfg.get('log_prediction', True),
             dist_sync_on_step=True,
+            wer_text_normalize=self._cfg.get('wer_text_normalize', False),
         )
 
         # Whether to compute loss during evaluation
@@ -257,6 +266,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         verbose: bool = True,
         timestamps: Optional[bool] = None,
         override_config: Optional[TranscribeConfig] = None,
+        chunking: Optional[ChunkingConfig] = None,
     ) -> TranscriptionReturnType:
         """
         Uses greedy decoding to transcribe audio files. Use this method for debugging and prototyping.
@@ -288,6 +298,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             override_config: (Optional[TranscribeConfig]) override transcription config pre-defined by the user.
                 **Note**: All other arguments in the function will be ignored if override_config is passed.
                 You should call this argument as `model.transcribe(audio, override_config=TranscribeConfig(...))`.
+            chunking: Optional offline chunk plan. Each read window is decoded; words are selected by time.
 
         Returns:
             Returns a tuple of 2 items -
@@ -296,7 +307,9 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         """
 
         timestamps = timestamps or (override_config.timestamps if override_config is not None else None)
-        if timestamps is not None:
+        # Planned chunking computes word timestamps call-locally and leaves the model decoding unchanged.
+        planned_chunking = resolve_chunking(chunking, override_config) is not None
+        if timestamps is not None and not planned_chunking:
             need_change_decoding = False
             if timestamps or (override_config is not None and override_config.timestamps):
                 logging.info(
@@ -333,6 +346,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             override_config=override_config,
             # Additional arguments
             partial_hypothesis=partial_hypothesis,
+            chunking=chunking,
         )
 
     def change_vocabulary(self, new_vocabulary: List[str], decoding_cfg: Optional[DictConfig] = None):
@@ -400,6 +414,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
                 use_cer=self.wer.use_cer,
                 log_prediction=self.wer.log_prediction,
                 dist_sync_on_step=True,
+                wer_text_normalize=self.wer.wer_text_normalize,
             )
 
             # Setup fused Joint step
@@ -460,6 +475,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             use_cer=self.wer.use_cer,
             log_prediction=self.wer.log_prediction,
             dist_sync_on_step=True,
+            wer_text_normalize=self.wer.wer_text_normalize,
         )
 
         # Setup fused Joint step
@@ -948,25 +964,94 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
     """ Transcription related methods """
 
+    def _transcribe_chunk_validate(self, trcfg):
+        if getattr(self.decoding, 'restart_token_ids', None):
+            raise ValueError('Planned RNNT/TDT chunking does not support `restart_after_tokens`.')
+        if isinstance(getattr(self.decoding, 'tokenizer', None), AggregateTokenizer):
+            # Word timestamps and assembled token IDs would need a language for every word.
+            raise ValueError('Planned RNNT/TDT chunking does not support an aggregate tokenizer.')
+        beam = self.decoding.cfg.get('beam') or {}
+        if self.decoding.cfg.strategy not in ('greedy', 'greedy_batch') and not beam.get(
+            'return_best_hypothesis', True
+        ):
+            raise ValueError('Planned RNNT/TDT chunking requires one best hypothesis per chunk.')
+
+    def _transcribe_chunk_decoding(self, trcfg):
+        """The model's decoding with word timestamps, which select words by time; the model is unchanged."""
+        if trcfg._internal.chunk_decoding is None:
+            decoding = self.decoding
+            timestamp_type = decoding.cfg.get('rnnt_timestamp_type', 'all')
+            if not decoding.compute_timestamps or timestamp_type not in ('all', 'word'):
+                cfg = copy.deepcopy(decoding.cfg)
+                with open_dict(cfg):
+                    cfg.compute_timestamps = True
+                    cfg.rnnt_timestamp_type = 'all'
+                kwargs = (
+                    {'tokenizer': decoding.tokenizer}
+                    if hasattr(decoding, 'tokenizer')
+                    else {'vocabulary': list(decoding.labels_map.values())}
+                )
+                decoding = type(decoding)(cfg, self.decoder, self.joint, **kwargs)
+            trcfg._internal.chunk_decoding = decoding
+        return trcfg._internal.chunk_decoding
+
+    def _transcribe_chunk_outputs(self, outputs, chunks, frame_samples, trcfg):
+        # Decode each read window with a fresh decoder that warms up on its left context.
+        # A decoder state carried across chunks can stay in blank through long stretches of speech.
+        decoding = self._transcribe_chunk_decoding(trcfg)
+        hyps = decoding.rnnt_decoder_predictions_tensor(
+            outputs['encoded'], outputs['encoded_len'], return_hypotheses=True
+        )
+        hyps = process_timestamp_outputs(hyps, self.encoder.subsampling_factor, self.cfg.preprocessor.window_stride)
+        sample_rate = int(self.cfg.sample_rate)
+        return [select_chunk_words(hyp.timestamp['word'], chunk, sample_rate) for hyp, chunk in zip(hyps, chunks)]
+
+    def _transcribe_chunk_finalize(self, parts, chunks, frame_samples, trcfg):
+        decoding = self._transcribe_chunk_decoding(trcfg)
+        if hasattr(decoding, 'tokenizer'):
+            text_to_ids = decoding.tokenizer.text_to_ids
+        else:
+            label_ids = {label: i for i, label in decoding.labels_map.items()}
+            text_to_ids = lambda text: [label_ids[c] for c in text if c in label_ids]
+        words = [word for part in parts for word in part]
+        frame_seconds = frame_samples / self.cfg.sample_rate
+        return words_to_hypothesis(words, text_to_ids, frame_seconds, trcfg.timestamps, decoding.segment_seperators)
+
     def _transcribe_forward(self, batch: Any, trcfg: TranscribeConfig):
-        encoded, encoded_len = self.forward(input_signal=batch[0], input_signal_length=batch[1])
-        output = dict(encoded=encoded, encoded_len=encoded_len)
-        return output
+        return self._transcribe_encode(batch[0], batch[1], trcfg)
+
+    def _transcribe_encode(self, signal: torch.Tensor, signal_len: torch.Tensor, trcfg: TranscribeConfig) -> dict:
+        """Encode audio for ``transcribe()``; with ``decoding.restart_after_tokens``, only extract features."""
+        if getattr(self, 'cur_decoder', 'rnnt') == 'rnnt' and getattr(self.decoding, 'restart_token_ids', None):
+            if trcfg.partial_hypothesis is not None:
+                raise NotImplementedError("`partial_hypothesis` is not supported with `restart_after_tokens`.")
+            processed_signal, processed_signal_length = self.preprocessor(input_signal=signal, length=signal_len)
+            return dict(processed_signal=processed_signal, processed_signal_length=processed_signal_length)
+        encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len)
+        return dict(encoded=encoded, encoded_len=encoded_len)
 
     def _transcribe_output_processing(
         self, outputs, trcfg: TranscribeConfig
     ) -> Union[List['Hypothesis'], List[List['Hypothesis']]]:
-        encoded = outputs.pop('encoded')
-        encoded_len = outputs.pop('encoded_len')
-
-        hyp = self.decoding.rnnt_decoder_predictions_tensor(
-            encoded,
-            encoded_len,
-            return_hypotheses=trcfg.return_hypotheses,
-            partial_hypotheses=trcfg.partial_hypothesis,
-        )
-        # cleanup memory
-        del encoded, encoded_len
+        if 'processed_signal' in outputs:
+            with torch.inference_mode():
+                hyp = self.cache_aware_transcribe_with_restart(
+                    outputs.pop('processed_signal'),
+                    outputs.pop('processed_signal_length'),
+                    self.decoding.restart_token_ids,
+                )
+            hyp = self.decoding.postprocess_hypotheses(hyp, return_hypotheses=trcfg.return_hypotheses)
+        else:
+            encoded = outputs.pop('encoded')
+            encoded_len = outputs.pop('encoded_len')
+            hyp = self.decoding.rnnt_decoder_predictions_tensor(
+                encoded,
+                encoded_len,
+                return_hypotheses=trcfg.return_hypotheses,
+                partial_hypotheses=trcfg.partial_hypothesis,
+            )
+            # cleanup memory
+            del encoded, encoded_len
 
         if trcfg.timestamps:
             hyp = process_timestamp_outputs(

@@ -99,10 +99,10 @@ model:
     _target_: nemo.collections.asr.modules.RNNTJoint
     log_softmax: null
     preserve_memory: false
-    fuse_loss_wer: false  # incompatible with joint turbo kernel
+    fuse_loss_wer: false  # incompatible with joint training kernel
     fused_batch_size: -1
 
-    turbo_kernel:
+    training_kernel:
       type: fused_vocab  # options: null, fused_vocab
       pruning:
         type: null  # options: null (disabled), backward, two_pass; experimental

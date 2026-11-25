@@ -103,7 +103,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, RNNTRestartMixin, ExportableEncD
             loss_kwargs=loss_kwargs,
             reduction=self.cfg.get("rnnt_reduction", "mean_batch"),
         )
-        self._validate_joint_turbo_kernel()
+        self._validate_joint_training_kernel()
 
         # Optional consistency loss (`ConsistencyRNNTLoss`), used by `_compute_losses(..., compute_consistency=True)`.
         # Not configured by this model: a model with consistency regularization is responsible for setting it up
@@ -393,8 +393,8 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, RNNTRestartMixin, ExportableEncD
             self.decoder = EncDecRNNTModel.from_config_dict(new_decoder_config)
 
             del self.loss
-            if self.joint.uses_turbo_kernel:
-                self.loss = self._make_loss_for_joint_turbo_kernel()
+            if self.joint.uses_training_kernel:
+                self.loss = self._make_loss_for_joint_training_kernel()
             else:
                 loss_name, loss_kwargs = self.extract_rnnt_loss_cfg(self.cfg.get('loss', None))
                 self.loss = RNNTLoss(
@@ -748,17 +748,17 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, RNNTRestartMixin, ExportableEncD
         encoded, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
         return encoded, encoded_len
 
-    def _validate_joint_turbo_kernel(self):
-        """The Joint turbo kernel does not produce logits: the loss must accept target/blank log-probabilities"""
-        if self.joint.uses_turbo_kernel and not self.loss.supports_logprobs_input:
+    def _validate_joint_training_kernel(self):
+        """The Joint training kernel does not produce logits: the loss must accept target/blank log-probabilities"""
+        if self.joint.uses_training_kernel and not self.loss.supports_logprobs_input:
             raise ValueError(
-                "Joint `turbo_kernel` requires an RNN-T loss that can be computed from target/blank log-probabilities: "
+                "Joint `training_kernel` requires an RNN-T loss that can be computed from target/blank log-probabilities: "
                 "use `loss.loss_name=turbo_rnnt` without gradient clamping"
             )
 
-    def _make_loss_for_joint_turbo_kernel(self) -> RNNTLoss:
+    def _make_loss_for_joint_training_kernel(self) -> RNNTLoss:
         """
-        Create the RNN-T loss for the Joint with the turbo kernel after the vocabulary is changed:
+        Create the RNN-T loss for the Joint with a training kernel after the vocabulary is changed:
         the loss from the config of the model with the same reduction, as in the constructor
         (the default loss can't be computed from target/blank log-probabilities).
         """
@@ -769,7 +769,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, RNNTRestartMixin, ExportableEncD
             loss_kwargs=loss_kwargs,
             reduction=self.cfg.get("rnnt_reduction", "mean_batch"),
         )
-        self._validate_joint_turbo_kernel()
+        self._validate_joint_training_kernel()
         return self.loss
 
     def _compute_losses(
@@ -785,7 +785,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, RNNTRestartMixin, ExportableEncD
         """
         Compute the RNN-T loss and, optionally, the consistency loss from the encoder and prediction network outputs.
 
-        With the Joint turbo kernel the loss is computed from the target/blank log-probabilities
+        With the Joint training kernel the loss is computed from the target/blank log-probabilities
         (`Joint.forward_for_loss`), without materializing the Joint output. Otherwise the full Joint output is used.
 
         When `compute_consistency` is set, `self.consistency_loss` is required and the batch is expected to be
@@ -800,7 +800,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, RNNTRestartMixin, ExportableEncD
             encoded_len: lengths of the encoder output, [B]
             target_length: lengths of the targets, [B]
             compute_consistency: whether to compute the consistency loss between the halves of the batch
-            current_step: optimizer step (training only), used by the Joint turbo kernel to schedule pruning
+            current_step: optimizer step (training only), used by the Joint training kernel to schedule pruning
 
         Returns:
             Tuple (RNN-T loss, consistency loss or None)
@@ -814,7 +814,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, RNNTRestartMixin, ExportableEncD
                 raise NotImplementedError("Consistency loss is not supported for the Joint with extra outputs (TDT)")
             half_batch_size = encoded.shape[0] // 2
 
-        if self.joint.uses_turbo_kernel or (
+        if self.joint.uses_training_kernel or (
             compute_consistency and self.loss.supports_logprobs_input and self.joint.supports_loss_logprobs
         ):
             loss_inputs = self.joint.forward_for_loss(

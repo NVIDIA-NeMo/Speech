@@ -39,7 +39,7 @@ from nemo.collections.asr.parts.submodules.ctc_decoding import CTCBPEDecodingCon
 from nemo.collections.asr.parts.turbo_transducer.rnnt_consistency import ConsistencyRNNTLoss
 from nemo.collections.asr.parts.turbo_transducer.types import (
     JointLossInputs,
-    TurboJointKernelType,
+    TrainingKernelType,
     TurboJointPruningType,
 )
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
@@ -75,7 +75,7 @@ ALL_MODELS = [
 ]
 
 
-def _turbo_kernel_config(pruning: Optional[dict] = None, backend: str = "triton") -> dict:
+def _training_kernel_config(pruning: Optional[dict] = None, backend: str = "triton") -> dict:
     return {
         'type': 'fused_vocab',
         'backend': backend,
@@ -90,7 +90,7 @@ def _turbo_kernel_config(pruning: Optional[dict] = None, backend: str = "triton"
 def _model_config(
     model_class: Type[EncDecRNNTModel],
     test_data_dir: str,
-    turbo_kernel: Optional[dict] = None,
+    training_kernel: Optional[dict] = None,
     loss_name: str = "turbo_rnnt",
     loss_kwargs: Optional[dict] = None,
 ) -> DictConfig:
@@ -130,7 +130,7 @@ def _model_config(
             '_target_': 'nemo.collections.asr.modules.RNNTJoint',
             'jointnet': {'joint_hidden': JOINT_HIDDEN, 'activation': 'relu'},
             'log_softmax': False,
-            'turbo_kernel': turbo_kernel,
+            'training_kernel': training_kernel,
         },
         'decoding': {'strategy': 'greedy_batch', 'greedy': {'max_symbols': 5}},
         'loss': {'loss_name': loss_name, f'{loss_name}_kwargs': loss_kwargs or {}},
@@ -216,18 +216,22 @@ def _prepare_for_direct_steps(model: EncDecRNNTModel, monkeypatch, global_step: 
     monkeypatch.setattr(model, "log", lambda *args, **kwargs: None)
 
 
-def _make_models(model_class: Type[EncDecRNNTModel], test_data_dir: str, device: torch.device, **turbo_kernel_kwargs):
+def _make_models(
+    model_class: Type[EncDecRNNTModel], test_data_dir: str, device: torch.device, **training_kernel_kwargs
+):
     """Reference model (standard Joint) and the model with Joint turbo kernel with identical weights"""
     torch.manual_seed(1234)
     # NB: some models (EOU) require the `trainer` argument
     reference_model = model_class(cfg=_model_config(model_class, test_data_dir), trainer=None).to(device)
     turbo_model = model_class(
-        cfg=_model_config(model_class, test_data_dir, turbo_kernel=_turbo_kernel_config(**turbo_kernel_kwargs)),
+        cfg=_model_config(
+            model_class, test_data_dir, training_kernel=_training_kernel_config(**training_kernel_kwargs)
+        ),
         trainer=None,
     ).to(device)
     turbo_model.load_state_dict(reference_model.state_dict(), strict=True)
-    assert not reference_model.joint.uses_turbo_kernel
-    assert turbo_model.joint.turbo_kernel_type is TurboJointKernelType.FUSED_VOCAB
+    assert not reference_model.joint.uses_training_kernel
+    assert turbo_model.joint.training_kernel_type is TrainingKernelType.FUSED_VOCAB
     return reference_model, turbo_model
 
 
@@ -254,36 +258,36 @@ def _loss_inputs(model: EncDecRNNTModel, device: torch.device, batch_size: int =
 class TestModelTurboKernelConfig:
     @pytest.mark.unit
     @pytest.mark.parametrize("model_class", ALL_MODELS)
-    def test_model_with_turbo_kernel(self, model_class, test_data_dir):
+    def test_model_with_training_kernel(self, model_class, test_data_dir):
         model = model_class(
-            cfg=_model_config(model_class, test_data_dir, turbo_kernel=_turbo_kernel_config()), trainer=None
+            cfg=_model_config(model_class, test_data_dir, training_kernel=_training_kernel_config()), trainer=None
         )
-        assert model.joint.uses_turbo_kernel
+        assert model.joint.uses_training_kernel
         assert model.loss.supports_logprobs_input
         assert model.consistency_loss is None
         # the Joint config is preserved in the model config (e.g., for saving the checkpoint)
-        assert model.cfg.joint.turbo_kernel.type == "fused_vocab"
+        assert model.cfg.joint.training_kernel.type == "fused_vocab"
 
     @pytest.mark.unit
     @pytest.mark.parametrize("model_class", [EncDecRNNTModel, EncDecHybridRNNTCTCBPEModel])
     @pytest.mark.parametrize("loss_name,loss_kwargs", [("warprnnt_numba", None), ("turbo_rnnt", {"clamp": 1.0})])
-    def test_turbo_kernel_requires_loss_from_logprobs(self, model_class, loss_name, loss_kwargs, test_data_dir):
+    def test_training_kernel_requires_loss_from_logprobs(self, model_class, loss_name, loss_kwargs, test_data_dir):
         config = _model_config(
             model_class,
             test_data_dir,
-            turbo_kernel=_turbo_kernel_config(),
+            training_kernel=_training_kernel_config(),
             loss_name=loss_name,
             loss_kwargs=loss_kwargs,
         )
-        with pytest.raises(ValueError, match="turbo_kernel"):
+        with pytest.raises(ValueError, match="training_kernel"):
             model_class(cfg=config)
         # the same loss is valid without the turbo kernel
-        config.joint.turbo_kernel = None
-        assert not model_class(cfg=config).joint.uses_turbo_kernel
+        config.joint.training_kernel = None
+        assert not model_class(cfg=config).joint.uses_training_kernel
 
     @pytest.mark.unit
-    def test_turbo_kernel_rejects_fuse_loss_wer(self, test_data_dir):
-        config = _model_config(EncDecRNNTModel, test_data_dir, turbo_kernel=_turbo_kernel_config())
+    def test_training_kernel_rejects_fuse_loss_wer(self, test_data_dir):
+        config = _model_config(EncDecRNNTModel, test_data_dir, training_kernel=_training_kernel_config())
         config.joint.fuse_loss_wer = True
         config.joint.fused_batch_size = 1
         # the Joint is instantiated by Hydra, which wraps the error
@@ -291,30 +295,37 @@ class TestModelTurboKernelConfig:
             EncDecRNNTModel(cfg=config)
 
     @pytest.mark.unit
-    def test_turbo_kernel_rejects_tdt(self, test_data_dir):
-        config = _model_config(EncDecRNNTModel, test_data_dir, turbo_kernel=_turbo_kernel_config(), loss_name="tdt")
+    def test_training_kernel_rejects_tdt(self, test_data_dir):
+        config = _model_config(
+            EncDecRNNTModel, test_data_dir, training_kernel=_training_kernel_config(), loss_name="tdt"
+        )
         config.joint.num_extra_outputs = 5
         with pytest.raises(InstantiationException, match="extra Joint outputs"):
             EncDecRNNTModel(cfg=config)
 
     @pytest.mark.unit
-    def test_turbo_kernel_is_preserved_on_vocabulary_change(self, test_data_dir):
-        model = EncDecRNNTModel(cfg=_model_config(EncDecRNNTModel, test_data_dir, turbo_kernel=_turbo_kernel_config()))
+    def test_training_kernel_is_preserved_on_vocabulary_change(self, test_data_dir):
+        model = EncDecRNNTModel(
+            cfg=_model_config(EncDecRNNTModel, test_data_dir, training_kernel=_training_kernel_config())
+        )
         model.change_vocabulary(new_vocabulary=LABELS + ['h'])
         assert model.joint.num_classes_with_blank == len(LABELS) + 2
-        assert model.joint.turbo_kernel_type is TurboJointKernelType.FUSED_VOCAB
+        assert model.joint.training_kernel_type is TrainingKernelType.FUSED_VOCAB
         assert model.loss.supports_logprobs_input
 
     @pytest.mark.unit
     @pytest.mark.parametrize("model_class", [EncDecRNNTBPEModel, EncDecHybridRNNTCTCBPEModel])
-    def test_turbo_kernel_is_preserved_on_tokenizer_change(self, model_class, test_data_dir):
+    def test_training_kernel_is_preserved_on_tokenizer_change(self, model_class, test_data_dir):
         """Regression: the loss was replaced by the default one, which can't be computed from log-probabilities"""
         config = _model_config(
-            model_class, test_data_dir, turbo_kernel=_turbo_kernel_config(), loss_kwargs={"fastemit_lambda": 0.01}
+            model_class,
+            test_data_dir,
+            training_kernel=_training_kernel_config(),
+            loss_kwargs={"fastemit_lambda": 0.01},
         )
         model = model_class(cfg=config)
         model.change_vocabulary(new_tokenizer_dir=config.tokenizer.dir, new_tokenizer_type="bpe")
-        assert model.joint.turbo_kernel_type is TurboJointKernelType.FUSED_VOCAB
+        assert model.joint.training_kernel_type is TrainingKernelType.FUSED_VOCAB
         assert model.loss.supports_logprobs_input
         # the loss is created from the config of the model, as in the constructor
         assert model.loss._loss.fastemit_lambda == 0.01
@@ -322,24 +333,24 @@ class TestModelTurboKernelConfig:
 
     @pytest.mark.unit
     def test_save_restore(self, test_data_dir, tmp_path):
-        turbo_kernel = _turbo_kernel_config(pruning={'type': 'two_pass', 'range_size': 2, 'start_step': 5})
-        model = EncDecRNNTModel(cfg=_model_config(EncDecRNNTModel, test_data_dir, turbo_kernel=turbo_kernel))
+        training_kernel = _training_kernel_config(pruning={'type': 'two_pass', 'range_size': 2, 'start_step': 5})
+        model = EncDecRNNTModel(cfg=_model_config(EncDecRNNTModel, test_data_dir, training_kernel=training_kernel))
         model.save_to(str(tmp_path / "model.nemo"))
         restored_model = EncDecRNNTModel.restore_from(str(tmp_path / "model.nemo"), map_location="cpu")
-        assert restored_model.joint.turbo_kernel_type is TurboJointKernelType.FUSED_VOCAB
-        assert restored_model.joint._turbo_kernel_cfg == model.joint._turbo_kernel_cfg
-        assert restored_model.joint._turbo_kernel_cfg.pruning.pruning_type is TurboJointPruningType.TWO_PASS
-        assert restored_model.joint._turbo_kernel_cfg.pruning.range_size == 2
-        assert restored_model.joint._turbo_kernel_cfg.pruning.start_step == 5
+        assert restored_model.joint.training_kernel_type is TrainingKernelType.FUSED_VOCAB
+        assert restored_model.joint._training_kernel_cfg == model.joint._training_kernel_cfg
+        assert restored_model.joint._training_kernel_cfg.pruning.pruning_type is TurboJointPruningType.TWO_PASS
+        assert restored_model.joint._training_kernel_cfg.pruning.range_size == 2
+        assert restored_model.joint._training_kernel_cfg.pruning.start_step == 5
 
 
 class TestModelComputeLossesRouting:
     """Routing of `_compute_losses` between the logits and the log-probabilities path (no kernels involved)"""
 
     @staticmethod
-    def _model_stub(uses_turbo_kernel: bool, loss_supports_logprobs: bool = True, consistency_loss=None):
+    def _model_stub(uses_training_kernel: bool, loss_supports_logprobs: bool = True, consistency_loss=None):
         joint = Mock()
-        joint.uses_turbo_kernel = uses_turbo_kernel
+        joint.uses_training_kernel = uses_training_kernel
         joint.supports_loss_logprobs = True
         joint.num_extra_outputs = 0
         loss = Mock()
@@ -348,8 +359,8 @@ class TestModelComputeLossesRouting:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("current_step", [None, 5])
-    def test_turbo_kernel_uses_logprobs_path(self, current_step):
-        model = self._model_stub(uses_turbo_kernel=True)
+    def test_training_kernel_uses_logprobs_path(self, current_step):
+        model = self._model_stub(uses_training_kernel=True)
         target_logprobs, blank_logprobs = torch.randn(2, 6, 4), torch.randn(2, 6, 4)
         model.joint.forward_for_loss.return_value = JointLossInputs(target_logprobs, blank_logprobs)
         inputs = _loss_inputs(SimpleNamespace(joint=SimpleNamespace(num_classes_with_blank=9)), torch.device("cpu"))
@@ -383,7 +394,7 @@ class TestModelComputeLossesRouting:
     @pytest.mark.parametrize("with_trainer", [True, False])
     def test_full_lattice_loss_is_logged(self, with_trainer):
         """Two-pass pruning: the loss of the full lattice reported by the Joint is reduced as the loss and logged"""
-        model = self._model_stub(uses_turbo_kernel=True)
+        model = self._model_stub(uses_training_kernel=True)
         model._trainer = object() if with_trainer else None
         model.log = Mock()
         model._log_full_lattice_loss = lambda *args: EncDecRNNTModel._log_full_lattice_loss(model, *args)
@@ -408,7 +419,7 @@ class TestModelComputeLossesRouting:
     @pytest.mark.unit
     def test_standard_joint_uses_logits_path(self):
         """Without the turbo kernel the behavior is not changed, even if the loss supports log-probabilities"""
-        model = self._model_stub(uses_turbo_kernel=False)
+        model = self._model_stub(uses_training_kernel=False)
         inputs = _loss_inputs(SimpleNamespace(joint=SimpleNamespace(num_classes_with_blank=9)), torch.device("cpu"))
 
         loss_value, consistency_loss_value = EncDecRNNTModel._compute_losses(model, **inputs, current_step=5)
@@ -425,11 +436,11 @@ class TestModelComputeLossesRouting:
         model.joint.forward_for_loss.assert_not_called()
 
     @pytest.mark.unit
-    @pytest.mark.parametrize("uses_turbo_kernel", [False, True])
-    def test_consistency_uses_logprobs_path(self, uses_turbo_kernel: bool):
+    @pytest.mark.parametrize("uses_training_kernel", [False, True])
+    def test_consistency_uses_logprobs_path(self, uses_training_kernel: bool):
         consistency_loss = Mock()
         consistency_loss.symmetrical = False
-        model = self._model_stub(uses_turbo_kernel=uses_turbo_kernel, consistency_loss=consistency_loss)
+        model = self._model_stub(uses_training_kernel=uses_training_kernel, consistency_loss=consistency_loss)
         consistency_kl = torch.randn(2, 6, 4)
         model.joint.forward_for_loss.return_value = JointLossInputs(
             torch.randn(4, 6, 4), torch.randn(4, 6, 4), consistency_kl
@@ -455,7 +466,7 @@ class TestModelComputeLossesRouting:
         """Loss that requires the full Joint output: both losses are computed from the logits"""
         consistency_loss = Mock()
         model = self._model_stub(
-            uses_turbo_kernel=False, loss_supports_logprobs=False, consistency_loss=consistency_loss
+            uses_training_kernel=False, loss_supports_logprobs=False, consistency_loss=consistency_loss
         )
         logits = torch.randn(4, 6, 4, 9)
         model.joint.return_value = logits
@@ -477,7 +488,7 @@ class TestModelComputeLossesRouting:
     def test_consistency_rejects_odd_batch(self, loss_supports_logprobs):
         """Regression: with the loss from the logits, the halves of an odd batch were broadcast silently"""
         model = self._model_stub(
-            uses_turbo_kernel=False, loss_supports_logprobs=loss_supports_logprobs, consistency_loss=Mock()
+            uses_training_kernel=False, loss_supports_logprobs=loss_supports_logprobs, consistency_loss=Mock()
         )
         inputs = _loss_inputs(
             SimpleNamespace(joint=SimpleNamespace(num_classes_with_blank=9)), torch.device("cpu"), batch_size=3
@@ -487,7 +498,7 @@ class TestModelComputeLossesRouting:
 
     @pytest.mark.unit
     def test_consistency_requires_consistency_loss(self):
-        model = self._model_stub(uses_turbo_kernel=True)
+        model = self._model_stub(uses_training_kernel=True)
         inputs = _loss_inputs(
             SimpleNamespace(joint=SimpleNamespace(num_classes_with_blank=9)), torch.device("cpu"), batch_size=4
         )
@@ -496,7 +507,7 @@ class TestModelComputeLossesRouting:
 
     @pytest.mark.unit
     def test_consistency_rejects_extra_outputs(self):
-        model = self._model_stub(uses_turbo_kernel=False, loss_supports_logprobs=False, consistency_loss=Mock())
+        model = self._model_stub(uses_training_kernel=False, loss_supports_logprobs=False, consistency_loss=Mock())
         model.joint.num_extra_outputs = 5
         inputs = _loss_inputs(
             SimpleNamespace(joint=SimpleNamespace(num_classes_with_blank=9)), torch.device("cpu"), batch_size=4
@@ -685,9 +696,9 @@ class TestModelTurboKernel:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("symmetrical", [True, False])
-    @pytest.mark.parametrize("use_turbo_kernel", [False, True])
+    @pytest.mark.parametrize("use_training_kernel", [False, True])
     def test_compute_losses_with_consistency_matches_reference(
-        self, symmetrical: bool, use_turbo_kernel: bool, test_data_dir
+        self, symmetrical: bool, use_training_kernel: bool, test_data_dir
     ):
         """
         Consistency loss is not configured by the model, but `_compute_losses` supports it:
@@ -697,7 +708,7 @@ class TestModelTurboKernel:
         device = torch.device("cuda")
         consistency_weight = 0.2
         reference_model, turbo_model = _make_models(EncDecRNNTModel, test_data_dir, device)
-        model = turbo_model if use_turbo_kernel else reference_model
+        model = turbo_model if use_training_kernel else reference_model
         model.consistency_loss = ConsistencyRNNTLoss(symmetrical=symmetrical, reduction="mean_volume")
         model.train()
 
@@ -731,7 +742,7 @@ class TestModelTurboKernel:
             [reference_encoded, reference_predictor_output],
         )
 
-        tolerance = dict(atol=2e-4, rtol=2e-4) if use_turbo_kernel else dict(atol=1e-5, rtol=1e-5)
+        tolerance = dict(atol=2e-4, rtol=2e-4) if use_training_kernel else dict(atol=1e-5, rtol=1e-5)
         assert torch.allclose(loss_value, reference_loss_value, **tolerance)
         assert torch.allclose(consistency_loss_value, reference_consistency_value, **tolerance)
         assert torch.allclose(inputs["encoded"].grad, reference_gradients[0], **tolerance)

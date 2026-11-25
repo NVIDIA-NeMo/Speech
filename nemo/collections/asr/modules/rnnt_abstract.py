@@ -29,7 +29,7 @@ class AbstractRNNTJoint(NeuralModule, ABC):
     """
 
     @property
-    def uses_turbo_kernel(self) -> bool:
+    def uses_training_kernel(self) -> bool:
         """Whether this Joint uses an optimized training-only kernel (requires computing the loss from log-probs)."""
         return False
 

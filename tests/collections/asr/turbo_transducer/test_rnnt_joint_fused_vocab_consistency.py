@@ -259,7 +259,7 @@ def test_joint_forward_for_loss_matches_materialized_logits_path(symmetrical, pr
     reference_joint = RNNTJoint(**joint_config).to(device).train()
     turbo_joint = RNNTJoint(
         **joint_config,
-        turbo_kernel={
+        training_kernel={
             "type": "fused_vocab",
             "backend": "triton",
             **FULL_PRECISION,

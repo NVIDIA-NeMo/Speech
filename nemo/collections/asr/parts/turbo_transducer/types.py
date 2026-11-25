@@ -61,7 +61,7 @@ class JointLossInputs(NamedTuple):
     full_lattice_loss: Optional[torch.Tensor] = None
 
 
-class TurboJointKernelType(PrettyStrEnum):
+class TrainingKernelType(PrettyStrEnum):
     """
     Optimized (training-only) Joint kernel.
 
@@ -156,24 +156,34 @@ class TurboJointPruningConfig:
 
 
 @dataclass
-class TurboJointKernelConfig:
-    """
-    Configuration of the Joint turbo kernel (`RNNTJoint(turbo_kernel=...)`).
-
-    Fields:
-        type: kernel type, see `TurboJointKernelType`. None disables the turbo kernel (other fields are ignored).
-        backend: `triton` (the only implemented backend); None selects it automatically.
-            `cutile` is reserved for the planned cuTile backend and is rejected with `NotImplementedError`.
-        use_high_precision_mm: use FP32 matmul operands with IEEE input precision (Triton).
-        mm_full_precision: use FP32 matmul operands for BF16 activations (by default BF16 operands are used).
-        input_grad_full_precision: accumulate the gradient for the Joint hidden in FP32.
-        weight_grad_full_precision: accumulate the gradient for the vocabulary projection weight in FP32.
-        backward_mode: backward algorithm, see `FusedVocabBackwardMode`: `chunked` (default, also if None)
-            or `atomic` (experimental). The gradient precision flags affect only the `atomic` mode.
-        pruning: optional pruning of the lattice, see `TurboJointPruningConfig`. None disables pruning.
-    """
+class TrainingKernelConfig:
+    """Select the training joint. Only options for the selected implementation are accepted."""
 
     type: Optional[str] = None
+
+    @property
+    def kernel_type(self) -> Optional[TrainingKernelType]:
+        return TrainingKernelType(self.type) if self.type is not None else None
+
+    @staticmethod
+    def from_config(config: Optional[Mapping[str, Any]]) -> "TrainingKernelConfig":
+        if config is None:
+            return FusedVocabKernelConfig()
+        if not isinstance(config, Mapping):
+            raise TypeError(f"`training_kernel` must be a mapping or None, got {type(config).__name__}")
+        kind = config.get("type")
+        if kind is not None:
+            kind = TrainingKernelType(kind)
+        options = OmegaConf.to_object(OmegaConf.merge(OmegaConf.structured(FusedVocabKernelConfig), config))
+        if kind is not None:
+            options.validate()
+        return options
+
+
+@dataclass
+class FusedVocabKernelConfig(TrainingKernelConfig):
+    """Vocabulary projection, gradient accumulation and optional lattice pruning."""
+
     backend: Optional[str] = TurboTransducerBackend.TRITON.value
     use_high_precision_mm: bool = False
     mm_full_precision: bool = False
@@ -182,29 +192,12 @@ class TurboJointKernelConfig:
     backward_mode: Optional[str] = FusedVocabBackwardMode.CHUNKED.value
     pruning: Optional[TurboJointPruningConfig] = None
 
-    @classmethod
-    def from_config(cls, config: Optional[Mapping[str, Any]]) -> "TurboJointKernelConfig":
-        """
-        Construct the validated config from a mapping (dict or DictConfig).
-        Unknown keys and values of wrong types are rejected; missing keys get the defaults.
-        """
-        if config is None:
-            return cls()
-        if not isinstance(config, Mapping) and not OmegaConf.is_dict(config):
-            raise TypeError(f"`turbo_kernel` must be a mapping or None, got {type(config).__name__}")
-        kernel_config: TurboJointKernelConfig = OmegaConf.to_object(OmegaConf.merge(OmegaConf.structured(cls), config))
-        if kernel_config.type is not None:
-            TurboJointKernelType(kernel_config.type)  # validate
-            check_turbo_joint_backend(kernel_config.backend)
-            if kernel_config.backward_mode is not None:
-                FusedVocabBackwardMode(kernel_config.backward_mode)  # validate
-            if kernel_config.pruning is not None:
-                kernel_config.pruning.validate()
-        return kernel_config
-
-    @property
-    def kernel_type(self) -> Optional[TurboJointKernelType]:
-        return TurboJointKernelType(self.type) if self.type is not None else None
+    def validate(self):
+        check_turbo_joint_backend(self.backend)
+        if self.backward_mode is not None:
+            FusedVocabBackwardMode(self.backward_mode)
+        if self.pruning is not None:
+            self.pruning.validate()
 
     @property
     def uses_pruning(self) -> bool:

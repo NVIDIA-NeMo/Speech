@@ -498,7 +498,7 @@ class TestJointTwoPassPruning:
             },
             num_classes=BLANK_ID,  # blank is the last label
             masking_prob=masking_prob,
-            turbo_kernel={
+            training_kernel={
                 "type": "fused_vocab",
                 "backend": "triton",
                 **(FULL_PRECISION if full_precision else {}),
@@ -1109,7 +1109,7 @@ def test_training_supplies_optimizer_step():
         is_interctc_enabled=lambda: False,
         forward=Mock(return_value=(encoded, src_lengths)),
         decoder=Mock(return_value=(decoder, tgt_lengths, None)),
-        joint=SimpleNamespace(fuse_loss_wer=False, uses_turbo_kernel=True),
+        joint=SimpleNamespace(fuse_loss_wer=False, uses_training_kernel=True),
         _compute_losses=Mock(side_effect=RuntimeError("stop at loss boundary")),
     )
     with pytest.raises(RuntimeError, match="stop at loss boundary"):

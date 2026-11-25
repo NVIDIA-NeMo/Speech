@@ -42,8 +42,8 @@ from nemo.collections.asr.parts.turbo_transducer.rnnt_joint_fused_vocab import (
 from nemo.collections.asr.parts.turbo_transducer.rnnt_pruning import rnnt_pruning_range_starts
 from nemo.collections.asr.parts.turbo_transducer.types import (
     JointLossInputs,
-    TurboJointKernelConfig,
-    TurboJointKernelType,
+    TrainingKernelConfig,
+    TrainingKernelType,
     TurboJointPruningConfig,
     TurboJointPruningType,
 )
@@ -1320,13 +1320,13 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             Warning: This will make the forward-backward pass much slower than normal.
             It also might not fix the OOM if the GPU simply does not have enough memory to compute the joint.
 
-        turbo_kernel: Optional dict-like config of the optimized training-only Joint kernel (Turbo Transducer),
-            see `TurboJointKernelConfig`. With the kernel enabled, the loss is computed from the target and blank
+        training_kernel: Optional dict-like config of the optimized training-only Joint kernel,
+            see `TrainingKernelConfig`. With the kernel enabled, the loss is computed from the target and blank
             log-probabilities returned by `forward_for_loss`, without materializing the logits `[B, T, U+1, V]`.
             This requires an RNN-T loss that accepts log-probabilities (`turbo_rnnt`). Decoding is not affected.
             The following key-value pairs are supported:
 
-            type: kernel type. None (default) disables the turbo kernel; `fused_vocab` fuses the vocabulary
+            type: kernel type. None (default) disables the training kernel; `fused_vocab` fuses the vocabulary
                 projection with log-softmax.
 
             backend: `triton` (default), the only implemented backend. `cutile` is reserved for the planned
@@ -1459,7 +1459,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         fused_batch_size: Optional[int] = None,
         experimental_fuse_loss_wer: Any = None,
         masking_prob: float = -1.0,
-        turbo_kernel: Optional[Dict[str, Any]] = None,
+        training_kernel: Optional[Dict[str, Any]] = None,
     ):
         super().__init__()
 
@@ -1480,18 +1480,18 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         self._fuse_loss_wer = fuse_loss_wer
         self._fused_batch_size = fused_batch_size
 
-        self._turbo_kernel_cfg = TurboJointKernelConfig.from_config(turbo_kernel)
-        self._turbo_kernel_type = self._turbo_kernel_cfg.kernel_type
-        if self.uses_turbo_kernel:
+        self._training_kernel_cfg = TrainingKernelConfig.from_config(training_kernel)
+        self._training_kernel_type = self._training_kernel_cfg.kernel_type
+        if self.uses_training_kernel:
             if fuse_loss_wer:
-                raise ValueError("`turbo_kernel` and `fuse_loss_wer` cannot be enabled together")
+                raise ValueError("`training_kernel` and `fuse_loss_wer` cannot be enabled together")
             if num_extra_outputs != 0:
-                raise ValueError("`turbo_kernel` does not support extra Joint outputs")
+                raise ValueError("`training_kernel` does not support extra Joint outputs")
             if preserve_memory:
-                raise ValueError("`preserve_memory` is not applicable when `turbo_kernel` is enabled")
-            if self._turbo_kernel_cfg.uses_pruning:
+                raise ValueError("`preserve_memory` is not applicable when `training_kernel` is enabled")
+            if self._training_kernel_cfg.uses_pruning:
                 logging.warning(
-                    f"Pruning of the Joint lattice (`turbo_kernel.pruning.type={self._turbo_kernel_cfg.pruning.type}`) "
+                    f"Pruning of the Joint lattice (`training_kernel.pruning.type={self._training_kernel_cfg.pruning.type}`) "
                     "is experimental: its behavior and config can change in future releases.",
                     mode=logging_mode.ONCE,
                 )
@@ -1528,10 +1528,10 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             dropout=self.dropout,
         )
 
-        if self.uses_turbo_kernel:
+        if self.uses_training_kernel:
             vocab_projection = self.joint_net[-1]
             if not isinstance(vocab_projection, torch.nn.Linear) or vocab_projection.bias is None:
-                raise TypeError("`turbo_kernel` requires the last `joint_net` module to be nn.Linear with bias")
+                raise TypeError("`training_kernel` requires the last `joint_net` module to be nn.Linear with bias")
 
         # Flag needed for RNNT export support
         self._rnnt_export = False
@@ -1542,12 +1542,12 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         self.hypotheses = None
 
     @property
-    def uses_turbo_kernel(self) -> bool:
-        return self._turbo_kernel_type is not None
+    def uses_training_kernel(self) -> bool:
+        return self._training_kernel_type is not None
 
     @property
-    def turbo_kernel_type(self) -> Optional[TurboJointKernelType]:
-        return self._turbo_kernel_type
+    def training_kernel_type(self) -> Optional[TrainingKernelType]:
+        return self._training_kernel_type
 
     @property
     def supports_loss_logprobs(self) -> bool:
@@ -1562,7 +1562,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         """
         if not self.supports_loss_logprobs:
             return False
-        return self._turbo_kernel_type in (None, TurboJointKernelType.FUSED_VOCAB)
+        return self._training_kernel_type in (None, TrainingKernelType.FUSED_VOCAB)
 
     def forward_for_loss(
         self,
@@ -1579,7 +1579,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         Run a Joint forward that returns per-position quantities for the losses (target/blank
         log-probabilities and, optionally, the consistency loss), instead of the full logits tensor.
 
-        With `turbo_kernel` enabled, the logits are never materialized. Otherwise the logits are computed
+        With `training_kernel` enabled, the logits are never materialized. Otherwise the logits are computed
         as usual, but the losses do not keep a separate gradient buffer for each of them.
 
         The temperature of the Joint is not applied: it is a parameter of decoding (set by the decoding config),
@@ -1596,7 +1596,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                 (the batch is expected to be a double batch: teacher first half, student second half)
             consistency_symmetrical: if True, compute symmetric KL divergence for the consistency loss
             current_step: optimizer step, supplied by the model during training. Required in training mode
-                if pruning is scheduled with a positive `turbo_kernel.pruning.start_step`.
+                if pruning is scheduled with a positive `training_kernel.pruning.start_step`.
 
         Returns:
             `JointLossInputs`
@@ -1605,14 +1605,14 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             raise NotImplementedError(f"{type(self).__name__} does not support `forward_for_loss`")
         if compute_consistency and not self.supports_consistency_loss:
             raise NotImplementedError(
-                f"Consistency loss is not supported for the turbo kernel `{self._turbo_kernel_type}`"
+                f"Consistency loss is not supported for the training kernel `{self._training_kernel_type}`"
             )
 
         encoder_output_projected = self.project_encoder(encoder_outputs.transpose(1, 2))  # [B, T, H]
         predictor_output_projected = self.project_prednet(decoder_outputs.transpose(1, 2))  # [B, U+1, H]
         blank_id = self._vocab_size
 
-        if self._turbo_kernel_type is None:
+        if self._training_kernel_type is None:
             logits = self._joint_logits_after_projection(encoder_output_projected, predictor_output_projected)
             return JointLossInputs(
                 *rnnt_logprobs_with_consistency(
@@ -1625,8 +1625,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                     consistency_symmetrical=consistency_symmetrical,
                 )
             )
-        if self._turbo_kernel_type is not TurboJointKernelType.FUSED_VOCAB:
-            raise NotImplementedError(f"Turbo kernel `{self._turbo_kernel_type}` is not implemented")
+        if self._training_kernel_type is not TrainingKernelType.FUSED_VOCAB:
+            raise NotImplementedError(f"Training kernel `{self._training_kernel_type}` is not implemented")
 
         vocab_projection = self.joint_net[-1]
         kernel_kwargs = dict(
@@ -1636,12 +1636,12 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             weight=vocab_projection.weight,
             bias=vocab_projection.bias,
             blank_id=blank_id,
-            backend=self._turbo_kernel_cfg.backend,
-            use_high_precision_mm=self._turbo_kernel_cfg.use_high_precision_mm,
-            mm_full_precision=self._turbo_kernel_cfg.mm_full_precision,
-            input_grad_full_precision=self._turbo_kernel_cfg.input_grad_full_precision,
-            weight_grad_full_precision=self._turbo_kernel_cfg.weight_grad_full_precision,
-            backward_mode=self._turbo_kernel_cfg.backward_mode,
+            backend=self._training_kernel_cfg.backend,
+            use_high_precision_mm=self._training_kernel_cfg.use_high_precision_mm,
+            mm_full_precision=self._training_kernel_cfg.mm_full_precision,
+            input_grad_full_precision=self._training_kernel_cfg.input_grad_full_precision,
+            weight_grad_full_precision=self._training_kernel_cfg.weight_grad_full_precision,
+            backward_mode=self._training_kernel_cfg.backward_mode,
         )
         pruning = self._get_active_pruning(current_step)
         full_lattice_loss = None
@@ -2067,7 +2067,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         """Pruning config for the current forward pass, None if pruning is not applied"""
         if not self.training or not torch.is_grad_enabled():
             return None
-        return self._turbo_kernel_cfg.get_active_pruning(current_step)
+        return self._training_kernel_cfg.get_active_pruning(current_step)
 
     def _estimate_pruning_range_starts(
         self, f: torch.Tensor, g: torch.Tensor, range_size: int, paired: bool, kernel_kwargs: Dict[str, Any]
@@ -2179,8 +2179,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         return self._fuse_loss_wer
 
     def set_fuse_loss_wer(self, fuse_loss_wer, loss=None, metric=None):
-        if fuse_loss_wer and self.uses_turbo_kernel:
-            raise ValueError("`turbo_kernel` and `fuse_loss_wer` cannot be enabled together")
+        if fuse_loss_wer and self.uses_training_kernel:
+            raise ValueError("`training_kernel` and `fuse_loss_wer` cannot be enabled together")
         self._fuse_loss_wer = fuse_loss_wer
 
         self._loss = loss

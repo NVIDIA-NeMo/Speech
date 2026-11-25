@@ -440,6 +440,14 @@ class RNNTLoss(Loss):
         self._supports_padding = RNNT_LOSS_RESOLVER[loss_name].supports_padding
         self._fp16_compat_checked = False
 
+    @property
+    def supports_logprobs_input(self) -> bool:
+        """
+        Whether the selected loss can be computed from target and blank log-probabilities (see `forward_from_logprobs`)
+        instead of the full Joint output. Required by the Joint turbo kernels, which do not materialize the logits.
+        """
+        return getattr(self._loss, 'supports_logprobs_input', False)
+
     def warmup(self, device: Union[str, torch.device]) -> bool:
         """Warm supported Numba RNNT/TDT kernels before allocating training activations.
 
@@ -472,6 +480,54 @@ class RNNTLoss(Loss):
             losses = losses.sum() / target_lengths.sum()  # same as above but longer samples weigh more
 
         return losses
+
+    def forward_from_logprobs(
+        self,
+        target_logprobs: torch.Tensor,
+        blank_logprobs: torch.Tensor,
+        input_lengths: torch.Tensor,
+        target_lengths: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute the RNN-T loss from target and blank log-probabilities instead of the full Joint output.
+        Supported only by the losses with `supports_logprobs_input`.
+
+        Unlike `forward`, the lengths are not validated against the shapes to avoid host-device synchronization.
+
+        Args:
+            target_logprobs: log-probabilities for target labels of size [B, T, U+1]
+            blank_logprobs: log-probabilities for the blank label of size [B, T, U+1]
+            input_lengths: lengths of the source sequences of size [B]
+            target_lengths: lengths of the targets of size [B]
+
+        Returns:
+            loss, reduced according to `reduction`
+        """
+        if not self.supports_logprobs_input:
+            raise NotImplementedError(
+                f"{type(self._loss).__name__} can't be computed from target and blank log-probabilities"
+            )
+
+        input_lengths = input_lengths.long()
+        target_lengths = target_lengths.long()
+
+        # Temporarily override loss reduction (same as in `forward`)
+        loss_reduction = self._loss.reduction
+        self._loss.reduction = None
+        try:
+            loss = self._loss.forward_from_logprobs(
+                target_logprobs=target_logprobs.contiguous(),
+                blank_logprobs=blank_logprobs.contiguous(),
+                act_lens=input_lengths,
+                label_lens=target_lengths,
+            )
+        finally:
+            self._loss.reduction = loss_reduction
+
+        if self.reduction is not None:
+            loss = self.reduce(loss, target_lengths)
+
+        return loss
 
     @typecheck()
     def forward(self, log_probs, targets, input_lengths, target_lengths):

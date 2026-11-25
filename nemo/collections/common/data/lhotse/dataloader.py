@@ -59,6 +59,7 @@ from nemo.collections.common.data.lhotse.sampling import (
     CERFilter,
     ContextSpeakerSimilarityFilter,
     DurationFilter,
+    DurationTokenBinsFilter,
     FixedBucketBatchSizeConstraint2D,
     MultimodalFixedBucketBatchSizeConstraint2D,
     MultimodalSamplingConstraint,
@@ -172,6 +173,10 @@ class LhotseDataLoadingConfig:
     max_duration: float | None = float("inf")
     min_tps: int = -1  # allowed tokens per second (audio-only)
     max_tps: Any = float("inf")  # float | list[float]
+    # Keeps the cuts that fit one of these (max duration, max tokens) bins under the rule of strict 2D bucketing,
+    # without bucketing by them; the format of two-dimensional bucket_duration_bins for audio.
+    # A max_tps list is applied per bin as 2D bucketing applies it.
+    filter_duration_bins: Any = None  # list[list[float]] | None = None
     #   * Text input
     min_tokens: int | None = None
     max_tokens: int | None = None
@@ -733,6 +738,12 @@ def get_lhotse_dataloader_from_multi_config(
         top_level_config["seed"] = resolve_seed(top_level_config["seed"])
         return OmegaConf.create({k: top_level_config.get(k, defaults[k]) for k in overwriting_opts})
 
+    if top_level_config.get("filter_duration_bins") is not None:
+        raise ValueError(
+            "filter_duration_bins is not shared by the sub-configs of a multi_config setup; "
+            "set it in each sub-config it should apply to."
+        )
+
     shared_opts = gather_shared_opts()
     dataset = configure_dataset_audio_loading(dataset, shared_opts.fault_tolerant_audio_loading)
     dataset = configure_dataset_checkpointed_rng(dataset, shared_opts.use_stateful_dataloader)
@@ -987,6 +998,13 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     if tokenizer is not None and config.pretokenize:
         cuts = cuts.filter(TokenPerSecondFilter(config.min_tps, config.max_tps))
         cuts = cuts.filter(TokenPerTokenFilter(config.min_tpt, config.max_tpt))
+    if config.filter_duration_bins is not None:
+        cuts = cuts.filter(
+            DurationTokenBinsFilter(
+                config.filter_duration_bins,
+                max_tps=config.max_tps if isinstance(config.max_tps, Sequence) else None,
+            )
+        )
 
     # Select the strategy customizing Lhotse sampler behaviour.
     # Provides support for dynamic batch sizes, multimodal dataloading, 2D bucketing, etc.

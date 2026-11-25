@@ -24,7 +24,7 @@ on:
   workflow_dispatch:
     inputs:
       release-ref:
-        description: Ref (SHA or branch name) to release
+        description: Full 40-character commit SHA to release
         required: true
         type: string
       version-bump-branch:
@@ -62,7 +62,6 @@ defaults:
     shell: bash -x -e -u -o pipefail {0}
 
 permissions:
-  id-token: write
   contents: write
   pull-requests: write
 
@@ -75,54 +74,152 @@ jobs:
     if: github.event_name != 'workflow_dispatch'
     uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_cicd_preflight.yml@cf5acebace78c7c339bc1f804357a991336f1c4d # v1.8.10
 
-  release:
+  release-workflow-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout workflow and regression tests
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Run offline release regression tests
+        run: |
+          python -m venv .venv-release-tests
+          .venv-release-tests/bin/python -m pip install PyYAML==6.0.3
+          .venv-release-tests/bin/python .github/tests/test_release_workflow.py -v
+
+  validate-inputs:
     needs: [pre-flight]
     if: |
       !cancelled() && !failure()
       && !(needs.pre-flight.outputs.docs_only == 'true'
            || needs.pre-flight.outputs.is_deployment_workflow == 'true')
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_release_library.yml@f7af92c4d1caea5a58577ce4ac5314f7de1bc5d4 # v1.4.3
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Validate immutable release ref
+        env:
+          RELEASE_REF: ${{ inputs.release-ref || github.sha }}
+        run: |
+          if [[ ! "$RELEASE_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::release-ref must be a full 40-character commit SHA"
+            exit 1
+          fi
+
+  bump:
+    needs: [validate-inputs, release-workflow-tests]
+    if: |
+      !cancelled() && !failure() && needs.validate-inputs.result == 'success'
+      && needs.release-workflow-tests.result == 'success'
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_release_bump.yml@2eee849aec3da7b625a798188a0e1ba603e448d8
     with:
       release-ref: ${{ inputs.release-ref || github.sha }}
       python-package: nemo
-      python-version: "3.12"
       library-name: Neural Modules
       validate-only: ${{ github.event_name != 'workflow_dispatch' }}
       dry-run: ${{ inputs.dry-run || false }}
-      wheel-content-ignore: "W002,W004,W005,W009"
-      skip-check-manifest: true
       version-bump-branch: ${{ inputs.version-bump-branch || github.ref_name }}
-      create-gh-release: ${{ inputs.create-gh-release || true }}
+      app-id: ${{ vars.BOT_ID }}
+      restrict-to-admins: true
+    secrets:
+      BOT_KEY: ${{ secrets.BOT_KEY }}
+
+  build-wheel:
+    needs: [bump, pre-flight]
+    if: |
+      !cancelled() && !failure() && needs.bump.result == 'success'
+    permissions:
+      contents: read
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_build_test_wheel.yml@2eee849aec3da7b625a798188a0e1ba603e448d8
+    with:
+      python-package: nemo
+      python-version: "3.12"
+      wheel-content-ignore: W002,W004,W005,W009
+      skip-check-manifest: true
+      ref: ${{ inputs.release-ref || github.sha }}
+
+  publish-wheel:
+    needs: build-wheel
+    if: >-
+      ${{ !cancelled() && !failure() && needs.build-wheel.result == 'success'
+          && github.event_name == 'workflow_dispatch' && !inputs.dry-run
+          && github.repository == 'NVIDIA-NeMo/Speech' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/${{ needs.build-wheel.outputs.pypi-name }}/
+    permissions:
+      id-token: write
+    steps:
+      - name: Download validated distributions
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.build-wheel.outputs.artifact-name }}
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+
+  finalize:
+    needs: [bump, build-wheel, publish-wheel, pre-flight]
+    if: |
+      !cancelled() && !failure() && needs.bump.result == 'success'
+      && needs.build-wheel.result == 'success'
+      && (github.event_name != 'workflow_dispatch' || inputs.dry-run || needs.publish-wheel.result == 'success')
+    permissions:
+      contents: write
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_release_finalize.yml@2eee849aec3da7b625a798188a0e1ba603e448d8
+    with:
+      release-ref: ${{ inputs.release-ref || github.sha }}
+      library-name: Neural Modules
+      validate-only: ${{ github.event_name != 'workflow_dispatch' }}
+      dry-run: ${{ inputs.dry-run || false }}
+      create-gh-release: ${{ github.event_name != 'workflow_dispatch' || inputs.create-gh-release }}
       app-id: ${{ vars.BOT_ID }}
       gh-release-use-changelog-builder: ${{ inputs.generate-changelog || false }}
-      publish-docs: ${{ inputs.publish-docs || true }}
+      publish-docs: ${{ github.event_name != 'workflow_dispatch' || inputs.publish-docs }}
       docs-target-path: nemo
       docs-directory: docs/source
       docs-requirements-file: requirements/requirements_docs.txt
       docs-sync-all: true
-      docs-no-extras: "--no-extra cu12 --no-extra compiled --no-extra compiled-a100 --no-extra vllm"
+      docs-no-extras: --no-extra cu12 --no-extra compiled --no-extra compiled-a100 --no-extra vllm
       publish-as-latest: true
       run-on-version-tag-only: ${{ github.ref_name != 'main' }}
       gh-release-from-tag: ${{ inputs.gh-release-from-tag || '' }}
-      restrict-to-admins: true
+      release-version: ${{ needs.bump.outputs.release-version || needs.build-wheel.outputs.version }}
+      pypi-name: ${{ needs.build-wheel.outputs.pypi-name }}
     secrets: inherit  # pragma: allowlist secret
 
   release-summary:
-    needs: [pre-flight, release]
-    if: ${{ !cancelled() }}
+    needs: [release-workflow-tests, pre-flight, validate-inputs, bump, build-wheel, publish-wheel, finalize]
+    if: ${{ always() }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
     steps:
-      - name: Result
+      - name: Check release results
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEEDS: ${{ toJSON(needs) }}
+          PUBLISH_EXPECTED: ${{ github.event_name == 'workflow_dispatch' && !inputs.dry-run }}
+          RELEASE_SKIPPED: ${{ needs.pre-flight.outputs.docs_only == 'true' || needs.pre-flight.outputs.is_deployment_workflow == 'true' }}
         run: |
-          FAILED_JOBS=$(gh run view $GITHUB_RUN_ID --repo ${{ github.repository }} --json jobs --jq '[.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required")] | length')
-
-          if [ "${FAILED_JOBS:-0}" -eq 0 ]; then
-              echo "✅ All previous jobs completed successfully"
-              exit 0
+          jq -e 'all(.[]; .result != "failure" and .result != "cancelled")' <<< "$NEEDS"
+          if [[ "$RELEASE_SKIPPED" == "true" ]]; then
+            exit 0
+          fi
+          jq -e '[.["release-workflow-tests"], .["validate-inputs"], .bump, .["build-wheel"], .finalize] | all(.[]; .result == "success")' <<< "$NEEDS"
+          if [[ "$PUBLISH_EXPECTED" == "true" ]]; then
+            jq -e '.["publish-wheel"].result == "success"' <<< "$NEEDS"
           else
-              echo "❌ Found $FAILED_JOBS failed job(s)"
-              gh run view $GITHUB_RUN_ID --repo ${{ github.repository }} --json jobs --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required") | .name'
-              exit 1
+            jq -e '.["publish-wheel"].result == "skipped"' <<< "$NEEDS"
           fi

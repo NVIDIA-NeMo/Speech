@@ -74,6 +74,26 @@ jobs:
     if: github.event_name != 'workflow_dispatch'
     uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_cicd_preflight.yml@cf5acebace78c7c339bc1f804357a991336f1c4d # v1.8.10
 
+  release-workflow-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout workflow and regression tests
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Run offline release regression tests
+        run: |
+          python -m venv .venv-release-tests
+          .venv-release-tests/bin/python -m pip install PyYAML==6.0.3
+          .venv-release-tests/bin/python .github/tests/test_release_workflow.py -v
+
   validate-inputs:
     needs: [pre-flight]
     if: |
@@ -94,9 +114,10 @@ jobs:
           fi
 
   bump:
-    needs: [validate-inputs]
+    needs: [validate-inputs, release-workflow-tests]
     if: |
       !cancelled() && !failure() && needs.validate-inputs.result == 'success'
+      && needs.release-workflow-tests.result == 'success'
     permissions:
       contents: write
       pull-requests: write
@@ -180,7 +201,7 @@ jobs:
     secrets: inherit  # pragma: allowlist secret
 
   release-summary:
-    needs: [pre-flight, validate-inputs, bump, build-wheel, publish-wheel, finalize]
+    needs: [release-workflow-tests, pre-flight, validate-inputs, bump, build-wheel, publish-wheel, finalize]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -196,7 +217,7 @@ jobs:
           if [[ "$RELEASE_SKIPPED" == "true" ]]; then
             exit 0
           fi
-          jq -e '[.["validate-inputs"], .bump, .["build-wheel"], .finalize] | all(.[]; .result == "success")' <<< "$NEEDS"
+          jq -e '[.["release-workflow-tests"], .["validate-inputs"], .bump, .["build-wheel"], .finalize] | all(.[]; .result == "success")' <<< "$NEEDS"
           if [[ "$PUBLISH_EXPECTED" == "true" ]]; then
             jq -e '.["publish-wheel"].result == "success"' <<< "$NEEDS"
           else

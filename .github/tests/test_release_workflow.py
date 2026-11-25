@@ -38,14 +38,12 @@ class ReleaseGuards(unittest.TestCase):
 
     def setUp(self) -> None:
         """Create a successful manual release context for the canonical repo."""
-        guard = JOBS["publish-wheel"]["if"]
-        match = re.search(r"github.repository == '([^']+)'", guard)
-        assert match is not None
-        repository = match[1]
         self.context = {
-            "github.repository": repository,
+            "github.repository": "NVIDIA-NeMo/Speech",
             "github.event_name": "workflow_dispatch",
             "inputs.dry-run": False,
+            "needs.validate-inputs.result": "success",
+            "needs.release-workflow-tests.result": "success",
             "needs.bump.result": "success",
             "needs.build-wheel.result": "success",
             "needs.publish-wheel.result": "success",
@@ -73,6 +71,15 @@ class ReleaseGuards(unittest.TestCase):
             with self.subTest(state=state):
                 self.context["needs.build-wheel.result"] = state
                 self.assertFalse(evaluate(JOBS["publish-wheel"]["if"], self.context))
+
+    def test_regression_failures_block_version_preparation(self) -> None:
+        """Require the regression job to succeed before version preparation."""
+        self.assertIn("release-workflow-tests", JOBS["bump"]["needs"])
+        self.assertTrue(evaluate(JOBS["bump"]["if"], self.context))
+        for state in ("failure", "cancelled", "skipped"):
+            with self.subTest(state=state):
+                self.context["needs.release-workflow-tests.result"] = state
+                self.assertFalse(evaluate(JOBS["bump"]["if"], self.context))
 
     def test_real_finalize_requires_upload(self) -> None:
         """A missing upload cannot finalize a real release; dry runs may continue."""

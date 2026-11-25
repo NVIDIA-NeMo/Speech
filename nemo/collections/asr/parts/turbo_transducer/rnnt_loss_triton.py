@@ -61,7 +61,7 @@ def _rnnt_fwd_kernel(
     src_len = tl.load(src_lengths_ptr + batch_i).to(tl.int64)
     tgt_len = tl.load(tgt_lengths_ptr + batch_i).to(tl.int64)
 
-    if src_len > max_src_len or tgt_len < 0 or tgt_len >= max_tgt_len_plus_1:
+    if (src_len > max_src_len or tgt_len < 0) or tgt_len >= max_tgt_len_plus_1:
         # invalid lengths: the lattice is outside the tensors
         tl.store(loss_batch_out_ptr + batch_i, float("nan"))
         return
@@ -159,7 +159,7 @@ def _rnnt_bwd_kernel(
     if grad_rnnt_loss == 0.0 or src_len <= 0:
         # gradients are zero-initialized
         return
-    if src_len > max_src_len or tgt_len < 0 or tgt_len >= max_tgt_len_plus_1:
+    if (src_len > max_src_len or tgt_len < 0) or tgt_len >= max_tgt_len_plus_1:
         # invalid lengths: the lattice is outside the tensors (loss is NaN)
         return
 

@@ -681,3 +681,86 @@ class TestPromptIndexDatasetRNG:
 
         assert dataset.rng is random
         assert first == second
+
+
+@pytest.mark.unit
+def test_chunked_transcription_keeps_each_manifest_language(prompt_model, tmp_path):
+    import json
+
+    import soundfile as sf
+    from omegaconf import open_dict
+
+    from nemo.collections.asr.parts.mixins.transcription import ChunkingConfig
+
+    with open_dict(prompt_model.cfg):
+        prompt_model.cfg.sample_rate = 16000
+        prompt_model.cfg.preprocessor.window_stride = 0.01
+    signal, _ = make_audio(batch_size=1, samples=20000)
+    sf.write(tmp_path / 'audio.wav', signal[0].numpy(), 16000)
+    manifest = tmp_path / 'manifest.json'
+    entries = [
+        {'audio_filepath': str(tmp_path / 'audio.wav'), 'duration': 1.25, 'text': '', 'lang': lang}
+        for lang in ['de-DE', 'ja-JP']
+    ]
+    manifest.write_text(''.join(json.dumps(entry) + '\n' for entry in entries))
+    # Run the language-conditioned path through a saved and restored checkpoint.
+    checkpoint = tmp_path / 'prompted.nemo'
+    prompt_model.save_to(str(checkpoint))
+    prompt_model = type(prompt_model).restore_from(str(checkpoint), map_location='cpu').eval()
+    assert isinstance(prompt_model, EncDecRNNTBPEModelWithPrompt) and prompt_model.concat
+    seen = []
+    forward = prompt_model.forward
+
+    def record(*args, language_prompt_indices=None, **kwargs):
+        seen.extend(language_prompt_indices.tolist())
+        return forward(*args, language_prompt_indices=language_prompt_indices, **kwargs)
+
+    prompt_model.forward = record
+    # Three windows per 1.25 s source, batched across the two sources.
+    chunking = ChunkingConfig(0.5, 0.1)
+    results = prompt_model.transcribe(str(manifest), batch_size=2, verbose=False, chunking=chunking)
+    assert len(results) == 2
+    # Every window conditions the encoder on its own utterance's manifest language.
+    assert seen == [PROMPT_DICTIONARY['de-DE']] * 3 + [PROMPT_DICTIONARY['ja-JP']] * 3
+    seen.clear()
+    prompt_model.transcribe(str(manifest), batch_size=2, verbose=False, chunking=chunking, target_lang='de-DE')
+    assert seen == [PROMPT_DICTIONARY['de-DE']] * 6  # An explicit language applies to every utterance.
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('timestamps', [True, False])
+def test_chunked_transcription_leaves_model_decoding_unchanged(prompt_model, timestamps):
+    from omegaconf import OmegaConf, open_dict
+
+    from nemo.collections.asr.parts.mixins.transcription import ChunkingConfig
+
+    with open_dict(prompt_model.cfg):
+        prompt_model.cfg.sample_rate = 16000
+        prompt_model.cfg.preprocessor.window_stride = 0.01
+    signal, _ = make_audio(batch_size=1, samples=20000)
+    decoding, settings = prompt_model.decoding, OmegaConf.to_container(prompt_model.cfg)
+    results = prompt_model.transcribe(
+        [signal[0]], chunking=ChunkingConfig(0.5, 0.1), timestamps=timestamps, target_lang='de-DE', verbose=False
+    )
+    assert len(results) == 1
+    assert prompt_model.decoding is decoding and OmegaConf.to_container(prompt_model.cfg) == settings
+
+
+@pytest.mark.unit
+def test_override_config_takes_precedence_over_the_chunking_argument(prompt_model, monkeypatch):
+    from nemo.collections.asr.parts.mixins.transcription import ChunkingConfig, TranscriptionMixin
+
+    changes, seen = [], []
+    monkeypatch.setattr(prompt_model, 'change_decoding_strategy', lambda *args, **kwargs: changes.append(args))
+    monkeypatch.setattr(
+        TranscriptionMixin,
+        'transcribe',
+        lambda self, audio, override_config=None, **kwargs: seen.append(override_config),
+    )
+    override = RNNTPromptTranscribeConfig(timestamps=True, return_hypotheses=True)
+    prompt_model.transcribe(
+        ['audio.wav'], timestamps=True, override_config=override, chunking=ChunkingConfig(10.0, 1.0)
+    )
+    # The override config has no chunking, so the plain path runs with the usual timestamp setup.
+    assert seen == [override] and override.chunking is None
+    assert changes and prompt_model.cfg.decoding.compute_timestamps

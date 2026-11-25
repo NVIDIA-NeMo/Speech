@@ -17,12 +17,15 @@
 from dataclasses import dataclass
 
 import torch
-from torch import Tensor
+from torch import Tensor, nn
 from torch.utils._pytree import GetAttrKey, register_pytree_node
+
+from nemo.utils import logging, logging_mode
 
 __all__ = [
     "PackedEncoderActivations",
     "PackedSlotLayout",
+    "forward_padded_fallback",
     "lengths_to_cu_seqlens",
     "pack_encoder_output",
     "packed_encoder_position_ids",
@@ -148,12 +151,17 @@ class PackedSlotLayout:
         slot_lengths: slot count of every utterance, shape ``(B,)``.
         total_slots: sum of ``slot_lengths``.
         token_slots: slot index of every packed token, shape ``(T_total,)``.
+        lengths: valid frames of every utterance, shape ``(B,)``; ``packed_slot_layout`` sets it,
+            a layout built without it leaves its consumers to derive it from the slots.
+        sequence_ids: utterance index of every packed token, shape ``(T_total,)``; set and optional as ``lengths``.
     """
 
     slot_offsets: Tensor
     slot_lengths: Tensor
     total_slots: int
     token_slots: Tensor
+    lengths: Tensor | None = None
+    sequence_ids: Tensor | None = None
 
     def scatter(self, data: Tensor) -> Tensor:
         """Place token-flat data ``(T_total, ...)`` into its slots; every other slot is zero."""
@@ -260,6 +268,50 @@ def unpack_encoder_output(packed: PackedEncoderActivations, *, total_length: int
     return output
 
 
+def forward_padded_fallback(
+    encoder: nn.Module, features: PackedEncoderActivations, *, allowed: bool
+) -> PackedEncoderActivations:
+    """Run an encoder without a sequence-packed form on the padded batch and re-pack its output.
+
+    The padded forward computes the padding that the packed layout exists to avoid, so it is never taken silently:
+    with ``allowed=False`` it raises, and otherwise it logs one warning per encoder class and reason.
+    Both name ``allow_padded_fallback``, the option of the encoders that call this, which is off by default.
+
+    Args:
+        encoder: an encoder with the padded ``forward(audio_signal, length)`` contract,
+            ``(B, D, T)`` features in and ``(B, D', T')`` states out.
+        features: packed features, data of shape ``(T_total, D)``.
+        allowed: whether the padded forward may run.
+
+    Returns:
+        The encoder states as ``PackedEncoderActivations`` with data of shape ``(T'_total, D')``.
+
+    Raises:
+        NotImplementedError: when ``allowed`` is False, with the encoder's ``sequence_packed_unsupported_reason()``.
+    """
+    reason = getattr(encoder, "sequence_packed_unsupported_reason", None)
+    reason = reason() if callable(reason) else None
+    # the fixed prefix keeps the class name inside the key that logging_mode.ONCE deduplicates on
+    unsupported = f"Padded fallback: {type(encoder).__name__} has no sequence-packed form" + (
+        f" in this configuration: {reason}" if reason else "."
+    )
+    if not allowed:
+        raise NotImplementedError(
+            f"{unsupported} Running it on the padded batch would cost the padded frames "
+            "that sequence-packed execution avoids; set allow_padded_fallback=True to allow that "
+            "(the option of ParallelExpertEncoder, in SpeechLM2 configs under pe_encoder_overrides or inside "
+            "pe_encoder_config, and of the speaker_encoder section)."
+        )
+    logging.warning(
+        f"{unsupported} It runs on the padded batch and is re-packed (allow_padded_fallback=True), "
+        "which costs the padded frames that sequence-packed execution avoids.",
+        mode=logging_mode.ONCE,
+    )
+    padded = unpack_encoder_output(features, total_length=features.padded_length).transpose(1, 2)
+    encoded, encoded_lengths = encoder(audio_signal=padded, length=features.lengths)
+    return pack_encoder_output(encoded.transpose(1, 2), encoded_lengths)
+
+
 def split_encoder_output(packed: PackedEncoderActivations) -> tuple[Tensor, ...]:
     """Return one unpadded ``(T_i, D)`` view per utterance."""
 
@@ -304,8 +356,9 @@ def packed_slot_layout(packed: PackedEncoderActivations, *, alignment: int = 1, 
     slot_lengths = torch.div(packed.lengths + (gap + alignment - 1), alignment, rounding_mode="floor") * alignment
     slot_offsets = torch.cumsum(slot_lengths, dim=0) - slot_lengths
     total_slots = int(slot_lengths.sum().item())
-    token_slots = slot_offsets[packed_sequence_ids(packed)] + packed_encoder_position_ids(packed)
-    return PackedSlotLayout(slot_offsets, slot_lengths, total_slots, token_slots)
+    sequence_ids = packed_sequence_ids(packed)
+    token_slots = slot_offsets[sequence_ids] + packed_encoder_position_ids(packed)
+    return PackedSlotLayout(slot_offsets, slot_lengths, total_slots, token_slots, packed.lengths, sequence_ids)
 
 
 def split_packed_data(data: Tensor, lengths: Tensor, cu_seqlens: Tensor) -> tuple[Tensor, ...]:

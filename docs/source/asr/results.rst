@@ -135,12 +135,16 @@ Inference on long audio
 
 In some cases the audio is too long for standard inference, especially if you're using a model such as Conformer, where the time and memory costs of the attention layers scale quadratically with the duration.
 
-There are two main ways of performing inference on long audio files in NeMo:
+The recommended way is planned chunking: pass ``chunking=ChunkingConfig(chunk_size=30.0, context_size=2.0)`` to
+``transcribe()``. It works for CTC, RNNT/TDT, hybrid, and AED models and bounds encoder memory independent of the
+recording length. See :ref:`asr-long-audio-inference`.
 
-The first way is to use buffered inference, where the audio is divided into chunks to run on, and the output is merged afterwards.
+There are two alternatives:
+
+The first alternative is to use buffered inference, where the audio is divided into chunks to run on, and the output is merged afterwards.
 The relevant scripts for this are contained in `this folder <https://github.com/NVIDIA-NeMo/Speech/blob/stable/examples/asr/asr_chunked_inference>`_.
 
-The second way, specifically for models with the Conformer/Fast Conformer encoder, is to use local attention, which changes the costs to be linear.
+The second alternative, specifically for models with the Conformer/Fast Conformer encoder, is to use local attention, which changes the costs to be linear.
 You can train Fast Conformer models with Longformer-style (https://arxiv.org/abs/2004.05150) local+global attention using one of the following configs: CTC config at
 ``<NeMo_git_root>/examples/asr/conf/fastconformer/fast-conformer-long_ctc_bpe.yaml`` and transducer config at ``<NeMo_git_root>/examples/asr/conf/fastconformer/fast-conformer-long_transducer_bpe.yaml``.
 You can also convert any model trained with full context attention to local, though this may result in lower WER in some cases. You can switch to local attention when running the

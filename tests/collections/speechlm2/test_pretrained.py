@@ -20,6 +20,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 from safetensors.torch import save_file
 
+from nemo.collections.speechlm2.modules.perception import IdentityConnector
 from nemo.collections.speechlm2.parts import pretrained
 from tests.collections.asr.test_parallel_expert_encoder import (
     _ASR_D_MODEL,
@@ -28,6 +29,7 @@ from tests.collections.asr.test_parallel_expert_encoder import (
     bundle_config,
     write_bundle,
 )
+from tests.collections.speechlm2.test_independent_dual_encoder import make_encoder
 
 
 def test_setup_speech_encoder_hydrates_missing_config_without_weights():
@@ -1025,3 +1027,40 @@ class _CpuHFFallbackAutoModel:
     def from_pretrained(cls, model_path_or_name, torch_dtype=None, trust_remote_code=False, **kwargs):
         config = pretrained.AutoConfig.from_pretrained(model_path_or_name, local_files_only=True)
         return cls.from_config(config, torch_dtype=torch_dtype, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "option, expected",
+    [({}, False), ({"allow_padded_fallback": True}, True), ({"allow_padded_fallback": False}, False)],
+    ids=["default", "allowed", "refused"],
+)
+def test_setup_independent_speaker_encoder_keeps_the_fallback_option(tmp_path, option, expected):
+    (tmp_path / "model_config.yaml").write_text("{}")
+    (tmp_path / "model.safetensors").touch()
+    speaker = make_encoder(32)
+    perception = torch.nn.Module()
+    perception.encoder = make_encoder(32)
+    perception.modality_adapter = IdentityConnector()
+    perception.rote = None
+    perception.proj = torch.nn.Linear(32, 7)
+    perception.preprocessor = SimpleNamespace(featurizer=SimpleNamespace(hop_length=160, sample_rate=16000))
+    perception.from_config_dict = lambda config: speaker
+    model = SimpleNamespace(
+        cfg=DictConfig(
+            {
+                "speaker_encoder": {"path": str(tmp_path), "frozen": True, "chunk_size_seconds": 120.0, **option},
+                "perception": {"modality_adapter": {"d_model": 32}},
+            }
+        ),
+        perception=perception,
+    )
+    with patch.object(pretrained, "load_file", return_value=speaker.state_dict()):
+        pretrained.setup_independent_speaker_encoder(model)
+
+    dual = model.perception.encoder
+    assert dual.allow_padded_fallback is expected
+    assert dual.asr_chunk_size_seconds is None
+    assert dual.auxiliary_chunk_size_seconds == 120.0
+    assert all(not parameter.requires_grad for parameter in speaker.parameters())
+    assert model.perception.proj.in_features == 64
+    assert model.perception.proj.out_features == 7

@@ -775,6 +775,123 @@ def test_salm_automodel_packed_audio_samples_match_padded_batch(device):
     assert torch.equal(actual["target_ids"], expected["target_ids"])
 
 
+@pytest.mark.parametrize("device", chunking_test_devices())
+def test_salm_automodel_prepare_inputs_right_pads_padded_batches(device):
+    """Automodel's padded-batch kernels (TE padding attention, Mamba) assume right padding."""
+    model = _make_chunking_test_model(encoder_chunk_size_seconds=None, sampling_rate=2, device=device)
+    pad, audio = model.text_pad_id, model.audio_locator_tag_id
+    batch = {
+        "audios": torch.tensor([[1.0, 2.0, 3.0, 0.0, 0.0], [10.0, 11.0, 12.0, 13.0, 14.0]], device=device),
+        "audio_lens": torch.tensor([3, 5], dtype=torch.long, device=device),
+        "input_ids": torch.tensor([[pad, audio, 10], [audio, 11, 12]], dtype=torch.long, device=device),
+        "loss_mask": torch.tensor([[False, False, True], [False, True, True]], dtype=torch.bool, device=device),
+    }
+
+    inputs = model.prepare_inputs(batch)
+
+    # Row 0 has 4 tokens (3 audio frames + 1 text token), row 1 has 7; each row's last token is not an input.
+    assert torch.equal(
+        inputs["attention_mask"],
+        torch.tensor([[True] * 3 + [False] * 3, [True] * 6], dtype=torch.bool, device=device),
+    )
+    torch.testing.assert_close(
+        inputs["input_embeds"][0, :3, 0], torch.tensor([1.0, 2.0, 3.0], device=device), rtol=0.0, atol=0.0
+    )
+    assert torch.equal(
+        inputs["target_ids"],
+        torch.tensor([[-100, -100, 10, -100, -100, -100], [-100] * 4 + [11, 12]], device=device),
+    )
+
+
+@pytest.mark.gpu
+@requires_cuda
+@pytest.mark.parametrize(
+    "blocks",
+    [["mamba", "attention", "mlp", "mamba", "attention", "mlp"], ["mamba", "attention", "moe", "attention"]],
+)
+def test_salm_automodel_padded_batch_matches_single_sequences_on_nemotron_h(blocks):
+    """Each sequence in a padded batch gets the same logits as when run alone (TE attention + Mamba)."""
+    pytest.importorskip("transformer_engine.pytorch")
+    pytest.importorskip("mamba_ssm")
+    from nemo_automodel.components.models.common import BackendConfig
+    from nemo_automodel.components.models.nemotron_v3.model import NemotronHForCausalLM
+    from transformers import NemotronHConfig
+
+    torch.manual_seed(0)
+    hidden = 256
+    config = NemotronHConfig(
+        layers_block_type=blocks,
+        vocab_size=128,
+        hidden_size=hidden,
+        intermediate_size=512,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=64,
+        mamba_num_heads=8,
+        mamba_head_dim=32,
+        ssm_state_size=16,
+        n_groups=1,
+        mamba_chunk_size=64,
+        n_routed_experts=4,
+        num_experts_per_tok=2,
+        moe_intermediate_size=128,
+        moe_shared_expert_intermediate_size=128,
+        n_group=1,
+        topk_group=1,
+        use_cache=False,
+    )
+    backend = BackendConfig(attn="te", linear="torch", rms_norm="torch", rope_fusion=False)
+    model = _make_chunking_test_model(encoder_chunk_size_seconds=None, sampling_rate=2, device="cuda")
+    model.llm = NemotronHForCausalLM(config, backend=backend).to("cuda", torch.bfloat16).eval()
+    with torch.no_grad():
+        for param in model.llm.parameters():
+            if param.dim() >= 2:
+                param.normal_(0, 0.05)
+    model.perception = _ProjectingTestPerception(model.perception, hidden)
+    model._fused_linear_cross_entropy = None
+
+    pad, audio = model.text_pad_id, model.audio_locator_tag_id
+    audio_lens = [60, 36, 12]
+    audios = torch.zeros(3, max(audio_lens), device="cuda")
+    for row, length in enumerate(audio_lens):
+        audios[row, :length] = torch.randn(length, device="cuda")
+    input_ids = torch.tensor([[audio, 10, 11, 12], [pad, audio, 13, 14], [pad, pad, audio, 15]], device="cuda")
+    loss_mask = input_ids.ne(pad) & input_ids.ne(audio)
+
+    def logits_of(rows):
+        batch = {
+            "audios": audios[rows, : max(audio_lens[r] for r in rows)],
+            "audio_lens": torch.tensor([audio_lens[r] for r in rows], device="cuda"),
+            "input_ids": input_ids[rows],
+            "loss_mask": loss_mask[rows],
+        }
+        with torch.no_grad():
+            inputs = model.prepare_inputs(batch)
+            logits = model(inputs["input_embeds"], attention_mask=inputs["attention_mask"])["logits"].float()
+        return [logits[i][inputs["attention_mask"][i]] for i in range(len(rows))]
+
+    batched = logits_of([0, 1, 2])
+    for row in range(3):
+        (alone,) = logits_of([row])
+        assert batched[row].shape == alone.shape
+        rel_err = ((batched[row] - alone).norm() / alone.norm()).item()
+        assert rel_err < 0.02, f"row {row}: relative logit error {rel_err:.4f}"
+
+
+class _ProjectingTestPerception(torch.nn.Module):
+    """Maps the scalar frames of ``ChunkingTestPerception`` to bf16 LLM-sized embeddings."""
+
+    def __init__(self, inner, hidden):
+        super().__init__()
+        self.inner = inner
+        self.preprocessor = inner.preprocessor
+        self.register_buffer("proj", torch.randn(hidden, device="cuda"))
+
+    def forward(self, *args, **kwargs):
+        frames, lens = self.inner(*args, **kwargs)
+        return (frames * self.proj).to(torch.bfloat16), lens
+
+
 def _make_chunking_test_model(encoder_chunk_size_seconds, sampling_rate, device, hop_length=1):
     model = SALMAutomodel.__new__(SALMAutomodel)
     torch.nn.Module.__init__(model)

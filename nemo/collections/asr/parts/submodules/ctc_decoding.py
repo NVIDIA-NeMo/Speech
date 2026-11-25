@@ -1070,7 +1070,7 @@ class CTCDecoding(AbstractCTCDecoding):
             A list of word-level confidence scores.
         """
         return self._aggregate_token_confidence_chars(
-            self.decode_tokens_to_str(hypothesis.text[0]).split(), hypothesis.token_confidence
+            self.decode_ids_to_str(hypothesis.text[0]).split(), hypothesis.token_confidence
         )
 
     def decode_tokens_to_str(self, tokens: List[str]) -> str:

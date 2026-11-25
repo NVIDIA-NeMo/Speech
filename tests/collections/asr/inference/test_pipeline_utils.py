@@ -21,6 +21,7 @@ import torch
 
 from nemo.collections.asr.inference.streaming.text.text_processing import INCOMPLETE_LANG_TAG
 from nemo.collections.asr.inference.utils.pipeline_utils import (
+    ceil_seconds_to_frames,
     check_existance_of_required_attributes,
     drop_trailing_features,
     filter_token_sequences,
@@ -99,6 +100,24 @@ class TestPipelineUtils:
 
         with pytest.raises(ValueError):
             check_existance_of_required_attributes(TestClass, ['test_attr'])
+
+
+class TestCeilSecondsToFrames:
+    # The stride of an 8x subsampling model with a 10 ms window stride, computed as get_model_stride() does.
+    MODEL_STRIDE_IN_SECS = 0.01 * 8
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "seconds, expected_frames",
+        [(0.0, 0), (0.08, 1), (0.56, 7), (1.12, 14), (2.24, 28), (4.48, 56), (5.6, 70), (8.88, 111)],
+    )
+    def test_whole_frames_give_exactly_that_many_frames(self, seconds, expected_frames):
+        assert ceil_seconds_to_frames(seconds, self.MODEL_STRIDE_IN_SECS) == expected_frames
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("seconds, expected_frames", [(0.001, 1), (0.081, 2), (0.5, 7), (0.57, 8)])
+    def test_partial_frame_rounds_up(self, seconds, expected_frames):
+        assert ceil_seconds_to_frames(seconds, self.MODEL_STRIDE_IN_SECS) == expected_frames
 
 
 class TestFilterTokenTriples:

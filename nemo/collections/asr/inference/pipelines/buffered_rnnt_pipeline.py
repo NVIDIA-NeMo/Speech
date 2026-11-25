@@ -34,6 +34,7 @@ from nemo.collections.asr.inference.streaming.state.rnnt_state import RNNTStream
 from nemo.collections.asr.inference.utils.enums import PaddingMode
 from nemo.collections.asr.inference.utils.pipeline_utils import (
     adjust_vad_segments,
+    ceil_seconds_to_frames,
     check_existance_of_required_attributes,
     drop_trailing_features,
     get_confidence_utils,
@@ -99,13 +100,13 @@ class BufferedRNNTPipeline(BasePipeline):
         self.buffer_size_in_secs = self.chunk_size + self.left_padding_size + self.right_padding_size
         self.expected_feature_buffer_len = int(self.buffer_size_in_secs / self.window_stride)
 
-        self.mid_delay = math.ceil((self.chunk_size + self.right_padding_size) / self.model_stride_in_secs)
+        self.mid_delay = ceil_seconds_to_frames(self.chunk_size + self.right_padding_size, self.model_stride_in_secs)
         self.tokens_per_frame_float = self.chunk_size / self.model_stride_in_secs
         self.tokens_per_left_padding_float = self.left_padding_size / self.model_stride_in_secs
         self.tokens_per_right_padding_float = self.right_padding_size / self.model_stride_in_secs
-        self.tokens_per_frame = math.ceil(self.tokens_per_frame_float)
-        self.tokens_per_left_padding = math.ceil(self.tokens_per_left_padding_float)
-        self.tokens_per_right_padding = math.ceil(self.tokens_per_right_padding_float)
+        self.tokens_per_frame = ceil_seconds_to_frames(self.chunk_size, self.model_stride_in_secs)
+        self.tokens_per_left_padding = ceil_seconds_to_frames(self.left_padding_size, self.model_stride_in_secs)
+        self.tokens_per_right_padding = ceil_seconds_to_frames(self.right_padding_size, self.model_stride_in_secs)
 
         if self.stateful:
             self.initial_delay = self.right_padding_size / self.model_stride_in_secs

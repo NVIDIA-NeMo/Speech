@@ -15,7 +15,6 @@
 
 from __future__ import annotations
 
-import math
 from typing import TYPE_CHECKING
 
 import torch
@@ -32,6 +31,7 @@ from nemo.collections.asr.inference.streaming.framing.request_options import ASR
 from nemo.collections.asr.inference.streaming.state.ctc_state import CTCStreamingState
 from nemo.collections.asr.inference.utils.enums import PaddingMode
 from nemo.collections.asr.inference.utils.pipeline_utils import (
+    ceil_seconds_to_frames,
     check_existance_of_required_attributes,
     drop_trailing_features,
     get_confidence_utils,
@@ -89,9 +89,9 @@ class BufferedCTCPipeline(BasePipeline):
         self.buffer_size_in_secs = self.chunk_size + self.left_padding_size + self.right_padding_size
         self.expected_feature_buffer_len = int(self.buffer_size_in_secs / self.window_stride)
         self.tokens_per_frame_float = self.chunk_size / self.model_stride_in_secs
-        self.tokens_per_frame = math.ceil(self.tokens_per_frame_float)
+        self.tokens_per_frame = ceil_seconds_to_frames(self.chunk_size, self.model_stride_in_secs)
         self.initial_delay = (self.left_padding_size + self.right_padding_size) / self.model_stride_in_secs
-        self.mid_delay = math.ceil((self.chunk_size + self.right_padding_size) / self.model_stride_in_secs)
+        self.mid_delay = ceil_seconds_to_frames(self.chunk_size + self.right_padding_size, self.model_stride_in_secs)
 
         self.stop_history_eou_in_milliseconds = cfg.endpointing.stop_history_eou
         self.residue_tokens_at_end = cfg.endpointing.residue_tokens_at_end

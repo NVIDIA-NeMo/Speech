@@ -99,9 +99,9 @@ class HFHubMixin(
         config = OmegaConf.load(resolved_config_file)
         validate_model_config_resolvers(config)
         model_kwargs['cfg'] = OmegaConf.to_container(config, resolve=False)
-        model_kwargs['cfg']['trust_remote_code'] = trust_remote_code
-        if isinstance(model_kwargs['cfg'].get('model'), dict):
-            model_kwargs['cfg']['model']['trust_remote_code'] = trust_remote_code
+        # Applied before resolution so aliases of the flag observe the caller's policy,
+        # and again after resolution for mappings that were internal references.
+        _apply_remote_code_policy(model_kwargs['cfg'], trust_remote_code)
         _inject_local_artifact_paths(model_kwargs['cfg'], model_id, _cached_file_kwargs)
         # The setting below tells the model's __init__ not to load the original pretrained weights
         # for individual children modules.
@@ -129,6 +129,7 @@ class HFHubMixin(
                 torch_dtype if isinstance(torch_dtype, str) else str(torch_dtype).replace("torch.", "")
             )
         model_kwargs['cfg'] = OmegaConf.to_container(resolve_model_config(config))
+        _apply_remote_code_policy(model_kwargs['cfg'], trust_remote_code)
 
         if device_mesh is None:
             if weights_path is None:
@@ -400,3 +401,10 @@ def _attach_bundled_ctc_timestamp(model, weights_path: Union[str, Path]) -> None
     if encoder is None or not getattr(encoder, "supports_ctc_timestamp_inputs", False):
         raise RuntimeError("Checkpoint contains a CTC timestamp head but the model has no compatible speech encoder.")
     encoder.ctc_timestamp_model_path = str(resolved_path)
+
+
+def _apply_remote_code_policy(cfg: dict, trust_remote_code: bool) -> None:
+    """Overwrite the root and nested ``model`` remote-code flags with the caller's policy."""
+    cfg['trust_remote_code'] = trust_remote_code
+    if isinstance(cfg.get('model'), dict):
+        cfg['model']['trust_remote_code'] = trust_remote_code

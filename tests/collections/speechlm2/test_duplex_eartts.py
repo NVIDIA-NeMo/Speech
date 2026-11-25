@@ -60,18 +60,24 @@ def test_load_language_model_uses_configured_remote_code_policy(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize('layout', ['direct', 'interpolated'])
 @pytest.mark.parametrize('route', ['hub', 'local_weights', 'distributed'])
 @pytest.mark.parametrize(
     'stored_policy,caller_kwargs,expected',
     [(True, {}, False), (True, {'trust_remote_code': False}, False), (False, {'trust_remote_code': True}, True)],
 )
 def test_from_pretrained_applies_policy_to_nested_eartts_config(
-    tmp_path, monkeypatch, route, stored_policy, caller_kwargs, expected
+    tmp_path, monkeypatch, layout, route, stored_policy, caller_kwargs, expected
 ):
     config = deepcopy(test_eartts_config)
     config['trust_remote_code'] = stored_policy
     config['model']['trust_remote_code'] = stored_policy
     config['model']['tts_config']['context_hidden_size'] = None
+    if layout == 'interpolated':
+        # The artifact hides the model mapping behind an internal reference, so the
+        # caller's policy must also apply to the mapping it resolves to.
+        config['template'] = config.pop('model')
+        config['model'] = '${template}'
     config_path = tmp_path / 'config.json'
     config_path.write_text(json.dumps(config))
     captured = {}

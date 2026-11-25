@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 import torch
@@ -415,6 +415,33 @@ class CodecHelper:
             return audio, audio_len, codes
 
 
+def stacked_channel_order(num_audio_codebooks: int, frame_stacking_factor: int, order: str) -> tuple:
+    """Order in which a local transformer visits the channels of frame-stacked codes.
+
+    Stacked channel ``c * S + f`` holds codebook ``c`` of frame ``f`` (the ``stack_codes``
+    layout). ``codebook_major`` visits channels in index order (f0c0, f1c0, f0c1, ...);
+    ``frame_major`` predicts every codebook of frame 0 before frame 1
+    (f0c0, ..., f0c{C-1}, f1c0, ...).
+
+    Args:
+        num_audio_codebooks: Number of codec codebooks (C).
+        frame_stacking_factor: Number of stacked frames (S).
+        order: ``codebook_major`` or ``frame_major``.
+
+    Returns:
+        Tuple of the ``C * S`` stacked channel indices in prediction order.
+    """
+    if order == 'codebook_major':
+        return tuple(range(num_audio_codebooks * frame_stacking_factor))
+    if order == 'frame_major':
+        return tuple(
+            codebook * frame_stacking_factor + frame
+            for frame in range(frame_stacking_factor)
+            for codebook in range(num_audio_codebooks)
+        )
+    raise ValueError(f"Unsupported local_transformer_order: {order!r}")
+
+
 class LocalTransformerHelper:
     """Orchestrates local-transformer forward passes and sampling.
 
@@ -435,6 +462,12 @@ class LocalTransformerHelper:
         audio_eos_id: Token id for audio EOS.
         mask_token_id: Token id used for MaskGit masking.
         codebook_size: Base codebook size (excluding special tokens).
+        channel_order: Order in which the local transformer visits the codebook channels.
+            ``channel_order[i]`` is the channel predicted at local-transformer position ``i``.
+            Embeddings, output heads, targets, logits, and returned codes keep their channel
+            indices; only the position of each channel in the local-transformer sequence changes.
+            Defaults to ``range(num_audio_codebooks)``. A non-default order requires
+            ``frame_stacking_factor == 1``.
     """
 
     def __init__(
@@ -450,6 +483,7 @@ class LocalTransformerHelper:
         audio_eos_id: int,
         mask_token_id: int,
         codebook_size: int,
+        channel_order: Optional[Sequence[int]] = None,
     ):
         self.local_transformer = local_transformer
         self.audio_embeddings = audio_embeddings
@@ -462,6 +496,23 @@ class LocalTransformerHelper:
         self.audio_eos_id = audio_eos_id
         self.mask_token_id = mask_token_id
         self.codebook_size = codebook_size
+        if channel_order is None:
+            channel_order = range(num_audio_codebooks)
+        channel_order = tuple(int(channel) for channel in channel_order)
+        if sorted(channel_order) != list(range(num_audio_codebooks)):
+            raise ValueError(
+                f"channel_order must be a permutation of range({num_audio_codebooks}), got {list(channel_order)}"
+            )
+        if frame_stacking_factor != 1 and channel_order != tuple(range(num_audio_codebooks)):
+            raise ValueError("A non-default channel_order requires frame_stacking_factor == 1")
+        self.channel_order = channel_order
+
+    @property
+    def sequence_order(self):
+        """Channel predicted at each local-transformer position during sampling."""
+        if self.frame_stacking_factor != 1:
+            return tuple(range(self.num_audio_codebooks * self.frame_stacking_factor))
+        return self.channel_order
 
     def create_random_mask(self, codes):
         """Creates a mask where True indicates positions that should be replaced with MASK_TOKEN."""
@@ -514,7 +565,7 @@ class LocalTransformerHelper:
         local_transformer_input = []
         audio_codes_target = pad_audio_codes(audio_codes_target, self.frame_stacking_factor).long()
         for fs_index in range(self.frame_stacking_factor):
-            for codebook_num in range(C):
+            for codebook_num in self.channel_order:
                 codes = audio_codes_target[:, codebook_num, fs_index :: self.frame_stacking_factor]
                 codes = codes.reshape(-1)
                 codebook_embedding = self.audio_embeddings[codebook_num + fs_index * C](codes)
@@ -544,13 +595,13 @@ class LocalTransformerHelper:
 
         local_transformer_output = self.local_transformer_audio_out_projection(local_transformer_output)
 
-        all_code_logits = []
+        all_code_logits = [None] * (C * self.frame_stacking_factor)
         for fs_index in range(self.frame_stacking_factor):
-            for codebook_num in range(audio_codes_target.size(1)):
-                codebook_logits = self.local_transformer_out_projections[codebook_num + fs_index * C](
-                    local_transformer_output[:, codebook_num + fs_index * C, :]
+            for position, codebook_num in enumerate(self.channel_order):
+                channel = codebook_num + fs_index * C
+                all_code_logits[channel] = self.local_transformer_out_projections[channel](
+                    local_transformer_output[:, position + fs_index * C, :]
                 )
-                all_code_logits.append(codebook_logits)
         all_code_logits = torch.cat(all_code_logits, dim=1)
 
         all_code_logits = all_code_logits.view(
@@ -592,8 +643,8 @@ class LocalTransformerHelper:
         self.local_transformer.reset_cache(use_cache=use_kv_cache)
         dec_output = dec_output.unsqueeze(1)  # (B, 1, E)
         local_transformer_input = self.local_transformer_in_projection(dec_output)
-        all_preds = []
-        for codebook_num in range(self.num_audio_codebooks * self.frame_stacking_factor):
+        all_preds = [None] * (self.num_audio_codebooks * self.frame_stacking_factor)
+        for codebook_num in self.sequence_order:
             _mask = torch.ones(
                 local_transformer_input.size(0), local_transformer_input.size(1), device=local_transformer_input.device
             )
@@ -636,7 +687,7 @@ class LocalTransformerHelper:
 
             if use_cfg:
                 codebook_preds[actual_batch_size:] = codebook_preds[:actual_batch_size]
-            all_preds.append(codebook_preds)
+            all_preds[codebook_num] = codebook_preds
 
             next_local_transformer_input = self.audio_embeddings[codebook_num](codebook_preds.squeeze(-1)).unsqueeze(1)
             next_local_transformer_input = self.audio_in_projection(next_local_transformer_input)
@@ -726,7 +777,7 @@ class LocalTransformerHelper:
             codes.scatter_(dim=1, index=topk_indices, src=unmasked_codes)
 
             local_transformer_input = local_transformer_input_init
-            for codebook_num in range(codebook_seq_len):
+            for codebook_num in self.sequence_order:
                 next_local_transformer_input = self.audio_embeddings[codebook_num](codes[:, codebook_num]).unsqueeze(1)
                 next_local_transformer_input = self.local_transformer_in_projection(next_local_transformer_input)
                 local_transformer_input = torch.cat([local_transformer_input, next_local_transformer_input], dim=1)
@@ -734,12 +785,11 @@ class LocalTransformerHelper:
             _mask = torch.ones(B, codebook_seq_len + 1, device=device)
             local_transformer_output = self.local_transformer(local_transformer_input, _mask)['output']
 
-            logits = []
-            for codebook_num in range(codebook_seq_len):
-                codebook_logits = self.local_transformer_out_projections[codebook_num](
-                    local_transformer_output[:, codebook_num + 1, :]
+            logits = [None] * codebook_seq_len
+            for position, codebook_num in enumerate(self.sequence_order):
+                logits[codebook_num] = self.local_transformer_out_projections[codebook_num](
+                    local_transformer_output[:, position + 1, :]
                 )
-                logits.append(codebook_logits)
             logits = torch.stack(logits, dim=1)
 
             if use_cfg:

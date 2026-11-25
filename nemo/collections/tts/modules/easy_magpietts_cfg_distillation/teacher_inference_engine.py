@@ -75,10 +75,11 @@ def _lt_sample_autoregressive(
     model.local_transformer.reset_cache(use_cache=use_kv_cache)
     dec_output = dec_output.unsqueeze(1)
     local_transformer_input = model.local_transformer_in_projection(dec_output)
-    predicted_codes = []
-    predicted_logits = []
+    num_channels = model.num_audio_codebooks * model.frame_stacking_factor
+    predicted_codes = [None] * num_channels
+    predicted_logits = [None] * num_channels
 
-    for codebook_num in range(model.num_audio_codebooks * model.frame_stacking_factor):
+    for codebook_num in model._lt_helper.sequence_order:
         size = (local_transformer_input.size(0), local_transformer_input.size(1))
         _mask = torch.ones(*size, device=local_transformer_input.device)
         local_transformer_output = model.local_transformer(local_transformer_input, _mask)["output"]
@@ -91,7 +92,7 @@ def _lt_sample_autoregressive(
         unconditional_logits = codebook_logits[bs:]
         cfg_logits = cfg_scale * conditional_logits + (1.0 - cfg_scale) * unconditional_logits
         codebook_logits[:bs] = cfg_logits
-        predicted_logits.append(codebook_logits.clone())
+        predicted_logits[codebook_num] = codebook_logits.clone()
 
         if sanitize_logits:
             codebook_logits = torch.nan_to_num(codebook_logits, nan=0.0, posinf=100.0, neginf=-100.0)
@@ -116,7 +117,7 @@ def _lt_sample_autoregressive(
             codebook_preds = torch.multinomial(codebook_probs, 1)
 
         codebook_preds[bs:] = codebook_preds[:bs]
-        predicted_codes.append(codebook_preds)
+        predicted_codes[codebook_num] = codebook_preds
 
         next_local_transformer_input = model.audio_embeddings[codebook_num](codebook_preds.squeeze(-1)).unsqueeze(1)
         next_local_transformer_input = model.audio_in_projection(next_local_transformer_input)

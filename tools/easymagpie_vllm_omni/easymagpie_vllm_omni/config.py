@@ -93,6 +93,9 @@ class EasyMagpieOmniArch:
     local_transformer_n_layers: int = 3
     local_transformer_n_heads: int = 12
     local_transformer_hidden_dim: int = 1536
+    # Order in which the local transformer predicts the stacked channels
+    # (``codebook_major`` or ``frame_major``); see ``local_transformer_channel_order``.
+    local_transformer_order: str = "codebook_major"
 
     # Optional checkpoint-specific special-token ids.
     forced_audio_bos_id: int | None = None
@@ -127,6 +130,8 @@ class EasyMagpieOmniArch:
         for name in positive_fields:
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive, got {getattr(self, name)}")
+        if self.local_transformer_order not in {"codebook_major", "frame_major"}:
+            raise ValueError(f"Unsupported local_transformer_order: {self.local_transformer_order!r}")
 
         if self.hidden_dim != self.embedding_dim:
             raise ValueError(
@@ -256,6 +261,22 @@ class EasyMagpieOmniArch:
         """User-history rows including the leading user-speaking profile row."""
         frames = self.codec_num_frames(num_samples)
         return 1 + (frames + self.frame_stacking_factor - 1) // self.frame_stacking_factor
+
+    @property
+    def local_transformer_channel_order(self) -> tuple[int, ...]:
+        """Stacked channel predicted at each local-transformer position.
+
+        Stacked channel ``c * S + f`` holds codebook ``c`` of frame ``f``. Codebook-major
+        visits channels in index order; frame-major predicts every codebook of frame 0
+        before frame 1. Codes are returned in channel-index order in both cases.
+        """
+        if self.local_transformer_order == "frame_major":
+            return tuple(
+                codebook * self.frame_stacking_factor + frame
+                for frame in range(self.frame_stacking_factor)
+                for codebook in range(self.num_audio_codebooks)
+            )
+        return tuple(range(self.num_stacked_codebooks))
 
     @property
     def text_prefill_num(self) -> int:
@@ -428,6 +449,7 @@ class EasyMagpieOmniArch:
             "local_transformer_n_layers",
             "local_transformer_n_heads",
             "local_transformer_hidden_dim",
+            "local_transformer_order",
             "forced_audio_bos_id",
             "forced_audio_eos_id",
             "forced_mask_token_id",

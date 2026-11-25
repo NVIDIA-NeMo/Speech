@@ -123,6 +123,18 @@ def test_cut_cer_filter(cut_example):
     assert f(cut_example) == True
 
 
+def test_cut_cer_filter_by_lang(cut_example):
+    f = CERFilter(0.01, {"en": 0.05})
+    assert f(cut_example) == False  # no lang tag: the global threshold applies
+
+    cut_example.lang = "en"
+    assert f(cut_example) == True
+
+    assert CERFilter(0.01, {"en": None})(cut_example) == True
+    assert CERFilter(0.4, {"en": 0.01})(cut_example) == False
+    assert CERFilter(0.01, {"de": 0.05})(cut_example) == False
+
+
 def test_cut_context_speaker_similarity_filter(cut_example):
     f = ContextSpeakerSimilarityFilter(0.6)
     assert f(cut_example) == True
@@ -134,6 +146,18 @@ def test_cut_context_speaker_similarity_filter(cut_example):
     assert f(cut_example) == True
 
 
+def test_cut_context_speaker_similarity_filter_by_lang(cut_example):
+    f = ContextSpeakerSimilarityFilter(0.95, {"en": 0.6})
+    assert f(cut_example) == False  # no lang tag: the global threshold applies
+
+    cut_example.lang = "en"
+    assert f(cut_example) == True
+
+    assert ContextSpeakerSimilarityFilter(0.95, {"en": None})(cut_example) == True
+    assert ContextSpeakerSimilarityFilter(0.3, {"en": 0.95})(cut_example) == False
+    assert ContextSpeakerSimilarityFilter(0.95, {"de": 0.3})(cut_example) == False
+
+
 def test_cut_validation_status_filter(cut_example):
     f = ValidationStatusFilter("pass")
     assert f(cut_example) == True
@@ -142,6 +166,12 @@ def test_cut_validation_status_filter(cut_example):
     assert f(cut_example) == False
 
     f = ValidationStatusFilter("any_other_status")
+    assert f(cut_example) == False
+
+    f = ValidationStatusFilter(["pass", "fail_ssim"])
+    assert f(cut_example) == True
+
+    f = ValidationStatusFilter(["wrong_text", "fail_ssim"])
     assert f(cut_example) == False
 
 

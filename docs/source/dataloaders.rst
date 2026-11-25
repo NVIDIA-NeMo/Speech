@@ -1905,7 +1905,95 @@ audio payload, configure:
 **Field-name overrides.** ``text_field``, ``lang_field``,
 ``channel_selector``, ``sample_rate``.
 
-**Filtering.** ``max_cer``, ``min_context_speaker_similarity``, ``keep``.
+**Filtering.** ``max_cer``, ``min_context_speaker_similarity``, ``keep``,
+``custom_field_filter``.
+
+``custom_field_filter`` selects examples by their custom fields (``cut.custom``).
+For a mixed cut, each field comes from the first unmuted data track that has it,
+as with attribute access on the cut (``cut.verified``),
+not from the merged ``cut.custom`` mapping, in which a later track overrides an earlier one.
+For NeMo manifests these are the additional keys of a row,
+that is, all keys except the ones the reader consumes, such as ``audio_filepath`` and ``duration``;
+the ``tags`` of an ``input_cfg`` entry are custom fields as well.
+The option maps a field name to a condition on its value.
+An example is kept when the conditions of all fields hold:
+
+.. code-block:: yaml
+
+   custom_field_filter:
+     verified: true                    # short for {eq: true}
+     snr: {gt: 5.0, le: 10.5}          # all operators of a field must hold
+     quality: {in: [very_high, high, medium]}
+     language: {neq: unknown, keep_if_missing: false}
+
+The operators of a condition are:
+
+* ``eq``, ``neq``: the value equals, or does not equal, the operand (a bool, a number or a string).
+  A bool, a number or a string in place of the condition stands for ``eq``.
+* ``gt``, ``ge``, ``lt``, ``le``: the value is greater than, at least, less than, or at most the operand (a number).
+* ``in``: the value equals one of the operands (a list of bools, numbers or strings).
+* ``keep_if_missing`` (default ``true``): whether an example that does not have the field is kept.
+  With the default, as with ``keep`` and ``max_cer``,
+  a field that only some of the data has filters only that part,
+  and a field name that no example has filters nothing.
+  With ``false``, an example without the field is dropped;
+  ``{keep_if_missing: false}`` alone keeps exactly the examples that have the field.
+
+An unknown operator or an operand of another type raises an error when the dataloader is built.
+
+* The values are compared as Python values: ``true`` matches ``true`` and ``1``
+  but not the string ``"true"``.
+  A bool value orders as the number ``1`` or ``0``.
+* A ``null`` in the manifest is a value, not a missing field:
+  it differs from every operand, so it fails ``eq`` and ``in`` and passes ``neq``.
+  A value that is not a number, such as ``null`` or a string, does not meet ``gt``, ``ge``, ``lt`` or ``le``,
+  and a value that is a list or a mapping meets no operator, also not ``neq``;
+  in both cases the example is dropped.
+* ``keep_if_missing`` belongs inside the condition of a field; at the top level of the option it raises an error.
+* In YAML, quote strings that YAML reads as another type:
+  an unquoted ``yes`` or ``on`` is a bool there and does not match the string ``"yes"``.
+* The filter looks at the fields of the cut, not of its supervisions.
+  Text and conversation examples are filtered by their custom fields the same way;
+  for text sources these are the ``tags`` only, since the reader keeps no other key of a row.
+* It is applied first, before tokenization and augmentation.
+* It is an option of the dataloader config.
+  Inside an ``input_cfg`` entry it is ignored, like the other dataloader options.
+  With ``multi_config: true`` it goes into the sub-configs;
+  at the top level it raises an error.
+* When no example passes, a dataloader over an infinite source yields nothing and does not stop,
+  as with the other filters.
+
+How ``custom_field_filter`` relates to the other ways to drop examples by their metadata:
+
+* ``_skipme`` is a key of a NeMo manifest row.
+  The reader drops a row with a truthy ``_skipme`` before it builds the cut,
+  so no cut is built for it, and an indexed tarred set does not read its audio.
+  The selection is part of the data: every dataloader that reads the manifest skips the row,
+  and another selection needs another copy of the manifests.
+  ``custom_field_filter`` leaves the manifests as they are and selects in the config,
+  so several configs select differently from the same manifests,
+  on any source type and with conditions beyond a flag.
+  It runs after the reader, on the built cut,
+  so the reader's work for a rejected example is already spent;
+  with a sequentially read tarred source that includes reading its audio from the tar.
+  Use ``_skipme`` for a fixed exclusion,
+  or when one fixed subset is all that is needed and rewriting the manifests is acceptable;
+  use ``custom_field_filter`` to select by metadata per experiment.
+  Both can be combined: a skipped row never reaches the filter.
+
+  ``_skipme`` keeps a row with broken audio out of the data
+  only where the reader does not open the audio of a skipped row:
+  with non-tarred manifests and with indexed tarred sets.
+  The sequential tar reader reads and inspects every member before it looks at the marker,
+  so a corrupt member still raises there unless ``fault_tolerant_audio_loading`` is set.
+* ``keep`` applies the same equality rule to the fixed cut field ``validation_status``,
+  but the two options are not interchangeable.
+  ``keep`` looks at mono cuts only and runs later in the pipeline, after padding with ``pad_min_duration``,
+  which turns a short cut into a mixed cut that ``keep`` lets pass.
+  ``custom_field_filter: {validation_status: pass}`` runs first and also covers mixed cuts and text examples,
+  so it drops such a cut.
+* ``max_cer`` and ``min_context_speaker_similarity`` read fields of the first supervision,
+  which ``custom_field_filter`` does not look at.
 
 For exact types and defaults, see the dataclass definition in the source
 file — it is the single source of truth.

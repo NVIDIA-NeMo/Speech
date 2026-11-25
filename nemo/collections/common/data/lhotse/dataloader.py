@@ -59,6 +59,7 @@ from nemo.collections.common.data.lhotse.sampling import (
     BucketingFilter,
     CERFilter,
     ContextSpeakerSimilarityFilter,
+    CustomFieldFilter,
     DurationFilter,
     DurationTokenBinsFilter,
     FixedBucketBatchSizeConstraint2D,
@@ -191,6 +192,16 @@ class LhotseDataLoadingConfig:
 
     # 2.4 Filters on validation status. If the validation status is not "pass", the cut will be filtered out.
     keep: str = "pass"
+
+    # 2.5 Filter on custom fields of a cut (``cut.custom``; for NeMo manifests, the additional keys
+    # of a row, plus the tags of input_cfg).
+    # Maps a field name to its condition: a value to keep, e.g. {verified: true},
+    # or operators with operands (eq, neq, gt, ge, lt, le, in), e.g. {snr: {gt: 5.0, le: 10.5}}.
+    # A cut is kept when all conditions hold. A cut without the field is kept,
+    # unless the condition sets keep_if_missing: false.
+    # Unlike ``_skipme`` in a NeMo manifest row, which the reader applies before it builds the cut,
+    # this selects per config and after the reader; see docs/source/dataloaders.rst for when to use which.
+    custom_field_filter: dict[str, Any] | None = None
 
     # 3. Supported existing NeMo options.
     shuffle: bool = False
@@ -734,6 +745,11 @@ def get_lhotse_dataloader_from_multi_config(
         top_level_config["seed"] = resolve_seed(top_level_config["seed"])
         return OmegaConf.create({k: top_level_config.get(k, defaults[k]) for k in overwriting_opts})
 
+    if top_level_config.get("custom_field_filter") is not None:
+        raise ValueError(
+            "custom_field_filter is not shared by the sub-configs of a multi_config setup; "
+            "set it in each sub-config it should apply to."
+        )
     if top_level_config.get("filter_duration_bins") is not None:
         raise ValueError(
             "filter_duration_bins is not shared by the sub-configs of a multi_config setup; "
@@ -837,6 +853,10 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     cuts, use_iterable_dataset = read_cutset_from_config(config)
     use_iterable_dataset = determine_use_iterable_dataset(use_iterable_dataset, config)
     source_cuts = cuts
+
+    # Custom field filtering comes first, so that rejected cuts are not tokenized.
+    if config.custom_field_filter:
+        cuts = cuts.filter(CustomFieldFilter(config.custom_field_filter))
 
     # Map-style + StatefulDataLoader requires shard_seed to be a fixed integer:
     #   * On the map path, cross-rank de-duplication is by ``rank/world_size``

@@ -451,10 +451,14 @@ class EncDecRNNTBPEEOUModel(EncDecRNNTBPEModel, ASREOUModelMixin):
 
         # If experimental fused Joint-Loss-WER is not used
         if not self.joint.fuse_loss_wer:
-            # Compute full joint and loss
-            joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
-            loss_value = self.loss(
-                log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
+            # Compute joint and loss
+            loss_value, _ = self._compute_losses(
+                encoded=encoded,
+                decoder=decoder,
+                transcript=transcript,
+                encoded_len=encoded_len,
+                target_length=target_length,
+                current_step=self.global_step,
             )
 
             # Add auxiliary losses, if registered
@@ -558,10 +562,12 @@ class EncDecRNNTBPEEOUModel(EncDecRNNTBPEModel, ASREOUModelMixin):
         if not self.joint.fuse_loss_wer:
             if self.compute_eval_loss:
                 decoder, target_length, states = self.decoder(targets=transcript, target_length=transcript_len)
-                joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
-
-                loss_value = self.loss(
-                    log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
+                loss_value, _ = self._compute_losses(
+                    encoded=encoded,
+                    decoder=decoder,
+                    transcript=transcript,
+                    encoded_len=encoded_len,
+                    target_length=target_length,
                 )
 
                 tensorboard_logs['val_loss'] = loss_value
@@ -812,10 +818,12 @@ class EncDecHybridRNNTCTCBPEEOUModel(EncDecHybridRNNTCTCBPEModel, ASREOUModelMix
         if not self.joint.fuse_loss_wer:
             if self.compute_eval_loss:
                 decoder, target_length, states = self.decoder(targets=transcript, target_length=transcript_len)
-                joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
-
-                loss_value = self.loss(
-                    log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
+                loss_value, _ = self._compute_losses(
+                    encoded=encoded,
+                    decoder=decoder,
+                    transcript=transcript,
+                    encoded_len=encoded_len,
+                    target_length=target_length,
                 )
                 tensorboard_logs['val_loss'] = loss_value
 

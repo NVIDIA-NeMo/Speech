@@ -26,6 +26,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
+from nemo.collections.asr.parts.utils.eou_utils import EOB_STRING, EOU_STRING  # noqa: F401 (re-exported)
 from nemo.collections.common.data.lhotse.audio_loading import LhotseAudioLoadingDatasetMixin
 from nemo.collections.common.data.lhotse.stateful_rng import StatefulRandomMixin
 from nemo.collections.common.tokenizers.aggregate_tokenizer import TokenizerWrapper
@@ -37,8 +38,6 @@ NON_SPEECH_LABEL = 0
 SPEECH_LABEL = 1
 EOU_LABEL = 2
 EOB_LABEL = 3
-EOU_STRING = '<EOU>'
-EOB_STRING = '<EOB>'
 
 # These augmentations are not supported yet, since they will need to change the SOU/EOU timestamps
 EOU_INVALID_AUGMENTATIONS = ['random_segment', 'speed', 'time_stretch']

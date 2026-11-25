@@ -1416,6 +1416,20 @@ For Canary-1B, we'll also provide the special tokens tokenizer. Example:
         --sub-buckets 5 \
         input_cfg.yaml
 
+Strict 2D bucketing (``bucketing_2d_strict_mode: true``, the default) also selects the training data:
+a cut that fits none of the bins is discarded.
+The option ``filter_duration_bins`` applies this selection on its own, with any sampler.
+Use it to train on the same data as a 2D-bucketed setup with a sampler that does not take 2D buckets,
+such as packed sequence sampling (``use_packed_sequence_sampling: true``),
+or to bound the number of tokens by the duration of a cut without bucketing.
+
+.. code-block:: yaml
+
+    filter_duration_bins: [[5.0, 20], [5.0, 40], [10.0, 35], [10.0, 70]]
+
+With ``multi_config: true`` the option goes into each sub-config it should apply to, next to that sub-config's sampling options;
+at the top level it raises an error.
+
 Pushing GPU utilization to the limits with bucketing and OOMptimizer
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -1881,7 +1895,7 @@ audio payload, configure:
 
 **Sampling — basic.** ``batch_size``, ``batch_duration``,
 ``quadratic_duration``, ``min_duration``, ``max_duration``, ``min_tps``,
-``max_tps``.
+``max_tps``, ``filter_duration_bins``.
 
 **Sampling — bucketing.** ``use_bucketing``, ``num_buckets``,
 ``bucket_duration_bins``, ``bucket_batch_size``, ``bucket_buffer_size``,

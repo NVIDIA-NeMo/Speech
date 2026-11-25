@@ -78,6 +78,8 @@ class AttentionAdapterModuleMixin(adapter_mixins.AdapterModuleMixin):
                 `loc`: Semantic location in module where this adapter was called. Can be 'mha' or 'post'.
                 `att_mask`: Optional, Attention mask
                 `pos_emb`: Optional, Positional Embedding for Relative Positional Encoding.
+                `attention_context`: Optional, the `PackedAttentionContext` of token-flat `x` `(T_total, D)`,
+                which a Conformer attention adapter then attends within the utterance boundaries.
                 The output tensor of the calling module is the input to the first adapter, whose output
                 is then chained to the next adapter until all adapters are consumed.
             adapter_module: The adapter module that is currently required to perform the forward pass.
@@ -104,6 +106,8 @@ class AttentionAdapterModuleMixin(adapter_mixins.AdapterModuleMixin):
         loc = input['loc']
         att_mask = input.get('att_mask', None)
         pos_emb = input.get('pos_emb', None)
+        attention_context = input.get('attention_context', None)
+        packed = {} if attention_context is None else {'attention_context': attention_context}
 
         from nemo.collections.common.parts import adapter_modules
 
@@ -112,11 +116,11 @@ class AttentionAdapterModuleMixin(adapter_mixins.AdapterModuleMixin):
 
         elif isinstance(adapter_module, conformer_mha.MultiHeadAttention) and loc == 'mha':
             if self.self_attention_model == 'rel_pos':
-                x = dict(query=x, key=x, value=x, mask=att_mask, pos_emb=pos_emb)
+                x = dict(query=x, key=x, value=x, mask=att_mask, pos_emb=pos_emb, **packed)
                 output = adapter_strategy(x, adapter_module, module=self)
 
             elif self.self_attention_model == 'abs_pos':
-                x = dict(query=x, key=x, value=x, mask=att_mask)
+                x = dict(query=x, key=x, value=x, mask=att_mask, **packed)
                 output = adapter_strategy(x, adapter_module, module=self)
 
             else:

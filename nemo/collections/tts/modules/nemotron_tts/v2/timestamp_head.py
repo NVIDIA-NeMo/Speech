@@ -244,7 +244,7 @@ class CTCTimestampHead(nn.Module):
         self,
         hidden_states: torch.Tensor,
         target_ids: torch.Tensor,
-        teacher: Mapping,
+        teacher: Optional[Mapping] = None,
         distillation_mask: Optional[torch.Tensor] = None,
         input_length: Optional[int] = None,
         input_start: int = 0,
@@ -262,6 +262,8 @@ class CTCTimestampHead(nn.Module):
         ``return_predictions`` also returns detached full-vocabulary argmax IDs
         and their probabilities on ``[0:input_length]`` from the same projection
         chunks, without retaining full-vocabulary logits.
+
+        ``teacher=None`` supports transcript-only CTC when distillation is off.
         """
         from torch.utils.checkpoint import checkpoint
 
@@ -279,13 +281,23 @@ class CTCTimestampHead(nn.Module):
             raise ValueError('CTC targets must index the CTC vocabulary')
         if targets.eq(self.blank_id).any():
             raise ValueError('CTC transcript targets cannot contain blank')
-        indices, probabilities, tail = (teacher[key] for key in ('indices', 'probabilities', 'tail_probabilities'))
+        if teacher is None:
+            if self.distillation_weight:
+                raise ValueError('CTC teacher probabilities are required when distillation_weight is nonzero')
+            indices = torch.empty((length, 0), dtype=torch.long)
+            probabilities = torch.empty((length, 0), dtype=torch.float32)
+            tail = torch.zeros(length, dtype=torch.float32)
+            if distillation_mask is not None:
+                raise ValueError('distillation_mask requires CTC teacher probabilities')
+            distillation_mask = torch.zeros(length, dtype=torch.bool)
+        else:
+            indices, probabilities, tail = (teacher[key] for key in ('indices', 'probabilities', 'tail_probabilities'))
         if (
             indices.ndim != 2
             or probabilities.shape != indices.shape
             or tail.shape != indices.shape[:1]
             or indices.size(0) < length
-            or not 0 < indices.size(1) <= self.vocab_size
+            or not (0 if teacher is None else 1) <= indices.size(1) <= self.vocab_size
         ):
             raise ValueError('Teacher CTC probabilities must cover the student subframes and vocabulary')
         if distillation_mask is None:
@@ -371,16 +383,21 @@ class CTCTimestampHead(nn.Module):
             other = logits.index_fill(-1, compact_ids, float('-inf')).logsumexp(-1, keepdim=True)
             compact = torch.cat([compact, other], dim=-1)
         compact_log_probs = compact.log_softmax(-1)
-        normalizer = logits.logsumexp(-1, keepdim=True)
-        selected_log_probs = logits.gather(-1, indices) - normalizer
-        probabilities = probabilities.masked_fill(~valid.unsqueeze(-1), 0)
-        tail = tail.masked_fill(~valid, 0)
-        tiny = torch.finfo(torch.float32).tiny
-        kl = (probabilities * (probabilities.clamp_min(tiny).log() - selected_log_probs)).sum(-1)
-        if indices.size(-1) < self.vocab_size:
-            remaining = logits.scatter(-1, indices, float('-inf')).logsumexp(-1) - normalizer.squeeze(-1)
-            kl = kl + tail * (tail.clamp_min(tiny).log() - remaining)
-        values = compact_log_probs, kl.sum()
+        if indices.size(-1):
+            normalizer = logits.logsumexp(-1, keepdim=True)
+            selected_log_probs = logits.gather(-1, indices) - normalizer
+            probabilities = probabilities.masked_fill(~valid.unsqueeze(-1), 0)
+            tail = tail.masked_fill(~valid, 0)
+            tiny = torch.finfo(torch.float32).tiny
+            kl = (probabilities * (probabilities.clamp_min(tiny).log() - selected_log_probs)).sum(-1)
+            if indices.size(-1) < self.vocab_size:
+                remaining = logits.scatter(-1, indices, float('-inf')).logsumexp(-1) - normalizer.squeeze(-1)
+                kl = kl + tail * (tail.clamp_min(tiny).log() - remaining)
+            kl = kl.sum()
+        else:
+            normalizer = logits.logsumexp(-1, keepdim=True) if return_predictions else None
+            kl = compact_log_probs.sum() * 0
+        values = compact_log_probs, kl
         if return_predictions:
             with torch.no_grad():
                 maxima, predicted = logits.max(-1)
@@ -802,6 +819,60 @@ def plot_ctc_timestamp_alignment(diagnostic, tokenizer, max_frames=800, max_toke
         figure.text(0.5, y, f'{label}: {text[:180]}', ha='center', fontsize=8, parse_math=False)
     figure.tight_layout(rect=(0, 0.135, 1, 0.95))
     return figure
+
+
+class TTSCtcTokenizer:
+    """Expose the existing aggregated TTS vocabulary to an auxiliary CTC head.
+
+    Encoding delegates to the selected input tokenizer with its global ID offset.
+    Decoding accepts predictions from any tokenizer in the aggregate vocabulary.
+    The CTC blank remains external and must be removed by the CTC decoder.
+    """
+
+    def __init__(self, tokenizer, tokenizer_name=None):
+        self.tokenizer = tokenizer
+        if tokenizer_name is None:
+            if len(tokenizer.tokenizers) != 1:
+                raise ValueError('Select a TTS tokenizer for CTC when multiple input tokenizers are configured')
+            tokenizer_name = next(iter(tokenizer.tokenizers))
+        if tokenizer_name not in tokenizer.tokenizers:
+            raise ValueError(f'Unknown TTS CTC tokenizer: {tokenizer_name!r}')
+        self.tokenizer_name = tokenizer_name
+        self.vocab_size = len(tokenizer.tokens)
+        self._names = sorted(tokenizer.tokenizer_offsets, key=tokenizer.tokenizer_offsets.get)
+        self._offsets = [tokenizer.tokenizer_offsets[name] for name in self._names]
+
+    def text_to_ids(self, text):
+        """Encode the complete TTS input with the same global IDs as conditioning."""
+        return self.tokenizer.encode(text, tokenizer_name=self.tokenizer_name)
+
+    def ids_to_text(self, ids):
+        """Decode contiguous runs with their owning native input tokenizer."""
+        return ''.join(self.tokenizer.decode(list(tokens), tokenizer_name=name) for name, tokens in self._groups(ids))
+
+    def ids_to_tokens(self, ids):
+        """Return native token pieces in their original global prediction order."""
+        pieces = []
+        for name, tokens in self._groups(ids):
+            native = self.tokenizer.tokenizers[name]
+            local = [token - self.tokenizer.tokenizer_offsets[name] for token in tokens]
+            convert = getattr(native, 'ids_to_tokens', None) or getattr(native, 'convert_ids_to_tokens', None)
+            pieces.extend(convert(local) if convert is not None else [native.tokens[token] for token in local])
+        return pieces
+
+    def _groups(self, ids):
+        from itertools import groupby
+
+        if isinstance(ids, torch.Tensor):
+            ids = ids.detach().cpu().tolist()
+        return groupby(map(int, ids), key=self._owner)
+
+    def _owner(self, token):
+        from bisect import bisect_right
+
+        if not 0 <= token < self.vocab_size:
+            raise ValueError('Remove CTC blank and ignored IDs before decoding the TTS vocabulary')
+        return self._names[bisect_right(self._offsets, token) - 1]
 
 
 def _frame_coordinate(seconds: float, frame_seconds: float) -> float:

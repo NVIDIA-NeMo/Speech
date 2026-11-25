@@ -50,7 +50,12 @@ from nemo.collections.tts.modules.magpietts_modules import (
     add_special_tokens,
 )
 from nemo.collections.tts.modules.nemotron_tts.v2 import AcousticCodesPredictor
-from nemo.collections.tts.modules.nemotron_tts.v2.timestamp_head import IGNORE_INDEX, CTCTimestampHead, TimestampHead
+from nemo.collections.tts.modules.nemotron_tts.v2.timestamp_head import (
+    IGNORE_INDEX,
+    CTCTimestampHead,
+    TimestampHead,
+    TTSCtcTokenizer,
+)
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
 from nemo.collections.tts.parts.utils.tts_dataset_utils import tokenize_text_with_phoneme_spans
 from nemo.core.classes import ModelPT
@@ -172,6 +177,9 @@ class StreamingState:
     all_ctc_timestamp_predictions: Optional[List[torch.Tensor]] = None
     all_ctc_timestamp_probabilities: Optional[List[torch.Tensor]] = None
     ctc_timestamp_drain_index: int = 0
+    all_tts_ctc_predictions: Optional[List[torch.Tensor]] = None
+    all_tts_ctc_probabilities: Optional[List[torch.Tensor]] = None
+    tts_ctc_drain_index: int = 0
 
 
 @dataclass
@@ -192,6 +200,9 @@ class StreamingFinalizeOutput:
     ctc_timestamp_tokens: Optional[torch.Tensor] = None
     ctc_timestamp_probabilities: Optional[torch.Tensor] = None
     ctc_timestamp_lens: Optional[torch.Tensor] = None
+    tts_ctc_tokens: Optional[torch.Tensor] = None
+    tts_ctc_probabilities: Optional[torch.Tensor] = None
+    tts_ctc_lens: Optional[torch.Tensor] = None
 
 
 @dataclass
@@ -214,6 +225,9 @@ class InferBatchOutput:
     ctc_timestamp_tokens: Optional[torch.Tensor] = None
     ctc_timestamp_probabilities: Optional[torch.Tensor] = None
     ctc_timestamp_lens: Optional[torch.Tensor] = None
+    tts_ctc_tokens: Optional[torch.Tensor] = None
+    tts_ctc_probabilities: Optional[torch.Tensor] = None
+    tts_ctc_lens: Optional[torch.Tensor] = None
 
 
 @dataclass
@@ -438,6 +452,7 @@ class NemotronTTSBase(ModelPT):
         # ModelPT constructs the dataloaders during initialization.
         self.use_timestamp_head = bool(cfg.get('use_timestamp_head', False))
         self.use_ctc_timestamp_head = bool(cfg.get('use_ctc_timestamp_head', False))
+        self.use_tts_ctc_head = bool(cfg.get('use_tts_ctc_head', False))
         super().__init__(cfg=cfg, trainer=trainer)
         self.timestamp_config = resolve_timestamp_config(cfg.get('timestamp_config', None))
 
@@ -624,6 +639,20 @@ class NemotronTTSBase(ModelPT):
         self.ctc_timestamp_head_config = dict(cfg.get('ctc_timestamp_head', {}) or {})
         if self.use_ctc_timestamp_head:
             self._init_ctc_timestamp_head()
+        self.tts_ctc_head_config = dict(cfg.get('tts_ctc_head', {}) or {})
+        if self.use_tts_ctc_head:
+            if self.frame_stacking_factor != 1:
+                raise ValueError('The TTS CTC head requires frame_stacking_factor=1')
+            self.tts_ctc_tokenizer = TTSCtcTokenizer(self.tokenizer, self.text_conditioning_tokenizer_name)
+            self.tts_ctc_head_config['frame_seconds'] = self.codec_model_samples_per_frame / self.sample_rate / 2
+            self.tts_ctc_head = CTCTimestampHead(
+                hidden_size=self.decoder.config.hidden_size,
+                vocab_size=len(self.tokenizer.tokens) + 1,
+                blank_id=len(self.tokenizer.tokens),
+                projection_size=self.tts_ctc_head_config.get('projection_size', 256),
+                chunk_size=self.tts_ctc_head_config.get('chunk_size', 128),
+                distillation_weight=0.0,
+            )
 
     def _init_ctc_timestamp_head(self):
         """Package the teacher tokenizer and construct a causal, frame-local CTC head."""
@@ -941,7 +970,8 @@ class NemotronTTSBase(ModelPT):
                     if key.startswith(name_with_dot):
                         new_state_dict[key[len(name_with_dot) :]] = state_dict[key]
                 if (
-                    name in {'text_aligner', 'aligned_text_head', 'timestamp_head', 'ctc_timestamp_head'}
+                    name
+                    in {'text_aligner', 'aligned_text_head', 'timestamp_head', 'ctc_timestamp_head', 'tts_ctc_head'}
                     and not new_state_dict
                 ):
                     # Auxiliary modules can be introduced when fine-tuning a base TTS checkpoint.
@@ -1222,24 +1252,29 @@ class NemotronTTSBase(ModelPT):
             values['enabled'] = enabled
         self.timestamp_config = resolve_timestamp_config(values)
 
-    def drain_ctc_timestamp_frames(self, state: StreamingState) -> List[dict]:
+    def drain_ctc_timestamp_frames(self, state: StreamingState, *, source: str = 'aligner') -> List[dict]:
         """Return new token/blank predictions on the 40 ms grid, without collapsing repeats.
 
         Frame times are relative to each item's retained audio. These are lexical
         CTC observations, not finalized word timestamps. Draining preserves history.
         """
-        history = state.all_ctc_timestamp_predictions
+        if source not in ('aligner', 'tts'):
+            raise ValueError("CTC source must be 'aligner' or 'tts'")
+        prefix = 'ctc_timestamp' if source == 'aligner' else 'tts_ctc'
+        history = getattr(state, f'all_{prefix}_predictions')
         if history is None:
             return []
-        start = state.ctc_timestamp_drain_index
-        state.ctc_timestamp_drain_index = len(history)
+        start = getattr(state, f'{prefix}_drain_index')
+        setattr(state, f'{prefix}_drain_index', len(history))
         if start == len(history):
             return []
         tokens = torch.stack(history[start:], dim=1).detach().cpu()
-        probabilities = torch.stack(state.all_ctc_timestamp_probabilities[start:], dim=1).detach().cpu()
+        probabilities = torch.stack(getattr(state, f'all_{prefix}_probabilities')[start:], dim=1).detach().cpu()
         starts = state.audio_prediction_start_idx.detach().cpu().tolist()
         rows = []
-        interval = self.ctc_timestamp_head_config['frame_seconds']
+        head_name = 'ctc_timestamp_head' if source == 'aligner' else 'tts_ctc_head'
+        interval = getattr(self, f'{head_name}_config')['frame_seconds']
+        blank_id = getattr(self, head_name).blank_id
         for sample, first in enumerate(starts):
             if first < 0:
                 continue
@@ -1257,25 +1292,27 @@ class NemotronTTSBase(ModelPT):
                             end_seconds=(frame + 1) * interval,
                             token_id=token,
                             probability=float(probabilities[sample, offset, subframe]),
-                            is_blank=token == self.ctc_timestamp_head.blank_id,
+                            is_blank=token == blank_id,
                         )
                     )
         return rows
 
     def _record_ctc_timestamp_predictions(self, state, needs_audio=None, *, frames=1):
-        if state.all_ctc_timestamp_predictions is None:
-            return
-        shape = (state.config.batch_size, 2)
-        if needs_audio is None:
-            tokens = torch.full(shape, IGNORE_INDEX, dtype=torch.long, device=state.config.device)
-            probabilities = torch.zeros(shape, device=state.config.device)
-        else:
-            hidden = state.last_hidden[: state.config.batch_size, -1, :]
-            probabilities, tokens = self.ctc_timestamp_head(hidden).float().softmax(-1).max(-1)
-            tokens = tokens.masked_fill(~needs_audio[:, None], IGNORE_INDEX)
-            probabilities = probabilities.masked_fill(~needs_audio[:, None], 0)
-        state.all_ctc_timestamp_predictions.extend([tokens] * frames)
-        state.all_ctc_timestamp_probabilities.extend([probabilities] * frames)
+        for prefix, head_name in (('ctc_timestamp', 'ctc_timestamp_head'), ('tts_ctc', 'tts_ctc_head')):
+            history = getattr(state, f'all_{prefix}_predictions', None)
+            if history is None:
+                continue
+            shape = (state.config.batch_size, 2)
+            if needs_audio is None:
+                tokens = torch.full(shape, IGNORE_INDEX, dtype=torch.long, device=state.config.device)
+                probabilities = torch.zeros(shape, device=state.config.device)
+            else:
+                hidden = state.last_hidden[: state.config.batch_size, -1, :]
+                probabilities, tokens = getattr(self, head_name)(hidden).float().softmax(-1).max(-1)
+                tokens = tokens.masked_fill(~needs_audio[:, None], IGNORE_INDEX)
+                probabilities = probabilities.masked_fill(~needs_audio[:, None], 0)
+            history.extend([tokens] * frames)
+            getattr(state, f'all_{prefix}_probabilities').extend([probabilities] * frames)
 
     def drain_timestamp_events(
         self, state: StreamingState, batch_indices: Optional[Iterable[int]] = None
@@ -1971,6 +2008,8 @@ class NemotronTTSBase(ModelPT):
                 all_timestamp_predictions=[] if getattr(self, 'use_timestamp_head', False) else None,
                 all_ctc_timestamp_predictions=[] if getattr(self, 'use_ctc_timestamp_head', False) else None,
                 all_ctc_timestamp_probabilities=[] if getattr(self, 'use_ctc_timestamp_head', False) else None,
+                all_tts_ctc_predictions=[] if getattr(self, 'use_tts_ctc_head', False) else None,
+                all_tts_ctc_probabilities=[] if getattr(self, 'use_tts_ctc_head', False) else None,
             )
             if self.timestamp_config['enabled']:
                 state.timestamp_session = StreamingTimestampSession(
@@ -2500,7 +2539,7 @@ class NemotronTTSBase(ModelPT):
                 hidden = state.last_hidden[: state.config.batch_size, -1, :]
                 classes = (self.timestamp_head(hidden) >= 0).long()
                 state.all_timestamp_predictions.append(classes.masked_fill(~needs_audio, IGNORE_INDEX))
-            if state.all_ctc_timestamp_predictions is not None:
+            if state.all_ctc_timestamp_predictions is not None or state.all_tts_ctc_predictions is not None:
                 real_audio = ((audio_codes_unstacked >= 0) & (audio_codes_unstacked < self.codebook_size)).all(
                     dim=(1, 2)
                 )
@@ -2609,6 +2648,9 @@ class NemotronTTSBase(ModelPT):
             state, state.all_timestamp_predictions, IGNORE_INDEX, include_eos=True
         )
         ctc_tokens, ctc_probabilities, ctc_lens = self._finalize_ctc_timestamp_predictions(state)
+        tts_ctc_tokens, tts_ctc_probabilities, tts_ctc_lens = self._finalize_ctc_timestamp_predictions(
+            state, source='tts'
+        )
 
         # Extract and decode phoneme predictions
         phoneme_tokens_list: List[List[int]] = []
@@ -2650,6 +2692,9 @@ class NemotronTTSBase(ModelPT):
                 ctc_timestamp_tokens=ctc_tokens,
                 ctc_timestamp_probabilities=ctc_probabilities,
                 ctc_timestamp_lens=ctc_lens,
+                tts_ctc_tokens=tts_ctc_tokens,
+                tts_ctc_probabilities=tts_ctc_probabilities,
+                tts_ctc_lens=tts_ctc_lens,
             )
 
         grad_ctx = torch.inference_mode if use_inference_mode else torch.no_grad
@@ -2690,6 +2735,9 @@ class NemotronTTSBase(ModelPT):
                     ctc_timestamp_tokens=ctc_tokens,
                     ctc_timestamp_probabilities=ctc_probabilities,
                     ctc_timestamp_lens=ctc_lens,
+                    tts_ctc_tokens=tts_ctc_tokens,
+                    tts_ctc_probabilities=tts_ctc_probabilities,
+                    tts_ctc_lens=tts_ctc_lens,
                 )
 
             # Create padded output tensor and slice each item's valid predictions
@@ -2726,6 +2774,9 @@ class NemotronTTSBase(ModelPT):
                 ctc_timestamp_tokens=ctc_tokens,
                 ctc_timestamp_probabilities=ctc_probabilities,
                 ctc_timestamp_lens=ctc_lens,
+                tts_ctc_tokens=tts_ctc_tokens,
+                tts_ctc_probabilities=tts_ctc_probabilities,
+                tts_ctc_lens=tts_ctc_lens,
             )
 
     def infer_batch(
@@ -2975,6 +3026,9 @@ class NemotronTTSBase(ModelPT):
                 ctc_timestamp_tokens=finalize_output.ctc_timestamp_tokens,
                 ctc_timestamp_probabilities=finalize_output.ctc_timestamp_probabilities,
                 ctc_timestamp_lens=finalize_output.ctc_timestamp_lens,
+                tts_ctc_tokens=finalize_output.tts_ctc_tokens,
+                tts_ctc_probabilities=finalize_output.tts_ctc_probabilities,
+                tts_ctc_lens=finalize_output.tts_ctc_lens,
             )
 
     @staticmethod
@@ -3258,12 +3312,14 @@ class NemotronTTSBase(ModelPT):
         result = tokens.gather(1, indices.expand(*indices.shape[:2], *tokens.shape[2:]))
         return result.masked_fill(padding, pad_id), lengths
 
-    def _finalize_ctc_timestamp_predictions(self, state):
+    def _finalize_ctc_timestamp_predictions(self, state, *, source='aligner'):
         """Crop the two CTC subframes per audio frame, excluding speech EOS."""
-        if state.all_ctc_timestamp_predictions is None:
+        prefix = 'ctc_timestamp' if source == 'aligner' else 'tts_ctc'
+        history = getattr(state, f'all_{prefix}_predictions', None)
+        if history is None:
             return None, None, None
-        tokens, lengths = self._finalize_frame_predictions(state, state.all_ctc_timestamp_predictions, IGNORE_INDEX)
-        probabilities, _ = self._finalize_frame_predictions(state, state.all_ctc_timestamp_probabilities, 0)
+        tokens, lengths = self._finalize_frame_predictions(state, history, IGNORE_INDEX)
+        probabilities, _ = self._finalize_frame_predictions(state, getattr(state, f'all_{prefix}_probabilities'), 0)
         return (
             tokens.reshape(tokens.size(0), -1),
             probabilities.reshape(probabilities.size(0), -1).float(),

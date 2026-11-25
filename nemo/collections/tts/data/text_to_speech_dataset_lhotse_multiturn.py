@@ -939,6 +939,7 @@ def build_token_channel(
 
     total = compute_num_frames(cut.duration, frame_length, cut.sampling_rate)
     tokens = torch.ones(total, dtype=torch.long) * pad_id
+    token_owners = torch.full((total,), -1, dtype=torch.long) if timestamp_turns is not None else None
 
     for supervision in cut.supervisions:
         if supervision.speaker in roles:
@@ -951,6 +952,7 @@ def build_token_channel(
             language = cut.lang if cut.has_custom("lang") else supervision.language
             pos = compute_num_frames(supervision.start, frame_length, cut.sampling_rate)
             interruption_pos = compute_num_frames(supervision.end, frame_length, cut.sampling_rate)
+            turn_index = len(timestamp_turns) if timestamp_turns is not None else None
             if timestamp_turns is not None:
                 timestamp_turns.append(
                     dict(
@@ -998,6 +1000,10 @@ def build_token_channel(
                 bop_marker=phoneme_text_bop_marker,
                 eop_marker=phoneme_text_eop_marker,
             )
+            if timestamp_turns is not None:
+                text_start = min(max(pos + int(add_text_bos), 0), total)
+                text_end = min(max(pos + int(add_text_bos) + len(raw_ids), text_start), total)
+                timestamp_turns[turn_index].update(text_token_start=text_start, text_token_end=text_end)
 
             if add_text_bos:
                 text_ids = torch.as_tensor([bos_id] + raw_ids + [eos_id])
@@ -1011,15 +1017,25 @@ def build_token_channel(
             if endpos > len(tokens):
                 text_ids = text_ids[: len(tokens) - pos]
             tokens[pos : pos + len(text_ids)] = text_ids
+            if token_owners is not None:
+                token_owners[pos : pos + len(text_ids)] = turn_index
 
             # add interruption token, used for add speech eos and interrupt the model
             if interruption_pos < len(tokens):
                 tokens[interruption_pos] = interruption_token_id
+                if token_owners is not None:
+                    token_owners[interruption_pos] = -1
 
     if timestamp_turns is not None:
-        for turn in timestamp_turns:
+        for turn_index, turn in enumerate(timestamp_turns):
             end_frame = turn['end_frame']
             turn['has_end_marker'] = 0 <= end_frame < len(tokens) and tokens[end_frame].item() == interruption_token_id
+            left, right = turn['text_token_start'], turn['text_token_end']
+            visible = token_owners[left:right].eq(turn_index)
+            values = tokens[left:right]
+            for special in (pad_id, bos_id, eos_id, interruption_token_id):
+                visible &= values.ne(special)
+            turn['input_token_ids'] = values[visible].tolist()
     return tokens
 
 

@@ -263,7 +263,16 @@ def test_source_metadata_keeps_chosen_full_transcript_and_fractional_waveform_of
     text = _packed_text(model, timestamp_turns=turns, fractional=True, normalized=True)
     text[0, 5] = model.pad_id  # The full reference survives even when packed conditioning is truncated.
     assert turns[0] == dict(
-        text='first turn', start=0.13, end=0.53, language=None, start_frame=2, end_frame=7, has_end_marker=True
+        text='first turn',
+        start=0.13,
+        end=0.53,
+        language=None,
+        start_frame=2,
+        end_frame=7,
+        has_end_marker=True,
+        text_token_start=3,
+        text_token_end=5,
+        input_token_ids=[7, 8],
     )
     model._timestamp_teacher.records = [
         {'words': [{'start': 0.0, 'end': 0.18}, {'start': 0.18, 'end': 0.4}], 'error': None},

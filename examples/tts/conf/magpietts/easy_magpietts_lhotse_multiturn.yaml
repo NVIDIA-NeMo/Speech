@@ -48,6 +48,12 @@ model:
     distillation_topk: 32
     aligner: ${model.timestamp_head.aligner}
 
+  use_tts_ctc_head: false
+  tts_ctc_head:
+    projection_size: 256
+    loss_weight: 0.1
+    chunk_size: 128
+
   # Decoder backend selection
   # Options: "huggingface" (default), "nemotron_h"
   decoder_type: "huggingface"

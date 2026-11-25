@@ -66,6 +66,57 @@ input transcript; counting nonblank predictions does not provide recovery after
 an insertion or omission. The head is an auxiliary output and does not change
 audio sampling.
 
+### Separate CTC head using the TTS input tokenizer
+
+Enable a second output head alongside ASR-tokenizer CTC distillation:
+
+```bash
+++model.use_ctc_timestamp_head=true \
+++model.use_tts_ctc_head=true \
+++model.tts_ctc_head.loss_weight=0.1 \
+++model.tts_ctc_head.projection_size=256 \
+++model.tts_ctc_head.chunk_size=128
+```
+
+`use_tts_ctc_head` defaults to `false`. This head predicts the selected TTS
+input text with the native TTS tokenizer and an appended CTC blank class.
+Each audio hidden state produces two ordered predictions, as in the existing
+CTC head. Its parameters and output vocabulary are independent of the ASR
+tokenizer head. Both heads read the same speech-delayed audio-prediction
+hidden states, and their predictions remain auxiliary outputs.
+
+The combined objective is
+`TTS_loss + ctc_timestamp_head.loss_weight * (CTC_ASR + KL)`
+`+ tts_ctc_head.loss_weight * CTC_TTS`.
+The comparison recipe starts with outer weight 0.1 for each head. Existing
+ASR CTC and distillation component weights remain 1.0. The native head uses
+the selected TTS input BPE IDs directly for ordinary CTC, excluding padding
+and model control markers. It does not tokenize the transcript again.
+Its supervision is independent of ASR alignment success. Enable the native
+head alone with `use_ctc_timestamp_head=false` to avoid loading the ASR
+teacher; when both heads are enabled, the existing ASR pass serves only the
+teacher-dependent head.
+
+`train/tts_ctc_loss` and `val/tts_ctc_loss` report the native head's loss.
+`val/tts_ctc_cer` evaluates its teacher-forced predictions against the selected
+lexical TTS input. When `run_val_inference=true`,
+`val/tts_ctc_generated_cer` evaluates its generated CTC stream. These rates
+remain separate from the ASR-tokenizer head's `ctc_timestamp` metrics and
+from ASR scoring of the generated waveform.
+
+During streaming, retrieve the native head's new frame observations with
+`model.drain_ctc_timestamp_frames(state, source='tts')`. Omitting `source`
+preserves the existing ASR-tokenizer head behavior. Native predictions are
+available from `streaming_finalize()` and batch inference as `tts_ctc_tokens`,
+`tts_ctc_probabilities`, and `tts_ctc_lens`.
+
+The separate comparison recipe ends in `_dual_ctc.sub`; its experiment,
+Slurm job, `srun` step, and example launch commands use `_dual_ctc` names.
+`TTS_CTC_LOSS_WEIGHT`, `TTS_CTC_PROJECTION_SIZE`, and `TTS_CTC_CHUNK_SIZE`
+override its native head settings. The vocabulary size follows the TTS
+tokenizer, so this head may be larger than the ASR-tokenizer head. Chunked
+projection and compact CTC probability aggregation bound retained logits.
+
 ### CTC validation diagnostics
 
 With `use_ctc_timestamp_head=true`, validation reports character error rates

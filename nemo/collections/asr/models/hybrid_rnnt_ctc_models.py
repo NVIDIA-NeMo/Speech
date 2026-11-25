@@ -23,11 +23,13 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 from nemo.collections.asr.data.audio_to_text_dali import DALIOutputs
 from nemo.collections.asr.losses.ctc import CTCLoss
 from nemo.collections.asr.metrics.wer import WER
+from nemo.collections.asr.models.ctc_models import EncDecCTCModel
 from nemo.collections.asr.models.rnnt_models import EncDecRNNTModel
 from nemo.collections.asr.parts.mixins import ASRBPEMixin, ASRTranscriptionMixin, InterCTCMixin, TranscribeConfig
 from nemo.collections.asr.parts.mixins.transcription import TranscriptionReturnType
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecoding, CTCDecodingConfig
+from nemo.collections.asr.parts.utils.longform_inference import ChunkingConfig, resolve_chunking
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.timestamp_utils import process_timestamp_outputs
 from nemo.core.classes.common import PretrainedModelInfo
@@ -106,6 +108,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin, ASRT
         verbose: bool = True,
         timestamps: bool = None,
         override_config: Optional[TranscribeConfig] = None,
+        chunking: Optional[ChunkingConfig] = None,
     ) -> TranscriptionReturnType:
         """
         Uses greedy decoding to transcribe audio files. Use this method for debugging and prototyping.
@@ -130,6 +133,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin, ASRT
                 Default is None and would retain the previous state set by using self.change_decoding_strategy().
             verbose: (bool) whether to display tqdm progress bar
             logprobs: (bool) whether to return ctc logits insted of hypotheses
+            chunking: Optional offline chunk plan, applied to the currently selected decoder head.
 
         Returns:
             Returns a tuple of 2 items -
@@ -137,7 +141,9 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin, ASRT
             * An optional list of beam search transcript texts / Hypothesis / NBestHypothesis.
         """
 
-        if timestamps is not None:
+        # Planned chunking computes timestamps call-locally and leaves the model decoding unchanged.
+        planned_chunking = resolve_chunking(chunking, override_config) is not None
+        if timestamps is not None and not planned_chunking:
             if self.cur_decoder not in ["ctc", "rnnt"]:
                 raise ValueError(
                     f"{self.cur_decoder} is not supported for cur_decoder. Supported values are ['ctc', 'rnnt']"
@@ -176,7 +182,29 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin, ASRT
             verbose=verbose,
             timestamps=timestamps,
             override_config=override_config,
+            chunking=chunking,
         )
+
+    def _transcribe_chunk_ctc_decoding(self):
+        return self.ctc_decoding
+
+    def _transcribe_chunk_ctc_decoder(self):
+        return self.ctc_decoder
+
+    def _transcribe_chunk_validate(self, trcfg):
+        if self.cur_decoder == 'ctc':
+            return EncDecCTCModel._transcribe_chunk_validate(self, trcfg)
+        return super()._transcribe_chunk_validate(trcfg)
+
+    def _transcribe_chunk_outputs(self, outputs, chunks, frame_samples, trcfg):
+        if self.cur_decoder == 'ctc':
+            return EncDecCTCModel._transcribe_chunk_outputs(self, outputs, chunks, frame_samples, trcfg)
+        return super()._transcribe_chunk_outputs(outputs, chunks, frame_samples, trcfg)
+
+    def _transcribe_chunk_finalize(self, parts, chunks, frame_samples, trcfg):
+        if self.cur_decoder == 'ctc':
+            return EncDecCTCModel._transcribe_chunk_finalize(self, parts, chunks, frame_samples, trcfg)
+        return super()._transcribe_chunk_finalize(parts, chunks, frame_samples, trcfg)
 
     def _transcribe_on_begin(self, audio, trcfg: TranscribeConfig):
         super()._transcribe_on_begin(audio, trcfg)

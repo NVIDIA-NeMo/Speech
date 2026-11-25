@@ -160,9 +160,10 @@ The corresponding `tts_ctc_word_ctc_valid_intervals`,
 coverage. The native head's CER metrics continue to evaluate its decoded
 global CTC output.
 
-The separate comparison recipe ends in `_dual_ctc_word_intervals.sub` and
+The separate comparison recipe ends in `_tts_ctc_word_intervals.sub` and
 uses the same suffix for its experiment, Slurm job, `srun` step, and launch
-examples. It enables both CTC heads and word-interval supervision, keeping
+examples. It enables native CTC with word-interval supervision and disables
+the ASR-tokenizer student head, keeping
 the other comparison recipes intact. Override its local supervision with
 `TTS_CTC_WORD_INTERVAL_WEIGHT` and
 `TTS_CTC_WORD_INTERVAL_TOLERANCE_SECONDS`; their initial values are `1.0`

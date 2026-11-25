@@ -52,7 +52,7 @@ from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
 from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.utils import logging
-from nemo.utils.env_var_parsing import get_envbool
+from nemo.utils.env_var_parsing import get_env_opt_in
 from nemo.utils.exceptions import NeMoBaseException
 
 
@@ -495,7 +495,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         logging.info(f"Using decoder type: {self.decoder_type}")
 
         if self.decoder_type == 'huggingface':
-            trust_remote_code = get_envbool(NEMO_ENV_TRUST_REMOTE_CODE, False)
+            trust_remote_code = get_env_opt_in(NEMO_ENV_TRUST_REMOTE_CODE)
             self.transformer_backend_config = AutoConfig.from_pretrained(
                 cfg.transformer_hf_backend,
                 trust_remote_code=trust_remote_code,

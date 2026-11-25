@@ -499,4 +499,6 @@ Backbone configuration loading
 The vLLM SpeechLM configuration loader defaults to ``trust_remote_code=False``
 when reading a backbone config. Set ``NEMO_TRUST_REMOTE_CODE=true`` in the launching
 environment to allow a vetted custom config. The opt-in is read from the process
-environment, not from the model configuration.
+environment, not from the model configuration. Only ``true``, ``1``, ``yes``, ``y``
+or ``t`` enable it; an unset or empty value, or ``false``, ``0``, ``no``, ``n``, ``f``
+or ``none``, keeps it disabled; any other value raises an error.

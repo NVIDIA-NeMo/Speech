@@ -204,7 +204,9 @@ Magpie-TTS and EasyMagpie-TTS default to ``trust_remote_code=False`` for Hugging
 Face tokenizers and backend loading. To allow vetted custom implementations, set
 ``NEMO_TRUST_REMOTE_CODE=true`` in the launching environment. This runtime opt-in
 also applies in dataloader workers. A ``trust_remote_code`` value saved in a model
-config cannot enable it.
+config cannot enable it. Only ``true``, ``1``, ``yes``, ``y`` or ``t`` enable the
+opt-in; an unset or empty value, or ``false``, ``0``, ``no``, ``n``, ``f`` or ``none``,
+keeps it disabled; any other value raises an error.
 
 References
 ##########

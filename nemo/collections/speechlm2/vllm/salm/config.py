@@ -30,7 +30,7 @@ from typing import Any
 from transformers import AutoConfig, PretrainedConfig
 
 from nemo.constants import NEMO_ENV_TRUST_REMOTE_CODE
-from nemo.utils.env_var_parsing import get_envbool
+from nemo.utils.env_var_parsing import get_env_opt_in
 
 # Architectures a checkpoint's config.json names, and the architectures and
 # model types of its MTP draft. A ParallelExpertEncoder on a NemotronH backbone
@@ -330,7 +330,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
 
         if llm_config is None:
             self.text_config = AutoConfig.from_pretrained(
-                pretrained_llm, trust_remote_code=get_envbool(NEMO_ENV_TRUST_REMOTE_CODE, False)
+                pretrained_llm, trust_remote_code=get_env_opt_in(NEMO_ENV_TRUST_REMOTE_CODE)
             )
         else:
             if not isinstance(llm_config, dict):

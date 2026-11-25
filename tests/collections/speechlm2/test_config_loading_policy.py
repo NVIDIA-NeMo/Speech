@@ -5,6 +5,42 @@ import json
 import pytest
 
 from nemo.collections.speechlm2.vllm.salm.config import NeMoSpeechLMConfig
+from nemo.utils.env_var_parsing import CoercionError
+
+
+def _write_custom_backbone(path):
+    (path / 'config.json').write_text(
+        json.dumps({'model_type': 'custom_backend', 'auto_map': {'AutoConfig': 'configuration_custom.CustomConfig'}})
+    )
+    (path / 'configuration_custom.py').write_text("raise RuntimeError('unexpected module import')\n")
+
+
+def _make_salm_config(path):
+    return NeMoSpeechLMConfig(
+        pretrained_llm=str(path),
+        pretrained_asr='unused',
+        audio_locator_tag='<|audio|>',
+        prompt_format='unused',
+        pretrained_weights=False,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('setting', ['', 'false', '0'])
+def test_salm_backbone_rejects_custom_code_without_affirmative_opt_in(tmp_path, monkeypatch, setting):
+    monkeypatch.setenv('NEMO_TRUST_REMOTE_CODE', setting)
+    _write_custom_backbone(tmp_path)
+    with pytest.raises(ValueError, match='trust_remote_code'):
+        _make_salm_config(tmp_path)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('setting', ['off', 'typo'])
+def test_salm_backbone_rejects_unrecognized_opt_in(tmp_path, monkeypatch, setting):
+    monkeypatch.setenv('NEMO_TRUST_REMOTE_CODE', setting)
+    _write_custom_backbone(tmp_path)
+    with pytest.raises(CoercionError, match='NEMO_TRUST_REMOTE_CODE'):
+        _make_salm_config(tmp_path)
 
 
 @pytest.mark.unit

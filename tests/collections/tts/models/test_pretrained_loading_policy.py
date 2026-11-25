@@ -13,6 +13,7 @@ from omegaconf import OmegaConf
 from transformers import ByT5Tokenizer
 
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import setup_tokenizers
+from nemo.utils.env_var_parsing import CoercionError
 
 
 @pytest.fixture
@@ -47,6 +48,26 @@ def test_tts_tokenizers_reject_custom_repository_code(custom_tokenizer_repositor
     )
     with pytest.raises(ValueError, match='trust_remote_code'):
         setup_tokenizers(config, mode=mode)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('setting', ['', 'false'])
+def test_tts_tokenizers_reject_custom_code_without_affirmative_opt_in(
+    custom_tokenizer_repository, monkeypatch, setting
+):
+    monkeypatch.setenv('NEMO_TRUST_REMOTE_CODE', setting)
+    config = OmegaConf.create({'text': {'_target_': 'AutoTokenizer', 'pretrained_model': custom_tokenizer_repository}})
+    with pytest.raises(ValueError, match='trust_remote_code'):
+        setup_tokenizers(config)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('setting', ['off', 'typo'])
+def test_tts_tokenizers_reject_unrecognized_opt_in(custom_tokenizer_repository, monkeypatch, setting):
+    monkeypatch.setenv('NEMO_TRUST_REMOTE_CODE', setting)
+    config = OmegaConf.create({'text': {'_target_': 'AutoTokenizer', 'pretrained_model': custom_tokenizer_repository}})
+    with pytest.raises(CoercionError, match='NEMO_TRUST_REMOTE_CODE'):
+        setup_tokenizers(config)
 
 
 @pytest.mark.unit
@@ -139,6 +160,17 @@ def test_tts_vetted_tokenizer_can_be_enabled(vetted_tokenizer_repository, monkey
     assert type(tokenizer.tokenizers['text']).__name__ == 'CustomTokenizer'
 
 
+_CHILD_PROCESS_TOKENIZER_SCRIPT = "; ".join(
+    [
+        "import sys",
+        "from nemo.collections.tts.data.text_to_speech_dataset_lhotse import setup_tokenizers",
+        "from omegaconf import OmegaConf",
+        "cfg = OmegaConf.create({'text': {'_target_': 'AutoTokenizer', 'pretrained_model': sys.argv[1]}})",
+        "assert type(setup_tokenizers(cfg).tokenizers['text']).__name__ == 'CustomTokenizer'",
+    ]
+)
+
+
 @pytest.mark.unit
 def test_tts_remote_code_policy_is_inherited_by_child_process(vetted_tokenizer_repository, monkeypatch):
     monkeypatch.setenv('NEMO_TRUST_REMOTE_CODE', 'true')
@@ -146,10 +178,7 @@ def test_tts_remote_code_policy_is_inherited_by_child_process(vetted_tokenizer_r
         [
             sys.executable,
             '-c',
-            "import sys; from nemo.collections.tts.data.text_to_speech_dataset_lhotse import setup_tokenizers; "
-            "from omegaconf import OmegaConf; "
-            "cfg = OmegaConf.create({'text': {'_target_': 'AutoTokenizer', 'pretrained_model': sys.argv[1]}}); "
-            "assert type(setup_tokenizers(cfg).tokenizers['text']).__name__ == 'CustomTokenizer'",
+            _CHILD_PROCESS_TOKENIZER_SCRIPT,
             vetted_tokenizer_repository,
         ],
         capture_output=True,

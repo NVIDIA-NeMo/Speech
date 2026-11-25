@@ -721,6 +721,7 @@ class NemotronTTSModel(NemotronTTSBase):
         word_counts = dict(word_ctc_valid_intervals=0, word_ctc_infeasible_intervals=0, word_ctc_skipped_intervals=0)
         use_word_intervals = source == 'tts' and getattr(self, 'use_tts_ctc_word_intervals', False)
         frames = skipped = infeasible = 0
+        skipped_empty = skipped_cropped = skipped_non_audio = trimmed_terminal_eos = 0
         captured = []
         interval = self.codec_model_samples_per_frame / self.sample_rate / 2
         lengths = audio_codes_lens.detach().cpu().tolist()
@@ -728,19 +729,35 @@ class NemotronTTSModel(NemotronTTSBase):
         if agent_mask is not None:
             real_audio &= agent_mask[:, : real_audio.size(1)].bool()
         real_audio = real_audio.detach().cpu()
+        eos_audio = audio_codes_target.eq(self.audio_eos_id).all(dim=1).detach().cpu()
         for target in targets:
             sample, start = target['batch_index'], target['start_frame']
-            end = min(target['end_frame'], hidden.size(1), lengths[sample])
+            end = min(target['end_frame'], hidden.size(1), real_audio.size(1), lengths[sample])
             teacher = target['ctc']
             if teacher['num_classes'] != head.vocab_size or teacher['blank_id'] != head.blank_id:
                 raise ValueError('The CTC teacher vocabulary/blank must match the timestamp head')
             # CTC needs a whole transcript: a cropped or non-audio turn cannot be
             # made valid by silently discarding impossible alignment paths.
-            if end <= start or target['end_frame'] > end or not target.get('complete_turn', True):
+            if end <= start:
                 skipped += 1
+                skipped_empty += 1
+                continue
+            if target['end_frame'] > end or not target.get('complete_turn', True):
+                skipped += 1
+                skipped_cropped += 1
+                continue
+            # Packed targets may replace the final codec frame with speech EOS.
+            # Exclude that terminal position without discarding the lexical turn.
+            has_terminal_eos = bool(eos_audio[sample, end - 1])
+            if has_terminal_eos:
+                end -= 1
+            if end <= start:
+                skipped += 1
+                skipped_empty += 1
                 continue
             if not real_audio[sample, start:end].all():
                 skipped += 1
+                skipped_non_audio += 1
                 continue
             duration = target['audio_duration']
             phase = target['audio_start_seconds'] - start * interval * 2
@@ -751,6 +768,7 @@ class NemotronTTSModel(NemotronTTSBase):
                 valid &= (teacher_rows >= 0) & (teacher_rows < teacher['indices'].size(0))
             if not valid.any():
                 skipped += 1
+                skipped_empty += 1
                 continue
             input_length = int(valid.nonzero()[-1]) + 1
             aligned = None
@@ -781,6 +799,7 @@ class NemotronTTSModel(NemotronTTSBase):
             kd_losses.append(result['distillation_loss'])
             infeasible += int(not result['ctc_valid'])
             frames += int(valid.sum())
+            trimmed_terminal_eos += int(has_terminal_eos)
             if collect_predictions:
                 captured.append((target, result, aligned, valid[:input_length], student_times[:input_length]))
 
@@ -794,6 +813,10 @@ class NemotronTTSModel(NemotronTTSBase):
             supervised_frames=frames,
             skipped_turns=skipped,
             infeasible_turns=infeasible,
+            trimmed_terminal_eos_turns=trimmed_terminal_eos,
+            skipped_empty_turns=skipped_empty,
+            skipped_cropped_turns=skipped_cropped,
+            skipped_non_audio_turns=skipped_non_audio,
         )
         if collect_predictions:
             metrics.update(self._collect_ctc_timestamp_predictions(captured, diagnostics, source=source))

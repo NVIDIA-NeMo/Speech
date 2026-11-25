@@ -178,6 +178,11 @@ blank; padding and invalid frames do not join separate occurrences or turns.
 Both reference and prediction use the existing TTS CER normalization (case,
 punctuation, and whitespace), without expanding written numbers into words.
 
+Lexical CTC excludes a terminal speech-EOS marker from its auxiliary interval,
+including when packing places EOS in the final codec position. Internal EOS,
+user-speech frames, and padded or incomplete turns remain excluded.
+Each head logs `trimmed_terminal_eos_turns` and skipped-turn counts by reason under its existing metric prefix.
+
 - `val/ctc_timestamp_cer`: student CTC predictions on teacher-forced GT audio.
 - `val/ctc_timestamp_teacher_cer`: the teacher's CTC predictions on the same
   retained frame grid.

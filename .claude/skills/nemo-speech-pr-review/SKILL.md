@@ -140,12 +140,22 @@ While reviewing:
   - Doc commands must run as written.
   - Revert unrelated changes, and files that are not part of the change (local environment files, scratch scripts). A
     PR with a release-branch label touches only files that exist on that branch.
-  - Docs are written in plain language. Implementation details go into code comments, not into a README. After a
-    rename, search docs, configs, and examples for the old name. Examples and configs name released models and public
-    datasets only.
-  - Comments are short, and carry no PR numbers or history. Comments explain why, not what. A comment that is false,
-    or that explains a config key no code reads, is a finding. A refactor keeps comments whose reason still holds at
-    the new location.
+  - Require a refinement pass after initial writing: analyze documentation, inline docstrings, and code comments to
+    distill their absolute essence and remove anything the reader does not need.
+  - Read every changed line as a human with very limited ability to retain context: it must be understandable without
+    remembering distant text or knowing the author's setup. Require explicit subjects and short, direct sentences.
+  - Every paragraph leads with its key insight or essential information, ideally in a single sentence. Each following
+    sentence must add information necessary to understand or use that insight; otherwise remove it.
+  - Never accept implementation details in documentation, docstrings, or comments: describe user-visible contracts or
+    intent, not implementation mechanics.
+  - Reject detailed multi-line comments unless they explain intent and add information beyond what reading the code
+    reveals. No comment may narrate what the code does.
+  - Comments carry no PR numbers or history. Flag false comments and explanations of config keys no code reads;
+    preserve comments whose reason still holds after a refactor.
+  - Reject documentation, docstrings, and comments tied to someone's experiment, local environment, or one-off setup;
+    require generally relevant information instead.
+  - After a rename, search docs, configs, and examples for the old name. Examples and configs name released models
+    and public datasets only.
 
 ## Checks
 
@@ -248,6 +258,7 @@ description.
 - Tests weakened to get CI passing.
 - Mechanical sweeps across the repository.
 - Internal paths, internal datasets, or names of unreleased models.
+- Documentation, docstrings, or comments that violate the writing rules under "Docs, comments, and diffs".
 
 **Leave approval to a maintainer.** Review fully, then name what triggered the guardrail and the decision the
 maintainer needs to make.
@@ -267,7 +278,7 @@ maintainer needs to make.
   trivial exception under Tests, an optional dependency that breaks import, a missing DCO sign-off, or anything under
   "Never approve".
 - **Should fix:** any other principle violation, including findings from Checks.
-- **Nitpick:** wording or readability. Label it optional.
+- **Nitpick:** wording or readability not covered by the mandatory writing rules above. Label it optional.
 
 ## Output
 

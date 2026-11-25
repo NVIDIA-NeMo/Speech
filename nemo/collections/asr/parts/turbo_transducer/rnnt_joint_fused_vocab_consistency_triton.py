@@ -512,7 +512,7 @@ def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
         pair_offsets, pair_mask, pruning_starts_ptr, max_tgt_len_plus_1, PRUNING_RANGE
     )
     student_lattice_offsets = teacher_lattice_offsets + student_lattice_offset
-    blank_mask, target_mask, targets = _load_lattice_rows(
+    blank_mask, target_mask, _ = _load_lattice_rows(
         teacher_lattice_offsets,
         pair_mask,
         targets_ptr,
@@ -520,6 +520,10 @@ def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
         tgt_lengths_ptr,
         max_src_len,
         max_tgt_len_plus_1,
+    )
+    # labels without a mask: the labels from the masked load fail to compile in Triton 3.7
+    targets = _load_targets_unmasked(
+        teacher_lattice_offsets, targets_ptr, student_lattice_offset, max_src_len, max_tgt_len_plus_1
     )
     teacher_lse, teacher_grad_target, teacher_grad_blank = _load_lattice_row_grads(
         teacher_lattice_offsets,
@@ -542,11 +546,6 @@ def _rnnt_joint_fused_vocab_consistency_bwd_triton_kernel(
     grad_consistency_kl = tl.load(grad_consistency_kl_ptr + teacher_lattice_offsets, mask=blank_mask, other=0.0).to(
         compute_dtype
     )
-    if PRUNING_RANGE:
-        # pruned lattice rows: labels from the masked load fail to compile in Triton 3.7, see `_load_targets_unmasked`
-        targets = _load_targets_unmasked(
-            teacher_lattice_offsets, targets_ptr, student_lattice_offset, max_src_len, max_tgt_len_plus_1
-        )
 
     # rows of the joint hidden and of its gradient
     if PRUNING_RANGE != 0 and not PACKED_HIDDEN:
@@ -826,7 +825,7 @@ def _rnnt_joint_fused_vocab_consistency_bwd_grad_logits_triton_kernel(
     teacher_logits += bias_chunk[None, :]
     student_logits += bias_chunk[None, :]
 
-    blank_mask, target_mask, targets = _load_lattice_rows(
+    blank_mask, target_mask, _ = _load_lattice_rows(
         teacher_lattice_offsets,
         chunk_mask,
         targets_ptr,
@@ -834,6 +833,10 @@ def _rnnt_joint_fused_vocab_consistency_bwd_grad_logits_triton_kernel(
         tgt_lengths_ptr,
         max_src_len,
         max_tgt_len_plus_1,
+    )
+    # labels without a mask: the labels from the masked load fail to compile in Triton 3.7
+    targets = _load_targets_unmasked(
+        teacher_lattice_offsets, targets_ptr, student_lattice_offset, max_src_len, max_tgt_len_plus_1
     )
     teacher_lse, teacher_grad_target, teacher_grad_blank = _load_lattice_row_grads(
         teacher_lattice_offsets,
@@ -1598,9 +1601,10 @@ def _load_targets_unmasked(lattice_offsets, targets_ptr, lattice_size, max_src_l
     """
     Target labels for flat offsets in the [B, T, U+1] lattice without a masked load: the index is clamped in-bounds,
     labels at positions without a target are arbitrary (callers zero their target gradients).
-    Workaround for Triton 3.7: when the labels from a masked load (`_load_lattice_rows`) are broadcast against
-    the vocabulary block, `TritonGPURemoveLayoutConversions` fails with
-    "'tt.load' op failed to verify that mask type matches ptr type".
+    Used by the backward kernels for all Triton versions. Workaround for Triton 3.7: when the labels from a masked
+    load (`_load_lattice_rows`) are broadcast against the vocabulary block, the kernels can't be compiled
+    ("PassManager::run failed": `TritonGPURemoveLayoutConversions` fails with "'tt.load' op failed to verify that
+    mask type matches ptr type") for the tiles of 32+ rows with 2+ warps, i.e., for all production configs.
     """
     max_tgt_len = max_tgt_len_plus_1 - 1
     clamped_offsets = tl.minimum(lattice_offsets, lattice_size - 1)

@@ -413,6 +413,40 @@ def test_tensor_descriptors_and_pointers_match_reference(tensor_descriptors_allo
 
 @pytest.mark.gpu
 @requires_triton_cuda
+@pytest.mark.parametrize("backward_mode", BACKWARD_MODES)
+def test_backward_with_rows_tile_of_several_warps(backward_mode, monkeypatch):
+    """
+    Regression: Triton 3.7 could not compile the backward kernels with any production config
+    ("PassManager::run failed"). The labels loaded with a mask broke a pass of the compiler for the tiles of 32+ rows
+    with 2+ warps, which the tile of the other tests (16 rows) does not cover.
+    """
+    for kernel in (
+        consistency_triton_module._rnnt_joint_fused_vocab_consistency_bwd_triton_kernel,
+        consistency_triton_module._rnnt_joint_fused_vocab_consistency_bwd_grad_logits_triton_kernel,
+    ):
+        config = kernel.configs[0]
+        assert config.num_warps >= 2
+        rows_tile_config = triton.Config(
+            dict(config.kwargs, PAIR_BLOCK=32), num_warps=config.num_warps, num_stages=config.num_stages
+        )
+        monkeypatch.setattr(kernel, "configs", [rows_tile_config])
+    _use_min_chunk_size(monkeypatch)
+    inputs = make_joint_inputs(double_batch=True)
+    leaves, reference_leaves = inputs.leaves(), inputs.leaves(torch.float64)
+    outputs = rnnt_joint_fused_vocab_with_consistency(
+        **inputs.kernel_kwargs(leaves), consistency_symmetrical=True, backward_mode=backward_mode, **FULL_PRECISION
+    )
+    expected_outputs = reference_outputs(inputs, reference_leaves, consistency_symmetrical=True)
+    grads = inputs.random_grads(num_outputs=3)
+    torch.autograd.backward(tuple(outputs), grads)
+    torch.autograd.backward(expected_outputs, [grad.double() for grad in grads])
+    assert_close_to_reference(
+        [leaf.grad for leaf in leaves], [leaf.grad for leaf in reference_leaves], FULL_PRECISION_TOLERANCE, GRAD_NAMES
+    )
+
+
+@pytest.mark.gpu
+@requires_triton_cuda
 def test_chunked_backward_is_autotuned_only_for_first_chunk(monkeypatch):
     """
     Regression: autotuning resets the bias gradient accumulated by the kernel, so it must be possible only for

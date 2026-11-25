@@ -26,11 +26,11 @@ from nemo.collections.asr.inference.model_wrappers.ctc_inference_wrapper import 
 from nemo.collections.asr.inference.pipelines.base_pipeline import BasePipeline
 from nemo.collections.asr.inference.streaming.decoders.greedy.greedy_ctc_decoder import ClippedCTCGreedyDecoder
 from nemo.collections.asr.inference.streaming.endpointing.greedy.greedy_ctc_endpointing import CTCGreedyEndpointing
-from nemo.collections.asr.inference.streaming.framing.multi_stream import ContinuousBatchedRequestStreamer
-from nemo.collections.asr.inference.streaming.framing.request import FeatureBuffer, Frame, Request
+from nemo.collections.asr.inference.streaming.framing.multi_stream import ContinuousBatchedFrameStreamer
+from nemo.collections.asr.inference.streaming.framing.request import Frame
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
 from nemo.collections.asr.inference.streaming.state.ctc_state import CTCStreamingState
-from nemo.collections.asr.inference.utils.enums import FeatureBufferPaddingMode, RequestType
+from nemo.collections.asr.inference.utils.enums import PaddingMode
 from nemo.collections.asr.inference.utils.pipeline_utils import (
     check_existance_of_required_attributes,
     drop_trailing_features,
@@ -95,10 +95,9 @@ class BufferedCTCPipeline(BasePipeline):
 
         self.stop_history_eou_in_milliseconds = cfg.endpointing.stop_history_eou
         self.residue_tokens_at_end = cfg.endpointing.residue_tokens_at_end
-        self.request_type = RequestType.from_str(cfg.streaming.request_type)
         self.word_boundary_tolerance = cfg.streaming.word_boundary_tolerance
-        self.padding_mode = FeatureBufferPaddingMode.from_str(cfg.streaming.padding_mode)
-        self.right_padding = self.padding_mode is FeatureBufferPaddingMode.RIGHT
+        self.padding_mode = PaddingMode.from_str(cfg.streaming.padding_mode)
+        self.right_padding = self.padding_mode is PaddingMode.RIGHT
         self.return_tail_result = cfg.return_tail_result
 
         self.zero_log_probs = self.init_zero_log_probs() if self.right_padding else None
@@ -270,35 +269,6 @@ class BufferedCTCPipeline(BasePipeline):
                     log_probs[i][:lpad, :] = self.zero_log_probs[:lpad, :]
         return log_probs
 
-    def get_logprobs_given_processed_signals(
-        self, fbuffers: list[FeatureBuffer], processed_signals: list[Tensor]
-    ) -> Tensor:
-        """
-        Get log probs from the ASR model.
-        Args:
-            fbuffers: (list[FeatureBuffer]) Feature buffers.
-            processed_signals: (list[Tensor]) Processed buffers.
-        Returns:
-            (Tensor) Log probabilities.
-        """
-        processed_signals = torch.cat([sig.unsqueeze_(0) for sig in processed_signals]).to(self.device)
-        processed_signals = drop_trailing_features(processed_signals, self.expected_feature_buffer_len)
-        processed_signal_lengths = torch.tensor([f.valid_size for f in fbuffers], device=self.device)
-        processed_signals = normalize_features(processed_signals, processed_signal_lengths)
-        processed_signal_lengths = processed_signal_lengths.clamp(max=processed_signals.shape[2])
-
-        log_probs = self.asr_model.get_logprobs(
-            processed_signal=processed_signals, processed_signal_length=processed_signal_lengths
-        ).clone()
-
-        if self.right_padding:
-            for i in range(len(log_probs)):
-                lpad = int(fbuffers[i].roll_size / self.subsampling_factor)
-                if lpad > 0:
-                    log_probs[i] = log_probs[i].roll(lpad, dims=0)
-                    log_probs[i][:lpad, :] = self.zero_log_probs[:lpad, :]
-        return log_probs
-
     def compute_logprobs_from_frames(self, frames: list[Frame]) -> Tensor:
         """
         Buffer the frames and get the log probabilities.
@@ -313,28 +283,14 @@ class BufferedCTCPipeline(BasePipeline):
             log_probs = self.get_logprobs_given_raw_signals(frames, raw_signals, left_paddings)
         return log_probs
 
-    def compute_logprobs_from_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> Tensor:
-        """
-        Buffer the feature buffers and get the log probabilities.
-        Args:
-            fbuffers: (list[FeatureBuffer]) List of feature buffers to transcribe.
-        Returns:
-            (Tensor) Log probabilities.
-        """
-        processed_signals = self.bufferer.update(fbuffers)
-        log_probs = None
-        if len(processed_signals) > 0:
-            log_probs = self.get_logprobs_given_processed_signals(fbuffers, processed_signals)
-        return log_probs
-
     def run_greedy_decoder(
-        self, state: CTCStreamingState, request: Request, buffer_log_probs: Tensor, start: int, end: int
+        self, state: CTCStreamingState, request: Frame, buffer_log_probs: Tensor, start: int, end: int
     ) -> bool:
         """
         Run Greedy decoder, update state and trigger EOU detection.
         Args:
             state: (CTCStreamingState) Current state for the particular stream.
-            request: (Request) Current request for the particular stream.
+            request: (Frame) Current request for the particular stream.
             buffer_log_probs: (Tensor) Log probabilities.
             start: (int) Start index of the log probabilities.
             end: (int) End index of the log probabilities.
@@ -361,11 +317,11 @@ class BufferedCTCPipeline(BasePipeline):
         state.set_incomplete_segment_tokens(tail_output["tokens"])
         return eou_detected
 
-    def shared_transcribe_step(self, requests: list[Request], log_probs: Tensor) -> None:
+    def shared_transcribe_step(self, requests: list[Frame], log_probs: Tensor) -> None:
         """
-        Shared transcribe step for frames and feature buffers.
+        Shared transcribe step for frames.
         Args:
-            requests: (list[Request]) List of frames or feature buffers to transcribe.
+            requests: (list[Frame]) List of frames to transcribe.
             log_probs: (Tensor) Log probabilities.
         """
         postponed_requests = [(ridx, request.stream_id) for ridx, request in enumerate(requests)]
@@ -401,17 +357,6 @@ class BufferedCTCPipeline(BasePipeline):
 
         self.update_partial_transcript(requests, self.tokenizer, self.leading_regex_pattern)
 
-    def transcribe_step_for_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> None:
-        """
-        Transcribe a step for feature buffers.
-        Args:
-            fbuffers: (list[FeatureBuffer]) List of feature buffers to transcribe.
-        """
-        log_probs = self.compute_logprobs_from_feature_buffers(fbuffers)
-        if log_probs is not None:
-            log_probs = normalize_log_probs(log_probs)
-            self.shared_transcribe_step(requests=fbuffers, log_probs=log_probs)
-
     def transcribe_step_for_frames(self, frames: list[Frame]) -> None:
         """
         Transcribe step for frames.
@@ -423,22 +368,17 @@ class BufferedCTCPipeline(BasePipeline):
             log_probs = normalize_log_probs(log_probs)
             self.shared_transcribe_step(requests=frames, log_probs=log_probs)
 
-    def get_request_generator(self) -> ContinuousBatchedRequestStreamer:
+    def get_request_generator(self) -> ContinuousBatchedFrameStreamer:
         """
         Initialize the request generator.
         Returns:
-            (ContinuousBatchedRequestStreamer) Request generator.
+            (ContinuousBatchedFrameStreamer) Request generator.
         """
-        request_generator = ContinuousBatchedRequestStreamer(
+        request_generator = ContinuousBatchedFrameStreamer(
             n_frames_per_stream=1,
             frame_size_in_secs=self.chunk_size,
             sample_rate=self.sample_rate,
             batch_size=self.batch_size,
-            request_type=self.request_type,
-            preprocessor=self.preprocessor,
-            buffer_size_in_secs=self.buffer_size_in_secs,
-            device=self.device,
             pad_last_frame=True,
-            right_pad_features=self.right_padding,
         )
         return request_generator

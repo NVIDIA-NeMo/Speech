@@ -32,6 +32,7 @@ from nemo.collections.speechlm2.data.duplex_ear_tts_dataset import (
     sample_audio_segments_repeat,
 )
 from nemo.collections.speechlm2.models import DuplexEARTTS
+from nemo.collections.speechlm2.modules.ear_tts_vae_codec import RVQVAEModel
 from nemo.collections.speechlm2.parts import hf_hub
 
 
@@ -282,6 +283,44 @@ test_eartts_config = {
 # set CI cached path
 if os.path.exists("/home/TestData/nvidia--NVIDIA-Nemotron-Nano-9B-v2/"):
     test_eartts_config["model"]["pretrained_lm_name"] = "/home/TestData/nvidia--NVIDIA-Nemotron-Nano-9B-v2/"
+
+
+@pytest.mark.gpu
+@pytest.mark.unit
+def test_codec_silence_tokens_are_computed_lazily(monkeypatch):
+    # Running the codec on CPU at construction time fails with oneDNN on arm64 (long depthwise conv).
+    encode_calls = []
+    original_encode = RVQVAEModel.encode
+
+    def spy_encode(self, *args, **kwargs):
+        encode_calls.append(args[0].shape)
+        return original_encode(self, *args, **kwargs)
+
+    monkeypatch.setattr(RVQVAEModel, "encode", spy_encode)
+    model = DuplexEARTTS(deepcopy(test_eartts_config))
+    assert encode_calls == [], "The audio codec must not run during model construction."
+
+    expected = model.get_codec_silence_frame()
+    encode_calls.clear()
+    tokens = model.get_codec_silence_tokens()
+    assert len(encode_calls) == 1
+    assert torch.equal(tokens, expected)
+    assert torch.equal(model.codec_silence_tokens, expected)
+    # The result is cached in the buffer and saved with the checkpoint.
+    assert torch.equal(model.get_codec_silence_tokens(), expected)
+    assert torch.equal(model.state_dict()["codec_silence_tokens"], expected)
+    assert len(encode_calls) == 1
+
+    # Silence tokens stored in a checkpoint take precedence and are not recomputed.
+    stored = (expected + 1) % test_eartts_config["model"]["codec_config"]["codebook_size"]
+    model.load_state_dict({**model.state_dict(), "codec_silence_tokens": stored})
+    assert torch.equal(model.get_codec_silence_tokens(), stored.to(model.device))
+    assert len(encode_calls) == 1
+
+    # A checkpoint saved before first use holds the -1 placeholder; it is recomputed after loading.
+    model.load_state_dict({**model.state_dict(), "codec_silence_tokens": torch.full_like(stored, -1)})
+    assert torch.equal(model.get_codec_silence_tokens(), expected)
+    assert len(encode_calls) == 2
 
 
 @pytest.fixture(scope="module")

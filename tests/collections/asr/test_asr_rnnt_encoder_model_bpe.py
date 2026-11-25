@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import os
 import shutil
 import tempfile
@@ -319,6 +320,33 @@ class TestEncDecRNNTBPEModel:
             pred_embedding = 3 * (asr_model.decoder.pred_hidden)
             joint_joint = 3 * (asr_model.joint.joint_hidden + 1)
             assert asr_model.num_weights == (nw1 + (pred_embedding + joint_joint))
+
+    @pytest.mark.skipif(
+        not NUMBA_RNNT_LOSS_AVAILABLE,
+        reason='RNNTLoss has not been compiled with appropriate numba version.',
+    )
+    @pytest.mark.unit
+    def test_wer_text_normalize(self, test_data_dir, asr_model):
+        assert asr_model.wer.wer_text_normalize is False
+
+        cfg = copy.deepcopy(asr_model.cfg)
+        with open_dict(cfg):
+            cfg.wer_text_normalize = True
+        model = EncDecRNNTBPEModel(cfg=cfg)
+        assert model.wer.wer_text_normalize is True
+
+        # flag is preserved when WER is re-created
+        model.change_decoding_strategy(decoding_cfg=DictConfig({'strategy': 'greedy', 'greedy': {'max_symbols': 10}}))
+        assert model.wer.wer_text_normalize is True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            new_tokenizer_dir = os.path.join(tmpdir, 'tokenizer')
+            os.makedirs(new_tokenizer_dir, exist_ok=True)
+            shutil.copy2(
+                os.path.join(test_data_dir, "asr", "tokenizers", "an4_wpe_128", 'vocab.txt'), new_tokenizer_dir
+            )
+            model.change_vocabulary(new_tokenizer_dir=new_tokenizer_dir, new_tokenizer_type='wpe')
+        assert model.wer.wer_text_normalize is True
 
     @pytest.mark.with_downloads()
     @pytest.mark.skipif(

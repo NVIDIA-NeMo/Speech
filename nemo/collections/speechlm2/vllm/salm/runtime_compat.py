@@ -127,12 +127,20 @@ def _canonicalize_speechlm_parts(parts: Iterable[Any]) -> list[Any]:
     return [*audio_parts, {"type": "text", "text": canonical_text}]
 
 
-def _patch_speechlm_training_prompt_contract(chat_utils: Any) -> None:
-    """Install an idempotent, SpeechLM-only exact prompt adapter."""
-    original = getattr(chat_utils, "_parse_chat_message_content_parts", None)
+_LEGACY_PARSER_NAME = "_parse_chat_message_content_parts"
+_PUBLIC_PARSER_NAME = "parse_chat_message_content_parts"
+
+
+def _patch_speechlm_training_prompt_contract(chat_utils: Any, parser_name: str = _LEGACY_PARSER_NAME) -> None:
+    """Install an idempotent, SpeechLM-only exact prompt adapter.
+
+    ``parser_name`` is the attribute of ``chat_utils`` that vLLM's chat path
+    resolves the content-part parser through (see ``_locate_chat_parser``).
+    """
+    original = getattr(chat_utils, parser_name, None)
     if not callable(original):
         raise TypeError(
-            "Unsupported vLLM chat API: _parse_chat_message_content_parts is missing. "
+            f"Unsupported vLLM chat API: {parser_name} is missing. "
             "Update the NeMo SpeechLM compatibility adapter before serving."
         )
     if getattr(original, "_nemo_speechlm_exact_training_prompt", False):
@@ -176,14 +184,35 @@ def _patch_speechlm_training_prompt_contract(chat_utils: Any) -> None:
         )
 
     _parse_chat_message_content_parts._nemo_speechlm_exact_training_prompt = True
-    chat_utils._parse_chat_message_content_parts = _parse_chat_message_content_parts
+    setattr(chat_utils, parser_name, _parse_chat_message_content_parts)
 
 
-def install_prompt_contract() -> None:
-    """Install the SpeechLM-only vLLM chat rendering adapter."""
+def _locate_chat_parser() -> tuple[Any, str]:
+    """Return the module and attribute through which vLLM's chat path finds the content-part parser.
+
+    The parser keeps its signature across releases but has moved twice:
+
+    * vLLM 0.33 split ``vllm.renderers.chat_utils`` into a package and made the
+      parser public as ``chat_message.parse_chat_message_content_parts``;
+      ``parse_chat_message_content`` calls it as a global of ``chat_message``, so
+      that module is the one to patch (the package re-export is a separate name).
+    * vLLM 0.32 has ``vllm.renderers.chat_utils._parse_chat_message_content_parts``.
+    * Earlier releases have ``vllm.entrypoints.chat_utils._parse_chat_message_content_parts``.
+    """
+    try:
+        from vllm.renderers.chat_utils import chat_message  # vLLM >= 0.33
+    except ImportError:
+        chat_message = None
+    if callable(getattr(chat_message, _PUBLIC_PARSER_NAME, None)):
+        return chat_message, _PUBLIC_PARSER_NAME
+
     try:
         from vllm.renderers import chat_utils  # vLLM 0.32
     except ImportError:
         from vllm.entrypoints import chat_utils
+    return chat_utils, _LEGACY_PARSER_NAME
 
-    _patch_speechlm_training_prompt_contract(chat_utils)
+
+def install_prompt_contract() -> None:
+    """Install the SpeechLM-only vLLM chat rendering adapter."""
+    _patch_speechlm_training_prompt_contract(*_locate_chat_parser())

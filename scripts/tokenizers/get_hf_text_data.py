@@ -21,11 +21,11 @@ Usage:
 python get_hf_text_data.py --config-path="conf" --config-name="huggingface_data_tokenizer"
 ```
 
+Existing output files are removed before extraction; the configured filename is treated literally.
 Please refer to "conf/huggingface_data_tokenizer.yaml" for more details.
 """
 
 
-import os
 from itertools import repeat
 from multiprocessing import Pool
 from pathlib import Path
@@ -79,7 +79,7 @@ def main(cfg) -> None:
 
     if Path(cfg.output_file).exists():
         logging.info(f"Output file {cfg.output_file} already exists, removing it...")
-        os.system(f"rm {cfg.output_file}")
+        Path(cfg.output_file).unlink()
 
     for data_cfg in cfg.hf_data_cfg:
         if 'num_proc' in data_cfg and data_cfg.get('streaming', False):

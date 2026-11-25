@@ -25,6 +25,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 import torch
+import yaml
 from safetensors.torch import save_file
 
 FT = Path(__file__).resolve().parents[3] / "examples" / "speechlm2" / "finetuning"
@@ -48,6 +49,72 @@ def test_torchrun_uses_standalone_rendezvous():
     assert "--standalone" in cmd
     assert not any(c.startswith("--master_port") for c in cmd)
     assert cmd[-1] == "trainer.max_steps=5"
+
+
+PACKED_TE_CFG = {"model": {"use_nemo_automodel": True, "packed_sequences": True, "automodel_backend": {"attn": "te"}}}
+
+
+def write_cfg(tmp_path, cfg):
+    path = tmp_path / "ft.yaml"
+    path.write_text(yaml.safe_dump(cfg))
+    return path
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "model,overrides,capability,expected",
+    [
+        ({}, [], (12, 0), "0"),  # packed THD training on sm_120 needs flash attention
+        ({"automodel_backend": None}, [], (12, 0), "0"),  # attn defaults to te
+        ({}, [], (10, 3), None),  # other GPUs keep cuDNN fused attention
+        ({}, [], None, None),  # no GPU visible
+        ({"packed_sequences": False}, [], (12, 0), None),
+        ({"use_nemo_automodel": False}, [], (12, 0), None),  # the guard applies to SALMAutomodel only
+        ({"automodel_backend": {"attn": "sdpa"}}, [], (12, 0), None),
+        ({}, ["model.packed_sequences=false"], (12, 0), None),
+        ({"packed_sequences": False}, ["model.packed_sequences=true"], (12, 0), "0"),
+        # repeated overrides: the last one wins, as in Hydra
+        ({}, ["model.packed_sequences=false", "model.packed_sequences=true"], (12, 0), "0"),
+        ({}, ["model.packed_sequences=true", "model.packed_sequences=false"], (12, 0), None),
+        # an override of the parent mapping
+        ({}, ["model.automodel_backend={attn: sdpa}"], (12, 0), None),
+        ({"automodel_backend": {"attn": "sdpa"}}, ["model.automodel_backend={attn: te}"], (12, 0), "0"),
+        # interpolations are resolved as in training
+        ({}, ["model.automodel_backend.attn=${oc.env:SALM_FT_TEST_ATTN,te}"], (12, 0), "0"),
+        ({"automodel_backend": {"attn": "${oc.env:SALM_FT_TEST_ATTN,sdpa}"}}, [], (12, 0), None),
+        ({"packed_sequences": "${model.use_nemo_automodel}"}, [], (12, 0), "0"),
+    ],
+)
+def test_training_env_sets_nvte_fused_attn_for_packed_training_on_sm120(
+    model, overrides, capability, expected, monkeypatch, tmp_path
+):
+    rt = load("run_training")
+    monkeypatch.setattr(rt, "_device_capability", lambda: capability)
+    monkeypatch.delenv("SALM_FT_TEST_ATTN", raising=False)
+    cfg = {"model": {**PACKED_TE_CFG["model"], **model}}
+    env = rt.training_env(write_cfg(tmp_path, cfg), overrides, environ={"PATH": "/bin"})
+    assert env.get("NVTE_FUSED_ATTN") == expected
+    assert env["PATH"] == "/bin"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("user_value", ["0", "1", ""])
+def test_training_env_keeps_user_nvte_fused_attn(user_value, monkeypatch, tmp_path):
+    rt = load("run_training")
+    monkeypatch.setattr(rt, "_device_capability", lambda: pytest.fail("must not probe the GPU"))
+    env = rt.training_env(write_cfg(tmp_path, PACKED_TE_CFG), [], environ={"NVTE_FUSED_ATTN": user_value})
+    assert env["NVTE_FUSED_ATTN"] == user_value
+
+
+@pytest.mark.unit
+def test_training_env_starts_from_the_process_environment(monkeypatch, tmp_path):
+    rt = load("run_training")
+    monkeypatch.setattr(rt, "_device_capability", lambda: (12, 0))
+    monkeypatch.delenv("NVTE_FUSED_ATTN", raising=False)
+    monkeypatch.setenv("SALM_FT_TEST_VAR", "1")
+    env = rt.training_env(write_cfg(tmp_path, PACKED_TE_CFG), [])
+    assert env["NVTE_FUSED_ATTN"] == "0" and env["SALM_FT_TEST_VAR"] == "1"
+    assert "NVTE_FUSED_ATTN" not in rt.os.environ
 
 
 @pytest.mark.unit
@@ -540,9 +607,74 @@ def test_resolve_speculation_records_the_effective_settings(
 ):
     ev = load("vllm_task_eval")
     monkeypatch.setattr(ev, "speechlm_is_hybrid", lambda model: hybrid)
+    monkeypatch.setattr(ev, "speechlm_mtp_layers", lambda model: 1)
     args = Namespace(model="ckpt", spec_k=spec_k, score_labels=score_labels)
     ev.resolve_speculation(args)
     assert (args.spec_k, args.replayssm) == (expected_spec_k, expected_replayssm)
+
+
+def _write_salm_export(path, **extra):
+    """A minimal SALM HF export config (embedded Qwen2 backbone, so nothing is downloaded)."""
+    path.mkdir(parents=True, exist_ok=True)
+    cfg = {
+        "model_type": "nemo_speechlm",
+        "architectures": ["NeMoSpeechLMForConditionalGeneration"],
+        "pretrained_llm": "Qwen/Qwen3-1.7B",
+        "pretrained_asr": "nvidia/canary-1b-v2",
+        "audio_locator_tag": "<|audio|>",
+        "prompt_format": "qwen3",
+        "pretrained_weights": True,
+        "llm_config": {"model_type": "qwen2", "architectures": ["Qwen2ForCausalLM"], "vocab_size": 100},
+        **extra,
+    }
+    (path / "config.json").write_text(json.dumps(cfg))
+    return str(path)
+
+
+_MTP_ON = {"enabled": True, "num_nextn_predict_layers": 1, "hybrid_override_pattern": "*"}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "extra,expected",
+    [
+        ({"mtp": {"enabled": False, "num_nextn_predict_layers": 1}}, 0),  # salm_automodel.yaml default export
+        ({}, 0),  # no mtp block, no compute_mtp
+        ({"compute_mtp": False}, 0),
+        ({"mtp": _MTP_ON}, 1),
+    ],
+)
+def test_speechlm_mtp_layers_reads_the_export_config(tmp_path, extra, expected):
+    ev = load("vllm_task_eval")
+    assert ev.speechlm_mtp_layers(_write_salm_export(tmp_path / "ckpt", **extra)) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "spec_k,mtp,expected_spec_k",
+    [
+        (None, None, 0),  # default on a checkpoint without MTP heads: no speculation
+        (None, _MTP_ON, 2),  # default on a checkpoint with MTP heads: speculation
+        (0, _MTP_ON, 0),
+        (3, _MTP_ON, 3),
+        (0, None, 0),
+    ],
+)
+def test_resolve_speculation_enables_mtp_only_when_the_checkpoint_has_it(tmp_path, spec_k, mtp, expected_spec_k):
+    ev = load("vllm_task_eval")
+    model = _write_salm_export(tmp_path / "ckpt", mtp=mtp or {"enabled": False})
+    args = Namespace(model=model, spec_k=spec_k, score_labels=None)
+    ev.resolve_speculation(args)
+    assert args.spec_k == expected_spec_k
+    assert args.replayssm is False  # Qwen2 backbone is not hybrid
+
+
+@pytest.mark.unit
+def test_resolve_speculation_refuses_explicit_mtp_without_mtp_heads(tmp_path):
+    ev = load("vllm_task_eval")
+    model = _write_salm_export(tmp_path / "ckpt", mtp={"enabled": False})
+    with pytest.raises(SystemExit, match="has no MTP heads"):
+        ev.resolve_speculation(Namespace(model=model, spec_k=2, score_labels=None))
 
 
 @pytest.mark.unit

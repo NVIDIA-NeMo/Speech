@@ -28,6 +28,7 @@ from nemo.collections.asr.models import ASRModel, EncDecHybridRNNTCTCModel
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecodingConfig
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecodingConfig
 from nemo.collections.asr.parts.utils.asr_confidence_utils import get_confidence_aggregation_bank
+from nemo.collections.asr.parts.utils.eou_utils import EOB_STRING, EOU_STRING
 
 SUPPORTED_CONFIDENCE_AGGREGATORS = get_confidence_aggregation_bank()
 
@@ -42,6 +43,9 @@ class ASRInferenceWrapper:
         - get_vocabulary: Returns the vocabulary for the model.
         - get_subsampling_factor: Returns the subsampling factor for the model.
     """
+
+    # decoder used by the derived classes: 'ctc' or 'rnnt' (selects the decoding config of hybrid models)
+    decoder_type: str | None = None
 
     def __init__(
         self,
@@ -71,9 +75,13 @@ class ASRInferenceWrapper:
         self.asr_model_cfg = self.asr_model._cfg
         self.set_dither_to_zero()
         self.tokenizer = self.asr_model.tokenizer
+        self._check_no_restart_after_tokens()
 
         # post initialization steps that must be implemented in the derived classes
         self.__post_init__()
+
+        # after `__post_init__`, which checks that the model type matches the wrapper
+        self._check_not_end_of_utterance_model()
 
     @staticmethod
     def load_model(model_name: str, map_location: torch.device) -> ASRModel:
@@ -284,3 +292,36 @@ class ASRInferenceWrapper:
             (int) subsampling factor for the model.
         """
         raise NotImplementedError()
+
+    def _check_no_restart_after_tokens(self) -> None:
+        """
+        Raise if the pipeline decoding config or the model decoding config of an RNNT decoder sets
+        ``decoding.restart_after_tokens``, which the streaming pipelines do not support. For hybrid models used with
+        CTC decoding, the model ``decoding`` config belongs to the inactive RNNT decoder and is not checked.
+        """
+        model_decoding_cfg = self.asr_model_cfg.get('decoding', None) if self.decoder_type == 'rnnt' else None
+        for cfg in (self.decoding_cfg, model_decoding_cfg):
+            if getattr(cfg, 'restart_after_tokens', None):  # DictConfig or decoding config dataclass
+                raise NotImplementedError(
+                    "`decoding.restart_after_tokens` is not supported by the streaming inference pipelines. "
+                    + _RESTART_AFTER_TOKENS_ALTERNATIVES
+                )
+
+    def _check_not_end_of_utterance_model(self) -> None:
+        """
+        Raise for end-of-utterance models (with ``<EOU>``/``<EOB>`` tokens). They stop emitting tokens after the first
+        ``<EOU>`` unless decoding restarts after it, so the pipelines would silently drop the rest of the audio.
+        """
+        eou_tokens = [token for token in (EOU_STRING, EOB_STRING) if token in self.get_vocabulary()]
+        if eou_tokens:
+            raise NotImplementedError(
+                f"End-of-utterance models (with {', '.join(eou_tokens)} in the vocabulary) are not supported by the "
+                "streaming inference pipelines: they stop emitting tokens after the first end of utterance, so the "
+                "rest of the audio would not be transcribed. " + _RESTART_AFTER_TOKENS_ALTERNATIVES
+            )
+
+
+_RESTART_AFTER_TOKENS_ALTERNATIVES = (
+    "Use `transcribe()` with `decoding.restart_after_tokens` or `speech_to_text_cache_aware_streaming_infer.py` "
+    "with `rnnt_decoding.restart_after_tokens` instead (see `examples/asr/asr_eou/README.md`)."
+)

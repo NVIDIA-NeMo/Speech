@@ -13,11 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import json
 import os
 import tempfile
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -31,6 +32,12 @@ from nemo.collections.asr.one_logger import ASRThroughputPolicy
 from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment, ChannelSelectorType
 from nemo.collections.asr.parts.utils import manifest_utils
+from nemo.collections.asr.parts.utils.longform_inference import (
+    ChunkBatches,
+    ChunkedAudioDataset,
+    ChunkingConfig,
+    collate_audio_chunks,
+)
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.common.data.utils import move_data_to_device
 from nemo.lightning.speech_throughput import register_throughput_policy
@@ -55,6 +62,7 @@ class InternalTranscribeConfig:
     # Scratch space
     temp_dir: Optional[str] = None
     manifest_filepath: Optional[str] = None
+    chunk_decoding: Optional[Any] = None
 
 
 @dataclass
@@ -67,6 +75,8 @@ class TranscribeConfig:
     augmentor: Optional[DictConfig] = None
     timestamps: Optional[bool] = None  # returns timestamps for each word and segments if model supports punctuations
     verbose: bool = True
+    # Opt-in offline chunk planning and output selection. Keyword-only, so positional fields keep their order.
+    chunking: Optional[ChunkingConfig] = field(default=None, kw_only=True)
 
     # Utility
     partial_hypothesis: Optional[List[Any]] = None
@@ -211,6 +221,7 @@ class TranscriptionMixin(ABC):
         verbose: bool = True,
         timestamps: Optional[bool] = None,
         override_config: Optional[TranscribeConfig] = None,
+        chunking: Optional[ChunkingConfig] = None,
         **config_kwargs,
     ) -> GenericTranscriptionType:
         """
@@ -239,6 +250,8 @@ class TranscriptionMixin(ABC):
             override_config: (Optional[TranscribeConfig]) override transcription config pre-defined by the user.
                 **Note**: All other arguments in the function will be ignored if override_config is passed.
                 You should call this argument as `model.transcribe(audio, override_config=TranscribeConfig(...))`.
+            chunking: Optional offline chunk plan. Supported models select output from disjoint time regions.
+                With override_config, set override_config.chunking instead.
             **config_kwargs: (Optional[Dict]) additional arguments to override the default TranscribeConfig.
                 Note: If override_config is passed, these arguments will be ignored.
 
@@ -267,6 +280,7 @@ class TranscriptionMixin(ABC):
                 augmentor=augmentor,
                 verbose=verbose,
                 timestamps=timestamps,
+                chunking=chunking,
                 **config_kwargs,
             )
         else:
@@ -352,6 +366,10 @@ class TranscriptionMixin(ABC):
         A generator version of `transcribe` function.
         """
 
+        if override_config is not None and getattr(override_config, 'chunking', None) is not None:
+            yield from self._transcribe_chunked_generator(audio, override_config)
+            return
+
         if override_config is None:
             override_config = TranscribeConfig()
 
@@ -411,6 +429,121 @@ class TranscriptionMixin(ABC):
         finally:
             # set mode back to its original value
             self._transcribe_on_end(transcribe_cfg)
+
+    def _transcribe_chunk_validate(self, trcfg):
+        """Validate model support before loading audio or changing model state."""
+        raise NotImplementedError(f'{type(self).__name__} does not support planned chunk transcription.')
+
+    def _transcribe_chunk_batch(self, audio, lengths, cuts, trcfg):
+        """Adapt waveform tensors and optional Lhotse cuts to the model input contract."""
+        return audio, lengths, None, None
+
+    def _transcribe_chunk_outputs(self, outputs, chunks, frame_samples, trcfg):
+        """Select one owned output per chunk in the model's native representation."""
+        raise NotImplementedError
+
+    def _transcribe_chunk_finalize(self, parts, chunks, frame_samples, trcfg):
+        """Assemble one source result and compute its final text and metadata."""
+        raise NotImplementedError
+
+    @torch.inference_mode()
+    def _transcribe_chunked_generator(self, audio, config):
+        """Batch independent read intervals and emit each complete utterance in input order."""
+        if isinstance(audio, DataLoader):
+            raise ValueError('Planned chunking requires files, a manifest, or waveforms, not an external DataLoader.')
+        trcfg = copy.deepcopy(config)
+        if isinstance(trcfg.chunking, (dict, DictConfig)):
+            trcfg.chunking = ChunkingConfig(**trcfg.chunking)
+        if not isinstance(trcfg.chunking, ChunkingConfig):
+            raise ValueError('chunking must be a ChunkingConfig or a mapping with chunk_size and context_size.')
+        self._transcribe_chunk_validate(trcfg)
+        if trcfg.batch_size <= 0:
+            raise ValueError('batch_size must be positive.')
+        if trcfg.augmentor is not None or trcfg.partial_hypothesis:
+            raise ValueError('Planned chunking does not accept augmentations or partial hypotheses.')
+        # A model's legacy chunker must not run at the same time as the shared chunk plan.
+        if hasattr(trcfg, 'enable_chunking'):
+            trcfg.enable_chunking = False
+        trcfg._internal = type(trcfg._internal)() if trcfg._internal is not None else InternalTranscribeConfig()
+        sample_rate = int(self.cfg.sample_rate)
+        frame_size = sample_rate * self.cfg.preprocessor.window_stride * self.encoder.subsampling_factor
+        frame_samples = round(frame_size)
+        if frame_samples <= 0 or abs(frame_size - frame_samples) > 1e-5:
+            raise ValueError('Chunked transcription requires an integral encoder frame size in audio samples.')
+        if isinstance(audio, (str, np.ndarray, torch.Tensor)):
+            audio = [audio]
+        else:
+            audio = list(audio)
+        if not audio:
+            raise ValueError('Input audio is empty.')
+        try:
+            self._transcribe_on_begin(audio, trcfg)
+            with tempfile.TemporaryDirectory() as tmpdir:
+                trcfg._internal.temp_dir = tmpdir
+                tensors = None
+                if isinstance(audio[0], str):
+                    from lhotse.lazy import LazyJsonlIterator
+
+                    from nemo.collections.common.data.lhotse.nemo_adapters import LazyNeMoIterator
+                    from nemo.collections.common.parts.preprocessing.manifest import get_full_path
+
+                    if len(audio) == 1 and audio[0].endswith(('.json', '.jsonl')):
+                        trcfg._internal.manifest_filepath = audio[0]
+                        audio = LazyJsonlIterator(audio[0])
+                        audio = (
+                            dict(
+                                entry,
+                                audio_filepath=get_full_path(
+                                    entry['audio_filepath'], manifest_file=trcfg._internal.manifest_filepath
+                                ),
+                            )
+                            for entry in audio
+                        )
+                    ds_config = self._transcribe_input_manifest_processing(audio, tmpdir, trcfg)
+                    sources = LazyNeMoIterator(
+                        os.path.join(tmpdir, 'manifest.json'),
+                        text_field=ds_config.get('text_field', 'text'),
+                        lang_field=ds_config.get('lang_field', 'lang'),
+                    )
+                elif all(isinstance(a, (np.ndarray, torch.Tensor)) for a in audio):
+                    sources = tensors = audio
+                else:
+                    raise ValueError('Provide a homogeneous list of file paths or mono waveforms.')
+                # Plan in the main process; workers only load the audio of their batches.
+                loader = DataLoader(
+                    ChunkedAudioDataset(tensors, sample_rate, trcfg.channel_selector),
+                    batch_sampler=ChunkBatches(sources, sample_rate, trcfg.chunking, frame_samples, trcfg.batch_size),
+                    num_workers=trcfg.num_workers or 0,
+                    collate_fn=collate_audio_chunks,
+                )
+                pending = {}
+                saw_chunk = False
+                for waveforms, lengths, indices, chunks, cuts in tqdm(
+                    loader, disable=not trcfg.verbose, desc='Transcribing chunks'
+                ):
+                    saw_chunk = True
+                    # Right padding permits feature extraction on sub-second sources without
+                    # shifting their times. Semantic lengths still exclude padding.
+                    if waveforms.shape[1] < sample_rate:
+                        waveforms = torch.nn.functional.pad(waveforms, (0, sample_rate - waveforms.shape[1]))
+                    waveforms, lengths = move_data_to_device((waveforms, lengths), trcfg._internal.device)
+                    batch = self._transcribe_chunk_batch(waveforms, lengths, cuts, trcfg)
+                    outputs = self._transcribe_forward(batch, trcfg)
+                    selected = self._transcribe_chunk_outputs(outputs, chunks, frame_samples, trcfg)
+                    if len(selected) != len(chunks):
+                        raise RuntimeError('Chunk output selection must return one result per input chunk.')
+                    for source_idx, chunk, part in zip(indices, chunks, selected):
+                        parts, plan = pending.setdefault(source_idx, ([], []))
+                        parts.append(part)
+                        plan.append(chunk)
+                        if chunk.is_last:
+                            yield [self._transcribe_chunk_finalize(parts, plan, frame_samples, trcfg)]
+                            del pending[source_idx]
+                    del waveforms, lengths, batch, outputs, selected
+                if not saw_chunk:
+                    raise ValueError('Input manifest contains no audio entries.')
+        finally:
+            self._transcribe_on_end(trcfg)
 
     """
     Transcribe Execution Flow

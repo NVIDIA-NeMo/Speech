@@ -28,11 +28,11 @@ head runs vLLM's Triton MoE backend, which keeps the expert weights in the unpac
 read; other backends may repack them.
 
 The output, ``{"encoder": {"layers.N.attn.w_qkv": range, ...}, "mtp": {"model.layers.N.eh_proj": range, ...}}``,
-is the input of ``quantize_encoder_mtp_fp8.py``. Needs vLLM 0.32 and the SpeechLM plugin with
+is the input of ``quantize_encoder_mtp_fp8.py``. Needs vLLM 0.33 and the SpeechLM plugin with
 NVIDIA-NeMo/Speech#16341.
 
 Example (inside the vLLM image with NeMo on PYTHONPATH):
-    VLLM_PLUGINS=nemo_speechlm VLLM_WORKER_MULTIPROC_METHOD=spawn python calibrate_activations.py \\
+    VLLM_PLUGINS=nemo_speechlm python calibrate_activations.py \\
         --checkpoint /models/ckpt-nvfp4-bf16heads --manifest calib.jsonl --kv-cache-dtype fp8 --output ranges.json
 """
 
@@ -183,7 +183,7 @@ def main() -> None:
 
     # collective_rpc sends a Python function to the engine process, which vLLM allows only with this set.
     os.environ.setdefault("VLLM_ALLOW_INSECURE_SERIALIZATION", "1")
-    # The observers reach the MTP draft as the V1 model runner's ``drafter``; vLLM 0.32 defaults to Model Runner V2,
+    # The observers reach the MTP draft as the V1 model runner's ``drafter``; vLLM 0.33 defaults to Model Runner V2,
     # which holds the draft elsewhere.
     os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "0")
     from vllm import LLM, SamplingParams

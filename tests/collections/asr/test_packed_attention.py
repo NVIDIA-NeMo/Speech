@@ -1,0 +1,1485 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Attention over packed sequences: the document block mask, the Triton kernel and the Transformer-XL attention."""
+
+import pytest
+import torch
+import torch._dynamo
+from torch.nn.attention.flex_attention import create_block_mask, flex_attention
+
+from nemo.collections.asr.parts.packed_sequence import pack_encoder_output, packed_sequence_ids
+from nemo.collections.asr.parts.submodules import packed_attention as packed_attention_module
+from nemo.collections.asr.parts.submodules.multi_head_attention import (
+    RelPositionalEncoding,
+    RelPositionMultiHeadAttention,
+    RelPositionMultiHeadAttentionLongformer,
+)
+from nemo.collections.asr.parts.submodules.packed_attention import (
+    PackedAttentionContext,
+    document_block_mask,
+    packed_attention,
+    packed_cross_attention,
+)
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE
+
+if TRITON_AVAILABLE:
+    import triton
+    import triton.language as tl
+
+    from nemo.collections.asr.parts.triton import rel_pos_attention as kernel_module
+    from nemo.collections.asr.parts.triton.rel_pos_attention import _keep as _kernel_keep
+
+    @triton.jit
+    def _keep_mask_kernel(
+        Mask, Seed, dropout_p, total, max_seqlen, stride_mt, stride_mh, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr
+    ):
+        rows = tl.program_id(0) * BLOCK_M + tl.arange(0, BLOCK_M)
+        h = tl.program_id(1)
+        offs_n = tl.arange(0, BLOCK_N)
+        keep = _kernel_keep(Seed, h, rows, offs_n, max_seqlen, dropout_p)
+        ptrs = Mask + rows[:, None] * stride_mt + h * stride_mh + offs_n[None, :]
+        tl.store(ptrs, keep.to(tl.int8), mask=(rows < total)[:, None] & (offs_n < max_seqlen)[None, :])
+
+
+requires_kernel = pytest.mark.skipif(
+    not (torch.cuda.is_available() and TRITON_AVAILABLE), reason="requires CUDA and Triton"
+)
+
+
+def _keep_mask(total, heads, max_seqlen, *, dropout_p, dropout_seed):
+    """The (T_total, H, max_seqlen) mask of attention weights the kernels keep under dropout, from the kernels' hash."""
+    mask = torch.zeros((total, heads, max_seqlen), dtype=torch.int8, device="cuda")
+    _keep_mask_kernel[(triton.cdiv(total, 32), heads)](
+        mask,
+        dropout_seed,
+        dropout_p,
+        total,
+        max_seqlen,
+        mask.stride(0),
+        mask.stride(1),
+        BLOCK_M=32,
+        BLOCK_N=triton.next_power_of_2(max_seqlen),
+    )
+    return mask.bool()
+
+
+def _valid_frames(padded, lengths):
+    """Rows of a padded (B, T, D) batch inside the lengths, in packing order."""
+    mask = torch.arange(padded.shape[1], device=padded.device)[None, :] < lengths[:, None]
+    return padded[mask]
+
+
+@pytest.fixture(autouse=True)
+def reset_dynamo_after_each_test():
+    """Leave no compiled state behind for the suites that run after this module.
+
+    Dynamo keeps the entries of a compiled function on its code object and counts them against the recompile limit;
+    the kernels these tests compile would otherwise stay in the process until a later compile hits that limit
+    and silently runs eagerly (the online CUDA-graph test of the parallel expert encoder then saw dense FlexAttention).
+    """
+    yield
+    torch._dynamo.reset()
+
+
+@pytest.fixture
+def flex_attention_only(monkeypatch):
+    """Route rel_pos attention to FlexAttention, the path without the Triton kernel."""
+    monkeypatch.setattr(packed_attention_module, "TRITON_AVAILABLE", False)
+
+
+def _rel_pos_inputs(context, heads, head_dim, device="cuda", dtype=torch.float32, pos_scale=1.0):
+    """Random q, k, v, pos_query and pos_emb for the context, as leaves."""
+    total, max_len = context.total_tokens, context.rel_pos_max_seqlen
+    q, k, v, pos_query = (
+        torch.randn(total, heads, head_dim, device=device, dtype=dtype, requires_grad=True) for _ in range(4)
+    )
+    pos_emb = (torch.randn(2 * max_len - 1, heads, head_dim, device=device, dtype=dtype) * pos_scale).requires_grad_()
+    return q, k, v, pos_query, pos_emb
+
+
+class TestDocumentBlockMask:
+    @pytest.mark.unit
+    @pytest.mark.parametrize("lengths", [[5, 3, 7], [300, 1, 129, 128, 40], [257]])
+    def test_matches_dense_document_mask(self, lengths):
+        lengths = torch.tensor(lengths)
+        packed = pack_encoder_output(torch.zeros(len(lengths), int(lengths.max()), 1), lengths)
+        sequence_ids = packed_sequence_ids(packed)
+        total = packed.total_tokens
+        block_mask = document_block_mask(sequence_ids, packed.cu_seqlens, total)
+
+        padded_ids = torch.full((-(-total // 128) * 128,), -1)
+        padded_ids[:total] = sequence_ids
+
+        def mask_mod(b, h, q_idx, kv_idx):
+            return padded_ids[q_idx] == padded_ids[kv_idx]
+
+        reference = create_block_mask(mask_mod, B=None, H=None, Q_LEN=total, KV_LEN=total, device="cpu")
+        torch.testing.assert_close(block_mask.to_dense(), reference.to_dense())
+        assert block_mask.full_kv_num_blocks is not None
+        if max(lengths.tolist()) >= 256:
+            assert int(block_mask.full_kv_num_blocks.sum()) > 0
+
+    @pytest.mark.unit
+    def test_padded_token_axis_keeps_the_tail_masked(self):
+        """The partially filled last block stays partial, so pad keys never reach the last utterance's queries."""
+        lengths = torch.tensor([300, 7, 150, 1, 260])
+        packed = pack_encoder_output(torch.zeros(len(lengths), 300, 1), lengths)
+        sequence_ids = packed_sequence_ids(packed)
+        total, padded_total = packed.total_tokens, 1024
+        block_mask = document_block_mask(sequence_ids, packed.cu_seqlens, total, padded_total_tokens=padded_total)
+        padded_ids = torch.full((padded_total,), -1)
+        padded_ids[:total] = sequence_ids
+
+        def mask_mod(b, h, q_idx, kv_idx):
+            # the tail queries attend nothing, as the skipped tail blocks of the built mask
+            return (padded_ids[q_idx] == padded_ids[kv_idx]) & (padded_ids[q_idx] >= 0)
+
+        reference = create_block_mask(mask_mod, B=None, H=None, Q_LEN=padded_total, KV_LEN=padded_total, device="cpu")
+        torch.testing.assert_close(block_mask.to_dense(), reference.to_dense())
+        last_real_block = -(-total // 128) - 1
+        assert int(block_mask.full_kv_num_blocks[..., last_real_block].sum()) == 0
+
+    @pytest.mark.unit
+    def test_context_from_lengths(self):
+        context = PackedAttentionContext.from_lengths(torch.tensor([3, 0, 2]))
+        assert context.total_tokens == 5 and context.max_seqlen == 3
+        assert context.cu_seqlens.tolist() == [0, 3, 3, 5]
+        assert context.position_ids.tolist() == [0, 1, 2, 0, 1]
+        assert context.sequence_slices == ((0, 3), (3, 3), (3, 5))
+        assert context.seq_starts.tolist() == [0, 3, 3] and context.seq_lens.tolist() == [3, 0, 2]
+        assert context.seq_starts.dtype == torch.int32 and context.seq_lens.dtype == torch.int32
+
+
+def _key_window(name, max_seqlen, device="cpu"):
+    """Key windows by query position: the first and the last key position, None for a side without a limit."""
+    positions = torch.arange(max_seqlen, device=device)
+    chunk_start = positions // 100 * 100
+    return {
+        "band": (positions - 40, positions + 13),
+        "wide_band": (positions - 300, positions + 300),
+        "left_only": (positions - 70, None),
+        "right_only": (None, positions + 5),
+        "chunks": (chunk_start - 200, chunk_start + 99),
+        "own_token": (positions, positions),
+    }[name]
+
+
+def _dense_window_attention(q, k, v, lengths, key_window, rel_pos_bias=None):
+    """Attention one query at a time over the keys of its window, written out with loops."""
+    first_key, last_key = key_window
+    outputs, offset = [], 0
+    scale = q.shape[-1] ** -0.5
+    for length in lengths.tolist():
+        for i in range(length):
+            lo = 0 if first_key is None else max(int(first_key[i]), 0)
+            hi = length - 1 if last_key is None else min(int(last_key[i]), length - 1)
+            keys = slice(offset + lo, offset + hi + 1)
+            scores = torch.einsum("hd,jhd->hj", q[offset + i], k[keys]) * scale
+            if rel_pos_bias is not None:
+                center = (rel_pos_bias.shape[-1] - 1) // 2
+                rel = center - i + torch.arange(lo, hi + 1, device=q.device)
+                scores = scores + rel_pos_bias[offset + i][:, rel] * scale
+            outputs.append(torch.einsum("hj,jhd->hd", torch.softmax(scores, dim=-1), v[keys]))
+        offset += length
+    return torch.stack(outputs)
+
+
+class TestPackedAttentionKeyWindow:
+    """A limited attention context: the keys of every token narrowed to a window inside its utterance."""
+
+    @pytest.mark.unit
+    def test_key_spans_stay_inside_the_utterance_and_hold_the_token(self):
+        lengths = torch.tensor([5, 0, 3])
+        packed = pack_encoder_output(torch.zeros(3, 5, 1), lengths)
+        positions = torch.arange(5)
+        context = PackedAttentionContext(packed, key_window=(positions - 1, positions + 2))
+        start, end = context.key_spans()
+        assert start.tolist() == [0, 0, 1, 2, 3, 5, 5, 6]
+        assert end.tolist() == [3, 4, 5, 5, 5, 8, 8, 8]
+        one_sided = PackedAttentionContext(packed, key_window=(None, positions))
+        assert [t.tolist() for t in one_sided.key_spans()] == [[0, 0, 0, 0, 0, 5, 5, 5], [1, 2, 3, 4, 5, 6, 7, 8]]
+        # a window that leaves its own token out is widened to it
+        beside = PackedAttentionContext(packed, key_window=(positions + 1, positions + 1))
+        assert [t.tolist() for t in beside.key_spans()] == [[0, 1, 2, 3, 4, 5, 6, 7], [2, 3, 4, 5, 5, 7, 8, 8]]
+        whole = PackedAttentionContext(packed)
+        assert whole.key_window is None
+        assert [t.tolist() for t in whole.key_spans()] == [[0, 0, 0, 0, 0, 5, 5, 5], [5, 5, 5, 5, 5, 8, 8, 8]]
+        assert PackedAttentionContext(packed, key_window=(None, None)).key_window is None
+        with pytest.raises(ValueError, match="key_window bounds must have shape"):
+            PackedAttentionContext(packed, key_window=(torch.arange(8), None))
+        with pytest.raises(TypeError, match="integer tensors"):
+            PackedAttentionContext(packed, key_window=(positions.double(), None))
+
+    @pytest.mark.unit
+    def test_bias_narrower_than_the_utterances_needs_a_two_sided_window(self):
+        packed = pack_encoder_output(torch.zeros(2, 60, 1), torch.tensor([60, 20]))
+        positions = torch.arange(60)
+        q = torch.randn(80, 2, 4)
+        bias = torch.randn(80, 2, 7)
+        for key_window in (None, (positions - 3, None), (None, positions + 3)):
+            with pytest.raises(ValueError, match="The position term covers 7 relative positions"):
+                packed_attention(q, q, q, PackedAttentionContext(packed, key_window=key_window), rel_pos_bias=bias)
+        context = PackedAttentionContext(packed, key_window=(positions - 3, positions + 3))
+        assert packed_attention(q, q, q, context, rel_pos_bias=bias).shape == q.shape
+
+    @pytest.mark.unit
+    def test_local_attention_checks_its_window_and_position_table(self):
+        attention = RelPositionMultiHeadAttentionLongformer(
+            n_head=2, n_feat=8, dropout_rate=0.0, pos_bias_u=None, pos_bias_v=None, att_context_size=[4, 4]
+        )
+        packed = pack_encoder_output(torch.randn(2, 40, 8), torch.tensor([40, 9]))
+        positions = torch.arange(40)
+        context = PackedAttentionContext(packed, key_window=(positions - 4, positions + 4))
+        assert attention.forward_packed(packed.data, context, pos_emb=torch.randn(1, 9, 8)).shape == (49, 8)
+        with pytest.raises(ValueError, match="needs pos_emb of 9 relative positions, got 13"):
+            attention.forward_packed(packed.data, context, pos_emb=torch.randn(1, 13, 8))
+        with pytest.raises(ValueError, match="needs the key window"):
+            attention.forward_packed(packed.data, PackedAttentionContext(packed), pos_emb=torch.randn(1, 9, 8))
+        with pytest.raises(ValueError, match="needs the key window"):
+            one_sided = PackedAttentionContext(packed, key_window=(positions - 4, None))
+            attention.forward_packed(packed.data, one_sided, pos_emb=torch.randn(1, 9, 8))
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("window", ["band", "wide_band", "left_only", "right_only", "chunks", "own_token"])
+    @pytest.mark.parametrize("lengths", [[1000, 1, 129, 0, 128, 40], [257]])
+    def test_block_mask_matches_dense_window_mask(self, lengths, window):
+        lengths = torch.tensor(lengths)
+        packed = pack_encoder_output(torch.zeros(len(lengths), int(lengths.max()), 1), lengths)
+        context = PackedAttentionContext(packed, key_window=_key_window(window, packed.max_seqlen))
+        total, padded_total = context.total_tokens, context.padded_total_tokens
+        start, end = context.key_spans()
+        starts = torch.full((padded_total,), padded_total)
+        starts[:total] = start
+        ends = torch.zeros(padded_total, dtype=torch.int64)
+        ends[:total] = end
+
+        def mask_mod(b, h, q_idx, kv_idx):
+            return (kv_idx >= starts[q_idx]) & (kv_idx < ends[q_idx])
+
+        reference = create_block_mask(mask_mod, B=None, H=None, Q_LEN=padded_total, KV_LEN=padded_total, device="cpu")
+        block_mask = context.block_mask()
+        torch.testing.assert_close(block_mask.to_dense(), reference.to_dense())
+
+        document = PackedAttentionContext(packed).block_mask()
+        blocks = int(block_mask.kv_num_blocks.sum() + block_mask.full_kv_num_blocks.sum())
+        document_blocks = int(document.kv_num_blocks.sum() + document.full_kv_num_blocks.sum())
+        assert blocks <= document_blocks
+        if window in ("band", "own_token") and max(lengths.tolist()) >= 1000:
+            # the blocks outside the window are skipped, not evaluated
+            assert blocks < document_blocks / 2
+        if window == "wide_band" and max(lengths.tolist()) >= 1000:
+            assert int(block_mask.full_kv_num_blocks.sum()) > 0
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("window", ["band", "left_only", "right_only", "chunks", "own_token"])
+    @pytest.mark.parametrize("bias_width", [None, "utterance", "window"])
+    def test_reference_path_attends_inside_the_window(self, window, bias_width):
+        """Outputs and gradients against attention written out per query; a bias as wide as the window suffices."""
+        if bias_width == "window" and window != "band":
+            pytest.skip("a bias narrower than the utterance needs a window bounded on both sides")
+        torch.manual_seed(1)
+        lengths = torch.tensor([150, 1, 0, 60])
+        packed = pack_encoder_output(torch.zeros(4, 150, 1), lengths)
+        key_window = _key_window(window, packed.max_seqlen)
+        context = PackedAttentionContext(packed, key_window=key_window)
+        total = context.total_tokens
+        q, k, v = (torch.randn(total, 2, 4, dtype=torch.float64, requires_grad=True) for _ in range(3))
+        bias = None
+        if bias_width is not None:
+            reach = 150 if bias_width == "utterance" else 41
+            bias = torch.randn(total, 2, 2 * reach - 1, dtype=torch.float64, requires_grad=True)
+        inputs = [t for t in (q, k, v, bias) if t is not None]
+
+        out = packed_attention(q, k, v, context, rel_pos_bias=bias)
+        grads = torch.autograd.grad(out.square().sum(), inputs)
+        reference = _dense_window_attention(q, k, v, lengths, key_window, rel_pos_bias=bias)
+        reference_grads = torch.autograd.grad(reference.square().sum(), inputs)
+        torch.testing.assert_close(out, reference)
+        for grad, reference_grad in zip(grads, reference_grads):
+            torch.testing.assert_close(grad, reference_grad)
+
+    @pytest.mark.unit
+    def test_empty_batch_keeps_gradients(self):
+        packed = pack_encoder_output(torch.zeros(2, 0, 1), torch.tensor([0, 0]))
+        empty = torch.empty(0, dtype=torch.int64)
+        context = PackedAttentionContext(packed, key_window=(empty, empty))
+        q = torch.randn(0, 2, 4, requires_grad=True)
+        out = packed_attention(q, q, q, context)
+        out.sum().backward()
+        assert out.shape == (0, 2, 4) and q.grad is not None
+
+    @pytest.mark.unit
+    @pytest.mark.gpu
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA FlexAttention")
+    @pytest.mark.parametrize("window", ["band", "wide_band", "left_only", "right_only", "chunks", "own_token"])
+    @pytest.mark.parametrize("with_bias", [False, True], ids=["no_bias", "bias"])
+    def test_flex_attention_matches_reference_on_cuda(self, window, with_bias):
+        """Utterances over several blocks of 128 tokens, of one token and of none; outputs and all gradients."""
+        torch.manual_seed(0)
+        lengths = torch.tensor([1000, 1, 300, 0, 129], device="cuda")
+        packed = pack_encoder_output(torch.zeros(5, 1000, 1, device="cuda"), lengths)
+        context = PackedAttentionContext(packed, key_window=_key_window(window, packed.max_seqlen, device="cuda"))
+        total, heads, head_dim = packed.total_tokens, 2, 32
+        inputs = [torch.randn(total, heads, head_dim, device="cuda", requires_grad=True) for _ in range(3)]
+        bias = None
+        if with_bias:
+            bias = torch.randn(total, heads, 2 * packed.max_seqlen - 1, device="cuda", requires_grad=True)
+            inputs.append(bias)
+
+        out = packed_attention(*inputs[:3], context, rel_pos_bias=bias)
+        grads = torch.autograd.grad(out.square().sum(), inputs)
+        reference = packed_attention_module._reference_packed_attention(
+            *inputs[:3], context, rel_pos_bias=bias, dropout_p=0.0, scale=head_dim**-0.5
+        )
+        reference_grads = torch.autograd.grad(reference.square().sum(), inputs)
+        torch.testing.assert_close(out, reference, atol=1e-4, rtol=1e-4)
+        for grad, reference_grad in zip(grads, reference_grads):
+            torch.testing.assert_close(grad, reference_grad, atol=1e-3, rtol=1e-3)
+
+    @pytest.mark.unit
+    @pytest.mark.gpu
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA FlexAttention")
+    @pytest.mark.parametrize("dtype, tolerance", [(torch.float16, 4e-3), (torch.bfloat16, 2e-2)], ids=["fp16", "bf16"])
+    def test_half_precision_window_runs_flex_attention_not_flash(self, dtype, tolerance, monkeypatch):
+        """Variable-length FlashAttention knows no window, so bias-free half precision takes FlexAttention too."""
+
+        def no_flash_attention(queries):
+            raise AssertionError("variable-length FlashAttention cannot express a key window")
+
+        monkeypatch.setattr(packed_attention_module, "_flash_attention_varlen", no_flash_attention)
+        torch.manual_seed(0)
+        lengths = torch.tensor([127, 0, 128, 129, 300, 1], device="cuda")
+        packed = pack_encoder_output(torch.zeros(6, 300, 1, device="cuda"), lengths)
+        context = PackedAttentionContext(packed, key_window=_key_window("band", packed.max_seqlen, device="cuda"))
+        q, k, v = (torch.randn(context.total_tokens, 2, 64, device="cuda", dtype=dtype) for _ in range(3))
+        upstream = torch.randn(context.total_tokens, 2, 64, device="cuda", dtype=dtype)
+
+        inputs = [t.detach().clone().requires_grad_() for t in (q, k, v)]
+        out = packed_attention(*inputs, context)
+        out.backward(upstream)
+        reference_inputs = [t.detach().float().requires_grad_() for t in (q, k, v)]
+        reference = packed_attention_module._reference_packed_attention(
+            *reference_inputs, context, rel_pos_bias=None, dropout_p=0.0, scale=64**-0.5
+        )
+        reference.backward(upstream.float())
+        torch.testing.assert_close(out.float(), reference, atol=tolerance, rtol=tolerance)
+        for value, reference_value in zip(inputs, reference_inputs):
+            torch.testing.assert_close(value.grad.float(), reference_value.grad, atol=tolerance, rtol=tolerance)
+
+    @pytest.mark.unit
+    @pytest.mark.gpu
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA FlexAttention")
+    def test_dropout_with_a_window_raises_on_cuda(self):
+        lengths = torch.tensor([40, 20], device="cuda")
+        packed = pack_encoder_output(torch.zeros(2, 40, 1, device="cuda"), lengths)
+        context = PackedAttentionContext(packed, key_window=_key_window("band", 40, device="cuda"))
+        q = torch.randn(60, 2, 64, device="cuda", dtype=torch.bfloat16)
+        with pytest.raises(NotImplementedError, match="limited attention context"):
+            packed_attention(q, q, q, context, dropout_p=0.1)
+
+
+class TestPackedAttentionKernelShapes:
+    """The shapes the compiled FlexAttention kernels see: powers of two from the padding floors, few per run."""
+
+    @pytest.mark.unit
+    def test_padded_sizes_are_powers_of_two_from_the_floors(self):
+        contexts = [PackedAttentionContext.from_lengths(torch.tensor([n])) for n in (1, 4096, 4097, 70000)]
+        assert [context.padded_total_tokens for context in contexts] == [4096, 4096, 8192, 131072]
+        contexts = [PackedAttentionContext.from_lengths(torch.tensor([n])) for n in (1, 128, 129, 500)]
+        assert [context.padded_max_seqlen for context in contexts] == [128, 128, 256, 512]
+        context = PackedAttentionContext.from_lengths(torch.tensor([300, 7]))
+        assert context.bias_rows().tolist() == list(range(307)) + [306] * (4096 - 307)
+
+    @pytest.mark.unit
+    @pytest.mark.gpu
+    def test_rel_pos_table_length_follows_the_backend(self, monkeypatch):
+        """FlexAttention needs the rounded length, the Triton kernel the longest utterance; the CPU runs neither."""
+        context = PackedAttentionContext.from_lengths(torch.tensor([300, 7]))
+        assert not context.rel_pos_kernel and context.rel_pos_max_seqlen == 512
+        if torch.cuda.is_available():
+            context = PackedAttentionContext.from_lengths(torch.tensor([300, 7], device="cuda"))
+            assert context.rel_pos_kernel == TRITON_AVAILABLE
+            assert context.rel_pos_max_seqlen == (300 if TRITON_AVAILABLE else 512)
+            monkeypatch.setattr(packed_attention_module, "TRITON_AVAILABLE", False)
+            context = PackedAttentionContext.from_lengths(torch.tensor([300, 7], device="cuda"))
+            assert not context.rel_pos_kernel and context.rel_pos_max_seqlen == 512
+            # an empty batch keeps a one-row table for the kernel
+            monkeypatch.setattr(packed_attention_module, "TRITON_AVAILABLE", True)
+            context = PackedAttentionContext.from_lengths(torch.tensor([0, 0], device="cuda"))
+            assert context.rel_pos_kernel and context.rel_pos_max_seqlen == 1
+
+    @pytest.mark.unit
+    def test_kernel_shapes_of_a_run_stay_below_the_recompile_limit(self):
+        """Batches of any size up to 150,000 tokens with utterances up to 100,000 frames share few shapes."""
+        shapes = set()
+        for total in range(1, 150_000, 1_009):
+            longest = min(total, 100_000)
+            context = PackedAttentionContext.from_lengths(torch.tensor([longest, total - longest]))
+            shapes.add((context.padded_total_tokens, context.padded_max_seqlen))
+        assert len(shapes) < packed_attention_module.RECOMPILE_LIMIT // 2
+
+    @staticmethod
+    def _attend_with_flex(lengths):
+        context = PackedAttentionContext.from_lengths(torch.tensor(lengths, device="cuda"))
+        assert not context.rel_pos_kernel
+        q, k, v, pos_query, pos_emb = _rel_pos_inputs(context, heads=2, head_dim=16)
+        return packed_attention(q, k, v, context, pos_query=pos_query, pos_emb=pos_emb)
+
+    # Dynamo settings are changed through the config module's own `patch`, not through monkeypatch:
+    # pytest's undo deletes the entry from torch's config module (torch 2.12 and 2.14),
+    # and every later lookup of `recompile_limit` in the process fails.
+
+    @pytest.mark.unit
+    @pytest.mark.gpu
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA FlexAttention")
+    def test_recompile_limit_miss_raises_instead_of_running_eagerly(self, monkeypatch, flex_attention_only):
+        """Past its recompile limit Dynamo would run flex_attention eagerly over dense scores; the miss must fail."""
+        monkeypatch.setattr(packed_attention_module, "RECOMPILE_LIMIT", 1)
+        limit_name = "recompile_limit" if hasattr(torch._dynamo.config, "recompile_limit") else "cache_size_limit"
+        torch._dynamo.reset()
+        with torch._dynamo.config.patch(**{limit_name: 1}):
+            self._attend_with_flex([40, 30])
+            with pytest.raises(torch._dynamo.exc.FailOnRecompileLimitHit):
+                self._attend_with_flex([5000, 30])
+
+    @pytest.mark.unit
+    @pytest.mark.gpu
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA FlexAttention")
+    def test_token_total_does_not_recompile(self, flex_attention_only):
+        """Batches with equal padded shapes but different token totals share one kernel.
+
+        The relative-position bias enters the kernel with its unpadded token axis;
+        without the dynamic mark on that axis the static compile specializes on every distinct total.
+        """
+        torch._dynamo.reset()
+        self._attend_with_flex([40, 30])
+        with torch._dynamo.config.patch(error_on_recompile=True):
+            self._attend_with_flex([40, 35])
+            self._attend_with_flex([45, 35, 20])
+
+    @pytest.mark.unit
+    @pytest.mark.gpu
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA FlexAttention")
+    def test_kernels_have_a_dynamo_cache_of_their_own(self, flex_attention_only):
+        """The packed kernels leave the code object of flex_attention itself alone.
+
+        The Transformer encoders compile flex_attention itself with dynamic shapes;
+        entries of the packed kernels on that code object would count against that compile's recompile limit.
+        """
+        torch._dynamo.reset()
+        self._attend_with_flex([40, 30])
+        self._attend_with_flex([5000, 30])  # a second kernel shape, a second cache entry
+        limit_name = "recompile_limit" if hasattr(torch._dynamo.config, "recompile_limit") else "cache_size_limit"
+        # with a shared cache the two entries above would already be over the limit of this compile
+        with torch._dynamo.config.patch(**{limit_name: 1, "fail_on_recompile_limit_hit": True}):
+            compiled_itself = torch.compile(flex_attention, dynamic=True)
+            q = torch.randn(1, 2, 64, 16, device="cuda")
+            assert compiled_itself(q, q, q).shape == q.shape
+
+
+class TestPackedRelPositionAttention:
+    @pytest.mark.unit
+    def test_matches_padded(self):
+        torch.manual_seed(2)
+        attention = RelPositionMultiHeadAttention(
+            n_head=2, n_feat=8, dropout_rate=0.0, pos_bias_u=None, pos_bias_v=None
+        )
+        attention = attention.double()
+        torch.nn.init.normal_(attention.pos_bias_u)
+        torch.nn.init.normal_(attention.pos_bias_v)
+        pos_enc = RelPositionalEncoding(d_model=8, dropout_rate=0.0, max_len=64).double()
+        pos_enc.extend_pe(64, "cpu", torch.float64)
+        lengths = torch.tensor([7, 3, 11])
+        x = torch.randn(3, 11, 8, dtype=torch.float64, requires_grad=True)
+        _, pos_emb = pos_enc(x)
+        pad = torch.arange(11)[None, :] >= lengths[:, None]
+        mask = pad[:, None, :] | pad[:, :, None]
+        padded_out = attention(query=x, key=x, value=x, mask=mask, pos_emb=pos_emb)
+
+        packed_x = x.detach().clone().requires_grad_()
+        packed = pack_encoder_output(packed_x, lengths)
+        packed_out = attention.forward_packed(packed.data, PackedAttentionContext(packed), pos_emb=pos_emb)
+        torch.testing.assert_close(packed_out, _valid_frames(padded_out, lengths))
+
+        _valid_frames(padded_out, lengths).square().sum().backward()
+        reference_grads = {name: p.grad.clone() for name, p in attention.named_parameters()}
+        attention.zero_grad()
+        packed_out.square().sum().backward()
+        torch.testing.assert_close(_valid_frames(packed_x.grad, lengths), _valid_frames(x.grad, lengths))
+        for name, parameter in attention.named_parameters():
+            torch.testing.assert_close(parameter.grad, reference_grads[name], msg=name)
+
+    @pytest.mark.unit
+    def test_empty_batch_keeps_gradients(self):
+        q = torch.randn(0, 2, 4, requires_grad=True)
+        pos_emb = torch.randn(1, 2, 4, requires_grad=True)
+        context = PackedAttentionContext.from_lengths(torch.tensor([0, 0]))
+        out = packed_attention(q, q, q, context, pos_query=q, pos_emb=pos_emb)
+        out.sum().backward()
+        assert out.shape == (0, 2, 4) and q.grad is not None and pos_emb.grad is not None
+
+    @pytest.mark.unit
+    def test_position_factors_come_together(self):
+        q = torch.randn(5, 2, 4)
+        context = PackedAttentionContext.from_lengths(torch.tensor([5]))
+        with pytest.raises(ValueError, match="both or neither"):
+            packed_attention(q, q, q, context, pos_query=q)
+
+    @pytest.mark.unit
+    def test_rel_pos_bias_keyword_matches_the_factors(self):
+        """The materialized position term of the earlier interface runs and trains like its factors."""
+        torch.manual_seed(5)
+        context = PackedAttentionContext.from_lengths(torch.tensor([7, 3, 11]))
+        q, k, v, pos_query, pos_emb = _rel_pos_inputs(context, heads=2, head_dim=8, device="cpu", dtype=torch.float64)
+        bias = torch.einsum("thd,rhd->thr", pos_query, pos_emb).detach().requires_grad_()
+        from_factors = packed_attention(q, k, v, context, pos_query=pos_query, pos_emb=pos_emb)
+        from_bias = packed_attention(q, k, v, context, rel_pos_bias=bias)
+        torch.testing.assert_close(from_bias, from_factors)
+        from_factors.square().sum().backward()
+        from_bias.square().sum().backward()
+        assert bias.grad is not None and torch.isfinite(bias.grad).all()
+        # the chain rule through the factors: the gradient of pos_query is that of the bias times pos_emb
+        torch.testing.assert_close(torch.einsum("thr,rhd->thd", bias.grad, pos_emb.detach()), pos_query.grad)
+        with pytest.raises(ValueError, match="not both"):
+            packed_attention(q, k, v, context, pos_query=pos_query, pos_emb=pos_emb, rel_pos_bias=bias)
+        empty = PackedAttentionContext.from_lengths(torch.tensor([0]))
+        out = packed_attention(q[:0], k[:0], v[:0], empty, rel_pos_bias=bias[:0])
+        assert out.shape == (0, 2, 8) and out.requires_grad
+
+    @pytest.mark.unit
+    @pytest.mark.gpu
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA FlexAttention")
+    @pytest.mark.parametrize(
+        "lengths, head_dim",
+        [([300, 7, 150, 1, 260], 32), ([1000, 513, 2], 32), ([300, 7, 150], 8), ([300, 7, 150], 44)],
+        ids=["five_utterances", "long_utterances", "head_dim_8", "head_dim_44"],
+    )
+    def test_flex_attention_matches_reference_on_cuda(self, lengths, head_dim, flex_attention_only):
+        """Also a head width below the kernel minimum of 16 and a non-power-of-two width, both zero-padded.
+
+        Width 44 is the head of the released FastConformer Small; without the padding to a power of two
+        it fell to a generic kernel configuration whose shared memory exceeds consumer Blackwell's (torch 2.12).
+        """
+        torch.manual_seed(0)
+        context = PackedAttentionContext.from_lengths(torch.tensor(lengths, device="cuda"))
+        assert not context.rel_pos_kernel
+        q, k, v, pos_query, pos_emb = _rel_pos_inputs(context, heads=4, head_dim=head_dim)
+        leaves = (q, k, v, pos_query, pos_emb)
+
+        out = packed_attention(q, k, v, context, pos_query=pos_query, pos_emb=pos_emb)
+        out.square().sum().backward()
+        grads = [t.grad.clone() for t in leaves]
+        for t in leaves:
+            t.grad = None
+        bias = torch.einsum("thd,rhd->thr", pos_query, pos_emb)
+        reference = packed_attention_module._reference_packed_attention(
+            q, k, v, context, rel_pos_bias=bias, dropout_p=0.0, scale=head_dim**-0.5
+        )
+        reference.square().sum().backward()
+
+        torch.testing.assert_close(out, reference, atol=1e-4, rtol=1e-4)
+        for grad, t in zip(grads, leaves):
+            torch.testing.assert_close(grad, t.grad, atol=1e-3, rtol=1e-3)
+
+
+def _cuda_param():
+    """The CUDA case of a device parametrization, marked as a GPU test and skipped without a GPU."""
+    return pytest.param(
+        "cuda",
+        marks=[pytest.mark.gpu, pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")],
+    )
+
+
+class TestPackedCrossAttention:
+    """Attention from token-flat queries to the keys of their own sequence, through FlashAttention and the reference."""
+
+    @pytest.mark.unit
+    def test_rejects_inputs_that_do_not_match_their_contexts(self):
+        queries = PackedAttentionContext.from_lengths(torch.tensor([3, 4]))
+        keys = PackedAttentionContext.from_lengths(torch.tensor([5, 4]))
+        q, k, v = torch.randn(7, 2, 8), torch.randn(9, 2, 8), torch.randn(9, 2, 8)
+        with pytest.raises(ValueError, match="equal query and key lengths"):
+            packed_cross_attention(q, k, v, queries, keys, causal=True)
+        with pytest.raises(ValueError, match="rows"):
+            packed_cross_attention(q[:5], k, v, queries, keys)
+        with pytest.raises(ValueError, match="rows"):
+            packed_cross_attention(q, k[:8], v, queries, keys)
+        with pytest.raises(ValueError, match="number of sequences"):
+            packed_cross_attention(q, k, v, queries, PackedAttentionContext.from_lengths(torch.tensor([9])))
+
+    @pytest.mark.unit
+    def test_half_precision_scores_stay_finite_on_the_dense_path(self):
+        """Unscaled products of 64 times 40 squared overflow float16; the scaling happens before the product."""
+        context = PackedAttentionContext.from_lengths(torch.tensor([2]))
+        x = torch.full((2, 1, 64), 40.0, dtype=torch.float16)
+        out = packed_cross_attention(x, x, x, context, context)
+        assert torch.isfinite(out).all()
+        torch.testing.assert_close(out, x)
+
+    @pytest.mark.unit
+    def test_queries_without_keys_keep_gradient_edges(self):
+        """A sequence with queries and no keys gets a zero context that still connects q, k and v."""
+        cases = [([1, 0], [0, 1], (1, 1, 8)), ([1, 1], [0, 0], (2, 1, 8)), ([0, 0], [1, 1], (0, 1, 8))]
+        for query_lengths, key_lengths, out_shape in cases:
+            query_context = PackedAttentionContext.from_lengths(torch.tensor(query_lengths))
+            key_context = PackedAttentionContext.from_lengths(torch.tensor(key_lengths))
+            q = torch.randn(query_context.total_tokens, 1, 8, requires_grad=True)
+            k, v = (torch.randn(key_context.total_tokens, 1, 8, requires_grad=True) for _ in range(2))
+            out = packed_cross_attention(q, k, v, query_context, key_context)
+            assert out.shape == out_shape and not out.any()
+            out.sum().backward()
+            for tensor in (q, k, v):
+                assert tensor.grad is not None and not tensor.grad.any()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", ["cpu", _cuda_param()])
+    def test_queries_without_keys_stay_finite_in_float16(self, device):
+        """The sum of 2048 rows of ones overflows float16; the zero context must not become NaN through it."""
+        query_context = PackedAttentionContext.from_lengths(torch.tensor([2048], device=device))
+        key_context = PackedAttentionContext.from_lengths(torch.tensor([0], device=device))
+        q = torch.ones((2048, 2, 64), dtype=torch.float16, device=device, requires_grad=True)
+        k, v = (torch.zeros((0, 2, 64), dtype=torch.float16, device=device, requires_grad=True) for _ in range(2))
+        out = packed_cross_attention(q, k, v, query_context, key_context)
+        assert out.shape == q.shape and torch.isfinite(out).all() and not out.any()
+        out.sum().backward()
+        for tensor in (q, k, v):
+            assert tensor.grad is not None and not tensor.grad.any()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", ["cpu", _cuda_param()])
+    def test_scalar_arguments_are_checked_before_the_dispatch(self, device):
+        """The same ranges on both backends: dropout in [0, 1), a positive finite scale; the boundaries run."""
+        dtype = torch.bfloat16 if device == "cuda" else torch.float32
+        context = PackedAttentionContext.from_lengths(torch.tensor([5, 3], device=device))
+        x = torch.randn(8, 2, 64, device=device, dtype=dtype)
+        for dropout_p in (1.0, -0.1, float("nan")):
+            with pytest.raises(ValueError, match="dropout_p"):
+                packed_cross_attention(x, x, x, context, context, dropout_p=dropout_p)
+        for scale in (-0.125, 0.0, float("nan"), float("inf")):
+            with pytest.raises(ValueError, match="scale"):
+                packed_cross_attention(x, x, x, context, context, scale=scale)
+        if device == "cuda":
+            self._skip_without_flash_attention(dtype)
+        out = packed_cross_attention(x, x, x, context, context, dropout_p=0.0, scale=0.5)
+        reference = packed_attention_module._reference_packed_cross_attention(
+            x.float(), x.float(), x.float(), context, context, causal=False, dropout_p=0.0, scale=0.5
+        )
+        torch.testing.assert_close(out.float(), reference, atol=5e-2, rtol=5e-2)
+        almost_all_dropped = packed_cross_attention(x, x, x, context, context, dropout_p=0.999)
+        assert almost_all_dropped.shape == x.shape and torch.isfinite(almost_all_dropped).all()
+
+    @pytest.mark.unit
+    @pytest.mark.gpu
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+    def test_rejects_cuda_inputs_outside_flash_attention(self):
+        """No silent fall-back to the dense per-sequence attention on CUDA: float32 and an odd head width."""
+        context = PackedAttentionContext.from_lengths(torch.tensor([3, 2], device="cuda"))
+        x = torch.randn(context.total_tokens, 2, 64, device="cuda")
+        with pytest.raises(NotImplementedError, match="FlashAttention only"):
+            packed_cross_attention(x, x, x, context, context)
+        narrow = torch.randn(context.total_tokens, 2, 12, device="cuda", dtype=torch.bfloat16)
+        with pytest.raises(NotImplementedError, match="FlashAttention only"):
+            packed_cross_attention(narrow, narrow, narrow, context, context)
+
+    @staticmethod
+    def _skip_without_flash_attention(dtype):
+        if packed_attention_module._flash_attention_varlen(torch.empty(1, 1, 8, device="cuda", dtype=dtype)) is None:
+            pytest.skip("requires a variable-length FlashAttention provider")
+
+    @pytest.mark.unit
+    @pytest.mark.gpu
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+    @pytest.mark.parametrize(
+        "dtype, tolerance",
+        [(torch.float16, 1e-2), (torch.bfloat16, 5e-2)],
+        ids=["fp16", "bf16"],
+    )
+    @pytest.mark.parametrize("causal", [False, True], ids=["cross", "causal"])
+    def test_flash_matches_the_dense_reference(self, dtype, tolerance, causal):
+        """Outputs and input gradients against the float32 reference; the lengths hold empty sequences."""
+        self._skip_without_flash_attention(dtype)
+        torch.manual_seed(0)
+        query_context = PackedAttentionContext.from_lengths(torch.tensor([5, 0, 130, 3], device="cuda"))
+        key_lengths = torch.tensor([9, 4, 0, 300], device="cuda")
+        key_context = query_context if causal else PackedAttentionContext.from_lengths(key_lengths)
+        heads, head_dim = 2, 64
+        q = torch.randn(query_context.total_tokens, heads, head_dim, device="cuda", dtype=dtype)
+        k, v = (torch.randn(key_context.total_tokens, heads, head_dim, device="cuda", dtype=dtype) for _ in range(2))
+        upstream = torch.randn_like(q)
+
+        def run(tensors, attention, **options):
+            inputs = [t.detach().clone().requires_grad_() for t in tensors]
+            out = attention(*inputs, query_context, key_context, causal=causal, **options)
+            out.backward(upstream.to(out.dtype))
+            return out.float(), [t.grad.float() for t in inputs]
+
+        out, grads = run((q, k, v), packed_cross_attention)
+        reference, reference_grads = run(
+            (q.float(), k.float(), v.float()),
+            packed_attention_module._reference_packed_cross_attention,
+            dropout_p=0.0,
+            scale=head_dim**-0.5,
+        )
+        torch.testing.assert_close(out, reference, atol=tolerance, rtol=tolerance)
+        for grad, reference_grad in zip(grads, reference_grads):
+            torch.testing.assert_close(grad, reference_grad, atol=tolerance, rtol=tolerance)
+
+    @pytest.mark.unit
+    @pytest.mark.gpu
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+    def test_dropout_reaches_the_kernel(self):
+        self._skip_without_flash_attention(torch.bfloat16)
+        torch.manual_seed(0)
+        context = PackedAttentionContext.from_lengths(torch.tensor([40, 25], device="cuda"))
+        q, k, v = (torch.randn(context.total_tokens, 2, 64, device="cuda", dtype=torch.bfloat16) for _ in range(3))
+        without = [packed_cross_attention(q, k, v, context, context) for _ in range(2)]
+        with_dropout = [packed_cross_attention(q, k, v, context, context, dropout_p=0.5) for _ in range(2)]
+        torch.testing.assert_close(without[0], without[1])
+        assert not torch.allclose(with_dropout[0], with_dropout[1])
+        assert not torch.allclose(with_dropout[0], without[0])
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+class TestPackedAttentionBackends:
+    """Bias-free attention through variable-length FlashAttention and through FlexAttention, against a float32 reference.
+
+    The two CUDA backends see the same half-precision queries, keys and values and the same nonuniform upstream
+    gradient; the dispatch is asserted, and outputs and input gradients are compared with the dense per-utterance
+    reference in float32 and with each other.
+    The lengths hold an empty utterance and utterances around the 128-token block boundary.
+    """
+
+    @staticmethod
+    def _flash_attention_available():
+        from nemo.collections.asr.modules import transformer_encoder_utils
+
+        return transformer_encoder_utils._get_flash_attention_varlen_for_device(torch.device("cuda")) is not None
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "dtype, tolerance",
+        [(torch.float16, 4e-3), (torch.bfloat16, 2e-2)],
+        ids=["fp16", "bf16"],
+    )
+    def test_flash_and_flex_match_the_dense_reference(self, dtype, tolerance, monkeypatch):
+        if not self._flash_attention_available():
+            pytest.skip("requires a variable-length FlashAttention provider")
+        torch.manual_seed(0)
+        lengths = torch.tensor([127, 0, 128, 129, 300, 1], device="cuda")
+        context = PackedAttentionContext.from_lengths(lengths)
+        heads, head_dim = 2, 64
+        q, k, v = (torch.randn(context.total_tokens, heads, head_dim, device="cuda", dtype=dtype) for _ in range(3))
+        ramp = torch.linspace(0.1, 2.0, context.total_tokens, device="cuda", dtype=dtype)
+        upstream = torch.randn(context.total_tokens, heads, head_dim, device="cuda", dtype=dtype) * ramp[:, None, None]
+        flash_provider = packed_attention_module._flash_attention_varlen
+
+        def run(backend):
+            dispatched = []
+
+            def select_provider(queries):
+                provider = None if backend == "flex" else flash_provider(queries)
+                dispatched.append("flex" if provider is None else "flash")
+                return provider
+
+            inputs = [t.detach().clone().requires_grad_() for t in (q, k, v)]
+            with pytest.MonkeyPatch.context() as patch:
+                patch.setattr(packed_attention_module, "_flash_attention_varlen", select_provider)
+                out = packed_attention(*inputs, context)
+            out.backward(upstream)
+            assert dispatched == [backend]
+            return out.float(), [t.grad.float() for t in inputs]
+
+        flash_out, flash_grads = run("flash")
+        flex_out, flex_grads = run("flex")
+        inputs = [t.detach().float().requires_grad_() for t in (q, k, v)]
+        reference = packed_attention_module._reference_packed_attention(
+            *inputs, context, rel_pos_bias=None, dropout_p=0.0, scale=head_dim**-0.5
+        )
+        reference.backward(upstream.float())
+        reference_grads = [t.grad for t in inputs]
+
+        for name, flash_value, flex_value, reference_value in zip(
+            ("output", "dq", "dk", "dv"),
+            [flash_out, *flash_grads],
+            [flex_out, *flex_grads],
+            [reference, *reference_grads],
+        ):
+            torch.testing.assert_close(flash_value, reference_value, atol=tolerance, rtol=tolerance, msg=name)
+            torch.testing.assert_close(flex_value, reference_value, atol=tolerance, rtol=tolerance, msg=name)
+            torch.testing.assert_close(flash_value, flex_value, atol=tolerance, rtol=tolerance, msg=name)
+
+
+def _dense_reference(q, k, v, pos_query, pos_emb, starts, lens, scale, keep=None, dropout_p=0.0):
+    """Dense attention one utterance at a time in the dtype of the inputs, for any packed layout.
+
+    ``keep`` is the kept-weight mask ``(T_total, H, max_seqlen)`` of the kernel's dropout, if any.
+    """
+    out = torch.zeros_like(q)
+    heads = q.shape[1]
+    center = (pos_emb.shape[0] - 1) // 2
+    for start, length in zip(starts, lens):
+        if length == 0:
+            continue
+        rows = slice(start, start + length)
+        scores = torch.einsum("ihd,jhd->hij", q[rows], k[rows]) * scale
+        positions = torch.arange(length, device=q.device)
+        relative = center + positions[None, :] - positions[:, None]
+        bias = torch.einsum("ihd,rhd->hir", pos_query[rows], pos_emb)
+        scores = scores + bias.gather(2, relative.expand(heads, -1, -1)) * scale
+        weights = torch.softmax(scores, dim=-1)
+        if keep is not None:
+            weights = weights * keep[rows, :, :length].permute(1, 0, 2).to(weights.dtype) / (1.0 - dropout_p)
+        out[rows] = torch.einsum("hij,jhd->ihd", weights, v[rows])
+    return out
+
+
+def _lengths_starts(lengths):
+    """Starts of a dense packing of these lengths."""
+    return [sum(lengths[:i]) for i in range(len(lengths))]
+
+
+def _max_relative_error(actual, reference):
+    """Largest absolute difference relative to the largest magnitude of the reference, in float64."""
+    reference = reference.double()
+    return float((actual.double() - reference).abs().max() / reference.abs().max().clamp_min(1e-12))
+
+
+def _relative_norm_error(actual, reference):
+    reference = reference.double()
+    return float((actual.double() - reference).norm() / reference.norm().clamp_min(1e-12))
+
+
+@pytest.mark.gpu
+@requires_kernel
+class TestPackedRelPosAttentionKernel:
+    """The Triton kernel against the dense per-utterance reference in float64, on the kernel's own layout."""
+
+    @staticmethod
+    def _run(q, k, v, pos_query, pos_emb, starts, lens, max_seqlen, scale, *, dropout_p=0.0, seed=None):
+        """Forward and the five gradients of the kernel, for a random upstream gradient of fixed seed."""
+        leaves = (q, k, v, pos_query, pos_emb)
+        out = kernel_module.packed_rel_pos_attention(
+            q, k, v, pos_query, pos_emb, starts, lens, max_seqlen, dropout_p=dropout_p, dropout_seed=seed, scale=scale
+        )
+        d_out = torch.randn(out.shape, generator=torch.Generator(device="cuda").manual_seed(99), device="cuda")
+        d_out = d_out.to(out.dtype)
+        grads = torch.autograd.grad(out, leaves, d_out)
+        return out, grads, d_out
+
+    @staticmethod
+    def _reference(q, k, v, pos_query, pos_emb, starts, lens, scale, d_out, *, keep=None, dropout_p=0.0):
+        """The float64 reference outputs and gradients for the same (rounded) inputs."""
+        leaves = [t.detach().double().requires_grad_() for t in (q, k, v, pos_query, pos_emb)]
+        out = _dense_reference(*leaves, starts, lens, scale, keep=keep, dropout_p=dropout_p)
+        grads = torch.autograd.grad(out, leaves, d_out.double())
+        return out, grads
+
+    @staticmethod
+    def _check(kernel, reference, tolerance, norm=False):
+        names = ("out", "d_q", "d_k", "d_v", "d_pos_query", "d_pos_emb")
+        for name, actual, expected in zip(names, (kernel[0], *kernel[1]), (reference[0], *reference[1])):
+            assert torch.isfinite(actual).all(), name
+            error = _relative_norm_error(actual, expected) if norm else _max_relative_error(actual, expected)
+            assert error <= tolerance, (name, error)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "lengths, head_dim",
+        [([300, 7, 150, 1, 260], 64), ([257, 33], 128), ([5, 0, 1, 3], 64), ([300, 7, 150], 44)],
+        ids=["five_utterances", "odd_widths", "empty_and_single_frame", "head_dim_44"],
+    )
+    def test_matches_float64_reference(self, lengths, head_dim):
+        """Outputs and all five gradients in float32, against the reference in float64 and in float32."""
+        torch.manual_seed(0)
+        context = PackedAttentionContext.from_lengths(torch.tensor(lengths, device="cuda"))
+        q, k, v, pos_query, pos_emb = _rel_pos_inputs(context, heads=4, head_dim=head_dim, pos_scale=0.5)
+        starts, lens = context.seq_starts, context.seq_lens
+        scale = head_dim**-0.5
+        kernel = self._run(q, k, v, pos_query, pos_emb, starts, lens, context.max_seqlen, scale)
+        reference64 = self._reference(q, k, v, pos_query, pos_emb, _lengths_starts(lengths), lengths, scale, kernel[2])
+        self._check(kernel, reference64, tolerance=2e-5)
+        # the tolerance is at the float32 level: the float32 reference meets it against the float64 one as well
+        reference32 = _dense_reference(
+            *(t.detach() for t in (q, k, v, pos_query, pos_emb)), _lengths_starts(lengths), lengths, scale
+        )
+        assert _max_relative_error(reference32, reference64[0]) <= 2e-5
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("dtype, tolerance", [(torch.bfloat16, 3e-2), (torch.float16, 1e-2)])
+    @pytest.mark.parametrize("head_dim", [64, 128])
+    def test_matches_float64_reference_in_half_precision(self, dtype, tolerance, head_dim):
+        """Outputs and gradients in bfloat16 and float16 against the float64 reference, by relative norm error."""
+        torch.manual_seed(1)
+        lengths = [300, 7, 150, 1, 260]
+        context = PackedAttentionContext.from_lengths(torch.tensor(lengths, device="cuda"))
+        q, k, v, pos_query, pos_emb = _rel_pos_inputs(context, heads=4, head_dim=head_dim, dtype=dtype, pos_scale=0.5)
+        scale = head_dim**-0.5
+        kernel = self._run(
+            q, k, v, pos_query, pos_emb, context.seq_starts, context.seq_lens, context.max_seqlen, scale
+        )
+        reference64 = self._reference(q, k, v, pos_query, pos_emb, _lengths_starts(lengths), lengths, scale, kernel[2])
+        assert kernel[0].dtype == dtype and all(grad.dtype == dtype for grad in kernel[1])
+        self._check(kernel, reference64, tolerance=tolerance, norm=True)
+
+    @pytest.mark.unit
+    def test_tile_ladder_steps_down_where_the_shared_memory_ends(self, monkeypatch):
+        """A configuration Triton refuses is skipped once per key and the next one runs; an exhausted ladder raises."""
+        torch.manual_seed(12)
+        lengths = [300, 7, 150]
+        context = PackedAttentionContext.from_lengths(torch.tensor(lengths, device="cuda"))
+        q, k, v, pos_query, pos_emb = _rel_pos_inputs(context, heads=2, head_dim=64, pos_scale=0.5)
+        starts, lens, max_seqlen, scale = context.seq_starts, context.seq_lens, context.max_seqlen, 64**-0.5
+        key = ("forward", q.device.index, q.dtype, 64)
+        monkeypatch.setattr(kernel_module, "_tiles_in_use", {})
+        self._run(q, k, v, pos_query, pos_emb, starts, lens, max_seqlen, scale)
+        entry = kernel_module._tiles_in_use[key]  # the entry this GPU runs without interference
+        oversized = (64, 128, 8, 64)  # 64 pipeline stages of key and value tiles exceed any shared memory
+        monkeypatch.setattr(kernel_module, "_tiles_in_use", {})
+        monkeypatch.setattr(kernel_module, "FORWARD_TILES", (oversized,) + kernel_module.FORWARD_TILES)
+        kernel = self._run(q, k, v, pos_query, pos_emb, starts, lens, max_seqlen, scale)
+        reference64 = self._reference(q, k, v, pos_query, pos_emb, _lengths_starts(lengths), lengths, scale, kernel[2])
+        self._check(kernel, reference64, tolerance=2e-5)
+        assert kernel_module._tiles_in_use[key] == entry + 1
+        monkeypatch.setattr(kernel_module, "_tiles_in_use", {})
+        monkeypatch.setattr(kernel_module, "FORWARD_TILES", (oversized,))
+        with pytest.raises(kernel_module.OutOfResources):
+            self._run(q, k, v, pos_query, pos_emb, starts, lens, max_seqlen, scale)
+
+    @pytest.mark.unit
+    def test_empty_input_keeps_the_gradient_edges(self):
+        heads, head_dim = 2, 32
+        leaves = [torch.randn(0, heads, head_dim, device="cuda", requires_grad=True) for _ in range(4)]
+        pos_emb = torch.randn(1, heads, head_dim, device="cuda", requires_grad=True)
+        starts = torch.zeros(2, dtype=torch.int32, device="cuda")
+        out = kernel_module.packed_rel_pos_attention(*leaves, pos_emb, starts, starts, 0)
+        assert out.shape == (0, heads, head_dim)
+        grads = torch.autograd.grad(out.sum(), (*leaves, pos_emb))
+        assert all(grad.shape == leaf.shape and not grad.any() for grad, leaf in zip(grads, (*leaves, pos_emb)))
+
+    @pytest.mark.unit
+    def test_all_empty_pack_with_non_finite_payloads_returns_zeros(self):
+        """The rows of a pack whose utterances are all empty are gap rows: zeros, whatever their payload."""
+        heads, head_dim = 1, 16
+        leaves = [torch.full((4, heads, head_dim), float("nan"), device="cuda", requires_grad=True) for _ in range(4)]
+        pos_emb = torch.full((1, heads, head_dim), float("nan"), device="cuda", requires_grad=True)
+        starts = torch.tensor([0, 2], device="cuda", dtype=torch.int32)
+        lens = torch.zeros(2, device="cuda", dtype=torch.int32)
+        out = kernel_module.packed_rel_pos_attention(*leaves, pos_emb, starts, lens, 0)
+        assert torch.equal(out, torch.zeros_like(out))
+        grads = torch.autograd.grad(out.sum(), (*leaves, pos_emb))
+        assert all(torch.equal(grad, torch.zeros_like(leaf)) for grad, leaf in zip(grads, (*leaves, pos_emb)))
+
+    @pytest.mark.unit
+    def test_full_dropout_zeroes_the_output(self):
+        """``dropout_p=1.0`` drops every weight, as ``nn.Dropout(1.0)`` on the attention weights would."""
+        context = PackedAttentionContext.from_lengths(torch.tensor([20, 5], device="cuda"))
+        q, k, v, pos_query, pos_emb = _rel_pos_inputs(context, heads=2, head_dim=32)
+        starts, lens, max_seqlen = context.seq_starts, context.seq_lens, context.max_seqlen
+        out = kernel_module.packed_rel_pos_attention(
+            q, k, v, pos_query, pos_emb, starts, lens, max_seqlen, dropout_p=1.0
+        )
+        assert torch.equal(out, torch.zeros_like(q))
+        grads = torch.autograd.grad(out.sum(), (q, k, v, pos_query, pos_emb))
+        assert all(not grad.any() for grad in grads)
+        out = packed_attention(q, k, v, context, pos_query=pos_query, pos_emb=pos_emb, dropout_p=1.0)
+        assert torch.equal(out, torch.zeros_like(q))
+
+    @pytest.mark.unit
+    def test_length_beyond_max_seqlen_is_rejected(self):
+        """A bound below a length would leave query rows zero and send position lookups past the table."""
+        heads, head_dim = 1, 16
+        q, k, pos_query = (torch.zeros(65, heads, head_dim, device="cuda") for _ in range(3))
+        v = torch.ones_like(q)
+        starts = torch.zeros(1, device="cuda", dtype=torch.int32)
+        lens = torch.full((1,), 65, device="cuda", dtype=torch.int32)
+        attend = kernel_module.packed_rel_pos_attention
+        with pytest.raises(ValueError, match="longest utterance of 65 rows"):
+            attend(q, k, v, pos_query, torch.zeros(1, heads, head_dim, device="cuda"), starts, lens, 1)
+        # the correct bound attends every row: uniform weights over the ones of v
+        table = torch.zeros(2 * 65 - 1, heads, head_dim, device="cuda")
+        out = attend(q, k, v, pos_query, table, starts, lens, 65)
+        torch.testing.assert_close(out, torch.ones_like(out))
+        # a compiled call cannot read the lengths: with the check on it is refused, never skipped
+        compiled = torch.compile(attend, fullgraph=True)
+        with pytest.raises(Exception, match="pass check_lengths=False"):
+            compiled(q, k, v, pos_query, table, starts, lens, 1)
+        with pytest.raises(Exception, match="pass check_lengths=False"):
+            compiled(q, k, v, pos_query, table, starts, lens, 65)
+        out = compiled(q, k, v, pos_query, table, starts, lens, 65, check_lengths=False)
+        torch.testing.assert_close(out, torch.ones_like(out))
+        torch._dynamo.reset()
+
+    @pytest.mark.unit
+    @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="requires two CUDA devices")
+    def test_runs_on_a_device_other_than_the_current(self):
+        """The launches pin the input device: tensors on the second device while the first one is current,
+        with an update of the input queued on a stream of the second device."""
+        torch.manual_seed(3)
+        device = torch.device("cuda:1")
+        lens = [30, 7, 15]
+        context = PackedAttentionContext.from_lengths(torch.tensor(lens, device=device))
+        q, k, v, pos_query, pos_emb = _rel_pos_inputs(context, heads=2, head_dim=32, device=device)
+        starts_t, lens_t, max_seqlen = context.seq_starts, context.seq_lens, context.max_seqlen
+        scale = 32**-0.5
+        stream = torch.cuda.Stream(device=device)
+        with torch.cuda.stream(stream), torch.cuda.device(0):
+            assert torch.cuda.current_device() == 0 and torch.cuda.current_stream(device) == stream
+            with torch.no_grad():
+                q.add_(0.5)
+            out = kernel_module.packed_rel_pos_attention(q, k, v, pos_query, pos_emb, starts_t, lens_t, max_seqlen)
+            d_out = torch.randn(out.shape, device=device)
+            grads = torch.autograd.grad(out, (q, k, v, pos_query, pos_emb), d_out)
+        stream.synchronize()
+        starts = [0, 30, 37]
+        reference = self._reference(q, k, v, pos_query, pos_emb, starts, lens, scale, d_out)
+        self._check((out, grads, d_out), reference, tolerance=2e-5)
+
+    @pytest.mark.unit
+    def test_gaps_between_utterances_and_junk_rows(self):
+        """Any layout: the rows between the utterances are never read and come back as zeros."""
+        torch.manual_seed(2)
+        lens = [40, 0, 25, 9]
+        starts = [8, 60, 61, 100]
+        total, heads, head_dim = 128, 2, 32
+        q, k, v, pos_query = (torch.randn(total, heads, head_dim, device="cuda") * 100 for _ in range(4))
+        for start, length in zip(starts, lens):
+            for tensor in (q, k, v, pos_query):
+                tensor[start : start + length] = torch.randn(length, heads, head_dim, device="cuda")
+        leaves = [t.requires_grad_() for t in (q, k, v, pos_query)]
+        pos_emb = (torch.randn(2 * 40 - 1, heads, head_dim, device="cuda") * 0.5).requires_grad_()
+        starts_t = torch.tensor(starts, device="cuda", dtype=torch.int32)
+        lens_t = torch.tensor(lens, device="cuda", dtype=torch.int32)
+        scale = head_dim**-0.5
+        kernel = self._run(*leaves, pos_emb, starts_t, lens_t, 40, scale)
+        reference64 = self._reference(*leaves, pos_emb, starts, lens, scale, kernel[2])
+        self._check(kernel, reference64, tolerance=2e-5)
+        valid = torch.zeros(total, dtype=torch.bool, device="cuda")
+        for start, length in zip(starts, lens):
+            valid[start : start + length] = True
+        assert (kernel[0][~valid] == 0).all()
+        for grad in kernel[1][:4]:
+            assert (grad[~valid] == 0).all()
+        # non-finite payloads in the gap rows change nothing: the kernels never read them,
+        # and the position-embedding gradient excludes them
+        for tensor in leaves:
+            with torch.no_grad():
+                tensor[~valid] = float("nan")
+                tensor[~valid, :, 0] = float("inf")
+        poisoned = self._run(*leaves, pos_emb, starts_t, lens_t, 40, scale)
+        for name, before, after in zip(
+            ("out", "d_q", "d_k", "d_v", "d_pos_query", "d_pos_emb"),
+            (kernel[0], *kernel[1]),
+            (poisoned[0], *poisoned[1]),
+        ):
+            assert torch.equal(before, after), name
+
+    @pytest.mark.unit
+    def test_strided_metadata_reads_every_utterance(self):
+        """Starts and lengths may arrive as strided views; the kernels read them as laid out."""
+        torch.manual_seed(13)
+        heads, head_dim = 2, 32
+        leaves = [torch.randn(3, heads, head_dim, device="cuda", requires_grad=True) for _ in range(4)]
+        pos_emb = torch.randn(1, heads, head_dim, device="cuda", requires_grad=True)
+        starts = torch.tensor([0, 0, 2, 0], device="cuda", dtype=torch.int32)[::2]
+        lens = torch.tensor([1, 0, 1, 0], device="cuda", dtype=torch.int64)[::2]
+        assert not starts.is_contiguous() and not lens.is_contiguous()
+        strided = self._run(*leaves, pos_emb, starts, lens, 1, head_dim**-0.5)
+        contiguous = self._run(*leaves, pos_emb, starts.contiguous(), lens.contiguous(), 1, head_dim**-0.5)
+        torch.testing.assert_close(strided[0][0], leaves[2][0])
+        torch.testing.assert_close(strided[0][2], leaves[2][2])
+        assert (strided[0][1] == 0).all()
+        for before, after in zip((strided[0], *strided[1]), (contiguous[0], *contiguous[1])):
+            assert torch.equal(before, after)
+
+    @pytest.mark.unit
+    def test_large_upstream_gradient_in_float16_keeps_finite_position_gradients(self):
+        """The position-term gradient is scaled in float32 before its float16 cast, so it does not overflow."""
+        heads, head_dim = 1, 16
+        zeros = [
+            torch.zeros(2, heads, head_dim, device="cuda", dtype=torch.float16, requires_grad=True) for _ in range(3)
+        ]
+        q, k, pos_query = zeros
+        v = torch.zeros(2, heads, head_dim, device="cuda", dtype=torch.float16)
+        v[:, 0, 0] = torch.tensor([4.0, -4.0])
+        v.requires_grad_()
+        pos_emb = torch.zeros(3, heads, head_dim, device="cuda", dtype=torch.float16, requires_grad=True)
+        starts = torch.tensor([0], device="cuda", dtype=torch.int32)
+        lens = torch.tensor([2], device="cuda", dtype=torch.int32)
+        for scale in (None, 0.5):
+            out = kernel_module.packed_rel_pos_attention(q, k, v, pos_query, pos_emb, starts, lens, 2, scale=scale)
+            d_out = torch.zeros_like(out)
+            d_out[:, 0, 0] = 60000.0
+            grads = torch.autograd.grad(out, (q, k, v, pos_query, pos_emb), d_out)
+            assert all(torch.isfinite(grad).all() for grad in grads)
+            assert all(not grad.any() for grad in (grads[0], grads[1], grads[3], grads[4]))
+            torch.testing.assert_close(
+                grads[2][:, 0, 0], torch.full((2,), 60000.0, device="cuda", dtype=torch.float16)
+            )
+
+    @pytest.mark.unit
+    def test_wider_position_table_is_sliced_to_the_utterances(self):
+        """A table beyond the longest utterance adds nothing; its outer rows get no gradient."""
+        torch.manual_seed(3)
+        lengths = [30, 12]
+        context = PackedAttentionContext.from_lengths(torch.tensor(lengths, device="cuda"))
+        q, k, v, pos_query, _ = _rel_pos_inputs(context, heads=2, head_dim=32)
+        pos_emb = torch.randn(2 * 100 - 1, 2, 32, device="cuda", requires_grad=True)
+        scale = 32**-0.5
+        kernel = self._run(q, k, v, pos_query, pos_emb, context.seq_starts, context.seq_lens, 30, scale)
+        reference64 = self._reference(q, k, v, pos_query, pos_emb, [0, 30], lengths, scale, kernel[2])
+        self._check(kernel, reference64, tolerance=2e-5)
+        d_pos_emb = kernel[1][4]
+        assert (d_pos_emb[:70] == 0).all() and (d_pos_emb[129:] == 0).all() and d_pos_emb[70:129].abs().sum() > 0
+
+    @pytest.mark.unit
+    def test_dropout_mask_statistics_and_exact_parity(self):
+        """The kept weights follow the probability, and the output equals the reference with the kernel's mask."""
+        torch.manual_seed(4)
+        lengths = [300, 7, 150, 260]
+        context = PackedAttentionContext.from_lengths(torch.tensor(lengths, device="cuda"))
+        heads, head_dim, dropout_p = 4, 64, 0.3
+        q, k, v, pos_query, pos_emb = _rel_pos_inputs(context, heads=heads, head_dim=head_dim, pos_scale=0.5)
+        seed = torch.tensor([12345], dtype=torch.int32, device="cuda")
+        keep = _keep_mask(context.total_tokens, heads, context.max_seqlen, dropout_p=dropout_p, dropout_seed=seed)
+        assert keep.shape == (context.total_tokens, heads, context.max_seqlen)
+        valid_pairs = sum(length * length for length in lengths) * heads
+        kept = sum(
+            int(keep[start : start + length, :, :length].sum()) for start, length in zip([0, 300, 307, 457], lengths)
+        )
+        assert abs(kept / valid_pairs - (1.0 - dropout_p)) < 0.01
+        scale = head_dim**-0.5
+        kernel = self._run(
+            q,
+            k,
+            v,
+            pos_query,
+            pos_emb,
+            context.seq_starts,
+            context.seq_lens,
+            context.max_seqlen,
+            scale,
+            dropout_p=dropout_p,
+            seed=seed,
+        )
+        reference64 = self._reference(
+            q, k, v, pos_query, pos_emb, [0, 300, 307, 457], lengths, scale, kernel[2], keep=keep, dropout_p=dropout_p
+        )
+        self._check(kernel, reference64, tolerance=2e-5)
+
+    @pytest.mark.unit
+    def test_dropout_seed_determines_the_mask(self):
+        torch.manual_seed(5)
+        context = PackedAttentionContext.from_lengths(torch.tensor([64, 30], device="cuda"))
+        q, k, v, pos_query, pos_emb = _rel_pos_inputs(context, heads=2, head_dim=32)
+        args = (q, k, v, pos_query, pos_emb, context.seq_starts, context.seq_lens, context.max_seqlen)
+
+        def attend(seed):
+            return kernel_module.packed_rel_pos_attention(*args, dropout_p=0.5, dropout_seed=seed).detach()
+
+        seed_a = torch.tensor([7], dtype=torch.int32, device="cuda")
+        torch.testing.assert_close(attend(seed_a), attend(seed_a), atol=0.0, rtol=0.0)
+        assert not torch.equal(attend(seed_a), attend(torch.tensor([8], dtype=torch.int32, device="cuda")))
+        # without a seed the kernel draws one from the device generator: fresh per call, reproducible per seed
+        torch.manual_seed(11)
+        first = attend(None)
+        second = attend(None)
+        assert not torch.equal(first, second)
+        torch.manual_seed(11)
+        torch.testing.assert_close(attend(None), first, atol=0.0, rtol=0.0)
+        without_dropout = kernel_module.packed_rel_pos_attention(*args).detach()
+        assert not torch.equal(first, without_dropout)
+
+    @pytest.mark.unit
+    def test_cuda_graph_replay_follows_new_contents_and_lengths(self):
+        """Forward and backward captured once; replays see new tensors, new lengths within the bound, the seed.
+        The capture cannot read the lengths, so the call passes ``check_lengths=False`` and the bound is the
+        caller's: every replay stays within it."""
+        torch.manual_seed(6)
+        heads, head_dim, capacity, bound = 2, 32, 160, 64
+        static = {
+            name: torch.randn(capacity, heads, head_dim, device="cuda", requires_grad=True)
+            for name in ("q", "k", "v", "pos_query")
+        }
+        static["pos_emb"] = torch.randn(2 * bound - 1, heads, head_dim, device="cuda", requires_grad=True)
+        d_out = torch.randn(capacity, heads, head_dim, device="cuda")
+        starts = torch.tensor([0, 60, 100], dtype=torch.int32, device="cuda")
+        lens = torch.tensor([60, 40, 60], dtype=torch.int32, device="cuda")
+        seed = torch.tensor([3], dtype=torch.int32, device="cuda")
+        leaves = tuple(static.values())
+
+        def step():
+            out = kernel_module.packed_rel_pos_attention(
+                *leaves,
+                starts,
+                lens,
+                bound,
+                dropout_p=0.2,
+                dropout_seed=seed,
+                scale=head_dim**-0.5,
+                check_lengths=False,
+            )
+            return (out, *torch.autograd.grad(out, leaves, d_out))
+
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            for _ in range(3):
+                step()
+        torch.cuda.current_stream().wait_stream(stream)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            captured = step()
+
+        def eager():
+            return [t.detach().clone() for t in step()]
+
+        for new_lens, new_seed in (([30, 0, 55], 21), ([60, 37, 2], 22)):
+            for tensor in leaves:
+                tensor.data.copy_(torch.randn_like(tensor))
+            lens.copy_(torch.tensor(new_lens, dtype=torch.int32, device="cuda"))
+            seed.fill_(new_seed)
+            graph.replay()
+            replayed = [t.clone() for t in captured]
+            for actual, expected in zip(replayed, eager()):
+                torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-6)
+
+    @pytest.mark.unit
+    def test_cuda_graph_replays_draw_fresh_dropout_masks(self):
+        """Without a given seed the capture holds a device draw, so every replay has another mask."""
+        torch.manual_seed(7)
+        context = PackedAttentionContext.from_lengths(torch.tensor([64, 30], device="cuda"))
+        q, k, v, pos_query, pos_emb = (t.detach() for t in _rel_pos_inputs(context, heads=2, head_dim=32))
+        args = (q, k, v, pos_query, pos_emb, context.seq_starts, context.seq_lens, context.max_seqlen)
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            for _ in range(2):
+                kernel_module.packed_rel_pos_attention(*args, dropout_p=0.5)
+        torch.cuda.current_stream().wait_stream(stream)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            # the capture cannot read the lengths: the context's bound holds by construction
+            out = kernel_module.packed_rel_pos_attention(*args, dropout_p=0.5, check_lengths=False)
+        graph.replay()
+        first = out.clone()
+        graph.replay()
+        second = out.clone()
+        assert torch.isfinite(first).all() and torch.isfinite(second).all()
+        assert not torch.equal(first, second)
+
+    @pytest.mark.unit
+    def test_production_shape_stays_below_the_int32_bound(self):
+        """Eight heads of 128 over a packed batch of the training size: finite, and one call equals two halves.
+
+        The position term is addressed as ``h * T_total * R + i * R + r`` in 64 bits (R padded to eight);
+        at this shape the product stays below 2**31, so a 32-bit regression would not show here,
+        which test_offsets_beyond_the_int32_bound covers.
+        """
+        torch.manual_seed(8)
+        generator = torch.Generator().manual_seed(8)
+        lengths = []
+        while sum(lengths) < 83_000:
+            lengths.append(int(torch.randint(50, 668, (1,), generator=generator)))
+        heads, head_dim = 8, 128
+        context = PackedAttentionContext.from_lengths(torch.tensor(lengths, device="cuda"))
+        assert heads * context.total_tokens * (2 * context.max_seqlen - 1 + 8) < 2**31
+        q, k, v, pos_query, pos_emb = _rel_pos_inputs(context, heads=heads, head_dim=head_dim, dtype=torch.bfloat16)
+        self._full_equals_halves(q, k, v, pos_query, pos_emb, lengths, head_dim**-0.5)
+
+    @pytest.mark.unit
+    def test_offsets_beyond_the_int32_bound(self):
+        """The position term of 96 utterances of 2,000 frames with four heads exceeds 2**31 elements."""
+        if torch.cuda.get_device_properties(0).total_memory < 64 * 1024**3:
+            pytest.skip("needs a 64 GiB GPU for the position term and its gradient")
+        torch.manual_seed(9)
+        heads, head_dim, seq_len, n_seqs = 4, 64, 2000, 96
+        lengths = [seq_len] * n_seqs
+        context = PackedAttentionContext.from_lengths(torch.tensor(lengths, device="cuda"))
+        assert heads * context.total_tokens * (2 * seq_len - 1) > 2**31
+        q, k, v, pos_query, pos_emb = _rel_pos_inputs(context, heads=heads, head_dim=head_dim, pos_scale=0.1)
+        self._full_equals_halves(q, k, v, pos_query, pos_emb, lengths, head_dim**-0.5)
+
+    def _full_equals_halves(self, q, k, v, pos_query, pos_emb, lengths, scale):
+        """One call over all utterances against two calls over the halves of the batch, outputs and gradients."""
+        max_seqlen = max(lengths)
+        starts = _lengths_starts(lengths)
+        d_out = torch.randn(q.shape, generator=torch.Generator(device="cuda").manual_seed(99), device="cuda")
+        d_out = d_out.to(q.dtype)
+
+        def run(first, last):
+            begin, end = starts[first], starts[last - 1] + lengths[last - 1]
+            leaves = [t[begin:end].detach().clone().requires_grad_() for t in (q, k, v, pos_query)]
+            table = pos_emb.detach().clone().requires_grad_()
+            starts_t = torch.tensor([s - begin for s in starts[first:last]], dtype=torch.int32, device="cuda")
+            lens_t = torch.tensor(lengths[first:last], dtype=torch.int32, device="cuda")
+            out = kernel_module.packed_rel_pos_attention(*leaves, table, starts_t, lens_t, max_seqlen, scale=scale)
+            return [out.detach(), *torch.autograd.grad(out, (*leaves, table), d_out[begin:end])]
+
+        half = len(lengths) // 2
+        full, first, second = run(0, len(lengths)), run(0, half), run(half, len(lengths))
+        tolerance = 1e-2 if q.dtype == torch.bfloat16 else 1e-4
+        for name, whole, a, b in zip(("out", "d_q", "d_k", "d_v", "d_pos_query", "d_pos_emb"), full, first, second):
+            halves = a + b if name == "d_pos_emb" else torch.cat([a, b])
+            assert torch.isfinite(whole).all(), name
+            error = _relative_norm_error(whole, halves)
+            assert error <= tolerance, (name, error)
+
+    @pytest.mark.unit
+    def test_rejects_what_the_kernels_cannot_take(self):
+        context = PackedAttentionContext.from_lengths(torch.tensor([20, 5], device="cuda"))
+        q, k, v, pos_query, pos_emb = (t.detach() for t in _rel_pos_inputs(context, heads=2, head_dim=32))
+        starts, lens, max_seqlen = context.seq_starts, context.seq_lens, context.max_seqlen
+        attend = kernel_module.packed_rel_pos_attention
+        with pytest.raises(TypeError, match="float32, bfloat16 or float16"):
+            attend(q.double(), k.double(), v.double(), pos_query.double(), pos_emb.double(), starts, lens, max_seqlen)
+        with pytest.raises(TypeError, match="pos_emb must be"):
+            attend(q, k, v, pos_query, pos_emb.half(), starts, lens, max_seqlen)
+        with pytest.raises(ValueError, match="odd number of rows"):
+            attend(q, k, v, pos_query, pos_emb[1:], starts, lens, max_seqlen)
+        with pytest.raises(ValueError, match="covers no utterance"):
+            attend(q, k, v, pos_query, pos_emb[2:-2], starts, lens, max_seqlen)
+        with pytest.raises(ValueError, match="dropout_p"):
+            attend(q, k, v, pos_query, pos_emb, starts, lens, max_seqlen, dropout_p=1.5)
+        with pytest.raises(ValueError, match="dropout_seed"):
+            attend(q, k, v, pos_query, pos_emb, starts, lens, max_seqlen, dropout_p=0.1, dropout_seed=starts)
+        with pytest.raises(ValueError, match="shape of q"):
+            attend(q, k[:-1], v, pos_query, pos_emb, starts, lens, max_seqlen)
+
+
+@pytest.mark.gpu
+@requires_kernel
+class TestPackedRelPosAttentionDispatch:
+    """What packed_attention routes to the kernel, and what it keeps for FlexAttention and the reference."""
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+    def test_kernel_is_the_default_for_rel_pos_on_cuda(self, monkeypatch, dtype):
+        calls = []
+        original = packed_attention_module.packed_rel_pos_attention
+        monkeypatch.setattr(
+            packed_attention_module, "packed_rel_pos_attention", lambda *a, **kw: calls.append(1) or original(*a, **kw)
+        )
+        monkeypatch.setattr(packed_attention_module, "_flex_packed_attention", _fail)
+        context = PackedAttentionContext.from_lengths(torch.tensor([30, 7], device="cuda"))
+        q, k, v, pos_query, pos_emb = _rel_pos_inputs(context, heads=2, head_dim=32, dtype=dtype)
+        out = packed_attention(q, k, v, context, pos_query=pos_query, pos_emb=pos_emb, dropout_p=0.1)
+        assert calls == [1] and out.dtype == dtype and out.shape == q.shape
+
+    @pytest.mark.unit
+    def test_float64_runs_the_reference_on_cuda(self, monkeypatch):
+        """Neither the kernel nor FlexAttention's Inductor template takes float64; the dense reference does."""
+        calls = []
+        original = packed_attention_module._reference_packed_attention
+        monkeypatch.setattr(
+            packed_attention_module,
+            "_reference_packed_attention",
+            lambda *a, **kw: calls.append(1) or original(*a, **kw),
+        )
+        monkeypatch.setattr(packed_attention_module, "_flex_packed_attention", _fail)
+        context = PackedAttentionContext.from_lengths(torch.tensor([30, 7], device="cuda"))
+        q, k, v, pos_query, pos_emb = _rel_pos_inputs(context, heads=2, head_dim=32, dtype=torch.float64)
+        out = packed_attention(q, k, v, context, pos_query=pos_query, pos_emb=pos_emb, dropout_p=0.1)
+        assert calls == [1] and out.dtype == torch.float64 and out.shape == q.shape
+        # the capability query agrees: the reference applies the dropout, with and without a position term
+        device = torch.device("cuda")
+        assert packed_attention_module.packed_attention_supports_dropout(device, torch.float64, 44)
+        assert packed_attention_module.packed_attention_supports_dropout(device, torch.float64, 44, rel_pos=True)
+        monkeypatch.setattr(packed_attention_module, "TRITON_AVAILABLE", False)
+        assert packed_attention_module.packed_attention_supports_dropout(device, torch.float64, 44, rel_pos=True)
+        assert not packed_attention_module.packed_attention_supports_dropout(device, torch.float32, 44, rel_pos=True)
+
+    @pytest.mark.unit
+    def test_rel_pos_bias_keyword_runs_flex_attention(self, monkeypatch):
+        """The materialized position term keeps the FlexAttention path of the earlier interface, dropout refusal included."""
+        monkeypatch.setattr(packed_attention_module, "packed_rel_pos_attention", _fail)
+        context = PackedAttentionContext.from_lengths(torch.tensor([30, 7], device="cuda"))
+        q, k, v, pos_query, pos_emb = _rel_pos_inputs(context, heads=2, head_dim=32)
+        bias = torch.einsum("thd,rhd->thr", pos_query, pos_emb).detach().requires_grad_()
+        out = packed_attention(q, k, v, context, rel_pos_bias=bias)
+        reference = packed_attention_module._reference_packed_attention(
+            q.double(), k.double(), v.double(), context, rel_pos_bias=bias.double(), dropout_p=0.0, scale=32**-0.5
+        )
+        torch.testing.assert_close(out.double(), reference, atol=1e-4, rtol=1e-4)
+        out.square().sum().backward()
+        assert bias.grad is not None and torch.isfinite(bias.grad).all() and bias.grad.abs().sum() > 0
+        with pytest.raises(NotImplementedError, match="dropout_att"):
+            packed_attention(q, k, v, context, rel_pos_bias=bias, dropout_p=0.1)
+
+    @pytest.mark.unit
+    def test_flex_attention_is_selectable_per_context(self, monkeypatch):
+        """``rel_pos_kernel=False`` keeps the backend before the kernel: FlexAttention over the rounded table."""
+        lengths = torch.tensor([30, 7], device="cuda")
+        kernel_context = PackedAttentionContext.from_lengths(lengths)
+        flex_context = PackedAttentionContext.from_lengths(lengths, rel_pos_kernel=False)
+        assert kernel_context.rel_pos_kernel and not flex_context.rel_pos_kernel
+        assert flex_context.rel_pos_max_seqlen == flex_context.padded_max_seqlen == 128
+        q, k, v, pos_query, pos_emb = _rel_pos_inputs(flex_context, heads=2, head_dim=32)
+        kernel = packed_attention(q, k, v, kernel_context, pos_query=pos_query, pos_emb=pos_emb)
+        monkeypatch.setattr(packed_attention_module, "packed_rel_pos_attention", _fail)
+        flex = packed_attention(q, k, v, flex_context, pos_query=pos_query, pos_emb=pos_emb)
+        torch.testing.assert_close(flex, kernel, atol=1e-4, rtol=1e-4)
+        with pytest.raises(NotImplementedError, match="dropout_att"):
+            packed_attention(q, k, v, flex_context, pos_query=pos_query, pos_emb=pos_emb, dropout_p=0.1)
+
+    @pytest.mark.unit
+    def test_dropout_is_refused_only_without_the_kernel(self, flex_attention_only):
+        context = PackedAttentionContext.from_lengths(torch.tensor([30, 7], device="cuda"))
+        q, k, v, pos_query, pos_emb = _rel_pos_inputs(context, heads=2, head_dim=32)
+        with pytest.raises(NotImplementedError, match="dropout_att"):
+            packed_attention(q, k, v, context, pos_query=pos_query, pos_emb=pos_emb, dropout_p=0.1)
+
+    @pytest.mark.unit
+    def test_rel_position_attention_module_matches_padded_without_a_padded_copy(self, monkeypatch):
+        """The Transformer-XL module through the kernel equals its padded forward; no pad and no FlexAttention run."""
+        torch.manual_seed(2)
+        attention = RelPositionMultiHeadAttention(
+            n_head=4, n_feat=256, dropout_rate=0.0, pos_bias_u=None, pos_bias_v=None
+        )
+        torch.nn.init.normal_(attention.pos_bias_u)
+        torch.nn.init.normal_(attention.pos_bias_v)
+        attention = attention.cuda()
+        pos_enc = RelPositionalEncoding(d_model=256, dropout_rate=0.0, max_len=400).cuda()
+        pos_enc.extend_pe(400, "cuda", torch.float32)
+        lengths = torch.tensor([300, 7, 150], device="cuda")
+        x = torch.randn(3, 300, 256, device="cuda", requires_grad=True)
+        _, pos_emb = pos_enc(x)
+        pad = torch.arange(300, device="cuda")[None, :] >= lengths[:, None]
+        mask = pad[:, None, :] | pad[:, :, None]
+        padded_out = attention(query=x, key=x, value=x, mask=mask, pos_emb=pos_emb)
+        _valid_frames(padded_out, lengths).square().sum().backward()
+        reference_grads = {name: p.grad.clone() for name, p in attention.named_parameters()}
+        attention.zero_grad()
+
+        # the padded forward pads inside rel_shift; the packed one must need neither pad nor FlexAttention
+        monkeypatch.setattr(packed_attention_module, "_flex_packed_attention", _fail)
+        monkeypatch.setattr(torch.nn.functional, "pad", _fail)
+        packed_x = x.detach().clone().requires_grad_()
+        packed = pack_encoder_output(packed_x, lengths)
+        context = PackedAttentionContext(packed)
+        assert context.rel_pos_kernel
+        packed_out = attention.forward_packed(packed.data, context, pos_emb=pos_emb)
+        torch.testing.assert_close(packed_out, _valid_frames(padded_out, lengths), atol=1e-4, rtol=1e-4)
+        packed_out.square().sum().backward()
+        torch.testing.assert_close(
+            _valid_frames(packed_x.grad, lengths), _valid_frames(x.grad, lengths), atol=1e-3, rtol=1e-3
+        )
+        for name, parameter in attention.named_parameters():
+            torch.testing.assert_close(parameter.grad, reference_grads[name], atol=1e-3, rtol=1e-3, msg=name)
+
+
+def _fail(*args, **kwargs):
+    raise AssertionError("this path must not run")

@@ -37,11 +37,13 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.losses.rnnt_pytorch import MultiblankRNNTLossPytorch, RNNTLossPytorch, TDTLossPytorch
+from nemo.collections.asr.parts.turbo_transducer.rnnt_loss import TurboRnntLoss
 from nemo.core.classes import Loss, typecheck
 from nemo.core.neural_types import LabelsType, LengthsType, LogprobsType, LossType, NeuralType
 from nemo.core.utils import numba_utils
 from nemo.core.utils.k2_utils import K2_INSTALLATION_MESSAGE
 from nemo.core.utils.numba_utils import NUMBA_INSTALLATION_MESSAGE
+from nemo.core.utils.optional_libs import TRITON_INSTALLATION_MESSAGE
 from nemo.utils import logging, logging_mode, model_utils
 
 try:
@@ -83,6 +85,9 @@ class RNNTLossConfig:
     installation_msg: str = ""
     min_version: Optional[str] = None
     force_float32: bool = True  # default True for now for all losses except graph-based
+    # True if the loss uses lengths to skip padding in the Joint output, i.e., the Joint output can be padded
+    # beyond the maximum lengths (no need to trim it, avoiding a copy of the full-size tensor)
+    supports_padding: bool = False
 
 
 # Resolved list of available RNNT losses
@@ -101,6 +106,17 @@ RNNT_LOSS_RESOLVER = {
         is_available=NUMBA_RNNT_AVAILABLE,
         installation_msg=NUMBA_INSTALLATION_MESSAGE,
         force_float32=False,  # This is only temporarily false, will be dynamically updated during resolution
+    ),
+    "turbo_rnnt": RNNTLossConfig(
+        loss_name="turbo_rnnt",
+        lib_name="triton",
+        min_version=None,
+        # always allow instantiation (e.g., restoring a model for inference without Triton);
+        # the loss raises an error in forward if Triton is not available
+        is_available=True,
+        installation_msg=TRITON_INSTALLATION_MESSAGE,
+        force_float32=False,  # do not cast logits to float32, the loss computes in float32 internally
+        supports_padding=True,
     ),
     "pytorch": RNNTLossConfig(
         loss_name="pytorch",
@@ -267,6 +283,10 @@ def resolve_rnnt_loss(loss_name: str, blank_idx: int, loss_kwargs: dict = None) 
         loss_func = RNNTLossNumba(blank=blank_idx, reduction='none', fastemit_lambda=fastemit_lambda, clamp=clamp)
         _warn_unused_additional_kwargs(loss_name, loss_kwargs)
 
+    elif loss_name == "turbo_rnnt":
+        loss_kwargs = _clean_kwargs(loss_name, loss_kwargs, TurboRnntLoss.__init__, ignore_params={"blank"})
+        loss_func = TurboRnntLoss(blank=blank_idx, **loss_kwargs)
+
     elif loss_name == 'pytorch':
         loss_func = RNNTLossPytorch(blank=blank_idx, reduction='none')
         _warn_unused_additional_kwargs(loss_name, loss_kwargs)
@@ -417,7 +437,16 @@ class RNNTLoss(Loss):
         self.reduction = reduction
         self._loss = resolve_rnnt_loss(loss_name, blank_idx=self._blank, loss_kwargs=loss_kwargs)
         self._force_float32 = RNNT_LOSS_RESOLVER[loss_name].force_float32
+        self._supports_padding = RNNT_LOSS_RESOLVER[loss_name].supports_padding
         self._fp16_compat_checked = False
+
+    @property
+    def supports_logprobs_input(self) -> bool:
+        """
+        Whether the selected loss can be computed from target and blank log-probabilities (see `forward_from_logprobs`)
+        instead of the full Joint output. Required by the Joint turbo kernels, which do not materialize the logits.
+        """
+        return getattr(self._loss, 'supports_logprobs_input', False)
 
     def warmup(self, device: Union[str, torch.device]) -> bool:
         """Warm supported Numba RNNT/TDT kernels before allocating training activations.
@@ -452,6 +481,54 @@ class RNNTLoss(Loss):
 
         return losses
 
+    def forward_from_logprobs(
+        self,
+        target_logprobs: torch.Tensor,
+        blank_logprobs: torch.Tensor,
+        input_lengths: torch.Tensor,
+        target_lengths: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute the RNN-T loss from target and blank log-probabilities instead of the full Joint output.
+        Supported only by the losses with `supports_logprobs_input`.
+
+        Unlike `forward`, the lengths are not validated against the shapes to avoid host-device synchronization.
+
+        Args:
+            target_logprobs: log-probabilities for target labels of size [B, T, U+1]
+            blank_logprobs: log-probabilities for the blank label of size [B, T, U+1]
+            input_lengths: lengths of the source sequences of size [B]
+            target_lengths: lengths of the targets of size [B]
+
+        Returns:
+            loss, reduced according to `reduction`
+        """
+        if not self.supports_logprobs_input:
+            raise NotImplementedError(
+                f"{type(self._loss).__name__} can't be computed from target and blank log-probabilities"
+            )
+
+        input_lengths = input_lengths.long()
+        target_lengths = target_lengths.long()
+
+        # Temporarily override loss reduction (same as in `forward`)
+        loss_reduction = self._loss.reduction
+        self._loss.reduction = None
+        try:
+            loss = self._loss.forward_from_logprobs(
+                target_logprobs=target_logprobs.contiguous(),
+                blank_logprobs=blank_logprobs.contiguous(),
+                act_lens=input_lengths,
+                label_lens=target_lengths,
+            )
+        finally:
+            self._loss.reduction = loss_reduction
+
+        if self.reduction is not None:
+            loss = self.reduce(loss, target_lengths)
+
+        return loss
+
     @typecheck()
     def forward(self, log_probs, targets, input_lengths, target_lengths):
         # Cast to int 64
@@ -459,8 +536,21 @@ class RNNTLoss(Loss):
         input_lengths = input_lengths.long()
         target_lengths = target_lengths.long()
 
-        max_logit_len = input_lengths.max()
-        max_targets_len = target_lengths.max()
+        max_logit_len = int(input_lengths.max())
+        max_targets_len = int(target_lengths.max())
+
+        # Lengths must be consistent with the Joint output and targets,
+        # otherwise the loss can silently read memory outside the tensors
+        if (
+            max_logit_len > log_probs.shape[1]
+            or max_targets_len + 1 > log_probs.shape[2]
+            or max_targets_len > targets.shape[1]
+        ):
+            raise ValueError(
+                f"Lengths exceed the size of the Joint output or targets: max input length {max_logit_len}, "
+                f"max target length {max_targets_len}, Joint output shape {list(log_probs.shape)} "
+                f"(expected [B, T, U+1, V]), targets shape {list(targets.shape)}"
+            )
 
         # Force cast joint to float32
         if not self._force_float32 and numba_utils.is_numba_cuda_fp16_supported():
@@ -486,7 +576,8 @@ class RNNTLoss(Loss):
         # max sequence length computed does not match the actual max sequence length
         # of the log_probs tensor, therefore we increment the input_lengths by the difference.
         # This difference is generally small.
-        if log_probs.shape[1] != max_logit_len:
+        # If the loss supports padding, the Joint output is used as is (without a copy of the full-size tensor).
+        if log_probs.shape[1] != max_logit_len and not self._supports_padding:
             log_probs = log_probs.narrow(dim=1, start=0, length=max_logit_len).contiguous()
 
         # Reduce transcript length to correct alignment if additional padding was applied.

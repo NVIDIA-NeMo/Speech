@@ -61,7 +61,7 @@ from nemo.collections.tts.modules.easy_magpietts_cfg_distillation import (
 )
 from nemo.collections.tts.modules.magpietts_modules import LocalTransformerType, remove_special_tokens
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
-from nemo.lightning.callback_group import CallbackGroup
+from nemo.lightning.callback_group import with_callback_context
 from nemo.utils import logging
 
 __all__ = ["EasyMagpieCFGDistillation"]
@@ -493,6 +493,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
         return self.lower_rejection_threshold is not None or self.upper_rejection_threshold is not None
 
     @rank_zero_only
+    @with_callback_context('on_load_checkpoint_start', 'on_load_checkpoint_end')
     def maybe_init_from_pretrained_checkpoint(
         self,
         cfg: OmegaConf,
@@ -510,8 +511,6 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
                 f"Cannot pass more than one model initialization arguments to config!\n"
                 f"Found : {[args[idx] for idx, arg_present in enumerate(arg_matches) if arg_present]}"
             )
-
-        CallbackGroup.get_instance().on_load_checkpoint_start()
 
         if "init_from_nemo_model" in cfg and cfg.init_from_nemo_model is not None:
             model_path = cfg.init_from_nemo_model
@@ -547,8 +546,6 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
                     del ckpt
                 else:
                     raise TypeError("Invalid type: init_from_ptl_ckpt is not a string!")
-
-        CallbackGroup.get_instance().on_load_checkpoint_end()
 
     def _init_extra_attributes(self) -> None:
         """Initialize distillation attributes from configuration values and defaults."""

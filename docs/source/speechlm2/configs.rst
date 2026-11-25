@@ -167,6 +167,16 @@ Note the differences from the SALM configuration:
   and diarization branches after feature stacking; set the data audio-token
   estimator's ``chunk_size_seconds`` to ``null`` because this does not change the
   total encoder-token count.
+* A ``ParallelExpertEncoder`` under ``packed_encoder_sequences: true`` and the independent speaker encoder
+  (``speaker_encoder``, which always runs its two encoders sequence-packed)
+  raise an error with the encoder's reason for a branch encoder whose configuration has no sequence-packed form.
+  Set ``allow_padded_fallback: true`` to run such a branch on the padded batch and re-pack its output instead;
+  that is slower than the packed form and logs one warning with the reason. The option is set
+  under ``pe_encoder_overrides`` for a ``ParallelExpertEncoder`` bundle (a local ``.nemo`` file as ``pe_encoder_path``),
+  inside ``pe_encoder_config`` for an inline one,
+  and under ``speaker_encoder`` for the independent speaker encoder.
+  A config, bundle or exported model without the key refuses the fallback, in training and in serving.
+  The Sortformer modules after the diarization encoder of a ``ParallelExpertEncoder`` always run padded.
 
 SALMAutomodel-Specific Options
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -275,6 +285,57 @@ the same THD batch satisfies TE's CP DualChunkSwap contract — see the
 Padding overhead drops from ``O(B * (T_max - T_avg))`` to
 ``O(per-utt rounding to 2*cp_size)``. Throughput improvement scales with
 the variance of utterance lengths in your bucketing.
+
+**Packed encoder sequences:**
+
+.. code-block:: yaml
+
+    model:
+      packed_encoder_sequences: true   # default false (padded encoder batches)
+
+With ``packed_encoder_sequences`` a ``ParallelExpertEncoder`` runs its ASR and
+diarization branches over the utterances of a batch token-flat, without padding
+between them, and ``encoder_chunk_size_seconds`` chunks both branches after
+feature stacking (see above). The attention over the packed batch picks its
+backend per branch, device and precision:
+
+* ``rel_pos`` attention (FastConformer, Sortformer) runs a fused Triton kernel on
+  CUDA in float32, bfloat16 and float16, with attention dropout (``dropout_att``,
+  any value up to ``1.0``). Without Triton it runs FlexAttention, which computes in
+  float32 and has no attention dropout.
+* ``abs_pos`` and ``rope`` attention (Transformer) run variable-length
+  FlashAttention in float16 or bfloat16, with attention dropout; otherwise
+  FlexAttention, without it.
+* ``packed_rel_pos_attention: flex`` on a ``ConformerEncoder`` (the
+  ``asr_encoder_cfg``, or the ``encoder`` of the ``diarization_model_cfg``) selects
+  FlexAttention for ``rel_pos`` attention, the backend of packed runs before the
+  kernel, which reproduces their outputs; it has no attention dropout. Keep it for a
+  run that thresholds the diarization probabilities of a frozen Sortformer and has
+  not been validated on the kernel. For an encoder mounted from a bundle
+  (``pe_encoder_path``) the switch of the diarization branch is the override
+  ``diar_packed_rel_pos_attention``, which leaves the bundle's architecture and
+  weights as they are:
+
+  .. code-block:: yaml
+
+      model:
+        pe_encoder_path: /path/to/parallel_expert_encoder.nemo
+        pe_encoder_overrides:
+          diar_packed_rel_pos_attention: flex
+
+* A branch whose configuration has no packed form in training mode (attention
+  dropout on a backend without it, among the cases
+  ``ConformerEncoder.sequence_packed_unsupported_reason`` names) runs padded and
+  is re-packed, so the step completes either way, with one exception: when
+  ``encoder_chunk_size_seconds`` requires splitting an utterance of the batch into
+  independent chunks, which has no padded form, the step raises ``TypeError`` with
+  the reason instead. Independent post-stacking chunks also need
+  ``subsampling: feature_stacking`` on the branch; a ``ConvSubsampling`` front end
+  raises ``TypeError`` when such a split is needed, in training and in evaluation.
+  Evaluation mode lifts the dropout condition only: every branch runs packed, and
+  the other packed-mode restrictions (the reasons
+  ``sequence_packed_unsupported_reason`` names, the chunking front end) hold in
+  both modes.
 
 DuplexS2SModel Configuration
 -----------------------------
@@ -459,7 +520,10 @@ Model Parameters
   ``lr = optimizer.lr * multiplier``; the first matching pattern wins and unmatched parameters keep the
   base learning rate.
 - **pe_encoder_path**: Path to a standalone ParallelExpertEncoder ``.nemo`` bundle (or a pretrained model
-  id) to mount as the perception encoder. Optional **pe_encoder_overrides** adjust the bundle's config.
+  id) to mount as the perception encoder. Optional **pe_encoder_overrides** adjust the bundle's runtime
+  settings, not its architecture: the speaker-feature contract, normalization, chunking, and
+  ``diar_packed_rel_pos_attention``, the packed attention backend of the diarization branch (see
+  "Packed encoder sequences" above).
 - **pe_encoder_config**: Inline ParallelExpertEncoder config, as embedded in consolidated checkpoints.
   It constructs only the encoder architecture: the weights must come from the checkpoint loaded
   afterwards (e.g. via ``init_from_checkpoint``), otherwise the encoder keeps its random initialization.
@@ -491,6 +555,7 @@ Example configurations for all model types can be found in the example directory
 
 - SALM: `examples/speechlm2/conf/salm.yaml`
 - SALMAutomodel: `examples/speechlm2/conf/salm_automodel.yaml`
+- SALMAutomodel, large-scale multi-node training: `examples/speechlm2/conf/salm_nemotron.yaml`
 - SALM DFlash draft training: ``examples/speechlm2/conf/dflash.yaml`` (launch with ``dflash_train.py``)
 - DuplexS2SModel: `examples/speechlm2/conf/s2s_duplex.yaml`
 - DuplexS2SSpeechDecoderModel: `examples/speechlm2/conf/s2s_duplex_speech_decoder.yaml`

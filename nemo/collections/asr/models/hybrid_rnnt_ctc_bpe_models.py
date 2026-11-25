@@ -110,6 +110,7 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
             use_cer=self.cfg.get('use_cer', False),
             log_prediction=self.cfg.get('log_prediction', True),
             dist_sync_on_step=True,
+            wer_text_normalize=self.cfg.get('wer_text_normalize', False),
         )
 
         # Setup fused Joint step if flag is set
@@ -131,6 +132,7 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
             use_cer=self.cfg.aux_ctc.get('use_cer', False),
             dist_sync_on_step=True,
             log_prediction=self.cfg.get("log_prediction", False),
+            wer_text_normalize=self.cfg.get('wer_text_normalize', False),
         )
 
         # setting the RNNT decoder as the default one
@@ -322,7 +324,11 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
         self.decoder = EncDecHybridRNNTCTCBPEModel.from_config_dict(new_decoder_config)
 
         del self.loss
-        self.loss = RNNTLoss(num_classes=self.joint.num_classes_with_blank - 1)
+        if self.joint.uses_turbo_kernel:
+            # the default loss can't be computed from the log-probabilities returned by the Joint turbo kernel
+            self.loss = self._make_loss_for_joint_turbo_kernel()
+        else:
+            self.loss = RNNTLoss(num_classes=self.joint.num_classes_with_blank - 1)
 
         if decoding_cfg is None:
             # Assume same decoding config as before
@@ -347,6 +353,7 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
             use_cer=self.wer.use_cer,
             log_prediction=self.wer.log_prediction,
             dist_sync_on_step=True,
+            wer_text_normalize=self.wer.wer_text_normalize,
         )
 
         # Setup fused Joint step
@@ -411,6 +418,7 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
                 use_cer=self.cfg.aux_ctc.get('use_cer', False),
                 log_prediction=self.cfg.get("log_prediction", False),
                 dist_sync_on_step=True,
+                wer_text_normalize=self.cfg.get('wer_text_normalize', False),
             )
 
             # Update config
@@ -460,6 +468,7 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
                 use_cer=self.wer.use_cer,
                 log_prediction=self.wer.log_prediction,
                 dist_sync_on_step=True,
+                wer_text_normalize=self.wer.wer_text_normalize,
             )
 
             # Setup fused Joint step
@@ -501,6 +510,7 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
                 use_cer=self.ctc_wer.use_cer,
                 log_prediction=self.ctc_wer.log_prediction,
                 dist_sync_on_step=True,
+                wer_text_normalize=self.ctc_wer.wer_text_normalize,
             )
 
             self.ctc_decoder.temperature = decoding_cfg.get('temperature', 1.0)

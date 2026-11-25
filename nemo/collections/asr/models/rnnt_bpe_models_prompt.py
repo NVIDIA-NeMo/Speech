@@ -32,6 +32,7 @@ from nemo.collections.asr.parts.mixins import ASRTranscriptionMixin, PromptStrea
 from nemo.collections.asr.parts.mixins.transcription import TranscriptionReturnType
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTBPEDecoding
+from nemo.collections.asr.parts.utils.longform_inference import ChunkingConfig, resolve_chunking
 from nemo.collections.asr.parts.utils.prompt_language_utils import (
     AUTO_PROMPT_LANGUAGE,
     resolve_deprecated_prompt_arguments,
@@ -175,6 +176,7 @@ class EncDecRNNTBPEModelWithPrompt(PromptStreamingMixin, EncDecRNNTBPEModel, ASR
             use_cer=self.cfg.get('use_cer', False),
             log_prediction=self.cfg.get('log_prediction', True),
             dist_sync_on_step=True,
+            wer_text_normalize=self.cfg.get('wer_text_normalize', False),
         )
 
         if self.joint.fuse_loss_wer:
@@ -456,9 +458,13 @@ class EncDecRNNTBPEModelWithPrompt(PromptStreamingMixin, EncDecRNNTBPEModel, ASR
             sample_id = batch_nb
 
         if not self.joint.fuse_loss_wer:
-            joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
-            loss_value = self.loss(
-                log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
+            loss_value, _ = self._compute_losses(
+                encoded=encoded,
+                decoder=decoder,
+                transcript=transcript,
+                encoded_len=encoded_len,
+                target_length=target_length,
+                current_step=self.global_step,
             )
             loss_value = self.add_auxiliary_losses(loss_value)
 
@@ -533,9 +539,12 @@ class EncDecRNNTBPEModelWithPrompt(PromptStreamingMixin, EncDecRNNTBPEModel, ASR
         if not self.joint.fuse_loss_wer:
             if self.compute_eval_loss:
                 decoder, target_length, states = self.decoder(targets=transcript, target_length=transcript_len)
-                joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
-                loss_value = self.loss(
-                    log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
+                loss_value, _ = self._compute_losses(
+                    encoded=encoded,
+                    decoder=decoder,
+                    transcript=transcript,
+                    encoded_len=encoded_len,
+                    target_length=target_length,
                 )
                 tensorboard_logs['val_loss'] = loss_value
 
@@ -646,9 +655,19 @@ class EncDecRNNTBPEModelWithPrompt(PromptStreamingMixin, EncDecRNNTBPEModel, ASR
         verbose: bool = True,
         timestamps: Optional[bool] = None,
         override_config: Optional[RNNTPromptTranscribeConfig] = None,
+        chunking: Optional[ChunkingConfig] = None,
         **prompt,
     ) -> TranscriptionReturnType:
-        if timestamps is not None:
+        """Transcribe with per-utterance language conditioning.
+
+        Arguments follow ``EncDecRNNTModel.transcribe``. ``chunking`` enables the
+        shared offline chunk plan. ``target_lang`` in ``prompt`` overrides manifest
+        languages. With ``override_config``, set its ``chunking`` and ``target_lang``
+        fields instead. Returns one transcription hypothesis per input utterance.
+        """
+        # Planned chunking computes timestamps call-locally and leaves the model decoding unchanged.
+        planned_chunking = resolve_chunking(chunking, override_config) is not None
+        if timestamps is not None and not planned_chunking:
             decoding_cfg = self.cfg.decoding
             if timestamps or (override_config is not None and override_config.timestamps):
                 return_hypotheses = True
@@ -674,6 +693,7 @@ class EncDecRNNTBPEModelWithPrompt(PromptStreamingMixin, EncDecRNNTBPEModel, ASR
                 timestamps=timestamps,
                 target_lang=prompt.get('target_lang', defaults.target_lang),
                 lang_field=prompt.get('lang_field', defaults.lang_field),
+                chunking=chunking,
             )
         else:
             if not isinstance(override_config, RNNTPromptTranscribeConfig):

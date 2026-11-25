@@ -252,6 +252,7 @@ class _AudioTextDALIDataset(Iterator):
 
             self.window = None
             window_name = params['window'] if 'window' in params else 'hann'
+            periodic_window = params['periodic_window'] if 'periodic_window' in params else False
             torch_windows = {
                 'hann': torch.hann_window,
                 'hamming': torch.hamming_window,
@@ -271,10 +272,11 @@ class _AudioTextDALIDataset(Iterator):
                         f" It must be one of: ('hann', 'ones', 'hamming', 'blackman', 'bartlett', None)."
                         f" None is equivalent to 'hann'."
                     )
-                window_tensor = window_fn(self.window_size, periodic=False) if window_fn else None
+                window_tensor = window_fn(self.window_size, periodic=periodic_window) if window_fn else None
             self.window = window_tensor.numpy().tolist() if window_tensor is not None else None
 
             self.n_fft = params['n_fft'] if 'n_fft' in params else 2 ** math.ceil(math.log2(self.window_size))
+            self.snip_edges = params['snip_edges'] if 'snip_edges' in params else False
             self.n_mels = params['n_mels'] if 'n_mels' in params else 64
             self.n_mfcc = params['n_mfcc'] if 'n_mfcc' in params else 64
 
@@ -291,7 +293,19 @@ class _AudioTextDALIDataset(Iterator):
 
             self.freq_low = params['lowfreq'] if 'lowfreq' in params else 0.0
             self.freq_high = params['highfreq'] if 'highfreq' in params else self.sample_rate / 2.0
+            self.mel_scale = params['mel_scale'] if 'mel_scale' in params else 'slaney'
+            if self.mel_scale not in ('slaney', 'htk'):
+                raise ValueError(f"{self} received mel_scale={self.mel_scale!r}; it must be 'slaney' or 'htk'.")
+            # DALI offers the area normalization of the filters or none, not librosa's other norms.
+            self.mel_norm = params['mel_norm'] if 'mel_norm' in params else 'slaney'
+            if self.mel_norm not in ('slaney', None):
+                raise ValueError(f"{self} received mel_norm={self.mel_norm!r}; it must be 'slaney' or None.")
             self.log_features = params['log'] if 'log' in params else True
+            self.log_base = params['log_base'] if 'log_base' in params else None
+            if self.log_base is not None and (self.log_base <= 0 or self.log_base == 1):
+                raise ValueError(
+                    f"{self} received log_base={self.log_base!r}; it must be a positive number other than 1."
+                )
 
             # We want to avoid taking the log of zero
             # There are two options: either adding or clamping to a small value
@@ -420,7 +434,7 @@ class _AudioTextDALIDataset(Iterator):
                     audio = audio + self.dither * gaussian_noise
 
                 # Preemphasis filter
-                if self.preemph > 0.0:
+                if self.preemph is not None and self.preemph > 0.0:
                     audio = dali.fn.preemphasis_filter(audio, preemph_coeff=self.preemph, border='zero')
 
                 # Power spectrogram
@@ -430,6 +444,7 @@ class _AudioTextDALIDataset(Iterator):
                     window_length=self.window_size,
                     window_step=self.window_stride,
                     window_fn=self.window,
+                    center_windows=not self.snip_edges,
                 )
 
                 if feature_type == 'mel_spectrogram' or feature_type == 'mfcc':
@@ -438,7 +453,8 @@ class _AudioTextDALIDataset(Iterator):
                         spec,
                         sample_rate=self.sample_rate,
                         nfilter=self.n_mels,
-                        normalize=True,
+                        normalize=self.mel_norm == 'slaney',
+                        mel_formula=self.mel_scale,
                         freq_low=self.freq_low,
                         freq_high=self.freq_high,
                     )
@@ -446,13 +462,24 @@ class _AudioTextDALIDataset(Iterator):
                     if feature_type == 'mfcc':
                         spec = dali.fn.mfcc(spec, n_mfcc=self.n_mfcc)
 
-                # Logarithm
-                if self.log_zero_guard_type == 'add':
-                    spec = spec + self.log_zero_guard_value
+                # Logarithm; with log=False the features stay linear, as in FilterbankFeatures,
+                # and the zero guard is not applied either.
+                if self.log_features:
+                    if self.log_zero_guard_type == 'add':
+                        spec = spec + self.log_zero_guard_value
 
-                spec = dali.fn.to_decibels(
-                    spec, multiplier=math.log(10), reference=1.0, cutoff_db=math.log(self.log_zero_guard_value)
-                )
+                    # to_decibels computes multiplier * log10(x),
+                    # so this multiplier gives the logarithm to log_base, or the natural logarithm when log_base is None;
+                    # the cutoff is the guard value in those units.
+                    log_multiplier = (
+                        math.log(10) / math.log(self.log_base) if self.log_base is not None else math.log(10)
+                    )
+                    spec = dali.fn.to_decibels(
+                        spec,
+                        multiplier=log_multiplier,
+                        reference=1.0,
+                        cutoff_db=log_multiplier * math.log10(self.log_zero_guard_value),
+                    )
 
                 # Normalization
                 spec = dali.fn.normalize(spec, axes=self.normalization_axes, epsilon=1e-5**2, ddof=1)

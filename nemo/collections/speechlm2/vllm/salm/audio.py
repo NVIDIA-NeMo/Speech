@@ -82,7 +82,10 @@ _DUMMY_AUDIO_TEXT_TOKEN_RESERVE = 64
 _MIN_CHUNK_SIZE_SAMPLES = 320
 # vLLM 0.32 tokenizes the prompt in its renderer and calls ``_call_hf_processor(hf_data, hf_kwargs)`` with the
 # multimodal data only; vLLM 0.28 calls ``_call_hf_processor(prompt, mm_data, mm_kwargs, tok_kwargs)``.
-_PROCESSOR_TAKES_PROMPT = "prompt" in inspect.signature(BaseMultiModalProcessor._call_hf_processor).parameters
+_LEGACY_PROCESSOR_HOOK = getattr(BaseMultiModalProcessor, "_call_hf_processor", None)
+_PROCESSOR_TAKES_PROMPT = (
+    _LEGACY_PROCESSOR_HOOK is not None and "prompt" in inspect.signature(_LEGACY_PROCESSOR_HOOK).parameters
+)
 # vLLM 0.32 applies prompt updates on token ids only; vLLM 0.28 also takes text targets.
 _PROMPT_UPDATES_TAKE_TEXT = hasattr(PromptUpdateDetails, "select_text")
 
@@ -284,6 +287,7 @@ def _maybe_mount_independent_speaker_encoder(
         asr_chunk_size_seconds=speaker_encoder_cfg.get("asr_chunk_size_seconds", None),
         auxiliary_chunk_size_seconds=speaker_encoder_cfg.get("chunk_size_seconds", None),
         freeze_auxiliary=speaker_encoder_cfg.get("frozen", True),
+        allow_padded_fallback=speaker_encoder_cfg.get("allow_padded_fallback", False),
     )
 
     old_proj = getattr(perception, "proj", None)
@@ -321,6 +325,7 @@ def _pad_to_vocab_size(tensor: torch.Tensor, target_vocab: int) -> torch.Tensor:
             target_vocab - tensor.shape[0],
             *tensor.shape[1:],
             dtype=tensor.dtype,
+            device=tensor.device,
         )
         tensor = torch.cat([tensor, pad], dim=0)
     return tensor
@@ -607,6 +612,26 @@ class NeMoSpeechLMMultiModalProcessor(
             return self._call_hf_processor_with_prompt(*args, **kwargs)
         return self._call_hf_processor_audio_only(*args, **kwargs)
 
+    if _LEGACY_PROCESSOR_HOOK is None:
+
+        def _apply_hf_processor_main(
+            self,
+            mm_items: MultiModalDataItems,
+            hf_processor_mm_kwargs: Mapping[str, object],
+        ) -> BatchFeature:
+            """vLLM 0.29's native hook; SALM packages waveforms without an HF processor.
+
+            The renderer has already tokenized the prompt, and the normal prompt-update
+            path expands its audio placeholders. Cached calls may contain only missing
+            audio items, or no audio at all.
+            """
+            processor_data, passthrough_data = self._get_hf_mm_data(mm_items)
+            result = self._call_hf_processor_audio_only(
+                {"audio": processor_data.get("audios", [])}, hf_processor_mm_kwargs
+            )
+            result.update(passthrough_data)
+            return result
+
     def _call_hf_processor_with_prompt(
         self,
         prompt: str,
@@ -624,11 +649,13 @@ class NeMoSpeechLMMultiModalProcessor(
         mm_data = dict(mm_data)
         audios = mm_data.pop("audios", [])
 
+        prompt_ids = None
         if audios:
             chunk_size_seconds = self.info._get_encoder_chunk_size_seconds()
             estimator_config = self.info._get_audio_token_estimator_config()
             audio_list: list[torch.Tensor] = []
             audio_lengths: list[int] = []
+            template = prompt
             parts = re.split(f"({re.escape(_AUDIO_PLACEHOLDER)})", prompt)
             # One placeholder is overwritten with one audio's encoder output
             # at forward time (positional pairing); counts must match or the
@@ -654,8 +681,12 @@ class NeMoSpeechLMMultiModalProcessor(
                 audio_lengths.append(audio_tensor.shape[-1])
 
             prompt = "".join(parts)
+            prompt_ids = self._expand_template_ids(
+                tokenizer, template, [len(parts[i]) // len(_AUDIO_PLACEHOLDER) for i in ph_positions]
+            )
 
-        prompt_ids = tokenizer.encode(prompt, add_special_tokens=True)
+        if prompt_ids is None:
+            prompt_ids = tokenizer.encode(prompt, add_special_tokens=True)
         result = BatchFeature(dict(input_ids=[prompt_ids]), tensor_type="pt")
 
         if audios:
@@ -665,6 +696,34 @@ class NeMoSpeechLMMultiModalProcessor(
             capture = bool(mm_kwargs.get("capture_ctc_timestamps", False))
             result["capture_ctc_timestamps"] = torch.full((len(audio_list),), capture)
         return result
+
+    def _expand_template_ids(
+        self, tokenizer: PreTrainedTokenizerBase, template: str, counts: list[int]
+    ) -> list[int] | None:
+        """Token ids of ``template`` with its i-th audio placeholder repeated ``counts[i]`` times.
+
+        The placeholder is a special token, which tokenizers split out before tokenizing the text between them,
+        so the ids equal the template's ids with each placeholder id repeated. Tokenizing the long expanded
+        string costs ~0.5 ms per request; the template is tokenized once per distinct prompt and checked then
+        against the direct tokenization of a probe that repeats every placeholder, whatever the request's counts.
+        Returns None (tokenize directly) when the check fails.
+        """
+        cache = self.__dict__.setdefault("_template_ids_cache", {})
+        if template not in cache:
+            ph_id = tokenizer.get_vocab().get(_AUDIO_PLACEHOLDER)
+            ids = tokenizer.encode(template, add_special_tokens=True)
+            entry = (ids, ph_id) if ph_id is not None and ids.count(ph_id) == len(counts) else None
+            probe = template.replace(_AUDIO_PLACEHOLDER, _AUDIO_PLACEHOLDER * 2)
+            if entry is not None and _expand_ids(*entry, [2] * len(counts)) != tokenizer.encode(
+                probe, add_special_tokens=True
+            ):
+                entry = None
+            if entry is None:
+                logging.warning("Audio prompt template does not tokenize separably; tokenizing every request.")
+            if len(cache) < 1024:
+                cache[template] = entry
+        entry = cache.get(template)
+        return None if entry is None else _expand_ids(*entry, counts)
 
     def _call_hf_processor_audio_only(
         self,
@@ -759,3 +818,15 @@ def _config_has_pe_encoder(config) -> bool:
     return getattr(config, "pe_encoder_path", None) not in (None, "", False) or getattr(
         config, "pe_encoder_config", None
     ) not in (None, {}, "", False)
+
+
+def _expand_ids(ids: list[int], placeholder_id: int, counts: list[int]) -> list[int]:
+    """Repeat the k-th occurrence of ``placeholder_id`` in ``ids`` ``counts[k]`` times."""
+    out, k = [], 0
+    for t in ids:
+        if t == placeholder_id:
+            out.extend([t] * counts[k])
+            k += 1
+        else:
+            out.append(t)
+    return out

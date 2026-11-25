@@ -28,6 +28,7 @@ The embedding alias is required by vLLM's Nemotron-H MTP loader even though
 the proposer subsequently shares the table with the target model.
 """
 
+import logging
 from collections.abc import Iterable
 
 import torch
@@ -39,6 +40,8 @@ from nemo.collections.speechlm2.vllm.salm.audio import _pad_to_vocab_size
 # Checkpoint tensors the draft head loads (see _remap_nemo_mtp_weights): the MTP layers, the LM head, and the
 # token embeddings under either export name.
 _DRAFT_CHECKPOINT_PREFIXES = ("llm.mtp.", "llm.lm_head.", "llm.model.embed_tokens.", "llm.backbone.embeddings.")
+
+logger = logging.getLogger(__name__)
 
 
 def _remap_nemo_mtp_weights(
@@ -214,4 +217,45 @@ class NeMoSpeechLMMTP(NemotronHMTP):
                 "draft head would run on uninitialized weights (vLLM skips its missing-weight check for quantized "
                 "checkpoints). Export the MTP head with the checkpoint or disable speculative decoding."
             )
+        warm_eagle_prepare_inputs_kernel()
         return loaded
+
+
+# ``num_reqs`` values that make Triton compile distinct variants of the kernel: 1, a generic value and a multiple of
+# 16 (Triton specializes integer arguments on ``== 1`` and ``% 16 == 0``).
+_EAGLE_PREPARE_WARMUP_NUM_REQS = (1, 2, 16)
+
+
+def warm_eagle_prepare_inputs_kernel(device: str | torch.device = "cuda") -> None:
+    """Compile every variant of vLLM's ``eagle_prepare_inputs_padded_kernel`` before serving.
+
+    vLLM's own warmup runs the speculative proposer with a few batch sizes, so the variants it does not reach are
+    JIT-compiled by the first real request that needs them (vLLM logs "JIT compilation during inference"), stalling
+    that request for tens of seconds under load. Launching the kernel once per variant moves that cost to start-up.
+    Best-effort: a vLLM without the kernel, or without a CUDA device, is left alone.
+    """
+    if not torch.cuda.is_available():
+        return
+    try:
+        from vllm.v1.spec_decode.utils import eagle_prepare_inputs_padded_kernel as kernel
+    except ImportError:
+        return
+    try:
+        for num_reqs in _EAGLE_PREPARE_WARMUP_NUM_REQS:
+            kwargs = dict(dtype=torch.int32, device=device)
+            cu_num_draft_tokens = torch.arange(1, num_reqs + 1, **kwargs)
+            valid_sampled_tokens_count = torch.ones(num_reqs, **kwargs)
+            query_start_loc = torch.arange(num_reqs + 1, **kwargs)
+            token_indices_to_sample = torch.empty(num_reqs, **kwargs)
+            num_rejected_tokens = torch.empty(num_reqs, **kwargs)
+            kernel[(num_reqs,)](
+                cu_num_draft_tokens,
+                valid_sampled_tokens_count,
+                query_start_loc,
+                token_indices_to_sample,
+                num_rejected_tokens,
+                num_reqs,
+            )
+        torch.cuda.synchronize(device)
+    except Exception:  # a warmup must never fail model loading
+        logger.warning("Could not warm up eagle_prepare_inputs_padded_kernel.", exc_info=True)

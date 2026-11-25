@@ -7,6 +7,7 @@ from omegaconf import OmegaConf
 
 from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.utils.config_utils import resolve_model_config
+from nemo.utils.tar_utils import safe_extract
 from tests.core.test_save_restore import MockModel
 
 
@@ -84,7 +85,7 @@ def model_archive(tmp_path):
     extracted = tmp_path / 'extracted'
     extracted.mkdir()
     with tarfile.open(archive) as source:
-        source.extractall(extracted, filter='data')
+        safe_extract(source, str(extracted))
     return archive, extracted
 
 

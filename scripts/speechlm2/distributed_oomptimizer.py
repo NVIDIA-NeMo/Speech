@@ -1234,6 +1234,17 @@ def _emit_profile(profile: dict, buckets, memory_fraction: float, ddp: bool, dty
     click.secho("\tbucket_batch_size=[" + ",".join(str(bs) for seqlen, bs in final_profile) + "]", bold=True)
 
 
+def _single_process_trainer_cfg(trainer_cfg: dict) -> dict:
+    """Restrict a resolved trainer config to one device while keeping the configured strategy.
+
+    The strategy is kept so that a single-GPU probe builds the model the same way single-GPU training does.
+    For example, ``AutomodelParallelStrategy`` provides the device mesh that makes SALMAutomodel cast its
+    perception module to the training dtype; without it the trainable parameters would stay in fp32 and the
+    profiled memory (and optimizer setup) would not match real training.
+    """
+    return {**trainer_cfg, "devices": 1, "num_nodes": 1}
+
+
 def _is_oom_like(error: RuntimeError) -> bool:
     error_msg = str(error)
     return (
@@ -1514,8 +1525,7 @@ def oomptimizer(
     model_cls = getattr(importlib.import_module(namespace), name)
     trainer_cfg = resolve_trainer_cfg(cfg.trainer)
     if not distributed:
-        trainer_cfg = {**trainer_cfg, "devices": 1, "num_nodes": 1}
-        trainer_cfg.pop("strategy", None)
+        trainer_cfg = _single_process_trainer_cfg(trainer_cfg)
     trainer = pl.Trainer(
         **{
             **trainer_cfg,

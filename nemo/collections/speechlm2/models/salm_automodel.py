@@ -437,9 +437,13 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             placeholder_id=self.audio_locator_tag_id,
             replacements=audio_embs,
             target_ids=target_ids_full,
+            # Automodel's padded-batch kernels (TE padding attention, Mamba) assume right padding.
+            padding_side="right",
         )
         input_embs = input_embs[:, :-1]
-        attention_mask = attention_mask[:, :-1]
+        # A position is a real input only if it has a next token: this drops each row's last token,
+        # which is not always in the last column when rows are right-padded.
+        attention_mask = attention_mask[:, :-1] & attention_mask[:, 1:]
         target_ids = target_ids[:, 1:]
 
         # BSHD path runs only when CP is inactive (the fit-start validator

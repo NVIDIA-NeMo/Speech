@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import pytest
 import torch
 
 from nemo.collections.speechlm2.models.salm import replace_placeholders_and_build_targets
@@ -136,3 +137,75 @@ def test_replace_placeholders_removes_excessive_left_padding():
         ])
     )
     # fmt: on
+
+
+def test_replace_placeholders_right_padding():
+    # fmt: off
+    PAD = 0
+    AUDIO = 100
+    input_ids = torch.tensor([
+        [7  , AUDIO, 1, 2    , AUDIO, 1],
+        [PAD,   PAD, 3, AUDIO, 4    , 5]
+    ])
+    loss_mask = torch.tensor([
+        [False, False, False, False, False, True],
+        [False, False, False, False, True , True]
+    ])
+    embeds = torch.ones(2, 6, 2)
+    embeds[1, :2] = 0
+    replacements = [
+        torch.full((4, 2), fill_value=2.0),
+        torch.full((3, 2), fill_value=3.0),
+        torch.full((2, 2), fill_value=4.0),
+    ]
+
+    embeds_r, targets_r, attention_mask_r = replace_placeholders_and_build_targets(
+        input_ids=input_ids,
+        embeds=embeds,
+        padding_id=PAD,
+        placeholder_id=AUDIO,
+        replacements=replacements,
+        target_ids=input_ids.where(loss_mask, -100),
+        padding_side="right",
+    )
+
+    assert embeds_r.shape == (2, 11, 2)
+    # batch item 0 has no padding: identical to the left-padded layout
+    assert (embeds_r[0, 0]    == 1.0).all()
+    assert (embeds_r[0, 1:5]  == 2.0).all()
+    assert (embeds_r[0, 5:7]  == 1.0).all()
+    assert (embeds_r[0, 7:10] == 3.0).all()
+    assert (embeds_r[0, 10]   == 1.0).all()
+    # batch item 1 starts at position 0 and is padded at the end
+    assert (embeds_r[1, 0:1]  == 1.0).all()
+    assert (embeds_r[1, 1:3]  == 4.0).all()
+    assert (embeds_r[1, 3:5]  == 1.0).all()
+    assert (embeds_r[1, 5:]   == 0.0).all()
+
+    torch.testing.assert_close(
+        targets_r,
+        torch.tensor([
+            [-100, -100, -100, -100, -100, -100, -100, -100, -100, -100, 1],
+            [-100, -100, -100,    4,    5, -100, -100, -100, -100, -100, -100],
+        ])
+    )
+    torch.testing.assert_close(
+        attention_mask_r,
+        torch.tensor([
+            [True, True, True, True, True, True,  True,  True,  True,  True,  True],
+            [True, True, True, True, True, False, False, False, False, False, False],
+        ])
+    )
+    # fmt: on
+
+
+def test_replace_placeholders_rejects_unknown_padding_side():
+    with pytest.raises(ValueError, match="padding_side"):
+        replace_placeholders_and_build_targets(
+            input_ids=torch.tensor([[1, 2]]),
+            embeds=torch.ones(1, 2, 2),
+            padding_id=0,
+            placeholder_id=100,
+            replacements=[],
+            padding_side="center",
+        )

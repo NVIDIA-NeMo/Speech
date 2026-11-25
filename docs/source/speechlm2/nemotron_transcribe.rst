@@ -30,7 +30,7 @@ audio understanding and reasoning were evaluated only in English.
 Install and download
 --------------------
 
-Use the latest NeMo Speech ``main`` branch and its vLLM 0.32.0 serving environment on Linux.
+Use the latest NeMo Speech ``main`` branch and its vLLM 0.33.0 serving environment on Linux.
 The BF16 example below targets one H100 80 GB. Start in a separate checkout and environment from training;
 the :doc:`general serving guide <vllm_serving>` explains which extras can be combined with ``vllm``.
 

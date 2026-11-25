@@ -287,6 +287,7 @@ def _maybe_mount_independent_speaker_encoder(
         asr_chunk_size_seconds=speaker_encoder_cfg.get("asr_chunk_size_seconds", None),
         auxiliary_chunk_size_seconds=speaker_encoder_cfg.get("chunk_size_seconds", None),
         freeze_auxiliary=speaker_encoder_cfg.get("frozen", True),
+        allow_padded_fallback=speaker_encoder_cfg.get("allow_padded_fallback", False),
     )
 
     old_proj = getattr(perception, "proj", None)

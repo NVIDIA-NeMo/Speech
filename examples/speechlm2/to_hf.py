@@ -196,6 +196,7 @@ def _hf_export_config(model: torch.nn.Module, dtype: str | torch.dtype) -> dict[
             ("speaker_feature_mode", "speaker_feature_mode"),
             ("speaker_activity_threshold", "speaker_activity_threshold"),
             ("spk_kernel_scale", "spk_kernel_scale"),
+            ("allow_padded_fallback", "allow_padded_fallback"),
         ):
             if hasattr(pe_encoder, attr_name):
                 bundle_config[config_key] = getattr(pe_encoder, attr_name)
@@ -219,6 +220,7 @@ def _hf_export_config(model: torch.nn.Module, dtype: str | torch.dtype) -> dict[
             "frozen": bool(getattr(dual, "freeze_auxiliary", True)),
             "chunk_size_seconds": getattr(dual, "auxiliary_chunk_size_seconds", None),
             "asr_chunk_size_seconds": getattr(dual, "asr_chunk_size_seconds", None),
+            "allow_padded_fallback": bool(getattr(dual, "allow_padded_fallback", False)),
         }
     dtype_name = _canonical_torch_dtype_name(dtype)
     config["dtype"] = dtype_name
@@ -345,19 +347,26 @@ def save_llm_backbone_config(model: torch.nn.Module, output_dir: str | Path) -> 
         return
 
     llm_backbone_dir = Path(output_dir) / LLM_BACKBONE_DIR
-    llm_backbone_dir.mkdir(parents=True, exist_ok=True)
+    # save_pretrained also copies remote-code modules referenced by ``auto_map``,
+    # but only when the config was instantiated from that remote code.
+    llm_config.save_pretrained(str(llm_backbone_dir))
+    config_path = llm_backbone_dir / "config.json"
+    config = json.loads(config_path.read_text())
+    if getattr(llm_config, "_auto_class", None) is None:
+        # A built-in Transformers class (e.g. loaded with trust_remote_code=False)
+        # keeps the source checkpoint's ``auto_map`` but serializes its own schema
+        # and ships no remote modules. Drop the stale map so every reload, including
+        # trust_remote_code=True, resolves the built-in class used in training.
+        config.pop("auto_map", None)
     if getattr(llm_config, "model_type", None) == "nemotron_h":
         # Transformers >= 5.15 renames these discriminators in memory. Serialize
         # the original names, which both older and newer serving runtimes accept.
         # Keep the live model config untouched, including its native MTP topology.
-        config = json.loads(llm_config.to_json_string())
         aliases = {"linear_attention": "mamba", "full_attention": "attention"}
         for key in ("layers_block_type", "mtp_layers_block_type"):
             if config.get(key) is not None:
                 config[key] = [aliases.get(block, block) for block in config[key]]
-        (llm_backbone_dir / "config.json").write_text(json.dumps(config, indent=2) + "\n")
-    else:
-        llm_config.save_pretrained(str(llm_backbone_dir))
+    config_path.write_text(json.dumps(config, indent=2) + "\n")
 
 
 def _detect_vllm_architecture(model_cfg: dict) -> tuple[str, int]:
@@ -574,17 +583,33 @@ def prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
 def _try_prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
     """Run vLLM prep; on ``ValueError``, warn and keep the HF-only output.
 
-    Backward compat for callers that never needed vLLM (e.g., NeMo SALM).
+    Backward compat for exports that are not vLLM targets (e.g., Duplex models
+    without ``audio_locator_tag``). vLLM prep also writes the root tokenizer.
+    A SALM-style export (with ``audio_locator_tag``) that bundles an
+    ``llm_backbone`` config and names no explicit ``tokenizer_path`` loads its
+    tokenizer from the export itself, so a failure there is re-raised instead
+    of leaving an unloadable checkpoint.
+
+    Raises:
+        RuntimeError: If prep fails for a SALM-style export that has a bundled
+            backbone config, no tokenizer, and no explicit ``tokenizer_path``.
     """
     from nemo.utils import logging as LOG
 
     try:
         prepare_for_vllm(output_dir, model_cfg)
     except ValueError as e:
+        output_dir = Path(output_dir)
+        is_salm_export = bool(model_cfg.get("audio_locator_tag"))
+        has_backbone_config = (output_dir / LLM_BACKBONE_DIR / "config.json").exists()
+        has_tokenizer = (output_dir / "tokenizer_config.json").exists() or model_cfg.get("tokenizer_path")
+        if is_salm_export and has_backbone_config and not has_tokenizer:
+            raise RuntimeError(
+                f"vLLM prep failed for the export in {output_dir}, so no tokenizer was written and the "
+                f"checkpoint cannot be loaded by NeMo SALM, HF, or vLLM: {e}"
+            ) from e
         LOG.warning(
-            "Checkpoint saved as HF-only; vLLM prep skipped: %s. "
-            "The checkpoint is still loadable by NeMo SALM and plain HF, but "
-            "is NOT vLLM-ready until prep succeeds.",
+            "Checkpoint saved as HF-only; vLLM prep skipped: %s. The checkpoint is NOT vLLM-ready until prep succeeds.",
             e,
         )
 

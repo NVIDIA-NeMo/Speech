@@ -36,7 +36,7 @@ than for English, for more throughput. Measure both on your own test sets agains
 - `transformers` with NemotronH support, `torch`, `safetensors` and `datasets`.
 - The default FP8 calibration reads the gated `nvidia/Nemotron-Post-Training-Dataset-v2`. Log in to Hugging Face
   with access to it, or pass `--calib-dataset cnn_dailymail`.
-- vLLM 0.32 and NeMo with the SpeechLM plugin's quantized serving (NVIDIA-NeMo/Speech#16341), for calibration and
+- vLLM 0.33 and NeMo with the SpeechLM plugin's quantized serving (NVIDIA-NeMo/Speech#16341), for calibration and
   serving. Serving the CTC timestamp head also needs NVIDIA-NeMo/Speech#16344; without it, assemble with
   `--skip-ctc-head`.
 - Working space on top of the source checkpoint. Keeping the BF16 decoder export, the quantized decoder and the
@@ -71,7 +71,7 @@ OUT=/models/speechlm-$RECIPE
 4. Calibrate the audio encoder and the MTP head by serving the step 3 checkpoint with vLLM and transcribing held-out
    audio with MTP speculative decoding on. Add `--kv-cache-dtype fp8` for NVFP4:
    ```bash
-   VLLM_PLUGINS=nemo_speechlm VLLM_WORKER_MULTIPROC_METHOD=spawn \
+   VLLM_PLUGINS=nemo_speechlm \
    python calibrate_activations.py --checkpoint $WORK/ckpt_bf16_heads --manifest calib.jsonl --output $WORK/ranges.json
    ```
    `calib.jsonl` holds one `{"audio_filepath": ...}` per line. Use a few hundred held-out clips that resemble your
@@ -89,7 +89,7 @@ you pass it, and refuses an output that is, contains or lies inside one of its i
 ## Serve
 
 ```bash
-VLLM_PLUGINS=nemo_speechlm VLLM_WORKER_MULTIPROC_METHOD=spawn \
+VLLM_PLUGINS=nemo_speechlm \
 vllm serve $OUT --trust-remote-code --dtype bfloat16 \
     --kv-cache-dtype fp8 \
     --speculative-config '{"method":"mtp","num_speculative_tokens":2}'

@@ -86,6 +86,9 @@ def test_entrypoint_rejects_ddp_spawn_before_building_model(tmp_path, monkeypatc
     build_model = Mock(side_effect=AssertionError("the model must not be built"))
     monkeypatch.setattr(SingleBlockDistributedOOMptimizerModel, "__init__", build_model)
     monkeypatch.delenv("WORLD_SIZE", raising=False)
+    # The entrypoint sets process-wide CUDA numerics; restore them so later tests in this process are unaffected.
+    matmul_precision = torch.get_float32_matmul_precision()
+    cudnn_allow_tf32 = torch.backends.cudnn.allow_tf32
     try:
         result = CliRunner().invoke(
             _OOMPTIMIZER.oomptimizer,
@@ -101,6 +104,8 @@ def test_entrypoint_rejects_ddp_spawn_before_building_model(tmp_path, monkeypatc
         )
     finally:
         torch.cuda.set_per_process_memory_fraction(1.0)
+        torch.set_float32_matmul_precision(matmul_precision)
+        torch.backends.cudnn.allow_tf32 = cudnn_allow_tf32
 
     assert result.exit_code != 0
     assert "Use 'ddp'" in result.output

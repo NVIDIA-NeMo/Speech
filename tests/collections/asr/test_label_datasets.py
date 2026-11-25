@@ -88,8 +88,18 @@ class TestASRDatasets:
         assert count == 6
 
     @pytest.mark.unit
-    def test_feat_seqlabel_dataset(self, test_data_dir):
-        manifest_path = os.path.abspath(os.path.join(test_data_dir, 'asr/feat/emb.json'))
+    def test_feat_seqlabel_dataset(self, test_data_dir, tmp_path):
+        fixture_manifest = os.path.abspath(os.path.join(test_data_dir, 'asr/feat/emb.json'))
+        manifest_path = str(tmp_path / 'features.json')
+        # Convert the repository's trusted legacy fixtures to numeric array files.
+        with open(fixture_manifest) as source, open(manifest_path, 'w') as dest:
+            for index, line in enumerate(source):
+                entry = json.loads(line)
+                features = np.load(entry['feature_filepath'], allow_pickle=True)
+                feature_path = tmp_path / f'features-{index}.npy'
+                np.save(feature_path, features, allow_pickle=False)
+                entry['feature_filepath'] = str(feature_path)
+                dest.write(json.dumps(entry) + '\n')
         feature_loader = ExternalFeatureLoader(augmentor=None)
         ds_braceexpand = FeatureToSeqSpeakerLabelDataset(
             manifest_filepath=manifest_path, labels=self.unique_labels_in_seq, feature_loader=feature_loader

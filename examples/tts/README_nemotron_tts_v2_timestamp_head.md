@@ -66,6 +66,42 @@ input transcript; counting nonblank predictions does not provide recovery after
 an insertion or omission. The head is an auxiliary output and does not change
 audio sampling.
 
+### CTC validation diagnostics
+
+With `use_ctc_timestamp_head=true`, validation reports character error rates
+against the exact lexical text selected for TTS, including the chosen raw or
+normalized form. Greedy decoding collapses repeated CTC labels before removing
+blank; padding and invalid frames do not join separate occurrences or turns.
+Both reference and prediction use the existing TTS CER normalization (case,
+punctuation, and whitespace), without expanding written numbers into words.
+
+- `val/ctc_timestamp_cer`: student CTC predictions on teacher-forced GT audio.
+- `val/ctc_timestamp_teacher_cer`: the teacher's CTC predictions on the same
+  retained frame grid.
+- `val/ctc_timestamp_generated_cer`: the generated CTC stream when
+  `run_val_inference=true` and one exact input reference is available per sample.
+
+CER is the sum of character insertions, deletions, and substitutions divided
+by the total reference characters across batches and distributed ranks. It
+can exceed one. Reference-character and evaluated-turn/sample counts are logged
+alongside the rates; a rate is omitted when its reference-character count is zero.
+Generated CER skips packed multiturn samples whose output cannot be paired
+unambiguously with one reference. These metrics evaluate the CTC head; generated
+speech ASR CER remains a separate metric.
+
+The first validation batch on rank zero logs up to three
+`CTC_Timestamp/Alignment_*` figures and a `CTC_Timestamp/Transcripts` table.
+The figures compare teacher and student CTC emissions on the same GT speech,
+including blank and prediction confidence. Repeated vocabulary IDs share a
+token-identity row; the figure does not assign separate word occurrences.
+PNG figures and full frame-level JSON records are also saved under
+`val_audios/ctc_timestamps_step_<step>/sample_<sample>_turn_<turn>.*`.
+
+Validation capture reuses the teacher and student projections already computed
+for their losses. It retains small token/probability observations rather than
+full-vocabulary logits and adds no ASR pass. Training does not capture or decode
+these diagnostics.
+
 ## Binary word-end head
 
 Enable an auxiliary frame classifier with a frozen Nemotron 3.5 Transcribe

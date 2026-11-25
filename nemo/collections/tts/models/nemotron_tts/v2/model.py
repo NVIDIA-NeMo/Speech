@@ -32,7 +32,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data.distributed import DistributedSampler
 
 import nemo.collections.asr as nemo_asr
-from nemo.collections.asr.metrics.wer import word_error_rate
+from nemo.collections.asr.metrics.wer import word_error_rate, word_error_rate_detail
 from nemo.collections.asr.parts.mixins.transcription import TranscribeConfig
 from nemo.collections.common.data.fallback import FallbackDataset
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
@@ -56,6 +56,8 @@ from nemo.collections.tts.modules.nemotron_tts.v2.timestamp_head import (
     IGNORE_INDEX,
     TIMESTAMP_LABELS,
     add_timestamp_markers,
+    decode_ctc_tokens,
+    plot_ctc_timestamp_alignment,
     plot_timestamp_alignment,
     reconcile_timestamp_eos,
     word_intervals_to_frame_labels,
@@ -136,6 +138,7 @@ class ProcessBatchOutput:
     timestamp_diagnostics: Optional[List[dict]] = None
     ctc_timestamp_loss: Optional[torch.Tensor] = None
     ctc_timestamp_metrics: Optional[dict] = None
+    ctc_timestamp_diagnostics: Optional[List[dict]] = None
 
 
 class NemotronTTSModel(NemotronTTSBase):
@@ -443,6 +446,8 @@ class NemotronTTSModel(NemotronTTSBase):
                             audio_duration=waveforms[turn_index].numel() / sample_rate,
                             ctc=record['ctc'],
                             complete_turn=complete_turn,
+                            reference_text=references[turn_index],
+                            turn_index=batch['timestamp_turns'][sample].index(turn) if turn is not None else 0,
                         )
                     )
                 if ctc_targets is not None and not getattr(self, 'use_timestamp_head', False):
@@ -525,12 +530,23 @@ class NemotronTTSModel(NemotronTTSBase):
             terminal_mask.to(device=text.device),
         )
 
-    def _compute_ctc_timestamp_loss(self, hidden, targets, audio_codes_target, audio_codes_lens, agent_mask=None):
+    def _compute_ctc_timestamp_loss(
+        self,
+        hidden,
+        targets,
+        audio_codes_target,
+        audio_codes_lens,
+        agent_mask=None,
+        *,
+        collect_predictions=False,
+        diagnostics=None,
+    ):
         """Supervise independent GT turns on the already speech-delayed audio grid."""
         head = self.ctc_timestamp_head
         zero = head(hidden[0, :0]).float().sum() * 0
         losses, ctc_losses, kd_losses = [], [], []
         frames = skipped = infeasible = 0
+        captured = []
         interval = self.codec_model_samples_per_frame / self.sample_rate / 2
         lengths = audio_codes_lens.detach().cpu().tolist()
         real_audio = ((audio_codes_target >= 0) & (audio_codes_target < self.codebook_size)).all(dim=1)
@@ -572,12 +588,15 @@ class NemotronTTSModel(NemotronTTSBase):
                 distillation_mask=valid[:input_length],
                 input_length=input_length,
                 input_start=int(valid.nonzero()[0]),
+                **({'return_predictions': True} if collect_predictions else {}),
             )
             losses.append(result['loss'])
             ctc_losses.append(result['ctc_loss'])
             kd_losses.append(result['distillation_loss'])
             infeasible += int(not result['ctc_valid'])
             frames += int(valid.sum())
+            if collect_predictions:
+                captured.append((target, result, aligned, valid[:input_length], student_times[:input_length]))
 
         def average(values):
             return torch.stack(values).mean() if values else zero
@@ -590,13 +609,156 @@ class NemotronTTSModel(NemotronTTSBase):
             skipped_turns=skipped,
             infeasible_turns=infeasible,
         )
+        if collect_predictions:
+            metrics.update(self._collect_ctc_timestamp_predictions(captured, diagnostics))
         return average(losses), metrics
+
+    def _collect_ctc_timestamp_predictions(self, captured, diagnostics=None):
+        """Decode independent turns and sum character errors against their selected TTS input."""
+        totals = dict(cer_errors=0, teacher_cer_errors=0, cer_reference_characters=0, cer_turns=0)
+        if not captured:
+            return totals
+        lengths = [result['predicted_ids'].numel() for _, result, *_ in captured]
+        predictions = torch.cat([result['predicted_ids'].detach() for _, result, *_ in captured]).cpu().split(lengths)
+        confidence = None
+        if diagnostics is not None:
+            confidence = (
+                torch.cat([result['predicted_probabilities'].detach() for _, result, *_ in captured])
+                .float()
+                .cpu()
+                .split(lengths)
+            )
+        blank_id = self.ctc_timestamp_head.blank_id
+        tokenizer = self.ctc_timestamp_tokenizer
+        for index, ((target, _, aligned, valid, times), predicted_ids) in enumerate(zip(captured, predictions)):
+            teacher_ids = aligned['indices'].gather(-1, aligned['probabilities'].argmax(-1, keepdim=True)).squeeze(-1)
+            student_text = decode_ctc_tokens(predicted_ids, blank_id, tokenizer, valid_mask=valid)
+            teacher_text = decode_ctc_tokens(teacher_ids, blank_id, tokenizer, valid_mask=valid)
+            reference = target['reference_text']
+            errors, characters = self._ctc_timestamp_cer_counts(reference, student_text)
+            teacher_errors, _ = self._ctc_timestamp_cer_counts(reference, teacher_text)
+            totals['cer_errors'] += errors
+            totals['teacher_cer_errors'] += teacher_errors
+            totals['cer_reference_characters'] += characters
+            totals['cer_turns'] += 1
+            if diagnostics is not None and len(diagnostics) < 3:
+                duration = target['audio_duration']
+                diagnostics.append(
+                    dict(
+                        batch_index=target['batch_index'],
+                        turn_index=target['turn_index'],
+                        reference_text=reference,
+                        reference_token_ids=target['ctc']['token_ids'].tolist(),
+                        teacher_text=teacher_text,
+                        student_text=student_text,
+                        student_cer=errors / characters if characters else None,
+                        teacher_cer=teacher_errors / characters if characters else None,
+                        frame_start_seconds=times.clamp(0, duration),
+                        frame_end_seconds=(times + target['ctc']['frame_seconds']).clamp(0, duration),
+                        teacher_indices=aligned['indices'],
+                        teacher_probabilities=aligned['probabilities'],
+                        teacher_tail_probabilities=aligned['tail_probabilities'],
+                        student_token_ids=predicted_ids,
+                        student_probabilities=confidence[index],
+                        valid_mask=valid,
+                        blank_id=blank_id,
+                    )
+                )
+        return totals
+
+    @staticmethod
+    def _ctc_timestamp_cer_counts(reference, hypothesis):
+        reference, hypothesis = process_text_for_cer(reference), process_text_for_cer(hypothesis)
+        if not reference:
+            return len(hypothesis), 0
+        rate, characters, *_ = word_error_rate_detail([hypothesis], [reference], use_cer=True)
+        return round(rate * characters), characters
+
+    def _update_generated_ctc_timestamp_cer(self, batch, generated):
+        """Score the generated CTC stream where one exact input reference is available."""
+        if generated.ctc_timestamp_tokens is None:
+            return
+        tokens = generated.ctc_timestamp_tokens.detach().cpu()
+        lengths = generated.ctc_timestamp_lens.detach().cpu().tolist()
+        if 'timestamp_turns' in batch:
+            references = [turns[0]['text'] if len(turns) == 1 else None for turns in batch.get('timestamp_turns', [])]
+        else:
+            references = batch.get('raw_texts', [])
+        totals = [0, 0, 0]
+        for reference, ids, length in zip(references, tokens, lengths):
+            if reference is None:
+                continue
+            prediction = decode_ctc_tokens(
+                ids[:length], self.ctc_timestamp_head.blank_id, self.ctc_timestamp_tokenizer
+            )
+            errors, characters = self._ctc_timestamp_cer_counts(reference, prediction)
+            totals[0] += errors
+            totals[1] += characters
+            totals[2] += 1
+        self._ctc_timestamp_validation_totals[4:] += torch.tensor(totals, device=self.device)
+
+    def _log_ctc_timestamp_examples(self, output):
+        """Save bounded teacher/student CTC emission comparisons and decoded transcripts."""
+        if not output.ctc_timestamp_diagnostics:
+            return {}
+        import matplotlib.pyplot as plt
+
+        directory = os.path.join(self.trainer.log_dir, 'val_audios', f'ctc_timestamps_step_{self.global_step}')
+        os.makedirs(directory, exist_ok=True)
+        media = {'trainer/global_step': self.global_step}
+        rows = []
+        for index, diagnostic in enumerate(output.ctc_timestamp_diagnostics[:3]):
+            stem = f"sample_{diagnostic['batch_index']}_turn_{diagnostic['turn_index']}"
+            figure = plot_ctc_timestamp_alignment(diagnostic, self.ctc_timestamp_tokenizer)
+            try:
+                figure.savefig(os.path.join(directory, f'{stem}.png'), dpi=150)
+                media[f'CTC_Timestamp/Alignment_{index}'] = wandb.Image(
+                    figure,
+                    caption=(
+                        f"Teacher-forced validation: sample {diagnostic['batch_index']}, turn {diagnostic['turn_index']}; "
+                        'teacher and student on the same ground-truth speech.'
+                    ),
+                )
+            finally:
+                plt.close(figure)
+            report = {
+                key: value.tolist() if isinstance(value, torch.Tensor) else value for key, value in diagnostic.items()
+            }
+            with open(os.path.join(directory, f'{stem}.json'), 'w', encoding='utf-8') as stream:
+                json.dump(report, stream, ensure_ascii=False, indent=2)
+            rows.append(
+                [
+                    diagnostic[key]
+                    for key in (
+                        'batch_index',
+                        'turn_index',
+                        'reference_text',
+                        'teacher_text',
+                        'student_text',
+                        'teacher_cer',
+                        'student_cer',
+                    )
+                ]
+            )
+        media['CTC_Timestamp/Transcripts'] = wandb.Table(
+            columns=['sample', 'turn', 'tts_input', 'teacher', 'student', 'teacher_cer', 'student_cer'], data=rows
+        )
+        return media
 
     def _log_ctc_timestamp_losses(self, output, mode, batch_size):
         if output.ctc_timestamp_loss is None:
             return
         values = {f'{mode}/ctc_timestamp_loss': output.ctc_timestamp_loss.detach()}
-        values.update({f'{mode}/ctc_timestamp_{key}': value for key, value in output.ctc_timestamp_metrics.items()})
+        metrics = dict(output.ctc_timestamp_metrics)
+        if mode == 'val':
+            if not hasattr(self, '_ctc_timestamp_validation_totals'):
+                self._ctc_timestamp_validation_totals = torch.zeros(7, dtype=torch.long, device=self.device)
+            counts = [
+                metrics.pop(key, 0)
+                for key in ('cer_errors', 'teacher_cer_errors', 'cer_reference_characters', 'cer_turns')
+            ]
+            self._ctc_timestamp_validation_totals[:4] += torch.tensor(counts, device=self.device)
+        values.update({f'{mode}/ctc_timestamp_{key}': value for key, value in metrics.items()})
         packed = torch.stack([torch.as_tensor(value, device=self.device).float() for value in values.values()])
         if mode == 'train' and getattr(self, '_trainer', None) is not None:
             packed = self.trainer.strategy.reduce(packed, reduce_op='mean')
@@ -1484,6 +1646,7 @@ class NemotronTTSModel(NemotronTTSBase):
         return_aligned_text_diagnostics: bool = False,
         timestamp_batch: Optional[dict] = None,
         return_timestamp_diagnostics: bool = False,
+        return_ctc_timestamp_diagnostics: bool = False,
     ) -> ProcessBatchOutput:
         """
         Simplified batch processing using channel-based embedding architecture.
@@ -1527,6 +1690,7 @@ class NemotronTTSModel(NemotronTTSBase):
             return_aligned_text_diagnostics: Collect bounded, detached BPE-head validation examples.
             timestamp_batch: Original batch containing GT waveforms and reference texts for the frozen teacher.
             return_timestamp_diagnostics: Collect up to three detached validation word-boundary examples.
+            return_ctc_timestamp_diagnostics: Collect up to three teacher/student CTC emission comparisons.
 
         Returns:
             ProcessBatchOutput: Contains loss values and model predictions
@@ -1540,6 +1704,7 @@ class NemotronTTSModel(NemotronTTSBase):
         use_timestamp_head = getattr(self, 'use_timestamp_head', False) and not return_policy_logits
         use_ctc_timestamp_head = getattr(self, 'use_ctc_timestamp_head', False) and not return_policy_logits
         ctc_timestamp_targets = [] if use_ctc_timestamp_head else None
+        ctc_timestamp_diagnostics = [] if use_ctc_timestamp_head and return_ctc_timestamp_diagnostics else None
         timestamp_diagnostics = [] if use_timestamp_head and return_timestamp_diagnostics else None
         if use_timestamp_head or use_ctc_timestamp_head:
             num_frames = (audio_codes.size(-1) + self.frame_stacking_factor - 1) // self.frame_stacking_factor + 1
@@ -2016,7 +2181,13 @@ class NemotronTTSModel(NemotronTTSBase):
         ctc_timestamp_loss = ctc_timestamp_metrics = None
         if use_ctc_timestamp_head:
             ctc_timestamp_loss, ctc_timestamp_metrics = self._compute_ctc_timestamp_loss(
-                pred_embeddings, ctc_timestamp_targets, audio_codes_target, audio_codes_lens_target, agent_mask
+                pred_embeddings,
+                ctc_timestamp_targets,
+                audio_codes_target,
+                audio_codes_lens_target,
+                agent_mask,
+                collect_predictions=mode == 'val' or ctc_timestamp_diagnostics is not None,
+                diagnostics=ctc_timestamp_diagnostics,
             )
             ctc_timestamp_metrics['teacher_failed_turns'] = timestamp_metrics['turns'] - len(ctc_timestamp_targets)
             loss = loss + self.ctc_timestamp_head_loss_weight * ctc_timestamp_loss
@@ -2091,6 +2262,7 @@ class NemotronTTSModel(NemotronTTSBase):
             timestamp_diagnostics=timestamp_diagnostics,
             ctc_timestamp_loss=ctc_timestamp_loss,
             ctc_timestamp_metrics=ctc_timestamp_metrics,
+            ctc_timestamp_diagnostics=ctc_timestamp_diagnostics,
         )
 
     def training_step(self, batch, batch_idx):
@@ -2420,6 +2592,7 @@ class NemotronTTSModel(NemotronTTSBase):
         )
         log_aligned_text = self.use_aligned_text_head and log_examples
         log_timestamps = getattr(self, 'use_timestamp_head', False) and log_examples
+        log_ctc_timestamps = getattr(self, 'use_ctc_timestamp_head', False) and log_examples
         batch_output = self.process_batch(
             text=batch['text'],
             text_lens=batch['text_lens'],
@@ -2441,6 +2614,7 @@ class NemotronTTSModel(NemotronTTSBase):
                 else None
             ),
             return_timestamp_diagnostics=log_timestamps,
+            return_ctc_timestamp_diagnostics=log_ctc_timestamps,
         )
         self._log_alignment_losses(batch_output, 'val', batch['text'].size(0))
         if getattr(self, 'use_timestamp_head', False):
@@ -2470,6 +2644,8 @@ class NemotronTTSModel(NemotronTTSBase):
             wandb_log_dict.update(self._log_aligned_text_head_examples(batch_output))
             if log_timestamps:
                 wandb_log_dict.update(self._log_timestamp_head_examples(batch_output, batch))
+            if log_ctc_timestamps:
+                wandb_log_dict.update(self._log_ctc_timestamp_examples(batch_output))
 
             # Perform single wandb log call if wandb is active and there is data
             for logger in self.loggers:
@@ -2496,6 +2672,8 @@ class NemotronTTSModel(NemotronTTSBase):
                 use_cfg=self.use_cfg_in_val,
                 cfg_scale=self.val_cfg_scale,
             )
+            if getattr(self, 'use_ctc_timestamp_head', False):
+                self._update_generated_ctc_timestamp_cer(batch, infer_output)
             if log_timestamps:
                 media = self._log_timestamp_head_examples(batch_output, batch, generated=infer_output)
                 for logger in self.loggers:
@@ -2713,6 +2891,8 @@ class NemotronTTSModel(NemotronTTSBase):
             self._generate_codec_silence_buffer()
 
     def on_validation_epoch_start(self) -> None:
+        if getattr(self, 'use_ctc_timestamp_head', False):
+            self._ctc_timestamp_validation_totals = torch.zeros(7, dtype=torch.long, device=self.device)
         if getattr(self, 'use_timestamp_head', False):
             self._timestamp_validation_totals = torch.zeros(
                 2, len(TIMESTAMP_LABELS), dtype=torch.long, device=self.device
@@ -2721,6 +2901,23 @@ class NemotronTTSModel(NemotronTTSBase):
             self.trainer.strategy.model.require_backward_grad_sync = False
 
     def on_validation_epoch_end(self):
+        if getattr(self, 'use_ctc_timestamp_head', False):
+            totals = self._ctc_timestamp_validation_totals
+            if torch.distributed.is_initialized():
+                torch.distributed.all_reduce(totals)
+            errors, teacher_errors, characters, turns, generated_errors, generated_characters, generated_turns = totals
+            values = {
+                'val/ctc_timestamp_reference_characters': characters,
+                'val/ctc_timestamp_evaluated_turns': turns,
+                'val/ctc_timestamp_generated_reference_characters': generated_characters,
+                'val/ctc_timestamp_generated_evaluated_samples': generated_turns,
+            }
+            if characters > 0:
+                values['val/ctc_timestamp_cer'] = errors.double() / characters
+                values['val/ctc_timestamp_teacher_cer'] = teacher_errors.double() / characters
+            if generated_characters > 0:
+                values['val/ctc_timestamp_generated_cer'] = generated_errors.double() / generated_characters
+            self.log_dict(values, on_step=False, on_epoch=True, sync_dist=False)
         if getattr(self, 'use_timestamp_head', False):
             totals = self._timestamp_validation_totals
             if torch.distributed.is_initialized():

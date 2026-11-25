@@ -248,6 +248,7 @@ class CTCTimestampHead(nn.Module):
         distillation_mask: Optional[torch.Tensor] = None,
         input_length: Optional[int] = None,
         input_start: int = 0,
+        return_predictions: bool = False,
     ) -> dict:
         """Return weighted loss, raw FP32 CTC/KL, and feasibility diagnostics.
 
@@ -258,6 +259,9 @@ class CTCTimestampHead(nn.Module):
         frames can be excluded. Distillation retains its explicit validity mask
         over ``[0:input_length]``. Infeasible CTC targets are reported and retain
         distillation supervision.
+        ``return_predictions`` also returns detached full-vocabulary argmax IDs
+        and their probabilities on ``[0:input_length]`` from the same projection
+        chunks, without retaining full-vocabulary logits.
         """
         from torch.utils.checkpoint import checkpoint
 
@@ -295,6 +299,7 @@ class CTCTimestampHead(nn.Module):
         compact_ids = torch.cat([torch.tensor([self.blank_id]), unique]).to(device=device)
         mapped_targets = torch.searchsorted(unique, targets) + 1
         compact_chunks, kl_chunks = [], []
+        prediction_chunks, probability_chunks = [], []
         for start in range(0, (length + self.subframes - 1) // self.subframes, self.chunk_size):
             end = min(start + self.chunk_size, hidden_states.size(0))
             left, right = self.subframes * start, min(self.subframes * end, length)
@@ -306,12 +311,18 @@ class CTCTimestampHead(nn.Module):
                 tail[left:right].detach().to(device=device, dtype=torch.float32),
                 distillation_mask[left:right].to(device=device),
             )
+            if return_predictions:
+                args += (True,)
             if torch.is_grad_enabled():
-                compact, kl = checkpoint(self._chunk_loss_inputs, *args, use_reentrant=False)
+                values = checkpoint(self._chunk_loss_inputs, *args, use_reentrant=False)
             else:
-                compact, kl = self._chunk_loss_inputs(*args)
+                values = self._chunk_loss_inputs(*args)
+            compact, kl = values[:2]
             compact_chunks.append(compact)
             kl_chunks.append(kl)
+            if return_predictions:
+                prediction_chunks.append(values[2])
+                probability_chunks.append(values[3])
         if compact_chunks:
             compact_log_probs = torch.cat(compact_chunks)
             zero = compact_log_probs.sum() * 0
@@ -331,7 +342,7 @@ class CTCTimestampHead(nn.Module):
         else:
             zero = self(hidden_states[:0]).float().sum() * 0
             ctc_loss = distillation_loss = zero
-        return {
+        result = {
             'loss': self.ctc_weight * ctc_loss + self.distillation_weight * distillation_loss,
             'ctc_loss': ctc_loss,
             'distillation_loss': distillation_loss,
@@ -340,8 +351,20 @@ class CTCTimestampHead(nn.Module):
             'supervised_subframes': ctc_length,
             'distilled_subframes': distillation_mask[:length].sum().to(device=device),
         }
+        if return_predictions:
+            result['predicted_ids'] = (
+                torch.cat(prediction_chunks) if prediction_chunks else torch.empty(0, dtype=torch.long, device=device)
+            )
+            result['predicted_probabilities'] = (
+                torch.cat(probability_chunks)
+                if probability_chunks
+                else torch.empty(0, dtype=torch.float32, device=device)
+            )
+        return result
 
-    def _chunk_loss_inputs(self, hidden_states, compact_ids, indices, probabilities, tail, valid):
+    def _chunk_loss_inputs(
+        self, hidden_states, compact_ids, indices, probabilities, tail, valid, return_predictions=False
+    ):
         logits = self(hidden_states).flatten(0, 1)[: indices.size(0)].float()
         compact = logits.index_select(-1, compact_ids)
         if compact_ids.numel() < self.vocab_size:
@@ -357,7 +380,13 @@ class CTCTimestampHead(nn.Module):
         if indices.size(-1) < self.vocab_size:
             remaining = logits.scatter(-1, indices, float('-inf')).logsumexp(-1) - normalizer.squeeze(-1)
             kl = kl + tail * (tail.clamp_min(tiny).log() - remaining)
-        return compact_log_probs, kl.sum()
+        values = compact_log_probs, kl.sum()
+        if return_predictions:
+            with torch.no_grad():
+                maxima, predicted = logits.max(-1)
+                confidence = (maxima - normalizer.squeeze(-1)).exp()
+            values += predicted, confidence
+        return values
 
 
 @dataclass(frozen=True)
@@ -598,6 +627,180 @@ def plot_timestamp_alignment(diagnostic):
         0.5, 0.01, cropped + 'Counts use all frames. Gray: reference supervision unavailable.', ha='center', fontsize=8
     )
     figure.tight_layout(rect=(0, 0.09, 1, 0.95))
+    return figure
+
+
+def decode_ctc_tokens(token_ids, blank_id, tokenizer, valid_mask=None):
+    """Greedily decode a single turn, collapsing repeats before removing blanks.
+
+    Ignored or invalid frames break runs. In particular, ``a, blank, a`` remains
+    two tokens, whereas ``a, a`` collapses to one. The tokenizer is the teacher's
+    dedicated CTC tokenizer, independently of the TTS conditioning tokenizer.
+    """
+    if isinstance(token_ids, torch.Tensor):
+        if token_ids.ndim != 1:
+            raise ValueError('CTC decoding requires one token ID per frame')
+        token_ids = token_ids.detach().cpu().tolist()
+    else:
+        token_ids = list(token_ids)
+    if valid_mask is None:
+        valid_mask = [True] * len(token_ids)
+    elif isinstance(valid_mask, torch.Tensor):
+        if valid_mask.ndim != 1 or valid_mask.dtype != torch.bool:
+            raise ValueError('CTC decoding requires a one-dimensional boolean validity mask')
+        valid_mask = valid_mask.detach().cpu().tolist()
+    else:
+        valid_mask = list(valid_mask)
+    if len(valid_mask) != len(token_ids):
+        raise ValueError('CTC token IDs and validity mask must have the same length')
+    previous, collapsed = blank_id, []
+    for token, valid in zip(token_ids, valid_mask):
+        if not valid or token == IGNORE_INDEX:
+            previous = blank_id
+            continue
+        if token != previous and token != blank_id:
+            collapsed.append(int(token))
+        previous = token
+    return tokenizer.ids_to_text(collapsed)
+
+
+def plot_ctc_timestamp_alignment(diagnostic, tokenizer, max_frames=800, max_tokens=64):
+    """Compare teacher and student greedy CTC emissions on the same audio clock.
+
+    Rows represent vocabulary identities, ordered by first occurrence in the
+    reference. Repeated reference pieces share a row; the plot does not infer
+    token-occurrence alignment from a vocabulary classifier. Display limits do
+    not truncate the decoded text or CER supplied by the caller.
+    """
+    from collections import Counter
+
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    def array(name, dtype=None):
+        value = diagnostic[name]
+        if isinstance(value, torch.Tensor):
+            value = value.detach().cpu().numpy()
+        return np.asarray(value, dtype=dtype)
+
+    starts, ends = array('frame_start_seconds', np.float64), array('frame_end_seconds', np.float64)
+    valid = array('valid_mask', bool)
+    teacher_ids = array('teacher_indices', np.int64)
+    teacher_probabilities = array('teacher_probabilities', np.float64)
+    tail = array('teacher_tail_probabilities', np.float64)
+    student_ids = array('student_token_ids', np.int64)
+    student_probabilities = array('student_probabilities', np.float64)
+    frames = starts.size
+    if starts.ndim != 1 or any(
+        value.shape != starts.shape for value in (ends, valid, tail, student_ids, student_probabilities)
+    ):
+        raise ValueError('CTC diagnostic frame arrays must be one-dimensional with matching shapes')
+    if teacher_ids.ndim != 2 or teacher_ids.shape != teacher_probabilities.shape or teacher_ids.shape[0] != frames:
+        raise ValueError('CTC teacher IDs and probabilities must have shape (frames, retained classes)')
+    if not teacher_ids.shape[1]:
+        raise ValueError('CTC diagnostics require at least one retained teacher class')
+    if not np.isfinite(starts).all() or not np.isfinite(ends).all() or (ends < starts).any():
+        raise ValueError('CTC frame intervals must be finite and nonnegative in duration')
+    if (np.diff(starts) < 0).any() or (starts[1:] < ends[:-1] - 1e-8).any():
+        raise ValueError('CTC frame intervals must be ordered and nonoverlapping')
+    if (
+        isinstance(max_frames, bool)
+        or not isinstance(max_frames, int)
+        or max_frames < 1
+        or isinstance(max_tokens, bool)
+        or not isinstance(max_tokens, int)
+        or max_tokens < 1
+    ):
+        raise ValueError('CTC display limits must be positive')
+
+    blank_id = int(diagnostic['blank_id'])
+    winner = teacher_probabilities.argmax(axis=-1)
+    teacher_tokens = np.take_along_axis(teacher_ids, winner[:, None], axis=-1).reshape(-1)
+    teacher_confidence = np.take_along_axis(teacher_probabilities, winner[:, None], axis=-1).reshape(-1)
+    reference = list(dict.fromkeys(int(token) for token in diagnostic['reference_token_ids'] if token != blank_id))
+    observed = Counter(
+        int(token)
+        for token in np.r_[teacher_tokens[valid], student_ids[valid]]
+        if token not in (blank_id, IGNORE_INDEX)
+    )
+    identities = reference[:max_tokens]
+    identities += [token for token, _ in observed.most_common() if token not in reference][
+        : max(0, max_tokens - len(identities))
+    ]
+    identities = [blank_id, *identities]
+    omitted = set(reference).union(observed).difference(identities)
+    labels = ['<blank>'] + [
+        f'{token}: {piece}' for token, piece in zip(identities[1:], tokenizer.ids_to_tokens(identities[1:]))
+    ]
+    if omitted:
+        labels.append('other / undisplayed IDs')
+    rows = {token: index for index, token in enumerate(identities)}
+    shown = min(frames, max_frames)
+    figure, axes = plt.subplots(
+        1,
+        3,
+        figsize=(17, min(13, max(4.5, 0.22 * len(labels)))),
+        sharex=True,
+        gridspec_kw={'width_ratios': [1, 1, 0.7]},
+    )
+    colormap = plt.get_cmap('viridis').copy()
+    colormap.set_bad('lightgray')
+    for axis, title, tokens, confidence in zip(
+        axes[:2],
+        ['Frozen ASR teacher', 'Distilled CTC head'],
+        [teacher_tokens, student_ids],
+        [teacher_confidence, student_probabilities],
+    ):
+        matrix = np.zeros((len(labels), shown), dtype=np.float32)
+        if shown:
+            indices = [rows.get(int(token), len(labels) - 1) for token in tokens[:shown]]
+            matrix[indices, np.arange(shown)] = confidence[:shown]
+            matrix[:, ~valid[:shown]] = np.nan
+            # Plot one rectangle per subframe, preserving cropped boundary bins.
+            for left, right in zip(
+                np.flatnonzero(np.r_[True, starts[1:shown] > ends[: shown - 1] + 1e-8]),
+                np.r_[np.flatnonzero(starts[1:shown] > ends[: shown - 1] + 1e-8) + 1, shown],
+            ):
+                image = axis.pcolormesh(
+                    np.r_[starts[left:right], ends[right - 1]],
+                    np.arange(len(labels) + 1) - 0.5,
+                    matrix[:, left:right],
+                    cmap=colormap,
+                    vmin=0,
+                    vmax=1,
+                )
+            figure.colorbar(image, ax=axis, label='Winning-token probability', fraction=0.04, pad=0.02)
+        else:
+            axis.text(0.5, 0.5, 'No CTC frames', ha='center', transform=axis.transAxes)
+        axis.set(title=title, xlabel='Speech time (s)', ylabel='CTC token identity')
+        axis.set_yticks(np.arange(len(labels)), labels, fontsize=7)
+        for tick in axis.get_yticklabels():
+            tick.set_parse_math(False)
+    centers = (starts[:shown] + ends[:shown]) / 2
+    teacher_blank = np.where(teacher_ids == blank_id, teacher_probabilities, 0).sum(axis=-1)
+    for values, label, style in (
+        (teacher_confidence, 'Teacher winning token', '-'),
+        (student_probabilities, 'Student winning token', '-'),
+        (teacher_blank, 'Teacher P(blank)', '--'),
+    ):
+        axes[2].plot(centers, np.where(valid[:shown], values[:shown], np.nan), style, label=label)
+    blank = valid[:shown] & (student_ids[:shown] == blank_id)
+    axes[2].scatter(centers[blank], student_probabilities[:shown][blank], s=8, marker='x', label='Student blank wins')
+    axes[2].set(title='CTC confidence', xlabel='Speech time (s)', ylabel='Probability', ylim=(-0.03, 1.03))
+    axes[2].legend(fontsize=7, loc='lower left')
+    if shown:
+        axes[0].set_xlim(starts[0], max(ends[shown - 1], starts[0] + 0.04))
+    figure.suptitle('Teacher and student greedy CTC emissions')
+    caption = f'Display: {shown}/{frames} frames. Repeated token IDs share a row; these are not forced alignments.'
+    figure.text(0.5, 0.10, caption, ha='center', fontsize=8)
+    for key, label, y in (
+        ('reference_text', 'TTS input', 0.075),
+        ('teacher_text', 'Teacher', 0.05),
+        ('student_text', 'Student', 0.025),
+    ):
+        text = str(diagnostic.get(key, '')).replace('\n', ' ')
+        figure.text(0.5, y, f'{label}: {text[:180]}', ha='center', fontsize=8, parse_math=False)
+    figure.tight_layout(rect=(0, 0.135, 1, 0.95))
     return figure
 
 

@@ -427,6 +427,7 @@ def _ctc_model(ctc_enabled=True, binary_enabled=False, multiturn=False):
     model.use_ctc_timestamp_head = ctc_enabled
     model.ctc_timestamp_head_config = dict(frame_seconds=0.04, distillation_topk=2, loss_weight=0.35)
     model.ctc_timestamp_head_loss_weight = 0.35
+    model.ctc_timestamp_tokenizer = SimpleNamespace(ids_to_text=lambda ids: ' '.join(str(token) for token in ids))
     if ctc_enabled:
         model.ctc_timestamp_head = CTCTimestampHead(
             hidden_size=16,

@@ -67,6 +67,84 @@ def test_ctc_head_returns_two_ordered_predictions_and_streams_without_future_con
     assert not torch.allclose(logits[:, :, 0], logits[:, :, 1])
 
 
+@pytest.mark.parametrize('grad_enabled', [False, True])
+def test_optional_predictions_reuse_projection_chunks_and_include_nontranscript_classes(grad_enabled):
+    torch.manual_seed(11)
+    head = CTCTimestampHead(5, 9, 8, projection_size=7, chunk_size=2)
+    hidden = torch.randn(5, 5, requires_grad=grad_enabled)
+    with torch.no_grad():
+        head.projection[-1].weight.zero_()
+        head.projection[-1].bias.zero_()
+        head.projection[-1].bias[6] = 5
+        head.projection[-1].bias[9 + 8] = 8
+    calls = []
+    hook = head.register_forward_hook(lambda _module, args, _output: calls.append(args[0].size(0)))
+    try:
+        with torch.set_grad_enabled(grad_enabled):
+            result = head.compute_loss(
+                hidden, torch.tensor([1, 2]), _teacher(10), input_start=1, input_length=9, return_predictions=True
+            )
+    finally:
+        hook.remove()
+    assert calls == [2, 2, 1]
+    assert result['predicted_ids'].tolist() == [6, 8, 6, 8, 6, 8, 6, 8, 6]
+    with torch.no_grad():
+        expected_probabilities, expected_ids = head(hidden).flatten(0, 1)[:9].float().softmax(-1).max(-1)
+    torch.testing.assert_close(result['predicted_ids'], expected_ids)
+    torch.testing.assert_close(result['predicted_probabilities'], expected_probabilities)
+    assert result['predicted_ids'].dtype == torch.long
+    assert result['predicted_probabilities'].dtype == torch.float32
+    assert not result['predicted_ids'].requires_grad and not result['predicted_probabilities'].requires_grad
+    assert result['supervised_subframes'] == 8
+    if grad_enabled:
+        result['loss'].backward()
+        assert torch.isfinite(hidden.grad).all()
+
+
+def test_optional_prediction_capture_preserves_loss_and_gradients_and_uses_full_timeline():
+    torch.manual_seed(12)
+    head = CTCTimestampHead(5, 9, 8, projection_size=7, chunk_size=2)
+    observed = copy.deepcopy(head)
+    hidden = torch.randn(5, 5, requires_grad=True)
+    observed_hidden = hidden.detach().clone().requires_grad_(True)
+    targets, teacher = torch.tensor([1, 1, 3]), _teacher(10)
+    valid = torch.tensor([False, True, True, False, True, True, True, True, False, False])
+    baseline = head.compute_loss(hidden, targets, teacher, valid, input_start=1, input_length=9)
+    result = observed.compute_loss(
+        observed_hidden, targets, teacher, valid, input_start=1, input_length=9, return_predictions=True
+    )
+    assert 'predicted_ids' not in baseline and 'predicted_probabilities' not in baseline
+    for key in ('loss', 'ctc_loss', 'distillation_loss'):
+        torch.testing.assert_close(result[key], baseline[key], rtol=0, atol=0)
+    assert result['predicted_ids'].shape == result['predicted_probabilities'].shape == (9,)
+    baseline['loss'].backward()
+    result['loss'].backward()
+    torch.testing.assert_close(observed_hidden.grad, hidden.grad, rtol=0, atol=0)
+    for parameter, expected in zip(observed.parameters(), head.parameters()):
+        torch.testing.assert_close(parameter.grad, expected.grad, rtol=0, atol=0)
+
+
+def test_optional_predictions_for_empty_supervision_have_explicit_dtypes():
+    head = CTCTimestampHead(5, 9, 8, projection_size=7)
+    hidden = torch.empty(0, 5, requires_grad=True)
+    result = head.compute_loss(hidden, torch.empty(0, dtype=torch.long), _teacher(0), return_predictions=True)
+    assert result['predicted_ids'].shape == result['predicted_probabilities'].shape == (0,)
+    assert result['predicted_ids'].dtype == torch.long
+    assert result['predicted_probabilities'].dtype == torch.float32
+    result['loss'].backward()
+    assert all(parameter.grad is not None for parameter in head.parameters())
+
+
+def test_optional_low_precision_predictions_keep_fp32_probabilities():
+    head = CTCTimestampHead(5, 9, 8, projection_size=7, chunk_size=1).bfloat16()
+    hidden = torch.randn(3, 5, requires_grad=True)
+    result = head.compute_loss(hidden, torch.tensor([1, 2]), _teacher(6), return_predictions=True)
+    assert result['predicted_probabilities'].dtype == torch.float32
+    assert torch.isfinite(result['predicted_probabilities']).all()
+    result['loss'].backward()
+    assert torch.isfinite(hidden.grad).all()
+
+
 @pytest.mark.parametrize('blank_id', [0, 4, 8])
 @pytest.mark.parametrize('topk', [3, 8])
 @pytest.mark.parametrize('chunk_size', [1, 4])

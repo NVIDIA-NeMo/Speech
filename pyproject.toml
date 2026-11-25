@@ -470,6 +470,7 @@ conflicts = [
     ],
 ]
 override-dependencies = [
+    "black>=26.10.1",
     "anyio>=4.14.2",
     "dnspython>=2.9.2",
     "transformers>=5.16.1",

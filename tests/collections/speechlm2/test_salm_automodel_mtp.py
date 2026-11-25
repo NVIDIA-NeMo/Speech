@@ -868,9 +868,15 @@ def test_standalone_evaluation_allows_mtp_context_parallelism(monkeypatch, hook_
         lambda **kwargs: captured_kwargs.update(kwargs),
     )
 
+    monkeypatch.setattr(
+        parallel_module, "installed_version", {"transformer-engine": "2.15.0", "flash-attn-4": "4.0.0b39"}.get
+    )
+
     getattr(model, hook_name)()
 
     assert captured_kwargs["check_backward"] is False
+    assert captured_kwargs["te_version"] == "2.15.0"
+    assert captured_kwargs["flash_attn_4_version"] == "4.0.0b39"
 
 
 @pytest.mark.parametrize("check_backward", [True, False])

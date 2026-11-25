@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import os
 import warnings
 from datetime import timedelta
@@ -25,10 +26,15 @@ import torch
 import torch.distributed as dist
 from lightning.fabric.plugins.collectives.torch_collective import default_pg_timeout
 from lightning.pytorch.strategies.model_parallel import ModelParallelStrategy
+from packaging.version import Version
 from typing_extensions import override
 
-# Blackwell sm_120, where TE 2.14's cuDNN fused-attention backward kernel
-# silently amplifies THD/padding_causal gradients 8x-960x per layer.
+# Transformer Engine before 2.21 passes causal masks to flash-attn-4 as window_size=(-1, 0), which flash-attn-4
+# reads as a window that admits no keys (attention output and gradients are zero).
+_MIN_TE_VERSION_FOR_FLASH_ATTN_4 = Version("2.21")
+
+# Blackwell sm_120, where TE's cuDNN fused-attention backward kernel (observed
+# with TE 2.14 and 2.15) silently amplifies THD/padding_causal gradients 8x-960x per layer.
 _SM120 = (12, 0)
 
 
@@ -115,10 +121,12 @@ def validate_parallelism_compatibility(
     nvte_fused_attn: Optional[str],
     device_capability: Optional[tuple[int, int]],
     check_backward: bool = True,
+    te_version: Optional[str] = None,
+    flash_attn_4_version: Optional[str] = None,
 ) -> None:
     """Raise on known-incompatible SALMAutomodel configurations.
 
-    Catches three combinations that produce incorrect forward execution,
+    Catches four combinations that produce incorrect forward execution,
     silent NaN gradients, or hangs at training time:
 
     1. ``packed_sequences=False`` (BSHD) under ``cp_size > 1``: TE's
@@ -133,15 +141,26 @@ def validate_parallelism_compatibility(
        FlashAttention. SDPA's 3D-THD path is broken in the Automodel
        branch we depend on (transpose assumes 4D BSHD).
     3. ``packed_sequences=True`` + ``attn="te"`` +
-       ``NVTE_FUSED_ATTN != "0"``: TE 2.14's cuDNN fused-attention
-       backward kernel produces forward outputs that match FA bit-for-bit
+       ``NVTE_FUSED_ATTN != "0"``: TE's cuDNN fused-attention backward
+       kernel (observed with TE 2.14 and 2.15) produces forward outputs that match FA bit-for-bit
        but a backward that amplifies gradients 8x-960x per layer on
        Blackwell sm_120. Compounded across the LLM's attention stack
        this drives gradients to ``inf`` and the optimizer to NaN. Set
        ``NVTE_FUSED_ATTN=0`` in the launcher environment to force
-       FlashAttention dispatch.
+       FlashAttention dispatch. On sm_120 that dispatches to
+       flash-attn-4, which needs TE >= 2.21 for causal masks.
 
-    Hard error on (1) and (2). When ``check_backward`` is true, hard error
+    4. ``packed_sequences=True`` + ``attn="te"`` + ``NVTE_FUSED_ATTN="0"``
+       with flash-attn-4 installed and TE < 2.21: TE dispatches the THD
+       causal attention to flash-attn-4 and passes the causal mask as
+       ``window_size=(-1, 0)``, which flash-attn-4 reads as a window that
+       admits no keys. Attention outputs and q/k/v gradients are zero and
+       nothing fails.
+
+    ``te_version`` and ``flash_attn_4_version`` are the installed package
+    versions (``None`` when not installed), see :func:`installed_version`.
+
+    Hard error on (1), (2) and (4). When ``check_backward`` is true, hard error
     on (3)-on-sm_120 and ``warnings.warn`` on (3) for other architectures
     (the bug may not apply but we have no way to be certain).
 
@@ -173,22 +192,58 @@ def validate_parallelism_compatibility(
                 "for the 2D [T_total, H] THD layout."
             )
 
+        # Case 4: THD causal attention routed to flash-attn-4 by TE < 2.21 attends to no keys.
+        if (
+            nvte_fused_attn == "0"
+            and flash_attn_4_version is not None
+            and te_version is not None
+            and Version(te_version) < _MIN_TE_VERSION_FOR_FLASH_ATTN_4
+        ):
+            raise ValueError(
+                "SALMAutomodel: ``packed_sequences=true`` with ``attn=te`` and ``NVTE_FUSED_ATTN=0`` makes "
+                f"Transformer Engine {te_version} use flash-attn-4 ({flash_attn_4_version}) for causal THD "
+                "attention. Transformer Engine before 2.21 passes the causal mask to flash-attn-4 as a window "
+                "that admits no keys, so every attention output and q/k/v gradient is zero. Install "
+                f"transformer-engine>={_MIN_TE_VERSION_FOR_FLASH_ATTN_4} (or uninstall flash-attn-4)."
+            )
+
         # Case 3: THD + TE attention without NVTE_FUSED_ATTN=0.
         if check_backward and nvte_fused_attn != "0":
             msg = (
                 "SALMAutomodel: ``packed_sequences=true`` with ``attn=te`` and "
                 '``NVTE_FUSED_ATTN`` not set to ``"0"`` (got '
-                f"{nvte_fused_attn!r}). TE 2.14's cuDNN fused-attention "
-                "backward kernel amplifies THD/padding_causal gradients "
+                f"{nvte_fused_attn!r}). TE's cuDNN fused-attention "
+                "backward kernel (observed with TE 2.14 and 2.15) amplifies THD/padding_causal gradients "
                 "8x-960x per layer on Blackwell sm_120; the resulting ``inf`` "
                 "gradients drive the optimizer to NaN. Set "
                 "``NVTE_FUSED_ATTN=0`` in the launcher environment to force "
                 "FlashAttention dispatch (requires ``flash-attn`` installed "
                 "for your GPU arch)."
             )
-            if device_capability == _SM120:
+            if packed_attention_requires_flash_attention(
+                packed_sequences=packed_sequences, attn_backend=attn_backend, device_capability=device_capability
+            ):
                 raise ValueError(msg)
             warnings.warn(msg, stacklevel=2)
+
+
+def packed_attention_requires_flash_attention(
+    *, packed_sequences: bool, attn_backend: str, device_capability: Optional[tuple[int, int]]
+) -> bool:
+    """Whether training must run with ``NVTE_FUSED_ATTN=0`` (case 3 of :func:`validate_parallelism_compatibility`).
+
+    True for packed (THD) sequences with TE attention on Blackwell sm_120, where TE's cuDNN fused-attention backward
+    is wrong for THD/``padding_causal``. Launchers use this to set ``NVTE_FUSED_ATTN=0`` for the training process.
+    """
+    return bool(packed_sequences) and attn_backend == "te" and tuple(device_capability or ()) == _SM120
+
+
+def installed_version(distribution: str) -> Optional[str]:
+    """Installed version of ``distribution`` (e.g. ``"transformer-engine"``), or ``None`` if it is not installed."""
+    try:
+        return importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        return None
 
 
 def setup_distributed(

@@ -51,7 +51,7 @@ Key Features
 
 **Multitalker** — Streaming multi-speaker ASR with speaker kernel injection handles overlapping speech in real time. See `Multitalker Parakeet <https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1>`__.
 
-**Long Audio** — Inference on audio over 1 hour via local attention or buffered chunked processing.
+**Long Audio** — Inference on audio over 1 hour via planned chunking (recommended), local attention, or buffered chunked processing.
 
 **Decoder Types** — NeMo supports CTC, RNN-T, TDT, AED, and Hybrid decoders. For a comparison of decoder types, see :ref:`asr_language_modeling_and_customization`.
 

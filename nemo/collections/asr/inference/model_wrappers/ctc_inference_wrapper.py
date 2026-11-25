@@ -25,6 +25,8 @@ class CTCInferenceWrapper(ASRInferenceWrapper):
     Provides a unified interface to work with CTC/Hybrid-CTC models.
     """
 
+    decoder_type = 'ctc'
+
     def __post_init__(self) -> None:
         """
         Additional post initialization step

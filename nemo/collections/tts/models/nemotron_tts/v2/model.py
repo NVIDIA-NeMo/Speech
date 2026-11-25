@@ -134,6 +134,8 @@ class ProcessBatchOutput:
     timestamp_mask: Optional[torch.Tensor] = None
     timestamp_metrics: Optional[dict] = None
     timestamp_diagnostics: Optional[List[dict]] = None
+    ctc_timestamp_loss: Optional[torch.Tensor] = None
+    ctc_timestamp_metrics: Optional[dict] = None
 
 
 class NemotronTTSModel(NemotronTTSBase):
@@ -161,6 +163,9 @@ class NemotronTTSModel(NemotronTTSBase):
         self.timestamp_head_loss_weight = float(self.timestamp_head_config.get('loss_weight', 0.1))
         if not math.isfinite(self.timestamp_head_loss_weight) or self.timestamp_head_loss_weight < 0:
             raise ValueError('timestamp_head.loss_weight must be finite and nonnegative')
+        self.ctc_timestamp_head_loss_weight = float(self.ctc_timestamp_head_config.get('loss_weight', 0.1))
+        if not math.isfinite(self.ctc_timestamp_head_loss_weight) or self.ctc_timestamp_head_loss_weight < 0:
+            raise ValueError('ctc_timestamp_head.loss_weight must be finite and nonnegative')
 
         self.label_smoothing = cfg.get('label_smoothing', 0.1)
         self.cross_entropy_loss = nn.CrossEntropyLoss(reduction='none', label_smoothing=self.label_smoothing)
@@ -309,11 +314,23 @@ class NemotronTTSModel(NemotronTTSBase):
         if teacher is None:
             from nemo.collections.tts.modules.nemotron_tts.v2.nemotron_asr_aligner import NemotronASRTimestampAligner
 
-            teacher = NemotronASRTimestampAligner(self.timestamp_head_config.get('aligner', {}))
+            config = (
+                self.ctc_timestamp_head_config
+                if getattr(self, 'use_ctc_timestamp_head', False)
+                else self.timestamp_head_config
+            )
+            teacher = NemotronASRTimestampAligner(config.get('aligner', {}))
+            if getattr(self, 'use_ctc_timestamp_head', False):
+                source = teacher.tokenizer.tokenizer.serialized_model_proto()
+                target = self.ctc_timestamp_tokenizer.tokenizer.serialized_model_proto()
+                if source != target:
+                    raise ValueError('The CTC timestamp teacher must use the student checkpoint tokenizer')
             object.__setattr__(self, '_timestamp_teacher', teacher)
         return teacher
 
-    def _prepare_timestamp_targets(self, batch, text, audio_codes_lens, num_frames, *, diagnostics=None):
+    def _prepare_timestamp_targets(
+        self, batch, text, audio_codes_lens, num_frames, *, diagnostics=None, ctc_targets=None
+    ):
         """Align independent GT waveform turns and restore classes to the audio target grid."""
         if batch is None:
             raise ValueError('Timestamp supervision requires timestamp_batch with ground-truth waveform and text')
@@ -377,6 +394,7 @@ class NemotronTTSModel(NemotronTTSBase):
         if acoustic_mask is not None:
             acoustic_mask = acoustic_mask.detach().cpu().tolist()
         for sample, start, end, left, right, reference, language, turn in plans:
+            complete_turn = end <= num_frames
             end = min(end, num_frames)
             valid_audio = 0 <= left < right <= source_lengths[sample]
             if (
@@ -390,17 +408,45 @@ class NemotronTTSModel(NemotronTTSBase):
             waveforms.append(audio[sample, left:right].detach())
             references.append(reference)
             languages.append(language)
-            metadata.append((sample, start, end, left / sample_rate, turn))
+            metadata.append((sample, start, end, left / sample_rate, turn, complete_turn))
         if waveforms:
             lengths = torch.tensor([waveform.numel() for waveform in waveforms], device=audio.device, dtype=torch.long)
             teacher = self._get_timestamp_teacher()
+            teacher_options = {}
+            if ctc_targets is not None:
+                teacher_options = dict(
+                    return_ctc=True,
+                    align_words=getattr(self, 'use_timestamp_head', False),
+                    distillation_topk=self.ctc_timestamp_head_config.get('distillation_topk', 32),
+                )
             with torch.no_grad():
                 records = teacher(
-                    pad_sequence(waveforms, batch_first=True), lengths, sample_rate, references, languages
+                    pad_sequence(waveforms, batch_first=True),
+                    lengths,
+                    sample_rate,
+                    references,
+                    languages,
+                    **teacher_options,
                 )
             if len(records) != len(metadata):
                 raise ValueError('Timestamp teacher must return one alignment per ground-truth turn')
-            for turn_index, ((sample, start, end, offset, turn), record) in enumerate(zip(metadata, records)):
+            for turn_index, ((sample, start, end, offset, turn, complete_turn), record) in enumerate(
+                zip(metadata, records)
+            ):
+                if ctc_targets is not None and record.get('ctc') is not None:
+                    ctc_targets.append(
+                        dict(
+                            batch_index=sample,
+                            start_frame=start,
+                            end_frame=end,
+                            audio_start_seconds=offset,
+                            audio_duration=waveforms[turn_index].numel() / sample_rate,
+                            ctc=record['ctc'],
+                            complete_turn=complete_turn,
+                        )
+                    )
+                if ctc_targets is not None and not getattr(self, 'use_timestamp_head', False):
+                    continue
                 if record.get('error') or not record.get('words'):
                     metrics['invalid_turns'] += 1
                     continue
@@ -477,6 +523,89 @@ class NemotronTTSModel(NemotronTTSBase):
             mask.clone().to(device=text.device),
             metrics,
             terminal_mask.to(device=text.device),
+        )
+
+    def _compute_ctc_timestamp_loss(self, hidden, targets, audio_codes_target, audio_codes_lens, agent_mask=None):
+        """Supervise independent GT turns on the already speech-delayed audio grid."""
+        head = self.ctc_timestamp_head
+        zero = head(hidden[0, :0]).float().sum() * 0
+        losses, ctc_losses, kd_losses = [], [], []
+        frames = skipped = infeasible = 0
+        interval = self.codec_model_samples_per_frame / self.sample_rate / 2
+        lengths = audio_codes_lens.detach().cpu().tolist()
+        real_audio = ((audio_codes_target >= 0) & (audio_codes_target < self.codebook_size)).all(dim=1)
+        if agent_mask is not None:
+            real_audio &= agent_mask[:, : real_audio.size(1)].bool()
+        real_audio = real_audio.detach().cpu()
+        for target in targets:
+            sample, start = target['batch_index'], target['start_frame']
+            end = min(target['end_frame'], hidden.size(1), lengths[sample])
+            teacher = target['ctc']
+            if teacher['num_classes'] != head.vocab_size or teacher['blank_id'] != head.blank_id:
+                raise ValueError('The CTC teacher vocabulary/blank must match the timestamp head')
+            # CTC needs a whole transcript: a cropped or non-audio turn cannot be
+            # made valid by silently discarding impossible alignment paths.
+            if end <= start or target['end_frame'] > end or not target.get('complete_turn', True):
+                skipped += 1
+                continue
+            if not real_audio[sample, start:end].all():
+                skipped += 1
+                continue
+            duration = target['audio_duration']
+            phase = target['audio_start_seconds'] - start * interval * 2
+            student_times = torch.arange(2 * (end - start), dtype=torch.float64) * interval - phase
+            teacher_rows = torch.floor(student_times / teacher['frame_seconds'] + 1e-6).long()
+            valid = (student_times >= -1e-6) & (student_times < duration - 1e-6)
+            valid &= (teacher_rows >= 0) & (teacher_rows < teacher['indices'].size(0))
+            if not valid.any():
+                skipped += 1
+                continue
+            input_length = int(valid.nonzero()[-1]) + 1
+            rows = teacher_rows.clamp(0, teacher['indices'].size(0) - 1)[:input_length]
+            aligned = {
+                key: teacher[key].index_select(0, rows) for key in ('indices', 'probabilities', 'tail_probabilities')
+            }
+            result = head.compute_loss(
+                hidden[sample, start:end],
+                teacher['token_ids'],
+                aligned,
+                distillation_mask=valid[:input_length],
+                input_length=input_length,
+                input_start=int(valid.nonzero()[0]),
+            )
+            losses.append(result['loss'])
+            ctc_losses.append(result['ctc_loss'])
+            kd_losses.append(result['distillation_loss'])
+            infeasible += int(not result['ctc_valid'])
+            frames += int(valid.sum())
+
+        def average(values):
+            return torch.stack(values).mean() if values else zero
+
+        metrics = dict(
+            ctc_loss=average(ctc_losses).detach(),
+            distillation_loss=average(kd_losses).detach(),
+            supervised_turns=len(losses),
+            supervised_frames=frames,
+            skipped_turns=skipped,
+            infeasible_turns=infeasible,
+        )
+        return average(losses), metrics
+
+    def _log_ctc_timestamp_losses(self, output, mode, batch_size):
+        if output.ctc_timestamp_loss is None:
+            return
+        values = {f'{mode}/ctc_timestamp_loss': output.ctc_timestamp_loss.detach()}
+        values.update({f'{mode}/ctc_timestamp_{key}': value for key, value in output.ctc_timestamp_metrics.items()})
+        packed = torch.stack([torch.as_tensor(value, device=self.device).float() for value in values.values()])
+        if mode == 'train' and getattr(self, '_trainer', None) is not None:
+            packed = self.trainer.strategy.reduce(packed, reduce_op='mean')
+        self.log_dict(
+            dict(zip(values, packed.unbind())),
+            on_step=mode == 'train',
+            on_epoch=mode != 'train',
+            batch_size=batch_size,
+            sync_dist=mode != 'train',
         )
 
     def _log_timestamp_head_examples(self, output, batch, generated=None):
@@ -1409,12 +1538,19 @@ class NemotronTTSModel(NemotronTTSBase):
         alignment_text = text.clone() if use_alignment else None
         timestamp_targets = timestamp_mask = timestamp_metrics = timestamp_terminals = None
         use_timestamp_head = getattr(self, 'use_timestamp_head', False) and not return_policy_logits
+        use_ctc_timestamp_head = getattr(self, 'use_ctc_timestamp_head', False) and not return_policy_logits
+        ctc_timestamp_targets = [] if use_ctc_timestamp_head else None
         timestamp_diagnostics = [] if use_timestamp_head and return_timestamp_diagnostics else None
-        if use_timestamp_head:
+        if use_timestamp_head or use_ctc_timestamp_head:
             num_frames = (audio_codes.size(-1) + self.frame_stacking_factor - 1) // self.frame_stacking_factor + 1
             timestamp_targets, timestamp_mask, timestamp_metrics, timestamp_terminals = (
                 self._prepare_timestamp_targets(
-                    timestamp_batch, text, audio_codes_lens, num_frames, diagnostics=timestamp_diagnostics
+                    timestamp_batch,
+                    text,
+                    audio_codes_lens,
+                    num_frames,
+                    diagnostics=timestamp_diagnostics,
+                    ctc_targets=ctc_timestamp_targets,
                 )
             )
 
@@ -1877,6 +2013,14 @@ class NemotronTTSModel(NemotronTTSBase):
                     valid_mask=timestamp_mask[sample, indices].detach().cpu(),
                     eos_mask=eos_positions[sample, indices].detach().cpu(),
                 )
+        ctc_timestamp_loss = ctc_timestamp_metrics = None
+        if use_ctc_timestamp_head:
+            ctc_timestamp_loss, ctc_timestamp_metrics = self._compute_ctc_timestamp_loss(
+                pred_embeddings, ctc_timestamp_targets, audio_codes_target, audio_codes_lens_target, agent_mask
+            )
+            ctc_timestamp_metrics['teacher_failed_turns'] = timestamp_metrics['turns'] - len(ctc_timestamp_targets)
+            loss = loss + self.ctc_timestamp_head_loss_weight * ctc_timestamp_loss
+
         aligned_text_loss = aligned_text_targets = aligned_text_mask = None
         aligned_text_diagnostics = None
         if alignment is not None:
@@ -1945,6 +2089,8 @@ class NemotronTTSModel(NemotronTTSBase):
             timestamp_mask=timestamp_mask,
             timestamp_metrics=timestamp_metrics,
             timestamp_diagnostics=timestamp_diagnostics,
+            ctc_timestamp_loss=ctc_timestamp_loss,
+            ctc_timestamp_metrics=ctc_timestamp_metrics,
         )
 
     def training_step(self, batch, batch_idx):
@@ -2170,7 +2316,11 @@ class NemotronTTSModel(NemotronTTSBase):
             task=batch["task"] if self.cfg.get("use_multiturn_dataset", False) else None,
             agent_mask=batch["agent_mask"] if self.cfg.get("use_multiturn_dataset", False) else None,
             user_audio_embedded=user_audio_embedded,
-            timestamp_batch=batch if getattr(self, 'use_timestamp_head', False) else None,
+            timestamp_batch=(
+                batch
+                if (getattr(self, 'use_timestamp_head', False) or getattr(self, 'use_ctc_timestamp_head', False))
+                else None
+            ),
         )
         loss = batch_output.loss
         codebook_loss = batch_output.codebook_loss
@@ -2179,6 +2329,8 @@ class NemotronTTSModel(NemotronTTSBase):
         self._log_alignment_losses(batch_output, 'train', batch['text'].size(0))
         if getattr(self, 'use_timestamp_head', False):
             self._log_timestamp_losses(batch_output, 'train', batch['text'].size(0))
+        if getattr(self, 'use_ctc_timestamp_head', False):
+            self._log_ctc_timestamp_losses(batch_output, 'train', batch['text'].size(0))
 
         if self.phoneme_tokenizer is not None:
             phoneme_loss = batch_output.phoneme_loss
@@ -2283,12 +2435,18 @@ class NemotronTTSModel(NemotronTTSBase):
             task=batch["task"] if "task" in batch else None,
             agent_mask=batch["agent_mask"] if "agent_mask" in batch else None,
             return_aligned_text_diagnostics=log_aligned_text,
-            timestamp_batch=batch if getattr(self, 'use_timestamp_head', False) else None,
+            timestamp_batch=(
+                batch
+                if (getattr(self, 'use_timestamp_head', False) or getattr(self, 'use_ctc_timestamp_head', False))
+                else None
+            ),
             return_timestamp_diagnostics=log_timestamps,
         )
         self._log_alignment_losses(batch_output, 'val', batch['text'].size(0))
         if getattr(self, 'use_timestamp_head', False):
             self._log_timestamp_losses(batch_output, 'val', batch['text'].size(0))
+        if getattr(self, 'use_ctc_timestamp_head', False):
+            self._log_ctc_timestamp_losses(batch_output, 'val', batch['text'].size(0))
         # Access ProcessBatchOutput dataclass attributes
         # Logits come from the auxiliary parallel prediction head.
         loss = batch_output.loss
@@ -2644,7 +2802,8 @@ class NemotronTTSModel(NemotronTTSBase):
             codec_model_samples_per_frame=self.codec_model_samples_per_frame,
             prior_scaling_factor=0.0,
             load_cached_codes_if_available=(
-                self.cfg.load_cached_codes_if_available and not getattr(self, 'use_timestamp_head', False)
+                self.cfg.load_cached_codes_if_available
+                and not (getattr(self, 'use_timestamp_head', False) or getattr(self, 'use_ctc_timestamp_head', False))
             ),
             dataset_type=dataset_type,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
             use_text_conditioning_tokenizer=True,
@@ -2710,7 +2869,9 @@ class NemotronTTSModel(NemotronTTSBase):
                 input_roles=["user", "User"],
                 output_roles=["assistant", "Assistant", "agent", "Agent"],
                 add_text_bos=self.cfg.get("add_text_bos", False),
-                return_timestamp_supervision=getattr(self, 'use_timestamp_head', False),
+                return_timestamp_supervision=(
+                    getattr(self, 'use_timestamp_head', False) or getattr(self, 'use_ctc_timestamp_head', False)
+                ),
                 phoneme_turn_dropout_batch_prob=self.cfg.get("phoneme_turn_dropout_batch_prob", 0.0),
                 phoneme_turn_dropout_turn_prob=self.cfg.get("phoneme_turn_dropout_turn_prob", 0.0),
                 phoneme_turn_max_words_to_drop=self.cfg.get("phoneme_turn_max_words_to_drop", 2),
@@ -2725,7 +2886,10 @@ class NemotronTTSModel(NemotronTTSBase):
                 prior_scaling_factor=0.0,
                 # The timestamp teacher needs target GT audio; the cached-code path omits it.
                 load_cached_codes_if_available=(
-                    self.cfg.load_cached_codes_if_available and not getattr(self, 'use_timestamp_head', False)
+                    self.cfg.load_cached_codes_if_available
+                    and not (
+                        getattr(self, 'use_timestamp_head', False) or getattr(self, 'use_ctc_timestamp_head', False)
+                    )
                 ),
                 dataset_type=mode,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
                 challenging_texts_path=dataset_cfg.dataset.get('challenging_texts_path'),

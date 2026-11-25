@@ -1,4 +1,72 @@
-# Nemotron-TTS V2 word-boundary pilot
+# Nemotron-TTS V2 timestamp heads
+
+## CTC and teacher distillation
+
+Enable the CTC head independently of the binary word-end head:
+
+```bash
+++model.use_ctc_timestamp_head=true \
+++model.use_timestamp_head=false \
+++model.ctc_timestamp_head.aligner.snapshot_path=/path/to/local/huggingface/snapshot \
+++model.ctc_timestamp_head.loss_weight=0.1 \
+++model.ctc_timestamp_head.ctc_weight=1.0 \
+++model.ctc_timestamp_head.distillation_weight=1.0
+```
+
+`use_ctc_timestamp_head` defaults to `false`. The head uses the frozen ASR
+aligner's dedicated SentencePiece tokenizer and blank ID, independently of the
+TTS input tokenizer. The tokenizer is packaged with the TTS checkpoint so
+inference can decode its predictions without loading the ASR teacher.
+Vocabulary size, blank ID, and CTC frame interval are derived from the teacher
+artifact and saved in the TTS configuration. By default, `ctc_timestamp_head.aligner`
+inherits `timestamp_head.aligner`; it can also be configured directly for a
+CTC-only experiment.
+
+Each audio hidden state produces two ordered CTC distributions. With the
+12.5 Hz codec and frame stacking factor one, these correspond to successive
+40 ms subframes, matching the teacher's 25 Hz CTC output. The teacher's acoustic
+encoder operates at 12.5 Hz and its CTC adapter upsamples by two. Both student
+predictions are available during the same TTS step; this does not add a future
+TTS step or guarantee 40 ms timestamp accuracy.
+
+The objective is
+`loss_weight * (ctc_weight * CTC + distillation_weight * KL)`.
+The default outer weight is 0.1, with both component weights set to 1.0.
+In a fresh-head A100 smoke test on three ground-truth speech samples, the
+unweighted objective was approximately 41.8–51.4, adding 4.18–5.14 to the
+training loss at this outer weight. This small initialization check is a
+starting-point calibration, not a converged-loss target or a quality result.
+CTC uses the selected reference transcript encoded with the teacher tokenizer.
+Distillation matches the frozen teacher's framewise probabilities, including
+blank. The teacher retains its highest-probability nonblank classes
+(`distillation_topk`, default 32), blank, and the remaining probability mass as
+one other category. KL is exact for this coarsened categorical distribution;
+it does not distinguish individual classes in that remaining category.
+
+The student computes projection chunks (`chunk_size`, default 128 audio frames)
+and checkpoints their intermediate activations during training. Transcript CTC
+uses the unique target classes, blank, and a log-sum-exp other category. This
+preserves the full-vocabulary CTC objective and gradients while limiting retained
+logit memory. Loss arithmetic uses FP32 when model parameters use BF16-true.
+
+Ground-truth agent turns are processed independently and restored to the
+original audio timeline. Padding, user turns, and speech EOS are excluded from
+lexical CTC predictions. The existing speech-delay slice is applied once.
+The CTC-only teacher path uses its encoder and CTC adapter without forced
+alignment search. When both heads are enabled with matching teacher settings,
+the teacher pass can provide both kinds of supervision.
+
+During streaming, call `model.drain_ctc_timestamp_frames(state)` after each
+`streaming_step()` to retrieve the new subframe token predictions and their
+probabilities. `streaming_finalize()` exposes `ctc_timestamp_tokens`,
+`ctc_timestamp_probabilities`, and `ctc_timestamp_lens`; batch inference exposes
+the corresponding fields. These are lexical CTC predictions. Recovering word
+timestamps requires matching their decoded token sequence against the available
+input transcript; counting nonblank predictions does not provide recovery after
+an insertion or omission. The head is an auxiliary output and does not change
+audio sampling.
+
+## Binary word-end head
 
 Enable an auxiliary frame classifier with a frozen Nemotron 3.5 Transcribe
 acoustic encoder and CTC timestamp adapter as its teacher:

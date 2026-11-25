@@ -38,6 +38,16 @@ model:
       use_cuda_alignment: true
       measure_timings: false
 
+  use_ctc_timestamp_head: false
+  ctc_timestamp_head:
+    projection_size: 256
+    loss_weight: 0.1
+    ctc_weight: 1.0
+    distillation_weight: 1.0
+    chunk_size: 128
+    distillation_topk: 32
+    aligner: ${model.timestamp_head.aligner}
+
   # Decoder backend selection
   # Options: "huggingface" (default), "nemotron_h"
   decoder_type: "huggingface"

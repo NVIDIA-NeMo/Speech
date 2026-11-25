@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Output-only word-end supervision at the TTS backbone's audio-frame rate."""
+"""Output-only word-end and distilled CTC supervision for audio hidden states."""
 
 import math
 from collections.abc import Mapping, Sequence
@@ -186,6 +186,178 @@ class TimestampHead(nn.Module):
                 raise ValueError('valid_mask must be boolean and have the same shape as labels')
             selected = selected & valid_mask
         return selected
+
+
+class CTCTimestampHead(nn.Module):
+    """Predict two ordered CTC distributions per audio hidden state.
+
+    ``compute_loss`` operates on one independent turn, excluding audio EOS. It
+    checkpoints bounded projection chunks and keeps only transcript classes,
+    blank, and an OTHER class for CTC. OTHER collects all excluded probability
+    mass, preserving both the full-vocabulary CTC value and gradients. Teacher
+    targets contain explicit token/blank probabilities plus their residual tail;
+    distillation is the categorical KL of that coarsened distribution.
+    """
+
+    subframes = 2
+
+    def __init__(
+        self,
+        hidden_size: int,
+        vocab_size: int,
+        blank_id: int,
+        projection_size: int = 256,
+        chunk_size: int = 128,
+        ctc_weight: float = 1.0,
+        distillation_weight: float = 1.0,
+    ):
+        super().__init__()
+        for name, value in (
+            ('hidden_size', hidden_size),
+            ('vocab_size', vocab_size),
+            ('projection_size', projection_size),
+            ('chunk_size', chunk_size),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f'{name} must be a positive integer')
+        if isinstance(blank_id, bool) or not isinstance(blank_id, int) or not 0 <= blank_id < vocab_size:
+            raise ValueError('blank_id must index the CTC vocabulary')
+        for name, value in (('ctc_weight', ctc_weight), ('distillation_weight', distillation_weight)):
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+                raise ValueError(f'{name} must be finite and nonnegative')
+        self.vocab_size, self.blank_id = vocab_size, blank_id
+        self.chunk_size = chunk_size
+        self.ctc_weight, self.distillation_weight = float(ctc_weight), float(distillation_weight)
+        self.projection = nn.Sequential(
+            nn.LayerNorm(hidden_size),
+            nn.Linear(hidden_size, projection_size),
+            nn.GELU(),
+            nn.Linear(projection_size, self.subframes * vocab_size),
+        )
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """Return ``(..., audio_frames, 2, vocab_size)`` logits without future frames."""
+        logits = self.projection(hidden_states.to(dtype=self.projection[1].weight.dtype))
+        return logits.unflatten(-1, (self.subframes, self.vocab_size))
+
+    def compute_loss(
+        self,
+        hidden_states: torch.Tensor,
+        target_ids: torch.Tensor,
+        teacher: Mapping,
+        distillation_mask: Optional[torch.Tensor] = None,
+        input_length: Optional[int] = None,
+        input_start: int = 0,
+    ) -> dict:
+        """Return weighted loss, raw FP32 CTC/KL, and feasibility diagnostics.
+
+        Sparse teacher arrays ``indices``/``probabilities`` have shape
+        ``(subframes, kept_classes)``; ``tail_probabilities`` holds the omitted
+        mass. Their time grid must already match this turn's student subframes.
+        CTC uses ``[input_start:input_length]`` so partially occupied boundary
+        frames can be excluded. Distillation retains its explicit validity mask
+        over ``[0:input_length]``. Infeasible CTC targets are reported and retain
+        distillation supervision.
+        """
+        from torch.utils.checkpoint import checkpoint
+
+        if hidden_states.ndim != 2 or target_ids.ndim != 1:
+            raise ValueError('CTC loss expects hidden_states (frames, hidden) and target_ids (tokens,)')
+        total = hidden_states.size(0) * self.subframes
+        length = total if input_length is None else input_length
+        if isinstance(length, bool) or not isinstance(length, int) or not 0 <= length <= total:
+            raise ValueError('input_length must be an integer within the available CTC subframes')
+        if isinstance(input_start, bool) or not isinstance(input_start, int) or not 0 <= input_start <= length:
+            raise ValueError('input_start must be an integer between zero and input_length')
+        ctc_length = length - input_start
+        targets = target_ids.detach().to(device='cpu', dtype=torch.long)
+        if targets.numel() and ((targets < 0).any() or (targets >= self.vocab_size).any()):
+            raise ValueError('CTC targets must index the CTC vocabulary')
+        if targets.eq(self.blank_id).any():
+            raise ValueError('CTC transcript targets cannot contain blank')
+        indices, probabilities, tail = (teacher[key] for key in ('indices', 'probabilities', 'tail_probabilities'))
+        if (
+            indices.ndim != 2
+            or probabilities.shape != indices.shape
+            or tail.shape != indices.shape[:1]
+            or indices.size(0) < length
+            or not 0 < indices.size(1) <= self.vocab_size
+        ):
+            raise ValueError('Teacher CTC probabilities must cover the student subframes and vocabulary')
+        if distillation_mask is None:
+            distillation_mask = torch.ones(indices.size(0), dtype=torch.bool, device=indices.device)
+        if distillation_mask.shape != indices.shape[:1] or distillation_mask.dtype != torch.bool:
+            raise ValueError('distillation_mask must be boolean with one entry per teacher subframe')
+        required = targets.numel() + int(targets[1:].eq(targets[:-1]).sum())
+        feasible = ctc_length >= required
+        device = hidden_states.device
+        unique = targets.unique(sorted=True)
+        compact_ids = torch.cat([torch.tensor([self.blank_id]), unique]).to(device=device)
+        mapped_targets = torch.searchsorted(unique, targets) + 1
+        compact_chunks, kl_chunks = [], []
+        for start in range(0, (length + self.subframes - 1) // self.subframes, self.chunk_size):
+            end = min(start + self.chunk_size, hidden_states.size(0))
+            left, right = self.subframes * start, min(self.subframes * end, length)
+            args = (
+                hidden_states[start:end],
+                compact_ids,
+                indices[left:right].detach().to(device=device, dtype=torch.long),
+                probabilities[left:right].detach().to(device=device, dtype=torch.float32),
+                tail[left:right].detach().to(device=device, dtype=torch.float32),
+                distillation_mask[left:right].to(device=device),
+            )
+            if torch.is_grad_enabled():
+                compact, kl = checkpoint(self._chunk_loss_inputs, *args, use_reentrant=False)
+            else:
+                compact, kl = self._chunk_loss_inputs(*args)
+            compact_chunks.append(compact)
+            kl_chunks.append(kl)
+        if compact_chunks:
+            compact_log_probs = torch.cat(compact_chunks)
+            zero = compact_log_probs.sum() * 0
+            denominator = distillation_mask[:length].sum().to(device=device).clamp_min(1)
+            distillation_loss = torch.stack(kl_chunks).sum() / denominator
+            if feasible and ctc_length:
+                ctc_loss = F.ctc_loss(
+                    compact_log_probs[input_start:].unsqueeze(1),
+                    mapped_targets,
+                    torch.tensor([ctc_length]),
+                    torch.tensor([targets.numel()]),
+                    blank=0,
+                    reduction='sum',
+                ) / max(targets.numel(), 1)
+            else:
+                ctc_loss = zero
+        else:
+            zero = self(hidden_states[:0]).float().sum() * 0
+            ctc_loss = distillation_loss = zero
+        return {
+            'loss': self.ctc_weight * ctc_loss + self.distillation_weight * distillation_loss,
+            'ctc_loss': ctc_loss,
+            'distillation_loss': distillation_loss,
+            'ctc_valid': feasible,
+            'infeasible_count': int(not feasible),
+            'supervised_subframes': ctc_length,
+            'distilled_subframes': distillation_mask[:length].sum().to(device=device),
+        }
+
+    def _chunk_loss_inputs(self, hidden_states, compact_ids, indices, probabilities, tail, valid):
+        logits = self(hidden_states).flatten(0, 1)[: indices.size(0)].float()
+        compact = logits.index_select(-1, compact_ids)
+        if compact_ids.numel() < self.vocab_size:
+            other = logits.index_fill(-1, compact_ids, float('-inf')).logsumexp(-1, keepdim=True)
+            compact = torch.cat([compact, other], dim=-1)
+        compact_log_probs = compact.log_softmax(-1)
+        normalizer = logits.logsumexp(-1, keepdim=True)
+        selected_log_probs = logits.gather(-1, indices) - normalizer
+        probabilities = probabilities.masked_fill(~valid.unsqueeze(-1), 0)
+        tail = tail.masked_fill(~valid, 0)
+        tiny = torch.finfo(torch.float32).tiny
+        kl = (probabilities * (probabilities.clamp_min(tiny).log() - selected_log_probs)).sum(-1)
+        if indices.size(-1) < self.vocab_size:
+            remaining = logits.scatter(-1, indices, float('-inf')).logsumexp(-1) - normalizer.squeeze(-1)
+            kl = kl + tail * (tail.clamp_min(tiny).log() - remaining)
+        return compact_log_probs, kl.sum()
 
 
 @dataclass(frozen=True)

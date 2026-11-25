@@ -30,6 +30,69 @@ from torch.nn.utils.rnn import pad_sequence
 from nemo.utils.cast_utils import fp32_precision
 
 
+def load_ctc_timestamp_tokenizer(config: Mapping[str, Any]) -> tuple[Any, dict[str, Any]]:
+    """Read the teacher's tokenizer and dimensions without constructing its networks.
+
+    A saved student supplies its registered ``tokenizer_model`` artifact and scalar
+    metadata. Initial training instead reads only the SentencePiece tensor and JSON
+    metadata from the teacher safetensors bundle. The returned ``model_proto`` bytes
+    allow callers to register a self-contained NeMo tokenizer artifact.
+    """
+    from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer
+    from nemo.collections.speechlm2.parts.ctc_timestamp_utils import _load_sentencepiece, _validate_vocabulary
+
+    config = _plain_config(config)
+    if config.get('tokenizer_model'):
+        tokenizer_options = dict(config.get('tokenizer_options') or {})
+        tokenizer = SentencePieceTokenizer(model_path=config['tokenizer_model'], **tokenizer_options)
+        metadata = {
+            'num_classes': int(config['num_classes']),
+            'blank_id': int(config['blank_id']),
+            'frame_seconds': float(config.get('frame_seconds', 0.04)),
+            'upsampling_factor': int(config.get('upsampling_factor', 2)),
+            'tokenizer_options': tokenizer_options,
+            'model_proto': tokenizer.tokenizer.serialized_model_proto(),
+        }
+    else:
+        from safetensors import safe_open
+
+        teacher_config = config.get('aligner') or config
+        snapshot = Path(teacher_config.get('snapshot_path', '')).expanduser()
+        path = Path(teacher_config.get('ctc_artifact_path') or snapshot / 'model.safetensors').expanduser()
+        with safe_open(str(path), framework='pt', device='cpu') as handle:
+            artifact_metadata = handle.metadata() or {}
+            if artifact_metadata.get('format') == 'nemo_ctc_timestamp_artifact_v1':
+                prefix, decoder_key, tokenizer_key = '', 'decoder_config', 'tokenizer_config'
+            elif artifact_metadata.get('ctc_timestamp_format') == 'nemo_ctc_timestamp_artifact_v1':
+                prefix = 'ctc_timestamp.'
+                decoder_key, tokenizer_key = 'ctc_timestamp_decoder_config', 'ctc_timestamp_tokenizer_config'
+            else:
+                raise ValueError('The teacher bundle has no supported CTC timestamp tokenizer artifact.')
+            decoder_config = json.loads(artifact_metadata[decoder_key])
+            tokenizer_options = json.loads(artifact_metadata[tokenizer_key])
+            proto = handle.get_tensor(prefix + 'tokenizer.model_proto')
+        if proto.dtype != torch.uint8 or proto.numel() == 0:
+            raise ValueError('The CTC tokenizer model must be a nonempty uint8 tensor.')
+        model_proto = proto.contiguous().numpy().tobytes()
+        tokenizer = _load_sentencepiece(dict(tokenizer_options, model_proto=model_proto))
+        _validate_vocabulary(tokenizer, decoder_config)
+        num_classes = int(decoder_config['num_classes']) + int(decoder_config.get('add_blank', True))
+        upsampling = int(decoder_config.get('upsampling_factor', 1))
+        metadata = {
+            'num_classes': num_classes,
+            'blank_id': num_classes - 1,
+            'frame_seconds': 0.08 / upsampling,
+            'upsampling_factor': upsampling,
+            'tokenizer_options': tokenizer_options,
+            'model_proto': model_proto,
+        }
+    if metadata['upsampling_factor'] != 2 or not math.isclose(metadata['frame_seconds'], 0.04):
+        raise ValueError('CTC timestamp distillation requires the teacher two-subframe, 40 ms adapter.')
+    if metadata['num_classes'] != tokenizer.vocab_size + 1 or metadata['blank_id'] != tokenizer.vocab_size:
+        raise ValueError('CTC tokenizer vocabulary and the appended blank class must match the teacher output.')
+    return tokenizer, metadata
+
+
 class NemotronASRTimestampAligner(nn.Module):
     """Align independent ground-truth audio turns with a frozen Nemotron teacher.
 
@@ -117,6 +180,10 @@ class NemotronASRTimestampAligner(nn.Module):
         sample_rate: int,
         texts: Sequence[str],
         languages: Sequence[str | None] | None = None,
+        *,
+        return_ctc: bool = False,
+        align_words: bool = True,
+        distillation_topk: int = 32,
     ) -> list[dict[str, Any]]:
         """Return one ``{words: [{word, start, end}], error}`` record per turn.
 
@@ -125,8 +192,16 @@ class NemotronASRTimestampAligner(nn.Module):
         Word times are relative to each input turn, in seconds. ``ctc_start`` and
         ``ctc_end`` retain the native CTC emission bounds for inspection. Invalid transcripts
         are reported independently, so one failure does not remove other records.
+        ``return_ctc`` additionally returns sparse teacher probabilities and transcript
+        IDs in ``ctc``. Set ``align_words=False`` to skip word dynamic programming;
+        the encoder is still run only once per acoustic microbatch. ``distillation_topk``
+        counts retained nonblank classes, in addition to explicit blank and tail mass.
         """
         _validate_batch(audio, lengths, sample_rate, texts, languages)
+        if not align_words and not return_ctc:
+            raise ValueError('Request word alignment or CTC distillation targets.')
+        if isinstance(distillation_topk, bool) or not isinstance(distillation_topk, int) or distillation_topk < 1:
+            raise ValueError('distillation_topk must be a positive integer.')
         self.eval()
         device = audio.device
         started = _timestamp(device, self.measure_timings)
@@ -142,6 +217,9 @@ class NemotronASRTimestampAligner(nn.Module):
                         sample_rate,
                         texts[start:end],
                         languages[start:end] if languages is not None else None,
+                        return_ctc=return_ctc,
+                        align_words=align_words,
+                        distillation_topk=distillation_topk,
                     )
                 )
                 for key, value in self.last_timings.items():
@@ -226,6 +304,13 @@ class NemotronASRTimestampAligner(nn.Module):
                 durations = [source_lengths[index] / sample_rate for index in indices]
                 transcripts = [texts[index] for index in indices]
                 before_prepare = _timestamp(device, self.measure_timings)
+                if return_ctc:
+                    ctc_records = _ctc_distillation_targets(aligner, inputs, transcripts, durations, distillation_topk)
+                    for index, record in zip(indices, ctc_records):
+                        results[index].update(record)
+                if not align_words:
+                    prepare_seconds += _timestamp(device, self.measure_timings) - before_prepare
+                    continue
                 try:
                     prepared = aligner.prepare_from_inputs(inputs, transcripts, durations)
                 except (ValueError, UnicodeError):
@@ -237,9 +322,11 @@ class NemotronASRTimestampAligner(nn.Module):
                         )
                         try:
                             prepared_one = aligner.prepare_from_inputs(single, [texts[index]], [durations[offset]])
-                            results[index] = _checked_alignment_results(
-                                aligner, prepared_one, [durations[offset]], device=alignment_device
-                            )[0]
+                            results[index].update(
+                                _checked_alignment_results(
+                                    aligner, prepared_one, [durations[offset]], device=alignment_device
+                                )[0]
+                            )
                         except (ValueError, UnicodeError) as error:
                             results[index]['error'] = f'{type(error).__name__}: {error}'
                     prepare_seconds += _timestamp(device, self.measure_timings) - before_prepare
@@ -250,7 +337,7 @@ class NemotronASRTimestampAligner(nn.Module):
                 prepare_seconds += after_prepare - before_prepare
                 align_seconds += after_align - after_prepare
                 for index, result in zip(indices, aligned):
-                    results[index] = result
+                    results[index].update(result)
 
         self.last_timings = {
             'resample': after_resample - started,
@@ -395,6 +482,91 @@ def _load_teacher_components(config):
             'encoder_attention_backend': 'sdpa',
         },
     )
+
+
+def _ctc_distillation_targets(aligner, inputs, texts, durations, topk):
+    """Retain ordered sparse categorical targets from the existing deferred head.
+
+    Every row keeps the strongest nonblank classes, the blank class, and the
+    probability mass of all remaining classes. This defines a coarsened teacher
+    distribution without retaining a full time-by-vocabulary tensor. Transcript
+    tokenization reuses the forced aligner's language and text-cleaning policy.
+    """
+    from nemo.collections.speechlm2.parts.ctc_timestamp_utils import _timestamp_units
+
+    num_classes = int(aligner.ctc_decoder.num_classes_with_blank)
+    upsampling = int(getattr(aligner.ctc_decoder, 'upsampling_factor', 1))
+    if upsampling != 2:
+        raise ValueError('CTC distillation requires two teacher subframes per 80 ms encoder frame.')
+    blank_id = aligner._resolve_blank_id(num_classes)
+    lengths = (inputs.asr_encoded_lengths * upsampling).detach().cpu().tolist()
+    count = min(topk, num_classes - 1)
+    targets, chunks = [], [[] for _ in texts]
+    for text, length, duration in zip(texts, lengths, durations):
+        record = {'error': None}
+        try:
+            words = aligner._tokenize_words(
+                _timestamp_units(aligner.parse_sot_words(text), aligner.timestamp_language or 'auto'), blank_id
+            )
+            token_ids = [token for word in words for token in word['token_ids']]
+            if not token_ids:
+                raise ValueError('The transcript has no CTC target tokens.')
+            minimum = len(token_ids) + sum(left == right for left, right in zip(token_ids, token_ids[1:]))
+            if minimum > length:
+                raise ValueError('The transcript is too long for the CTC timeline.')
+            with torch.inference_mode(False):
+                record['ctc'] = {
+                    'token_ids': torch.tensor(token_ids, dtype=torch.long),
+                    'num_classes': num_classes,
+                    'blank_id': blank_id,
+                    'frame_seconds': 0.08 / upsampling,
+                    'audio_duration': duration,
+                }
+        except (ValueError, UnicodeError) as error:
+            record['error'] = f'{type(error).__name__}: {error}'
+        targets.append(record)
+    for batch_start, start, log_probs in aligner._iter_ctc_windows(inputs):
+        if log_probs.shape[-1] != num_classes:
+            raise ValueError('The teacher CTC vocabulary changed during distillation.')
+        values, indices = log_probs.float().topk(count + 1, dim=-1)
+        # Rank only this small candidate set, preserving descending nonblank order.
+        order = torch.arange(count + 1, device=indices.device).expand_as(indices)
+        order = order.masked_fill(indices == blank_id, count + 1).argsort(dim=-1)[..., :count]
+        indices = indices.gather(-1, order)
+        values = values.gather(-1, order)
+        indices = torch.cat((indices, torch.full_like(indices[..., :1], blank_id)), dim=-1)
+        probabilities = torch.cat((values.exp(), log_probs[..., blank_id : blank_id + 1].float().exp()), dim=-1)
+        tail = (1 - probabilities.sum(dim=-1)).clamp_min(0)
+        for offset in range(log_probs.size(0)):
+            row = batch_start + offset
+            length = min(log_probs.size(1), lengths[row] - start)
+            if length > 0 and 'ctc' in targets[row]:
+                chunks[row].append(
+                    tuple(_ordinary_cpu(value[offset, :length]) for value in (indices, probabilities, tail))
+                )
+    with torch.inference_mode(False):
+        for record, pieces in zip(targets, chunks):
+            if 'ctc' not in record:
+                continue
+            if not pieces:
+                record.pop('ctc')
+                record['error'] = 'empty_ctc_timeline'
+                continue
+            for name, values in zip(('indices', 'probabilities', 'tail_probabilities'), zip(*pieces)):
+                record['ctc'][name] = torch.cat(values)
+            probabilities = record['ctc']['probabilities']
+            if (
+                not torch.isfinite(probabilities).all()
+                or not torch.isfinite(record['ctc']['tail_probabilities']).all()
+            ):
+                record.pop('ctc')
+                record['error'] = 'invalid_ctc_probabilities'
+    return targets
+
+
+def _ordinary_cpu(tensor):
+    with torch.inference_mode(False):
+        return tensor.detach().to(device='cpu').clone()
 
 
 def _load_selected_weights(module, path, prefix, dtype_policy):

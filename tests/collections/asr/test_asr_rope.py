@@ -13,11 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
+
 import pytest
 import torch
 from omegaconf import OmegaConf
 
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
+from nemo.collections.asr.modules.transformer import transformer_modules
 from nemo.collections.asr.parts.submodules.multi_head_attention import RoPEMultiHeadAttention, RotaryPositionalEncoding
 
 
@@ -270,6 +273,58 @@ class TestRotaryPositionalEncoding:
         back = scripted.cpu()
         torch.testing.assert_close(back(q, q)[0], expected[0])
         assert back.cos.device.type == 'cpu'
+
+    @pytest.mark.unit
+    def test_traced_module_follows_a_device_move(self):
+        # a trace holds the plain tables as constants of the tracing device, see `_rows`
+        pe = RotaryPositionalEncoding(d_k=8, max_len=16)
+        q, k = torch.randn(1, 2, 3, 8), torch.randn(1, 2, 5, 8)
+        expected = pe(q, k)
+        traced = torch.jit.trace(pe, (q, k))
+        buffer = io.BytesIO()
+        torch.jit.save(traced, buffer)
+        buffer.seek(0)
+        loaded = torch.jit.load(buffer)
+        torch.testing.assert_close(loaded(q, k), expected)
+        moved = loaded.to('meta')
+        out = moved(q.to('meta'), k.to('meta'))
+        assert out[0].device.type == 'meta' and out[0].shape == q.shape and out[1].shape == k.shape
+
+    @pytest.mark.run_only_on('GPU')
+    @pytest.mark.unit
+    def test_traced_module_follows_a_device_move_gpu(self):
+        pe = RotaryPositionalEncoding(d_k=8, max_len=16)
+        q, k = torch.randn(1, 2, 3, 8), torch.randn(1, 2, 5, 8)
+        expected = pe(q, k)
+        traced = torch.jit.trace(pe, (q, k))
+        buffer = io.BytesIO()
+        torch.jit.save(traced, buffer)
+        buffer.seek(0)
+        loaded = torch.jit.load(buffer).cuda()
+        out = loaded(q.cuda(), k.cuda())
+        torch.testing.assert_close(out[0].cpu(), expected[0])
+        torch.testing.assert_close(out[1].cpu(), expected[1])
+        back = loaded.cpu()
+        torch.testing.assert_close(back(q, k), expected)
+        # traced on the GPU and moved to the CPU
+        traced = torch.jit.trace(pe.cuda(), (q.cuda(), k.cuda())).cpu()
+        torch.testing.assert_close(traced(q, k), expected)
+        # the decoder attention, whose forward grows the tables and rotates through this module; its dict output
+        # is not traceable
+        attention = transformer_modules.MultiHeadAttention(hidden_size=16, num_attention_heads=2, rotary_base=10000.0)
+
+        class States(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.attention = attention
+
+            def forward(self, x, mask):
+                return self.attention(x, x, x, mask)[0]
+
+        x, mask = torch.randn(2, 5, 16), torch.zeros(2, 1, 1, 5)
+        expected = States()(x, mask)
+        traced = torch.jit.trace(States(), (x, mask)).cuda()
+        torch.testing.assert_close(traced(x.cuda(), mask.cuda()).cpu(), expected)
 
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit

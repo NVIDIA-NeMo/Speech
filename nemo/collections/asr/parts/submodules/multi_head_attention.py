@@ -1430,13 +1430,29 @@ class RotaryPositionalEncoding(torch.nn.Module):
         if not torch.jit.is_scripting():
             self.extend_pe(t_k, q.device)
 
-        cos_k = self.cos[:t_k].view(1, 1, t_k, self.d_k_rot)
-        sin_k = self.sin[:t_k].view(1, 1, t_k, self.d_k_rot)
-        cos_q = self.cos[cache_len:t_k].view(1, 1, t_q, self.d_k_rot)
-        sin_q = self.sin[cache_len:t_k].view(1, 1, t_q, self.d_k_rot)
+        # the rows in the Q/K runtime dtype and on their device
+        cos_k = self._rows(self.cos, 0, t_k, k).view(1, 1, t_k, self.d_k_rot)
+        sin_k = self._rows(self.sin, 0, t_k, k).view(1, 1, t_k, self.d_k_rot)
+        cos_q = self._rows(self.cos, cache_len, t_k, q).view(1, 1, t_q, self.d_k_rot)
+        sin_q = self._rows(self.sin, cache_len, t_k, q).view(1, 1, t_q, self.d_k_rot)
 
-        # The tables are stored in the module's dtype; cast to the Q/K runtime dtype (which may have
-        # been upgraded to fp32 by autocast handling in MultiHeadAttention.forward).
-        q = self._apply_rotary(q, cos_q.to(q.dtype), sin_q.to(q.dtype))
-        k = self._apply_rotary(k, cos_k.to(k.dtype), sin_k.to(k.dtype))
+        q = self._apply_rotary(q, cos_q, sin_q)
+        k = self._apply_rotary(k, cos_k, sin_k)
         return q, k
+
+    @staticmethod
+    def _rows(table: torch.Tensor, start: int, end: int, like: torch.Tensor) -> torch.Tensor:
+        """Rows ``start`` to ``end`` of a table, on the device and in the dtype of ``like``.
+
+        A trace holds the plain tables as constants of the tracing device and records ``to(other)`` with a
+        constant device as well.
+        Rows allocated like the input and copied from the table follow the input's device, so a traced module
+        moved (or saved and loaded) after tracing reads them where its inputs are; the ONNX exporter has no
+        device and no symbolic for the copy, and eager and scripted modules read a view.
+        """
+        if not torch.jit.is_scripting():
+            if torch.jit.is_tracing() and not torch.onnx.is_in_onnx_export():
+                rows = like.new_empty([end - start, table.size(1)])
+                rows.copy_(table[start:end])
+                return rows
+        return table[start:end].to(like)

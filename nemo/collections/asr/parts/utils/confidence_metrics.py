@@ -105,27 +105,29 @@ def ece(
 
     ECE measures how close the correct prediction scores are to one and the incorrect prediction scores are to zero.
     ECE ranges from zero to one with the best value zero (the lower the value, the better).
+
+    Scores are split into ``n_bins`` equal-width bins over [0, 1]. For every bin, the share of correct
+    predictions (``y_true == 1``) is compared with the mean score, and the absolute gaps are averaged
+    with weights proportional to the bin sizes.
     """
     y_true = np.array(y_true)
     y_score = np.array(y_score)
     assert len(y_true) == len(y_score)
     assert np.all(y_true >= 0) and np.all(y_true <= 1)
-    py = np.array([1 - y_score, y_score]).T
     acc, conf = np.zeros(n_bins), np.zeros(n_bins)
     Bm = np.zeros(n_bins)
     ece_curve = []
     thresholds = []
     for m in range(n_bins):
         a, b = m / n_bins, (m + 1) / n_bins
-        threshold = (a + b) / 2
-        thresholds.append(threshold)
-        py_index = (py.T[1] >= threshold).astype(int)
-        py_value = py[np.arange(len(py_index)), py_index]
-        bin_range = ((py_value > a) & (py_value <= b)).nonzero()[0]
+        thresholds.append((a + b) / 2)
+        # every score falls into exactly one bin (a, b]; the first bin also takes scores equal to zero
+        lower_ok = y_score >= a if m == 0 else y_score > a
+        bin_range = (lower_ok & (y_score <= b)).nonzero()[0]
         Bm[m] = len(bin_range)
         if Bm[m] > 0:
-            acc[m] = (py_index[bin_range] == y_true[bin_range]).sum() / Bm[m]
-            conf[m] = py_value[bin_range].sum() / Bm[m]
+            acc[m] = y_true[bin_range].sum() / Bm[m]
+            conf[m] = y_score[bin_range].sum() / Bm[m]
         ece_curve.append(Bm[m] * np.abs(acc[m] - conf[m]))
     ece = sum(ece_curve) / sum(Bm)
     if return_curve:

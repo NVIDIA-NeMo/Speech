@@ -16,7 +16,8 @@
 
 Audio remains registered through vLLM's multimodal parser while the rendered
 user content matches ``SALMDataset``: text is followed by one ASCII space and
-the final ``<|audio|>`` locator.
+one ordered ``<|audio|>`` locator per audio payload, with adjacent locators
+separated by one ASCII space.
 """
 
 from __future__ import annotations
@@ -24,6 +25,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from functools import wraps
 from typing import Any
+
+from nemo.collections.speechlm2.vllm.salm.config import SPEECHLM_MTP_MODEL_TYPE, TRANSCRIBE_MTP_MODEL_TYPE
 
 _AUDIO_LOCATOR = "<|audio|>"
 _AUDIO_PART_TYPES = frozenset({"audio_url", "input_audio", "audio_embeds"})
@@ -36,7 +39,8 @@ def _is_nemo_speechlm_tracker(mm_tracker: Any) -> bool:
     hf_config = getattr(model_config, "hf_config", None)
     return getattr(hf_config, "model_type", None) in {
         "nemo_speechlm",
-        "nemo_speechlm_mtp",
+        SPEECHLM_MTP_MODEL_TYPE,
+        TRANSCRIBE_MTP_MODEL_TYPE,
     }
 
 
@@ -73,7 +77,7 @@ def _text_value(part: Any, part_type: str) -> str:
 
 
 def _canonicalize_speechlm_parts(parts: Iterable[Any]) -> list[Any]:
-    """Retain one audio payload but render ``text <|audio|>``."""
+    """Retain ordered audio payloads but render text followed by matching locators."""
     parts = list(parts)
     audio_parts: list[Any] = []
     text_values: list[str] = []
@@ -91,21 +95,20 @@ def _canonicalize_speechlm_parts(parts: Iterable[Any]) -> list[Any]:
 
     if not audio_parts:
         return parts
-    if len(audio_parts) != 1:
-        raise ValueError(
-            "NeMo SpeechLM exact prompt rendering supports exactly one audio "
-            f"payload per user message; got {len(audio_parts)}."
-        )
 
     text = " ".join(text_values)
+    locator_suffix = " ".join([_AUDIO_LOCATOR] * len(audio_parts))
     locator_count = text.count(_AUDIO_LOCATOR)
-    if locator_count > 1:
-        raise ValueError("NeMo SpeechLM prompt contains more than one <|audio|> locator for " "one audio payload.")
-    if locator_count == 1:
+    if locator_count:
+        if locator_count != len(audio_parts):
+            raise ValueError(
+                f"NeMo SpeechLM prompt contains {locator_count} {_AUDIO_LOCATOR} locators "
+                f"for {len(audio_parts)} audio payloads; counts must match."
+            )
         expected = (
-            _AUDIO_LOCATOR
-            if text == _AUDIO_LOCATOR
-            else f"{text.removesuffix(_AUDIO_LOCATOR).rstrip()} {_AUDIO_LOCATOR}"
+            locator_suffix
+            if text == locator_suffix
+            else f"{text.removesuffix(locator_suffix).rstrip()} {locator_suffix}"
         )
         if text != expected:
             raise ValueError(
@@ -114,22 +117,30 @@ def _canonicalize_speechlm_parts(parts: Iterable[Any]) -> list[Any]:
             )
         canonical_text = text
     elif text:
-        canonical_text = f"{text} {_AUDIO_LOCATOR}"
+        canonical_text = f"{text} {locator_suffix}"
     else:
-        canonical_text = _AUDIO_LOCATOR
+        canonical_text = locator_suffix
 
     # The media item is still parsed and registered. Its explicit locator in
     # the final text consumes the registered placeholder, preventing vLLM from
     # prepending a missing locator.
-    return [audio_parts[0], {"type": "text", "text": canonical_text}]
+    return [*audio_parts, {"type": "text", "text": canonical_text}]
 
 
-def _patch_speechlm_training_prompt_contract(chat_utils: Any) -> None:
-    """Install an idempotent, SpeechLM-only exact prompt adapter."""
-    original = getattr(chat_utils, "_parse_chat_message_content_parts", None)
+_LEGACY_PARSER_NAME = "_parse_chat_message_content_parts"
+_PUBLIC_PARSER_NAME = "parse_chat_message_content_parts"
+
+
+def _patch_speechlm_training_prompt_contract(chat_utils: Any, parser_name: str = _LEGACY_PARSER_NAME) -> None:
+    """Install an idempotent, SpeechLM-only exact prompt adapter.
+
+    ``parser_name`` is the attribute of ``chat_utils`` that vLLM's chat path
+    resolves the content-part parser through (see ``_locate_chat_parser``).
+    """
+    original = getattr(chat_utils, parser_name, None)
     if not callable(original):
         raise TypeError(
-            "Unsupported vLLM chat API: _parse_chat_message_content_parts is missing. "
+            f"Unsupported vLLM chat API: {parser_name} is missing. "
             "Update the NeMo SpeechLM compatibility adapter before serving."
         )
     if getattr(original, "_nemo_speechlm_exact_training_prompt", False):
@@ -173,11 +184,35 @@ def _patch_speechlm_training_prompt_contract(chat_utils: Any) -> None:
         )
 
     _parse_chat_message_content_parts._nemo_speechlm_exact_training_prompt = True
-    chat_utils._parse_chat_message_content_parts = _parse_chat_message_content_parts
+    setattr(chat_utils, parser_name, _parse_chat_message_content_parts)
+
+
+def _locate_chat_parser() -> tuple[Any, str]:
+    """Return the module and attribute through which vLLM's chat path finds the content-part parser.
+
+    The parser keeps its signature across releases but has moved twice:
+
+    * vLLM 0.33 split ``vllm.renderers.chat_utils`` into a package and made the
+      parser public as ``chat_message.parse_chat_message_content_parts``;
+      ``parse_chat_message_content`` calls it as a global of ``chat_message``, so
+      that module is the one to patch (the package re-export is a separate name).
+    * vLLM 0.32 has ``vllm.renderers.chat_utils._parse_chat_message_content_parts``.
+    * Earlier releases have ``vllm.entrypoints.chat_utils._parse_chat_message_content_parts``.
+    """
+    try:
+        from vllm.renderers.chat_utils import chat_message  # vLLM >= 0.33
+    except ImportError:
+        chat_message = None
+    if callable(getattr(chat_message, _PUBLIC_PARSER_NAME, None)):
+        return chat_message, _PUBLIC_PARSER_NAME
+
+    try:
+        from vllm.renderers import chat_utils  # vLLM 0.32
+    except ImportError:
+        from vllm.entrypoints import chat_utils
+    return chat_utils, _LEGACY_PARSER_NAME
 
 
 def install_prompt_contract() -> None:
     """Install the SpeechLM-only vLLM chat rendering adapter."""
-    from vllm.entrypoints import chat_utils
-
-    _patch_speechlm_training_prompt_contract(chat_utils)
+    _patch_speechlm_training_prompt_contract(*_locate_chat_parser())

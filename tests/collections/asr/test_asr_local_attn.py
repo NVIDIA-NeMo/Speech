@@ -35,6 +35,7 @@ def getattr2(object, attr):
 class TestASRLocalAttention:
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_forward(self):
         asr_model = ASRModel.from_pretrained("stt_en_conformer_ctc_small")
         asr_model = asr_model.eval()
@@ -55,6 +56,7 @@ class TestASRLocalAttention:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_change_save_restore(self):
 
         model = ASRModel.from_pretrained("stt_en_conformer_ctc_small")

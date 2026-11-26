@@ -113,7 +113,18 @@ def _merge_lora_weights(
 
     if not lora_cfg:
         lora_cfg = {"r": 128, "lora_alpha": 256}
-    scaling = lora_cfg.get("lora_alpha", 1) / lora_cfg.get("r", 1)
+    # NeMo Automodel serializes the adapter shape as ``dim``/``alpha``; PEFT uses
+    # ``r``/``lora_alpha``. Reading only the PEFT spelling silently falls back to
+    # scaling=1.0 on a NeMo-trained checkpoint, which applies the adapter at the
+    # wrong magnitude instead of failing.
+    rank = lora_cfg.get("r", lora_cfg.get("dim"))
+    alpha = lora_cfg.get("lora_alpha", lora_cfg.get("alpha"))
+    if rank is None or alpha is None:
+        raise ValueError(
+            "LoRA weights are present but the checkpoint's lora config has no recognizable "
+            f"rank/alpha (expected 'r'/'lora_alpha' or 'dim'/'alpha'); got keys {sorted(lora_cfg)}."
+        )
+    scaling = alpha / rank
 
     base: dict[str, torch.Tensor] = {}
     lora_a: dict[str, torch.Tensor] = {}
@@ -250,6 +261,21 @@ class HybridBackend(_BaseBackend):
         # correctly inside vLLM's hybrid registry).
         return ["NemotronHForCausalLM"]
 
+    def preprocess_llm_weights(
+        self, weights: Iterable[tuple[str, torch.Tensor]]
+    ) -> Iterable[tuple[str, torch.Tensor]]:
+        """Merge LoRA adapters before the NeMo -> HuggingFace rename.
+
+        Without this the base class's identity default lets ``lora_A``/``lora_B``
+        tensors reach ``AutoWeightsLoader``, which has no destination for them:
+        a LoRA fine-tune of a hybrid backbone would then serve at base-model
+        quality with no error. Merging here mirrors ``TransformerBackend`` and
+        must run before ``nemo_to_hf_llm_weights`` so both the base tensor and
+        its adapters still carry their original NeMo names.
+        """
+        lora_cfg = getattr(self.config, "lora", None)
+        return list(_merge_lora_weights(list(weights), lora_cfg))
+
     def nemo_to_hf_llm_weights(
         self, weights: Iterable[tuple[str, torch.Tensor]]
     ) -> Iterable[tuple[str, torch.Tensor]]:
@@ -285,6 +311,12 @@ class HybridBackend(_BaseBackend):
                     )
             elif hf_name in (
                 "backbone.embed_tokens.weight",
+                # NemotronH's embedding is `embeddings`, and a ModelOpt export
+                # already carries that HF name, so it never hits the
+                # `embed_tokens` rename above. Omitting it here leaves the
+                # embedding unpadded and every quantized checkpoint dies on
+                # vLLM's `loaded_weight.shape[output_dim] == org_vocab_size`.
+                "backbone.embeddings.weight",
                 "lm_head.weight",
             ):
                 if target_vocab:

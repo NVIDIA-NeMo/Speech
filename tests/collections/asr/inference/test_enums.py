@@ -15,13 +15,7 @@
 
 import pytest
 
-from nemo.collections.asr.inference.utils.enums import (
-    ASRDecodingType,
-    ASROutputGranularity,
-    FeatureBufferPaddingMode,
-    PipelineType,
-    RequestType,
-)
+from nemo.collections.asr.inference.utils.enums import ASRDecodingType, ASROutputGranularity, PaddingMode, PipelineType
 
 
 class TestEnums:
@@ -48,15 +42,8 @@ class TestEnums:
             PipelineType.from_str("invalid")
 
     @pytest.mark.unit
-    def test_RequestType(self):
-        assert RequestType.from_str("frame") == RequestType.FRAME
-        assert RequestType.from_str("feature_buffer") == RequestType.FEATURE_BUFFER
+    def test_PaddingMode(self):
+        assert PaddingMode.from_str("left") == PaddingMode.LEFT
+        assert PaddingMode.from_str("right") == PaddingMode.RIGHT
         with pytest.raises(ValueError):
-            RequestType.from_str("invalid")
-
-    @pytest.mark.unit
-    def test_FeatureBufferPaddingMode(self):
-        assert FeatureBufferPaddingMode.from_str("left") == FeatureBufferPaddingMode.LEFT
-        assert FeatureBufferPaddingMode.from_str("right") == FeatureBufferPaddingMode.RIGHT
-        with pytest.raises(ValueError):
-            FeatureBufferPaddingMode.from_str("invalid")
+            PaddingMode.from_str("invalid")

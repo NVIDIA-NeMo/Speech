@@ -48,9 +48,12 @@ import os
 import re
 import struct
 import tempfile
+import threading
+import time
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from itertools import zip_longest
 from multiprocessing import get_context
@@ -113,6 +116,48 @@ _MANIFEST_REUSE_BATCH_BYTES = 64 << 20
 
 class NativeTarRouteSignatureMismatch(ValueError):
     """The authenticated source route does not describe the target manifest rows."""
+
+
+_PROGRESS_INTERVAL = 60.0
+
+
+@contextmanager
+def _log_progress(stage: str, *, total: int | None = None) -> Iterator[Callable[[], None]]:
+    """Report the active phase even while a filesystem or worker operation is blocked."""
+    started = time.monotonic()
+    state = (0, started)
+    stopped = threading.Event()
+
+    def advance() -> None:
+        nonlocal state
+        state = (state[0] + 1, time.monotonic())
+
+    def report(status: str) -> None:
+        completed, last_completion = state
+        now = time.monotonic()
+        counts = (
+            "" if total is None else f" completed={completed}/{total} last_completion={now - last_completion:.0f}s ago"
+        )
+        logging.info("%s: %s elapsed=%.0fs%s", stage, status, now - started, counts)
+
+    def heartbeat() -> None:
+        while not stopped.wait(_PROGRESS_INTERVAL):
+            report("running")
+
+    # A timed thread also reports blocked serial I/O without polling files or the scheduler.
+    thread = threading.Thread(target=heartbeat, name="idxpack-progress", daemon=True)
+    report("started")
+    thread.start()
+    status = "finished"
+    try:
+        yield advance
+    except BaseException:
+        status = "failed"
+        raise
+    finally:
+        stopped.set()
+        thread.join()
+        report(status)
 
 
 @dataclass(frozen=True)
@@ -1202,144 +1247,152 @@ def _build_native_tar_ordinal_array_specs(
     map_summaries: list[list[NativeTarOrdinalMapBuildSummary | None]] = []
     tasks = []
     manifest_keys = []
-    for map_index, spec in enumerate(maps):
-        manifest_index_paths = tuple(
-            _resolve_local_sidecar(manifest_path, indexes_root) for manifest_path in spec.manifest_paths
-        )
-        if spec.aggregate_manifest:
-            aggregate_arrays, snapshot, summary = _build_aggregate_native_tar_array_specs(
-                spec,
-                map_index,
-                temporary_directory,
-                manifest_index_paths[0],
-                indexes_root=indexes_root,
-                index_path_overrides=index_path_overrides,
-                source_size_overrides=source_size_overrides,
-                include_member_ordinals=include_member_ordinals,
+    with _log_progress("Preparing native-tar routes"):
+        for map_index, spec in enumerate(maps):
+            manifest_index_paths = tuple(
+                _resolve_local_sidecar(manifest_path, indexes_root) for manifest_path in spec.manifest_paths
             )
-            arrays.extend(aggregate_arrays)
-            map_snapshots.append(snapshot)
-            map_summaries.append([summary])
-        else:
-            assert include_member_ordinals
-            tar_index_paths = tuple(
-                (
-                    index_path_overrides[tar_path]
-                    if tar_path in index_path_overrides
-                    else _resolve_local_sidecar(tar_path, indexes_root)
-                )
-                for tar_path in spec.tar_paths
-            )
-            output_paths = tuple(
-                temporary_directory / f"native-tar-route-{map_index:06d}-{shard_index:06d}.u32"
-                for shard_index in range(len(spec.manifest_paths))
-            )
-            map_snapshots.append(
-                NativeTarOrdinalMapInputSnapshot.capture(
-                    spec.manifest_paths,
-                    spec.tar_paths,
-                    manifest_index_paths,
-                    tar_index_paths,
-                )
-            )
-            map_summaries.append([None] * len(output_paths))
-            tasks.extend(
-                (
+            if spec.aggregate_manifest:
+                aggregate_arrays, snapshot, summary = _build_aggregate_native_tar_array_specs(
+                    spec,
                     map_index,
-                    shard_index,
-                    output_path,
-                    manifest_path,
-                    manifest_index_path,
-                    tar_path,
-                    tar_index_path,
-                    source_size_overrides.get(tar_path),
+                    temporary_directory,
+                    manifest_index_paths[0],
+                    indexes_root=indexes_root,
+                    index_path_overrides=index_path_overrides,
+                    source_size_overrides=source_size_overrides,
+                    include_member_ordinals=include_member_ordinals,
                 )
-                for shard_index, (
-                    output_path,
-                    manifest_path,
-                    manifest_index_path,
-                    tar_path,
-                    tar_index_path,
-                ) in enumerate(
-                    zip(
-                        output_paths,
+                arrays.extend(aggregate_arrays)
+                map_snapshots.append(snapshot)
+                map_summaries.append([summary])
+            else:
+                assert include_member_ordinals
+                tar_index_paths = tuple(
+                    (
+                        index_path_overrides[tar_path]
+                        if tar_path in index_path_overrides
+                        else _resolve_local_sidecar(tar_path, indexes_root)
+                    )
+                    for tar_path in spec.tar_paths
+                )
+                output_paths = tuple(
+                    temporary_directory / f"native-tar-route-{map_index:06d}-{shard_index:06d}.u32"
+                    for shard_index in range(len(spec.manifest_paths))
+                )
+                map_snapshots.append(
+                    NativeTarOrdinalMapInputSnapshot.capture(
                         spec.manifest_paths,
-                        manifest_index_paths,
                         spec.tar_paths,
+                        manifest_index_paths,
                         tar_index_paths,
                     )
                 )
-            )
-            arrays.append(
-                IndexPackArraySpec(
-                    role=NEMO_TAR_ORDINAL_MAP_ROLE,
-                    kind=NEMO_TAR_ORDINAL_MAP_KIND,
-                    source_spec=nemo_tar_ordinal_map_source_spec(
-                        spec.manifest_source_spec,
-                        spec.tar_source_spec,
-                    ),
-                    shard_paths=output_paths,
-                    dtype="uint32",
+                map_summaries.append([None] * len(output_paths))
+                tasks.extend(
+                    (
+                        map_index,
+                        shard_index,
+                        output_path,
+                        manifest_path,
+                        manifest_index_path,
+                        tar_path,
+                        tar_index_path,
+                        source_size_overrides.get(tar_path),
+                    )
+                    for shard_index, (
+                        output_path,
+                        manifest_path,
+                        manifest_index_path,
+                        tar_path,
+                        tar_index_path,
+                    ) in enumerate(
+                        zip(
+                            output_paths,
+                            spec.manifest_paths,
+                            manifest_index_paths,
+                            spec.tar_paths,
+                            tar_index_paths,
+                        )
+                    )
                 )
+                arrays.append(
+                    IndexPackArraySpec(
+                        role=NEMO_TAR_ORDINAL_MAP_ROLE,
+                        kind=NEMO_TAR_ORDINAL_MAP_KIND,
+                        source_spec=nemo_tar_ordinal_map_source_spec(
+                            spec.manifest_source_spec,
+                            spec.tar_source_spec,
+                        ),
+                        shard_paths=output_paths,
+                        dtype="uint32",
+                    )
+                )
+            manifest_keys.append(
+                IndexPackCollectionSpec(
+                    role="manifest",
+                    kind=JSONL,
+                    source_spec=spec.manifest_source_spec,
+                    paths=spec.manifest_paths,
+                ).key
             )
-        manifest_keys.append(
-            IndexPackCollectionSpec(
-                role="manifest",
-                kind=JSONL,
-                source_spec=spec.manifest_source_spec,
-                paths=spec.manifest_paths,
-            ).key
-        )
 
-    if native_tar_route_workers == 1 or len(tasks) <= 1:
-        results = map(_write_native_tar_ordinal_map_shard_task, tasks)
-        for map_index, shard_index, summary in results:
-            map_summaries[map_index][shard_index] = summary
-    else:
-        with ProcessPoolExecutor(
-            max_workers=min(native_tar_route_workers, len(tasks)),
-            mp_context=get_context("spawn"),
-        ) as executor:
-            futures = [executor.submit(_write_native_tar_ordinal_map_shard_task, task) for task in tasks]
-            try:
-                for future in as_completed(futures):
-                    map_index, shard_index, summary = future.result()
-                    map_summaries[map_index][shard_index] = summary
-            except BaseException:
-                for future in futures:
-                    future.cancel()
-                raise
+    with _log_progress("Building native-tar routes", total=len(tasks)) as advance:
+        if native_tar_route_workers == 1 or len(tasks) <= 1:
+            results = map(_write_native_tar_ordinal_map_shard_task, tasks)
+            for map_index, shard_index, summary in results:
+                map_summaries[map_index][shard_index] = summary
+                advance()
+        else:
+            with ProcessPoolExecutor(
+                max_workers=min(native_tar_route_workers, len(tasks)),
+                mp_context=get_context("spawn"),
+            ) as executor:
+                futures = [executor.submit(_write_native_tar_ordinal_map_shard_task, task) for task in tasks]
+                try:
+                    for future in as_completed(futures):
+                        map_index, shard_index, summary = future.result()
+                        map_summaries[map_index][shard_index] = summary
+                        advance()
+                except BaseException:
+                    for future in futures:
+                        future.cancel()
+                    raise
 
     validated_manifest_keys = set()
     records_checked = 0
     skip_marker_records = 0
     top_level_skip_marker_records = 0
     custom_skip_marker_records = 0
-    for map_index, (spec, manifest_key, input_snapshot) in enumerate(zip(maps, manifest_keys, map_snapshots)):
-        input_snapshot.validate()
-        pending_summaries = map_summaries[map_index]
-        assert all(summary is not None for summary in pending_summaries)
-        shard_summaries = tuple(summary for summary in pending_summaries if summary is not None)
-        build_summary = NativeTarOrdinalMapBuildSummary(
-            shard_rows=tuple(summary.records_checked for summary in shard_summaries),
-            records_checked=sum(summary.records_checked for summary in shard_summaries),
-            skip_marker_records=sum(summary.skip_marker_records for summary in shard_summaries),
-            top_level_skip_marker_records=sum(summary.top_level_skip_marker_records for summary in shard_summaries),
-            custom_skip_marker_records=sum(summary.custom_skip_marker_records for summary in shard_summaries),
-            input_snapshot=input_snapshot,
-        )
-        if manifest_key not in validated_manifest_keys:
-            validated_manifest_keys.add(manifest_key)
-            records_checked += build_summary.records_checked
-            skip_marker_records += build_summary.skip_marker_records
-            top_level_skip_marker_records += build_summary.top_level_skip_marker_records
-            custom_skip_marker_records += build_summary.custom_skip_marker_records
-        logging.info(
-            "Built native-tar ordinal map: key=%s shards=%d rows=%d",
-            spec.key.hex(),
-            len(build_summary.shard_rows),
-            build_summary.records_checked,
-        )
+    with _log_progress("Validating route input snapshots"):
+        for map_index, (spec, manifest_key, input_snapshot) in enumerate(zip(maps, manifest_keys, map_snapshots)):
+            input_snapshot.validate()
+            pending_summaries = map_summaries[map_index]
+            assert all(summary is not None for summary in pending_summaries)
+            shard_summaries = tuple(summary for summary in pending_summaries if summary is not None)
+            build_summary = NativeTarOrdinalMapBuildSummary(
+                shard_rows=tuple(summary.records_checked for summary in shard_summaries),
+                records_checked=sum(summary.records_checked for summary in shard_summaries),
+                skip_marker_records=sum(summary.skip_marker_records for summary in shard_summaries),
+                top_level_skip_marker_records=sum(
+                    summary.top_level_skip_marker_records for summary in shard_summaries
+                ),
+                custom_skip_marker_records=sum(summary.custom_skip_marker_records for summary in shard_summaries),
+                input_snapshot=input_snapshot,
+            )
+            if manifest_key not in validated_manifest_keys:
+                validated_manifest_keys.add(manifest_key)
+                records_checked += build_summary.records_checked
+                skip_marker_records += build_summary.skip_marker_records
+                top_level_skip_marker_records += build_summary.top_level_skip_marker_records
+                custom_skip_marker_records += build_summary.custom_skip_marker_records
+            logging.info(
+                "Built native-tar ordinal map: key=%s shards=%d rows=%d",
+                spec.key.hex(),
+                len(build_summary.shard_rows),
+                build_summary.records_checked,
+            )
+
     return (
         arrays,
         IndexPackRecordValidationSummary(
@@ -1721,20 +1774,24 @@ def _write_validated_index_pack(
     output.parent.mkdir(parents=True, exist_ok=True)
     staged = output.with_name(f".{output.name}.record-validation.{os.getpid()}.{uuid.uuid4().hex}")
     try:
-        write_index_pack(
-            staged,
-            collections,
-            indexes_root=indexes_root,
-            source_size_overrides=source_size_overrides,
-            index_path_overrides=index_path_overrides,
-        )
+        with _log_progress("Writing index pack"):
+            write_index_pack(
+                staged,
+                collections,
+                indexes_root=indexes_root,
+                source_size_overrides=source_size_overrides,
+                index_path_overrides=index_path_overrides,
+            )
+
         validation_specs = [spec for spec in collections if spec.key not in (prevalidated_collection_keys or ())]
-        scanned_summary = validate_idxpack_json_records(
-            staged,
-            validation_specs,
-            report=logging.error,
-            num_workers=record_validation_workers,
-        )
+        with _log_progress("Validating index-pack records"):
+            scanned_summary = validate_idxpack_json_records(
+                staged,
+                validation_specs,
+                report=logging.error,
+                num_workers=record_validation_workers,
+            )
+
         prevalidated_summary = prevalidated_summary or _empty_validation_summary()
         summary = IndexPackRecordValidationSummary(
             records_checked=prevalidated_summary.records_checked + scanned_summary.records_checked,
@@ -1751,17 +1808,19 @@ def _write_validated_index_pack(
             errors=prevalidated_summary.errors + scanned_summary.errors,
             errors_reported=prevalidated_summary.errors_reported + scanned_summary.errors_reported,
         )
-        for validate_snapshot in pre_publish_validators:
-            validate_snapshot()
-        if overwrite:
-            os.replace(staged, output)
-        else:
-            try:
-                os.link(staged, output)
-            except FileExistsError as ex:
-                raise FileExistsError(f"Index pack already exists: {output}") from ex
-            staged.unlink()
-        _fsync_directory(output.parent)
+        with _log_progress("Rechecking sources and publishing index pack"):
+            for validate_snapshot in pre_publish_validators:
+                validate_snapshot()
+            if overwrite:
+                os.replace(staged, output)
+            else:
+                try:
+                    os.link(staged, output)
+                except FileExistsError as ex:
+                    raise FileExistsError(f"Index pack already exists: {output}") from ex
+                staged.unlink()
+            _fsync_directory(output.parent)
+
         return summary
     finally:
         if staged.exists():
@@ -1979,6 +2038,7 @@ def main(
 
     Native tar indexes are validated against local or remote source metadata.
     A stale sentinel must be rebuilt with build_indexes.py --force.
+    Reports the active phase every minute, with completed-shard counts during native-tar routing.
     """
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     _validate_native_tar_reuse_options(
@@ -1987,14 +2047,16 @@ def main(
         reuse_native_tar_routes_source_pack_sha256,
         native_tar_paths_only=native_tar_paths_only,
     )
-    config = _load_input_cfg(input_cfg, data_blend_dir)
-    native_tar_ordinal_maps = []
-    collections = discover_pack_collections(
-        config,
-        data_blend_dir=data_blend_dir,
-        native_tar_ordinal_maps=native_tar_ordinal_maps,
-    )
-    route_specs = discover_sharegpt_route_specs(config, data_blend_dir=data_blend_dir)
+    with _log_progress("Discovering collections"):
+        config = _load_input_cfg(input_cfg, data_blend_dir)
+        native_tar_ordinal_maps = []
+        collections = discover_pack_collections(
+            config,
+            data_blend_dir=data_blend_dir,
+            native_tar_ordinal_maps=native_tar_ordinal_maps,
+        )
+        route_specs = discover_sharegpt_route_specs(config, data_blend_dir=data_blend_dir)
+
     collections = _configure_native_tar_path_only_collections(collections, enabled=native_tar_paths_only)
     num_paths = sum(len(collection.paths) for collection in collections)
     click.echo(f"Discovered {len(collections)} collections with {num_paths} ordered paths.")
@@ -2006,17 +2068,19 @@ def main(
         )
         return
     try:
-        source_size_overrides, index_path_overrides = _preflight_native_tar_sidecars(
-            collections,
-            indexes_root,
-            fallback_indexes_root=fallback_native_tar_indexes_root,
-            accept_trailing_zero_padding=accept_trailing_zero_tar_padding,
-            repair_stale_local_sidecars_root=repair_stale_local_native_tar_sidecars_root,
-        )
-        source_size_overrides.update(_path_only_source_sizes(collections))
-        wds_index_paths = _preflight_wds_v2_sidecars(collections, indexes_root)
-        index_path_overrides.update(wds_index_paths)
-        _ensure_sharegpt_routes(route_specs, output=output, indexes_root=indexes_root)
+        with _log_progress("Checking source indexes"):
+            source_size_overrides, index_path_overrides = _preflight_native_tar_sidecars(
+                collections,
+                indexes_root,
+                fallback_indexes_root=fallback_native_tar_indexes_root,
+                accept_trailing_zero_padding=accept_trailing_zero_tar_padding,
+                repair_stale_local_sidecars_root=repair_stale_local_native_tar_sidecars_root,
+            )
+            source_size_overrides.update(_path_only_source_sizes(collections))
+            wds_index_paths = _preflight_wds_v2_sidecars(collections, indexes_root)
+            index_path_overrides.update(wds_index_paths)
+            _ensure_sharegpt_routes(route_specs, output=output, indexes_root=indexes_root)
+
         output_path = Path(output)
         if output_path.exists() and not overwrite:
             raise FileExistsError(f"Index pack already exists: {output_path}")
@@ -2033,24 +2097,26 @@ def main(
             reused_summary = _empty_validation_summary()
             reused_manifest_keys: set[bytes] = set()
             reused_snapshot_validators: list[Callable[[], None]] = []
-            if reuse_native_tar_routes_source_pack is not None:
-                (
-                    reused_arrays,
-                    maps_to_build,
-                    reused_summary,
-                    reused_manifest_keys,
-                    reused_snapshot_validators,
-                ) = _reuse_native_tar_ordinal_array_specs(
-                    native_tar_ordinal_maps,
-                    temporary_directory,
-                    source_input_cfg=reuse_native_tar_routes_source_input_cfg,
-                    source_pack_path=reuse_native_tar_routes_source_pack,
-                    source_pack_sha256=reuse_native_tar_routes_source_pack_sha256,
-                    data_blend_dir=data_blend_dir,
-                    indexes_root=indexes_root,
-                    index_path_overrides=index_path_overrides,
-                    native_tar_route_workers=native_tar_route_workers,
-                )
+            with _log_progress("Reusing native-tar routes"):
+                if reuse_native_tar_routes_source_pack is not None:
+                    (
+                        reused_arrays,
+                        maps_to_build,
+                        reused_summary,
+                        reused_manifest_keys,
+                        reused_snapshot_validators,
+                    ) = _reuse_native_tar_ordinal_array_specs(
+                        native_tar_ordinal_maps,
+                        temporary_directory,
+                        source_input_cfg=reuse_native_tar_routes_source_input_cfg,
+                        source_pack_path=reuse_native_tar_routes_source_pack,
+                        source_pack_sha256=reuse_native_tar_routes_source_pack_sha256,
+                        data_blend_dir=data_blend_dir,
+                        indexes_root=indexes_root,
+                        index_path_overrides=index_path_overrides,
+                        native_tar_route_workers=native_tar_route_workers,
+                    )
+
             (
                 built_arrays,
                 built_summary,

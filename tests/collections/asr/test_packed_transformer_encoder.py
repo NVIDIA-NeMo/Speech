@@ -31,6 +31,8 @@ from nemo.collections.asr.parts.packed_sequence import (
     PackedEncoderActivations,
     pack_encoder_output,
     packed_encoder_position_ids,
+    packed_sequence_ids,
+    packed_slot_layout,
     split_encoder_output,
     split_packed_data,
     unpack_encoder_output,
@@ -323,6 +325,32 @@ def test_sequence_packed_fused_qkv_matches_default_and_preserves_checkpoint_keys
     assert set(encoder.state_dict()) == state_keys
 
 
+def test_sequence_packed_qkv_runs_a_specialized_projection_through_its_forward():
+    torch.manual_seed(0)
+    encoder = _make_encoder(position="rope")
+    inputs = torch.randn(2, 6, encoder.d_model)
+    lengths = torch.tensor([6, 3])
+    with torch.no_grad():
+        plain = encoder.forward_sequence_packed(inputs, lengths, bypass_pre_encode=True)
+    calls = []
+
+    class _RecordingLinear(torch.nn.Linear):
+        def forward(self, x):
+            calls.append(tuple(x.shape))
+            return super().forward(x)
+
+    for layer in encoder.layers:
+        projection = _RecordingLinear(layer.attn.w_qkv.in_features, layer.attn.w_qkv.out_features)
+        projection.load_state_dict(layer.attn.w_qkv.state_dict())
+        layer.attn.w_qkv = projection
+
+    with torch.no_grad():
+        specialized = encoder.forward_sequence_packed(inputs, lengths, bypass_pre_encode=True)
+
+    assert calls == [(9, encoder.d_model)] * len(encoder.layers)
+    torch.testing.assert_close(specialized.data, plain.data, rtol=1e-5, atol=1e-6)
+
+
 def test_sequence_packed_layers_receive_only_valid_tokens(monkeypatch):
     encoder = _make_encoder(position="rope")
     encoded = torch.randn(3, 7, encoder.d_model)
@@ -446,6 +474,7 @@ def test_sequence_packed_adds_no_state_dict_keys_and_loads_strictly():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="FlexAttention backward requires CUDA")
+@pytest.mark.gpu
 def test_sequence_packed_supports_activation_checkpoint_wrapped_layers():
     encoder = _make_encoder(position="rope").to(device="cuda", dtype=torch.bfloat16).train()
     state_keys = set(encoder.state_dict())
@@ -462,6 +491,7 @@ def test_sequence_packed_supports_activation_checkpoint_wrapped_layers():
 
 
 @requires_cuda_varlen_flash_attention
+@pytest.mark.gpu
 def test_sequence_packed_thd_cuda_matches_padded_outputs_and_gradients():
     torch.manual_seed(0)
     padded_encoder = _make_encoder(position="rope", qk_norm=True).to(device="cuda", dtype=torch.bfloat16).train()
@@ -508,6 +538,7 @@ def test_sequence_packed_thd_cuda_matches_padded_outputs_and_gradients():
         (torch.float16, "no_pos", "full", True, 1.0),
     ],
 )
+@pytest.mark.gpu
 def test_sequence_packed_cuda_fast_path_matrix(dtype, position, attention, qk_norm, rotary_fraction):
     torch.manual_seed(0)
     encoder = _make_encoder(
@@ -531,6 +562,7 @@ def test_sequence_packed_cuda_fast_path_matrix(dtype, position, attention, qk_no
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA FlexAttention")
+@pytest.mark.gpu
 def test_sequence_packed_cuda_fp32_relative_position_fallback_gradients():
     torch.manual_seed(0)
     padded_encoder = _make_encoder(position="rel_pos").cuda().train()
@@ -554,6 +586,7 @@ def test_sequence_packed_cuda_fp32_relative_position_fallback_gradients():
 
 
 @requires_cuda_varlen_flash_attention
+@pytest.mark.gpu
 def test_sequence_packed_reduces_forward_backward_peak_memory_for_uneven_batch():
     torch.manual_seed(0)
     encoder = TransformerEncoder(
@@ -603,3 +636,25 @@ def test_sequence_packed_reduces_forward_backward_peak_memory_for_uneven_batch()
         f"Expected native THD to materially reduce peak activation memory; "
         f"padded={padded_peak:,} bytes, packed={packed_peak:,} bytes."
     )
+
+
+def test_packed_slot_layout_slots_and_round_trip():
+    packed = pack_encoder_output(torch.arange(2 * 5 * 1, dtype=torch.float32).reshape(2, 5, 1), torch.tensor([5, 2]))
+    layout = packed_slot_layout(packed, alignment=3, gap=3)
+    # ceil((5 + 3) / 3) * 3 = 9 and ceil((2 + 3) / 3) * 3 = 6
+    assert layout.slot_lengths.tolist() == [9, 6] and layout.slot_offsets.tolist() == [0, 9]
+    assert layout.total_slots == 15
+    assert layout.token_slots.tolist() == [0, 1, 2, 3, 4, 9, 10]
+    slots = layout.scatter(packed.data)
+    assert slots.shape == (15, 1) and slots[5:9].abs().sum() == 0 and slots[11:].abs().sum() == 0
+    torch.testing.assert_close(layout.gather(slots), packed.data)
+    assert packed_sequence_ids(packed).tolist() == [0, 0, 0, 0, 0, 1, 1]
+    with pytest.raises(ValueError, match="alignment"):
+        packed_slot_layout(packed, alignment=0)
+
+
+def test_packed_encoder_output_detach_and_cpu_keep_metadata():
+    data = torch.randn(3, 2, requires_grad=True)
+    packed = pack_encoder_output(data.unsqueeze(0), torch.tensor([3]))
+    detached = packed.detach().cpu()
+    assert not detached.data.requires_grad and detached.lengths.tolist() == [3] and detached.max_seqlen == 3

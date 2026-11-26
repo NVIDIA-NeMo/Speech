@@ -36,6 +36,7 @@ model:
   # fresh head before Automodel parallelizes and loads the backbone weights. Add
   # "^llm\\.mtp\\..+$" to
   # prevent_freeze_params when the broad LLM freeze pattern above is active.
+  # MTP on a NemotronH backbone (e.g. the default above) needs ++model.trust_remote_code=true.
   mtp:
     enabled: false
     training_mode: joint  # joint preserves the recipe freeze policy; head_only trains only llm.mtp
@@ -277,7 +278,7 @@ data:
     # use_bucketing: true
     # use_multimodal_sampling: true
     # use_packed_sequence_sampling: false  # Sum lengths; requires a padding-free model path
-    # packing_buffer_size: 128  # Packed best-fit lookahead, with or without bucketing
+    # packing_buffer_size: 1024  # Packed best-fit lookahead, with or without bucketing
     # shuffle_buffer_size: 10000  # Reservoir size for ordinary non-packed samplers; legacy packed configs are aliased
     # measure_total_length: true
     # Note: `batch_tokens`, `bucket_duration_bins`, and `max_tokens` all represent tokens as

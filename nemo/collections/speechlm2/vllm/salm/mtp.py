@@ -28,6 +28,7 @@ The embedding alias is required by vLLM's Nemotron-H MTP loader even though
 the proposer subsequently shares the table with the target model.
 """
 
+import logging
 from collections.abc import Iterable
 
 import torch
@@ -35,6 +36,12 @@ from vllm.model_executor.models.nemotron_h_mtp import NemotronHMTP
 from vllm.model_executor.models.utils import _merge_multimodal_embeddings
 
 from nemo.collections.speechlm2.vllm.salm.audio import _pad_to_vocab_size
+
+# Checkpoint tensors the draft head loads (see _remap_nemo_mtp_weights): the MTP layers, the LM head, and the
+# token embeddings under either export name.
+_DRAFT_CHECKPOINT_PREFIXES = ("llm.mtp.", "llm.lm_head.", "llm.model.embed_tokens.", "llm.backbone.embeddings.")
+
+logger = logging.getLogger(__name__)
 
 
 def _remap_nemo_mtp_weights(
@@ -118,6 +125,19 @@ class NeMoSpeechLMMTP(NemotronHMTP):
     # capability flag; implementing ``embed_input_ids`` alone is not enough.
     supports_multimodal_embeddings = True
 
+    def is_unused_checkpoint_weight(self, name: str) -> bool:
+        """Whether vLLM can skip a checkpoint tensor without reading it.
+
+        vLLM 0.32 calls this on the raw checkpoint names before reading them, and NemotronHMTP.load_weights
+        calls it again on the names ``load_weights`` below has already remapped (``mtp.*``, ``lm_head.*``,
+        ``backbone.embeddings.*``). NemotronHMTP's own rule expects unprefixed names, so it would skip every
+        ``llm.``-prefixed draft tensor and leave the draft head uninitialized.
+        """
+        if name.startswith("llm."):
+            return not name.startswith(_DRAFT_CHECKPOINT_PREFIXES)
+        parent = getattr(super(), "is_unused_checkpoint_weight", None)
+        return parent(name) if parent is not None else False
+
     def embed_input_ids(
         self,
         input_ids: torch.Tensor,
@@ -146,11 +166,23 @@ class NeMoSpeechLMMTP(NemotronHMTP):
             is_multimodal=is_multimodal,
         )
 
+    def compute_logits(self, hidden_states: torch.Tensor, *args, **kwargs) -> torch.Tensor | None:
+        logits = super().compute_logits(hidden_states, *args, **kwargs)
+        if logits is not None:
+            logits[..., self.config.speechlm_output_vocab_size :] = -torch.inf
+            for token_id in getattr(self.config, "speechlm_runtime_added_token_ids", []):
+                if token_id < logits.shape[-1]:
+                    logits[..., token_id] = -torch.inf
+        return logits
+
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         """Load only the SALM-prefixed weights required by the reusable draft head."""
         # NeMoSpeechLMConfig delegates this to the already padded text-config
         # vocabulary used to construct NemotronHMTP. Reading config directly
         # avoids coupling padding to vLLM's internal module names.
+        from nemo.collections.speechlm2.vllm.salm.precision import preserve_hybrid_precision
+
+        preserve_hybrid_precision(self)
         target_vocab = int(self.config.vocab_size)
         if target_vocab <= 0:
             raise ValueError(f"Draft model vocabulary size must be positive, got {target_vocab}.")
@@ -161,10 +193,69 @@ class NeMoSpeechLMMTP(NemotronHMTP):
         pattern = self.config.mtp_hybrid_override_pattern
         if not isinstance(pattern, str) or not pattern:
             raise ValueError(f"mtp_hybrid_override_pattern must be a non-empty string, got {pattern!r}.")
-        return super().load_weights(
-            _remap_nemo_mtp_weights(
-                weights,
-                target_vocab,
-                expected_layer_modules=len(pattern),
+        head_tensors = 0
+
+        def _count_head_tensors(items: Iterable[tuple[str, torch.Tensor]]) -> Iterable[tuple[str, torch.Tensor]]:
+            nonlocal head_tensors
+            for name, tensor in items:
+                if name.startswith("mtp."):
+                    head_tensors += 1
+                yield name, tensor
+
+        loaded = super().load_weights(
+            _count_head_tensors(
+                _remap_nemo_mtp_weights(
+                    weights,
+                    target_vocab,
+                    expected_layer_modules=len(pattern),
+                )
             )
         )
+        if head_tensors == 0:
+            raise ValueError(
+                "Speculative MTP is enabled, but the checkpoint has no 'llm.mtp.*' draft-head tensors, so the "
+                "draft head would run on uninitialized weights (vLLM skips its missing-weight check for quantized "
+                "checkpoints). Export the MTP head with the checkpoint or disable speculative decoding."
+            )
+        warm_eagle_prepare_inputs_kernel()
+        return loaded
+
+
+# ``num_reqs`` values that make Triton compile distinct variants of the kernel: 1, a generic value and a multiple of
+# 16 (Triton specializes integer arguments on ``== 1`` and ``% 16 == 0``).
+_EAGLE_PREPARE_WARMUP_NUM_REQS = (1, 2, 16)
+
+
+def warm_eagle_prepare_inputs_kernel(device: str | torch.device = "cuda") -> None:
+    """Compile every variant of vLLM's ``eagle_prepare_inputs_padded_kernel`` before serving.
+
+    vLLM's own warmup runs the speculative proposer with a few batch sizes, so the variants it does not reach are
+    JIT-compiled by the first real request that needs them (vLLM logs "JIT compilation during inference"), stalling
+    that request for tens of seconds under load. Launching the kernel once per variant moves that cost to start-up.
+    Best-effort: a vLLM without the kernel, or without a CUDA device, is left alone.
+    """
+    if not torch.cuda.is_available():
+        return
+    try:
+        from vllm.v1.spec_decode.utils import eagle_prepare_inputs_padded_kernel as kernel
+    except ImportError:
+        return
+    try:
+        for num_reqs in _EAGLE_PREPARE_WARMUP_NUM_REQS:
+            kwargs = dict(dtype=torch.int32, device=device)
+            cu_num_draft_tokens = torch.arange(1, num_reqs + 1, **kwargs)
+            valid_sampled_tokens_count = torch.ones(num_reqs, **kwargs)
+            query_start_loc = torch.arange(num_reqs + 1, **kwargs)
+            token_indices_to_sample = torch.empty(num_reqs, **kwargs)
+            num_rejected_tokens = torch.empty(num_reqs, **kwargs)
+            kernel[(num_reqs,)](
+                cu_num_draft_tokens,
+                valid_sampled_tokens_count,
+                query_start_loc,
+                token_indices_to_sample,
+                num_rejected_tokens,
+                num_reqs,
+            )
+        torch.cuda.synchronize(device)
+    except Exception:  # a warmup must never fail model loading
+        logger.warning("Could not warm up eagle_prepare_inputs_padded_kernel.", exc_info=True)

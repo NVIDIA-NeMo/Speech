@@ -58,6 +58,7 @@ def test_perception_packed_capability_rejects_each_unsupported_stack(unsupported
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Perception packed-gradient parity requires CUDA")
+@pytest.mark.gpu
 def test_perception_packed_spec_augmentation_and_projection_gradients_match_legacy():
     torch.manual_seed(0)
     legacy = _make_perception().cuda().train()

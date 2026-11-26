@@ -2161,6 +2161,62 @@ def test_dataloader_with_noise_nemo_tar(cutset_path: Path, nemo_tarred_manifest_
     assert -5.0 < cut.tracks[1].snr < 5.0
 
 
+@pytest.mark.unit
+def test_dataloader_with_noise_cut_ids_are_deterministic_across_resume(tmp_path: Path):
+    from lhotse.indexing import create_jsonl_index
+    from lhotse.testing.dummies import DummyManifest
+
+    cuts = DummyManifest(CutSet, begin_id=0, end_id=10, with_data=True)
+    for c in cuts:
+        c.features = None
+        c.custom = None
+        c.supervisions[0].custom = None
+    cuts_path = tmp_path / "cuts.jsonl"
+    cuts.save_audios(tmp_path / "audio").to_file(cuts_path)
+    create_jsonl_index(cuts_path)
+    config = OmegaConf.create(
+        {
+            "input_cfg": [{"type": "lhotse", "cuts_path": str(cuts_path)}],
+            "noise_path": str(cuts_path),
+            "noise_mix_prob": 1.0,
+            "noise_snr": [-5.0, 5.0],
+            "batch_size": 2,
+            "seed": 0,
+            "shard_seed": 0,
+            "force_finite": True,
+            "force_iterable_dataset": True,
+            "use_stateful_dataloader": True,
+            "indexed": True,
+        }
+    )
+
+    def make_dl():
+        return get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity())
+
+    def batch_ids(batch):
+        assert all(isinstance(c, MixedCut) for c in batch)
+        # Each noise-mixed cut keeps the ID of the clean source cut it was mixed from.
+        assert all(c.id == c.tracks[0].cut.id for c in batch)
+        return [c.id for c in batch]
+
+    # Two fresh iterations yield identical mixed cut IDs, which are exactly the clean source cut IDs.
+    ref = [batch_ids(b) for b in make_dl()]
+    assert len(ref) == 5
+    assert sorted(cid for b in ref for cid in b) == sorted(c.id for c in cuts)
+    assert [batch_ids(b) for b in make_dl()] == ref
+
+    # Save state mid-epoch, then restore it into a fresh dataloader and finish the epoch:
+    # the mixed cut IDs must match the uninterrupted run.
+    dl = make_dl()
+    it = iter(dl)
+    first = [batch_ids(next(it)) for _ in range(2)]
+    state = dl.state_dict()
+    dl = make_dl()
+    dl.load_state_dict(state)
+    rest = [batch_ids(b) for b in dl]
+    assert first + rest == ref
+
+
 def test_dataloader_with_synth_rir(cutset_path: Path):
     from lhotse.augmentation import ReverbWithImpulseResponse
 
@@ -2732,6 +2788,66 @@ def test_force_iterable_dataset(cutset_path: Path):
     assert len(batches_iter) == 2 * len(batches_map)
     # assertion that this is in fact the same data (same ids)
     assert set(c.id for b in batches_iter for c in b) == set(c.id for b in batches_map for c in b)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "finite_options", [{"force_finite": True}, {"metadata_only": True}, {"force_finite": True, "metadata_only": True}]
+)
+@pytest.mark.parametrize("weights", [[1, 0, 2], [0, 1, 0]])
+@pytest.mark.parametrize("temperature", [0.0, 1.0])
+def test_finite_mixture_exhausts_positive_sources_with_disabled_slots(
+    cutset_shar_path, finite_options, weights, temperature
+):
+    config = OmegaConf.create(
+        {
+            "input_cfg": [
+                {
+                    "type": "lhotse",
+                    "shar_path": cutset_shar_path,
+                    "weight": weight,
+                    "tags": {"source_slot": slot},
+                }
+                for slot, weight in enumerate(weights)
+            ],
+            "shard_seed": 42,
+            "reweight_temperature": [temperature],
+            **finite_options,
+        }
+    )
+
+    cuts, is_tarred = cutset_module.read_cutset_from_config(config)
+    # Consume to exhaustion: the old finite mux fails after the enabled sources end.
+    source_counts = Counter(cut.source_slot for cut in cuts)
+
+    assert is_tarred
+    assert source_counts == {slot: 10 for slot, weight in enumerate(weights) if weight > 0}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("temperature", [0.0, 1.0])
+def test_infinite_mixture_retains_disabled_source_slots(cutset_shar_path, temperature):
+    config = OmegaConf.create(
+        {
+            "input_cfg": [
+                {
+                    "type": "lhotse",
+                    "shar_path": cutset_shar_path,
+                    "weight": weight,
+                    "tags": {"source_slot": slot},
+                }
+                for slot, weight in enumerate([1, 0, 2])
+            ],
+            "shard_seed": 42,
+            "reweight_temperature": [temperature],
+        }
+    )
+
+    cuts, _ = cutset_module.read_cutset_from_config(config)
+
+    assert len(cuts.cuts.sources) == 3
+    assert cuts.cuts.weights[1] == 0.0
+    assert {cut.source_slot for cut in islice(cuts, 30)} == {0, 2}
 
 
 def test_force_map_dataset(cutset_shar_path: Path):
@@ -3367,3 +3483,23 @@ def test_dataloader_reweight_temperature_mixed_leaf_and_group(
     nested_total = dataset_counts["N1"] + dataset_counts["N2"]
     assert dataset_counts["N1"] / nested_total == pytest.approx(0.5, abs=0.15)
     assert dataset_counts["N2"] / nested_total == pytest.approx(0.5, abs=0.15)
+
+
+@pytest.mark.parametrize("multi_config", [False, True])
+@pytest.mark.parametrize("num_workers,prefetch_factor,expected", [(1, 4, 4), (1, None, 2), (0, None, None)])
+def test_prefetch_factor_reaches_dataloader(cutset_path, multi_config, num_workers, prefetch_factor, expected):
+    source = {"cuts_path": str(cutset_path), "batch_size": 2}
+    options = {
+        "seed": 0,
+        "shard_seed": 0,
+        "shuffle": False,
+        "num_workers": num_workers,
+        "prefetch_factor": prefetch_factor,
+    }
+    if multi_config:
+        config = OmegaConf.create({**options, "multi_config": True, "source": source})
+    else:
+        config = OmegaConf.create({**source, **options})
+    loader = get_lhotse_dataloader_from_config(config, global_rank=0, world_size=1, dataset=Identity())
+    assert loader.num_workers == num_workers
+    assert loader.prefetch_factor == expected

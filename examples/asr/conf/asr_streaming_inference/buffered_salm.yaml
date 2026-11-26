@@ -62,13 +62,13 @@ streaming:
   chunk_size: 4.0                             # Audio chunk size in seconds
   overlap_size: 4.0                           # Overlap size in seconds
   merging_strategy: lcsubstr                  # Merging strategy: lcs or lcsubstr
-  request_type: frame                         # Type of request: frame or feature_buffer
   max_new_tokens: 64                          # Maximum number of new tokens to generate
 
 
 # ========================
 # Pipeline settings
 # ========================
+preload_audio: false                          # Set true to read all audio into host memory before the timed loop, so RTFx excludes disk I/O
 matmul_precision: high                        # Matrix multiplication precision: highest, high, medium
 log_level: 20                                 # Logging level: 0 (NOTSET), 10 (DEBUG), 20 (INFO), 30 (WARNING), 40 (ERROR), 50 (CRITICAL)
 pipeline_type: buffered                       # Pipeline type: buffered, cache_aware

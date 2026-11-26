@@ -20,6 +20,7 @@ from nemo.collections.tts.metrics.frechet_codec_distance import FrechetCodecDist
 from nemo.collections.tts.models import AudioCodecModel
 
 
+@pytest.mark.gpu
 class TestFrechetCodecDistance:
     codec_name = "nvidia/low-frame-rate-speech-codec-22khz"
 

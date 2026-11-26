@@ -732,6 +732,17 @@ To enable bucketing, set ``batch_size: null`` and use the following options:
   batching. Use this option only when the dataset and model preserve a
   padding-free representation through the expensive model path.
 
+* ``batch_output_tokens`` (packed sequence sampling only) is a second cap of a packed batch
+  on the total number of output tokens, for encoder-decoder models whose decoder activations and loss grow with the targets:
+  the ``answer_ids`` of cuts tokenized with a ``prompt_format``,
+  the supervision ``tokens`` of cuts tokenized without one,
+  and the answer length of prompt-formatted text examples.
+  The best fit stays exact for ``batch_tokens``;
+  when the selected candidates exceed the output cap, the ones with the most output tokens are dropped
+  and the remaining candidates are backfilled under both limits.
+  It needs tokenized examples, so pass a tokenizer with ``pretokenize: true`` (with or without ``prompt_format``);
+  an untokenized example raises, and so does a single example above the cap, which ``max_tokens`` filters beforehand.
+
 * (non-oomptimizer-only) ``quadratic_factor`` is a quadratic penalty to equalize the GPU memory usage between buckets of short and long sequence lengths for models with quadratic memory usage. It is only a heuristic and may not be as efficient as using OOMptimizer.
 
 **Joint dataloading of text/audio/multimodal data.** The key strength of this approach is that we can easily combine audio datasets and text datasets,
@@ -1000,7 +1011,7 @@ error before audio loading.
 Building ``.idx`` sidecars
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Two equivalent ways:
+Two ways, which differ for tar files:
 
 1. Lhotse's CLI per file::
 
@@ -1008,20 +1019,56 @@ Two equivalent ways:
        lhotse index tar  path/to/shard.tar
        lhotse index shar path/to/shar_dir/
 
+   ``lhotse index tar`` writes the Lhotse Shar/WebDataset paired layout (one
+   entry per JSON + payload member pair). Use it only for ``lhotse_shar`` tars.
+   Do **not** use it for ``nemo``/``nemo_tarred`` audio tars (or other tars
+   with one member per sample): there it lists only half of the samples.
+   Indexed ``nemo_tarred`` loading rejects such an index at startup when an
+   active manifest row lies past the tar index's last entry and no route
+   sidecar (see below) maps the rows. Rows marked with ``_skipme`` never touch
+   the tar and are allowed there.
+
 2. NeMo's batch helper that takes a config and indexes everything it
-   references in one shot::
+   references in one shot. **Use this for** ``nemo_tarred`` **tars**::
 
        python scripts/dataloading/build_indexes.py path/to/input_cfg.yaml
 
    The script walks ``input_cfg`` (including nested ``group`` entries and
    per-entry YAML references), dispatches the right tar layout for each
    adapter (NeMo one-member-per-sample vs. WebDataset/Shar pair format), and
-   skips files that already have an up-to-date ``.idx``. Use ``--force`` to
-   rebuild, ``--workers N`` for parallelism, ``--dry-run`` to preview.
+   skips files that already have an up-to-date ``.idx``. An existing NeMo tar
+   ``.idx`` in the paired layout (e.g. written by ``lhotse index tar``) is not
+   up to date and is rebuilt. Use ``--force`` to rebuild everything,
+   ``--workers N`` for parallelism, ``--dry-run`` to preview.
 
    Pass ``--indexes-root /path/to/mirror`` to write the sidecars to a
    separate directory tree that mirrors the data files' layout instead of
    placing them next to the data — see :ref:`lhotse-indexes-root` below.
+
+   For ``nemo``/``nemo_tarred`` entries the script also writes **route
+   sidecars** when manifest row ``i`` can't be read positionally from tar
+   member ``i``:
+
+   * a manifest whose rows don't map 1:1 to its tar members, e.g. several
+     ``-subN`` rows that share one audio member, or a filtered manifest; and
+   * one (non-sharded) manifest paired with several tars, where each row's
+     ``shard_id`` selects its tar.
+
+   Route sidecars (``<manifest>.nemo-tar-ordinal.idx`` and, for one manifest
+   with several tars, ``<manifest>.nemo-tar-shard.idx``) hold one uint32 per
+   manifest row: the row's tar member ordinal and tar position. They are the
+   same arrays that ``convert_indexes_to_idxpack.py`` embeds in a version-3
+   ``.idxpack``, so lookup stays O(1) and resume stays exact. Members are
+   matched by name, so the selected member is validated strictly when its
+   audio loads. Route sidecars must be local: for remote manifests, pass a
+   local ``--indexes-root``. Stored ordinals and tar positions only apply to
+   the tars they were built for, so each route records its ordered tar paths
+   in ``<manifest>.nemo-tar-ordinal.idx.tars.json``. Rerunning the script
+   rebuilds a route when the manifest or tar indexes it was built from are
+   newer, or when the entry now pairs the manifest with different tars (or
+   the same tars in a different order). Indexed loading fails at startup with
+   an actionable error when a required route sidecar is missing or was built
+   for different tars.
 
 Packing sidecars into dataset-level ``.idxpack`` files
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -1187,6 +1234,17 @@ Two ways to populate the mirror:
    ``ais://`` / ``s3://`` / ``http://`` are all supported as sources),
    and copies it into the local mirror. Use ``--source-indexes-root``
    when the source sidecars themselves live under another mirror.
+
+   For ``nemo``/``nemo_tarred`` datasets that need route sidecars (repeated
+   ``-subN`` rows, filtered manifests, or one manifest paired with several
+   tars), prefetch copies only the offset indexes. Build the local routes
+   with the same ``indexes_root`` before starting training::
+
+       python scripts/dataloading/build_indexes.py \
+           --indexes-root /scratch/idx path/to/input_cfg.yaml
+
+   This reuses the prefetched ``.idx`` files and only writes the missing
+   routes, reading the manifests and tar headers (not audio payloads).
 
 Both scripts accept ``--force``, ``--workers N``, and ``--dry-run``.
 
@@ -1358,6 +1416,20 @@ For Canary-1B, we'll also provide the special tokens tokenizer. Example:
         --sub-buckets 5 \
         input_cfg.yaml
 
+Strict 2D bucketing (``bucketing_2d_strict_mode: true``, the default) also selects the training data:
+a cut that fits none of the bins is discarded.
+The option ``filter_duration_bins`` applies this selection on its own, with any sampler.
+Use it to train on the same data as a 2D-bucketed setup with a sampler that does not take 2D buckets,
+such as packed sequence sampling (``use_packed_sequence_sampling: true``),
+or to bound the number of tokens by the duration of a cut without bucketing.
+
+.. code-block:: yaml
+
+    filter_duration_bins: [[5.0, 20], [5.0, 40], [10.0, 35], [10.0, 70]]
+
+With ``multi_config: true`` the option goes into each sub-config it should apply to, next to that sub-config's sampling options;
+at the top level it raises an error.
+
 Pushing GPU utilization to the limits with bucketing and OOMptimizer
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -1447,6 +1519,27 @@ Other, more exotic configurations:
 
 * With ``shard_seed=<int>``, all dataloading workers will yield the same results. This is only useful for unit testing and maybe debugging.
 
+* Indexed ``nemo`` manifest sources (``indexed: true``) ignore ``shard_seed="trng"`` and ``shard_seed="randomized"`` and shuffle shards with a fixed seed of 0, so every rank and worker uses the same order and reads its own disjoint slice. NeMo logs a warning about this once per process. Set an integer ``shard_seed`` to choose a different order.
+
+.. note::
+
+   On the iterable path (tarred, Lhotse Shar, Parquet, or ``force_iterable_dataset: true``) with non-indexed
+   sources, an integer ``shard_seed`` makes every dataloading worker on every rank yield the identical stream, so each
+   batch would be seen ``num_workers * world_size`` times. The dataloader raises a ``ValueError`` for this combination
+   whenever ``max(num_workers, 1) * world_size > 1``; use ``shard_seed: "randomized"`` for deterministic,
+   reproducible order instead. The check uses each source's effective settings after ``input_cfg`` overrides: a
+   non-indexed source that sets ``shard_seed: randomized`` (or ``trng``) together with ``shuffle: true`` or a
+   ``slice_length`` (random per-shard slices) is accepted under a loader-level integer ``shard_seed``, while every other
+   active non-indexed source in the blend that inherits the integer seed is still rejected. Zero-weight blend members
+   are ignored because they never contribute examples. A ``slice_length`` that covers whole shards selects no random
+   offset, but detecting that would require reading every manifest, so the check accepts it. Conversely, a source that
+   shuffles with its own integer ``shard_seed`` is rejected under a ``"randomized"``/``"trng"`` loader unless the
+   selected sampler shuffles: ``shuffle: true`` with the default or bucketing samplers does, while the non-bucketing
+   ``use_packed_sequence_sampling`` sampler never shuffles. Indexed sources (``indexed: true``) partition data across
+   ranks and workers, so they accept an integer ``shard_seed`` (and indexed weighted blends require one; see the
+   item above for how indexed ``nemo`` sources treat string seeds). Single-process loading (``num_workers <= 1`` on one rank) and map-style loading also still accept an integer
+   ``shard_seed``.
+
 * With ``seed="trng"``, the base random seed itself will be drawn using a TRNG. It will be different on each GPU training process. This setting is not recommended.
 
 * With ``seed="randomized"``, the base random seed is set to Python's global RNG seed. It might be different on each GPU training process. This setting is not recommended.
@@ -1471,8 +1564,9 @@ The :class:`~nemo.collections.common.data.lhotse.broadcasting.BroadcastingDataLo
 fixes this at the data layer: construct the real Lhotse loader on a
 single DP-source rank (``cp_rank == 0`` and ``tp_rank == 0``) and let the
 wrapper broadcast each batch to the other ranks in the ``(cp, tp)``
-sub-mesh over NCCL. Iteration ends in lockstep via a continue/stop
-broadcast — no length needs to be known up-front.
+sub-mesh over NCCL. Each step broadcasts one framed message containing a
+batch, clean-exhaustion signal, or source-side error, so all ranks finish
+or fail in lockstep without requiring the loader length up-front.
 
 .. code-block:: python
 
@@ -1759,7 +1853,7 @@ audio payload, configure:
 
 **Sampling — basic.** ``batch_size``, ``batch_duration``,
 ``quadratic_duration``, ``min_duration``, ``max_duration``, ``min_tps``,
-``max_tps``.
+``max_tps``, ``filter_duration_bins``.
 
 **Sampling — bucketing.** ``use_bucketing``, ``num_buckets``,
 ``bucket_duration_bins``, ``bucket_batch_size``, ``bucket_buffer_size``,
@@ -1789,7 +1883,8 @@ audio payload, configure:
 **On-the-fly augmentation.**
 
 * Speed/RIR — ``perturb_speed``, ``rir_enabled``, ``rir_path``, ``rir_prob``.
-* Noise — ``noise_path``, ``noise_snr``, ``noise_mix_prob``.
+* Noise — ``noise_path``, ``noise_snr``, ``noise_mix_prob``. A noisy cut keeps
+  its source cut's ID, so IDs stay the same after a resume.
 * Lowpass — ``lowpass_enabled``, ``lowpass_frequencies_interval``,
   ``lowpass_prob``.
 * Compression — ``compression_enabled``, ``compression_prob``,
@@ -1810,7 +1905,95 @@ audio payload, configure:
 **Field-name overrides.** ``text_field``, ``lang_field``,
 ``channel_selector``, ``sample_rate``.
 
-**Filtering.** ``max_cer``, ``min_context_speaker_similarity``, ``keep``.
+**Filtering.** ``max_cer``, ``min_context_speaker_similarity``, ``keep``,
+``custom_field_filter``.
+
+``custom_field_filter`` selects examples by their custom fields (``cut.custom``).
+For a mixed cut, each field comes from the first unmuted data track that has it,
+as with attribute access on the cut (``cut.verified``),
+not from the merged ``cut.custom`` mapping, in which a later track overrides an earlier one.
+For NeMo manifests these are the additional keys of a row,
+that is, all keys except the ones the reader consumes, such as ``audio_filepath`` and ``duration``;
+the ``tags`` of an ``input_cfg`` entry are custom fields as well.
+The option maps a field name to a condition on its value.
+An example is kept when the conditions of all fields hold:
+
+.. code-block:: yaml
+
+   custom_field_filter:
+     verified: true                    # short for {eq: true}
+     snr: {gt: 5.0, le: 10.5}          # all operators of a field must hold
+     quality: {in: [very_high, high, medium]}
+     language: {neq: unknown, keep_if_missing: false}
+
+The operators of a condition are:
+
+* ``eq``, ``neq``: the value equals, or does not equal, the operand (a bool, a number or a string).
+  A bool, a number or a string in place of the condition stands for ``eq``.
+* ``gt``, ``ge``, ``lt``, ``le``: the value is greater than, at least, less than, or at most the operand (a number).
+* ``in``: the value equals one of the operands (a list of bools, numbers or strings).
+* ``keep_if_missing`` (default ``true``): whether an example that does not have the field is kept.
+  With the default, as with ``keep`` and ``max_cer``,
+  a field that only some of the data has filters only that part,
+  and a field name that no example has filters nothing.
+  With ``false``, an example without the field is dropped;
+  ``{keep_if_missing: false}`` alone keeps exactly the examples that have the field.
+
+An unknown operator or an operand of another type raises an error when the dataloader is built.
+
+* The values are compared as Python values: ``true`` matches ``true`` and ``1``
+  but not the string ``"true"``.
+  A bool value orders as the number ``1`` or ``0``.
+* A ``null`` in the manifest is a value, not a missing field:
+  it differs from every operand, so it fails ``eq`` and ``in`` and passes ``neq``.
+  A value that is not a number, such as ``null`` or a string, does not meet ``gt``, ``ge``, ``lt`` or ``le``,
+  and a value that is a list or a mapping meets no operator, also not ``neq``;
+  in both cases the example is dropped.
+* ``keep_if_missing`` belongs inside the condition of a field; at the top level of the option it raises an error.
+* In YAML, quote strings that YAML reads as another type:
+  an unquoted ``yes`` or ``on`` is a bool there and does not match the string ``"yes"``.
+* The filter looks at the fields of the cut, not of its supervisions.
+  Text and conversation examples are filtered by their custom fields the same way;
+  for text sources these are the ``tags`` only, since the reader keeps no other key of a row.
+* It is applied first, before tokenization and augmentation.
+* It is an option of the dataloader config.
+  Inside an ``input_cfg`` entry it is ignored, like the other dataloader options.
+  With ``multi_config: true`` it goes into the sub-configs;
+  at the top level it raises an error.
+* When no example passes, a dataloader over an infinite source yields nothing and does not stop,
+  as with the other filters.
+
+How ``custom_field_filter`` relates to the other ways to drop examples by their metadata:
+
+* ``_skipme`` is a key of a NeMo manifest row.
+  The reader drops a row with a truthy ``_skipme`` before it builds the cut,
+  so no cut is built for it, and an indexed tarred set does not read its audio.
+  The selection is part of the data: every dataloader that reads the manifest skips the row,
+  and another selection needs another copy of the manifests.
+  ``custom_field_filter`` leaves the manifests as they are and selects in the config,
+  so several configs select differently from the same manifests,
+  on any source type and with conditions beyond a flag.
+  It runs after the reader, on the built cut,
+  so the reader's work for a rejected example is already spent;
+  with a sequentially read tarred source that includes reading its audio from the tar.
+  Use ``_skipme`` for a fixed exclusion,
+  or when one fixed subset is all that is needed and rewriting the manifests is acceptable;
+  use ``custom_field_filter`` to select by metadata per experiment.
+  Both can be combined: a skipped row never reaches the filter.
+
+  ``_skipme`` keeps a row with broken audio out of the data
+  only where the reader does not open the audio of a skipped row:
+  with non-tarred manifests and with indexed tarred sets.
+  The sequential tar reader reads and inspects every member before it looks at the marker,
+  so a corrupt member still raises there unless ``fault_tolerant_audio_loading`` is set.
+* ``keep`` applies the same equality rule to the fixed cut field ``validation_status``,
+  but the two options are not interchangeable.
+  ``keep`` looks at mono cuts only and runs later in the pipeline, after padding with ``pad_min_duration``,
+  which turns a short cut into a mixed cut that ``keep`` lets pass.
+  ``custom_field_filter: {validation_status: pass}`` runs first and also covers mixed cuts and text examples,
+  so it drops such a cut.
+* ``max_cer`` and ``min_context_speaker_similarity`` read fields of the first supervision,
+  which ``custom_field_filter`` does not look at.
 
 For exact types and defaults, see the dataclass definition in the source
 file — it is the single source of truth.

@@ -35,6 +35,7 @@ from nemo.collections.asr.parts.mixins.transcription import GenericTranscription
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecoding, CTCDecodingConfig
 from nemo.collections.asr.parts.utils.asr_batching import get_semi_sorted_batch_sampler
+from nemo.collections.asr.parts.utils.longform_inference import ChunkingConfig, resolve_chunking, select_chunk_frames
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.timestamp_utils import process_timestamp_outputs
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
@@ -107,6 +108,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
             use_cer=self._cfg.get('use_cer', False),
             dist_sync_on_step=True,
             log_prediction=self._cfg.get("log_prediction", False),
+            wer_text_normalize=self._cfg.get('wer_text_normalize', False),
         )
 
         # Setup optional Optimization flags
@@ -117,6 +119,23 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
 
         # Adapter modules setup (from ASRAdapterModelMixin)
         self.setup_adapters()
+
+    def freeze_encoder(self) -> None:
+        """Freeze the encoder and keep it in evaluation mode while the CTC model trains."""
+        self.encoder.freeze()
+        self._keep_encoder_in_eval = True
+
+    def unfreeze_encoder(self, partial: bool = False) -> None:
+        """Undo :meth:`freeze_encoder` and restore normal training-mode propagation."""
+        self._keep_encoder_in_eval = False
+        self.encoder.unfreeze(partial=partial)
+
+    def train(self, mode: bool = True):
+        """Set module mode without re-enabling training behavior in a frozen encoder."""
+        super().train(mode)
+        if mode and getattr(self, '_keep_encoder_in_eval', False):
+            self.encoder.eval()
+        return self
 
     def transcribe(
         self,
@@ -129,6 +148,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         verbose: bool = True,
         timestamps: Optional[bool] = None,
         override_config: Optional[TranscribeConfig] = None,
+        chunking: Optional[ChunkingConfig] = None,
     ) -> TranscriptionReturnType:
         """
         Uses greedy decoding to transcribe audio files. Use this method for debugging and prototyping.
@@ -156,13 +176,15 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
             override_config: (Optional[TranscribeConfig]) override transcription config pre-defined by the user.
                 **Note**: All other arguments in the function will be ignored if override_config is passed.
                 You should call this argument as `model.transcribe(audio, override_config=TranscribeConfig(...))`.
+            chunking: Optional offline chunk plan. Owned frames are assembled before CTC collapse.
 
         Returns:
             A list of transcriptions (or raw log probabilities if logprobs is True) in the same order as 
             paths2audio_files
         """
         timestamps = timestamps or (override_config.timestamps if override_config is not None else None)
-        if timestamps is not None:
+        planned_chunking = resolve_chunking(chunking, override_config) is not None
+        if timestamps is not None and not planned_chunking:
             # else retain the decoder state (users can set it using change_decoding_strategy)
             if timestamps or (override_config is not None and override_config.timestamps):
                 logging.info(
@@ -189,6 +211,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
             verbose=verbose,
             timestamps=timestamps,
             override_config=override_config,
+            chunking=chunking,
         )
 
     def change_vocabulary(self, new_vocabulary: List[str], decoding_cfg: Optional[DictConfig] = None):
@@ -245,6 +268,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
                 use_cer=self._cfg.get('use_cer', False),
                 dist_sync_on_step=True,
                 log_prediction=self._cfg.get("log_prediction", False),
+                wer_text_normalize=self._cfg.get('wer_text_normalize', False),
             )
 
             # Update config
@@ -290,6 +314,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
             use_cer=self.wer.use_cer,
             log_prediction=self.wer.log_prediction,
             dist_sync_on_step=True,
+            wer_text_normalize=self.wer.wer_text_normalize,
         )
 
         self.decoder.temperature = decoding_cfg.get('temperature', 1.0)
@@ -536,7 +561,12 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         encoder_output = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
         encoded = encoder_output[0]
         encoded_len = encoder_output[1]
-        log_probs = self.decoder(encoder_output=encoded)
+        if getattr(self.decoder, "requires_encoded_lengths", False):
+            log_probs = self.decoder(encoder_output=encoded, encoded_lengths=encoded_len)
+        else:
+            log_probs = self.decoder(encoder_output=encoded)
+        if hasattr(self.decoder, "output_lengths"):
+            encoded_len = self.decoder.output_lengths(encoded_len)
         greedy_predictions = log_probs.argmax(dim=-1, keepdim=False)
 
         return (
@@ -697,6 +727,67 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
 
     """ Transcription related methods """
 
+    def _transcribe_chunk_validate(self, trcfg):
+        decoding = self._transcribe_chunk_ctc_decoding()
+        if decoding.cfg.strategy not in ('greedy', 'greedy_batch'):
+            raise ValueError('Planned CTC chunking currently supports greedy and greedy_batch decoding.')
+        if decoding.cfg.get('greedy', {}).get('ngram_lm_model'):
+            raise ValueError('Planned CTC chunking currently requires decoding without an n-gram LM.')
+
+    def _transcribe_chunk_ctc_decoding(self):
+        return self.decoding
+
+    def _transcribe_chunk_ctc_decoder(self):
+        return self.decoder
+
+    def _transcribe_chunk_outputs(self, outputs, chunks, frame_samples, trcfg):
+        logits = outputs['logits']
+        lengths = outputs.get('logits_len', outputs.get('encoded_len'))
+        decoding = self._transcribe_chunk_ctc_decoding()
+        # Fusion models (e.g. a boosting tree) score log probabilities, not argmax labels.
+        retain_logits = (
+            trcfg.return_hypotheses
+            or decoding.preserve_alignments
+            or decoding.preserve_frame_confidence
+            or getattr(decoding.decoding, 'fusion_models', None) is not None
+        )
+        selected = []
+        upsampling_factor = getattr(self._transcribe_chunk_ctc_decoder(), 'upsampling_factor', 1)
+        for i, (length, chunk) in enumerate(zip(lengths, chunks)):
+            frames = select_chunk_frames(logits[i, : int(length)], chunk, frame_samples, upsampling_factor)
+            selected.append((frames if retain_logits else frames.argmax(-1)).detach().cpu().clone())
+        return selected
+
+    def _transcribe_chunk_finalize(self, parts, chunks, frame_samples, trcfg):
+        # A single CTC collapse preserves repeated labels and blanks across chunk joins.
+        frames = torch.cat(parts)
+        decoding = copy.copy(self._transcribe_chunk_ctc_decoding())
+        decoding.decoding = copy.copy(decoding.decoding)
+        timestamps = trcfg.timestamps if trcfg.timestamps is not None else decoding.compute_timestamps
+        decoding.compute_timestamps = bool(
+            timestamps or decoding.preserve_token_confidence or decoding.preserve_word_confidence
+        )
+        decoding.decoding.compute_timestamps = decoding.compute_timestamps or decoding.preserve_frame_confidence
+        hyp = decoding.ctc_decoder_predictions_tensor(
+            frames.unsqueeze(0), torch.tensor([len(frames)]), return_hypotheses=True
+        )[0]
+        if trcfg.return_hypotheses:
+            hyp.y_sequence = frames
+            if hyp.alignments is None:
+                hyp.alignments = frames
+        if timestamps:
+            hyp = process_timestamp_outputs(
+                hyp,
+                self.encoder.subsampling_factor,
+                self.cfg.preprocessor.window_stride
+                / getattr(self._transcribe_chunk_ctc_decoder(), 'upsampling_factor', 1),
+            )[0]
+        else:
+            hyp.timestamp = []
+        if not trcfg.return_hypotheses and not timestamps:
+            hyp = Hypothesis(hyp.score, hyp.y_sequence, hyp.text)
+        return hyp
+
     def _transcribe_forward(self, batch: Any, trcfg: TranscribeConfig):
         logits, logits_len, greedy_predictions = self.forward(input_signal=batch[0], input_signal_length=batch[1])
         output = dict(logits=logits, logits_len=logits_len)
@@ -738,7 +829,9 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
 
         if trcfg.timestamps:
             hypotheses = process_timestamp_outputs(
-                hypotheses, self.encoder.subsampling_factor, self.cfg['preprocessor']['window_stride']
+                hypotheses,
+                self.encoder.subsampling_factor,
+                self.cfg['preprocessor']['window_stride'] / getattr(self.decoder, 'upsampling_factor', 1),
             )
 
         return hypotheses

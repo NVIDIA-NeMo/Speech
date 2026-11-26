@@ -130,6 +130,7 @@ class TestEMAConfig:
 
     @pytest.mark.unit
     @pytest.mark.run_only_on('GPU')
+    @pytest.mark.gpu
     def test_ema_saved_state(self, tmpdir, caplog):
         """Test to ensure that when we re-load the EMA callback, it loads the EMA weights correctly."""
         temp_path = os.path.join(tmpdir, 'saved_state')
@@ -251,6 +252,7 @@ class TestEMAConfig:
 
     @pytest.mark.unit
     @pytest.mark.run_only_on('GPU')
+    @pytest.mark.gpu
     def test_exp_manager_ema_weights(self, tmpdir):
         """Test to ensure that the exp manager adds the EMA callback, and we save an additional EMA checkpoint."""
         tmp_path = tmpdir / "exp_manager_test"
@@ -277,6 +279,7 @@ class TestEMAConfig:
             assert torch.allclose(saved_weight.cpu(), ema_weight.cpu())
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_exp_manager_ema_weights_topk(self, tmpdir):
         """Test to ensure that EMA correctly ensures we only keep topk checkpoints."""
         tmp_path = tmpdir / "exp_manager_test"
@@ -298,6 +301,7 @@ class TestEMAConfig:
         assert len(os.listdir(tmp_path / "checkpoints/")) == (save_top_k + 1) * 2 + 1
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_exp_manager_ema_weights_topk_resume(self, tmpdir):
         """Test to ensure that we always keep top_k checkpoints, even after resuming."""
         tmp_path = tmpdir / "exp_manager_test"
@@ -356,6 +360,7 @@ class TestEMATrain:
     @pytest.mark.parametrize("accumulate_grad_batches", [1, 2])
     @pytest.mark.parametrize("validate_original_weights", [True, False])
     @pytest.mark.run_only_on('GPU')
+    @pytest.mark.gpu
     def test_ema_run_cuda(
         self,
         test_data_dir,
@@ -414,6 +419,7 @@ class TestEMATrain:
         trainer.fit(model=model, val_dataloaders=model.train_dataloader())
 
     @pytest.mark.unit
+    @pytest.mark.gpu
     def test_ema_run_with_save_best_model(self, tmpdir):
         """Test to ensure that we save the model correctly when save best model is set to True."""
         tmp_path = tmpdir / "exp_manager_test"

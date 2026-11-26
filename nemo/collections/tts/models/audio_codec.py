@@ -43,8 +43,9 @@ from nemo.collections.tts.losses.audio_codec_loss import (
 )
 from nemo.collections.tts.modules.audio_codec_modules import ResNetSpeakerEncoder, default_precision
 from nemo.collections.tts.modules.common import GaussianDropout
+from nemo.collections.tts.one_logger import AudioCodecThroughputPolicy
 from nemo.collections.tts.parts.utils.callbacks import LoggingCallback
-from nemo.collections.tts.parts.utils.helpers import get_batch_size, get_num_workers
+from nemo.collections.tts.parts.utils.helpers import get_max_steps
 from nemo.collections.tts.parts.utils.tts_dataset_utils import resample_batch
 from nemo.core import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate, typecheck
@@ -57,10 +58,12 @@ from nemo.core.neural_types.elements import (
     TokenIndex,
 )
 from nemo.core.neural_types.neural_type import NeuralType
-from nemo.core.optim.lr_scheduler import compute_max_steps, prepare_lr_scheduler
+from nemo.core.optim.lr_scheduler import prepare_lr_scheduler
+from nemo.lightning.speech_throughput import register_throughput_policy
 from nemo.utils import logging, model_utils
 
 
+@register_throughput_policy(AudioCodecThroughputPolicy)
 class AudioCodecModel(ModelPT):
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         # Convert to Hydra 1.0 compatible DictConfig
@@ -89,6 +92,9 @@ class AudioCodecModel(ModelPT):
 
         # Encoder setup
         self.audio_encoder = safe_instantiate(cfg.audio_encoder)
+        self.freeze_encoder = cfg.get("freeze_encoder", False)
+        if self.freeze_encoder:
+            self._freeze_encoder()
 
         # Optionally, add gaussian noise to encoder output as an information bottleneck
         encoder_noise_stdev = cfg.get("encoder_noise_stdev", 0.0)
@@ -100,6 +106,7 @@ class AudioCodecModel(ModelPT):
         if "vector_quantizer" in cfg:
             self.vector_quantizer = safe_instantiate(cfg.vector_quantizer)
             self.codebook_dropout_rate = cfg.get("codebook_dropout_rate", 0.0)
+            logging.info(f"Codebook dropout rate: {self.codebook_dropout_rate}")
 
             vq_output_types = list(self.vector_quantizer.output_types.keys())
 
@@ -249,6 +256,19 @@ class AudioCodecModel(ModelPT):
 
         self.clip_grad_norm = cfg.get("clip_grad_norm", None)
         self.skip_nan_gradients = cfg.get("skip_nan_gradients", False)
+
+    def train(self, mode: bool = True):
+        # Override the train method to keep a frozen encoder in evaluation mode after validation.
+        super().train(mode)
+        if getattr(self, "freeze_encoder", False):
+            self.audio_encoder.eval()
+        return self
+
+    def _freeze_encoder(self):
+        for p in self.audio_encoder.parameters():
+            p.requires_grad = False
+        self.audio_encoder.eval()
+        logging.info("Encoder frozen: excluded from generator optimizer.")
 
     @property
     def dtype(self):
@@ -865,6 +885,10 @@ class AudioCodecModel(ModelPT):
         Expects a config with two sub-sections:
           * `dataloader_params`: forwarded to Lhotse data loader
           * `dataset_args`: forwarded to the dataset class, `AudioCodecLhotseDataset`
+
+        Each training example is a random crop of exactly `dataset_args.segment_duration` seconds, so
+        `dataloader_params.batch_size` directly sets the total audio duration per batch. To keep the
+        configuration unambiguous, `batch_size` is required and `dataloader_params.batch_duration` is rejected.
         """
         if not isinstance(cfg, DictConfig):
             cfg = OmegaConf.create(cfg)
@@ -911,9 +935,21 @@ class AudioCodecModel(ModelPT):
         # the training segment duration so the dataset class has enough samples to choose from.
         loader_cfg.min_duration = segment_duration
 
-        # Make sure batch_size is set
+        # Every example is a crop of exactly `segment_duration` seconds, so `batch_size` directly sets the total
+        # audio duration per batch. The config is restricted to `batch_size` to keep it unambiguous.
+        if cfg.dataloader_params.get("batch_duration") is not None:
+            raise ValueError(
+                "`batch_duration` is not supported in `train_ds.dataloader_params` for AudioCodecModel. "
+                "Every training example is a fixed-length crop of `train_ds.dataset_args.segment_duration` "
+                f"(= {segment_duration}s), so `batch_size` directly sets the total audio duration per batch. "
+                "Remove `batch_duration` and set `batch_size` instead "
+                "(for D seconds of audio per batch, use batch_size = D / segment_duration)."
+            )
         if loader_cfg.batch_size is None:
-            raise ValueError("`batch_size` must be set in `train_ds.dataloader_params`.")
+            raise ValueError(
+                "`batch_size` must be set in `train_ds.dataloader_params`. AudioCodecModel trains on fixed-length "
+                "crops of `train_ds.dataset_args.segment_duration`, so batches are sized by number of examples."
+            )
 
         # --- Create the dataset ---
 
@@ -949,23 +985,7 @@ class AudioCodecModel(ModelPT):
 
     @property
     def max_steps(self):
-        if "max_steps" in self._cfg:
-            return self._cfg.get("max_steps")
-
-        if "max_epochs" not in self._cfg:
-            raise ValueError("Must specify 'max_steps' or 'max_epochs'.")
-
-        if "steps_per_epoch" in self._cfg:
-            return self._cfg.max_epochs * self._cfg.steps_per_epoch
-        return compute_max_steps(
-            max_epochs=self._cfg.max_epochs,
-            accumulate_grad_batches=self.trainer.accumulate_grad_batches,
-            limit_train_batches=self.trainer.limit_train_batches,
-            num_workers=get_num_workers(self.trainer),
-            num_samples=len(self._train_dl.dataset),
-            batch_size=get_batch_size(self._train_dl),
-            drop_last=self._train_dl.drop_last,
-        )
+        return get_max_steps(self._cfg, self.trainer, self._train_dl)
 
     def configure_optimizers(self):
         optim_config = self._cfg.optim.copy()
@@ -974,11 +994,14 @@ class AudioCodecModel(ModelPT):
         sched_config = optim_config.pop("sched", None)
         OmegaConf.set_struct(optim_config, True)
 
+        if self.freeze_encoder:
+            encoder_params = []
+        else:
+            encoder_params = list(self.audio_encoder.parameters())
+
         se_params = self.speaker_encoder.parameters() if self.use_scl_loss else []
         vq_params = self.vector_quantizer.parameters() if self.vector_quantizer else []
-        self.gen_params = list(
-            itertools.chain(self.audio_encoder.parameters(), self.audio_decoder.parameters(), vq_params, se_params)
-        )
+        self.gen_params = list(itertools.chain(encoder_params, self.audio_decoder.parameters(), vq_params, se_params))
         optim_g = safe_instantiate(optim_config, params=self.gen_params)
 
         if self.discriminator is None:

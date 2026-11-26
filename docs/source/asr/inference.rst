@@ -24,6 +24,53 @@ Loading Checkpoints
     model = nemo_asr.models.ASRModel.from_pretrained("nvidia/parakeet-tdt-0.6b-v2")
 
 
+Exporting a Transformer Encoder to ONNX
+---------------------------------------
+
+Export an offline Transformer encoder with NeMo's existing API:
+
+.. code-block:: python
+
+    model.eval()
+    encoder = model.encoder
+    encoder.set_max_audio_length(5000)
+    encoder.export("encoder.onnx", onnx_opset_version=17)
+
+Set the maximum length to cover the longest feature sequence you need; the exported positional cache cannot grow later.
+Batch size and sequence length may vary within that limit.
+
+Inputs are ``audio_signal`` of shape ``(batch, features, frames)`` and int64 ``length`` of shape ``(batch,)``.
+Outputs are ``outputs`` of shape ``(batch, channels, encoded_frames)`` and int64 ``encoded_lengths``.
+
+Export uses scaled dot-product attention with the encoder's weights, positional encodings and masks.
+Ordinary training and inference retain FlexAttention.
+Check outputs, lengths and transcripts with your intended runtime and precision, since rounding can affect recognition.
+
+Preprocessing, decoding, streaming caches and ``bypass_pre_encode`` are outside this interface.
+For RNNT/TDT, ``model.export("model.onnx")`` exports the encoder and combined prediction/joint network separately.
+
+
+Building a TensorRT Engine for a Transformer Encoder
+----------------------------------------------------
+
+To run the offline encoder with TensorRT, compile it directly into a standalone plan with Torch-TensorRT, without an ONNX file:
+
+.. code-block:: bash
+
+    python examples/asr/export/build_torch_trt_encoder.py \
+        --model model.nemo --engine encoder.plan
+
+The script captures the encoder with ``torch.export`` and converts the whole graph in FP32 with TF32 disabled.
+Unsupported operations fail the conversion; the plan has no PyTorch fallback.
+The plan has the same inputs and outputs as the ONNX export above.
+
+Batch size and padded frame count are dynamic within the limits given by ``--min-frames``, ``--opt-frames``, ``--max-frames``, ``--opt-batch`` and ``--max-batch``.
+Building requires a CUDA device and matching PyTorch, Torch-TensorRT and TensorRT versions, and running the plan requires TensorRT only.
+The script refuses to overwrite an existing ``--engine`` file.
+Build the plan for the GPU and TensorRT version that will run it, and compare its outputs with the ONNX or PyTorch results at the same precision.
+The `example README <https://github.com/NVIDIA-NeMo/Speech/blob/main/examples/asr/export/README_torch_tensorrt.md>`_ lists the validated versions, the limits of the conversion and the minimum frame count with feature stacking.
+
+
 Basic Transcription
 -------------------
 
@@ -154,17 +201,74 @@ For decoding customization (confidence, CUDA graphs, language models, word boost
         print(f"{start:0.2f} - {end:0.2f} : {word}")
 
 
+.. _asr-long-audio-inference:
+
 Long Audio Inference
 --------------------
 
 For audio longer than what fits in memory (especially with Conformer's quadratic attention):
+
+**Planned chunking (recommended):**
+
+.. code-block:: python
+
+    from nemo.collections.asr.parts.mixins.transcription import ChunkingConfig
+
+    outputs = model.transcribe(
+        ["recording.wav"],
+        batch_size=4,
+        timestamps=True,  # optional
+        chunking=ChunkingConfig(chunk_size=30.0, context_size=2.0),
+    )
+    print(outputs[0].text)
+
+From the command line:
+
+.. code-block:: bash
+
+    python examples/asr/transcribe_speech.py \
+        pretrained_name=nvidia/parakeet-tdt-0.6b-v2 \
+        audio_dir=/path/to/audio \
+        '+chunking={chunk_size:30.0,context_size:2.0}'
+
+Each recording is split into chunks of ``chunk_size`` seconds. Each chunk is transcribed with
+``context_size`` seconds of extra audio on each side; the context improves recognition near
+chunk edges, and its output is kept from one chunk only, so joins are not duplicated. Encoder
+memory depends on the chunk duration plus context and on the batch size, not on the recording
+length. CTC models keep each recording's owned output frames on the CPU until the recording is
+complete: frame labels by default, and full log probabilities when hypotheses, alignments,
+confidence or a fusion model are requested, so that storage grows with the recording length.
+The defaults (30 s and 2 s) suit Parakeet and Canary models.
+
+Planned chunking works with CTC, RNNT/TDT, hybrid and AED (Canary) models, and accepts files,
+manifests and waveforms at the model's sample rate. It is off unless ``chunking`` is set. With
+``override_config`` or ``transcribe_generator``, set ``config.chunking`` instead; as with the
+other arguments, ``override_config`` takes precedence over ``chunking=``.
+
+Limitations:
+
+* CTC results keep the usual CTC hypothesis fields, including confidence and alignments.
+  RNNT/TDT and AED results contain text and word/segment timestamps; token confidence,
+  alignments and AED cross-attention scores are not returned.
+* AED models transcribe only (no speech translation). Their timestamps require a CTC timestamp
+  model, as in ``canary-1b-v2``.
+* One best hypothesis per chunk. CTC supports ``greedy`` and ``greedy_batch`` without an n-gram LM.
+* These raise an error: RNNT/TDT models with an aggregate tokenizer, or with a character
+  vocabulary and TDT durations; ``decoding.restart_after_tokens``; augmentations; partial
+  hypotheses; external DataLoaders.
+* The encoder sees one chunk at a time, so results can differ from whole-recording inference.
+
+**Which method to use:** planned chunking for every model type. Local attention (below) is an
+alternative for Fast Conformer models; it keeps one encoder pass over the whole recording, so
+memory still grows with its length. Buffered inference scripts (below) are a streaming-style
+alternative.
 
 **Buffered / chunked inference:**
 
 Divide audio into overlapping chunks and merge outputs. Scripts are in
 `examples/asr/asr_chunked_inference <https://github.com/NVIDIA-NeMo/Speech/tree/main/examples/asr/asr_chunked_inference>`_.
 
-**Local attention (recommended for Fast Conformer):**
+**Local attention (alternative for Fast Conformer):**
 
 Switch to Longformer-style local+global attention for linear-cost inference on audio >1 hour:
 
@@ -256,6 +360,15 @@ See the `Streaming ASR Pipelines tutorial <https://github.com/NVIDIA-NeMo/Speech
 
 See :ref:`cache-aware streaming conformer` for model architecture details.
 
+.. note::
+
+   End-of-utterance models with ``<EOU>``/``<EOB>`` tokens (e.g. ``parakeet_realtime_eou_120m-v1``) and
+   ``decoding.restart_after_tokens`` are not supported by the streaming pipelines, which raise an error for them.
+   Such models stop emitting tokens after the first ``<EOU>`` unless decoding restarts after it. Use ``transcribe()``
+   with ``decoding.restart_after_tokens`` or
+   ``examples/asr/asr_cache_aware_streaming/speech_to_text_cache_aware_streaming_infer.py`` with
+   ``rnnt_decoding.restart_after_tokens='["<EOU>","<EOB>"]'`` instead (see ``examples/asr/asr_eou/README.md``).
+
 
 Prompt-conditioned Streaming (Multilingual)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -275,8 +388,13 @@ flag directly:
         decoder_type=rnnt \
         strip_lang_tags=true
 
-Use ``target_lang=<lang-code>`` to pin every sample in the batch to one language, or
-``target_lang=auto`` to read the per-sample ``target_lang`` field from each manifest entry.
+``target_lang`` must be a key of the model's ``prompt_dictionary``. A bare language code such as
+``en`` is also accepted when it matches exactly one locale key (for example ``en-US``). An
+unsupported language raises an error. ``target_lang=auto`` (the default when ``target_lang`` is
+unset) selects the language-agnostic prompt; quality on languages the model was not trained on is
+not guaranteed. This script applies one prompt to every sample. For per-utterance languages, use
+``model.transcribe()``, which reads each manifest entry's ``lang`` field when ``target_lang`` is
+unset and uses ``auto`` for entries without one.
 Setting ``strip_lang_tags=true`` removes ``<xx-XX>`` language tags from the decoded text
 (pattern is customizable via ``lang_tag_pattern``).
 

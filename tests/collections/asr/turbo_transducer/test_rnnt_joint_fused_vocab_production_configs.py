@@ -51,6 +51,8 @@ from tests.collections.asr.turbo_transducer.utils import (
 if TRITON_AVAILABLE:
     from triton.runtime.errors import OutOfResources
 
+    from nemo.collections.asr.parts.turbo_transducer.utils_triton import BF16_ATOMICS_AVAILABLE
+
 pytestmark = [
     pytest.mark.nightly,
     pytest.mark.gpu,
@@ -200,6 +202,9 @@ def _run_and_compare_with_reference(
     With `pruned_lattice`, the Joint is evaluated only for random pruning ranges of size `pruning_range_size`;
     otherwise `pruning_range_size` enables backward pruning.
     """
+    if backward_mode == "atomic" and not BF16_ATOMICS_AVAILABLE:
+        # Triton 3.3 (no BF16 atomics): the gradient of the joint hidden is accumulated in FP32
+        kernel_kwargs["input_grad_full_precision"] = True
     inputs = make_joint_inputs(
         hidden_dtype=torch.bfloat16,
         dims=PRODUCTION_DIMS,

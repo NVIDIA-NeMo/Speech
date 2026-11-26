@@ -363,7 +363,9 @@ if TRITON_AVAILABLE:
         token_logprob = 0.0
         if target_idx < states - 1:
             token = tl.load(targets_ptr + batch_idx * target_stride + target_idx)
-            token_logit = tl.load(logits_ptr + local * vocab + token).to(tl.float32)
+            token_logit = tl.load(
+                logits_ptr + local * vocab + token, mask=(token >= 0) & (token < vocab), other=float("nan")
+            ).to(tl.float32)
             token_logprob = (token_logit - peak) - shifted_logsumexp
         tl.store(target_out_ptr + local, token_logprob)
 

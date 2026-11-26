@@ -41,10 +41,12 @@ from nemo.collections.tts.data.text_to_speech_dataset_lhotse import MagpieTTSLho
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import MagpieTTSLhotseMultiturnDataset
 from nemo.collections.tts.models.nemotron_tts.v2.base import NemotronTTSBase, TrainingMode
 from nemo.collections.tts.modules.aligner import (
+    alignment_schedule,
     collect_aligned_text_head_diagnostics,
     init_training_alignment,
     prepare_attention_alignment_training,
     reload_pretrained_aligner,
+    resolve_attention_alignment_config,
 )
 from nemo.collections.tts.modules.attention_alignment import (
     AttentionAlignmentGuidance,
@@ -366,6 +368,36 @@ class NemotronTTSModel(NemotronTTSBase):
                 heads=selection.heads,
                 query_chunk_size=selection.query_chunk_size,
             )
+            mask = dict(settings.get('mask') or {})
+            enabled = mask.pop('enabled', False)
+            if type(enabled) is not bool:
+                raise ValueError('asr_word_start_attention.mask.enabled must be a boolean')
+            if enabled:
+                start_width = mask.pop('start_band_width', 0.5)
+                if (
+                    isinstance(start_width, bool)
+                    or not isinstance(start_width, (int, float))
+                    or not math.isfinite(start_width)
+                    or start_width <= 0
+                ):
+                    raise ValueError('asr_word_start_attention.mask.start_band_width must be finite and positive')
+                defaults = dict(
+                    start_step=0,
+                    ramp_steps=1000,
+                    prior_anneal_steps=5000,
+                    prior_strength=1.0,
+                    band_width=1.0,
+                    look_back_tokens=1,
+                    look_ahead_tokens=1,
+                )
+                if mask.keys() - defaults.keys():
+                    raise ValueError(
+                        f'Unknown asr_word_start_attention.mask options: {sorted(mask.keys() - defaults.keys())}'
+                    )
+                resolved = resolve_attention_alignment_config({**defaults, **mask})
+                settings['mask'] = dict(
+                    enabled=True, start_band_width=float(start_width), **{name: resolved[name] for name in defaults}
+                )
             logging.info(
                 f'ASR word starts supervise main-backbone attention blocks {tuple(blocks[i] for i in chosen)}, heads {selection.heads}.'
             )
@@ -716,6 +748,10 @@ class NemotronTTSModel(NemotronTTSBase):
         dropout_conditioning=False,
     ):
         """Anchor selected attention queries to native word spans on the audio clock."""
+        settings = self.asr_word_start_attention_config
+        mask = settings.get('mask') or {}
+        use_mask = mask.get('enabled', False)
+        loss_scale, prior_strength = alignment_schedule(mask, self.global_step) if use_mask else (1.0, 0.0)
         metrics = dict(
             turns=len(targets),
             anchors=0,
@@ -729,6 +765,8 @@ class NemotronTTSModel(NemotronTTSBase):
             merged_word_groups=0,
             dropped_conditioning_turns=len(targets) if dropout_conditioning else 0,
         )
+        if use_mask:
+            metrics.update(interior_frames=0, loss_scale=loss_scale, prior_strength=prior_strength)
         if dropout_conditioning:
             return None, metrics
         records = {(item['batch_index'], item['turn_index']): item for item in word_targets}
@@ -769,25 +807,40 @@ class NemotronTTSModel(NemotronTTSBase):
             metrics['collision_count'] += mapping['collision_count']
             metrics['merged_word_groups'] += mapping['merged_word_groups']
             keys = positions + contexts[sample]
-            for anchor in mapping['anchors']:
-                frame, first, end = (anchor[key] for key in ('frame_index', 'token_start', 'token_end'))
-                if not target['start_frame'] <= frame < target['end_frame'] or not real_audio[sample, frame]:
+            anchors = mapping['anchors']
+            for ordinal, anchor in enumerate(anchors):
+                onset, first, end = (anchor[key] for key in ('frame_index', 'token_start', 'token_end'))
+                begin = target['start_frame'] if use_mask and ordinal == 0 else onset
+                finish = (
+                    (anchors[ordinal + 1]['frame_index'] if ordinal + 1 < len(anchors) else target['end_frame'])
+                    if use_mask
+                    else onset + 1
+                )
+                for frame in range(max(begin, target['start_frame']), min(finish, target['end_frame'])):
+                    if not real_audio[sample, frame]:
+                        metrics['skipped_non_audio_anchors'] += 1
+                        continue
+                    query = frame + delays[sample]
+                    if not (keys[first:end] <= query).any():
+                        metrics['skipped_causal_anchors'] += 1
+                        continue
+                    at_start = frame == onset
+                    left = max(0, first - mask.get('look_back_tokens', 1)) if use_mask and not at_start else first
+                    right = (
+                        min(keys.numel(), end + mask.get('look_ahead_tokens', 1)) if use_mask and not at_start else end
+                    )
+                    candidates.append((index, sample, query, left, right, at_start))
+                if not use_mask and not target['start_frame'] <= onset < target['end_frame']:
                     metrics['skipped_non_audio_anchors'] += 1
-                    continue
-                query = frame + delays[sample]
-                if not (keys[first:end] <= query).any():
-                    metrics['skipped_causal_anchors'] += 1
-                    continue
-                candidates.append((index, sample, query, first, end))
-        counts = Counter((sample, query) for _, sample, query, _, _ in candidates)
+        counts = Counter((sample, query) for _, sample, query, _, _, _ in candidates)
         grouped = {}
-        for index, sample, query, first, end in candidates:
+        for index, sample, query, first, end, at_start in candidates:
             if counts[sample, query] > 1:
                 metrics['overlapping_anchors'] += 1
                 continue
-            grouped.setdefault(index, []).append((query, first, end))
+            grouped.setdefault((index, at_start), []).append((query, first, end))
         turns = []
-        for index, values in grouped.items():
+        for (index, at_start), values in grouped.items():
             target = targets[index]
             sample = target['batch_index']
             queries, starts, ends = zip(*sorted(values))
@@ -799,14 +852,14 @@ class NemotronTTSModel(NemotronTTSBase):
                     key_positions=(target['key_positions'] + contexts[sample]).to(device),
                     token_indices=torch.tensor(starts, device=device, dtype=torch.long),
                     token_end_indices=torch.tensor(ends, device=device, dtype=torch.long),
+                    **({'band_width': mask['start_band_width' if at_start else 'band_width']} if use_mask else {}),
                 )
             )
-            metrics['anchors'] += len(queries)
-        settings = self.asr_word_start_attention_config
+            metrics['anchors' if at_start else 'interior_frames'] += len(queries)
         guidance = (
             AttentionAlignmentGuidance(
                 turns=turns,
-                prior_strength=0.0,
+                prior_strength=prior_strength,
                 layers=settings.get('layers', 'middle'),
                 heads=settings.get('heads', (0,)),
                 query_chunk_size=settings.get('query_chunk_size', 128),
@@ -2508,7 +2561,12 @@ class NemotronTTSModel(NemotronTTSBase):
             word_start_loss = getattr(transformer_out, 'attention_alignment_loss', None)
             if word_start_loss is None:
                 word_start_loss = transformer_hidden_states.float().sum() * 0.0
-            loss = loss + self.asr_word_start_attention_config.get('loss_weight', 0.1) * word_start_loss
+            loss = (
+                loss
+                + self.asr_word_start_attention_config.get('loss_weight', 0.1)
+                * word_start_metrics.get('loss_scale', 1.0)
+                * word_start_loss
+            )
 
         predictor_targets, predictor_loss_mask = self._acoustic_codes_predictor_targets(
             num_positions=transformer_hidden_states.size(1),

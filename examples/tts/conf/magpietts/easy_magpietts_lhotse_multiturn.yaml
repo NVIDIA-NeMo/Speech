@@ -21,6 +21,16 @@ model:
     layers: middle
     heads: [0]
     query_chunk_size: 128
+    mask:
+      enabled: false
+      start_band_width: 0.5
+      band_width: 1.0
+      look_back_tokens: 1
+      look_ahead_tokens: 1
+      start_step: 0
+      ramp_steps: 1000
+      prior_anneal_steps: 5000
+      prior_strength: 1.0
 
   use_timestamp_head: false
   timestamp_head:

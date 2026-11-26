@@ -32,6 +32,8 @@ class AttentionAlignmentTurn:
     ``token_end_indices`` optionally gives exclusive word-span ends, with
     ``token_indices`` supplying the starts. Span targets supervise attention
     mass on the word, leaving its distribution among BPE keys unrestricted.
+    An optional ``band_width`` adds Gaussian falloff outside that span and
+    permits a soft forward prior using the same unnormalized band weights.
     """
 
     batch_index: int
@@ -39,6 +41,7 @@ class AttentionAlignmentTurn:
     key_positions: torch.Tensor
     token_indices: torch.Tensor
     token_end_indices: torch.Tensor | None = None
+    band_width: float | None = None
 
 
 @dataclass
@@ -53,7 +56,7 @@ class AttentionAlignmentGuidance:
     selects ordinal ``num_attention_layers // 2``; ``None`` selects every layer.
     Optional look-back/look-ahead token counts give the soft band a flat local
     tolerance window before Gaussian falloff; causal visibility still applies.
-    Word-span turns use a loss on their total attention mass and require a zero prior.
+    Word-span turns without a per-turn band width require a zero prior.
     """
 
     turns: list[AttentionAlignmentTurn]
@@ -135,7 +138,9 @@ def apply_attention_alignment(
         raise ValueError('Attention guidance does not support cached decoding')
     if attention_mask is not None and attention_mask.ndim not in (2, 4):
         raise ValueError('Attention guidance requires a 2D padding or 4D attention mask')
-    if guidance.prior_strength and any(turn.token_end_indices is not None for turn in guidance.turns):
+    if guidance.prior_strength and any(
+        turn.token_end_indices is not None and turn.band_width is None for turn in guidance.turns
+    ):
         raise ValueError('Word-span attention supervision requires prior_strength=0')
 
     batch_size, num_heads, query_length, _ = query.shape
@@ -179,6 +184,11 @@ def apply_attention_alignment(
         selected_query = query[turn.batch_index].index_select(0, selected_heads)
         selected_key = key[turn.batch_index].index_select(0, selected_heads)
         selected_value = value[turn.batch_index].index_select(0, selected_heads)
+        selected_ordinary = (
+            ordinary_output[turn.batch_index].index_select(0, selected_heads)
+            if turn.band_width is not None and guidance.prior_strength
+            else None
+        )
         for start in range(0, positions.numel(), guidance.query_chunk_size):
             rows = positions[start : start + guidance.query_chunk_size]
             row_centers = centers[start : start + guidance.query_chunk_size]
@@ -205,12 +215,19 @@ def apply_attention_alignment(
             )
             if ends is not None:
                 args += (ends[start : start + guidance.query_chunk_size],)
+                if turn.band_width is not None:
+                    ordinary_chunk = None if selected_ordinary is None else selected_ordinary.index_select(1, rows)
+                    args += (turn.band_width, ordinary_chunk)
             if torch.is_grad_enabled() and any(tensor.requires_grad for tensor in (q, selected_key, selected_value)):
-                chunk_loss, guided_output = checkpoint(_alignment_chunk, *args, use_reentrant=False)
+                result = checkpoint(_alignment_chunk, *args, use_reentrant=False)
             else:
-                chunk_loss, guided_output = _alignment_chunk(*args)
+                result = _alignment_chunk(*args)
+            chunk_loss, guided_output = result[:2]
             loss_sum = loss_sum + chunk_loss
-            count += len(head_indices) * rows.numel() if ends is None else guided_output
+            if ends is None:
+                count += len(head_indices) * rows.numel()
+            else:
+                count += guided_output if turn.band_width is None else result[2]
             if guidance.prior_strength:
                 output[turn.batch_index, selected_heads[:, None], rows[None, :], :] = guided_output
     return output, loss_sum / (count.clamp_min(1) if isinstance(count, torch.Tensor) else max(count, 1))
@@ -1405,6 +1422,8 @@ def _alignment_chunk(
     look_back_tokens,
     look_ahead_tokens,
     token_ends=None,
+    token_band_width=None,
+    ordinary_output=None,
 ):
     with torch.autocast(device_type=query.device.type, enabled=False):
         scores = torch.matmul(query.float(), key.float().transpose(-1, -2)) / math.sqrt(query.size(-1))
@@ -1416,41 +1435,64 @@ def _alignment_chunk(
         if token_ends is not None:
             indices = torch.arange(text_keys.numel(), device=query.device)[None, :]
             spans = (indices >= centers[:, None]) & (indices < token_ends[:, None])
-            target_visible = visible.expand(query.size(0), -1, -1).index_select(-1, text_keys) & spans[None]
+            text_visible = visible.expand(query.size(0), -1, -1).index_select(-1, text_keys)
+            target_visible = text_visible & spans[None]
             valid = target_visible.any(dim=-1)
             # Sanitizing empty head/query pairs keeps all-masked logsumexp gradients finite.
             safe_scores = scores.masked_fill(~valid[..., None], 0.0)
-            word_scores = safe_scores.index_select(-1, text_keys).masked_fill(~target_visible, -torch.inf)
+            word_scores = safe_scores.index_select(-1, text_keys)
+            if token_band_width is None:
+                word_scores = word_scores.masked_fill(~target_visible, -torch.inf)
+            else:
+                distance = (centers[:, None] - indices).clamp_min(0) + (indices - token_ends[:, None] + 1).clamp_min(0)
+                log_weights = -0.5 * (distance.float() / token_band_width).square()
+                word_scores = (word_scores + log_weights[None]).masked_fill(~text_visible, -torch.inf)
             word_scores = word_scores.masked_fill(~valid[..., None], 0.0)
             losses = safe_scores.logsumexp(dim=-1) - word_scores.logsumexp(dim=-1)
-            return losses.masked_fill(~valid, 0.0).sum(), valid.sum()
-        log_probs = F.log_softmax(scores, dim=-1)
-
-        token_distance = torch.arange(text_keys.numel(), device=query.device)[None, :] - centers[:, None]
-        distance = (token_distance - look_ahead_tokens).clamp_min(0) + (-token_distance - look_back_tokens).clamp_min(
-            0
-        )
-        target = torch.exp(-0.5 * (distance.float() / band_width).square())
-        text_visible = visible.expand(query.size(0), -1, -1).index_select(-1, text_keys)
-        target = target[None, :, :] * text_visible
-        target = (target / target.sum(dim=-1, keepdim=True).clamp_min(torch.finfo(torch.float32).tiny)).detach()
-        text_log_probs = log_probs.index_select(-1, text_keys)
-        loss = -(target * torch.where(target > 0, text_log_probs, 0.0)).sum()
-
-        if not prior_strength:
-            return loss, query.new_empty((0,))
+            loss = losses.masked_fill(~valid, 0.0).sum()
+            if token_band_width is None:
+                return loss, valid.sum()
+            if not prior_strength:
+                return loss, query.new_empty((0,)), valid.sum()
+            target = log_weights.exp()[None].expand(query.size(0), -1, -1)
+            scores = safe_scores
+        else:
+            log_probs = F.log_softmax(scores, dim=-1)
+            token_distance = torch.arange(text_keys.numel(), device=query.device)[None, :] - centers[:, None]
+            distance = (token_distance - look_ahead_tokens).clamp_min(0) + (
+                -token_distance - look_back_tokens
+            ).clamp_min(0)
+            target = torch.exp(-0.5 * (distance.float() / band_width).square())
+            text_visible = visible.expand(query.size(0), -1, -1).index_select(-1, text_keys)
+            target = target[None, :, :] * text_visible
+            target = (target / target.sum(dim=-1, keepdim=True).clamp_min(torch.finfo(torch.float32).tiny)).detach()
+            text_log_probs = log_probs.index_select(-1, text_keys)
+            loss = -(target * torch.where(target > 0, text_log_probs, 0.0)).sum()
+            if not prior_strength:
+                return loss, query.new_empty((0,))
         prior = torch.full_like(scores, 1e-6)
         prior = prior.scatter(-1, text_keys[None, None, :].expand_as(target), target.clamp_min(1e-6))
         prior = (1.0 - prior_strength) + prior_strength * prior
         probabilities = F.softmax(scores + prior.log(), dim=-1)
         probabilities = F.dropout(probabilities, p=dropout_p, training=dropout_p > 0)
         guided_output = torch.matmul(probabilities, value.float()).to(dtype=query.dtype)
+        if token_ends is not None:
+            guided_output = torch.where(valid[..., None], guided_output, ordinary_output)
+            return loss, guided_output, valid.sum()
         return loss, guided_output
 
 
 def _validate_turn(turn, query, query_length, batch_size):
     if type(turn.batch_index) is not int or not 0 <= turn.batch_index < batch_size:
         raise ValueError('Attention alignment batch_index is out of range')
+    if turn.band_width is not None and (
+        turn.token_end_indices is None
+        or isinstance(turn.band_width, bool)
+        or not isinstance(turn.band_width, (int, float))
+        or not math.isfinite(turn.band_width)
+        or turn.band_width <= 0
+    ):
+        raise ValueError('Per-turn band_width requires word spans and a finite positive scalar')
     fields = (turn.query_positions, turn.key_positions, turn.token_indices)
     if turn.token_end_indices is not None:
         fields += (turn.token_end_indices,)

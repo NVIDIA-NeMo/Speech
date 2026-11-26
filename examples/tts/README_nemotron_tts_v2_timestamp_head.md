@@ -15,7 +15,8 @@ Enable sparse attention supervision from the frozen ASR aligner's word onsets:
 `use_asr_word_start_attention` defaults to `false`. Each word onset supervises
 one nearest 80 ms audio query. The loss rewards the sum of attention over that
 word's visible input BPE tokens, leaving the distribution within its token
-span free. Other query rows and heads retain ordinary attention. Layer
+span free. With the optional mask disabled, other query rows and heads retain
+ordinary attention. Layer
 `middle` selects the main backbone's middle attention layer, excluding the
 acoustic-code predictor's layers; the default head is zero.
 
@@ -44,6 +45,47 @@ and the Glow-TTS attention loss disabled. The source recipes and their pins
 remain unchanged. `ASR_WORD_START_ATTENTION_LOSS_WEIGHT`,
 `ASR_WORD_START_ATTENTION_LAYERS`, `ASR_WORD_START_ATTENTION_HEADS`, and
 `ASR_WORD_START_ATTENTION_QUERY_CHUNK_SIZE` override the new recipe's settings.
+
+### Optional word-band training mask
+
+Enable the separate soft-mask variant with:
+
+```bash
+++model.use_asr_word_start_attention=true \
+++model.asr_word_start_attention.mask.enabled=true \
+++model.asr_word_start_attention.mask.start_band_width=0.5 \
+++model.asr_word_start_attention.mask.band_width=1.0 \
+++model.asr_word_start_attention.mask.look_back_tokens=1 \
+++model.asr_word_start_attention.mask.look_ahead_tokens=1 \
+++model.asr_word_start_attention.mask.start_step=0 \
+++model.asr_word_start_attention.mask.ramp_steps=1000 \
+++model.asr_word_start_attention.mask.prior_anneal_steps=5000 \
+++model.asr_word_start_attention.mask.prior_strength=1.0
+```
+
+`mask.enabled` defaults to `false`. When enabled, the loss supervises word
+bands across the valid audio frames. At a word onset, the plateau contains
+that word's full BPE span without additional neighboring tokens; Gaussian
+falloff uses `start_band_width`. Interior frames use the whole word span plus
+the backward/forward token tolerance and the broader `band_width`. Attention
+can distribute freely within each plateau. Leading and trailing audio map
+to the first and last word; dropped conditioning, user audio, and EOS frames
+are excluded.
+
+The same bands provide a finite Gaussian attention prior during training and
+teacher-forced validation.
+This favors progression through ASR word order without imposing a strict
+forward-only constraint; the causal attention mask still applies. The
+existing schedule ramps the word-band loss and prior, then anneals only the
+prior. With the defaults above, the ramp finishes at step 1,000 and the prior
+reaches zero at step 6,000; the loss remains active. Inference uses ordinary
+attention and requires no ASR teacher or guidance.
+
+The separate `_asr_word_start_attention_mask.sub` recipe enables this mode
+with the timestamp and CTC student heads disabled. Its experiment and Slurm
+names use the same suffix. `ASR_WORD_START_ATTENTION_MASK_*` environment
+variables expose the eight mask settings above. The attention-only recipe
+and its pin remain unchanged.
 
 ## CTC and teacher distillation
 

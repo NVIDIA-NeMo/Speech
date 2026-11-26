@@ -17,6 +17,7 @@ import json
 import os
 import shutil
 import tempfile
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Set, Union
 
 import pytest
@@ -26,6 +27,7 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 from nemo.collections.asr.models import EncDecCTCModel, EncDecCTCModelBPE
 from nemo.core.classes import ModelPT
 from nemo.core.connectors import save_restore_connector
+from nemo.utils import msc_utils
 from nemo.utils.app_state import AppState
 from nemo.utils.exceptions import NeMoBaseException
 
@@ -389,6 +391,21 @@ class TestSaveRestore:
         assert diff.mean() <= 1e-9
         # assert os.path.basename(model.temp_file) == model_copy.temp_file
         assert model_copy.temp_data == ["*****\n"]
+
+    @pytest.mark.unit
+    def test_mock_save_to_multistorageclient_url(self, tmp_path, monkeypatch):
+        """A model saved to an msc:// URL is uploaded as a complete .nemo archive."""
+        msc_client = _LocalMultiStorageClient(root=tmp_path)
+        monkeypatch.setattr(msc_utils, "HAVE_MSC", True)
+        monkeypatch.setattr(msc_utils, "msc", msc_client)
+        model = MockModel(cfg=_mock_model_config().model, trainer=None).to('cpu')
+        nemo_url = "msc://profile/MockModel.nemo"
+
+        model.save_to(save_path=nemo_url)
+        model_copy = MockModel.restore_from(restore_path=str(msc_client.local_path(nemo_url)), map_location='cpu')
+
+        assert torch.equal(model_copy.w.weight, model.w.weight)
+        assert torch.equal(model_copy.w.bias, model.w.bias)
 
     @pytest.mark.unit
     def test_mock_restore_from_config_only(self):
@@ -1452,3 +1469,20 @@ def test_load_state_dict_honors_force_no_weights_only(tmp_path, monkeypatch):
 
     assert torch.equal(state["w"], torch.zeros(2))
     assert state["meta"].value == 11
+
+
+class _LocalMultiStorageClient:
+    """Stand-in for the ``multistorageclient`` module that uploads ``msc://`` objects to a local directory."""
+
+    def __init__(self, root: Path):
+        self._root = root
+
+    def upload_file(self, url: str, local_path: str) -> None:
+        """Store the content ``local_path`` has at call time as the object at ``url``, as the real client does."""
+        target = self.local_path(url)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(local_path, target)
+
+    def local_path(self, url: str) -> Path:
+        """Return the local file that holds the object at ``url``."""
+        return self._root / url.removeprefix(msc_utils.MSC_PROTOCOL)

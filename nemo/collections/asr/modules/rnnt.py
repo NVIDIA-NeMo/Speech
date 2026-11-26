@@ -1320,42 +1320,11 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             Warning: This will make the forward-backward pass much slower than normal.
             It also might not fix the OOM if the GPU simply does not have enough memory to compute the joint.
 
-        training_kernel: Optional dict-like config of the optimized training-only Joint kernel,
-            see `TrainingKernelConfig`. With the kernel enabled, the loss is computed from the target and blank
-            log-probabilities returned by `forward_for_loss`, without materializing the logits `[B, T, U+1, V]`.
-            This requires an RNN-T loss that accepts log-probabilities (`turbo_rnnt`). Decoding is not affected.
-            The following key-value pairs are supported:
-
-            type: kernel type. None (default) disables the training kernel; `fused_vocab` fuses the vocabulary
-                projection with log-softmax.
-
-            backend: `triton` (default), the only implemented backend. `cutile` is reserved for the planned
-                cuTile backend and raises `NotImplementedError`.
-
-            mm_full_precision: bool, False by default. BF16 activations use BF16 matmul operands with FP32 master
-                parameters; set to True to use FP32 operands.
-
-            use_high_precision_mm: bool, False by default. Use FP32 operands with IEEE math in Triton.
-
-            input_grad_full_precision, weight_grad_full_precision: bool, False by default. Accumulate
-                the gradient for the Joint hidden / vocabulary projection weight in FP32.
-
-            backward_mode: algorithm of the backward pass: `chunked` (default, also if None) or `atomic`
-                (experimental). Both algorithms compute the same gradients.
-
-            pruning: Optional dict-like config, missing or None disables pruning. Experimental: a warning
-                is logged if pruning is enabled.
-                With pruning, the Joint is evaluated only for `range_size` contiguous target positions per frame.
-                `type`: None (default) disables pruning. `backward` computes the full forward pass and selects
-                the positions by the gradient of the loss: the loss value is exact, its gradient is approximated,
-                the backward pass is faster. `two_pass` selects the positions by a forward pass without gradient
-                (and without dropout), then evaluates the Joint only for them: the loss is the loss of the pruned
-                lattice with the exact gradient, the memory for the activations is several times lower.
-                `range_size` is required if `type` is set (at least 2 for `two_pass`). `start_step` is the first
-                optimizer step with pruning (None or non-positive: prune from the first step).
-                Pruning is applied only in training mode.
-
-            Incompatible with `fuse_loss_wer`, `preserve_memory` and extra outputs (e.g., TDT durations).
+        training_kernel: Optional training joint config. `type: flash` scores packed tiles of at most
+            `max_joint_rows` valid positions. `type: fused_vocab` fuses the vocabulary projection with
+            log-softmax and accepts precision, backward and pruning options (see `FusedVocabKernelConfig`).
+            Both return target and blank log-probabilities to the loss. A missing or null type uses the
+            standard joint. Decoding uses the standard joint for every setting.
 
         fuse_loss_wer: Optional bool, set to False by default.
 
@@ -1366,6 +1335,9 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
             When this flag is set, prior to calling forward, the fields `loss` and `wer` (either one) *must*
             be set using the `RNNTJoint.set_loss()` or `RNNTJoint.set_wer()` methods.
+
+            Further, when this flag is set, the following argument `fused_batch_size` *must* be provided
+            as a non negative integer. This value refers to the size of the sub-batch.
 
             When the flag is set, the input and output signature of `forward()` of this method changes.
             Input - in addition to `encoder_outputs` (mandatory argument), the following arguments can be provided.
@@ -1389,8 +1361,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                 - wer_numerator + wer_denominator (optional). Returned if transcripts, transcripts_lengths are provided
                     and compute_wer is set.
 
-        fused_batch_size: Number of utterances per sub-batch. Required for fused execution with
-            sub-batching. Factorized-joint losses consume the whole batch and can omit this setting.
+        fused_batch_size: Optional int, required if `fuse_loss_wer` flag is set. Determines the size of the
+            sub-batches. Should be any value below the actual batch size per GPU.
         masking_prob: Optional float, indicating the probability of masking out decoder output in HAINAN
             (Hybrid Autoregressive Inference Transducer) model, described in https://arxiv.org/pdf/2410.02597
             Default to -1.0, which runs standard Joint network computation; if > 0, then masking out decoder output
@@ -1480,6 +1452,10 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         self._fuse_loss_wer = fuse_loss_wer
         self._fused_batch_size = fused_batch_size
 
+        if fuse_loss_wer and (fused_batch_size is None):
+            raise ValueError("If `fuse_loss_wer` is set, then `fused_batch_size` cannot be None!")
+
+        self.flash_clamp = 0.0
         self._training_kernel_cfg = TrainingKernelConfig.from_config(training_kernel)
         self._training_kernel_type = self._training_kernel_cfg.kernel_type
         if self.uses_training_kernel:
@@ -1489,7 +1465,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                 raise ValueError("`training_kernel` does not support extra Joint outputs")
             if preserve_memory:
                 raise ValueError("`preserve_memory` is not applicable when `training_kernel` is enabled")
-            if self._training_kernel_cfg.uses_pruning:
+            if self._training_kernel_type is TrainingKernelType.FUSED_VOCAB and self._training_kernel_cfg.uses_pruning:
                 logging.warning(
                     f"Pruning of the Joint lattice (`training_kernel.pruning.type={self._training_kernel_cfg.pruning.type}`) "
                     "is experimental: its behavior and config can change in future releases.",
@@ -1517,7 +1493,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         self.activation = jointnet['activation']
 
         # Optional arguments
-        self.dropout = jointnet.get('dropout', 0.0)
+        dropout = jointnet.get('dropout', 0.0)
 
         self.pred, self.enc, self.joint_net = self._joint_net_modules(
             num_classes=self._num_classes,  # add 1 for blank symbol
@@ -1525,7 +1501,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             enc_n_hidden=self.encoder_hidden,
             joint_n_hidden=self.joint_hidden,
             activation=self.activation,
-            dropout=self.dropout,
+            dropout=dropout,
         )
 
         if self.uses_training_kernel:
@@ -1579,7 +1555,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         Run a Joint forward that returns per-position quantities for the losses (target/blank
         log-probabilities and, optionally, the consistency loss), instead of the full logits tensor.
 
-        With `training_kernel` enabled, the logits are never materialized. Otherwise the logits are computed
+        Flash materializes logits for one packed tile at a time. Fused vocab computes scores without storing
+        logits. With neither kernel enabled, logits are computed
         as usual, but the losses do not keep a separate gradient buffer for each of them.
 
         The temperature of the Joint is not applied: it is a parameter of decoding (set by the decoding config),
@@ -1611,6 +1588,11 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         encoder_output_projected = self.project_encoder(encoder_outputs.transpose(1, 2))  # [B, T, H]
         predictor_output_projected = self.project_prednet(decoder_outputs.transpose(1, 2))  # [B, U+1, H]
         blank_id = self._vocab_size
+
+        if self._training_kernel_type is TrainingKernelType.FLASH:
+            return self._flash_logprobs_after_projection(
+                encoder_output_projected, predictor_output_projected, encoder_lengths, transcripts, transcript_lengths
+            )
 
         if self._training_kernel_type is None:
             logits = self._joint_logits_after_projection(encoder_output_projected, predictor_output_projected)
@@ -1685,36 +1667,58 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             full_lattice_loss=full_lattice_loss,
         )
 
-    def _compute_wer(self, encoder_outputs, encoder_lengths, transcripts, transcript_lengths, keep_hypotheses):
-        """Decode one batch of encoder states and return its WER, numerator, denominator and hypotheses.
+    def _flash_logprobs_after_projection(
+        self,
+        encoder: torch.Tensor,
+        predictor: torch.Tensor,
+        source_lengths: torch.Tensor,
+        targets: torch.Tensor,
+        target_lengths: torch.Tensor,
+    ) -> JointLossInputs:
+        """Score packed tiles from projected encoder [B, T, H] and predictor [B, U+1, H] states."""
+        from nemo.collections.asr.parts.triton.rnnt_joint import packed_joint_logprobs
+        from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
-        Args:
-            encoder_outputs: Encoder states of shape [B, T, D].
-        """
-        predictions = encoder_outputs.transpose(1, 2).detach()  # [B, T, D] -> [B, D, T]
-        transcripts = transcripts.detach()
+        if not TRITON_AVAILABLE:
+            raise RuntimeError("Triton is required for Flash RNN-T training")
+        if self.is_adapter_available():
+            raise ValueError("Flash does not support joint adapters")
+        layers = self.joint_net
+        activations = {torch.nn.ReLU: "relu", torch.nn.Sigmoid: "sigmoid", torch.nn.Tanh: "tanh"}
+        if (
+            type(layers) is not torch.nn.Sequential
+            or tuple(map(type, layers))[1:] not in ((torch.nn.Linear,), (torch.nn.Dropout, torch.nn.Linear))
+            or type(layers[0]) not in activations
+        ):
+            raise ValueError("Flash RNN-T requires ReLU, Sigmoid or Tanh, optional Dropout, and Linear")
+        output = layers[-1]
+        if self.num_extra_outputs or output.out_features != self.num_classes_with_blank:
+            raise ValueError("The Flash joint output must include every label and the blank in the final column")
+        dropout = layers[1] if len(layers) == 3 else None
+        if dropout is not None and not 0 <= dropout.p < 1:
+            raise ValueError(f"joint dropout must be in [0, 1), got {dropout.p}")
+        if self.training and self.masking_prob > 0:
+            predictor_mask = torch.rand(predictor.shape[:2], device=predictor.device) > self.masking_prob
+        else:
+            predictor_mask = torch.ones(predictor.shape[:2], dtype=torch.bool, device=predictor.device)
 
-        # Update WER on each process without syncing
-        if self.training:
-            original_sync = self.wer._to_sync
-            self.wer._to_sync = False
-
-        self.wer.update(
-            predictions=predictions,
-            predictions_lengths=encoder_lengths,
-            targets=transcripts,
-            targets_lengths=transcript_lengths,
+        return JointLossInputs(
+            *packed_joint_logprobs(
+                encoder,
+                predictor,
+                targets,
+                source_lengths,
+                target_lengths,
+                output.weight,
+                output.bias,
+                activations[type(layers[0])],
+                dropout.p if dropout is not None and dropout.training else 0.0,
+                self._vocab_size,
+                self.flash_clamp,
+                self._training_kernel_cfg.max_joint_rows,
+                predictor_mask,
+            )
         )
-        hypotheses = self.wer.get_hypotheses() if keep_hypotheses else []
-
-        # Sync and all_reduce on all processes, compute global WER
-        wer, wer_num, wer_denom = self.wer.compute()
-        self.wer.reset()
-
-        if self.training:
-            self.wer._to_sync = original_sync
-
-        return wer, wer_num, wer_denom, hypotheses
 
     @typecheck()
     def forward(
@@ -1749,37 +1753,15 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             if self._loss is None or self._wer is None:
                 raise ValueError("`fuse_loss_wer` flag is set, but `loss` and `wer` modules were not provided! ")
 
+            # If fused joint step is required, fused batch size is required as well
+            if self._fused_batch_size is None:
+                raise ValueError("If `fuse_loss_wer` is set, then `fused_batch_size` cannot be None!")
+
             # When using fused joint step, both encoder and transcript lengths must be provided
             if (encoder_lengths is None) or (transcript_lengths is None):
                 raise ValueError(
                     "`fuse_loss_wer` is set, therefore encoder and target lengths " "must be provided as well!"
                 )
-
-            if getattr(self._loss, "requires_factorized_joint", False):
-                # This loss consumes the projections directly and tiles the lattice itself,
-                # so the sub-batch loop below has nothing left to do.
-                losses = wer = wer_num = wer_denom = None
-                if decoder_outputs is not None:
-                    losses = self.loss.forward_from_joint(
-                        joint=self,
-                        encoder=encoder_outputs,
-                        predictor=decoder_outputs,
-                        targets=transcripts,
-                        input_lengths=encoder_lengths,
-                        target_lengths=transcript_lengths,
-                    )
-                hypotheses = []
-                if compute_wer:
-                    # One decode, so `wer` is total errors over total words. The loop below
-                    # averages per-chunk ratios instead; wer_num and wer_denom are unaffected.
-                    wer, wer_num, wer_denom, hypotheses = self._compute_wer(
-                        encoder_outputs, encoder_lengths, transcripts, transcript_lengths, keep_hypotheses
-                    )
-                self.hypotheses = hypotheses if keep_hypotheses else None
-                return losses, wer, wer_num, wer_denom
-
-            if self._fused_batch_size is None:
-                raise ValueError("`fused_batch_size` is required for fused joint sub-batching.")
 
             losses = []
             wers, wer_nums, wer_denoms = [], [], []
@@ -1855,9 +1837,31 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
                 # Update WER for sub batch
                 if compute_wer:
-                    wer, wer_num, wer_denom, hyp = self._compute_wer(
-                        sub_enc, sub_enc_lens, sub_transcripts, sub_transcript_lens, keep_hypotheses
+                    sub_enc = sub_enc.transpose(1, 2)  # [B, T, D] -> [B, D, T]
+                    sub_enc = sub_enc.detach()
+                    sub_transcripts = sub_transcripts.detach()
+
+                    # Update WER on each process without syncing
+                    if self.training:
+                        original_sync = self.wer._to_sync
+                        self.wer._to_sync = False
+
+                    self.wer.update(
+                        predictions=sub_enc,
+                        predictions_lengths=sub_enc_lens,
+                        targets=sub_transcripts,
+                        targets_lengths=sub_transcript_lens,
                     )
+
+                    hyp = self.wer.get_hypotheses() if keep_hypotheses else []
+
+                    # Sync and all_reduce on all processes, compute global WER
+                    wer, wer_num, wer_denom = self.wer.compute()
+                    self.wer.reset()
+
+                    if self.training:
+                        self.wer._to_sync = original_sync
+
                     wers.append(wer)
                     wer_nums.append(wer_num)
                     wer_denoms.append(wer_denom)
@@ -2065,7 +2069,11 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
     def _get_active_pruning(self, current_step: Optional[int]) -> Optional[TurboJointPruningConfig]:
         """Pruning config for the current forward pass, None if pruning is not applied"""
-        if not self.training or not torch.is_grad_enabled():
+        if (
+            self._training_kernel_type is not TrainingKernelType.FUSED_VOCAB
+            or not self.training
+            or not torch.is_grad_enabled()
+        ):
             return None
         return self._training_kernel_cfg.get_active_pruning(current_step)
 
@@ -2392,9 +2400,6 @@ class SampledRNNTJoint(RNNTJoint):
                 transcript_lengths=transcript_lengths,
                 compute_wer=compute_wer,
             )
-
-        if getattr(self._loss, "requires_factorized_joint", False):
-            raise ValueError("A factorized-joint loss needs the full vocabulary and cannot use SampledRNNTJoint")
 
         if transcripts is None or transcript_lengths is None:
             logging.warning(

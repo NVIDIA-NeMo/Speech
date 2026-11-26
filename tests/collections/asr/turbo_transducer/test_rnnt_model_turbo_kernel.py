@@ -217,21 +217,20 @@ def _prepare_for_direct_steps(model: EncDecRNNTModel, monkeypatch, global_step: 
 
 
 def _make_models(
-    model_class: Type[EncDecRNNTModel], test_data_dir: str, device: torch.device, **training_kernel_kwargs
+    model_class: Type[EncDecRNNTModel], test_data_dir: str, device: torch.device, flash=False, **training_kernel_kwargs
 ):
     """Reference model (standard Joint) and the model with Joint turbo kernel with identical weights"""
     torch.manual_seed(1234)
     # NB: some models (EOU) require the `trainer` argument
     reference_model = model_class(cfg=_model_config(model_class, test_data_dir), trainer=None).to(device)
+    kernel = {"type": "flash", "max_joint_rows": 64} if flash else _training_kernel_config(**training_kernel_kwargs)
     turbo_model = model_class(
-        cfg=_model_config(
-            model_class, test_data_dir, training_kernel=_training_kernel_config(**training_kernel_kwargs)
-        ),
+        cfg=_model_config(model_class, test_data_dir, training_kernel=kernel),
         trainer=None,
     ).to(device)
     turbo_model.load_state_dict(reference_model.state_dict(), strict=True)
     assert not reference_model.joint.uses_training_kernel
-    assert turbo_model.joint.training_kernel_type is TrainingKernelType.FUSED_VOCAB
+    assert turbo_model.joint.training_kernel_type is TrainingKernelType(kernel["type"])
     return reference_model, turbo_model
 
 
@@ -520,10 +519,10 @@ class TestModelComputeLossesRouting:
 @requires_triton_cuda
 class TestModelTurboKernel:
     @pytest.mark.unit
-    @pytest.mark.parametrize("model_class", ALL_MODELS)
-    def test_training_step_matches_standard_joint(self, model_class, test_data_dir, monkeypatch):
+    @pytest.mark.parametrize("model_class,flash", [(cls, False) for cls in ALL_MODELS] + [(EncDecRNNTModel, True)])
+    def test_training_step_matches_standard_joint(self, model_class, flash, test_data_dir, monkeypatch):
         device = torch.device("cuda")
-        reference_model, turbo_model = _make_models(model_class, test_data_dir, device)
+        reference_model, turbo_model = _make_models(model_class, test_data_dir, device, flash=flash)
         batch = _make_batch(reference_model, device)
         global_step = 3
 

@@ -103,7 +103,7 @@ model:
     fused_batch_size: -1
 
     training_kernel:
-      type: fused_vocab  # options: null, fused_vocab
+      type: fused_vocab  # options: null, fused_vocab, flash
       pruning:
         type: null  # options: null (disabled), backward, two_pass; experimental
         range_size: 16  # target positions per frame; use values 8 or 16

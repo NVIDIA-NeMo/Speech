@@ -712,7 +712,7 @@ not affected: the parameters of the Joint are the same, so the kernel can be ena
     fuse_loss_wer: false  # incompatible with a training kernel
 
     training_kernel:
-      type: fused_vocab  # options: null (disabled), fused_vocab
+      type: fused_vocab  # options: null (disabled), fused_vocab, flash
       backend: triton  # the only implemented backend
       use_high_precision_mm: false
       mm_full_precision: false
@@ -734,9 +734,9 @@ not affected: the parameters of the Joint are the same, so the kernel can be ena
 
 When switching kernels, replace the section with the options for the selected type.
 
-* ``type``: The kernel type. ``null`` (or a missing ``training_kernel`` section) disables the kernel, the other parameters are ignored. ``fused_vocab`` fuses the vocabulary projection with log-softmax; the Joint hidden representation is still materialized.
+* ``type``: The kernel type. ``null`` (or a missing ``training_kernel`` section) disables the kernel, the other parameters are ignored. ``fused_vocab`` fuses the vocabulary projection with log-softmax; the Joint hidden representation is still materialized. ``flash`` scores packed tiles; see `Flash joint scoring for RNN-T`_.
 
-The following options apply to ``fused_vocab``:
+Flash accepts ``max_joint_rows`` (default 200000). The following options apply to ``fused_vocab``:
 
 * ``backend``: ``triton`` (default, requires Triton) is the only implemented backend; ``null`` selects it automatically. ``cutile`` is reserved for the planned cuTile backend: requesting it raises ``NotImplementedError``.
 
@@ -762,7 +762,7 @@ The following options apply to ``fused_vocab``:
 
 Requirements and limitations:
 
-* A CUDA GPU and the ``turbo_rnnt`` loss (see :ref:`Turbo-RNNT Loss <turbo-rnnt-loss>`) without gradient clamping (``clamp``): clamping is applied to the gradient for the Joint output, which is not materialized. An incompatible loss is rejected when the model is constructed.
+* A CUDA GPU and the ``turbo_rnnt`` loss (see :ref:`Turbo-RNNT Loss <turbo-rnnt-loss>`) are required. Only the Flash kernel supports logit-gradient clamping (``clamp``). An incompatible loss is rejected when the model is constructed.
 
 * The loss does not depend on the temperature set by the decoding config (``decoding.temperature``): the temperature is applied only in decoding. Note that the Joint output of the standard Joint with ``log_softmax: true`` is scaled by the temperature, so the loss computed from it differs if the temperature is not 1.
 
@@ -894,38 +894,32 @@ This reduces memory retained during compilation without changing random states.
 
 Custom training loops can call ``RNNTLoss.warmup(device)`` before allocating batch activations.
 
-Flash Transducer Loss
-^^^^^^^^^^^^^^^^^^^^^
+Flash joint scoring for RNN-T
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The Transducer objective sums over an alignment lattice of ``[B, T, U + 1]`` positions, each scored
-across the whole vocabulary. The default loss builds that ``[B, T, U + 1, V]`` tensor in full, which
-dominates the memory of a Transducer step. ``flash_rnnt`` returns the same loss and the same
-gradients without it: the encoder and prediction network are projected once, every utterance's
-lattice is laid end to end into one flat list of ``T * (U + 1)`` rows, and that list is scored in
-tiles, each tile reduced to the two transition log-probabilities the dynamic program needs and then
-rebuilt during the backward pass instead of being kept. Only the ``[B, T, U + 1]`` scores survive
-into backward, so the vocabulary axis costs one tile rather than one batch.
-
-It requires Triton, CUDA, and a standard Transducer joint -- no adapters, no HAT, unnormalized
-logits at temperature 1 -- and reads the joint's projections directly, so it must be paired with a
-fused joint step:
+The Flash training backend projects the encoder and predictor once, packs valid alignment positions
+into tiles, and computes the target and blank log probabilities for each tile. Turbo RNN-T evaluates
+the loss on these two score tensors. Backward recomputes the joint intermediates one tile at a time.
+Flash uses the standard CUDA joint with Triton. Joint adapters, lattice pruning and the auxiliary
+consistency loss are unsupported. Decoding uses the ordinary joint.
 
 .. code-block:: yaml
 
   model:
     joint:
-      fuse_loss_wer: true
+      training_kernel:
+        type: flash
+        max_joint_rows: 200000
     loss:
-      loss_name: "flash_rnnt"
-      flash_rnnt_kwargs:
+      loss_name: turbo_rnnt
+      turbo_rnnt_kwargs:
         fastemit_lambda: 0.0
         clamp: -1.0
-        max_joint_rows: 200000  # rows of one tile
 
-``max_joint_rows`` is the only knob on cost and does not change the result: it sets peak workspace
-and the size of the projection's problem. Raise it to trade memory for speed, lower it to fit a
-larger batch. Rows are packed rather than padded out to a rectangle, so a tile costs the same
-whatever mix of utterance lengths falls inside it.
+For a vocabulary of size V (including blank), the logits for R rows occupy R × V × element size
+bytes. Hidden states, score planes, recurrence state and gradients also contribute to peak memory.
+Each tile draws its own dropout seed and reuses it in backward. Changing the row limit can therefore
+change training results when joint dropout is enabled.
 
 FastEmit Regularization
 ^^^^^^^^^^^^^^^^^^^^^^^

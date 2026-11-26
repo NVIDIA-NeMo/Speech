@@ -47,7 +47,7 @@ class TurboRnntLoss(nn.Module):
 
     Gradient clamping (`clamp`) is applied to the gradient of each per-utterance loss for the logits before it is
     multiplied by the upstream gradient (as in `warprnnt_numba`), so it does not depend on the reduction of the loss
-    and the batch size. With precomputed scores, the producing joint must apply this clamp during its backward.
+    and the batch size. For precomputed scores, the joint must apply the configured clamp to its logits.
     """
 
     def __init__(
@@ -76,6 +76,7 @@ class TurboRnntLoss(nn.Module):
         self.fastemit_lambda = fastemit_lambda
         self.clamp = float(clamp) if clamp > 0 else 0.0  # 0.0: no clamping
         self.reduction = None  # NB: `RNNTLoss` wrapper reads/overrides this attribute and applies reduction itself
+        self.joint_clamps_logits = False
         self.mask_non_finite = mask_non_finite
         self.warn_non_finite = warn_non_finite
         self.backend = TurboTransducerBackend(backend)
@@ -89,9 +90,9 @@ class TurboRnntLoss(nn.Module):
     def supports_logprobs_input(self) -> bool:
         """
         Whether the loss can be computed from target/blank log-probabilities (see `forward_from_logprobs`).
-        Gradient clamping is applied to the gradient for the logits, so it requires the logits.
+        A positive clamp requires scores from a joint that clamps its logits gradients.
         """
-        return self.clamp == 0.0
+        return self.clamp == 0.0 or self.joint_clamps_logits
 
     @triton_required
     def forward(
@@ -135,8 +136,6 @@ class TurboRnntLoss(nn.Module):
         blank_logprobs: torch.Tensor,
         act_lens: torch.Tensor,
         label_lens: torch.Tensor,
-        *,
-        loss_grad_scale: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Compute RNN-T loss from target and blank log-probabilities.
@@ -146,15 +145,14 @@ class TurboRnntLoss(nn.Module):
             blank_logprobs: log-probabilities for the blank label of size [B, T, U+1]
             act_lens: lengths of activations (source lengths) of size [B]
             label_lens: lengths of label sequences of size [B]
-            loss_grad_scale: optional FP32 buffer [B] shared with a joint that clamps logits gradients.
 
         Returns:
             batch of RNN-T scores (loss) of size [B]
         """
-        if not self.supports_logprobs_input and loss_grad_scale is None:
+        if not self.supports_logprobs_input:
             raise NotImplementedError(
                 "Gradient clamping is applied to the gradient for the logits "
-                "and requires the score producer to clamp them"
+                "and is not supported when computing the loss from log-probabilities"
             )
         if target_logprobs.device.type != "cuda" or blank_logprobs.device.type != "cuda":
             raise NotImplementedError("Turbo-RNNT loss supports only CUDA inputs")
@@ -165,7 +163,6 @@ class TurboRnntLoss(nn.Module):
             src_lengths=act_lens,
             tgt_lengths=label_lens,
             fastemit_lambda=self.fastemit_lambda,
-            loss_grad_scale=loss_grad_scale,
         )
         return self._postprocess_loss(loss_batch)
 

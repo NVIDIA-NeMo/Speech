@@ -65,10 +65,12 @@ class TrainingKernelType(PrettyStrEnum):
     """
     Optimized (training-only) Joint kernel.
 
+    - FLASH: packs valid lattice positions and recomputes the Joint in row tiles during backward.
     - FUSED_VOCAB: the vocabulary projection is fused with log-softmax, the Joint hidden `[B, T, U+1, D]` is
       materialized, but the logits `[B, T, U+1, V]` are not.
     """
 
+    FLASH = "flash"
     FUSED_VOCAB = "fused_vocab"
 
 
@@ -167,17 +169,26 @@ class TrainingKernelConfig:
 
     @staticmethod
     def from_config(config: Optional[Mapping[str, Any]]) -> "TrainingKernelConfig":
-        if config is None:
-            return FusedVocabKernelConfig()
-        if not isinstance(config, Mapping):
+        if config is not None and not isinstance(config, Mapping):
             raise TypeError(f"`training_kernel` must be a mapping or None, got {type(config).__name__}")
-        kind = config.get("type")
-        if kind is not None:
-            kind = TrainingKernelType(kind)
-        options = OmegaConf.to_object(OmegaConf.merge(OmegaConf.structured(FusedVocabKernelConfig), config))
-        if kind is not None:
-            options.validate()
+        if config is None or config.get("type") is None:
+            return TrainingKernelConfig()
+        kind = TrainingKernelType(config["type"])
+        schema = FlashKernelConfig if kind is TrainingKernelType.FLASH else FusedVocabKernelConfig
+        options = OmegaConf.to_object(OmegaConf.merge(OmegaConf.structured(schema), config))
+        options.validate()
         return options
+
+
+@dataclass
+class FlashKernelConfig(TrainingKernelConfig):
+    """Maximum number of valid alignment positions per recomputed tile."""
+
+    max_joint_rows: int = 200_000
+
+    def validate(self):
+        if self.max_joint_rows < 1:
+            raise ValueError("max_joint_rows must be positive")
 
 
 @dataclass

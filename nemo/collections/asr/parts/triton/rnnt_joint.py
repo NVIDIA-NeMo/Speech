@@ -23,11 +23,12 @@ own coordinates through ``_locate``, storing no per-row index array. Score plane
 
 from __future__ import annotations
 
+from functools import partial
+
 import torch
+from torch.utils.checkpoint import checkpoint
 
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
-
-ACTIVATIONS = ("relu", "sigmoid", "tanh")
 
 if TRITON_AVAILABLE:
     import triton
@@ -562,8 +563,7 @@ class _PackedLogProbs(torch.autograd.Function):
         ctx.save_for_backward(logits, targets, offsets, states, logsumexp)
         ctx.meta = (start, blank_id, batch_pow2, block, targets.stride(0))
         ctx.clamp = float(clamp) if clamp > 0.0 else 0.0
-        # Held outside the saved tensors: the loss backward fills this buffer after the forward, and
-        # the version counter would reject a saved tensor that changed in between.
+        # The blank-score hook fills this buffer. All tiles read from it during backward.
         ctx.loss_grad_scale = loss_grad_scale
         return target_out, blank_out
 
@@ -683,3 +683,94 @@ class _PackedScatter(torch.autograd.Function):
 
 
 packed_scatter = _PackedScatter.apply
+
+
+def packed_joint_logprobs(
+    projected_encoder: torch.Tensor,
+    projected_predictor: torch.Tensor,
+    targets: torch.Tensor,
+    source_lengths: torch.Tensor,
+    target_lengths: torch.Tensor,
+    output_weight: torch.Tensor,
+    output_bias: torch.Tensor,
+    activation: str,
+    dropout_p: float,
+    blank: int,
+    clamp: float,
+    max_joint_rows: int,
+    predictor_mask: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return target and blank score planes [B, T, U+1]. With clamping, only the RNN-T loss may consume them."""
+    batch, source_steps = projected_encoder.shape[0], projected_encoder.shape[1]
+    target_states = projected_predictor.shape[1]
+    if not projected_encoder.is_cuda:
+        raise RuntimeError("Flash RNN-T training requires CUDA tensors")
+    if (
+        projected_predictor.size(0) != batch
+        or targets.size(0) != batch
+        or source_lengths.shape != (batch,)
+        or target_lengths.shape != (batch,)
+    ):
+        raise ValueError("Projected states, targets and length vectors must agree on batch size")
+
+    offsets, states, total_rows = lattice_layout(
+        source_lengths, target_lengths, source_steps, min(target_states, targets.shape[1] + 1)
+    )
+    device = projected_encoder.device
+    lengths = source_lengths.to(torch.int32)
+    # The extraction addresses a label by row stride alone, so the columns have to be adjacent.
+    targets = targets.contiguous()
+    tiles = (total_rows + max_joint_rows - 1) // max_joint_rows
+    tile_rows = (total_rows + tiles - 1) // tiles
+
+    # A checkpoint input must keep its version until replay. The per-utterance scales are filled in backward.
+    loss_grad_scale = torch.empty(batch, dtype=torch.float32, device=device) if clamp > 0 else None
+    score_tile = partial(packed_tile_scores, loss_grad_scale=loss_grad_scale)
+
+    # The dynamic program reads a rectangular lattice, so each tile scatters straight into one.
+    shape = (batch, source_steps, target_states)
+    target_scores = torch.zeros(batch * source_steps * target_states, device=device, dtype=torch.float32)
+    blank_scores = torch.zeros_like(target_scores)
+
+    for start in range(0, total_rows, tile_rows):
+        rows = min(tile_rows, total_rows - start)
+        # Drawn outside the tile so the recomputation replays the forward's mask. With dropout off
+        # the branch that reads it is not compiled, so any valid address works.
+        seed = lengths
+        if dropout_p > 0.0:
+            seed = torch.randint(0, 2**31 - 1, (1,), device=device, dtype=torch.int32)
+        target_score_tile, blank_score_tile = checkpoint(
+            score_tile,
+            projected_encoder,
+            projected_predictor,
+            output_weight,
+            output_bias,
+            targets,
+            offsets,
+            states,
+            lengths,
+            seed,
+            predictor_mask,
+            start,
+            rows,
+            activation,
+            dropout_p,
+            blank,
+            clamp,
+            use_reentrant=False,
+            preserve_rng_state=False,
+        )
+        # The scatter derives each address from its row, so no index over the lattice is held.
+        target_scores, blank_scores = packed_scatter(
+            target_score_tile, blank_score_tile, target_scores, blank_scores, offsets, states, start, shape
+        )
+
+    blank_scores = blank_scores.view(shape)
+    if loss_grad_scale is not None and blank_scores.requires_grad:
+        # Every RNN-T alignment ends in this blank, so its gradient is the negative per-utterance loss scale.
+        def read_terminal_blank_grad(grad):
+            terminal = grad[torch.arange(batch, device=device), (lengths - 1).clamp_min(0), target_lengths.long()]
+            loss_grad_scale.copy_(terminal)
+
+        blank_scores.register_hook(read_terminal_blank_grad)
+    return target_scores.view(shape), blank_scores

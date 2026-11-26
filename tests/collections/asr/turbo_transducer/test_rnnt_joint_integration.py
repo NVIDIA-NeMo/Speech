@@ -99,11 +99,8 @@ class _PlainJoint(AbstractRNNTJoint):
 class TestTrainingKernelConfig:
     @pytest.mark.unit
     def test_defaults(self):
-        for config in [None, {}, {"type": None}]:
-            kernel_config = TrainingKernelConfig.from_config(config)
-            assert kernel_config.kernel_type is None
-            assert not kernel_config.uses_pruning
-            assert kernel_config.get_active_pruning(current_step=10) is None
+        for config in [None, {}, {"type": None}, {"max_joint_rows": 1000}, {"type": None, "max_joint_rows": 1000}]:
+            assert TrainingKernelConfig.from_config(config) == TrainingKernelConfig()
 
     @pytest.mark.unit
     @pytest.mark.parametrize("as_dict_config", [False, True])
@@ -136,6 +133,8 @@ class TestTrainingKernelConfig:
             ({"type": "fused_vocab", "pruning": {"type": "backward", "range": 8}}, ConfigKeyError),
             ({"type": "fused_vocab", "pruning": 8}, ValidationError),
             ({"type": "fused_vocab", "pruning": {"type": "backward", "range_size": "wide"}}, ValidationError),
+            ({"type": "fused_vocab", "max_joint_rows": 200000}, ConfigKeyError),
+            ({"type": "flash", "backward_mode": "chunked"}, ConfigKeyError),
             # strict: an enabled pruning requires a valid type and range size
             ({"type": "fused_vocab", "pruning": {"type": "forward", "range_size": 8}}, ValueError),
             ({"type": "fused_vocab", "pruning": {"type": "backward"}}, ValueError),

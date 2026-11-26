@@ -42,6 +42,8 @@ from nemo.collections.asr.parts.mixins import (
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecoding, RNNTDecodingConfig
 from nemo.collections.asr.parts.turbo_transducer.rnnt_consistency import ConsistencyRNNTLoss
+from nemo.collections.asr.parts.turbo_transducer.rnnt_loss import TurboRnntLoss
+from nemo.collections.asr.parts.turbo_transducer.types import TrainingKernelType
 from nemo.collections.asr.parts.utils.asr_batching import get_semi_sorted_batch_sampler
 from nemo.collections.asr.parts.utils.longform_inference import (
     ChunkingConfig,
@@ -103,7 +105,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, RNNTRestartMixin, ExportableEncD
             loss_kwargs=loss_kwargs,
             reduction=self.cfg.get("rnnt_reduction", "mean_batch"),
         )
-        self._validate_joint_training_kernel()
+        self._configure_joint_training_kernel()
 
         # Optional consistency loss (`ConsistencyRNNTLoss`), used by `_compute_losses(..., compute_consistency=True)`.
         # Not configured by this model: a model with consistency regularization is responsible for setting it up
@@ -748,9 +750,15 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, RNNTRestartMixin, ExportableEncD
         encoded, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
         return encoded, encoded_len
 
-    def _validate_joint_training_kernel(self):
-        """The Joint training kernel does not produce logits: the loss must accept target/blank log-probabilities"""
-        if self.joint.uses_training_kernel and not self.loss.supports_logprobs_input:
+    def _configure_joint_training_kernel(self):
+        """Configure logit clamping at the joint and check that the loss can consume its scores."""
+        if not self.joint.uses_training_kernel:
+            return
+        backend = self.loss._loss
+        if self.joint.training_kernel_type is TrainingKernelType.FLASH and isinstance(backend, TurboRnntLoss):
+            self.joint.flash_clamp = backend.clamp
+            backend.joint_clamps_logits = True
+        if not self.loss.supports_logprobs_input:
             raise ValueError(
                 "Joint `training_kernel` requires an RNN-T loss that can be computed from target/blank log-probabilities: "
                 "use `loss.loss_name=turbo_rnnt` without gradient clamping"
@@ -769,7 +777,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, RNNTRestartMixin, ExportableEncD
             loss_kwargs=loss_kwargs,
             reduction=self.cfg.get("rnnt_reduction", "mean_batch"),
         )
-        self._validate_joint_training_kernel()
+        self._configure_joint_training_kernel()
         return self.loss
 
     def _compute_losses(

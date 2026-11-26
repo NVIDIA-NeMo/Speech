@@ -192,7 +192,7 @@ attempt stopped before reuse and is excluded from the tables.
 
 #### Setup and measurement
 
-- Legacy source: `fa1009753cc353702ae0ac701b2aab10d7d4136a`;
+- Legacy source: `028cc3807ff82dd12083055533c5870031a5f621`;
   current non-CFG and CFG: `2c69a87f2dbc083af91bc39df2a7ad75846ea11b`.
   Results apply to these revisions; subsequent source changes have not been
   benchmarked here.
@@ -308,7 +308,7 @@ measured requests**. It measures the opt-in asynchronous CFG profile
 `deploy/easymagpie_cfg_async.yaml` (named `easymagpie_cfg_async_compiled.yaml` at the benchmarked revision) together with the standard non-CFG profile
 at the same revision. Two attempts stopped at NVML preflight before server start and are
 excluded. Legacy was not rerun: the legacy rows below are copied unchanged from the
-synchronous benchmark (source `fa1009753cc353702ae0ac701b2aab10d7d4136a`) for reference.
+synchronous benchmark (source `028cc3807ff82dd12083055533c5870031a5f621`) for reference.
 
 #### Setup and measurement
 
@@ -349,8 +349,9 @@ measured requests. Values are mean/p95.
 | CFG async WS c32 | 622.96 | 16.021 | 6.2419 | 38.8843× | 0.02572 | 1025.9/1543.8 | 4.626/8.269 | 369.7/609.0 |
 | CFG async WS c32 repeat | 676.24 | 18.175 | 5.5020 | 37.2070× | 0.02688 | 1050.2/1648.3 | 4.949/8.540 | 368.2/593.2 |
 
-Rows marked "repeat" rerun the CFG async c32 cells at `dce588ddb08b8c6b61ceeaed26e8aefb8f8f9e48`, which
-contains only behaviour-neutral refactoring of the source above, with the same setup and procedure.
+Rows marked "repeat" rerun the CFG async c32 cells at `c12046773037bd0b6a08467652b587a5b5b304a1`, which
+contains only behaviour-neutral refactoring of the source above, with the same setup and procedure
+(measured before this README section and one error message were edited).
 The repeat is within 2.25%/4.31% (HTTP/WS) of the original audio throughput. In the same session, non-CFG
 c32 measured 11.06%/7.44% above its rows above (HTTP/WS), so these differences are within one-run variation.
 

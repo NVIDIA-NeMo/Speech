@@ -29,6 +29,8 @@ import torch
 from torch.utils.checkpoint import checkpoint
 
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
+from nemo.utils import logging
+from nemo.utils.nemo_logging import LogMode
 
 if TRITON_AVAILABLE:
     import triton
@@ -706,6 +708,19 @@ def packed_joint_logprobs(
         or target_lengths.shape != (batch,)
     ):
         raise ValueError("Projected states, targets and length vectors must agree on batch size")
+
+    logits_dtype = torch.get_autocast_dtype("cuda") if torch.is_autocast_enabled("cuda") else projected_encoder.dtype
+    vocab = output_weight.shape[0]
+    columns_per_16_bytes = 16 // logits_dtype.itemsize
+    if vocab % columns_per_16_bytes:
+        logging.warning(
+            "Your vocabulary size of %d (including blank) will slow down Flash RNN-T training. "
+            "Use a vocabulary size divisible by %d when training with %s.",
+            vocab,
+            columns_per_16_bytes,
+            logits_dtype,
+            mode=LogMode.ONCE,
+        )
 
     offsets, states, total_rows = lattice_layout(
         source_lengths, target_lengths, source_steps, min(target_states, targets.shape[1] + 1)

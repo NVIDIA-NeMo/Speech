@@ -1,5 +1,50 @@
 # Nemotron-TTS V2 timestamp heads
 
+## ASR word-start attention
+
+Enable sparse attention supervision from the frozen ASR aligner's word onsets:
+
+```bash
+++model.use_asr_word_start_attention=true \
+++model.asr_word_start_attention.loss_weight=0.1 \
+++model.asr_word_start_attention.layers=middle \
+'++model.asr_word_start_attention.heads=[0]' \
+++model.ctc_timestamp_head.aligner.snapshot_path=/path/to/local/huggingface/snapshot
+```
+
+`use_asr_word_start_attention` defaults to `false`. Each word onset supervises
+one nearest 80 ms audio query. The loss rewards the sum of attention over that
+word's visible input BPE tokens, leaving the distribution within its token
+span free. Other query rows and heads retain ordinary attention. Layer
+`middle` selects the main backbone's middle attention layer, excluding the
+acoustic-code predictor's layers; the default head is zero.
+
+Onsets use the teacher's `ctc_start`, including the actual first-word onset
+after leading silence. The input IDs must match the full-text tokenizer
+offsets exactly. BPE pieces spanning words merge their word groups, and
+word starts that share an audio query merge their target spans. Unavailable
+causal targets, invalid mappings, and unusable audio positions are skipped
+and counted. Turn offsets and the speech delay are applied once.
+
+The objective adds `asr_word_start_attention.loss_weight * mean_anchor_loss`
+to the TTS loss. It reuses the existing attention hook and ASR teacher;
+enabling it adds no trainable parameters. When another ASR-dependent objective
+is enabled, the same teacher forward supplies its word timings. The teacher
+settings come from `ctc_timestamp_head.aligner`. It runs only to prepare
+training and teacher-forced validation targets; inference retains the existing
+attention calculation and streaming API.
+
+W&B logs `train/asr_word_start_attention_loss` and
+`val/asr_word_start_attention_loss`, alongside anchor and skipped-target counts.
+
+The separate recipe ends in `_asr_word_start_attention.sub`; its experiment,
+Slurm job, `srun` step, and launch examples use the same suffix. It enables
+this attention loss with both CTC student heads, the binary timestamp head,
+and the Glow-TTS attention loss disabled. The source recipes and their pins
+remain unchanged. `ASR_WORD_START_ATTENTION_LOSS_WEIGHT`,
+`ASR_WORD_START_ATTENTION_LAYERS`, `ASR_WORD_START_ATTENTION_HEADS`, and
+`ASR_WORD_START_ATTENTION_QUERY_CHUNK_SIZE` override the new recipe's settings.
+
 ## CTC and teacher distillation
 
 Enable the CTC head independently of the binary word-end head:

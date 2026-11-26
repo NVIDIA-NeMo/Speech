@@ -456,6 +456,9 @@ class NemotronTTSBase(ModelPT):
         self.use_tts_ctc_word_intervals = self.use_tts_ctc_head and bool(
             ((cfg.get('tts_ctc_head') or {}).get('word_interval') or {}).get('enabled', False)
         )
+        self.use_asr_word_start_attention = bool(cfg.get('use_asr_word_start_attention', False))
+        if self.use_asr_word_start_attention and cfg.get('use_attention_alignment', False):
+            raise ValueError('Choose use_asr_word_start_attention or use_attention_alignment')
         super().__init__(cfg=cfg, trainer=trainer)
         self.timestamp_config = resolve_timestamp_config(cfg.get('timestamp_config', None))
 
@@ -643,6 +646,10 @@ class NemotronTTSBase(ModelPT):
         if self.use_ctc_timestamp_head:
             self._init_ctc_timestamp_head()
         self.tts_ctc_head_config = dict(cfg.get('tts_ctc_head', {}) or {})
+        if self.use_asr_word_start_attention:
+            if self.frame_stacking_factor != 1:
+                raise ValueError('ASR word-start attention requires frame_stacking_factor=1')
+            self.tts_ctc_tokenizer = TTSCtcTokenizer(self.tokenizer, self.text_conditioning_tokenizer_name)
         if self.use_tts_ctc_head:
             if self.frame_stacking_factor != 1:
                 raise ValueError('The TTS CTC head requires frame_stacking_factor=1')

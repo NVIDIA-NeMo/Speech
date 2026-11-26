@@ -16,6 +16,7 @@ import json
 import math
 import os
 import random
+from collections import Counter
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -26,7 +27,7 @@ import wandb
 from lhotse.utils import compute_num_frames
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data.distributed import DistributedSampler
@@ -45,7 +46,11 @@ from nemo.collections.tts.modules.aligner import (
     prepare_attention_alignment_training,
     reload_pretrained_aligner,
 )
-from nemo.collections.tts.modules.attention_alignment import plot_aligned_text_head_alignment
+from nemo.collections.tts.modules.attention_alignment import (
+    AttentionAlignmentGuidance,
+    AttentionAlignmentTurn,
+    plot_aligned_text_head_alignment,
+)
 from nemo.collections.tts.modules.magpietts_modules import (
     add_special_tokens,
     remove_eos_token,
@@ -57,6 +62,7 @@ from nemo.collections.tts.modules.nemotron_tts.v2.timestamp_head import (
     TIMESTAMP_LABELS,
     add_timestamp_markers,
     decode_ctc_tokens,
+    map_asr_word_start_anchors,
     map_tts_ctc_word_intervals,
     plot_ctc_timestamp_alignment,
     plot_timestamp_alignment,
@@ -142,6 +148,8 @@ class ProcessBatchOutput:
     ctc_timestamp_diagnostics: Optional[List[dict]] = None
     tts_ctc_loss: Optional[torch.Tensor] = None
     tts_ctc_metrics: Optional[dict] = None
+    asr_word_start_attention_loss: Optional[torch.Tensor] = None
+    asr_word_start_attention_metrics: Optional[dict] = None
 
 
 class NemotronTTSModel(NemotronTTSBase):
@@ -156,6 +164,7 @@ class NemotronTTSModel(NemotronTTSBase):
     def __init__(self, cfg: DictConfig, trainer: 'Trainer' = None):
         super().__init__(cfg=cfg, trainer=trainer)
         init_training_alignment(self, cfg)
+        self._init_asr_word_start_attention(cfg)
 
         # Training-specific configuration
         self.dropout_text_input_prob = cfg.get('dropout_text_input_prob', 0.0)
@@ -323,6 +332,44 @@ class NemotronTTSModel(NemotronTTSBase):
             sync_dist=mode != 'train',
         )
 
+    def _init_asr_word_start_attention(self, cfg):
+        """Resolve supervision against the main backbone attention layers."""
+        config = cfg.get('asr_word_start_attention', {}) or {}
+        self.asr_word_start_attention_config = (
+            OmegaConf.to_container(config, resolve=True) if isinstance(config, DictConfig) else dict(config)
+        )
+        if getattr(self, 'use_asr_word_start_attention', False):
+            settings = self.asr_word_start_attention_config
+            weight = settings.get('loss_weight', 0.1)
+            if (
+                isinstance(weight, bool)
+                or not isinstance(weight, (int, float))
+                or not math.isfinite(weight)
+                or weight < 0
+            ):
+                raise ValueError('asr_word_start_attention.loss_weight must be finite and nonnegative')
+            selection = AttentionAlignmentGuidance(
+                turns=[],
+                layers=settings.get('layers', 'middle'),
+                heads=settings.get('heads', (0,)),
+                query_chunk_size=settings.get('query_chunk_size', 128),
+            )
+            blocks = [index for index, kind in enumerate(self.decoder.config.layers_block_type) if kind == 'attention']
+            chosen = selection.resolve_layers(len(blocks))
+            if selection.heads is not None and any(
+                head >= self.decoder.config.num_attention_heads for head in selection.heads
+            ):
+                raise ValueError('asr_word_start_attention.heads exceeds the backbone head count')
+            settings.update(
+                loss_weight=float(weight),
+                layers=selection.layers,
+                heads=selection.heads,
+                query_chunk_size=selection.query_chunk_size,
+            )
+            logging.info(
+                f'ASR word starts supervise main-backbone attention blocks {tuple(blocks[i] for i in chosen)}, heads {selection.heads}.'
+            )
+
     def _get_timestamp_teacher(self):
         """Cache the frozen external teacher without registering checkpoint/optimizer weights."""
         teacher = getattr(self, '_timestamp_teacher', None)
@@ -334,6 +381,7 @@ class NemotronTTSModel(NemotronTTSBase):
                 if (
                     getattr(self, 'use_ctc_timestamp_head', False)
                     or getattr(self, 'use_tts_ctc_word_intervals', False)
+                    or getattr(self, 'use_asr_word_start_attention', False)
                 )
                 else self.timestamp_head_config
             )
@@ -458,6 +506,8 @@ class NemotronTTSModel(NemotronTTSBase):
                             turn_index=batch['timestamp_turns'][sample].index(turn) if turn is not None else 0,
                             words=record.get('words', []),
                             error=record.get('error'),
+                            audio_start_seconds=offset,
+                            audio_duration=waveforms[turn_index].numel() / sample_rate,
                         )
                     )
                 if ctc_targets is not None and record.get('ctc') is not None:
@@ -556,8 +606,10 @@ class NemotronTTSModel(NemotronTTSBase):
             terminal_mask.to(device=text.device),
         )
 
-    def _prepare_tts_ctc_targets(self, batch, text, text_lens, audio_codes_lens, num_frames):
-        """Recover per-turn labels from the actual conditioning BPE channel."""
+    def _prepare_tts_ctc_targets(
+        self, batch, text, text_lens, audio_codes_lens, num_frames, *, include_key_positions=False
+    ):
+        """Recover native BPE occurrences and optional positions from conditioning."""
         batch = {} if batch is None else batch
         if any(key in batch for key in ('task', 'agent_mask')) and 'timestamp_turns' not in batch:
             raise ValueError('Multiturn TTS CTC supervision requires timestamp_turns metadata')
@@ -571,7 +623,7 @@ class NemotronTTSModel(NemotronTTSBase):
         if acoustic_mask is not None:
             acoustic_mask = acoustic_mask.detach().cpu().tolist()
         frame_seconds = self.codec_model_samples_per_frame / self.sample_rate
-        blank = self.tts_ctc_head.blank_id
+        blank = len(self.tokenizer.tokens)
         controls = {self.pad_id, self.bos_id, self.eos_id, getattr(self, 'interruption_token_id', None)}
         result = []
         for sample in range(text.size(0)):
@@ -601,16 +653,16 @@ class NemotronTTSModel(NemotronTTSBase):
                 if start < 0 or end <= start or float(turn['end']) <= float(turn['start']):
                     continue
                 ids = turn.get('input_token_ids')
+                left = turn.get('text_token_start', start)
+                right = turn.get(
+                    'text_token_end',
+                    (
+                        turns[turn_index + 1].get('start_frame', text_lengths[sample])
+                        if turn_index + 1 < len(turns)
+                        else text_lengths[sample]
+                    ),
+                )
                 if ids is None:
-                    left = turn.get('text_token_start', start)
-                    right = turn.get(
-                        'text_token_end',
-                        (
-                            turns[turn_index + 1].get('start_frame', text_lengths[sample])
-                            if turn_index + 1 < len(turns)
-                            else text_lengths[sample]
-                        ),
-                    )
                     visible = rows[sample, left:right].tolist()
                     ids = visible[: visible.index(self.eos_id)] if self.eos_id in visible else visible
                 ids = [int(token) for token in ids if token not in controls]
@@ -633,13 +685,136 @@ class NemotronTTSModel(NemotronTTSBase):
                         token_ids=token_ids,
                         ctc=dict(
                             token_ids=token_ids,
-                            num_classes=self.tts_ctc_head.vocab_size,
+                            num_classes=blank + 1,
                             blank_id=blank,
                             frame_seconds=frame_seconds / 2,
                         ),
                     )
                 )
+                if include_key_positions:
+                    positions = []
+                    for position in range(left, min(right, text_lengths[sample], rows.size(1))):
+                        token = int(rows[sample, position])
+                        if token == self.eos_id:
+                            break
+                        if token not in controls:
+                            positions.append(position)
+                    result[-1]['key_positions'] = (
+                        torch.tensor(positions, dtype=torch.long) if rows[sample, positions].tolist() == ids else None
+                    )
         return result
+
+    def _prepare_asr_word_start_attention(
+        self,
+        targets,
+        word_targets,
+        context_lens,
+        audio_delay,
+        audio_targets,
+        audio_lens,
+        agent_mask=None,
+        dropout_conditioning=False,
+    ):
+        """Anchor selected attention queries to native word spans on the audio clock."""
+        metrics = dict(
+            turns=len(targets),
+            anchors=0,
+            teacher_failed_turns=0,
+            mapping_failed_turns=0,
+            incomplete_turns=0,
+            skipped_non_audio_anchors=0,
+            skipped_causal_anchors=0,
+            overlapping_anchors=0,
+            collision_count=0,
+            merged_word_groups=0,
+            dropped_conditioning_turns=len(targets) if dropout_conditioning else 0,
+        )
+        if dropout_conditioning:
+            return None, metrics
+        records = {(item['batch_index'], item['turn_index']): item for item in word_targets}
+        lengths = audio_lens.detach().cpu().tolist()
+        contexts = context_lens.detach().cpu().tolist()
+        delays = audio_delay.detach().cpu().tolist()
+        real_audio = ((audio_targets >= 0) & (audio_targets < self.codebook_size)).all(dim=1)
+        if agent_mask is not None:
+            real_audio &= agent_mask[:, : real_audio.size(1)].bool()
+        real_audio = real_audio.detach().cpu()
+        interval = self.codec_model_samples_per_frame / self.sample_rate
+        candidates = []
+        for index, target in enumerate(targets):
+            sample = target['batch_index']
+            if not target.get('complete_turn', True) or target['end_frame'] > min(lengths[sample], real_audio.size(1)):
+                metrics['incomplete_turns'] += 1
+                continue
+            positions = target.get('key_positions')
+            if positions is None:
+                metrics['mapping_failed_turns'] += 1
+                continue
+            record = records.get((sample, target['turn_index']))
+            if record is None or record.get('error') or not record.get('words'):
+                metrics['teacher_failed_turns'] += 1
+                continue
+            mapping = map_asr_word_start_anchors(
+                self.tts_ctc_tokenizer,
+                target['reference_text'],
+                target['token_ids'],
+                record['words'],
+                record.get('audio_duration', target['audio_duration']),
+                interval,
+                audio_start_seconds=record.get('audio_start_seconds', target['audio_start_seconds']),
+            )
+            if mapping['error']:
+                metrics['mapping_failed_turns'] += 1
+                continue
+            metrics['collision_count'] += mapping['collision_count']
+            metrics['merged_word_groups'] += mapping['merged_word_groups']
+            keys = positions + contexts[sample]
+            for anchor in mapping['anchors']:
+                frame, first, end = (anchor[key] for key in ('frame_index', 'token_start', 'token_end'))
+                if not target['start_frame'] <= frame < target['end_frame'] or not real_audio[sample, frame]:
+                    metrics['skipped_non_audio_anchors'] += 1
+                    continue
+                query = frame + delays[sample]
+                if not (keys[first:end] <= query).any():
+                    metrics['skipped_causal_anchors'] += 1
+                    continue
+                candidates.append((index, sample, query, first, end))
+        counts = Counter((sample, query) for _, sample, query, _, _ in candidates)
+        grouped = {}
+        for index, sample, query, first, end in candidates:
+            if counts[sample, query] > 1:
+                metrics['overlapping_anchors'] += 1
+                continue
+            grouped.setdefault(index, []).append((query, first, end))
+        turns = []
+        for index, values in grouped.items():
+            target = targets[index]
+            sample = target['batch_index']
+            queries, starts, ends = zip(*sorted(values))
+            device = audio_targets.device
+            turns.append(
+                AttentionAlignmentTurn(
+                    batch_index=sample,
+                    query_positions=torch.tensor(queries, device=device, dtype=torch.long),
+                    key_positions=(target['key_positions'] + contexts[sample]).to(device),
+                    token_indices=torch.tensor(starts, device=device, dtype=torch.long),
+                    token_end_indices=torch.tensor(ends, device=device, dtype=torch.long),
+                )
+            )
+            metrics['anchors'] += len(queries)
+        settings = self.asr_word_start_attention_config
+        guidance = (
+            AttentionAlignmentGuidance(
+                turns=turns,
+                prior_strength=0.0,
+                layers=settings.get('layers', 'middle'),
+                heads=settings.get('heads', (0,)),
+                query_chunk_size=settings.get('query_chunk_size', 128),
+            )
+            if turns
+            else None
+        )
+        return guidance, metrics
 
     def _attach_tts_ctc_word_intervals(self, targets, word_targets):
         """Map teacher word times onto the existing target occurrences and audio grid."""
@@ -933,6 +1108,21 @@ class NemotronTTSModel(NemotronTTSBase):
             packed = self.trainer.strategy.reduce(packed, reduce_op='mean')
         self.log_dict(
             dict(zip(values, packed.unbind())),
+            on_step=mode == 'train',
+            on_epoch=mode != 'train',
+            batch_size=batch_size,
+            sync_dist=mode != 'train',
+        )
+
+    def _log_asr_word_start_attention_losses(self, output, mode, batch_size):
+        if output.asr_word_start_attention_loss is None:
+            return
+        values = {'loss': output.asr_word_start_attention_loss.detach(), **output.asr_word_start_attention_metrics}
+        packed = torch.stack([torch.as_tensor(value, device=self.device).float() for value in values.values()])
+        if mode == 'train' and getattr(self, '_trainer', None) is not None:
+            packed = self.trainer.strategy.reduce(packed, reduce_op='mean')
+        self.log_dict(
+            {f'{mode}/asr_word_start_attention_{key}': value for key, value in zip(values, packed.unbind())},
             on_step=mode == 'train',
             on_epoch=mode != 'train',
             batch_size=batch_size,
@@ -1946,19 +2136,25 @@ class NemotronTTSModel(NemotronTTSBase):
         use_timestamp_head = getattr(self, 'use_timestamp_head', False) and not return_policy_logits
         use_ctc_timestamp_head = getattr(self, 'use_ctc_timestamp_head', False) and not return_policy_logits
         use_tts_ctc_head = getattr(self, 'use_tts_ctc_head', False) and not return_policy_logits
+        use_word_start_attention = getattr(self, 'use_asr_word_start_attention', False) and not return_policy_logits
         use_word_intervals = use_tts_ctc_head and getattr(self, 'use_tts_ctc_word_intervals', False)
-        word_targets = [] if use_word_intervals else None
+        word_targets = [] if (use_word_intervals or use_word_start_attention) else None
         word_interval_metrics = None
         tts_ctc_targets = None
-        if use_tts_ctc_head:
+        if use_tts_ctc_head or use_word_start_attention:
             native_frames = (audio_codes.size(-1) + self.frame_stacking_factor - 1) // self.frame_stacking_factor + 1
             tts_ctc_targets = self._prepare_tts_ctc_targets(
-                timestamp_batch, text, text_lens, audio_codes_lens, native_frames
+                timestamp_batch,
+                text,
+                text_lens,
+                audio_codes_lens,
+                native_frames,
+                **({'include_key_positions': True} if use_word_start_attention else {}),
             )
         ctc_timestamp_targets = [] if use_ctc_timestamp_head else None
         ctc_timestamp_diagnostics = [] if use_ctc_timestamp_head and return_ctc_timestamp_diagnostics else None
         timestamp_diagnostics = [] if use_timestamp_head and return_timestamp_diagnostics else None
-        if use_timestamp_head or use_ctc_timestamp_head or use_word_intervals:
+        if use_timestamp_head or use_ctc_timestamp_head or use_word_intervals or use_word_start_attention:
             num_frames = (audio_codes.size(-1) + self.frame_stacking_factor - 1) // self.frame_stacking_factor + 1
             timestamp_targets, timestamp_mask, timestamp_metrics, timestamp_terminals = (
                 self._prepare_timestamp_targets(
@@ -1968,7 +2164,7 @@ class NemotronTTSModel(NemotronTTSBase):
                     num_frames,
                     diagnostics=timestamp_diagnostics,
                     ctc_targets=ctc_timestamp_targets,
-                    **({'word_targets': word_targets} if use_word_intervals else {}),
+                    **({'word_targets': word_targets} if word_targets is not None else {}),
                 )
             )
         if use_word_intervals:
@@ -2261,13 +2457,26 @@ class NemotronTTSModel(NemotronTTSBase):
                 dropout_conditioning=dropout_text_input or dropout_conditional_input,
             )
 
+        word_start_guidance = word_start_metrics = None
+        if use_word_start_attention:
+            word_start_guidance, word_start_metrics = self._prepare_asr_word_start_attention(
+                tts_ctc_targets,
+                word_targets,
+                context_lens,
+                audio_delay,
+                audio_codes_target,
+                audio_codes_lens_target,
+                agent_mask,
+                dropout_conditioning=dropout_text_input or dropout_conditional_input,
+            )
+
         # 8. Forward pass through transformer
         transformer_out = self.forward(
             inputs_embeds=full_embedding,
             attention_mask=get_mask_from_lengths(combined_channel_lens),
             **(
-                {'attention_alignment': alignment.guidance}
-                if alignment is not None and self.use_attention_alignment
+                {'attention_alignment': word_start_guidance if use_word_start_attention else alignment.guidance}
+                if use_word_start_attention or (alignment is not None and self.use_attention_alignment)
                 else {}
             ),
         )
@@ -2294,6 +2503,12 @@ class NemotronTTSModel(NemotronTTSBase):
                 agent_mask_target=agent_mask if self.cfg.get("mask_user_on_loss", False) else None,
             )
         loss = self.parallel_codebook_loss_scale * codebook_loss
+        word_start_loss = None
+        if use_word_start_attention:
+            word_start_loss = getattr(transformer_out, 'attention_alignment_loss', None)
+            if word_start_loss is None:
+                word_start_loss = transformer_hidden_states.float().sum() * 0.0
+            loss = loss + self.asr_word_start_attention_config.get('loss_weight', 0.1) * word_start_loss
 
         predictor_targets, predictor_loss_mask = self._acoustic_codes_predictor_targets(
             num_positions=transformer_hidden_states.size(1),
@@ -2534,6 +2749,8 @@ class NemotronTTSModel(NemotronTTSBase):
             ctc_timestamp_diagnostics=ctc_timestamp_diagnostics,
             tts_ctc_loss=tts_ctc_loss,
             tts_ctc_metrics=tts_ctc_metrics,
+            asr_word_start_attention_loss=word_start_loss,
+            asr_word_start_attention_metrics=word_start_metrics,
         )
 
     def training_step(self, batch, batch_idx):
@@ -2765,6 +2982,7 @@ class NemotronTTSModel(NemotronTTSBase):
                     getattr(self, 'use_timestamp_head', False)
                     or getattr(self, 'use_ctc_timestamp_head', False)
                     or getattr(self, 'use_tts_ctc_head', False)
+                    or getattr(self, 'use_asr_word_start_attention', False)
                 )
                 else None
             ),
@@ -2774,6 +2992,8 @@ class NemotronTTSModel(NemotronTTSBase):
         self.log('train/codebook_loss', codebook_loss, prog_bar=True, sync_dist=True)
         self.log('train/loss', loss, prog_bar=True, sync_dist=True)
         self._log_alignment_losses(batch_output, 'train', batch['text'].size(0))
+        if getattr(self, 'use_asr_word_start_attention', False):
+            self._log_asr_word_start_attention_losses(batch_output, 'train', batch['text'].size(0))
         if getattr(self, 'use_timestamp_head', False):
             self._log_timestamp_losses(batch_output, 'train', batch['text'].size(0))
         if getattr(self, 'use_ctc_timestamp_head', False):
@@ -2891,6 +3111,7 @@ class NemotronTTSModel(NemotronTTSBase):
                     getattr(self, 'use_timestamp_head', False)
                     or getattr(self, 'use_ctc_timestamp_head', False)
                     or getattr(self, 'use_tts_ctc_head', False)
+                    or getattr(self, 'use_asr_word_start_attention', False)
                 )
                 else None
             ),
@@ -2898,6 +3119,8 @@ class NemotronTTSModel(NemotronTTSBase):
             return_ctc_timestamp_diagnostics=log_ctc_timestamps,
         )
         self._log_alignment_losses(batch_output, 'val', batch['text'].size(0))
+        if getattr(self, 'use_asr_word_start_attention', False):
+            self._log_asr_word_start_attention_losses(batch_output, 'val', batch['text'].size(0))
         if getattr(self, 'use_timestamp_head', False):
             self._log_timestamp_losses(batch_output, 'val', batch['text'].size(0))
         if getattr(self, 'use_ctc_timestamp_head', False):
@@ -3307,6 +3530,7 @@ class NemotronTTSModel(NemotronTTSBase):
                     getattr(self, 'use_timestamp_head', False)
                     or getattr(self, 'use_ctc_timestamp_head', False)
                     or getattr(self, 'use_tts_ctc_word_intervals', False)
+                    or getattr(self, 'use_asr_word_start_attention', False)
                 )
             ),
             dataset_type=dataset_type,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
@@ -3377,6 +3601,7 @@ class NemotronTTSModel(NemotronTTSBase):
                     getattr(self, 'use_timestamp_head', False)
                     or getattr(self, 'use_ctc_timestamp_head', False)
                     or getattr(self, 'use_tts_ctc_head', False)
+                    or getattr(self, 'use_asr_word_start_attention', False)
                 ),
                 phoneme_turn_dropout_batch_prob=self.cfg.get("phoneme_turn_dropout_batch_prob", 0.0),
                 phoneme_turn_dropout_turn_prob=self.cfg.get("phoneme_turn_dropout_turn_prob", 0.0),
@@ -3397,6 +3622,7 @@ class NemotronTTSModel(NemotronTTSBase):
                         getattr(self, 'use_timestamp_head', False)
                         or getattr(self, 'use_ctc_timestamp_head', False)
                         or getattr(self, 'use_tts_ctc_word_intervals', False)
+                        or getattr(self, 'use_asr_word_start_attention', False)
                     )
                 ),
                 dataset_type=mode,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)

@@ -27,12 +27,18 @@ from torch.utils.checkpoint import checkpoint
 
 @dataclass
 class AttentionAlignmentTurn:
-    """A complete output turn on the decoder's absolute, pre-shifted timeline."""
+    """Output queries and text keys on the decoder's absolute, pre-shifted timeline.
+
+    ``token_end_indices`` optionally gives exclusive word-span ends, with
+    ``token_indices`` supplying the starts. Span targets supervise attention
+    mass on the word, leaving its distribution among BPE keys unrestricted.
+    """
 
     batch_index: int
     query_positions: torch.Tensor
     key_positions: torch.Tensor
     token_indices: torch.Tensor
+    token_end_indices: torch.Tensor | None = None
 
 
 @dataclass
@@ -47,6 +53,7 @@ class AttentionAlignmentGuidance:
     selects ordinal ``num_attention_layers // 2``; ``None`` selects every layer.
     Optional look-back/look-ahead token counts give the soft band a flat local
     tolerance window before Gaussian falloff; causal visibility still applies.
+    Word-span turns use a loss on their total attention mass and require a zero prior.
     """
 
     turns: list[AttentionAlignmentTurn]
@@ -128,6 +135,8 @@ def apply_attention_alignment(
         raise ValueError('Attention guidance does not support cached decoding')
     if attention_mask is not None and attention_mask.ndim not in (2, 4):
         raise ValueError('Attention guidance requires a 2D padding or 4D attention mask')
+    if guidance.prior_strength and any(turn.token_end_indices is not None for turn in guidance.turns):
+        raise ValueError('Word-span attention supervision requires prior_strength=0')
 
     batch_size, num_heads, query_length, _ = query.shape
     head_indices = tuple(range(num_heads)) if guidance.heads is None else guidance.heads
@@ -146,6 +155,7 @@ def apply_attention_alignment(
         positions = turn.query_positions.detach().long()
         keys = turn.key_positions.detach().long()
         centers = turn.token_indices.detach().long()
+        ends = None if turn.token_end_indices is None else turn.token_end_indices.detach().long()
         target_exists = (centers >= 0) & (centers < keys.numel())
         center_keys = keys[centers.clamp(0, keys.numel() - 1)]
         target_exists = target_exists & (center_keys <= positions)
@@ -157,11 +167,13 @@ def apply_attention_alignment(
             if identity in seen_queries:
                 raise ValueError('Attention alignment query spans must not overlap')
             seen_queries.add(identity)
-        if attention_mask is not None:
+        if attention_mask is not None and ends is None:
             center_mask = _select_center_mask(attention_mask, turn.batch_index, selected_heads, positions, center_keys)
             target_exists = target_exists & _mask_visibility(center_mask).all(dim=0)
         positions = positions[target_exists]
         centers = centers[target_exists]
+        if ends is not None:
+            ends = ends[target_exists]
         if not positions.numel():
             continue
         selected_query = query[turn.batch_index].index_select(0, selected_heads)
@@ -191,15 +203,17 @@ def apply_attention_alignment(
                 guidance.look_back_tokens,
                 guidance.look_ahead_tokens,
             )
+            if ends is not None:
+                args += (ends[start : start + guidance.query_chunk_size],)
             if torch.is_grad_enabled() and any(tensor.requires_grad for tensor in (q, selected_key, selected_value)):
                 chunk_loss, guided_output = checkpoint(_alignment_chunk, *args, use_reentrant=False)
             else:
                 chunk_loss, guided_output = _alignment_chunk(*args)
             loss_sum = loss_sum + chunk_loss
-            count += len(head_indices) * rows.numel()
+            count += len(head_indices) * rows.numel() if ends is None else guided_output
             if guidance.prior_strength:
                 output[turn.batch_index, selected_heads[:, None], rows[None, :], :] = guided_output
-    return output, loss_sum / max(count, 1)
+    return output, loss_sum / (count.clamp_min(1) if isinstance(count, torch.Tensor) else max(count, 1))
 
 
 class AttentionTimestampTracker:
@@ -1390,6 +1404,7 @@ def _alignment_chunk(
     dropout_p,
     look_back_tokens,
     look_ahead_tokens,
+    token_ends=None,
 ):
     with torch.autocast(device_type=query.device.type, enabled=False):
         scores = torch.matmul(query.float(), key.float().transpose(-1, -2)) / math.sqrt(query.size(-1))
@@ -1398,6 +1413,17 @@ def _alignment_chunk(
         if mask.dtype != torch.bool:
             scores = scores + mask.float()
         scores = scores.masked_fill(~visible, -torch.inf)
+        if token_ends is not None:
+            indices = torch.arange(text_keys.numel(), device=query.device)[None, :]
+            spans = (indices >= centers[:, None]) & (indices < token_ends[:, None])
+            target_visible = visible.expand(query.size(0), -1, -1).index_select(-1, text_keys) & spans[None]
+            valid = target_visible.any(dim=-1)
+            # Sanitizing empty head/query pairs keeps all-masked logsumexp gradients finite.
+            safe_scores = scores.masked_fill(~valid[..., None], 0.0)
+            word_scores = safe_scores.index_select(-1, text_keys).masked_fill(~target_visible, -torch.inf)
+            word_scores = word_scores.masked_fill(~valid[..., None], 0.0)
+            losses = safe_scores.logsumexp(dim=-1) - word_scores.logsumexp(dim=-1)
+            return losses.masked_fill(~valid, 0.0).sum(), valid.sum()
         log_probs = F.log_softmax(scores, dim=-1)
 
         token_distance = torch.arange(text_keys.numel(), device=query.device)[None, :] - centers[:, None]
@@ -1425,13 +1451,25 @@ def _alignment_chunk(
 def _validate_turn(turn, query, query_length, batch_size):
     if type(turn.batch_index) is not int or not 0 <= turn.batch_index < batch_size:
         raise ValueError('Attention alignment batch_index is out of range')
-    for field in (turn.query_positions, turn.key_positions, turn.token_indices):
+    fields = (turn.query_positions, turn.key_positions, turn.token_indices)
+    if turn.token_end_indices is not None:
+        fields += (turn.token_end_indices,)
+    for field in fields:
         if field.ndim != 1 or field.dtype not in (torch.int32, torch.int64) or field.device != query.device:
             raise ValueError(
                 'Attention alignment positions and indices must be 1D integer tensors on the query device'
             )
     if turn.query_positions.shape != turn.token_indices.shape:
         raise ValueError('Each guided query requires one teacher token index')
+    if turn.token_end_indices is not None:
+        if turn.token_end_indices.shape != turn.token_indices.shape:
+            raise ValueError('Each word-span start requires one exclusive end index')
+        if torch.any(
+            (turn.token_indices < 0)
+            | (turn.token_indices >= turn.token_end_indices)
+            | (turn.token_end_indices > turn.key_positions.numel())
+        ):
+            raise ValueError('Word-span indices must satisfy 0 <= start < end <= text key count')
     for positions in (turn.query_positions, turn.key_positions):
         if positions.numel() and (
             torch.any(positions < 0)

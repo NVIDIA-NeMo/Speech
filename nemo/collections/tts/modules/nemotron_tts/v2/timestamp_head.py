@@ -1049,6 +1049,52 @@ def map_tts_ctc_word_intervals(tokenizer, text, token_ids, words, audio_duration
     return result(None, segments)
 
 
+def map_asr_word_start_anchors(
+    tokenizer, text, token_ids, words, audio_duration, frame_seconds, audio_start_seconds=0.0
+):
+    """Map actual ASR word onsets to native BPE spans on the audio query grid.
+
+    ``ctc_start`` preserves the first word's onset before the public interval
+    includes initial silence. Starts sharing one query frame form one anchor;
+    their BPE occurrences remain a contiguous span without duplicated targets.
+    The caller applies turn bounds, audio validity, and causal text visibility.
+    """
+    for name, value, allow_zero in (
+        ('frame_seconds', frame_seconds, False),
+        ('audio_start_seconds', audio_start_seconds, True),
+    ):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value < 0
+            or (not allow_zero and value == 0)
+        ):
+            raise ValueError(f'{name} must be finite and {"nonnegative" if allow_zero else "positive"}')
+    result = dict(anchors=[], error=None, token_coverage=0.0, merged_word_groups=0, collision_count=0)
+    try:
+        onset_words = [dict(word, start=word.get('ctc_start', word.get('start'))) for word in words]
+    except (AttributeError, TypeError, ValueError):
+        result['error'] = 'invalid_word_times'
+        return result
+    mapping = map_tts_ctc_word_intervals(tokenizer, text, token_ids, onset_words, audio_duration)
+    result.update((name, mapping[name]) for name in ('error', 'token_coverage', 'merged_word_groups'))
+    if result['error']:
+        return result
+    for segment in mapping['segments']:
+        # Snap half-frame ties before rounding onto the global audio timeline.
+        coordinate = _frame_coordinate(2 * (audio_start_seconds + segment['start']), frame_seconds) / 2
+        frame = math.floor(coordinate + 0.5)
+        if result['anchors'] and result['anchors'][-1]['frame_index'] == frame:
+            result['anchors'][-1]['token_end'] = segment['token_end']
+            result['collision_count'] += 1
+        else:
+            result['anchors'].append(
+                dict(frame_index=frame, token_start=segment['token_start'], token_end=segment['token_end'])
+            )
+    return result
+
+
 def _lexical_text_offsets(text):
     """Retain source-character spans while comparing casefolded Unicode lexemes."""
     import unicodedata

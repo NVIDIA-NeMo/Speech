@@ -15,6 +15,13 @@ model:
   aligned_text_loss_weight: 1.0
   start_aligner_text_head_steps: 10000
 
+  use_asr_word_start_attention: false
+  asr_word_start_attention:
+    loss_weight: 0.1
+    layers: middle
+    heads: [0]
+    query_chunk_size: 128
+
   use_timestamp_head: false
   timestamp_head:
     projection_size: 128

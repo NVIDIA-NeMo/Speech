@@ -338,7 +338,6 @@ if TRITON_AVAILABLE:
         states_ptr,
         target_out_ptr,
         blank_out_ptr,
-        logsumexp_ptr,
         tile_start,
         batch,
         vocab,
@@ -347,10 +346,7 @@ if TRITON_AVAILABLE:
         batch_pow2: tl.constexpr,
         block_vocab: tl.constexpr,
     ):
-        """Reduce one packed row to the target and blank log-probabilities, keeping its log-sum-exp.
-
-        The saved log-sum-exp lets the backward reach the softmax with one exponential.
-        """
+        """Compute target and blank log-probabilities for one packed row."""
         local = tl.program_id(0).to(tl.int64)
         row = tile_start + local
         batch_idx, source_idx, target_idx, states = _locate(row_starts_ptr, states_ptr, row, batch, batch_pow2)
@@ -359,17 +355,17 @@ if TRITON_AVAILABLE:
         mask = offsets < vocab
         logits = tl.load(logits_ptr + local * vocab + offsets, mask=mask, other=-float("inf")).to(tl.float32)
         peak = tl.max(logits, axis=0)
-        logsumexp = peak + tl.log(tl.sum(tl.exp(tl.where(mask, logits - peak, -float("inf"))), axis=0))
+        shifted_logsumexp = tl.log(tl.sum(tl.exp(tl.where(mask, logits - peak, -float("inf"))), axis=0))
 
         blank_logit = tl.load(logits_ptr + local * vocab + blank_id).to(tl.float32)
-        tl.store(blank_out_ptr + local, blank_logit - logsumexp)
-        tl.store(logsumexp_ptr + local, logsumexp)
+        tl.store(blank_out_ptr + local, (blank_logit - peak) - shifted_logsumexp)
         # the last state of a transcript has no token to score; the plane keeps its zero there
-        token_logit = 0.0
+        token_logprob = 0.0
         if target_idx < states - 1:
             token = tl.load(targets_ptr + batch_idx * target_stride + target_idx)
-            token_logit = tl.load(logits_ptr + local * vocab + token).to(tl.float32) - logsumexp
-        tl.store(target_out_ptr + local, token_logit)
+            token_logit = tl.load(logits_ptr + local * vocab + token).to(tl.float32)
+            token_logprob = (token_logit - peak) - shifted_logsumexp
+        tl.store(target_out_ptr + local, token_logprob)
 
     @triton.autotune(
         configs=[triton.Config({}, num_warps=warps) for warps in (1, 2, 4)],
@@ -383,7 +379,6 @@ if TRITON_AVAILABLE:
         targets_ptr,
         row_starts_ptr,
         states_ptr,
-        logsumexp_ptr,
         grad_target_ptr,
         grad_blank_ptr,
         loss_grad_scale_ptr,
@@ -409,7 +404,7 @@ if TRITON_AVAILABLE:
         offsets = tl.arange(0, block_vocab)
         mask = offsets < vocab
         logits = tl.load(logits_ptr + local * vocab + offsets, mask=mask, other=-float("inf")).to(tl.float32)
-        softmax = tl.exp(logits - tl.load(logsumexp_ptr + local))
+        softmax = tl.softmax(logits)
 
         grad_blank = tl.load(grad_blank_ptr + local).to(tl.float32)
         scored = target_idx < states - 1
@@ -543,7 +538,6 @@ class _PackedLogProbs(torch.autograd.Function):
         block = triton.next_power_of_2(vocab)
         target_out = torch.empty(rows, device=logits.device, dtype=torch.float32)
         blank_out = torch.empty(rows, device=logits.device, dtype=torch.float32)
-        logsumexp = torch.empty(rows, device=logits.device, dtype=torch.float32)
         _packed_logprobs_fwd[(rows,)](
             logits,
             targets,
@@ -551,7 +545,6 @@ class _PackedLogProbs(torch.autograd.Function):
             states,
             target_out,
             blank_out,
-            logsumexp,
             start,
             len(states),
             vocab,
@@ -560,7 +553,7 @@ class _PackedLogProbs(torch.autograd.Function):
             batch_pow2=batch_pow2,
             block_vocab=block,
         )
-        ctx.save_for_backward(logits, targets, offsets, states, logsumexp)
+        ctx.save_for_backward(logits, targets, offsets, states)
         ctx.meta = (start, blank_id, batch_pow2, block, targets.stride(0))
         ctx.clamp = float(clamp) if clamp > 0.0 else 0.0
         # The blank-score hook fills this buffer. All tiles read from it during backward.
@@ -569,7 +562,7 @@ class _PackedLogProbs(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_target, grad_blank):
-        logits, targets, offsets, states, logsumexp = ctx.saved_tensors
+        logits, targets, offsets, states = ctx.saved_tensors
         start, blank_id, batch_pow2, block, target_stride = ctx.meta
         rows, vocab = logits.shape
         # The tile owns its logits -- they are produced by the projection inside it and read by
@@ -579,14 +572,13 @@ class _PackedLogProbs(torch.autograd.Function):
         grad_logits = logits
         # Any valid pointer will do when clamping is off: clamp_grad is a constexpr, so the
         # kernel that reads it is never compiled.
-        loss_grad_scale = ctx.loss_grad_scale if ctx.loss_grad_scale is not None else logsumexp
+        loss_grad_scale = ctx.loss_grad_scale if ctx.loss_grad_scale is not None else grad_blank
         _packed_logprobs_bwd[(rows,)](
             logits,
             grad_logits,
             targets,
             offsets,
             states,
-            logsumexp,
             grad_target.contiguous(),
             grad_blank.contiguous(),
             loss_grad_scale,

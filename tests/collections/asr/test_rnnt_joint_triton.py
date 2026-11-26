@@ -18,6 +18,7 @@ import torch
 
 from nemo.collections.asr.parts.triton.rnnt_joint import (
     _PackedJoint,
+    _PackedLogProbs,
     lattice_layout,
     packed_joint_logprobs,
     packed_scatter,
@@ -218,3 +219,21 @@ def test_joint_dropout_replays_each_tile_once(monkeypatch):
     assert (forward_values == 0).any() and (forward_values != 0).any()
     for forward, replay in calls.values():
         assert torch.equal(forward, replay)
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.gpu
+def test_packed_logprobs_large_common_offset():
+    logits = torch.tensor([[0, 0, 0, 0, 0], [0, 8, 8, 0, 0]], device="cuda", dtype=torch.float32) + 1e8
+    reference = logits.clone().requires_grad_()
+    targets = torch.tensor([[1]], device="cuda")
+    offsets = torch.tensor([0, 2], device="cuda")
+    states = torch.tensor([2], device="cuda")
+    target, blank = _PackedLogProbs.apply(logits.requires_grad_(), targets, offsets, states, 0, 4, 0.0, None)
+    logprobs = reference.log_softmax(dim=-1)
+    torch.testing.assert_close(target[0], logprobs[0, 1])
+    torch.testing.assert_close(blank, logprobs[:, 4])
+    (target[0] + blank.sum()).backward()
+    (logprobs[0, 1] + logprobs[:, 4].sum()).backward()
+    torch.testing.assert_close(logits.grad, reference.grad)

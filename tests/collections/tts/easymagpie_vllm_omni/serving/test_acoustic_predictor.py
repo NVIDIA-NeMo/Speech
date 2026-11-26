@@ -32,6 +32,92 @@ if TYPE_CHECKING:
     from easymagpie_vllm_omni.acoustic_predictor import EasyMagpieAcousticCodesPredictor
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("operation", ["advance", "generate_codes"])
+@pytest.mark.parametrize("rows", [2, 6])
+def test_predictor_preserves_backbone_hidden_with_inplace_residual(
+    operation: str,
+    rows: int,
+) -> None:
+    """A fused residual norm must not overwrite the input shared with the phoneme head.
+
+    Verify that an in-place residual norm leaves the caller's hidden states and their backing storage
+    unchanged and that generated codes match an out-of-place reference.
+
+    Args:
+        operation: Predictor method under test, ``"advance"`` or ``"generate_codes"``.
+        rows: Number of hidden-state rows passed to the predictor.
+    """
+    from easymagpie_vllm_omni.acoustic_predictor import AcousticCodesPredictorBlock
+    from vllm.model_executor.models.nemotron_h import NemotronHMLPDecoderLayer
+
+    class ResidualNorm(torch.nn.Module):
+        """Normalize hidden states, optionally adding the residual in place."""
+
+        # CPU stand-in for the CUDA fused_add_rms_norm.maybe_inplace provider.
+        # The functional provider provides the independent output reference.
+        inplace = True
+
+        def forward(
+            self,
+            hidden: torch.Tensor,
+            residual: torch.Tensor | None = None,
+        ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+            """Normalize the hidden states or their sum with the residual.
+
+            Args:
+                hidden: Hidden states to normalize.
+                residual: Optional residual added to ``hidden``; updated in place when ``inplace`` is set.
+
+            Returns:
+                The normalized hidden states when no residual is given; otherwise the normalized sum and the
+                updated residual.
+            """
+            if residual is None:
+                return torch.nn.functional.normalize(hidden, dim=-1)
+            if self.inplace:
+                residual.add_(hidden)
+            else:
+                residual = residual + hidden
+            return torch.nn.functional.normalize(residual, dim=-1), residual
+
+    block = AcousticCodesPredictorBlock.__new__(AcousticCodesPredictorBlock)
+    torch.nn.Module.__init__(block)
+    layers = []
+    for _ in range(2):
+        layer = NemotronHMLPDecoderLayer.__new__(NemotronHMLPDecoderLayer)
+        torch.nn.Module.__init__(layer)
+        layer.norm = ResidualNorm()
+        layer.mixer = torch.nn.Identity()
+        layers.append(layer)
+    block.layers = torch.nn.ModuleList(layers)
+    block.norm = ResidualNorm()
+    block.num_codes = 1
+    block.codebook_indices = (0,)
+    block.codebook_projection = torch.nn.Linear(4, 33, bias=False)
+    with torch.no_grad():
+        block.codebook_projection.weight.zero_()
+        block.codebook_projection.weight[:4].copy_(torch.eye(4))
+    predictor = _synthetic_predictor(torch.zeros(rows, 1, 33))
+    predictor.blocks = torch.nn.ModuleList([block])
+    predictor.temperature = 0.0
+    # A view makes preservation cover the caller's underlying storage as well.
+    backing = torch.arange(rows * 8, dtype=torch.float32).reshape(rows, 8) + 1
+    hidden = backing[:, ::2]
+    original = backing.clone()
+    positions = torch.arange(rows)
+    expected_phonemes = hidden.argmax(dim=-1).clone()
+    result = getattr(predictor, operation)(hidden, positions=positions)
+    torch.testing.assert_close(backing, original, rtol=0, atol=0)
+    assert torch.equal(hidden.argmax(dim=-1), expected_phonemes)
+
+    for norm in [*map(lambda layer: layer.norm, block.layers), block.norm]:
+        norm.inplace = False
+    expected = getattr(predictor, operation)(original[:, ::2].clone(), positions=positions)
+    if operation == "generate_codes":
+        torch.testing.assert_close(result, expected, rtol=0, atol=0)
+
+
 def _synthetic_predictor(logits: torch.Tensor) -> EasyMagpieAcousticCodesPredictor:
     """Construct an acoustic predictor with deterministic test logits.
 

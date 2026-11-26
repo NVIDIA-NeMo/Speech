@@ -14,6 +14,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -54,9 +55,109 @@ def adapter(tmp_path: Path) -> Any:
         "text_vocab_size": 100,
     }
     instance._text_stream_metadata = lambda: (99, 0)
-    instance._prompt_len = lambda _speaker: 2
+    instance._prompt_len = lambda _speaker, _context: 2
     instance._model_tokenizer = lambda: SimpleNamespace(encode=lambda *_args, **_kwargs: [10, 11])
     return instance
+
+
+@pytest.fixture
+def async_adapter(adapter: Any) -> Any:
+    """Configure the serving adapter for the async CFG scheduler profile.
+
+    Args:
+        adapter: Serving adapter fixture.
+
+    Returns:
+        The adapter with the async CFG scheduler, ``max_model_len=512``, and a default of 128 new tokens.
+    """
+    args = adapter.ctx.engine_client.stage_configs[0].engine_args
+    args.scheduler_cls = "easymagpie_vllm_omni.cfg_async_scheduler.EasyMagpieCFGAsyncScheduler"
+    args.max_model_len = 512
+    adapter.ctx.engine_client.default_sampling_params_list = [SamplingParams(max_tokens=128)]
+    return adapter
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_cfg", [True, False])
+async def test_async_http_cfg_profile_accepts_complete_text(
+    async_adapter: Any,
+    use_cfg: bool,
+) -> None:
+    """Verify the async CFG profile accepts complete-text HTTP requests with or without CFG.
+
+    Args:
+        async_adapter: Serving adapter configured for the async CFG profile.
+        use_cfg: Whether the request enables CFG.
+    """
+    request = OpenAICreateSpeechRequest(input="hello", voice="demon", extra_params={"use_cfg": use_cfg})
+    assert async_adapter.validate(request) is None
+    prepared = await async_adapter.build(request, [], False)
+    assert prepared.prompt["additional_information"]["use_cfg"] is use_cfg
+    assert prepared.prompt["additional_information"]["speaker_id"] == "demon"
+
+
+@pytest.mark.parametrize("use_cfg", [True, False])
+def test_async_cfg_profile_builds_incremental_spec_by_default(
+    async_adapter: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    use_cfg: bool,
+) -> None:
+    """Verify the async CFG profile builds an incremental streaming spec without any opt-in variable.
+
+    Args:
+        async_adapter: Serving adapter configured for the async CFG profile.
+        monkeypatch: Fixture used to clear the former opt-in variable.
+        use_cfg: Whether the request enables CFG.
+    """
+    monkeypatch.delenv("EASYMAGPIE_ASYNC_STREAMING", raising=False)
+    request = OpenAICreateSpeechRequest(input="", voice="demon", extra_params={"use_cfg": use_cfg})
+    spec = async_adapter.build_streaming_spec(request)
+    assert spec.prefill_prompt["additional_information"]["use_cfg"] is use_cfg
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested", [511, None])
+async def test_async_http_history_bound_rejected_before_generation(
+    async_adapter: Any,
+    requested: int | None,
+) -> None:
+    """Verify an HTTP request whose full history exceeds ``max_model_len`` is rejected before generation.
+
+    Args:
+        async_adapter: Serving adapter configured for the async CFG profile.
+        requested: Requested ``max_new_tokens``, or None to use the engine default.
+    """
+    if requested is None:
+        async_adapter.ctx.engine_client.default_sampling_params_list[0].max_tokens = 511
+    request = OpenAICreateSpeechRequest(input="hello", voice="demon", max_new_tokens=requested)
+    with pytest.raises(ValueError, match="full history exceeds max_model_len"):
+        await async_adapter.build(request, [], False)
+
+
+@pytest.mark.asyncio
+async def test_async_http_history_bound_includes_prompt(async_adapter: Any) -> None:
+    """Verify an HTTP request whose prompt plus new tokens fits ``max_model_len`` is accepted.
+
+    Args:
+        async_adapter: Serving adapter configured for the async CFG profile.
+    """
+    request = OpenAICreateSpeechRequest(input="hello", voice="demon", max_new_tokens=510)
+    prepared = await async_adapter.build(request, [], False)
+    assert len(prepared.prompt["prompt_token_ids"]) == 2
+
+
+def test_async_cfg_profile_checks_capability_and_reference(async_adapter: Any) -> None:
+    """Verify the async CFG profile reports a missing CFG capability and reference audio even without CFG.
+
+    Args:
+        async_adapter: Serving adapter configured for the async CFG profile.
+    """
+    request = OpenAICreateSpeechRequest(input="hello", extra_params={"use_cfg": True})
+    async_adapter._model_config_cache.pop("cfg_capability")
+    assert "reconvert" in async_adapter.validate(request)
+    request.extra_params = {"use_cfg": False}
+    request.ref_audio = "data:audio/wav;base64,AAAA"
+    assert "registered speaker" in async_adapter.validate(request)
 
 
 @pytest.mark.asyncio
@@ -408,6 +509,10 @@ class _Socket:
             The next configured JSON message.
         """
         return json.dumps(next(self.incoming))
+
+    async def receive(self) -> dict[str, Any]:
+        """Keep the connected client idle while the handler drains final audio."""
+        return await asyncio.Future()
 
     async def send_json(self, message: str) -> None:
         """Record a JSON message sent by the streaming handler.

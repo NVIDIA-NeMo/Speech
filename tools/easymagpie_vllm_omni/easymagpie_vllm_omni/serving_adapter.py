@@ -31,6 +31,8 @@ logger = logging.getLogger(__name__)
 MODEL_TYPE = "easymagpie"
 _TALKER_STAGE = "easymagpie"
 _TALKER_ARCH = "EasyMagpieTTSForConditionalGeneration"
+_CFG_SCHEDULER = "easymagpie_vllm_omni.cfg_scheduler.EasyMagpieCFGScheduler"
+_ASYNC_CFG_SCHEDULER = "easymagpie_vllm_omni.cfg_async_scheduler.EasyMagpieCFGAsyncScheduler"
 _SERVING_MODULE = "vllm_omni.entrypoints.openai.serving_speech"
 
 _DEFAULT_SPEAKER = "eng"
@@ -99,19 +101,43 @@ def _build_adapter_cls() -> type:
             self._tokenize()
             return self._tokenizer
 
-        def _prompt_len(self, speaker_id: str) -> int:
-            cached = self._prompt_len_cache.get(speaker_id)
-            if cached is not None:
-                return cached
-            from easymagpie_vllm_omni.easymagpie import EasyMagpieTTSForConditionalGeneration
+        def _prompt_len(
+            self,
+            speaker_id: str,
+            context_text: str | None,
+        ) -> int:
+            """Return known-speaker conditioning rows for the request's effective context.
 
-            plen = int(
-                EasyMagpieTTSForConditionalGeneration.get_prompt_len(
-                    speaker_id, self._model_path(), tokenize=self._tokenize()
+            The ``[task? | speaker]`` prefix is cached per speaker; the context rows are added per request with
+            the same empty/missing fallback the model applies when it assembles the prefill.
+
+            Args:
+                speaker_id: Registered speaker whose conditioning prefix is measured.
+                context_text: Request context text; empty or missing uses the default context.
+
+            Returns:
+                Number of conditioning prompt rows.
+            """
+            prefix = self._prompt_len_cache.get(speaker_id)
+            if prefix is None:
+                from easymagpie_vllm_omni.easymagpie import EasyMagpieTTSForConditionalGeneration
+
+                prefix = int(
+                    EasyMagpieTTSForConditionalGeneration.get_speaker_prefix_len(speaker_id, self._model_path())
                 )
-            )
-            self._prompt_len_cache[speaker_id] = plen
-            return plen
+                self._prompt_len_cache[speaker_id] = prefix
+            return prefix + self._context_len(context_text)
+
+        def _context_len(self, context_text: str | None) -> int:
+            """Return the number of context-text tokens, using the default context when empty or missing.
+
+            Args:
+                context_text: Request context text.
+
+            Returns:
+                Number of context tokens.
+            """
+            return len(self._tokenize()(context_text or _DEFAULT_CONTEXT_TEXT))
 
         def _model_config(self) -> dict[str, Any]:
             if self._model_config_cache is None:
@@ -188,8 +214,10 @@ def _build_adapter_cls() -> type:
             ref_audio = request.ref_audio
             if ref_audio is None:
                 speaker_id = (request.voice or _DEFAULT_SPEAKER).strip()
-                prompt["prompt_token_ids"] = [0] * (self._prompt_len(speaker_id) + text_prefill_num)
+                context_text = prompt["additional_information"]["context_text"]
+                prompt["prompt_token_ids"] = [0] * (self._prompt_len(speaker_id, context_text) + text_prefill_num)
                 prompt["additional_information"]["speaker_id"] = speaker_id
+                self._validate_async_history(request, len(prompt["prompt_token_ids"]))
                 return PreparedRequest(prompt=prompt, tts_params={}, model_type=MODEL_TYPE)
 
             arch = self._arch()
@@ -199,8 +227,7 @@ def _build_adapter_cls() -> type:
                 raise ValueError(
                     f"EasyMagpie reference audio must be {arch.codec_input_sample_rate} Hz; received {sample_rate} Hz"
                 )
-            context_text = prompt["additional_information"]["context_text"]
-            context_len = len(self._tokenize()(context_text))
+            context_len = self._context_len(prompt["additional_information"]["context_text"])
             task_len = int(arch.num_task_embeddings > 0)
             prompt["prompt_token_ids"] = (
                 [0] * task_len + [arch.audio_input_token_id] + [0] * context_len + [0] * text_prefill_num
@@ -225,11 +252,12 @@ def _build_adapter_cls() -> type:
                 codec_config = json.loads(codec_config_path.read_text())
                 sample_rate = int(codec_config.get("output_sample_rate", sample_rate))
 
+            context_text = (request.extra_params or {}).get("context_text", _DEFAULT_CONTEXT_TEXT)
             return EasyMagpieStreamingSpec(
                 prefill_prompt={
-                    "prompt_token_ids": [0] * (self._prompt_len(speaker_id) + text_prefill_num),
+                    "prompt_token_ids": [0] * (self._prompt_len(speaker_id, context_text) + text_prefill_num),
                     "additional_information": {
-                        "context_text": (request.extra_params or {}).get("context_text", _DEFAULT_CONTEXT_TEXT),
+                        "context_text": context_text,
                         **acoustic_info,
                         "speaker_id": speaker_id,
                         "text_prefill_num": text_prefill_num,
@@ -241,20 +269,52 @@ def _build_adapter_cls() -> type:
                 text_prefill_num=text_prefill_num,
             )
 
-        def _uses_cfg_scheduler(self) -> bool:
-            """Check whether Stage 0 uses the paired CFG synthesis scheduler.
+        def _talker_args(self) -> Any:
+            """Return the engine arguments of the talker stage.
 
             Returns:
-                Whether the requested condition holds.
+                Talker stage engine arguments, or None if no talker stage is configured.
             """
             engine = getattr(self.ctx, "engine_client", None)
             for stage in getattr(engine, "stage_configs", None) or []:
                 args = getattr(stage, "engine_args", None)
                 if getattr(args, "model_stage", None) == _TALKER_STAGE:
-                    return getattr(args, "scheduler_cls", None) == (
-                        "easymagpie_vllm_omni.cfg_scheduler.EasyMagpieCFGScheduler"
-                    )
-            return False
+                    return args
+            return None
+
+        def _uses_cfg_scheduler(self) -> bool:
+            return getattr(self._talker_args(), "scheduler_cls", None) in (_CFG_SCHEDULER, _ASYNC_CFG_SCHEDULER)
+
+        def _uses_async_cfg_scheduler(self) -> bool:
+            """Return whether the talker stage uses the async CFG scheduler.
+
+            Returns:
+                True if the talker stage's scheduler class is the async CFG scheduler.
+            """
+            return getattr(self._talker_args(), "scheduler_cls", None) == _ASYNC_CFG_SCHEDULER
+
+        def _validate_async_history(
+            self,
+            request: OpenAICreateSpeechRequest,
+            prompt_len: int,
+        ) -> None:
+            """Check that the full async CFG history fits in the talker's ``max_model_len``.
+
+            Args:
+                request: Incoming speech request; its ``max_new_tokens`` or the engine default bounds generation.
+                prompt_len: Number of prompt rows of the request.
+
+            Raises:
+                ValueError: If the prompt plus the generation bound exceeds ``max_model_len``.
+            """
+            if not self._uses_async_cfg_scheduler():
+                return
+            bound = request.max_new_tokens
+            if bound is None:
+                defaults = self.ctx.engine_client.default_sampling_params_list
+                bound = defaults[0].max_tokens
+            if prompt_len + bound > self._talker_args().max_model_len:
+                raise ValueError("Async CFG full history exceeds max_model_len; lower max_new_tokens")
 
         def _acoustic_info(self, request: OpenAICreateSpeechRequest) -> dict[str, Any]:
             """Validate acoustic request settings and the converted CFG artifact contract.
@@ -274,7 +334,7 @@ def _build_adapter_cls() -> type:
                 raise ValueError("The V2 CFG pipeline requires a registered speaker with a precomputed embedding")
             if settings.use_cfg:
                 if not self._uses_cfg_scheduler():
-                    raise ValueError("CFG requires the easymagpie_cfg pipeline; select deploy/easymagpie_cfg.yaml")
+                    raise ValueError("CFG requires the easymagpie_cfg or easymagpie_cfg_async pipeline")
                 config = self._model_config()
                 capability = config.get("cfg_capability")
                 if capability is None:

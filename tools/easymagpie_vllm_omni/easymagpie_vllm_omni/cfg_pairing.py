@@ -21,8 +21,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import wraps
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
+
+from easymagpie_vllm_omni.connector_lifecycle import install_sender_metadata_cleanup
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -224,6 +227,7 @@ class CFGPairingTransferFilter:
             adapter: Wrapped codec transfer adapter or adapter test fixture.
         """
         self._adapter = adapter
+        install_sender_metadata_cleanup(adapter)
 
     def __getattr__(self, name: str) -> Any:
         """Forward connector attributes to the wrapped transfer adapter.
@@ -249,7 +253,7 @@ class CFGPairingTransferFilter:
             request: Incoming engine request.
             is_segment_finished: Whether the current resumable segment has ended.
         """
-        if not is_cfg_hidden_id(request.request_id):
+        if not is_cfg_hidden_id(request.request_id) and not getattr(request, "_easymagpie_sender_retired", False):
             return self._adapter.save_async(multimodal_output, request, is_segment_finished)
         return None
 
@@ -273,4 +277,71 @@ class CFGPairingTransferFilter:
         if isinstance(ids, str):
             ids = [ids]
         public = [rid for rid in ids if not is_cfg_hidden_id(rid)]
-        return self._adapter.finish_requests(public, finished_status, requests)
+        result = self._adapter.finish_requests(public, finished_status, requests)
+        if getattr(getattr(self._adapter, "connector", None), "stage_id", None) == 0:
+            cancelled = getattr(self._adapter, "_cancelled_load_reqs", None)
+            if cancelled is not None:
+                cancelled.difference_update(public)
+        for rid in public:
+            request = requests.get(rid)
+            if request is not None:
+                _queue_sender_retirement(self._adapter, request)
+        return result
+
+
+def _queue_sender_retirement(
+    adapter: Any,
+    request: Any,
+) -> None:
+    """Retire this native generation on the sole sender thread after prior sends.
+
+    Engine external IDs identify physical generations, including same-public-ID
+    recoveries. Mark the actual request object rather than keeping ID tombstones
+    that could suppress a fresh generation. Never clear buffers on the aborting
+    scheduler thread: a dequeued send may still be using them.
+
+    Args:
+        adapter: Native chunk transfer adapter that owns the save queue and sender thread.
+        request: Finished engine request whose sender state is retired.
+    """
+    queue = getattr(adapter, "_pending_save_reqs", None)
+    if queue is None or not hasattr(adapter, "_send_single_request"):
+        return
+    if getattr(request, "_easymagpie_sender_retired", False):
+        return
+    if not getattr(adapter, "_easymagpie_retirement_sender", False):
+        original = adapter._send_single_request
+
+        @wraps(original)
+        def send(task: dict[str, Any]) -> Any:
+            """Send a queued task natively, or clear sender state for a queued retirement task.
+
+            Args:
+                task: Queued save task.
+
+            Returns:
+                The native send result, or None for a retirement task.
+            """
+            identity = task.get("_easymagpie_retire_sender")
+            if identity is None:
+                return original(task)
+            _, external = identity
+            adapter.cleanup_sender(external)
+            for name in (
+                "_emp_frame_buffer",
+                "_emp_frame_buffer_base",
+                "_emp_seen_frames",
+                "_emp_request_speech_delay",
+                "_emp_emitted_frames",
+                "_emp_emitted_chunks",
+            ):
+                mapping = getattr(adapter, name, None)
+                if mapping is not None:
+                    mapping.pop(external, None)
+
+        adapter._send_single_request = send
+        adapter._easymagpie_retirement_sender = True
+    request._easymagpie_sender_retired = True
+    with adapter._save_cond:
+        queue.append({"request": request, "_easymagpie_retire_sender": (request.request_id, request.external_req_id)})
+        adapter._save_cond.notify()

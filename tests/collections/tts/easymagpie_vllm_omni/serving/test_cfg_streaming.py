@@ -3,12 +3,14 @@
 """Paired incremental text against the pinned synchronous engine scheduler."""
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 
 import pytest
 from test_cfg_concurrency import _batch_output, _mixed_scheduler, _plain
 from test_cfg_scheduler import _request
+from vllm.v1.engine import FinishReason
 from vllm.v1.request import RequestStatus
 from vllm_omni.engine.serialization import deserialize_additional_information, serialize_additional_information
 
@@ -77,6 +79,51 @@ def test_stream_final_sentinel_completes_both_branches_and_allows_reuse(queued: 
     assert len(scheduler.schedule().num_scheduled_tokens) == 2
 
 
+@pytest.mark.parametrize("queued", [False, True])
+def test_acoustic_eos_ends_paired_stream_and_drops_pending_text(queued: bool) -> None:
+    """An acoustic EOS ends the utterance, as in NeMo streaming and complete-text synthesis.
+
+    Args:
+        queued: Whether the next text segment was already queued when EOS arrived.
+    """
+    scheduler = _mixed_scheduler()
+    free = scheduler.kv_cache_manager.block_pool.get_num_free_blocks()
+    scheduler.add_request(_chunk(initial=True))
+    pair = scheduler.cfg_pairs["stream"]
+    if queued:
+        scheduler.add_request(_chunk())
+    step = scheduler.schedule()
+    outputs = scheduler.update_from_output(step, _batch_output(step, stopped={"stream"}))
+    public = [(o.request_id, o.new_token_ids, o.finish_reason, o.is_segment_finished) for o in outputs[0].outputs]
+    assert public == [("stream", [1], FinishReason.STOP, False)]
+    assert not scheduler.requests and not scheduler.cfg_pairs and not scheduler._cfg_streams
+    assert scheduler.kv_cache_manager.block_pool.get_num_free_blocks() == free
+    # Text racing the end of the utterance is dropped: it neither resumes nor raises.
+    if not queued:
+        scheduler.add_request(_chunk())
+    final = _chunk()
+    final.resumable = False
+    scheduler.add_request(final)
+    assert not scheduler.requests and not scheduler._cfg_streams
+    assert set(pair.physical_ids) <= scheduler.schedule().finished_req_ids
+    scheduler.add_request(_chunk(initial=True))
+    assert len(scheduler.schedule().num_scheduled_tokens) == 2
+
+
+def test_acoustic_eos_on_the_segment_limit_still_ends_the_stream() -> None:
+    """vLLM reports a length stop when EOS lands on a segment's last frame; the utterance still ends."""
+    scheduler = _mixed_scheduler()
+    scheduler.add_request(_chunk(initial=True))
+    scheduler.add_request(_chunk())
+    first = scheduler.schedule()
+    scheduler.update_from_output(first, _batch_output(first))
+    last = scheduler.schedule()
+    outputs = scheduler.update_from_output(last, _batch_output(last, stopped={"stream"}))
+    public = outputs[0].outputs[0]
+    assert public.new_token_ids == [1] and public.finish_reason is not None and not public.is_segment_finished
+    assert not scheduler.requests and not scheduler.cfg_pairs and not scheduler._cfg_streams
+
+
 def test_stream_abort_while_waiting_and_late_output_preserves_other_request() -> None:
     """Verify stream abort while waiting and late output preserves other request."""
     scheduler = _mixed_scheduler()
@@ -89,9 +136,11 @@ def test_stream_abort_while_waiting_and_late_output_preserves_other_request() ->
     scheduler.update_from_output(step, _batch_output(step))
     assert set(scheduler.requests) == {"plain"}
     assert not scheduler._cfg_streams
-    with pytest.raises(ValueError):
-        scheduler.add_request(_chunk())  # Late continuation cannot resurrect a stream.
+    # A late continuation cannot resurrect a stream. It is dropped rather than raised:
+    # an exception from add_request is fatal for the engine core on a disconnect race.
+    scheduler.add_request(_chunk())
     assert set(scheduler.requests) == {"plain"}
+    assert not scheduler._cfg_streams and not scheduler.cfg_pairs
 
 
 @pytest.mark.parametrize(
@@ -136,22 +185,58 @@ def test_late_empty_final_sentinel_after_stream_cleanup_preserves_other_request(
 
 
 @pytest.mark.parametrize("synthesis_info", [{"speaker_id": "eng"}, {"text_token": [4]}, {"use_cfg": True}])
-def test_routing_metadata_does_not_hide_invalid_orphan_synthesis(synthesis_info: dict[str, Any]) -> None:
-    """Verify routing metadata does not hide invalid orphan synthesis.
+def test_placeholder_input_for_unknown_request_is_dropped_and_logged(
+    synthesis_info: dict[str, Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A placeholder-prompt request for an unknown ID is stream leftover, never a fresh synthesis.
+
+    Raising from ``add_request`` kills the engine core, so it is dropped with a log line instead.
 
     Args:
-        synthesis_info: Non-routing fields requiring synthesis validation.
+        synthesis_info: Non-routing fields that a fresh synthesis would carry.
+        caplog: Log capture fixture.
     """
     scheduler = _mixed_scheduler()
+    scheduler.add_request(_plain("survivor"))
     request = _request(
         "orphan",
         info={"global_request_id": ["orphan"], "omni_final_stage_id": 1, **synthesis_info},
         prompt=[0],
         resumable=False,
     )
+    with caplog.at_level(logging.INFO, logger="easymagpie_vllm_omni.cfg_scheduler"):
+        scheduler.add_request(request)
+    assert set(scheduler.requests) == {"survivor"}
+    assert not scheduler._cfg_streams
+    assert any("Dropping late input" in r.getMessage() and "orphan" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("info", [{"text_token": [4, 5]}, {"text_token": [4, 5], "text_token_start": 0}])
+def test_late_final_update_without_text_offset_after_stream_cleanup_is_dropped(info: dict[str, Any]) -> None:
+    """A final update carrying text but no positive offset for a removed stream must not kill the engine.
+
+    Args:
+        info: Final-update metadata without a continuation offset.
+    """
+    scheduler = _mixed_scheduler()
+    scheduler.add_request(_chunk(initial=True))
+    scheduler.finish_requests("stream", RequestStatus.FINISHED_ABORTED)
+    scheduler.add_request(_plain("survivor"))
+    scheduler.add_request(_request("stream", info=dict(info), prompt=[0], resumable=False))
+    assert set(scheduler.requests) == {"survivor"}
+    assert not scheduler._cfg_streams and not scheduler.cfg_pairs
+    step = scheduler.schedule()
+    assert set(step.num_scheduled_tokens) == {"survivor"}
+
+
+def test_fresh_request_with_full_prompt_is_still_validated() -> None:
+    """Only single-placeholder leftovers are dropped; an invalid fresh stream still fails validation."""
+    scheduler = _mixed_scheduler()
+    request = _request("fresh", info={"text_token": [4], "text_token_start": 0}, prompt=[0, 0, 0], resumable=True)
     with pytest.raises(ValueError):
         scheduler.add_request(request)
-    assert not scheduler.requests and not scheduler.cfg_pairs and not scheduler._cfg_streams
+    assert not scheduler.requests
 
 
 def test_duplicate_stream_chunk_does_not_queue_or_advance_histories() -> None:
@@ -333,3 +418,65 @@ def _chunk(
     request = _request(request_id, info=info, prompt=None if initial else [0], resumable=True)
     request.max_tokens = request.sampling_params.max_tokens = 2
     return request
+
+
+@pytest.mark.parametrize("status", [RequestStatus.FINISHED_ABORTED, RequestStatus.FINISHED_STOPPED])
+def test_late_continuation_chunk_after_stream_cleanup_is_dropped(status: RequestStatus) -> None:
+    """A disconnect can race the input iterator; a late text update for a removed stream must not raise.
+
+    Args:
+        status: Final request status of the removed stream.
+    """
+    scheduler = _mixed_scheduler()
+    scheduler.add_request(_chunk(initial=True))
+    scheduler.finish_requests("stream", status)
+    scheduler.add_request(_plain("survivor"))
+    free = scheduler.kv_cache_manager.block_pool.get_num_free_blocks()
+    scheduler.add_request(_chunk())
+    assert set(scheduler.requests) == {"survivor"}
+    assert not scheduler._cfg_streams and not scheduler.cfg_pairs
+    assert scheduler.kv_cache_manager.block_pool.get_num_free_blocks() == free
+    step = scheduler.schedule()
+    assert set(step.num_scheduled_tokens) == {"survivor"}
+    scheduler.update_from_output(step, _batch_output(step))
+
+
+@pytest.mark.parametrize("status", [RequestStatus.FINISHED_ABORTED, RequestStatus.FINISHED_STOPPED])
+def test_late_final_update_with_tokens_after_stream_cleanup_is_dropped(status: RequestStatus) -> None:
+    """A final non-resumable update that still carries text for a removed stream must not raise.
+
+    Args:
+        status: Final request status of the removed stream.
+    """
+    scheduler = _mixed_scheduler()
+    scheduler.add_request(_chunk(initial=True))
+    scheduler.finish_requests("stream", status)
+    scheduler.add_request(_plain("survivor"))
+    scheduler.add_request(
+        _request("stream", info={"text_token": [4, 5], "text_token_start": 2}, prompt=[0], resumable=False)
+    )
+    assert set(scheduler.requests) == {"survivor"}
+    assert not scheduler._cfg_streams and not scheduler.cfg_pairs
+
+
+@pytest.mark.parametrize(
+    "info",
+    [
+        {"text_token": [4, 5]},
+        {"text_token_start": 0},
+        {"global_request_id": ["stream"], "omni_final_stage_id": 1, "text_token": [4]},
+    ],
+)
+def test_late_resumable_placeholder_update_for_removed_stream_is_dropped(info: dict[str, Any]) -> None:
+    """A resumable placeholder-prompt update is stream tail even without a text offset; it must not raise.
+
+    Args:
+        info: Request metadata shapes observed on disconnect races.
+    """
+    scheduler = _mixed_scheduler()
+    scheduler.add_request(_chunk(initial=True))
+    scheduler.finish_requests("stream", RequestStatus.FINISHED_ABORTED)
+    scheduler.add_request(_plain("survivor"))
+    scheduler.add_request(_request("stream", info=dict(info), prompt=[0], resumable=True))
+    assert set(scheduler.requests) == {"survivor"}
+    assert not scheduler._cfg_streams and not scheduler.cfg_pairs

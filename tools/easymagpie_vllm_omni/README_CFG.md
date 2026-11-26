@@ -33,9 +33,11 @@ modes, and batch shapes.
 ### V2 CFG synthesis
 
 [`deploy/easymagpie_cfg.yaml`](deploy/easymagpie_cfg.yaml) adds guided synthesis
-for known-speaker requests with complete text or bounded incremental text. This is the single
-CFG deployment profile, using a compiled backbone and full decode CUDA graphs. It matches
-the standard `easymagpie.yaml` profile's configured capacity for 32 logical CFG requests.
+for known-speaker requests with complete text or bounded incremental text. This is the
+synchronous CFG deployment profile, using a compiled backbone and full decode
+CUDA graphs. It matches the standard `easymagpie.yaml` profile's configured capacity for
+32 logical CFG requests. The recommended asynchronous CFG profile is described below; this
+synchronous profile remains available as an alternative during the move to asynchronous scheduling.
 Stage 0 has 64 physical slots because each guided request owns two histories; Stage 1 has
 32 slots because only the public branch produces codec input. Guided and
 conditional-only requests use the same explicit pipeline, with `use_cfg` selecting
@@ -45,24 +47,30 @@ Completion and cancellation free both histories.
 
 The batching limits account for both physical CFG branches:
 
-| Setting | Standard `easymagpie.yaml` | CFG synthesis profile |
-| --- | --- | --- |
-| Stage-0 `max_num_seqs` | 32 | 64 (32 guided logical requests) |
-| Stage-0 `max_num_batched_tokens` | 4096 | 8192 (both branch spans) |
-| Stage-0 `max_model_len` | 4096 | 4096 per physical history |
-| Stage-1 `max_num_seqs` | 32 | 32 public streams |
-| Stage-1 `max_num_batched_tokens` / `max_model_len` | 512 / 512 | 2048 / 2048 |
-| Stage-0 async scheduling / chunked prefill | enabled / enabled | disabled / disabled |
+| Setting | Standard `easymagpie.yaml` | CFG synthesis profile | Async CFG profile |
+| --- | --- | --- | --- |
+| Stage-0 `max_num_seqs` | 32 | 64 (32 guided logical requests) | 64 |
+| Stage-0 `max_num_batched_tokens` | 4096 | 8192 (both branch spans) | 8192 |
+| Stage-0 `max_model_len` | 4096 | 4096 per physical history | 4096 |
+| Stage-1 `max_num_seqs` | 32 | 32 public streams | 32 |
+| Stage-1 `max_num_batched_tokens` / `max_model_len` | 512 / 512 | 2048 / 2048 | 2048 / 2048 |
+| Stage-0 async scheduling / chunked prefill | enabled / enabled | disabled / disabled | enabled / disabled |
 
 The codec retains cumulative prompt history across chunks, so its 2048-position capacity must
 cover the Stage-0 output bound. Unchunked scheduling also requires its per-step token budget to
 be at least that history limit; copying the standard codec's 512-token budget would reject this
-configuration. The synchronous, unchunked CFG restriction remains in force. Thus sequence capacity
+configuration. The unchunked CFG restriction remains in force. Thus sequence capacity
 and the Stage-0 logical token budget match the baseline, while those execution/history requirements
 remain explicit differences. Cache availability and the request bound can reduce achieved admission.
 
-Raw reference/user audio, retained turns, preemption, asynchronous scheduling,
-chunked prefill, and prefix caching remain unsupported in this CFG path.
+Asynchronous scheduling is provided by the recommended CFG profile
+[`deploy/easymagpie_cfg_async.yaml`](deploy/easymagpie_cfg_async.yaml) (compiled Stage 0, eager codec).
+Selecting it enables both complete-text (HTTP) and incremental (WebSocket) input; no other switch is needed.
+For an eager Stage 0, set `enforce_eager: true` and `compilation_config: {mode: 0, cudagraph_mode: NONE}`
+on stage 0 of a copy of this profile.
+
+Raw reference/user audio, retained turns, preemption, chunked prefill, and prefix caching
+remain unsupported in this CFG path.
 Scale 1 numerical parity with conditional-only greedy inference is not established.
 
 CFG requires a V2 checkpoint converted with
@@ -79,7 +87,9 @@ from vllm.plugins import load_general_plugins
 from vllm_omni import AsyncOmni
 
 load_general_plugins()
-omni = AsyncOmni(model="/path/to/reconverted_v2", deploy_config="tools/easymagpie_vllm_omni/deploy/easymagpie_cfg.yaml")
+omni = AsyncOmni(
+    model="/path/to/reconverted_v2", deploy_config="tools/easymagpie_vllm_omni/deploy/easymagpie_cfg_async.yaml"
+)
 # Add these to an ordinary complete-text known-speaker prompt's additional_information:
 prompt["additional_information"].update(use_cfg=True, cfg_scale=2.5, temperature=0.7, top_k=80)
 ```
@@ -173,7 +183,7 @@ Tests cover configuration guards, dispatch to piecewise prefill/full decode,
 fallback beyond the capture range, and cache/graph contracts. CPU tests do not
 establish actual GPU replay, waveform quality, or performance.
 
-### Benchmarks
+### Synchronous CFG benchmarks
 
 The benchmark covers 10 configurations across 11 runs, including a legacy HTTP c32
 repeat, with **1,100/1,100 successful measured requests**. Legacy incremental c1/c32
@@ -237,10 +247,16 @@ differ, these ratios do not measure equal-output inference speed or speech quali
 
 #### Playback and measured compilation
 
-An underrun estimates playback-buffer exhaustion when playback starts on first
-audio. A deadline miss is a gap exceeding the preceding chunk's audio duration;
-previously buffered audio can cover it. These are playback estimates, not failed
-synthesis requests. Affected requests count streams with at least one underrun.
+- **Underrun:** estimates playback-buffer exhaustion when playback starts on first audio.
+- **Deadline miss:** a gap exceeding the preceding chunk's audio duration; previously
+  buffered audio can cover it.
+- **Requests affected:** streams with at least one underrun.
+- **Measured compiler/cache activity:** files added or changed in the run's isolated compiler
+  caches between snapshots taken before and after the measured phase. Specializations count
+  new Triton kernel variants by kernel name (for example, fused-MoE or gather). "None observed"
+  does not prove that no compilation occurred.
+
+Underruns and deadline misses are playback estimates, not failed synthesis requests.
 
 | Configuration | Underruns | Requests affected / 100 | Deadline misses | Measured compiler/cache activity |
 | --- | ---: | ---: | ---: | --- |
@@ -284,6 +300,117 @@ and chunk durations for all 2,244 WAVs across smoke, warmup, measured, and reuse
 phases. Each included run passed readiness, integrity, postflight, and cleanup
 checks. Two 40.80-second c1 outputs remain in the totals without filtering.
 Speech intelligibility, speaker similarity, and stopping quality were not evaluated.
+
+### Asynchronous CFG benchmarks
+
+This benchmark covers 8 configurations in 8 runs, one run each, with **800/800 successful
+measured requests**. It measures the opt-in asynchronous CFG profile
+`deploy/easymagpie_cfg_async.yaml` (named `easymagpie_cfg_async_compiled.yaml` at the benchmarked revision) together with the standard non-CFG profile
+at the same revision. Two attempts stopped at NVML preflight before server start and are
+excluded. Legacy was not rerun: the legacy rows below are copied unchanged from the
+synchronous benchmark (source `fa1009753cc353702ae0ac701b2aab10d7d4136a`) for reference.
+
+#### Setup and measurement
+
+- Non-CFG and CFG async source: `630260754595d5803f118fd98aa080c1e88a86a0`.
+  Results apply to this revision.
+- GPU0: NVIDIA RTX 5880 Ada Generation, 49,140 MiB. Python 3.12,
+  torch 2.11.0+cu130, vLLM/vLLM-Omni 0.24.0. BF16 exports, FP16 talker,
+  FP32 SSM cache, eager FP32 codec.
+- The 100-text corpus, speaker, sampling settings, client ordering seed, PCM format, and
+  WS chunking are the same as in the synchronous benchmark.
+- Each run uses fresh isolated compiler caches and one server: startup, 2 c1 smoke requests,
+  100 excluded warmups at the selected concurrency, 100 measured requests, and 2 c1 reuse
+  requests. Unlike the synchronous benchmark, there is no separate startup compilation gate;
+  the measured server compiles from empty caches during startup.
+- Non-CFG uses the standard asynchronous/chunked `easymagpie.yaml`. CFG async uses Stage-0
+  asynchronous scheduling with unchunked prefill and the CFG slot and token budgets shown above.
+  WS runs set `EASYMAGPIE_ASYNC_STREAMING=1`, which the benchmarked revision required for incremental input;
+  the variable has since been removed and the async CFG profile accepts incremental input directly.
+
+#### Throughput and latency
+
+Columns and definitions match the synchronous tables. Each row contains 100/100 successful
+measured requests. Values are mean/p95.
+
+| Configuration | Audio s | Wall s | Requests/s | Audio/wall | RTF | TTFA mean/p95 ms | Latency mean/p95 s | ITL mean/p95 ms |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Legacy HTTP c1 | 788.56 | 80.161 | 1.2475 | 9.8372× | 0.10165 | 155.9/191.1 | 0.799/1.483 | 52.0/68.0 |
+| Legacy HTTP c32 | 745.60 | 17.200 | 5.8139 | 43.3484× | 0.02307 | 639.1/917.1 | 4.944/9.553 | 371.9/581.9 |
+| Legacy HTTP c32 repeat | 766.40 | 18.087 | 5.5288 | 42.3724× | 0.02360 | 851.3/1259.8 | 5.124/10.536 | 357.4/543.5 |
+| Non-CFG HTTP c1 | 755.28 | 76.737 | 1.3032 | 9.8425× | 0.10160 | 162.2/207.7 | 0.765/1.332 | 51.3/68.3 |
+| Non-CFG HTTP c32 | 791.60 | 17.688 | 5.6535 | 44.7530× | 0.02234 | 988.6/1559.6 | 5.271/10.822 | 345.0/866.2 |
+| Non-CFG WS c1 | 755.28 | 78.522 | 1.2735 | 9.6187× | 0.10396 | 173.5/213.6 | 0.782/1.329 | 51.8/69.6 |
+| Non-CFG WS c32 | 818.08 | 17.418 | 5.7411 | 46.9664× | 0.02129 | 766.9/1495.4 | 4.665/7.537 | 303.0/510.2 |
+| CFG async HTTP c1 | 628.72 | 76.611 | 1.3053 | 8.2066× | 0.12185 | 157.8/188.7 | 0.764/1.332 | 61.8/83.0 |
+| CFG async HTTP c32 | 626.88 | 14.354 | 6.9667 | 43.6729× | 0.02290 | 656.4/820.3 | 4.153/7.135 | 358.4/538.9 |
+| CFG async HTTP c32 repeat | 631.60 | 14.794 | 6.7593 | 42.6916× | 0.02342 | 707.8/802.7 | 4.306/7.256 | 365.6/562.8 |
+| CFG async WS c1 | 631.20 | 77.447 | 1.2912 | 8.1501× | 0.12270 | 161.8/190.9 | 0.772/1.305 | 61.9/84.9 |
+| CFG async WS c32 | 622.96 | 16.021 | 6.2419 | 38.8843× | 0.02572 | 1025.9/1543.8 | 4.626/8.269 | 369.7/609.0 |
+| CFG async WS c32 repeat | 676.24 | 18.175 | 5.5020 | 37.2070× | 0.02688 | 1050.2/1648.3 | 4.949/8.540 | 368.2/593.2 |
+
+Rows marked "repeat" rerun the CFG async c32 cells at `dce588ddb08b8c6b61ceeaed26e8aefb8f8f9e48`, which
+contains only behaviour-neutral refactoring of the source above, with the same setup and procedure.
+The repeat is within 2.25%/4.31% (HTTP/WS) of the original audio throughput. In the same session, non-CFG
+c32 measured 11.06%/7.44% above its rows above (HTTP/WS), so these differences are within one-run variation.
+
+Relative to non-CFG at the same revision, CFG async audio throughput is 16.62%/15.27% lower
+at c1 HTTP/WS and 2.41%/17.21% lower at c32 HTTP/WS. CFG async generates 16–24% less total
+audio. As in the synchronous benchmark, the generated outputs differ, so these ratios do
+not measure equal-output inference speed or speech quality.
+
+Non-CFG HTTP audio throughput is 0.05% above legacy at c1, and 3.24% above the first
+legacy c32 run or 5.62% above its repeat. CFG async HTTP c32 is 0.75%/3.07% above the two
+legacy c32 runs; CFG async HTTP c1 is 16.58% below legacy c1.
+
+Compared with the synchronous CFG rows above, CFG async audio throughput is 4.23% lower at
+c1 HTTP, 2.06% higher at c1 WS, and 33.87%/21.25% higher at c32 HTTP/WS. The synchronous CFG
+and legacy rows come from different revisions and benchmark runs, and each new configuration
+has one run, so all these differences are descriptive, without confidence intervals or a
+controlled regression estimate.
+
+#### Playback and measured compilation
+
+Definitions match the synchronous playback table.
+
+| Configuration | Underruns | Requests affected / 100 | Deadline misses | Measured compiler/cache activity |
+| --- | ---: | ---: | ---: | --- |
+| Legacy HTTP c1 | 0 | 0 | 0 | None observed |
+| Legacy HTTP c32 | 15 | 11 | 59 | None observed |
+| Legacy HTTP c32 repeat | 3 | 3 | 21 | 16 files; 2 fused-MoE specializations |
+| Non-CFG HTTP c1 | 0 | 0 | 0 | None observed |
+| Non-CFG HTTP c32 | 10 | 9 | 103 | 64 files; 8 fused-MoE specializations |
+| Non-CFG WS c1 | 0 | 0 | 0 | None observed |
+| Non-CFG WS c32 | 5 | 3 | 38 | 16 files; 2 fused-MoE specializations |
+| CFG async HTTP c1 | 0 | 0 | 0 | None observed |
+| CFG async HTTP c32 | 0 | 0 | 25 | None observed |
+| CFG async HTTP c32 repeat | 3 | 3 | 37 | None observed |
+| CFG async WS c1 | 0 | 0 | 0 | None observed |
+| CFG async WS c32 | 12 | 9 | 60 | 16 files; 2 fused-MoE specializations |
+| CFG async WS c32 repeat | 12 | 11 | 56 | 16 files; 2 fused-MoE specializations |
+
+All c1 rows have zero playback gaps. CFG async HTTP c32 has no underruns; CFG async WS c32
+affects 9/100 requests (synchronous CFG: 58/100 HTTP and 76/100 WS).
+
+Among the eight new runs, cache snapshots show additional compiled specializations in three
+c32 runs after the fixed warmup. Their timings include compilation overhead and should not be
+treated as steady-state measurements. The other five new runs show no measured cache activity.
+No new run logged a measured JIT warning or detected compiler processes at phase boundaries.
+
+#### Startup, memory, and validation limits
+
+Fresh-cache startup to health took 266.80–270.81 s across all eight runs (CFG async
+269.15–270.81 s). This is startup wall time, not part of request throughput.
+
+GPU memory was sampled every 15 seconds across whole server lifetimes. CFG async maxima were
+26,551 MiB at c1 and 29,129–31,601 MiB at c32; non-CFG maxima were 38,443 MiB at c1 and
+40,671–42,679 MiB at c32. As in the synchronous benchmark, codec cache budgets differ between
+the profiles, so this does not establish lower intrinsic CFG memory.
+
+Validation checked request IDs, PCM format, frame counts, and chunk durations for all 1,632
+WAVs across smoke, warmup, measured, and reuse phases. Each run passed readiness, integrity,
+GPU health, and cleanup checks. Two 40.80-second non-CFG WS c32 outputs remain in the totals
+without filtering. Speech intelligibility, speaker similarity, and stopping quality were not evaluated.
 
 ### CFG benchmark scripts
 
@@ -329,9 +456,12 @@ Launch the server with a CFG deployment and a reconverted V2 checkpoint containi
 registered speaker embeddings:
 
 ```bash
-EASYMAGPIE_DEPLOY_CONFIG=tools/easymagpie_vllm_omni/deploy/easymagpie_cfg.yaml \
+EASYMAGPIE_DEPLOY_CONFIG=tools/easymagpie_vllm_omni/deploy/easymagpie_cfg_async.yaml \
   bash tools/easymagpie_vllm_omni/scripts/run_server.sh /path/to/reconverted_v2 8091
 ```
+
+The synchronous `deploy/easymagpie_cfg.yaml` is an alternative with the same requests and settings below;
+it remains available during the move to asynchronous scheduling.
 
 For complete text, send acoustic settings in `extra_params`:
 
@@ -362,18 +492,19 @@ positive integer. Nonpositive temperature selects greedy acoustic decoding; scal
 zero and one are supported. These are acoustic settings, separate from the engine's
 dummy-token sampling settings.
 
-Guided requests require the `easymagpie_cfg` pipeline,
+Guided requests require a CFG pipeline (`easymagpie_cfg_async` or `easymagpie_cfg`),
 valid V2 capability metadata, and a registered speaker. Unsupported deployments,
 older artifacts, and raw-reference CFG requests are rejected before generation.
 Incremental sessions require registered speakers for conditional-only inference too.
-On the CFG pipeline, `max_new_tokens` bounds the whole stream, including text warmup,
+On both CFG pipelines, `max_new_tokens` bounds the whole stream, including text warmup,
 EOS, and acoustic tail, for guided and conditional requests. The bound must fit the
 deployment's cache and codec capacities. Settings are fixed for the session.
 
 ### Incremental text with paired V2 CFG
 
 Use the direct `AsyncOmni.generate()` streaming-input API with the explicit
-`easymagpie_cfg` pipeline and a registered speaker. Speaker embeddings must be
+`easymagpie_cfg_async` pipeline (or the synchronous alternative `easymagpie_cfg`) and a
+registered speaker. Speaker embeddings must be
 prepared offline with the served checkpoint. HTTP/WebSocket clients can select CFG
 through `extra_params` as described above.
 
@@ -392,7 +523,7 @@ The stream's `max_new_tokens` becomes the immutable `max_stream_tokens` request
 bound. It covers the sum of all segment generation limits, including warmup, text
 EOS, and tail; it is not a per-chunk limit. The initial prompt plus that bound must
 fit Stage 0's `max_model_len`, and the codec history must cover the bound (2048 in
-the supplied profile). Text that leaves no room for EOS/tail is rejected. Use
+both supplied CFG profiles). Text that leaves no room for EOS/tail is rejected. Use
 the checkpoint's phoneme-BOS warmup; a too-short initial text input cannot start
 generation. Requests keep their original CFG mode, scale, speaker, and acoustic
 sampling settings throughout the stream.
@@ -407,8 +538,8 @@ turns and request-time audio conditioning are outside this contract.
 
 ### Mixed CFG/conditional admission
 
-The same `easymagpie_cfg.yaml` deployment supports mixed CFG/conditional traffic
-with 64 physical Stage-0 slots and 32 public Stage-1 slots. CFG consumes two physical
+The `easymagpie_cfg_async.yaml` deployment, like its synchronous alternative `easymagpie_cfg.yaml`,
+supports mixed CFG/conditional traffic with 64 physical Stage-0 slots and 32 public Stage-1 slots. CFG consumes two physical
 slots, conditional-only consumes one, and private branches never transfer codec
 payloads. Set `use_cfg=False` for conditional-only direct requests or `use_cfg: false`
 in HTTP/WebSocket `extra_params`.
@@ -436,7 +567,8 @@ completed incremental stream ignores those late updates until its input iterator
 closes, so a terminal prewarm cannot reopen it and block subsequent requests.
 Cancellation also clears this pending terminal tracking.
 
-`EasyMagpieCFGScheduler` admits logical units in FCFS order. Before admission it
+`EasyMagpieCFGScheduler` admits logical units in FCFS order; the async profile's
+`EasyMagpieCFGAsyncScheduler` extends it and keeps the same admission rules. Before admission it
 reserves engine-managed cache for the entire bounded prompt plus generation
 history of every branch. A pair waits together if sequence slots, the per-step
 token budget, or cache capacity are unavailable. A unit that cannot fit the
@@ -447,11 +579,13 @@ capacity. The benchmarks do not isolate the throughput or memory effect of this
 reservation policy.
 
 The mixed scheduler requires FCFS, Mamba cache mode `none`, and a token budget
-covering every active physical decode sequence. Scheduling remains synchronous
-with prefix caching and chunked prefill disabled, including when CUDA graphs are enabled.
+covering every active physical decode sequence. Both profiles keep prefix caching and
+chunked prefill disabled, including when CUDA graphs are enabled. The async profile schedules the
+next step while the current one runs; the synchronous profile schedules one step at a time.
 CPU tests use the real hybrid cache allocator to check pair isolation, independent stopping, queueing under pressure,
 abort/late outputs, failure cleanup, and slot reuse. They also check multiple
 guided pairs mixed with a conditional predictor row and private connector filtering.
+Async scheduler tests also admit two guided pairs with a conditional request within the physical budget.
 
 The benchmark measures guided traffic rather than saturated mixed CFG/conditional
 traffic. GPU cancellation and lifecycle behavior under saturated mixed load, and

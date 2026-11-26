@@ -74,6 +74,7 @@ class EasyMagpieInputStream:
         self._input_queue: asyncio.Queue[list[int] | object] = asyncio.Queue(maxsize=max(1, queue_depth))
         self._segment_completions: asyncio.Queue[None] = asyncio.Queue()
         self._finished = False
+        self._closed = False
         self._received_first_update = False
         self._pending_first_tokens: list[int] = []
         self.observed_output_frames = 0
@@ -83,6 +84,9 @@ class EasyMagpieInputStream:
         return self._finished
 
     async def put_tokens(self, token_ids: list[int]) -> None:
+        if self._closed:
+            # The engine already ended this utterance; text racing that end is not synthesized.
+            return
         if self._finished:
             raise RuntimeError("Cannot append tokens after input.done")
         if not token_ids:
@@ -131,6 +135,24 @@ class EasyMagpieInputStream:
             if not self._input_queue.full():
                 self._input_queue.put_nowait(_DONE)
 
+    def close(self) -> None:
+        """Stop producing engine input because the engine request has ended.
+
+        An acoustic EOS can end the utterance before the client sends input.done. Pending and later text is then
+        dropped, and ``inputs()`` returns without submitting further segments. It does not wait for a segment
+        completion that will never arrive: AsyncOmni does not cancel the input task of a completed request.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        self._finished = True
+        self._pending_first_tokens = []
+        while not self._input_queue.empty():
+            self._input_queue.get_nowait()
+        # Wake a consumer blocked on input or on a segment completion.
+        self._input_queue.put_nowait(_DONE)
+        self._segment_completions.put_nowait(None)
+
     def observe_output(self, output: Any) -> None:
         """Track generated frames and release the next text update at segment completion."""
         if getattr(output, "stage_id", None) != 0:
@@ -145,7 +167,7 @@ class EasyMagpieInputStream:
             self._segment_completions.put_nowait(None)
 
     async def _wait_for_segment_completion(self) -> None:
-        if self.pace_timeout_s <= 0:
+        if self.pace_timeout_s <= 0 or self._closed:
             return
         try:
             await asyncio.wait_for(self._segment_completions.get(), timeout=self.pace_timeout_s)
@@ -168,7 +190,7 @@ class EasyMagpieInputStream:
     async def inputs(self):
         """Yield token-bearing prefill, updates, EOS, then the acoustic tail."""
         first_item = await self._next_input()
-        if first_item is _DONE:
+        if first_item is _DONE or self._closed:
             return
         # Cumulative index of the next text id in the model's buffer. Each segment
         # is tagged with the absolute ``text_token_start`` of its first id so the
@@ -206,6 +228,8 @@ class EasyMagpieInputStream:
                 break
             token_ids = cast(list[int], item)
             await self._wait_for_segment_completion()
+            if self._closed:
+                return
             token_ids, input_done = self._accumulate_queued_tokens(token_ids)
             if input_done:
                 token_ids.append(self.text_eos_id)
@@ -224,6 +248,8 @@ class EasyMagpieInputStream:
                 break
 
         await self._wait_for_segment_completion()
+        if self._closed:
+            return
         if not input_done:
             submitted_frames += 1
             if bounded and submitted_frames >= self.max_new_tokens:
@@ -240,6 +266,8 @@ class EasyMagpieInputStream:
             )
             text_token_start += 1
             await self._wait_for_segment_completion()
+            if self._closed:
+                return
 
         tail_max_tokens = self.max_new_tokens - (submitted_frames if bounded else self.observed_output_frames)
         yield StreamingInput(
@@ -354,9 +382,10 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
             )
 
             async def observed_generator():
-                async for output in generator:
-                    input_stream.observe_output(output)
-                    yield output
+                async with aclosing(generator):
+                    async for output in generator:
+                        input_stream.observe_output(output)
+                        yield output
 
             await websocket.send_json(
                 {
@@ -370,21 +399,28 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
 
             async def send_audio() -> int:
                 total_bytes = 0
-                async with aclosing(
-                    self._speech_service._generate_pcm_chunks(observed_generator(), request_id)
-                ) as chunks:
+                chunks = self._speech_service._generate_pcm_chunks(observed_generator(), request_id)
+                try:
                     async for chunk in chunks:
                         total_bytes += len(chunk)
                         await websocket.send_bytes(chunk)
+                    if not input_stream.finished:
+                        logger.warning(
+                            "Incremental EasyMagpie request %s ended at acoustic EOS before input.done; "
+                            "later text is ignored",
+                            request_id,
+                        )
+                finally:
+                    await _close_stream_iterator(chunks)
+                    # The engine request has ended: stop feeding it input.
+                    input_stream.close()
                 return total_bytes
 
             audio_task = asyncio.create_task(send_audio())
             text_parts: list[str] = []
             input_token_count = 0
             while True:
-                raw = await asyncio.wait_for(websocket.receive_text(), timeout=self._idle_timeout)
-                if audio_task.done():
-                    audio_task.result()
+                raw = await _receive_stream_message(websocket, audio_task, self._idle_timeout)
                 if len(raw) > _MAX_INPUT_MESSAGE_SIZE:
                     await self._send_error(websocket, "Input message too large")
                     continue
@@ -451,7 +487,7 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
                 else:
                     await self._send_error(websocket, f"Unknown message type: {msg_type}")
 
-            total_bytes = await audio_task
+            total_bytes = await _wait_for_stream_audio(websocket, audio_task)
             await websocket.send_json(
                 {
                     "type": "audio.done",
@@ -472,8 +508,9 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
             logger.exception("Incremental EasyMagpie generation failed for %s", request_id)
             await self._send_error(websocket, f"Incremental EasyMagpie generation failed: {error}")
         finally:
-            if audio_task is not None and not audio_task.done():
-                audio_task.cancel()
+            if audio_task is not None:
+                if not audio_task.done():
+                    audio_task.cancel()
                 await asyncio.gather(audio_task, return_exceptions=True)
             if request_id is not None and not completed:
                 try:
@@ -516,3 +553,90 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
         except ValidationError as error:
             await self._send_error(websocket, f"Invalid session config: {error}")
             return None
+
+
+async def _receive_stream_message(
+    websocket: WebSocket,
+    audio_task: asyncio.Task[int],
+    timeout: float,
+) -> str:
+    """Surface output failures even while the client sends no further text.
+
+    Args:
+        websocket: Client WebSocket to read the next text message from.
+        audio_task: Task sending audio to the client; its failure is raised as soon as it completes.
+        timeout: Maximum number of seconds to wait for a client message.
+
+    Returns:
+        Next text message from the client.
+
+    Raises:
+        asyncio.TimeoutError: If no message arrives within ``timeout``.
+    """
+    receive = asyncio.create_task(asyncio.wait_for(websocket.receive_text(), timeout=timeout))
+    try:
+        done, _ = await asyncio.wait((receive, audio_task), return_when=asyncio.FIRST_COMPLETED)
+        if audio_task in done:
+            audio_task.result()
+        return await receive
+    finally:
+        if not receive.done():
+            receive.cancel()
+        await asyncio.gather(receive, return_exceptions=True)
+
+
+async def _wait_for_stream_audio(
+    websocket: WebSocket,
+    audio_task: asyncio.Task[int],
+) -> int:
+    """Keep observing disconnects after input.done while the acoustic tail drains.
+
+    Args:
+        websocket: Client WebSocket observed for disconnects.
+        audio_task: Task sending the remaining audio to the client.
+
+    Returns:
+        Result of the audio task: the number of audio bytes sent.
+
+    Raises:
+        WebSocketDisconnect: If the client disconnects before the audio task finishes.
+    """
+
+    async def receive_until_disconnect() -> None:
+        """Read client messages until a disconnect arrives.
+
+        Raises:
+            WebSocketDisconnect: When the client disconnects.
+        """
+        while True:
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                raise WebSocketDisconnect(code=message.get("code", 1000))
+
+    receive = asyncio.create_task(receive_until_disconnect())
+    try:
+        done, _ = await asyncio.wait((receive, audio_task), return_when=asyncio.FIRST_COMPLETED)
+        if receive in done:
+            receive.result()
+        return audio_task.result()
+    finally:
+        if not receive.done():
+            receive.cancel()
+        await asyncio.gather(receive, return_exceptions=True)
+
+
+async def _close_stream_iterator(iterator: Any) -> None:
+    """Join iterator teardown even if disconnect cancellation races a failed send.
+
+    Args:
+        iterator: Async output iterator to close.
+
+    Raises:
+        asyncio.CancelledError: If the caller was cancelled; raised after the close completes.
+    """
+    close = asyncio.ensure_future(iterator.aclose())
+    try:
+        await asyncio.shield(close)
+    except asyncio.CancelledError:
+        await close
+        raise

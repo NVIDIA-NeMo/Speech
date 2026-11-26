@@ -137,3 +137,16 @@ EASYMAGPIE_CFG_PIPELINE = replace(
         EASYMAGPIE_PIPELINE.stages[1],
     ),
 )
+
+# Opt-in async CFG topology; eager vs compiled is a deploy setting, not a separate pipeline.
+EASYMAGPIE_CFG_ASYNC_PIPELINE = replace(
+    EASYMAGPIE_CFG_PIPELINE,
+    model_type="easymagpie_cfg_async",
+    stages=(
+        replace(
+            EASYMAGPIE_CFG_PIPELINE.stages[0],
+            scheduler_cls="easymagpie_vllm_omni.cfg_async_scheduler.EasyMagpieCFGAsyncScheduler",
+        ),
+        EASYMAGPIE_CFG_PIPELINE.stages[1],
+    ),
+)

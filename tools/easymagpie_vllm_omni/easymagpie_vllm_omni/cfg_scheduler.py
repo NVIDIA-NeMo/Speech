@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -30,6 +31,7 @@ from easymagpie_vllm_omni.cfg_pairing import (
     is_cfg_hidden_id,
 )
 from easymagpie_vllm_omni.config import EasyMagpieOmniArch
+from easymagpie_vllm_omni.stream_policy import end_stream_at_terminal_stop, is_late_stream_input
 from vllm.v1.core.sched.request_queue import create_request_queue
 from vllm.v1.request import RequestStatus
 from vllm_omni.core.sched.omni_ar_scheduler import OmniARScheduler
@@ -45,6 +47,8 @@ if TYPE_CHECKING:
     from vllm.v1.engine import EngineCoreOutputs
     from vllm.v1.outputs import ModelRunnerOutput
     from vllm.v1.request import Request, StreamingUpdate
+
+logger = logging.getLogger(__name__)
 
 
 class _CFGHistoryScheduler(OmniARScheduler):
@@ -66,11 +70,22 @@ class _CFGHistoryScheduler(OmniARScheduler):
             **kwargs: Keyword arguments forwarded to the base scheduler implementation.
         """
         super().__init__(*args, **kwargs)
-        validate_cfg_config(self.vllm_config)
+        self._validate_config(self.vllm_config)
         self.cfg_pairs: dict[str, CFGPair] = {}
         self._cfg_step_pending = False
         if self.chunk_transfer_adapter is not None:
             self.chunk_transfer_adapter = CFGPairingTransferFilter(self.chunk_transfer_adapter)
+
+    def _validate_config(self, config: VllmConfig) -> None:
+        """Validate that the engine configuration supports paired CFG histories.
+
+        Args:
+            config: Engine configuration to validate.
+
+        Raises:
+            ValueError: If the configuration cannot safely support paired histories.
+        """
+        validate_cfg_config(config)
 
     def add_request(self, request: OmniRequest) -> None:
         """Admit a logical request and allocate its physical CFG histories.
@@ -310,6 +325,16 @@ class EasyMagpieCFGScheduler(_CFGHistoryScheduler):
         if existing is not None and request.request_id in self._cfg_streams:
             self._add_stream_update(request)
             return
+        if is_late_stream_input(request, live=existing is not None):
+            # A client disconnect can race the input iterator. A late update or final sentinel for a
+            # removed stream carries nothing to synthesize; raising here kills the engine core.
+            logger.info(
+                "Dropping late input for removed stream %s (resumable=%s, keys=%s)",
+                request.request_id,
+                request.resumable,
+                sorted(deserialize_additional_information(request.additional_information)),
+            )
+            return
         if not request.resumable:
             # AsyncOmni closes the input iterator with an empty sentinel, even
             # after an input error has aborted and freed the stream. It carries
@@ -317,8 +342,7 @@ class EasyMagpieCFGScheduler(_CFGHistoryScheduler):
             # The engine injects routing IDs even into this empty prompt;
             # routing metadata must not make a late sentinel look like a new
             # synthesis request and crash the engine after timeout cleanup.
-            info = deserialize_additional_information(request.additional_information)
-            if request.prompt_token_ids == [0] and not (info.keys() - {"global_request_id", "omni_final_stage_id"}):
+            if _is_empty_final_sentinel(request):
                 return
             return super().add_request(request)
         info = deserialize_additional_information(request.additional_information)
@@ -422,7 +446,9 @@ class EasyMagpieCFGScheduler(_CFGHistoryScheduler):
                     terminal = copy.copy(session)
                     terminal.resumable = False
                     terminal.status = RequestStatus.FINISHED_STOPPED
-                    self.chunk_transfer_adapter.save_async(None, terminal, False)
+                    # The native sender passes this boundary flag to the
+                    # processor as its flush signal, including for a final sentinel.
+                    self.chunk_transfer_adapter.save_async(None, terminal, True)
                 self.finish_requests(ids, RequestStatus.FINISHED_ABORTED)
             else:
                 for rid in ids:
@@ -468,12 +494,25 @@ class EasyMagpieCFGScheduler(_CFGHistoryScheduler):
             for physical in updates:
                 # Bypass duplicate-ID admission: vLLM queues or resumes this update.
                 OmniARScheduler.add_request(self, physical)
-        except Exception:
-            self.finish_requests(ids, RequestStatus.FINISHED_ABORTED)
+        except Exception as error:
+            self._abort_stream_update(ids, error)
             raise
         stream.text_tokens.extend(tokens)
         stream.submitted_tokens += request.max_tokens
         stream.tail_submitted = not tokens
+
+    def _abort_stream_update(
+        self,
+        ids: Iterable[str],
+        error: Exception,
+    ) -> None:
+        """Retire both histories after an input update partially fails to apply.
+
+        Args:
+            ids: Physical request IDs of the stream histories to abort.
+            error: Error raised while applying the update.
+        """
+        self.finish_requests(ids, RequestStatus.FINISHED_ABORTED)
 
     def _update_request_as_session(
         self,
@@ -502,16 +541,19 @@ class EasyMagpieCFGScheduler(_CFGHistoryScheduler):
         self.waiting.add_request(request)
 
     def _handle_stopped_request(self, request: Request) -> bool:
-        """Handle a segment boundary or the final streaming sentinel.
+        """Pause a stream at its segment limit, or end it at acoustic EOS or the final sentinel.
+
+        Every CFG stream is one utterance: retained dialogue replies are outside its
+        contract. Both branches of a pair receive the public branch's sampled token,
+        so they take the same decision.
 
         Args:
-            request: Incoming engine request.
+            request: Physical request that stopped on its last sampled token.
 
         Returns:
             Whether the request has fully completed rather than paused for input.
         """
-        if request.resumable and request.streaming_queue and request.streaming_queue[0] is None:
-            request.resumable = False
+        end_stream_at_terminal_stop(request, eos_ends_stream=True)
         return super()._handle_stopped_request(request)
 
     def _prune_streams(self) -> None:
@@ -560,6 +602,25 @@ class EasyMagpieCFGScheduler(_CFGHistoryScheduler):
         if needed + manager.watermark_blocks > manager.block_pool.num_gpu_blocks - 1:
             raise ValueError("Logical request's full cache reservation exceeds total cache capacity")
 
+    def _running_token_cost(self) -> int:
+        """Estimate the token budget the running histories consume in the next step.
+
+        Returns:
+            Number of uncomputed tokens summed over running requests.
+        """
+        return sum(r.num_tokens - r.num_computed_tokens for r in self.running)
+
+    def _can_schedule_history(self, request: Request) -> bool:
+        """Allow subclasses to gate a history before reservation or resume metadata.
+
+        Args:
+            request: Waiting physical history considered for admission.
+
+        Returns:
+            Whether the history may be scheduled; always True here.
+        """
+        return True
+
     def _admit_waiting_units(self) -> RequestQueue:
         """Reserve and admit complete logical units in FCFS order.
 
@@ -568,7 +629,7 @@ class EasyMagpieCFGScheduler(_CFGHistoryScheduler):
         """
         admitted = create_request_queue(self.policy)
         slots = self.max_num_running_reqs - len(self.running)
-        tokens = self.max_num_scheduled_tokens - sum(r.num_tokens - r.num_computed_tokens for r in self.running)
+        tokens = self.max_num_scheduled_tokens - self._running_token_cost()
         seen = set()
         # A parked stream owns its reservation. Resume owners before fresh
         # admissions so a new request waiting for those blocks cannot deadlock
@@ -581,6 +642,8 @@ class EasyMagpieCFGScheduler(_CFGHistoryScheduler):
                 pair = next(p for p in self.cfg_pairs.values() if p.unconditional_id == request.request_id)
             unit = [self.requests[rid] for rid in pair.physical_ids] if pair else [request]
             seen.update(r.request_id for r in unit)
+            if any(not self._can_schedule_history(r) for r in unit):
+                continue
             if any(r.status == RequestStatus.WAITING_FOR_STREAMING_REQ for r in unit):
                 continue
             cost = sum(r.num_tokens - r.num_computed_tokens for r in unit)
@@ -711,3 +774,16 @@ class _CFGTextStream:
     submitted_tokens: int
     tail_submitted: bool = False
     closed: bool = False
+
+
+def _is_empty_final_sentinel(request: OmniRequest) -> bool:
+    """Return whether a non-resumable request is the input iterator's empty closing sentinel.
+
+    Args:
+        request: Incoming engine request to inspect.
+
+    Returns:
+        True if the request has a placeholder prompt and carries only routing metadata.
+    """
+    info = deserialize_additional_information(request.additional_information)
+    return request.prompt_token_ids == [0] and not (info.keys() - {"global_request_id", "omni_final_stage_id"})

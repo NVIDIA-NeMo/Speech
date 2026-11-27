@@ -231,7 +231,18 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
         input_stream: EasyMagpieInputStream | None = None
         completed = False
         try:
-            config = await self._receive_config(websocket)
+            try:
+                raw = await asyncio.wait_for(websocket.receive_text(), timeout=self._config_timeout)
+            except asyncio.TimeoutError:
+                await self._send_error(websocket, "Timeout waiting for session.config")
+                return
+            message = await self._parse_message(websocket, raw)
+            if message is None:
+                return
+            if message.get("type") != "session.config":
+                await self._send_error(websocket, "First message must be session.config")
+                return
+            config = await self._build_config(websocket, message)
             if config is None:
                 return
             if not config.stream_audio or config.response_format != "pcm":
@@ -245,14 +256,6 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
                     websocket, "word_timestamps is not supported with incremental EasyMagpie input."
                 )
                 return
-            if config.model and hasattr(self._speech_service, "_check_model"):
-                error = await self._speech_service._check_model(
-                    OpenAICreateSpeechRequest(input="ping", model=config.model)
-                )
-                if error is not None:
-                    await self._send_error(websocket, str(error))
-                    return
-
             adapter = self._speech_service._get_tts_adapter()
             if adapter is None or not hasattr(adapter, "build_streaming_spec"):
                 await self._send_error(websocket, "EasyMagpie incremental serving adapter is unavailable.")

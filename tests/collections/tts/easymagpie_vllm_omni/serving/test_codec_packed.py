@@ -19,6 +19,7 @@ from easymagpie_vllm_omni.codec.config import EasyMagpieCodecConfig
 from easymagpie_vllm_omni.codec.packed import (
     CODEC_STATE_ELEMENTS,
     CodecStateLayer,
+    PackedCausalConv1d,
     PackedEasyMagpieCodec,
     PackedFiniteScalarDequantizer,
 )
@@ -279,3 +280,49 @@ def test_cuda_packed_kernels_preserve_state_across_chunks() -> None:
             pieces.append(streamed(codes[0, frame : frame + 1]))
 
     torch.testing.assert_close(torch.cat(pieces), expected, atol=3e-5, rtol=3e-5)
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for packed convolution")
+@pytest.mark.parametrize("lengths,uses_padding", [((3, 1), True), ((8, 1, 1), False)])
+@torch.inference_mode()
+def test_cuda_ragged_causal_conv_preserves_prefixes_and_state(lengths, uses_padding, monkeypatch):
+    if uses_padding and not torch.backends.cudnn.is_available():
+        pytest.skip("cuDNN is required for padded convolution")
+    torch.manual_seed(31)
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    batch_size = len(lengths) + 1
+    pages = tuple(reversed(range(batch_size)))
+    initial = [True, False, *([True] * (len(lengths) - 1))]
+    time_factor = 2
+    config = VllmConfig()
+    with set_current_vllm_config(config):
+        layer = PackedCausalConv1d(
+            4, 8, 5, activate=False, time_factor=time_factor, dtype=torch.float32, prefix="ragged"
+        ).cuda()
+    state = torch.randn(batch_size, CODEC_STATE_ELEMENTS, device="cuda")
+    expected_state = state.clone()
+    layer.kv_cache = [state]
+    inputs = torch.randn((1 + sum(lengths)) * time_factor, 4, device="cuda")
+    request_metadata = mixed_metadata(sum(lengths), device="cuda")
+    request_metadata.num_prefills = len(lengths)
+    request_metadata.num_reqs = batch_size
+    request_metadata.seq_lens = torch.tensor((2, *lengths), dtype=torch.int32, device="cuda")
+    request_metadata.query_start_loc_p = torch.tensor((0, *lengths), device="cuda").cumsum(0, dtype=torch.int32)
+    request_metadata.state_indices_tensor_d = torch.tensor([[pages[0]]], dtype=torch.int32, device="cuda")
+    request_metadata.state_indices_tensor_p = torch.tensor(pages[1:], dtype=torch.int32, device="cuda")
+    request_metadata.has_initial_states_p = torch.tensor(initial[1:], device="cuda")
+    request_metadata.codec_max_query_len = max(lengths)
+
+    conv_inputs = []
+    hook = layer.conv.register_forward_pre_hook(lambda module, args: conv_inputs.append(args[0].shape))
+    with set_forward_context({layer.prefix: request_metadata}, config):
+        actual = layer(inputs)
+    hook.remove()
+    assert conv_inputs == ([(len(lengths), 4, layer.history + max(lengths) * time_factor)] if uses_padding else [])
+    sequences = inputs.split([length * time_factor for length in (1, *lengths)])
+    expected = torch.cat(
+        [layer._one(seq, expected_state[page], has_state) for seq, page, has_state in zip(sequences, pages, initial)]
+    )
+    torch.testing.assert_close(actual, expected, atol=2e-5, rtol=2e-5)
+    torch.testing.assert_close(state, expected_state, atol=0, rtol=0)

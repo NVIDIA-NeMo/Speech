@@ -71,11 +71,13 @@ def _gather_packed_state_inputs_kernel(
     state_ptr,
     cache_indices_ptr,
     has_initial_ptr,
+    query_start_loc_ptr,
     output_ptr,
     stride_state_page: tl.constexpr,
     channels: tl.constexpr,
     history: tl.constexpr,
     sequence_rows: tl.constexpr,
+    time_factor: tl.constexpr,
     IS_DECODE: tl.constexpr,
     numel,
     BLOCK: tl.constexpr,
@@ -97,10 +99,17 @@ def _gather_packed_state_inputs_kernel(
         mask=mask & (row < history) & (has_initial != 0),
         other=0.0,
     )
-    input_row = sequence * sequence_rows + row - history
+    if query_start_loc_ptr is not None:
+        start = tl.load(query_start_loc_ptr + sequence, mask=mask) * time_factor
+        end = tl.load(query_start_loc_ptr + sequence + 1, mask=mask) * time_factor
+        input_row = start + row - history
+        mask_input = input_row < end
+    else:
+        input_row = sequence * sequence_rows + row - history
+        mask_input = True
     current = tl.load(
         input_ptr + input_row * channels + channel,
-        mask=mask & (row >= history),
+        mask=mask & (row >= history) & mask_input,
         other=0.0,
     )
     tl.store(output_ptr + offsets, tl.where(row < history, previous, current), mask=mask)
@@ -114,11 +123,15 @@ def gather_packed_state_inputs(
     *,
     history: int,
     is_decode: bool,
+    query_start_loc: torch.Tensor | None = None,
+    sequence_rows: int | None = None,
+    time_factor: int = 1,
 ) -> torch.Tensor:
-    """Gather cached history and append uniform packed inputs in one kernel."""
+    """Gather cached history and right-pad each sequence to the batch length."""
     inputs = inputs.contiguous()
     batch_size = cache_indices.numel()
-    sequence_rows = inputs.shape[0] // batch_size
+    if sequence_rows is None:
+        sequence_rows = inputs.shape[0] // batch_size
     channels = inputs.shape[1]
     outputs = torch.empty(
         (batch_size, history + sequence_rows, channels),
@@ -131,14 +144,53 @@ def gather_packed_state_inputs(
         state,
         cache_indices,
         has_initial,
+        query_start_loc,
         outputs,
         state.stride(0),
         channels,
         history,
         sequence_rows,
+        time_factor,
         IS_DECODE=is_decode,
         numel=outputs.numel(),
         BLOCK=block,
+    )
+    return outputs
+
+
+@triton.jit
+def _pack_causal_conv_output_kernel(
+    input_ptr,
+    output_ptr,
+    query_start_loc_ptr,
+    stride_batch: tl.constexpr,
+    stride_channel: tl.constexpr,
+    stride_row: tl.constexpr,
+    channels: tl.constexpr,
+    sequence_rows,
+    time_factor: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
+    sequence = tl.program_id(0)
+    offsets = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
+    row = offsets // channels
+    channel = offsets % channels
+    start = tl.load(query_start_loc_ptr + sequence) * time_factor
+    end = tl.load(query_start_loc_ptr + sequence + 1) * time_factor
+    mask = (row < sequence_rows) & (start + row < end)
+    values = tl.load(input_ptr + sequence * stride_batch + channel * stride_channel + row * stride_row, mask=mask)
+    tl.store(output_ptr + start * channels + offsets, values, mask=mask)
+
+
+def pack_causal_conv_output(
+    inputs: torch.Tensor, query_start_loc: torch.Tensor, output_rows: int, time_factor: int
+) -> torch.Tensor:
+    """Pack the valid prefixes of batched channel-first convolution outputs."""
+    batch_size, channels, sequence_rows = inputs.shape
+    outputs = inputs.new_empty((output_rows, channels))
+    block = 256
+    _pack_causal_conv_output_kernel[(batch_size, triton.cdiv(channels * sequence_rows, block))](
+        inputs, outputs, query_start_loc, *inputs.stride(), channels, sequence_rows, time_factor, BLOCK=block
     )
     return outputs
 

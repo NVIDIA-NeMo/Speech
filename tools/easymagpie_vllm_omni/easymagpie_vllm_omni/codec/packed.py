@@ -284,15 +284,20 @@ class PackedCausalConv1d(CodecStateLayer):
         state.copy_(joined[-self.history :])
         return self.activation(outputs)
 
-    def _uniform_cuda(
+    def _batched_cuda(
         self,
         inputs: torch.Tensor,
         metadata: Mamba1AttentionMetadata,
         *,
         is_decode: bool,
+        max_query_len: int | None = None,
     ) -> torch.Tensor:
-        """Run a uniform packed batch through one batched cuDNN convolution."""
-        from easymagpie_vllm_omni.codec.kernels import gather_packed_state_inputs, update_packed_state
+        """Run one batched cuDNN convolution, optionally right-padding prefills."""
+        from easymagpie_vllm_omni.codec.kernels import (
+            gather_packed_state_inputs,
+            pack_causal_conv_output,
+            update_packed_state,
+        )
 
         inputs = inputs.contiguous()
         if is_decode:
@@ -313,8 +318,11 @@ class PackedCausalConv1d(CodecStateLayer):
             has_initial,
             history=self.history,
             is_decode=is_decode,
+            query_start_loc=query_start_loc if max_query_len is not None else None,
+            sequence_rows=max_query_len * self.time_factor if max_query_len is not None else None,
+            time_factor=self.time_factor,
         )
-        outputs = self.conv(joined.transpose(1, 2)).transpose(1, 2).contiguous()
+        outputs = self.conv(joined.transpose(1, 2))
 
         update_packed_state(
             inputs,
@@ -327,7 +335,9 @@ class PackedCausalConv1d(CodecStateLayer):
             time_factor=self.time_factor,
             is_decode=is_decode,
         )
-        return outputs.reshape(-1, self.conv.out_channels)
+        if max_query_len is not None:
+            return pack_causal_conv_output(outputs, query_start_loc, inputs.shape[0], self.time_factor)
+        return outputs.transpose(1, 2).contiguous().reshape(-1, self.conv.out_channels)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         metadata = self._metadata()
@@ -344,7 +354,7 @@ class PackedCausalConv1d(CodecStateLayer):
             if getattr(metadata, "codec_uniform", False):
                 if metadata.num_decodes and metadata.num_prefills:
                     raise NotImplementedError("uniform codec batches cannot mix prefill and decode")
-                outputs = self._uniform_cuda(inputs, metadata, is_decode=bool(metadata.num_decodes))
+                outputs = self._batched_cuda(inputs, metadata, is_decode=bool(metadata.num_decodes))
                 return self.activation(outputs)
 
             parts = []
@@ -365,25 +375,37 @@ class PackedCausalConv1d(CodecStateLayer):
                     )
                 )
             if metadata.num_prefills:
-                if (
-                    metadata.query_start_loc_p is None
-                    or metadata.state_indices_tensor_p is None
-                    or metadata.has_initial_states_p is None
-                ):
+                prefill_inputs = inputs[decode_rows:]
+                query_start_loc = metadata.query_start_loc_p
+                state_indices = metadata.state_indices_tensor_p
+                has_initial = metadata.has_initial_states_p
+                if query_start_loc is None or state_indices is None or has_initial is None:
                     raise RuntimeError("incomplete codec prefill metadata")
-                parts.append(
-                    packed_causal_conv1d(
-                        inputs[decode_rows:],
-                        self.conv.weight,
-                        self.conv.bias,
-                        self.kv_cache[0],
-                        metadata.query_start_loc_p,
-                        metadata.state_indices_tensor_p,
-                        metadata.has_initial_states_p,
-                        time_factor=self.time_factor,
-                        max_query_len=self._prefill_max_query_len(metadata),
+                max_query_len = getattr(metadata, "codec_max_query_len", None)
+                # Bound the extra padded rows and use the same cuDNN precision as uniform batches.
+                if (
+                    max_query_len
+                    and metadata.num_prefills * max_query_len <= 2 * metadata.num_prefill_tokens
+                    and torch.backends.cudnn.enabled
+                    and torch.backends.cudnn.is_available()
+                ):
+                    parts.append(
+                        self._batched_cuda(prefill_inputs, metadata, is_decode=False, max_query_len=max_query_len)
                     )
-                )
+                else:
+                    parts.append(
+                        packed_causal_conv1d(
+                            prefill_inputs,
+                            self.conv.weight,
+                            self.conv.bias,
+                            self.kv_cache[0],
+                            query_start_loc,
+                            state_indices,
+                            has_initial,
+                            time_factor=self.time_factor,
+                            max_query_len=max_query_len or self._prefill_max_query_len(metadata),
+                        )
+                    )
             if len(parts) == 1:
                 outputs = parts[0]
             else:

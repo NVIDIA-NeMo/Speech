@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Convert an EasyMagpieTTS ``.nemo`` checkpoint to a vLLM-Omni model directory.
+"""Convert an EasyMagpieTTS ``.nemo`` or Lightning checkpoint to a vLLM-Omni model directory.
 
 The output directory is self-contained and ready to be passed as ``model=<dir>``
 to the ``easymagpie_vllm_omni`` vLLM-Omni model
@@ -131,10 +131,16 @@ _NEMOTRON_CONFIG_FIELDS = (
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Convert an EasyMagpieTTS .nemo checkpoint to a vLLM-Omni model directory."
+    parser = argparse.ArgumentParser(description="Convert an EasyMagpieTTS checkpoint to a vLLM-Omni model directory.")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--nemo_file", help="Path to an EasyMagpieTTS .nemo checkpoint.")
+    source.add_argument("--checkpoint_file", help="Path to an EasyMagpieTTS Lightning .ckpt checkpoint.")
+    parser.add_argument("--hparams_file", help="Training hparams YAML; required with --checkpoint_file.")
+    parser.add_argument(
+        "--hparams_file_from_wandb",
+        action="store_true",
+        help="Read the model config from the hparams YAML's cfg.value field.",
     )
-    parser.add_argument("--nemo_file", required=True, help="Path to the EasyMagpieTTS .nemo checkpoint.")
     parser.add_argument("--codec_model_path", required=True, help="Path to the audio codec .nemo checkpoint.")
     parser.add_argument("--outdir", required=True, help="Output directory for the vLLM model.")
     parser.add_argument(
@@ -661,6 +667,9 @@ def convert(args) -> None:
     model, ckpt_name = load_easy_magpie_model(
         ModelLoadConfig(
             nemo_file=args.nemo_file,
+            hparams_file=args.hparams_file,
+            checkpoint_file=args.checkpoint_file,
+            hparams_from_wandb=args.hparams_file_from_wandb,
             codecmodel_path=args.codec_model_path,
             phoneme_tokenizer_path=args.phoneme_tokenizer_path,
             disable_cas_for_context_text=args.disable_cas_for_context_text,

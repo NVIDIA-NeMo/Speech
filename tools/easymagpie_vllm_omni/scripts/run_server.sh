@@ -1,5 +1,5 @@
 #!/bin/bash
-# Requires vLLM / vLLM-Omni 0.24+.
+# Requires vLLM / vLLM-Omni 0.32+.
 set -e
 
 MODEL="${1:?Usage: run_server.sh <model_dir> [port]}"

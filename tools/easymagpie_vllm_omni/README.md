@@ -42,7 +42,7 @@ PYTHONPATH="$PWD" python tools/easymagpie_vllm_omni/scripts/convert_to_vllm.py \
 
 ### Setup the serving environment
 
-Serving needs a GPU, matching **vLLM 0.24 / vLLM-Omni 0.24** versions, and this package.
+Serving needs a GPU, matching **vLLM 0.32 / vLLM-Omni 0.32** versions, and this package.
 It does not need NeMo after conversion:
 
 ```bash

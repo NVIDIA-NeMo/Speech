@@ -155,7 +155,7 @@ class PolynomialDecayAnnealingParams(WarmupSchedulerParams):
 
 
 @dataclass
-class PolynomialHoldDecayAnnealingParams(WarmupSchedulerParams):
+class PolynomialHoldDecayAnnealingParams(WarmupHoldSchedulerParams):
     """
     Polynomial Hold Decay Annealing parameter config
     It is not derived from Config as it is not a NeMo object (and in particular it doesn't need a name).

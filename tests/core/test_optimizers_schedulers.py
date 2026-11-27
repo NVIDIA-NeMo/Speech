@@ -27,7 +27,15 @@ from lightning.pytorch.utilities import rank_zero_only
 from nemo.core import config, optim
 from nemo.core.config.modelPT import ModelConfig, ModelConfigBuilder
 from nemo.core.config.schedulers import ReduceLROnPlateauParams
-from nemo.core.optim.lr_scheduler import AVAILABLE_SCHEDULERS, PiecewiseLinear
+from nemo.core.optim.lr_scheduler import (
+    AVAILABLE_SCHEDULERS,
+    CosineAnnealing,
+    PiecewiseLinear,
+    SquareRootConstantPolicy,
+    T5InverseSquareRootAnnealing,
+    WarmupAnnealHoldPolicy,
+    WarmupAnnealing,
+)
 from nemo.core.optim.optimizers import AVAILABLE_OPTIMIZERS
 from nemo.utils import logging
 
@@ -1404,3 +1412,61 @@ class TestPiecewiseLinear:
         assert all(later >= earlier for earlier, later in zip(rates[:peak], rates[1 : peak + 1]))
         assert all(later <= earlier for earlier, later in zip(rates[peak:], rates[peak + 1 :]))
         assert rates[79204] == pytest.approx(1e-5, rel=1e-3)  # 0.9 * 88004 = 79203.6
+
+
+class TestSchedulerPolicies:
+    @pytest.mark.unit
+    def test_square_root_constant_policy_with_constant_ratio_and_zero(self):
+        optimizer = _sgd_with_group_lrs(0.1)
+        # Should initialize and step without TypeError / ZeroDivisionError
+        sched_ratio = SquareRootConstantPolicy(optimizer, constant_ratio=0.1, max_steps=100)
+        assert sched_ratio.constant_steps == 10
+        assert sched_ratio.constant_lr == pytest.approx(1 / (10**0.5))
+
+        sched_zero = SquareRootConstantPolicy(optimizer, constant_steps=0, max_steps=100)
+        assert sched_zero.constant_steps == 0
+        assert sched_zero.constant_lr == 1.0
+
+        sched_t5 = T5InverseSquareRootAnnealing(optimizer, max_steps=100)
+        assert sched_t5.constant_steps == 0
+        assert sched_t5.constant_lr == 1.0
+        assert sched_t5.get_last_lr() == [1.0]
+
+    @pytest.mark.unit
+    def test_warmup_anneal_hold_policy_ratio_validation(self):
+        optimizer = _sgd_with_group_lrs(0.1)
+        with pytest.raises(AssertionError, match="total steps"):
+            WarmupAnnealHoldPolicy(optimizer, constant_ratio=0.1, max_steps=None)
+
+    @pytest.mark.unit
+    def test_warmup_annealing_multi_param_groups(self):
+        optimizer = _sgd_with_group_lrs(1e-3, 1e-4)
+        scheduler = WarmupAnnealing(optimizer, warmup_steps=0, max_steps=100, min_lr=0.0)
+        for _ in range(50):
+            optimizer.step()
+            scheduler.step()
+        # At step 50, both groups should be halved: 5e-4 and 5e-5
+        lrs = scheduler.get_last_lr()
+        assert lrs[0] == pytest.approx(5e-4)
+        assert lrs[1] == pytest.approx(5e-5)
+
+    @pytest.mark.unit
+    def test_cosine_annealing_constant_steps_multi_param_groups(self):
+        optimizer = _sgd_with_group_lrs(1e-3, 1e-4)
+        scheduler = CosineAnnealing(optimizer, warmup_steps=0, constant_steps=50, max_steps=100, min_lr=0.0)
+        for _ in range(25):
+            optimizer.step()
+            scheduler.step()
+        # Halfway through the 50 decay steps, group 0 is 5e-4 and group 1 should be 5e-5
+        lrs = scheduler.get_last_lr()
+        assert lrs[0] == pytest.approx(5e-4)
+        assert lrs[1] == pytest.approx(5e-5)
+
+    @pytest.mark.unit
+    def test_polynomial_hold_decay_annealing_params(self):
+        from nemo.core.config.schedulers import PolynomialHoldDecayAnnealingParams, WarmupHoldSchedulerParams
+
+        params = PolynomialHoldDecayAnnealingParams(hold_steps=10, hold_ratio=0.1)
+        assert isinstance(params, WarmupHoldSchedulerParams)
+        assert params.hold_steps == 10
+        assert params.hold_ratio == 0.1

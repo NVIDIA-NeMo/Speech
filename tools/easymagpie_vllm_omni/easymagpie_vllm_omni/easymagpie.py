@@ -829,7 +829,16 @@ class EasyMagpieTTSForConditionalGeneration(
             return input_ids, base, {}
 
         start = self._batch_slot_offset(input_ids, start)
-        if bool(info_dict["_omni_is_prefill"]):
+        # Omni includes the resumed text placeholder in the prompt length.
+        # This row consumes text and advances acoustic decode after the speaker prefix.
+        context_len = info_dict.get("text_stream_context_len")
+        resumed_text = (
+            span_len == 1
+            and context_len is not None
+            and int(info_dict["_omni_num_computed_tokens"]) >= context_len
+            and "text_token" in info_dict
+        )
+        if info_dict["_omni_is_prefill"] and not resumed_text:
             # A one-token prefill has the same query shape as decode. Clear the
             # per-slot decode gates so it cannot inherit stale state when the
             # forward dispatcher intentionally treats that shape uniformly.
@@ -967,6 +976,8 @@ class EasyMagpieTTSForConditionalGeneration(
                 decode_offset = int(info_dict.get("text_prefill_num", 0) or 0)
 
         info_update: dict[str, Any] = {"decode_offset": decode_offset}
+        if offset == 0 and "text_token" in info_dict and not has_user_audio:
+            info_update["text_stream_context_len"] = prompt_len
         if uses_raw_reference and conditioning_len > 0:
             info_update.update(
                 speaker_reference_prefilled=True,

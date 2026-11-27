@@ -534,3 +534,25 @@ def test_first_agent_decode_uses_user_speaking_end_token():
     model.has_phoneme = False
     model._combined_embeddings = torch.zeros(1, 3)
     model._dec_text_tokens = torch.zeros(1, dtype=torch.long)
+
+
+@pytest.mark.parametrize("computed, expected", [(70, "prefill"), (72, "decode")])
+def test_text_resume_uses_decode_after_initial_context(computed, expected):
+    model = SimpleNamespace(
+        _batch_slot_offset=lambda _ids, start: start,
+        _dec_text_mask=torch.ones(1),
+        _dec_audio_valid=torch.ones(1),
+        has_phoneme=False,
+        _preprocess_prefill=lambda *args: "prefill",
+        _preprocess_decode=lambda *args: "decode",
+    )
+    result = EasyMagpieTTSForConditionalGeneration.preprocess(
+        model,
+        torch.zeros(1, dtype=torch.long),
+        None,
+        _omni_is_prefill=True,
+        _omni_num_computed_tokens=computed,
+        text_stream_context_len=71,
+        text_token=[42],
+    )
+    assert result == expected

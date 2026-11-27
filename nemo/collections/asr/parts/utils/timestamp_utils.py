@@ -222,7 +222,7 @@ def get_words_offsets(
             if "end" in char_offset:
                 word_offsets[-1]["end"] = char_offsets[-1]["end"]
 
-    return word_offsets
+    return [offset for offset in word_offsets if offset["word"].strip()]
 
 
 def get_segment_offsets(

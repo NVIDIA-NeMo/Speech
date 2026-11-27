@@ -29,6 +29,7 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 from safetensors.torch import load_file
+from torch.distributed.checkpoint import save as save_dcp
 
 _TO_HF_PATH = Path(__file__).parents[3] / "examples" / "speechlm2" / "to_hf.py"
 _spec = importlib.util.spec_from_file_location("to_hf_for_test", _TO_HF_PATH)
@@ -1042,6 +1043,92 @@ def test_prepare_for_vllm_publication_failure_rolls_back_all_artifacts(tmp_path)
     for name, content in original_artifacts.items():
         assert (output_dir / name).read_bytes() == content
     assert list(output_dir.parent.glob(f".{output_dir.name}-vllm-*")) == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("training_ep_size", [1, 8])
+def test_single_rank_automodel_dcp_preserves_weights_at_their_export_dtype(
+    tmp_path, monkeypatch, mocker, training_ep_size
+):
+    checkpoint = tmp_path / "step=4.ckpt"
+    original = {"llm.A_log": torch.tensor([0.1234567]), "llm.weight": torch.tensor([-0.3456789])}
+    save_dcp({"state_dict": original}, checkpoint_id=checkpoint)
+    config = tmp_path / "training.yaml"
+    strategy_config = {
+        "_target_": "nemo.collections.speechlm2.parts.parallel.AutomodelParallelStrategy",
+        "tp_size": 1,
+        "cp_size": 1,
+        "pp_size": 1,
+        "ep_size": training_ep_size,
+    }
+    OmegaConf.save({"model": {}, "trainer": {"strategy": strategy_config}}, config)
+    cfg = to_hf.HfExportConfig(
+        class_path="nemo.collections.speechlm2.models.SALMAutomodel",
+        ckpt_path=str(checkpoint),
+        ckpt_config=str(config),
+        output_dir=str(tmp_path / "export"),
+    )
+    monkeypatch.setenv("RANK", "0")
+    dist = mocker.patch.object(to_hf, "dist")
+    dist.is_initialized.return_value = True
+    dist.get_world_size.return_value = 1
+    build_mesh = mocker.patch.object(to_hf, "setup_distributed_from_config")
+    mocker.patch.object(to_hf, "_try_prepare_for_vllm")
+    model = torch.nn.Module()
+    model.cfg = {}
+    model.llm = torch.nn.Module()
+    model.llm.A_log = torch.nn.Parameter(torch.zeros(1))
+    model.llm.weight = torch.nn.Parameter(torch.zeros(1))
+    model.llm.state_dict_adapter = SimpleNamespace(forced_hf_dtype_mapping=lambda _: {"llm.A_log": "F32"})
+    construct_model = mocker.Mock(return_value=model)
+    mocker.patch.object(to_hf, "import_class_by_path", return_value=construct_model)
+
+    to_hf.main(cfg)
+
+    build_mesh.assert_not_called()
+    assert construct_model.call_args.args[0]["init_configure_model"] is True
+    exported = load_file(Path(cfg.output_dir) / "model.safetensors")
+    torch.testing.assert_close(exported["llm.A_log"], original["llm.A_log"], rtol=0, atol=0)
+    torch.testing.assert_close(exported["llm.weight"], original["llm.weight"].to(torch.bfloat16), rtol=0, atol=0)
+
+
+@pytest.mark.unit
+def test_multi_rank_automodel_dcp_configures_the_conversion_mesh(tmp_path, monkeypatch, mocker):
+    checkpoint = tmp_path / "step=4.ckpt"
+    checkpoint.mkdir()
+    config = tmp_path / "training.yaml"
+    strategy_config = {
+        "_target_": "nemo.collections.speechlm2.parts.parallel.AutomodelParallelStrategy",
+        "ep_size": 8,
+    }
+    OmegaConf.save({"model": {}, "trainer": {"strategy": strategy_config}}, config)
+    cfg = to_hf.HfExportConfig(
+        class_path="nemo.collections.speechlm2.models.SALMAutomodel",
+        ckpt_path=str(checkpoint),
+        ckpt_config=str(config),
+        output_dir=str(tmp_path / "export"),
+    )
+    monkeypatch.setenv("RANK", "0")
+    dist = mocker.patch.object(to_hf, "dist")
+    dist.is_initialized.return_value = True
+    dist.get_rank.return_value = 0
+    dist.get_world_size.return_value = 8
+    model = mocker.Mock()
+    construct_model = mocker.Mock(return_value=model)
+    mocker.patch.object(to_hf, "import_class_by_path", return_value=construct_model)
+    build_mesh = mocker.patch.object(to_hf, "setup_distributed_from_config")
+    mocker.patch.object(to_hf, "load_checkpoint")
+    state = {"llm.A_log": torch.tensor([0.1234567])}
+    mocker.patch.object(to_hf, "consolidate_state_dict", return_value=state)
+    save_hf_checkpoint = mocker.patch.object(to_hf, "save_hf_checkpoint")
+    mocker.patch.object(to_hf, "_try_prepare_for_vllm")
+
+    to_hf.main(cfg)
+
+    build_mesh.assert_called_once_with(strategy_config)
+    assert construct_model.call_args.args[0]["init_configure_model"] is False
+    model.configure_model.assert_called_once_with(distributed_setup=build_mesh.return_value.distributed_setup)
+    save_hf_checkpoint.assert_called_once_with(model, state, cfg)
 
 
 def test_adapt_strategy_collapses_incompatible_hsdp_replicate_axis() -> None:

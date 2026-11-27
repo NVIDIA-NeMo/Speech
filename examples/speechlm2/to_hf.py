@@ -676,14 +676,8 @@ def main(cfg: HfExportConfig) -> None:
     _is_torchrun = "RANK" in os.environ
     if _is_torchrun and dist.is_available() and not dist.is_initialized():
         dist.init_process_group(backend="nccl")
-    is_distributed = (
-        _is_torchrun
-        and Path(cfg.ckpt_path).is_dir()
-        and _uses_automodel_parallel(strategy_cfg)
-        and dist.get_world_size() > 1
-    )
-
-    if is_distributed:
+    automodel_dcp = _is_torchrun and Path(cfg.ckpt_path).is_dir() and _uses_automodel_parallel(strategy_cfg)
+    if automodel_dcp and dist.get_world_size() > 1:
         strategy = setup_distributed_from_config(strategy_cfg)
 
         # Don't call configure_model() inside __init__ — we set the distributed setup first.
@@ -701,19 +695,23 @@ def main(cfg: HfExportConfig) -> None:
             _try_prepare_for_vllm(cfg.output_dir, model_cfg)
 
         dist.barrier()
-        dist.destroy_process_group()
     else:
         model_cfg["init_configure_model"] = True
         model_cfg["pretrained_weights"] = False
         model = cls(model_cfg)
         load_checkpoint(model, cfg.ckpt_path, cfg.checkpoint_format)
-        if cfg.checkpoint_format == "nemo_rl":
+        # A single rank loads the full model without reconstructing the training mesh.
+        # It still needs the dtype-aware serializer to preserve protected FP32 weights.
+        if automodel_dcp or cfg.checkpoint_format == "nemo_rl":
             save_hf_checkpoint(model, consolidate_state_dict(model), cfg)
         else:
             model = cast_model_for_export(model, cfg.dtype)
             model.save_pretrained(cfg.output_dir, config=_hf_export_config(model, cfg.dtype))
             save_llm_backbone_config(model, cfg.output_dir)
         _try_prepare_for_vllm(cfg.output_dir, model_cfg)
+
+    if automodel_dcp:
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

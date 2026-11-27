@@ -59,7 +59,9 @@ def test_native_codec_chunk_appends_prompt_without_resetting_state(monkeypatch):
         update_block_hashes=lambda: None,
     )
 
-    def fake_poll(self, req):
+    def fake_poll(self, entry):
+        req = entry.request
+        self.get_req_chunk[req.request_id] += 1
         req.prompt_token_ids = [0]
         req._all_token_ids[:] = []
         req.num_computed_tokens = 0
@@ -68,7 +70,7 @@ def test_native_codec_chunk_appends_prompt_without_resetting_state(monkeypatch):
 
     monkeypatch.setattr(OmniChunkTransferAdapter, "_poll_single_request", fake_poll)
 
-    assert _poll_native_codec_chunk(adapter, request) is True
+    assert _poll_native_codec_chunk(adapter, SimpleNamespace(request=request)) is True
     assert request.prompt_token_ids == [0, 0, 0, 0, 0]
     assert request._all_token_ids == [0, 0, 0, 0, 0]
     assert request.num_prompt_tokens == 5
@@ -84,7 +86,7 @@ def test_native_codec_chunk_appends_prompt_without_resetting_state(monkeypatch):
         additional_information=None,
         update_block_hashes=lambda: None,
     )
-    assert _poll_native_codec_chunk(adapter, prewarm_request) is True
+    assert _poll_native_codec_chunk(adapter, SimpleNamespace(request=prewarm_request)) is True
     assert prewarm_request.prompt_token_ids == [0, 0, 0]
     assert prewarm_request._all_token_ids == [0, 0, 0]
     assert prewarm_request.num_computed_tokens == 0
@@ -94,6 +96,7 @@ def test_native_codec_empty_segment_marker_wakes_scheduler_without_resetting_sta
     adapter = object.__new__(OmniChunkTransferAdapter)
     adapter._easymagpie_num_quantizers = 2
     adapter._easymagpie_chunk_lock = threading.Lock()
+    adapter.get_req_chunk = {"request": 1}
     adapter.segment_finished_requests = set()
     adapter._finished_load_reqs = set()
     request = SimpleNamespace(
@@ -106,20 +109,21 @@ def test_native_codec_empty_segment_marker_wakes_scheduler_without_resetting_sta
         update_block_hashes=lambda: None,
     )
 
-    def fake_poll(self, req):
-        # The base adapter resets these fields before deciding that an empty
-        # non-terminal segment marker is not a schedulable codec chunk.
-        req.prompt_token_ids = []
+    def fake_poll(self, entry):
+        req = entry.request
+        self.get_req_chunk[req.request_id] += 1
+        req.prompt_token_ids = [0]
         req._all_token_ids[:] = []
         req.num_prompt_tokens = 0
         req.num_computed_tokens = 0
         req.additional_information = {"meta": {"is_segment_finished": True}}
         self.segment_finished_requests.add(req.request_id)
-        return False
+        self._finished_load_reqs.add(req.request_id)
+        return True
 
     monkeypatch.setattr(OmniChunkTransferAdapter, "_poll_single_request", fake_poll)
 
-    assert _poll_native_codec_chunk(adapter, request) is True
+    assert _poll_native_codec_chunk(adapter, SimpleNamespace(request=request)) is True
     assert request.prompt_token_ids == [0, 0, 0]
     assert request._all_token_ids == [0, 0, 0]
     assert request.num_prompt_tokens == 3

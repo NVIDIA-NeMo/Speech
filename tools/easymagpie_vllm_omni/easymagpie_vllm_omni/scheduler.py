@@ -69,48 +69,29 @@ def _set_segment_finished(outputs, request_id: str, value: bool) -> None:
                 output.is_segment_finished = value
 
 
-def _poll_native_codec_chunk_unlocked(adapter: OmniChunkTransferAdapter, request: Request) -> bool:
+def _poll_native_codec_chunk(adapter: OmniChunkTransferAdapter, entry) -> bool:
     """Receive a chunk without resetting the vLLM state-cache position."""
-    old_num_computed_tokens = request.num_computed_tokens
-    # Async-chunk prewarm may install one unscheduled placeholder before the
-    # first real payload. Only tokens with materialized state are retained.
-    old_prompt = list(request.prompt_token_ids or [])[:old_num_computed_tokens]
-    old_all_token_ids = list(request._all_token_ids)[:old_num_computed_tokens]
-
-    received = OmniChunkTransferAdapter._poll_single_request(adapter, request)
-    if not received:
-        segment_boundary_received = request.request_id in adapter.segment_finished_requests
-        request.prompt_token_ids = old_prompt
-        request._all_token_ids[:] = old_all_token_ids
-        request.num_prompt_tokens = len(old_prompt)
-        request.num_computed_tokens = old_num_computed_tokens
-        request.update_block_hashes()
-
-        # TODO(vLLM-Omni upstream): `_poll_single_request()` consumes an empty
-        # `is_segment_finished` payload, records the boundary, and then returns
-        # False before publishing scheduler readiness through
-        # `_finished_load_reqs`. This leaves Stage 1 parked in
-        # WAITING_FOR_CHUNK forever. Upstream should treat
-        # `payload_segment_finished` like `payload_finished` in its early-return
-        # condition; remove this private-state bridge once that fix is available.
-        if segment_boundary_received:
-            adapter._finished_load_reqs.add(request.request_id)
-        return segment_boundary_received
-
-    frames = _codec_payload_frames(request.additional_information, adapter._easymagpie_num_quantizers)
-    placeholders = [0] * frames
-    request.prompt_token_ids = old_prompt + placeholders
-    request._all_token_ids[:] = old_all_token_ids + placeholders
-    request.num_prompt_tokens = len(request.prompt_token_ids)
-    request.num_computed_tokens = old_num_computed_tokens
-    request.update_block_hashes()
-    return True
-
-
-def _poll_native_codec_chunk(adapter: OmniChunkTransferAdapter, request: Request) -> bool:
-    """Publish connector readiness only after the request payload is coherent."""
     with adapter._easymagpie_chunk_lock:
-        return _poll_native_codec_chunk_unlocked(adapter, request)
+        request = entry.request
+        old_computed = request.num_computed_tokens
+        old_prompt = list(request.prompt_token_ids or [])[:old_computed]
+        old_all_tokens = list(request._all_token_ids)[:old_computed]
+        chunk_id = adapter.get_req_chunk[request.request_id]
+
+        received = OmniChunkTransferAdapter._poll_single_request(adapter, entry)
+        if adapter.get_req_chunk.get(request.request_id) == chunk_id:
+            return received
+
+        frames = 0
+        if received:
+            frames = _codec_payload_frames(request.additional_information, adapter._easymagpie_num_quantizers)
+        placeholders = [0] * frames
+        request.prompt_token_ids = old_prompt + placeholders
+        request._all_token_ids[:] = old_all_tokens + placeholders
+        request.num_prompt_tokens = len(request.prompt_token_ids)
+        request.num_computed_tokens = old_computed
+        request.update_block_hashes()
+        return received
 
 
 def _codec_segment_resets_state(request: Request) -> bool:

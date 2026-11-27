@@ -1492,10 +1492,11 @@ class EasyMagpieTTSForConditionalGeneration(
             else:
                 last_phon = info_dict.get("last_phoneme_token")
                 if isinstance(last_phon, torch.Tensor) and last_phon.numel() > 0:
-                    p = last_phon.to(device=device, dtype=torch.long).reshape(-1)[: self.arch.phoneme_stacking_factor]
-                    self._dec_phoneme_tokens[start, : p.shape[0]].copy_(p)
-                    self._dec_phoneme_valid[start] = 1
+                    # Omni keeps the flat phoneme state on the host.
+                    p = last_phon.reshape(-1)[: self.arch.phoneme_stacking_factor]
                     feed_eos = bool((p == self.phoneme_eos_id).any())
+                    self._dec_phoneme_tokens[start, : p.shape[0]].copy_(p, non_blocking=True)
+                    self._dec_phoneme_valid[start] = 1
                 else:
                     self._dec_phoneme_valid[start] = 0
             if phoneme_ended or feed_eos:

@@ -604,3 +604,30 @@ def test_runner_owns_the_last_audio_code_snapshot():
     codes.zero_()
     retained = runner.model_intermediate_buffer["id"]["gpu_state"]["last_audio_codes"]
     torch.testing.assert_close(retained, torch.tensor([[3, 4]]))
+
+
+def test_host_phoneme_eos_is_fed_once_then_masks_the_channel():
+    model = SimpleNamespace(
+        arch=SimpleNamespace(phoneme_stacking_factor=2, audio_bos_id=10),
+        has_phoneme=True,
+        phonemes_delay=1,
+        phoneme_eos_id=7,
+        speech_delay=9,
+        embedding_dim=2,
+        _dec_text_mask=torch.zeros(1),
+        _dec_phoneme_tokens=torch.zeros((1, 2), dtype=torch.long),
+        _dec_phoneme_valid=torch.zeros(1),
+        _dec_audio_valid=torch.zeros(1),
+        _combined_embeddings=torch.zeros(1, 2),
+    )
+    decode = EasyMagpieTTSForConditionalGeneration._preprocess_decode
+    ids = torch.zeros(1, dtype=torch.long)
+    state = {"decode_offset": 2, "last_phoneme_token": torch.tensor([[4, 7]])}
+    _, _, update = decode(model, ids, 0, ids.device, state)
+    assert update["phoneme_ended"] is True
+    assert model._dec_phoneme_valid[0] == 1
+    torch.testing.assert_close(model._dec_phoneme_tokens[0], state["last_phoneme_token"][0])
+
+    _, _, update = decode(model, ids, 0, ids.device, {**state, **update})
+    assert update["phoneme_ended"] is True
+    assert model._dec_phoneme_valid[0] == 0

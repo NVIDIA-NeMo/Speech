@@ -664,3 +664,111 @@ class TestConformerEncoderRoPE:
         model.change_attention_model(att_context_size=[4, 4])
         assert isinstance(model.encoder.layers[0].self_attn, RoPEMultiHeadAttention)
         assert model.encoder.layers[0].self_attn._max_cache_len == 4
+
+    @staticmethod
+    def _build_use_bias_free_encoder(self_attention_model='rel_pos', **kwargs):
+        # use_bias=False encoder whose _cfg carries the fields change_attention_model reads
+        from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
+
+        enc = ConformerEncoder(
+            feat_in=80,
+            n_layers=2,
+            d_model=64,
+            n_heads=4,
+            self_attention_model=self_attention_model,
+            subsampling_factor=4,
+            subsampling_conv_channels=32,
+            pos_emb_max_len=256,
+            use_bias=False,
+            dropout=0.0,
+            dropout_att=0.0,
+            dropout_emb=0.0,
+            dropout_pre_encoder=0.0,
+            **kwargs,
+        ).eval()
+        enc._cfg = OmegaConf.create(
+            {
+                'd_model': 64,
+                'n_heads': 4,
+                'dropout': 0.0,
+                'dropout_att': 0.0,
+                'dropout_emb': 0.0,
+                'pos_emb_max_len': 256,
+                'rope_base': 10000.0,
+                'rotary_fraction': 1.0,
+                'use_bias': False,
+            }
+        )
+        return enc
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("target_model", ['rel_pos_local_attn', 'rel_pos', 'abs_pos'])
+    def test_change_attention_model_preserves_use_bias_false_on_any_swap(self, target_model):
+        # Regression (#16576): every target of change_attention_model must keep use_bias=False,
+        # not just 'rope'. A swap must never add randomly initialised bias tensors that are not in
+        # the checkpoint — each load of the checkpoint would silently produce a different model.
+        enc = self._build_use_bias_free_encoder()
+        checkpoint_keys = set(enc.state_dict())
+
+        enc.change_attention_model(target_model, att_context_size=[64, 64])
+
+        for layer in enc.layers:
+            biases = [name for name, _ in layer.self_attn.named_parameters() if name.endswith('.bias')]
+            assert biases == [], f"{target_model} attention gained bias parameters: {biases}"
+        added = sorted(k for k in set(enc.state_dict()) - checkpoint_keys if k.endswith('.bias'))
+        assert added == [], f"state dict gained bias keys that are not in the checkpoint: {added}"
+        x = torch.randn(2, 80, 256)
+        lens = torch.tensor([256, 128])
+        out, _ = enc(audio_signal=x, length=lens)
+        assert torch.isfinite(out).all()
+
+    @pytest.mark.unit
+    def test_change_attention_model_warns_about_state_dict_differences(self, caplog):
+        # Regression (#16576): the swap loop used to load the previous weights with strict=False
+        # and ignore the result, so parameters the rebuilt modules add or drop stayed invisible —
+        # exactly how the missing use_bias forwarding went unnoticed (random bias tensors no
+        # checkpoint contains). change_attention_model must report the state-dict differences.
+        # 'abs_pos' and 'rel_pos' differ by linear_pos.weight and pos_bias_u/v in both directions.
+        import logging as std_logging
+
+        enc = self._build_use_bias_free_encoder()
+
+        with caplog.at_level(std_logging.WARNING):
+            enc.change_attention_model('abs_pos')  # drops linear_pos.weight and pos_bias_u/v
+            enc.change_attention_model('rel_pos')  # adds fresh ones the checkpoint does not have
+        report = "\n".join(r.getMessage() for r in caplog.records)
+
+        assert report, "change_attention_model must warn when the rebuild changes the state dict"
+        assert "missing" in report and "unexpected" in report, f"the warning must list the differences:\n{report}"
+        for key in ('linear_pos.weight', 'pos_bias_u', 'pos_bias_v'):
+            assert key in report, f"{key} is not listed in the state-dict warning:\n{report}"
+        # the bug this warning exists for: a projection bias the checkpoint never had
+        assert 'linear_q.bias' not in report
+
+    @pytest.mark.unit
+    def test_change_attention_model_keeps_global_attention(self):
+        # Regression (#16576): a rebuild used to drop the global-token settings of
+        # rel_pos_local_attn attention, silently deleting the global_{q,k,v} projections from the
+        # state dict and changing what the layers compute. A rebuild must keep the layer's
+        # settings, so afterwards the state dict is exactly the checkpoint's again.
+        enc = self._build_use_bias_free_encoder(
+            self_attention_model='rel_pos_local_attn',
+            att_context_size=[64, 64],
+            global_tokens=2,
+            global_tokens_spacing=2,
+            global_attn_separate=True,
+        )
+        checkpoint_keys = set(enc.state_dict())
+        assert any(k.endswith('global_q.weight') for k in checkpoint_keys)
+
+        enc.change_attention_model(att_context_size=[32, 32])
+
+        assert set(enc.state_dict()) == checkpoint_keys
+        for layer in enc.layers:
+            assert layer.self_attn.global_attn_separate
+            assert layer.self_attn.global_tokens == 2
+            assert layer.self_attn.global_q.bias is None
+        x = torch.randn(2, 80, 256)
+        lens = torch.tensor([256, 128])
+        out, _ = enc(audio_signal=x, length=lens)
+        assert torch.isfinite(out).all()

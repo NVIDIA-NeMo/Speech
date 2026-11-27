@@ -426,6 +426,32 @@ class BasePipeline(PipelineInterface):
             num_slots=self.num_slots,
         )
 
+    def align_buffers_for_preprocessing(
+        self, frames: list[Frame], raw_signals: Tensor, left_paddings: Tensor
+    ) -> tuple[Tensor, Tensor]:
+        """
+        Get the audio buffers and their valid lengths as the preprocessor expects them.
+        With right padding, every buffer is rolled to the left by its left padding, so the audio starts at sample 0.
+        Args:
+            frames: (list[Frame]) Frames of the buffers.
+            raw_signals: (Tensor) Audio buffers, [batch, buffer_size].
+            left_paddings: (Tensor) Left paddings of the audio buffers, [batch].
+        Returns:
+            (tuple[Tensor, Tensor]) Audio buffers [batch, buffer_size] and their valid lengths [batch].
+        """
+        buffer_len = raw_signals.size(1)
+        # Only final frames have right padding
+        right_paddings = torch.tensor(
+            [frame.size - frame.valid_size for frame in frames], device=raw_signals.device
+        ).clamp(min=0)
+        buffer_lens = buffer_len - right_paddings
+        if self.right_padding:
+            # Padding at the beginning of the buffer degrades the accuracy
+            positions = torch.arange(buffer_len, device=raw_signals.device) + left_paddings.unsqueeze(1)
+            raw_signals = raw_signals.gather(1, positions % buffer_len)
+            buffer_lens = buffer_lens - left_paddings
+        return raw_signals, buffer_lens
+
     def init_bufferer_for_cache_aware_streaming(self) -> None:
         """Initialize the bufferer for cache-aware streaming."""
         check_existance_of_required_attributes(

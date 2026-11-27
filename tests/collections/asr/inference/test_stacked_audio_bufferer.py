@@ -19,6 +19,7 @@ import pytest
 import torch
 
 from nemo.collections.asr.inference.pipelines.buffered_ctc_pipeline import BufferedCTCPipeline
+from nemo.collections.asr.inference.pipelines.buffered_rnnt_pipeline import BufferedRNNTPipeline
 from nemo.collections.asr.inference.streaming.buffering.stacked_audio_bufferer import StackedAudioBufferer
 from nemo.collections.asr.inference.streaming.framing.mono_stream import MonoStream
 from nemo.collections.asr.inference.streaming.framing.multi_stream import MultiStream
@@ -28,6 +29,12 @@ from nemo.collections.asr.inference.utils.enums import PaddingMode
 # 4 samples per second and 2 s buffers: the buffer holds 8 samples and frames of 3 samples are used
 SAMPLE_RATE = 4
 BUFFER_SECS = 2.0
+
+
+PIPELINE_METHODS = [
+    (BufferedCTCPipeline, "get_logprobs_given_raw_signals"),
+    (BufferedRNNTPipeline, "encode_raw_signals"),
+]
 
 
 def _frame(stream_id, values, is_last=False):
@@ -142,33 +149,68 @@ def test_batch_with_frames_of_different_sizes_or_repeated_streams_is_rejected():
         bufferer.update([_frame(0, [1, 2, 3]), _frame(0, [4, 5, 6])])
 
 
-@pytest.mark.unit
-def test_buffered_ctc_rolls_each_buffer_by_its_own_left_padding_and_shortens_its_length():
-    seen = {}
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_frames_on_the_cpu_are_buffered_on_the_cuda_device():
+    bufferer = StackedAudioBufferer(SAMPLE_RATE, BUFFER_SECS, device="cuda", num_slots=1)
+    bufferer.update([_frame(0, [1, 2, 3]), _frame(1, [4, 5, 6])])
 
+    buffers, left_paddings = bufferer.update([_frame(1, [7, 8, 9]), _frame(0, [10, 11, 12])])
+
+    assert buffers.is_cuda and left_paddings.is_cuda
+    assert buffers.tolist() == [[0, 0, 4, 5, 6, 7, 8, 9], [0, 0, 1, 2, 3, 10, 11, 12]]
+    assert left_paddings.tolist() == [2, 2]
+
+
+class _RecordingModel:
+    """Stands in for the ASR model, the outputs are not under test."""
+
+    def get_logprobs(self, processed_signal, processed_signal_length):
+        return torch.zeros(2, 1, 1)
+
+    def encode(self, processed_signal, processed_signal_length):
+        return torch.zeros(2, 1, 1), torch.ones(2, dtype=torch.int64)
+
+
+def _pipeline(pipeline_cls, padding_mode, seen):
     def preprocess(buffers, buffer_lens, expected_feature_buffer_len):
         seen["buffers"], seen["buffer_lens"] = buffers, buffer_lens
         return torch.zeros(2, 1, 1), torch.ones(2, dtype=torch.int64)
 
-    class _Model:
-        def get_logprobs(self, processed_signal, processed_signal_length):
-            return torch.zeros(2, 1, 1)
-
-    pipeline = object.__new__(BufferedCTCPipeline)
-    pipeline.right_padding = True
-    pipeline.padding_mode = PaddingMode.RIGHT
+    pipeline = object.__new__(pipeline_cls)
+    pipeline.padding_mode = padding_mode
+    pipeline.right_padding = padding_mode is PaddingMode.RIGHT
     pipeline.preprocess = preprocess
-    pipeline.asr_model = _Model()
+    pipeline.asr_model = _RecordingModel()
     pipeline.device = torch.device("cpu")
     pipeline.expected_feature_buffer_len = 1
     pipeline.sample_rate = SAMPLE_RATE
-    pipeline.model_stride_in_secs = 1e9  # the roll back of the log probs is not under test
+    pipeline.model_stride_in_secs = 1e9  # the roll back of the model output is not under test
     pipeline.zero_log_probs = torch.zeros(1, 1)
+    pipeline.zero_encoded = torch.zeros(1, 1)
+    pipeline.prompt_enabled = False
+    return pipeline
+
+
+# row 0 has no left padding, row 1 has three padded samples in front; the second frame has one padded sample
+PADDING_CASES = [
+    (PaddingMode.RIGHT, [[0, 1, 2, 3, 4, 5, 6, 7], [11, 12, 13, 14, 15, 8, 9, 10]], [8, 8 - 1 - 3]),
+    (PaddingMode.LEFT, [[0, 1, 2, 3, 4, 5, 6, 7], [8, 9, 10, 11, 12, 13, 14, 15]], [8, 8 - 1]),
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("pipeline_cls, method", PIPELINE_METHODS)
+@pytest.mark.parametrize("padding_mode, want_buffers, want_lens", PADDING_CASES)
+def test_buffered_pipelines_preprocess_each_buffer_rolled_by_its_left_padding_with_its_valid_length(
+    pipeline_cls, method, padding_mode, want_buffers, want_lens
+):
+    seen = {}
+    pipeline = _pipeline(pipeline_cls, padding_mode, seen)
     frames = [_frame(0, [0, 0, 0]), Frame(samples=torch.zeros(3), stream_id=1, length=2)]
     raw_signals = torch.arange(16, dtype=torch.float32).reshape(2, 8)
 
-    pipeline.get_logprobs_given_raw_signals(frames, raw_signals, torch.tensor([0, 3]))
+    getattr(pipeline, method)(frames, raw_signals, torch.tensor([0, 3]))
 
-    # row 0 has no left padding, row 1 starts at its third sample; the second frame has one padded sample
-    assert seen["buffers"].tolist() == [[0, 1, 2, 3, 4, 5, 6, 7], [11, 12, 13, 14, 15, 8, 9, 10]]
-    assert seen["buffer_lens"].tolist() == [8, 8 - 1 - 3]
+    assert seen["buffers"].tolist() == want_buffers
+    assert seen["buffer_lens"].tolist() == want_lens

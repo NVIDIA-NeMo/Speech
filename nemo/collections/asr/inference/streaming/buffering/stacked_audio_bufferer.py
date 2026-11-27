@@ -25,7 +25,7 @@ class StackedAudioBufferer:
     Audio bufferer that keeps the buffers of all running streams in one [num_slots, buffer_size] tensor
     on the given device. A batch of frames is buffered with a few vectorized operations, and the
     result is a batch of buffers instead of a list of per-stream tensors.
-    It buffers exactly like BatchedAudioBufferer.
+    The buffer of a stream holds its last buffer_size samples, zero padded in front.
     """
 
     def __init__(
@@ -123,9 +123,8 @@ class StackedAudioBufferer:
         slots = torch.tensor([self._get_slot(frame.stream_id) for frame in frames], device=self.device)
         samples = torch.stack([frame.samples for frame in frames]).to(self.device, dtype=torch.float32)
 
-        buffers = torch.roll(self.buffer[slots], -shift, dims=1)
-        buffers[:, -shift:] = samples
-        self.buffer[slots] = buffers
+        buffers = torch.cat([self.buffer.index_select(0, slots)[:, shift:], samples], dim=1)
+        self.buffer.index_copy_(0, slots, buffers)
 
         left_paddings = (self.left_padding[slots] - shift).clamp_(min=0)
         self.left_padding[slots] = left_paddings

@@ -82,7 +82,9 @@ class BufferedCTCPipeline(BasePipeline):
         self.sample_rate = cfg.streaming.sample_rate
         self.asr_output_granularity = cfg.asr_output_granularity
         self.batch_size = cfg.streaming.batch_size
-        self.num_slots = cfg.streaming.get('num_slots') or self.batch_size
+        self.num_slots = cfg.streaming.get('num_slots')
+        if self.num_slots is None:
+            self.num_slots = self.batch_size
 
         self.chunk_size = cfg.streaming.chunk_size
         self.left_padding_size = cfg.streaming.left_padding_size
@@ -221,24 +223,7 @@ class BufferedCTCPipeline(BasePipeline):
             (Tensor) Log probabilities.
         """
 
-        buffer_len = raw_signals.size(1)
-        if self.right_padding:
-            # Roll every buffer to the left by its left padding
-            # This is done to avoid the padding at the beginning of the buffered frames
-            # which can cause the performance degradation
-            positions = torch.arange(buffer_len, device=raw_signals.device) + left_paddings.unsqueeze(1)
-            raw_signals = raw_signals.gather(1, positions % buffer_len)
-
-        # Only final frames have right padding
-        # Calculate right paddings
-        right_paddings = torch.tensor([frame.size - frame.valid_size for frame in frames], device=self.device).clamp(
-            min=0
-        )
-
-        # Create and adjust the buffer lens
-        buffer_lens = buffer_len - right_paddings
-        if self.right_padding:
-            buffer_lens = buffer_lens - left_paddings
+        raw_signals, buffer_lens = self.align_buffers_for_preprocessing(frames, raw_signals, left_paddings)
 
         # Preprocess the buffers with corresponding buffer lens
         feature_buffers, feature_buffer_lens = self.preprocess(

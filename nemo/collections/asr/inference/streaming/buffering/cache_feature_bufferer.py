@@ -123,7 +123,6 @@ class BatchedCacheFeatureBufferer:
                 continue
             self.available_slots.put(slot_id)
             stream_id = self.slotidx2streamidx[slot_id]
-            self.audio_bufferer.rm_stream(stream_id)  # the audio history goes with the slot
             del self.slotidx2streamidx[slot_id], self.streamidx2slotidx[stream_id]
 
     def reset_slots(self, slot_ids: list[int]) -> None:
@@ -134,10 +133,8 @@ class BatchedCacheFeatureBufferer:
         """
         slot_ids_tensor = torch.tensor(slot_ids, device=self.device, dtype=torch.long)
         self.feature_buffer.index_fill_(0, slot_ids_tensor, self.ZERO_LEVEL_SPEC_DB_VAL)
-        # drop the audio history too, the next frame of the stream starts from a zero buffer
-        for slot_id in slot_ids:
-            if slot_id in self.slotidx2streamidx:
-                self.audio_bufferer.rm_stream(self.slotidx2streamidx[slot_id])
+        # the audio history goes with the features
+        self.audio_bufferer.reset_slots(slot_ids)
 
     def preprocess(
         self, audio_buffers: Tensor, right_paddings: Tensor, expected_feat_len: int
@@ -224,7 +221,7 @@ class BatchedCacheFeatureBufferer:
         right_paddings = torch.tensor(
             [frame.size - frame.valid_size for frame in frames], dtype=torch.long, device=self.device
         )
-        audio_buffers, _ = self.audio_bufferer.update(frames)
+        audio_buffers, _ = self.audio_bufferer.update_slots(slot_ids, frames)
 
         features, right_paddings = self.preprocess(
             audio_buffers=audio_buffers,

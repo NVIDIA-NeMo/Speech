@@ -80,8 +80,7 @@ class StackedAudioBufferer:
             if not self.free_slots:
                 self._grow()
             slot = self.free_slots.pop()
-            self.buffer[slot].zero_()
-            self.left_padding[slot] = self.buffer_size
+            self.reset_slots([slot])
             self.stream_id2slot[stream_id] = slot
         return slot
 
@@ -95,11 +94,46 @@ class StackedAudioBufferer:
         if slot is not None:
             self.free_slots.append(slot)
 
+    def reset_slots(self, slots: list[int]) -> None:
+        """
+        Zero the buffers of the given slots
+        Args:
+            slots (list[int]): slot indices
+        """
+        slots = torch.tensor(slots, device=self.device, dtype=torch.long)
+        self.buffer.index_fill_(0, slots, 0.0)
+        self.left_padding.index_fill_(0, slots, self.buffer_size)
+
     def update(self, frames: list[Frame]) -> tuple[Tensor, Tensor]:
         """
-        Update the buffers with the new frames.
+        Update the buffers with the new frames, every stream gets a slot on its first frame
+        and releases it on its last frame.
         Every frame must come from a different stream and have the same size.
         Args:
+            frames (list[Frame]): list of frames
+        Returns:
+            tuple[Tensor, Tensor]:
+                buffers: [len(frames), buffer_size] float tensor on the device, a copy of the state
+                left_paddings: [len(frames)] int64 tensor on the device, one per input frame
+        """
+        self._check_frame_sizes(frames)
+        if len({frame.stream_id for frame in frames}) != len(frames):
+            raise ValueError("A batch of frames must have one frame per stream")
+
+        outputs = self.update_slots([self._get_slot(frame.stream_id) for frame in frames], frames)
+
+        for frame in frames:
+            if frame.is_last:
+                self.rm_stream(frame.stream_id)
+
+        return outputs
+
+    def update_slots(self, slots: list[int], frames: list[Frame]) -> tuple[Tensor, Tensor]:
+        """
+        Update the buffers of the given slots with the new frames, for callers that assign the slots themselves.
+        Every frame must go to a different slot and have the same size.
+        Args:
+            slots (list[int]): slot index of every frame
             frames (list[Frame]): list of frames
         Returns:
             tuple[Tensor, Tensor]:
@@ -112,25 +146,31 @@ class StackedAudioBufferer:
                 torch.zeros(0, dtype=torch.int64, device=self.device),
             )
 
-        shift = frames[0].size
-        if any(frame.size != shift for frame in frames):
-            raise ValueError("All frames of a batch must have the same size, use pad_last_frame=True")
-        if shift > self.buffer_size:
-            raise RuntimeError(f"Frame size ({shift}) exceeds buffer size ({self.buffer_size})")
-        if len({frame.stream_id for frame in frames}) != len(frames):
+        shift = self._check_frame_sizes(frames)
+        if len(set(slots)) != len(frames):
             raise ValueError("A batch of frames must have one frame per stream")
 
-        slots = torch.tensor([self._get_slot(frame.stream_id) for frame in frames], device=self.device)
+        slots = torch.tensor(slots, device=self.device, dtype=torch.long)
         samples = torch.stack([frame.samples for frame in frames]).to(self.device, dtype=torch.float32)
 
         buffers = torch.cat([self.buffer.index_select(0, slots)[:, shift:], samples], dim=1)
         self.buffer.index_copy_(0, slots, buffers)
 
-        left_paddings = (self.left_padding[slots] - shift).clamp_(min=0)
-        self.left_padding[slots] = left_paddings
-
-        for frame in frames:
-            if frame.is_last:
-                self.rm_stream(frame.stream_id)
+        left_paddings = (self.left_padding.index_select(0, slots) - shift).clamp_(min=0)
+        self.left_padding.index_copy_(0, slots, left_paddings)
 
         return buffers, left_paddings
+
+    def _check_frame_sizes(self, frames: list[Frame]) -> int:
+        """Get the common size of the frames, 0 for an empty batch"""
+        if len(frames) == 0:
+            return 0
+        size = frames[0].size
+        if any(frame.size != size for frame in frames):
+            raise ValueError(
+                "All frames of a batch must have the same size; pad the last frame of a stream to the frame size "
+                "and set `length` to the number of valid samples"
+            )
+        if size > self.buffer_size:
+            raise RuntimeError(f"Frame size ({size}) exceeds buffer size ({self.buffer_size})")
+        return size

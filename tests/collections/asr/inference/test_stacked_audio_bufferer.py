@@ -149,6 +149,25 @@ def test_batch_with_frames_of_different_sizes_or_repeated_streams_is_rejected():
         bufferer.update([_frame(0, [1, 2, 3]), _frame(0, [4, 5, 6])])
 
 
+@pytest.mark.unit
+def test_caller_assigned_slots_keep_their_history_in_any_batch_order_and_a_reset_slot_starts_over():
+    bufferer = StackedAudioBufferer(SAMPLE_RATE, BUFFER_SECS, device="cpu", num_slots=3)
+    bufferer.update_slots([2, 0], [_frame(7, [1, 2, 3]), _frame(8, [4, 5, 6])])
+
+    # the same slots in the opposite order: the history follows the slot, not the position or the stream id
+    buffers, left_paddings = bufferer.update_slots([0, 2], [_frame(7, [7, 8, 9]), _frame(8, [10, 11, 12])])
+    assert buffers.tolist() == [[0, 0, 4, 5, 6, 7, 8, 9], [0, 0, 1, 2, 3, 10, 11, 12]]
+    assert left_paddings.tolist() == [2, 2]
+
+    bufferer.reset_slots([0])
+    buffers, left_paddings = bufferer.update_slots([0, 2], [_frame(7, [13, 14, 15]), _frame(8, [16, 17, 18])])
+    assert buffers.tolist() == [[0, 0, 0, 0, 0, 13, 14, 15], [2, 3, 10, 11, 12, 16, 17, 18]]
+    assert left_paddings.tolist() == [5, 0]
+
+    with pytest.raises(ValueError, match="one frame per stream"):
+        bufferer.update_slots([1, 1], [_frame(7, [1, 2, 3]), _frame(8, [4, 5, 6])])
+
+
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 def test_frames_on_the_cpu_are_buffered_on_the_cuda_device():

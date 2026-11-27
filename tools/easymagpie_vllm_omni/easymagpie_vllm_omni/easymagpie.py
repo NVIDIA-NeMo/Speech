@@ -35,7 +35,7 @@ from typing import Any, Optional
 
 import torch
 from easymagpie_vllm_omni.acoustic_predictor import create_acoustic_predictor
-from easymagpie_vllm_omni.backbone_patches import patch_shared_expert_activation
+from easymagpie_vllm_omni.backbone_patches import patch_moe_routed_scale, patch_shared_expert_activation
 from easymagpie_vllm_omni.codec.encoder import EasyMagpieCodecEncoder
 from easymagpie_vllm_omni.codec.encoder_config import EasyMagpieCodecEncoderConfig
 from easymagpie_vllm_omni.config import NO_AUDIO_FRAME, EasyMagpieOmniArch
@@ -186,6 +186,7 @@ class EasyMagpieTTSForConditionalGeneration(
             prefix=maybe_prefix(prefix, "backbone"),
         )
         patch_shared_expert_activation(self.backbone)
+        patch_moe_routed_scale(self.backbone)
 
         # ── Architecture-selected acoustic predictor ───────────────────
         with set_model_tag(arch.acoustic_predictor_type):

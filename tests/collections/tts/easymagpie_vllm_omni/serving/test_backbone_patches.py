@@ -22,7 +22,7 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("vllm")
 
-from easymagpie_vllm_omni.backbone_patches import patch_shared_expert_activation  # noqa: E402
+from easymagpie_vllm_omni.backbone_patches import patch_moe_routed_scale, patch_shared_expert_activation  # noqa: E402
 from vllm.model_executor.layers.activation import ReLUSquaredActivation  # noqa: E402
 
 
@@ -58,3 +58,22 @@ def test_shared_expert_patch_rejects_unknown_upstream_implementation():
 
     with pytest.raises(RuntimeError, match="implementation changed"):
         patch_shared_expert_activation(backbone)
+
+
+def test_fp16_shared_moe_output_retains_routed_scale():
+    from vllm.model_executor.layers.fused_moe.runner.moe_runner import MoERunner
+
+    class NemotronHMoE(torch.nn.Module):
+        shared_experts = object()
+        routed_scaling_factor = 2.5
+
+        def forward(self, shared, routed):
+            shared, routed = MoERunner._maybe_apply_routed_scale_to_output(self, shared, routed)
+            return shared + routed
+
+    mixer = NemotronHMoE()
+    backbone = SimpleNamespace(layers=[SimpleNamespace(mixer=mixer)])
+    shared, routed = torch.tensor(4.0, dtype=torch.float16), torch.tensor(2.0, dtype=torch.float16)
+    assert mixer(shared.clone(), routed.clone()).item() != 9.0
+    assert patch_moe_routed_scale(backbone) == 1
+    assert mixer(shared, routed).item() == 9.0

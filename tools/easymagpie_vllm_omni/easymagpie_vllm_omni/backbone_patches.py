@@ -12,9 +12,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Shared-expert activation for the EasyMagpie backbone."""
+"""Nemotron-H expert compatibility for EasyMagpie checkpoints."""
 from __future__ import annotations
 
+import torch
 from vllm.logger import init_logger
 from vllm.model_executor.layers.activation import ReLUSquaredActivation, get_act_fn
 
@@ -50,4 +51,27 @@ def patch_shared_expert_activation(backbone) -> int:
         se.act_fn = get_act_fn(activation_name)
         patched += 1
     logger.info("%s shared-expert activation fix installed on %d layers", activation_name, patched)
+    return patched
+
+
+def patch_moe_routed_scale(backbone) -> int:
+    """Restore the FP16 scale deferred by the shared-expert MoE runner."""
+    patched = 0
+    for layer in backbone.layers:
+        mixer = getattr(layer, "mixer", None)
+        if mixer is None or mixer.__class__.__name__ != "NemotronHMoE":
+            continue
+        scale = float(getattr(mixer, "routed_scaling_factor", 1.0))
+        if scale == 1.0 or mixer.shared_experts is None:
+            continue
+
+        def _scale_output(_mod, _inp, out, _scale=scale):
+            # FusedMoE only defers the scale in FP16; leave other dtypes alone.
+            if isinstance(out, torch.Tensor) and out.dtype == torch.float16:
+                return out * _scale
+            return out
+
+        mixer.register_forward_hook(_scale_output)
+        patched += 1
+    logger.info("FP16 MoE routed-scale fix installed on %d layers", patched)
     return patched

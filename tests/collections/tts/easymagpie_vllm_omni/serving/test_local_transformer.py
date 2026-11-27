@@ -94,3 +94,29 @@ def test_generate_codes_deterministic_with_seed():
     second = cp.generate_codes(dec_hidden)
 
     assert torch.equal(first, second)
+
+
+def test_code_loop_uses_only_causal_prefix(vllm_config_factory, monkeypatch):
+    predictor = EasyMagpieLocalTransformerPredictor(vllm_config=vllm_config_factory())
+    original = predictor.local_transformer.forward
+    widths = []
+
+    def capture_width(inputs):
+        widths.append(inputs.shape[1])
+        return original(inputs)
+
+    monkeypatch.setattr(predictor.local_transformer, "forward", capture_width)
+    state = torch.randn(2, predictor.embedding_dim)
+    torch.manual_seed(1234)
+    prefix_codes = predictor.generate_codes(state)
+
+    def run_full_length(inputs):
+        suffix = inputs.new_zeros((inputs.shape[0], predictor.num_codebooks - inputs.shape[1], inputs.shape[2]))
+        return original(torch.cat((inputs, suffix), dim=1))
+
+    monkeypatch.setattr(predictor.local_transformer, "forward", run_full_length)
+    torch.manual_seed(1234)
+    full_codes = predictor.generate_codes(state)
+
+    assert widths == list(range(1, predictor.num_codebooks + 1))
+    torch.testing.assert_close(prefix_codes, full_codes, rtol=0, atol=0)

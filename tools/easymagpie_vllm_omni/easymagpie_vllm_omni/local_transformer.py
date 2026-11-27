@@ -196,7 +196,7 @@ class EasyMagpieCodeLoop(nn.Module):
         forbidden = cp.forbidden_mask
         codes: list[torch.Tensor] = []
         for k in range(n):
-            hidden = cp.local_transformer(buf)
+            hidden = cp.local_transformer(buf[:, : k + 1])
             row = cp.local_transformer_audio_out_projection(hidden[:, k, :])
             logits = cp.local_transformer_out_projections[k](row)
             logits = logits.masked_fill(forbidden, float("-inf")) / temperature

@@ -16,7 +16,7 @@ import warnings
 from collections import defaultdict
 from itertools import repeat
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import torch
 from lhotse import CutSet
@@ -584,12 +584,14 @@ def replace_placeholders_and_build_targets(
     placeholder_id: int,
     replacements: list[torch.Tensor],
     target_ids: Optional[torch.Tensor] = None,
+    padding_side: Literal["left", "right"] = "left",
 ) -> tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
     """Replaces each occurrence of the placeholder_id in input_ids with the corresponding tensor
     from the replacements list in the embeds tensor, and creates corresponding adjusted target_ids.
 
-    Note: when padding is necessary, we apply left-padding to the examples not to introduce
-        anomalies at generation time.
+    Note: by default, we apply left-padding to the examples not to introduce anomalies at generation time.
+        Use ``padding_side="right"`` for training-time forward passes through backends whose padding masks
+        assume right padding (e.g. Transformer Engine attention and Mamba layers).
 
     Args:
       input_ids (Tensor): shape (batch, sequence_length); input token ids.
@@ -598,6 +600,8 @@ def replace_placeholders_and_build_targets(
       placeholder_id (int): an id to be replaced.
       replacements (list of Tensor): each Tensor has shape (L_i, hidden_dim), with L_i arbitrary.
       target_ids (Tensor): shape (batch, sequence_length); target token ids.
+      padding_side (str): ``"left"`` places each example at the end of its output row,
+        ``"right"`` places it at the start.
 
     Returns:
       Tuple[Tensor, Tensor, Tensor]:
@@ -610,6 +614,8 @@ def replace_placeholders_and_build_targets(
         - Tensor of shape (batch, max_new_sequence_length) with attention padding masks
           updated to account for shape changes due to replacements.
     """
+    if padding_side not in ("left", "right"):
+        raise ValueError(f"padding_side must be 'left' or 'right', got {padding_side!r}")
     batch_size, seq_len = input_ids.size()
     if target_ids is not None:
         assert target_ids.size() == input_ids.size(), "target_ids must have the same shape as input_ids"
@@ -705,10 +711,11 @@ def replace_placeholders_and_build_targets(
         output_target_ids = repeat(None)
     for i, (seq, tgt, att) in enumerate(zip(output_sequences, output_target_ids, output_att_masks)):
         seq_len = seq.size(0)
-        output[i, -seq_len:] = seq
+        row = slice(max_seq_length - seq_len, None) if padding_side == "left" else slice(0, seq_len)
+        output[i, row] = seq
         if tgt is not None:
-            new_target_ids[i, -seq_len:] = tgt
-        attention_masks[i, -seq_len:] = att
+            new_target_ids[i, row] = tgt
+        attention_masks[i, row] = att
 
     return output, new_target_ids, attention_masks
 

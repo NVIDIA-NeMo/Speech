@@ -437,9 +437,13 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             placeholder_id=self.audio_locator_tag_id,
             replacements=audio_embs,
             target_ids=target_ids_full,
+            # Automodel's padded-batch kernels (TE padding attention, Mamba) assume right padding.
+            padding_side="right",
         )
         input_embs = input_embs[:, :-1]
-        attention_mask = attention_mask[:, :-1]
+        # A position is a real input only if it has a next token: this drops each row's last token,
+        # which is not always in the last column when rows are right-padded.
+        attention_mask = attention_mask[:, :-1] & attention_mask[:, 1:]
         target_ids = target_ids[:, 1:]
 
         # BSHD path runs only when CP is inactive (the fit-start validator
@@ -490,7 +494,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         """
         import os
 
-        from nemo.collections.speechlm2.parts.parallel import validate_parallelism_compatibility
+        from nemo.collections.speechlm2.parts.parallel import installed_version, validate_parallelism_compatibility
 
         cp_size = 1
         tp_size = 1
@@ -513,6 +517,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             nvte_fused_attn=nvte_fused_attn,
             device_capability=device_capability,
             check_backward=check_backward,
+            te_version=installed_version("transformer-engine"),
+            flash_attn_4_version=installed_version("flash-attn-4"),
         )
         mtp_cfg = self.cfg.get("mtp", None)
         mtp_enabled = mtp_cfg is not None and bool(mtp_cfg.get("enabled", False))

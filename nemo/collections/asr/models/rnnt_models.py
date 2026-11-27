@@ -16,7 +16,7 @@
 import copy
 import os
 from math import ceil
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -41,11 +41,19 @@ from nemo.collections.asr.parts.mixins import (
 )
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecoding, RNNTDecodingConfig
+from nemo.collections.asr.parts.turbo_transducer.rnnt_consistency import ConsistencyRNNTLoss
 from nemo.collections.asr.parts.utils.asr_batching import get_semi_sorted_batch_sampler
+from nemo.collections.asr.parts.utils.longform_inference import (
+    ChunkingConfig,
+    resolve_chunking,
+    select_chunk_words,
+    words_to_hypothesis,
+)
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.timestamp_utils import process_timestamp_outputs
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.collections.common.parts.preprocessing.parsers import make_parser
+from nemo.collections.common.tokenizers.aggregate_tokenizer import AggregateTokenizer
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.classes.mixins import AccessMixin
 from nemo.core.neural_types import AcousticEncodedRepresentation, AudioSignal, LengthsType, NeuralType, SpectrogramType
@@ -95,6 +103,12 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, RNNTRestartMixin, ExportableEncD
             loss_kwargs=loss_kwargs,
             reduction=self.cfg.get("rnnt_reduction", "mean_batch"),
         )
+        self._validate_joint_turbo_kernel()
+
+        # Optional consistency loss (`ConsistencyRNNTLoss`), used by `_compute_losses(..., compute_consistency=True)`.
+        # Not configured by this model: a model with consistency regularization is responsible for setting it up
+        # and for constructing the double batch.
+        self.consistency_loss: Optional[ConsistencyRNNTLoss] = None
 
         if hasattr(self.cfg, 'spec_augment') and self._cfg.spec_augment is not None:
             self.spec_augmentation = EncDecRNNTModel.from_config_dict(self.cfg.spec_augment)
@@ -259,6 +273,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, RNNTRestartMixin, ExportableEncD
         verbose: bool = True,
         timestamps: Optional[bool] = None,
         override_config: Optional[TranscribeConfig] = None,
+        chunking: Optional[ChunkingConfig] = None,
     ) -> TranscriptionReturnType:
         """
         Uses greedy decoding to transcribe audio files. Use this method for debugging and prototyping.
@@ -290,6 +305,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, RNNTRestartMixin, ExportableEncD
             override_config: (Optional[TranscribeConfig]) override transcription config pre-defined by the user.
                 **Note**: All other arguments in the function will be ignored if override_config is passed.
                 You should call this argument as `model.transcribe(audio, override_config=TranscribeConfig(...))`.
+            chunking: Optional offline chunk plan. Each read window is decoded; words are selected by time.
 
         Returns:
             Returns a tuple of 2 items -
@@ -298,7 +314,9 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, RNNTRestartMixin, ExportableEncD
         """
 
         timestamps = timestamps or (override_config.timestamps if override_config is not None else None)
-        if timestamps is not None:
+        # Planned chunking computes word timestamps call-locally and leaves the model decoding unchanged.
+        planned_chunking = resolve_chunking(chunking, override_config) is not None
+        if timestamps is not None and not planned_chunking:
             need_change_decoding = False
             if timestamps or (override_config is not None and override_config.timestamps):
                 logging.info(
@@ -335,6 +353,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, RNNTRestartMixin, ExportableEncD
             override_config=override_config,
             # Additional arguments
             partial_hypothesis=partial_hypothesis,
+            chunking=chunking,
         )
 
     def change_vocabulary(self, new_vocabulary: List[str], decoding_cfg: Optional[DictConfig] = None):
@@ -374,10 +393,13 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, RNNTRestartMixin, ExportableEncD
             self.decoder = EncDecRNNTModel.from_config_dict(new_decoder_config)
 
             del self.loss
-            loss_name, loss_kwargs = self.extract_rnnt_loss_cfg(self.cfg.get('loss', None))
-            self.loss = RNNTLoss(
-                num_classes=self.joint.num_classes_with_blank - 1, loss_name=loss_name, loss_kwargs=loss_kwargs
-            )
+            if self.joint.uses_turbo_kernel:
+                self.loss = self._make_loss_for_joint_turbo_kernel()
+            else:
+                loss_name, loss_kwargs = self.extract_rnnt_loss_cfg(self.cfg.get('loss', None))
+                self.loss = RNNTLoss(
+                    num_classes=self.joint.num_classes_with_blank - 1, loss_name=loss_name, loss_kwargs=loss_kwargs
+                )
 
             if decoding_cfg is None:
                 # Assume same decoding config as before
@@ -726,6 +748,128 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, RNNTRestartMixin, ExportableEncD
         encoded, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
         return encoded, encoded_len
 
+    def _validate_joint_turbo_kernel(self):
+        """The Joint turbo kernel does not produce logits: the loss must accept target/blank log-probabilities"""
+        if self.joint.uses_turbo_kernel and not self.loss.supports_logprobs_input:
+            raise ValueError(
+                "Joint `turbo_kernel` requires an RNN-T loss that can be computed from target/blank log-probabilities: "
+                "use `loss.loss_name=turbo_rnnt` without gradient clamping"
+            )
+
+    def _make_loss_for_joint_turbo_kernel(self) -> RNNTLoss:
+        """
+        Create the RNN-T loss for the Joint with the turbo kernel after the vocabulary is changed:
+        the loss from the config of the model with the same reduction, as in the constructor
+        (the default loss can't be computed from target/blank log-probabilities).
+        """
+        loss_name, loss_kwargs = self.extract_rnnt_loss_cfg(self.cfg.get("loss", None))
+        self.loss = RNNTLoss(
+            num_classes=self.joint.num_classes_with_blank - 1,
+            loss_name=loss_name,
+            loss_kwargs=loss_kwargs,
+            reduction=self.cfg.get("rnnt_reduction", "mean_batch"),
+        )
+        self._validate_joint_turbo_kernel()
+        return self.loss
+
+    def _compute_losses(
+        self,
+        encoded: torch.Tensor,
+        decoder: torch.Tensor,
+        transcript: torch.Tensor,
+        encoded_len: torch.Tensor,
+        target_length: torch.Tensor,
+        compute_consistency: bool = False,
+        current_step: Optional[int] = None,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Compute the RNN-T loss and, optionally, the consistency loss from the encoder and prediction network outputs.
+
+        With the Joint turbo kernel the loss is computed from the target/blank log-probabilities
+        (`Joint.forward_for_loss`), without materializing the Joint output. Otherwise the full Joint output is used.
+
+        When `compute_consistency` is set, `self.consistency_loss` is required and the batch is expected to be
+        a double batch: the first half is the teacher pass, the second half is the student pass of the same utterances.
+        If both the loss and the Joint support log-probabilities, both losses are computed by `Joint.forward_for_loss`
+        with a single gradient buffer for the Joint output.
+
+        Args:
+            encoded: encoder output, [B, D, T]
+            decoder: prediction network output, [B, D, U+1]
+            transcript: targets, [B, U]
+            encoded_len: lengths of the encoder output, [B]
+            target_length: lengths of the targets, [B]
+            compute_consistency: whether to compute the consistency loss between the halves of the batch
+            current_step: optimizer step (training only), used by the Joint turbo kernel to schedule pruning
+
+        Returns:
+            Tuple (RNN-T loss, consistency loss or None)
+        """
+        if compute_consistency:
+            if self.consistency_loss is None:
+                raise ValueError("`compute_consistency` requires the consistency loss (`self.consistency_loss`)")
+            if encoded.shape[0] % 2 != 0:
+                raise ValueError(f"Consistency loss requires a double batch, got odd batch size {encoded.shape[0]}")
+            if getattr(self.joint, "num_extra_outputs", 0) > 0:
+                raise NotImplementedError("Consistency loss is not supported for the Joint with extra outputs (TDT)")
+            half_batch_size = encoded.shape[0] // 2
+
+        if self.joint.uses_turbo_kernel or (
+            compute_consistency and self.loss.supports_logprobs_input and self.joint.supports_loss_logprobs
+        ):
+            loss_inputs = self.joint.forward_for_loss(
+                encoder_outputs=encoded,
+                decoder_outputs=decoder,
+                encoder_lengths=encoded_len,
+                transcripts=transcript,
+                transcript_lengths=target_length,
+                compute_consistency=compute_consistency,
+                consistency_symmetrical=self.consistency_loss.symmetrical if compute_consistency else True,
+                current_step=current_step,
+            )
+            loss_value = self.loss.forward_from_logprobs(
+                target_logprobs=loss_inputs.target_logprobs,
+                blank_logprobs=loss_inputs.blank_logprobs,
+                input_lengths=encoded_len,
+                target_lengths=target_length,
+            )
+            if loss_inputs.full_lattice_loss is not None:
+                self._log_full_lattice_loss(loss_inputs.full_lattice_loss, target_length)
+            if not compute_consistency:
+                return loss_value, None
+            consistency_loss_value = self.consistency_loss.forward_from_kl(
+                consistency_kl=loss_inputs.consistency_kl,
+                src_lengths=encoded_len[:half_batch_size],
+                tgt_lengths=target_length[:half_batch_size],
+            )
+            return loss_value, consistency_loss_value
+
+        joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
+        loss_value = self.loss(
+            log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
+        )
+        if not compute_consistency:
+            return loss_value, None
+        consistency_loss_value = self.consistency_loss(
+            teacher_logits=joint[:half_batch_size],
+            student_logits=joint[half_batch_size:],
+            src_lengths=encoded_len[:half_batch_size],
+            tgt_lengths=target_length[:half_batch_size],
+        )
+        return loss_value, consistency_loss_value
+
+    def _log_full_lattice_loss(self, full_lattice_loss: torch.Tensor, target_length: torch.Tensor):
+        """
+        Log the RNN-T loss of the full lattice (`train_loss_full_lattice`), reported by the Joint with two-pass
+        pruning. The value is reduced as the training loss, but it is a baseline computed by the first pass
+        without dropout, masking of the prediction network output and FastEmit scaling. The training loss is
+        the loss of the pruned lattice computed with the training settings (and can include auxiliary losses):
+        the difference between the logged values does not isolate the probability removed by pruning.
+        """
+        if getattr(self, "_trainer", None) is None:
+            return
+        self.log("train_loss_full_lattice", self.loss.reduce(full_lattice_loss, target_length.long()))
+
     # PTL-specific methods
     def training_step(self, batch, batch_nb):
         # Reset access registry
@@ -753,10 +897,14 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, RNNTRestartMixin, ExportableEncD
 
         # If experimental fused Joint-Loss-WER is not used
         if not self.joint.fuse_loss_wer:
-            # Compute full joint and loss
-            joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
-            loss_value = self.loss(
-                log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
+            # Compute joint and loss
+            loss_value, _ = self._compute_losses(
+                encoded=encoded,
+                decoder=decoder,
+                transcript=transcript,
+                encoded_len=encoded_len,
+                target_length=target_length,
+                current_step=self.global_step,
             )
 
             # Add auxiliary losses, if registered
@@ -859,10 +1007,12 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, RNNTRestartMixin, ExportableEncD
         if not self.joint.fuse_loss_wer:
             if self.compute_eval_loss:
                 decoder, target_length, states = self.decoder(targets=transcript, target_length=transcript_len)
-                joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
-
-                loss_value = self.loss(
-                    log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
+                loss_value, _ = self._compute_losses(
+                    encoded=encoded,
+                    decoder=decoder,
+                    transcript=transcript,
+                    encoded_len=encoded_len,
+                    target_length=target_length,
                 )
 
                 tensorboard_logs['val_loss'] = loss_value
@@ -951,6 +1101,59 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, RNNTRestartMixin, ExportableEncD
         return {**test_loss_log, 'log': tensorboard_logs}
 
     """ Transcription related methods """
+
+    def _transcribe_chunk_validate(self, trcfg):
+        if getattr(self.decoding, 'restart_token_ids', None):
+            raise ValueError('Planned RNNT/TDT chunking does not support `restart_after_tokens`.')
+        if isinstance(getattr(self.decoding, 'tokenizer', None), AggregateTokenizer):
+            # Word timestamps and assembled token IDs would need a language for every word.
+            raise ValueError('Planned RNNT/TDT chunking does not support an aggregate tokenizer.')
+        beam = self.decoding.cfg.get('beam') or {}
+        if self.decoding.cfg.strategy not in ('greedy', 'greedy_batch') and not beam.get(
+            'return_best_hypothesis', True
+        ):
+            raise ValueError('Planned RNNT/TDT chunking requires one best hypothesis per chunk.')
+
+    def _transcribe_chunk_decoding(self, trcfg):
+        """The model's decoding with word timestamps, which select words by time; the model is unchanged."""
+        if trcfg._internal.chunk_decoding is None:
+            decoding = self.decoding
+            timestamp_type = decoding.cfg.get('rnnt_timestamp_type', 'all')
+            if not decoding.compute_timestamps or timestamp_type not in ('all', 'word'):
+                cfg = copy.deepcopy(decoding.cfg)
+                with open_dict(cfg):
+                    cfg.compute_timestamps = True
+                    cfg.rnnt_timestamp_type = 'all'
+                kwargs = (
+                    {'tokenizer': decoding.tokenizer}
+                    if hasattr(decoding, 'tokenizer')
+                    else {'vocabulary': list(decoding.labels_map.values())}
+                )
+                decoding = type(decoding)(cfg, self.decoder, self.joint, **kwargs)
+            trcfg._internal.chunk_decoding = decoding
+        return trcfg._internal.chunk_decoding
+
+    def _transcribe_chunk_outputs(self, outputs, chunks, frame_samples, trcfg):
+        # Decode each read window with a fresh decoder that warms up on its left context.
+        # A decoder state carried across chunks can stay in blank through long stretches of speech.
+        decoding = self._transcribe_chunk_decoding(trcfg)
+        hyps = decoding.rnnt_decoder_predictions_tensor(
+            outputs['encoded'], outputs['encoded_len'], return_hypotheses=True
+        )
+        hyps = process_timestamp_outputs(hyps, self.encoder.subsampling_factor, self.cfg.preprocessor.window_stride)
+        sample_rate = int(self.cfg.sample_rate)
+        return [select_chunk_words(hyp.timestamp['word'], chunk, sample_rate) for hyp, chunk in zip(hyps, chunks)]
+
+    def _transcribe_chunk_finalize(self, parts, chunks, frame_samples, trcfg):
+        decoding = self._transcribe_chunk_decoding(trcfg)
+        if hasattr(decoding, 'tokenizer'):
+            text_to_ids = decoding.tokenizer.text_to_ids
+        else:
+            label_ids = {label: i for i, label in decoding.labels_map.items()}
+            text_to_ids = lambda text: [label_ids[c] for c in text if c in label_ids]
+        words = [word for part in parts for word in part]
+        frame_seconds = frame_samples / self.cfg.sample_rate
+        return words_to_hypothesis(words, text_to_ids, frame_seconds, trcfg.timestamps, decoding.segment_seperators)
 
     def _transcribe_forward(self, batch: Any, trcfg: TranscribeConfig):
         return self._transcribe_encode(batch[0], batch[1], trcfg)

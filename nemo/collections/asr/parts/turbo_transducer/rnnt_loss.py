@@ -85,6 +85,14 @@ class TurboRnntLoss(nn.Module):
             # allow instantiation (e.g., to restore a model for inference), but the loss can't be computed
             logging.warning("Triton is not available, Turbo-RNNT loss can't be computed. Install Triton to use it.")
 
+    @property
+    def supports_logprobs_input(self) -> bool:
+        """
+        Whether the loss can be computed from target/blank log-probabilities (see `forward_from_logprobs`).
+        Gradient clamping is applied to the gradient for the logits, so it requires the logits.
+        """
+        return self.clamp == 0.0
+
     @triton_required
     def forward(
         self,
@@ -140,7 +148,7 @@ class TurboRnntLoss(nn.Module):
         Returns:
             batch of RNN-T scores (loss) of size [B]
         """
-        if self.clamp > 0.0:
+        if not self.supports_logprobs_input:
             raise NotImplementedError(
                 "Gradient clamping is applied to the gradient for the logits "
                 "and is not supported when computing the loss from log-probabilities"

@@ -1068,3 +1068,18 @@ class PromptStreamingMixin:
         out_dtype = encoded.dtype
         encoded = self.prompt_kernel(torch.cat([encoded, prompt], dim=-1)).to(out_dtype)
         return encoded.transpose(1, 2)  # (B, T, D) -> (B, D, T)
+
+    def _transcribe_chunk_batch(self, audio, lengths, cuts, trcfg):
+        """Retain each utterance's language prompt when its chunks share an inference batch."""
+        languages = [
+            (
+                trcfg.target_lang
+                if trcfg.target_lang is not None
+                else (cut.supervisions[0].language if cut is not None and cut.supervisions else None)
+            )
+            for cut in cuts
+        ]
+        indices = torch.tensor(
+            [self.resolve_prompt_language(lang) for lang in languages], device=audio.device, dtype=torch.long
+        )
+        return audio, lengths, None, None, indices

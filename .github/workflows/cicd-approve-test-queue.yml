@@ -31,7 +31,11 @@ concurrency:
 jobs:
   approve-test-queue:
     if: github.repository == 'NVIDIA-NeMo/Speech'
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_test_approval_queue.yml@f07495d7a01aad5578a407db8e0c4f4e395375f6 # v1.9.1
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_test_approval_queue.yml@main
     with:
       workflow_name: CICD NeMo
       max_concurrency_internal: ${{ fromJSON(vars.MAX_CONCURRENCY || '1') }}

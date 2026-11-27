@@ -45,7 +45,7 @@ from nemo.collections.tts.modules.audio_codec_modules import ResNetSpeakerEncode
 from nemo.collections.tts.modules.common import GaussianDropout
 from nemo.collections.tts.one_logger import AudioCodecThroughputPolicy
 from nemo.collections.tts.parts.utils.callbacks import LoggingCallback
-from nemo.collections.tts.parts.utils.helpers import get_batch_size, get_num_workers
+from nemo.collections.tts.parts.utils.helpers import get_max_steps
 from nemo.collections.tts.parts.utils.tts_dataset_utils import resample_batch
 from nemo.core import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate, typecheck
@@ -58,7 +58,7 @@ from nemo.core.neural_types.elements import (
     TokenIndex,
 )
 from nemo.core.neural_types.neural_type import NeuralType
-from nemo.core.optim.lr_scheduler import compute_max_steps, prepare_lr_scheduler
+from nemo.core.optim.lr_scheduler import prepare_lr_scheduler
 from nemo.lightning.speech_throughput import register_throughput_policy
 from nemo.utils import logging, model_utils
 
@@ -885,6 +885,10 @@ class AudioCodecModel(ModelPT):
         Expects a config with two sub-sections:
           * `dataloader_params`: forwarded to Lhotse data loader
           * `dataset_args`: forwarded to the dataset class, `AudioCodecLhotseDataset`
+
+        Each training example is a random crop of exactly `dataset_args.segment_duration` seconds, so
+        `dataloader_params.batch_size` directly sets the total audio duration per batch. To keep the
+        configuration unambiguous, `batch_size` is required and `dataloader_params.batch_duration` is rejected.
         """
         if not isinstance(cfg, DictConfig):
             cfg = OmegaConf.create(cfg)
@@ -931,9 +935,21 @@ class AudioCodecModel(ModelPT):
         # the training segment duration so the dataset class has enough samples to choose from.
         loader_cfg.min_duration = segment_duration
 
-        # Make sure batch_size is set
+        # Every example is a crop of exactly `segment_duration` seconds, so `batch_size` directly sets the total
+        # audio duration per batch. The config is restricted to `batch_size` to keep it unambiguous.
+        if cfg.dataloader_params.get("batch_duration") is not None:
+            raise ValueError(
+                "`batch_duration` is not supported in `train_ds.dataloader_params` for AudioCodecModel. "
+                "Every training example is a fixed-length crop of `train_ds.dataset_args.segment_duration` "
+                f"(= {segment_duration}s), so `batch_size` directly sets the total audio duration per batch. "
+                "Remove `batch_duration` and set `batch_size` instead "
+                "(for D seconds of audio per batch, use batch_size = D / segment_duration)."
+            )
         if loader_cfg.batch_size is None:
-            raise ValueError("`batch_size` must be set in `train_ds.dataloader_params`.")
+            raise ValueError(
+                "`batch_size` must be set in `train_ds.dataloader_params`. AudioCodecModel trains on fixed-length "
+                "crops of `train_ds.dataset_args.segment_duration`, so batches are sized by number of examples."
+            )
 
         # --- Create the dataset ---
 
@@ -969,23 +985,7 @@ class AudioCodecModel(ModelPT):
 
     @property
     def max_steps(self):
-        if "max_steps" in self._cfg:
-            return self._cfg.get("max_steps")
-
-        if "max_epochs" not in self._cfg:
-            raise ValueError("Must specify 'max_steps' or 'max_epochs'.")
-
-        if "steps_per_epoch" in self._cfg:
-            return self._cfg.max_epochs * self._cfg.steps_per_epoch
-        return compute_max_steps(
-            max_epochs=self._cfg.max_epochs,
-            accumulate_grad_batches=self.trainer.accumulate_grad_batches,
-            limit_train_batches=self.trainer.limit_train_batches,
-            num_workers=get_num_workers(self.trainer),
-            num_samples=len(self._train_dl.dataset),
-            batch_size=get_batch_size(self._train_dl),
-            drop_last=self._train_dl.drop_last,
-        )
+        return get_max_steps(self._cfg, self.trainer, self._train_dl)
 
     def configure_optimizers(self):
         optim_config = self._cfg.optim.copy()

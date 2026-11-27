@@ -142,6 +142,7 @@ class TranscriptionConfig:
 
     # Set to True to output greedy timestamp information (only supported models) and returns full alignment hypotheses
     timestamps: Optional[bool] = None
+    chunking: dict[str, float] = field(default_factory=dict)  # empty disables; owned duration/context in seconds
 
     # Set to True to return hypotheses instead of text from the transcribe function
     return_hypotheses: bool = False
@@ -425,6 +426,8 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
             override_cfg.text_field = cfg.gt_text_attr_name
             override_cfg.lang_field = cfg.gt_lang_attr_name
             override_cfg.timestamps = cfg.timestamps
+            if cfg.chunking:
+                override_cfg.chunking = cfg.chunking
             if hasattr(override_cfg, "prompt"):
                 override_cfg.prompt = parse_multitask_prompt(OmegaConf.to_container(cfg.prompt))
             # Prompt-conditioned RNNT models: forward the language-ID prompt. None is forwarded too,

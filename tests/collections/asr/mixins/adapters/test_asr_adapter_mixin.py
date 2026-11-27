@@ -17,7 +17,7 @@ import os
 
 import pytest
 import torch
-from omegaconf import DictConfig, ListConfig, OmegaConf
+from omegaconf import DictConfig, ListConfig, OmegaConf, open_dict
 
 from nemo.collections.asr.models import ASRModel, EncDecCTCModel, EncDecMultiTaskModel, EncDecRNNTModel
 from nemo.collections.asr.parts.submodules.adapters import (
@@ -26,6 +26,7 @@ from nemo.collections.asr.parts.submodules.adapters import (
 )
 from nemo.collections.asr.parts.utils import adapter_utils
 from nemo.collections.common.parts import adapter_modules
+from nemo.core.classes.common import UnsafeTargetError
 from nemo.core.classes.mixins.access_mixins import AccessMixin
 from nemo.core.classes.mixins.adapter_mixins import AdapterModuleMixin, get_registered_adapter
 from nemo.core.utils import numba_utils
@@ -764,3 +765,17 @@ class TestASRAdapterMixin:
             assert loss['adapter_loss'][0] == torch.tensor(0.0)  # initially adapter is 0 init, no loss required.
 
             AccessMixin.reset_registry(model)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('target', ['unregistered_adapter.Adapter', 'unregistered_adapter.Missing'])
+def test_ctc_restore_validates_adapter_target_before_import(model, tmp_path, monkeypatch, target):
+    (tmp_path / 'unregistered_adapter.py').write_text("raise RuntimeError('unexpected import')\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    checkpoint = tmp_path / 'model.nemo'
+    model.save_to(checkpoint)
+    config = ASRModel.restore_from(checkpoint, return_config=True)
+    with open_dict(config):
+        config.adapters = {'adapter': {'_target_': target, 'enabled': True, 'in_features': 50}}
+    with pytest.raises(UnsafeTargetError):
+        ASRModel.restore_from(checkpoint, override_config_path=config, map_location='cpu')

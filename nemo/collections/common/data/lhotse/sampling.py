@@ -14,13 +14,17 @@
 # limitations under the License.
 # pylint: disable=C0116
 import math
+import operator
 from bisect import bisect_left
+from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from numbers import Real
 from typing import Any, Sequence
 
 import numpy as np
-from lhotse.cut import Cut, MonoCut
+from lhotse.custom import CustomFieldMixin
+from lhotse.cut import Cut, MixedCut, MonoCut
 from lhotse.dataset import SamplingConstraint, TokenConstraint
 from lhotse.dataset.sampling.dynamic_bucketing import FixedBucketBatchSizeConstraint
 from lhotse.utils import ifnone
@@ -571,6 +575,145 @@ class ValidationStatusFilter:
             return True
 
 
+_MISSING = object()
+
+_CUSTOM_FIELD_OPERATORS = {
+    "eq": operator.eq,
+    "neq": operator.ne,
+    "gt": operator.gt,
+    "ge": operator.ge,
+    "lt": operator.lt,
+    "le": operator.le,
+    "in": lambda value, choices: value in choices,
+}
+_CUSTOM_FIELD_ORDER_OPERATORS = ("gt", "ge", "lt", "le")
+
+
+def _is_custom_field_scalar(value: Any) -> bool:
+    # NaN equals nothing and orders with nothing, so no cut that has the field could meet the condition.
+    return isinstance(value, (bool, int, float, str)) and not (isinstance(value, float) and math.isnan(value))
+
+
+class CustomFieldFilter:
+    """
+    Callable, returns ``True`` if the custom fields of an example meet all given conditions and ``False`` otherwise.
+    Applies to cuts and to the text and conversation examples, which carry custom fields the same way,
+    and acts as a pass-through for objects that cannot carry custom fields.
+
+    Compared to the ``_skipme`` key of a NeMo manifest row, which makes the reader drop the row before a cut is built:
+    this filter selects in the config and leaves the manifests unchanged, for any source type,
+    but it sees the cut after the reader built it, so the reader's work for a rejected example is spent.
+    :class:`ValidationStatusFilter` applies the same equality rule to the fixed field ``validation_status``,
+    but to mono cuts only, and the dataloader applies it later, after padding, so the two can select differently.
+
+    Args:
+        conditions: maps the name of a custom field (a key of ``example.custom``) to its condition.
+            A condition is a mapping of operators to operands, all of which must hold:
+            ``eq`` and ``neq`` (a bool, a number or a string), ``gt``, ``ge``, ``lt`` and ``le`` (a number),
+            ``in`` (a list of bools, numbers or strings),
+            and optionally ``keep_if_missing`` (default ``True``), whether an example without the field passes.
+            A bool, a number or a string in place of the mapping stands for ``{"eq": value}``.
+            A value that is not a number fails ``gt``, ``ge``, ``lt`` and ``le``,
+            and a value that is not a bool, a number, a string or ``None`` (a list, say) fails every operator.
+            ``None`` or an empty mapping disables the filter.
+
+    Example::
+
+        >>> keep = CustomFieldFilter({"verified": True, "snr": {"gt": 5.0, "le": 10.5}, "quality": {"in": ["high"]}})
+        >>> cuts = cuts.filter(keep)
+    """
+
+    def __init__(self, conditions: Mapping[str, Any] | None) -> None:
+        conditions = ifnone(conditions, {})
+        if not isinstance(conditions, Mapping):
+            raise ValueError(f"custom_field_filter must map field names to conditions, got {conditions!r}.")
+        self.conditions = [self._parse_condition(name, condition) for name, condition in conditions.items()]
+
+    @staticmethod
+    def _parse_condition(name: Any, condition: Any) -> tuple[str, bool, list[tuple[str, Any]]]:
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"custom_field_filter: a field name must be a non-empty string, got {name!r}.")
+        prefix = f"custom_field_filter: the condition for field {name!r}"
+        if name == "keep_if_missing" and isinstance(condition, bool):
+            raise ValueError(
+                "custom_field_filter: keep_if_missing is set per field, inside the condition of the field, "
+                "e.g. {snr: {gt: 5.0, keep_if_missing: false}}."
+            )
+        if _is_custom_field_scalar(condition):
+            return name, True, [("eq", condition)]
+        if not isinstance(condition, Mapping) or len(condition) == 0:
+            raise ValueError(
+                f"{prefix} must be a bool, a number or a string (the value to keep), "
+                f"or a non-empty mapping of operators ({', '.join(_CUSTOM_FIELD_OPERATORS)}) to operands, "
+                f"optionally with keep_if_missing, got {condition!r}."
+            )
+        keep_if_missing = True
+        checks = []
+        for key, operand in condition.items():
+            if key == "keep_if_missing":
+                if not isinstance(operand, bool):
+                    raise ValueError(f"{prefix}: keep_if_missing must be a bool, got {operand!r}.")
+                keep_if_missing = operand
+            elif key not in _CUSTOM_FIELD_OPERATORS:
+                raise ValueError(
+                    f"{prefix} has the unknown key {key!r}, "
+                    f"expected one of {', '.join(_CUSTOM_FIELD_OPERATORS)}, keep_if_missing."
+                )
+            elif key == "in":
+                if isinstance(operand, str) or not isinstance(operand, Sequence) or len(operand) == 0:
+                    raise ValueError(f"{prefix}: the operand of 'in' must be a non-empty list, got {operand!r}.")
+                operand = tuple(operand)
+                if not all(_is_custom_field_scalar(choice) for choice in operand):
+                    raise ValueError(
+                        f"{prefix}: the operand of 'in' must hold bools, numbers or strings, got {operand!r}."
+                    )
+                checks.append((key, operand))
+            elif key in _CUSTOM_FIELD_ORDER_OPERATORS:
+                if isinstance(operand, (bool, str)) or not _is_custom_field_scalar(operand):
+                    raise ValueError(f"{prefix}: the operand of {key!r} must be a number, got {operand!r}.")
+                checks.append((key, operand))
+            else:
+                if not _is_custom_field_scalar(operand):
+                    raise ValueError(
+                        f"{prefix}: the operand of {key!r} must be a bool, a number or a string, got {operand!r}."
+                    )
+                checks.append((key, operand))
+        return name, keep_if_missing, checks
+
+    def __call__(self, example) -> bool:
+        if isinstance(example, MixedCut):
+            # As attribute access on a mixed cut resolves a custom field: the first unmuted data track that has it.
+            # The merged `cut.custom` mapping differs: there a later track overrides an earlier one.
+            customs = [
+                track.cut.custom
+                for track in example.tracks
+                if isinstance(track.cut, CustomFieldMixin) and not track.mute
+            ]
+        elif isinstance(example, CustomFieldMixin):
+            customs = [example.custom]
+        else:
+            return True
+        for name, keep_if_missing, checks in self.conditions:
+            # Read the custom mapping itself: attribute access would return
+            # the attribute of the cut for a field named like one (``id``, ``channel``).
+            value = next((custom[name] for custom in customs if custom is not None and name in custom), _MISSING)
+            if value is _MISSING:
+                if not keep_if_missing:
+                    return False
+                continue
+            for key, operand in checks:
+                if key in _CUSTOM_FIELD_ORDER_OPERATORS:
+                    # Only a number orders with the numeric operand, not None or a string.
+                    if not isinstance(value, (Real, np.bool_)):
+                        return False
+                elif value is not None and not isinstance(value, (Real, np.bool_, str)):
+                    # A list, a mapping or an array equals no operand.
+                    return False
+                if not _CUSTOM_FIELD_OPERATORS[key](value, operand):
+                    return False
+        return True
+
+
 class CERFilter:
     """
     Callable, returns ``True`` if a cut's CER is less than max_cer and ``False`` otherwise.
@@ -751,6 +894,54 @@ class TokenPerTokenFilter:
             return True  # pass-through for non-text examples.
         tpt = example.answer_ids.shape[0] / example.context_ids.shape[0]
         return self.tpt_min <= tpt <= self.tpt_max
+
+
+class DurationTokenBinsFilter:
+    """
+    Callable, returns ``True`` if a cut fits one of the ``(max duration, max tokens)`` bins and ``False`` otherwise.
+    The rule is the one of strict 2D bucketing, applied without bucketing:
+    the bins with the smallest maximum duration that covers the cut's duration are the candidates,
+    and the cut is kept if its number of tokens fits one of them.
+    Acts as a pass-through for objects of other type than Cut.
+
+    Args:
+        bins: the ``(max duration in seconds, max number of tokens)`` pairs, sorted ascendingly,
+            in the format of two-dimensional ``bucket_duration_bins`` for audio.
+        max_tps: optional maximum number of tokens per second for every bin, as strict 2D bucketing applies it:
+            a cut above the limit of the smallest bin that fits it is discarded.
+    """
+
+    def __init__(self, bins: Sequence[Sequence[float]], max_tps: Sequence[float] | None = None) -> None:
+        try:
+            pairs = [tuple(bin_) for bin_ in bins]
+        except TypeError:
+            pairs = []
+        is_valid = bool(pairs) and all(
+            len(pair) == 2
+            and all(isinstance(bound, Real) and not isinstance(bound, bool) and math.isfinite(bound) for bound in pair)
+            and pair[0] > 0
+            and pair[1] >= 0
+            for pair in pairs
+        )
+        if not is_valid or pairs != sorted(pairs):
+            raise ValueError(
+                "filter_duration_bins must be a non-empty, ascendingly sorted list of [max_duration, max_tokens] pairs "
+                f"of finite numbers with max_duration > 0 and max_tokens >= 0 (got {bins!r}); "
+                "for a duration limit alone use max_duration"
+            )
+        if max_tps is not None and len(max_tps) != len(pairs):
+            raise ValueError(
+                "A max_tps list needs one value per bin of filter_duration_bins "
+                f"(got {len(max_tps)} values for {len(pairs)} bins)"
+            )
+        self.bins = np.asarray(pairs)
+        self.max_tps = None if max_tps is None else list(max_tps)
+
+    def __call__(self, example) -> bool:
+        if not isinstance(example, Cut):
+            return True  # pass-through for examples other than cuts.
+        example_lens = (example.duration, _measure_tokens(example))
+        return find_smallest_bucket(self.bins, example_lens, strict=True, max_ratio=self.max_tps) is not None
 
 
 class BucketingFilter:

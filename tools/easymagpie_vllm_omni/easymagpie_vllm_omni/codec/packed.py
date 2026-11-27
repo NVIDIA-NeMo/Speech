@@ -109,14 +109,14 @@ class PackedFiniteScalarDequantizer(nn.Module):
             torch.tensor([1, *config.num_levels_per_group[:-1]], dtype=torch.int64),
             dim=0,
         )
-        self.num_groups = config.num_codebooks
-        self.register_buffer("levels", levels, persistent=False)
-        self.register_buffer("bases", bases, persistent=False)
+        indices = torch.arange(config.codebook_size).unsqueeze(-1)
+        nonnegative = torch.div(indices, bases, rounding_mode="floor") % levels
+        scale = torch.div(levels, 2, rounding_mode="floor")
+        table = (nonnegative - scale).to(torch.float32) / scale
+        self.register_buffer("table", table, persistent=False)
 
     def forward(self, indices: torch.Tensor) -> torch.Tensor:
-        nonnegative = torch.div(indices.unsqueeze(-1), self.bases, rounding_mode="floor") % self.levels
-        scale = torch.div(self.levels, 2, rounding_mode="floor")
-        return ((nonnegative - scale) / scale).flatten(start_dim=1)
+        return self.table[indices].flatten(start_dim=1)
 
 
 class PackedHalfSnake(nn.Module):

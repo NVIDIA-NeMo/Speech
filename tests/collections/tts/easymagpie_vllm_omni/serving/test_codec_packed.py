@@ -16,7 +16,12 @@
 import pytest
 import torch
 from easymagpie_vllm_omni.codec.config import EasyMagpieCodecConfig
-from easymagpie_vllm_omni.codec.packed import CODEC_STATE_ELEMENTS, CodecStateLayer, PackedEasyMagpieCodec
+from easymagpie_vllm_omni.codec.packed import (
+    CODEC_STATE_ELEMENTS,
+    CodecStateLayer,
+    PackedEasyMagpieCodec,
+    PackedFiniteScalarDequantizer,
+)
 from vllm.config import VllmConfig, set_current_vllm_config
 from vllm.forward_context import set_forward_context
 from vllm.v1.attention.backends.mamba1_attn import Mamba1AttentionMetadata
@@ -100,6 +105,22 @@ def mixed_metadata(prefill_frames: int, *, device: torch.device | str = "cpu") -
     )
     result.codec_max_query_len = prefill_frames
     return result
+
+
+@pytest.mark.parametrize("level_sizes", [[4, 4, 4, 4, 4, 4], [3, 4, 7]])
+def test_packed_fsq_table_matches_all_codes(level_sizes):
+    import math
+
+    size = math.prod(level_sizes)
+    config = EasyMagpieCodecConfig(
+        num_codebooks=2, codebook_size=size, num_levels_per_group=level_sizes, input_dim=2 * len(level_sizes)
+    )
+    codes = torch.arange(size).reshape(-1, 1).expand(-1, 2)
+    levels = torch.tensor(level_sizes)
+    bases = torch.cumprod(torch.tensor([1, *level_sizes[:-1]]), dim=0)
+    scale = levels // 2
+    expected = (((codes.unsqueeze(-1) // bases) % levels - scale) / scale).flatten(start_dim=1)
+    torch.testing.assert_close(PackedFiniteScalarDequantizer(config)(codes), expected, rtol=0, atol=0)
 
 
 def test_packed_profile_path_registers_state_layers() -> None:

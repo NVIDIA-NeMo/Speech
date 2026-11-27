@@ -55,19 +55,42 @@ that an old checkpoint is removed even when the current save fails.
 To prevent this, this feature is meant to be used in conjunction with saving top k checkpoints. 
 
 
+Hugging Face Storage Buckets
+============================
+
+Use the S3-compatible gateway to save and restore checkpoints in a Hugging Face
+Storage Bucket with ``S3CheckpointIO``. Create the bucket and generate
+read/write S3 credentials for it. See the
+`Hugging Face gateway setup guide <https://huggingface.co/docs/hub/en/storage-buckets-s3>`_.
+
+Store the generated access key and secret in an AWS credentials profile named
+``hf-checkpoints``. Add the matching profile to your AWS config file, replacing
+``my-org`` with the bucket's Hugging Face namespace.
+
+.. code-block:: ini
+
+    [profile hf-checkpoints]
+    region = us-east-1
+    endpoint_url = https://my-org.s3.hf.co
+    request_checksum_calculation = when_required
+    response_checksum_validation = when_required
+    s3 =
+        addressing_style = path
+
+Set ``AWS_PROFILE=hf-checkpoints`` in the training environment on every worker,
+including when resuming a run. Use an S3 URI with the bucket name and checkpoint
+prefix for both ``S3CheckpointIO`` and the checkpoint callback's ``dirpath``,
+for example ``s3://my-bucket/experiment-1/checkpoints``. The endpoint provides
+the namespace. The URI starts with the bucket name.
+
+
 S3Utils and Dependencies
 ========================
 
-This utility class is used by the S3CheckpoinIO and the exp_manager to do S3-related operations. 
-It has dependencies on 
-
-1. boto3[crt]
-
-2. s3fs==0.4.2
-
-3. tenacity
-
-If any of these are missing, this class can't be used. 
+``S3CheckpointIO`` and ``exp_manager`` use ``S3Utils`` for S3 operations.
+``S3Utils`` requires ``boto3`` and ``tenacity``. AWS CRT support is optional.
+Install a compatible version of ``s3fs`` when the Lightning checkpoint
+callback needs to access an S3 checkpoint directory through fsspec.
 
 
 

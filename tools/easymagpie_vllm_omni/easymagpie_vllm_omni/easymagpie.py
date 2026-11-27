@@ -35,11 +35,7 @@ from typing import Any, Optional
 
 import torch
 from easymagpie_vllm_omni.acoustic_predictor import create_acoustic_predictor
-from easymagpie_vllm_omni.backbone_patches import (
-    patch_mamba_streaming_decode,
-    patch_moe_routed_scale,
-    patch_shared_expert_activation,
-)
+from easymagpie_vllm_omni.backbone_patches import patch_shared_expert_activation
 from easymagpie_vllm_omni.codec.encoder import EasyMagpieCodecEncoder
 from easymagpie_vllm_omni.codec.encoder_config import EasyMagpieCodecEncoderConfig
 from easymagpie_vllm_omni.config import NO_AUDIO_FRAME, EasyMagpieOmniArch
@@ -188,21 +184,7 @@ class EasyMagpieTTSForConditionalGeneration(
             vllm_config=vllm_config,
             prefix=maybe_prefix(prefix, "backbone"),
         )
-        # vLLM 0.24's NemotronHMLP hard-codes ReLU² in shared_experts,
-        # ignoring the checkpoint's mlp_hidden_act. Restore the configured
-        # activation (no-op when the backbone has no MoE layers).
         patch_shared_expert_activation(self.backbone)
-        # vLLM's FusedMoE defers routed_scaling_factor to the decoder layer in
-        # FP16, but NemotronH's decoder layer never compensates, so the MoE
-        # output is under-scaled by routed_scaling_factor. Restore it (no-op in
-        # fp32/bf16 and when there are no MoE layers).
-        patch_moe_routed_scale(self.backbone)
-        # The streaming-input path keeps extending the prompt, so vLLM's Mamba2
-        # metadata builder would classify every single-token decode step as a
-        # prefill — breaking the FULL decode cudagraph (stale
-        # state_indices_tensor_d). Force single-token extends to classify as
-        # decodes so FULL/FULL_DECODE_ONLY cudagraphs read the right Mamba slot.
-        patch_mamba_streaming_decode()
 
         # ── Architecture-selected acoustic predictor ───────────────────
         with set_model_tag(arch.acoustic_predictor_type):

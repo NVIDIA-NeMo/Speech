@@ -310,9 +310,6 @@ def talker2code2wav_async_chunk(
             # instead of a Python list round-trip.
             frame_row = frame.detach().to(device="cpu", dtype=torch.long).reshape(-1).contiguous()
             frame_buffer[request_id].append(frame_row)
-            # Keep the framework buffer populated too (some connector bookkeeping
-            # counts active requests by its non-empty per-request lists).
-            transfer_manager.code_prompt_token_ids[request_id].append(frame_row)
     elif not finished:
         return None
 

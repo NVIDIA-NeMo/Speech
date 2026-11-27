@@ -45,7 +45,10 @@ pytest tests/collections/tts -m unit -v                  # TTS unit tests
 pytest -k "test_name" tests/                             # Single test by name
 ```
 
-Markers: `unit`, `integration`, `system`, `pleasefixme` (broken — skip), `skipduringci`.
+Markers: `unit`, `integration`, `system`, `gpu`, `pleasefixme` (broken — skip), `skipduringci`.
+
+Mark tests that exercise CUDA with `@pytest.mark.gpu`: on pull requests the GPU CI jobs run only those tests, and every
+test runs in the CPU jobs. See "GPU tests" in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## CI & PRs
 
@@ -89,7 +92,41 @@ git push --force-with-lease
 Before running these commands, the contributor must configure `user.name` and `user.email` to the real name and
 email used to author their commits. Reviewers must not rewrite an external contributor's commits on their behalf.
 
+### Maintainer design rules
+
+Follow these when writing code; reviews enforce them. The full rubric is
+[`.claude/skills/nemo-speech-pr-review/SKILL.md`](.claude/skills/nemo-speech-pr-review/SKILL.md).
+
+- **Never lose data silently.** Raise on unsupported inputs instead of warning and continuing. Strict is the
+  default; fault tolerance is opt-in.
+- **Keep metadata in sync.** Anything that changes audio updates sampling rate, durations, and supervisions.
+- **Protect released checkpoints, not new code.** Add new behavior as a new class or opt-in option instead of
+  editing what released models use. Brand-new code gets no compatibility shims.
+- **Reuse before adding.** Extend existing code instead of writing a parallel path. If new behavior is better,
+  adopt it without a flag. Never hardcode model names in shared code.
+- **Keep layers separate.** Core model methods take and return tensors; audio loading belongs in the dataloader
+  or in high-level APIs such as `transcribe()`.
+- **Data loading.** Keep manifests lazy and cuts immutable. Create and seed the RNG in `__iter__`, never the
+  global RNG.
+- **Optional dependencies never break `import nemo`.** Import them locally behind `is_module_available`.
+
 ## Documentation
+
+### Writing rules
+
+These rules apply to documentation, inline docstrings, and code comments; violations must be fixed before approval.
+
+- **Refine after drafting.** After the initial writing pass, analyze and refine the text to distill its absolute
+  essence; remove anything the reader does not need.
+- **Assume very limited context retention.** Make every line readable without remembering distant text or knowing
+  the author's setup; use explicit subjects and short, direct sentences.
+- **Lead with the key insight.** Start every paragraph with its essential information, ideally in a single sentence;
+  keep each following sentence only when it adds information necessary to understand or use that insight.
+- **Never include implementation details.** Describe user-visible contracts or intent, not implementation mechanics.
+- **Keep comments short.** Use detailed multi-line comments only to explain intent and add information that cannot
+  be learned by reading the code; never narrate what the code does.
+- **Reject experiment-specific context.** Accept only generally relevant information, not details tied to someone's
+  experiment, local environment, or one-off setup.
 
 Sphinx-based docs live in `docs/source/`. Build with:
 

@@ -85,6 +85,7 @@ def test_router_uses_fp32_operands_and_preserves_loader(specialized):
     gate.FP32_SUPPORTED_SHAPES = {(3, 2)}
     for name in (
         "allow_ll_bf16_gemm",
+        "allow_ll_fp32w_gemm",
         "allow_dsv3_router_gemm",
         "allow_cublas_router_gemm",
         "allow_bf16x3_router_gemm",
@@ -99,6 +100,7 @@ def test_router_uses_fp32_operands_and_preserves_loader(specialized):
         getattr(gate, name)
         for name in (
             "allow_ll_bf16_gemm",
+            "allow_ll_fp32w_gemm",
             "allow_dsv3_router_gemm",
             "allow_cublas_router_gemm",
             "allow_bf16x3_router_gemm",
@@ -130,6 +132,10 @@ def test_real_vllm_router_dispatch_matches_fp32_linear(monkeypatch):
     gate.weight = nn.Parameter(torch.empty(2, 3, dtype=torch.bfloat16))
     gate.bias = None
     gate.allow_specialized_router_gemm = False
+    # Set by __init__ for an unquantized CUDA gate; read by GateLinear.forward in vLLM 0.32.
+    gate.is_unquantized = True
+    gate.allow_rocm_bf16x3_router_gemm = False
+    gate.return_bias = True
     _promote_router_precision(gate)
     observed = []
 

@@ -261,6 +261,7 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
             use_cer=self._cfg.get('use_cer', False),
             log_prediction=self._cfg.get('log_prediction', True),
             dist_sync_on_step=True,
+            wer_text_normalize=self._cfg.get('wer_text_normalize', False),
         )
 
         # Setup fused Joint step if flag is set
@@ -339,7 +340,11 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
         self.decoder = EncDecRNNTBPEModel.from_config_dict(new_decoder_config)
 
         del self.loss
-        self.loss = RNNTLoss(num_classes=self.joint.num_classes_with_blank - 1)
+        if self.joint.uses_turbo_kernel:
+            # the default loss can't be computed from the log-probabilities returned by the Joint turbo kernel
+            self.loss = self._make_loss_for_joint_turbo_kernel()
+        else:
+            self.loss = RNNTLoss(num_classes=self.joint.num_classes_with_blank - 1)
 
         if decoding_cfg is None:
             # Assume same decoding config as before
@@ -364,6 +369,7 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
             use_cer=self.wer.use_cer,
             log_prediction=self.wer.log_prediction,
             dist_sync_on_step=True,
+            wer_text_normalize=self.wer.wer_text_normalize,
         )
 
         # Setup fused Joint step
@@ -418,6 +424,7 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
             use_cer=self.wer.use_cer,
             log_prediction=self.wer.log_prediction,
             dist_sync_on_step=True,
+            wer_text_normalize=self.wer.wer_text_normalize,
         )
 
         # Setup fused Joint step

@@ -18,7 +18,7 @@ import os
 import tarfile
 from abc import ABC, abstractmethod
 from pathlib import PurePosixPath
-from typing import List
+from typing import List, Optional
 
 import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
@@ -28,12 +28,14 @@ import nemo.collections.asr.models as asr_models
 from nemo.collections.asr.parts.mixins.asr_adapter_mixins import ASRAdapterModelMixin
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.utils import asr_module_utils
+from nemo.collections.asr.parts.utils.prompt_language_utils import resolve_prompt_index
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.tokenizer_utils import (
     extract_capitalized_tokens_from_vocab,
     extract_punctuation_from_vocab,
 )
 from nemo.collections.common import tokenizers
+from nemo.collections.common.parts.utils import ModuleBlock
 from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.utils import app_state, logging
 from nemo.utils.file_utils import robust_copy
@@ -528,6 +530,7 @@ class ASRModuleMixin(ASRAdapterModelMixin):
         update_config: bool = True,
         rope_base: float = None,
         rotary_fraction: float = None,
+        self_attn: ModuleBlock | None = None,
     ):
         """
         Update the self_attention_model if function is available in encoder.
@@ -557,8 +560,17 @@ class ASRModuleMixin(ASRAdapterModelMixin):
                 ``self_attention_model='rope'``. If None, the existing value is kept.
             rotary_fraction (float): Fraction of the per-head dim to rotate. Only used when
                 ``self_attention_model='rope'``. If None, the existing value is kept.
+            self_attn: the block the new attention layers are built from, see `ConformerEncoder.change_attention_model`;
+                an encoder built from a `self_attn` block needs a new block here to change its attention model,
+                and with `update_config` the block must be a Hydra section.
         """
-        if self_attention_model is None and att_context_size is None and rope_base is None and rotary_fraction is None:
+        if (
+            self_attention_model is None
+            and att_context_size is None
+            and rope_base is None
+            and rotary_fraction is None
+            and self_attn is None
+        ):
             return
 
         if not hasattr(self, 'encoder'):
@@ -579,6 +591,7 @@ class ASRModuleMixin(ASRAdapterModelMixin):
             device=self.device,
             rope_base=rope_base,
             rotary_fraction=rotary_fraction,
+            self_attn=self_attn,
         )
         if update_config:
             with open_dict(self.cfg):
@@ -587,6 +600,8 @@ class ASRModuleMixin(ASRAdapterModelMixin):
                 if self.encoder.self_attention_model == 'rope':
                     self.cfg.encoder.rope_base = self.encoder._cfg.rope_base
                     self.cfg.encoder.rotary_fraction = self.encoder._cfg.rotary_fraction
+                if self_attn is not None:
+                    self.cfg.encoder.self_attn = self.encoder._cfg.self_attn
 
     def change_subsampling_conv_chunking_factor(
         self, subsampling_conv_chunking_factor: int, update_config: bool = True
@@ -739,12 +754,33 @@ class ASRModuleMixin(ASRAdapterModelMixin):
                     all_hyp_or_transcribed_texts.append(decoded_out[0])
             best_hyp = None
         else:
-            best_hyp = self.decoding.rnnt_decoder_predictions_tensor(
-                encoder_output=encoded,
-                encoded_lengths=encoded_len,
-                return_hypotheses=True,
-                partial_hypotheses=previous_hypotheses,
-            )
+            restart_token_ids = getattr(self.decoding, 'restart_token_ids', None)
+            if restart_token_ids:
+                if not hasattr(self, 'decode_chunk_with_restart'):
+                    raise NotImplementedError(f"`restart_after_tokens` is not supported by {type(self).__name__}.")
+                if bypass_pre_encode:
+                    raise NotImplementedError("`restart_after_tokens` is not supported with `bypass_pre_encode`.")
+                hyps, (cache_last_channel_next, cache_last_time_next, cache_last_channel_next_len) = (
+                    self.decode_chunk_with_restart(
+                        encoded=encoded,
+                        encoded_len=encoded_len,
+                        processed_signal=processed_signal,
+                        processed_signal_length=processed_signal_length,
+                        hypotheses=previous_hypotheses,
+                        caches=(cache_last_channel_next, cache_last_time_next, cache_last_channel_next_len),
+                        restart_token_ids=restart_token_ids,
+                        keep_all_outputs=keep_all_outputs,
+                        drop_extra_pre_encoded=drop_extra_pre_encoded or 0,
+                    )
+                )
+                best_hyp = self.decoding.postprocess_hypotheses(hyps, return_hypotheses=True)
+            else:
+                best_hyp = self.decoding.rnnt_decoder_predictions_tensor(
+                    encoder_output=encoded,
+                    encoded_lengths=encoded_len,
+                    return_hypotheses=True,
+                    partial_hypotheses=previous_hypotheses,
+                )
             greedy_predictions = [hyp.y_sequence for hyp in best_hyp]
 
             all_hyp_or_transcribed_texts = best_hyp
@@ -969,7 +1005,24 @@ class PromptStreamingMixin:
             torch.nn.Linear(proj_out_size * 2, proj_out_size),
         )
 
-    def set_inference_prompt(self, target_lang: str):
+    def resolve_prompt_language(self, target_lang: Optional[str]) -> int:
+        """Map a language name to its prompt index.
+
+        Accepts an exact ``prompt_dictionary`` key (``"de-DE"``, ``"de"``) or a bare language code
+        that matches exactly one locale key. None selects the language-agnostic ``"auto"`` prompt.
+
+        Args:
+            target_lang: Language name, or None for the language-agnostic prompt.
+
+        Returns:
+            (int) Index into the prompt one-hot vector.
+
+        Raises:
+            ValueError: If the language is not supported by the model, or is ambiguous.
+        """
+        return resolve_prompt_index(target_lang, self.cfg.model_defaults.get('prompt_dictionary') or {})
+
+    def set_inference_prompt(self, target_lang: Optional[str]):
         """
         Set the language prompt for streaming inference.
 
@@ -978,17 +1031,10 @@ class PromptStreamingMixin:
         ``change_decoding_strategy``.
 
         Args:
-            target_lang: A key from the model's ``prompt_dictionary``
+            target_lang: Language name, resolved by :meth:`resolve_prompt_language`
                          (e.g. ``"en-US"``, ``"auto"``).
         """
-        prompt_dict = self.cfg.model_defaults.get('prompt_dictionary', {})
-        if target_lang not in prompt_dict:
-            available = list(prompt_dict.keys())
-            raise ValueError(
-                f"Unknown target language '{target_lang}'. "
-                f"Available: {available[:20]}{'...' if len(available) > 20 else ''}"
-            )
-        self._inference_prompt_index = prompt_dict[target_lang]
+        self._inference_prompt_index = self.resolve_prompt_language(target_lang)
         logging.info(f"Inference prompt set to '{target_lang}' (index {self._inference_prompt_index})")
 
     def _apply_prompt_to_encoded(self, encoded: Tensor) -> Tensor:
@@ -1022,3 +1068,18 @@ class PromptStreamingMixin:
         out_dtype = encoded.dtype
         encoded = self.prompt_kernel(torch.cat([encoded, prompt], dim=-1)).to(out_dtype)
         return encoded.transpose(1, 2)  # (B, T, D) -> (B, D, T)
+
+    def _transcribe_chunk_batch(self, audio, lengths, cuts, trcfg):
+        """Retain each utterance's language prompt when its chunks share an inference batch."""
+        languages = [
+            (
+                trcfg.target_lang
+                if trcfg.target_lang is not None
+                else (cut.supervisions[0].language if cut is not None and cut.supervisions else None)
+            )
+            for cut in cuts
+        ]
+        indices = torch.tensor(
+            [self.resolve_prompt_language(lang) for lang in languages], device=audio.device, dtype=torch.long
+        )
+        return audio, lengths, None, None, indices

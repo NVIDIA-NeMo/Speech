@@ -100,6 +100,7 @@ def load_pretrained_automodel_llm(
         model_path_or_name,
         kwargs,
         trust_remote_code=trust_remote_code,
+        mtp_config_overrides=mtp_config_overrides,
     )
 
     use_repeated_mtp = bool(kwargs.get("mtp_use_repeated_layer", False))
@@ -141,7 +142,13 @@ def load_pretrained_automodel_llm(
             )
         if initialize_fresh_mtp:
             for name, value in mtp_config_overrides.items():
-                setattr(config, name, value)
+                try:
+                    setattr(config, name, value)
+                except AttributeError as e:
+                    raise AttributeError(
+                        f"Cannot set MTP config field '{name}' on {type(config).__name__}; "
+                        "set ++model.trust_remote_code=true to enable MTP on this backbone."
+                    ) from e
         model = NeMoAutoModelForCausalLM.from_config(
             config,
             torch_dtype=dtype,
@@ -352,6 +359,7 @@ def setup_independent_speaker_encoder(model: torch.nn.Module):
         asr_chunk_size_seconds=cfg.get("asr_chunk_size_seconds", None),
         auxiliary_chunk_size_seconds=cfg.get("chunk_size_seconds", None),
         freeze_auxiliary=cfg.get("frozen", True),
+        allow_padded_fallback=cfg.get("allow_padded_fallback", False),
     )
     dual.auxiliary_encoder_config = OmegaConf.to_container(speaker_config, resolve=True)
 
@@ -826,6 +834,13 @@ def _is_dcp_checkpoint(path: str) -> bool:
     return os.path.isdir(path) and os.path.exists(os.path.join(path, ".metadata"))
 
 
+def _model_has_dtensors(model: torch.nn.Module) -> bool:
+    """Return whether any model parameter or buffer is a DTensor."""
+    from torch.distributed.tensor import DTensor
+
+    return any(isinstance(value, DTensor) for values in (model.parameters(), model.buffers()) for value in values)
+
+
 def init_from_training_checkpoint(model: torch.nn.Module, checkpoint_path: str):
     """Initialize model weights from a previous training checkpoint.
 
@@ -870,6 +885,20 @@ def init_from_training_checkpoint(model: torch.nn.Module, checkpoint_path: str):
             dcp.load(state_dict, checkpoint_id=str(checkpoint_path))
         model.load_state_dict(state_dict["state_dict"])
         logging.info(f"Loaded distributed checkpoint from {checkpoint_path}")
+    elif Path(checkpoint_path).is_dir() and _model_has_dtensors(model):
+        # A regular load_state_dict cannot copy CPU tensors into parameters
+        # that FSDP2 has already converted to DTensors. Reuse the HF storage
+        # reader so DCP narrows every safetensors value to its local shard and
+        # writes it directly into the existing DTensor storage.
+        from nemo.collections.speechlm2.parts.hf_hub import _load_state_dict_with_dtensors
+
+        strict = bool(model.cfg.get("init_from_checkpoint_strict", True))
+        _load_state_dict_with_dtensors(model, checkpoint_path, strict=strict)
+        logging.info(
+            "Loaded Hugging Face checkpoint into DTensor model from %s (strict=%s)",
+            checkpoint_path,
+            strict,
+        )
     else:
         init_model_from_checkpoint(model, checkpoint_path)
 

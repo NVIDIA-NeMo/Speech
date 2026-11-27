@@ -37,6 +37,7 @@ EVALSET_ENTRY_KEYS = frozenset(
         "language",
         "asr_model",
         "strip_text_annotations_for_metrics",
+        "precomputed_context_audio_embedding_key",
     }
 )
 
@@ -98,6 +99,7 @@ def validate_evalset_entry(info: dict, dataset_name: Optional[str] = None) -> No
     - ``language``: non-empty string without surrounding whitespace (remove the key to use the CLI-level language).
     - ``asr_model``: ``{"name": <model name or .nemo path>, "type": <one of ASR_MODEL_TYPES>}``.
     - ``strip_text_annotations_for_metrics``: JSON boolean.
+    - ``precomputed_context_audio_embedding_key``: non-empty embedding-table key; ``__zero__`` selects empty audio context.
 
     Absent keys are fine. A JSON ``null`` is rejected like any other wrong type, so that a broken override cannot
     silently fall back to the default or CLI-level value. Used by ``load_evalset_config``
@@ -111,6 +113,10 @@ def validate_evalset_entry(info: dict, dataset_name: Optional[str] = None) -> No
         ValueError: If a recognized key has a malformed value.
     """
     prefix = f"Dataset {dataset_name}: " if dataset_name is not None else "Evalset entry: "
+    if "precomputed_context_audio_embedding_key" in info:
+        value = info["precomputed_context_audio_embedding_key"]
+        if not isinstance(value, str) or not value or value != value.strip():
+            raise ValueError(f"{prefix}'precomputed_context_audio_embedding_key' must be a non-empty string.")
     if "strip_text_annotations_for_metrics" in info:
         value = info["strip_text_annotations_for_metrics"]
         if not isinstance(value, bool):

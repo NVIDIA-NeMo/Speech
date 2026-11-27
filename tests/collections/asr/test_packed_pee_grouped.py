@@ -17,7 +17,7 @@ import torch
 from omegaconf import OmegaConf
 
 from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, pack_encoder_output
-from tests.collections.asr.test_parallel_expert_encoder_two_branch import (
+from tests.collections.asr.test_parallel_expert_encoder import (
     _MEL_FEATURES,
     _N_SPK,
     build_toy_packed_pe_encoder,

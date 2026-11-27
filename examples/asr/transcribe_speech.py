@@ -142,6 +142,7 @@ class TranscriptionConfig:
 
     # Set to True to output greedy timestamp information (only supported models) and returns full alignment hypotheses
     timestamps: Optional[bool] = None
+    chunking: dict[str, float] = field(default_factory=dict)  # empty disables; owned duration/context in seconds
 
     # Set to True to return hypotheses instead of text from the transcribe function
     return_hypotheses: bool = False
@@ -188,6 +189,13 @@ class TranscriptionConfig:
     decoder_type: Optional[str] = None
     # att_context_size can be set for cache-aware streaming models with multiple look-aheads
     att_context_size: Optional[list] = None
+
+    # Language-ID prompt for prompt-conditioned ASR RNNT models: the language spoken in the audio
+    # (e.g. "en", "de-DE", or the language-agnostic "auto"), applied to every utterance. By default
+    # (null) each utterance uses its own manifest language, read from `gt_lang_attr_name`, and "auto"
+    # when it names none. A language the model does not support raises an error. Ignored by models
+    # without prompt conditioning.
+    target_lang: Optional[str] = None
 
     # Use this for model-specific changes before transcription
     model_change: ModelChangeConfig = field(default_factory=ModelChangeConfig)
@@ -418,8 +426,14 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
             override_cfg.text_field = cfg.gt_text_attr_name
             override_cfg.lang_field = cfg.gt_lang_attr_name
             override_cfg.timestamps = cfg.timestamps
+            if cfg.chunking:
+                override_cfg.chunking = cfg.chunking
             if hasattr(override_cfg, "prompt"):
                 override_cfg.prompt = parse_multitask_prompt(OmegaConf.to_container(cfg.prompt))
+            # Prompt-conditioned RNNT models: forward the language-ID prompt. None is forwarded too,
+            # since it asks for each utterance's own manifest language.
+            if hasattr(override_cfg, "target_lang"):
+                override_cfg.target_lang = cfg.target_lang
 
             device = next(asr_model.parameters()).device
             for run_step in range(cfg.warmup_steps + cfg.run_steps):

@@ -38,24 +38,8 @@ from tests.collections.speechlm2._chunking_helpers import (
 requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="SALMAutomodel requires CUDA")
 
 
-@pytest.fixture(autouse=True, scope="module")
-def _default_device_cuda():
-    """Run this module's tests on CUDA by default, but scope the change so it does
-    not leak. ``torch.set_default_device`` is a global, process-wide mutation; setting
-    it at import time bleeds into other modules collected in the same pytest session
-    (e.g. device-agnostic ASR module tests),
-    causing spurious cuda/cpu device-mismatch failures. The previous default device
-    is always restored on teardown.
-    """
-    if not torch.cuda.is_available():
-        yield
-        return
-    prev = torch.get_default_device()
-    torch.set_default_device('cuda')
-    try:
-        yield
-    finally:
-        torch.set_default_device(prev)
+# Run on CUDA when available, without leaking the default device to other test modules (see conftest.py).
+pytestmark = pytest.mark.usefixtures("cuda_default_device")
 
 
 def resolve_pretrained_models():
@@ -77,8 +61,8 @@ AUDIO_LOCATOR_TAG = "<|audioplaceholder|>"
 PROMPT = "qwen"
 
 
-@pytest.fixture(scope="session")
-def model():
+@pytest.fixture(scope="module")
+def model(cuda_default_device):
     if not torch.cuda.is_available():
         pytest.skip("SALMAutomodel requires CUDA")
     cfg = {
@@ -143,18 +127,18 @@ def model():
     return model
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def dataset(model):
     return SALMDataset(model.tokenizer)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def prompt_formatter(model):
     return PromptFormatter.resolve(PROMPT)(model.tokenizer)
 
 
-@pytest.fixture(scope="session")
-def training_cutset_batch():
+@pytest.fixture(scope="module")
+def training_cutset_batch(cuda_default_device):
     cut = dummy_cut(0, recording=dummy_recording(0, with_data=True))
     cut.supervisions = [
         SupervisionSegment(
@@ -177,6 +161,7 @@ def training_cutset_batch():
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_dataset(dataset, prompt_formatter, training_cutset_batch):
     # This first step pre-tokenizes the examples, usually handled within `get_lhotse_dataloder_from_config`.
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
@@ -194,6 +179,7 @@ def test_salm_automodel_dataset(dataset, prompt_formatter, training_cutset_batch
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_training_step(model, dataset, prompt_formatter, training_cutset_batch):
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
     batch = dataset[training_cutset_batch]
@@ -208,6 +194,7 @@ def test_salm_automodel_training_step_uses_dataloader_iter_signature():
     assert list(inspect.signature(SALMAutomodel.training_step).parameters) == ["self", "dataloader_iter"]
 
 
+@pytest.mark.gpu
 def test_salm_automodel_forward_enters_configured_te_fp8_context():
     events = []
 
@@ -238,6 +225,7 @@ def test_salm_automodel_forward_enters_configured_te_fp8_context():
     assert events == ["enter", "forward", "exit"]
 
 
+@pytest.mark.gpu
 def test_salm_automodel_backward_does_not_enter_te_fp8_context(monkeypatch):
     events = []
 
@@ -264,6 +252,7 @@ def test_salm_automodel_backward_does_not_enter_te_fp8_context(monkeypatch):
     assert events == ["setup", "backward"]
 
 
+@pytest.mark.gpu
 def test_salm_automodel_pad_token_override_preserves_eot_labels(monkeypatch):
     seen = {}
 
@@ -302,6 +291,7 @@ def test_salm_automodel_pad_token_override_preserves_eot_labels(monkeypatch):
     assert packed["target_ids"].tolist() == [-100, -100, 42, 11, -100]
 
 
+@pytest.mark.gpu
 def test_salm_automodel_fused_linear_forward_keeps_hidden_states_without_logits():
     class FakeLLM(torch.nn.Module):
         def __init__(self):
@@ -331,6 +321,7 @@ def test_salm_automodel_fused_linear_forward_keeps_hidden_states_without_logits(
     assert outputs["logits"].shape == (1, 5, 0)
 
 
+@pytest.mark.gpu
 def test_salm_automodel_fused_linear_loss_consumes_hidden_states_and_lm_weight():
     calls = []
 
@@ -383,23 +374,29 @@ def test_salm_automodel_notifies_garbage_collection_after_optimizer_step(monkeyp
     assert calls == ["optimizer", "gc"]
 
 
+@pytest.mark.gpu
 def test_salm_automodel_record_training_stats_uses_thd_metadata():
     model = SALMAutomodel.__new__(SALMAutomodel)
-    batch = {"input_ids": torch.zeros(3, 7, dtype=torch.long)}
+    batch = {
+        "input_ids": torch.zeros(21, dtype=torch.long),
+        "text_cu_seqlens": torch.tensor([0, 7, 14, 21]),
+    }
     inputs = {
         "input_embeds": torch.zeros(5, 4),
         "attention_mask": None,
         "num_tokens": torch.tensor(11),
-        "num_examples": torch.tensor(3),
+        "num_examples": torch.tensor(99),
     }
 
     model._record_training_stats(batch, inputs)
 
-    assert model._last_batch_num_tokens == 11
+    assert torch.equal(model._last_batch_num_tokens, torch.tensor(11))
+    assert model._last_batch_num_tokens.data_ptr() == inputs["num_tokens"].data_ptr()
     assert model._last_batch_num_examples == 3
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_validation_step(model, dataset, prompt_formatter, training_cutset_batch):
     model.on_validation_epoch_start()
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
@@ -409,6 +406,7 @@ def test_salm_automodel_validation_step(model, dataset, prompt_formatter, traini
     assert results is None
 
 
+@pytest.mark.gpu
 def test_salm_automodel_validation_epoch_end_uses_token_weighted_metrics():
     model = SALMAutomodel.__new__(SALMAutomodel)
     torch.nn.Module.__init__(model)
@@ -437,6 +435,7 @@ def test_salm_automodel_validation_epoch_end_uses_token_weighted_metrics():
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_generation(model):
     answer = model.generate(
         prompts=[
@@ -462,6 +461,7 @@ def test_salm_automodel_generation(model):
         (None, {}),
     ],
 )
+@pytest.mark.gpu
 def test_salm_automodel_generation_passes_enable_thinking(
     model, monkeypatch, enable_thinking, expected_formatter_kwargs
 ):
@@ -499,6 +499,7 @@ def test_salm_automodel_generation_passes_enable_thinking(
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_generation_audios_via_prompt(model, tmp_path):
     audio_path = tmp_path / "audio.wav"
     dummy_cut(0, with_data=True).save_audio(audio_path)
@@ -523,6 +524,7 @@ def test_salm_automodel_generation_audios_via_prompt(model, tmp_path):
 
 
 @requires_cuda
+@pytest.mark.gpu
 def test_salm_automodel_generation_prompts_as_tensor(model):
     answer = model.generate(
         prompts=torch.tensor([[1, 2, 3, 4, 5, 6, 7, model.audio_locator_tag_id]]),
@@ -773,6 +775,123 @@ def test_salm_automodel_packed_audio_samples_match_padded_batch(device):
 
     torch.testing.assert_close(actual["input_embeds"], expected["input_embeds"], rtol=0.0, atol=0.0)
     assert torch.equal(actual["target_ids"], expected["target_ids"])
+
+
+@pytest.mark.parametrize("device", chunking_test_devices())
+def test_salm_automodel_prepare_inputs_right_pads_padded_batches(device):
+    """Automodel's padded-batch kernels (TE padding attention, Mamba) assume right padding."""
+    model = _make_chunking_test_model(encoder_chunk_size_seconds=None, sampling_rate=2, device=device)
+    pad, audio = model.text_pad_id, model.audio_locator_tag_id
+    batch = {
+        "audios": torch.tensor([[1.0, 2.0, 3.0, 0.0, 0.0], [10.0, 11.0, 12.0, 13.0, 14.0]], device=device),
+        "audio_lens": torch.tensor([3, 5], dtype=torch.long, device=device),
+        "input_ids": torch.tensor([[pad, audio, 10], [audio, 11, 12]], dtype=torch.long, device=device),
+        "loss_mask": torch.tensor([[False, False, True], [False, True, True]], dtype=torch.bool, device=device),
+    }
+
+    inputs = model.prepare_inputs(batch)
+
+    # Row 0 has 4 tokens (3 audio frames + 1 text token), row 1 has 7; each row's last token is not an input.
+    assert torch.equal(
+        inputs["attention_mask"],
+        torch.tensor([[True] * 3 + [False] * 3, [True] * 6], dtype=torch.bool, device=device),
+    )
+    torch.testing.assert_close(
+        inputs["input_embeds"][0, :3, 0], torch.tensor([1.0, 2.0, 3.0], device=device), rtol=0.0, atol=0.0
+    )
+    assert torch.equal(
+        inputs["target_ids"],
+        torch.tensor([[-100, -100, 10, -100, -100, -100], [-100] * 4 + [11, 12]], device=device),
+    )
+
+
+@pytest.mark.gpu
+@requires_cuda
+@pytest.mark.parametrize(
+    "blocks",
+    [["mamba", "attention", "mlp", "mamba", "attention", "mlp"], ["mamba", "attention", "moe", "attention"]],
+)
+def test_salm_automodel_padded_batch_matches_single_sequences_on_nemotron_h(blocks):
+    """Each sequence in a padded batch gets the same logits as when run alone (TE attention + Mamba)."""
+    pytest.importorskip("transformer_engine.pytorch")
+    pytest.importorskip("mamba_ssm")
+    from nemo_automodel.components.models.common import BackendConfig
+    from nemo_automodel.components.models.nemotron_v3.model import NemotronHForCausalLM
+    from transformers import NemotronHConfig
+
+    torch.manual_seed(0)
+    hidden = 256
+    config = NemotronHConfig(
+        layers_block_type=blocks,
+        vocab_size=128,
+        hidden_size=hidden,
+        intermediate_size=512,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=64,
+        mamba_num_heads=8,
+        mamba_head_dim=32,
+        ssm_state_size=16,
+        n_groups=1,
+        mamba_chunk_size=64,
+        n_routed_experts=4,
+        num_experts_per_tok=2,
+        moe_intermediate_size=128,
+        moe_shared_expert_intermediate_size=128,
+        n_group=1,
+        topk_group=1,
+        use_cache=False,
+    )
+    backend = BackendConfig(attn="te", linear="torch", rms_norm="torch", rope_fusion=False)
+    model = _make_chunking_test_model(encoder_chunk_size_seconds=None, sampling_rate=2, device="cuda")
+    model.llm = NemotronHForCausalLM(config, backend=backend).to("cuda", torch.bfloat16).eval()
+    with torch.no_grad():
+        for param in model.llm.parameters():
+            if param.dim() >= 2:
+                param.normal_(0, 0.05)
+    model.perception = _ProjectingTestPerception(model.perception, hidden)
+    model._fused_linear_cross_entropy = None
+
+    pad, audio = model.text_pad_id, model.audio_locator_tag_id
+    audio_lens = [60, 36, 12]
+    audios = torch.zeros(3, max(audio_lens), device="cuda")
+    for row, length in enumerate(audio_lens):
+        audios[row, :length] = torch.randn(length, device="cuda")
+    input_ids = torch.tensor([[audio, 10, 11, 12], [pad, audio, 13, 14], [pad, pad, audio, 15]], device="cuda")
+    loss_mask = input_ids.ne(pad) & input_ids.ne(audio)
+
+    def logits_of(rows):
+        batch = {
+            "audios": audios[rows, : max(audio_lens[r] for r in rows)],
+            "audio_lens": torch.tensor([audio_lens[r] for r in rows], device="cuda"),
+            "input_ids": input_ids[rows],
+            "loss_mask": loss_mask[rows],
+        }
+        with torch.no_grad():
+            inputs = model.prepare_inputs(batch)
+            logits = model(inputs["input_embeds"], attention_mask=inputs["attention_mask"])["logits"].float()
+        return [logits[i][inputs["attention_mask"][i]] for i in range(len(rows))]
+
+    batched = logits_of([0, 1, 2])
+    for row in range(3):
+        (alone,) = logits_of([row])
+        assert batched[row].shape == alone.shape
+        rel_err = ((batched[row] - alone).norm() / alone.norm()).item()
+        assert rel_err < 0.02, f"row {row}: relative logit error {rel_err:.4f}"
+
+
+class _ProjectingTestPerception(torch.nn.Module):
+    """Maps the scalar frames of ``ChunkingTestPerception`` to bf16 LLM-sized embeddings."""
+
+    def __init__(self, inner, hidden):
+        super().__init__()
+        self.inner = inner
+        self.preprocessor = inner.preprocessor
+        self.register_buffer("proj", torch.randn(hidden, device="cuda"))
+
+    def forward(self, *args, **kwargs):
+        frames, lens = self.inner(*args, **kwargs)
+        return (frames * self.proj).to(torch.bfloat16), lens
 
 
 def _make_chunking_test_model(encoder_chunk_size_seconds, sampling_rate, device, hop_length=1):

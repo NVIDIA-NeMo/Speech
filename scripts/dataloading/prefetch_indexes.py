@@ -46,6 +46,14 @@ Examples::
 
 After prefetch, point your training config at the mirror via the top-level
 ``indexes_root: /scratch/idx`` option (no per-source changes required).
+
+``nemo``/``nemo_tarred`` datasets that need native-tar route sidecars (repeated
+``-subN`` rows, filtered manifests, or one manifest paired with several tars)
+get only their offset indexes here. Build the routes into the same mirror
+before training::
+
+    python scripts/dataloading/build_indexes.py \\
+        --indexes-root /scratch/idx path/to/input_cfg.yaml
 """
 
 import logging
@@ -62,7 +70,7 @@ from omegaconf import OmegaConf
 
 # Reuse the discovery + IndexJob machinery from build_indexes.py.
 sys.path.insert(0, str(Path(__file__).parent))
-from build_indexes import IndexJob, discover  # type: ignore[import-not-found]
+from build_indexes import NEMO_TAR_ROUTE, IndexJob, discover  # type: ignore[import-not-found]
 
 
 def _copy_idx(src: str, dst: str) -> None:
@@ -129,6 +137,8 @@ def main(
     Prefetch .idx sidecars referenced by INPUT_CFGS into a local mirror.
 
     INPUT_CFGS are NeMo Lhotse dataloading configs (``input_cfg`` YAML).
+    nemo/nemo_tarred route sidecars are not copied: afterwards, run
+    ``build_indexes.py --indexes-root <same root>`` to build any that are needed.
     """
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -143,6 +153,10 @@ def main(
     seen: set[tuple[str, str]] = set()
     unique: list[IndexJob] = []
     for j in jobs:
+        if j.kind == NEMO_TAR_ROUTE:
+            # Route sidecars are not ``.idx`` mirrors of a data file; build them locally with
+            # build_indexes.py --indexes-root after prefetching.
+            continue
         key = (j.path, j.kind)
         if key not in seen:
             seen.add(key)

@@ -22,10 +22,9 @@ import pytest
 import torch
 from huggingface_hub import hf_hub_download
 
-MODEL_NAME = "nvidia/magpie_tts_multilingual_357m"
+from tests.e2e_nightly.magpie_release_checkpoints import HF_NEMO_FILE, MODEL_NAME, MODEL_RELEASES
+
 NEMO_FILE = "nvidia__magpie_tts_multilingual_357m.nemo"
-HF_NEMO_FILE = "magpie_tts_multilingual_357m.nemo"
-MODEL_RELEASES = ("v2512", "v2602", "v2607")
 
 MODEL_DIR = os.environ.get(
     "NEMO_MODEL_SUPPORT_DIR",

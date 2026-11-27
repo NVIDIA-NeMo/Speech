@@ -16,7 +16,7 @@ import warnings
 from collections import defaultdict
 from itertools import repeat
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import torch
 from lhotse import CutSet
@@ -39,6 +39,7 @@ from transformers import GenerationConfig
 from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.salm_dataset import left_collate_vectors
+from nemo.collections.speechlm2.one_logger import SALMThroughputPolicy
 from nemo.collections.speechlm2.parts.encoder_chunking import encode_audio_with_optional_chunking
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.input_utils import _unpad_inputs
@@ -51,9 +52,13 @@ from nemo.collections.speechlm2.parts.pretrained import (
     setup_speech_encoder,
 )
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
+from nemo.lightning.callback_group import with_model_init_callbacks
+from nemo.lightning.speech_throughput import register_throughput_policy
 from nemo.utils import logging
 
 
+@register_throughput_policy(SALMThroughputPolicy)
+@with_model_init_callbacks
 class SALM(LightningModule, HFHubMixin):
     def __init__(self, cfg) -> None:
         assert isinstance(cfg, dict), (
@@ -217,10 +222,9 @@ class SALM(LightningModule, HFHubMixin):
                 m.eval()
 
         inputs = self.prepare_inputs(batch)
-        # Counters consumed by TrainingStatsCallback. ``attention_mask`` is 1
-        # for every real LLM input position (text non-pad + audio frames
-        # post-perception) and 0 for padding.
-        self._last_batch_num_tokens = int(inputs["attention_mask"].long().sum().item())
+        # Exact work counter consumed by training telemetry callbacks.
+        # The mask covers text and post-perception audio positions, but not padding.
+        self._last_batch_num_tokens = inputs["attention_mask"].long().sum().detach()
         self._last_batch_num_examples = int(inputs["input_embeds"].shape[0])
         forward_outputs = self(inputs["input_embeds"], attention_mask=inputs["attention_mask"])
         num_frames = (inputs["target_ids"] != -100).long().sum()
@@ -580,12 +584,14 @@ def replace_placeholders_and_build_targets(
     placeholder_id: int,
     replacements: list[torch.Tensor],
     target_ids: Optional[torch.Tensor] = None,
+    padding_side: Literal["left", "right"] = "left",
 ) -> tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
     """Replaces each occurrence of the placeholder_id in input_ids with the corresponding tensor
     from the replacements list in the embeds tensor, and creates corresponding adjusted target_ids.
 
-    Note: when padding is necessary, we apply left-padding to the examples not to introduce
-        anomalies at generation time.
+    Note: by default, we apply left-padding to the examples not to introduce anomalies at generation time.
+        Use ``padding_side="right"`` for training-time forward passes through backends whose padding masks
+        assume right padding (e.g. Transformer Engine attention and Mamba layers).
 
     Args:
       input_ids (Tensor): shape (batch, sequence_length); input token ids.
@@ -594,6 +600,8 @@ def replace_placeholders_and_build_targets(
       placeholder_id (int): an id to be replaced.
       replacements (list of Tensor): each Tensor has shape (L_i, hidden_dim), with L_i arbitrary.
       target_ids (Tensor): shape (batch, sequence_length); target token ids.
+      padding_side (str): ``"left"`` places each example at the end of its output row,
+        ``"right"`` places it at the start.
 
     Returns:
       Tuple[Tensor, Tensor, Tensor]:
@@ -606,6 +614,8 @@ def replace_placeholders_and_build_targets(
         - Tensor of shape (batch, max_new_sequence_length) with attention padding masks
           updated to account for shape changes due to replacements.
     """
+    if padding_side not in ("left", "right"):
+        raise ValueError(f"padding_side must be 'left' or 'right', got {padding_side!r}")
     batch_size, seq_len = input_ids.size()
     if target_ids is not None:
         assert target_ids.size() == input_ids.size(), "target_ids must have the same shape as input_ids"
@@ -701,10 +711,11 @@ def replace_placeholders_and_build_targets(
         output_target_ids = repeat(None)
     for i, (seq, tgt, att) in enumerate(zip(output_sequences, output_target_ids, output_att_masks)):
         seq_len = seq.size(0)
-        output[i, -seq_len:] = seq
+        row = slice(max_seq_length - seq_len, None) if padding_side == "left" else slice(0, seq_len)
+        output[i, row] = seq
         if tgt is not None:
-            new_target_ids[i, -seq_len:] = tgt
-        attention_masks[i, -seq_len:] = att
+            new_target_ids[i, row] = tgt
+        attention_masks[i, row] = att
 
     return output, new_target_ids, attention_masks
 

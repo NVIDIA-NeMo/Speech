@@ -40,7 +40,7 @@ from lhotse.dataset import (
 )
 from lhotse.dataset.dataloading import resolve_seed
 from lhotse.dataset.sampling.base import CutSampler, SamplingConstraint, TimeConstraint
-from lhotse.lazy import LazyFlattener
+from lhotse.lazy import IteratorNode, LazyFlattener
 from lhotse.utils import fix_random_seed
 from omegaconf import DictConfig, OmegaConf
 
@@ -59,7 +59,9 @@ from nemo.collections.common.data.lhotse.sampling import (
     BucketingFilter,
     CERFilter,
     ContextSpeakerSimilarityFilter,
+    CustomFieldFilter,
     DurationFilter,
+    DurationTokenBinsFilter,
     FixedBucketBatchSizeConstraint2D,
     MultimodalFixedBucketBatchSizeConstraint2D,
     MultimodalSamplingConstraint,
@@ -73,6 +75,10 @@ from nemo.collections.common.data.prompt_fn import apply_prompt_format_fn
 from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.common.tokenizers.aggregate_tokenizer import TokenizerWrapper
 from nemo.utils import logging
+
+# Candidates considered by packed best-fit batching when packing_buffer_size is unset.
+# Smaller buffers find fewer exact fits and leave more of each token budget empty.
+DEFAULT_PACKING_BUFFER_SIZE = 1024
 
 
 @dataclass
@@ -115,7 +121,7 @@ class LhotseDataLoadingConfig:
     # without bucketing. This is independent of bucket_buffer_size, which caps
     # total occupancy across all buckets.
     # Explicit legacy shuffle_buffer_size values are copied here during schema
-    # merge; otherwise packed sampling uses a safe 128-candidate default.
+    # merge; otherwise packed sampling uses DEFAULT_PACKING_BUFFER_SIZE candidates.
     packing_buffer_size: int | None = None
     concurrent_bucketing: bool = True  # fetches data in a background thread
     bucketing_2d_strict_mode: bool = True  # reduces padding by discarding significant outliers
@@ -147,6 +153,10 @@ class LhotseDataLoadingConfig:
     # supersedes token_equivalent_duration for constraints and token filters.
     audio_token_estimator: Any = None
     batch_tokens: int | None = None
+    # A second cap of a packed batch on its total output tokens
+    # (the supervision tokens of cuts, the answer tokens of prompted examples), besides batch_tokens.
+    # Packed sequence sampling only.
+    batch_output_tokens: int | None = None
     # Use sum-of-lengths rather than padded batch-size-times-maximum accounting.
     # Enable this when the encoder consumes packed sequences.
     use_packed_sequence_sampling: bool = False
@@ -161,6 +171,10 @@ class LhotseDataLoadingConfig:
     max_duration: float | None = float("inf")
     min_tps: int = -1  # allowed tokens per second (audio-only)
     max_tps: Any = float("inf")  # float | list[float]
+    # Keeps the cuts that fit one of these (max duration, max tokens) bins under the rule of strict 2D bucketing,
+    # without bucketing by them; the format of two-dimensional bucket_duration_bins for audio.
+    # A max_tps list is applied per bin as 2D bucketing applies it.
+    filter_duration_bins: Any = None  # list[list[float]] | None = None
     #   * Text input
     min_tokens: int | None = None
     max_tokens: int | None = None
@@ -178,6 +192,16 @@ class LhotseDataLoadingConfig:
 
     # 2.4 Filters on validation status. If the validation status is not "pass", the cut will be filtered out.
     keep: str = "pass"
+
+    # 2.5 Filter on custom fields of a cut (``cut.custom``; for NeMo manifests, the additional keys
+    # of a row, plus the tags of input_cfg).
+    # Maps a field name to its condition: a value to keep, e.g. {verified: true},
+    # or operators with operands (eq, neq, gt, ge, lt, le, in), e.g. {snr: {gt: 5.0, le: 10.5}}.
+    # A cut is kept when all conditions hold. A cut without the field is kept,
+    # unless the condition sets keep_if_missing: false.
+    # Unlike ``_skipme`` in a NeMo manifest row, which the reader applies before it builds the cut,
+    # this selects per config and after the reader; see docs/source/dataloaders.rst for when to use which.
+    custom_field_filter: dict[str, Any] | None = None
 
     # 3. Supported existing NeMo options.
     shuffle: bool = False
@@ -721,6 +745,17 @@ def get_lhotse_dataloader_from_multi_config(
         top_level_config["seed"] = resolve_seed(top_level_config["seed"])
         return OmegaConf.create({k: top_level_config.get(k, defaults[k]) for k in overwriting_opts})
 
+    if top_level_config.get("custom_field_filter") is not None:
+        raise ValueError(
+            "custom_field_filter is not shared by the sub-configs of a multi_config setup; "
+            "set it in each sub-config it should apply to."
+        )
+    if top_level_config.get("filter_duration_bins") is not None:
+        raise ValueError(
+            "filter_duration_bins is not shared by the sub-configs of a multi_config setup; "
+            "set it in each sub-config it should apply to."
+        )
+
     shared_opts = gather_shared_opts()
     dataset = configure_dataset_audio_loading(dataset, shared_opts.fault_tolerant_audio_loading)
     fix_random_seed(shared_opts.seed)
@@ -817,6 +852,11 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     # 1. Load a manifest as a Lhotse CutSet.
     cuts, use_iterable_dataset = read_cutset_from_config(config)
     use_iterable_dataset = determine_use_iterable_dataset(use_iterable_dataset, config)
+    source_cuts = cuts
+
+    # Custom field filtering comes first, so that rejected cuts are not tokenized.
+    if config.custom_field_filter:
+        cuts = cuts.filter(CustomFieldFilter(config.custom_field_filter))
 
     # Map-style + StatefulDataLoader requires shard_seed to be a fixed integer:
     #   * On the map path, cross-rank de-duplication is by ``rank/world_size``
@@ -909,12 +949,16 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
         noise = guess_parse_cutset(config.noise_path)
         # make sure the noise is resampled to the same sample rate as the audio cuts
         noise = noise.resample(config.sample_rate)
+        # preserve_id="left": a noisy cut keeps its source cut's ID. Otherwise Lhotse draws the ID from a
+        # process-global UUID stream that isn't part of the dataloader state, so IDs (and any per-cut seed
+        # derived from them) would differ between an uninterrupted run and a resumed one.
         cuts = cuts.mix(
             cuts=noise,
             snr=tuple(config.noise_snr),
             mix_prob=config.noise_mix_prob,
             seed=config.shard_seed,
             random_mix_offset=True,
+            preserve_id="left",
         )
 
     # 2.b. On-the-fly speed perturbation.
@@ -973,6 +1017,13 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     if tokenizer is not None and config.pretokenize:
         cuts = cuts.filter(TokenPerSecondFilter(config.min_tps, config.max_tps))
         cuts = cuts.filter(TokenPerTokenFilter(config.min_tpt, config.max_tpt))
+    if config.filter_duration_bins is not None:
+        cuts = cuts.filter(
+            DurationTokenBinsFilter(
+                config.filter_duration_bins,
+                max_tps=config.max_tps if isinstance(config.max_tps, Sequence) else None,
+            )
+        )
 
     # Select the strategy customizing Lhotse sampler behaviour.
     # Provides support for dynamic batch sizes, multimodal dataloading, 2D bucketing, etc.
@@ -1002,7 +1053,7 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
         if use_exact_packed_sampler:
             packing_buffer_size = config.packing_buffer_size
             if packing_buffer_size is None:
-                packing_buffer_size = 128
+                packing_buffer_size = DEFAULT_PACKING_BUFFER_SIZE
             sampler_kwargs["packing_buffer_size"] = packing_buffer_size
         else:
             sampler_kwargs["shuffle_buffer_size"] = config.shuffle_buffer_size
@@ -1035,7 +1086,7 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
         if config.use_packed_sequence_sampling:
             packing_buffer_size = config.packing_buffer_size
             if packing_buffer_size is None:
-                packing_buffer_size = 128
+                packing_buffer_size = DEFAULT_PACKING_BUFFER_SIZE
             sampler_kwargs["packing_buffer_size"] = packing_buffer_size
         else:
             sampler_kwargs["shuffle_buffer_size"] = config.shuffle_buffer_size
@@ -1048,6 +1099,13 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
             rank=0 if use_iterable_dataset else global_rank,
             world_size=1 if use_iterable_dataset else world_size,
             **sampler_kwargs,
+        )
+
+    if use_iterable_dataset:
+        # Validate after sampler selection: whether the sampler shuffles depends on the selected class
+        # (e.g. PackedSequenceDynamicCutSampler never shuffles), not only on ``config.shuffle``.
+        _validate_iterable_shard_seed(
+            config, source_cuts, world_size, sampler_shuffles=bool(getattr(sampler, "shuffle", False))
         )
 
     if config.concatenate_samples:
@@ -1156,6 +1214,7 @@ def determine_sampling_constraint(
                     audio_token_estimator=audio_token_estimator,
                     batch_size=config.batch_size,
                     batch_tokens=config.batch_tokens,
+                    batch_output_tokens=config.batch_output_tokens,
                     bucket_duration_bins=bucket_duration_bins,
                     bucket_batch_size=config.bucket_batch_size,
                     quadratic_factor=config.quadratic_factor,
@@ -1179,6 +1238,7 @@ def determine_sampling_constraint(
                 audio_token_estimator=audio_token_estimator,
                 batch_size=config.batch_size,
                 batch_tokens=config.batch_tokens,
+                batch_output_tokens=config.batch_output_tokens,
                 quadratic_factor=config.quadratic_factor,
                 measure_total_length=config.measure_total_length,
                 use_packed_sequence_sampling=config.use_packed_sequence_sampling,
@@ -1455,3 +1515,88 @@ def _cut_text_into_windows(cut, num_tokens: int, tokenizer) -> list:
         )
         ans.append(new_cut)
     return ans
+
+
+def _validate_iterable_shard_seed(config: DictConfig, cuts: CutSet, world_size: int, sampler_shuffles: bool) -> None:
+    """Reject integer shard seeds that make every worker of a non-indexed iterable pipeline yield the same stream.
+
+    On the iterable path the sampler runs independently in every dataloading worker on every rank. Non-indexed
+    sources (NeMo tarred, Lhotse Shar, Parquet, plain JSONL streams) yield different streams per worker only when
+    something on their path is shuffled with a per-worker seed (``"trng"`` or ``"randomized"``). When the order is
+    instead fixed by an integer seed, every worker yields the same stream and each batch is seen
+    ``num_workers * world_size`` times. Indexed sources partition indices by ``(rank, worker_id)`` and are safe.
+
+    The check inspects the resolved reader graph, so per-source ``shard_seed``/``shuffle`` overrides in ``input_cfg``
+    are honoured: a source that shuffles its own shards (or draws random per-shard slices via ``slice_length``) with
+    ``shard_seed: randomized`` is accepted under a loader with an integer ``shard_seed``, while every other active
+    non-indexed source in the same blend is still checked. Zero-weight blend members are skipped because they never
+    contribute examples. ``sampler_shuffles`` is the effective shuffle setting of the selected sampler.
+    """
+    num_shards = max(int(config.get("num_workers", 0) or 0), 1) * max(int(world_size), 1)
+    if num_shards <= 1:
+        return
+    shard_seed = config.get("shard_seed")
+    # The sampler shuffles with the loader-level shard_seed; it de-duplicates workers only with a per-worker seed.
+    sampler_randomizes = sampler_shuffles and isinstance(shard_seed, str)
+    offending = _find_fixed_order_sources(
+        cuts,
+        randomized=sampler_randomizes,
+        int_seed_origin=f"loader shard_seed={shard_seed}" if _is_int_seed(shard_seed) else None,
+        found=[],
+    )
+    if not offending:
+        return
+    raise ValueError(
+        f"shard_seed={shard_seed} with num_workers={config.get('num_workers', 0)} and world_size={world_size}: "
+        f"non-indexed iterable source(s) ordered by an integer seed ({', '.join(sorted(set(offending)))}) would make "
+        f"each of the {num_shards} dataloading workers yield the identical data stream, duplicating each batch. "
+        "Either use shard_seed='randomized' (deterministic and different in each worker/rank) or 'trng' for those "
+        "sources (at the loader level, or per source together with shuffle: true), or make every source indexed "
+        "(indexed: true, with .idx files built by scripts/dataloading/build_indexes.py), which partitions data across "
+        "workers and ranks and accepts an integer shard_seed."
+    )
+
+
+def _is_int_seed(seed) -> bool:
+    return isinstance(seed, int) and not isinstance(seed, bool)
+
+
+def _find_fixed_order_sources(node, randomized: bool, int_seed_origin: Optional[str], found: list) -> list:
+    """Collect non-indexed leaf readers whose order is fixed by an integer seed and never per-worker randomized.
+
+    ``randomized`` / ``int_seed_origin`` describe the nodes above ``node``: a node that shuffles its sources or shards
+    (``shuffle_shards`` / ``shuffle_iters``) or selects random per-shard slices (``slice_length``) with a string seed
+    randomizes everything below it per worker, and one that does so with an integer seed fixes their order
+    (``int_seed_origin`` names the nearest such node). Multiplexers only interleave sources, so they don't count, and
+    their zero-weight sources are skipped because they are never sampled. Returns the ``int_seed_origin`` of every
+    offending leaf.
+
+    A ``slice_length`` that covers a whole shard draws no offset; detecting that would require reading every shard
+    manifest, so such a source is conservatively treated as randomized (the check may miss it, but never rejects a
+    randomized source).
+    """
+    if hasattr(node, "data") and not callable(getattr(node, "data")):
+        node = node.data  # unwrap CutSet
+    if getattr(node, "is_indexed", False):
+        return found
+    seed = getattr(node, "shard_seed", getattr(node, "seed", None))
+    shuffles = any(getattr(node, attr, False) is True for attr in ("shuffle_shards", "shuffle_iters"))
+    slices = getattr(node, "slice_length", None) is not None
+    if shuffles or slices:
+        randomized = randomized or isinstance(seed, str)
+        if _is_int_seed(seed):
+            int_seed_origin = f"{type(node).__name__}(seed={seed})"
+    children = []
+    if isinstance(node, IteratorNode):
+        sources = getattr(node, "sources", None)
+        children = list(sources) if isinstance(sources, (list, tuple)) else [getattr(node, "source", None)]
+        weights = getattr(node, "weights", None)
+        if isinstance(weights, (list, tuple)) and len(weights) == len(children):
+            children = [c for c, w in zip(children, weights) if w > 0]
+    children = [c for c in children if isinstance(c, (IteratorNode, CutSet))]
+    if children:
+        for child in children:
+            _find_fixed_order_sources(child, randomized=randomized, int_seed_origin=int_seed_origin, found=found)
+    elif int_seed_origin is not None and not randomized:
+        found.append(int_seed_origin)
+    return found

@@ -14,13 +14,17 @@
 # limitations under the License.
 # pylint: disable=C0116
 import math
+import operator
 from bisect import bisect_left
+from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from numbers import Real
 from typing import Any, Sequence
 
 import numpy as np
-from lhotse.cut import Cut, MonoCut
+from lhotse.custom import CustomFieldMixin
+from lhotse.cut import Cut, MixedCut, MonoCut
 from lhotse.dataset import SamplingConstraint, TokenConstraint
 from lhotse.dataset.sampling.dynamic_bucketing import FixedBucketBatchSizeConstraint
 from lhotse.utils import ifnone
@@ -57,6 +61,11 @@ class MultimodalSamplingConstraint(SamplingConstraint):
     # Setting this enables dynamic batch sizes.
     # We will use ``token_equivalent_duration`` to convert audio examples to token sizes.
     batch_tokens: int | None = None
+
+    # A second cap of a packed batch: the total number of output tokens
+    # (the supervision tokens of cuts, the answer tokens of prompted examples), enforced besides batch_tokens.
+    # Packed sequence sampling only.
+    batch_output_tokens: int | None = None
 
     # When specified, this value is inversely proportional to the penalty we assign
     # to longer examples when measuring their length/duration;
@@ -103,9 +112,12 @@ class MultimodalSamplingConstraint(SamplingConstraint):
                 raise ValueError("bucket_duration_bins and bucket_batch_size must have equal lengths")
             if not self.bucket_batch_size or any(int(size) <= 0 for size in self.bucket_batch_size):
                 raise ValueError("bucket_batch_size values must be positive")
+        if self.batch_output_tokens is not None and not self.use_packed_sequence_sampling:
+            raise ValueError("batch_output_tokens requires use_packed_sequence_sampling=True")
         if self.use_packed_sequence_sampling:
             self._internal = PackedTokenConstraint(
                 batch_tokens=self.batch_tokens,
+                batch_output_tokens=self.batch_output_tokens,
                 max_examples=self.batch_size,
                 quadratic_length=self.quadratic_factor,
             )
@@ -145,6 +157,8 @@ class MultimodalSamplingConstraint(SamplingConstraint):
         num_tokens = self.measure_length(example)
         self._activate_bucket(num_tokens)
         example.num_tokens = num_tokens
+        if self.batch_output_tokens is not None:
+            example.num_output_tokens = self.measure_output_length(example)
         self._internal.add(example)
 
     def exceeded(self) -> bool:
@@ -161,6 +175,11 @@ class MultimodalSamplingConstraint(SamplingConstraint):
         self._activate_bucket(num_tokens)
         if self._internal.max_examples is not None and self._internal.num_examples + 1 > self._internal.max_examples:
             return True
+        if (
+            self.batch_output_tokens is not None
+            and self._internal.current_output + self.measure_output_length(example) > self.batch_output_tokens
+        ):
+            return True
         return (
             self._internal.batch_tokens is not None
             and self._internal.current + self._internal.budget_length(num_tokens) > self._internal.batch_tokens
@@ -172,7 +191,42 @@ class MultimodalSamplingConstraint(SamplingConstraint):
             raise RuntimeError("reached_limit() is only valid for packed sequence sampling")
         if self._internal.max_examples is not None and self._internal.num_examples >= self._internal.max_examples:
             return True
+        if self.batch_output_tokens is not None and self._internal.current_output >= self.batch_output_tokens:
+            return True
         return self._internal.batch_tokens is not None and self._internal.current >= self._internal.batch_tokens
+
+    def measure_output_length(self, example: Any) -> int:
+        """Count the output tokens of one example for the ``batch_output_tokens`` cap.
+
+        Args:
+            example: a cut tokenized with a prompt format, which contributes its ``answer_ids``;
+                a cut tokenized without one, whose supervisions contribute their ``tokens``;
+                or a prompt-formatted text example, which contributes its answer length.
+
+        Returns:
+            The output token count.
+
+        Raises:
+            ValueError: for an untokenized example, since the cap cannot be enforced without the tokens.
+        """
+        if isinstance(example, Cut):
+            if example.has_custom("answer_ids"):
+                return len(example.answer_ids)
+            if any(s.has_custom("tokens") for s in example.supervisions):
+                return sum(len(s.tokens) for s in example.supervisions if s.has_custom("tokens"))
+            raise ValueError(
+                f"batch_output_tokens needs tokenized examples, but cut {example.id!r} has neither answer_ids "
+                "(a tokenizer with prompt_format) nor supervision tokens (a tokenizer with pretokenize=True)."
+            )
+        if isinstance(example, Formattable):
+            length = measure_formattable_length(example, "output", audio_token_estimator=self.audio_token_estimator)
+            if length is None:
+                raise ValueError(
+                    f"batch_output_tokens needs the output length of every example, "
+                    f"but a {type(example).__name__} example has none."
+                )
+            return int(length)
+        raise RuntimeError(f"Unsupported example type: {type(example)}")
 
     def measure_packing_length(self, example: Any) -> int:
         """Measure one example against the packed batch's effective token budget."""
@@ -256,10 +310,15 @@ class PackedTokenConstraint(SamplingConstraint):
     current: int = 0
     num_examples: int = 0
     quadratic_length: float | None = None
+    # a second cap over the examples' ``num_output_tokens``, see MultimodalSamplingConstraint.batch_output_tokens
+    batch_output_tokens: int | None = None
+    current_output: int = 0
 
     def __post_init__(self) -> None:
         if self.batch_tokens is not None and self.batch_tokens <= 0:
             raise ValueError(f"batch_tokens must be positive or null (got {self.batch_tokens})")
+        if self.batch_output_tokens is not None and self.batch_output_tokens <= 0:
+            raise ValueError(f"batch_output_tokens must be positive or null (got {self.batch_output_tokens})")
         if self.max_examples is not None and self.max_examples <= 0:
             raise ValueError(f"batch_size must be positive or null (got {self.max_examples})")
         if self.quadratic_length is not None and self.quadratic_length <= 0:
@@ -273,25 +332,34 @@ class PackedTokenConstraint(SamplingConstraint):
 
     def add(self, example: Any) -> None:
         self.current += self.budget_length(self.measure_length(example))
+        if self.batch_output_tokens is not None:
+            self.current_output += int(example.num_output_tokens)
         self.num_examples += 1
 
     def exceeded(self) -> bool:
         if self.max_examples is not None and self.num_examples > self.max_examples:
+            return True
+        if self.batch_output_tokens is not None and self.current_output > self.batch_output_tokens:
             return True
         return self.batch_tokens is not None and self.current > self.batch_tokens
 
     def close_to_exceeding(self) -> bool:
         if self.max_examples is not None and self.num_examples >= self.max_examples:
             return True
-        if self.batch_tokens is None:
-            return False
         if self.num_examples == 0:
+            return False
+        if self.batch_output_tokens is not None:
+            mean_output = self.current_output / self.num_examples
+            if self.current_output + mean_output > self.batch_output_tokens:
+                return True
+        if self.batch_tokens is None:
             return False
         mean_length = self.current / self.num_examples
         return self.current + mean_length > self.batch_tokens
 
     def reset(self) -> None:
         self.current = 0
+        self.current_output = 0
         self.num_examples = 0
 
     def measure_length(self, example: Any) -> float:
@@ -507,6 +575,145 @@ class ValidationStatusFilter:
             return True
 
 
+_MISSING = object()
+
+_CUSTOM_FIELD_OPERATORS = {
+    "eq": operator.eq,
+    "neq": operator.ne,
+    "gt": operator.gt,
+    "ge": operator.ge,
+    "lt": operator.lt,
+    "le": operator.le,
+    "in": lambda value, choices: value in choices,
+}
+_CUSTOM_FIELD_ORDER_OPERATORS = ("gt", "ge", "lt", "le")
+
+
+def _is_custom_field_scalar(value: Any) -> bool:
+    # NaN equals nothing and orders with nothing, so no cut that has the field could meet the condition.
+    return isinstance(value, (bool, int, float, str)) and not (isinstance(value, float) and math.isnan(value))
+
+
+class CustomFieldFilter:
+    """
+    Callable, returns ``True`` if the custom fields of an example meet all given conditions and ``False`` otherwise.
+    Applies to cuts and to the text and conversation examples, which carry custom fields the same way,
+    and acts as a pass-through for objects that cannot carry custom fields.
+
+    Compared to the ``_skipme`` key of a NeMo manifest row, which makes the reader drop the row before a cut is built:
+    this filter selects in the config and leaves the manifests unchanged, for any source type,
+    but it sees the cut after the reader built it, so the reader's work for a rejected example is spent.
+    :class:`ValidationStatusFilter` applies the same equality rule to the fixed field ``validation_status``,
+    but to mono cuts only, and the dataloader applies it later, after padding, so the two can select differently.
+
+    Args:
+        conditions: maps the name of a custom field (a key of ``example.custom``) to its condition.
+            A condition is a mapping of operators to operands, all of which must hold:
+            ``eq`` and ``neq`` (a bool, a number or a string), ``gt``, ``ge``, ``lt`` and ``le`` (a number),
+            ``in`` (a list of bools, numbers or strings),
+            and optionally ``keep_if_missing`` (default ``True``), whether an example without the field passes.
+            A bool, a number or a string in place of the mapping stands for ``{"eq": value}``.
+            A value that is not a number fails ``gt``, ``ge``, ``lt`` and ``le``,
+            and a value that is not a bool, a number, a string or ``None`` (a list, say) fails every operator.
+            ``None`` or an empty mapping disables the filter.
+
+    Example::
+
+        >>> keep = CustomFieldFilter({"verified": True, "snr": {"gt": 5.0, "le": 10.5}, "quality": {"in": ["high"]}})
+        >>> cuts = cuts.filter(keep)
+    """
+
+    def __init__(self, conditions: Mapping[str, Any] | None) -> None:
+        conditions = ifnone(conditions, {})
+        if not isinstance(conditions, Mapping):
+            raise ValueError(f"custom_field_filter must map field names to conditions, got {conditions!r}.")
+        self.conditions = [self._parse_condition(name, condition) for name, condition in conditions.items()]
+
+    @staticmethod
+    def _parse_condition(name: Any, condition: Any) -> tuple[str, bool, list[tuple[str, Any]]]:
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"custom_field_filter: a field name must be a non-empty string, got {name!r}.")
+        prefix = f"custom_field_filter: the condition for field {name!r}"
+        if name == "keep_if_missing" and isinstance(condition, bool):
+            raise ValueError(
+                "custom_field_filter: keep_if_missing is set per field, inside the condition of the field, "
+                "e.g. {snr: {gt: 5.0, keep_if_missing: false}}."
+            )
+        if _is_custom_field_scalar(condition):
+            return name, True, [("eq", condition)]
+        if not isinstance(condition, Mapping) or len(condition) == 0:
+            raise ValueError(
+                f"{prefix} must be a bool, a number or a string (the value to keep), "
+                f"or a non-empty mapping of operators ({', '.join(_CUSTOM_FIELD_OPERATORS)}) to operands, "
+                f"optionally with keep_if_missing, got {condition!r}."
+            )
+        keep_if_missing = True
+        checks = []
+        for key, operand in condition.items():
+            if key == "keep_if_missing":
+                if not isinstance(operand, bool):
+                    raise ValueError(f"{prefix}: keep_if_missing must be a bool, got {operand!r}.")
+                keep_if_missing = operand
+            elif key not in _CUSTOM_FIELD_OPERATORS:
+                raise ValueError(
+                    f"{prefix} has the unknown key {key!r}, "
+                    f"expected one of {', '.join(_CUSTOM_FIELD_OPERATORS)}, keep_if_missing."
+                )
+            elif key == "in":
+                if isinstance(operand, str) or not isinstance(operand, Sequence) or len(operand) == 0:
+                    raise ValueError(f"{prefix}: the operand of 'in' must be a non-empty list, got {operand!r}.")
+                operand = tuple(operand)
+                if not all(_is_custom_field_scalar(choice) for choice in operand):
+                    raise ValueError(
+                        f"{prefix}: the operand of 'in' must hold bools, numbers or strings, got {operand!r}."
+                    )
+                checks.append((key, operand))
+            elif key in _CUSTOM_FIELD_ORDER_OPERATORS:
+                if isinstance(operand, (bool, str)) or not _is_custom_field_scalar(operand):
+                    raise ValueError(f"{prefix}: the operand of {key!r} must be a number, got {operand!r}.")
+                checks.append((key, operand))
+            else:
+                if not _is_custom_field_scalar(operand):
+                    raise ValueError(
+                        f"{prefix}: the operand of {key!r} must be a bool, a number or a string, got {operand!r}."
+                    )
+                checks.append((key, operand))
+        return name, keep_if_missing, checks
+
+    def __call__(self, example) -> bool:
+        if isinstance(example, MixedCut):
+            # As attribute access on a mixed cut resolves a custom field: the first unmuted data track that has it.
+            # The merged `cut.custom` mapping differs: there a later track overrides an earlier one.
+            customs = [
+                track.cut.custom
+                for track in example.tracks
+                if isinstance(track.cut, CustomFieldMixin) and not track.mute
+            ]
+        elif isinstance(example, CustomFieldMixin):
+            customs = [example.custom]
+        else:
+            return True
+        for name, keep_if_missing, checks in self.conditions:
+            # Read the custom mapping itself: attribute access would return
+            # the attribute of the cut for a field named like one (``id``, ``channel``).
+            value = next((custom[name] for custom in customs if custom is not None and name in custom), _MISSING)
+            if value is _MISSING:
+                if not keep_if_missing:
+                    return False
+                continue
+            for key, operand in checks:
+                if key in _CUSTOM_FIELD_ORDER_OPERATORS:
+                    # Only a number orders with the numeric operand, not None or a string.
+                    if not isinstance(value, (Real, np.bool_)):
+                        return False
+                elif value is not None and not isinstance(value, (Real, np.bool_, str)):
+                    # A list, a mapping or an array equals no operand.
+                    return False
+                if not _CUSTOM_FIELD_OPERATORS[key](value, operand):
+                    return False
+        return True
+
+
 class CERFilter:
     """
     Callable, returns ``True`` if a cut's CER is less than max_cer and ``False`` otherwise.
@@ -687,6 +894,54 @@ class TokenPerTokenFilter:
             return True  # pass-through for non-text examples.
         tpt = example.answer_ids.shape[0] / example.context_ids.shape[0]
         return self.tpt_min <= tpt <= self.tpt_max
+
+
+class DurationTokenBinsFilter:
+    """
+    Callable, returns ``True`` if a cut fits one of the ``(max duration, max tokens)`` bins and ``False`` otherwise.
+    The rule is the one of strict 2D bucketing, applied without bucketing:
+    the bins with the smallest maximum duration that covers the cut's duration are the candidates,
+    and the cut is kept if its number of tokens fits one of them.
+    Acts as a pass-through for objects of other type than Cut.
+
+    Args:
+        bins: the ``(max duration in seconds, max number of tokens)`` pairs, sorted ascendingly,
+            in the format of two-dimensional ``bucket_duration_bins`` for audio.
+        max_tps: optional maximum number of tokens per second for every bin, as strict 2D bucketing applies it:
+            a cut above the limit of the smallest bin that fits it is discarded.
+    """
+
+    def __init__(self, bins: Sequence[Sequence[float]], max_tps: Sequence[float] | None = None) -> None:
+        try:
+            pairs = [tuple(bin_) for bin_ in bins]
+        except TypeError:
+            pairs = []
+        is_valid = bool(pairs) and all(
+            len(pair) == 2
+            and all(isinstance(bound, Real) and not isinstance(bound, bool) and math.isfinite(bound) for bound in pair)
+            and pair[0] > 0
+            and pair[1] >= 0
+            for pair in pairs
+        )
+        if not is_valid or pairs != sorted(pairs):
+            raise ValueError(
+                "filter_duration_bins must be a non-empty, ascendingly sorted list of [max_duration, max_tokens] pairs "
+                f"of finite numbers with max_duration > 0 and max_tokens >= 0 (got {bins!r}); "
+                "for a duration limit alone use max_duration"
+            )
+        if max_tps is not None and len(max_tps) != len(pairs):
+            raise ValueError(
+                "A max_tps list needs one value per bin of filter_duration_bins "
+                f"(got {len(max_tps)} values for {len(pairs)} bins)"
+            )
+        self.bins = np.asarray(pairs)
+        self.max_tps = None if max_tps is None else list(max_tps)
+
+    def __call__(self, example) -> bool:
+        if not isinstance(example, Cut):
+            return True  # pass-through for examples other than cuts.
+        example_lens = (example.duration, _measure_tokens(example))
+        return find_smallest_bucket(self.bins, example_lens, strict=True, max_ratio=self.max_tps) is not None
 
 
 class BucketingFilter:

@@ -283,7 +283,8 @@ class AutoTokenizer(TokenizerSpec):
         Converts tokens back into text.
 
         Args:
-            tokens (Union[str, Iterable[str]]): List of tokens, iterable of tokens, or single token string to be converted.
+            tokens (Union[str, Iterable[str]]): List of tokens, iterable of tokens,
+                or single token string to be converted.
 
         Returns:
             str: The reconstructed text.

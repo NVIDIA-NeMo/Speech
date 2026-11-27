@@ -91,20 +91,6 @@ MEGATRON_CONFIG_MAP = {
 }
 
 
-def list_available_models() -> List[str]:
-    """Retrieves the names of all available pretrained Megatron-BERT models.
-
-    This function uses the NeMo MegatronBertModel class to list all available
-    pretrained model configurations, extracting each model's name.
-
-    Returns:
-        List[str]: A list of pretrained Megatron-BERT model names.
-    """
-
-    all_pretrained_megatron_bert_models = [model.pretrained_model_name for model in list_available_models()]
-    return all_pretrained_megatron_bert_models
-
-
 def get_megatron_lm_models_list() -> List[str]:
     """
     Returns the list of supported Megatron-LM models

@@ -156,7 +156,6 @@ class EasyMagpieDummyInputsBuilder(BaseDummyInputsBuilder[EasyMagpieProcessingIn
         return ProcessorInputs(
             prompt=dummy_prompt,
             mm_data_items=self.info.parse_mm_data(dummy_mm_data, validate=False),
-            tokenization_kwargs={"truncation": False},
         )
 
 

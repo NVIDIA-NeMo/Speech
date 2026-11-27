@@ -40,6 +40,13 @@ PYTHONPATH="$PWD" python tools/easymagpie_vllm_omni/scripts/convert_to_vllm.py \
   --speaker_name eng
 ```
 
+For a Lightning checkpoint, use `--checkpoint_file /path/to/model.ckpt` and
+`--hparams_file /path/to/hparams.yaml` in place of `--nemo_file`. Convert v2
+checkpoints in a NeMo checkout with v2 inference support. If the training
+configuration is missing the architecture selector, add `model_type: v2` to a
+copy of the model configuration. For a W&B export, set it under `cfg.value`
+and pass `--hparams_file_from_wandb`.
+
 ### Setup the serving environment
 
 Serving needs a GPU, matching **vLLM 0.32 / vLLM-Omni 0.32** versions, and this package.

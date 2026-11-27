@@ -594,8 +594,11 @@ def configure_codec_reference_speaker_encoder(outdir: str, config: dict) -> None
         "reference_speaker_encoder_max_length",
     )
     encoder_config.update({field: config[field] for field in fields if field in config})
-    encoder_config["context_audio_bos_id"] = int(config["codebook_size"]) + 2
-    encoder_config["context_audio_eos_id"] = int(config["codebook_size"]) + 3
+    codebook_size = int(config["codebook_size"])
+    encoder_config["audio_bos_id"] = codebook_size
+    encoder_config["audio_eos_id"] = codebook_size + 1
+    encoder_config["context_audio_bos_id"] = codebook_size + 2
+    encoder_config["context_audio_eos_id"] = codebook_size + 3
     with open(path, "w") as output_file:
         json.dump(encoder_config, output_file, indent=2)
 

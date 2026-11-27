@@ -174,8 +174,7 @@ class EasyMagpieTTSForConditionalGeneration(
         #   per-step deltas) instead of re-accumulating and re-sending the whole
         #   cumulative code tensor on every step.
         # * otherwise (two-stage EasyMagpie LM; ``engine_output_type="latent"``): emit
-        #   the inter-stage keys (``audio_codes`` + nested ``codes.audio``) that
-        #   the Code2Wav connector / async-chunk streamer consume.
+        #   the ``codes.audio`` payload consumed by the decoder connector.
         engine_output_type = getattr(vllm_config.model_config, "engine_output_type", None)
         self._single_stage_audio = str(engine_output_type or "").lower() == "audio"
 
@@ -756,19 +755,7 @@ class EasyMagpieTTSForConditionalGeneration(
     # ------------------------------------------------------------------
 
     def make_omni_output(self, model_outputs, **_: Any) -> OmniOutput:
-        """Surface the sampled codes (``BT x num_codebooks``).
-
-        The codes are exposed under **two** keys so the same model serves both
-        deployment shapes:
-
-        * ``audio_codes`` — the flat single-stage key read by :meth:`postprocess`.
-        * ``codes.audio`` — the nested :class:`~vllm_omni.data_entry_keys.OmniPayload`
-          layout consumed by the in-engine two-stage pipeline (Code2Wav). The
-          AR runner's ``flatten_payload`` turns this into the ``codes.audio``
-          dotted key, which CONCATenates across decode steps into the full
-          acoustic sequence for the Stage-1 producer / async-chunk streamer
-          (see :mod:`easymagpie_vllm_omni.stage_processors`).
-        """
+        """Deliver sampled codes to the decoder or single-stage client."""
         if isinstance(model_outputs, OmniOutput):
             return model_outputs
         hidden = model_outputs
@@ -785,10 +772,7 @@ class EasyMagpieTTSForConditionalGeneration(
             )
         return OmniOutput(
             text_hidden_states=hidden,
-            multimodal_outputs={
-                "audio_codes": audio_codes,
-                "codes": {"audio": audio_codes},
-            },
+            multimodal_outputs={"codes": {"audio": audio_codes}},
         )
 
     # ------------------------------------------------------------------

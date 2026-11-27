@@ -21,6 +21,11 @@ from typing import Any
 # Each audio codebook appends BOS, EOS, context, mask, and reserved tokens.
 NUM_SPECIAL_AUDIO_TOKENS: int = 8
 
+# Stage 0 uses this for prefill/non-audio rows. Every sampled codec token and
+# audio control token is non-negative.
+NO_AUDIO_FRAME: int = -1
+
+
 # Offsets within the trailing special-token block.
 SPECIAL_AUDIO_BOS: int = 0
 SPECIAL_AUDIO_EOS: int = 1

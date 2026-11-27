@@ -41,7 +41,7 @@ from easymagpie_vllm_omni.backbone_patches import (
 )
 from easymagpie_vllm_omni.codec.encoder import EasyMagpieCodecEncoder
 from easymagpie_vllm_omni.codec.encoder_config import EasyMagpieCodecEncoderConfig
-from easymagpie_vllm_omni.config import EasyMagpieOmniArch
+from easymagpie_vllm_omni.config import NO_AUDIO_FRAME, EasyMagpieOmniArch
 from easymagpie_vllm_omni.local_transformer import EasyMagpieCodePredictor
 from easymagpie_vllm_omni.multimodal import (
     EasyMagpieDummyInputsBuilder,
@@ -287,7 +287,11 @@ class EasyMagpieTTSForConditionalGeneration(
             self._dec_phoneme_tokens = torch.zeros(max_num_tokens, arch.phoneme_stacking_factor, dtype=torch.long)
             self._dec_phoneme_valid = torch.zeros(max_num_tokens, dtype=torch.long)
 
-        self._out_codes = torch.zeros(max_num_tokens, self.num_codebooks, dtype=torch.long)
+        self._out_codes = torch.full(
+            (max_num_tokens, self.num_codebooks),
+            NO_AUDIO_FRAME,
+            dtype=torch.long,
+        )
 
         # ── Audio-EOS → engine stop ─────────────────────────────────────
         # The model signals end-of-speech inside the audio codebooks.
@@ -606,7 +610,7 @@ class EasyMagpieTTSForConditionalGeneration(
         if decode_idx is not None:
             # Acoustic prediction is skipped on prefill rows. Clear their shared
             # scratch slots so a prior request cannot leak a fake codec frame.
-            self._out_codes[:num_tokens].zero_()
+            self._out_codes[:num_tokens].fill_(NO_AUDIO_FRAME)
         if decode_idx is None:
             # Warm-up or decode-only batches exercise the full decode path.
             self._assemble_decode_embeddings(combined, slice(0, num_tokens))

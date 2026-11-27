@@ -24,15 +24,12 @@ from collections.abc import Mapping
 from typing import Any
 
 import torch
+from easymagpie_vllm_omni.config import NO_AUDIO_FRAME
 from vllm.logger import init_logger
 from vllm_omni.data_entry_keys import CodesStruct, MetaStruct, OmniPayload, OmniPayloadStruct
 from vllm_omni.engine.serialization import deserialize_additional_information
 
 logger = init_logger(__name__)
-
-
-# Base codebook size, excluding control tokens.
-_CODEBOOK_SIZE = 1024
 
 
 def _empty_finished_payload() -> dict[str, Any]:
@@ -44,17 +41,20 @@ def _empty_finished_payload() -> dict[str, Any]:
 
 
 def _filter_audio_codes(audio_codes: torch.Tensor) -> torch.Tensor:
-    """Drop all-zero (padding/warm-up), negative, and special-token frames.
+    """Drop prefill/no-audio rows marked with ``NO_AUDIO_FRAME``.
 
-    Special audio tokens (bos/eos/mask) live at ``codebook_size + offset`` — any
-    frame containing one is an out-of-band control frame, not audio, so it is
-    removed here (the decoder additionally clamps as a safety net).
+    Control tokens are forwarded to Stage 1, which interprets them using its
+    codec configuration and trims a partially filled final stacked frame.
+    Streaming speech-delay warm-up frames are filtered separately by the async
+    stage before codec buffering.
     """
-    if not isinstance(audio_codes, torch.Tensor) or audio_codes.numel() == 0 or audio_codes.ndim != 2:
+    if audio_codes.ndim != 2:
+        raise ValueError(f"Stage-0 audio codes must have shape [frames, codebooks], got {tuple(audio_codes.shape)}")
+    if audio_codes.numel() == 0:
         return audio_codes
-    valid_mask = (
-        (audio_codes >= 0).all(dim=1) & audio_codes.any(dim=1) & (audio_codes.max(dim=1).values < _CODEBOOK_SIZE)
-    )
+    # Stage 0 writes either a complete codebook row or the sentinel in every
+    # channel, so checking one channel avoids a reduction over all codebooks.
+    valid_mask = audio_codes[:, 0] != NO_AUDIO_FRAME
     return audio_codes[valid_mask]
 
 
@@ -176,7 +176,7 @@ def talker2code2wav_full_payload(transfer_manager, multimodal_output, request, i
     kept_frames = int(audio.shape[0]) if audio.ndim == 2 else 0
     logger.info(
         "easymagpie.talker2code2wav_full_payload: req=%s accumulated %d frames "
-        "(%d after filtering control/padding).",
+        "(%d after filtering prefill/no-audio sentinel rows).",
         rid,
         raw_frames,
         kept_frames,
@@ -201,7 +201,8 @@ def _extract_last_frame(multimodal_output: OmniPayload | dict[str, Any]) -> torc
         return None
     if audio_codes.ndim == 2:
         frame = audio_codes[-1]
-        if frame.numel() == 0 or not bool(frame.any().item()):
+        # Prefill callbacks carry the no-audio sentinel.
+        if frame.numel() == 0 or int(frame[0].item()) == NO_AUDIO_FRAME:
             return None
         return frame.to(torch.long).reshape(-1)
     if audio_codes.ndim == 1:

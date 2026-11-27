@@ -80,3 +80,72 @@ class CodecLatentAudioEmbedder(nn.Module):
             embedded = channel_embedded if embedded is None else embedded + channel_embedded
         assert embedded is not None
         return embedded / len(codebook_indices)
+
+
+class AcousticCodesPredictorBlock(nn.Module):
+    """One cached v2 predictor block: one attention/MLP pair plus one code head."""
+
+    def __init__(
+        self,
+        *,
+        vllm_config: VllmConfig,
+        predictor_config,
+        codebook_index: int,
+        num_output_tokens: int,
+        prefix: str,
+        cache_layer_index: int,
+    ) -> None:
+        super().__init__()
+        self.codebook_indices = (codebook_index,)
+        self.num_codes = 1
+        self.layers = nn.ModuleList(
+            [
+                NemotronHAttentionDecoderLayer(
+                    config=predictor_config,
+                    layer_idx=0,
+                    model_config=vllm_config.model_config,
+                    cache_config=vllm_config.cache_config,
+                    quant_config=vllm_config.quant_config,
+                    parallel_config=vllm_config.parallel_config,
+                    prefix=f"{prefix}.cache_layers.{cache_layer_index}",
+                ),
+                NemotronHMLPDecoderLayer(
+                    config=predictor_config,
+                    layer_idx=1,
+                    model_config=vllm_config.model_config,
+                    cache_config=vllm_config.cache_config,
+                    quant_config=vllm_config.quant_config,
+                    parallel_config=vllm_config.parallel_config,
+                    prefix=f"{prefix}.blocks.{codebook_index}.layers.1",
+                ),
+            ]
+        )
+        mlp = self.layers[1]
+        activation = str(predictor_config.mlp_hidden_act).lower()
+        if activation in {"silu", "swish"}:
+            mlp.mixer.act_fn = nn.SiLU()
+        elif activation == "gelu":
+            mlp.mixer.act_fn = nn.GELU()
+        elif activation == "relu":
+            mlp.mixer.act_fn = nn.ReLU()
+        elif activation not in {"relu2", "relu_squared"}:
+            raise ValueError(f"unsupported acoustic predictor MLP activation {activation!r}")
+
+        self.norm = RMSNorm(predictor_config.hidden_size, eps=predictor_config.layer_norm_epsilon)
+        self.codebook_projection = nn.Linear(predictor_config.hidden_size, num_output_tokens)
+        self.num_output_tokens = num_output_tokens
+
+    def forward(self, hidden_states: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
+        residual = None
+        for layer in self.layers:
+            hidden_states, residual = layer(
+                positions=positions,
+                hidden_states=hidden_states,
+                residual=residual,
+            )
+        hidden_states, _ = self.norm(hidden_states, residual)
+        return hidden_states
+
+    def compute_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        logits = self.codebook_projection(hidden_states)
+        return logits.unsqueeze(1)

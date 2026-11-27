@@ -14,8 +14,11 @@
 from types import SimpleNamespace
 
 import pytest
+from easymagpie_vllm_omni.audio_output import is_audio_segment_finished
 from easymagpie_vllm_omni.omni_compat import patch_streaming_lifecycle, preserve_resumable_segment
+from vllm.outputs import RequestOutput
 from vllm_omni.engine.orchestrator import Orchestrator
+from vllm_omni.outputs import OmniRequestOutput
 
 
 def _request_state(*, finished):
@@ -76,3 +79,17 @@ async def test_patch_marks_segment_before_delegating_and_is_idempotent(monkeypat
     assert output.finished is False
     assert output.is_segment_finished is True
     assert calls == [(1, 0, [output])]
+
+
+def test_audio_segment_survives_omni_frontend_output_wrapping():
+    raw = RequestOutput(
+        request_id="request",
+        prompt=None,
+        prompt_token_ids=None,
+        prompt_logprobs=None,
+        outputs=[SimpleNamespace()],
+        finished=False,
+    )
+    assert preserve_resumable_segment(raw, _request_state(finished=True), stage_id=1)
+    frontend = OmniRequestOutput.from_stage_output(raw, stage_id=1)
+    assert is_audio_segment_finished(frontend)

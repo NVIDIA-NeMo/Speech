@@ -27,6 +27,8 @@ def preserve_resumable_segment(output, request_state, stage_id: int) -> bool:
 
     output.finished = False
     output.is_segment_finished = True
+    for completion in getattr(output, "outputs", ()):
+        completion.is_segment_finished = True
     return True
 
 

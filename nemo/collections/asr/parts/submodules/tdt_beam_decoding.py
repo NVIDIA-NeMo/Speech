@@ -37,6 +37,7 @@ from tqdm import tqdm
 from nemo.collections.asr.modules import rnnt_abstract
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.submodules.rnnt_beam_decoding import pack_hypotheses
+from nemo.collections.asr.parts.submodules.tdt_frame_sync_batched_computer import FrameSyncBatchedTDTComputer
 from nemo.collections.asr.parts.submodules.tdt_malsd_batched_computer import ModifiedALSDBatchedTDTComputer
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
 from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import BlankLMScoreMode, PruningMode
@@ -868,6 +869,7 @@ class BeamBatchedTDTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs)
             durations: Token durations tensor for TDT
             blank_index: index of blank symbol
             beam_size: beam size
+            search_type: `malsd_batch` or `frame_sync_batch` (frame-synchronous beam search)
             max_symbols_per_step: max symbols to emit on each step (to avoid infinite looping)
             preserve_alignments: if alignments are needed
             fusion_models: list of fusion models to use for decoding
@@ -919,6 +921,27 @@ class BeamBatchedTDTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs)
                 preserve_step_confidence=preserve_step_confidence,
                 include_duration_confidence=include_duration_confidence,
                 confidence_method_cfg=confidence_method_cfg,
+            )
+        elif search_type == "frame_sync_batch":
+            if preserve_alignments:
+                raise NotImplementedError("Preserve alignments is not supported by frame_sync_batch")
+            if enable_per_stream_biasing:
+                raise NotImplementedError("Per-stream biasing is not supported by frame_sync_batch")
+            if preserve_step_confidence:
+                raise NotImplementedError("Confidence calculation is not supported by frame_sync_batch")
+            self.decoding_computer = FrameSyncBatchedTDTComputer(
+                decoder=self.decoder,
+                joint=self.joint,
+                durations=durations,
+                blank_index=self._blank_index,
+                beam_size=self.beam_size,
+                max_symbols_per_step=self.max_symbols,
+                fusion_models=fusion_models,
+                fusion_models_alpha=fusion_models_alpha,
+                blank_lm_score_mode=blank_lm_score_mode,
+                pruning_mode=pruning_mode,
+                beam_beta=beam_beta,
+                allow_cuda_graphs=allow_cuda_graphs,
             )
         else:
             raise Exception(f"Decoding strategy {search_type} nor implemented.")

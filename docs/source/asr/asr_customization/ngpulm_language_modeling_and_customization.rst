@@ -202,7 +202,7 @@ where:
     - ``acoustic_score`` is the score predicted by the ASR.
     - ``lm_score`` is the score predicted by the NGPU-LM LM.
     - ``ngram_lm_alpha`` is the weight given to the language model.
-    - ``beam_beta`` is a reward for every emitted token (``malsd_batch`` only, ``0`` by default).
+    - ``beam_beta`` is a reward for every emitted token (``malsd_batch`` and ``frame_sync_batch`` only, ``0`` by default).
 
 Final hypotheses is chosen based on the normalized score ``final_score / seq_length``.
 
@@ -254,30 +254,36 @@ In NeMo fully batched implementation of following strategies are supported:
 
 - **malsd_batch:** fully batched implemention of modified Alignment-Length Synchronous Decoding [alsd]_, supporting both RNNT and TDT models.
 - **maes_batch:** fully batched implemention of modified Adaptive Expansion Search [aes]_, supporting for only RNNT models. CudaGraphs are not supported.
+- **frame_sync_batch:** fully batched frame-synchronous beam search for TDT models. A TDT step advances by its predicted
+  duration, so ``malsd_batch`` ranks hypotheses that have consumed different amounts of audio against each other.
+  ``frame_sync_batch`` keeps the hypotheses per frame instead: only hypotheses that have reached the same frame are merged
+  and pruned to the beam, blank is expanded with each of its top non-zero durations, and labels with their top durations.
+  A label with duration 0 stays on its frame at most ``max_symbols_per_step`` times in a row. CudaGraphs are supported;
+  per-stream biasing, alignments and confidence are not.
 
 The following is the list of the adjustable arguments of batched CTC decoding algorithm ``beam_batch``:
 
-+-----------------------+-----------+-------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
-| **Argument**          | **Type**  | **Strategy**            | **Default**      | **Description**                                                                                                                |
-+-----------------------+-----------+-------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
-| ngram_lm_alpha        | float     | malsd_batch, maes_batch | Required         | Weight factor applied to the language model scores.                                                                            |
-+-----------------------+-----------+-------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
-| beam_size             | int       | malsd_batch, maes_batch | 4                | Beam size.                                                                                                                     |
-+-----------------------+-----------+-------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
-| pruning_mode          | str       | malsd_batch, maes_batch | late             | Mode for hypotheses pruning. Can be ``early`` or ``late``.                                                                     |
-+-----------------------+-----------+-------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
-| blank_lm_score_mode   | str       | malsd_batch, maes_batch | lm_weighted_full | Mode for blank symbol scoring. Can be ``no_score`` or ``lm_weighted_full``                                                     |
-+-----------------------+-----------+-------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
-| beam_beta             | float     | malsd_batch             | 0.0              | Score added for every emitted token (length reward). Positive values counter deletions at high LM weights.                     |
-+-----------------------+-----------+-------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
-| max_symbols_per_step  | int       | malsd_batch             | 10               | Max symbols to emit on each step to avoid infinite looping.                                                                    |
-+-----------------------+-----------+-------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
-| maes_num_step         | int       | maes_batch              | 2                | Number of adaptive steps to take.                                                                                              |
-+-----------------------+-----------+-------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
-| maes_expansion_beta   | float     | maes_batch              | 1.0              | Maximum number of prefix expansions allowed, in addition to the beam size.                                                     |
-+-----------------------+-----------+-------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
-| maes_expansion_gamma  | float     | maes_batch              | 2.3              | Threshold used to prune candidate hypotheses by comparing their scores to the best hypothesis.                                 |
-+-----------------------+-----------+-------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
++-----------------------+-----------+-------------------------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
+| **Argument**          | **Type**  | **Strategy**                              | **Default**      | **Description**                                                                                                                |
++-----------------------+-----------+-------------------------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
+| ngram_lm_alpha        | float     | malsd_batch, maes_batch, frame_sync_batch | Required         | Weight factor applied to the language model scores.                                                                            |
++-----------------------+-----------+-------------------------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
+| beam_size             | int       | malsd_batch, maes_batch, frame_sync_batch | 4                | Beam size.                                                                                                                     |
++-----------------------+-----------+-------------------------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
+| pruning_mode          | str       | malsd_batch, maes_batch, frame_sync_batch | late             | Mode for hypotheses pruning. Can be ``early`` or ``late``.                                                                     |
++-----------------------+-----------+-------------------------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
+| blank_lm_score_mode   | str       | malsd_batch, maes_batch, frame_sync_batch | lm_weighted_full | Mode for blank symbol scoring. Can be ``no_score`` or ``lm_weighted_full``                                                     |
++-----------------------+-----------+-------------------------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
+| beam_beta             | float     | malsd_batch, frame_sync_batch             | 0.0              | Score added for every emitted token (length reward). Positive values counter deletions at high LM weights.                     |
++-----------------------+-----------+-------------------------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
+| max_symbols_per_step  | int       | malsd_batch, frame_sync_batch             | 10               | Max symbols to emit on each step to avoid infinite looping.                                                                    |
++-----------------------+-----------+-------------------------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
+| maes_num_step         | int       | maes_batch                                | 2                | Number of adaptive steps to take.                                                                                              |
++-----------------------+-----------+-------------------------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
+| maes_expansion_beta   | float     | maes_batch                                | 1.0              | Maximum number of prefix expansions allowed, in addition to the beam size.                                                     |
++-----------------------+-----------+-------------------------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
+| maes_expansion_gamma  | float     | maes_batch                                | 2.3              | Threshold used to prune candidate hypotheses by comparing their scores to the best hypothesis.                                 |
++-----------------------+-----------+-------------------------------------------+------------------+--------------------------------------------------------------------------------------------------------------------------------+
 
 You can run NGPU-LM shallow fusion during beam RNN-T / TDT decoding using the following command:
 
@@ -305,6 +311,31 @@ You can run NGPU-LM shallow fusion during beam RNN-T / TDT decoding using the fo
 .. note::
 
     To run the inference with TDT model, you need to provide pretrained TDT model in ``pretrained_name`` field (for example ``nvidia/parakeet-tdt_ctc-1.1b`` ).
+
+For TDT models, frame-synchronous beam search is selected with ``rnnt_decoding.strategy="frame_sync_batch"``.
+With an LM it needs a ``beam_beta`` to counter deletions. Tune ``ngram_lm_alpha`` and ``beam_beta`` together on a
+dev set: past its best value, a larger ``beam_beta`` leads to insertions sooner than with ``malsd_batch``.
+
+.. code-block:: bash
+
+    python examples/asr/speech_to_text_eval.py \
+        pretrained_name=nvidia/parakeet-tdt-0.6b-v2 \
+        amp=false \
+        amp_dtype=bfloat16 \
+        matmul_precision=high \
+        compute_dtype=bfloat16 \
+        presort_manifest=true \
+        cuda=0 \
+        batch_size=32 \
+        dataset_manifest=<path to the evaluation JSON manifest file> \
+        rnnt_decoding.beam.ngram_lm_model=<path to the .nemo/.ARPA file of the NGPU-LM model> \
+        rnnt_decoding.beam.ngram_lm_alpha=0.3 \
+        rnnt_decoding.beam.beam_beta=1.0 \
+        rnnt_decoding.beam.beam_size=8 \
+        rnnt_decoding.beam.pruning_mode="late" \
+        rnnt_decoding.beam.blank_lm_score_mode="lm_weighted_full" \
+        rnnt_decoding.beam.allow_cuda_graphs=True \
+        rnnt_decoding.strategy="frame_sync_batch"
 
 AED Decoding with NGPU-LM
 -------------------------

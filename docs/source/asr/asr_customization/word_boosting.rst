@@ -36,7 +36,7 @@ We recommend to provide the list of context phrases directly into ``speech_to_te
 
 List of the most important parameters:
 
-*  ``strategy`` - The strategy to use for decoding depending on the model type (CTC - greedy_batch or beam_batch; RNN-T/TDT - greedy_batch or malsd_batch; AED - beam).
+*  ``strategy`` - The strategy to use for decoding depending on the model type (CTC - greedy_batch or beam_batch; RNN-T/TDT - greedy_batch or malsd_batch, TDT also frame_sync_batch; AED - beam).
 *  ``model_path``, ``key_phrases_file``, ``key_phrases_list``, ``key_phrase_items_list`` - The way to pass the context phrases into the decoding script.
 *  ``context_score`` - The score for each arc transition in the context graph (1.0 is recommended).
 *  ``depth_scaling`` - The scaling factor for the depth of the context graph (2.0 is recommended for CTC, RNN-T and TDT, 1.0 for Canary).
@@ -138,6 +138,8 @@ Omitted fields fall back to the global values, and per-phrase ``alpha`` works in
         rnnt_decoding.beam.boosting_tree.context_score=1.0 \
         rnnt_decoding.beam.boosting_tree.depth_scaling=2.0 \
         rnnt_decoding.beam.boosting_tree_alpha=${BT_ALPHA}
+
+For TDT models, frame-synchronous beam search takes the same arguments with ``rnnt_decoding.strategy="frame_sync_batch"``.
 
 **3.1. AED (Canary) greedy (beam_size=1) or beam (beam_size>1) decoding:**
 

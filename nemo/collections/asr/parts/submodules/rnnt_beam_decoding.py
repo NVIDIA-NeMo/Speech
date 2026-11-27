@@ -1775,7 +1775,8 @@ class BeamRNNTInferConfig:
     max_symbols_per_step: Optional[int] = 10
     blank_lm_score_mode: Optional[str | BlankLMScoreMode] = BlankLMScoreMode.LM_WEIGHTED_FULL
     pruning_mode: Optional[str | PruningMode] = PruningMode.LATE
-    # malsd_batch only: score added for every non-blank label (length reward), as `beam_beta` in CTC beam search.
+    # malsd_batch and frame_sync_batch only: score added for every non-blank label (length reward),
+    # as `beam_beta` in CTC beam search.
     beam_beta: float = 0.0
     allow_cuda_graphs: Optional[bool] = True
     enable_per_stream_biasing: bool = False

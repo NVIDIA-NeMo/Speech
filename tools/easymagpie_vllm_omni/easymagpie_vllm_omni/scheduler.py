@@ -70,28 +70,33 @@ def _set_segment_finished(outputs, request_id: str, value: bool) -> None:
 
 
 def _poll_native_codec_chunk(adapter: OmniChunkTransferAdapter, entry) -> bool:
-    """Receive a chunk without resetting the vLLM state-cache position."""
+    """Serialize codec cache-position updates with the scheduler."""
     with adapter._easymagpie_chunk_lock:
-        request = entry.request
-        old_computed = request.num_computed_tokens
-        old_prompt = list(request.prompt_token_ids or [])[:old_computed]
-        old_all_tokens = list(request._all_token_ids)[:old_computed]
-        chunk_id = adapter.get_req_chunk[request.request_id]
+        return OmniChunkTransferAdapter._poll_single_request(adapter, entry)
 
-        received = OmniChunkTransferAdapter._poll_single_request(adapter, entry)
-        if adapter.get_req_chunk.get(request.request_id) == chunk_id:
-            return received
 
-        frames = 0
-        if received:
-            frames = _codec_payload_frames(request.additional_information, adapter._easymagpie_num_quantizers)
-        placeholders = [0] * frames
-        request.prompt_token_ids = old_prompt + placeholders
-        request._all_token_ids[:] = old_all_tokens + placeholders
-        request.num_prompt_tokens = len(request.prompt_token_ids)
-        request.num_computed_tokens = old_computed
-        request.update_block_hashes()
-        return received
+def _commit_native_codec_chunk(adapter: OmniChunkTransferAdapter, request: Request, result, **kwargs) -> bool:
+    """Append new frames at the existing codec cache position."""
+    payload, _ = result
+    if not payload:
+        return OmniChunkTransferAdapter._commit_received_chunk(adapter, request, result, **kwargs)
+
+    old_computed = request.num_computed_tokens
+    old_prompt = list(request.prompt_token_ids or [])[:old_computed]
+    old_all_tokens = list(request._all_token_ids)[:old_computed]
+
+    # Each chunk is a snapshot of new frames. Controls without codes must
+    # replace consumed audio and any prewarm payload in the worker input.
+    payload.setdefault("meta", {})["replace_runtime_additional_information"] = True
+    frames = _codec_payload_frames(payload, adapter._easymagpie_num_quantizers)
+    received = OmniChunkTransferAdapter._commit_received_chunk(adapter, request, result, **kwargs)
+    placeholders = [0] * frames
+    request.prompt_token_ids = old_prompt + placeholders
+    request._all_token_ids[:] = old_all_tokens + placeholders
+    request.num_prompt_tokens = len(request.prompt_token_ids)
+    request.num_computed_tokens = old_computed
+    request.update_block_hashes()
+    return received
 
 
 def _codec_segment_resets_state(request: Request) -> bool:
@@ -119,6 +124,7 @@ class EasyMagpieCodecScheduler(OmniGenerationScheduler):
         adapter._easymagpie_chunk_lock = threading.Lock()
         adapter._easymagpie_num_quantizers = num_quantizers
         adapter._poll_single_request = MethodType(_poll_native_codec_chunk, adapter)
+        adapter._commit_received_chunk = MethodType(_commit_native_codec_chunk, adapter)
         self._easymagpie_reset_on_update: set[str] = set()
 
     def _update_request_as_session(self, session: Request, update: StreamingUpdate) -> None:

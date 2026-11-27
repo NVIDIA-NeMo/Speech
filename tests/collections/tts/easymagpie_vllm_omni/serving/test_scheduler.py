@@ -15,7 +15,6 @@
 """Tests for the EasyMagpie streaming schedulers."""
 from __future__ import annotations
 
-import threading
 from types import SimpleNamespace
 
 import pytest
@@ -23,7 +22,7 @@ import torch
 from easymagpie_vllm_omni.scheduler import (
     EasyMagpieCodecScheduler,
     _codec_segment_resets_state,
-    _poll_native_codec_chunk,
+    _commit_native_codec_chunk,
     _set_segment_finished,
 )
 from vllm.v1.request import RequestStatus
@@ -42,91 +41,58 @@ def test_scheduler_output_marks_only_the_matching_segment():
     assert other.is_segment_finished is False
 
 
-def test_native_codec_chunk_appends_prompt_without_resetting_state(monkeypatch):
-    adapter = object.__new__(OmniChunkTransferAdapter)
-    adapter._easymagpie_num_quantizers = 2
-    adapter._easymagpie_chunk_lock = threading.Lock()
-    adapter.get_req_chunk = {"request": 1}
-    request = SimpleNamespace(
-        prompt_token_ids=[0, 0],
-        request_id="request",
-        _all_token_ids=[0, 0],
-        num_computed_tokens=2,
-        num_prompt_tokens=2,
-        additional_information=None,
-        update_block_hashes=lambda: None,
-    )
+@pytest.mark.parametrize("computed", [0, 2])
+def test_native_codec_chunk_appends_prompt_without_resetting_state(computed):
+    adapter, request = _codec_receiver(computed)
+    payload = {"codes": {"audio": torch.ones((3, 2), dtype=torch.long)}}
 
-    def fake_poll(self, entry):
-        req = entry.request
-        self.get_req_chunk[req.request_id] += 1
-        req.prompt_token_ids = [0]
-        req._all_token_ids[:] = []
-        req.num_computed_tokens = 0
-        req.additional_information = {"codes": {"audio": torch.ones((3, 2), dtype=torch.long)}}
-        return True
-
-    monkeypatch.setattr(OmniChunkTransferAdapter, "_poll_single_request", fake_poll)
-
-    assert _poll_native_codec_chunk(adapter, SimpleNamespace(request=request)) is True
-    assert request.prompt_token_ids == [0, 0, 0, 0, 0]
-    assert request._all_token_ids == [0, 0, 0, 0, 0]
-    assert request.num_prompt_tokens == 5
-    assert request.num_computed_tokens == 2
+    assert _receive_codec_chunk(adapter, request, payload)
+    assert request.prompt_token_ids == request._all_token_ids == [0] * (computed + 3)
+    assert request.num_prompt_tokens == computed + 3
+    assert request.num_computed_tokens == computed
     assert request.additional_information["codes"]["audio"].shape == (3, 2)
 
-    prewarm_request = SimpleNamespace(
-        prompt_token_ids=[0],
+
+@pytest.mark.parametrize("boundary", ["is_segment_finished", "finished"])
+def test_native_codec_control_marker_never_replays_consumed_frames(boundary):
+    adapter, request = _codec_receiver(3)
+    request.additional_information = {"codes": {"audio": torch.ones((3, 2), dtype=torch.long)}}
+    request.model_intermediate_buffer = request.additional_information
+
+    assert _receive_codec_chunk(adapter, request, {"meta": {boundary: True}})
+    assert request.prompt_token_ids == request._all_token_ids == [0, 0, 0]
+    assert request.num_prompt_tokens == request.num_computed_tokens == 3
+    assert "codes" not in request.additional_information
+    assert "codes" not in request.model_intermediate_buffer
+    assert adapter._finished_load_reqs == {"request"}
+    assert request.resumable == (boundary == "is_segment_finished")
+
+
+def _receive_codec_chunk(adapter, request, payload):
+    return _commit_native_codec_chunk(
+        adapter, request, (payload, 1), stage_id=1, req_id="request", chunk_id=1, connector_get_key="request_0_1"
+    )
+
+
+def _codec_receiver(computed):
+    adapter = object.__new__(OmniChunkTransferAdapter)
+    adapter._easymagpie_num_quantizers = 2
+    adapter.model_mode = "generation"
+    adapter.get_req_chunk = {"request": 1}
+    adapter.segment_finished_requests = set()
+    adapter.upstream_exhausted_requests = set()
+    adapter._finished_load_reqs = set()
+    request = SimpleNamespace(
+        prompt_token_ids=[0] * max(1, computed),
+        _all_token_ids=[0] * max(1, computed),
         request_id="request",
-        _all_token_ids=[0],
-        num_computed_tokens=0,
-        num_prompt_tokens=1,
+        resumable=True,
+        num_computed_tokens=computed,
+        num_prompt_tokens=max(1, computed),
         additional_information=None,
         update_block_hashes=lambda: None,
     )
-    assert _poll_native_codec_chunk(adapter, SimpleNamespace(request=prewarm_request)) is True
-    assert prewarm_request.prompt_token_ids == [0, 0, 0]
-    assert prewarm_request._all_token_ids == [0, 0, 0]
-    assert prewarm_request.num_computed_tokens == 0
-
-
-def test_native_codec_empty_segment_marker_wakes_scheduler_without_resetting_state(monkeypatch):
-    adapter = object.__new__(OmniChunkTransferAdapter)
-    adapter._easymagpie_num_quantizers = 2
-    adapter._easymagpie_chunk_lock = threading.Lock()
-    adapter.get_req_chunk = {"request": 1}
-    adapter.segment_finished_requests = set()
-    adapter._finished_load_reqs = set()
-    request = SimpleNamespace(
-        prompt_token_ids=[0, 0, 0],
-        request_id="request",
-        _all_token_ids=[0, 0, 0],
-        num_computed_tokens=3,
-        num_prompt_tokens=3,
-        additional_information={"codes": {"audio": torch.ones((3, 2), dtype=torch.long)}},
-        update_block_hashes=lambda: None,
-    )
-
-    def fake_poll(self, entry):
-        req = entry.request
-        self.get_req_chunk[req.request_id] += 1
-        req.prompt_token_ids = [0]
-        req._all_token_ids[:] = []
-        req.num_prompt_tokens = 0
-        req.num_computed_tokens = 0
-        req.additional_information = {"meta": {"is_segment_finished": True}}
-        self.segment_finished_requests.add(req.request_id)
-        self._finished_load_reqs.add(req.request_id)
-        return True
-
-    monkeypatch.setattr(OmniChunkTransferAdapter, "_poll_single_request", fake_poll)
-
-    assert _poll_native_codec_chunk(adapter, SimpleNamespace(request=request)) is True
-    assert request.prompt_token_ids == [0, 0, 0]
-    assert request._all_token_ids == [0, 0, 0]
-    assert request.num_prompt_tokens == 3
-    assert request.num_computed_tokens == 3
-    assert adapter._finished_load_reqs == {"request"}
+    return adapter, request
 
 
 def test_codec_segment_stop_consumes_late_boundary_readiness(monkeypatch):

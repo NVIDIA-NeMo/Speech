@@ -47,8 +47,28 @@ def test_payload_codes_rejects_scheduled_frame_mismatch():
 
 
 class _FakeCodec(torch.nn.Module):
+    def __init__(self, samples_per_frame: int) -> None:
+        super().__init__()
+        self.samples_per_frame = samples_per_frame
+
     def forward(self, codes: torch.Tensor) -> torch.Tensor:
-        return torch.arange(codes.shape[0] * 6, dtype=torch.float32, device=codes.device)
+        return torch.arange(codes.shape[0] * self.samples_per_frame, dtype=torch.float32, device=codes.device)
+
+
+def _codec_model(frame_stacking_factor: int) -> EasyMagpieCodecForConditionalGeneration:
+    model = EasyMagpieCodecForConditionalGeneration.__new__(EasyMagpieCodecForConditionalGeneration)
+    torch.nn.Module.__init__(model)
+    model.config = SimpleNamespace(
+        num_stacked_codebooks=2 * frame_stacking_factor,
+        frame_stacking_factor=frame_stacking_factor,
+        codebook_size=1024,
+        samples_per_codec_frame=3,
+        samples_per_frame=3 * frame_stacking_factor,
+        output_sample_rate=22050,
+    )
+    model.vllm_config = SimpleNamespace(device_config=SimpleNamespace(device=torch.device("cpu")))
+    model.codec = _FakeCodec(model.config.samples_per_frame)
+    return model
 
 
 @pytest.mark.parametrize(
@@ -59,18 +79,7 @@ class _FakeCodec(torch.nn.Module):
     ],
 )
 def test_forward_trims_terminal_control_subframes(terminal_row, expected_samples):
-    model = EasyMagpieCodecForConditionalGeneration.__new__(EasyMagpieCodecForConditionalGeneration)
-    torch.nn.Module.__init__(model)
-    model.config = SimpleNamespace(
-        num_stacked_codebooks=4,
-        frame_stacking_factor=2,
-        codebook_size=1024,
-        samples_per_codec_frame=3,
-        samples_per_frame=6,
-        output_sample_rate=22050,
-    )
-    model.vllm_config = SimpleNamespace(device_config=SimpleNamespace(device=torch.device("cpu")))
-    model.codec = _FakeCodec()
+    model = _codec_model(frame_stacking_factor=2)
     info = {"codes": {"audio": torch.tensor([[1, 2, 101, 102], terminal_row])}}
 
     output = model.forward(
@@ -81,3 +90,27 @@ def test_forward_trims_terminal_control_subframes(terminal_row, expected_samples
 
     audio = output.multimodal_outputs["model_outputs"][0]
     torch.testing.assert_close(audio, torch.arange(expected_samples, dtype=torch.float32))
+
+
+@pytest.mark.parametrize("frame_stacking_factor", [1, 2])
+def test_forward_resolves_connector_audio_lengths_before_transferring_codes(frame_stacking_factor):
+    model = _codec_model(frame_stacking_factor)
+    valid = torch.arange(model.config.num_stacked_codebooks)
+    terminal = valid.clone()
+    terminal[-1] = model.config.codebook_size
+    stacked = torch.stack([valid, terminal])
+    # Meta can execute the fake decoder but exposes no scalar values after transfer.
+    output = model.forward(
+        input_ids=torch.empty(4, dtype=torch.long, device="meta"),
+        runtime_additional_information=[
+            {"codes": {"audio": stacked.T.flatten().tolist()}},
+            {},
+            {"codes": {"audio": stacked}},
+        ],
+        request_token_spans=[(0, 2), (2, 2), (2, 4)],
+    )
+
+    expected_samples = 3 * (2 * frame_stacking_factor - 1)
+    audio = output.multimodal_outputs["model_outputs"]
+    assert len(audio) == 2
+    assert all(chunk.is_meta and chunk.numel() == expected_samples for chunk in audio)

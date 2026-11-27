@@ -267,8 +267,7 @@ def test_native_codec_segment_resume_stays_on_cached_request_path(status, queue_
     scheduler._resume_codec_after_segment(session)
 
     assert scheduler.waiting == []
-    assert scheduler.deferred_waiting == []
-    assert scheduler.kv_holding_waiting == []
+    assert scheduler.skipped_waiting == []
     assert scheduler.running == [session]
     assert session.status == RequestStatus.RUNNING
     assert session.prompt_token_ids == [0] * 6

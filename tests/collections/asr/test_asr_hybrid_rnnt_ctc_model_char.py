@@ -348,6 +348,7 @@ class TestEncDecHybridRNNTCTCModel:
             'tdt_include_duration_confidence',
             'confidence_method_cfg',
             'length_norm_power',  # cache-aware streaming only
+            'beam_beta',  # malsd_batch only
         ]
 
         result = assert_dataclass_signature_match(

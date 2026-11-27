@@ -1560,6 +1560,7 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
         fusion_models_alpha: Optional[List[float]] = None,
         blank_lm_score_mode: Optional[str | BlankLMScoreMode] = BlankLMScoreMode.LM_WEIGHTED_FULL,
         pruning_mode: Optional[str | PruningMode] = PruningMode.LATE,
+        beam_beta: float = 0.0,
         allow_cuda_graphs: Optional[bool] = True,
         return_best_hypothesis: Optional[str] = True,
         enable_per_stream_biasing: bool = False,
@@ -1594,6 +1595,8 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
             fusion_models_alpha: list of alpha values for fusion models
             blank_lm_score_mode: mode for scoring blank symbol with LM
             pruning_mode: mode for pruning hypotheses with LM
+            beam_beta: score added for every non-blank label (length reward); positive values counter deletions.
+                Supported by `malsd_batch` only.
             allow_cuda_graphs: whether to allow CUDA graphs
             return_best_hypothesis: whether to return the best hypothesis or N-best hypotheses
             enable_per_stream_biasing: whether to enable per-stream biasing via multi-boosting tree
@@ -1636,12 +1639,17 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
                 fusion_models_alpha=fusion_models_alpha,
                 blank_lm_score_mode=blank_lm_score_mode,
                 pruning_mode=pruning_mode,
+                beam_beta=beam_beta,
                 allow_cuda_graphs=allow_cuda_graphs,
                 enable_per_stream_biasing=enable_per_stream_biasing,
                 preserve_step_confidence=preserve_step_confidence,
                 confidence_method_cfg=confidence_method_cfg,
             )
         elif search_type == "maes_batch":
+            if beam_beta:
+                raise NotImplementedError(
+                    "`beam_beta` is not supported with `maes_batch` decoding; use `malsd_batch`."
+                )
             self.decoding_computer = ModifiedAESBatchedRNNTComputer(
                 decoder=self.decoder,
                 joint=self.joint,
@@ -1767,6 +1775,8 @@ class BeamRNNTInferConfig:
     max_symbols_per_step: Optional[int] = 10
     blank_lm_score_mode: Optional[str | BlankLMScoreMode] = BlankLMScoreMode.LM_WEIGHTED_FULL
     pruning_mode: Optional[str | PruningMode] = PruningMode.LATE
+    # malsd_batch only: score added for every non-blank label (length reward), as `beam_beta` in CTC beam search.
+    beam_beta: float = 0.0
     allow_cuda_graphs: Optional[bool] = True
     enable_per_stream_biasing: bool = False
     preserve_frame_confidence: bool = False

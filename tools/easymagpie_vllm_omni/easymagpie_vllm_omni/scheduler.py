@@ -102,6 +102,8 @@ def _commit_native_codec_chunk(adapter: OmniChunkTransferAdapter, request: Reque
 def _codec_segment_resets_state(request: Request) -> bool:
     """Whether the completed Stage-1 segment is a dialogue utterance boundary."""
     payload = getattr(request, "additional_information", None)
+    if payload is None:
+        payload = getattr(request, "model_intermediate_buffer", None)
     meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
     codec_streaming = meta.get("codec_streaming") if isinstance(meta, dict) else None
     if isinstance(codec_streaming, torch.Tensor):

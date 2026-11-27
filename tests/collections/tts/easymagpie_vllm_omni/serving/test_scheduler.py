@@ -118,7 +118,8 @@ def test_codec_segment_stop_consumes_late_boundary_readiness(monkeypatch):
     assert scheduler.chunk_transfer_adapter.requests_with_ready_chunks == set()
 
 
-def test_dialogue_boundary_resets_codec_before_consuming_queued_update(monkeypatch):
+@pytest.mark.parametrize("cached", [False, True])
+def test_dialogue_boundary_resets_codec_before_consuming_queued_update(monkeypatch, cached):
     scheduler = object.__new__(EasyMagpieCodecScheduler)
     scheduler.chunk_transfer_adapter = SimpleNamespace(
         segment_finished_requests={"request"},
@@ -132,6 +133,13 @@ def test_dialogue_boundary_resets_codec_before_consuming_queued_update(monkeypat
         request_id="request",
         additional_information={"meta": {"codec_streaming": torch.tensor(False)}},
     )
+    if cached:
+        request.model_intermediate_buffer = request.additional_information
+        cached_reqs = SimpleNamespace(req_ids=[request.request_id])
+        OmniChunkTransferAdapter.attach_cached_additional_information(
+            SimpleNamespace(scheduled_cached_reqs=cached_reqs), {request.request_id: request}
+        )
+        assert request.additional_information is None
     update = SimpleNamespace()
     base_updates = []
 

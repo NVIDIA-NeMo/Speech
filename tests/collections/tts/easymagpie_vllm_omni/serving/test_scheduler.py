@@ -95,6 +95,21 @@ def _codec_receiver(computed):
     return adapter, request
 
 
+def test_terminal_text_update_does_not_finish_the_existing_codec_request(monkeypatch):
+    scheduler = object.__new__(EasyMagpieCodecScheduler)
+    scheduler.requests = {"stream": SimpleNamespace(resumable=True)}
+    accepted = []
+    monkeypatch.setattr(OmniGenerationScheduler, "add_request", lambda self, request: accepted.append(request))
+
+    first_http = SimpleNamespace(request_id="http", resumable=False)
+    next_text = SimpleNamespace(request_id="stream", resumable=True)
+    final_text = SimpleNamespace(request_id="stream", resumable=False)
+    for request in (first_http, next_text, final_text):
+        scheduler.add_request(request)
+
+    assert accepted == [first_http, next_text]
+
+
 def test_codec_segment_stop_consumes_late_boundary_readiness(monkeypatch):
     scheduler = object.__new__(EasyMagpieCodecScheduler)
     scheduler.chunk_transfer_adapter = SimpleNamespace(

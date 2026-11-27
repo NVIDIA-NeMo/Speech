@@ -129,6 +129,13 @@ class EasyMagpieCodecScheduler(OmniGenerationScheduler):
         adapter._commit_received_chunk = MethodType(_commit_native_codec_chunk, adapter)
         self._easymagpie_reset_on_update: set[str] = set()
 
+    def add_request(self, request: Request) -> None:
+        # The terminal text update also prewarms Stage 1. Wait for the
+        # connector's terminal chunk so queued audio can drain first.
+        if not request.resumable and request.request_id in self.requests:
+            return
+        super().add_request(request)
+
     def _update_request_as_session(self, session: Request, update: StreamingUpdate) -> None:
         """Resume a text chunk, or reset Stage 1 for a new dialogue reply.
 

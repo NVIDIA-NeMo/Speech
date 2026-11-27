@@ -23,7 +23,11 @@ from omegaconf import DictConfig, open_dict
 
 from nemo.collections.asr.inference.utils.constants import SENTENCEPIECE_UNDERSCORE
 from nemo.collections.asr.inference.utils.device_utils import setup_device
-from nemo.collections.asr.inference.utils.pipeline_utils import make_preprocessor_deterministic, set_compile_cache_dir
+from nemo.collections.asr.inference.utils.pipeline_utils import (
+    compile_encoder_body,
+    make_preprocessor_deterministic,
+    set_compile_cache_dir,
+)
 from nemo.collections.asr.models import ASRModel, EncDecHybridRNNTCTCModel
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecodingConfig
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecodingConfig
@@ -46,6 +50,9 @@ class ASRInferenceWrapper:
 
     # decoder used by the derived classes: 'ctc' or 'rnnt' (selects the decoding config of hybrid models)
     decoder_type: str | None = None
+
+    # compile `encoder.forward_internal` (dynamic batch, static feature length) instead of the whole encoder
+    compiles_encoder_body: bool = False
 
     def __init__(
         self,
@@ -98,13 +105,10 @@ class ASRInferenceWrapper:
         if self.compile_encoder:
             if self.compile_cache_dir is not None:
                 set_compile_cache_dir(self.compile_cache_dir)
-            self.compile_encoder_module()
-
-    def compile_encoder_module(self) -> None:
-        """
-        Compile the encoder with torch.compile. Derived classes whose encoder is called differently override this.
-        """
-        self.asr_model.encoder = torch.compile(self.asr_model.encoder)
+            if self.compiles_encoder_body:
+                compile_encoder_body(self.asr_model.encoder)
+            else:
+                self.asr_model.encoder = torch.compile(self.asr_model.encoder)
 
     @staticmethod
     def load_model(model_name: str, map_location: torch.device) -> ASRModel:

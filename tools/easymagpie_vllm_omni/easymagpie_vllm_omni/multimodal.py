@@ -164,15 +164,10 @@ class EasyMagpieMultiModalProcessor(BaseMultiModalProcessor[EasyMagpieProcessing
 
     def _call_hf_processor(
         self,
-        prompt: str,
-        mm_data: Mapping[str, object],
-        mm_kwargs: Mapping[str, object],
-        tok_kwargs: Mapping[str, object],
+        hf_data: Mapping[str, object],
+        hf_kwargs: Mapping[str, object],
     ) -> BatchFeature:
-        tokenizer = self.info.get_tokenizer()
-        input_ids = tokenizer.encode(prompt, add_special_tokens=bool(tok_kwargs.get("add_special_tokens", False)))
-
-        audios = mm_data.get("audios", [])
+        audios = hf_data.get("audio", [])
         audio_values: list[torch.Tensor] = []
         for audio in audios if isinstance(audios, (list, tuple)) else [audios]:
             value = torch.as_tensor(np.asarray(audio), dtype=torch.float32)
@@ -187,7 +182,7 @@ class EasyMagpieMultiModalProcessor(BaseMultiModalProcessor[EasyMagpieProcessing
                 )
             audio_values.append(value.contiguous())
 
-        raw_output_kinds = mm_kwargs.get(_AUDIO_OUTPUTS_KWARG, [_AUDIO_OUTPUT_REFERENCE] * len(audio_values))
+        raw_output_kinds = hf_kwargs.get(_AUDIO_OUTPUTS_KWARG, [_AUDIO_OUTPUT_REFERENCE] * len(audio_values))
         output_kinds = [int(kind) for kind in raw_output_kinds]
         if len(output_kinds) != len(audio_values):
             raise ValueError(f"Got {len(output_kinds)} audio outputs for {len(audio_values)} audio items")
@@ -200,7 +195,6 @@ class EasyMagpieMultiModalProcessor(BaseMultiModalProcessor[EasyMagpieProcessing
 
         return BatchFeature(
             {
-                "input_ids": [input_ids],
                 "audio_values": audio_values,
                 "audio_lens": torch.tensor([audio.numel() for audio in audio_values], dtype=torch.long),
                 "audio_output_kinds": torch.tensor(output_kinds, dtype=torch.long),
@@ -220,16 +214,6 @@ class EasyMagpieMultiModalProcessor(BaseMultiModalProcessor[EasyMagpieProcessing
         processor_kwargs[_AUDIO_OUTPUTS_KWARG] = output_kinds
         updated_inputs = replace(inputs, hf_processor_mm_kwargs=processor_kwargs)
         return self._apply_hf_processor(updated_inputs, timing_ctx)
-
-    def _hf_processor_applies_updates(
-        self,
-        prompt_text: str,
-        mm_items: MultiModalDataItems,
-        hf_processor_mm_kwargs: Mapping[str, object],
-        tokenization_kwargs: Mapping[str, object],
-    ) -> bool:
-        del prompt_text, mm_items, hf_processor_mm_kwargs, tokenization_kwargs
-        return False
 
     def _get_mm_fields_config(
         self,

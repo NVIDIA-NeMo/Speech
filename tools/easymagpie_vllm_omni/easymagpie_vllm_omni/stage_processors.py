@@ -362,7 +362,7 @@ def talker2code2wav_async_chunk(
             return OmniPayloadStruct(
                 codes=CodesStruct(audio=torch.empty(0, dtype=torch.long)),
                 meta=MetaStruct(
-                    finished=torch.tensor(True, dtype=torch.bool),
+                    finished=torch.tensor(true_finished, dtype=torch.bool),
                     codec_streaming=not reset_codec,
                 ),
             )
@@ -405,7 +405,7 @@ def talker2code2wav_async_chunk(
         codes=CodesStruct(audio=code_predictor_codes),
         meta=MetaStruct(
             left_context_size=0,
-            finished=torch.tensor(finished, dtype=torch.bool),
+            finished=torch.tensor(true_finished, dtype=torch.bool),
             codec_streaming=not reset_codec,
         ),
     )

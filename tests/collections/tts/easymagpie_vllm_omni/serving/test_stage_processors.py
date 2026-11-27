@@ -64,6 +64,7 @@ def test_async_codec_state_stays_continuous_across_resumable_segments():
     request.finished = True
     warmup_flush = talker2code2wav_async_chunk(manager, _output(2), request, is_finished=True)
     assert warmup_flush.codes.audio.numel() == 0
+    assert not bool(warmup_flush.meta.finished)
     manager.code_prompt_token_ids.pop(request.external_req_id, None)
 
     # The framework buffer is reset per segment, but the processor's request
@@ -74,6 +75,7 @@ def test_async_codec_state_stays_continuous_across_resumable_segments():
     request.output_token_ids = [0, 0]
     request.finished = True
     first = talker2code2wav_async_chunk(manager, _output(4), request, is_finished=True)
+    assert not bool(first.meta.finished)
     torch.testing.assert_close(first.codes.audio, torch.tensor([[3, 103], [4, 104]]))
     assert first.meta.left_context_size == 0
     manager.code_prompt_token_ids.pop(request.external_req_id, None)

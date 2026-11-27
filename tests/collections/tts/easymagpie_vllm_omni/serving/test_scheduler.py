@@ -20,14 +20,29 @@ from types import SimpleNamespace
 import pytest
 import torch
 from easymagpie_vllm_omni.scheduler import (
+    EasyMagpieARAsyncScheduler,
     EasyMagpieCodecScheduler,
     _codec_segment_resets_state,
     _commit_native_codec_chunk,
     _set_segment_finished,
 )
 from vllm.v1.request import RequestStatus
+from vllm_omni.core.sched.omni_ar_scheduler import OmniARAsyncScheduler
 from vllm_omni.core.sched.omni_generation_scheduler import OmniGenerationScheduler
 from vllm_omni.distributed.omni_connectors.transfer_adapter.chunk_transfer_adapter import OmniChunkTransferAdapter
+
+
+def test_stage_zero_resumes_with_the_latest_text_tokens(monkeypatch):
+    scheduler = object.__new__(EasyMagpieARAsyncScheduler)
+    session = SimpleNamespace(
+        num_computed_tokens=71, num_tokens=72, additional_information={"text_token": [10], "text_token_start": 0}
+    )
+    update = SimpleNamespace(additional_information={"text_token": [20], "text_token_start": 1})
+    monkeypatch.setattr(OmniARAsyncScheduler, "_update_request_as_session", lambda self, session, update: None)
+
+    scheduler._update_request_as_session(session, update)
+
+    assert session.additional_information == {"text_token": [20], "text_token_start": 1}
 
 
 def test_scheduler_output_marks_only_the_matching_segment():

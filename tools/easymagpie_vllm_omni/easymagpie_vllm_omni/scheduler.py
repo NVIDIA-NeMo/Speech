@@ -35,6 +35,8 @@ class EasyMagpieARAsyncScheduler(OmniARAsyncScheduler):
 
     def _update_request_as_session(self, session: Request, update: StreamingUpdate) -> None:
         super()._update_request_as_session(session, update)
+        if update.additional_information is not None:
+            session.additional_information = update.additional_information
 
         # Defensive guard: if a resumed session has every token already computed
         # (``num_computed_tokens >= num_tokens``), the upstream scheduler computes

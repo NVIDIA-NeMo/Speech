@@ -399,6 +399,39 @@ class TestConformerBlockComposition:
             ConformerConvolution(d_model=16, kernel_size=4, conv_context_size=2)
 
     @pytest.mark.unit
+    def test_change_attention_model_preserves_train_eval_mode(self):
+        config = DictConfig(
+            {
+                "_target_": "nemo.collections.asr.modules.ConformerEncoder",
+                "feat_in": 8,
+                "n_layers": 2,
+                "d_model": 16,
+                "n_heads": 2,
+                "subsampling_conv_channels": 4,
+                "dropout": 0.1,
+                "dropout_att": 0.1,
+                "dropout_emb": 0.1,
+                "pos_emb_max_len": 64,
+                "self_attention_model": "rel_pos",
+            }
+        )
+        encoder = ConformerEncoder.from_config_dict(config).eval()
+        assert not any(m.training for _, m in encoder.named_modules())
+
+        encoder.change_attention_model("rel_pos_local_attn", [16, 16])
+        assert not any(m.training for _, m in encoder.named_modules())
+        assert not encoder.pos_enc.training
+        for layer in encoder.layers:
+            assert not layer.self_attn.training
+
+        # Verify training mode is also properly maintained
+        encoder.train()
+        encoder.change_attention_model("rel_pos")
+        assert encoder.pos_enc.training
+        for layer in encoder.layers:
+            assert layer.self_attn.training
+
+    @pytest.mark.unit
     def test_change_attention_model_keeps_the_attention_block(self):
         encoder = _composed_encoder(self_attn=functools.partial(RelPositionMultiHeadAttention, use_bias=False))
         encoder._cfg = OmegaConf.create(

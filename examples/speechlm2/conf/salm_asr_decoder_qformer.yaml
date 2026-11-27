@@ -31,7 +31,7 @@ model:
      target: nemo.collections.speechlm2.modules.perception.AudioTranscriptionPerceptionModule
      output_dim: 4096
      modality_adapter:
-       _target_: nemo.collections.asr.modules.QformerConnector
+       _target_: nemo.collections.speechlm2.modules.perception.QformerConnector
        prompt_size: 64
        target_layer_ids: [0, 5, 11, 17, 23]
        qformer_num_hidden_layers: 6

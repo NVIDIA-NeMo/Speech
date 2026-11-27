@@ -134,6 +134,21 @@ def test_packed_profile_path_registers_state_layers() -> None:
     assert actual.shape == (5 * config.samples_per_frame,)
 
 
+def test_codec_state_binding_preserves_each_page_stride():
+    vllm_config = VllmConfig()
+    with set_current_vllm_config(vllm_config):
+        layer = CodecStateLayer(time_factor=1, dtype=torch.float32, prefix="codec")
+    pages = torch.zeros((3, 1, 1, (CODEC_STATE_ELEMENTS + 4) * 4), dtype=torch.int8)
+
+    layer.bind_kv_cache(pages)
+    state = layer.kv_cache[0]
+    assert state.shape == (3, CODEC_STATE_ELEMENTS)
+    assert state.stride() == (CODEC_STATE_ELEMENTS + 4, 1)
+    state[1, 4] = 3.0
+    assert pages.view(torch.float32)[1, 0, 0, 4] == 3.0
+    assert pages.view(torch.float32)[0, 0, 0, 4] == 0.0
+
+
 def test_vllm_state_pages_match_full_decode() -> None:
     torch.manual_seed(17)
     config = tiny_config()

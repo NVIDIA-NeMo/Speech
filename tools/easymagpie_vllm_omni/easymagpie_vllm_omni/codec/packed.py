@@ -156,6 +156,11 @@ class CodecStateLayer(nn.Module, AttentionLayerBase):
             raise ValueError(f"duplicate layer name: {prefix}")
         compilation.static_forward_context[prefix] = self
 
+    def bind_kv_cache(self, kv_cache: torch.Tensor) -> None:
+        pages = kv_cache.squeeze(dim=(1, 2))
+        state_bytes = CODEC_STATE_ELEMENTS * self.dtype.itemsize
+        self.kv_cache = [pages[:, :state_bytes].view(self.dtype)]
+
     def get_attn_backend(self) -> type[AttentionBackend]:
         return CodecStateBackend
 

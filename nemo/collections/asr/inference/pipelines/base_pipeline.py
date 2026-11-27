@@ -138,9 +138,13 @@ class BasePipeline(PipelineInterface):
         return [self.get_state(stream_id) for stream_id in stream_ids]
 
     def delete_state(self, stream_id: int) -> None:
-        """Delete the state from the state pool."""
+        """Delete the state of the stream and release its buffer."""
         if stream_id in self._state_pool:
             del self._state_pool[stream_id]
+        # a stream that ends without a last frame still holds its buffer
+        bufferer = getattr(self, 'bufferer', None)
+        if bufferer is not None:
+            bufferer.rm_stream(stream_id)
 
     def delete_states(self, stream_ids: Iterable[int]) -> None:
         """Delete states for a list of stream IDs."""

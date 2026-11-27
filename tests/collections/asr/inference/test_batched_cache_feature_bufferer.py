@@ -17,6 +17,7 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
+from nemo.collections.asr.inference.pipelines.cache_aware_ctc_pipeline import CacheAwareCTCPipeline
 from nemo.collections.asr.inference.streaming.buffering.cache_feature_bufferer import BatchedCacheFeatureBufferer
 from nemo.collections.asr.inference.streaming.framing.request import Frame
 
@@ -198,3 +199,21 @@ def test_freeing_an_unfinished_stream_gives_its_audio_slot_to_the_next_stream():
     assert bufferer.audio_bufferer.buffer.shape[0] == 2
     assert seen[1][0, :look_back].eq(0).all() and seen[1][0, look_back:].eq(3).all()
     assert seen[1][1, :look_back].eq(5).all() and seen[1][1, look_back:].eq(6).all()
+
+
+@pytest.mark.unit
+def test_deleting_the_state_of_a_stream_without_a_last_frame_frees_its_slot_for_the_next_stream():
+    pipeline = object.__new__(CacheAwareCTCPipeline)
+    pipeline._state_pool = {0: object(), 1: object()}
+    pipeline.bufferer = _bufferer(num_slots=2)
+    seen = _audio_seen_by_the_preprocessor(pipeline.bufferer)
+    look_back = int(0.01 * SAMPLE_RATE)
+
+    pipeline.bufferer.update([_const_frame(0, 9), _const_frame(1, 5)])
+    pipeline.delete_state(0)
+    # both slots were taken: stream 2 fits only in the slot stream 0 gave back, and starts from silence
+    pipeline.bufferer.update([_const_frame(2, 3), _const_frame(1, 6)])
+
+    assert seen[1][0, :look_back].eq(0).all() and seen[1][0, look_back:].eq(3).all()
+    assert seen[1][1, :look_back].eq(5).all() and seen[1][1, look_back:].eq(6).all()
+    assert pipeline._state_pool == {1: pipeline._state_pool[1]}

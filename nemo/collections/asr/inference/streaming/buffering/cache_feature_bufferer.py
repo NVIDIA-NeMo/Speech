@@ -125,6 +125,16 @@ class BatchedCacheFeatureBufferer:
             stream_id = self.slotidx2streamidx[slot_id]
             del self.slotidx2streamidx[slot_id], self.streamidx2slotidx[stream_id]
 
+    def rm_stream(self, stream_id: int) -> None:
+        """
+        Free the slot of the given stream
+        Args:
+            stream_id (int): stream id
+        """
+        slot_id = self.streamidx2slotidx.get(stream_id)
+        if slot_id is not None:
+            self.free_slots([slot_id])
+
     def reset_slots(self, slot_ids: list[int]) -> None:
         """
         Reset the slots for the given slot_ids

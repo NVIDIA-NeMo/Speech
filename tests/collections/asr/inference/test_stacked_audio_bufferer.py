@@ -168,6 +168,23 @@ def test_caller_assigned_slots_keep_their_history_in_any_batch_order_and_a_reset
         bufferer.update_slots([1, 1], [_frame(7, [1, 2, 3]), _frame(8, [4, 5, 6])])
 
 
+@pytest.mark.unit
+def test_deleting_the_state_of_streams_that_never_send_a_last_frame_keeps_the_buffer_at_one_slot():
+    pipeline = object.__new__(BufferedCTCPipeline)
+    pipeline._state_pool = {}
+    pipeline.bufferer = StackedAudioBufferer(SAMPLE_RATE, BUFFER_SECS, device="cpu", num_slots=1)
+
+    for stream_id in range(5):
+        pipeline._state_pool[stream_id] = object()
+        buffers, _ = pipeline.bufferer.update([_frame(stream_id, [1, 2, 3])])
+        pipeline.delete_state(stream_id)
+        # every stream starts from silence in the one slot the stream before it gave back
+        assert buffers.tolist() == [[0, 0, 0, 0, 0, 1, 2, 3]]
+
+    assert pipeline.bufferer.buffer.shape[0] == 1
+    assert pipeline._state_pool == {}
+
+
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 def test_frames_on_the_cpu_are_buffered_on_the_cuda_device():

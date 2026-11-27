@@ -44,6 +44,7 @@ from nemo.collections.asr.parts.utils.speaker_utils import (
     OnlineSegmentor,
     check_ranges,
     fl2int,
+    generate_diarization_output_lines,
     get_new_cursor_for_update,
     get_online_segments_from_slices,
     get_online_subsegments_from_buffer,
@@ -541,10 +542,18 @@ class TestDiarizationSegmentationUtils:
         assert not is_overlap(rangeA, rangeB)
 
     @pytest.mark.unit
-    @pytest.mark.parametrize("x", [1.0, 2.3456])
+    @pytest.mark.parametrize("x", [1.0, 1.25, 2.3456])
     @pytest.mark.parametrize("decimals", [1, 2, 3, 4])
     def test_fl2int(self, x, decimals):
         assert fl2int(x, decimals) == round(x * 10**decimals, 0)
+
+    @pytest.mark.unit
+    def test_diarization_output_across_int32_limit(self):
+        timestamps = [[[21470.0, 21474.0], [21480.001, 21490.003]]]
+        assert generate_diarization_output_lines(timestamps, model_spk_num=1) == [
+            "21470.000 21474.000 speaker_0",
+            "21480.001 21490.003 speaker_0",
+        ]
 
     @pytest.mark.unit
     @pytest.mark.parametrize("x", [1234])

@@ -42,7 +42,7 @@ from easymagpie_vllm_omni.backbone_patches import (
 from easymagpie_vllm_omni.codec.encoder import EasyMagpieCodecEncoder
 from easymagpie_vllm_omni.codec.encoder_config import EasyMagpieCodecEncoderConfig
 from easymagpie_vllm_omni.config import NO_AUDIO_FRAME, EasyMagpieOmniArch
-from easymagpie_vllm_omni.local_transformer import EasyMagpieCodePredictor
+from easymagpie_vllm_omni.local_transformer import EasyMagpieLocalTransformerPredictor
 from easymagpie_vllm_omni.multimodal import (
     EasyMagpieDummyInputsBuilder,
     EasyMagpieMultiModalProcessor,
@@ -112,7 +112,7 @@ _DEFAULT_CONTEXT_TEXT = "[EN]"
 
 
 # This class is not wrapped in ``@support_torch_compile``: the Nemotron-H
-# backbone and :class:`EasyMagpieCodePredictor` each manage their own
+# backbone and :class:`EasyMagpieLocalTransformerPredictor` each manage their own
 # ``torch.compile`` / CUDA-graph capture internally, so the outer ``forward``
 # runs eagerly and dispatches into the two self-compiled subgraphs.
 @MULTIMODAL_REGISTRY.register_processor(
@@ -208,7 +208,7 @@ class EasyMagpieTTSForConditionalGeneration(
 
         # ── Local transformer (its own compile group / CUDA graph) ──────
         with set_model_tag("local_transformer"):
-            self.code_predictor = EasyMagpieCodePredictor(
+            self.code_predictor = EasyMagpieLocalTransformerPredictor(
                 vllm_config=vllm_config,
                 prefix=maybe_prefix(prefix, "code_predictor"),
             )

@@ -223,7 +223,7 @@ class CacheAwareCTCInferenceWrapper(CacheAwareASRInferenceWrapper):
         return log_probs, tail_log_probs, new_context
 
     def non_final_frames(
-        self, num_frames: int, drop_left_context: int | None, valid_out_len: int | None
+        self, num_frames: int, drop_left_context: int | None, valid_out_len: int | None, has_cache: bool = True
     ) -> tuple[int, tuple[int, int] | None]:
         """
         Frames of a stream that is not on its last chunk, in the output of a step that kept every output.
@@ -233,12 +233,13 @@ class CacheAwareCTCInferenceWrapper(CacheAwareASRInferenceWrapper):
             num_frames: (int) number of frames of the kept output, after the left context was dropped.
             drop_left_context: (int | None) number of left context frames that were dropped.
             valid_out_len: (int | None) number of valid output frames.
+            has_cache: (bool) whether the step ran with caches; without them the encoder does not cap its output.
         Returns:
             (tuple[int, tuple[int, int] | None]) number of head frames, and the (start, end) of the tail frames, if any.
         """
         encoder_frames = num_frames + (drop_left_context or 0)
         encoder_valid_out_len = self.asr_model.encoder.streaming_cfg.valid_out_len
-        if encoder_valid_out_len > 0:
+        if has_cache and encoder_valid_out_len > 0:
             encoder_frames = min(encoder_frames, encoder_valid_out_len)
         kept = max(encoder_frames - (drop_left_context or 0), 0)
         if not valid_out_len:

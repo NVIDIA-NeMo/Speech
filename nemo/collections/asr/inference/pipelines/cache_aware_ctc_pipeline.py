@@ -355,7 +355,9 @@ class CacheAwareCTCPipeline(BasePipeline):
             (tuple[list[Tensor], list[Tensor | None] | None]) The log probabilities and the tail log probabilities,
             one entry per request, as views. The tail is None unless it is asked for and there is one.
         """
-        head, tail = self.asr_model.non_final_frames(log_probs.shape[1], self.drop_left_context, self.valid_out_len)
+        head, tail = self.asr_model.non_final_frames(
+            log_probs.shape[1], self.drop_left_context, self.valid_out_len, self.use_cache
+        )
         heads = [row if last else row[:head] for row, last in zip(log_probs, is_last)]
         if not (self.return_tail_result and tail is not None):
             return heads, None

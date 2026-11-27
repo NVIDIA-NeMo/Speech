@@ -559,7 +559,7 @@ class FilterbankFeatures(nn.Module):
             guarded[guarded_positions] = x
             guarded = _dither_and_preemphasize_exact_pad_blocks(
                 guarded,
-                seq_len,
+                seq_len + pad_left,
                 block_lengths,
                 block_offsets,
                 self.preemph,
@@ -644,7 +644,11 @@ class FilterbankFeatures(nn.Module):
 
         # do preemphasis
         if self.preemph is not None:
-            timemask = torch.arange(x.shape[1], device=x.device).unsqueeze(0) < seq_len_time.unsqueeze(1)
+            # with exact_pad the signal starts after the left padding, so the mask must count that padding
+            time_offset = self.stft_pad_amount or 0
+            timemask = torch.arange(x.shape[1], device=x.device).unsqueeze(0) < (
+                seq_len_time.unsqueeze(1) + time_offset
+            )
             x = torch.cat((x[:, 0].unsqueeze(1), x[:, 1:] - self.preemph * x[:, :-1]), dim=1)
             x = x.masked_fill(~timemask, 0.0)
 

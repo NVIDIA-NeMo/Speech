@@ -174,7 +174,7 @@ class EasyMagpieCodecScheduler(OmniGenerationScheduler):
             segment_requests = getattr(self, "_easymagpie_segment_requests", None)
             if segment_requests is not None:
                 segment_requests.add(request.request_id)
-            if not reset_codec:
+            if not reset_codec and request.num_computed_tokens > 0:
                 stopped_sessions = getattr(self, "_easymagpie_stopped_sessions", None)
                 if stopped_sessions is not None:
                     stopped_sessions.append(request)
@@ -211,7 +211,7 @@ class EasyMagpieCodecScheduler(OmniGenerationScheduler):
         # be re-admitted through the generation scheduler's ``scheduled_new``
         # path afterward. That path recreates the worker batch row, losing the
         # codec's recurrent cache even when ``num_computed_tokens`` is retained.
-        # Move resumable segment stops back to ``running`` after the base method
+        # Move resumable sessions with decoded frames back to ``running`` after the base method
         # has emitted the finish and removed them. Their next codec frames are
         # then scheduled as cached tokens against the same state pages.
         self._easymagpie_stopped_sessions = []

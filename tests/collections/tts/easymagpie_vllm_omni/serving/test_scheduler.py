@@ -155,12 +155,13 @@ def test_dialogue_boundary_resets_codec_before_consuming_queued_update(monkeypat
     assert scheduler.chunk_transfer_adapter.segment_finished_requests == set()
 
 
-def test_native_codec_update_marks_resumable_segment_output(monkeypatch):
+@pytest.mark.parametrize("computed", [0, 3])
+def test_native_codec_segment_caches_only_previously_admitted_requests(monkeypatch, computed):
     scheduler = object.__new__(EasyMagpieCodecScheduler)
     scheduler.chunk_transfer_adapter = SimpleNamespace(segment_finished_requests=set())
     scheduler._easymagpie_reset_on_update = set()
     output = SimpleNamespace(request_id="request", is_segment_finished=False)
-    request = SimpleNamespace(request_id="request", additional_information={})
+    request = SimpleNamespace(request_id="request", additional_information={}, num_computed_tokens=computed)
 
     def fake_base_stop(self, session):
         return False
@@ -171,11 +172,15 @@ def test_native_codec_update_marks_resumable_segment_output(monkeypatch):
 
     monkeypatch.setattr(OmniGenerationScheduler, "_handle_stopped_request", fake_base_stop)
     monkeypatch.setattr(OmniGenerationScheduler, "update_from_output", fake_base_update)
-    monkeypatch.setattr(EasyMagpieCodecScheduler, "_resume_codec_after_segment", lambda self, session: None)
+    resumed = []
+    monkeypatch.setattr(
+        EasyMagpieCodecScheduler, "_resume_codec_after_segment", lambda self, session: resumed.append(session)
+    )
 
     scheduler.update_from_output(None, None)
 
     assert output.is_segment_finished is True
+    assert resumed == ([request] if computed else [])
     assert scheduler._easymagpie_segment_requests is None
 
 

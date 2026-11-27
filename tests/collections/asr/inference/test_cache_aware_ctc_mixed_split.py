@@ -22,6 +22,7 @@ from nemo.collections.asr.inference.model_wrappers.cache_aware_ctc_inference_wra
     CacheAwareCTCInferenceWrapper,
 )
 from nemo.collections.asr.inference.pipelines.cache_aware_ctc_pipeline import CacheAwareCTCPipeline
+from nemo.collections.asr.inference.pipelines.cache_aware_rnnt_pipeline import CacheAwareRNNTPipeline
 
 LEFT_CONTEXT = 70
 
@@ -63,3 +64,20 @@ def test_non_last_requests_of_a_mixed_batch_keep_the_frames_a_step_of_their_own_
     assert torch.equal(heads[1], log_probs[1, :expected_head])
     assert torch.equal(tails[1], log_probs[1, expected_tail[0] : expected_tail[1]])
     assert tails[0] is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("pipeline_class", [CacheAwareCTCPipeline, CacheAwareRNNTPipeline])
+@pytest.mark.parametrize("batched", [False, True])
+@pytest.mark.parametrize("right_paddings", [None, [0, 0, 0], [0, 4, 7]])
+def test_both_cache_aware_pipelines_stack_buffers_and_subtract_right_padding(pipeline_class, batched, right_paddings):
+    pipeline = object.__new__(pipeline_class)
+    pipeline.device = torch.device("cpu")
+    data = torch.arange(3 * 2 * 10).reshape(3, 2, 10).float()
+    buffers = data.clone() if batched else [row.clone() for row in data]
+
+    features, lengths = pipeline.preprocess(buffers, right_paddings)
+
+    assert torch.equal(features, data)
+    assert lengths.tolist() == [10 - p for p in (right_paddings or [0, 0, 0])]
+    assert lengths.dtype == torch.long

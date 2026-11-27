@@ -38,6 +38,7 @@ from nemo.collections.asr.inference.utils.pipeline_utils import (
     check_existance_of_required_attributes,
     get_confidence_utils,
     normalize_log_probs,
+    preprocess_feature_buffers,
 )
 
 if TYPE_CHECKING:
@@ -206,24 +207,7 @@ class CacheAwareCTCPipeline(BasePipeline):
         Returns:
             (tuple[Tensor, Tensor]) Processed feature buffers and their lengths.
         """
-        if isinstance(buffers, Tensor):
-            # already batched by the bufferer: no stacking, and no host round trip for the lengths
-            feature_buffers = buffers
-            feature_buffer_lens = torch.full(
-                (feature_buffers.shape[0],), feature_buffers.shape[2], device=self.device, dtype=torch.long
-            )
-            if right_paddings is not None:
-                right_paddings = torch.as_tensor(right_paddings, device=feature_buffer_lens.device)
-                feature_buffer_lens = feature_buffer_lens - right_paddings
-            return feature_buffers.to(self.device), feature_buffer_lens
-
-        feature_buffers = [f_buffer.unsqueeze_(0) for f_buffer in buffers]
-        feature_buffer_lens = torch.tensor([f_buffer.shape[2] for f_buffer in feature_buffers], device=self.device)
-        if right_paddings is not None:
-            right_paddings = torch.tensor(right_paddings, device=feature_buffer_lens.device)
-            feature_buffer_lens = feature_buffer_lens - right_paddings
-        feature_buffers = torch.cat(feature_buffers).to(self.device)
-        return feature_buffers, feature_buffer_lens
+        return preprocess_feature_buffers(buffers, right_paddings, self.device)
 
     def run_greedy_decoder(self, state: CacheAwareCTCStreamingState, request: Frame, log_probs: Tensor):
         """

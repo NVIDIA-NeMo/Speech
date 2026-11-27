@@ -92,9 +92,6 @@ class BufferedRNNTPipeline(BasePipeline):
         self.stateful = cfg.streaming.stateful
         self.stateless = not self.stateful
         self.batch_size = cfg.streaming.batch_size
-        self.num_slots = cfg.streaming.get('num_slots')
-        if self.num_slots is None:
-            self.num_slots = self.batch_size
 
         self.chunk_size = cfg.streaming.chunk_size
         self.left_padding_size = cfg.streaming.left_padding_size

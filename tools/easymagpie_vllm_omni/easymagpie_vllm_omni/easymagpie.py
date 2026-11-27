@@ -150,8 +150,7 @@ class EasyMagpieTTSForConditionalGeneration(
     use_async_omni_output: bool = True
     eager_omni_postprocess_before_async_output: bool = True
 
-    # Keep small per-step tensors GPU-resident across steps (no D2H/H2D).
-    gpu_resident_buffer_keys: set[str] = {"last_audio_codes", "last_phoneme_token"}
+    gpu_resident_buffer_keys: set[tuple[str, str]] = {("gpu_state", "last_audio_codes")}
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
         super().__init__()
@@ -1519,7 +1518,7 @@ class EasyMagpieTTSForConditionalGeneration(
                 self._dec_audio_codes[start].fill_(self.arch.audio_bos_id)
             self._dec_audio_valid[start] = 1
         else:
-            last_codes = info_dict.get("last_audio_codes")
+            last_codes = info_dict.get("gpu_state", {}).get("last_audio_codes")
             if isinstance(last_codes, torch.Tensor) and last_codes.numel() > 0:
                 c = last_codes.to(device=device, dtype=torch.long).reshape(-1)[: self.num_codebooks]
                 self._dec_audio_codes[start, : c.shape[0]].copy_(c)
@@ -1555,7 +1554,7 @@ class EasyMagpieTTSForConditionalGeneration(
             elif "codes.audio" in mm:
                 audio_codes = mm.get("codes.audio")
         if isinstance(audio_codes, torch.Tensor) and audio_codes.numel() > 0:
-            out["last_audio_codes"] = audio_codes[last : last + 1].detach()
+            out["gpu_state"] = {"last_audio_codes": audio_codes[last : last + 1]}
         if self.has_phoneme:
             out["last_phoneme_token"] = self._dec_phoneme_tokens[last : last + 1].detach().clone()
         return out

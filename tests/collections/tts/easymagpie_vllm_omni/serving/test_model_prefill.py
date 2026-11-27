@@ -582,3 +582,25 @@ def test_async_omni_output_slices_each_request_in_a_padded_batch():
         scheduled_seq_len=34,
     )
     torch.testing.assert_close(per_request["codes.audio"], model._out_codes[33:34])
+
+
+def test_runner_owns_the_last_audio_code_snapshot():
+    from vllm_omni.worker.gpu_model_runner import OmniGPUModelRunner
+
+    model = SimpleNamespace(
+        has_phoneme=False,
+        gpu_resident_buffer_keys=EasyMagpieTTSForConditionalGeneration.gpu_resident_buffer_keys,
+    )
+    runner = object.__new__(OmniGPUModelRunner)
+    runner.model = model
+    runner.requests = {"id": SimpleNamespace()}
+    runner.model_intermediate_buffer = {}
+    codes = torch.tensor([[1, 2], [3, 4]])
+    output = EasyMagpieTTSForConditionalGeneration.postprocess(
+        model, torch.zeros(2, 3), multimodal_outputs={"codes": {"audio": codes}}
+    )
+
+    runner._update_intermediate_buffer("id", output)
+    codes.zero_()
+    retained = runner.model_intermediate_buffer["id"]["gpu_state"]["last_audio_codes"]
+    torch.testing.assert_close(retained, torch.tensor([[3, 4]]))

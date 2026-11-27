@@ -201,5 +201,9 @@ class EasyMagpieCodecForConditionalGeneration(nn.Module):
         raise TypeError(f"unexpected EasyMagpie codec output: {type(model_outputs)}")
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
-        mapped = ((f"codec.{name}" if name.startswith("audio_decoder.") else name, tensor) for name, tensor in weights)
-        return AutoWeightsLoader(self, skip_prefixes=["codec.dequantizer."]).load_weights(mapped)
+        mapped = (
+            (f"codec.{name}" if name.startswith("audio_decoder.") else name, tensor)
+            for name, tensor in weights
+            if not name.startswith("codec.dequantizer.")
+        )
+        return AutoWeightsLoader(self).load_weights(mapped)

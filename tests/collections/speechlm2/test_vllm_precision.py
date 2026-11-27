@@ -11,7 +11,8 @@ from torch import nn
 from nemo.collections.speechlm2.vllm.salm.precision import _promote_mamba_parameters, _promote_router_precision
 
 
-def test_target_load_preserves_fp32_checkpoint_values(hybrid_checkpoint, monkeypatch):
+@pytest.mark.parametrize("streaming", [True, False], ids=["streaming", "full_pass"])
+def test_target_load_preserves_fp32_checkpoint_values(hybrid_checkpoint, monkeypatch, tmp_path, streaming):
     from nemo.collections.speechlm2.vllm.salm import model as model_module
 
     body, checkpoint, parameters = hybrid_checkpoint
@@ -27,8 +28,22 @@ def test_target_load_preserves_fp32_checkpoint_values(hybrid_checkpoint, monkeyp
     monkeypatch.setattr(model_module, "_maybe_mount_pe_encoder", lambda *args: None)
     monkeypatch.setattr(model_class, "_load_perception_weights", lambda self, weights: set())
 
-    model = model_class(vllm_config=SimpleNamespace(model_config=SimpleNamespace(hf_config=config), quant_config=None))
+    if streaming:
+        from safetensors.torch import save_file
+
+        save_file({"llm.model.layers.0.weight": torch.ones(1)}, str(tmp_path / "model.safetensors"))
+    # A directory without safetensors files cannot be inspected, so it takes the full pass.
+    model_config = SimpleNamespace(hf_config=config, model=str(tmp_path))
+    model = model_class(vllm_config=SimpleNamespace(model_config=model_config, quant_config=None))
+    streamed = []
+    load_streaming = model_class._load_weights_streaming
+    monkeypatch.setattr(
+        model_class,
+        "_load_weights_streaming",
+        lambda self, weights: streamed.append(True) or load_streaming(self, weights),
+    )
     loaded = model.load_weights(("llm.model." + name, value) for name, value in checkpoint.items())
+    assert bool(streamed) is streaming
 
     assert loaded == {"language_model.backbone." + name for name in checkpoint}
     _assert_preserved_checkpoint(body, checkpoint, parameters)

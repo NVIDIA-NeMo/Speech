@@ -27,8 +27,6 @@ stages:
     mamba_ssm_cache_dtype: float32
     # vLLM multimodal profiling uses the tokenizer to locate expanded audio placeholders.
     skip_tokenizer_init: false
-    engine_extras:
-      worker_cls: easymagpie_vllm_omni.runner.EasyMagpieGPUARWorker
     default_sampling_params:
       temperature: 0.0
       detokenize: false

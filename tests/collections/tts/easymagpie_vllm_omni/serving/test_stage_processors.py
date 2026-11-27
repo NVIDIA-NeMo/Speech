@@ -20,10 +20,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 from easymagpie_vllm_omni.config import NO_AUDIO_FRAME
-from easymagpie_vllm_omni.stage_processors import (
-    _filter_audio_codes,
-    talker2code2wav_async_chunk,
-)
+from easymagpie_vllm_omni.stage_processors import _filter_audio_codes, talker2code2wav_async_chunk
 
 
 class _Request:
@@ -211,6 +208,21 @@ def test_async_codec_forwards_terminal_audio_eos_row():
 
     assert bool(terminal.meta.finished)
     torch.testing.assert_close(terminal.codes.audio, torch.tensor([[1, 101], [2, 102], [1025, 777]]))
+
+
+def test_forced_terminal_flushes_short_codec_tail_before_request_status_changes():
+    manager = _manager()
+    manager.config.hf_config.streaming_speech_delay = 0
+    manager.connector.config["extra"]["codec_chunk_frames"] = 4
+    request = _Request()
+
+    assert talker2code2wav_async_chunk(manager, _output(1), request) is None
+    request.resumable = False
+    terminal = talker2code2wav_async_chunk(manager, None, request, is_finished=True)
+
+    assert bool(terminal.meta.finished)
+    torch.testing.assert_close(terminal.codes.audio, torch.tensor([[1, 101]]))
+    assert request.external_req_id not in manager._emp_frame_buffer
 
 
 def test_async_codec_buffer_drops_emitted_rows():

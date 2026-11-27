@@ -260,17 +260,6 @@ def _persistent_list_state(transfer_manager: Any, attr: str) -> dict:
     return state
 
 
-def _is_true_request_finish(request: Any) -> bool:
-    """True only at the real end of the utterance, not at a segment stop.
-
-    Mirrors the transfer adapter's own ``request.is_finished() and not
-    request.resumable`` rule: a resumable streaming request reports
-    ``is_finished()`` at every segment boundary while still expecting more
-    input, so it must not be treated as the terminal finish.
-    """
-    return bool(getattr(request, "is_finished", lambda: False)()) and not bool(getattr(request, "resumable", False))
-
-
 def talker2code2wav_async_chunk(
     transfer_manager: Any,
     multimodal_output: OmniPayload | dict[str, Any] | None,
@@ -356,7 +345,7 @@ def talker2code2wav_async_chunk(
     emitted_chunks_state = _persistent_state(transfer_manager, "_emp_emitted_chunks")
     emitted_chunks = emitted_chunks_state[request_id]
 
-    true_finished = _is_true_request_finish(request) or reset_codec
+    true_finished = finished and (reset_codec or not bool(getattr(request, "resumable", False)))
 
     def _cleanup() -> None:
         emitted_state.pop(request_id, None)

@@ -14,9 +14,10 @@
 
 import json
 
+import pytest
 from omegaconf import OmegaConf
 
-from nemo.collections.asr.parts.utils.transcribe_utils import write_transcription
+from nemo.collections.asr.parts.utils.transcribe_utils import PunctuationCapitalization, write_transcription
 
 
 def test_write_transcription_preserves_unicode_for_audio_dir(tmp_path):
@@ -71,3 +72,13 @@ def test_write_transcription_preserves_unicode_for_manifest(tmp_path):
     record = json.loads(raw)
     assert record["pred_text"] == "Grüße François"
     assert record["text"] == "référence"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("punctuation_marks", [".,-?!", ".,?-!", "^.,?-"])
+def test_punctuation_capitalization_treats_marks_literally(punctuation_marks):
+    pc = PunctuationCapitalization(punctuation_marks)
+    text = ["Room 101-B, floor 3. ok?"]
+
+    assert pc.rm_punctuation(text) == ["Room 101 B floor 3 ok"]
+    assert pc.separate_punctuation(text) == ["Room 101 - B , floor 3 . ok ?"]

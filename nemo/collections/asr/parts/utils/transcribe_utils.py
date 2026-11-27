@@ -682,7 +682,8 @@ class PunctuationCapitalization:
         Example: punctuation_marks = '.,?'
         """
         if punctuation_marks:
-            self.regex_punctuation = re.compile(fr"([{''.join(punctuation_marks)}])")
+            escaped_marks = ''.join(re.escape(mark) for mark in punctuation_marks)
+            self.regex_punctuation = re.compile(fr"([{escaped_marks}])")
             self.regex_extra_space = re.compile(r'\s{2,}')
         else:
             self.regex_punctuation = None

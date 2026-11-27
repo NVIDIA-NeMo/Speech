@@ -19,6 +19,7 @@ import torch
 from easymagpie_vllm_omni.codec.encoder import EasyMagpieCodecEncoderOutput
 from easymagpie_vllm_omni.easymagpie import EasyMagpieTTSForConditionalGeneration
 from torch import nn
+from vllm.config import CUDAGraphMode
 
 
 def test_text_prefill_embeddings_add_phoneme_bos_at_position_three():
@@ -584,11 +585,12 @@ def test_async_omni_output_slices_each_request_in_a_padded_batch():
     torch.testing.assert_close(per_request["codes.audio"], model._out_codes[33:34])
 
 
-def test_runner_owns_the_last_audio_code_snapshot():
+def test_runner_owns_the_feedback_snapshots():
     from vllm_omni.worker.gpu_model_runner import OmniGPUModelRunner
 
     model = SimpleNamespace(
-        has_phoneme=False,
+        has_phoneme=True,
+        _dec_phoneme_state=torch.tensor([[5, 6, 0], [4, 7, 1]]),
         gpu_resident_buffer_keys=EasyMagpieTTSForConditionalGeneration.gpu_resident_buffer_keys,
     )
     runner = object.__new__(OmniGPUModelRunner)
@@ -602,32 +604,112 @@ def test_runner_owns_the_last_audio_code_snapshot():
 
     runner._update_intermediate_buffer("id", output)
     codes.zero_()
-    retained = runner.model_intermediate_buffer["id"]["gpu_state"]["last_audio_codes"]
-    torch.testing.assert_close(retained, torch.tensor([[3, 4]]))
+    model._dec_phoneme_state.zero_()
+    retained = runner.model_intermediate_buffer["id"]["gpu_state"]
+    torch.testing.assert_close(retained["last_audio_codes"], torch.tensor([[3, 4]]))
+    torch.testing.assert_close(retained["last_phoneme_token"], torch.tensor([[4, 7, 1]]))
 
 
-def test_host_phoneme_eos_is_fed_once_then_masks_the_channel():
-    model = SimpleNamespace(
-        arch=SimpleNamespace(phoneme_stacking_factor=2, audio_bos_id=10),
-        has_phoneme=True,
-        phonemes_delay=1,
-        phoneme_eos_id=7,
-        speech_delay=9,
-        embedding_dim=2,
-        _dec_text_mask=torch.zeros(1),
-        _dec_phoneme_tokens=torch.zeros((1, 2), dtype=torch.long),
-        _dec_phoneme_valid=torch.zeros(1),
-        _dec_audio_valid=torch.zeros(1),
-        _combined_embeddings=torch.zeros(1, 2),
+@pytest.fixture
+def phoneme_feedback_model():
+    model = EasyMagpieTTSForConditionalGeneration.__new__(EasyMagpieTTSForConditionalGeneration)
+    nn.Module.__init__(model)
+    model.arch = SimpleNamespace(phoneme_stacking_factor=2, phoneme_vocab_size=8, audio_bos_id=1)
+    model.has_phoneme = True
+    model.phonemes_delay = 1
+    model.phoneme_bos_id = model.phoneme_eos_id = 7
+    model.phoneme_confidence_unk_threshold = 0.0
+    model.speech_delay = 9
+    model.audio_eos_id = 9
+    model.embedding_dim = 2
+    model.code_predictor = SimpleNamespace(
+        requires_all_tokens=True,
+        embed_audio_frame=lambda codes: torch.zeros_like(codes, dtype=torch.float32),
+        generate_codes=lambda hidden, **kwargs: torch.zeros_like(hidden, dtype=torch.long),
+        advance=lambda *args, **kwargs: None,
     )
-    decode = EasyMagpieTTSForConditionalGeneration._preprocess_decode
-    ids = torch.zeros(1, dtype=torch.long)
-    state = {"decode_offset": 2, "last_phoneme_token": torch.tensor([[4, 7]])}
-    _, _, update = decode(model, ids, 0, ids.device, state)
-    assert update["phoneme_ended"] is True
-    assert model._dec_phoneme_valid[0] == 1
-    torch.testing.assert_close(model._dec_phoneme_tokens[0], state["last_phoneme_token"][0])
+    model.text_embedding = nn.Embedding(1, 2)
+    model._embed_phoneme = lambda tokens: tokens.float()
+    model.phoneme_final_proj = lambda hidden: nn.functional.one_hot(hidden.long(), 8).flatten(1).float()
+    model._dec_text_tokens = torch.zeros(3, dtype=torch.long)
+    model._dec_text_mask = torch.zeros(3, dtype=torch.long)
+    model._dec_audio_codes = torch.zeros(3, 2, dtype=torch.long)
+    model._dec_audio_valid = torch.zeros(3, dtype=torch.long)
+    model._dec_phoneme_state = torch.zeros(3, 3, dtype=torch.long)
+    model._dec_phoneme_valid = torch.zeros(3, dtype=torch.long)
+    model._combined_embeddings = torch.zeros(3, 2)
+    model._out_codes = torch.zeros(3, 2, dtype=torch.long)
+    model._token_stop = torch.zeros(3, dtype=torch.bool)
+    model._sample_stop = torch.zeros(3, dtype=torch.bool)
+    return model
 
-    _, _, update = decode(model, ids, 0, ids.device, {**state, **update})
-    assert update["phoneme_ended"] is True
-    assert model._dec_phoneme_valid[0] == 0
+
+@torch.inference_mode()
+def test_resumed_phoneme_eos_is_fed_once_then_masks_the_channel(phoneme_feedback_model):
+    from vllm_omni.worker.gpu_model_runner import OmniGPUModelRunner
+
+    model = phoneme_feedback_model
+    runner = object.__new__(OmniGPUModelRunner)
+    runner.model = model
+    runner.requests = {"id": SimpleNamespace()}
+    runner.model_intermediate_buffer = {"id": {}}
+    state = runner.model_intermediate_buffer["id"]
+    ids = torch.zeros(1, dtype=torch.long)
+    for prediction, embedded, ended in [
+        ([4, 7], [0, 0], 0),
+        ([4, 7], [7, 7], 0),
+        ([2, 3], [4, 7], 1),
+        ([1, 2], [0, 0], 1),
+    ]:
+        _, combined, update = model.preprocess(
+            ids,
+            None,
+            _omni_is_prefill=True,
+            _omni_num_computed_tokens=5,
+            text_stream_context_len=5,
+            text_token=[],
+            **state,
+        )
+        model._assemble_decode_embeddings(combined, slice(0, 1))
+        torch.testing.assert_close(combined[0], torch.tensor(embedded, dtype=torch.float32))
+        hidden = torch.tensor([prediction])
+        model._predict_phonemes(hidden, slice(0, 1))
+        runner._update_intermediate_buffer("id", {**update, **model.postprocess(hidden)})
+        torch.testing.assert_close(state["gpu_state"]["last_phoneme_token"], torch.tensor([[*prediction, ended]]))
+
+
+@pytest.mark.parametrize(
+    "prefill_rows,has_decode,user_audio", [(2, False, True), (2, True, True), (2, False, False), (1, False, True)]
+)
+@torch.inference_mode()
+def test_prefill_refreshes_the_last_phoneme(phoneme_feedback_model, prefill_rows, has_decode, user_audio, monkeypatch):
+    model = phoneme_feedback_model
+    model._maybe_set_code_sampling_params = lambda _: None
+    model._build_user_audio_prefill_chunk = lambda **kwargs: kwargs["input_embeds"]
+    model._build_reference_audio_prefill_chunk = lambda **kwargs: (kwargs["input_embeds"], 1, False, 1)
+    ids = torch.zeros(prefill_rows + has_decode, dtype=torch.long)
+    model._dec_phoneme_state[has_decode : ids.numel()] = torch.tensor([3, 4, 1])
+    model._dec_phoneme_valid[has_decode : ids.numel()].fill_(1)
+    combined = torch.zeros(ids.numel(), 2)
+    _, _, update = model.preprocess(
+        ids[-prefill_rows:],
+        combined[-prefill_rows:],
+        _omni_is_prefill=True,
+        _omni_num_computed_tokens=1,
+        _omni_prompt_len=prefill_rows + 1,
+        speaker_reference_prefilled=user_audio,
+        reference_conditioning_len=1,
+        gpu_state={"last_phoneme_token": torch.tensor([[1, 2, 1]])},
+    )
+    assert bool(update.get("user_audio_prefilled")) == user_audio
+    model.vllm_config = SimpleNamespace(compilation_config=SimpleNamespace(cudagraph_mode=CUDAGraphMode.NONE))
+    query_start = torch.tensor([0, 1, ids.numel()] if has_decode else [0, ids.numel()])
+    metadata = SimpleNamespace(max_query_len=prefill_rows, query_start_loc=query_start)
+    monkeypatch.setattr(
+        "easymagpie_vllm_omni.easymagpie.get_forward_context", lambda: SimpleNamespace(attn_metadata=metadata)
+    )
+    model.backbone = lambda **kwargs: torch.tensor([[1, 2], [3, 4], [5, 6]][-ids.numel() :])
+    hidden = model(ids, torch.arange(ids.numel()), inputs_embeds=combined)
+    torch.testing.assert_close(model._combined_embeddings[: ids.numel()], combined)
+    feedback = model.postprocess(hidden[-prefill_rows:])["gpu_state"]["last_phoneme_token"]
+    torch.testing.assert_close(feedback, torch.tensor([[5, 6, int(not user_audio)]]))

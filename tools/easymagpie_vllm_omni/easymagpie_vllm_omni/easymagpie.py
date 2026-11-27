@@ -71,6 +71,7 @@ logger = init_logger(__name__)
 _DUMMY_TOKEN_ID = 0
 _AUDIO_OUTPUT_USER = 0
 _AUDIO_OUTPUT_REFERENCE = 1
+_PHONEME_FEEDBACK = 2
 
 
 def _merge_streaming_text_chunk(
@@ -150,7 +151,10 @@ class EasyMagpieTTSForConditionalGeneration(
     use_async_omni_output: bool = True
     eager_omni_postprocess_before_async_output: bool = True
 
-    gpu_resident_buffer_keys: set[tuple[str, str]] = {("gpu_state", "last_audio_codes")}
+    gpu_resident_buffer_keys: set[tuple[str, str]] = {
+        ("gpu_state", "last_audio_codes"),
+        ("gpu_state", "last_phoneme_token"),
+    }
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
         super().__init__()
@@ -265,7 +269,8 @@ class EasyMagpieTTSForConditionalGeneration(
         self._dec_audio_codes = torch.zeros(max_num_tokens, self.num_codebooks, dtype=torch.long)
         self._dec_audio_valid = torch.zeros(max_num_tokens, dtype=torch.long)
         if self.has_phoneme:
-            self._dec_phoneme_tokens = torch.zeros(max_num_tokens, arch.phoneme_stacking_factor, dtype=torch.long)
+            # Keep the sticky EOS flag in the final column of the phoneme snapshot.
+            self._dec_phoneme_state = torch.zeros(max_num_tokens, arch.phoneme_stacking_factor + 1, dtype=torch.long)
             self._dec_phoneme_valid = torch.zeros(max_num_tokens, dtype=torch.long)
 
         self._out_codes = torch.full(
@@ -692,9 +697,14 @@ class EasyMagpieTTSForConditionalGeneration(
 
         # Phoneme: previous predicted phoneme (gated by validity).
         if self.has_phoneme:
-            phon_emb = self._embed_phoneme(self._dec_phoneme_tokens[idx])
-            phon_emb = phon_emb * self._dec_phoneme_valid[idx].unsqueeze(-1).to(phon_emb.dtype)
-            combined[idx] += phon_emb
+            state = self._dec_phoneme_state[idx]
+            tokens, ended = state[:, :-1], state[:, -1]
+            valid = self._dec_phoneme_valid[idx]
+            phon_emb = self._embed_phoneme(tokens)
+            combined[idx] += phon_emb * ((valid > 0) & (ended == 0)).unsqueeze(-1).to(phon_emb.dtype)
+            # The EOS prediction is fed once, then the bit stays set across future steps.
+            fed_eos = (valid == _PHONEME_FEEDBACK) & (tokens == self.phoneme_eos_id).any(dim=1)
+            self._dec_phoneme_state[idx, -1] = ended | fed_eos
 
     @torch.no_grad()
     def _predict_phonemes(self, hidden_states: torch.Tensor, idx) -> None:
@@ -724,8 +734,7 @@ class EasyMagpieTTSForConditionalGeneration(
             replace = underconfident & (~eos_step)
             preds = torch.where(replace, torch.full_like(preds, self.phoneme_unk_id), preds)
 
-        self._dec_phoneme_tokens[idx] = preds
-        self._dec_phoneme_valid[idx] = 1
+        self._dec_phoneme_state[idx, :-1] = preds
 
     # ------------------------------------------------------------------
     # compute_logits — dummy (real output is the codes tensor)
@@ -835,9 +844,16 @@ class EasyMagpieTTSForConditionalGeneration(
             stop = start + span_len
             self._dec_text_mask[start:stop].zero_()
             self._dec_audio_valid[start:stop].zero_()
+            result = self._preprocess_prefill(input_ids, input_embeds, span_len, device, info_dict)
             if self.has_phoneme:
                 self._dec_phoneme_valid[start:stop].zero_()
-            return self._preprocess_prefill(input_ids, input_embeds, span_len, device, info_dict)
+                ended = self._dec_phoneme_state[start:stop, -1]
+                last_phon = info_dict.get("gpu_state", {}).get("last_phoneme_token")
+                if result[2].get("user_audio_prefilled") or last_phon is None:
+                    ended.zero_()
+                else:
+                    ended.copy_(last_phon[0, -1], non_blocking=True)
+            return result
 
         return self._preprocess_decode(input_ids, start, device, info_dict)
 
@@ -976,12 +992,7 @@ class EasyMagpieTTSForConditionalGeneration(
                 reference_prefill_prompt_len=prompt_len,
             )
         if has_user_audio:
-            info_update.update(
-                user_audio_prefilled=True,
-                phoneme_ended=False,
-                # The final prefill row predicts a fresh phoneme for this turn.
-                last_phoneme_token=None,
-            )
+            info_update["user_audio_prefilled"] = True
         if text_tokens_changed:
             info_update["text_tokens"] = text_tokens
         input_ids_out = torch.full_like(input_ids, _DUMMY_TOKEN_ID)
@@ -1437,6 +1448,7 @@ class EasyMagpieTTSForConditionalGeneration(
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
         decode_offset = int(info_dict.get("decode_offset", 0) or 0)
         info_update: dict[str, Any] = {"decode_offset": decode_offset + 1}
+        gpu_state = info_dict.get("gpu_state", {})
 
         # ── Text channel ── (delay 0: one subword per step from step 0). The text
         # stream leads the phoneme/audio streams by their respective delays. The
@@ -1482,25 +1494,19 @@ class EasyMagpieTTSForConditionalGeneration(
         # with phoneme BOS), then feeds back the previous step's prediction, and
         # closes one step after the model emits the phoneme EOS (sticky flag).
         if self.has_phoneme:
-            phoneme_ended = bool(info_dict.get("phoneme_ended", False))
-            feed_eos = False
-            if phoneme_ended or decode_offset < self.phonemes_delay:
-                self._dec_phoneme_valid[start] = 0
-            elif decode_offset == self.phonemes_delay:
-                self._dec_phoneme_tokens[start].fill_(self.phoneme_bos_id)
+            last_phon = gpu_state.get("last_phoneme_token")
+            state = self._dec_phoneme_state[start]
+            has_feedback = isinstance(last_phon, torch.Tensor) and last_phon.numel() > 0
+            if has_feedback:
+                state.copy_(last_phon.reshape(-1), non_blocking=True)
+            else:
+                state[-1] = 0
+            if decode_offset == self.phonemes_delay:
+                state[:-1].fill_(self.phoneme_bos_id)
                 self._dec_phoneme_valid[start] = 1
             else:
-                last_phon = info_dict.get("last_phoneme_token")
-                if isinstance(last_phon, torch.Tensor) and last_phon.numel() > 0:
-                    # Omni keeps the flat phoneme state on the host.
-                    p = last_phon.reshape(-1)[: self.arch.phoneme_stacking_factor]
-                    feed_eos = bool((p == self.phoneme_eos_id).any())
-                    self._dec_phoneme_tokens[start, : p.shape[0]].copy_(p, non_blocking=True)
-                    self._dec_phoneme_valid[start] = 1
-                else:
-                    self._dec_phoneme_valid[start] = 0
-            if phoneme_ended or feed_eos:
-                info_update["phoneme_ended"] = True
+                use_feedback = has_feedback and decode_offset > self.phonemes_delay
+                self._dec_phoneme_valid[start] = _PHONEME_FEEDBACK if use_feedback else 0
 
         # ── Audio channel ── opens at decode step == ``speech_delay`` (seeded with
         # audio BOS), then feeds back the previous frame's codes. For the leading
@@ -1519,7 +1525,7 @@ class EasyMagpieTTSForConditionalGeneration(
                 self._dec_audio_codes[start].fill_(self.arch.audio_bos_id)
             self._dec_audio_valid[start] = 1
         else:
-            last_codes = info_dict.get("gpu_state", {}).get("last_audio_codes")
+            last_codes = gpu_state.get("last_audio_codes")
             if isinstance(last_codes, torch.Tensor) and last_codes.numel() > 0:
                 c = last_codes.to(device=device, dtype=torch.long).reshape(-1)[: self.num_codebooks]
                 self._dec_audio_codes[start, : c.shape[0]].copy_(c)
@@ -1557,7 +1563,7 @@ class EasyMagpieTTSForConditionalGeneration(
         if isinstance(audio_codes, torch.Tensor) and audio_codes.numel() > 0:
             out["gpu_state"] = {"last_audio_codes": audio_codes[last : last + 1]}
         if self.has_phoneme:
-            out["last_phoneme_token"] = self._dec_phoneme_tokens[last : last + 1].detach().clone()
+            out.setdefault("gpu_state", {})["last_phoneme_token"] = self._dec_phoneme_state[last : last + 1]
         return out
 
     # ------------------------------------------------------------------

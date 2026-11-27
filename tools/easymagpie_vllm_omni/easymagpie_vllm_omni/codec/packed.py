@@ -322,7 +322,10 @@ class PackedCausalConv1d(CodecStateLayer):
             sequence_rows=max_query_len * self.time_factor if max_query_len is not None else None,
             time_factor=self.time_factor,
         )
-        outputs = self.conv(joined.transpose(1, 2))
+        # Singleton height exposes the time-major gather directly to channels-last convolution.
+        outputs = F.conv2d(joined.transpose(1, 2).unsqueeze(2), self.conv.weight.unsqueeze(2), self.conv.bias).squeeze(
+            2
+        )
 
         update_packed_state(
             inputs,

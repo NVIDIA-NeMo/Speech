@@ -315,11 +315,18 @@ def test_cuda_ragged_causal_conv_preserves_prefixes_and_state(lengths, uses_padd
     request_metadata.codec_max_query_len = max(lengths)
 
     conv_inputs = []
-    hook = layer.conv.register_forward_pre_hook(lambda module, args: conv_inputs.append(args[0].shape))
+    conv2d = torch.nn.functional.conv2d
+
+    def track_conv2d(inputs, weight, bias):
+        assert inputs.is_contiguous(memory_format=torch.channels_last)
+        assert weight.squeeze(2).is_contiguous()
+        conv_inputs.append(inputs.shape)
+        return conv2d(inputs, weight, bias)
+
+    monkeypatch.setattr(torch.nn.functional, "conv2d", track_conv2d)
     with set_forward_context({layer.prefix: request_metadata}, config):
         actual = layer(inputs)
-    hook.remove()
-    assert conv_inputs == ([(len(lengths), 4, layer.history + max(lengths) * time_factor)] if uses_padding else [])
+    assert conv_inputs == ([(len(lengths), 4, 1, layer.history + max(lengths) * time_factor)] if uses_padding else [])
     sequences = inputs.split([length * time_factor for length in (1, *lengths)])
     expected = torch.cat(
         [layer._one(seq, expected_state[page], has_state) for seq, page, has_state in zip(sequences, pages, initial)]

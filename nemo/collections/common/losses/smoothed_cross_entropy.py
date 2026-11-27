@@ -156,16 +156,16 @@ class SmoothedNLLLoss(NeuralModule, Exportable):
         """
         Params:
         -   log_probs: BxTxC
-        -   labels: B
+        -   labels: BxT
         -   output_mask: BxT
         -   lengths: B
         """
 
         if output_mask is None and lengths is None:
-            output_mask = torch.ones_like(log_probs).float()
+            output_mask = torch.ones_like(labels, dtype=log_probs.dtype)
         elif output_mask is None and lengths is not None:
             output_mask = torch.arange(log_probs.size(1), device=log_probs.device)[None, :] < lengths[:, None]
-            output_mask = output_mask.float()
+            output_mask = output_mask.to(dtype=log_probs.dtype)
 
         log_probs = log_probs.transpose(1, 2)  # BxTxC -> BxCxT
 

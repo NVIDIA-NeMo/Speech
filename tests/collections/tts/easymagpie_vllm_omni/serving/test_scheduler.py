@@ -21,14 +21,12 @@ from types import SimpleNamespace
 import pytest
 import torch
 from easymagpie_vllm_omni.scheduler import (
-    EasyMagpieARAsyncScheduler,
     EasyMagpieCodecScheduler,
     _codec_segment_resets_state,
     _poll_native_codec_chunk,
     _set_segment_finished,
 )
 from vllm.v1.request import RequestStatus
-from vllm_omni.core.sched.omni_ar_scheduler import OmniARAsyncScheduler
 from vllm_omni.core.sched.omni_generation_scheduler import OmniGenerationScheduler
 from vllm_omni.distributed.omni_connectors.transfer_adapter.chunk_transfer_adapter import OmniChunkTransferAdapter
 
@@ -241,7 +239,9 @@ def test_native_codec_streaming_update_preserves_state_and_resumes_polling():
         update_block_hashes=lambda: None,
         status=RequestStatus.WAITING_FOR_STREAMING_REQ,
     )
-    scheduler.skipped_waiting = _SkippedWaiting([session])
+    scheduler.deferred_waiting = _SkippedWaiting([session])
+    scheduler.deferred_waiting.discard = scheduler.deferred_waiting.remove
+    scheduler.kv_holding_waiting = _SkippedWaiting([session])
     enqueued = []
     scheduler._enqueue_waiting_request = enqueued.append
     update = SimpleNamespace(
@@ -263,7 +263,8 @@ def test_native_codec_streaming_update_preserves_state_and_resumes_polling():
     assert session.status == RequestStatus.WAITING
     assert scheduler.num_waiting_for_streaming_input == 0
     assert scheduler.chunk_transfer_adapter.segment_finished_requests == set()
-    assert scheduler.skipped_waiting == []
+    assert scheduler.deferred_waiting == []
+    assert scheduler.kv_holding_waiting == []
     assert enqueued == [session]
 
 
@@ -300,7 +301,8 @@ def test_native_codec_segment_resume_stays_on_cached_request_path(status, queue_
     scheduler._resume_codec_after_segment(session)
 
     assert scheduler.waiting == []
-    assert scheduler.skipped_waiting == []
+    assert scheduler.deferred_waiting == []
+    assert scheduler.kv_holding_waiting == []
     assert scheduler.running == [session]
     assert session.status == RequestStatus.RUNNING
     assert session.prompt_token_ids == [0] * 6

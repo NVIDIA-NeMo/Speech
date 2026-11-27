@@ -818,10 +818,18 @@ class EasyMagpieTTSForConditionalGeneration(
             base = input_embeds if input_embeds is not None else self.embed_input_ids(input_ids)
             return input_ids, base, {}
 
+        start = self._batch_slot_offset(input_ids, start)
         if bool(info_dict["_omni_is_prefill"]):
+            # A one-token prefill has the same query shape as decode. Clear the
+            # per-slot decode gates so it cannot inherit stale state when the
+            # forward dispatcher intentionally treats that shape uniformly.
+            stop = start + span_len
+            self._dec_text_mask[start:stop].zero_()
+            self._dec_audio_valid[start:stop].zero_()
+            if self.has_phoneme:
+                self._dec_phoneme_valid[start:stop].zero_()
             return self._preprocess_prefill(input_ids, input_embeds, span_len, device, info_dict)
 
-        start = self._batch_slot_offset(input_ids, start)
         return self._preprocess_decode(input_ids, start, device, info_dict)
 
     @staticmethod

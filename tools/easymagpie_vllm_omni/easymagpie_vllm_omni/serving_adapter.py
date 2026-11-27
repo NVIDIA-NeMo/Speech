@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+from copy import copy
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -65,6 +66,7 @@ def _build_adapter_cls() -> type:
 
         name = MODEL_TYPE
         stage_keys = frozenset({_TALKER_STAGE})
+        model_archs = frozenset({_TALKER_ARCH})
 
         def __init__(self, ctx: Any) -> None:
             super().__init__(ctx)
@@ -205,6 +207,20 @@ def _build_adapter_cls() -> type:
             prompt["multi_modal_data"] = {"audio": [(waveform, sample_rate)]}
             return PreparedRequest(prompt=prompt, tts_params={}, model_type=MODEL_TYPE)
 
+        def apply_sampling_overrides(
+            self,
+            sampling_params_list: list,
+            request: OpenAICreateSpeechRequest,
+            prompt: dict[str, Any] | None = None,
+            request_id: str | None = None,
+        ) -> list:
+            if request.max_new_tokens is None:
+                return sampling_params_list
+            params = list(sampling_params_list)
+            params[0] = copy(params[0])
+            params[0].max_tokens = request.max_new_tokens
+            return params
+
         def build_streaming_spec(self, request: OpenAICreateSpeechRequest) -> EasyMagpieStreamingSpec:
             """Build the speaker prefill and tokenizer metadata without complete text."""
             speaker_id = (request.voice or _DEFAULT_SPEAKER).strip()
@@ -245,33 +261,6 @@ def _register_adapter() -> None:
     tts_adapters.register_tts_adapter(_build_adapter_cls())
 
 
-def _patch_detection() -> None:
-    from vllm_omni.entrypoints.openai import serving_speech as ss
-
-    ss._TTS_MODEL_STAGES.add(_TALKER_STAGE)
-    # The speech endpoint otherwise leaves the deploy-YAML max_tokens unchanged
-    # and silently ignores request.max_new_tokens for EasyMagpie.
-    ss._SAMPLING_MAX_TOKENS_TTS_MODEL_TYPES.add(MODEL_TYPE)
-
-    detect = ss.OmniOpenAIServingSpeech._detect_tts_model_type
-    if getattr(detect, "_easymagpie_patched", False):
-        return
-    _orig_detect = detect
-
-    def _detect_tts_model_type(self):
-        stage = getattr(self, "_tts_stage", None)
-        if stage is not None:
-            engine_args = getattr(stage, "engine_args", None)
-            model_stage = getattr(engine_args, "model_stage", None)
-            model_arch = getattr(engine_args, "model_arch", None)
-            if model_stage == _TALKER_STAGE or model_arch == _TALKER_ARCH:
-                return MODEL_TYPE
-        return _orig_detect(self)
-
-    _detect_tts_model_type._easymagpie_patched = True
-    ss.OmniOpenAIServingSpeech._detect_tts_model_type = _detect_tts_model_type
-
-
 def _patch_streaming_handler() -> None:
     """Select the EasyMagpie-aware handler when API state is initialized."""
     from easymagpie_vllm_omni.serving_stream import EasyMagpieStreamingSpeechHandler
@@ -287,7 +276,6 @@ def apply_serving_patches(force: bool = False) -> None:
     if not force and _SERVING_MODULE not in sys.modules:
         return
     try:
-        _patch_detection()
         _register_adapter()
         _patch_streaming_handler()
         logger.info(

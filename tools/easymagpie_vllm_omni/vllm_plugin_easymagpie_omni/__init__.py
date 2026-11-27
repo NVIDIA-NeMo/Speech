@@ -53,7 +53,10 @@ def register() -> None:
             registry.register_model(_CODEC_ARCH, _CODEC_TARGET)
 
     if omni_available:
+        from easymagpie_vllm_omni.omni_compat import patch_streaming_lifecycle
+
         _register_pipeline()
+        patch_streaming_lifecycle()
         _register_serving_adapter()
 
 

@@ -1,0 +1,42 @@
+{
+  "name": "NeMoTTS Dev Container",
+  "build": {
+    "dockerfile": "../.devcontainer/devDockerfile"
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
+  },
+  "forwardPorts": [8888],
+  "portsAttributes": {
+    "8888": {
+      "label": "Nsight JupyterLab",
+      "onAutoForward": "notify"
+    }
+  },
+  "runArgs": [
+    "--gpus",
+    "\"device=0,1\"",
+    "--ipc=host",
+    "--name",
+    "${localEnv:USER}_nemo_tts_devcontainer_nemotts-117"
+  ],
+  "workspaceFolder": "/workspace/NeMo",
+  "mounts": [
+    "source=${localWorkspaceFolder},target=/workspace/NeMo,type=bind",
+    "source=claude-code-config-${devcontainerId},target=/root/.claude,type=volume"
+  ],
+  "remoteUser": "root",
+  "postCreateCommand": "pip install -e /workspace/NeMo --no-deps && pip install lhotse==2.0.0a1",
+  "customizations": {
+    "vscode": {
+        "settings": {
+            "terminal.integrated.shell.linux": "/bin/bash"
+        },
+        "extensions": [
+          "anthropic.claude-code",
+          "ms-python.python",
+          "ms-toolsai.jupyter"
+        ]
+    }
+  }
+}

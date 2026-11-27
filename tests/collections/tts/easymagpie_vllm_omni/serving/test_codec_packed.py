@@ -52,10 +52,6 @@ def metadata(frames: int, *, has_initial: bool, device: torch.device | str = "cp
         state_indices_tensor_d=torch.empty((0, 1), dtype=torch.int32, device=device),
         query_start_loc_d=None,
         num_accepted_tokens=None,
-        block_idx_last_scheduled_token=None,
-        block_idx_first_scheduled_token_p=None,
-        block_idx_last_computed_token=None,
-        block_idx_last_scheduled_token_prev_step=None,
         seq_lens=torch.tensor([frames], dtype=torch.int32, device=device),
     )
     result.codec_max_query_len = frames
@@ -81,10 +77,6 @@ def decode_metadata(
         state_indices_tensor_d=torch.tensor(pages, dtype=torch.int32, device=device).unsqueeze(1),
         query_start_loc_d=None,
         num_accepted_tokens=None,
-        block_idx_last_scheduled_token=None,
-        block_idx_first_scheduled_token_p=None,
-        block_idx_last_computed_token=None,
-        block_idx_last_scheduled_token_prev_step=None,
         seq_lens=torch.full((num_decodes,), 2, dtype=torch.int32, device=device),
     )
     result.codec_uniform = True
@@ -104,10 +96,6 @@ def mixed_metadata(prefill_frames: int, *, device: torch.device | str = "cpu") -
         state_indices_tensor_d=torch.tensor([[0]], dtype=torch.int32, device=device),
         query_start_loc_d=None,
         num_accepted_tokens=None,
-        block_idx_last_scheduled_token=None,
-        block_idx_first_scheduled_token_p=None,
-        block_idx_last_computed_token=None,
-        block_idx_last_scheduled_token_prev_step=None,
         seq_lens=torch.tensor([2, prefill_frames], dtype=torch.int32, device=device),
     )
     result.codec_max_query_len = prefill_frames

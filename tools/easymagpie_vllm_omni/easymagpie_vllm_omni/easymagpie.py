@@ -40,6 +40,9 @@ from easymagpie_vllm_omni.backbone_patches import (
     patch_moe_routed_scale,
     patch_shared_expert_activation,
 )
+from easymagpie_vllm_omni.cfg import AcousticSamplingSettings, validate_cfg_context_embedding
+from easymagpie_vllm_omni.cfg_graph import CFGGraphBuffers, uses_cfg_decode_graphs
+from easymagpie_vllm_omni.cfg_pairing import CFG_PAIR_METADATA_KEY
 from easymagpie_vllm_omni.codec.encoder import EasyMagpieCodecEncoder
 from easymagpie_vllm_omni.codec.encoder_config import EasyMagpieCodecEncoderConfig
 from easymagpie_vllm_omni.config import NO_AUDIO_FRAME, EasyMagpieOmniArch
@@ -153,7 +156,8 @@ class EasyMagpieTTSForConditionalGeneration(
     omni_pooler_payload_include_hidden: bool = False
 
     # Keep small per-step tensors GPU-resident across steps (no D2H/H2D).
-    gpu_resident_buffer_keys: set[str] = {"last_audio_codes", "last_phoneme_token"}
+    strict_worker_feedback = True
+    gpu_resident_buffer_keys: set[str] = {"last_audio_codes", "last_phoneme_token", "phoneme_ended"}
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
         super().__init__()
@@ -227,6 +231,11 @@ class EasyMagpieTTSForConditionalGeneration(
         # at conversion time and fed additively on every decode step.
         text_vocab_size = int(getattr(hf_config, "text_vocab_size", getattr(hf_config, "vocab_size", 0)))
         self.text_embedding = nn.Embedding(text_vocab_size, self.embedding_dim)
+        self.register_buffer(
+            "cfg_context_embedding", torch.zeros(1, self.embedding_dim) if arch.cfg_capability is not None else None
+        )
+        self.cfg_pairing_layout = None
+        self.cfg_guidance_layout = None
 
         # Text-stream EOS id. Legacy checkpoints place it at vocab_size - 2;
         # multiturn checkpoints append an interruption token after the existing
@@ -281,6 +290,17 @@ class EasyMagpieTTSForConditionalGeneration(
         self._dec_text_mask = torch.zeros(max_num_tokens, dtype=torch.long)
         self._dec_audio_codes = torch.zeros(max_num_tokens, self.num_codebooks, dtype=torch.long)
         self._dec_audio_valid = torch.zeros(max_num_tokens, dtype=torch.long)
+        if self.arch.acoustic_predictor_type == "acoustic_codes_predictor":
+            self.use_fixed_acoustic_sampling = True
+        self._acoustic_temperature = torch.full((max_num_tokens,), 0.7, dtype=torch.float32)
+        self._acoustic_top_k = torch.full((max_num_tokens,), 80, dtype=torch.long)
+        self._cfg_scale = torch.ones(max_num_tokens, dtype=torch.float32)
+        # Opt-in fixed-shape path also runs during dummy capture with no live pair.
+        self.cfg_graph_buffers = (
+            CFGGraphBuffers(max_num_tokens, device=self._cfg_scale.device)
+            if arch.cfg_capability is not None and uses_cfg_decode_graphs(vllm_config)
+            else None
+        )
         if self.has_phoneme:
             self._dec_phoneme_tokens = torch.zeros(max_num_tokens, arch.phoneme_stacking_factor, dtype=torch.long)
             self._dec_phoneme_valid = torch.zeros(max_num_tokens, dtype=torch.long)
@@ -604,6 +624,21 @@ class EasyMagpieTTSForConditionalGeneration(
 
         decode_idx, num_req, prefill_last_idx = self._get_query_dispatch()
 
+        graph_buffers = getattr(self, "cfg_graph_buffers", None)
+        layout = getattr(self, "cfg_guidance_layout", None)
+        if graph_buffers is not None:
+            owners = graph_buffers.owners[:num_tokens]
+            self._dec_audio_codes[:num_tokens].copy_(self._dec_audio_codes[owners])
+            self._dec_audio_valid[:num_tokens].copy_(self._dec_audio_valid[owners] * graph_buffers.active[:num_tokens])
+        elif layout is not None:
+            # The public branch owns the previous acoustic frame, even when private
+            # downstream postprocessing is suppressed by the runner.
+            for conditional, unconditional in zip(layout.conditional_rows, layout.unconditional_rows):
+                c = torch.tensor(conditional, device=combined.device, dtype=torch.long)
+                u = torch.tensor(unconditional, device=combined.device, dtype=torch.long)
+                self._dec_audio_codes[u] = self._dec_audio_codes[c]
+                self._dec_audio_valid[u] = self._dec_audio_valid[c]
+
         if decode_idx is not None:
             # Acoustic prediction is skipped on prefill rows. Clear their shared
             # scratch slots so a prior request cannot leak a fake codec frame.
@@ -638,7 +673,19 @@ class EasyMagpieTTSForConditionalGeneration(
                 else:
                     valid = decode_idx[:num_req]
                     predict[valid] = self._dec_audio_valid[valid].bool()
-                codes = self.code_predictor.generate_codes(hidden_states, positions=positions, predict=predict)
+                sampling_kwargs = {}
+                if hasattr(self, "_acoustic_temperature"):
+                    sampling_kwargs = dict(
+                        pairing=None if graph_buffers is not None else self.cfg_guidance_layout,
+                        graph_pairing=graph_buffers,
+                        cfg_scale=self._cfg_scale[:num_tokens],
+                        temperature=self._acoustic_temperature[:num_tokens],
+                        top_k=self._acoustic_top_k[:num_tokens],
+                        fixed_sampling=getattr(self, "use_fixed_acoustic_sampling", False),
+                    )
+                codes = self.code_predictor.generate_codes(
+                    hidden_states, positions=positions, predict=predict, **sampling_kwargs
+                )
             if decode_idx is None:
                 assert codes is not None
                 self._out_codes[:num_tokens].copy_(codes)
@@ -729,6 +776,13 @@ class EasyMagpieTTSForConditionalGeneration(
         # Run in the model dtype (don't force fp32): ``phoneme_final_proj`` weights
         # follow ``model_config.dtype`` (e.g. bf16), and argmax is dtype-insensitive,
         # so an fp32 upcast here would mismatch the weight dtype in ``F.linear``.
+        layout = getattr(self, "cfg_guidance_layout", None)
+        graph_buffers = getattr(self, "cfg_graph_buffers", None)
+        if layout is not None and graph_buffers is None:
+            rows = torch.arange(hidden_states.shape[0], device=hidden_states.device)[idx]
+            private = [row for group in layout.unconditional_rows for row in group]
+            rows = rows[~torch.isin(rows, torch.tensor(private, device=rows.device))]
+            idx = rows
         logits = self.phoneme_final_proj(hidden_states[idx])
         s = self.arch.phoneme_stacking_factor
         logits = logits.view(-1, s, self.arch.phoneme_vocab_size)
@@ -741,8 +795,14 @@ class EasyMagpieTTSForConditionalGeneration(
             replace = underconfident & (~eos_step)
             preds = torch.where(replace, torch.full_like(preds, self.phoneme_unk_id), preds)
 
-        self._dec_phoneme_tokens[idx] = preds
-        self._dec_phoneme_valid[idx] = 1
+        if graph_buffers is not None:
+            rows = torch.arange(hidden_states.shape[0], device=hidden_states.device)[idx]
+            valid = graph_buffers.active[rows] & (graph_buffers.owners[rows] == rows)
+            self._dec_phoneme_tokens[idx] = torch.where(valid[:, None], preds, self._dec_phoneme_tokens[idx])
+            self._dec_phoneme_valid[idx] = valid.long()
+        else:
+            self._dec_phoneme_tokens[idx] = preds
+            self._dec_phoneme_valid[idx] = 1
 
     # ------------------------------------------------------------------
     # compute_logits — dummy (real output is the codes tensor)
@@ -847,7 +907,30 @@ class EasyMagpieTTSForConditionalGeneration(
             return input_ids, base, {}
 
         start = self._batch_slot_offset(input_ids, start)
-        if bool(info_dict["_omni_is_prefill"]):
+        settings = AcousticSamplingSettings.from_info(info_dict)
+        if hasattr(self, "use_fixed_acoustic_sampling"):
+            # The runner resets this once per batch, before all requests preprocess.
+            self.use_fixed_acoustic_sampling &= settings.uses_fixed_sampling
+        if settings.use_cfg:
+            if getattr(self.arch, "cfg_capability", None) is None:
+                raise ValueError("CFG requires reconversion with cfg_context_embedding and cfg_capability")
+            if CFG_PAIR_METADATA_KEY not in info_dict:
+                raise ValueError(
+                    "use_cfg requires the easymagpie_cfg_async or easymagpie_cfg deployment profile "
+                    "with paired scheduling"
+                )
+        if hasattr(self, "_acoustic_temperature"):
+            self._acoustic_temperature[start : start + span_len] = settings.temperature
+            self._acoustic_top_k[start : start + span_len] = settings.top_k
+            self._cfg_scale[start : start + span_len] = settings.cfg_scale if settings.use_cfg else 1.0
+        # Appending one streaming placeholder grows vLLM's prompt length. It
+        # labels that row as prefill, although our speaker/text warmup is already
+        # cached and this row must consume the next text/phoneme/audio inputs.
+        streaming_prompt_len = info_dict.get("_stream_prompt_len")
+        streaming_decode = streaming_prompt_len is not None and int(info_dict["_omni_num_computed_tokens"]) >= int(
+            streaming_prompt_len
+        )
+        if bool(info_dict["_omni_is_prefill"]) and not streaming_decode:
             # A one-token prefill has the same query shape as decode. Clear the
             # per-slot decode gates so it cannot inherit stale state when the
             # forward dispatcher intentionally treats that shape uniformly.
@@ -858,7 +941,12 @@ class EasyMagpieTTSForConditionalGeneration(
                 self._dec_phoneme_valid[start:stop].zero_()
             return self._preprocess_prefill(input_ids, input_embeds, span_len, device, info_dict)
 
-        return self._preprocess_decode(input_ids, start, device, info_dict)
+        result = self._preprocess_decode(input_ids, start, device, info_dict)
+        if settings.use_cfg and info_dict[CFG_PAIR_METADATA_KEY]["branch"] == "unconditional":
+            self._dec_text_mask[start : start + span_len].zero_()
+            if self.has_phoneme:
+                self._dec_phoneme_valid[start : start + span_len].zero_()
+        return result
 
     @staticmethod
     def _batch_slot_offset(input_ids_view: torch.Tensor, fallback: int) -> int:
@@ -984,6 +1072,16 @@ class EasyMagpieTTSForConditionalGeneration(
                 )
                 decode_offset = int(info_dict.get("text_prefill_num", 0) or 0)
 
+        if info_dict.get("use_cfg") and info_dict[CFG_PAIR_METADATA_KEY]["branch"] == "unconditional":
+            if uses_raw_reference or has_user_audio or reference_prefilled:
+                raise ValueError("Initial CFG synthesis supports complete text and a known speaker only")
+            # Context includes task, speaker, and context text; target warmup is zero.
+            absolute = torch.arange(offset, offset + span_len, device=device)
+            take = torch.where(
+                (absolute < conditioning_len).unsqueeze(-1),
+                self.cfg_context_embedding.to(take.dtype).expand(span_len, -1),
+                torch.zeros_like(take),
+            )
         info_update: dict[str, Any] = {"decode_offset": decode_offset}
         if uses_raw_reference and conditioning_len > 0:
             info_update.update(
@@ -1337,6 +1435,8 @@ class EasyMagpieTTSForConditionalGeneration(
         ``additional_information`` and stores them on the code predictor. Absent
         keys leave the existing defaults untouched.
         """
+        if getattr(self.code_predictor, "requires_all_tokens", False):
+            return  # V2 uses per-token request settings populated by preprocess.
         temperature = info_dict.get("temperature")
         if temperature is not None:
             self.code_predictor.temperature = float(temperature)
@@ -1413,18 +1513,56 @@ class EasyMagpieTTSForConditionalGeneration(
         return task_len + t_audio + ctx_len
 
     @classmethod
-    def get_prompt_len(cls, speaker_id: str, model_path: str, *, tokenize: Callable[[str], Iterable[int]]) -> int:
+    def get_prompt_len(
+        cls,
+        speaker_id: str,
+        model_path: str,
+        *,
+        tokenize: Callable[[str], Iterable[int]],
+        context_text: Optional[str] = _DEFAULT_CONTEXT_TEXT,
+    ) -> int:
         """Known-speaker convenience wrapper around :meth:`estimate_prompt_len`.
 
-        Resolves everything from the checkpoint dir so it cannot disagree with
-        what the engine actually uses: loads the speaker embedding from
-        ``speaker_embeddings/<speaker_id>.pt`` (the same file the engine reads in
-        :meth:`_load_known_speaker_embedding`), reads ``has_task_embedding`` from
-        ``config.json`` (``num_task_embeddings``),
-        and conditions on the fixed :data:`_DEFAULT_CONTEXT_TEXT`. Lets a caller
-        holding only a ``speaker_id`` size ``prompt_token_ids`` without an engine
-        instance (``context_text`` / ``has_task_embedding`` are intentionally not
-        params — they must match the precomputed checkpoint, not be overridden).
+        Resolves the speaker and task rows from the checkpoint dir (see :meth:`get_speaker_prefix_len`) and adds
+        the tokenized request ``context_text``. A missing or empty context falls back to
+        :data:`_DEFAULT_CONTEXT_TEXT`, exactly as :meth:`_build_prefill_embeds` does, so the advertised length
+        matches the assembled prefill.
+
+        Args:
+            speaker_id: Registered speaker whose embedding is stored in the checkpoint directory.
+            model_path: Converted checkpoint directory.
+            tokenize: Text tokenizer for the context text.
+            context_text: Request context text; empty or missing uses the default context.
+
+        Returns:
+            Number of prefill prompt rows.
+
+        Raises:
+            FileNotFoundError: If the speaker embedding file does not exist.
+        """
+        ctx_len = len(list(tokenize(context_text or _DEFAULT_CONTEXT_TEXT)))
+        return cls.get_speaker_prefix_len(speaker_id, model_path) + ctx_len
+
+    @staticmethod
+    def get_speaker_prefix_len(
+        speaker_id: str,
+        model_path: str,
+    ) -> int:
+        """Return the context-independent ``[task? | speaker]`` prefill rows for a known speaker.
+
+        Loads the speaker embedding from ``speaker_embeddings/<speaker_id>.pt`` (the same file the engine reads
+        in :meth:`_load_known_speaker_embedding`) and ``num_task_embeddings`` from ``config.json``. Callers can
+        cache this per speaker and add the per-request context length.
+
+        Args:
+            speaker_id: Registered speaker whose embedding is stored in the checkpoint directory.
+            model_path: Converted checkpoint directory.
+
+        Returns:
+            Number of task and speaker prefill rows.
+
+        Raises:
+            FileNotFoundError: If the speaker embedding file does not exist.
         """
         import json
         import os
@@ -1438,12 +1576,7 @@ class EasyMagpieTTSForConditionalGeneration(
         with open(os.path.join(model_path, "config.json")) as f:
             num_task_embeddings = int(json.load(f).get("num_task_embeddings", 0))
 
-        return cls.estimate_prompt_len(
-            speaker_embedding,
-            tokenize=tokenize,
-            context_text=_DEFAULT_CONTEXT_TEXT,
-            has_task_embedding=num_task_embeddings > 0,
-        )
+        return int(num_task_embeddings > 0) + int(speaker_embedding.shape[0])
 
     def _preprocess_decode(
         self,
@@ -1490,33 +1623,39 @@ class EasyMagpieTTSForConditionalGeneration(
             if appended:
                 info_update["text_tokens"] = text_tokens
         if decode_offset < len(text_tokens):
-            self._dec_text_tokens[start] = int(text_tokens[decode_offset])
-            self._dec_text_mask[start] = 1
+            self._dec_text_tokens[start : start + 1].fill_(int(text_tokens[decode_offset]))
+            self._dec_text_mask[start : start + 1].fill_(1)
         else:
-            self._dec_text_mask[start] = 0
+            self._dec_text_mask[start : start + 1].fill_(0)
 
         # ── Phoneme channel ── opens at decode step == ``phonemes_delay`` (seeded
         # with phoneme BOS), then feeds back the previous step's prediction, and
         # closes one step after the model emits the phoneme EOS (sticky flag).
         if self.has_phoneme:
-            phoneme_ended = bool(info_dict.get("phoneme_ended", False))
-            feed_eos = False
-            if phoneme_ended or decode_offset < self.phonemes_delay:
-                self._dec_phoneme_valid[start] = 0
+            phoneme_ended = info_dict.get("phoneme_ended", False)
+            if isinstance(phoneme_ended, torch.Tensor):
+                phoneme_ended = phoneme_ended.to(device=device, dtype=torch.bool)
+            else:
+                # Initial state and multiturn prefill resets are host booleans.
+                # A device fill avoids uploading a host scalar every decode step.
+                phoneme_ended = torch.empty((), device=device, dtype=torch.bool).fill_(bool(phoneme_ended))
+            if decode_offset < self.phonemes_delay:
+                self._dec_phoneme_valid[start : start + 1].zero_()
             elif decode_offset == self.phonemes_delay:
                 self._dec_phoneme_tokens[start].fill_(self.phoneme_bos_id)
-                self._dec_phoneme_valid[start] = 1
+                self._dec_phoneme_valid[start].copy_(~phoneme_ended)
             else:
                 last_phon = info_dict.get("last_phoneme_token")
                 if isinstance(last_phon, torch.Tensor) and last_phon.numel() > 0:
                     p = last_phon.to(device=device, dtype=torch.long).reshape(-1)[: self.arch.phoneme_stacking_factor]
                     self._dec_phoneme_tokens[start, : p.shape[0]].copy_(p)
-                    self._dec_phoneme_valid[start] = 1
-                    feed_eos = bool((p == self.phoneme_eos_id).any())
+                    # Consume EOS once, then mask subsequent inputs using the
+                    # previous state. Never modify an earlier request update.
+                    self._dec_phoneme_valid[start].copy_(~phoneme_ended)
+                    phoneme_ended = phoneme_ended | (p == self.phoneme_eos_id).any()
                 else:
-                    self._dec_phoneme_valid[start] = 0
-            if phoneme_ended or feed_eos:
-                info_update["phoneme_ended"] = True
+                    self._dec_phoneme_valid[start : start + 1].zero_()
+            info_update["phoneme_ended"] = phoneme_ended
 
         # ── Audio channel ── opens at decode step == ``speech_delay`` (seeded with
         # audio BOS), then feeds back the previous frame's codes. For the leading
@@ -1525,7 +1664,7 @@ class EasyMagpieTTSForConditionalGeneration(
         # stability but its codes for those frames are discarded by the caller and
         # never fed back here.
         if decode_offset < self.speech_delay:
-            self._dec_audio_valid[start] = 0
+            self._dec_audio_valid[start : start + 1].fill_(0)
         elif decode_offset == self.speech_delay:
             if info_dict.get("user_audio_prefilled") and self.arch.use_user_speaking_end_token:
                 # Native multiturn inference places USER_SPEAKING_END in the
@@ -1533,17 +1672,17 @@ class EasyMagpieTTSForConditionalGeneration(
                 self._dec_audio_codes[start].fill_(self.arch.audio_user_speaking_end_id)
             else:
                 self._dec_audio_codes[start].fill_(self.arch.audio_bos_id)
-            self._dec_audio_valid[start] = 1
+            self._dec_audio_valid[start : start + 1].fill_(1)
         else:
             last_codes = info_dict.get("last_audio_codes")
             if isinstance(last_codes, torch.Tensor) and last_codes.numel() > 0:
                 c = last_codes.to(device=device, dtype=torch.long).reshape(-1)[: self.num_codebooks]
                 self._dec_audio_codes[start, : c.shape[0]].copy_(c)
-                self._dec_audio_valid[start] = 1
+                self._dec_audio_valid[start : start + 1].fill_(1)
             else:
                 # Fallback (should not happen once audio has started): seed BOS.
                 self._dec_audio_codes[start].fill_(self.arch.audio_bos_id)
-                self._dec_audio_valid[start] = 1
+                self._dec_audio_valid[start : start + 1].fill_(1)
 
         inputs_embeds_out = torch.zeros((1, self.embedding_dim), device=device, dtype=self._combined_embeddings.dtype)
         return input_ids, inputs_embeds_out, info_update
@@ -1637,6 +1776,13 @@ class EasyMagpieTTSForConditionalGeneration(
         predictor_weights: list[tuple[str, torch.Tensor]] = []
 
         for name, tensor in weights:
+            if name == "cfg_context_embedding":
+                if getattr(self, "cfg_context_embedding", None) is None:
+                    raise ValueError("cfg_context_embedding requires V2 CFG capability metadata")
+                validate_cfg_context_embedding(tensor, self.embedding_dim)
+                self.cfg_context_embedding.copy_(tensor)
+                loaded.add(name)
+                continue
             if name.startswith("decoder."):
                 backbone_weights.append((name[len("decoder.") :], tensor))
                 continue
@@ -1669,6 +1815,9 @@ class EasyMagpieTTSForConditionalGeneration(
             with torch.no_grad():
                 target.data.copy_(tensor.to(target.dtype))
             loaded.add(mapped)
+
+        if getattr(self.arch, "cfg_capability", None) is not None and "cfg_context_embedding" not in loaded:
+            raise ValueError("CFG artifact is missing cfg_context_embedding; reconvert the NeMo checkpoint")
 
         # ``NemotronHModel.load_weights`` (the inner model) does *not* apply the
         # HF->vLLM renaming that lives on the ``NemotronHForCausalLM`` wrapper, so

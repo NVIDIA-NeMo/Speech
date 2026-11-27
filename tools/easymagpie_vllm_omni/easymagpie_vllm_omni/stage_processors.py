@@ -260,30 +260,54 @@ def _persistent_list_state(transfer_manager: Any, attr: str) -> dict:
     return state
 
 
-def _is_true_request_finish(request: Any) -> bool:
+def _is_true_request_finish(
+    request: Any,
+    finished: bool,
+) -> bool:
     """True only at the real end of the utterance, not at a segment stop.
 
-    Mirrors the transfer adapter's own ``request.is_finished() and not
-    request.resumable`` rule: a resumable streaming request reports
+    Uses the queued task's captured finish flag with the transfer adapter's
+    ``not request.resumable`` rule: a resumable streaming request reports
     ``is_finished()`` at every segment boundary while still expecting more
     input, so it must not be treated as the terminal finish.
+
+    Args:
+        request: Engine request of the queued task.
+        finished: Finish flag captured with the queued task.
+
+    Returns:
+        True if the request finished and is not resumable.
     """
-    return bool(getattr(request, "is_finished", lambda: False)()) and not bool(getattr(request, "resumable", False))
+    return finished and not bool(getattr(request, "resumable", False))
 
 
 def talker2code2wav_async_chunk(
     transfer_manager: Any,
     multimodal_output: OmniPayload | dict[str, Any] | None,
     request: Any,
-    is_finished: bool = False,
+    is_finished: bool | None = None,
 ) -> OmniPayloadStruct | None:
     """Emit newly generated time-major codec rows to the stateful native codec.
 
     ``multimodal_output`` must retain this name because the transfer adapter
-    passes it by keyword.
+    passes it by keyword. An explicit ``is_finished`` belongs to this queued
+    task; the live request may have completed before the sender processes it.
+    Direct callers that omit the flag retain live request-status inference.
+
+    Args:
+        transfer_manager: Native chunk transfer adapter that holds per-request codec state.
+        multimodal_output: CPU snapshot of the talker's multimodal output, or None when there is no new frame.
+        request: Engine request that produced the output.
+        is_finished: Finish flag captured with the queued task; None infers it from the live request.
+
+    Returns:
+        A codec payload with new frames or a finish/reset marker, or None when nothing is ready to emit.
+
+    Raises:
+        ValueError: If ``text_prefill_num`` or the codec chunk configuration is invalid.
     """
     request_id = request.external_req_id
-    finished = bool(is_finished or request.is_finished())
+    finished = bool(request.is_finished() if is_finished is None else is_finished)
     info = deserialize_additional_information(getattr(request, "additional_information", None))
     reset_codec = finished and bool(info.get("reset_codec_on_segment", False))
 
@@ -356,7 +380,7 @@ def talker2code2wav_async_chunk(
     emitted_chunks_state = _persistent_state(transfer_manager, "_emp_emitted_chunks")
     emitted_chunks = emitted_chunks_state[request_id]
 
-    true_finished = _is_true_request_finish(request) or reset_codec
+    true_finished = _is_true_request_finish(request, finished) or reset_codec
 
     def _cleanup() -> None:
         emitted_state.pop(request_id, None)

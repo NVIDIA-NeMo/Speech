@@ -65,7 +65,13 @@ def packed_half_snake(inputs: torch.Tensor, alpha: torch.Tensor) -> torch.Tensor
     return outputs
 
 
-@triton.jit
+# ``sequence_rows`` (codec chunk frames x layer time factor) changes with the codec chunk length: startup chunks,
+# stream tails and incremental input all produce new values. As a ``tl.constexpr`` (or a specialized integer) every
+# unseen value triggered a Triton JIT compilation during serving, which blocked the codec stage and stalled playback
+# for the whole batch. As a non-specialized runtime argument the kernel compiles once per layer configuration; the
+# value is only used in index arithmetic, so there is no runtime cost. The remaining constexpr arguments depend only on
+# the layer configuration.
+@triton.jit(do_not_specialize=["sequence_rows"])
 def _gather_packed_state_inputs_kernel(
     input_ptr,
     state_ptr,
@@ -75,11 +81,30 @@ def _gather_packed_state_inputs_kernel(
     stride_state_page: tl.constexpr,
     channels: tl.constexpr,
     history: tl.constexpr,
-    sequence_rows: tl.constexpr,
+    sequence_rows,
     IS_DECODE: tl.constexpr,
     numel,
     BLOCK: tl.constexpr,
 ):
+    """Write each sequence's cached history rows followed by its packed input rows.
+
+    History rows are read from the sequence's state page and are zero when the sequence has no
+    initial state; decode steps always read them.
+
+    Args:
+        input_ptr: Packed input rows, ``sequence_rows`` per sequence, ``channels`` wide.
+        state_ptr: Paged state cache holding ``history`` rows per page.
+        cache_indices_ptr: State page index of each sequence.
+        has_initial_ptr: Per-sequence flag whether the state page holds valid history.
+        output_ptr: Output of shape ``(batch, history + sequence_rows, channels)``.
+        stride_state_page: Element stride between state pages.
+        channels: Number of channels per row.
+        history: Number of cached history rows per sequence.
+        sequence_rows: Number of input rows per sequence; not specialized, so new values do not recompile.
+        IS_DECODE: Whether every sequence has initial state.
+        numel: Number of output elements.
+        BLOCK: Number of output elements per program.
+    """
     offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     mask = offsets < numel
     channel = offsets % channels

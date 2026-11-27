@@ -12,14 +12,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tests for the standalone EasyMagpie LM pipeline topology."""
+"""Tests for EasyMagpie standard, LM, and compiled CFG deployment contracts."""
 from __future__ import annotations
 
 import pytest
 
 pytest.importorskip("vllm_omni")
 
-from easymagpie_vllm_omni.pipeline import EASYMAGPIE_LM_PIPELINE, EASYMAGPIE_PIPELINE  # noqa: E402
+from easymagpie_vllm_omni.pipeline import (  # noqa: E402
+    EASYMAGPIE_CFG_ASYNC_PIPELINE,
+    EASYMAGPIE_CFG_PIPELINE,
+    EASYMAGPIE_LM_PIPELINE,
+    EASYMAGPIE_PIPELINE,
+)
 
 
 def test_lm_pipeline_is_single_stage():
@@ -40,3 +45,232 @@ def test_two_stage_pipeline_unchanged():
     assert len(EASYMAGPIE_PIPELINE.stages) == 2
     assert EASYMAGPIE_PIPELINE.stages[1].final_output is True
     assert EASYMAGPIE_PIPELINE.stages[1].final_output_type == "audio"
+
+
+def test_cfg_pipeline_requires_explicit_selection_and_keeps_standard_pipeline() -> None:
+    """Verify CFG pipeline requires explicit selection and keeps standard pipeline."""
+    pipeline = EASYMAGPIE_CFG_PIPELINE
+    assert pipeline.model_type == "easymagpie_cfg"
+    assert pipeline.hf_architectures == ()
+    assert pipeline.validate() == []
+    assert pipeline.stages[0].scheduler_cls == "easymagpie_vllm_omni.cfg_scheduler.EasyMagpieCFGScheduler"
+    assert pipeline.stages[1] == EASYMAGPIE_PIPELINE.stages[1]
+    assert EASYMAGPIE_PIPELINE.stages[0].scheduler_cls.endswith(".EasyMagpieARAsyncScheduler")
+
+
+def test_plugin_registers_explicit_cfg_profiles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Register the opt-in async profile alongside the unchanged defaults.
+
+    Args:
+        monkeypatch: Fixture used to capture pipeline registrations.
+    """
+    import vllm_plugin_easymagpie_omni
+    from vllm_omni.config import pipeline_registry
+
+    registered = []
+    monkeypatch.setattr(pipeline_registry, "register_pipeline", registered.append)
+    vllm_plugin_easymagpie_omni._register_pipeline()
+    assert [pipeline.model_type for pipeline in registered] == [
+        "easymagpie",
+        "easymagpie_lm",
+        "easymagpie_cfg",
+        "easymagpie_cfg_async",
+    ]
+
+
+def test_async_cfg_profile_resolves_restricted_execution() -> None:
+    from conftest import EASYMAGPIE_ROOT
+    from vllm_omni.config.stage_config import load_deploy_config, merge_pipeline_deploy
+
+    pipeline = EASYMAGPIE_CFG_ASYNC_PIPELINE
+    assert pipeline.hf_architectures == ()
+    assert pipeline.validate() == []
+    assert pipeline.stages[1] == EASYMAGPIE_CFG_PIPELINE.stages[1]
+    assert EASYMAGPIE_CFG_PIPELINE.stages[0].scheduler_cls.endswith(".EasyMagpieCFGScheduler")
+    deploy = load_deploy_config(EASYMAGPIE_ROOT / "deploy/easymagpie_cfg_async.yaml")
+    assert deploy.pipeline == pipeline.model_type
+    acoustic, codec = merge_pipeline_deploy(pipeline, deploy)
+    assert acoustic.scheduler_cls == "easymagpie_vllm_omni.cfg_async_scheduler.EasyMagpieCFGAsyncScheduler"
+    assert acoustic.yaml_engine_args["async_scheduling"] is True
+    assert codec.yaml_engine_args["async_scheduling"] is False
+    assert acoustic.yaml_engine_args["max_num_seqs"] == 64
+    assert codec.yaml_engine_args["max_num_seqs"] == 32
+    assert acoustic.yaml_engine_args["worker_cls"] == "easymagpie_vllm_omni.runner.EasyMagpieGPUARWorker"
+    # Compiled acoustic stage, eager codec.
+    assert acoustic.yaml_engine_args["enforce_eager"] is False
+    assert acoustic.yaml_engine_args["compilation_config"]["cudagraph_mode"] == "FULL_AND_PIECEWISE"
+    assert codec.yaml_engine_args["enforce_eager"] is True
+    assert codec.yaml_engine_args["compilation_config"] == {"mode": 0, "cudagraph_mode": "NONE"}
+    for stage in (acoustic, codec):
+        args = stage.yaml_engine_args
+        assert args["distributed_executor_backend"] == "uni"
+        assert args["enable_prefix_caching"] is False
+        assert args["enable_chunked_prefill"] is False
+        assert stage.yaml_runtime["env"]["VLLM_USE_V2_MODEL_RUNNER"] == "0"
+    assert acoustic.yaml_engine_args["max_model_len"] == 4096
+    assert acoustic.yaml_engine_args["max_num_batched_tokens"] == 8192
+    assert codec.yaml_engine_args["max_model_len"] == codec.yaml_engine_args["max_num_batched_tokens"] == 2048
+    assert acoustic.yaml_extras["default_sampling_params"]["max_tokens"] == 2048
+
+
+def test_general_plugin_load_registers_async_profile() -> None:
+    """Verify loading general vLLM plugins registers the async CFG profile next to the CFG profile."""
+    from vllm.plugins import load_general_plugins
+    from vllm_omni.config.pipeline_registry import OMNI_PIPELINES
+
+    load_general_plugins()
+    assert OMNI_PIPELINES["easymagpie_cfg_async"] == EASYMAGPIE_CFG_ASYNC_PIPELINE
+    assert "easymagpie_cfg_async_eager" not in OMNI_PIPELINES
+    assert OMNI_PIPELINES["easymagpie_cfg"] == EASYMAGPIE_CFG_PIPELINE
+
+
+def test_cfg_synthesis_deployment_uses_compiled_synchronous_paired_execution() -> None:
+    """Verify compiled CFG retains synchronous paired execution and an eager codec."""
+    from conftest import EASYMAGPIE_ROOT
+    from easymagpie_vllm_omni.pipeline import EASYMAGPIE_CFG_PIPELINE
+    from vllm_omni.config.stage_config import load_deploy_config, merge_pipeline_deploy
+
+    deploy = load_deploy_config(EASYMAGPIE_ROOT / "deploy" / "easymagpie_cfg.yaml")
+    assert deploy.pipeline == "easymagpie_cfg"
+    assert EASYMAGPIE_CFG_PIPELINE.validate() == []
+    stages = merge_pipeline_deploy(EASYMAGPIE_CFG_PIPELINE, deploy)
+    assert stages[0].scheduler_cls.endswith(".EasyMagpieCFGScheduler")
+    assert stages[0].yaml_engine_args["max_num_seqs"] == 64
+    assert stages[1].yaml_engine_args["max_num_seqs"] == 32
+    assert stages[0].yaml_engine_args["enforce_eager"] is False
+    assert stages[1].yaml_engine_args["enforce_eager"] is True
+    for stage in stages:
+        args = stage.yaml_engine_args
+        assert args["async_scheduling"] is False
+        assert args["enable_prefix_caching"] is False
+        assert args["enable_chunked_prefill"] is False
+
+
+def test_cfg_synthesis_batch_capacity_matches_standard_with_two_branches() -> None:
+    """Verify CFG synthesis batch capacity matches standard with two branches."""
+    import yaml
+    from conftest import EASYMAGPIE_ROOT
+
+    deploy = EASYMAGPIE_ROOT / "deploy"
+    standard = yaml.safe_load((deploy / "easymagpie.yaml").read_text())
+    cfg = yaml.safe_load((deploy / "easymagpie_cfg.yaml").read_text())
+    acoustic, codec = cfg["stages"]
+    standard_acoustic, standard_codec = standard["stages"]
+    # Sequence and prefill/decode token budgets count both physical branches.
+    assert acoustic["max_num_seqs"] == 2 * standard_acoustic["max_num_seqs"]
+    assert acoustic["max_num_batched_tokens"] == 2 * standard_acoustic["max_num_batched_tokens"]
+    assert acoustic["max_model_len"] == standard_acoustic["max_model_len"]
+    # Only the public branch transfers a codec stream. Unchunked scheduling
+    # additionally requires its token budget to cover retained prompt history.
+    assert codec["max_num_seqs"] == standard_codec["max_num_seqs"]
+    assert codec["max_num_batched_tokens"] == max(standard_codec["max_num_batched_tokens"], codec["max_model_len"])
+    for stage, reference in zip(cfg["stages"], standard["stages"]):
+        assert stage["gpu_memory_utilization"] == reference["gpu_memory_utilization"]
+        assert stage["devices"] == reference["devices"]
+    compilation = acoustic["compilation_config"]
+    assert acoustic["max_num_seqs"] in compilation["cudagraph_capture_sizes"]
+
+
+def test_cfg_codec_history_fits_full_acoustic_generation() -> None:
+    """Verify CFG codec history fits full acoustic generation."""
+    import yaml
+    from conftest import EASYMAGPIE_ROOT
+
+    config = yaml.safe_load((EASYMAGPIE_ROOT / "deploy" / "easymagpie_cfg.yaml").read_text())
+    acoustic, codec = config["stages"]
+    # Omni's generation runner stores the cumulative codec prompt in InputBatch,
+    # even though each forward consumes only the next small streaming chunk.
+    assert codec["max_model_len"] >= acoustic["default_sampling_params"]["max_tokens"]
+
+
+def test_cfg_profile_matches_standard_precision() -> None:
+    """Verify CFG profile matches standard precision."""
+    from pathlib import Path
+
+    import yaml
+
+    deploy = Path(__file__).resolve().parents[5] / "tools/easymagpie_vllm_omni/deploy"
+    standard = yaml.safe_load((deploy / "easymagpie.yaml").read_text())
+    lm = yaml.safe_load((deploy / "easymagpie_lm.yaml").read_text())
+    cfg = yaml.safe_load((deploy / "easymagpie_cfg.yaml").read_text())
+    # Compare every explicit dtype, including inherited model/attention/conv
+    # defaults: missing fields must stay missing on both sides as well.
+    for reference in (standard, lm):
+        assert {k: v for k, v in cfg.items() if k.endswith("dtype")} == {
+            k: v for k, v in reference.items() if k.endswith("dtype")
+        }
+        assert {k: v for k, v in cfg["stages"][0].items() if k.endswith("dtype")} == {
+            k: v for k, v in reference["stages"][0].items() if k.endswith("dtype")
+        }
+    assert {k: v for k, v in cfg["stages"][1].items() if k.endswith("dtype")} == {
+        k: v for k, v in standard["stages"][1].items() if k.endswith("dtype")
+    }
+
+
+@pytest.mark.parametrize("policy", ["eager", "decode", "compiled"])
+def test_async_cfg_policy_profiles_parse_and_dispatch(policy: str) -> None:
+    """Verify the async CFG deployment validates and dispatches CUDA graphs under each Stage-0 policy.
+
+    Args:
+        policy: Stage-0 execution policy: ``eager``, ``decode`` (full decode graphs only), or ``compiled``.
+    """
+    from conftest import EASYMAGPIE_ROOT
+    from easymagpie_vllm_omni.cfg_async_scheduler import EasyMagpieCFGAsyncScheduler
+    from easymagpie_vllm_omni.cfg_graph import uses_cfg_decode_graphs
+    from test_cfg_scheduler import _config
+    from vllm.config import CompilationConfig, CompilationMode, CUDAGraphMode
+    from vllm.v1.cudagraph_dispatcher import CudagraphDispatcher
+    from vllm_omni.config.stage_config import load_deploy_config, merge_pipeline_deploy
+
+    pipeline = EASYMAGPIE_CFG_ASYNC_PIPELINE
+    assert pipeline.hf_architectures == ()
+    assert pipeline.validate() == []
+    # One deployment file; eager and decode-only are Stage-0 overrides of it.
+    deploy = load_deploy_config(EASYMAGPIE_ROOT / "deploy/easymagpie_cfg_async.yaml")
+    assert deploy.pipeline == pipeline.model_type
+    acoustic, codec = merge_pipeline_deploy(pipeline, deploy)
+    args = acoustic.yaml_engine_args
+    assert acoustic.scheduler_cls.endswith(".EasyMagpieCFGAsyncScheduler")
+    assert args["async_scheduling"] is True
+    assert codec.yaml_engine_args["async_scheduling"] is False
+    assert codec.yaml_engine_args["enforce_eager"] is True
+    assert codec.yaml_engine_args["compilation_config"] == {"mode": 0, "cudagraph_mode": "NONE"}
+    assert args["max_num_seqs"] == 64
+    assert codec.yaml_engine_args["max_num_seqs"] == 32
+    assert args["max_model_len"] == 4096
+    assert args["max_num_batched_tokens"] == 8192
+    assert args["worker_cls"] == "easymagpie_vllm_omni.runner.EasyMagpieGPUARWorker"
+    assert acoustic.yaml_runtime["env"]["VLLM_USE_V2_MODEL_RUNNER"] == "0"
+    assert codec.yaml_runtime["env"]["VLLM_USE_V2_MODEL_RUNNER"] == "0"
+
+    config = _config()
+    config.scheduler_config.scheduler_cls = acoustic.scheduler_cls
+    config.scheduler_config.async_scheduling = args["async_scheduling"]
+    config.scheduler_config.max_num_seqs = args["max_num_seqs"]
+    config.model_config.enforce_eager = policy == "eager" or args["enforce_eager"]
+    config.model_config.hf_config.cfg_capability = {"version": 1}
+    compilation_args = args["compilation_config"]
+    if policy == "decode":
+        compilation_args = {**compilation_args, "mode": 0, "cudagraph_mode": "FULL_DECODE_ONLY"}
+    elif policy == "eager":
+        compilation_args = {"mode": 0, "cudagraph_mode": "NONE"}
+    compilation = CompilationConfig(**compilation_args)
+    config.compilation_config = compilation
+    object.__new__(EasyMagpieCFGAsyncScheduler)._validate_config(config)
+    assert uses_cfg_decode_graphs(config) == (policy != "eager")
+    if policy == "eager":
+        assert compilation.mode == CompilationMode.NONE
+        assert compilation.cudagraph_mode == CUDAGraphMode.NONE
+        return
+    compilation.set_splitting_ops_for_v1(all2all_backend="allgather_reducescatter")
+    dispatcher = CudagraphDispatcher(config)
+    dispatcher.initialize_cudagraph_keys(compilation.cudagraph_mode)
+    for tokens in (1, 2, 3, 32, 63, 64):
+        mode, batch = dispatcher.dispatch(tokens, uniform_decode=True)
+        assert mode == CUDAGraphMode.FULL
+        assert batch.num_tokens >= tokens
+    mode, _ = dispatcher.dispatch(10, uniform_decode=False)
+    assert mode == (CUDAGraphMode.PIECEWISE if policy == "compiled" else CUDAGraphMode.NONE)
+    mode, _ = dispatcher.dispatch(compilation.max_cudagraph_capture_size + 1, uniform_decode=False)
+    assert mode == CUDAGraphMode.NONE
+    assert compilation.mode == (CompilationMode.VLLM_COMPILE if policy == "compiled" else CompilationMode.NONE)

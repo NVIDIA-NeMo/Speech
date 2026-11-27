@@ -54,15 +54,7 @@ def register() -> None:
 
     if omni_available:
         _register_pipeline()
-        _register_streaming_compatibility()
         _register_serving_adapter()
-
-
-def _register_streaming_compatibility() -> None:
-    """Keep resumable turn boundaries distinct from request completion."""
-    from easymagpie_vllm_omni.omni_compat import patch_streaming_lifecycle
-
-    patch_streaming_lifecycle()
 
 
 def _register_serving_adapter() -> None:

@@ -1187,14 +1187,14 @@ class BatchedFrameASRRNNT(FrameBatchASR):
             # Get prompt dictionary from model config
             prompt_dict = getattr(self.asr_model._cfg, 'model_defaults', {}).get('prompt_dictionary', {})
             if not prompt_dict:
-                logging.ValueError("Prompt dictionary is empty in model config")
+                raise ValueError("Prompt dictionary is empty in model config")
 
             # Get prompt index from dictionary or default to 0
             prompt_idx = 0  # Default value
             if self.target_lang_id is not None and isinstance(self.target_lang_id, str):
                 prompt_idx = prompt_dict.get(self.target_lang_id, 0)
                 if prompt_idx == 0 and self.target_lang_id not in prompt_dict:
-                    logging.ValueError(f"Prompt ID '{self.target_lang_id}' not found in prompt dictionary")
+                    raise ValueError(f"Prompt ID '{self.target_lang_id}' not found in prompt dictionary")
 
             # Create target prompt tensor with calculated time dimension
             time_length = feat_signal.shape[2]

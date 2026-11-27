@@ -556,3 +556,29 @@ def test_text_resume_uses_decode_after_initial_context(computed, expected):
         text_token=[42],
     )
     assert result == expected
+
+
+def test_async_omni_output_slices_each_request_in_a_padded_batch():
+    from vllm_omni.worker.output.payload_build import build_omni_mm_payload
+
+    hidden = torch.zeros(40, 8)
+    model = SimpleNamespace(_out_codes=torch.arange(80).view(40, 2), _single_stage_audio=False)
+    output = EasyMagpieTTSForConditionalGeneration.make_omni_output(
+        model, hidden, request_token_spans=[(index, index + 1) for index in range(34)]
+    )
+
+    assert output.text_hidden_states is hidden
+    assert set(output.multimodal_outputs) == {"codes"}
+    per_request = build_omni_mm_payload(
+        combined_multimodal_outputs=None,
+        mm_cpu={"codes.audio": output.multimodal_outputs["codes"]["audio"]},
+        rid="request-33",
+        idx=33,
+        start=33,
+        end=34,
+        audio_sparse_output=False,
+        sparse_mm_index={},
+        hidden_seq_len=0,
+        scheduled_seq_len=34,
+    )
+    torch.testing.assert_close(per_request["codes.audio"], model._out_codes[33:34])

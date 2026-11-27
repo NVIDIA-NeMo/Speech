@@ -147,6 +147,8 @@ class EasyMagpieTTSForConditionalGeneration(
     # inter-stage pooler payload so the runner skips the per-step D2H copy +
     # transport of hidden states (the default is True and would pass them).
     omni_pooler_payload_include_hidden: bool = False
+    use_async_omni_output: bool = True
+    eager_omni_postprocess_before_async_output: bool = True
 
     # Keep small per-step tensors GPU-resident across steps (no D2H/H2D).
     gpu_resident_buffer_keys: set[str] = {"last_audio_codes", "last_phoneme_token"}
@@ -754,12 +756,16 @@ class EasyMagpieTTSForConditionalGeneration(
     # multimodal output plumbing
     # ------------------------------------------------------------------
 
-    def make_omni_output(self, model_outputs, **_: Any) -> OmniOutput:
+    def make_omni_output(
+        self, model_outputs, *, request_token_spans: list[tuple[int, int]] | None = None, **_: Any
+    ) -> OmniOutput:
         """Deliver sampled codes to the decoder or single-stage client."""
         if isinstance(model_outputs, OmniOutput):
             return model_outputs
         hidden = model_outputs
-        num_tokens = int(hidden.shape[0])
+        # Omni slices async payloads by scheduled length when their hidden
+        # states are omitted. Exclude CUDA graph padding from the code tensor.
+        num_tokens = request_token_spans[-1][1] if request_token_spans else hidden.shape[0]
         audio_codes = self._out_codes[:num_tokens].clone()
         if self._single_stage_audio:
             # Drainable client key (see ``self._single_stage_audio`` in __init__):

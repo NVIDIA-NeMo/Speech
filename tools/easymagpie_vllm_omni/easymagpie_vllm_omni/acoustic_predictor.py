@@ -149,3 +149,146 @@ class AcousticCodesPredictorBlock(nn.Module):
     def compute_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
         logits = self.codebook_projection(hidden_states)
         return logits.unsqueeze(1)
+
+
+class EasyMagpieAcousticCodesPredictor(nn.Module):
+    """NemotronTTS v2 predictor backed by vLLM-managed global KV caches."""
+
+    requires_all_tokens: bool = True
+
+    def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
+        super().__init__()
+        arch = EasyMagpieOmniArch.from_hf_config(vllm_config.model_config.hf_config)
+        self.arch = arch
+        self.audio_embedder = CodecLatentAudioEmbedder(arch)
+        self.num_codebooks = arch.num_stacked_codebooks
+        self.num_output_tokens = arch.codebook_size + 1
+        self.temperature = 0.7
+        self.top_k = _DEFAULT_TOP_K
+        self._sample_top_k = min(self.top_k, self.num_output_tokens)
+
+        predictor_config = vllm_config.model_config.hf_config
+        self.blocks = nn.ModuleList(
+            [
+                AcousticCodesPredictorBlock(
+                    vllm_config=vllm_config,
+                    predictor_config=predictor_config,
+                    codebook_index=codebook_index,
+                    num_output_tokens=self.num_output_tokens,
+                    prefix=prefix,
+                    cache_layer_index=predictor_config.num_hidden_layers + codebook_index,
+                )
+                for codebook_index in range(self.num_codebooks)
+            ]
+        )
+
+        max_num_tokens = vllm_config.scheduler_config.max_num_batched_tokens
+        self._gumbel_buf = torch.zeros(
+            max_num_tokens,
+            self.num_codebooks,
+            self._sample_top_k,
+            dtype=torch.float32,
+        )
+
+    def embed_audio_frame(self, codes: torch.Tensor) -> torch.Tensor:
+        return self.audio_embedder.embed_audio_frame(codes)
+
+    @torch.no_grad()
+    def advance(self, hidden_states: torch.Tensor, *, positions: torch.Tensor) -> None:
+        """Populate every predictor cache using MASK conditioning between blocks."""
+        num_tokens = hidden_states.shape[0]
+        previous_codes = None
+        previous_indices = None
+        for block in self.blocks:
+            if previous_codes is not None:
+                hidden_states = hidden_states + self.audio_embedder.embed_codebooks(previous_codes, previous_indices)
+            hidden_states = block(hidden_states, positions)
+            previous_codes = torch.full(
+                (num_tokens, block.num_codes),
+                self.arch.mask_token_id,
+                dtype=torch.long,
+                device=hidden_states.device,
+            )
+            previous_indices = block.codebook_indices
+
+    @torch.no_grad()
+    def generate_codes(
+        self,
+        hidden_states: torch.Tensor,
+        *,
+        positions: torch.Tensor,
+        predict: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Advance every cache row and sample only rows in ``predict``."""
+        num_tokens = hidden_states.shape[0]
+        if predict is None:
+            predict = torch.ones(num_tokens, dtype=torch.bool, device=hidden_states.device)
+        if predict.shape != (num_tokens,):
+            raise ValueError(f"expected predict mask {(num_tokens,)}, got {tuple(predict.shape)}")
+
+        noise = self._gumbel_buf[:num_tokens]
+        noise.uniform_(1e-20, 1.0 - 1e-20)
+        noise.log_().neg_().log_().neg_()
+        temperature = max(float(self.temperature), _MIN_SAMPLING_TEMPERATURE)
+
+        codes = torch.full(
+            (num_tokens, self.num_codebooks),
+            self.arch.mask_token_id,
+            dtype=torch.long,
+            device=hidden_states.device,
+        )
+        previous_codes = None
+        previous_indices = None
+        code_offset = 0
+        for block in self.blocks:
+            if previous_codes is not None:
+                hidden_states = hidden_states + self.audio_embedder.embed_codebooks(previous_codes, previous_indices)
+            hidden_states = block(hidden_states, positions)
+            logits = block.compute_logits(hidden_states)
+            logits = torch.nan_to_num(logits, nan=0.0, posinf=100.0, neginf=-100.0).clamp(-100.0, 100.0)
+            values, indices = torch.topk(logits, self._sample_top_k, dim=-1)
+            picked = (values / temperature + noise[:, code_offset : code_offset + block.num_codes]).argmax(
+                dim=-1, keepdim=True
+            )
+            sampled = indices.gather(-1, picked).squeeze(-1)
+            sampled = torch.where(sampled == self.arch.codebook_size, self.arch.audio_eos_id, sampled)
+            previous_codes = torch.where(
+                predict.unsqueeze(-1),
+                sampled,
+                torch.full_like(sampled, self.arch.mask_token_id),
+            )
+            codes[:, code_offset : code_offset + block.num_codes] = previous_codes
+            previous_indices = block.codebook_indices
+            code_offset += block.num_codes
+        return codes
+
+    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
+        """Load NeMo predictor weights, packing q/k/v through vLLM loaders."""
+        params = dict(self.named_parameters())
+        loaded = set()
+        for name, tensor in weights:
+            for shard_name, shard_id in (("q_proj", "q"), ("k_proj", "k"), ("v_proj", "v")):
+                marker = f".{shard_name}."
+                if marker not in name:
+                    continue
+                mapped = name.replace(marker, ".qkv_proj.")
+                param = params[mapped]
+                param.weight_loader(param, tensor, shard_id)
+                loaded.add(mapped)
+                break
+            else:
+                param = params[name]
+                loader = getattr(param, "weight_loader", default_weight_loader)
+                loader(param, tensor)
+                loaded.add(name)
+        return loaded
+
+
+def create_acoustic_predictor(*, vllm_config: VllmConfig, prefix: str = "") -> nn.Module:
+    """Construct the predictor selected by the converted artifact."""
+    arch = EasyMagpieOmniArch.from_hf_config(vllm_config.model_config.hf_config)
+    if arch.acoustic_predictor_type == "local_transformer":
+        return EasyMagpieLocalTransformerPredictor(vllm_config=vllm_config, prefix=prefix)
+    if arch.acoustic_predictor_type == "acoustic_codes_predictor":
+        return EasyMagpieAcousticCodesPredictor(vllm_config=vllm_config, prefix=prefix)
+    raise ValueError(f"unsupported acoustic predictor {arch.acoustic_predictor_type!r}")

@@ -61,7 +61,7 @@ from vllm.model_executor.models.interfaces import (
     SupportsMultiModal,
 )
 from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM, NemotronHModel
-from vllm.model_executor.models.utils import _merge_multimodal_embeddings, maybe_prefix
+from vllm.model_executor.models.utils import AutoWeightsLoader, _merge_multimodal_embeddings, maybe_prefix
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.sequence import IntermediateTensors
 from vllm_omni.model_executor.models.output_templates import OmniOutput
@@ -1626,8 +1626,8 @@ class EasyMagpieTTSForConditionalGeneration(
         Nemotron-H names) and the TTS submodules at top level
         (``audio_embeddings.*``, ``local_transformer.*``, ``phoneme_*``,
         ``text_embedding.*``, projection heads). Backbone weights are routed to
-        :meth:`NemotronHModel.load_weights` (which handles HF naming + Mamba/MoE
-        packing); TTS weights are copied directly by name.
+        ``AutoWeightsLoader`` with the Nemotron-H mapper; TTS weights are copied
+        directly by name.
         """
         # The codec's fixed STFT windows are persistent buffers in the
         # standalone safetensors shard and must be restored alongside weights.
@@ -1670,15 +1670,9 @@ class EasyMagpieTTSForConditionalGeneration(
                 target.data.copy_(tensor.to(target.dtype))
             loaded.add(mapped)
 
-        # ``NemotronHModel.load_weights`` (the inner model) does *not* apply the
-        # HF->vLLM renaming that lives on the ``NemotronHForCausalLM`` wrapper, so
-        # raw HF names such as ``embeddings.weight`` / ``...mixer.A_log`` would not
-        # match the inner param names (``embed_tokens.weight`` / ``...mixer.A``).
-        # Apply that mapper here so the converted checkpoint can keep stock HF
-        # Nemotron-H names. The wrapper's ``backbone -> model`` prefix rule is a
-        # no-op here because we already stripped the ``decoder.`` prefix.
-        backbone_weights = list(NemotronHForCausalLM.hf_to_vllm_mapper.apply(backbone_weights))
-        backbone_loaded = self.backbone.load_weights(backbone_weights)
+        backbone_loaded = AutoWeightsLoader(self.backbone).load_weights(
+            backbone_weights, mapper=NemotronHForCausalLM.hf_to_vllm_mapper
+        )
         loaded |= {f"backbone.{n}" for n in backbone_loaded}
         if predictor_weights:
             predictor_loaded = self.code_predictor.load_weights(predictor_weights)

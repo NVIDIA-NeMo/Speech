@@ -432,6 +432,38 @@ class TestConformerBlockComposition:
             assert layer.self_attn._max_cache_len == 2
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("initial_mode", [False, True])
+    @pytest.mark.parametrize("target_model", ["rel_pos", "rel_pos_local_attn", "abs_pos", "rope"])
+    def test_change_attention_model_preserves_training_mode(self, initial_mode, target_model):
+        config = DictConfig(
+            {
+                "_target_": "nemo.collections.asr.modules.ConformerEncoder",
+                "feat_in": 8,
+                "n_layers": 2,
+                "d_model": 16,
+                "n_heads": 2,
+                "subsampling_conv_channels": 4,
+                "dropout": 0.1,
+                "dropout_att": 0.1,
+                "dropout_emb": 0.1,
+                "pos_emb_max_len": 64,
+                "self_attention_model": "rel_pos",
+            }
+        )
+        encoder = ConformerEncoder.from_config_dict(config)
+        encoder.train(initial_mode)
+        assert encoder.training == initial_mode
+        for _, m in encoder.named_modules():
+            assert m.training == initial_mode
+
+        context = [4, 4] if target_model == "rel_pos_local_attn" else None
+        encoder.change_attention_model(self_attention_model=target_model, att_context_size=context)
+
+        assert encoder.training == initial_mode
+        for name, m in encoder.named_modules():
+            assert m.training == initial_mode, f"Module {name} has training={m.training}, expected {initial_mode}"
+
+    @pytest.mark.unit
     def test_change_attention_model_persists_a_section_replacement(self):
         attention = "nemo.collections.asr.parts.submodules.multi_head_attention."
         config = DictConfig(

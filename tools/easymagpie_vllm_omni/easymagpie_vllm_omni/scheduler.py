@@ -195,8 +195,9 @@ class EasyMagpieCodecScheduler(OmniGenerationScheduler):
         waiting_for_input = session.status == RequestStatus.WAITING_FOR_STREAMING_REQ
         if session in self.waiting:
             self.waiting.remove_requests((session,))
-        if session in self.skipped_waiting:
-            self.skipped_waiting.remove_requests((session,))
+        if session in self.kv_holding_waiting:
+            self.kv_holding_waiting.remove_requests((session,))
+        self.deferred_waiting.discard(session)
         if waiting_for_input:
             self.num_waiting_for_streaming_input -= 1
 

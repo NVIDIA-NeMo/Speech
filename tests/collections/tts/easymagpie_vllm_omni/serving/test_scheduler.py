@@ -238,7 +238,7 @@ def test_native_codec_streaming_update_preserves_state_and_resumes_polling():
     ("status", "queue_name", "num_waiting"),
     [
         (RequestStatus.WAITING, "waiting", 0),
-        (RequestStatus.WAITING_FOR_STREAMING_REQ, "skipped_waiting", 1),
+        (RequestStatus.WAITING_FOR_STREAMING_REQ, "kv_holding_waiting", 1),
     ],
 )
 def test_native_codec_segment_resume_stays_on_cached_request_path(status, queue_name, num_waiting):
@@ -261,13 +261,17 @@ def test_native_codec_segment_resume_stays_on_cached_request_path(status, queue_
         status=status,
     )
     scheduler.waiting = _RequestQueue()
-    scheduler.skipped_waiting = _RequestQueue()
+    scheduler.kv_holding_waiting = _RequestQueue()
+    scheduler.deferred_waiting = _RequestQueue()
+    scheduler.deferred_waiting.discard = scheduler.deferred_waiting.remove
+    scheduler.deferred_waiting.append(session)
     getattr(scheduler, queue_name).append(session)
 
     scheduler._resume_codec_after_segment(session)
 
     assert scheduler.waiting == []
-    assert scheduler.skipped_waiting == []
+    assert scheduler.kv_holding_waiting == []
+    assert scheduler.deferred_waiting == []
     assert scheduler.running == [session]
     assert session.status == RequestStatus.RUNNING
     assert session.prompt_token_ids == [0] * 6

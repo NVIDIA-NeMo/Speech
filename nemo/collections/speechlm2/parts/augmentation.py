@@ -172,15 +172,18 @@ class AudioAugmenter:
 
             audio_cpu = batch_audio[i, :audio_length].cpu().numpy()
 
-            if use_loudness_norm and PYLOUDNORM_AVAILABLE:
+            # Per-row flag: whether a silent/invalid row disabled loudness
+            # normalization must not leak into the next row's iteration.
+            row_use_loudness_norm = use_loudness_norm
+            if row_use_loudness_norm and PYLOUDNORM_AVAILABLE:
                 meter = pyln.Meter(self.sample_rate)
                 try:
                     speech_loudness = meter.integrated_loudness(audio_cpu)
                     # Check for invalid loudness values (-inf for silent audio)
                     if speech_loudness == float('-inf') or not np.isfinite(speech_loudness):
-                        use_loudness_norm = False
+                        row_use_loudness_norm = False
                 except Exception:
-                    use_loudness_norm = False
+                    row_use_loudness_norm = False
 
             convolved = fftconvolve(audio_cpu, ir, mode="full")[:audio_length]
 
@@ -188,7 +191,7 @@ class AudioAugmenter:
             input_rms = np.sqrt(np.mean(audio_cpu**2)) + 1e-8
             convolved_rms = np.sqrt(np.mean(convolved**2)) + 1e-8
 
-            if use_loudness_norm and PYLOUDNORM_AVAILABLE:
+            if row_use_loudness_norm and PYLOUDNORM_AVAILABLE:
                 try:
                     convolved_loudness = meter.integrated_loudness(convolved)
                     # Check for invalid loudness values
@@ -256,15 +259,18 @@ class AudioAugmenter:
 
             audio_cpu = batch_audio[i, :audio_length].cpu().numpy()
 
-            if use_loudness_norm and PYLOUDNORM_AVAILABLE:
+            # Per-row flag: whether a silent/invalid row disabled loudness
+            # normalization must not leak into the next row's iteration.
+            row_use_loudness_norm = use_loudness_norm
+            if row_use_loudness_norm and PYLOUDNORM_AVAILABLE:
                 meter = pyln.Meter(self.sample_rate)
                 try:
                     speech_loudness = meter.integrated_loudness(audio_cpu)
                     # Check for invalid loudness values (-inf for silent audio)
                     if speech_loudness == float('-inf') or not np.isfinite(speech_loudness):
-                        use_loudness_norm = False
+                        row_use_loudness_norm = False
                 except Exception:
-                    use_loudness_norm = False
+                    row_use_loudness_norm = False
 
             convolved = fftconvolve(audio_cpu, ir, mode="full")[:audio_length]
 
@@ -272,7 +278,7 @@ class AudioAugmenter:
             input_rms = np.sqrt(np.mean(audio_cpu**2)) + 1e-8
             convolved_rms = np.sqrt(np.mean(convolved**2)) + 1e-8
 
-            if use_loudness_norm and PYLOUDNORM_AVAILABLE:
+            if row_use_loudness_norm and PYLOUDNORM_AVAILABLE:
                 try:
                     convolved_loudness = meter.integrated_loudness(convolved)
                     # Check for invalid loudness values

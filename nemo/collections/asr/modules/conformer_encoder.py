@@ -921,7 +921,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
 
         Configurations without a sequence-packed form (streaming caches, ``rel_pos_local_attn`` with global tokens
         or different context sizes on the two sides, context sizes that ``att_context_style`` does not define,
-        reduction layers, causal or VGGNet subsampling,
+        reduction layers, VGGNet subsampling,
         intermediate layer captures, and in training mode attention dropout where FlexAttention would have to apply it)
         are named by ``sequence_packed_unsupported_reason`` and refused here with ``NotImplementedError``;
         the parallel expert encoder and the independent dual encoder consult ``supports_sequence_packed_output``
@@ -1040,6 +1040,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         intermediate layer captures (InterCTC and ``save_encoder_tensors``, whose consumers expect padded tensors),
         frontends other than a linear layer or a ``ConvSubsampling`` that names no reason of its own,
         and whatever the convolution module of a layer names (both by ``sequence_packed_unsupported_reason``).
+        Training with ``att_context_style: chunked_limited`` and causal subsampling: the padded forward then pads
+        every utterance with silence before the subsampling and drops the frames of that padding.
         Attention dropout in training mode on CUDA: FlexAttention has no dropout, so ``rel_pos`` attention
         keeps its dropout only through its Triton kernel
         (``packed_rel_pos_attention: triton``, Triton installed, float32, bfloat16 or float16)
@@ -1085,6 +1087,18 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             reason = pre_encode.sequence_packed_unsupported_reason()
             if reason is not None:
                 return reason
+            # the condition of forward_internal, which then pads every utterance with silence before the
+            # subsampling and drops the frames of that padding after it; the packed forward does neither
+            if (
+                self.training
+                and self.att_context_style == "chunked_limited"
+                and pre_encode.is_causal
+                and pre_encode._subsampling in ("striding", "dw_striding", "striding_conv1d")
+            ):
+                return (
+                    "Training with att_context_style: chunked_limited and causal subsampling pads the first chunk "
+                    "with silence and drops the extra pre-encoded frames, which has no sequence-packed form."
+                )
         elif not isinstance(pre_encode, nn.Linear):
             return f"{type(pre_encode).__name__} has no sequence-packed form."
         # the self-attention of every layer and its enabled attention adapters, which run the same packed attention

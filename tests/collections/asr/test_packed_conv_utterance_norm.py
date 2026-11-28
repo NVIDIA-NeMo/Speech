@@ -22,8 +22,14 @@ import torch
 
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
 from nemo.collections.asr.parts.packed_sequence import pack_encoder_output, packed_slot_layout
-from nemo.collections.asr.parts.submodules.conformer_modules import ConformerConvolution, ConformerFeedForward
+from nemo.collections.asr.parts.submodules.conformer_modules import (
+    ConformerConvolution,
+    ConformerFeedForward,
+    packed_depthwise_conv_kernel_available,
+)
+from nemo.collections.asr.parts.submodules.packed_attention import PackedAttentionContext
 from nemo.collections.asr.parts.submodules.subsampling import ConvSubsampling
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
 D_MODEL = 6
 KERNEL_SIZE = 5
@@ -261,6 +267,35 @@ class TestPackedConvUtteranceNormCuda:
         torch.testing.assert_close(outputs.double(), reference, atol=1e-4, rtol=1e-4)
         for name, gradient in _gradients(module, padded, outputs.square().mean()).items():
             torch.testing.assert_close(gradient.double(), reference_grads[name], atol=1e-5, rtol=1e-3, msg=name)
+
+    @pytest.mark.unit
+    @pytest.mark.skipif(not TRITON_AVAILABLE, reason="requires Triton")
+    @pytest.mark.parametrize("norm_type", NORM_TYPES)
+    def test_kernel_path_takes_the_boundaries_from_the_context(self, norm_type):
+        """Where the depthwise convolution runs its Triton kernel the encoder builds no gapped layout:
+        the normalization takes the utterance lengths and indices from the attention context,
+        matches the float64 reference as the layout path does, and reads no value back from the device."""
+        torch.manual_seed(5)
+        module = _module(norm_type, d_model=24).cuda()
+        lengths = torch.tensor([300, 2, 0, 150], device="cuda")
+        padded = _varied(torch.randn(4, 300, 24, device="cuda"))
+        reference, reference_grads = self._reference(module, padded, lengths)
+        packed = pack_encoder_output(padded, lengths)
+        assert packed_depthwise_conv_kernel_available(packed.data)
+        context = PackedAttentionContext(packed)
+        outputs = module.forward_packed(packed.data, context=context)
+        torch.testing.assert_close(outputs.double(), reference, atol=1e-4, rtol=1e-4)
+        for name, gradient in _gradients(module, padded, outputs.square().mean()).items():
+            torch.testing.assert_close(gradient.double(), reference_grads[name], atol=1e-5, rtol=1e-3, msg=name)
+        # a leaf: the backward of the packing itself, a boolean mask, is not what is tested
+        data = packed.data.detach().requires_grad_()
+        mode = torch.cuda.get_sync_debug_mode()
+        torch.cuda.set_sync_debug_mode("error")
+        try:
+            module.forward_packed(data, context=context).square().sum().backward()
+        finally:
+            torch.cuda.set_sync_debug_mode(mode)
+        assert data.grad is not None and torch.isfinite(data.grad).all()
 
     @pytest.mark.unit
     @pytest.mark.parametrize("norm_type", NORM_TYPES)

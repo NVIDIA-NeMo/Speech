@@ -16,6 +16,7 @@
 
 import itertools
 import os
+import re
 import string
 import warnings
 from abc import ABC, abstractmethod
@@ -52,6 +53,15 @@ _TOKENIZER_MODULE = 'nemo.collections.common.tokenizers.text_to_speech.tts_token
 _HINDI_CHARS_TOKENIZER_TARGET = f'{_TOKENIZER_MODULE}.HindiCharsTokenizer'
 _ARABIC_CHARS_TOKENIZER_TARGET = f'{_TOKENIZER_MODULE}.ArabicCharsTokenizer'
 _IPA_TOKENIZER_TARGET = f'{_TOKENIZER_MODULE}.IPATokenizer'
+
+# Joins two tokenizer names into a code-switching pair understood by AggregatedTTSTokenizer, e.g.
+# "arabic_MSA_chartokenizer+english_phoneme": Latin-script spans go to the second tokenizer, the rest to the first.
+CODE_SWITCH_TOKENIZER_SEPARATOR = '+'
+# Latin-script words, joined by whitespace into one phrase ("credit card"), with in-word apostrophes, hyphens
+# and digits ("don't", "two-factor", "A2A"), plus ASCII punctuation glued to the last word ("lounges."), so a
+# sentence-final period after an English word is encoded by the Latin tokenizer as in its own training data.
+# Standalone digits and punctuation, and non-ASCII punctuation such as "،" or "؟", are not matched.
+_LATIN_SPAN_RE = re.compile(r"[A-Za-z][A-Za-z0-9'\-]*(?:\s+[A-Za-z][A-Za-z0-9'\-]*)*[.,!?;:]*")
 
 DEFAULT_CHARSET_VERSION = 2
 DEFAULT_PUNCT_VERSION = 2
@@ -1561,12 +1571,137 @@ class AggregatedTTSTokenizer:
             raise ValueError("AggregatedTTSTokenizer could not find a padding token in the first tokenizer")
 
     def encode(self, text: str, tokenizer_name: str = None) -> List[int]:
-        """Tokenizer encode from text to tokens"""
+        """Tokenizer encode from text to tokens.
+
+        ``tokenizer_name`` is either one of the aggregated tokenizers, or a code-switching pair
+        ``"<primary>+<latin>"`` (see :meth:`encode_code_switched`).
+        """
+        if tokenizer_name not in self.tokenizers:
+            pair = split_code_switch_tokenizer_name(tokenizer_name)
+            if pair is not None:
+                return self.encode_code_switched(text, primary_tokenizer_name=pair[0], latin_tokenizer_name=pair[1])
         tokenizer = self.tokenizers[tokenizer_name]
         tokens = tokenizer.encode(text)
         return [self.tokenizer_offsets[tokenizer_name] + token for token in tokens]
 
+    def encode_code_switched(self, text: str, primary_tokenizer_name: str, latin_tokenizer_name: str) -> List[int]:
+        """Encode text that mixes a primary language with embedded Latin-script (e.g. English) words.
+
+        Latin-script spans (see ``_LATIN_SPAN_RE``), including ASCII punctuation glued to their last word, are
+        encoded with ``latin_tokenizer_name``; everything else, including digits and other punctuation, with
+        ``primary_tokenizer_name``. Each span keeps its own tokenizer's offset
+        in the shared vocabulary, so a model trained on both tokenizers can be used as is. Word boundaries between
+        spans use the primary tokenizer's space token, and the primary tokenizer's ``pad_with_space`` is applied once
+        around the whole sequence. G2P of the Latin spans is forced to phonemes (``phoneme_probability=1.0``) so
+        embedded words are never randomly spelled out as graphemes.
+
+        Args:
+            text: Input text.
+            primary_tokenizer_name: Tokenizer for the matrix language (e.g. ``"arabic_MSA_chartokenizer"``).
+            latin_tokenizer_name: Tokenizer for Latin-script spans (e.g. ``"english_phoneme"``).
+
+        Returns:
+            Token ids in the aggregated vocabulary.
+        """
+        for name in (primary_tokenizer_name, latin_tokenizer_name):
+            if name not in self.tokenizers:
+                raise KeyError(f"Code-switching tokenizer '{name}' is not one of {self.tokenizer_names}.")
+            if not isinstance(self.tokenizers[name], BaseTokenizer) or not hasattr(self.tokenizers[name], "space"):
+                raise ValueError(
+                    f"Code-switching requires space-aware NeMo tokenizers, but '{name}' is "
+                    f"{type(self.tokenizers[name]).__name__}."
+                )
+
+        segments = []
+        position = 0
+        for match in _LATIN_SPAN_RE.finditer(text):
+            if match.start() > position:
+                segments.append((primary_tokenizer_name, text[position : match.start()]))
+            segments.append((latin_tokenizer_name, match.group(0)))
+            position = match.end()
+        if position < len(text):
+            segments.append((primary_tokenizer_name, text[position:]))
+
+        primary = self.tokenizers[primary_tokenizer_name]
+        space_id = self.tokenizer_offsets[primary_tokenizer_name] + _space_token_id(primary)
+        token_ids = []
+        pending_space = False
+        with _forced_phoneme_probability(self.tokenizers[latin_tokenizer_name], 1.0):
+            for name, segment in segments:
+                pending_space = pending_space or segment[:1].isspace()
+                segment_ids = self._encode_unpadded(segment.strip(), name)
+                if segment_ids:
+                    if token_ids and pending_space:
+                        token_ids.append(space_id)
+                    token_ids.extend(segment_ids)
+                    pending_space = False
+                pending_space = pending_space or segment[-1:].isspace()
+
+        if getattr(primary, "pad_with_space", False):
+            token_ids = [space_id] + token_ids + [space_id]
+        return token_ids
+
     def decode(self, tokens: List[int], tokenizer_name: str = None) -> str:
         """Tokernizer decoder from tokens to text"""
+        if tokenizer_name not in self.tokenizers:
+            pair = split_code_switch_tokenizer_name(tokenizer_name)
+            if pair is not None:
+                return ''.join(
+                    self.decode(list(group), name)
+                    for name, group in itertools.groupby(tokens, key=lambda token: self._owning_tokenizer(token, pair))
+                )
         tokenizer = self.tokenizers[tokenizer_name]
         return tokenizer.decode([token - self.tokenizer_offsets[tokenizer_name] for token in tokens])
+
+    def _encode_unpadded(self, text: str, tokenizer_name: str) -> List[int]:
+        """Encode with one tokenizer, dropping the per-call ``pad_with_space`` padding."""
+        tokenizer = self.tokenizers[tokenizer_name]
+        tokens = tokenizer.encode(text)
+        if getattr(tokenizer, "pad_with_space", False):
+            space = _space_token_id(tokenizer)
+            if len(tokens) >= 2 and tokens[0] == space and tokens[-1] == space:
+                tokens = tokens[1:-1]
+        return [self.tokenizer_offsets[tokenizer_name] + token for token in tokens]
+
+    def _owning_tokenizer(self, token: int, tokenizer_names: List[str]) -> str:
+        """Return which of ``tokenizer_names`` owns aggregated ``token``."""
+        for name in tokenizer_names:
+            offset = self.tokenizer_offsets[name]
+            if offset <= token < offset + self.num_tokens_per_tokenizer[name]:
+                return name
+        raise ValueError(f"Token id {token} does not belong to any of {tokenizer_names}.")
+
+
+def split_code_switch_tokenizer_name(tokenizer_name: Optional[str]) -> Optional[List[str]]:
+    """Split a code-switching tokenizer name ``"<primary>+<latin>"`` into its two parts.
+
+    Returns ``None`` if ``tokenizer_name`` is not a code-switching name.
+    """
+    if not tokenizer_name or CODE_SWITCH_TOKENIZER_SEPARATOR not in tokenizer_name:
+        return None
+    parts = tokenizer_name.split(CODE_SWITCH_TOKENIZER_SEPARATOR)
+    if len(parts) != 2 or not all(parts):
+        raise ValueError(
+            f"Code-switching tokenizer name must be '<primary>{CODE_SWITCH_TOKENIZER_SEPARATOR}<latin>', "
+            f"got '{tokenizer_name}'."
+        )
+    return parts
+
+
+def _space_token_id(tokenizer: BaseTokenizer) -> int:
+    return tokenizer._token2id[tokenizer.tokens[tokenizer.space]]
+
+
+@contextmanager
+def _forced_phoneme_probability(tokenizer: BaseTokenizer, probability: float):
+    """Temporarily set the tokenizer's G2P phoneme probability, restoring the previous value (not the init value)."""
+    g2p = getattr(tokenizer, "g2p", None)
+    if g2p is None or not hasattr(g2p, "phoneme_probability"):
+        yield
+        return
+    previous = g2p.phoneme_probability
+    g2p.phoneme_probability = probability
+    try:
+        yield
+    finally:
+        g2p.phoneme_probability = previous

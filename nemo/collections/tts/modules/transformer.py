@@ -37,14 +37,25 @@ class PositionalEmbedding(nn.Module):
     def __init__(self, demb):
         super(PositionalEmbedding, self).__init__()
         self.demb = demb
-        inv_freq = 1 / (10000 ** (torch.arange(0.0, demb, 2.0) / demb))
+        # Always build inv_freq in float32, regardless of torch's current default dtype.
+        # PyTorch Lightning's "bf16-true" precision setting calls
+        # torch.set_default_dtype(torch.bfloat16) for the duration of model construction,
+        # which would otherwise make this division-then-power computation run (and get
+        # stored) in bfloat16, silently losing precision in the positional frequencies.
+        inv_freq = 1 / (10000 ** (torch.arange(0.0, demb, 2.0, dtype=torch.float32) / demb))
         self.register_buffer('inv_freq', inv_freq)
 
     def forward(self, pos_seq, bsz=None):
+        # Compute the sinusoid in float32 for precision, then cast back to the caller's
+        # dtype -- this also keeps the matmul below from failing when pos_seq arrives in
+        # fp16/bf16 (e.g. cast to the model's running dtype by the caller) while inv_freq
+        # is float32.
+        input_dtype = pos_seq.dtype
+        pos_seq = pos_seq.float()
         #        sinusoid_inp = torch.ger(pos_seq, self.inv_freq)
         sinusoid_inp = torch.matmul(torch.unsqueeze(pos_seq, -1), torch.unsqueeze(self.inv_freq, 0))
 
-        pos_emb = torch.cat([sinusoid_inp.sin(), sinusoid_inp.cos()], dim=1)
+        pos_emb = torch.cat([sinusoid_inp.sin(), sinusoid_inp.cos()], dim=1).to(input_dtype)
         if bsz is not None:
             return pos_emb[None, :, :].repeat(bsz, 1, 1)
         else:

@@ -26,6 +26,13 @@ from nemo.core.classes import NeuralModule, typecheck
 from nemo.core.neural_types import FloatType, LengthsType, NeuralType, SpectrogramType, VoidType
 from nemo.utils import logging
 
+__all__ = [
+    'GaussianFourierProjection',
+    'NoiseConditionalScoreNetworkPlusPlus',
+    'ResnetBlockBigGANPlusPlus',
+    'SpectrogramNoiseConditionalScoreNetworkPlusPlus',
+]
+
 
 class SpectrogramNoiseConditionalScoreNetworkPlusPlus(NeuralModule):
     """This model handles complex-valued inputs by stacking real and imaginary components.
@@ -300,11 +307,12 @@ class NoiseConditionalScoreNetworkPlusPlus(NeuralModule):
         """Forward pass of the model.
 
         Args:
-            input: input tensor, shjae (B, C, D, T)
+            input: input tensor, shape (B, C, D, T)
             input_length: length of the valid time steps for each example in the batch, shape (B,)
             condition: scalar condition (time) for the model, will be embedded using `self.time_embedding`
         """
-        assert input.shape[1] == self.in_channels
+        if input.shape[1] != self.in_channels:
+            raise ValueError(f"Expected input with {self.in_channels} channels, got {input.shape[1]} channels.")
 
         # apply padding at the input
         *_, D, T = input.shape
@@ -374,7 +382,10 @@ class NoiseConditionalScoreNetworkPlusPlus(NeuralModule):
 
         result = sum(images)
 
-        assert result.shape[-2:] == input.shape[-2:]
+        if result.shape[-2:] != input.shape[-2:]:
+            raise RuntimeError(
+                f"Projected images shape {result.shape[-2:]} does not match input shape {input.shape[-2:]}."
+            )
 
         # remove padding
         result = result[:, :, :D, :T]
@@ -393,7 +404,7 @@ class GaussianFourierProjection(NeuralModule):
 
     @property
     def input_types(self) -> Dict[str, NeuralType]:
-        """Returns definitions of module output ports."""
+        """Returns definitions of module input ports."""
         return {
             "input": NeuralType(('B',), FloatType()),
         }
@@ -405,7 +416,8 @@ class GaussianFourierProjection(NeuralModule):
             "output": NeuralType(('B', 'D'), VoidType()),
         }
 
-    def forward(self, input):
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        """Generate Fourier feature embeddings for input scalars."""
         x_proj = input[:, None] * self.W[None, :] * 2 * math.pi
         return torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1)
 
@@ -502,6 +514,10 @@ class ResnetBlockBigGANPlusPlus(torch.nn.Module):
         h = self.middle_conv(h)
 
         if diffusion_time_embedding is not None:
+            if not hasattr(self, 'diffusion_step_projection'):
+                raise ValueError(
+                    "Received diffusion_time_embedding, but diffusion_step_embedding_dim was not set during initialization."
+                )
             h = h + self.diffusion_step_projection(diffusion_time_embedding)
 
         h = self.output_block(h)

@@ -329,16 +329,16 @@ class TestAudioSegment:
                 # Test
                 assert (
                     audio_segment.sample_rate == sample_rate
-                ), f'channel_selector {channel_selector}, offset {offset}, duration {duration}, sample rate not matching: {audio_segment.sample_rate} != {sample_rate}'
+                ), f'channel_selector {channel_selector}, offset None, duration None, sample rate not matching: {audio_segment.sample_rate} != {sample_rate}'
                 assert (
                     audio_segment.num_channels == ref_channels
-                ), f'channel_selector {channel_selector}, offset {offset}, duration {duration}, num channels not matching: {audio_segment.num_channels} != {ref_channels}'
+                ), f'channel_selector {channel_selector}, offset None, duration None, num channels not matching: {audio_segment.num_channels} != {ref_channels}'
                 assert audio_segment.num_samples == len(
                     ref_samples
-                ), f'channel_selector {channel_selector}, offset {offset}, duration {duration}, num samples not matching: {audio_segment.num_samples} != {len(ref_samples)}'
+                ), f'channel_selector {channel_selector}, offset None, duration None, num samples not matching: {audio_segment.num_samples} != {len(ref_samples)}'
                 assert np.allclose(
                     audio_segment.samples, ref_samples, rtol=rtol, atol=atol
-                ), f'channel_selector {channel_selector}, offset {offset}, duration {duration}, samples not matching'
+                ), f'channel_selector {channel_selector}, offset None, duration None, samples not matching'
 
                 # 3) Load a random segment
                 offset = 0.45 * np.random.rand() * signal_len_sec

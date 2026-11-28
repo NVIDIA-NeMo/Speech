@@ -29,7 +29,7 @@ __all__ = [
     "TopKSequenceGenerator",
     "BeamSearchSequenceGenerator",
     "BeamSearchSequenceGeneratorWithLanguageModel",
-    "BeamSearchSequenceGeneratorWithNGramLM",
+    "BeamSearchSequenceGeneratorWithFusionModels",
     "EnsembleBeamSearchSequenceGenerator",
 ]
 

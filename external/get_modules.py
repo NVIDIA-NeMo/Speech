@@ -107,7 +107,8 @@ def main():
     # Load the collection specification.
     collection_spec = importlib.util.find_spec(collections[args.collection])
     if collection_spec is None:
-        logging.error("Failed to load the `{}` collection".format(val))
+        logging.error("Failed to load the `{}` collection".format(args.collection))
+        exit(-1)
 
     # Import the module from the module specification.
     collection = importlib.util.module_from_spec(collection_spec)

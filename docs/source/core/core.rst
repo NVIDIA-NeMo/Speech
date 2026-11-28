@@ -504,6 +504,18 @@ in Python or, for a model attribute, through ``optim_param_groups``:
                 use_muon: false
                 weight_decay: 0.0
 
+The step runs in its multi-tensor form by default (``foreach: true``):
+one batched Newton-Schulz iteration per matrix shape,
+faster, with transient memory for the stacked matrices of the largest shape group.
+``foreach: false`` selects the per-parameter loop, which computes the same update up to bfloat16 rounding.
+For a step captured in a CUDA graph or compiled with ``torch.compile``,
+pass the learning rate as a one-element tensor on the device and set ``capturable: true``.
+
+.. code-block:: python
+
+    # a step to be captured in a CUDA graph: the schedule fills the tensor learning rate in place
+    optimizer = Muon(model.parameters(), lr=torch.tensor(0.02, device="cuda"), capturable=True)
+
 Optimizer Params
 ~~~~~~~~~~~~~~~~
 

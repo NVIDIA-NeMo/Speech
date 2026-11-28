@@ -28,7 +28,8 @@ One optimizer instance handles both kinds,
 so one learning-rate schedule drives both with a fixed ratio.
 """
 
-from typing import Any, Callable, Dict, Iterable, Optional, Sequence, Tuple, Union
+import math
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import torch
 from torch.optim.optimizer import Optimizer
@@ -72,9 +73,21 @@ class Muon(Optimizer):
     so the relative decay per step is the same fraction of the respective learning rate;
     set ``weight_decay: 0.0`` on a parameter group to exclude it.
 
+    ``foreach=True`` (the default) runs one batched Newton-Schulz iteration per matrix shape
+    and the remaining arithmetic as ``torch._foreach`` operations:
+    faster, with transient memory for the stacked matrices of the largest shape group.
+    ``foreach=False`` updates one parameter after the other.
+    Both keep the same state and compute the same update up to bfloat16 rounding.
+
+    For a step captured in a CUDA graph or compiled with ``torch.compile``,
+    pass ``lr`` as a one-element float32 or float64 tensor on the parameters' device
+    (a scheduler updates it in place) and set ``capturable=True``,
+    which keeps the AdamW step counts on the device.
+    A loaded state dict keeps the ``foreach`` and ``capturable`` of this instance.
+
     Args:
         params: iterable of parameters or of parameter-group dicts
-        lr: learning rate of the Muon update
+        lr: learning rate of the Muon update, a float or a one-element tensor on the parameters' device
         momentum: momentum factor of the gradient buffer
         nesterov: apply the momentum buffer in Nesterov form
         ns_steps: number of Newton-Schulz iterations
@@ -85,12 +98,14 @@ class Muon(Optimizer):
         adam_lr_ratio: the AdamW learning rate is ``lr * adam_lr_ratio``
         adam_dim_threshold: matrices with a dimension of at least this size fall back to AdamW
         use_muon: force (``True``) or exclude (``False``) the Muon update; ``None`` selects by shape
+        foreach: the multi-tensor step (``True``) or the per-parameter loop (``False``), see above
+        capturable: keep the AdamW step count on the device, for a step captured in a CUDA graph, see above
     """
 
     def __init__(
         self,
         params: Union[Iterable[torch.Tensor], Iterable[Dict[str, Any]]],
-        lr: float = 2e-2,
+        lr: Union[float, torch.Tensor] = 2e-2,
         momentum: float = 0.95,
         nesterov: bool = True,
         ns_steps: int = 5,
@@ -101,9 +116,10 @@ class Muon(Optimizer):
         adam_lr_ratio: float = 0.025,
         adam_dim_threshold: int = 8192,
         use_muon: Optional[bool] = None,
+        foreach: bool = True,
+        capturable: bool = False,
     ) -> None:
-        if lr < 0.0:
-            raise ValueError(f"Invalid learning rate: {lr}")
+        _validate_lr(lr)
         if not 0.0 <= momentum < 1.0:
             raise ValueError(f"Invalid momentum: {momentum}")
         if ns_steps < 1:
@@ -132,9 +148,12 @@ class Muon(Optimizer):
             adam_lr_ratio=adam_lr_ratio,
             adam_dim_threshold=adam_dim_threshold,
             use_muon=use_muon,
+            foreach=foreach,
+            capturable=capturable,
         )
         super().__init__(params, defaults)
         for group in self.param_groups:
+            _validate_lr(group['lr'])
             if group['scale_mode'] not in SCALE_MODES:
                 raise ValueError(f"Unknown scale_mode {group['scale_mode']!r}, expected one of {SCALE_MODES}")
             if group['use_muon']:
@@ -143,6 +162,43 @@ class Muon(Optimizer):
                         raise ValueError(
                             f"use_muon=True needs at least two dimensions, got shape {tuple(param.shape)}"
                         )
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        super().__setstate__(state)
+        for group in self.param_groups:
+            # an optimizer state saved before the options existed has neither in its parameter groups
+            group.setdefault('foreach', True)
+            group.setdefault('capturable', False)
+        self._convert_step_counts()
+
+    def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
+        """Loads the optimizer state; ``foreach`` and ``capturable`` stay as this instance was constructed.
+
+        The other group options, the learning rate included, come from the state dict, as in ``torch.optim``.
+
+        Args:
+            state_dict: an optimizer state as :meth:`state_dict` returns it
+        """
+        # the two options describe how this instance executes, not the saved training
+        options = [(group['foreach'], group['capturable']) for group in self.param_groups]
+        super().load_state_dict(state_dict)
+        for group, (foreach, capturable) in zip(self.param_groups, options):
+            group['foreach'], group['capturable'] = foreach, capturable
+        self._convert_step_counts()
+
+    def _convert_step_counts(self) -> None:
+        # the AdamW step count follows the group's `capturable`: a float32 tensor on the device, or an int
+        for group in self.param_groups:
+            for param in group['params']:
+                param_state = self.state.get(param)
+                if param_state is None or 'step' not in param_state:
+                    continue
+                if group['capturable']:
+                    param_state['step'] = torch.as_tensor(
+                        param_state['step'], device=param.device, dtype=torch.float32
+                    )
+                elif isinstance(param_state['step'], torch.Tensor):
+                    param_state['step'] = int(param_state['step'])
 
     @staticmethod
     def selects_muon(param: torch.Tensor, *, use_muon: Optional[bool], adam_dim_threshold: int) -> bool:
@@ -175,40 +231,79 @@ class Muon(Optimizer):
             with torch.enable_grad():
                 loss = closure()
 
+        # checks of the eager step only: the capture query has no Dynamo trace
+        capturing = (
+            not torch.compiler.is_compiling()
+            and torch.cuda.is_available()
+            and torch.cuda.is_current_stream_capturing()
+        )
         for group in self.param_groups:
+            muon_params: List[torch.Tensor] = []
+            adamw_params: List[torch.Tensor] = []
             for param in group['params']:
                 if param.grad is None:
                     continue
-                state = self.state[param]
                 if self.selects_muon(
                     param, use_muon=group['use_muon'], adam_dim_threshold=group['adam_dim_threshold']
                 ):
-                    _muon_update(
-                        param,
-                        param.grad,
-                        state,
-                        lr=group['lr'],
-                        momentum=group['momentum'],
-                        nesterov=group['nesterov'],
-                        ns_steps=group['ns_steps'],
-                        weight_decay=group['weight_decay'],
-                        scale_mode=group['scale_mode'],
-                    )
+                    muon_params.append(param)
                 else:
-                    _adamw_update(
-                        param,
-                        param.grad,
-                        state,
-                        lr=group['lr'] * group['adam_lr_ratio'],
-                        betas=group['adam_betas'],
-                        eps=group['adam_eps'],
-                        weight_decay=group['weight_decay'],
+                    adamw_params.append(param)
+            lr = group['lr']
+            if isinstance(lr, torch.Tensor):
+                lr = lr.reshape(())
+            if capturing:
+                # a captured step bakes Python numbers in: the step count and the learning rate must live on the device
+                if not group['capturable']:
+                    raise RuntimeError(
+                        "A CUDA graph capture of Muon.step needs capturable=True in every parameter group"
                     )
+                devices = {param.device for param in muon_params + adamw_params}
+                if not isinstance(lr, torch.Tensor) or (devices and lr.device not in devices):
+                    raise RuntimeError(
+                        "A CUDA graph capture of Muon.step needs the learning rate as a tensor "
+                        f"on the parameters' device, got {lr!r}"
+                    )
+            muon_options = dict(
+                lr=lr,
+                momentum=group['momentum'],
+                nesterov=group['nesterov'],
+                ns_steps=group['ns_steps'],
+                weight_decay=group['weight_decay'],
+                scale_mode=group['scale_mode'],
+            )
+            adamw_options = dict(
+                lr=lr * group['adam_lr_ratio'],
+                betas=group['adam_betas'],
+                eps=group['adam_eps'],
+                weight_decay=group['weight_decay'],
+                capturable=group['capturable'],
+            )
+            if group['foreach']:
+                if muon_params:
+                    _muon_update_foreach(
+                        muon_params,
+                        [param.grad for param in muon_params],
+                        [self.state[param] for param in muon_params],
+                        **muon_options,
+                    )
+                if adamw_params:
+                    _adamw_update_foreach(
+                        adamw_params,
+                        [param.grad for param in adamw_params],
+                        [self.state[param] for param in adamw_params],
+                        **adamw_options,
+                    )
+            else:
+                for param in muon_params:
+                    _muon_update(param, param.grad, self.state[param], **muon_options)
+                for param in adamw_params:
+                    _adamw_update(param, param.grad, self.state[param], **adamw_options)
         return loss
 
 
 def zeropower_via_newtonschulz5(grad: torch.Tensor, steps: int = 5) -> torch.Tensor:
-    """Approximate the orthogonal factor of a matrix with a quintic Newton-Schulz iteration.
+    """Approximate the orthogonal factor of a matrix or of a batch of matrices with a quintic Newton-Schulz iteration.
 
     For the singular value decomposition ``grad = U S V^T`` the result approximates ``U V^T``:
     the iteration pushes the singular values towards one, not exactly onto it,
@@ -217,28 +312,29 @@ def zeropower_via_newtonschulz5(grad: torch.Tensor, steps: int = 5) -> torch.Ten
     The iteration runs in bfloat16 on the wide orientation of the matrix (rows <= columns),
     so transposing the input transposes the result;
     the result has the dtype of the input.
+    A batch of matrices is iterated as one, with batched matrix products.
 
     Args:
-        grad: a matrix of shape (rows, columns), any float dtype
+        grad: a matrix of shape (rows, columns) or a batch of matrices of shape (n, rows, columns), any float dtype
         steps: number of Newton-Schulz iterations
 
     Returns:
-        the approximately semi-orthogonal matrix, same shape and dtype as ``grad``
+        the approximately semi-orthogonal matrix or matrices, same shape and dtype as ``grad``
     """
-    if grad.ndim != 2:
-        raise ValueError(f"Expected a matrix, got a tensor of shape {tuple(grad.shape)}")
+    if grad.ndim not in (2, 3):
+        raise ValueError(f"Expected a matrix or a batch of matrices, got a tensor of shape {tuple(grad.shape)}")
     a, b, c = 3.4445, -4.7750, 2.0315
     x = grad.bfloat16()
-    transpose = grad.size(0) > grad.size(1)
+    transpose = grad.size(-2) > grad.size(-1)
     if transpose:
-        x = x.T
-    x = x / (x.norm() + 1e-7)
+        x = x.mT
+    x = x / (x.norm(dim=(-2, -1), keepdim=True) + 1e-7)
     for _ in range(steps):
-        aa = x @ x.T
+        aa = x @ x.mT
         bb = b * aa + c * (aa @ aa)
         x = a * x + bb @ x
     if transpose:
-        x = x.T
+        x = x.mT
     return x.to(grad.dtype)
 
 
@@ -283,7 +379,57 @@ def _muon_update(
     orthogonal = zeropower_via_newtonschulz5(matrix, steps=ns_steps)
     if weight_decay != 0:
         param.mul_(1 - lr * weight_decay)
-    param.add_(orthogonal.reshape_as(param), alpha=-lr * update_scale(matrix.shape, scale_mode))
+    scale = update_scale(matrix.shape, scale_mode)
+    if isinstance(lr, torch.Tensor):
+        param.addcmul_(orthogonal.reshape_as(param), lr, value=-scale)
+    else:
+        param.add_(orthogonal.reshape_as(param), alpha=-lr * scale)
+
+
+def _muon_update_foreach(
+    params: List[torch.Tensor],
+    grads: List[torch.Tensor],
+    states: List[Dict[str, Any]],
+    *,
+    lr: float,
+    momentum: float,
+    nesterov: bool,
+    ns_steps: int,
+    weight_decay: float,
+    scale_mode: str,
+) -> None:
+    bufs: List[torch.Tensor] = []
+    for param, state in zip(params, states):
+        if 'momentum_buffer' not in state:
+            state['momentum_buffer'] = torch.zeros_like(param)
+        bufs.append(state['momentum_buffer'])
+    torch._foreach_mul_(bufs, momentum)
+    torch._foreach_add_(bufs, grads)
+    if weight_decay != 0:
+        torch._foreach_mul_(params, 1 - lr * weight_decay)
+    # one batched Newton-Schulz iteration per matrix shape; torch.stack needs one device and dtype per batch
+    batches: Dict[Tuple[torch.device, torch.dtype, int, int], List[int]] = {}
+    for index, param in enumerate(params):
+        rows, columns = param.size(0), math.prod(param.shape[1:])
+        batches.setdefault((param.device, param.dtype, rows, columns), []).append(index)
+    for (_, _, rows, columns), indices in batches.items():
+        source = grads if nesterov else bufs
+        update = torch.stack([source[index].reshape(rows, columns) for index in indices])
+        if nesterov:
+            update.add_(torch.stack([bufs[index].reshape(rows, columns) for index in indices]), alpha=momentum)
+        orthogonal = zeropower_via_newtonschulz5(update, steps=ns_steps)
+        scale = update_scale((rows, columns), scale_mode)
+        if isinstance(lr, torch.Tensor):
+            # `alpha` takes no tensor: scale the stack by the learning rate first
+            orthogonal.mul_(lr * -scale)
+            alpha = 1.0
+        else:
+            alpha = -lr * scale
+        torch._foreach_add_(
+            [params[index] for index in indices],
+            [matrix.reshape_as(params[index]) for index, matrix in zip(indices, orthogonal.unbind(0))],
+            alpha=alpha,
+        )
 
 
 def _adamw_update(
@@ -291,13 +437,14 @@ def _adamw_update(
     grad: torch.Tensor,
     state: Dict[str, Any],
     *,
-    lr: float,
+    lr: Union[float, torch.Tensor],
     betas: Tuple[float, float],
     eps: float,
     weight_decay: float,
+    capturable: bool,
 ) -> None:
     if 'exp_avg' not in state:
-        state['step'] = 0
+        state['step'] = _initial_step(param, capturable)
         state['exp_avg'] = torch.zeros_like(param)
         state['exp_avg_sq'] = torch.zeros_like(param)
     state['step'] += 1
@@ -308,7 +455,115 @@ def _adamw_update(
     exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
     bias_correction1 = 1 - beta1**step
     bias_correction2 = 1 - beta2**step
-    denom = (exp_avg_sq.sqrt() / (bias_correction2**0.5)).add_(eps)
     if weight_decay != 0:
         param.mul_(1 - lr * weight_decay)
-    param.addcdiv_(exp_avg, denom, value=-lr / bias_correction1)
+    step_size = lr / bias_correction1
+    denom = (exp_avg_sq.sqrt() / (bias_correction2**0.5)).add_(eps)
+    if isinstance(step_size, torch.Tensor):
+        # a tensor step size scales the quotient, in float32 for float16 (the quotient can exceed its range)
+        param.addcmul_(_float32_range(exp_avg) / _float32_range(denom), step_size, value=-1.0)
+    else:
+        param.addcdiv_(exp_avg, denom, value=-step_size)
+
+
+def _adamw_update_foreach(
+    params: List[torch.Tensor],
+    grads: List[torch.Tensor],
+    states: List[Dict[str, Any]],
+    *,
+    lr: Union[float, torch.Tensor],
+    betas: Tuple[float, float],
+    eps: float,
+    weight_decay: float,
+    capturable: bool,
+) -> None:
+    for param, state in zip(params, states):
+        if 'exp_avg' not in state:
+            state['step'] = _initial_step(param, capturable)
+            state['exp_avg'] = torch.zeros_like(param)
+            state['exp_avg_sq'] = torch.zeros_like(param)
+    beta1, beta2 = betas
+    # the step count differs between parameters after a step without a gradient: one batch per Python count
+    if capturable:
+        steps = [state['step'] for state in states]
+        if not all(isinstance(step, torch.Tensor) for step in steps):
+            # reached under torch.compile only: Dynamo sets `capturable` while tracing
+            raise RuntimeError(
+                "The multi-tensor capturable Muon step needs the AdamW step counts on the device: "
+                "construct the optimizer with capturable=True (a loaded state dict is converted) "
+                "or compile the step before the first one"
+            )
+        torch._foreach_add_(steps, 1)
+        batches: Dict[Any, List[int]] = {None: list(range(len(params)))}
+    else:
+        batches = {}
+        for index, state in enumerate(states):
+            state['step'] += 1
+            batches.setdefault(state['step'], []).append(index)
+    for step, indices in batches.items():
+        step_params = [params[index] for index in indices]
+        step_grads = [grads[index] for index in indices]
+        exp_avgs = [states[index]['exp_avg'] for index in indices]
+        exp_avg_sqs = [states[index]['exp_avg_sq'] for index in indices]
+        torch._foreach_mul_(exp_avgs, beta1)
+        torch._foreach_add_(exp_avgs, step_grads, alpha=1 - beta1)
+        torch._foreach_mul_(exp_avg_sqs, beta2)
+        torch._foreach_addcmul_(exp_avg_sqs, step_grads, step_grads, value=1 - beta2)
+        if weight_decay != 0:
+            torch._foreach_mul_(step_params, 1 - lr * weight_decay)
+        denoms = torch._foreach_sqrt(exp_avg_sqs)
+        if capturable:
+            # step sizes `-lr / (1 - beta1^t)` and bias corrections as device tensors, one per parameter
+            steps = [states[index]['step'] for index in indices]
+            negative_step_sizes = torch._foreach_pow(beta1, steps)
+            torch._foreach_sub_(negative_step_sizes, 1)
+            torch._foreach_reciprocal_(negative_step_sizes)
+            torch._foreach_mul_(negative_step_sizes, lr)
+            bias_correction2_sqrts = torch._foreach_pow(beta2, steps)
+            torch._foreach_sub_(bias_correction2_sqrts, 1)
+            torch._foreach_neg_(bias_correction2_sqrts)
+            torch._foreach_sqrt_(bias_correction2_sqrts)
+            torch._foreach_div_(denoms, bias_correction2_sqrts)
+            torch._foreach_add_(denoms, eps)
+            # as in the loop: the step size scales the quotient, in float32 for float16
+            updates = torch._foreach_div(
+                [_float32_range(exp_avg) for exp_avg in exp_avgs], [_float32_range(denom) for denom in denoms]
+            )
+            torch._foreach_mul_(updates, negative_step_sizes)
+            torch._foreach_add_(step_params, updates)
+        else:
+            bias_correction1 = 1 - beta1**step
+            bias_correction2 = 1 - beta2**step
+            torch._foreach_div_(denoms, bias_correction2**0.5)
+            torch._foreach_add_(denoms, eps)
+            step_size = lr / bias_correction1
+            if isinstance(step_size, torch.Tensor):
+                # as in the loop: the step size scales the quotient, in float32 for float16
+                updates = torch._foreach_div(
+                    [_float32_range(exp_avg) for exp_avg in exp_avgs], [_float32_range(denom) for denom in denoms]
+                )
+                torch._foreach_mul_(updates, -step_size)
+                torch._foreach_add_(step_params, updates)
+            else:
+                torch._foreach_addcdiv_(step_params, exp_avgs, denoms, value=-step_size)
+
+
+def _float32_range(tensor: torch.Tensor) -> torch.Tensor:
+    # float16 is the one floating-point dtype with a smaller range than float32 (bfloat16 has float32's)
+    return tensor.float() if tensor.dtype == torch.float16 else tensor
+
+
+def _initial_step(param: torch.Tensor, capturable: bool) -> Union[int, torch.Tensor]:
+    # float32 whatever the default dtype is: a half-precision count stops advancing at 256 or 2048
+    return torch.zeros((), device=param.device, dtype=torch.float32) if capturable else 0
+
+
+def _validate_lr(lr: Union[float, torch.Tensor]) -> None:
+    if isinstance(lr, torch.Tensor):
+        if lr.numel() != 1:
+            raise ValueError(f"A tensor learning rate needs one element, got shape {tuple(lr.shape)}")
+        if not lr.dtype.is_floating_point or torch.finfo(lr.dtype).bits < 32:
+            # a half-precision learning rate rounds the decay factor 1 - lr * weight_decay to 1
+            raise ValueError(f"A tensor learning rate needs a float32 or float64 tensor, got {lr.dtype}")
+    if lr < 0.0:
+        raise ValueError(f"Invalid learning rate: {lr}")

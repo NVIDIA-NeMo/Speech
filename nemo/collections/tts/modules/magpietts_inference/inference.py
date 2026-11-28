@@ -298,10 +298,6 @@ class BaseInferenceRunner(abc.ABC):
             context_duration_min = self.model.cfg.get('context_duration_min', 5.0)
         if context_duration_max is None:
             context_duration_max = self.model.cfg.get('context_duration_max', 5.0)
-        # For multi-encoder models, use fixed 5s context for fair evaluation
-        if context_duration_min < 5.0 and context_duration_max > 5.0:
-            context_duration_min = 5.0
-            context_duration_max = 5.0
         return context_duration_min, context_duration_max
 
     @staticmethod
@@ -957,6 +953,7 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
             phoneme_text_eop_marker=self.model.phoneme_text_eop_marker,
             add_language_to_context_text=self.model.add_language_to_context_text,
             default_tokenizer_name=self.config.default_tokenizer_name,
+            randomize_context=False,
         )
         dataset.text_tokenizer = self.model.tokenizer
 

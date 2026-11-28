@@ -15,7 +15,7 @@
 
 import torch
 
-from nemo.collections.speechlm2.parts.label_prep import maybe_prepend_prompt_tokens
+from nemo.collections.speechlm2.parts.label_prep import maybe_prepend_prompt_tokens, prepare_text_and_asr_labels
 
 
 def test_maybe_prepend_prompt_tokens_with_source_tokens():
@@ -137,3 +137,35 @@ def test_maybe_prepend_prompt_tokens_no_prompt():
     assert torch.equal(out_encoded, source_encoded)
     assert torch.equal(out_lens, source_encoded_lens)
     assert torch.equal(out_tokens, target_tokens)
+
+
+def test_prepare_text_and_asr_labels_delay_channel_keeps_eos_near_boundary():
+    """delay_text_channel_by must not drop an EOS that falls within the delay window.
+
+    The clamp that is supposed to relocate such an EOS into the slot that survives the
+    right-shift was writing to the slot the shift discards instead, silently erasing EOS
+    from the training labels.
+    """
+    PAD, BOS, EOS = 0, 1, 3
+    delay_by = 2
+
+    # EOS sits at the last index that is still inside the pre-shift delay window.
+    boundary_tokens = torch.tensor([[BOS, 10, 11, 12, 13, 14, EOS, PAD]])
+    # EOS sits at the very last index.
+    last_idx_tokens = torch.tensor([[BOS, 10, 11, 12, 13, 14, PAD, EOS]])
+    # Control: EOS well inside the sequence, outside the delay window entirely.
+    control_tokens = torch.tensor([[BOS, 10, 11, EOS, PAD, PAD, PAD, PAD]])
+
+    for target_tokens in (boundary_tokens, last_idx_tokens, control_tokens):
+        out = prepare_text_and_asr_labels(
+            batch={"target_token_lens": torch.tensor([7])},
+            target_tokens=target_tokens.clone(),
+            source_encoded=torch.zeros(1, target_tokens.shape[1], 4),
+            cfg={"delay_text_channel_by": delay_by},
+            text_pad_id=PAD,
+            text_bos_id=BOS,
+            text_eos_id=EOS,
+        )
+        assert (
+            out["text_labels"] == EOS
+        ).any(), f"EOS lost after delay_text_channel_by shift for input {target_tokens.tolist()}"

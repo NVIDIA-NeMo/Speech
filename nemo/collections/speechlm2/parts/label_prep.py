@@ -168,7 +168,7 @@ def prepare_text_and_asr_labels(
         )
         for i in range(target_tokens.size(0)):
             if eos_mask[i].any():
-                target_tokens[i, -(delay_by)] = text_eos_id
+                target_tokens[i, -(delay_by + 1)] = text_eos_id
         target_tokens = torch.where(eos_mask, text_pad_id, target_tokens)
         pad = torch.full(
             (target_tokens.shape[0], delay_by),

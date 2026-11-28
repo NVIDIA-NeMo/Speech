@@ -28,6 +28,7 @@ from nemo.collections.asr.parts.preprocessing.perturb import process_augmentatio
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.collections.asr.parts.utils.eou_utils import EOB_STRING, EOU_STRING  # noqa: F401 (re-exported)
 from nemo.collections.common.data.lhotse.audio_loading import LhotseAudioLoadingDatasetMixin
+from nemo.collections.common.data.lhotse.stateful_rng import StatefulRandomMixin
 from nemo.collections.common.tokenizers.aggregate_tokenizer import TokenizerWrapper
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
@@ -73,7 +74,7 @@ class RandomPaddingConfig:
     post_pad_duration: float = 3.0  # amount of right-padding when pad_distribution='constant'
 
 
-class LhotseSpeechToTextBpeEOUDataset(LhotseAudioLoadingDatasetMixin, torch.utils.data.Dataset):
+class LhotseSpeechToTextBpeEOUDataset(StatefulRandomMixin, LhotseAudioLoadingDatasetMixin, torch.utils.data.Dataset):
     """
     This dataset processes the audio data and the corresponding text data to generate the ASR labels,
     along with EOU labels for each frame. The audios used in this dataset should only contain speech with
@@ -137,6 +138,11 @@ class LhotseSpeechToTextBpeEOUDataset(LhotseAudioLoadingDatasetMixin, torch.util
         5) concatenate the pre-padding, audio, and post-padding to get the padded audio signal
         6) update the EOU labels accordingly
 
+    Random draws use the dataset's generator ``self.rng`` (see
+    :class:`~nemo.collections.common.data.lhotse.stateful_rng.StatefulRandomMixin`). With
+    ``use_stateful_dataloader=True`` it is checkpointed, so a resumed run produces the same batches as an
+    uninterrupted run; otherwise the draws are the same as before (global ``np.random``).
+    The ``augmentor`` perturbations keep their own random generators, which are not checkpointed.
     """
 
     @property
@@ -423,7 +429,7 @@ class LhotseSpeechToTextBpeEOUDataset(LhotseAudioLoadingDatasetMixin, torch.util
             padded_eou_targets: torch.Tensor of padded EOU labels, shape [T+padding]
             padded_eou_targets_len: torch.Tensor of padded EOU label length, shape [1]
         """
-        p = np.random.rand()
+        p = self.rng.random() if self.checkpointed_rng_enabled else np.random.rand()
         if self.padding_cfg is None or p > self.padding_cfg.prob:
             # don't apply padding
             eou_targets = self._repeat_eou_labels(eou_targets)
@@ -454,9 +460,13 @@ class LhotseSpeechToTextBpeEOUDataset(LhotseAudioLoadingDatasetMixin, torch.util
         post_padding_duration = None
 
         if self.padding_cfg.pad_distribution == 'uniform':
-            total_padding_duration = np.random.uniform(min_padding_duration, max_padding_duration)
+            total_padding_duration = self._uniform(min_padding_duration, max_padding_duration)
         elif self.padding_cfg.pad_distribution == 'normal':
-            total_padding_duration = np.random.normal(self.padding_cfg.normal_mean, self.padding_cfg.normal_std)
+            mean, std = self.padding_cfg.normal_mean, self.padding_cfg.normal_std
+            if self.checkpointed_rng_enabled:
+                total_padding_duration = self.rng.gauss(mean, std)
+            else:
+                total_padding_duration = np.random.normal(mean, std)
             total_padding_duration = max(min_padding_duration, min(max_padding_duration, total_padding_duration))
         elif self.padding_cfg.pad_distribution == 'constant':
             pass
@@ -470,7 +480,7 @@ class LhotseSpeechToTextBpeEOUDataset(LhotseAudioLoadingDatasetMixin, torch.util
             pre_padding_duration = total_padding_duration / 2
             post_padding_duration = total_padding_duration / 2
         else:
-            post_padding_duration = np.random.uniform(
+            post_padding_duration = self._uniform(
                 self.padding_cfg.min_post_pad_duration, total_padding_duration - self.padding_cfg.min_pre_pad_duration
             )
             pre_padding_duration = total_padding_duration - post_padding_duration
@@ -496,6 +506,10 @@ class LhotseSpeechToTextBpeEOUDataset(LhotseAudioLoadingDatasetMixin, torch.util
         padded_eou_targets = torch.cat((pre_padding_eou, eou_targets, post_padding_eou), dim=0)
         padded_eou_targets = self._repeat_eou_labels(padded_eou_targets)
         return padded_audio, padded_audio_len, padded_eou_targets
+
+    def _uniform(self, low: float, high: float) -> float:
+        """Uniform draw from the checkpointed generator when enabled, else from ``np.random`` as before."""
+        return self.rng.uniform(low, high) if self.checkpointed_rng_enabled else np.random.uniform(low, high)
 
     def _maybe_augment_audio(self, audio: torch.Tensor, audio_len: torch.Tensor):
         """

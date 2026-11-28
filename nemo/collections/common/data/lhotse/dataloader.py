@@ -123,7 +123,9 @@ class LhotseDataLoadingConfig:
     # Explicit legacy shuffle_buffer_size values are copied here during schema
     # merge; otherwise packed sampling uses DEFAULT_PACKING_BUFFER_SIZE candidates.
     packing_buffer_size: int | None = None
-    concurrent_bucketing: bool = True  # fetches data in a background thread
+    # Fetches data in a background thread. None (auto) resolves to False when use_stateful_dataloader=True
+    # (background prefetch makes the batch order nondeterministic, breaking exact resume) and True otherwise.
+    concurrent_bucketing: bool | None = None
     bucketing_2d_strict_mode: bool = True  # reduces padding by discarding significant outliers
     #   d. Other Lhotse sampling options.
     # Reservoir size for ordinary (non-packed) dynamic sampling.
@@ -1068,7 +1070,7 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
             duration_bins=determine_bucket_duration_bins(config),
             num_cuts_for_bins_estimate=config.num_cuts_for_bins_estimate,
             buffer_size=config.bucket_buffer_size,
-            concurrent=config.concurrent_bucketing,
+            concurrent=_resolve_concurrent_bucketing(config),
             rank=0 if use_iterable_dataset else global_rank,
             world_size=1 if use_iterable_dataset else world_size,
             **sampler_kwargs,
@@ -1515,6 +1517,27 @@ def _cut_text_into_windows(cut, num_tokens: int, tokenizer) -> list:
         )
         ans.append(new_cut)
     return ans
+
+
+def _resolve_concurrent_bucketing(config) -> bool:
+    """
+    Resolve ``concurrent_bucketing`` for the bucketing sampler.
+
+    ``None`` (the default) means auto: disabled with ``use_stateful_dataloader=True`` and enabled otherwise.
+    Concurrent bucketing fills buckets in a background thread, so the batch order depends on thread timing
+    and differs between runs; a resumed StatefulDataLoader could then not reproduce the interrupted run.
+    """
+    concurrent = config.get("concurrent_bucketing", None)
+    stateful = bool(config.get("use_stateful_dataloader", False))
+    if concurrent is None:
+        return not stateful
+    if concurrent and stateful:
+        raise ValueError(
+            "concurrent_bucketing=True is incompatible with use_stateful_dataloader=True: the background "
+            "bucketing thread makes the batch order nondeterministic, so training cannot resume exactly. "
+            "Set concurrent_bucketing to false or remove it (it defaults to false with the stateful dataloader)."
+        )
+    return bool(concurrent)
 
 
 def _validate_iterable_shard_seed(config: DictConfig, cuts: CutSet, world_size: int, sampler_shuffles: bool) -> None:

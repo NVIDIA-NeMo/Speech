@@ -47,7 +47,7 @@ class RandomProjectionVectorQuantizer(NeuralModule, Exportable):
             code_dim: dimension of the codebook features
             num_classes: number of classes
             num_books: number of codebooks
-            dist_fn: distance function to use, one of "l2" or "cosine"
+            dist_fn: distance function for unit-normalized lookup vectors, one of "l2" or "cosine"
             time_ahead: if Ture, the input is of shape (B, T, D), otherwise (B, D, T)
             freeze: whether to freeze the projection matrix
             squeeze_single: if True, squeeze codebook dimension if num_books is 1
@@ -151,10 +151,10 @@ class RandomProjectionVectorQuantizer(NeuralModule, Exportable):
         x = F.normalize(x.view(B, T, self.num_books, self.code_dim), dim=-1)
 
         # get tokens (xid) of shape (B, T, num_books)
-        # Both x and codebooks are L2-normalized, so for both "cosine" and "l2":
-        # argmax(dot) == argmax(cosine) == argmin(||a-b||^2)  since ||a-b||^2 = 2 - 2*a·b
-        xid = torch.einsum('btdh,dch->btdc', x, self.codebooks)
-        xid = xid.max(dim=-1)[1]
+        # Unit-norm lookup keeps cosine and L2 equivalent after codebook updates or checkpoint loading.
+        lookup_codebooks = F.normalize(self.codebooks, dim=-1)
+        scores = torch.einsum('btdh,dch->btdc', x, lookup_codebooks)
+        xid = scores.argmax(dim=-1)
 
         # xid2: (B, T, num_books) -> (B, T, num_books)
         xid2 = xid + self.book_offsets

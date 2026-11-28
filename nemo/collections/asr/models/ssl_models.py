@@ -859,17 +859,11 @@ class EncDecMaskedTokenPredModel(SpeechEncDecSelfSupervisedModel):
             valid_tokens_n = all_valid[:, n]
             if valid_tokens_n.numel() > 0:
                 batch_token_count[n] = torch.bincount(valid_tokens_n.long(), minlength=int(self.cfg.num_classes))
-        # Derive unique count from bincount — no separate .unique() call
-        num_unique_tokens = (batch_token_count > 0).sum(dim=1)
-
         # Sync batch counts across ranks (SUM) so cumulative is global
         if torch.distributed.is_initialized():
             torch.distributed.all_reduce(batch_token_count, op=torch.distributed.ReduceOp.SUM)
+        num_unique_tokens = (batch_token_count > 0).sum(dim=1)
         self.cumulative_token_count += batch_token_count
-
-        # Get the maximum number of unique tokens for each codebook across all ranks
-        if torch.distributed.is_initialized():
-            torch.distributed.all_reduce(num_unique_tokens, op=torch.distributed.ReduceOp.MAX)
 
         # coverage = fraction of codebook entries used
         codebook_coverage = num_unique_tokens / float(self.cfg.num_classes)

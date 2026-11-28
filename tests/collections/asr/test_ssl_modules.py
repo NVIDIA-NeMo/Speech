@@ -231,6 +231,45 @@ class TestRandomProjectionVectorQuantizer:
         q = RandomProjectionVectorQuantizer(feat_in=16, code_dim=8, num_classes=32, num_books=1)
         assert q.codebooks.dtype == torch.float32
 
+    @pytest.mark.unit
+    @pytest.mark.parametrize("num_books", [1, 2])
+    @pytest.mark.parametrize("dist_fn", ["l2", "cosine"])
+    @pytest.mark.parametrize("freeze_after_step", [False, True])
+    def test_normalized_lookup_after_optimizer_step(self, num_books, dist_fn, freeze_after_step):
+        q = RandomProjectionVectorQuantizer(
+            feat_in=2,
+            code_dim=2,
+            num_classes=2,
+            num_books=num_books,
+            dist_fn=dist_fn,
+            time_ahead=True,
+            freeze=False,
+        )
+        with torch.no_grad():
+            q.proj.weight.copy_(torch.eye(2).repeat(num_books, 1))
+            codebooks = torch.nn.functional.normalize(torch.tensor([[1.0, -1.0], [1.0, 0.0]]), dim=-1)
+            q.codebooks.copy_(codebooks.unsqueeze(0).expand(num_books, -1, -1))
+
+        inputs = torch.tensor([[[1.0, -1.0]]])
+        optimizer = torch.optim.SGD([q.codebooks], lr=1.0)
+        xq, xid = q(input_signal=inputs)
+        assert torch.equal(xid, torch.zeros_like(xid))
+        loss = -xq.sum()
+        loss.backward()
+        optimizer.step()
+        if freeze_after_step:
+            q.freeze()
+
+        projected = q.proj(q.input_norm(inputs)).view(1, 1, num_books, 2)
+        projected = torch.nn.functional.normalize(projected, dim=-1)
+        lookup_codebooks = torch.nn.functional.normalize(q.codebooks, dim=-1)
+        distances = (projected.unsqueeze(-2) - lookup_codebooks).square().sum(dim=-1)
+        expected = distances.argmin(dim=-1)
+        _, actual = q(input_signal=inputs)
+
+        assert torch.equal(expected, torch.ones_like(expected))
+        assert torch.equal(actual, expected)
+
     def test_l2_nearest_neighbor_correctness(self):
         """Verify L2 picks the closest codebook entry on a small example."""
         q = RandomProjectionVectorQuantizer(

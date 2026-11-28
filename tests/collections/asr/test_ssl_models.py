@@ -13,6 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from types import SimpleNamespace
+from unittest.mock import Mock
+
 import pytest
 import torch
 from omegaconf import DictConfig
@@ -393,6 +396,40 @@ class TestContrastiveLoss:
 
 
 class TestDenoiseMLMSSLModel:
+    @pytest.mark.unit
+    @pytest.mark.parametrize("distributed", [False, True])
+    @pytest.mark.parametrize("single_book", [False, True])
+    def test_codebook_coverage(self, monkeypatch, distributed, single_book):
+        model = SimpleNamespace(cfg=DictConfig({'num_classes': 4}), log=Mock())
+        tokens = torch.tensor([[[0, 0], [1, 0], [3, 3]]])
+        remote_counts = torch.tensor([[0, 1, 1, 0], [0, 1, 1, 0]])
+        if single_book:
+            tokens = tokens[:, :, 0]
+            remote_counts = remote_counts[:1]
+
+        def all_reduce(tensor, op):
+            if op == torch.distributed.ReduceOp.SUM:
+                tensor.add_(remote_counts)
+            elif op == torch.distributed.ReduceOp.MAX:
+                tensor.copy_(torch.maximum(tensor, (remote_counts > 0).sum(dim=1)))
+
+        monkeypatch.setattr(torch.distributed, 'is_initialized', lambda: distributed)
+        monkeypatch.setattr(torch.distributed, 'all_reduce', all_reduce)
+        expected_counts = torch.tensor([[1, 1, 0, 0], [2, 0, 0, 0]])[: remote_counts.size(0)]
+        if distributed:
+            expected_counts += remote_counts
+
+        for step in (1, 2):
+            EncDecDenoiseMaskedTokenPredModel.log_codebook_coverage(model, tokens, torch.tensor([2]))
+            torch.testing.assert_close(model.cumulative_token_count, step * expected_counts)
+            logged = {call.args[0]: call.args[1] for call in model.log.call_args_list}
+            coverage = (expected_counts > 0).sum(dim=1) / 4.0
+            for n, expected in enumerate(coverage):
+                torch.testing.assert_close(logged[f'codebook_coverage_cb{n}'], expected)
+                torch.testing.assert_close(logged[f'cumul_codebook_coverage_cb{n}'], expected)
+            torch.testing.assert_close(logged['codebook_coverage_avg'], coverage.mean())
+            model.log.reset_mock()
+
     @pytest.mark.unit
     def test_forward(self, denoise_mlm_ssl_model):
         input_signal = torch.randn(size=(4, 64000))

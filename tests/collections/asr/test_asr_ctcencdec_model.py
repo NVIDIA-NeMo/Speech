@@ -15,6 +15,7 @@
 import copy
 from types import SimpleNamespace
 
+import lightning.pytorch as pl
 import pytest
 import torch
 from lhotse import CutSet, MonoCut
@@ -478,3 +479,46 @@ class TestEncDecCTCModel:
         assert signatures_match
         assert cls_subset is None
         assert dataclass_subset is None
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("limit_train_batches", [1.0, 0.5])
+    def test_setup_training_data_lhotse_iterable_with_float_limit_train_batches(
+        self, asr_model, tmp_path, limit_train_batches
+    ):
+        # Lhotse's IterableDatasetWrapper has no length; setup used to crash calling len() on it.
+        cuts_path = tmp_path / "cuts.jsonl.gz"
+        cuts = DummyManifest(CutSet, begin_id=0, end_id=4, with_data=True)
+        for cut in cuts:
+            cut.features = None
+            cut.custom = None
+            cut.supervisions[0].custom = None
+        cuts.save_audios(tmp_path / "audio").to_file(cuts_path)
+        trainer = pl.Trainer(
+            accelerator="cpu",
+            devices=1,
+            limit_train_batches=limit_train_batches,
+            logger=False,
+            enable_checkpointing=False,
+        )
+        asr_model.set_trainer(trainer)
+
+        asr_model.setup_training_data(
+            DictConfig(
+                {
+                    'use_lhotse': True,
+                    'cuts_path': str(cuts_path),
+                    'force_iterable_dataset': True,
+                    'batch_size': 2,
+                    'num_workers': 0,
+                    'shuffle': True,
+                    'labels': list(asr_model.decoder.vocabulary),
+                }
+            )
+        )
+
+        assert isinstance(asr_model._train_dl.dataset, torch.utils.data.IterableDataset)
+        assert trainer.limit_train_batches == limit_train_batches
+        assert type(trainer.limit_train_batches) is float
+        audio, audio_lens, tokens, token_lens = next(iter(asr_model._train_dl))
+        assert audio.shape[0] == audio_lens.shape[0] == 2
+        assert tokens.shape[0] == token_lens.shape[0] == 2

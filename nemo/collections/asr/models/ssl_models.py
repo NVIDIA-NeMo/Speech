@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from math import ceil
 from typing import Any, Dict, List, Optional, Union
 
 import torch
@@ -254,27 +253,7 @@ class SpeechEncDecSelfSupervisedModel(ModelPT, ASRModuleMixin, AccessMixin):
 
         self._train_dl = self._setup_dataloader_from_config(config=train_data_config)
 
-        # Need to set this because if using an IterableDataset, the length of the dataloader is the total number
-        # of samples rather than the number of batches, and this messes up the tqdm progress bar.
-        # So we set the number of steps manually (to the correct number) to fix this.
-        if (
-            self._train_dl is not None
-            and hasattr(self._train_dl, 'dataset')
-            and isinstance(self._train_dl.dataset, torch.utils.data.IterableDataset)
-        ):
-            # We also need to check if limit_train_batches is already set.
-            # If it's an int, we assume that the user has set it to something sane, i.e. <= # training batches,
-            # and don't change it. Otherwise, adjust batches accordingly if it's a float (including 1.0).
-            if self._trainer is not None and isinstance(self._trainer.limit_train_batches, float):
-                self._trainer.limit_train_batches = int(
-                    self._trainer.limit_train_batches
-                    * ceil((len(self._train_dl.dataset) / self.world_size) / train_data_config['batch_size'])
-                )
-            elif self._trainer is None:
-                logging.warning(
-                    "Model Trainer was not set before constructing the dataset, incorrect number of "
-                    "training batches will be used. Please set the trainer and rebuild the dataset."
-                )
+        self._set_limit_batches_for_iterable_dataset(self._train_dl, train_data_config.get('batch_size'))
 
     def setup_validation_data(self, val_data_config: Optional[Union[DictConfig, Dict]]):
         """
@@ -299,22 +278,9 @@ class SpeechEncDecSelfSupervisedModel(ModelPT, ASRModuleMixin, AccessMixin):
 
         self._validation_dl = self._setup_dataloader_from_config(config=val_data_config)
 
-        # Need to set this because if using an IterableDataset, the length of the dataloader is the total number
-        # of samples rather than the number of batches, and this messes up the tqdm progress bar.
-        # So we set the number of steps manually (to the correct number) to fix this.
-        if (
-            self._validation_dl is not None
-            and hasattr(self._validation_dl, 'dataset')
-            and isinstance(self._validation_dl.dataset, torch.utils.data.IterableDataset)
-        ):
-            # We also need to check if limit_train_batches is already set.
-            # If it's an int, we assume that the user has set it to something sane, i.e. <= # training batches,
-            # and don't change it. Otherwise, adjust batches accordingly if it's a float (including 1.0).
-            if isinstance(self._trainer.limit_val_batches, float):
-                self._trainer.limit_val_batches = int(
-                    self._trainer.limit_val_batches
-                    * ceil((len(self._validation_dl.dataset) / self.world_size) / val_data_config['batch_size'])
-                )
+        self._set_limit_batches_for_iterable_dataset(
+            self._validation_dl, val_data_config.get('batch_size'), stage="val"
+        )
 
     @property
     def input_types(self) -> Optional[Dict[str, NeuralType]]:

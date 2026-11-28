@@ -15,7 +15,8 @@
 # ASR adapter training with a linear adapter and a tiny-attention (RelPos MHA) encoder adapter.
 set -e
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/asr_adapters/train_asr_adapter.py \
-    model.pretrained_model="stt_en_conformer_ctc_small" \
+    model.pretrained_model=null \
+    model.nemo_model=/home/TestData/asr/stt_en_conformer_ctc_small-1.6.0.nemo \
     model.adapter.adapter_name="an4" \
     model.adapter.linear.in_features=176 \
     model.train_ds.manifest_filepath=/home/TestData/an4_dataset/an4_train.json \
@@ -27,7 +28,8 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo exampl
     exp_manager.exp_dir=/tmp/speech_to_text_adapters_results
 
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/asr_adapters/train_asr_adapter.py \
-    model.pretrained_model="stt_en_conformer_ctc_small" \
+    model.pretrained_model=null \
+    model.nemo_model=/home/TestData/asr/stt_en_conformer_ctc_small-1.6.0.nemo \
     model.adapter.adapter_name="encoder:an4" \
     model.adapter.adapter_type="tiny_attn" \
     model.adapter.tiny_attn.n_feat=176 \

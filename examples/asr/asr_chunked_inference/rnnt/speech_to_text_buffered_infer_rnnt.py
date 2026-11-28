@@ -70,6 +70,7 @@ import lightning.pytorch as pl
 import torch
 from omegaconf import OmegaConf, open_dict
 
+from nemo.collections.asr.inference.utils.pipeline_utils import ceil_seconds_to_frames
 from nemo.collections.asr.models import EncDecHybridRNNTCTCModel, EncDecRNNTModel
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecodingConfig
 from nemo.collections.asr.parts.utils.eval_utils import cal_write_wer
@@ -259,8 +260,8 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     total_buffer = cfg.total_buffer_in_secs
     chunk_len = float(cfg.chunk_len_in_secs)
 
-    tokens_per_chunk = math.ceil(chunk_len / model_stride_in_secs)
-    mid_delay = math.ceil((chunk_len + (total_buffer - chunk_len) / 2) / model_stride_in_secs)
+    tokens_per_chunk = ceil_seconds_to_frames(chunk_len, model_stride_in_secs)
+    mid_delay = ceil_seconds_to_frames(chunk_len + (total_buffer - chunk_len) / 2, model_stride_in_secs)
     logging.info(f"tokens_per_chunk is {tokens_per_chunk}, mid_delay is {mid_delay}")
 
     if cfg.merge_algo == 'middle':

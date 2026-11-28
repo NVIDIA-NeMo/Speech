@@ -14,6 +14,7 @@
 # limitations under the License.
 
 
+import math
 import re
 from functools import partial, wraps
 from typing import Iterable
@@ -311,6 +312,22 @@ def seconds_to_frames(seconds: float | int | Iterable[float | int], model_stride
         return [int(s / model_stride_in_secs) for s in seconds]
 
     raise ValueError(f"Invalid type for seconds: {type(seconds)}")
+
+
+def ceil_seconds_to_frames(seconds: float, model_stride_in_secs: float) -> int:
+    """
+    Convert seconds to the number of frames that cover them; a whole number of frames up to floating point error
+    (0.56 s at a stride of 0.08 s) gives exactly that number.
+    Args:
+        seconds: (float) Time in seconds
+        model_stride_in_secs: (float) Stride of the model in seconds
+    Returns:
+        (int) Number of frames
+    """
+    frames = seconds / model_stride_in_secs
+    if math.isclose(frames, round(frames)):
+        return round(frames)
+    return math.ceil(frames)
 
 
 def filter_token_triples(

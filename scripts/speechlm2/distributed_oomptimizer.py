@@ -80,6 +80,7 @@ The main control flow is:
    the original tool, while preserving the per-probe logs for debugging.
 """
 
+import gc
 import importlib
 import inspect
 import json
@@ -96,6 +97,7 @@ from pathlib import Path
 import click
 import lightning.pytorch as pl
 import torch
+from lightning.pytorch.strategies.launchers import _MultiProcessingLauncher
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, IterableDataset
 
@@ -1234,6 +1236,46 @@ def _emit_profile(profile: dict, buckets, memory_fraction: float, ddp: bool, dty
     click.secho("\tbucket_batch_size=[" + ",".join(str(bs) for seqlen, bs in final_profile) + "]", bold=True)
 
 
+def _single_process_trainer_cfg(trainer_cfg: dict) -> dict:
+    """Restrict a resolved trainer config to one device while keeping the configured strategy.
+
+    The strategy is kept so that a single-GPU probe builds the model the same way single-GPU training does.
+    For example, ``AutomodelParallelStrategy`` provides the device mesh that makes SALMAutomodel cast its
+    perception module to the training dtype; without it the trainable parameters would stay in fp32 and the
+    profiled memory (and optimizer setup) would not match real training.
+    """
+    return {**trainer_cfg, "devices": 1, "num_nodes": 1}
+
+
+def _validate_in_process_launcher(trainer: pl.Trainer) -> None:
+    """Reject strategies that run ``fit`` in spawned/forked child processes.
+
+    The OOMptimizer warm-up fit uses a function-local synthetic dataset that cannot be pickled, and profiling
+    continues in the current process after ``fit`` returns, so it must run in-process.
+    """
+    if isinstance(trainer.strategy.launcher, _MultiProcessingLauncher):
+        raise click.ClickException(
+            f"Strategy {type(trainer.strategy).__name__} launches training in spawned or forked worker processes "
+            f"(start_method={trainer.strategy.launcher._start_method!r}), which the OOMptimizer does not support. "
+            "Use 'ddp' (or another strategy that runs in the current process) in trainer.strategy instead."
+        )
+
+
+def _release_warmup_optimizers(trainer: pl.Trainer) -> None:
+    """Free optimizer state created by the warm-up ``fit`` before profiling builds its own optimizer.
+
+    Lightning's generic ``Strategy.teardown`` offloads optimizer state to CPU, but ``ModelParallelStrategy``
+    (and ``AutomodelParallelStrategy``) leave it on the GPU. Without this, profiling would measure two sets of
+    optimizer state. The model itself is not moved or recast. The optimizer objects stay registered with the trainer
+    because some models read e.g. ``trainer.optimizers[0].param_groups`` in ``training_step``.
+    """
+    for optimizer in trainer.optimizers:
+        optimizer.state.clear()
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def _is_oom_like(error: RuntimeError) -> bool:
     error_msg = str(error)
     return (
@@ -1514,8 +1556,7 @@ def oomptimizer(
     model_cls = getattr(importlib.import_module(namespace), name)
     trainer_cfg = resolve_trainer_cfg(cfg.trainer)
     if not distributed:
-        trainer_cfg = {**trainer_cfg, "devices": 1, "num_nodes": 1}
-        trainer_cfg.pop("strategy", None)
+        trainer_cfg = _single_process_trainer_cfg(trainer_cfg)
     trainer = pl.Trainer(
         **{
             **trainer_cfg,
@@ -1525,6 +1566,7 @@ def oomptimizer(
             "val_check_interval": 0.0,
         }
     )
+    _validate_in_process_launcher(trainer)
     with trainer.init_module():
         model = model_cls(OmegaConf.to_container(cfg.model, resolve=True))
     model = model.to(device)
@@ -1568,6 +1610,7 @@ def oomptimizer(
 
     # initialize everything PTL needs
     trainer.fit(model, DataLoader(_GenDataset(), batch_size=None))
+    _release_warmup_optimizers(trainer)
     model = model.to(device)
     optimizer = model.configure_optimizers()["optimizer"]
     model.log = lambda *args, **kwargs: None  # no logging

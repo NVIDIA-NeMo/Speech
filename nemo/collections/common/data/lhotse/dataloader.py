@@ -31,7 +31,6 @@ from lhotse.dataset import (
     CutConcatenate,
     DynamicBucketingSampler,
     DynamicCutSampler,
-    IterableDatasetWrapper,
     LowpassUsingResampling,
     ReverbWithImpulseResponse,
     RoundRobinSampler,
@@ -40,7 +39,7 @@ from lhotse.dataset import (
 )
 from lhotse.dataset.dataloading import resolve_seed
 from lhotse.dataset.sampling.base import CutSampler, SamplingConstraint, TimeConstraint
-from lhotse.lazy import IteratorNode, LazyFlattener
+from lhotse.lazy import IteratorNode, LazyFlattener, supports_graph_restore
 from lhotse.utils import fix_random_seed
 from omegaconf import DictConfig, OmegaConf
 
@@ -70,6 +69,10 @@ from nemo.collections.common.data.lhotse.sampling import (
     TokenPerSecondFilter,
     TokenPerTokenFilter,
     ValidationStatusFilter,
+)
+from nemo.collections.common.data.lhotse.stateful_rng import (
+    StatefulIterableDatasetWrapper,
+    configure_dataset_checkpointed_rng,
 )
 from nemo.collections.common.data.prompt_fn import apply_prompt_format_fn
 from nemo.collections.common.prompts import PromptFormatter
@@ -639,6 +642,7 @@ def get_lhotse_dataloader_from_single_config(
     logging.info("We will be using a Lhotse DataLoader.")
     config = make_structured_with_schema_warnings(config)
     dataset = configure_dataset_audio_loading(dataset, config.fault_tolerant_audio_loading)
+    dataset = configure_dataset_checkpointed_rng(dataset, config.use_stateful_dataloader)
 
     # First, resolve the random seed in case a string value was provided.
     config.seed = resolve_seed(config.seed)
@@ -659,7 +663,7 @@ def get_lhotse_dataloader_from_single_config(
         # This together with infinite datasets removes the need to split data across nodes/workers.
         _maybe_init_main_process_for_iterable(config.num_workers, global_rank, world_size, config.seed)
         dloader_kwargs = dict(
-            dataset=IterableDatasetWrapper(dataset=dataset, sampler=sampler),
+            dataset=StatefulIterableDatasetWrapper(dataset=dataset, sampler=sampler),
             worker_init_fn=make_worker_init_fn(rank=global_rank, world_size=world_size, seed=config.seed),
             persistent_workers=config.num_workers > 0,  # helps Lhotse Shar maintain shuffling state
         )
@@ -758,6 +762,7 @@ def get_lhotse_dataloader_from_multi_config(
 
     shared_opts = gather_shared_opts()
     dataset = configure_dataset_audio_loading(dataset, shared_opts.fault_tolerant_audio_loading)
+    dataset = configure_dataset_checkpointed_rng(dataset, shared_opts.use_stateful_dataloader)
     fix_random_seed(shared_opts.seed)
 
     configs = {
@@ -817,7 +822,7 @@ def get_lhotse_dataloader_from_multi_config(
         # This together with infinite datasets removes the need to split data across nodes/workers.
         _maybe_init_main_process_for_iterable(shared_opts.num_workers, global_rank, world_size, shared_opts.seed)
         dloader_kwargs = dict(
-            dataset=IterableDatasetWrapper(dataset=dataset, sampler=sampler),
+            dataset=StatefulIterableDatasetWrapper(dataset=dataset, sampler=sampler),
             worker_init_fn=make_worker_init_fn(rank=global_rank, world_size=world_size, seed=shared_opts.seed),
             persistent_workers=shared_opts.num_workers > 0,  # helps Lhotse Shar maintain shuffling state
         )
@@ -946,9 +951,13 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     # 2. Optional augmentations.
     # 2.a. Noise mixing.
     if config.noise_path is not None:
-        noise = guess_parse_cutset(config.noise_path)
+        # With use_stateful_dataloader, the noise shards are shuffled with the data's shard_seed (unless noise_path
+        # sets its own), so the noise order, and therefore the mixed audio, is reproducible and replayed exactly on
+        # resume. Without it, the noise keeps its own default shard_seed, as before.
+        noise_shard_seed = config.shard_seed if config.use_stateful_dataloader else None
+        noise = guess_parse_cutset(config.noise_path, shard_seed=noise_shard_seed)
         # make sure the noise is resampled to the same sample rate as the audio cuts
-        noise = noise.resample(config.sample_rate)
+        noise = _mixable_noise(noise.resample(config.sample_rate))
         # preserve_id="left": a noisy cut keeps its source cut's ID. Otherwise Lhotse draws the ID from a
         # process-global UUID stream that isn't part of the dataloader state, so IDs (and any per-cut seed
         # derived from them) would differ between an uninterrupted run and a resumed one.
@@ -1600,3 +1609,34 @@ def _find_fixed_order_sources(node, randomized: bool, int_seed_origin: Optional[
     elif int_seed_origin is not None and not randomized:
         found.append(int_seed_origin)
     return found
+
+
+def _mixable_noise(noise: CutSet) -> CutSet:
+    """
+    Make a noise CutSet usable by ``CutSet.mix``.
+
+    Lhotse's ``LazyCutMixer`` samples indexed, graph-restorable noise by index, which needs the noise length. Tarred
+    and Shar noise is repeated indefinitely by default (and blends may be weighted or stream-bounded), so such a noise
+    CutSet can have no length, and mixing then fails on the first batch with "... is an infinite iterator". Only
+    that case is changed: the noise is mixed as a stream, which keeps the configured repetition, weights and
+    ``max_open_streams``. Every other noise CutSet is returned unchanged, whatever ``use_stateful_dataloader`` is.
+    """
+    if not noise.is_lazy or not (
+        getattr(noise.data, "is_indexed", False) and supports_graph_restore(noise.data, require_length=True)
+    ):
+        return noise
+    try:
+        len(noise.data)
+    except TypeError:
+        return CutSet(_StreamingNoise(noise.data))
+    return noise
+
+
+class _StreamingNoise(IteratorNode):
+    """Iterates over an (infinite) indexed CutSet graph without exposing its random access to ``LazyCutMixer``."""
+
+    def __init__(self, source):
+        self.source = source
+
+    def __iter__(self):
+        yield from self.source
